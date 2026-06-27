@@ -53,7 +53,7 @@ def _urllib_transport(
 ) -> RelayResponse:
     req = urllib.request.Request(url, data=body, method=method, headers=dict(headers))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (https only)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return RelayResponse(
                 resp.status,
                 {k.lower(): v for k, v in resp.headers.items()},
@@ -79,6 +79,12 @@ class RelayClient:
         transport: Transport | None = None,
         timeout: float = DEFAULT_TIMEOUT_S,
     ) -> None:
+        # Outbound-HTTPS-only: enforce the https scheme that _urllib_transport's
+        # S310 audit-suppression assumes, so an operator misconfiguration can't
+        # send tokens over http:// or follow a file:// base. Skipped when a custom
+        # transport is injected (tests use https://relay.test through a fake).
+        if transport is None and not base_url.startswith("https://"):
+            raise ValueError(f"relay base_url must be https://, got {base_url!r}")
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._transport: Transport = transport or (

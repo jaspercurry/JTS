@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import urllib.parse
 
@@ -333,6 +334,63 @@ def test_pull_blob_parses_integrity_headers():
     blob, integrity = client.pull_blob("cap_1", "pu")
     assert blob == b"ciphertext-bytes"
     assert integrity == {"plaintext_len": 42, "sha256": "ab" * 32}
+
+
+def test_client_requires_https_base_without_custom_transport():
+    # Outbound-HTTPS-only: a real client refuses a non-https base so tokens can
+    # never go over http://. An injected transport (tests) bypasses the guard.
+    with pytest.raises(ValueError, match="https"):
+        RelayClient("http://relay.test")
+    RelayClient("https://relay.test")  # ok
+    RelayClient("http://relay.test", transport=lambda *_a: RelayResponse(200, {}, b"{}"))
+
+
+# --- observability (event= logs) ---------------------------------------------
+
+
+def test_observability_logs_the_capture_lifecycle(caplog):
+    caplog.set_level(logging.INFO, logger="jasper.capture_relay.session")
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)  # logs capture_relay.registered
+    wav = b"RIFF" + bytes(range(64))
+
+    def on_armed():
+        backend.phone_upload(session.session_id, session.content_key, wav)
+
+    backend.phone_arm(session.session_id)
+    run_capture(
+        client,
+        session,
+        on_armed=on_armed,
+        poll_interval_s=0.0,
+        timeout_s=5.0,
+        sleep=lambda _s: None,
+    )
+    text = caplog.text
+    for ev in ("registered", "armed", "ready", "captured"):
+        assert f"capture_relay.{ev}" in text, ev
+    # session_id is logged (CSPRNG, non-secret); tokens/keys never are.
+    assert session.upload_token not in text
+    assert session.pull_token not in text
+    assert crypto.content_key_to_b64url(session.content_key) not in text
+
+
+def test_failure_logs_warning_with_reason_and_traceback(caplog):
+    caplog.set_level(logging.WARNING, logger="jasper.capture_relay.session")
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    backend.phone_abort(session.session_id)
+    with pytest.raises(CaptureAborted):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: None,
+            poll_interval_s=0.0,
+            timeout_s=5.0,
+            sleep=lambda _s: None,
+        )
+    assert "capture_relay.failed" in caplog.text
+    assert "CaptureAborted" in caplog.text  # operator can see the real cause
 
 
 def test_classify_status():

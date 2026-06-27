@@ -21,6 +21,7 @@ and trivially testable with a fake relay.
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import time
 from collections.abc import Callable
@@ -34,6 +35,9 @@ from jasper.capture_relay.crypto import (
     generate_content_key,
 )
 from jasper.capture_relay.spec import CaptureSpec
+from jasper.log_event import log_event
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TTL_S = 900
 DEFAULT_POLL_INTERVAL_S = 0.75
@@ -103,7 +107,7 @@ def mint_session(
 
 def register_session(client: RelayClient, session: PiCaptureSession) -> dict:
     """Register the session + opaque spec with the relay."""
-    return client.register(
+    result = client.register(
         session_id=session.session_id,
         capture_spec_json=session.capture_spec_json(),
         upload_token=session.upload_token,
@@ -111,6 +115,15 @@ def register_session(client: RelayClient, session: PiCaptureSession) -> dict:
         ttl_s=session.ttl_s,
         max_upload_bytes=session.spec.max_upload_bytes,
     )
+    # session_id is a CSPRNG id, not a secret; tokens/keys are never logged.
+    log_event(
+        logger,
+        "capture_relay.registered",
+        session_id=session.session_id,
+        kind=session.spec.kind,
+        ttl_s=session.ttl_s,
+    )
+    return result
 
 
 @dataclass(frozen=True)
@@ -176,9 +189,23 @@ def run_capture(
             monotonic=monotonic,
         )
     except Exception as exc:  # noqa: BLE001 — cue on ANY failure, then re-raise
+        slug = classify_failure_cue(exc)
+        # Operator-facing half of no-silent-failure: a WARNING with the failure
+        # type + cue slug, plus the traceback (so an *unexpected* error — e.g. a
+        # bug in the host's on_armed/stimulus playback — is diagnosable even
+        # though the household only hears the generic measurement_failed cue).
+        log_event(
+            logger,
+            "capture_relay.failed",
+            level=logging.WARNING,
+            exc_info=True,
+            session_id=session.session_id,
+            reason=type(exc).__name__,
+            cue=slug,
+        )
         if play_cue is not None:
             try:
-                play_cue(classify_failure_cue(exc))
+                play_cue(slug)
             except Exception:  # noqa: BLE001 — the cue is best-effort
                 pass
         raise
@@ -207,9 +234,11 @@ def _poll_until_capture(
 
         if state.armed and not armed_fired:
             armed_fired = True
+            log_event(logger, "capture_relay.armed", session_id=session.session_id)
             on_armed()
 
         if state.ready:
+            log_event(logger, "capture_relay.ready", session_id=session.session_id)
             blob, header_integrity = client.pull_blob(
                 session.session_id, session.pull_token
             )
@@ -217,13 +246,20 @@ def _poll_until_capture(
             try:
                 expected_len = int(integrity["plaintext_len"])
                 expected_sha = str(integrity["sha256"])
-                return decrypt_and_verify(
+                wav = decrypt_and_verify(
                     session.content_key, blob, expected_len, expected_sha
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise CaptureFailed(
                     "relay-pulled capture failed decrypt/integrity"
                 ) from exc
+            log_event(
+                logger,
+                "capture_relay.captured",
+                session_id=session.session_id,
+                wav_bytes=len(wav),
+            )
+            return wav
 
         if monotonic() >= deadline:
             raise CaptureTimeout(
