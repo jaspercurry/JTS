@@ -23,6 +23,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CHUNKSIZE,
+    DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
@@ -30,6 +31,8 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
     ensure_volume_limit_db,
+    file_capture_resampler_yaml,
+    is_async_resampler,
 )
 from jasper.camilla_emit import emit_master_gain_pipeline
 from jasper.camilla_stereo_prefix import build_stereo_prefix
@@ -50,27 +53,10 @@ _JTS_GENERATED_RE = re.compile(
     r"|grouping_leader|grouping_solo_restore|grouping_follower)\.yml$"
 )
 
-# Stage 4 lean lane: default async resampler for a File-CAPTURE config. A File
-# backend has no clock for CamillaDSP to rate-tune (rate-adjust method 1 is
-# unavailable), so enable_rate_adjust must steer the ratio via an async
-# resampler (method 2) or the chain free-runs. BalancedAsync (AsyncSinc /
-# Balanced) is CamillaDSP's recommended speed/quality point for adaptive rate
-# adjustment.
-DEFAULT_FILE_CAPTURE_RESAMPLER = "BalancedAsync"
-# CamillaDSP's async (adjustable-ratio) resampler families. ONLY these can
-# carry enable_rate_adjust's ratio corrections on a clockless File capture; a
-# Synchronous/fixed resampler or None lets the chain free-run.
-_ASYNC_RESAMPLER_TYPES = frozenset(
-    {"BalancedAsync", "FastAsync", "AccurateAsync", "AsyncSinc", "AsyncPoly"}
-)
-
-
-def _is_async_resampler(resampler_type: str | None) -> bool:
-    """True if resampler_type is one of CamillaDSP's async (ratio-adjustable)
-    families — the only ones that can carry rate-adjust on a File capture."""
-    if not resampler_type:
-        return False
-    return resampler_type in _ASYNC_RESAMPLER_TYPES or resampler_type.endswith("Async")
+# Lean-lane File-capture resampler vocabulary lives in the shared contract
+# (jasper.camilla_config_contract): DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE /
+# _PROFILE, is_async_resampler(), file_capture_resampler_yaml(). Imported above
+# so the stereo and active-speaker emitters share one v4-schema definition.
 
 
 def emit_sound_config(
@@ -95,6 +81,7 @@ def emit_sound_config(
     playback_pipe_path: str | None = None,
     capture_pipe_path: str | None = None,
     resampler_type: str | None = None,
+    resampler_profile: str | None = DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile.
 
@@ -207,10 +194,10 @@ def emit_sound_config(
                 "async-resampler ratio correction; without it the lean lane "
                 "free-runs (Stage-1 AEC3 drift hazard)"
             )
-        if not _is_async_resampler(resampler_type):
+        if not is_async_resampler(resampler_type):
             raise ValueError(
                 "capture_pipe_path (File capture) requires an async resampler "
-                "(BalancedAsync/FastAsync/AccurateAsync/AsyncSinc/AsyncPoly) — "
+                "(AsyncSinc/AsyncPoly — CamillaDSP v4 vocabulary) — "
                 "enable_rate_adjust on a clockless File capture has nothing to "
                 f"steer without one; got resampler_type={resampler_type!r}"
             )
@@ -287,10 +274,12 @@ def emit_sound_config(
     channels: 2
     device: "{capture_device}"
     format: {capture_format}"""
-    # The resampler line appears ONLY when requested (the lean lane), so every
+    # The resampler block appears ONLY when requested (the lean lane), so every
     # existing ALSA-capture caller is byte-identical (no resampler key).
     resampler_line = (
-        f"\n  resampler_type: {resampler_type}" if resampler_type is not None else ""
+        file_capture_resampler_yaml(resampler_type, resampler_profile)
+        if resampler_type is not None
+        else ""
     )
     yaml = f"""---
 # Auto-generated JTS DSP config{header_id}.

@@ -59,6 +59,58 @@ def ensure_volume_limit_db(value: float) -> float:
     return out
 
 
+# --- Lean-lane File-capture resampler (CamillaDSP v4 object schema) ---
+# A File (named-pipe) capture has no hardware clock, so enable_rate_adjust can
+# only discipline it by steering an ASYNC resampler's ratio (rate-adjust
+# "method 2"). The deployed CamillaDSP is v4.x, whose resampler is an OBJECT
+# under "devices": a "resampler" mapping carrying an AsyncSinc kind and a
+# Balanced profile (see file_capture_resampler_yaml below for the emitted YAML).
+# The pre-v2 scalar form (`resampler_type: BalancedAsync`) is rejected by the
+# v4 parser, so emitters MUST use the object form. AsyncSinc / Balanced is
+# CamillaDSP's recommended speed/quality point for adaptive rate adjustment on
+# a 1 GB Pi 5. Shared here so both the stereo and active-speaker emitters use
+# one definition (no copy-paste twin, no cross-package private import).
+DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE = "AsyncSinc"
+DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE = "Balanced"
+# The lean-lane capture FIFO — single owner so the producer and consumer can
+# never drift (mirrors snapcast's shared SNAPFIFO). The usbsink writer
+# (jasper.usbsink, JASPER_USBSINK_OUTPUT_MODE=fifo) writes full-width S32_LE
+# PCM here; the File-capture CamillaDSP config reads it. Both sides import this
+# constant rather than spelling the path literally.
+DEFAULT_LEAN_CAPTURE_FIFO = "/run/jasper-usbsink/lean.pipe"
+# CamillaDSP v4 async (ratio-adjustable) resampler types — the ONLY ones that
+# can carry enable_rate_adjust on a clockless File capture. Synchronous cannot.
+ASYNC_RESAMPLER_TYPES = frozenset({"AsyncSinc", "AsyncPoly"})
+
+
+def is_async_resampler(resampler_type: str | None) -> bool:
+    """True iff ``resampler_type`` is a CamillaDSP v4 async (ratio-adjustable)
+    resampler — the only kind that can carry enable_rate_adjust on a clockless
+    File capture. Exact-set membership: an unknown or ``Synchronous`` type
+    returns False so the File-capture guard fails loud rather than emitting a
+    config that would free-run.
+    """
+    return resampler_type in ASYNC_RESAMPLER_TYPES
+
+
+def file_capture_resampler_yaml(
+    resampler_type: str,
+    profile: str | None = DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
+) -> str:
+    """Emit the CamillaDSP v4 ``resampler:`` object block for a File-capture
+    lean-lane config.
+
+    Newline-prefixed and indented to nest under ``devices:`` (two spaces for
+    ``resampler:``, four for its keys). ``profile`` applies to ``AsyncSinc``;
+    pass ``None`` to omit it (e.g. ``AsyncPoly``, which takes ``interpolation``
+    rather than ``profile``).
+    """
+    block = f"\n  resampler:\n    type: {resampler_type}"
+    if profile:
+        block += f"\n    profile: {profile}"
+    return block
+
+
 @dataclass(frozen=True)
 class PeqFilter:
     """Import-cheap representation of a CamillaDSP peaking EQ."""
