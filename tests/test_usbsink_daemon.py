@@ -208,6 +208,15 @@ def test_daemon_config_latency_knobs_overridable(monkeypatch):
     assert cfg.latency == "low"
 
 
+def test_daemon_config_latency_knobs_clamp_to_floor(monkeypatch):
+    """queue_maxblocks=0 -> unbounded queue.Queue (OOM risk); floor at 1."""
+    monkeypatch.setenv("JASPER_USBSINK_QUEUE_MAXBLOCKS", "0")
+    monkeypatch.setenv("JASPER_USBSINK_BLOCK_FRAMES", "0")
+    cfg = DaemonConfig.from_env()
+    assert cfg.queue_maxblocks == 1
+    assert cfg.block_frames == 1
+
+
 @pytest.mark.parametrize(
     "raw,expected",
     [

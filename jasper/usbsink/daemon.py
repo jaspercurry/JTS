@@ -169,12 +169,15 @@ class DaemonConfig:
             control_url=os.environ.get(
                 "JASPER_USBSINK_CONTROL_URL", VOLUME_DEFAULT_CONTROL_URL,
             ),
-            block_frames=int(os.environ.get(
+            # Clamp both to >= 1: block_frames < 1 is a degenerate audio
+            # block, and queue_maxblocks=0 makes queue.Queue UNBOUNDED —
+            # unbounded memory growth on the 1 GB Pi if the consumer stalls.
+            block_frames=max(1, int(os.environ.get(
                 "JASPER_USBSINK_BLOCK_FRAMES", str(BLOCK_FRAMES),
-            )),
-            queue_maxblocks=int(os.environ.get(
+            ))),
+            queue_maxblocks=max(1, int(os.environ.get(
                 "JASPER_USBSINK_QUEUE_MAXBLOCKS", str(QUEUE_MAXBLOCKS),
-            )),
+            ))),
             latency=os.environ.get("JASPER_USBSINK_LATENCY", ""),
         )
 
