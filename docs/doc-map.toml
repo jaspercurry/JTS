@@ -19,6 +19,13 @@ session_artifacts = [
   # HANDOFF-barge-in.md. Not a canonical scan target; retire when barge-in ships.
   "docs/barge-in-build-prompts.md",
 ]
+# Prior-art research artifacts: long-lived studies kept as reference (each
+# tagged `Status: research` in-doc), not canonical operational scan targets.
+# They satisfy the no-orphan-doc invariant without routing a future maintainer
+# to them as current operational truth.
+research = [
+  "docs/RESEARCH-pipewire-low-latency.md",
+]
 
 [[subsystem]]
 id = "ci-and-branch-protection"

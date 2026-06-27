@@ -38,7 +38,7 @@ class Subsystem:
     verification: tuple[str, ...]
 
 
-DOCUMENT_CLASS_KEYS = ("session_artifacts",)
+DOCUMENT_CLASS_KEYS = ("session_artifacts", "research")
 
 
 def repo_path(path: str) -> str:
