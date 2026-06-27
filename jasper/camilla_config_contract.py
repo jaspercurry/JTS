@@ -133,6 +133,91 @@ def is_async_resampler(resampler_type: str | None) -> bool:
     return resampler_type in ASYNC_RESAMPLER_TYPES
 
 
+# snd-aloop ALSA captures whose name a JTS config taps for the summed program.
+# A `plug:`-wrapped form resolves to the same device, so match the substring.
+_SND_ALOOP_CAPTURE_TOKENS = ("jasper_capture", "Loopback")
+
+
+def snd_aloop_rate_adjust_oscillation_reason(text: str) -> str | None:
+    """Return why an emitted CamillaDSP config would re-introduce the
+    rate_adjust + async-resampler oscillation on a snd-aloop capture, else None.
+
+    The MIRROR of the lean-lane File-capture guard. A File (named-pipe) capture
+    is clockless and REQUIRES enable_rate_adjust + an async resampler. A
+    snd-aloop ALSA capture (``plug:jasper_capture`` / ``hw:Loopback,...``) at
+    capture-rate == playback-rate is the OPPOSITE case: the loopback already
+    rate-tracks, so ``enable_rate_adjust: true`` with an async resampler makes
+    CamillaDSP's adjuster and the resampler fight, producing the metastable
+    AirPlay-dropout oscillation documented in
+    docs/HANDOFF (CamillaDSP rate_adjust + AsyncSinc). The safe shape is
+    enable_rate_adjust true AND NO async resampler block.
+
+    Returns a one-clause reason string when the config is a JTS-generated
+    snd-aloop capture config (single samplerate ⇒ capture == playback by
+    construction) that carries an async resampler — the dangerous both-on
+    combination. Returns None when the config is not a snd-aloop capture (e.g. a
+    File-capture lean config, which has its own guard) or is safe. NOTE the
+    bonded-leader pipe-sink config legitimately sets ``enable_rate_adjust:
+    false`` on its snd-aloop capture (snapclient is the sole rate-tracker on the
+    synced chain) — that is NOT this oscillation and is intentionally not
+    flagged; only the async-resampler-on-loopback case is. Parser is
+    deliberately lightweight — these are JTS-generated configs with a stable,
+    simple ``devices:`` shape, not arbitrary YAML.
+    """
+    capture_device: str | None = None
+    has_resampler = False
+    resampler_type: str | None = None
+    in_devices = False
+    devices_indent = 0
+    nested: str | None = None
+    nested_indent = 0
+
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = _yaml_indent(raw_line)
+        if not in_devices:
+            if stripped == "devices:":
+                in_devices = True
+                devices_indent = indent
+            continue
+        # Left the devices: block.
+        if indent <= devices_indent and raw_line.lstrip() == raw_line:
+            break
+        if stripped.endswith(":"):
+            key = stripped[:-1].strip()
+            if key in {"capture", "playback", "resampler"}:
+                nested = key
+                nested_indent = indent
+                if key == "resampler":
+                    has_resampler = True
+            continue
+        if ":" not in stripped:
+            continue
+        key, raw_value = stripped.split(":", 1)
+        key = key.strip()
+        value = _clean_yaml_scalar(raw_value)
+        if nested == "capture" and key == "device" and indent > nested_indent:
+            capture_device = value
+        elif nested == "resampler" and key == "type" and indent > nested_indent:
+            resampler_type = value
+
+    if capture_device is None:
+        return None
+    if not any(tok in capture_device for tok in _SND_ALOOP_CAPTURE_TOKENS):
+        return None  # not a snd-aloop capture (e.g. File lean lane)
+
+    if has_resampler and is_async_resampler(resampler_type):
+        return (
+            f"snd-aloop capture {capture_device!r} carries an async resampler "
+            f"(type={resampler_type!r}) — combined with enable_rate_adjust this "
+            "fights the loopback's own rate tracking (the AirPlay-dropout "
+            "oscillation)"
+        )
+    return None
+
+
 def file_capture_resampler_yaml(
     resampler_type: str,
     profile: str | None = DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
