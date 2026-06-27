@@ -5649,3 +5649,112 @@ def test_check_wifi_recover_timer_no_systemctl_skips(monkeypatch):
     r = doctor.check_wifi_recover_timer()
     assert r.status == "ok"
     assert "no systemctl" in r.detail
+
+
+# ---- check_dac_usb_sync_mode (Stage 6 clock-coherence advisory) -------------
+
+
+def _sync_mode_state(*syncs):
+    """An OutputHardwareState with one Apple playback child per sync tag."""
+    return OutputHardwareState(
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        profile_label="Apple USB-C audio adapter",
+        status="ready",
+        physical_output_count=2,
+        apple_dac_count=len(syncs),
+        child_devices=tuple(
+            OutputCardFact(
+                card_id=f"A{i or ''}",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                endpoint_sync=tag,
+                has_playback=True,
+            )
+            for i, tag in enumerate(syncs)
+        ),
+    )
+
+
+def test_dac_sync_mode_skips_when_no_xvf_mic(monkeypatch):
+    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: False)
+    # Must short-circuit before reading output state when chip-AEC is moot.
+    monkeypatch.setattr(
+        doctor.audio, "_output_hardware_state_or_none",
+        lambda: (_ for _ in ()).throw(AssertionError("must not probe")),
+    )
+    result = doctor.check_dac_usb_sync_mode()
+    assert result.status == "ok"
+    assert "no XVF3800 mic present" in result.detail
+
+
+def test_dac_sync_mode_ok_for_sync_apple_dongle(monkeypatch):
+    # Mirrors the real jts capture: Apple dongle reports (SYNC).
+    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
+    monkeypatch.setattr(
+        doctor.audio, "_output_hardware_state_or_none",
+        lambda: _sync_mode_state("SYNC"),
+    )
+    result = doctor.check_dac_usb_sync_mode()
+    assert result.status == "ok"
+    assert "synchronous USB playback endpoint" in result.detail
+    # Advisory clock-coherence wording, not an enable/disable gate.
+    assert "clock-coherence observation only" in result.detail
+    assert "binding chip-AEC gate" in result.detail
+
+
+def test_dac_sync_mode_ok_for_adaptive_endpoint(monkeypatch):
+    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
+    monkeypatch.setattr(
+        doctor.audio, "_output_hardware_state_or_none",
+        lambda: _sync_mode_state("ADAPTIVE"),
+    )
+    result = doctor.check_dac_usb_sync_mode()
+    assert result.status == "ok"
+    assert "synchronous USB playback endpoint" in result.detail
+
+
+def test_dac_sync_mode_warns_fail_closed_for_async(monkeypatch):
+    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
+    monkeypatch.setattr(
+        doctor.audio, "_output_hardware_state_or_none",
+        lambda: _sync_mode_state("ASYNC"),
+    )
+    result = doctor.check_dac_usb_sync_mode()
+    assert result.status == "warn"
+    assert "async USB playback endpoint" in result.detail
+    # Reframed as advisory: the binding gate is DAC qual + outputd SRO verdict.
+    assert "outputd SRO verdict" in result.detail
+
+
+def test_dac_sync_mode_na_for_i2s_dac(monkeypatch):
+    # HiFiBerry/I2S HAT: known DAC profile, no USB endpoint sync tag.
+    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
+    state = OutputHardwareState(
+        profile_id="hifiberry_dac8x",
+        profile_label="HiFiBerry DAC8x",
+        status="ready",
+        physical_output_count=8,
+        child_devices=(
+            OutputCardFact(
+                card_id="DAC8x",
+                device_id="hifiberry_dac8x",
+                endpoint_sync=None,
+                has_playback=True,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        doctor.audio, "_output_hardware_state_or_none", lambda: state
+    )
+    result = doctor.check_dac_usb_sync_mode()
+    assert result.status == "ok"
+    assert "I2S clock slave" in result.detail
+
+
+def test_dac_sync_mode_warns_when_state_unavailable(monkeypatch):
+    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
+    monkeypatch.setattr(
+        doctor.audio, "_output_hardware_state_or_none", lambda: None
+    )
+    result = doctor.check_dac_usb_sync_mode()
+    assert result.status == "warn"
+    assert "output hardware state unavailable" in result.detail
