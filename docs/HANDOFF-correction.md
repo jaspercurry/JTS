@@ -9,6 +9,19 @@
 
 ## Status
 
+- 🧪 **Phone-mic capture relay path (gated, default-off, on-device-pending).**
+  As of 2026-06-27 there is an *optional* alternative capture transport that
+  moves the capture page to a trusted cloud origin (jasper.tech) and pulls the
+  WAV back through a stateless E2E-encrypted relay, feeding **this same**
+  MeasurementSession analysis. It is **inert unless an operator sets
+  `JASPER_CAPTURE_RELAY_BASE`** — `POST /relay/capture` returns a clear "not
+  configured" otherwise, and the on-Pi same-origin flow below is byte-identical.
+  The transport + the `correction_setup.py` adapter
+  (`jasper/capture_relay/correction_adapter.py`) are hardware-free tested; the
+  live `getUserMedia`/CSP/Wake-Lock path + the adapter's background sweep
+  playback still need on-device validation. Single source of truth for the
+  design, deploy, and remaining work:
+  [phone-mic-relay-plan.md](phone-mic-relay-plan.md). Do not restate it here.
 - ✅ **HTTPS measurement hub shell.** As of 2026-06-23,
   `/correction/` is the secure measurement hub for `room`, `crossover`,
   and `bass`. `/correction/` and `/correction/room/` render the existing

@@ -1,22 +1,31 @@
 # Phone-mic capture relay — design & build plan
 
-> **Status: transport BUILT (hardware-free), not yet wired or deployed.** The
-> design below is settled; the transport — capture-spec schema, the Cloudflare
-> Worker + R2 relay, the static capture page, and the Pi-side
-> session/poll/pull/decrypt/verify wiring (`jasper/capture_relay/*`, `relay/`,
-> `capture-page/`) — has been implemented and is covered by hardware-free tests
-> (PRs landed 2026-06-27, build steps §14 1–8). **Still owed before this is
-> operational truth:** (a) the thin `correction_setup.py` daemon adapter that
-> calls `run_capture()` and feeds `MeasurementSession.on_capture_uploaded`, plus
-> a `/state` section + a `jasper-doctor` check; (b) **on-device validation** on a
-> real iPhone (Safari) + Android (Chrome) — the live `getUserMedia`/CSP/Wake-Lock
-> path is unit-tested only; (c) the cloud deploy (`wrangler deploy` the Worker +
-> R2 + Pages). The current operational truth for `/correction/` (and
-> `/balance/`, `/sync/`) remains [HANDOFF-correction.md](HANDOFF-correction.md):
-> the capture page is served from the Pi over a self-signed cert and uploads the
-> WAV same-origin. **Once the adapter lands and on-device validation passes, fold
-> this into the live correction flow and convert this doc to the HANDOFF shape
-> (current-state-first) with a `Last verified:` footer.**
+> **Status: BUILT (hardware-free), gated default-off, not yet validated on
+> device or deployed.** The design below is settled; the transport — capture-spec
+> schema, the Cloudflare Worker + R2 relay, the static capture page, and the
+> Pi-side session/poll/pull/decrypt/verify wiring (`jasper/capture_relay/*`,
+> `relay/`, `capture-page/`) — is implemented and covered by hardware-free tests
+> (PRs landed 2026-06-27, build steps §14 1–8). The `correction_setup.py` daemon
+> adapter (`jasper/capture_relay/correction_adapter.py` + `POST /relay/capture`),
+> the `/state.capture_relay` section, and the `jasper-doctor` "Phone-mic relay"
+> check have also landed — the relay capture endpoint is **gated + default-off**
+> (inert unless `JASPER_CAPTURE_RELAY_BASE` is set), so the standard on-Pi flow is
+> byte-identical until an operator opts in. **Still owed before this is
+> operational truth:** (a) **on-device validation** on a real iPhone (Safari) +
+> Android (Chrome) — the live `getUserMedia`/CSP/Wake-Lock path *and* the daemon
+> adapter's background sweep playback are unit-tested only; (b) tuning the
+> alignment-confidence threshold against on-device sweeps (a deploy-time env knob,
+> `JASPER_CAPTURE_ALIGNMENT_THRESHOLD`); (c) the cloud deploy (`wrangler deploy`
+> the Worker + R2 + Pages); (d) an audible failure cue from the correction daemon
+> (a jasper-web → jasper-voice cue bridge — the registry cues exist but jasper-web
+> has no cue channel yet; failures currently surface on the capture page +
+> `/status.relay` + `event=capture_relay.*` logs). The current operational truth
+> for `/correction/` (and `/balance/`, `/sync/`) remains
+> [HANDOFF-correction.md](HANDOFF-correction.md): the capture page is served from
+> the Pi over a self-signed cert and uploads the WAV same-origin. **Once on-device
+> validation passes and the relay is deployed, make the relay path the default and
+> convert this doc to the HANDOFF shape (current-state-first) with a
+> `Last verified:` footer.**
 
 ---
 
@@ -488,5 +497,6 @@ corrections are unaffected) — say so in the UI when the relay is unreachable.
 
 ---
 
-Last updated: 2026-06-27 — transport implemented (hardware-free); adapter +
-on-device validation + cloud deploy still owed (see Status banner).
+Last updated: 2026-06-27 — transport + `/correction/` adapter implemented
+(hardware-free, gated default-off); on-device validation, alignment-threshold
+tuning, cloud deploy, and an audible failure cue still owed (see Status banner).

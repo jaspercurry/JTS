@@ -122,6 +122,84 @@ _session_lock = threading.Lock()
 _session = None  # type: ignore[var-annotated]
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
+
+# Active phone-mic-relay capture surfaced in /status: {tap_link, status} or None.
+# Set by POST /relay/capture, updated by its background runner. Guarded by
+# _session_lock (same single-session scope).
+_relay_capture: dict[str, Any] | None = None
+# Bound the foreground relay registration so a slow/unreachable relay fails fast
+# rather than hanging the request thread for RelayClient's 15 s default.
+_RELAY_REGISTER_TIMEOUT_S = 10.0
+
+# Mutating routes this handler accepts. Module-scoped so route membership is
+# pinnable by a test (deleting a line would otherwise 404 a route silently).
+_POST_ROUTES = frozenset({
+    "/start",
+    "/next-position",
+    "/repeat-position",
+    "/verify",
+    "/test-tone",
+    "/autolevel/start",
+    "/autolevel/lock",
+    "/autolevel/cancel",
+    "/upload-noise",
+    "/upload-capture",
+    "/relay/capture",
+    "/calibration/fetch",
+    "/calibration/upload",
+    "/apply",
+    "/reset",
+    "/session/delete",
+    "/crossover/driver-test",
+    "/crossover/driver-confirm",
+    "/crossover/driver-abort",
+    "/crossover/summed-test",
+    "/crossover/driver-capture-sweep",
+    "/crossover/summed-capture-sweep",
+    "/crossover/driver-capture",
+    "/crossover/summed-capture",
+    "/balance/start",
+    "/balance/ramp",
+    "/balance/meter",
+    "/balance/lock",
+    "/balance/stop",
+    "/balance/apply",
+    "/balance/reset",
+    "/sync/start",
+    "/sync/play",
+    "/sync/analyze",
+    "/sync/apply",
+    "/sync/stop",
+    "/sync/reset",
+})
+
+
+def _set_relay_capture(value: dict[str, Any] | None) -> None:
+    global _relay_capture
+    with _session_lock:
+        _relay_capture = value
+
+
+def _get_relay_capture() -> dict[str, Any] | None:
+    with _session_lock:
+        return dict(_relay_capture) if _relay_capture else None
+
+
+def _begin_relay_capture() -> bool:
+    """Atomically claim the single relay-capture slot. Returns False if one is
+    already in flight (so a double-tap can't spawn two relay sessions + a file
+    race for one position — mirrors /autolevel's "already in progress" guard).
+    The slot is released by `_set_relay_capture(None)` on a failed open, or by the
+    background runner setting `complete`/`failed`."""
+    global _relay_capture
+    with _session_lock:
+        if _relay_capture and _relay_capture.get("status") in (
+            "starting",
+            "awaiting_phone",
+        ):
+            return False
+        _relay_capture = {"status": "starting"}
+        return True
 _start_in_progress = False
 
 _ACTIVE_SESSION_STATES = frozenset({
@@ -1359,6 +1437,10 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     snap["current_config"] = current_config
     snap["current_correction"] = current_config.get("current_correction")
     snap["last_dsp_apply"] = last_dsp_apply_state()
+    # Active phone-mic-relay capture, when one is in flight (tap-link + status).
+    # None on the default on-Pi flow, so the page only shows the relay UI when the
+    # operator has enabled it.
+    snap["relay"] = _get_relay_capture()
     return snap
 
 
@@ -1584,6 +1666,130 @@ def _handle_upload_capture(
         "peqs": [p.__dict__ for p in sess.peqs],
         "design_report": sess.design_report,
     }
+
+
+def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """POST /relay/capture: capture the current position via the cloud relay (the
+    phone runs the capture page on jasper.tech) instead of a same-origin browser
+    upload.
+
+    GATED + DEFAULT-OFF. Inert unless an operator sets JASPER_CAPTURE_RELAY_BASE,
+    so the standard on-Pi /correction/ flow is byte-identical without it. When
+    enabled it mints a relay session, returns the phone tap-link, and runs the
+    capture in the background: when the phone is recording (it drops `armed`), the
+    Pi plays the sweep through the SAME measurement_window()/prepare_and_play_sweep
+    path the browser flow uses (loud-output safety + renderer/voice pause
+    preserved), then pulls + decrypts + verifies and feeds the WAV into
+    on_capture_uploaded — the identical 48 kHz / mono / 32 MB seam as a
+    same-origin upload.
+
+    ON-DEVICE: the background sweep playback and the real measurement cannot be
+    exercised hardware-free — only the config gate, the state guard, and the seam
+    wiring are unit-tested. The relay Worker + capture page must be deployed and
+    the phone must reach jasper.tech. Audible failure cues await a
+    jasper-web -> jasper-voice cue bridge; until then failures surface on the
+    capture page, on the jts.local status page (`relay.status`), and in
+    `event=capture_relay.*` logs. This is the integration point the
+    docs/phone-mic-relay-plan.md adapter step describes, shipped gated so the
+    default flow is unaffected while it is validated on hardware.
+    """
+    from jasper.capture_relay import correction_adapter
+    from jasper.capture_relay.client import RelayClient
+    from jasper.capture_relay.health import relay_base_from_env
+    from jasper.correction.session import SessionState
+
+    # Gate on the configured relay origin (this also narrows it from str|None to
+    # str for the register call below — same as correction_adapter.relay_enabled).
+    relay_base = relay_base_from_env()
+    if relay_base is None:
+        raise ValueError(
+            "phone-mic relay capture is not configured — set "
+            "JASPER_CAPTURE_RELAY_BASE (and deploy the relay + capture page), or "
+            "use the on-Pi /correction/ capture flow"
+        )
+
+    sess = _get_or_create_session()
+    if sess is None:
+        raise RuntimeError("no session — POST /start first")
+    # A relay capture owns the sweep for one position (it plays on `armed`), so it
+    # starts from the pre-sweep state, not the post-sweep AWAITING_CAPTURE.
+    if sess.state != SessionState.NEEDS_NOISE_CAPTURE:
+        raise ValueError(
+            "relay capture starts a measurement position; expected state "
+            f"needs_noise_capture, got {sess.state.value}"
+        )
+
+    # Refuse a second relay capture while one is in flight (double-tap → two
+    # relay sessions + a capture-file race for one position).
+    if not _begin_relay_capture():
+        raise ValueError("a phone-mic relay capture is already in progress")
+
+    capture_origin = correction_adapter.capture_origin_from_env()
+    # Release the claimed slot if anything before the background spawn fails
+    # (a failed register, etc.) — try/finally + a flag avoids a broad except.
+    spawned = False
+    try:
+        # Register in the foreground so the relay session is guaranteed to exist
+        # before the phone opens the tap-link (the page fetches the spec
+        # immediately). Bound the timeout so a slow/unreachable relay fails fast
+        # instead of hanging the request thread for the full 15 s default.
+        client = RelayClient(relay_base, timeout=_RELAY_REGISTER_TIMEOUT_S)
+        rc = correction_adapter.open_room_sweep_capture(
+            client,
+            position=sess.current_position + 1,
+            total_positions=sess.total_positions,
+            relay_base=relay_base,
+            capture_origin=capture_origin,
+        )
+        capture_path = sess.capture_path_for_position(sess.current_position)
+
+        def _on_armed() -> None:
+            # The phone is recording; play the sweep through the safe playback
+            # path (measurement_window pauses renderers/voice; prepare_and_play_
+            # sweep owns the loud-output-safe sweep). Same machinery as the
+            # browser flow.
+            _schedule_measurement_sweep(
+                sess, _camilla(), from_state=SessionState.NEEDS_NOISE_CAPTURE,
+            )
+
+        async def _run() -> None:
+            try:
+                # run_capture's default timeout (120 s) is intentionally ~ the
+                # session's AWAITING_CAPTURE watchdog so the two recovery paths
+                # agree; keep them aligned if either constant changes.
+                await asyncio.to_thread(
+                    correction_adapter.run_and_store,
+                    client,
+                    rc.pi_session,
+                    capture_path,
+                    on_armed=_on_armed,
+                )
+                await sess.on_capture_uploaded(capture_path)
+                _set_relay_capture({"tap_link": rc.tap_link, "status": "complete"})
+            except Exception as exc:  # noqa: BLE001 — surface loudly; never crash the loop
+                # run_capture already logs event=capture_relay.failed with a
+                # traceback; this outer net also flips /status.relay to failed.
+                log_event(
+                    logger,
+                    "capture_relay.adapter_failed",
+                    level=logging.WARNING,
+                    exc_info=True,
+                    session_id=sess.session_id,
+                    reason=type(exc).__name__,
+                )
+                _set_relay_capture({"tap_link": rc.tap_link, "status": "failed"})
+
+        _set_relay_capture({"tap_link": rc.tap_link, "status": "awaiting_phone"})
+        asyncio.run_coroutine_threadsafe(_run(), _ensure_loop())
+        spawned = True
+        return {
+            "session_id": sess.session_id,
+            "state": sess.state.value,
+            "relay": {"tap_link": rc.tap_link, "status": "awaiting_phone"},
+        }
+    finally:
+        if not spawned:
+            _set_relay_capture(None)  # release the slot on any early failure
 
 
 def _maybe_restore_main_volume(sess, cam) -> None:
@@ -2139,44 +2345,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             path = urlparse(self.path).path.rstrip("/") or "/"
-            if path not in {
-                "/start",
-                "/next-position",
-                "/repeat-position",
-                "/verify",
-                "/test-tone",
-                "/autolevel/start",
-                "/autolevel/lock",
-                "/autolevel/cancel",
-                "/upload-noise",
-                "/upload-capture",
-                "/calibration/fetch",
-                "/calibration/upload",
-                "/apply",
-                "/reset",
-                "/session/delete",
-                "/crossover/driver-test",
-                "/crossover/driver-confirm",
-                "/crossover/driver-abort",
-                "/crossover/summed-test",
-                "/crossover/driver-capture-sweep",
-                "/crossover/summed-capture-sweep",
-                "/crossover/driver-capture",
-                "/crossover/summed-capture",
-                "/balance/start",
-                "/balance/ramp",
-                "/balance/meter",
-                "/balance/lock",
-                "/balance/stop",
-                "/balance/apply",
-                "/balance/reset",
-                "/sync/start",
-                "/sync/play",
-                "/sync/analyze",
-                "/sync/apply",
-                "/sync/stop",
-                "/sync/reset",
-            }:
+            if path not in _POST_ROUTES:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if not guard_mutating_request(self):
@@ -2272,6 +2441,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if path == "/upload-noise":
                     try:
                         self._send_json(_handle_upload_noise(self))
+                    except ValueError as e:
+                        self._send_client_error(str(e))
+                    return
+                if path == "/relay/capture":
+                    try:
+                        self._send_json(_handle_relay_capture(self))
                     except ValueError as e:
                         self._send_client_error(str(e))
                     return
