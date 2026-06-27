@@ -158,3 +158,74 @@ def test_fifo_coupling_does_not_trip_oscillation_guard():
     fifo_kwargs = capture_kwargs_for_coupling("fifo")
     cfg = emit_sound_config(SoundProfile(), **fifo_kwargs)
     assert snd_aloop_rate_adjust_oscillation_reason(cfg) is None
+
+
+# ---- coupling_capture_kwargs_from_env (the live emit-time resolver) ---------
+
+
+def test_coupling_capture_kwargs_from_env_default_is_empty():
+    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
+
+    # No coupling env -> {} -> byte-identical emits (the default-OFF contract).
+    assert coupling_capture_kwargs_from_env({}) == {}
+    assert coupling_capture_kwargs_from_env({"JASPER_FANIN_CAMILLA_COUPLING": ""}) == {}
+    assert (
+        coupling_capture_kwargs_from_env({"JASPER_FANIN_CAMILLA_COUPLING": "loopback"})
+        == {}
+    )
+    # A typo fails safe to loopback ({}), never silently arming the pipe.
+    assert (
+        coupling_capture_kwargs_from_env({"JASPER_FANIN_CAMILLA_COUPLING": "fif0"})
+        == {}
+    )
+
+
+def test_coupling_capture_kwargs_from_env_fifo_uses_default_path():
+    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
+
+    kwargs = coupling_capture_kwargs_from_env(
+        {"JASPER_FANIN_CAMILLA_COUPLING": "fifo"}
+    )
+    assert kwargs["capture_pipe_path"] == DEFAULT_FANIN_CAMILLA_FIFO
+    assert kwargs["resampler_type"] == DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE
+    assert kwargs["enable_rate_adjust"] is True
+
+
+def test_coupling_capture_kwargs_from_env_fifo_honors_path_override():
+    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
+
+    kwargs = coupling_capture_kwargs_from_env(
+        {
+            "JASPER_FANIN_CAMILLA_COUPLING": "fifo",
+            "JASPER_FANIN_CAMILLA_FIFO": "  /run/soak.pipe ",
+        }
+    )
+    # The path env is resolved the SAME way Rust resolves JASPER_FANIN_CAMILLA_FIFO
+    # so producer + consumer name the same pipe.
+    assert kwargs["capture_pipe_path"] == "/run/soak.pipe"
+
+
+# ---- member_kwargs_are_pipe_sink (the coupling precedence veto) -------------
+
+
+def test_member_kwargs_are_pipe_sink_detects_grouped_sink():
+    from jasper.fanin_coupling import member_kwargs_are_pipe_sink
+
+    # Solo defaults (rate_adjust on, no pipe) -> NOT a sink -> coupling applies.
+    assert member_kwargs_are_pipe_sink(None) is False
+    assert member_kwargs_are_pipe_sink({}) is False
+    assert (
+        member_kwargs_are_pipe_sink(
+            {"enable_rate_adjust": True, "playback_pipe_path": None}
+        )
+        is False
+    )
+    # A grouped/bonded sink (pipe + rate_adjust off) -> IS a sink -> veto.
+    assert (
+        member_kwargs_are_pipe_sink(
+            {"enable_rate_adjust": False, "playback_pipe_path": "/run/snapfifo"}
+        )
+        is True
+    )
+    # rate_adjust=False alone is enough to read as a sink (fail-safe veto).
+    assert member_kwargs_are_pipe_sink({"enable_rate_adjust": False}) is True
