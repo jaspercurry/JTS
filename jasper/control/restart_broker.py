@@ -107,6 +107,12 @@ MANAGED_UNITS = frozenset({
     "jasper-grouping-reconcile-trailing.service",
     "jasper-camilla.service",
     "jasper-outputd.service",
+    # The adaptive output-buffer reconciler restarts fan-in to apply a shrunk
+    # JASPER_FANIN_OUTPUT_BUFFER_FRAMES on an exclusive wired USB source. Caught
+    # on jts 2026-06-27: the restart was rejected ("not in allowlist") because
+    # fan-in had never been broker-restarted before — the unit tests mocked the
+    # broker so they never hit this. Keep in lockstep with the polkit grant.
+    "jasper-fanin.service",
     # Root oneshot that captures `jasper-doctor --json` at full fidelity for the
     # /system/diagnostics card — the non-root jasper-control `systemctl start`s
     # it via its polkit manage-units grant (WS1 Phase 3b-2).

@@ -25,38 +25,26 @@ def _value_for(unit_text: str, key: str) -> str | None:
     return None
 
 
-def test_bridge_elects_rt_in_the_dsp_tier_and_bounds_rttime() -> None:
-    """Audio-latency foundation G6. LimitRTPRIO=99 was wired but no RT policy
-    was ever elected, so the bridge's mic/AEC loop ran SCHED_OTHER and got
-    preempted under load. Elect SCHED_FIFO at priority 28: above Camilla (25,
-    the DSP tier it belongs with) but below the fan-in (30) and outputd (35)
-    sinks, so the final-output path still wins a starved CPU. LimitRTTIME bounds
-    a runaway RT thread to SIGXCPU instead of a watchdog reboot (G4, mandatory
-    with any FIFO election)."""
+def test_bridge_does_not_elect_process_wide_rt_to_avoid_rttime_startup_kill() -> None:
+    """Regression guard for the 2026-06-27 jts finding: the G6 attempt elected a
+    process-wide SCHED_FIFO policy plus a 200 ms RTTIME cap, but the bridge's
+    CPU-heavy startup (DTLN / WebRTC-AEC3 model load runs >200 ms) hit the RTTIME
+    hard limit while scheduled FIFO and was SIGKILLed (status=9/KILL) in a crash
+    loop. jts3 has no XVF mic, so process-wide bridge RT was never exercised
+    pre-merge. The bridge must run SCHED_OTHER (it keeps Nice=-10 + realtime IO).
+    A future RT election must set the policy on the steady-state audio thread
+    AFTER model load, never process-wide via systemd."""
     unit = UNIT_PATH.read_text()
-    assert _value_for(unit, "CPUSchedulingPolicy") == "fifo"
-    bridge_prio = int(_value_for(unit, "CPUSchedulingPriority"))
-    assert bridge_prio == 28
+    assert _value_for(unit, "CPUSchedulingPolicy") is None, (
+        "the AEC bridge must NOT set a process-wide RT policy — FIFO RTTIME-kills "
+        "its model-loading startup (see the unit comment / 2026-06-27 jts finding)."
+    )
+    assert _value_for(unit, "CPUSchedulingPriority") is None
+    assert _value_for(unit, "LimitRTTIME") is None
+    # Pre-existing knobs stay (harmless with no policy elected); the softer
+    # scheduling boosts the bridge always had remain.
     assert _value_for(unit, "LimitRTPRIO") == "99"
-    assert _value_for(unit, "LimitRTTIME") == "200000"
-
-    systemd_dir = UNIT_PATH.parent
-    camilla_prio = int(
-        _value_for(
-            (systemd_dir / "jasper-camilla.service").read_text(),
-            "CPUSchedulingPriority",
-        )
-    )
-    fanin_prio = int(
-        _value_for(
-            (systemd_dir / "jasper-fanin.service").read_text(),
-            "CPUSchedulingPriority",
-        )
-    )
-    assert camilla_prio < bridge_prio < fanin_prio, (
-        f"AEC bridge ({bridge_prio}) must sit above Camilla ({camilla_prio}) "
-        f"and below the fan-in sink ({fanin_prio})."
-    )
+    assert _value_for(unit, "Nice") == "-10"
 
 
 def test_bridge_sources_wake_corpus_env_after_system_env() -> None:
