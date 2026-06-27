@@ -2745,3 +2745,58 @@ def test_pair_balance_controller_via_node():
     )
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout.strip().splitlines()[-1])["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# C7-3: Python↔JS balance-trim parity contract
+# ---------------------------------------------------------------------------
+
+_BALANCE_TRIM_FIXTURE = _REPO / "tests" / "fixtures" / "balance_trim_parity_fixture.json"
+_BALANCE_TRIM_PARITY_SCRIPT = _REPO / "scripts" / "check-balance-trim-parity.mjs"
+
+
+def test_balance_trim_python_matches_fixture():
+    """Python _balance_trims_from_db must agree with the shared contract fixture.
+
+    The fixture is the bridge between the Python backend and the JS frontend.
+    If this test fails, update the fixture from the authoritative Python
+    implementation, then verify that check-balance-trim-parity.mjs also passes
+    (i.e. the JS side was updated to match).
+    """
+    from jasper.web.rooms_setup import _balance_trims_from_db
+
+    fixture = json.loads(_BALANCE_TRIM_FIXTURE.read_text())
+    for case in fixture["cases"]:
+        balance_db = case["balance_db"]
+        left, right, clamped = _balance_trims_from_db(balance_db)
+        assert left == case["left"], (
+            f"Python left trim mismatch at balance_db={balance_db}: "
+            f"got {left}, expected {case['left']}"
+        )
+        assert right == case["right"], (
+            f"Python right trim mismatch at balance_db={balance_db}: "
+            f"got {right}, expected {case['right']}"
+        )
+        assert clamped == case["clamped"], (
+            f"Python clamped flag mismatch at balance_db={balance_db}: "
+            f"got {clamped}, expected {case['clamped']}"
+        )
+
+
+def test_balance_trim_js_matches_fixture_via_node():
+    """JS trimsForBalance must agree with the shared contract fixture (C7-3).
+
+    Runs scripts/check-balance-trim-parity.mjs which imports grouping-view.js
+    and sweeps the same balance_db values Python was tested against above.
+    If this test fails alongside test_balance_trim_python_matches_fixture the
+    fixture itself is stale; if only this test fails, grouping-view.js drifted.
+    """
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    proc = subprocess.run(
+        [_NODE, str(_BALANCE_TRIM_PARITY_SCRIPT)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout

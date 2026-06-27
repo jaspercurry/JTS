@@ -183,6 +183,8 @@ jobs:
           node tests/js/sound_profile_harness.mjs deploy/assets/sound-profile/js/main.js
           node tests/js/dialog_harness.mjs deploy/assets/shared/js/dialog.js
           node scripts/check-peq-parity.mjs
+          node scripts/check-balance-trim-parity.mjs
+          node tests/js/correction_render_harness.mjs deploy/assets/correction/js/main.js
 
   rust:
     # CI formats, lints, compiles, and tests the Rust audio daemons — the
