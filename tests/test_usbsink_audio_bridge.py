@@ -56,6 +56,70 @@ def _make_bridge(**overrides) -> AudioBridge:
     return AudioBridge(**overrides)
 
 
+def _install_fake_sd(monkeypatch):
+    """Inject a fake `sounddevice` module so start() can open 'streams'
+    headlessly, capturing the kwargs passed to RawInput/RawOutputStream
+    (start() lazily `import sounddevice as sd`)."""
+    import sys
+    import types
+
+    captured: dict = {"in": None, "out": None}
+
+    class _S:
+        def __init__(self, **kw):
+            self._kw = kw
+            self.samplerate = kw.get("samplerate")
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+        def abort(self):
+            pass
+
+    def _ri(**kw):
+        captured["in"] = kw
+        return _S(**kw)
+
+    def _ro(**kw):
+        captured["out"] = kw
+        return _S(**kw)
+
+    mod = types.ModuleType("sounddevice")
+    mod.RawInputStream = _ri
+    mod.RawOutputStream = _ro
+    monkeypatch.setitem(sys.modules, "sounddevice", mod)
+    return captured
+
+
+def test_start_omits_latency_kwarg_by_default(monkeypatch):
+    # Default (latency=None) must NOT pass `latency` to PortAudio, so the
+    # behavior is byte-for-byte the historical default ('high').
+    cap = _install_fake_sd(monkeypatch)
+    _make_bridge().start()
+    assert "latency" not in cap["in"]
+    assert "latency" not in cap["out"]
+
+
+def test_start_forwards_latency_hint_to_both_streams(monkeypatch):
+    cap = _install_fake_sd(monkeypatch)
+    _make_bridge(latency="low").start()
+    assert cap["in"]["latency"] == "low"
+    assert cap["out"]["latency"] == "low"
+
+
+def test_start_forwards_float_latency_to_both_streams(monkeypatch):
+    cap = _install_fake_sd(monkeypatch)
+    _make_bridge(latency=0.02).start()
+    assert cap["in"]["latency"] == 0.02
+    assert cap["out"]["latency"] == 0.02
+
+
 # ----------------------------------------------------------------------
 # Capture callback — RMS computation
 # ----------------------------------------------------------------------
