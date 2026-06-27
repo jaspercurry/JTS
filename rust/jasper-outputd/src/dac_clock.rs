@@ -208,7 +208,19 @@ impl DacClockObserver {
         // tracks the real DAC playout; its ratio settles at the drift.
         self.virtual_frames += self.sample_rate * interval * self.dll.ratio();
         let err = self.virtual_frames - consumed;
+        let resyncs_before = self.dll.resync_count();
         let _ratio = self.dll.update(err);
+        // SF-1: a forward discontinuity (consumed jumps *up* — which the
+        // monotonicity guard above does NOT catch, it only catches regressions)
+        // feeds an error past max_resync, so the DLL hard-jumps and re-inits its
+        // ratio to unity. Our virtual accumulator is then stale (still near the
+        // pre-jump position), so without re-anchoring it the SAME huge error
+        // feeds every subsequent sample and one glitch becomes a resync storm.
+        // Re-anchor to the actual consumed position so the next interval starts
+        // at ~zero error and the loop re-locks from the new baseline.
+        if self.dll.resync_count() > resyncs_before {
+            self.virtual_frames = consumed;
+        }
 
         self.last_elapsed_s = Some(elapsed_seconds);
         self.last_consumed = Some(consumed);
@@ -331,6 +343,71 @@ mod tests {
             snap.sro_ppm
         );
         assert_eq!(snap.verdict(), "drifting");
+    }
+
+    #[test]
+    fn dll_self_resync_re_anchors_virtual_clock_and_does_not_storm() {
+        // SF-1 regression: a FORWARD discontinuity (consumed jumps up) slips
+        // past the observer's monotonicity guard (which only catches
+        // regressions) and feeds the DLL an error past max_resync. The loop
+        // hard-jumps once; the virtual clock must re-anchor so it re-locks from
+        // the new baseline instead of feeding the same huge error forever.
+        let mut clock = DacClockObserver::new(RATE, PERIOD);
+        drive(&mut clock, 200, 30.0);
+        assert!(
+            clock.is_locked(),
+            "precondition: the loop is locked before the discontinuity"
+        );
+        let resyncs_before = clock.snapshot().resync_count;
+
+        let period_s = f64::from(PERIOD) / f64::from(RATE);
+        let dac_delay: u64 = 1024;
+        // Where drive() left the observer (its last accepted sample).
+        let base_elapsed = (200.0_f64 / period_s).floor() * period_s;
+        let base_consumed = f64::from(RATE) * base_elapsed * (1.0 + 30.0 / 1.0e6);
+
+        // ONE forward jump of 5 s of frames in a single interval — far beyond
+        // max_resync, and consumed only goes UP so the monotonicity guard does
+        // not catch it.
+        let jump = 5.0 * f64::from(RATE);
+        let jump_elapsed = base_elapsed + 1.0;
+        let jump_consumed = base_consumed + jump;
+        clock.observe(
+            jump_consumed.round() as u64 + dac_delay,
+            dac_delay,
+            jump_elapsed,
+        );
+        assert_eq!(
+            clock.snapshot().resync_count,
+            resyncs_before + 1,
+            "the forward discontinuity must resync exactly once"
+        );
+
+        // Re-observe from the new baseline at the same +30 ppm. With the
+        // re-anchor the error is tiny and the loop re-locks with NO further
+        // resyncs; without it, resync_count would climb without bound (storm).
+        let steps = (400.0 / period_s) as u64;
+        for step in 1..=steps {
+            let t = jump_elapsed + step as f64 * period_s;
+            let consumed =
+                jump_consumed + f64::from(RATE) * (t - jump_elapsed) * (1.0 + 30.0 / 1.0e6);
+            clock.observe(consumed.round() as u64 + dac_delay, dac_delay, t);
+        }
+        let snap = clock.snapshot();
+        assert_eq!(
+            snap.resync_count,
+            resyncs_before + 1,
+            "no resync storm after re-anchor (resync_count stayed at +1): {snap:?}"
+        );
+        assert!(
+            snap.locked,
+            "the loop must re-lock from the new baseline after the jump: {snap:?}"
+        );
+        assert!(
+            (snap.sro_ppm - 30.0).abs() < 5.0,
+            "re-locked near the true +30 ppm, got {}",
+            snap.sro_ppm
+        );
     }
 
     #[test]

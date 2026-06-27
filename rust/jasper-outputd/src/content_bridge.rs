@@ -659,6 +659,67 @@ mod tests {
         );
     }
 
+    /// Inc 3 transient: a brief fill excursion that stays WITHIN the ring's
+    /// safe bounds must be RIDDEN — the shared DLL's slew clamp keeps the loop
+    /// locked (no unlock) and does not hard-jump (no resync) on a momentary
+    /// wobble, then re-settles. This is distinct from the overrun/underfill
+    /// tests, which cross the hard thresholds on purpose; here the failure mode
+    /// guarded against is an over-sensitive resync/unlock firing on normal
+    /// source jitter.
+    #[test]
+    fn transient_fill_excursion_is_ridden_without_unlock_or_resync() {
+        let mut bridge = ContentBridge::new(bridge_config(), 1024, 2).unwrap();
+        bridge.push_input(&silent_frames(
+            DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES as usize + SINC_RADIUS_FRAMES as usize + 1,
+        ));
+        let mut out = silent_frames(1024);
+        let mut carry = 0.0f64;
+        let feed = |bridge: &mut ContentBridge, carry: &mut f64, out: &mut [i16], rate: f64| {
+            *carry += 1024.0 * rate;
+            let frames = carry.floor() as usize;
+            *carry -= frames as f64;
+            bridge.push_input(&silent_frames(frames));
+            bridge.render_period(out);
+        };
+        // Lock on a nominal (rate == 1.0) source.
+        for _ in 0..15_000 {
+            feed(&mut bridge, &mut carry, &mut out, 1.0);
+        }
+        assert!(bridge.metrics().locked, "precondition: the loop is locked");
+        let resyncs_before = bridge.metrics().resync_count;
+        let unlocks_before = bridge.metrics().unlock_count;
+
+        // A brief +1% excursion (~100 periods): pushes fill up transiently but
+        // stays well under the ring, then returns to nominal. A transient the
+        // loop must ride, NOT a hard overrun.
+        for _ in 0..100 {
+            feed(&mut bridge, &mut carry, &mut out, 1.01);
+            assert!(
+                (bridge.metrics().fill_frames as u64) < DEFAULT_CONTENT_BRIDGE_RING_FRAMES as u64,
+                "the excursion must stay within the ring (else it is an overrun, not a transient)"
+            );
+        }
+        // Recover to nominal and re-settle.
+        for _ in 0..15_000 {
+            feed(&mut bridge, &mut carry, &mut out, 1.0);
+        }
+        let metrics = bridge.metrics();
+        assert!(
+            metrics.locked,
+            "the loop must stay/return locked through the transient: {metrics:?}"
+        );
+        assert_eq!(
+            metrics.resync_count, resyncs_before,
+            "a within-bounds transient must NOT resync: {} -> {}",
+            resyncs_before, metrics.resync_count
+        );
+        assert_eq!(
+            metrics.unlock_count, unlocks_before,
+            "a within-bounds transient must NOT unlock: {} -> {}",
+            unlocks_before, metrics.unlock_count
+        );
+    }
+
     #[test]
     fn slower_source_settles_with_negative_ratio_without_underflow() {
         let mut bridge = ContentBridge::new(bridge_config(), 1024, 2).unwrap();
