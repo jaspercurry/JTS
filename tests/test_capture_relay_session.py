@@ -23,7 +23,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from jasper.capture_relay import crypto
 from jasper.capture_relay.client import RelayClient, RelayError, RelayResponse
+from jasper.capture_relay.cues import (
+    MEASUREMENT_FAILED_CUE_SLUG,
+    RELAY_UNREACHABLE_CUE_SLUG,
+)
 from jasper.capture_relay.session import (
+    CaptureAborted,
     CaptureFailed,
     CaptureTimeout,
     classify_status,
@@ -101,6 +106,9 @@ class FakeRelayBackend:
     # --- phone simulation ---
     def phone_arm(self, sid):
         self.sessions[sid]["event"] = {"armed": True}
+
+    def phone_abort(self, sid, reason="backgrounded"):
+        self.sessions[sid]["event"] = {"aborted": True, "abort_reason": reason}
 
     def phone_upload(self, sid, content_key, wav):
         iv = os.urandom(crypto.IV_BYTES)
@@ -331,3 +339,116 @@ def test_classify_status():
     assert classify_status({"state": "pending", "event": None}).armed is False
     assert classify_status({"state": "pending", "event": {"armed": True}}).armed is True
     assert classify_status({"state": "ready", "event": {"armed": True}}).ready is True
+    aborted = classify_status({"state": "pending", "event": {"aborted": True, "reason": "lock"}})
+    assert aborted.aborted is True
+    assert aborted.abort_reason == "lock"
+
+
+# --- step 7: abort + no-silent-failure cues ----------------------------------
+
+
+def test_phone_abort_raises_loud():
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    backend.phone_abort(session.session_id, reason="backgrounded")
+    with pytest.raises(CaptureAborted):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: None,
+            poll_interval_s=0.0,
+            timeout_s=5.0,
+            sleep=lambda _s: None,
+        )
+
+
+def test_play_cue_fires_on_timeout():
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    backend.phone_arm(session.session_id)  # armed but never uploads
+    cues = []
+    ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0])
+    with pytest.raises(CaptureTimeout):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: None,
+            poll_interval_s=0.0,
+            timeout_s=2.0,
+            sleep=lambda _s: None,
+            monotonic=lambda: next(ticks),
+            play_cue=cues.append,
+        )
+    # No-silent-failure: the speaker is told why (plan §12).
+    assert cues == [MEASUREMENT_FAILED_CUE_SLUG]
+
+
+def test_play_cue_fires_on_integrity_failure():
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    wav = b"RIFF payload"
+    cues = []
+
+    def on_armed():
+        backend.phone_upload_corrupt(session.session_id, session.content_key, wav)
+
+    backend.phone_arm(session.session_id)
+    with pytest.raises(CaptureFailed):
+        run_capture(
+            client,
+            session,
+            on_armed=on_armed,
+            poll_interval_s=0.0,
+            timeout_s=5.0,
+            sleep=lambda _s: None,
+            play_cue=cues.append,
+        )
+    assert cues == [MEASUREMENT_FAILED_CUE_SLUG]
+
+
+def test_relay_death_mid_poll_cues_unreachable_and_propagates():
+    # The relay 5xx's mid-poll -> client.status raises RelayError(503); run_capture
+    # cues measurement_relay_unreachable and re-raises (no un-cued escape).
+    def transport(method, url, headers, body):
+        if url.endswith("/sessions"):  # registration succeeds
+            return RelayResponse(201, {}, b'{"state":"pending"}')
+        return RelayResponse(503, {}, b'{"error":"upstream"}')  # status 5xx
+
+    client = RelayClient("https://relay.test", transport=transport)
+    session = mint_session(
+        build_room_sweep_spec(), relay_base="https://relay.test", capture_origin="c.test"
+    )
+    register_session(client, session)
+    cues = []
+    with pytest.raises(RelayError):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: None,
+            poll_interval_s=0.0,
+            timeout_s=5.0,
+            sleep=lambda _s: None,
+            play_cue=cues.append,
+        )
+    assert cues == [RELAY_UNREACHABLE_CUE_SLUG]
+
+
+def test_cue_is_best_effort_and_never_masks_the_failure():
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    backend.phone_abort(session.session_id)
+
+    def boom(_slug):
+        raise RuntimeError("cue subsystem down")
+
+    # A failing cue must not swallow or replace the real CaptureAborted.
+    with pytest.raises(CaptureAborted):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: None,
+            poll_interval_s=0.0,
+            timeout_s=5.0,
+            sleep=lambda _s: None,
+            play_cue=boom,
+        )

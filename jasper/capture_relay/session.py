@@ -27,6 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from jasper.capture_relay.client import RelayClient
+from jasper.capture_relay.cues import classify_failure_cue
 from jasper.capture_relay.crypto import (
     content_key_to_b64url,
     decrypt_and_verify,
@@ -45,6 +46,10 @@ class CaptureTimeout(RuntimeError):
 
 class CaptureFailed(RuntimeError):
     """The relay-pulled blob failed decrypt or integrity (see __cause__)."""
+
+
+class CaptureAborted(RuntimeError):
+    """The phone aborted mid-capture (e.g. backgrounded / screen locked)."""
 
 
 @dataclass(frozen=True)
@@ -113,15 +118,26 @@ class PollState:
     armed: bool
     ready: bool
     integrity: dict | None
+    aborted: bool = False
+    abort_reason: str = ""
 
 
 def classify_status(status_payload: dict) -> PollState:
-    """Read the relay status into the three signals the Pi acts on."""
-    event = status_payload.get("event") or {}
-    armed = bool(isinstance(event, dict) and event.get("armed"))
+    """Read the relay status into the signals the Pi acts on."""
+    event = status_payload.get("event") if isinstance(status_payload, dict) else None
+    event = event if isinstance(event, dict) else {}
+    armed = bool(event.get("armed"))
+    aborted = bool(event.get("aborted"))
+    abort_reason = str(event.get("abort_reason") or event.get("reason") or "")
     ready = status_payload.get("state") == "ready"
     integrity = status_payload.get("integrity")
-    return PollState(armed=armed, ready=ready, integrity=integrity)
+    return PollState(
+        armed=armed,
+        ready=ready,
+        integrity=integrity,
+        aborted=aborted,
+        abort_reason=abort_reason,
+    )
 
 
 def run_capture(
@@ -133,19 +149,61 @@ def run_capture(
     timeout_s: float = DEFAULT_TIMEOUT_S,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
+    play_cue: Callable[[str], None] | None = None,
 ) -> bytes:
     """Poll the relay until the phone uploads; pull, decrypt, verify, return WAV.
 
     `on_armed` fires exactly once, when the phone's `armed` flag is first seen —
-    the host plays the stimulus then. Raises `CaptureTimeout` if no ready blob
-    arrives within `timeout_s`, or `CaptureFailed` if decrypt/integrity fails
-    (both are loud, never a silent hang or a silently-wrong measurement).
+    the host plays the stimulus then. Raises loudly — never a silent hang or a
+    silently-wrong measurement — on:
+      - `CaptureTimeout`: no ready blob within `timeout_s`;
+      - `CaptureAborted`: the phone posted an `aborted` event (backgrounded);
+      - `CaptureFailed`: the pulled blob failed decrypt/integrity;
+      - `RelayError` / `OSError`: the relay died or became unreachable mid-poll.
+    `play_cue` (host-injected, no-silent-failure) is called with the matching cue
+    slug before ANY of those propagate — so a host that passes `play_cue` gets a
+    complete no-silent-failure contract and need not re-cue run_capture failures
+    itself (the cue for a connectivity loss is `measurement_relay_unreachable`).
     """
+    try:
+        return _poll_until_capture(
+            client,
+            session,
+            on_armed=on_armed,
+            poll_interval_s=poll_interval_s,
+            timeout_s=timeout_s,
+            sleep=sleep,
+            monotonic=monotonic,
+        )
+    except Exception as exc:  # noqa: BLE001 — cue on ANY failure, then re-raise
+        if play_cue is not None:
+            try:
+                play_cue(classify_failure_cue(exc))
+            except Exception:  # noqa: BLE001 — the cue is best-effort
+                pass
+        raise
+
+
+def _poll_until_capture(
+    client: RelayClient,
+    session: PiCaptureSession,
+    *,
+    on_armed: Callable[[], None],
+    poll_interval_s: float,
+    timeout_s: float,
+    sleep: Callable[[float], None],
+    monotonic: Callable[[], float],
+) -> bytes:
     deadline = monotonic() + timeout_s
     armed_fired = False
     while True:
         status = client.status(session.session_id, session.pull_token)
         state = classify_status(status)
+
+        if state.aborted:
+            raise CaptureAborted(
+                f"phone aborted the capture ({state.abort_reason or 'no reason'})"
+            )
 
         if state.armed and not armed_fired:
             armed_fired = True

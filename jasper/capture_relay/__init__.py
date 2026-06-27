@@ -32,6 +32,11 @@ from __future__ import annotations
 from jasper.capture_relay import alignment, crypto
 from jasper.capture_relay.alignment import AlignmentError, assert_alignment_confident
 from jasper.capture_relay.client import RelayClient, RelayError
+from jasper.capture_relay.cues import (
+    MEASUREMENT_FAILED_CUE_SLUG,
+    RELAY_UNREACHABLE_CUE_SLUG,
+    classify_failure_cue,
+)
 from jasper.capture_relay.crypto import (
     DecryptError,
     IntegrityError,
@@ -39,6 +44,7 @@ from jasper.capture_relay.crypto import (
     generate_content_key,
 )
 from jasper.capture_relay.session import (
+    CaptureAborted,
     CaptureFailed,
     CaptureTimeout,
     PiCaptureSession,
@@ -64,8 +70,12 @@ __all__ = [
     "BUILDERS",
     "SHIPPED_KINDS",
     "AlignmentError",
+    "CaptureAborted",
     "CaptureConstraints",
     "CaptureFailed",
+    "MEASUREMENT_FAILED_CUE_SLUG",
+    "RELAY_UNREACHABLE_CUE_SLUG",
+    "classify_failure_cue",
     "CaptureSpec",
     "CaptureSpecError",
     "CaptureStimulus",

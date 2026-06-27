@@ -109,6 +109,38 @@ CUES: tuple[CueDef, ...] = (
             "once per hour to avoid nagging during bursts."
         ),
     ),
+    CueDef(
+        slug="measurement_relay_unreachable",
+        template=(
+            "I couldn't reach the measurement service. New measurements need "
+            "internet, but anything already set up still works."
+        ),
+        description=(
+            "Played by the phone-mic capture relay when the Pi cannot reach "
+            "the cloud relay to run a new measurement (the household is "
+            "standing at the listening position with their phone, so an "
+            "audible reason beats a silent stall). Wired from "
+            "jasper/capture_relay (RELAY_UNREACHABLE_CUE_SLUG). The relay is a "
+            "shared dependency only at commissioning; existing applied "
+            "corrections are unaffected."
+        ),
+    ),
+    CueDef(
+        slug="measurement_failed",
+        template=(
+            "Sorry, that measurement didn't work. Visit {hostname} to try "
+            "again."
+        ),
+        description=(
+            "Played by the phone-mic capture relay when a measurement is "
+            "started but cannot be used — the phone never finished within the "
+            "timeout, the capture failed decrypt/integrity, the recording "
+            "couldn't be aligned to the stimulus, or the phone aborted "
+            "(backgrounded). Wired from jasper/capture_relay "
+            "(MEASUREMENT_FAILED_CUE_SLUG). Honest and low-alarm: it names no "
+            "cause it can't stand behind and points the household to retry."
+        ),
+    ),
 )
 
 
