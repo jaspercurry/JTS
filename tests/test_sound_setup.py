@@ -41,7 +41,11 @@ from jasper.sound.profile import (
     save_profile,
 )
 from jasper.sound.runtime import reconcile_current_dsp
-from jasper.sound.settings import SoundSettings, load_sound_settings
+from jasper.sound.settings import (
+    DEFAULT_VOLUME_FLOOR_DB,
+    SoundSettings,
+    load_sound_settings,
+)
 from jasper.volume_curve import percent_to_db
 from jasper.web import sound_setup
 
@@ -483,7 +487,11 @@ def test_sound_module_preserves_editor_behaviour():
     assert "dsp_write_epoch: dspWriteEpoch" in js
     assert "function cancelLiveDrafts()" in js
     assert "jsonHeaders()" in js
-    assert "meta[name=jts-csrf]" in js  # CSRF read from the tag, not substituted
+    # CSRF/JSON helpers are imported from the shared http.js (which reads the
+    # meta[name=jts-csrf] tag) rather than re-declared locally — the token is
+    # never string-substituted at render time. (See the http.js drift guard in
+    # tests/test_web_wizard_conventions.py.)
+    assert 'from "/assets/shared/js/http.js"' in js
     assert "Active crossover setup" in js
     assert "/assets/sound-profile/js/active-speaker-ui.js" in js
     assert "./active-speaker/prepare-driver-test" not in js
@@ -3163,6 +3171,11 @@ def test_state_payload_contains_stock_curves_profiles_and_preview(tmp_path: Path
     assert payload["limits"]["max_parametric_bands"] == 8
     # Cut-filter Q ceiling is exposed so the UI's Width slider can bound HP/LP.
     assert payload["limits"]["cut_max_q"] == 1.4
+    # Volume-floor SSOT: the reset/default floor is forwarded from the one
+    # backend owner (volume_curve.DEFAULT_VOLUME_FLOOR_DB, re-exported via
+    # sound.settings) so the /sound/ editor stops hardcoding -50. If this drifts,
+    # the page's reset button + default would silently disagree with the server.
+    assert payload["limits"]["volume_floor_default_db"] == DEFAULT_VOLUME_FLOOR_DB
     assert payload["headroom_db"] > 0
 
 

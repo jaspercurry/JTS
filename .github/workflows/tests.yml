@@ -185,6 +185,7 @@ jobs:
           node scripts/check-peq-parity.mjs
           node scripts/check-balance-trim-parity.mjs
           node tests/js/correction_render_harness.mjs deploy/assets/correction/js/main.js
+          node scripts/check-sensitivity-trim-parity.mjs
 
   rust:
     # CI formats, lints, compiles, and tests the Rust audio daemons — the

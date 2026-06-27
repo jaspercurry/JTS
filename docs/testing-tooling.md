@@ -139,6 +139,27 @@ fixture (and adds filter-theory sanity probes). The `js` CI job runs the node
 check as part of the browser-module harness set; run it locally when touching
 either implementation so parity failures land before CI.
 
+## Sensitivity → level-trim parity (JS ↔ Python)
+
+The /sound/ active-crossover form pre-fills a starting per-driver level trim
+from the driver sensitivity gap (optimistic UI,
+[`deploy/assets/sound-profile/js/active-speaker-ui.js`](../deploy/assets/sound-profile/js/active-speaker-ui.js)
+`sensitivityTrimsFromGap`); the server re-derives the same fail-safe
+authoritatively on save
+([`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py)
+`_derive_corrections`, the `datasheet_trims` block).
+[`tests/fixtures/sensitivity_trim_fixture.json`](../tests/fixtures/sensitivity_trim_fixture.json)
+is the shared contract:
+
+```sh
+node scripts/check-sensitivity-trim-parity.mjs   # asserts the JS matches the fixture
+```
+
+`tests/test_active_speaker_baseline_profile.py::test_sensitivity_trim_matches_shared_parity_fixture`
+asserts the Python source matches the same fixture. The `js` CI job runs the node
+check alongside the PEQ parity check; run it locally when touching either
+implementation so parity failures land before CI.
+
 ---
 
 ## Optional ESP32 firmware builds
