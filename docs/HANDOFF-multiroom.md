@@ -2092,11 +2092,11 @@ tests/test_multiroom_snapcast_rpc.py (Snapcast volume/mute RPC seams).
 Updated 2026-06-24: `/rooms/`
 now exposes pair balance as one centered slider (the UI clamps the ordinary
 household adjustment to ±6 dB; the backend/grouping safety envelope remains the
-validated attenuate-only -24..0 dB contract). `POST /trim` still
-supports the legacy `target=self|peer` ±0.5 dB nudge, but the page uses
+validated attenuate-only -24..0 dB contract). `POST /trim` takes only
 `target=pair` + signed `balance_db`, which rewrites BOTH member trims
 absolutely and re-normalizes wasted attenuation so one side is always
-0 dB. `JASPER_GROUPING_TRIM_DB` remains wizard/bond-owned intent — the LOUDER
+0 dB. (The legacy `target=self|peer` ±0.5 dB nudge was removed once the
+slider replaced it — it had no remaining caller.) `JASPER_GROUPING_TRIM_DB` remains wizard/bond-owned intent — the LOUDER
 speaker trims down, never a boost; outputd re-validates fail-closed. For dumb endpoints the
 reconciler derives `JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB` into
 grouping-outputd.env (empty on solo = unset to env_f32) and outputd
