@@ -62,7 +62,10 @@ the encryption key.
 ```sh
 cd relay
 npx wrangler r2 bucket create jts-capture-relay          # object store
-# TTL backstop: auto-delete anything older than ~1 h (in case a Pi never pulls)
+# COARSE TTL backstop in case a Pi never pulls. This is a *floor* of 1 day (R2
+# lifecycle granularity), 24x looser than the session TTL (<=1 h, MAX_TTL_S). The
+# real reclaim is the Worker's on-access self-delete past `expires_at`
+# (loadLive); the lifecycle rule only catches sessions never touched again.
 npx wrangler r2 bucket lifecycle add jts-capture-relay \
     --expire-days 1 --prefix ""                          # or set in the dashboard
 npx wrangler deploy                                      # publishes the Worker
@@ -71,7 +74,12 @@ npx wrangler deploy                                      # publishes the Worker
 Then attach a custom domain (e.g. `relay.jasper.tech`) in the Cloudflare
 dashboard (Workers & Pages → this worker → Settings → Domains & Routes), and set
 `CAPTURE_ORIGIN` in `wrangler.toml` to the capture page's origin so CORS allows
-it. The `RELAY_RATELIMIT` binding is declared in `wrangler.toml`.
+it. The `RELAY_RATELIMIT` binding (declared in `wrangler.toml`, `namespace_id`
+must be unique within your account) backs BOTH the per-session limit and the
+per-IP **registration** limit (`reg:<cf-connecting-ip>`) that bounds open
+`POST /sessions` flooding. Absent the binding, the Worker falls back to a
+per-isolate in-memory counter that never writes R2 (so it can neither amplify
+writes nor clobber session state).
 
 ## Test
 

@@ -128,7 +128,12 @@ export async function sha256Hex(input) {
 }
 
 // Constant-time-ish hex comparison: equal length required, XOR-accumulate so the
-// timing does not leak which character differs.
+// timing does not leak which character differs. Belt-and-suspenders: both inputs
+// here are already SHA-256 *hex digests* (the presented token is hashed before
+// this call), always 64 chars, so the length check can never leak token length,
+// and a timing oracle could at worst leak digest bytes — uninvertible to the
+// token. JS charCodeAt/`|=` is not a hardware-constant-time primitive, but that
+// is acceptable given the inputs are pre-hashed, not the secrets themselves.
 function timingSafeEqualHex(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
   if (a.length !== b.length) return false;
@@ -202,25 +207,53 @@ async function loadLive(store, id, env) {
   return meta;
 }
 
-async function rateLimited(env, store, meta, id) {
-  // Preferred: Cloudflare's atomic Rate Limiting binding.
+// Module-level, per-isolate fallback rate state. Used ONLY when the atomic
+// RELAY_RATELIMIT binding is absent (production declares it in wrangler.toml).
+// It deliberately NEVER touches R2: an earlier version persisted the counter
+// into meta/<id>, which (a) wrote R2 on every read-only GET /spec and (b)
+// read-modify-wrote the shared state object, so a concurrent spec/event fetch
+// could clobber the `ready`/`armed` control state and strand the Pi. Keeping the
+// counter in isolate memory removes both: it cannot corrupt the durable state
+// machine. It is per-isolate (not globally consistent), which is acceptable for
+// a best-effort safety cap whose real bounds are the hard size cap + TTL.
+const _fallbackRate = new Map();
+const _FALLBACK_RATE_MAX_KEYS = 10000;
+
+function fallbackRateLimited(key, now) {
+  let r = _fallbackRate.get(key);
+  if (!r || now - r.windowStart > RATE_WINDOW_MS) {
+    r = { windowStart: now, count: 0 };
+  }
+  r.count += 1;
+  _fallbackRate.set(key, r);
+  if (_fallbackRate.size > _FALLBACK_RATE_MAX_KEYS) {
+    for (const [k, v] of _fallbackRate) {
+      if (now - v.windowStart > RATE_WINDOW_MS) _fallbackRate.delete(k);
+    }
+  }
+  return r.count > RATE_MAX_REQUESTS;
+}
+
+// Per-session limit on the phone-facing endpoints (a leaked upload_token).
+async function rateLimited(env, id) {
   if (env.RELAY_RATELIMIT && typeof env.RELAY_RATELIMIT.limit === "function") {
     const { success } = await env.RELAY_RATELIMIT.limit({ key: id });
     return !success;
   }
-  // Fallback: best-effort per-session fixed window persisted in meta. Under
-  // concurrent abuse the cap is approximate; the hard size cap + TTL +
-  // delete-after-pull are the real bounds.
-  const now = nowMs(env);
-  const r = meta.rate || { window_start: now, count: 0 };
-  if (now - r.window_start > RATE_WINDOW_MS) {
-    r.window_start = now;
-    r.count = 0;
+  return fallbackRateLimited(id, nowMs(env));
+}
+
+// Per-IP limit on OPEN registration so a flood of POST /sessions cannot fill the
+// bucket with short-lived sessions (each is otherwise only bounded by TTL +
+// per-session caps). Keyed distinctly from the session-id limiter.
+async function registrationRateLimited(env, request) {
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  const key = `reg:${ip}`;
+  if (env.RELAY_RATELIMIT && typeof env.RELAY_RATELIMIT.limit === "function") {
+    const { success } = await env.RELAY_RATELIMIT.limit({ key });
+    return !success;
   }
-  r.count += 1;
-  meta.rate = r;
-  await store.putMeta(id, meta);
-  return r.count > RATE_MAX_REQUESTS;
+  return fallbackRateLimited(key, nowMs(env));
 }
 
 // --- Endpoint handlers --------------------------------------------------------
@@ -286,7 +319,6 @@ async function registerSession(request, store, env, cors) {
     event: null,
     integrity: null,
     size: 0,
-    rate: { window_start: now, count: 0 },
   };
   await store.putMeta(id, meta);
   return json({ session_id: id, state: "pending", expires_at: meta.expires_at }, 201, cors);
@@ -301,7 +333,13 @@ async function getSpec(meta, store, id, env, cors) {
 }
 
 async function postEvent(request, store, meta, id, env, cors) {
-  const len = Number(request.headers.get("content-length") || "0");
+  // Require Content-Length and cap it BEFORE reading. A missing header must NOT
+  // default to 0 (which would skip the cap and read an unbounded chunked body
+  // into the Worker, then persist + echo it on every Pi poll). Mirror putBlob.
+  const len = Number(request.headers.get("content-length") || "-1");
+  if (!Number.isFinite(len) || len <= 0) {
+    return json({ error: "content_length_required" }, 411, cors);
+  }
   if (len > MAX_EVENT_BYTES) {
     return json({ error: "event_too_large" }, 413, cors);
   }
@@ -420,6 +458,9 @@ export async function handle(request, store, env) {
     if (request.method !== "POST") {
       return json({ error: "method_not_allowed" }, 405, cors);
     }
+    if (await registrationRateLimited(env, request)) {
+      return json({ error: "rate_limited" }, 429, cors);
+    }
     return registerSession(request, store, env, cors);
   }
 
@@ -465,7 +506,7 @@ export async function handle(request, store, env) {
       if (!(await authorize(meta, request, "upload"))) {
         return json({ error: "unauthorized" }, 401, cors);
       }
-      if (await rateLimited(env, store, meta, id)) {
+      if (await rateLimited(env, id)) {
         return json({ error: "rate_limited" }, 429, cors);
       }
       if (sub === "spec") return getSpec(meta, store, id, env, cors);

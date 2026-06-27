@@ -37,4 +37,4 @@ def test_relay_worker_contract():
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert out["ok"] is True, out
     # The harness counts each top-level test; a silent drop would shrink this.
-    assert out["passed"] >= 16, out
+    assert out["passed"] >= 19, out
