@@ -34,6 +34,7 @@ _HARNESSES = [
     "capture_relay_client_test.mjs",
     "capture_fragment_test.mjs",
     "capture_constraints_test.mjs",
+    "capture_wakelock_test.mjs",
 ]
 
 

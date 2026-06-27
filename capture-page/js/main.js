@@ -21,6 +21,7 @@ import { renderScreen } from "./render.js";
 import { RelayClient } from "./relay-client.js";
 import { importContentKey, encryptWav } from "./crypto.js";
 import { constraintDecision, verifyRealizedConstraints } from "./constraints.js";
+import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
 import { createMonoRecorder, float32ToWavBlob } from "./measurement-audio.js";
 
 function setStatus(message, kind = "info") {
@@ -39,6 +40,36 @@ async function blobToBytes(blob) {
 async function onStart(ctx) {
   const { spec, client, contentKeyB64 } = ctx;
   let recorder = null;
+  let wakeLock = null;
+  let disposeWatch = () => {};
+  let aborted = false;
+
+  // Abort path (step 7): if the page is backgrounded mid-capture, stop and tell
+  // the Pi (which plays the audible cue) — never upload garbage.
+  const abort = async (reason) => {
+    if (aborted) return;
+    aborted = true;
+    setStatus(
+      reason === "backgrounded"
+        ? "Measurement stopped — the screen must stay on this page. Tap Start to try again."
+        : `Measurement stopped — ${reason}. Tap Start to try again.`,
+      "error",
+    );
+    try {
+      await client.postEvent({ aborted: true, abort_reason: reason });
+    } catch {
+      /* the Pi also times out if it never hears the abort */
+    }
+    if (recorder) {
+      try {
+        await recorder.close();
+      } catch {
+        /* already closed */
+      }
+      recorder = null;
+    }
+  };
+
   try {
     setStatus("Starting microphone…", "info");
     // getUserMedia must be inside this user gesture (iOS). EC/AGC/NS are forced
@@ -63,6 +94,14 @@ async function onStart(ctx) {
     }
 
     recorder.start();
+    // Hold the screen on for the capture; if it backgrounds anyway, abort+cue.
+    wakeLock = await acquireWakeLock();
+    disposeWatch = watchVisibilityAbort(
+      typeof document !== "undefined" ? document : null,
+      (reason) => {
+        void abort(reason);
+      },
+    );
     setStatus(
       decision.degraded
         ? `Measuring at lower confidence — ${decision.reason}. Keep the screen on.`
@@ -76,7 +115,9 @@ async function onStart(ctx) {
 
     // Record the full window (pre-roll + stimulus + post-roll).
     await new Promise((r) => setTimeout(r, recordWindowMs(spec)));
+    if (aborted) return;
     const samples = await recorder.stop({ timeoutMs: 5000 });
+    if (aborted) return;
     await recorder.close();
     recorder = null;
 
@@ -97,10 +138,15 @@ async function onStart(ctx) {
         /* already closed */
       }
     }
-    setStatus(
-      `Measurement failed: ${err && err.message ? err.message : err}. Tap Start to try again.`,
-      "error",
-    );
+    if (!aborted) {
+      setStatus(
+        `Measurement failed: ${err && err.message ? err.message : err}. Tap Start to try again.`,
+        "error",
+      );
+    }
+  } finally {
+    disposeWatch();
+    if (wakeLock) await wakeLock.release();
   }
 }
 
