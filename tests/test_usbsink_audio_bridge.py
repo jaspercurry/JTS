@@ -370,3 +370,54 @@ def test_set_preempted_idempotent_no_double_log():
     assert bridge.is_preempted is True
     bridge.set_preempted(False)
     assert bridge.is_preempted is False
+
+
+# ----------------------------------------------------------------------
+# stop() — wedged fifo writer-thread join surfaces a breadcrumb
+# ----------------------------------------------------------------------
+
+
+def test_stop_logs_warn_when_fifo_writer_join_times_out(caplog):
+    """If the fifo writer thread is wedged in a blocking os.write (reader
+    stopped draining), stop()'s join times out. The thread is a daemon so
+    it won't block exit, but stop() must leave a WARN breadcrumb so the
+    operator can tell the reader side (CamillaDSP File-capture) stalled."""
+    import logging
+    from unittest.mock import MagicMock
+
+    bridge = _make_bridge(output_mode="fifo")
+    bridge._started = True
+    wedged = MagicMock()
+    wedged.is_alive.return_value = True  # join didn't unwind the thread
+    bridge._fifo_thread = wedged
+
+    with caplog.at_level(logging.WARNING):
+        bridge.stop()
+
+    wedged.join.assert_called_once()
+    assert bridge._fifo_thread is None
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        "event=usbsink.fifo_writer_join_timeout" in m for m in messages
+    )
+
+
+def test_stop_no_join_timeout_warn_when_fifo_writer_exits(caplog):
+    """The happy path: writer thread joins cleanly → no breadcrumb."""
+    import logging
+    from unittest.mock import MagicMock
+
+    bridge = _make_bridge(output_mode="fifo")
+    bridge._started = True
+    clean = MagicMock()
+    clean.is_alive.return_value = False  # joined cleanly
+    bridge._fifo_thread = clean
+
+    with caplog.at_level(logging.WARNING):
+        bridge.stop()
+
+    clean.join.assert_called_once()
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any(
+        "event=usbsink.fifo_writer_join_timeout" in m for m in messages
+    )

@@ -66,6 +66,10 @@ logger = logging.getLogger(__name__)
 #     anything else, but we already match so plug becomes a no-op)
 SAMPLE_RATE = 48000
 CHANNELS = 2
+# Width of one S32_LE sample in bytes. The FIFO lean lane writes
+# full-width S32_LE PCM (CamillaDSP File-captures at S32_LE), so the
+# per-block byte size is frames * channels * S32_BYTES.
+S32_BYTES = 4
 # Block size = 10 ms. Small enough that preempt + host pause/resume
 # transitions land within one mux tick; large enough that PortAudio's
 # per-callback overhead is amortized.
@@ -75,6 +79,14 @@ BLOCK_FRAMES = 480
 # before the output side starts dropping frames. Sized to absorb a
 # brief stall in either direction (e.g. systemd reset_failed kick).
 QUEUE_MAXBLOCKS = 8
+
+# FIFO lean-lane error-log throttle. The writer-thread counters
+# (fifo_reader_gone / fifo_errors) can move on every loop turn while
+# the reader is persistently absent (CamillaDSP down). Log the first
+# occurrence of each, then at most once per FIFO_ERROR_LOG_THROTTLE_SEC
+# afterward, so a long reader outage costs one breadcrumb plus a slow
+# trickle rather than spamming the journal at the write cadence.
+FIFO_ERROR_LOG_THROTTLE_SEC = 30.0
 
 
 @dataclass
@@ -86,9 +98,11 @@ class BridgeStats:
     frames_captured: int = 0
     # Frames of queued host audio written into the renderer lane.
     frames_played: int = 0
-    # Frames written by the playback callback regardless of source:
-    # queued audio, preempt silence, or underrun silence. This is the
-    # liveness counter for "the output stream is still being serviced."
+    # Frames written to the output sink regardless of source: queued
+    # audio, preempt silence, or underrun silence. In aloop mode the
+    # playback callback increments it; in fifo mode the writer thread
+    # increments it on every block write. This is the liveness counter
+    # for "the output sink is still being serviced."
     frames_output: int = 0
     frames_dropped_full: int = 0
     frames_underrun: int = 0
@@ -333,6 +347,18 @@ class AudioBridge:
             self._fifo_stop.set()
             if self._fifo_thread is not None:
                 self._fifo_thread.join(timeout=2.0)
+                if self._fifo_thread.is_alive():
+                    # The writer is wedged in a blocking os.write because
+                    # the reader stopped draining. It's a daemon thread so
+                    # it won't block process exit, but surface it: a
+                    # persistently-blocked writer means the reader side
+                    # (CamillaDSP File-capture) is not consuming the pipe.
+                    log_event(
+                        logger,
+                        "usbsink.fifo_writer_join_timeout",
+                        timeout_sec=2.0,
+                        level=logging.WARNING,
+                    )
                 self._fifo_thread = None
             # Stop the producer first so the queue stops growing,
             # then the consumer.
@@ -577,9 +603,26 @@ class AudioBridge:
         import os
 
         # One queue entry is one full-width S32_LE stereo block.
-        block_bytes = self._block_frames * self._channels * 4
+        block_bytes = self._block_frames * self._channels * S32_BYTES
         silence = bytes(block_bytes)
         fd = -1
+
+        # Throttled error logging. The reader-gone / write-error counters
+        # are otherwise dead-on-read (nothing surfaces them yet — the
+        # /state + doctor wiring is a later PR). Log the first occurrence
+        # of each event and then at most once per throttle window so a
+        # persistently-absent reader (CamillaDSP down) does not spam the
+        # journal at the per-block write cadence.
+        last_error_log: dict[str, float] = {}
+
+        def _throttled_warn(event_name: str, **fields: object) -> None:
+            now = time.monotonic()
+            last = last_error_log.get(event_name)
+            if last is not None and now - last < FIFO_ERROR_LOG_THROTTLE_SEC:
+                return
+            last_error_log[event_name] = now
+            log_event(logger, event_name, level=logging.WARNING, **fields)
+
         try:
             while not self._fifo_stop.is_set():
                 # (Re)open the write end if needed.
@@ -596,6 +639,13 @@ class AudioBridge:
                             self._fifo_stop.wait(0.2)
                             continue
                         self.stats.fifo_errors += 1
+                        _throttled_warn(
+                            "usbsink.fifo_error",
+                            phase="open",
+                            errno=e.errno,
+                            error=e,
+                            count=self.stats.fifo_errors,
+                        )
                         self._fifo_stop.wait(0.5)
                         continue
                     # Reader present: switch to blocking so writes pace
@@ -632,8 +682,19 @@ class AudioBridge:
                     os.close(fd)
                     fd = -1
                     self.stats.fifo_reader_gone += 1
-                except OSError:
+                    _throttled_warn(
+                        "usbsink.fifo_reader_gone",
+                        count=self.stats.fifo_reader_gone,
+                    )
+                except OSError as e:
                     self.stats.fifo_errors += 1
+                    _throttled_warn(
+                        "usbsink.fifo_error",
+                        phase="write",
+                        errno=e.errno,
+                        error=e,
+                        count=self.stats.fifo_errors,
+                    )
                     if fd >= 0:
                         os.close(fd)
                     fd = -1

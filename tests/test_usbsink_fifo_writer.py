@@ -238,6 +238,36 @@ def test_fifo_writer_reopens_after_reader_goes_away(tmp_path):
 
 
 # ----------------------------------------------------------------------
+# FIFO error counters surface a throttled WARN when they move
+# ----------------------------------------------------------------------
+
+
+def test_fifo_writer_open_error_logs_throttled_warn(tmp_path, caplog):
+    """A non-ENXIO open OSError (here: the fifo_path is a directory →
+    IsADirectoryError) increments fifo_errors AND surfaces a throttled
+    WARN so the otherwise dead-on-read counter is observable. The first
+    occurrence always logs; we stop the loop right after."""
+    import logging
+
+    bogus = str(tmp_path / "a_dir")
+    os.mkdir(bogus)  # O_WRONLY open of a directory → IsADirectoryError
+    b = AudioBridge(output_mode="fifo", fifo_path=bogus, block_frames=4, channels=2)
+
+    wt = threading.Thread(target=b._fifo_writer_loop, daemon=True)
+    with caplog.at_level(logging.WARNING):
+        wt.start()
+        # Loop sleeps 0.5 s after an open error; one turn is enough to log.
+        time.sleep(0.3)
+        b._fifo_stop.set()
+        wt.join(timeout=3.0)
+
+    assert not wt.is_alive()
+    assert b.stats.fifo_errors >= 1
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("event=usbsink.fifo_error" in m and "phase=open" in m for m in messages)
+
+
+# ----------------------------------------------------------------------
 # _ensure_fifo
 # ----------------------------------------------------------------------
 
