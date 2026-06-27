@@ -22,6 +22,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CHUNKSIZE,
+    DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
@@ -29,6 +30,8 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     FilterSpec,
     PeqFilter,
+    file_capture_resampler_yaml,
+    is_async_resampler,
     total_positive_boost_db,
 )
 from jasper.camilla_emit import (
@@ -1310,6 +1313,9 @@ def emit_active_speaker_baseline_config(
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
+    capture_pipe_path: str | None = None,
+    resampler_type: str | None = None,
+    resampler_profile: str | None = DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
 ) -> str:
     """Build an accepted active-speaker baseline candidate.
 
@@ -1355,6 +1361,21 @@ def emit_active_speaker_baseline_config(
     sample_rate = _positive_int(sample_rate, "sample_rate")
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
+    # Stage 4 File-CAPTURE lean-lane guard (mirror of jasper.sound.camilla_yaml).
+    # enable_rate_adjust is already hardcoded true on the active graph, so a File
+    # capture only additionally REQUIRES an async resampler: the clockless pipe
+    # capture is disciplined to the real DAC via async-resampler ratio correction.
+    # Layer A (split mixer + per-driver crossover/HP/limiter) is untouched.
+    if capture_pipe_path is not None:
+        capture_pipe_path = _yaml_string(capture_pipe_path, "capture_pipe_path")
+        if not is_async_resampler(resampler_type):
+            raise ActiveSpeakerConfigError(
+                "capture_pipe_path (File-capture lean lane) requires an async "
+                "resampler (AsyncSinc/AsyncPoly — CamillaDSP v4 vocabulary) — a "
+                "clockless File capture has no clock for CamillaDSP to rate-tune, "
+                "so enable_rate_adjust steers the async resampler's ratio instead; "
+                f"got resampler_type={resampler_type!r}"
+            )
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     baseline_headroom_db = _finite_float(baseline_headroom_db, "baseline_headroom_db")
     limiter_clip_limit_db = _finite_float(
@@ -1422,6 +1443,26 @@ def emit_active_speaker_baseline_config(
         baseline_id = _yaml_string(baseline_id, "baseline_id")
         metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
+    # Capture source: ALSA Loopback (default, byte-identical) or the Stage-4 lean
+    # File/pipe capture. Mirror of jasper.sound.camilla_yaml; Layer A is downstream
+    # and unchanged either way.
+    if capture_pipe_path is not None:
+        capture_yaml = f"""  capture:
+    type: File
+    channels: 2
+    filename: "{capture_pipe_path}"
+    format: {capture_format}"""
+    else:
+        capture_yaml = f"""  capture:
+    type: Alsa
+    channels: 2
+    device: "{capture_device}"
+    format: {capture_format}"""
+    resampler_line = (
+        file_capture_resampler_yaml(resampler_type, resampler_profile)
+        if resampler_type is not None
+        else ""
+    )
 
     yaml = f"""---
 # Auto-generated active-speaker baseline config.
@@ -1437,12 +1478,8 @@ devices:
   queuelimit: 4
   target_level: {target_level}
   volume_limit: {volume_limit_db:.1f}
-  enable_rate_adjust: true
-  capture:
-    type: Alsa
-    channels: 2
-    device: "{capture_device}"
-    format: {capture_format}
+  enable_rate_adjust: true{resampler_line}
+{capture_yaml}
   playback:
     type: Alsa
     channels: {output_count}
