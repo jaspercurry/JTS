@@ -20,6 +20,7 @@ import { parseFragment, recordWindowMs } from "./fragment.js";
 import { renderScreen } from "./render.js";
 import { RelayClient } from "./relay-client.js";
 import { importContentKey, encryptWav } from "./crypto.js";
+import { constraintDecision, verifyRealizedConstraints } from "./constraints.js";
 import { createMonoRecorder, float32ToWavBlob } from "./measurement-audio.js";
 
 function setStatus(message, kind = "info") {
@@ -43,11 +44,35 @@ async function onStart(ctx) {
     // getUserMedia must be inside this user gesture (iOS). EC/AGC/NS are forced
     // off by measurement-audio's mono constraints.
     recorder = await createMonoRecorder({ sampleRate: spec.sample_rate_hz || 48000 });
-    recorder.start();
-    setStatus("Recording — keep the screen on and stay quiet.", "recording");
 
-    // Drop `armed` so the Pi plays the stimulus inside our window.
-    await client.postEvent({ armed: true });
+    // Measurement validity is loud (step 6, §9): verify the REALIZED constraints
+    // — WebKit has historically ignored echoCancellation:false. Decide per the
+    // spec's per-kind policy before wasting the user's time recording.
+    const track = recorder.stream.getAudioTracks ? recorder.stream.getAudioTracks()[0] : null;
+    const settings = track && track.getSettings ? track.getSettings() : {};
+    const decision = constraintDecision(verifyRealizedConstraints(settings, spec), spec);
+    if (decision.action === "refuse") {
+      await recorder.close();
+      recorder = null;
+      setStatus(
+        `This phone can't run a clean measurement (${decision.reason}). ` +
+          "Try a different phone, or use a calibrated USB mic on the speaker.",
+        "error",
+      );
+      return;
+    }
+
+    recorder.start();
+    setStatus(
+      decision.degraded
+        ? `Measuring at lower confidence — ${decision.reason}. Keep the screen on.`
+        : "Recording — keep the screen on and stay quiet.",
+      "recording",
+    );
+
+    // Drop `armed` so the Pi plays the stimulus inside our window. `degraded`
+    // rides along so the Pi can mark a capability-fallback capture lower-confidence.
+    await client.postEvent({ armed: true, degraded: decision.degraded });
 
     // Record the full window (pre-roll + stimulus + post-roll).
     await new Promise((r) => setTimeout(r, recordWindowMs(spec)));
