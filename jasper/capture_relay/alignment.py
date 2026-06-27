@@ -41,14 +41,34 @@ refinement, mirroring the correction confidence model's staging):
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import numpy as np
 from scipy import signal as scipy_signal
 
+
+def _env_threshold(default: float = 0.40) -> float:
+    """The default confidence gate, overridable at deploy time.
+
+    The 0.40 default is NOT empirically derived — a conservative v1 starting
+    point. Tuning it needs on-device sweeps, so it is a deploy-time knob
+    (`JASPER_CAPTURE_ALIGNMENT_THRESHOLD`, 0..1) rather than a code change: set it
+    in jasper.env once measured, no rebuild required.
+    """
+    raw = os.environ.get("JASPER_CAPTURE_ALIGNMENT_THRESHOLD", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            return default
+        if 0.0 <= value <= 1.0:
+            return value
+    return default
+
+
 # A clean swept-sine alignment is strongly peaked; default gate is conservative.
-# NOT empirically derived — a v1 starting point; retune against on-device sweeps.
-DEFAULT_CONFIDENCE_THRESHOLD = 0.40
+DEFAULT_CONFIDENCE_THRESHOLD = _env_threshold()
 # Exclude the main correlation lobe (~a few ms) when picking the competing peak.
 DEFAULT_EXCLUDE_RADIUS_S = 0.005
 # Cost/memory backstop: truncate a pathologically long capture. The stimulus

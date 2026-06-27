@@ -313,6 +313,20 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _capture_relay_config() -> dict[str, Any]:
+    """Network-free phone-mic-relay config snapshot for `/state.capture_relay`.
+
+    Reads ``JASPER_CAPTURE_RELAY_BASE`` from os.environ DIRECTLY (a deploy-time
+    value) so jasper-control never imports the capture_relay package's numpy/scipy
+    deps just for a config field. The doctor (on-demand) imports
+    capture_relay.health to actively probe reachability. This MUST stay in
+    lockstep with capture_relay.health.relay_config_from_env — pinned by
+    tests/test_capture_relay_health.py.
+    """
+    base = (os.environ.get("JASPER_CAPTURE_RELAY_BASE") or "").strip().rstrip("/")
+    return {"configured": bool(base), "relay_base": base or None}
+
+
 async def _get_state(
     *,
     camilla_host: str,
@@ -755,6 +769,8 @@ async def _get_state(
     from ..mic_presence import read_mic_presence
     mic_presence = read_mic_presence()
 
+    capture_relay_state = _capture_relay_config()
+
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
@@ -942,4 +958,7 @@ async def _get_state(
         # Async research summary. Counts and timestamps only; no prompt or
         # answer text leaves the local store through /state.
         "research": research_state,
+        # Phone-mic capture relay config snapshot (network-free; the doctor
+        # probes reachability on demand). {configured, relay_base}.
+        "capture_relay": capture_relay_state,
     }

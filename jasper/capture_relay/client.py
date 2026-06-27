@@ -103,8 +103,10 @@ class RelayClient:
         if not (200 <= resp.status < 300):
             detail = ""
             try:
+                # Expected failures: a non-JSON body (ValueError) or a JSON value
+                # that isn't an object (AttributeError on .get).
                 detail = (self._json(resp) or {}).get("error", "")
-            except Exception:  # noqa: BLE001 — best-effort error detail
+            except (ValueError, AttributeError, UnicodeDecodeError):
                 detail = resp.body[:200].decode("utf-8", "replace")
             raise RelayError(f"{what} failed: {resp.status} {detail}", resp.status, resp.body)
 
