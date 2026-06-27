@@ -23,6 +23,14 @@ CAPTURE_ENABLED_ENV = "JASPER_CONVERSATION_HISTORY_ENABLED"
 CAPTURE_ALIAS_ENV = "JASPER_CONVERSATION_CAPTURE"
 RETENTION_DAYS_ENV = "JASPER_CONVERSATION_HISTORY_RETENTION_DAYS"
 RETENTION_MAX_ROWS_ENV = "JASPER_CONVERSATION_HISTORY_MAX_ROWS"
+# Code defaults so retention is bounded even when the env vars are ABSENT.
+# `.env.example` only documents these (and is copied to jasper.env once, on
+# fresh install), so a Pi first-installed before the vars existed would
+# otherwise have no retention at all and grow the SQLite store unbounded.
+# Semantics, matching the `.env.example` comments: env var absent -> use
+# these defaults; env var explicitly blank or 0 -> that guard is disabled.
+DEFAULT_RETENTION_DAYS = 30
+DEFAULT_RETENTION_MAX_ROWS = 500
 SETTINGS_FILE_MODE = 0o644
 STORE_FILE_MODE = 0o660
 _STORE_ERRORS = (OSError, sqlite3.Error)
@@ -336,9 +344,11 @@ def read_settings(
     return ConversationSettings(
         capture_enabled=_env_bool(capture_raw, default=False),
         db_path=(merged.get(DB_PATH_ENV) or DEFAULT_DB_PATH).strip() or DEFAULT_DB_PATH,
-        retention_days=_env_optional_positive_int(merged.get(RETENTION_DAYS_ENV)),
-        retention_max_rows=_env_optional_positive_int(
-            merged.get(RETENTION_MAX_ROWS_ENV),
+        retention_days=_env_retention_int(
+            merged, RETENTION_DAYS_ENV, DEFAULT_RETENTION_DAYS,
+        ),
+        retention_max_rows=_env_retention_int(
+            merged, RETENTION_MAX_ROWS_ENV, DEFAULT_RETENTION_MAX_ROWS,
         ),
         settings_path=settings_path,
     )
@@ -457,6 +467,24 @@ def _env_optional_positive_int(value: str | None) -> int | None:
     except ValueError:
         return None
     return parsed if parsed > 0 else None
+
+
+def _env_retention_int(
+    merged: dict[str, str],
+    key: str,
+    default: int,
+) -> int | None:
+    """Resolve a retention guard, distinguishing "absent" from "disabled".
+
+    Absent key -> ``default`` (the speaker stays bounded out of the box).
+    Present-but-blank or ``0`` -> ``None`` (household opted the guard off).
+    Present positive int -> that value. This preserves the documented
+    escape hatch (blank/0 disables) while never leaving retention off
+    just because the env var predates these settings.
+    """
+    if key not in merged:
+        return default
+    return _env_optional_positive_int(merged.get(key))
 
 
 def _compact_utc(ts_utc: str) -> str:

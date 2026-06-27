@@ -11,12 +11,15 @@ from jasper import conversation_history as history_module
 from jasper.conversation_history import (
     CAPTURE_ENABLED_ENV,
     CAPTURE_ALIAS_ENV,
+    DEFAULT_RETENTION_DAYS,
+    DEFAULT_RETENTION_MAX_ROWS,
     ConversationStore,
     ConversationTurn,
     DB_PATH_ENV,
     RETENTION_DAYS_ENV,
     RETENTION_MAX_ROWS_ENV,
     make_turn_id,
+    prune_for_settings,
     read_settings,
 )
 
@@ -252,6 +255,123 @@ def test_read_settings_wizard_file_capture_flag_wins_over_env_alias(tmp_path):
     )
 
     assert settings.capture_enabled is True
+
+
+def test_read_settings_uses_code_defaults_when_retention_env_absent(tmp_path):
+    settings_file = tmp_path / "conversation_history.env"
+    settings_file.write_text(f"{CAPTURE_ALIAS_ENV}=1\n", encoding="utf-8")
+
+    settings = read_settings(path=str(settings_file), environ={})
+
+    assert settings.retention_days == DEFAULT_RETENTION_DAYS == 30
+    assert settings.retention_max_rows == DEFAULT_RETENTION_MAX_ROWS == 500
+    assert settings.retention == {"days": 30, "max_rows": 500}
+
+
+def test_read_settings_explicit_zero_disables_retention(tmp_path):
+    settings_file = tmp_path / "conversation_history.env"
+    settings_file.write_text(
+        "\n".join([
+            f"{RETENTION_DAYS_ENV}=0",
+            f"{RETENTION_MAX_ROWS_ENV}=0",
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    settings = read_settings(path=str(settings_file), environ={})
+
+    assert settings.retention == {"days": None, "max_rows": None}
+
+
+def test_read_settings_blank_disables_retention(tmp_path):
+    settings_file = tmp_path / "conversation_history.env"
+    settings_file.write_text(
+        "\n".join([
+            f"{RETENTION_DAYS_ENV}=",
+            f"{RETENTION_MAX_ROWS_ENV}=",
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    settings = read_settings(path=str(settings_file), environ={})
+
+    assert settings.retention == {"days": None, "max_rows": None}
+
+
+def test_read_settings_explicit_values_override_defaults(tmp_path):
+    settings_file = tmp_path / "conversation_history.env"
+    settings_file.write_text(
+        "\n".join([
+            f"{RETENTION_DAYS_ENV}=7",
+            f"{RETENTION_MAX_ROWS_ENV}=42",
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    settings = read_settings(path=str(settings_file), environ={})
+
+    assert settings.retention == {"days": 7, "max_rows": 42}
+
+
+def test_prune_for_settings_bounds_store_with_absent_retention_env(tmp_path):
+    # Repro for the unbounded-growth bug: a Pi whose env file predates the
+    # retention vars must still prune via the code defaults. Before the fix
+    # read_settings() returned days=None/max_rows=None here and prune no-oped.
+    settings_file = tmp_path / "conversation_history.env"
+    settings_file.write_text(f"{CAPTURE_ALIAS_ENV}=1\n", encoding="utf-8")
+    settings = read_settings(path=str(settings_file), environ={})
+
+    store = ConversationStore(str(tmp_path / "history.db"))
+    # One row inside the 30-day window but beyond the 500-row cap, plus one
+    # row older than 30 days. Both retention guards should remove a row.
+    over_cap_recent = _turn("2026-06-19T20:00:00Z", 1, user_text="over cap")
+    assert store.add(over_cap_recent) is True
+    for seq in range(2, DEFAULT_RETENTION_MAX_ROWS + 2):
+        ts = f"2026-06-19T20:00:{seq % 60:02d}Z"
+        assert store.add(_turn(ts, seq)) is True
+    old_row = _turn("2026-04-01T00:00:00Z", 1, user_text="ancient")
+    assert store.add(old_row) is True
+
+    deleted = prune_for_settings(
+        store,
+        settings,
+        anchor_ts_utc="2026-06-19T20:05:00Z",
+    )
+
+    assert deleted >= 2
+    assert store.get(old_row.id) is None  # age guard removed the stale row
+    stats = store.stats()
+    assert stats is not None
+    assert stats.turn_count == DEFAULT_RETENTION_MAX_ROWS  # row cap enforced
+
+
+def test_prune_for_settings_noops_when_retention_disabled(tmp_path):
+    settings_file = tmp_path / "conversation_history.env"
+    settings_file.write_text(
+        "\n".join([
+            f"{RETENTION_DAYS_ENV}=0",
+            f"{RETENTION_MAX_ROWS_ENV}=0",
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+    settings = read_settings(path=str(settings_file), environ={})
+
+    store = ConversationStore(str(tmp_path / "history.db"))
+    old_row = _turn("2020-01-01T00:00:00Z", 1, user_text="ancient")
+    assert store.add(old_row) is True
+
+    deleted = prune_for_settings(
+        store,
+        settings,
+        anchor_ts_utc="2026-06-19T20:05:00Z",
+    )
+
+    assert deleted == 0
+    assert store.get(old_row.id) == old_row
 
 
 def test_prune_by_max_rows_keeps_newest_rows(tmp_path):
