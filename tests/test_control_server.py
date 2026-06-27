@@ -1965,6 +1965,67 @@ def test_volume_mute_when_already_silent(server_with_coordinator):
     assert body["percent"] == 0
 
 
+def _block_active_speaker_volume(monkeypatch):
+    """Force the active-speaker readiness gate into the not-safe state.
+
+    Mirrors test_grouping_set_enable_rejects_active_speaker_setup_block: an
+    active speaker whose combined crossover hasn't been validated reports
+    `volume_allowed=False`, which `_active_speaker_volume_block` turns into a
+    block.
+    """
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {
+            "active": True,
+            "configured": False,
+            "volume_allowed": False,
+            "grouping_allowed": False,
+            "reason": "baseline_summed_validation_missing",
+            "detail": "validate the combined crossover before saving the active profile",
+        },
+    )
+
+
+def test_volume_adjust_refused_when_active_speaker_not_safe(
+    monkeypatch, server_with_coordinator,
+):
+    # Pins the dial-path readiness gate (C3b-4): while the active speaker is
+    # unsafe for volume, /volume/adjust must refuse with 409 BEFORE dispatching
+    # any coordinator op — full-range gain on a not-yet-validated crossover is a
+    # tweeter-damage risk. Delete the `_active_speaker_volume_block()` guard in
+    # `_post_volume_adjust` and this 200s + records ("adjust", ...): the tripwire.
+    base, fake = server_with_coordinator
+    _block_active_speaker_volume(monkeypatch)
+
+    status, body = _post(f"{base}/volume/adjust", {"delta_percent": 5})
+
+    assert status == 409
+    assert "validate the combined crossover" in body["error"]
+    assert body["active_speaker_setup"]["volume_allowed"] is False
+    assert fake.calls == []  # op never dispatched
+
+
+def test_volume_mute_refused_when_active_speaker_not_safe(
+    monkeypatch, server_with_coordinator,
+):
+    # Same readiness gate for the mute route (C3b-4): a blocked active speaker
+    # refuses /volume/mute with 409 before touching the coordinator. Removing the
+    # `_active_speaker_volume_block()` guard in `_post_volume_mute` lets the
+    # toggle run (200 + ("mute"|"unmute", ...) recorded): the tripwire.
+    base, fake = server_with_coordinator
+    _block_active_speaker_volume(monkeypatch)
+
+    status, body = _post(f"{base}/volume/mute", {})
+
+    assert status == 409
+    assert "validate the combined crossover" in body["error"]
+    assert body["active_speaker_setup"]["volume_allowed"] is False
+    assert fake.calls == []  # op never dispatched
+
+
 # --- /transport/{toggle,next,previous} ---
 
 
