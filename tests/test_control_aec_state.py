@@ -21,6 +21,13 @@ from pathlib import Path
 import pytest
 
 from jasper import atomic_io
+from jasper.chip_aec_policy import (
+    ACTION_FIX_MIC_PROFILE,
+    BLOCKER_DAC,
+    BLOCKER_MIC,
+    CHIP_AEC_BLOCKER_CODES,
+)
+from jasper.control import aec_endpoints
 from jasper.control import server
 from jasper.mics import xvf3800
 from jasper.web import wake_setup
@@ -990,3 +997,93 @@ def test_write_aec_leg_chip_aec_writes_boolean(aec_mode_file):
     assert "JASPER_WAKE_LEG_RAW=1" in body   # preserved
     assert "JASPER_AUDIO_INPUT_PROFILE=custom" in body
     assert server._read_aec_state()["leg_chip_aec"] is True
+
+
+# ---------- chip_aec_gate blockers: one canonical vocabulary ----------------
+#
+# `chip_aec_gate.blockers` once carried two vocabularies on one JSON field:
+# the ChipAecGate dataclass emitted "mic"/"dac" (and recommended_action
+# switched on them), while jasper-control's _chip_aec_gate overwrote the list
+# with a parallel "mic_beam_plan"/"dac_gate" scheme. A consumer could not
+# reliably switch on the field. These tests pin the unified vocabulary
+# (CHIP_AEC_BLOCKER_CODES) and fail if a mixed/foreign value is reintroduced.
+
+# An approved DAC needs no calibration (no "dac" blocker); an unapproved one
+# does. Pulled from the registry so a profile rename can't silently rot these.
+_APPROVED_DAC_ID = "hifiberry_dac8x"
+_UNAPPROVED_DAC_ID = "mystery_usb_audio_not_in_registry"
+
+
+def _gate_state() -> dict:
+    """Minimal aec_mode.env-shaped state selecting the chip-AEC profile."""
+    return {
+        "mode": "auto",
+        "leg_raw": False,
+        "leg_dtln": False,
+        "leg_chip_aec": True,
+        "profile": "xvf_chip_aec",
+    }
+
+
+@pytest.mark.parametrize(
+    ("mic_available", "dac_id", "expected"),
+    [
+        # mic present + approved DAC -> nothing blocks
+        (True, _APPROVED_DAC_ID, set()),
+        # mic absent + approved DAC -> only the mic blocks
+        (False, _APPROVED_DAC_ID, {BLOCKER_MIC}),
+        # mic present + unapproved DAC -> only the DAC blocks
+        (True, _UNAPPROVED_DAC_ID, {BLOCKER_DAC}),
+        # mic absent + unapproved DAC -> both block
+        (False, _UNAPPROVED_DAC_ID, {BLOCKER_MIC, BLOCKER_DAC}),
+    ],
+)
+def test_chip_aec_gate_blockers_use_canonical_vocabulary(
+    mic_available, dac_id, expected,
+):
+    """Every blocker _chip_aec_gate emits is a canonical code, in every
+    mic/DAC permutation — and matches the exact expected set so the
+    gating itself is pinned alongside the vocabulary."""
+    payload = aec_endpoints._chip_aec_gate(
+        {"JASPER_AUDIO_DAC_ID": dac_id},
+        _gate_state(),
+        mic_available=mic_available,
+    )
+    blockers = payload["blockers"]
+    assert set(blockers) == expected
+    # The whole point of the fix: a consumer can switch on these codes.
+    assert set(blockers) <= CHIP_AEC_BLOCKER_CODES
+    # Mutation guard — the retired foreign vocabulary must never come back.
+    assert "mic_beam_plan" not in blockers
+    assert "dac_gate" not in blockers
+
+
+def test_chip_aec_gate_blockers_never_emit_foreign_codes():
+    """Exhaustive scan: across the mic x DAC matrix, the union of every
+    code _chip_aec_gate can put on `blockers` is exactly the canonical
+    set's subset — reintroducing a second vocabulary fails here."""
+    emitted: set[str] = set()
+    for mic_available in (True, False):
+        for dac_id in (_APPROVED_DAC_ID, _UNAPPROVED_DAC_ID):
+            payload = aec_endpoints._chip_aec_gate(
+                {"JASPER_AUDIO_DAC_ID": dac_id},
+                _gate_state(),
+                mic_available=mic_available,
+            )
+            emitted.update(payload["blockers"])
+    assert emitted == {BLOCKER_MIC, BLOCKER_DAC}
+    assert emitted <= CHIP_AEC_BLOCKER_CODES
+
+
+def test_chip_aec_gate_recommended_action_reflects_mic_blocker():
+    """recommended_action reads the same vocabulary the gate emits: a
+    missing mic routes the operator to fix the mic first. This was dead
+    before unification because the endpoint's foreign 'mic_beam_plan'
+    code never reached the dataclass that recommended_action inspects."""
+    payload = aec_endpoints._chip_aec_gate(
+        {"JASPER_AUDIO_DAC_ID": _APPROVED_DAC_ID},
+        _gate_state(),
+        mic_available=False,
+    )
+    assert BLOCKER_MIC in payload["blockers"]
+    assert payload["recommended_action"] == ACTION_FIX_MIC_PROFILE
