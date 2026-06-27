@@ -1,0 +1,144 @@
+<!doctype html>
+<!--
+  SPDX-FileCopyrightText: 2026 Jasper Curry
+  SPDX-License-Identifier: Apache-2.0
+
+  JTS phone-mic capture page (build step 3). Static, trusted-origin (Cloudflare
+  Pages under jasper.tech) so getUserMedia works on iOS Safari + Android Chrome
+  with no cert warning and no app. The Pi-supplied UI is rendered as DATA by
+  js/render.js; nothing executable ever comes from the relay. See
+  docs/phone-mic-relay-plan.md.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Defense in depth: a strict CSP so even a renderer bug cannot load or run
+         off-origin code. No inline scripts; only same-origin modules; the page
+         connects only to the relay (set RELAY_BASE in js/config.js to match). -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src https:; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    />
+    <title>Speaker measurement</title>
+    <style>
+      :root {
+        --cap-accent: oklch(0.72 0.045 150);
+        --cap-font: system-ui, -apple-system, sans-serif;
+        --cap-bg: oklch(0.98 0.005 95);
+        --cap-fg: oklch(0.25 0.02 150);
+        --cap-muted: oklch(0.5 0.02 150);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --cap-bg: oklch(0.2 0.01 150);
+          --cap-fg: oklch(0.95 0.01 95);
+          --cap-muted: oklch(0.7 0.02 150);
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        background: var(--cap-bg);
+        color: var(--cap-fg);
+        font-family: var(--cap-font);
+        display: flex;
+        justify-content: center;
+        padding: max(1.5rem, env(safe-area-inset-top)) 1.25rem 2rem;
+      }
+      main {
+        width: 100%;
+        max-width: 30rem;
+      }
+      #screen {
+        --cap-accent: oklch(0.72 0.045 150);
+        font-family: var(--cap-font);
+      }
+      .cap-heading {
+        font-size: 1.5rem;
+        line-height: 1.2;
+        margin: 0 0 1rem;
+      }
+      .cap-steps {
+        margin: 0 0 1.5rem;
+        padding-left: 1.25rem;
+        line-height: 1.6;
+      }
+      .cap-steps li {
+        margin: 0.25rem 0;
+      }
+      .cap-note {
+        color: var(--cap-muted);
+        font-size: 0.9rem;
+        margin: 1rem 0 0;
+      }
+      .cap-meter {
+        height: 0.75rem;
+        border-radius: 0.5rem;
+        background: color-mix(in oklch, var(--cap-accent) 18%, transparent);
+        overflow: hidden;
+        margin: 0 0 1.5rem;
+      }
+      .cap-meter-bar {
+        height: 100%;
+        width: 0%;
+        background: var(--cap-accent);
+        transition: width 80ms linear;
+      }
+      .cap-button {
+        appearance: none;
+        border: 0;
+        width: 100%;
+        padding: 1rem 1.25rem;
+        font-size: 1.1rem;
+        font-weight: 600;
+        font-family: inherit;
+        color: oklch(0.99 0 0);
+        background: var(--cap-accent);
+        border-radius: 0.85rem;
+        cursor: pointer;
+      }
+      .cap-button:active {
+        filter: brightness(0.94);
+      }
+      #status {
+        margin-top: 1.25rem;
+        padding: 0.85rem 1rem;
+        border-radius: 0.7rem;
+        font-size: 0.95rem;
+        background: color-mix(in oklch, var(--cap-accent) 10%, transparent);
+        color: var(--cap-fg);
+        min-height: 1.2em;
+      }
+      #status[data-kind="error"] {
+        background: oklch(0.9 0.06 25);
+        color: oklch(0.3 0.1 25);
+      }
+      #status[data-kind="recording"] {
+        background: oklch(0.9 0.07 25);
+        color: oklch(0.3 0.12 25);
+        font-weight: 600;
+      }
+      #status[data-kind="done"] {
+        background: oklch(0.9 0.07 150);
+        color: oklch(0.3 0.1 150);
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="screen"></div>
+      <p id="status" role="status" aria-live="polite">Loading measurement…</p>
+      <noscript>
+        This page needs JavaScript to record a measurement. Enable it and reopen
+        the link from your speaker.
+      </noscript>
+    </main>
+    <script type="module" src="./js/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "name": "jts-capture-page",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Static phone-mic capture page for JTS measurements (Cloudflare Pages). Fixed DATA renderer + E2E-encrypted upload; reuses the JTS measurement-audio helper.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "bash build.sh"
+  }
+}
