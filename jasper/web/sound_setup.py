@@ -212,11 +212,17 @@ class OutputTopologyRevisionConflict(ValueError):
 # (one thread per request), so without this the compare and the write are a
 # TOCTOU: two concurrent POSTs can both read the same revision, both pass the
 # stale-check, and both write — the second silently clobbering the first (the
-# lost update the revision guard exists to prevent). The lock scope is just the
-# read+compare+write; ``save_output_topology`` is a self-contained atomic
-# tempfile+os.replace write (no subprocess, no re-entry into this module, no
-# nested acquisition of this lock), so holding it cannot deadlock or stall the
-# wizard on a blocking call.
+# lost update the revision guard exists to prevent). The held section is kept
+# minimal — the revision compare, the in-memory topology parse + software-guard
+# request (which may itself persist), the write, and the post-write revision
+# recapture — and nothing else: the response payload (to_dict, channel-identity
+# / clock-domain reports, playback-route) is built AFTER release because some of
+# those readers do their own filesystem I/O (clock_domain_report reads the
+# observed-hardware tmpfs file on the dual-Apple composite-DAC path), which must
+# not be held under the lock. ``save_output_topology`` is a self-contained
+# atomic tempfile+os.replace write (no subprocess, no re-entry into this module,
+# no nested acquisition of this lock), so the held section cannot deadlock or
+# stall the wizard on a blocking call.
 _output_topology_write_lock = threading.Lock()
 
 
@@ -328,10 +334,14 @@ def _save_output_topology_payload(
     *,
     require_revision: bool = False,
 ) -> dict[str, Any]:
-    # Hold the write lock across the revision-compare AND the write so the two
-    # are one atomic critical section (see _output_topology_write_lock). Under
-    # ThreadingHTTPServer two concurrent saves would otherwise both read the
-    # same revision, both pass the stale-check, and both write — a lost update.
+    # Hold the write lock across ONLY the revision-compare, the write, and the
+    # post-write revision recapture so they are one atomic critical section (see
+    # _output_topology_write_lock). Under ThreadingHTTPServer two concurrent
+    # saves would otherwise both read the same revision, both pass the
+    # stale-check, and both write — a lost update. The response payload below is
+    # built after release (no I/O held under the lock); ``saved_revision`` is
+    # captured inside the lock so the returned revision is this writer's own
+    # published value, not a racing winner's.
     with _output_topology_write_lock:
         if require_revision:
             expected_revision = str(raw.get("topology_revision") or "")
@@ -347,28 +357,29 @@ def _save_output_topology_payload(
             topology
         )
         save_output_topology(topology)
-        evaluation = topology.evaluation()
-        logger.info(
-            "event=sound.output_topology_save topology_id=%s status=%s "
-            "device_id=%s groups=%d assigned_outputs=%d blockers=%d warnings=%d "
-            "software_guards_requested=%s",
-            topology.topology_id,
-            evaluation["status"],
-            topology.hardware.device_id,
-            len(topology.speaker_groups),
-            evaluation["assigned_output_count"],
-            len(evaluation["blockers"]),
-            len(evaluation["warnings"]),
-            guards_changed,
-        )
-        return {
-            "output_topology": topology.to_dict(include_evaluation=True),
-            "topology_revision": _output_topology_revision(),
-            "output_hardware": _output_hardware_dict(),
-            "channel_identity": channel_identity_report(topology),
-            "clock_domain": clock_domain_report(topology),
-            "active_playback_route": _active_speaker_playback_route_payload(topology),
-        }
+        saved_revision = _output_topology_revision()
+    evaluation = topology.evaluation()
+    logger.info(
+        "event=sound.output_topology_save topology_id=%s status=%s "
+        "device_id=%s groups=%d assigned_outputs=%d blockers=%d warnings=%d "
+        "software_guards_requested=%s",
+        topology.topology_id,
+        evaluation["status"],
+        topology.hardware.device_id,
+        len(topology.speaker_groups),
+        evaluation["assigned_output_count"],
+        len(evaluation["blockers"]),
+        len(evaluation["warnings"]),
+        guards_changed,
+    )
+    return {
+        "output_topology": topology.to_dict(include_evaluation=True),
+        "topology_revision": saved_revision,
+        "output_hardware": _output_hardware_dict(),
+        "channel_identity": channel_identity_report(topology),
+        "clock_domain": clock_domain_report(topology),
+        "active_playback_route": _active_speaker_playback_route_payload(topology),
+    }
 
 
 def _reset_output_topology_payload() -> dict[str, Any]:
