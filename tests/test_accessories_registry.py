@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
+from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE, WIIM_REMOTE_2_NAME_RE
 from jasper.accessories.registry import (
     CAP_MUTE,
     CAP_TAP_GESTURES,
@@ -158,6 +158,32 @@ def test_wiim_remote_2_declares_adapter_mic_source():
     assert WIIM_REMOTE_2.mic.capture_profile_id == "wiim_remote_2"
     assert WIIM_REMOTE_2.mic.device == WIIM_REMOTE_2_MIC_DEVICE
     assert WIIM_REMOTE_2.mic.adapter_service == "jasper-wiim-remote-mic.service"
+
+
+def test_wiim_remote_2_name_re_ssot_registry_matches_adapter():
+    """Registry bt_name_regexes and adapter WIIM_REMOTE_2_NAME_RE are the same object.
+
+    Both callers import from constants.py; this test pins the contract so a
+    drift (someone redefining the pattern in one file) makes CI red immediately.
+    Drift failure mode: reconciler activates the adapter via the registry match,
+    but the adapter's stale regex fails to find the voice characteristic →
+    silent wiim_remote_mic.not_ready retry loop with no audio.
+    """
+    from jasper.accessories.wiim_remote_mic import WIIM_REMOTE_2_NAME_RE as adapter_re
+
+    # Both modules must import the constant (same object identity).
+    assert adapter_re is WIIM_REMOTE_2_NAME_RE, (
+        "wiim_remote_mic.WIIM_REMOTE_2_NAME_RE is not the constants.py object — "
+        "it has been redefined locally and the SSOT has drifted"
+    )
+
+    # Registry entry must also use the constants.py value.
+    registry_regexes = WIIM_REMOTE_2.identity.bt_name_regexes
+    assert len(registry_regexes) == 1
+    assert registry_regexes[0] is WIIM_REMOTE_2_NAME_RE, (
+        "WIIM_REMOTE_2.identity.bt_name_regexes[0] is not constants.WIIM_REMOTE_2_NAME_RE "
+        "— registry has drifted from the SSOT"
+    )
 
 
 def test_adapter_mic_sources_do_not_reuse_reserved_voice_udp_ports():
