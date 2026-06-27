@@ -24,9 +24,18 @@ Public surface:
   - `CaptureSpec` — the frozen, kind-agnostic spec dataclass.
   - `build_room_sweep_spec(...)` — the step-1 builder for `kind="room_sweep"`.
   - `CaptureSpecError` — raised by strict, loud validation at the boundary.
+  - `crypto` — Pi-side E2E decrypt + plaintext integrity (step 5): mint the
+    content key, decrypt the relay-pulled blob, verify before analysis.
 """
 from __future__ import annotations
 
+from jasper.capture_relay import crypto
+from jasper.capture_relay.crypto import (
+    DecryptError,
+    IntegrityError,
+    decrypt_and_verify,
+    generate_content_key,
+)
 from jasper.capture_relay.spec import (
     CaptureConstraints,
     CaptureSpec,
@@ -42,5 +51,10 @@ __all__ = [
     "CaptureSpecError",
     "CaptureStimulus",
     "CaptureValidity",
+    "DecryptError",
+    "IntegrityError",
     "build_room_sweep_spec",
+    "crypto",
+    "decrypt_and_verify",
+    "generate_content_key",
 ]
