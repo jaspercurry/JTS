@@ -30,11 +30,20 @@ Public surface:
 from __future__ import annotations
 
 from jasper.capture_relay import crypto
+from jasper.capture_relay.client import RelayClient, RelayError
 from jasper.capture_relay.crypto import (
     DecryptError,
     IntegrityError,
     decrypt_and_verify,
     generate_content_key,
+)
+from jasper.capture_relay.session import (
+    CaptureFailed,
+    CaptureTimeout,
+    PiCaptureSession,
+    mint_session,
+    register_session,
+    run_capture,
 )
 from jasper.capture_relay.spec import (
     CaptureConstraints,
@@ -47,14 +56,22 @@ from jasper.capture_relay.spec import (
 
 __all__ = [
     "CaptureConstraints",
+    "CaptureFailed",
     "CaptureSpec",
     "CaptureSpecError",
     "CaptureStimulus",
+    "CaptureTimeout",
     "CaptureValidity",
     "DecryptError",
     "IntegrityError",
+    "PiCaptureSession",
+    "RelayClient",
+    "RelayError",
     "build_room_sweep_spec",
     "crypto",
     "decrypt_and_verify",
     "generate_content_key",
+    "mint_session",
+    "register_session",
+    "run_capture",
 ]
