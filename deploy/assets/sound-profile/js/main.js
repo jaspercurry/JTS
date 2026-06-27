@@ -4141,19 +4141,23 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         render();
         return {ok: false, payload: payload, error: failure};
       }
+      // Success path is inside the try so a throw from the refresh/render calls
+      // is handled like any other postCommission error instead of rejecting the
+      // un-awaited runCommissionAutoRamp promise (which would wedge the
+      // single-flight flag — the symmetric half of the C3a-7 fix).
+      if (payload && payload.measurements) {
+        patchActiveSpeaker({measurements: payload.measurements});
+      }
+      await refreshCommissionState();
+      await refreshCommissioningView();
+      if (showBusy) patchActiveSpeaker({commissionBusy: ''});
+      render();
+      return {ok: true, payload: payload};
     } catch (e) {
       patchActiveSpeaker({commissionBusy: '', commissionError: String(e.message || e)});
       render();
       return {ok: false, error: String(e.message || e)};
     }
-    if (payload && payload.measurements) {
-      patchActiveSpeaker({measurements: payload.measurements});
-    }
-    await refreshCommissionState();
-    await refreshCommissioningView();
-    if (showBusy) patchActiveSpeaker({commissionBusy: ''});
-    render();
-    return {ok: true, payload: payload};
   }
   async function commissionArm(role, options) {
     options = options || {};
@@ -4249,43 +4253,54 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     render();
   }
   async function runCommissionAutoRamp(groupId, role, token) {
-    while (commissionAutoRampCurrent(groupId, role, token)) {
-      var result = await commissionStep(role, {
-        confirm: false,
-        busyLabel: '',
-        autoRetryPending: !!commissionPendingStep(),
-        identityAudition: !!commissionAutoRamp.identityAudition
-      });
-      if (!commissionAutoRampCurrent(groupId, role, token)) return;
-      if (!result || !result.ok) {
-        var stopMessage = result && result.error ?
-          result.error : 'Stopped. JTS could not play the driver test.';
-        if (result && result.payload &&
-            commissionPayloadHasIssue(result.payload, 'commission_ramp_at_limit')) {
-          stopCommissionAutoRamp(stopMessage);
-          patchActiveSpeaker({commissionBusy: '', commissionError: stopMessage});
-          status(stopMessage, true);
-          render();
+    try {
+      while (commissionAutoRampCurrent(groupId, role, token)) {
+        var result = await commissionStep(role, {
+          confirm: false,
+          busyLabel: '',
+          autoRetryPending: !!commissionPendingStep(),
+          identityAudition: !!commissionAutoRamp.identityAudition
+        });
+        if (!commissionAutoRampCurrent(groupId, role, token)) return;
+        if (!result || !result.ok) {
+          var stopMessage = result && result.error ?
+            result.error : 'Stopped. JTS could not play the driver test.';
+          if (result && result.payload &&
+              commissionPayloadHasIssue(result.payload, 'commission_ramp_at_limit')) {
+            stopCommissionAutoRamp(stopMessage);
+            patchActiveSpeaker({commissionBusy: '', commissionError: stopMessage});
+            status(stopMessage, true);
+            render();
+            return;
+          }
+          await stopAndAbortCommissionAutoRamp(stopMessage);
           return;
         }
-        await stopAndAbortCommissionAutoRamp(stopMessage);
-        return;
+        if (!commissionAutoRampCurrent(groupId, role, token)) {
+          await stopAndAbortCommissionAutoRamp('Stopped because the active driver test changed.');
+          return;
+        }
+        var payload = result.payload || {};
+        var level = Number(payload.next_gain_db);
+        commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
+          stepCount: commissionAutoRamp.stepCount + 1,
+          levelDbfs: isFinite(level) ? level : commissionAutoRamp.levelDbfs,
+          message: 'Tone is playing for ' + humanRole(role) + '.'
+        });
+        render();
+        await sleepMs(COMMISSION_RAMP_LISTEN_MS);
+        if (!commissionAutoRampCurrent(groupId, role, token)) return;
+        await sleepMs(COMMISSION_RAMP_NEXT_PULSE_MS);
       }
-      if (!commissionAutoRampCurrent(groupId, role, token)) {
-        await stopAndAbortCommissionAutoRamp('Stopped because the active driver test changed.');
-        return;
+    } finally {
+      // Single-flight release for ALL loop exits — normal completion, the
+      // drift-based commissionAutoRampCurrent()-false returns, and any uncaught
+      // throw (e.g. a render() error on a happy-path step). Token-guarded so we
+      // only clear OUR own run: a newer run (or an explicit stop, which both
+      // bump the token) leaves commissionAutoRamp.token !== token, so we skip.
+      if (commissionAutoRamp.running && commissionAutoRamp.token === token) {
+        stopCommissionAutoRamp('');
       }
-      var payload = result.payload || {};
-      var level = Number(payload.next_gain_db);
-      commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
-        stepCount: commissionAutoRamp.stepCount + 1,
-        levelDbfs: isFinite(level) ? level : commissionAutoRamp.levelDbfs,
-        message: 'Tone is playing for ' + humanRole(role) + '.'
-      });
-      render();
-      await sleepMs(COMMISSION_RAMP_LISTEN_MS);
-      if (!commissionAutoRampCurrent(groupId, role, token)) return;
-      await sleepMs(COMMISSION_RAMP_NEXT_PULSE_MS);
     }
   }
   async function startCommissionAutoRamp(role, options) {
@@ -4337,9 +4352,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       rampStarted = true;
       runCommissionAutoRamp(group.id, role, token);
     } finally {
-      // runCommissionAutoRamp is fire-and-forget (not awaited): it owns its own
-      // stop/reset cycle. Only reset the flag here if the ramp never started —
-      // i.e. an unexpected throw occurred before we handed off to the loop.
+      // runCommissionAutoRamp is fire-and-forget (not awaited). Once we've handed
+      // off, its own try/finally releases the single-flight flag for every loop
+      // exit, so we only reset here if the ramp never started — i.e. an
+      // unexpected throw occurred before handoff. Token-guarded so we never clear
+      // a newer run's flag.
       if (!rampStarted && commissionAutoRamp.running && commissionAutoRamp.token === token) {
         stopCommissionAutoRamp('');
       }

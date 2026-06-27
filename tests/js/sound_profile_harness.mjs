@@ -3729,6 +3729,153 @@ async function testCommissionAutoRampResetsRunningFlagOnThrow() {
   return { commissionAutoRampResetsRunningFlagOnThrow: true };
 }
 
+// C3a-7 (symmetric half): the fire-and-forget runCommissionAutoRamp loop must
+// ALSO release the single-flight guard on every exit. A render() throw on a
+// happy-path step inside the loop body (line ~4285, OUTSIDE postCommission's
+// try/catch) rejects the un-awaited loop promise. Without the loop's try/finally
+// commissionAutoRamp.running stays true and the card wedges in the disabled
+// "Preparing" state forever.
+//
+// We inject the throw via the status className setter, gated to fire on the
+// SECOND "Tone is playing for" render — the first is postCommission's
+// post-success render (now inside its try/catch after fix #2), the second is the
+// loop's own render() at line ~4285.  Targeting the second isolates the loop
+// finally: with the loop finally removed, the card stays wedged and the test
+// fails; with it present, running resets and a fresh click re-runs the flow.
+async function testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow() {
+  let commissionState = {
+    commission_load: {
+      status: "loaded",
+      target: { role: "woofer", audible_gain_db: -120 },
+      rollback_available: true,
+    },
+    ramp: { confirmed_roles: [], pending: null },
+    floor: { status: "floor_required", floor_audio_confirmed: false },
+  };
+  const stepRequests = [];
+  let injectThrow = true;
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/commission-ramp-step": (p, o) => {
+      stepRequests.push({ path: p, body: JSON.parse(o.body || "{}") });
+      // Successful step that produces a pending tone (canAck) so the card renders
+      // the "Tone is playing for" state.
+      commissionState = {
+        commission_load: {
+          status: "loaded",
+          target: { role: "woofer", audible_gain_db: -80 },
+          rollback_available: true,
+        },
+        ramp: {
+          confirmed_roles: [],
+          pending: { role: "woofer", gain_db: -80, frequency_hz: 250 },
+        },
+        floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
+      };
+      return Promise.resolve(response({ status: "stepped", next_gain_db: -80 }));
+    },
+    "./active-speaker/commission-ramp-abort": () =>
+      Promise.resolve(response({ status: "rolled_back" })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+  // Replace the 'status' element with one whose className setter throws on the
+  // SECOND render where the card shows "Tone is playing for" — i.e. the loop's
+  // own render() at line ~4285, not postCommission's post-success render.
+  const realStatus = harness.elements.get("status");
+  let tonePlayingRenderCount = 0;
+  const throwingStatus = Object.create(realStatus);
+  Object.defineProperty(throwingStatus, "className", {
+    get() { return realStatus.className; },
+    set(v) {
+      if (injectThrow) {
+        const viewBody = harness.elements.get("view-body");
+        const body = viewBody ? String(viewBody.innerHTML || "") : "";
+        if (body.includes("Tone is playing for")) {
+          tonePlayingRenderCount += 1;
+          if (tonePlayingRenderCount === 2) {
+            injectThrow = false;
+            throw new TypeError(
+              "simulated render() throw in runCommissionAutoRamp loop body (C3a-7 test)"
+            );
+          }
+        }
+      }
+      realStatus.className = v;
+    },
+    configurable: true,
+  });
+  Object.defineProperty(throwingStatus, "textContent", {
+    get() { return realStatus.textContent; },
+    set(v) { realStatus.textContent = v; },
+    configurable: true,
+  });
+  harness.elements.set("status", throwingStatus);
+  globalThis.document.getElementById = (id) => {
+    if (!harness.elements.has(id)) harness.elements.set(id, makeEl(id));
+    return harness.elements.get(id);
+  };
+
+  // Capture the unhandled rejection the loop emits when the injected throw
+  // propagates out of the (un-awaited) loop promise.  The loop's try/finally
+  // resets commissionAutoRamp.running before the rejection fires.
+  let capturedRejection = null;
+  const rejHandler = (reason) => { capturedRejection = reason; };
+  process.on("unhandledRejection", rejHandler);
+
+  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  process.removeListener("unhandledRejection", rejHandler);
+
+  // Restore a clean status element so the assertion render works.
+  harness.elements.set("status", realStatus);
+  injectThrow = false;
+
+  if (!capturedRejection || !String(capturedRejection).includes("C3a-7")) {
+    fail("expected the injected render throw to reject the loop promise", {
+      capturedRejection: capturedRejection ? String(capturedRejection) : null,
+    });
+  }
+  if (stepRequests.length < 1) {
+    fail("the loop should have taken at least one ramp step before the render throw", { stepRequests });
+  }
+
+  // Reset the pending state so a recovered card would offer Play again and a
+  // stuck-running card would render the disabled "Preparing" branch
+  // (rampPreparing = running && !toneActive).
+  commissionState = {
+    commission_load: {
+      status: "loaded",
+      target: { role: "woofer", audible_gain_db: -120 },
+      rollback_available: true,
+    },
+    ramp: { confirmed_roles: [], pending: null },
+    floor: { status: "floor_required", floor_audio_confirmed: false },
+  };
+
+  // The flow must be re-runnable: a fresh click kicks off another ramp step.
+  // (With the loop finally missing, commissionAutoRamp.running is stuck true, so
+  // startCommissionAutoRamp short-circuits at its "already running" guard and no
+  // new ramp step is sent.)
+  const stepsBefore = stepRequests.length;
+  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  await harness.flush(); await harness.flush(); await harness.flush();
+  if (stepRequests.length <= stepsBefore) {
+    fail(
+      "a fresh commission-step click after the loop render throw must kick off the " +
+      "ramp again — the loop's single-flight guard was not cleared",
+      { stepRequests }
+    );
+  }
+
+  return { commissionAutoRampLoopResetsRunningFlagOnRenderThrow: true };
+}
+
 async function testResetPartialCleanupSurfacesWarning() {
   const posts = [];
   const fetchHandler = baseFetch({
@@ -3943,6 +4090,7 @@ results.push(await testCommissionOutputReconcileFailureSurfacesReason());
 results.push(await testCommissionToneFailureStopsAutoRamp());
 results.push(await testCommissionRampLimitKeepsConfirmationOpen());
 results.push(await testCommissionAutoRampResetsRunningFlagOnThrow());
+results.push(await testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow());
 results.push(await testResetPartialCleanupSurfacesWarning());
 results.push(await testFollowerModeRendersLocalDriverUi());
 results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
