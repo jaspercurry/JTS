@@ -152,12 +152,6 @@ def local_source_lifecycle(source: Source) -> LocalSourceLifecycle:
     raise KeyError(source)
 
 
-def local_source_infrastructure_lifecycles() -> tuple[
-    LocalSourceInfrastructureLifecycle, ...
-]:
-    return _INFRASTRUCTURE
-
-
 def _flatten(
     attr: str,
     *,
@@ -178,14 +172,6 @@ def local_source_park_units() -> tuple[str, ...]:
 
 def local_source_restore_units() -> tuple[str, ...]:
     return _flatten("restore_units", include_infrastructure=True)
-
-
-def local_source_runtime_units() -> tuple[str, ...]:
-    return _flatten("runtime_units", include_infrastructure=True)
-
-
-def local_source_advertise_units() -> tuple[str, ...]:
-    return _flatten("advertise_units", include_infrastructure=False)
 
 
 def local_source_audio_refresh_units() -> tuple[str, ...]:

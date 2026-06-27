@@ -147,7 +147,6 @@ def build_microphone_settings_view(status: Mapping[str, Any]) -> dict[str, Any]:
     gate = _mapping(status.get("chip_aec_gate"))
     legs = _mapping(status.get("legs"))
     software = _mapping(status.get("software_aec3"))
-    wake_word = _mapping(status.get("wake_word"))
 
     mic_view = _mic_view(mic, gate)
     echo_view = _echo_view(
@@ -168,7 +167,6 @@ def build_microphone_settings_view(status: Mapping[str, Any]) -> dict[str, Any]:
             software=software,
             echo_mode=str(echo_view.get("mode") or ""),
         ),
-        "wake": _wake_view(wake_word, status.get("threshold")),
         "advanced": _advanced_view(profile=profile, gate=gate, mic_view=mic_view),
     }
 
@@ -184,11 +182,6 @@ def _mic_view(mic: Mapping[str, Any], gate: Mapping[str, Any]) -> dict[str, Any]
     firmware = _mapping(mic.get("firmware"))
     firmware_label = str(firmware.get("label") or "unknown")
     chip_capable = bool(gate.get("mic_available"))
-    warnings = [
-        str(item)
-        for item in mic.get("warnings", [])
-        if str(item).strip()
-    ] if isinstance(mic.get("warnings"), list) else []
 
     if not detected:
         kind = "none"
@@ -224,7 +217,6 @@ def _mic_view(mic: Mapping[str, Any], gate: Mapping[str, Any]) -> dict[str, Any]
         "chip_aec_capable": chip_capable,
         "chip_beam_plan": str(mic.get("chip_beam_plan") or ""),
         "capabilities": capabilities,
-        "warnings": warnings,
     }
 
 
@@ -410,8 +402,6 @@ def _fusion_view(
     toggles = [
         _fusion_toggle(
             "raw",
-            "Direct/raw wake stream",
-            "Parallel raw mic wake scoring for software-AEC experiments.",
             _mapping(legs.get("raw")),
             enabled=not chip_on and not bridge_unavailable,
             disabled_reason=(
@@ -422,8 +412,6 @@ def _fusion_view(
         ),
         _fusion_toggle(
             "dtln",
-            "DTLN neural stream",
-            "Optional neural cleanup stream. Higher CPU and memory cost.",
             _mapping(legs.get("dtln")),
             enabled=not chip_on and not bridge_unavailable,
             disabled_reason=(
@@ -434,8 +422,6 @@ def _fusion_view(
         ),
         _fusion_toggle(
             "chip_aec",
-            "Hardware beam scoring",
-            "XVF3800 chip-AEC beam streams used for wake scoring.",
             _mapping(legs.get("chip_aec")),
             enabled=(
                 not bridge_unavailable
@@ -463,8 +449,6 @@ def _fusion_view(
 
 def _fusion_toggle(
     toggle_id: str,
-    label: str,
-    description: str,
     leg: Mapping[str, Any],
     *,
     enabled: bool,
@@ -473,25 +457,10 @@ def _fusion_toggle(
     checked = bool(leg.get("configured"))
     return {
         "id": toggle_id,
-        "label": label,
-        "description": description,
         "checked": checked,
         "enabled": enabled,
         "status": "on" if checked else "off",
         "disabled_reason": disabled_reason,
-    }
-
-
-def _wake_view(wake_word: Mapping[str, Any], threshold: Any) -> dict[str, Any]:
-    try:
-        threshold_value = float(threshold)
-    except (TypeError, ValueError):
-        threshold_value = None
-    return {
-        "label": str(wake_word.get("label") or ""),
-        "pronunciation": str(wake_word.get("pronunciation") or ""),
-        "model": str(wake_word.get("model") or ""),
-        "threshold": threshold_value,
     }
 
 

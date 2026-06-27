@@ -5113,7 +5113,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     errors.forEach(function(error) {
       if (error && error.id) ids.push(String(error.id));
     });
-    var count = errors.length || ids.length || 1;
+    var count = errors.length || 1;
     var msg = 'Reset speaker setup, but JTS could not clear ' + count +
       ' active-speaker setup artifact' + (count === 1 ? '' : 's');
     if (ids.length) msg += ': ' + ids.join(', ');

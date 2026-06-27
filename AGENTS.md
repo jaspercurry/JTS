@@ -1113,7 +1113,7 @@ and is independent of cross-provider switching.
 |---|---|---|
 | `gemini` | ~$0.025 | cheapest; 15-min audio cap with 2-h resumption handle |
 | `openai` | ~$0.30 | reasoning levels, 128K context, 60-min hard cap, no resumption |
-| `grok` | ~$0.05 | flat $3/hour, metered by connection uptime (`ConnectionUptimeMeter`), not tokens |
+| `grok` | ~$0.05 | flat $3/hour, metered by billable turn activity (`BillableActivityMeter`), not tokens |
 
 Spend accounting (`jasper/usage.py`): the stored `cost_usd` is a true
 estimate at built-in list rates (overridable via

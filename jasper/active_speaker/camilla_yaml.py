@@ -1783,7 +1783,3 @@ def _atomic_write_text(path: Path, text: str) -> None:
     # Active-speaker configs are read by both root-owned CamillaDSP helpers and
     # the non-root jasper-web commissioning route. Keep them group-readable.
     atomic_write_text(path, text, mode=0o640)
-
-
-def active_speaker_startup_config_path(config_dir: str | Path) -> Path:
-    return Path(config_dir) / ACTIVE_STARTUP_CONFIG_NAME

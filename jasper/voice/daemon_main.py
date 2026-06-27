@@ -106,8 +106,6 @@ def _wire_billable_activity_meter(
 
     set_meter = getattr(connection, "set_billable_activity_meter", None)
     if not callable(set_meter):
-        set_meter = getattr(connection, "set_uptime_meter", None)
-    if not callable(set_meter):
         log_event(
             logger,
             "pricing.flat_rate_meter_unavailable",

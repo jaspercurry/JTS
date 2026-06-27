@@ -21,7 +21,6 @@ import {
   defaultActiveSpeakerStep,
   levelMatchSummary,
   localSubwooferGroup,
-  nearfieldCaptureHint,
   subwooferCrossoverBand,
   subwooferCrossoverFcHz,
   SUMMED_TEST_GENERIC_RETRY_HINT,
@@ -140,9 +139,6 @@ assert.equal(levelMatchSummary({ corrections: {} }).available, false);
 }
 
 // Near-field copy — the level match is OPTIONAL and the copy must say so.
-assert.ok(nearfieldCaptureHint("Tweeter").includes("Tweeter"));
-assert.ok(nearfieldCaptureHint("Tweeter").includes("2–5 cm"));
-assert.ok(/optional/i.test(nearfieldCaptureHint("Tweeter")));
 assert.ok(NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("2–5 cm"));
 assert.ok(/optional/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
 assert.ok(/skip/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
