@@ -202,6 +202,90 @@ def test_check_service_runtime_state_warns_on_restart_count(monkeypatch):
     assert "jasper-voice.service NRestarts=2" in r.detail
 
 
+# -------------------------------------------------- active WiFi connection
+
+
+def _nmcli_active_run(stdout: str):
+    """Build a fake `_run` returning ``stdout`` for any nmcli invocation.
+
+    Records the argv it was called with so tests can assert the field
+    order requested from nmcli."""
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *a, **kw):
+        calls.append(list(argv))
+
+        class FakeRun:
+            returncode = 0
+            stdout = ""
+
+        FakeRun.stdout = stdout
+        return FakeRun()
+
+    fake_run.calls = calls  # type: ignore[attr-defined]
+    return fake_run
+
+
+def test_active_wifi_connection_simple(monkeypatch):
+    """Plain SSID with no colon resolves to (name, device)."""
+    # nmcli -t -f TYPE,DEVICE,NAME connection show --active
+    stdout = "802-11-wireless:wlan0:HomeWiFi\n"
+    monkeypatch.setattr(doctor.network, "_run", _nmcli_active_run(stdout))
+
+    name, device = doctor.network._active_wifi_connection("nmcli")
+
+    assert name == "HomeWiFi"
+    assert device == "wlan0"
+
+
+def test_active_wifi_connection_handles_colon_in_ssid(monkeypatch):
+    """An SSID containing a literal colon must still be matched.
+
+    Real-world SSIDs like ``Home:2.4G`` / ``AT&T:5G`` appear in
+    nmcli -t output with the colon escaped as ``\\:``. With the old
+    NAME-first field order (``NAME,TYPE,DEVICE``) this row mis-parsed —
+    the first ``\\:`` was treated as a field boundary, TYPE landed on
+    ``2.4G`` (not a wifi type), and the active connection was silently
+    missed, returning (None, None) for a valid profile. This test pins
+    the colon-safe TYPE,DEVICE,NAME order + unescape and FAILS on the
+    old order."""
+    # As emitted by `nmcli -t -f TYPE,DEVICE,NAME connection show --active`:
+    # the NAME field's literal colon is backslash-escaped.
+    stdout = "802-11-wireless:wlan0:Home\\:2.4G\n"
+    fake_run = _nmcli_active_run(stdout)
+    monkeypatch.setattr(doctor.network, "_run", fake_run)
+
+    name, device = doctor.network._active_wifi_connection("nmcli")
+
+    assert name == "Home:2.4G", "colon-containing SSID must be unescaped, not dropped"
+    assert device == "wlan0"
+    # The variable-content NAME field must be requested last so fixed-format
+    # TYPE/DEVICE tokens parse unambiguously.
+    assert "TYPE,DEVICE,NAME" in fake_run.calls[0]
+
+
+def test_active_wifi_connection_no_wifi_row(monkeypatch):
+    """Only a non-wifi (ethernet) active connection → (None, None)."""
+    stdout = "802-3-ethernet:eth0:Wired connection 1\n"
+    monkeypatch.setattr(doctor.network, "_run", _nmcli_active_run(stdout))
+
+    assert doctor.network._active_wifi_connection("nmcli") == (None, None)
+
+
+def test_active_wifi_connection_nonzero_returncode(monkeypatch):
+    """nmcli failure → (None, None), not a crash."""
+
+    def fake_run(argv, *a, **kw):
+        class FakeRun:
+            returncode = 1
+            stdout = ""
+
+        return FakeRun()
+
+    monkeypatch.setattr(doctor.network, "_run", fake_run)
+    assert doctor.network._active_wifi_connection("nmcli") == (None, None)
+
+
 # ----------------------------------------------------------------- grouping
 
 
@@ -3972,8 +4056,8 @@ def test_check_wifi_guardian_ok_when_stash_matches_active(
     )
     monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
     _patch_doctor_nmcli(monkeypatch, [
-        # connection show --active
-        "Home:802-11-wireless\n",
+        # connection show --active (TYPE,DEVICE,NAME)
+        "802-11-wireless:wlan0:Home\n",
         # connection show Home (ssid lookup)
         "802-11-wireless.ssid:Home\n",
     ])
@@ -3987,8 +4071,8 @@ def test_check_wifi_guardian_ok_ethernet_only(monkeypatch, tmp_path):
     Pi. Don't warn — there's nothing to recover and nothing to drift."""
     monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(tmp_path / "missing.env"))
     _patch_doctor_nmcli(monkeypatch, [
-        # connection show --active → no wifi line
-        "eth0:802-3-ethernet\n",
+        # connection show --active → no wifi line (TYPE,DEVICE,NAME)
+        "802-3-ethernet:eth0:Wired connection 1\n",
     ])
     r = doctor.check_wifi_guardian()
     assert r.status == "ok"
@@ -4002,7 +4086,7 @@ def test_check_wifi_guardian_warns_when_stash_missing_but_active(
     Warn so the dashboard / system check surfaces the recovery gap."""
     monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(tmp_path / "missing.env"))
     _patch_doctor_nmcli(monkeypatch, [
-        "Home:802-11-wireless\n",
+        "802-11-wireless:wlan0:Home\n",
         "802-11-wireless.ssid:Home\n",
     ])
     r = doctor.check_wifi_guardian()
@@ -4021,12 +4105,38 @@ def test_check_wifi_guardian_warns_on_ssid_drift(monkeypatch, tmp_path):
     )
     monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
     _patch_doctor_nmcli(monkeypatch, [
-        "Cafe:802-11-wireless\n",
+        "802-11-wireless:wlan0:Cafe\n",
         "802-11-wireless.ssid:Cafe\n",
     ])
     r = doctor.check_wifi_guardian()
     assert r.status == "warn"
     assert "Home" in r.detail and "Cafe" in r.detail
+
+
+def test_check_wifi_guardian_matches_colon_ssid(monkeypatch, tmp_path):
+    """A profile NAME with a literal colon (e.g. "Home:5G") must be
+    matched, not silently treated as "no active WiFi".
+
+    Regression for the same colon-parse bug as C10-1: the guardian check
+    used to run its own NAME-first nmcli probe, which mis-split an escaped
+    "\\:" and reported a bogus "no recovery stash"/"no WiFi" state for a
+    valid profile. It now reuses the colon-safe _active_wifi_connection.
+    The SSID value lookup is forced to fail so the check falls back to the
+    (unescaped) profile name, pinning the helper's output end-to-end."""
+    stash = tmp_path / "wifi_guardian.env"
+    stash.write_text(
+        "JASPER_WIFI_SSID=Home:5G\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
+    )
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
+    _patch_doctor_nmcli(monkeypatch, [
+        # active connection: NAME "Home:5G" arrives colon-escaped from nmcli -t
+        "802-11-wireless:wlan0:Home\\:5G\n",
+        # ssid value lookup fails → fall back to the unescaped profile name
+        _mock_nmcli_proc(returncode=1),
+    ])
+    r = doctor.check_wifi_guardian()
+    assert r.status == "ok"
+    assert "Home:5G" in r.detail
 
 
 def test_check_wifi_guardian_warns_when_active_wifi_missing(
@@ -4069,8 +4179,9 @@ def test_check_wifi_guardian_registered_in_sync_checks():
 
 
 def test_check_wifi_link_local_ipv6_ok(monkeypatch):
+    # nmcli -t -f TYPE,DEVICE,NAME connection show --active
     _patch_doctor_nmcli(monkeypatch, [
-        "Home:802-11-wireless:wlan0\n",
+        "802-11-wireless:wlan0:Home\n",
         "link-local\n",
         "2: wlan0    inet6 fe80::1/64 scope link\n",
     ])
@@ -4080,20 +4191,25 @@ def test_check_wifi_link_local_ipv6_ok(monkeypatch):
 
 
 def test_check_wifi_link_local_ipv6_warns_when_profile_ignores_ipv6(monkeypatch):
+    # Profile NAME carries a literal colon (e.g. "Home:5G"); it arrives
+    # escaped as "\:" in nmcli -t output and must be unescaped, not dropped.
     _patch_doctor_nmcli(monkeypatch, [
-        "Home Speaker:802-11-wireless:wlan0\n",
+        "802-11-wireless:wlan0:Home\\:5G\n",
         "ignore\n",
     ])
     r = doctor.check_wifi_link_local_ipv6()
     assert r.status == "warn"
     assert "ipv6.method=ignore" in r.detail
     assert "Apple clients" in r.detail
-    assert "nmcli connection modify 'Home Speaker' ipv6.method link-local" in r.detail
+    # Profile resolved with its colon intact (shlex.quote leaves a colon
+    # name unquoted — colons need no shell escaping).
+    assert "active WiFi profile 'Home:5G'" in r.detail
+    assert "nmcli connection modify Home:5G ipv6.method link-local" in r.detail
 
 
 def test_check_wifi_link_local_ipv6_warns_when_link_local_missing(monkeypatch):
     _patch_doctor_nmcli(monkeypatch, [
-        "Home:802-11-wireless:wlan0\n",
+        "802-11-wireless:wlan0:Home\n",
         "auto\n",
         "",
     ])

@@ -68,18 +68,46 @@ def _format_phy_regdom_detail(phy_countries: dict[str, str]) -> str:
     return "; ".join(parts)
 
 def _active_wifi_connection(nmcli: str) -> tuple[str | None, str | None]:
-    """Return the active Wi-Fi NetworkManager profile name and device."""
+    """Return the active Wi-Fi NetworkManager profile name and device.
+
+    Field order is ``TYPE,DEVICE,NAME`` on purpose: ``nmcli -t``
+    colon-separates fields, and a profile NAME can legitimately contain
+    a literal colon (real SSIDs like ``Home:2.4G`` or ``AT&T:5G``).
+    nmcli escapes such colons as ``\\:`` inside the value, but a
+    NAME-first split (the previous order) still mis-parsed them — the
+    first ``\\:`` was treated as a field boundary, so TYPE landed on the
+    wrong token and the active Wi-Fi row was silently missed, returning
+    ``(None, None)`` for a perfectly valid profile. Putting the only
+    variable-content field (NAME) last means the fixed-format TYPE and
+    DEVICE tokens parse unambiguously and NAME is the remainder, which
+    we then unescape. This mirrors the ``TYPE,NAME`` order the bash
+    guardian uses for the same reason (deploy/bin/jasper-wifi-guardian);
+    drift is pinned by tests/test_doctor.py."""
     proc = _run(
-        [nmcli, "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"],
+        [nmcli, "-t", "-f", "TYPE,DEVICE,NAME", "connection", "show", "--active"],
         timeout=5,
     )
     if proc.returncode != 0:
         return None, None
     for raw in proc.stdout.splitlines():
+        # TYPE and DEVICE never contain a colon, so split off exactly the
+        # first two fields; the rest is the (possibly colon-bearing) NAME.
         parts = raw.split(":", 2)
-        if len(parts) >= 2 and parts[1] in ("802-11-wireless", "wifi"):
-            return parts[0], parts[2] if len(parts) == 3 and parts[2] else None
+        if len(parts) == 3 and parts[0] in ("802-11-wireless", "wifi"):
+            device = parts[1] or None
+            name = _nm_unescape(parts[2]) or None
+            return name, device
     return None, None
+
+
+def _nm_unescape(value: str) -> str:
+    r"""Reverse ``nmcli -t``'s ``\:`` escaping of literal colons in values.
+
+    A literal backslash in a value would itself be escaped as ``\\`` by
+    nmcli, but SSIDs with backslashes are not a real-world case, so —
+    matching the bash guardian's ``nm_unescape`` — we reverse only the
+    colon escape and leave any other backslash as-is."""
+    return value.replace("\\:", ":")
 
 @doctor_check(order=63, group="network")
 def check_wifi_regdom() -> CheckResult:
@@ -164,20 +192,12 @@ def check_wifi_guardian() -> CheckResult:
     stash_path = os.environ.get("JASPER_WIFI_STASH_FILE", _STASH_DEFAULT)
     stash = read_stash(stash_path)
 
-    # Probe active SSID via nmcli (same idiom as the guardian itself).
-    proc = _run(
-        [nmcli, "-t", "-f", "NAME,TYPE", "connection", "show", "--active"],
-        timeout=5,
-    )
-    active_name: str | None = None
-    if proc.returncode == 0:
-        for raw in proc.stdout.splitlines():
-            # Naive split: NM doesn't quote single colons in NAME often,
-            # but bssid-style fields are filtered out by the field list.
-            parts = raw.split(":", 1)
-            if len(parts) == 2 and parts[1] in ("802-11-wireless", "wifi"):
-                active_name = parts[0]
-                break
+    # Resolve the active Wi-Fi profile name colon-safely via the shared
+    # helper (TYPE-first field order + `\:` unescape). A previous inline
+    # NAME-first probe here silently missed profiles whose name contained a
+    # literal colon (real SSIDs like "Home:5G"), making the guardian check
+    # falsely report "no active WiFi" / stash drift for a valid profile.
+    active_name, _device = _active_wifi_connection(nmcli)
 
     active_ssid: str | None = None
     if active_name:
