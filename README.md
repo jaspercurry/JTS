@@ -419,7 +419,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-peering.md            Multi-Pi wake arbitration (off by default)
   HANDOFF-persistent-live-session.md
   HANDOFF-voice-music-control.md
-  HANDOFF-volume.md             Source-aware volume coordinator + gain-chain ledger
+  HANDOFF-volume.md             Source-aware volume coordinator
   multi-user-spotify.md
   audit-pending-followups.md    Open Tier 2/3 follow-ups
   ...                           additional HANDOFF, proposal, research,
