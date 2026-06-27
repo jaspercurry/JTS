@@ -725,16 +725,6 @@ class UsageStore:
             (datetime.now(timezone.utc).isoformat(), _BILLABLE_ACTIVITY_KIND),
         )
 
-    def record_connection_open(
-        self, provider: str, rate_per_hour_usd: float,
-    ) -> None:
-        """Back-compatible alias for ``record_billable_activity_open``."""
-        self.record_billable_activity_open(provider, rate_per_hour_usd)
-
-    def record_connection_close(self) -> None:
-        """Back-compatible alias for ``record_billable_activity_close``."""
-        self.record_billable_activity_close()
-
     def close_dangling_intervals(self) -> None:
         """Conservatively close intervals a crash left open (no clean
         teardown ran): set closed_at = opened_at (zero duration) so a
@@ -1021,20 +1011,3 @@ class BillableActivityMeter:
             self._store.record_billable_activity_close()
         except Exception as e:  # noqa: BLE001
             logger.warning("activity meter: close failed: %s", e)
-
-    def mark_connected(self) -> None:
-        """Back-compatible alias for ``mark_started``."""
-        self.mark_started()
-
-    def mark_disconnected(self) -> None:
-        """Back-compatible alias for ``mark_ended``."""
-        self.mark_ended()
-
-
-class ConnectionUptimeMeter(BillableActivityMeter):
-    """Back-compatible name for ``BillableActivityMeter``.
-
-    Kept so older local imports fail soft during rolling development; new
-    code should use ``BillableActivityMeter`` to avoid reintroducing the
-    idle-socket billing model.
-    """

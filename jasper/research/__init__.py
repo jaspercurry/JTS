@@ -22,7 +22,7 @@ from .base import (
     TextLLMClient,
     TextLLMProvider,
 )
-from .catalog import PROVIDERS, TextProviderEntry, default_model, provider_by_id
+from .catalog import PROVIDERS, TextProviderEntry, provider_by_id
 from .scheduler import (
     DEFAULT_CONCURRENCY,
     DEFAULT_DB_PATH,
@@ -106,6 +106,5 @@ __all__ = [
     "TextLLMProvider",
     "TextProviderEntry",
     "active_research_provider",
-    "default_model",
     "provider_by_id",
 ]

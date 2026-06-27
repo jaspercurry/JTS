@@ -75,7 +75,10 @@ class ResearchJob:
 class ResearchStartResult:
     accepted: bool
     job: ResearchJob | None
-    message: str
+    # Decline reason spoken to the user when ``accepted`` is False (read by
+    # the research tool). On the accepted path the tool speaks its own accept
+    # confirmation, so ``message`` stays empty there.
+    message: str = ""
 
 
 class ResearchJobStore:
@@ -451,11 +454,7 @@ class ResearchScheduler:
         )
         # Query text is deliberately omitted — it can carry personal content.
         log_event(logger, "research.submit", job_id=job.id)
-        return ResearchStartResult(
-            accepted=True,
-            job=job,
-            message="On it. I'll let you know when the research is ready.",
-        )
+        return ResearchStartResult(accepted=True, job=job)
 
     def list_jobs(self) -> list[ResearchJob]:
         return sorted(self._jobs.values(), key=lambda job: job.created_at)

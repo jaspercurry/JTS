@@ -432,11 +432,6 @@ export const NEARFIELD_LEVEL_MATCH_GUIDANCE =
   'plays — keep the same distance for every driver. You can skip this and finish ' +
   'by ear; JTS then uses the datasheet levels.';
 
-export function nearfieldCaptureHint(roleLabel) {
-  return 'Optional — hold the phone 2–5 cm from the ' + (roleLabel || 'driver') +
-    ', centred, to capture its tone for a measured level match.';
-}
-
 // Single generic fallback for the combined-test failure line when the backend
 // commissioning view is unavailable (e.g. its fetch failed). The per-failure-code
 // copy is OWNED by the backend coordinator (commissioning_coordinator.summed_test_

@@ -16,7 +16,6 @@ from typing import Any
 
 from jasper.active_speaker.runtime_contract import (
     CONTRACT_NORMAL_MONO_FULL_RANGE,
-    GRAPH_FLAT_FULL_RANGE,
     classify_camilla_graph,
     classify_output_contract,
     flat_program_graph_blocked_reason,
@@ -68,39 +67,6 @@ def assert_flat_apply_safe(topology: OutputTopology | None = None) -> None:
             "room-correction apply would send full-range program to a protected "
             f"tweeter: {reason}"
         )
-
-
-def flat_measurement_config_path(
-    base_config_path: str | Path,
-    *,
-    topology: OutputTopology | None = None,
-) -> Path:
-    """Return the flat correction sweep target, or raise if it is unsafe.
-
-    A flat sweep is only a measurement baseline for ordinary full-range output.
-    The web flow now prefers a topology-preserving measurement graph; this
-    helper remains for legacy callers and tests that ask for the old flat
-    target explicitly.
-    """
-
-    topology = topology or _load_topology_for_correction()
-    contract = classify_output_contract(topology)
-    base = Path(base_config_path)
-    must_probe_graph = (
-        contract.requires_roleful_graph
-        or contract.classification == CONTRACT_NORMAL_MONO_FULL_RANGE
-        or bool(contract.issues)
-    )
-    if not must_probe_graph:
-        return base
-
-    graph = classify_camilla_graph(base, topology)
-    if graph.allowed and graph.classification == GRAPH_FLAT_FULL_RANGE:
-        return base
-    raise CorrectionRuntimeSafetyError(
-        "room-correction flat sweep is unsafe for the saved output topology: "
-        f"{_first_issue(graph.issues)}"
-    )
 
 
 def reset_config_path(
