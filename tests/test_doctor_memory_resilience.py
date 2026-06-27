@@ -25,6 +25,8 @@ from unittest.mock import MagicMock, patch
 from jasper.cli import doctor
 from jasper.conversation_history import (
     CAPTURE_ENABLED_ENV,
+    DEFAULT_RETENTION_DAYS,
+    DEFAULT_RETENTION_MAX_ROWS,
     ConversationStore,
     ConversationTurn,
     DB_PATH_ENV,
@@ -1446,7 +1448,9 @@ def test_conversation_history_state_reads_store_summary(monkeypatch, tmp_path):
     assert snap["capture_enabled"] is True
     assert snap["turn_count"] == 1
     assert snap["last_write_age_seconds"] is not None
-    assert snap["retention"] == {"days": 30, "max_rows": None}
+    # max_rows is absent from the env file, so it resolves to the code
+    # default rather than disabling the row-count guard.
+    assert snap["retention"] == {"days": 30, "max_rows": DEFAULT_RETENTION_MAX_ROWS}
 
 
 def test_conversation_history_state_disabled_missing_db_is_not_unavailable(
@@ -1458,11 +1462,16 @@ def test_conversation_history_state_disabled_missing_db_is_not_unavailable(
     settings_path.write_text(f"{CAPTURE_ENABLED_ENV}=0\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings_path))
 
+    # Neither retention var is set, so both bounds resolve to the code
+    # defaults that keep the store bounded out of the box.
     assert state_aggregate._conversation_history_state() == {
         "capture_enabled": False,
         "turn_count": None,
         "last_write_age_seconds": None,
-        "retention": {"days": None, "max_rows": None},
+        "retention": {
+            "days": DEFAULT_RETENTION_DAYS,
+            "max_rows": DEFAULT_RETENTION_MAX_ROWS,
+        },
     }
 
 
