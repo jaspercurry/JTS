@@ -108,7 +108,24 @@ RestartSec=2
 Nice=-10
 IOSchedulingClass=realtime
 IOSchedulingPriority=4
+
+# Real-time scheduling (audio-latency foundation G6). LimitRTPRIO=99 was
+# already wired but nothing ever ELECTED an RT policy, so the bridge's mic/AEC
+# loop ran SCHED_OTHER and got preempted under load — the same starvation the
+# other audio daemons avoid. Elect SCHED_FIFO at priority 28: above Camilla
+# (25, the DSP node it shares timing assumptions with) but below the fan-in
+# (30) and outputd (35) sinks, so the final-output path still wins a starved
+# CPU. The bridge is real-time mic processing, not a sink, so it sits with the
+# DSP tier rather than the output tier.
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=28
 LimitRTPRIO=99
+
+# LimitRTTIME bounds RT-thread runaway (G4, mandatory with any FIFO election).
+# A spinning FIFO thread can starve PID 1 on the 1 GB Pi and trip the hardware
+# watchdog into a reboot; SIGXCPU at 200 ms reduces that to one crashed daemon
+# that Restart=on-failure revives. Mirrors PipeWire RTKit's RTTimeUSec.
+LimitRTTIME=200000
 LimitMEMLOCK=infinity
 
 # OOM protection (Stage 1 of memory-resilience plan, see

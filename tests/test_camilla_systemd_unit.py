@@ -52,6 +52,42 @@ def _value_for(unit_text: str, key: str) -> str | None:
     return None
 
 
+def test_unit_elects_rt_below_the_sinks_and_bounds_rttime():
+    """Audio-latency foundation G1+G4. CamillaDSP must run SCHED_FIFO so it
+    isn't preempted under load (the source of the fan-in short-read/xrun
+    storms), but BELOW the two sinks that have to win the CPU when the system
+    is starved: jasper-fanin (30) and jasper-outputd (35). Camilla feeds them,
+    so the ordering 25 < 30 < 35 must hold — verify it against the sibling
+    units, not just a literal. LimitRTPRIO=99 gives the binary's
+    audio_thread_priority promotion headroom; LimitRTTIME=200000 (200 ms) bounds
+    a runaway RT thread to a SIGXCPU instead of a watchdog reboot (mandatory
+    with G1)."""
+    unit = UNIT_PATH.read_text()
+    assert _value_for(unit, "CPUSchedulingPolicy") == "fifo"
+    camilla_prio = int(_value_for(unit, "CPUSchedulingPriority"))
+    assert camilla_prio == 25
+    assert _value_for(unit, "LimitRTPRIO") == "99"
+    assert _value_for(unit, "LimitRTTIME") == "200000"
+
+    systemd_dir = UNIT_PATH.parent
+    fanin_prio = int(
+        _value_for(
+            (systemd_dir / "jasper-fanin.service").read_text(),
+            "CPUSchedulingPriority",
+        )
+    )
+    outputd_prio = int(
+        _value_for(
+            (systemd_dir / "jasper-outputd.service").read_text(),
+            "CPUSchedulingPriority",
+        )
+    )
+    assert camilla_prio < fanin_prio < outputd_prio, (
+        f"Camilla ({camilla_prio}) must stay below fan-in ({fanin_prio}) and "
+        f"outputd ({outputd_prio}) so the sinks win the CPU when starved."
+    )
+
+
 def test_unit_passes_cutover_statefile_to_camilladsp():
     """The outputd topology uses a separate Camilla statefile so
     rollback to pre-outputd code can keep the user's normal correction statefile

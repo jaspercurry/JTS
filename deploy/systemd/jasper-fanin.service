@@ -67,6 +67,13 @@ LimitMEMLOCK=infinity
 CPUSchedulingPolicy=fifo
 CPUSchedulingPriority=30
 
+# LimitRTTIME bounds RT-thread runaway (audio-latency foundation G4). A FIFO
+# thread that spins without blocking can starve PID 1 on the 1 GB Pi and trip
+# the hardware watchdog into a full reboot; SIGXCPU at 200 ms turns that into a
+# single crashed daemon that Restart=on-failure revives instead. Mirrors
+# PipeWire RTKit's RTTimeUSec. Carried by every FIFO unit (camilla/fanin/outputd).
+LimitRTTIME=200000
+
 # Hardening — matches the conventions of jasper-camilla,
 # jasper-aec-bridge, jasper-voice. Defense in depth.
 NoNewPrivileges=true

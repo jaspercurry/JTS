@@ -888,6 +888,54 @@ def _outputd_active_channels_from_env(env: dict[str, str]) -> int | None:
         return None
     return value if 2 <= value <= 8 else None
 
+
+# outputd STATUS reports, per content/dac section, an all-time xrun_count plus
+# two rolling fields the daemon already computes: xrun_rate_per_hour (count /
+# uptime-hours) and last_xrun_age_ms (ms since the most recent xrun, null when
+# none). The doctor WARN keys on BOTH so it flags a *sustained, current*
+# problem — a high rate alone could be a long-ago burst diluting slowly as
+# uptime grows, and a recent single xrun alone is a normal transient. Only a
+# rate that's still meaningfully high AND a recent xrun is worth a yellow line.
+_OUTPUTD_XRUN_RATE_WARN_PER_HOUR = 6.0
+_OUTPUTD_XRUN_RECENT_AGE_MS = 300_000  # 5 minutes
+
+
+def _outputd_xrun_rate_warning(
+    content: dict[str, object],
+    dac: dict[str, object],
+) -> str | None:
+    """Return a one-clause WARN reason when either outputd lane shows a
+    sustained xrun rate with a recent xrun, else None.
+
+    Keyed on the daemon-computed ``xrun_rate_per_hour`` and ``last_xrun_age_ms``
+    so a burst that has since cleared (recent-but-low-rate, or high-rate but
+    stale) does NOT warn. Both sections are checked independently; the worst
+    qualifying lane is reported.
+    """
+
+    def _f(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    worst: tuple[float, str] | None = None
+    for label, section in (("content", content), ("dac", dac)):
+        if not isinstance(section, dict):
+            continue
+        rate = _f(section.get("xrun_rate_per_hour"))
+        age = _f(section.get("last_xrun_age_ms"))  # null → None → no recent xrun
+        if rate is None or age is None:
+            continue
+        if rate >= _OUTPUTD_XRUN_RATE_WARN_PER_HOUR and age <= _OUTPUTD_XRUN_RECENT_AGE_MS:
+            reason = (
+                f"{label} xrun_rate_per_hour={rate:.1f} "
+                f"(last_xrun_age_ms={int(age)})"
+            )
+            if worst is None or rate > worst[0]:
+                worst = (rate, reason)
+    return worst[1] if worst else None
+
+
 @doctor_check(order=50, group="audio")
 def check_fanin_asound_wiring() -> CheckResult:
     """Verify the deployed ALSA graph is the fan-in graph.
@@ -1571,6 +1619,7 @@ def check_outputd_service() -> CheckResult:
         )
     content_xruns = int(content.get("xrun_count", 0) or 0)
     dac_xruns = int(dac.get("xrun_count", 0) or 0)
+    xrun_warning = _outputd_xrun_rate_warning(content, dac)
     content_empty = int(content.get("empty_periods", 0) or 0)
     content_partial = int(content.get("partial_periods", 0) or 0)
     content_eagain = int(content.get("eagain_count", 0) or 0)
@@ -1687,6 +1736,16 @@ def check_outputd_service() -> CheckResult:
             f"active but tts.pending_frames={tts_pending} (>2s). "
             f"over_budget_streak_ms={tts_over_budget_streak_ms}. "
             "TTS producer may be outrunning outputd playback.",
+        )
+    if xrun_warning is not None:
+        return CheckResult(
+            "jasper-outputd",
+            "warn",
+            f"active but {xrun_warning}. xruns={content_xruns}/{dac_xruns}. "
+            "A sustained, recent xrun rate means audible dropouts — check "
+            "CPU contention (jasper-camilla RT scheduling), DAC buffer sizing "
+            "(JASPER_OUTPUTD_DAC_BUFFER_FRAMES), and "
+            "`journalctl -u jasper-outputd | grep xrun`.",
         )
     return CheckResult(
         "jasper-outputd",

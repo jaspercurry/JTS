@@ -163,6 +163,17 @@ def test_sched_fifo_and_mlockall_settings():
     assert _value_for(unit, "LimitMEMLOCK") == "infinity"
 
 
+def test_rt_runtime_bounded_by_limit_rttime():
+    """Every FIFO unit caps RT-thread runaway with LimitRTTIME (audio-latency
+    foundation G4). Without it, a spinning FIFO thread can starve PID 1 on the
+    1 GB Pi and trip the hardware watchdog into a full reboot; the 200 ms
+    SIGXCPU bound reduces that whole-system wedge to one crashed daemon. This is
+    mandatory wherever CPUSchedulingPolicy=fifo is set."""
+    unit = _read_unit()
+    assert _value_for(unit, "CPUSchedulingPolicy") == "fifo"
+    assert _value_for(unit, "LimitRTTIME") == "200000"
+
+
 def test_runtime_directory():
     """`RuntimeDirectory=jasper-fanin` makes systemd create
     /run/jasper-fanin/ on start and remove it on stop. The UDS

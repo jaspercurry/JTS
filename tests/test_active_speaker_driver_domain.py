@@ -181,6 +181,33 @@ def test_rejects_positive_correction_gain() -> None:
         _emit("mono", 2, "left", corrections={"woofer": {"gain_db": 3.0}})
 
 
+def test_chunksize_floored_to_loopback_minimum() -> None:
+    # S1: the follower captures the leader's stream from an snd-aloop loopback
+    # that EPIPEs below ~1024 frames, so the G7 chunksize knob is floored here
+    # even though the direct-DAC paths may tune it lower.
+    from jasper.active_speaker.camilla_yaml import FOLLOWER_LOOPBACK_MIN_CHUNKSIZE
+
+    # A sub-floor explicit value is clamped up to the loopback minimum.
+    assert (
+        _doc(chunksize=256)["devices"]["chunksize"]
+        == FOLLOWER_LOOPBACK_MIN_CHUNKSIZE
+    )
+    # A value at/above the floor passes through unchanged.
+    assert _doc(chunksize=4096)["devices"]["chunksize"] == 4096
+    # The shipped default (unset) is exactly the floor — byte-identical, no clamp.
+    assert _doc()["devices"]["chunksize"] == FOLLOWER_LOOPBACK_MIN_CHUNKSIZE
+
+
+def test_chunksize_env_override_is_floored(monkeypatch) -> None:
+    # The runtime path leaves chunksize=None so resolve_camilla_chunksize() reads
+    # the env; a too-low operator override must not reach the loopback emitter
+    # unclamped (the EPIPE landmine S1 guards against).
+    from jasper.active_speaker.camilla_yaml import FOLLOWER_LOOPBACK_MIN_CHUNKSIZE
+
+    monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", "256")
+    assert _doc()["devices"]["chunksize"] == FOLLOWER_LOOPBACK_MIN_CHUNKSIZE
+
+
 def test_threads_capture_device() -> None:
     # The gap-1 seam: the reconciler will pass the round-trip loopback here.
     doc = _doc(channel="left", capture_device="loop:0,1")
