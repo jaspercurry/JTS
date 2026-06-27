@@ -1235,6 +1235,26 @@ def check_fanin_service() -> CheckResult:
             f"check /var/lib/jasper/fanin.env and "
             f"JASPER_FANIN_INPUT_BUFFER_FRAMES.",
         )
+    # Adaptive fan-in output-buffer (default-OFF experiment): when
+    # JASPER_FANIN_ADAPTIVE_BUFFER=enabled, jasper-mux deliberately shrinks the
+    # output buffer below 3072 (down to the 1536 floor) while USB is the sole
+    # source — see jasper.fanin.buffer_reconcile. A shrunk-but-floor-valid value
+    # is the EXPECTED soak state, not a misconfiguration, so report it as warn
+    # rather than the hard fail used for an unexplained drift. The floor (1536)
+    # and the >3072 / below-floor cases below still fail.
+    _adaptive_on = (
+        os.environ.get("JASPER_FANIN_ADAPTIVE_BUFFER", "").strip().lower()
+        == "enabled"
+    )
+    if _adaptive_on and 1536 <= output_buffer_frames < 3072:
+        return CheckResult(
+            "jasper-fanin service",
+            "warn",
+            f"active with JASPER_FANIN_ADAPTIVE_BUFFER=enabled and runtime "
+            f"output_buffer_frames={output_buffer_frames} (adaptive shrink "
+            f"active; floor 1536). Expected during the latency soak — restore "
+            f"defaults by unsetting the flag.",
+        )
     if output_buffer_frames < 3072:
         return CheckResult(
             "jasper-fanin service",
