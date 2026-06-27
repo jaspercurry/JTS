@@ -9,6 +9,8 @@ import asyncio
 import logging
 import re
 
+from .. import bluealsa_probe
+
 logger = logging.getLogger(__name__)
 
 BLUEZ_DEST = "org.bluez"
@@ -30,18 +32,20 @@ async def bluetooth_active_device_path() -> str | None:
     the matching AVRCP player under org.bluez. The hci/dev suffix is
     shared, so translate:
       /org/bluealsa/hci0/dev_AA_BB/... -> /org/bluez/hci0/dev_AA_BB
+
+    Probes go through `bluealsa_probe.list_pcms`, which adds a shared
+    process-local backoff so a D-Bus permission denial here does not
+    hammer the system bus on every BT transport command. The probe
+    already swallows FileNotFoundError / timeout (returning None); a
+    rarer spawn-time OSError is caught locally so this helper keeps its
+    never-raise contract.
     """
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "bluealsa-cli", "list-pcms",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError, OSError) as e:
+        stdout = await bluealsa_probe.list_pcms(logger)
+    except OSError as e:
         logger.debug("bluealsa-cli list-pcms failed: %s", e)
         return None
-    if proc.returncode != 0:
+    if stdout is None:
         return None
     match = _BLUEALSA_A2DP_DEVICE_RE.search(stdout)
     if match is None:
