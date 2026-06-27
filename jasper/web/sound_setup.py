@@ -1345,6 +1345,7 @@ async def _live_draft_profile(
     validated YAML file and records rollback state.
     """
     from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
+    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
     from jasper.sound.graph_carrier import carrier_for_loaded_config
 
     cam = camilla_factory()
@@ -1438,6 +1439,7 @@ async def _live_draft_profile(
             profile,
             profile_id=f"live-{time.time_ns()}",
             output_trim_db=output_trim_db,
+            fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
         )
         yaml = result.yaml
 

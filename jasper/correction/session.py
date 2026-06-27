@@ -1668,6 +1668,7 @@ class MeasurementSession:
             profile = load_profile()
             prior_config_path: str | None = None
             if camilla_get_config is not None:
+                from jasper.fanin_coupling import coupling_capture_kwargs_from_env
                 from jasper.sound.graph_carrier import carrier_for_loaded_config
 
                 prior_config_path = await camilla_get_config()
@@ -1684,6 +1685,7 @@ class MeasurementSession:
                     room_peqs=peq_objs,
                     out_path=out_path,
                     profile_id=self.session_id,
+                    fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
                 )
                 from jasper.correction.runtime_safety import (
                     assert_correction_graph_safe,

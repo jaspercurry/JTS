@@ -18,6 +18,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
     DEFAULT_LEAN_CAPTURE_FIFO,
 )
+from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_PATH,
@@ -164,6 +165,12 @@ async def load_profile_config(
     ):
         pre_carrier.reemit(profile, output_trim_db=output_trim_db)
 
+    # SHARED fan-in→Camilla coupling: resolve the File-capture kwargs ONCE from
+    # the env (JASPER_FANIN_CAMILLA_COUPLING / _FIFO). Default loopback -> {} ->
+    # byte-identical emit. Every carrier applies it (the active baseline too);
+    # the lean-lane / grouped-pipe-sink precedence lives in the carrier.
+    coupling_capture_kwargs = coupling_capture_kwargs_from_env()
+
     async def _prepare_config() -> dict[str, Any]:
         current_path = await cam.get_config_file_path(best_effort=False)
         if not current_path:
@@ -174,6 +181,7 @@ async def load_profile_config(
             out_path=out_path,
             profile_id=render_id,
             output_trim_db=output_trim_db,
+            fanin_coupling_capture_kwargs=coupling_capture_kwargs,
         )
         return {
             "prior_config_path": current_path,
@@ -259,10 +267,15 @@ async def reconcile_current_dsp(
 
         carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
         try:
+            # Same coupling kwargs the durable load_profile_config emit uses
+            # below, so the dry-run YAML matches what gets written — the
+            # `unchanged`/`flat_profile_noop` short-circuits stay correct under
+            # =fifo (a coupling flip is a real change the reconcile must apply).
             dry = carrier.reemit(
                 profile,
                 profile_id=RECONCILE_PROFILE_ID,
                 output_trim_db=trim_db,
+                fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
             )
         except CarrierCannotHostEq as exc:
             return _log_reconcile_result(

@@ -144,3 +144,51 @@ def resolve_fifo_path(raw_path: str | None) -> str:
         return DEFAULT_FANIN_CAMILLA_FIFO
     value = raw_path.strip()
     return value or DEFAULT_FANIN_CAMILLA_FIFO
+
+
+def coupling_capture_kwargs_from_env(
+    env: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """Resolve the live ``emit_sound_config`` capture kwargs from the process env.
+
+    The one call shape a config emitter uses to thread the SHARED fan-in→Camilla
+    coupling into a live re-emit: reads :data:`COUPLING_ENV_VAR` +
+    :data:`FIFO_PATH_ENV_VAR` together so the emitted File-capture config names
+    the SAME pipe the Rust ``FifoWriter`` writes (the path env is resolved by
+    :func:`resolve_fifo_path` on BOTH sides). Returns ``{}`` for the default
+    ``loopback`` coupling (byte-identical to today). Read at emit time — a
+    systemd ``EnvironmentFile`` flip takes effect on the next config regeneration
+    without a code edit, exactly like the CamillaDSP latency knobs.
+    """
+    import os
+
+    source = os.environ if env is None else env
+    return capture_kwargs_for_coupling(
+        source.get(COUPLING_ENV_VAR),
+        fifo_path=resolve_fifo_path(source.get(FIFO_PATH_ENV_VAR)),
+    )
+
+
+def member_kwargs_are_pipe_sink(member_kwargs: dict[str, object] | None) -> bool:
+    """True when the resolved grouping member kwargs are a SnapFIFO pipe sink.
+
+    A bonded/grouped member (active-leader program bake, or a passive grouping
+    follower leader) writes CamillaDSP's playback to the Snapcast pipe with
+    ``enable_rate_adjust=False`` (snapclient is the sole rate-tracker — the
+    multiroom inv-5). That is mutually exclusive with the FIFO COUPLING's File
+    *capture*, which REQUIRES ``enable_rate_adjust=True`` to discipline the
+    clockless pipe input. So when this is True, FIFO coupling must be a no-op for
+    that emit (the grouped capture topology is the Distributed-Active track's
+    concern, not this solo-speaker latency hop). The solo defaults
+    (``enable_rate_adjust`` truthy / absent, no ``playback_pipe_path``) return
+    False → coupling applies. Mirrors ``jasper.multiroom.member_config``'s
+    leader-vs-solo distinction without importing it (keeps this module
+    import-cheap for the socket-activated emitters).
+    """
+    if not member_kwargs:
+        return False
+    if member_kwargs.get("playback_pipe_path"):
+        return True
+    # An explicit enable_rate_adjust=False is the pipe-sink signal even if the
+    # path resolution is deferred; treat it as a sink to stay fail-safe.
+    return member_kwargs.get("enable_rate_adjust") is False
