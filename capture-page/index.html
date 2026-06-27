@@ -15,11 +15,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <!-- Defense in depth: a strict CSP so even a renderer bug cannot load or run
-         off-origin code. No inline scripts; only same-origin modules; the page
-         connects only to the relay (set RELAY_BASE in js/config.js to match). -->
+         off-origin code, or exfiltrate the live mic / E2E key to an arbitrary
+         host. Notes:
+         - `script-src 'self' blob:` — the AudioWorklet recorder in the shared
+           measurement-audio helper loads its processor via a `blob:` URL
+           (URL.createObjectURL); worklet module fetches are governed by
+           script-src, so WITHOUT blob: the recorder fails to start in EVERY
+           browser. blob: cannot be used to inject a remote script (it is the
+           page's own generated module), so this stays tight.
+         - `connect-src` is pinned to the RELAY ORIGIN only — the page talks to
+           nothing else, so a renderer compromise has no outbound channel for the
+           mic/key. Keep this in lockstep with RELAY_BASE in js/config.js (a fork
+           edits both).
+         - `img-src 'none'` — the renderer can only ever create h1/p/ol/li/div/
+           button; there is no <img>, so no image origin is needed. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src https:; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+      content="default-src 'none'; script-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src https://relay.jasper.tech; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     />
     <title>Speaker measurement</title>
     <style>
