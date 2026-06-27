@@ -50,7 +50,6 @@ from jasper.active_speaker.measurement import (
     load_measurement_state,
     record_driver_measurement,
     record_summed_test_artifact,
-    record_summed_validation,
 )
 from jasper.active_speaker.safe_playback import (
     arm_safe_playback_session,
@@ -155,7 +154,7 @@ def _dict_items(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _config_paths_match(a: str | None, b: str | None) -> bool:
+def _config_paths_match(a: str | Path | None, b: str | Path | None) -> bool:
     if not a or not b:
         return False
     try:
@@ -1898,24 +1897,3 @@ async def start_summed_test(
         "measurements": measurement_payload,
         "commission": commission_status_payload(),
     }
-
-
-def record_summed_result(raw: dict[str, Any]) -> dict[str, Any]:
-    """Record one operator/audible summed crossover result."""
-
-    if not isinstance(raw, dict):
-        raise ValueError("summed validation request must be an object")
-    topology = load_output_topology()
-    payload = record_summed_validation(
-        topology,
-        raw,
-        calibration_level=load_calibration_level_state(),
-    )
-    log_event(
-        logger,
-        "active_speaker.web_summed_validation",
-        status=payload.get("status"),
-        group_id=raw.get("speaker_group_id"),
-        outcome=raw.get("outcome"),
-    )
-    return payload

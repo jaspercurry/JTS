@@ -714,10 +714,21 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
+  // Map the backend config `kind` to a banner CSS class. The class set
+  // (applied/custom/flat) is presentation and stays here; the human copy is
+  // OWNED by the backend (correction.status.describe_current_config -> {label,
+  // message}) and rendered verbatim so the two surfaces cannot drift (C4a-2).
+  function correctionBannerClass(kind) {
+    if (kind === 'custom' || kind === 'unknown') return 'custom';
+    return 'flat';
+  }
+
   function renderCurrentCorrection(cc, config) {
-    // `cc` is the parsed JTS room-correction descriptor. `config`
-    // distinguishes flat outputd baseline, preference EQ, and custom
-    // CamillaDSP configs that JTS should not overclaim as flat.
+    // `cc` is the parsed JTS room-correction descriptor. When a correction is
+    // applied JTS formats the live PEQ count + timestamp client-side (dynamic
+    // data, not copy). Otherwise the backend `config` descriptor owns the
+    // label/message; the browser renders it rather than re-deriving per-kind
+    // strings that have drifted from the backend.
     if (cc && cc.applied_at_epoch) {
       currentCorrectionBanner.className = 'applied';
       var when = formatAppliedAt(cc.applied_at_epoch);
@@ -727,35 +738,18 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         'Current correction: ' + count + ' PEQ ' + noun +
         (when ? ' applied ' + when : '');
       currentCorrectionResetBtn.classList.remove('hidden');
-    } else if (config && config.kind === 'custom') {
-      currentCorrectionBanner.className = 'custom';
-      currentCorrectionLabel.textContent =
-        'Advanced DSP config active — JTS cannot safely preserve it during measurement.';
+      return;
+    }
+    var kind = config && config.kind || '';
+    currentCorrectionBanner.className = correctionBannerClass(kind);
+    currentCorrectionLabel.textContent =
+      (config && (config.message || config.label)) ||
+      'No correction applied — speaker is flat.';
+    // A non-JTS/advanced config offers a reset to the flat baseline; managed
+    // (flat/preference/active-speaker/measurement) states have nothing to reset.
+    if (kind === 'custom') {
       currentCorrectionResetBtn.classList.remove('hidden');
-    } else if (config && config.kind === 'sound_preference') {
-      currentCorrectionBanner.className = 'flat';
-      currentCorrectionLabel.textContent =
-        'Preference EQ is active; no room correction is applied.';
-      currentCorrectionResetBtn.classList.add('hidden');
-    } else if (config && config.kind === 'active_speaker') {
-      currentCorrectionBanner.className = 'flat';
-      currentCorrectionLabel.textContent =
-        'Active-speaker DSP is active; no room correction is applied.';
-      currentCorrectionResetBtn.classList.add('hidden');
-    } else if (config && config.kind === 'measurement_baseline') {
-      currentCorrectionBanner.className = 'flat';
-      currentCorrectionLabel.textContent =
-        'Measurement baseline is active; correction and preference EQ are bypassed.';
-      currentCorrectionResetBtn.classList.add('hidden');
-    } else if (config && config.kind === 'unknown') {
-      currentCorrectionBanner.className = 'custom';
-      currentCorrectionLabel.textContent =
-        config.message || 'Could not identify the active CamillaDSP config.';
-      currentCorrectionResetBtn.classList.add('hidden');
     } else {
-      currentCorrectionBanner.className = 'flat';
-      currentCorrectionLabel.textContent =
-        'No correction applied — speaker is flat.';
       currentCorrectionResetBtn.classList.add('hidden');
     }
   }
