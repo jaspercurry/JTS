@@ -134,6 +134,13 @@ class DaemonConfig:
     # PortAudio latency hint: "" = PortAudio default (high); else "low" /
     # "high" / a float seconds string (e.g. "0.02").
     latency: str = ""
+    # Output sink mode. "aloop" (default) = PortAudio RawOutputStream to
+    # the snd-aloop fan-in lane (usbsink_substream) — byte-identical
+    # current behavior. "fifo" = a writer thread → named pipe that
+    # CamillaDSP File-captures (Stage 4b lean lane). Nothing sets "fifo"
+    # yet; the lean lane is dormant until a lean-lane apply wires it.
+    output_mode: str = "aloop"
+    fifo_path: str = "/run/jasper-usbsink/lean.pipe"
 
     @classmethod
     def from_env(cls) -> "DaemonConfig":
@@ -179,6 +186,12 @@ class DaemonConfig:
                 "JASPER_USBSINK_QUEUE_MAXBLOCKS", str(QUEUE_MAXBLOCKS),
             ))),
             latency=os.environ.get("JASPER_USBSINK_LATENCY", ""),
+            output_mode=_parse_output_mode(
+                os.environ.get("JASPER_USBSINK_OUTPUT_MODE", "aloop"),
+            ),
+            fifo_path=os.environ.get(
+                "JASPER_USBSINK_FIFO_PATH", "/run/jasper-usbsink/lean.pipe",
+            ),
         )
 
 
@@ -206,6 +219,26 @@ def _parse_latency(raw: str) -> float | str | None:
         return None
 
 
+def _parse_output_mode(raw: str) -> str:
+    """Parse JASPER_USBSINK_OUTPUT_MODE → "aloop" (default/unset) or
+    "fifo". An unrecognized value falls back to "aloop" with a warning:
+    a typo must never silently break audio NOR silently select the new
+    lean-lane path (default-OFF safety)."""
+    s = (raw or "").strip().lower()
+    if s == "":
+        return "aloop"
+    if s in ("aloop", "fifo"):
+        return s
+    log_event(
+        logger,
+        "usbsink.output_mode_invalid",
+        value=raw,
+        using="aloop",
+        level=logging.WARNING,
+    )
+    return "aloop"
+
+
 class UsbSinkDaemon:
     """Runs the audio bridge under systemd, with watchdog patting tied
     to forward progress in the playback/output callback.
@@ -227,6 +260,8 @@ class UsbSinkDaemon:
             block_frames=config.block_frames,
             queue_maxblocks=config.queue_maxblocks,
             latency=_parse_latency(config.latency),
+            output_mode=config.output_mode,
+            fifo_path=config.fifo_path,
         )
         # Preempt listener restores prior preempt state in start() —
         # before the bridge has actually opened streams, so an
@@ -446,33 +481,44 @@ class UsbSinkDaemon:
     ) -> None:
         """Translate bridge counters into watchdog and idle-state signals.
 
-        Playback callback progress is the daemon-health sentinel. Capture
-        callback progress is source activity evidence only; lack of it is a
-        normal idle state for a USB gadget source.
+        Output-side progress is the daemon-health sentinel. In the default
+        aloop mode that is the PortAudio playback callback
+        (`playback_callbacks`); in the Stage-4b lean lane there is no
+        playback callback, so the writer thread's `fifo_writes` counter is
+        the sentinel instead (it advances on every block — host audio,
+        preempt silence, or underrun silence — same "silence is still
+        useful work" contract). Capture callback progress is source
+        activity evidence only; lack of it is a normal idle state for a USB
+        gadget source.
         """
-        if stats.playback_callbacks > self._last_playback_callbacks_seen:
+        # Mode-agnostic forward-progress value for the watchdog sentinel.
+        if self._config.output_mode == "fifo":
+            output_progress = stats.fifo_writes
+        else:
+            output_progress = stats.playback_callbacks
+        if output_progress > self._last_playback_callbacks_seen:
             if self._playback_stale_logged:
                 log_event(
                     logger,
                     "usbsink.playback_resumed",
                     stale_sec=f"{now - self._last_playback_progress_mono:.1f}",
-                    playback_callbacks=stats.playback_callbacks,
+                    output_progress=output_progress,
                     output=stats.frames_output,
                 )
-            self._last_playback_callbacks_seen = stats.playback_callbacks
+            self._last_playback_callbacks_seen = output_progress
             self._last_playback_progress_mono = now
             self._playback_stale_logged = False
             heartbeat.bump()
         elif now - self._last_playback_progress_mono > WATCHDOG_STALE_SEC:
             # Don't bump; let systemd's WatchdogSec fire if the output
-            # callback has truly stopped. Log only once per stale episode;
+            # path has truly stopped. Log only once per stale episode;
             # Heartbeat will add its standard suppression breadcrumb.
             if not self._playback_stale_logged:
                 log_event(
                     logger,
                     "usbsink.playback_no_progress",
                     stale_sec=f"{now - self._last_playback_progress_mono:.1f}",
-                    playback_callbacks=stats.playback_callbacks,
+                    output_progress=output_progress,
                     output=stats.frames_output,
                     note="watchdog will fire",
                     level=logging.WARNING,

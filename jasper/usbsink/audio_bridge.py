@@ -26,6 +26,13 @@ The playback target is `pcm.usbsink_substream`, the USB-in private
 snd-aloop lane. jasper-fanin reads the capture side, sums it with the
 other renderer lanes, and writes one music stream to CamillaDSP/AEC.
 
+In the Stage-4b lean lane (`output_mode="fifo"`, default OFF) the
+RawOutputStream is replaced by a plain writer thread that drains the
+same queue and blocking-writes FULL-WIDTH S32_LE PCM into a named pipe
+that CamillaDSP File-captures directly — collapsing the renderer →
+fan-in → dsnoop → Camilla hops into one pipe read. Nothing selects this
+mode yet; the lean lane stays dormant until a caller sets it.
+
 The bridge exposes minimal external surface:
   - `start()` / `stop()` for lifecycle
   - `set_preempted(bool)` for the mux preempt protocol
@@ -59,6 +66,10 @@ logger = logging.getLogger(__name__)
 #     anything else, but we already match so plug becomes a no-op)
 SAMPLE_RATE = 48000
 CHANNELS = 2
+# Width of one S32_LE sample in bytes. The FIFO lean lane writes
+# full-width S32_LE PCM (CamillaDSP File-captures at S32_LE), so the
+# per-block byte size is frames * channels * S32_BYTES.
+S32_BYTES = 4
 # Block size = 10 ms. Small enough that preempt + host pause/resume
 # transitions land within one mux tick; large enough that PortAudio's
 # per-callback overhead is amortized.
@@ -68,6 +79,14 @@ BLOCK_FRAMES = 480
 # before the output side starts dropping frames. Sized to absorb a
 # brief stall in either direction (e.g. systemd reset_failed kick).
 QUEUE_MAXBLOCKS = 8
+
+# FIFO lean-lane error-log throttle. The writer-thread counters
+# (fifo_reader_gone / fifo_errors) can move on every loop turn while
+# the reader is persistently absent (CamillaDSP down). Log the first
+# occurrence of each, then at most once per FIFO_ERROR_LOG_THROTTLE_SEC
+# afterward, so a long reader outage costs one breadcrumb plus a slow
+# trickle rather than spamming the journal at the write cadence.
+FIFO_ERROR_LOG_THROTTLE_SEC = 30.0
 
 
 @dataclass
@@ -79,9 +98,11 @@ class BridgeStats:
     frames_captured: int = 0
     # Frames of queued host audio written into the renderer lane.
     frames_played: int = 0
-    # Frames written by the playback callback regardless of source:
-    # queued audio, preempt silence, or underrun silence. This is the
-    # liveness counter for "the output stream is still being serviced."
+    # Frames written to the output sink regardless of source: queued
+    # audio, preempt silence, or underrun silence. In aloop mode the
+    # playback callback increments it; in fifo mode the writer thread
+    # increments it on every block write. This is the liveness counter
+    # for "the output sink is still being serviced."
     frames_output: int = 0
     frames_dropped_full: int = 0
     frames_underrun: int = 0
@@ -97,6 +118,15 @@ class BridgeStats:
     started_at_mono: float = field(default_factory=time.monotonic)
     last_capture_callback_mono: float = 0.0
     last_playback_callback_mono: float = 0.0
+    # FIFO lean-lane (output_mode="fifo") counters. Zero in aloop mode.
+    # fifo_writes is the writer-thread liveness sentinel the daemon's
+    # watchdog reads in place of playback_callbacks (which never advances
+    # when there is no PortAudio output stream).
+    fifo_writes: int = 0
+    fifo_underrun: int = 0
+    fifo_errors: int = 0
+    fifo_reader_gone: int = 0
+    last_fifo_write_mono: float = 0.0
 
 
 class AudioBridge:
@@ -133,6 +163,14 @@ class AudioBridge:
         block_frames: int = BLOCK_FRAMES,
         queue_maxblocks: int = QUEUE_MAXBLOCKS,
         latency: float | str | None = None,
+        # Output sink mode. "aloop" (default) = PortAudio RawOutputStream
+        # into the snd-aloop fan-in lane (usbsink_substream) — byte-identical
+        # current behavior. "fifo" = a writer thread blocking-writes full
+        # S32_LE PCM into a named pipe that CamillaDSP File-captures (Stage 4b
+        # lean lane); no PortAudio output stream is opened. Nothing sets
+        # "fifo" yet — the lean lane stays dormant until a caller flips it.
+        output_mode: str = "aloop",
+        fifo_path: str = "/run/jasper-usbsink/lean.pipe",
     ) -> None:
         self._capture_device = capture_device
         self._playback_device = playback_device
@@ -146,6 +184,8 @@ class AudioBridge:
         # USB-input latency term (~50-90 ms). Lower it on-device to approach
         # the <60 ms lip-sync target; validate xrun-free under load.
         self._latency = latency
+        self._output_mode = output_mode  # "aloop" (default) | "fifo"
+        self._fifo_path = fifo_path
         # PortAudio callback runs on a high-priority thread; we share
         # an int16 array buffer via a bounded queue. put_nowait/
         # get_nowait keep both callbacks lock-free.
@@ -183,6 +223,11 @@ class AudioBridge:
         # Lifecycle lock — start/stop are infrequent but might race
         # in tests.
         self._lifecycle_lock = threading.Lock()
+        # FIFO-mode writer thread + its stop signal. None / unset in
+        # aloop mode (the writer thread only exists when output_mode is
+        # "fifo"); see _fifo_writer_loop.
+        self._fifo_thread: threading.Thread | None = None
+        self._fifo_stop = threading.Event()
 
     # ------------------------------------------------------------------
     # Public interface
@@ -214,16 +259,32 @@ class AudioBridge:
                 callback=self._capture_callback,
                 **extra,
             )
-            self._out_stream = sd.RawOutputStream(
-                device=self._playback_device,
-                samplerate=self._sample_rate,
-                channels=self._channels,
-                dtype="int16",  # snd-aloop renderer-side convention
-                blocksize=self._block_frames,
-                callback=self._playback_callback,
-                **extra,
-            )
-            # Validate that PortAudio actually opened both streams at
+            if self._output_mode == "fifo":
+                # Lean lane: no PortAudio output stream. A writer thread
+                # drains the same bounded queue and blocking-writes full
+                # S32_LE PCM to the FIFO that CamillaDSP File-captures.
+                # Pacing = the reader (DAC rate via CamillaDSP AsyncSinc);
+                # the RT capture callback never blocks — only the writer
+                # thread owns the blocking write. Validate only the
+                # capture stream's negotiated rate.
+                self._ensure_fifo(self._fifo_path)
+                validate_streams = (("capture", self._in_stream),)
+            else:
+                self._out_stream = sd.RawOutputStream(
+                    device=self._playback_device,
+                    samplerate=self._sample_rate,
+                    channels=self._channels,
+                    dtype="int16",  # snd-aloop renderer-side convention
+                    blocksize=self._block_frames,
+                    callback=self._playback_callback,
+                    **extra,  # carry the Stage-2 latency hint to the output too
+                )
+                validate_streams = (
+                    ("capture", self._in_stream),
+                    ("playback", self._out_stream),
+                )
+
+            # Validate that PortAudio actually opened each stream at
             # the requested rate. UAC2 sample-rate negotiation is
             # legally allowed to honor a different rate than requested
             # (rare but possible on some host configurations); a
@@ -233,10 +294,7 @@ class AudioBridge:
             # here is better than silent audio glitches — systemd's
             # Restart=on-failure will try again, and the doctor will
             # surface the issue on the next pass.
-            for label, stream in (
-                ("capture", self._in_stream),
-                ("playback", self._out_stream),
-            ):
+            for label, stream in validate_streams:
                 actual = float(stream.samplerate)
                 if abs(actual - float(self._sample_rate)) > 0.5:
                     raise RuntimeError(
@@ -246,10 +304,19 @@ class AudioBridge:
                         f"gadget descriptor / host-driver issue)"
                     )
 
-            # Start playback first so the loopback subdevice is open
-            # for write before the gadget side starts producing —
-            # avoids an immediate underrun spike at boot.
-            self._out_stream.start()
+            if self._output_mode == "fifo":
+                self._fifo_stop.clear()
+                self._fifo_thread = threading.Thread(
+                    target=self._fifo_writer_loop,
+                    name="usbsink-fifo-writer",
+                    daemon=True,
+                )
+                self._fifo_thread.start()
+            else:
+                # Start playback first so the loopback subdevice is open
+                # for write before the gadget side starts producing —
+                # avoids an immediate underrun spike at boot.
+                self._out_stream.start()
             self._in_stream.start()
             self._started = True
             self.stats.started_at_mono = time.monotonic()
@@ -257,7 +324,12 @@ class AudioBridge:
                 logger,
                 "usbsink.bridge_started",
                 capture=self._capture_device,
-                playback=self._playback_device,
+                playback=(
+                    self._fifo_path
+                    if self._output_mode == "fifo"
+                    else self._playback_device
+                ),
+                mode=self._output_mode,
                 rate=self._sample_rate,
                 channels=self._channels,
                 block=self._block_frames,
@@ -268,6 +340,26 @@ class AudioBridge:
         with self._lifecycle_lock:
             if not self._started:
                 return
+            # FIFO-mode writer thread: signal stop and join. The loop
+            # re-checks the flag between writes (short queue.get timeout),
+            # so a starved or blocked writer unwinds within one cycle. In
+            # aloop mode _fifo_thread is None and this is a no-op.
+            self._fifo_stop.set()
+            if self._fifo_thread is not None:
+                self._fifo_thread.join(timeout=2.0)
+                if self._fifo_thread.is_alive():
+                    # The writer is wedged in a blocking os.write because
+                    # the reader stopped draining. It's a daemon thread so
+                    # it won't block process exit, but surface it: a
+                    # persistently-blocked writer means the reader side
+                    # (CamillaDSP File-capture) is not consuming the pipe.
+                    log_event(
+                        logger,
+                        "usbsink.fifo_writer_join_timeout",
+                        timeout_sec=2.0,
+                        level=logging.WARNING,
+                    )
+                self._fifo_thread = None
             # Stop the producer first so the queue stops growing,
             # then the consumer.
             for s, label in (
@@ -377,12 +469,20 @@ class AudioBridge:
         s16_view = arr.view(np.int16)[1::2]
         self.stats.frames_captured += frames
 
+        # The aloop lane wants the S16 high-half view (the fan-in lane is
+        # fixed S16_LE). The FIFO lean lane wants the FULL-WIDTH S32_LE
+        # bytes — CamillaDSP File-captures at DEFAULT_CAPTURE_FORMAT
+        # (S32_LE), so handing it the half-width S16 stream would misframe
+        # every sample. bytes() copies the chosen view into a fresh bytes
+        # object for the queue — the underlying PortAudio buffer is reused
+        # before the consumer drains it, so the copy is unavoidable. The
+        # RMS computation above is mode-agnostic (reads the S32 `arr`).
+        if self._output_mode == "fifo":
+            payload = bytes(indata)  # full-width S32_LE interleaved stereo
+        else:
+            payload = bytes(s16_view)
         try:
-            # bytes() copies the view into a fresh bytes object for
-            # the queue — this is the only unavoidable per-callback
-            # allocation, since the underlying PortAudio buffer is
-            # reused before the playback callback consumes it.
-            self._queue.put_nowait(bytes(s16_view))
+            self._queue.put_nowait(payload)
         except queue.Full:
             # Output side is too slow or stalled. Drop this block — the
             # alternative (blocking the PortAudio thread) would
@@ -450,3 +550,155 @@ class AudioBridge:
             out_mv[:n] = block_mv[:n]
             out_mv[n:expected_bytes] = silence_mv[:expected_bytes - n]
         self.stats.frames_played += frames
+
+    # ------------------------------------------------------------------
+    # FIFO lean-lane writer (output_mode="fifo" only)
+    # ------------------------------------------------------------------
+
+    def _ensure_fifo(self, path: str) -> None:
+        """Create the lean-lane FIFO if absent. Idempotent. Raises only
+        if the path exists and is NOT a FIFO — a real file there is a
+        config error we must not silently write into.
+
+        CamillaDSP's File backend opens ``filename`` for read and does
+        not create it; the usbsink daemon owns creation (mirror of the
+        snapserver SNAPFIFO precedent, where an external producer owns
+        the pipe)."""
+        import os
+        import stat
+
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        try:
+            os.mkfifo(path, 0o660)
+        except FileExistsError:
+            if not stat.S_ISFIFO(os.stat(path).st_mode):
+                raise RuntimeError(
+                    f"usbsink: fifo path {path!r} exists and is not a FIFO"
+                )
+
+    def _fifo_writer_loop(self) -> None:
+        """Drain the bounded queue and blocking-write S32_LE PCM to the
+        FIFO that CamillaDSP File-captures. Runs on a plain (non-realtime)
+        thread, so its blocking write can never XRUN the gadget.
+
+        Reader-first open (mirrors the snapserver SNAPFIFO idiom): a
+        blocking ``O_WRONLY`` open would gate daemon startup on CamillaDSP
+        being up, so open ``O_NONBLOCK`` and retry on ENXIO ("no reader
+        yet"), then clear ``O_NONBLOCK`` so writes block-and-pace on the
+        reader once it appears. A reader that goes away (CamillaDSP config
+        reload) surfaces as ``BrokenPipeError`` → close + reopen. The RT
+        capture callback never reaches this thread's blocking write; it
+        only enqueues (drop-on-full).
+
+        Preempt + underrun semantics match the aloop playback callback:
+        under preempt drop the real block and write silence; on an empty
+        queue write a silence block. Either way the writer keeps the lean
+        lane fed and advances the liveness counter (fifo_writes) so the
+        watchdog does not falsely fire on an idle host.
+        """
+        import errno
+        import fcntl
+        import os
+
+        # One queue entry is one full-width S32_LE stereo block.
+        block_bytes = self._block_frames * self._channels * S32_BYTES
+        silence = bytes(block_bytes)
+        fd = -1
+
+        # Throttled error logging. The reader-gone / write-error counters
+        # are otherwise dead-on-read (nothing surfaces them yet — the
+        # /state + doctor wiring is a later PR). Log the first occurrence
+        # of each event and then at most once per throttle window so a
+        # persistently-absent reader (CamillaDSP down) does not spam the
+        # journal at the per-block write cadence.
+        last_error_log: dict[str, float] = {}
+
+        def _throttled_warn(event_name: str, **fields: object) -> None:
+            now = time.monotonic()
+            last = last_error_log.get(event_name)
+            if last is not None and now - last < FIFO_ERROR_LOG_THROTTLE_SEC:
+                return
+            last_error_log[event_name] = now
+            log_event(logger, event_name, level=logging.WARNING, **fields)
+
+        try:
+            while not self._fifo_stop.is_set():
+                # (Re)open the write end if needed.
+                if fd < 0:
+                    try:
+                        fd = os.open(
+                            self._fifo_path, os.O_WRONLY | os.O_NONBLOCK,
+                        )
+                    except OSError as e:
+                        if e.errno == errno.ENXIO:
+                            # No reader (CamillaDSP not up / reloading).
+                            # Wait and retry; do NOT block the open so
+                            # daemon start is never gated on the reader.
+                            self._fifo_stop.wait(0.2)
+                            continue
+                        self.stats.fifo_errors += 1
+                        _throttled_warn(
+                            "usbsink.fifo_error",
+                            phase="open",
+                            errno=e.errno,
+                            error=e,
+                            count=self.stats.fifo_errors,
+                        )
+                        self._fifo_stop.wait(0.5)
+                        continue
+                    # Reader present: switch to blocking so writes pace
+                    # on the reader (the DAC clock via CamillaDSP).
+                    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                    fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
+
+                # Pull one block (short timeout so the stop flag is
+                # re-checked promptly and shutdown is never wedged on a
+                # starved queue).
+                try:
+                    block = self._queue.get(timeout=0.1)
+                except queue.Empty:
+                    # Host idle / not streaming yet: emit timing-accurate
+                    # silence so the lean lane never starves CamillaDSP
+                    # and the liveness counter keeps advancing.
+                    block = silence
+                    self.stats.fifo_underrun += self._block_frames
+
+                if self._preempted:
+                    # Mux preempt: write silence, drop the real block —
+                    # same contract as the aloop playback callback's
+                    # preempt path (drain + silence so backlog can't grow).
+                    block = silence
+
+                try:
+                    os.write(fd, block)
+                    self.stats.fifo_writes += 1
+                    self.stats.last_fifo_write_mono = time.monotonic()
+                    self.stats.frames_output += self._block_frames
+                except BrokenPipeError:
+                    # Reader vanished (CamillaDSP reload/stop). Close and
+                    # reopen on the next loop turn.
+                    os.close(fd)
+                    fd = -1
+                    self.stats.fifo_reader_gone += 1
+                    _throttled_warn(
+                        "usbsink.fifo_reader_gone",
+                        count=self.stats.fifo_reader_gone,
+                    )
+                except OSError as e:
+                    self.stats.fifo_errors += 1
+                    _throttled_warn(
+                        "usbsink.fifo_error",
+                        phase="write",
+                        errno=e.errno,
+                        error=e,
+                        count=self.stats.fifo_errors,
+                    )
+                    if fd >= 0:
+                        os.close(fd)
+                    fd = -1
+                    self._fifo_stop.wait(0.2)
+        finally:
+            if fd >= 0:
+                os.close(fd)

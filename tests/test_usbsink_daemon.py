@@ -354,3 +354,69 @@ def test_capture_resume_logs_once_after_idle(caplog):
     assert any("event=usbsink.capture_resumed" in m for m in messages)
     assert daemon._capture_idle_logged is False
     assert hb.bumps == 2
+
+
+# ----------------------------------------------------------------------
+# Watchdog sentinel selection by output_mode. In the Stage-4b lean lane
+# (output_mode="fifo") there is no PortAudio playback callback, so the
+# fifo writer thread's fifo_writes counter is the liveness sentinel; in
+# aloop mode the sentinel is playback_callbacks and fifo_writes is moot.
+# ----------------------------------------------------------------------
+
+
+def test_watchdog_fifo_mode_bumps_on_fifo_writes_not_playback_callbacks():
+    """fifo mode: advancing fifo_writes pats the heartbeat; advancing
+    playback_callbacks alone (which never happens in fifo mode, but
+    guard it anyway) does NOT."""
+    daemon = UsbSinkDaemon(DaemonConfig(output_mode="fifo"))
+    hb = _FakeHeartbeat()
+    now = 100.0
+    daemon._last_capture_progress_mono = now - 1.0
+    daemon._last_playback_progress_mono = now - 1.0
+
+    # fifo_writes advancing → heartbeat patted.
+    daemon._observe_bridge_progress(
+        BridgeStats(fifo_writes=1, frames_output=BLOCK_FRAMES),
+        hb,
+        now,
+    )
+    assert hb.bumps == 1
+    assert daemon._last_playback_callbacks_seen == 1
+
+    # playback_callbacks advancing while fifo_writes holds steady → NO
+    # bump (fifo_writes is the sentinel in fifo mode).
+    daemon._observe_bridge_progress(
+        BridgeStats(fifo_writes=1, playback_callbacks=5),
+        hb,
+        now + 1.0,
+    )
+    assert hb.bumps == 1
+
+
+def test_watchdog_aloop_mode_ignores_fifo_writes():
+    """aloop mode (default): playback_callbacks is the sentinel;
+    advancing fifo_writes alone does NOT pat the heartbeat, and
+    advancing playback_callbacks does."""
+    daemon = UsbSinkDaemon(DaemonConfig(output_mode="aloop"))
+    hb = _FakeHeartbeat()
+    now = 100.0
+    daemon._last_capture_progress_mono = now - 1.0
+    daemon._last_playback_progress_mono = now - 1.0
+
+    # fifo_writes advancing while playback_callbacks holds → NO bump.
+    daemon._observe_bridge_progress(
+        BridgeStats(fifo_writes=7),
+        hb,
+        now,
+    )
+    assert hb.bumps == 0
+    assert daemon._last_playback_callbacks_seen == 0
+
+    # playback_callbacks advancing → heartbeat patted.
+    daemon._observe_bridge_progress(
+        BridgeStats(playback_callbacks=1, frames_output=BLOCK_FRAMES),
+        hb,
+        now + 1.0,
+    )
+    assert hb.bumps == 1
+    assert daemon._last_playback_callbacks_seen == 1
