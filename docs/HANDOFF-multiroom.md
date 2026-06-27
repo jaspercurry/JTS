@@ -74,6 +74,18 @@ reassert using the household credential; off via
 `JASPER_GROUPING_SUPERVISOR=disabled`). Auto-unwind to solo is deliberately
 NOT built — disband stays one tap on /rooms until a real non-converging
 failure shape is observed.
+After-the-fact observability for restart cascades is owned by
+`jasper.multiroom.cascade_timeline` — a bounded `/state` ring that scans the
+existing `multiroom.reconcile.*` / `restart_broker.*` /
+`grouping_supervisor.*` journal lines so an operator can answer "what kicked
+what?" without a raw log bundle. It is **solo-gated** (a speaker with no bond
+configured produces no bond cascade, so `_tick` skips the per-unit
+`journalctl` scan and only re-reads the cheap grouping env; the scan resumes
+the moment a bond is configured) and, like the sibling supervisors, has an
+off-switch — `JASPER_MULTIROOM_CASCADE_TIMELINE=disabled` (exact match,
+case-insensitive; any other value warns and stays enabled). Surface:
+`/state.resilience.multiroom_cascade` (`{"enabled": false}` when disabled or
+not yet running).
 A leader whose bond apply did not land reads `degraded` with "active
 CamillaDSP config does not write the snapserver pipe".
 **The retired outputd-as-producer machinery was REMOVED on 2026-06-11** (the
