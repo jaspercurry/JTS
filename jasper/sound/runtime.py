@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -26,6 +27,31 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
 RECONCILE_PROFILE_ID = "reconcile-current-dsp"
+
+# The generated YAML header carries a cosmetic ``(id=<profile_id>)`` marker
+# (see ``jasper.sound.camilla_yaml.emit_sound_config`` — it is the ONLY place
+# ``profile_id`` reaches the emitted YAML). A wizard save stamps a wall-clock
+# ``time.time_ns()`` id; reconcile's dry-run stamps ``RECONCILE_PROFILE_ID``. So
+# the on-disk file and a freshly re-emitted candidate differ in this header
+# even when the DSP is byte-identical otherwise. Strip the marker on both sides
+# before the "is the config unchanged?" comparison so the no-op path can fire on
+# a redeploy.
+#
+# Anchored to the exact ``# Auto-generated JTS DSP config (id=...).`` header line
+# (group 1 is that line minus the marker) so a stray ``(id=...)`` substring
+# elsewhere in the YAML — e.g. inside a device name like
+# ``hw:CARD=x (id=realA)`` — is NEVER stripped. A genuine change to such a value
+# must still register as different, so no real change can be masked.
+_CONFIG_ID_HEADER_RE = re.compile(
+    r"^(# Auto-generated JTS DSP config) \(id=[^)]*\)\.$",
+    re.MULTILINE,
+)
+
+
+def _config_without_id_header(text: str) -> str:
+    """Return ``text`` with the cosmetic ``(id=...)`` header marker removed."""
+
+    return _CONFIG_ID_HEADER_RE.sub(r"\1.", text)
 
 
 def _log_reconcile_result(payload: dict[str, Any]) -> dict[str, Any]:
@@ -251,7 +277,10 @@ async def reconcile_current_dsp(
             )
         if not force and _paths_match(current_path, out_path):
             try:
-                if out_path.read_text(encoding="utf-8") == dry.yaml:
+                on_disk = _config_without_id_header(
+                    out_path.read_text(encoding="utf-8")
+                )
+                if on_disk == _config_without_id_header(dry.yaml):
                     return _log_reconcile_result(
                         {
                             "status": "unchanged",
