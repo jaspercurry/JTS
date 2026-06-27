@@ -3375,7 +3375,9 @@ def main(argv: list[str] | None = None) -> int:
     grouping_supervisor.start_supervisor()
     # After-the-fact multiroom cascade timeline: scans existing structured
     # journal events into a small /state ring so restart chains are
-    # reconstructable without fetching raw logs first.
+    # reconstructable without fetching raw logs first. Solo-gated (skips the
+    # journalctl scan when no bond is configured) and off via
+    # JASPER_MULTIROOM_CASCADE_TIMELINE=disabled.
     from ..multiroom import cascade_timeline
     cascade_timeline.start_sampler()
     # Runtime debug toggle: clear an expired session left on disk, or
