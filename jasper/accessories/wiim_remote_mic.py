@@ -29,7 +29,7 @@ from dbus_next.errors import DBusError  # type: ignore
 
 from jasper.log_event import log_event
 
-from .constants import WIIM_REMOTE_2_MIC_UDP_PORT
+from .constants import WIIM_REMOTE_2_MIC_UDP_PORT, WIIM_REMOTE_2_NAME_RE
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ BLUEZ_PROPERTIES_IFACE = "org.freedesktop.DBus.Properties"
 
 HID_REPORT_UUID = "00002a4d-0000-1000-8000-00805f9b34fb"
 REPORT_REFERENCE_UUID = "00002908-0000-1000-8000-00805f9b34fb"
-WIIM_REMOTE_2_NAME_RE = r"(?i)\bwiim remote 2\b"
+# WIIM_REMOTE_2_NAME_RE is imported from .constants — single source of truth.
 WIIM_VOICE_REPORT_REFERENCE = bytes((0x03, 0x01))
 
 WIIM_VOICE_PACKET_BYTES = 131

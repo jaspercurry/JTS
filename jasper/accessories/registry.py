@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Mapping, Union
 
-from .constants import WIIM_REMOTE_2_MIC_DEVICE
+from .constants import WIIM_REMOTE_2_MIC_DEVICE, WIIM_REMOTE_2_NAME_RE
 
 
 # Subset of evdev keycodes we care about for HID consumer-control
@@ -261,7 +261,7 @@ WIIM_REMOTE_2 = RemoteProfile(
     name="WiiM Remote 2",
     identity=RemoteIdentity(
         usb_ids=((0x2717, 0x32B9),),
-        bt_name_regexes=(r"(?i)\bwiim remote 2\b",),
+        bt_name_regexes=(WIIM_REMOTE_2_NAME_RE,),
     ),
     keymap={
         KEY_VOLUMEUP: KeyAction(
