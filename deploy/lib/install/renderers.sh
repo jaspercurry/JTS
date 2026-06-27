@@ -81,6 +81,17 @@ install_renderers() {
         need_build=1
     elif ! /usr/local/bin/shairport-sync -V 2>&1 | grep -q "AirPlay2"; then
         need_build=1
+    elif ! /usr/local/bin/shairport-sync -V 2>&1 | grep -q -- "-pipe-"; then
+        # The pipe output backend (--with-pipe) was added to the configure
+        # line; an older source build (or apt AP1) lacks it. shairport-sync's
+        # -V feature string gains a "-pipe-" token only when the backend is
+        # compiled in, so this forces exactly one rebuild on upgrade and is a
+        # no-op once the pipe-capable binary is installed.
+        # PRE-MERGE: confirm the exact token on the first rebuilt -V before
+        # relying on this (Stage 5 of docs/HANDOFF-audio-latency-foundation.md);
+        # if upstream emits a trailing "-pipe" with no following dash, switch
+        # to: grep -qE -- '-pipe(-|$)'.
+        need_build=1
     fi
     if [[ "$need_build" == "1" ]]; then
         echo "Building shairport-sync ${SHAIRPORT_SYNC_VERSION} with AirPlay 2..."
@@ -104,6 +115,7 @@ install_renderers() {
                 --with-alsa --with-soxr --with-avahi \
                 --with-ssl=openssl --with-systemd \
                 --with-airplay-2 \
+                --with-pipe \
                 --with-metadata --with-dbus-interface \
                 --with-mpris-interface
             # RAM-bounded + cgroup-contained C build (BUILD_SANDBOX_KB_PER_JOB_C
