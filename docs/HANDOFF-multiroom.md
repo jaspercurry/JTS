@@ -460,6 +460,17 @@ question is not "does WiFi work" but "what buffer size + codec hold
 L/R sync on this household's WiFi" — that is what the §8 spike
 measures.
 
+> **Note (2026-06-27):** until the Stage-0 latency fix, the configured
+> `buffer_ms` was **inert** — it was passed as a `pipe://…&buffer_ms=`
+> *source-URL query param*, which snapcast silently ignores, so every bond
+> actually ran snapcast's **1000 ms** global default regardless of the
+> configured value. It is now routed through the global `--stream.buffer
+> <ms>` flag (`reconcile.py:snapserver_argv`), so the configured value
+> finally takes effect. Any on-device buffer-sizing observation recorded
+> *before* this fix was made against the 1000 ms default, not the value in
+> the config — re-measure before trusting earlier `buffer_ms` conclusions
+> (including the §8 spike numbers).
+
 This mirrors what the mature open-source players landed on. Both
 Music Assistant and (effectively) Home Assistant draw a hard line:
 **grouping/control is the platform's job; audio sync is the engine's
@@ -2729,3 +2740,9 @@ local-source follower parking rechecked against `jasper/local_sources/registry.p
 and `jasper.multiroom.reconcile`; wireless-sub 2.1 path from 2026-06-23
 unchanged; snapclient journal rate limit rechecked against
 `deploy/systemd/jasper-snapclient.service`)
+
+Stage-0 update 2026-06-27: `buffer_ms` was inert (passed as a snapcast
+`pipe://…&buffer_ms=` source-URL param it silently ignores, so bonds ran the
+1000 ms default); now routed via `--stream.buffer` in
+`reconcile.py:snapserver_argv` so the configured value takes effect. Pre-fix
+buffer-sizing observations predate any real buffer change.
