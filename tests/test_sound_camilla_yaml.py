@@ -540,3 +540,107 @@ def test_channel_delays_reject_negative_or_non_finite_values():
             room_peqs_right=[],
             channel_delays_ms=(math.nan, 0.0),
         )
+
+
+# ---- Stage 4a: File-CAPTURE lean lane -------------------------------------
+
+
+def test_file_capture_emits_lean_lane_shape():
+    """The File-CAPTURE lean lane — capture type File (a named pipe),
+    playback type Alsa (the REAL DAC), enable_rate_adjust true, an async
+    resampler so the DAC clock can discipline the clockless capture, and the
+    0 dB ceiling preserved. The mirror of the File-SINK path."""
+    yaml = emit_sound_config(
+        SoundProfile(enabled=False),
+        capture_pipe_path="/run/jasper/lean_capture.fifo",
+        playback_device="hw:DAC8x,0",
+        enable_rate_adjust=True,
+        resampler_type="BalancedAsync",
+        chunksize=2048,
+        target_level=4096,
+    )
+    assert "type: File" in yaml
+    assert 'filename: "/run/jasper/lean_capture.fifo"' in yaml
+    assert "type: Alsa" in yaml
+    assert 'device: "hw:DAC8x,0"' in yaml
+    assert "enable_rate_adjust: true" in yaml
+    assert "resampler_type: BalancedAsync" in yaml
+    assert "volume_limit: 0.0" in yaml
+    assert "chunksize: 2048" in yaml
+    assert "target_level: 4096" in yaml
+
+
+def test_file_capture_resampler_line_absent_on_solo_default():
+    """Byte-contract: the resampler line appears ONLY when requested, so
+    every existing (ALSA-capture, no-resampler) caller is byte-identical."""
+    yaml = emit_sound_config(SoundProfile(enabled=False))
+    assert "resampler_type" not in yaml
+    assert "type: Alsa" in yaml
+    assert "type: File" not in yaml
+
+
+def test_file_capture_rejects_rate_adjust_off():
+    """Fail LOUD: a File capture with rate_adjust off would free-run against
+    the DAC (no clock on capture, no compensator) — the Stage-1 hazard."""
+    import pytest
+
+    with pytest.raises(ValueError, match="requires enable_rate_adjust=True"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            capture_pipe_path="/run/jasper/lean_capture.fifo",
+            enable_rate_adjust=False,
+            resampler_type="BalancedAsync",
+        )
+
+
+def test_file_capture_rejects_non_async_resampler():
+    """Fail LOUD: enable_rate_adjust on a clockless File capture has nothing
+    to steer without an async resampler — reject a fixed/sync resampler and
+    reject the no-resampler case."""
+    import pytest
+
+    with pytest.raises(ValueError, match="requires an async resampler"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            capture_pipe_path="/run/jasper/lean_capture.fifo",
+            enable_rate_adjust=True,
+            resampler_type="Synchronous",
+        )
+    with pytest.raises(ValueError, match="requires an async resampler"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            capture_pipe_path="/run/jasper/lean_capture.fifo",
+            enable_rate_adjust=True,
+            resampler_type=None,
+        )
+
+
+def test_file_capture_rejects_combined_pipe_in_and_pipe_out():
+    """A File-in/File-out config has no clock anywhere — refuse it. The
+    capture guard is placed above the sink guard so this raises its own
+    message first."""
+    import pytest
+
+    with pytest.raises(ValueError, match="cannot both be set"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            capture_pipe_path="/run/jasper/lean_capture.fifo",
+            playback_pipe_path="/run/jasper-snapserver/snapfifo",
+            enable_rate_adjust=True,
+            resampler_type="BalancedAsync",
+        )
+
+
+def test_file_capture_keeps_zero_db_ceiling_guard():
+    """The 0 dB ceiling guard fires on the File-capture path too (it runs
+    before any branch in emit_sound_config)."""
+    import pytest
+
+    with pytest.raises(ValueError, match="must not exceed 0 dB"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            capture_pipe_path="/run/jasper/lean_capture.fifo",
+            enable_rate_adjust=True,
+            resampler_type="BalancedAsync",
+            volume_limit_db=1.0,
+        )
