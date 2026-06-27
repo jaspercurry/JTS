@@ -202,43 +202,62 @@ def test_active_speaker_output_safety_snapshot_allows_setup_ready(
     assert payload["reason"] is None
 
 
-def test_level_match_provisional_none_when_no_applied_baseline(
-    tmp_path, monkeypatch,
-) -> None:
-    state = tmp_path / "active_speaker_baseline_profile.json"
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(state)
-    )
-    # Missing file -> None (not applicable).
-    assert _active_speaker_level_match_provisional() is None
-    # Saved but not applied -> None.
-    state.write_text(
-        json.dumps({"status": "ready_to_apply", "provisional": True}),
-        encoding="utf-8",
-    )
-    assert _active_speaker_level_match_provisional() is None
+def test_level_match_provisional_none_when_no_applied_baseline() -> None:
+    # C3b-3: the value is read from the readiness snapshot the caller already
+    # computed, not from a second off-disk open. No applicable active baseline ->
+    # None: a passive speaker (no baseline_profile), a non-dict setup, and an
+    # active baseline whose candidate is not `applied` (e.g. superseded /
+    # not-yet-applied) all return None.
+    assert _active_speaker_level_match_provisional(None) is None
+    assert _active_speaker_level_match_provisional({"baseline_profile": None}) is None
+    assert _active_speaker_level_match_provisional({
+        "baseline_profile": {"status": "ready_to_apply", "provisional": True},
+    }) is None
 
 
-def test_level_match_provisional_reads_applied_baseline(
+def test_level_match_provisional_reads_applied_baseline() -> None:
+    assert _active_speaker_level_match_provisional({
+        "baseline_profile": {"status": "applied", "provisional": True},
+    }) is True
+    assert _active_speaker_level_match_provisional({
+        "baseline_profile": {"status": "applied", "provisional": False},
+    }) is False
+
+
+def test_level_match_provisional_deduped_from_snapshot_setup(
     tmp_path, monkeypatch,
 ) -> None:
-    state = tmp_path / "active_speaker_baseline_profile.json"
+    # C3b-3 dedup pin: the snapshot's `level_match_provisional` is read from the
+    # SAME readiness snapshot it already computed (the single source), not a
+    # second disk read. Mutation-check: have `read_active_speaker_setup_status`
+    # report an applied+provisional baseline and assert the snapshot surfaces it.
+    # Reverting the dedup to a stale second disk read against an absent file
+    # would yield None here (it would no longer track the snapshot).
+    import jasper.control.server as srv_mod
+
     monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(state)
+        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE",
+        str(tmp_path / "absent_baseline_profile.json"),  # nothing on disk
     )
-    state.write_text(
-        json.dumps({"status": "applied", "provisional": True}), encoding="utf-8"
-    )
-    assert _active_speaker_level_match_provisional() is True
-    state.write_text(
-        json.dumps({"status": "applied", "provisional": False}), encoding="utf-8"
-    )
-    assert _active_speaker_level_match_provisional() is False
-    # Snapshot surfaces it on /state.
+
+    def fake_setup(**_kwargs):
+        return {
+            "active": True,
+            "configured": True,
+            "volume_allowed": True,
+            "grouping_allowed": True,
+            "reason": None,
+            "baseline_profile": {"status": "applied", "provisional": True},
+            "issues": [],
+        }
+
+    monkeypatch.setattr(srv_mod, "read_active_speaker_setup_status", fake_setup)
+
     payload = _active_speaker_output_safety_snapshot({
         "current": {"camilla": {"config_path": "/var/lib/camilladsp/configs/x.yml"}},
     })
-    assert payload["level_match_provisional"] is False
+    # Tracks the snapshot's baseline_profile, despite the on-disk file being absent.
+    assert payload["level_match_provisional"] is True
 
 
 @pytest.fixture
