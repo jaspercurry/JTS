@@ -385,6 +385,41 @@ def test_generic_jts_pipe_sound_config_resolves_to_program_bake(tmp_path, monkey
     assert carrier.kind == "active_leader_program_bake"
 
 
+def test_sound_current_pipe_under_non_protected_topology_stays_sound_or_correction(
+    tmp_path,
+    monkeypatch,
+):
+    # Pins the PR #1011 topology-narrowing clause directly (the prior negative
+    # test passes via the filename gate, so it can't catch a regression here).
+    # This config DOES pass the filename gate (`sound_current.yml`) AND the pipe
+    # check — identical to the positive program-bake case above — so the ONLY
+    # thing keeping it out of the program-bake carrier is
+    # `flat_program_graph_blocked_reason(topology) is not None`. Under a
+    # full-range passive topology there is no protected tweeter, so that reason is
+    # None: a plain stereo speaker that happens to be a SnapFIFO grouping leader
+    # must stay on the ordinary sound/correction carrier, never get re-stamped as
+    # an active program bake. Delete the topology clause and this resolves to
+    # `active_leader_program_bake` instead — the mutation tripwire.
+    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.sound.profile import SoundProfile
+
+    _persist_topology(_full_range_stereo(), tmp_path, monkeypatch)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "sound_current.yml"
+    path.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            enable_rate_adjust=False,
+            playback_pipe_path=SNAPFIFO,
+        ),
+        encoding="utf-8",
+    )
+
+    carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+    assert carrier.kind == "sound_or_correction"
+
+
 def test_grouping_leader_pipe_config_does_not_resolve_to_program_bake(
     tmp_path,
     monkeypatch,

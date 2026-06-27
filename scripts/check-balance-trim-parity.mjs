@@ -13,8 +13,10 @@
 // against a fixture generated from the Python implementation.
 //
 // tests/fixtures/balance_trim_parity_fixture.json is the shared contract:
-// tests/test_balance_trim_parity.py asserts Python matches it; this script
-// asserts the JS module matches it. If either side drifts, one test fails.
+// tests/test_web_rooms_setup.py::test_balance_trim_python_matches_fixture
+// asserts Python matches it; this script asserts the JS module matches it
+// (also driven from tests/test_web_rooms_setup.py::test_balance_trim_js_matches_fixture_via_node).
+// If either side drifts, one test fails.
 //
 // Usage: node scripts/check-balance-trim-parity.mjs   (exit 0 = parity holds)
 
