@@ -61,7 +61,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use log::{info, warn};
 
-use crate::mixer::Mixer;
+use crate::mixer::{CouplingObservability, Mixer};
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
 
@@ -85,6 +85,9 @@ pub struct StateServer {
     output_pcm: String,
     output_frames_written: Arc<AtomicU64>,
     output_xrun_count: Arc<AtomicU64>,
+    /// Coupling transport echo + (under fifo) the shared FIFO counters. Cloned
+    /// from the mixer so STATUS reads the same atomics the work loop writes.
+    coupling: CouplingObservability,
     /// Music-only side-output (multi-room sync tap) — shared with the
     /// mixer. `None` pcm = solo speaker (tap disabled).
     music_output_pcm: Option<String>,
@@ -148,6 +151,7 @@ impl StateServer {
             output_pcm,
             output_frames_written: Arc::clone(&mixer.frames_written),
             output_xrun_count: Arc::clone(&mixer.output_xrun_count),
+            coupling: mixer.coupling.clone(),
             music_output_pcm,
             music_frames_written: Arc::clone(&mixer.music_frames_written),
             music_output_drops: Arc::clone(&mixer.music_output_drops),
@@ -388,6 +392,47 @@ impl StateServer {
             "xrun_count",
             self.output_xrun_count.load(Ordering::Relaxed),
         );
+        buf.push(',');
+
+        // coupling transport echo. `transport:"loopback"` (default) carries no
+        // fifo block — byte-identical observability to the pre-coupling daemon.
+        // `transport:"fifo"` adds a `fifo` block with the shared-capture pipe
+        // path, the requested + kernel-resolved pipe size, and the reopen /
+        // dropped-period counters (a growing dropped_periods while CamillaDSP is
+        // up means the shared capture is starving — jasper-doctor's actionable
+        // signal). actual_pipe_bytes is 0 when the write end is not currently
+        // open (reader absent / CamillaDSP reloading).
+        push_kv_str(&mut buf, "transport", self.coupling.transport);
+        if let Some(fifo) = &self.coupling.fifo {
+            buf.push(',');
+            buf.push_str(r#""fifo":{"#);
+            push_kv_str(&mut buf, "path", &fifo.path);
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "requested_pipe_bytes",
+                fifo.requested_pipe_bytes as u64,
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "actual_pipe_bytes",
+                fifo.actual_pipe_bytes.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "reopen_count",
+                fifo.reopen_count.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "dropped_periods",
+                fifo.dropped_periods.load(Ordering::Relaxed),
+            );
+            buf.push('}');
+        }
         buf.push('}');
         buf.push(',');
 
@@ -606,6 +651,10 @@ mod tests {
             output_pcm: "hw:Loopback,0,7".to_string(),
             output_frames_written: Arc::new(AtomicU64::new(98765)),
             output_xrun_count: Arc::new(AtomicU64::new(1)),
+            coupling: CouplingObservability {
+                transport: "loopback",
+                fifo: None,
+            },
             music_output_pcm: Some("hw:Loopback,0,6".to_string()),
             music_frames_written: Arc::new(AtomicU64::new(54321)),
             music_output_drops: Arc::new(AtomicU64::new(3)),
@@ -617,6 +666,22 @@ mod tests {
             output_buffer_frames: 2048,
             tts_metrics: Some(TtsMetrics::new(96_000)),
         }
+    }
+
+    fn make_fifo_test_server() -> StateServer {
+        use crate::mixer::FifoObservability;
+        let mut server = make_test_server();
+        server.coupling = CouplingObservability {
+            transport: "fifo",
+            fifo: Some(FifoObservability {
+                path: "/run/jasper-fanin/camilla.pipe".to_string(),
+                requested_pipe_bytes: 8192,
+                reopen_count: Arc::new(AtomicU64::new(2)),
+                dropped_periods: Arc::new(AtomicU64::new(7)),
+                actual_pipe_bytes: Arc::new(AtomicU64::new(8192)),
+            }),
+        };
+        server
     }
 
     #[test]
@@ -660,6 +725,54 @@ mod tests {
         assert!(j.contains(r#""pcm":"hw:Loopback,0,7""#));
         assert!(j.contains(r#""sample_rate":48000"#));
         assert!(j.contains(r#""frames_written":98765"#));
+    }
+
+    #[test]
+    fn snapshot_json_loopback_transport_has_no_fifo_block() {
+        // Default coupling: transport=loopback, NO fifo block — byte-identical
+        // observability to the pre-coupling daemon.
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        assert!(
+            j.contains(r#""transport":"loopback""#),
+            "missing transport: {j}"
+        );
+        assert!(
+            !j.contains(r#""fifo":"#),
+            "loopback must emit no fifo block: {j}"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_fifo_transport_reports_observability() {
+        // =fifo: transport + the shared FIFO observability counters.
+        let server = make_fifo_test_server();
+        let j = server.snapshot_json();
+        assert!(
+            j.contains(r#""transport":"fifo""#),
+            "missing transport: {j}"
+        );
+        assert!(j.contains(r#""fifo":{"#), "missing fifo block: {j}");
+        assert!(
+            j.contains(r#""path":"/run/jasper-fanin/camilla.pipe""#),
+            "missing fifo path: {j}"
+        );
+        assert!(
+            j.contains(r#""requested_pipe_bytes":8192"#),
+            "missing requested_pipe_bytes: {j}"
+        );
+        assert!(
+            j.contains(r#""actual_pipe_bytes":8192"#),
+            "missing actual_pipe_bytes: {j}"
+        );
+        assert!(
+            j.contains(r#""reopen_count":2"#),
+            "missing reopen_count: {j}"
+        );
+        assert!(
+            j.contains(r#""dropped_periods":7"#),
+            "missing dropped_periods: {j}"
+        );
     }
 
     #[test]

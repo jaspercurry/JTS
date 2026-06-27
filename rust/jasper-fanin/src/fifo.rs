@@ -44,6 +44,8 @@
 
 use std::io;
 use std::os::unix::io::RawFd;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use log::{info, warn};
@@ -95,6 +97,19 @@ pub struct FifoWriter {
     last_reopen_warn: Option<std::time::Instant>,
     /// True once we have logged the resolved pipe size for the current fd.
     logged_pipe_size: bool,
+    /// Cumulative reader-gone / reopen events: incremented every time the
+    /// reader was absent on (re)open or the write hit EPIPE and we closed the
+    /// fd. A growing value means CamillaDSP is reloading repeatedly (or never
+    /// came up). Surfaced via STATUS — the FIFO analogue of an output xrun.
+    reopen_count: Arc<AtomicU64>,
+    /// Cumulative periods DROPPED because no reader was present (every `Waited`
+    /// outcome — the period was summed but not written). A growing value while
+    /// CamillaDSP is supposedly up means the shared capture is starving.
+    dropped_periods: Arc<AtomicU64>,
+    /// Kernel-resolved pipe buffer size (F_GETPIPE_SZ read-back) on the current
+    /// fd, or 0 when the write end is not open. The requested size is rounded up
+    /// by the kernel, so this is the only honest record of the live pipe depth.
+    actual_pipe_bytes: Arc<AtomicU64>,
 }
 
 impl FifoWriter {
@@ -111,7 +126,22 @@ impl FifoWriter {
             wire_buf: vec![0u8; period_samples * S32_BYTES],
             last_reopen_warn: None,
             logged_pipe_size: false,
+            reopen_count: Arc::new(AtomicU64::new(0)),
+            dropped_periods: Arc::new(AtomicU64::new(0)),
+            actual_pipe_bytes: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Shared observability counters for the STATUS endpoint. Cloned once at
+    /// mixer construction so the state server reads the same atomics the work
+    /// loop writes (mirrors the frames_written / xrun_count idiom). Returns
+    /// `(reopen_count, dropped_periods, actual_pipe_bytes)`.
+    pub fn observability(&self) -> (Arc<AtomicU64>, Arc<AtomicU64>, Arc<AtomicU64>) {
+        (
+            Arc::clone(&self.reopen_count),
+            Arc::clone(&self.dropped_periods),
+            Arc::clone(&self.actual_pipe_bytes),
+        )
     }
 
     /// Write one period (i16 interleaved) to the pipe, widening to S32_LE.
@@ -136,6 +166,9 @@ impl FifoWriter {
             match self.try_open() {
                 OpenOutcome::Opened => {}
                 OpenOutcome::NoReaderWaited | OpenOutcome::ErrorWaited => {
+                    // The period was summed by the mixer but cannot be written
+                    // (no reader). Count it as a dropped period for STATUS.
+                    self.dropped_periods.fetch_add(1, Ordering::Relaxed);
                     return FifoWriteOutcome::Waited;
                 }
             }
@@ -156,6 +189,11 @@ impl FifoWriter {
                 // warning; other errnos warn (throttled).
                 let errno = e.raw_os_error().unwrap_or(0);
                 self.close_fd();
+                // The reader-gone close drops this period; count it. The reopen
+                // itself is counted on the NEXT successful open (try_open) so the
+                // counter stays bounded (1 at startup, +1 per CamillaDSP reload)
+                // rather than growing per-period during a long outage.
+                self.dropped_periods.fetch_add(1, Ordering::Relaxed);
                 if errno == libc::EPIPE {
                     info!(
                         "event=fanin.fifo.reader_gone path={} (CamillaDSP reload?) — reopening",
@@ -224,6 +262,10 @@ impl FifoWriter {
 
         self.fd = fd;
         self.last_reopen_warn = None; // reader is back; reset the throttle
+                                      // A successful (re)open: 1 at startup, +1 on each CamillaDSP reload.
+                                      // Bounded and the meaningful "how many times has the reader reattached"
+                                      // signal for STATUS — distinct from dropped_periods (per-period drops).
+        self.reopen_count.fetch_add(1, Ordering::Relaxed);
         info!("event=fanin.fifo.opened path={}", self.path);
         OpenOutcome::Opened
     }
@@ -242,6 +284,11 @@ impl FifoWriter {
             )
         };
         let actual = unsafe { libc::fcntl(fd, libc::F_GETPIPE_SZ) };
+        // Record the kernel-resolved size for STATUS (0 if the read-back failed).
+        self.actual_pipe_bytes.store(
+            if actual >= 0 { actual as u64 } else { 0 },
+            Ordering::Relaxed,
+        );
         if !self.logged_pipe_size {
             if set_rc < 0 {
                 let err = io::Error::last_os_error();
@@ -271,6 +318,11 @@ impl FifoWriter {
             // never double-closed or reused.
             unsafe { libc::close(self.fd) };
             self.fd = -1;
+            // Re-log + re-record the resolved pipe size on the next open (a fresh
+            // reader gets a fresh pipe), and clear the live size — the pipe is
+            // not open right now, so STATUS should report 0.
+            self.logged_pipe_size = false;
+            self.actual_pipe_bytes.store(0, Ordering::Relaxed);
         }
     }
 
@@ -488,12 +540,22 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut w = FifoWriter::new(&path_s, 4, 8192).expect("new writer");
+        let (reopen, dropped, actual) = w.observability();
         // 4 frames * 2ch = 8 i16 samples.
         let period = vec![0i16; 8];
         // No reader has opened the read end → open() returns ENXIO → Waited.
         let outcome = w.write_period(&period);
         assert_eq!(outcome, FifoWriteOutcome::Waited);
         assert!(w.fd < 0, "fd must remain unopened with no reader");
+        // Observability: a no-reader turn drops the period, opens nothing, and
+        // reports a not-open pipe size.
+        assert_eq!(
+            dropped.load(Ordering::Relaxed),
+            1,
+            "no-reader drops a period"
+        );
+        assert_eq!(reopen.load(Ordering::Relaxed), 0, "no successful open yet");
+        assert_eq!(actual.load(Ordering::Relaxed), 0, "pipe not open → size 0");
 
         drop(w);
         let _ = std::fs::remove_file(&path);
@@ -517,12 +579,25 @@ mod tests {
         assert!(rfd >= 0, "open read end");
 
         let mut w = FifoWriter::new(&path_s, 4, 8192).expect("new writer");
+        let (reopen, dropped, actual) = w.observability();
         let period = vec![1234i16; 8]; // 4 frames * 2ch
 
         // Reader present → write succeeds.
         let outcome = w.write_period(&period);
         assert_eq!(outcome, FifoWriteOutcome::Wrote);
         assert!(w.fd >= 0, "fd open after a successful write");
+        // Observability: a successful open bumps reopen_count to 1 and records
+        // the kernel-resolved pipe size (>0). No drops on the happy path.
+        assert_eq!(reopen.load(Ordering::Relaxed), 1, "first open counted");
+        assert_eq!(
+            dropped.load(Ordering::Relaxed),
+            0,
+            "no drop on a clean write"
+        );
+        assert!(
+            actual.load(Ordering::Relaxed) > 0,
+            "pipe size recorded after open"
+        );
 
         // Read back the widened bytes and verify the format split.
         let mut reader = unsafe { std::fs::File::from_raw_fd(rfd) };
@@ -553,6 +628,17 @@ mod tests {
         assert!(
             saw_reopen,
             "reader-gone must trigger a close+reopen, not a crash"
+        );
+        // Observability after reader-gone: at least one period dropped, and the
+        // live pipe size resets to 0 while the write end is closed.
+        assert!(
+            dropped.load(Ordering::Relaxed) >= 1,
+            "reader-gone drops at least one period"
+        );
+        assert_eq!(
+            actual.load(Ordering::Relaxed),
+            0,
+            "pipe size cleared while write end closed"
         );
 
         drop(w);

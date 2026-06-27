@@ -18,6 +18,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
     DEFAULT_LEAN_CAPTURE_FIFO,
 )
+from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_PATH,
@@ -164,6 +165,12 @@ async def load_profile_config(
     ):
         pre_carrier.reemit(profile, output_trim_db=output_trim_db)
 
+    # SHARED fan-in→Camilla coupling: resolve the File-capture kwargs ONCE from
+    # the env (JASPER_FANIN_CAMILLA_COUPLING / _FIFO). Default loopback -> {} ->
+    # byte-identical emit. Every carrier applies it (the active baseline too);
+    # the lean-lane / grouped-pipe-sink precedence lives in the carrier.
+    coupling_capture_kwargs = coupling_capture_kwargs_from_env()
+
     async def _prepare_config() -> dict[str, Any]:
         current_path = await cam.get_config_file_path(best_effort=False)
         if not current_path:
@@ -174,6 +181,7 @@ async def load_profile_config(
             out_path=out_path,
             profile_id=render_id,
             output_trim_db=output_trim_db,
+            fanin_coupling_capture_kwargs=coupling_capture_kwargs,
         )
         return {
             "prior_config_path": current_path,
@@ -259,10 +267,14 @@ async def reconcile_current_dsp(
 
         carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
         try:
+            # Same coupling kwargs the durable load_profile_config emit uses
+            # below, so the dry-run YAML matches what gets written.
+            coupling_capture_kwargs = coupling_capture_kwargs_from_env()
             dry = carrier.reemit(
                 profile,
                 profile_id=RECONCILE_PROFILE_ID,
                 output_trim_db=trim_db,
+                fanin_coupling_capture_kwargs=coupling_capture_kwargs,
             )
         except CarrierCannotHostEq as exc:
             return _log_reconcile_result(
@@ -279,6 +291,13 @@ async def reconcile_current_dsp(
 
         if (
             not force
+            # MB1: under =fifo the shared capture must flip loopback->File even on
+            # a flat profile. This noop fired BEFORE the capture-diff, so a flat
+            # speaker armed the pipe-writer while Camilla kept capturing the dead
+            # loopback -> silent outage. When coupling kwargs are set, fall
+            # through to the YAML-diff below so the arm actually applies (it still
+            # returns `unchanged` if the File capture is already loaded).
+            and not coupling_capture_kwargs
             and carrier.kind == "base_flat"
             and sound_filter_count == 0
             and trim_db == 0.0
@@ -626,16 +645,22 @@ async def restore_buffered_config(
         render_id = str(time.time_ns())
 
         def _prepare() -> dict[str, Any]:
-            # Re-emit the buffered config from saved intent (NO capture_kwargs =
-            # the default ALSA fan-in capture). carrier_for_loaded_config on the
-            # lean config resolves to the same stereo-host carrier that emitted
-            # it, so room PEQs are preserved on the buffered config too.
+            # Re-emit the buffered config from saved intent.
+            # carrier_for_loaded_config on the lean config resolves to the same
+            # stereo-host carrier that emitted it, so room PEQs are preserved on
+            # the buffered config too.
+            # H1: thread the SHARED fan-in→Camilla coupling here too. Under =fifo
+            # the buffered (non-lean) capture must be the fan-in FIFO, not the
+            # default loopback — otherwise leave-lean (with both flags on)
+            # restores a loopback config while fan-in writes the pipe → silent
+            # outage. Default loopback → {} → the unchanged ALSA capture.
             carrier = carrier_for_loaded_config(lean_path, config_dir=config_path)
             result = carrier.reemit(
                 profile,
                 out_path=out_path,
                 profile_id=render_id,
                 output_trim_db=trim_db,
+                fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
             )
             return {"room_peq_count": result.room_peq_count}
 

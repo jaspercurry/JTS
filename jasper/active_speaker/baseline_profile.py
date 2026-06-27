@@ -24,6 +24,7 @@ from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
+    DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
     FilterSpec,
     PeqFilter,
 )
@@ -954,6 +955,9 @@ def recompose_baseline_yaml(
     output_trim_db: float = 0.0,
     playback_device: str | None = None,
     out_path: str | Path | None = None,
+    capture_pipe_path: str | None = None,
+    resampler_type: str | None = None,
+    resampler_profile: str = DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit the active-speaker baseline YAML for the current accepted
     evidence, with optional program-domain room PEQ / preference EQ inserted
@@ -987,9 +991,19 @@ def recompose_baseline_yaml(
     fan-in-fed program domain — a solo speaker's single graph and a pair
     leader's bake instance (``camilla#1``). A wireless follower (and a leader's
     own-driver instance, ``camilla#2``) is Layer-A-only and never recomposes
-    preference EQ, so this seam always captures from the default fan-in tap. The
+    preference EQ, so this seam always captures from the fan-in program tap. The
     role-varying capture (the round-trip loopback) belongs to the driver-domain
     emit on build/apply, where ``capture_device`` lives.
+
+    The fan-in program tap is either the default ALSA snd-aloop capture
+    (``capture_pipe_path`` unset — byte-identical to today) OR the SHARED
+    fan-in→Camilla coupling's named pipe (``capture_pipe_path`` +
+    ``resampler_type`` set, threaded from the graph carrier under
+    ``JASPER_FANIN_CAMILLA_COUPLING=fifo``). Either way Layer A is rebuilt from
+    the canonical evidence and unchanged; only the program-domain capture block
+    differs. ``enable_rate_adjust`` is intentionally NOT a parameter — the active
+    graph hardcodes it true, so the File capture only additionally needs the
+    async resampler.
 
     **Gate scope (intentionally a subset of the candidate builder).** This only
     re-checks what it needs to EMIT a structurally-valid baseline — playback
@@ -1052,6 +1066,9 @@ def recompose_baseline_yaml(
         output_trim_db=output_trim_db,
         out_path=out_path,
         baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
+        capture_pipe_path=capture_pipe_path,
+        resampler_type=resampler_type,
+        resampler_profile=resampler_profile,
     )
     return yaml, []
 

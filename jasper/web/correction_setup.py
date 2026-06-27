@@ -1078,6 +1078,7 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
     )
     from jasper.dsp_apply import DspApplyError, apply_dsp_config
     from jasper.correction.status import describe_current_config
+    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
     from jasper.sound.graph_carrier import (
         CarrierCannotHostEq,
         carrier_for_loaded_config,
@@ -1092,6 +1093,9 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
     out_path = sess.cfg.config_dir / (
         f"correction_measurement_{sess.session_id}_{int(sess.started_at)}.yml"
     )
+    # The measurement graph must capture the SAME program tap fan-in is feeding,
+    # else under =fifo it would measure a dead loopback. Thread the coupling.
+    coupling_capture_kwargs = coupling_capture_kwargs_from_env()
 
     async def _prepare_config() -> dict[str, Any]:
         anchor = await cam.get_config_file_path(best_effort=False)
@@ -1103,6 +1107,7 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
             room_peqs=[],
             out_path=out_path,
             profile_id=f"measurement-{sess.session_id}",
+            fanin_coupling_capture_kwargs=coupling_capture_kwargs,
         )
         assert_correction_graph_safe(result.yaml)
         sess.pre_measurement_config_path = Path(anchor)
@@ -1958,6 +1963,7 @@ async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
     """
 
     from jasper.correction.runtime_safety import assert_correction_graph_safe
+    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
     from jasper.sound.camilla_yaml import sound_config_path
     from jasper.sound.graph_carrier import carrier_for_loaded_config
     from jasper.sound.profile import load_profile
@@ -1978,6 +1984,7 @@ async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
         room_peqs=[],
         out_path=out_path,
         profile_id=f"correction-reset-{time.time_ns()}",
+        fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
     )
     assert_correction_graph_safe(result.yaml)
     log_event(
