@@ -35,15 +35,23 @@ RECONCILE_PROFILE_ID = "reconcile-current-dsp"
 # the on-disk file and a freshly re-emitted candidate differ in this header
 # even when the DSP is byte-identical otherwise. Strip the marker on both sides
 # before the "is the config unchanged?" comparison so the no-op path can fire on
-# a redeploy; nothing else in the YAML carries the id, so a genuine change
-# (filters, gains, devices, trim, room PEQs) is never masked.
-_CONFIG_ID_HEADER_RE = re.compile(r" \(id=[^)]*\)")
+# a redeploy.
+#
+# Anchored to the exact ``# Auto-generated JTS DSP config (id=...).`` header line
+# (group 1 is that line minus the marker) so a stray ``(id=...)`` substring
+# elsewhere in the YAML — e.g. inside a device name like
+# ``hw:CARD=x (id=realA)`` — is NEVER stripped. A genuine change to such a value
+# must still register as different, so no real change can be masked.
+_CONFIG_ID_HEADER_RE = re.compile(
+    r"^(# Auto-generated JTS DSP config) \(id=[^)]*\)\.$",
+    re.MULTILINE,
+)
 
 
 def _config_without_id_header(text: str) -> str:
     """Return ``text`` with the cosmetic ``(id=...)`` header marker removed."""
 
-    return _CONFIG_ID_HEADER_RE.sub("", text)
+    return _CONFIG_ID_HEADER_RE.sub(r"\1.", text)
 
 
 def _log_reconcile_result(payload: dict[str, Any]) -> dict[str, Any]:

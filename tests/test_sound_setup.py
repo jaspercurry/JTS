@@ -40,7 +40,7 @@ from jasper.sound.profile import (
     load_profile_library,
     save_profile,
 )
-from jasper.sound.runtime import reconcile_current_dsp
+from jasper.sound.runtime import _config_without_id_header, reconcile_current_dsp
 from jasper.sound.settings import (
     DEFAULT_VOLUME_FLOOR_DB,
     SoundSettings,
@@ -3381,6 +3381,40 @@ async def test_reconcile_current_dsp_logs_unchanged_config(
     assert "id=1717000000000000001" in current.read_text()
     assert "event=sound.reconcile_current_dsp" in caplog.text
     assert "result=unchanged" in caplog.text
+
+
+def test_config_id_header_strip_only_touches_the_header_line():
+    # The unchanged-detection normalizer must collapse ONLY the cosmetic
+    # ``# Auto-generated JTS DSP config (id=...).`` header line. A ``(id=...)``
+    # span anywhere else in the YAML (e.g. inside a device name) must survive,
+    # so a genuine change to such a value still compares as different and can
+    # never be masked as "unchanged". Guards against an unanchored global sub.
+    header_ts = (
+        "---\n"
+        "# Auto-generated JTS DSP config (id=1717000000000000001).\n"
+        'devices:\n  device: "hw:CARD=x (id=realA)"\n'
+    )
+    header_reconcile = (
+        "---\n"
+        "# Auto-generated JTS DSP config (id=reconcile-current-dsp).\n"
+        'devices:\n  device: "hw:CARD=x (id=realA)"\n'
+    )
+    # Differing header ids collapse to the same normalized text...
+    assert _config_without_id_header(header_ts) == _config_without_id_header(
+        header_reconcile
+    )
+    # ...and the header line loses only its marker.
+    assert "# Auto-generated JTS DSP config.\n" in _config_without_id_header(header_ts)
+
+    # A ``(id=...)`` substring OUTSIDE the header is preserved verbatim.
+    assert '(id=realA)' in _config_without_id_header(header_ts)
+
+    # Same header id, but a different device-name ``(id=...)`` span: the configs
+    # must stay DIFFERENT after normalization (no masking of a real change).
+    device_a = header_reconcile
+    device_b = header_reconcile.replace("(id=realA)", "(id=realB)")
+    assert _config_without_id_header(device_a) != _config_without_id_header(device_b)
+
 
 async def test_apply_profile_no_trim_by_default_so_boosts_boost(
     tmp_path: Path, monkeypatch
