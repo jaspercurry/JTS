@@ -104,6 +104,16 @@ build_install_rust_daemon() {
         "${REPO_DIR}/rust/jasper-tts-protocol/" \
         "$(dirname "${cache_dir}")/jasper-tts-protocol/"
     chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-tts-protocol"
+    # Same for the shared clock crate (jasper-clock) so jasper-outputd's
+    # `path = "../jasper-clock"` resolves. Guarded by existence so a branch
+    # predating the crate still builds (its daemons don't depend on it).
+    if [[ -d "${REPO_DIR}/rust/jasper-clock" ]]; then
+        rsync -a --delete \
+            --exclude='target/' \
+            "${REPO_DIR}/rust/jasper-clock/" \
+            "$(dirname "${cache_dir}")/jasper-clock/"
+        chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-clock"
+    fi
     chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     local -a cargo_env=()
