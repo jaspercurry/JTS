@@ -23,6 +23,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CHUNKSIZE,
+    DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
@@ -30,6 +31,8 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
     ensure_volume_limit_db,
+    file_capture_resampler_yaml,
+    is_async_resampler,
 )
 from jasper.camilla_emit import emit_master_gain_pipeline
 from jasper.camilla_stereo_prefix import build_stereo_prefix
@@ -49,6 +52,11 @@ _JTS_GENERATED_RE = re.compile(
     r"|correction_measurement_[A-Za-z0-9]+_\d+"
     r"|grouping_leader|grouping_solo_restore|grouping_follower)\.yml$"
 )
+
+# Lean-lane File-capture resampler vocabulary lives in the shared contract
+# (jasper.camilla_config_contract): DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE /
+# _PROFILE, is_async_resampler(), file_capture_resampler_yaml(). Imported above
+# so the stereo and active-speaker emitters share one v4-schema definition.
 
 
 def emit_sound_config(
@@ -71,6 +79,9 @@ def emit_sound_config(
     enable_rate_adjust: bool = True,
     channel_split: ChannelSplit | None = None,
     playback_pipe_path: str | None = None,
+    capture_pipe_path: str | None = None,
+    resampler_type: str | None = None,
+    resampler_profile: str | None = DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile.
 
@@ -156,6 +167,40 @@ def emit_sound_config(
             "channel_split (member channel-selection weave) are mutually "
             "exclusive topology axes — see HANDOFF-multiroom.md §2"
         )
+    # Stage 4 lean-lane File-CAPTURE guards (fail LOUD at the API boundary,
+    # the MIRROR of the pipe-SINK guards below). A File capture has no clock,
+    # so CamillaDSP cannot rate-tune the capture side (rate-adjust method 1 is
+    # unavailable). The real DAC on playback IS the chain's clock; the only way
+    # it can discipline a clockless File capture is rate-adjust method 2 —
+    # async-resampler ratio correction. So a File capture REQUIRES BOTH
+    # enable_rate_adjust=True AND an async resampler. Emitting either without
+    # the other lets the solo lean lane free-run against the DAC (the Stage-1
+    # AEC3-path drift hazard); refuse it rather than ship silent drift. Placed
+    # ABOVE the pipe-sink block so the both-set case raises its own message
+    # first (the sink block would otherwise raise on enable_rate_adjust).
+    if capture_pipe_path is not None:
+        if playback_pipe_path is not None:
+            raise ValueError(
+                "capture_pipe_path (File capture, lean lane) and "
+                "playback_pipe_path (File sink) cannot both be set — the lean "
+                "lane reads a pipe and writes the REAL DAC; a File-in/File-out "
+                "config has no clock anywhere and would free-run"
+            )
+        if not enable_rate_adjust:
+            raise ValueError(
+                "capture_pipe_path (File capture) requires "
+                "enable_rate_adjust=True — the real DAC playback clock "
+                "disciplines the clockless File capture via CamillaDSP's "
+                "async-resampler ratio correction; without it the lean lane "
+                "free-runs (Stage-1 AEC3 drift hazard)"
+            )
+        if not is_async_resampler(resampler_type):
+            raise ValueError(
+                "capture_pipe_path (File capture) requires an async resampler "
+                "(AsyncSinc/AsyncPoly — CamillaDSP v4 vocabulary) — "
+                "enable_rate_adjust on a clockless File capture has nothing to "
+                f"steer without one; got resampler_type={resampler_type!r}"
+            )
     # Bonded-leader pipe-sink guards (fail LOUD at the API boundary,
     # same pattern as above). A File sink has no output clock, so
     # rate_adjust has nothing to steer — and the synced chain's one
@@ -214,6 +259,28 @@ def emit_sound_config(
     channels: 2
     device: "{playback_device}"
     format: {playback_format}"""
+    # Capture source: ALSA loopback (solo — the default, byte-identical) or
+    # the Stage-4 lean-lane File/pipe capture fed by a timing-preserving
+    # source (USB / shairport pipe). Mirror of the playback if/else above.
+    if capture_pipe_path is not None:
+        capture_yaml = f"""  capture:
+    type: File
+    channels: 2
+    filename: "{capture_pipe_path}"
+    format: {capture_format}"""
+    else:
+        capture_yaml = f"""  capture:
+    type: Alsa
+    channels: 2
+    device: "{capture_device}"
+    format: {capture_format}"""
+    # The resampler block appears ONLY when requested (the lean lane), so every
+    # existing ALSA-capture caller is byte-identical (no resampler key).
+    resampler_line = (
+        file_capture_resampler_yaml(resampler_type, resampler_profile)
+        if resampler_type is not None
+        else ""
+    )
     yaml = f"""---
 # Auto-generated JTS DSP config{header_id}.
 # Source: jasper.sound.camilla_yaml.emit_sound_config
@@ -232,12 +299,8 @@ devices:
   queuelimit: 4
   target_level: {target_level}
   volume_limit: {volume_limit_db:.1f}
-  enable_rate_adjust: {rate_adjust_literal}
-  capture:
-    type: Alsa
-    channels: 2
-    device: "{capture_device}"
-    format: {capture_format}
+  enable_rate_adjust: {rate_adjust_literal}{resampler_line}
+{capture_yaml}
 {playback_yaml}
 
 filters:
