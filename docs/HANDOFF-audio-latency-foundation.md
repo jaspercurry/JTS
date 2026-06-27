@@ -70,8 +70,8 @@ usbsink bridge's normal snd-aloop lane uses the high-16 S16 view; the FIFO must
 | 4a | File-capture CamillaDSP emitter + fail-loud guards (stereo + active) | shipped, default-OFF |
 | 4b-i | `decide_lean_route` pure routing policy ([`jasper/lean_lane.py`](../jasper/lean_lane.py)) | shipped, unwired |
 | 4b-ii | usbsink FIFO-output mode (`JASPER_USBSINK_OUTPUT_MODE=fifo`) | shipped, default-OFF |
-| 4b-iii | reconciler stages + loads the lean File-capture config | **owed** |
-| 4b-iv | wire `decide_lean_route` into mux `_tick` (enter/leave-lean ladders, fail-loud → buffered) | **owed** |
+| 4b-iii | stage + validate + classify the lean config (`jasper.sound.runtime.stage_lean_capture_config`) — emit + `--check` + `classify_camilla_graph`, **no live-load** | shipped, default-OFF |
+| 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim), arm the usbsink FIFO output at runtime, and swap/restore via mux `_tick` (`decide_lean_route` → enter/leave-lean ladders, fail-loud → buffered) | **owed** |
 | 5 | shairport-sync built `--with-pipe` (capable binary; runtime AirPlay pipe lane is future, #1318-gated) | shipped, dormant |
 | 6 | `jasper-doctor` DAC USB sync-mode advisory (clock-coherence signal, *not* the chip-AEC gate) | shipped |
 
@@ -112,7 +112,7 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-06-27 (lean-lane emitter + FIFO mode + decision policy
+Last verified: 2026-06-27 (4b-iii stage_lean_capture_config shipped; lean-lane emitter + FIFO mode + decision policy
 landed; resampler v4 object schema confirmed against the CamillaDSP v4.1.3
 config reference; outputd-unchanged topology confirmed against
 `camilla_config_contract.DEFAULT_PLAYBACK_DEVICE` + `rust/jasper-outputd`).
