@@ -29,10 +29,11 @@
 //
 // Security: every peer field (name, room, address, hostname-derived URL) and
 // every grouping value is untrusted — it arrives over mDNS / from a config
-// file. This module builds DOM exclusively through the h()/svg() helpers
-// below, whose text children become document.createTextNode (escaped by
-// construction). There is NO innerHTML path and NO inline onclick with
-// interpolated strings. The peer click-through href is additionally
+// file. This module builds DOM exclusively through the shared h()/svg()
+// helpers (/assets/shared/js/dom.js), whose text children become
+// document.createTextNode (escaped by construction). There is NO innerHTML
+// path and NO inline onclick with interpolated strings. The peer
+// click-through href is additionally
 // scheme-guarded (http/https only) as defense-in-depth against a poisoned
 // mDNS address. The wake-response toggle needs no confirm; the bond card's
 // destructive "Dissolve pair" action uses jtsConfirm (the styled <dialog>,
@@ -42,6 +43,7 @@
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { localWebHost } from "/assets/shared/js/local-web-host.js";
+import { h, svg } from "/assets/shared/js/dom.js";
 import { createPairBalanceController } from "./pair-balance-controller.js";
 import {
   BALANCE_MAX_DB,
@@ -59,103 +61,6 @@ import {
 const POLL_MS = 7000;
 const BALANCE_LIVE_COMMIT_MS = 150;
 const root = document.getElementById("app");
-
-// ---------------------------------------------------------------------------
-// Tiny hyperscript helper — a self-contained twin of the system-status dom.js
-// h()/svg(). Kept inline because this page owns only main.js. Text children
-// become text nodes, so untrusted strings are escaped by the DOM; there is no
-// innerHTML to forget to sanitise.
-// ---------------------------------------------------------------------------
-const SVG_NS = "http://www.w3.org/2000/svg";
-
-function parseTag(tag) {
-  let tagName = "div";
-  const classes = [];
-  let id = "";
-  const match = tag.match(/^([a-zA-Z][\w-]*)?((?:[.#][\w-]+)*)$/);
-  if (match) {
-    if (match[1]) tagName = match[1];
-    for (const part of (match[2] || "").match(/[.#][\w-]+/g) || []) {
-      if (part[0] === ".") classes.push(part.slice(1));
-      else id = part.slice(1);
-    }
-  } else {
-    tagName = tag;
-  }
-  return { tagName, classes, id };
-}
-
-function isChildLike(v) {
-  return (
-    v instanceof Node ||
-    Array.isArray(v) ||
-    typeof v === "string" ||
-    typeof v === "number"
-  );
-}
-
-function appendChildren(el, children) {
-  for (const c of children) {
-    if (c == null || c === false) continue;
-    if (Array.isArray(c)) appendChildren(el, c);
-    else if (c instanceof Node) el.appendChild(c);
-    else el.appendChild(document.createTextNode(String(c)));
-  }
-}
-
-function h(tag, props, ...children) {
-  const { tagName, classes, id } = parseTag(tag);
-  const el = document.createElement(tagName);
-  if (id) el.id = id;
-  if (classes.length) el.className = classes.join(" ");
-  if (props && typeof props === "object" && !isChildLike(props)) {
-    for (const key in props) {
-      const value = props[key];
-      if (value == null || value === false) continue;
-      if (key === "class" || key === "className") {
-        el.className = el.className ? `${el.className} ${value}` : value;
-      } else if (key === "style" && typeof value === "object") {
-        for (const prop in value) {
-          if (prop.includes("-")) el.style.setProperty(prop, value[prop]);
-          else el.style[prop] = value[prop];
-        }
-      } else if (key.startsWith("attr:")) {
-        el.setAttribute(key.slice(5), value);
-      } else if (key in el) {
-        try { el[key] = value; } catch { el.setAttribute(key, value); }
-      } else {
-        el.setAttribute(key, value);
-      }
-    }
-  } else if (props !== undefined) {
-    children.unshift(props);
-  }
-  appendChildren(el, children);
-  return el;
-}
-
-function svg(tag, props, ...children) {
-  const { tagName, classes, id } = parseTag(tag);
-  const el = document.createElementNS(SVG_NS, tagName);
-  if (id) el.setAttribute("id", id);
-  if (classes.length) el.setAttribute("class", classes.join(" "));
-  if (props && typeof props === "object" && !isChildLike(props)) {
-    for (const key in props) {
-      const value = props[key];
-      if (value == null || value === false) continue;
-      if (key === "class" || key === "className") el.setAttribute("class", value);
-      else el.setAttribute(key, value);
-    }
-  } else if (props !== undefined) {
-    children.unshift(props);
-  }
-  for (const c of children) {
-    if (c == null || c === false) continue;
-    if (c instanceof Node) el.appendChild(c);
-    else el.appendChild(document.createTextNode(String(c)));
-  }
-  return el;
-}
 
 // ---------------------------------------------------------------------------
 // Small helpers

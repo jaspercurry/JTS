@@ -504,7 +504,13 @@ assigning to `innerHTML`, or use DOM/text APIs where practical — on the
 ES-module pages that means `escapeHtml` from
 [`/assets/shared/js/escape.js`](deploy/assets/shared/js/escape.js), the
 shared module promoted from per-page copies; the conventions test fails
-any page module that re-declares its own escaper. Do not
+any page module that re-declares its own escaper. The text-node DOM
+builder `h()`/`svg()` — the basis of the "untrusted strings never reach
+innerHTML" argument, since string children become `createTextNode` — is
+likewise the single shared module
+[`/assets/shared/js/dom.js`](deploy/assets/shared/js/dom.js); pages import
+`h`/`svg` from there and the same conventions test fails any page module
+that re-declares its own `h()`/`svg()`. Do not
 put untrusted strings into generated inline JavaScript such as
 `onclick="handler('...')"`. Prefer escaped `data-*` attributes with a
 delegated click handler.

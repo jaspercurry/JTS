@@ -6,7 +6,7 @@
 // (app.css). Everything returns DOM nodes via dom.js, so text content is
 // escaped by construction — there is no innerHTML path.
 
-import { h, svg } from "./dom.js";
+import { h, svg } from "/assets/shared/js/dom.js";
 
 // A titled section: a cased card title above a card body. Returns the section
 // plus the (empty) body container, so the poll loop can re-render just the

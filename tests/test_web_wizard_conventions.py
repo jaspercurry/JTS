@@ -655,3 +655,51 @@ def test_modules_do_not_redefine_the_shared_html_escaper():
         "(or escapeAttr / the escapeText alias) from /assets/shared/js/escape.js "
         "instead:\n" + "\n".join(offenders)
     )
+
+
+# The text-node DOM builder (h() / svg()) is the entire basis of the
+# "untrusted strings never reach innerHTML" safety argument: string children
+# become text nodes, so transcripts, provider names, device labels, etc. are
+# escaped by the DOM. It was copy-pasted across the /chat/ and /system/ module
+# graphs (and had already drifted — `catch (_)` vs `catch`, divergent comments)
+# before it was promoted to the shared module at /assets/shared/js/dom.js (same
+# shared-by-promotion path as dialog.js / escape.js / http.js). Pages now import
+# h/svg from there. This test keeps the duplication from creeping back: no
+# canonical module may re-declare its own h()/svg() builder again — dom.js is
+# the one home for the XSS-safety primitive.
+_SHARED_DOM_MODULE = Path("deploy/assets/shared/js/dom.js")
+_LOCAL_DOM_BUILDER_DEF_RE = re.compile(r"function\s+(?:h|svg)\b")
+
+
+def test_shared_dom_module_exists_and_exports_the_builder():
+    """The drift test below is only meaningful once the shared home exists and
+    exports the names pages import."""
+    assert _SHARED_DOM_MODULE.is_file(), (
+        f"{_SHARED_DOM_MODULE} (shared text-node DOM builder) is missing"
+    )
+    src = _SHARED_DOM_MODULE.read_text()
+    assert re.search(r"export\s+function\s+h\b", src), (
+        "dom.js must export h"
+    )
+    assert re.search(r"export\s+function\s+svg\b", src), (
+        "dom.js must export svg"
+    )
+
+
+def test_modules_do_not_redefine_the_shared_dom_builder():
+    """No deploy/assets module re-declares h()/svg() now that the shared dom.js
+    owns the text-node DOM builder — they import from /assets/shared/js/dom.js
+    instead. dom.js itself is the canonical definition and is exempt."""
+    assert WEB_MODULE_FILES, "expected web ES modules to scan"
+    offenders = []
+    for path in WEB_MODULE_FILES:
+        if path.resolve() == _SHARED_DOM_MODULE.resolve():
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if _LOCAL_DOM_BUILDER_DEF_RE.search(line):
+                offenders.append(f"{path}:{lineno}: {line.strip()}")
+    assert offenders == [], (
+        "these modules redefine the shared text-node DOM builder — import "
+        "h/svg from /assets/shared/js/dom.js instead (it is the one home for "
+        "the XSS-safety primitive):\n" + "\n".join(offenders)
+    )

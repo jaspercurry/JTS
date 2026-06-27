@@ -8,7 +8,7 @@
 // orchestration. Status tones use the named helpers in format.js so the
 // colour thresholds stay aligned with the researched Pi/Linux semantics.
 
-import { h } from "./dom.js";
+import { h } from "/assets/shared/js/dom.js";
 import { sparkline, cpuBars } from "./charts.js";
 import {
   fmtBytes, fmtAgo, fmtEpochAgo, fmtDur, fmtMsAge, fmtRatePerHour,
