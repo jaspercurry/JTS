@@ -11,15 +11,19 @@ without SSHing into journald first. It is intentionally small: no log bundle,
 no raw journal retention, no unbounded history.
 
 Solo gate: the events this ring captures (``multiroom.reconcile.*``,
-``restart_broker.*``, ``grouping_supervisor.*``) only fire on a speaker that
-is part of a multiroom bond. A solo speaker (no grouping configured — the
-overwhelmingly common single-speaker household) has no cascade to
-reconstruct, so ``_tick`` skips the per-unit ``journalctl`` subprocess work
-and only re-reads the cheap grouping env (one file read) each cycle. The
-moment a bond is configured the scan resumes with no restart. A configured-
-but-invalid (fail-LOUD) bond is intentionally NOT treated as solo: its
-reconcile events are exactly what an operator debugging the broken bond
-wants in the ring.
+``restart_broker.*``, ``grouping_supervisor.*``) chiefly fire on a speaker
+that is part of a multiroom bond. (``restart_broker.*`` is the exception —
+the broker also serves solo in-process callers such as wifi-scan-repair,
+/sources/, /correction/, wake-corpus, and active-speaker startup — so the
+solo gate intentionally trades away capturing those non-multiroom restarts,
+which are not what this multiroom-cascade ring exists to reconstruct.) A solo
+speaker (no grouping configured — the overwhelmingly common single-speaker
+household) has no bond cascade to reconstruct, so ``_tick`` skips the
+per-unit ``journalctl`` subprocess work and only re-reads the cheap grouping
+env (one file read) each cycle. The moment a bond is configured the scan
+resumes with no restart. A configured-but-invalid (fail-LOUD) bond is
+intentionally NOT treated as solo: its reconcile events are exactly what an
+operator debugging the broken bond wants in the ring.
 
 Disable knob: set ``JASPER_MULTIROOM_CASCADE_TIMELINE=disabled`` in
 /etc/jasper/jasper.env and restart jasper-control. Mirrors
