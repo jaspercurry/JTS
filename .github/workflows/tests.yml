@@ -233,6 +233,7 @@ jobs:
         run: |
           set -euo pipefail
           for crate in \
+            rust/jasper-clock \
             rust/jasper-tts-protocol \
             rust/jasper-fanin \
             rust/jasper-outputd \
@@ -251,10 +252,16 @@ jobs:
         if: steps.rust-needed.outputs.run == 'true'
         with:
           workspaces: |
+            rust/jasper-clock
             rust/jasper-fanin
             rust/jasper-outputd
             rust/jasper-dual-dac-lab
             rust/jasper-tts-protocol
+
+      - name: jasper-clock — clippy
+        if: steps.rust-needed.outputs.run == 'true'
+        working-directory: rust/jasper-clock
+        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
 
       - name: jasper-tts-protocol — clippy
         if: steps.rust-needed.outputs.run == 'true'
@@ -275,6 +282,14 @@ jobs:
         if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-dual-dac-lab
         run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
+
+      - name: jasper-clock — build + test (pure DLL crate; no ALSA)
+        if: steps.rust-needed.outputs.run == 'true'
+        # The shared clock primitive (spa_dll port). Pure Rust, no libasound,
+        # so this is the crate whose convergence/no-oscillation properties are
+        # the regression gate for every consumer's loop math.
+        working-directory: rust/jasper-clock
+        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
       - name: jasper-tts-protocol — build + test (shared wire-protocol crate)
         if: steps.rust-needed.outputs.run == 'true'

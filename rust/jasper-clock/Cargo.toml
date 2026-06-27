@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Pure clock-tracking primitive: a Rust port of PipeWire's spa_dll
+# second-order delay-locked loop. No I/O, no ALSA, no PipeWire dependency —
+# this crate is the ONE shared clock-reconciliation algorithm that every
+# clock-domain boundary in the JTS audio daemons composes (software-AEC3
+# reference drift, chip-AEC SRO, the content-bridge rate match, future
+# wireless-sub / multiroom-follower locks). See
+# docs/RESEARCH-pipewire-low-latency.md Part 3.
+#
+# Deliberately dependency-free so it compiles and unit-tests on any host
+# (the daemons that consume it link libasound, which is Linux-only). Pin to
+# the same edition the production daemons use; CI builds it on Trixie-era
+# rustc (1.85.0).
+
+[package]
+name = "jasper-clock"
+version = "0.1.0"
+edition = "2021"
+description = "Pure clock-tracking DLL (spa_dll port) shared across the JTS audio daemons."
+license = "Apache-2.0"
+repository = "https://github.com/jaspercurry/JTS"
+authors = ["Jasper Curry <jaspercurry@gmail.com>"]
+rust-version = "1.75"
+
+[dependencies]
