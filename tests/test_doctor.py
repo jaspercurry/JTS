@@ -5758,3 +5758,64 @@ def test_dac_sync_mode_warns_when_state_unavailable(monkeypatch):
     result = doctor.check_dac_usb_sync_mode()
     assert result.status == "warn"
     assert "output hardware state unavailable" in result.detail
+
+
+# --- G3: outputd xrun-rate WARN tier (audio-latency foundation) ---
+
+def _xrun_section(rate_per_hour, last_xrun_age_ms):
+    """Minimal outputd STATUS content/dac section for the xrun-rate helper."""
+    return {
+        "xrun_count": 0,
+        "xrun_rate_per_hour": rate_per_hour,
+        "last_xrun_age_ms": last_xrun_age_ms,
+    }
+
+
+def test_outputd_xrun_warning_none_when_no_recent_xrun():
+    """last_xrun_age_ms=null (no xrun ever) → never warn, regardless of rate."""
+    quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
+    assert doctor.audio._outputd_xrun_rate_warning(quiet, quiet) is None
+
+
+def test_outputd_xrun_warning_suppressed_for_stale_burst():
+    """A high all-time rate whose last xrun is OLD (a cleared deploy-time
+    burst) must NOT warn — the WARN is for a sustained, *current* problem."""
+    stale = _xrun_section(
+        rate_per_hour=50.0,
+        last_xrun_age_ms=doctor.audio._OUTPUTD_XRUN_RECENT_AGE_MS + 1,
+    )
+    assert doctor.audio._outputd_xrun_rate_warning(stale, stale) is None
+
+
+def test_outputd_xrun_warning_suppressed_for_recent_single_blip():
+    """A recent xrun with a LOW sustained rate (one transient blip) must not
+    warn — only a rate at/above the threshold qualifies."""
+    blip = _xrun_section(
+        rate_per_hour=doctor.audio._OUTPUTD_XRUN_RATE_WARN_PER_HOUR - 0.1,
+        last_xrun_age_ms=1000,
+    )
+    assert doctor.audio._outputd_xrun_rate_warning(blip, blip) is None
+
+
+def test_outputd_xrun_warning_fires_on_recent_sustained_rate():
+    """Recent xrun AND a sustained rate at/above threshold → warn, naming the
+    offending lane and both fields."""
+    hot = _xrun_section(
+        rate_per_hour=doctor.audio._OUTPUTD_XRUN_RATE_WARN_PER_HOUR,
+        last_xrun_age_ms=2000,
+    )
+    quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
+    reason = doctor.audio._outputd_xrun_rate_warning(quiet, hot)
+    assert reason is not None
+    assert "dac" in reason
+    assert "xrun_rate_per_hour" in reason
+    assert "last_xrun_age_ms" in reason
+
+
+def test_outputd_xrun_warning_reports_worst_lane():
+    """When both lanes qualify, the higher-rate lane is reported."""
+    content = _xrun_section(rate_per_hour=8.0, last_xrun_age_ms=1000)
+    dac = _xrun_section(rate_per_hour=40.0, last_xrun_age_ms=1000)
+    reason = doctor.audio._outputd_xrun_rate_warning(content, dac)
+    assert reason is not None
+    assert reason.startswith("dac ")
