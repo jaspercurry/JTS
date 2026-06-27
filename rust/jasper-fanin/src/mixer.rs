@@ -126,6 +126,31 @@ pub struct Mixer {
     /// (consumer behind) or xrun. A growing value means the snapserver
     /// consumer is behind; surfaced via STATUS, NEVER escalated (inv-1).
     pub music_output_drops: Arc<AtomicU64>,
+    /// Coupling transport + (under `Fifo`) the shared FIFO observability
+    /// counters, cloned for the STATUS endpoint. `None` of the FIFO fields under
+    /// `Loopback` (the default), so STATUS reports `transport=loopback` with no
+    /// fifo block — byte-identical to the pre-coupling snapshot.
+    pub coupling: CouplingObservability,
+}
+
+/// Coupling transport echo + the shared FIFO counters for the STATUS endpoint.
+/// Under `Loopback` (default), `fifo` is `None` and STATUS reports only
+/// `transport:"loopback"`. Under `Fifo`, `fifo` carries the pipe path + the
+/// reopen / dropped-period / live-pipe-size atomics the `FifoWriter` updates.
+#[derive(Clone)]
+pub struct CouplingObservability {
+    pub transport: &'static str,
+    pub fifo: Option<FifoObservability>,
+}
+
+/// The shared FIFO counters (cloned Arcs from the live `FifoWriter`).
+#[derive(Clone)]
+pub struct FifoObservability {
+    pub path: String,
+    pub requested_pipe_bytes: u32,
+    pub reopen_count: Arc<AtomicU64>,
+    pub dropped_periods: Arc<AtomicU64>,
+    pub actual_pipe_bytes: Arc<AtomicU64>,
 }
 
 pub struct Input {
@@ -183,7 +208,7 @@ impl Mixer {
         // substream — byte-identical to today. Fifo ensures + lazily opens the
         // bounded named pipe CamillaDSP File-captures (the lower-latency
         // coupling). Exactly one is active.
-        let output = match config.camilla_coupling {
+        let (output, coupling) = match config.camilla_coupling {
             Coupling::Loopback => {
                 let pcm = open_output(&config.output_pcm, config)
                     .with_context(|| format!("opening output PCM {}", config.output_pcm))?;
@@ -191,7 +216,13 @@ impl Mixer {
                     "event=fanin.output.opened transport=alsa pcm={} period_frames={} buffer_frames={}",
                     config.output_pcm, config.period_frames, config.output_buffer_frames,
                 );
-                Output::Alsa(pcm)
+                (
+                    Output::Alsa(pcm),
+                    CouplingObservability {
+                        transport: "loopback",
+                        fifo: None,
+                    },
+                )
             }
             Coupling::Fifo => {
                 // The pipe is created here (producer owns it); the write end is
@@ -209,7 +240,21 @@ impl Mixer {
                     "event=fanin.output.opened transport=fifo path={} period_frames={} requested_pipe_bytes={}",
                     config.camilla_fifo_path, config.period_frames, config.fifo_pipe_bytes,
                 );
-                Output::Fifo(writer)
+                // Capture the shared counters before the writer moves into Output.
+                let (reopen_count, dropped_periods, actual_pipe_bytes) = writer.observability();
+                (
+                    Output::Fifo(writer),
+                    CouplingObservability {
+                        transport: "fifo",
+                        fifo: Some(FifoObservability {
+                            path: config.camilla_fifo_path.clone(),
+                            requested_pipe_bytes: config.fifo_pipe_bytes,
+                            reopen_count,
+                            dropped_periods,
+                            actual_pipe_bytes,
+                        }),
+                    },
+                )
             }
         };
 
@@ -259,6 +304,7 @@ impl Mixer {
             music_only_buf: vec![0i16; period_samples],
             music_frames_written: Arc::new(AtomicU64::new(0)),
             music_output_drops: Arc::new(AtomicU64::new(0)),
+            coupling,
         })
     }
 
