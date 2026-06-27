@@ -16,7 +16,7 @@
 // Those refine onStart(); the transport happy path is what ships in step 3.
 
 import { RELAY_BASE } from "./config.js";
-import { parseFragment, recordWindowMs } from "./fragment.js";
+import { parseFragment, recordWindowMs, withinUploadCap } from "./fragment.js";
 import { renderScreen } from "./render.js";
 import { RelayClient } from "./relay-client.js";
 import { importContentKey, encryptWav } from "./crypto.js";
@@ -127,6 +127,15 @@ async function onStart(ctx) {
     );
     const key = await importContentKey(contentKeyB64);
     const { blob, plaintextLen, sha256 } = await encryptWav(key, wavBytes);
+    // Page half of the dual size cap (§8): fail loud locally rather than after a
+    // wasted upload that the Worker would 413.
+    if (!withinUploadCap(blob.length, spec)) {
+      setStatus(
+        "This recording is too large to upload. Try a shorter measurement.",
+        "error",
+      );
+      return;
+    }
     await client.putBlob(blob, plaintextLen, sha256);
 
     setStatus("Done — your speaker is analyzing the measurement.", "done");

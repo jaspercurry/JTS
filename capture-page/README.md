@@ -57,13 +57,15 @@ origins distinct so the relay's CORS allowlist (`CAPTURE_ORIGIN`) is meaningful.
 ## Test
 
 ```sh
-node tests/js/capture_render_test.mjs
-node tests/js/capture_crypto_test.mjs
-node tests/js/capture_relay_client_test.mjs
-node tests/js/capture_fragment_test.mjs
+node tests/js/capture_render_test.mjs        # DATA renderer (XSS-inert)
+node tests/js/capture_crypto_test.mjs        # E2E AES-GCM + integrity
+node tests/js/capture_relay_client_test.mjs  # phone-side relay requests
+node tests/js/capture_fragment_test.mjs      # fragment parse + upload cap
+node tests/js/capture_constraints_test.mjs   # realized-constraints verify/degrade
+node tests/js/capture_wakelock_test.mjs      # Screen Wake Lock + visibility abort
 ```
 
-All four run in CI through `tests/test_capture_page_js.py` (pytest) and
+All six run in CI through `tests/test_capture_page_js.py` (pytest) and
 `scripts/check-js-syntax.sh` (`node --check`).
 
 ## Needs on-device validation

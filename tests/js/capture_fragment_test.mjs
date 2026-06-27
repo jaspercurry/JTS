@@ -10,7 +10,12 @@
 
 import assert from "node:assert/strict";
 
-import { parseFragment, recordWindowMs, FragmentError } from "../../capture-page/js/fragment.js";
+import {
+  parseFragment,
+  recordWindowMs,
+  withinUploadCap,
+  FragmentError,
+} from "../../capture-page/js/fragment.js";
 
 let passed = 0;
 function ok() {
@@ -57,12 +62,24 @@ function testRecordWindowDefaults() {
   ok();
 }
 
+function testWithinUploadCap() {
+  // Page half of the dual size cap.
+  assert.equal(withinUploadCap(1000, { max_upload_bytes: 2000 }), true);
+  assert.equal(withinUploadCap(3000, { max_upload_bytes: 2000 }), false);
+  assert.equal(withinUploadCap(3000, { max_upload_bytes: 3000 }), true); // boundary
+  // Absent/invalid cap defers to the Worker.
+  assert.equal(withinUploadCap(1 << 30, {}), true);
+  assert.equal(withinUploadCap(1 << 30, { max_upload_bytes: 0 }), true);
+  ok();
+}
+
 const tests = [
   testParsesFullFragment,
   testAcceptsNoLeadingHash,
   testRejectsMissingParts,
   testRejectsMalformedKey,
   testRecordWindowDefaults,
+  testWithinUploadCap,
 ];
 
 let failure = null;

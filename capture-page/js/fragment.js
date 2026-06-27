@@ -45,3 +45,13 @@ export function recordWindowMs(spec) {
   if (Number.isFinite(d) && d > 0) return d;
   return 12000;
 }
+
+// Page half of the plan's "dual size cap" (§8): the page refuses to upload a
+// blob larger than spec.max_upload_bytes so a wrong/oversized spec fails loud
+// locally rather than after a wasted capture + a Worker 413. An absent/invalid
+// cap defers to the Worker (which always enforces its own hard ceiling).
+export function withinUploadCap(byteLength, spec) {
+  const cap = spec && Number(spec.max_upload_bytes);
+  if (!Number.isFinite(cap) || cap <= 0) return true;
+  return byteLength <= cap;
+}
