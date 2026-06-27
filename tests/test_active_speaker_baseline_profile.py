@@ -7,10 +7,12 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from jasper.active_speaker.baseline_profile import (
+    _derive_corrections,
     apply_baseline_profile,
     build_baseline_profile_candidate,
 )
@@ -307,6 +309,54 @@ def _valid_config(path: str | Path) -> CamillaConfigValidationResult:
         status=ValidationStatus.VALID,
         path=str(path),
     )
+
+
+_SENSITIVITY_TRIM_FIXTURE = json.loads(
+    (Path(__file__).parent / "fixtures" / "sensitivity_trim_fixture.json").read_text()
+)
+
+
+def _derive_sensitivity_trims(way_count: int, sensitivities: dict[str, float]):
+    """Run the production datasheet-trim derivation for a sensitivity-only input.
+
+    _derive_corrections reads only preset.way_count and preset.crossover_regions
+    (the latter short-circuits with no measurements), so a minimal duck preset
+    exercises the real path. Returns {role: gain_db} for the roles the source
+    actually attributed to the sensitivity gap.
+    """
+    drivers = {
+        role: {"sensitivity_db_2v83_1m": value}
+        for role, value in sensitivities.items()
+    }
+    preset = SimpleNamespace(way_count=way_count, crossover_regions=[])
+    corrections, _issues, meta = _derive_corrections(
+        preset, {"drivers": drivers}, {}
+    )
+    sources = meta["sources"]
+    return {
+        role: corrections[role]["gain_db"]
+        for role in corrections
+        if sources.get(role) == "sensitivity"
+    }
+
+
+def test_sensitivity_trim_matches_shared_parity_fixture():
+    """Python source reproduces the committed fixture (the JS contract).
+
+    The /sound/ form pre-fills these trims client-side (optimistic UI); the
+    server re-derives them here authoritatively. scripts/check-sensitivity-trim-parity.mjs
+    asserts the JS (active-speaker-ui.js::sensitivityTrimsFromGap) matches the
+    same fixture, so the two cannot silently diverge. Mirrors the eq-math.js
+    parity model (test_python_matches_shared_parity_fixture).
+    """
+    cases = _SENSITIVITY_TRIM_FIXTURE["cases"]
+    assert cases, "expected sensitivity-trim parity cases"
+    for case in cases:
+        got = _derive_sensitivity_trims(case["way_count"], case["sensitivities"])
+        expected = {
+            role: float(trim) for role, trim in case["expected_trims"].items()
+        }
+        assert got == pytest.approx(expected), case["name"]
 
 
 def test_baseline_profile_compiles_durable_camilla_yaml(

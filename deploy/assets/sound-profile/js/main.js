@@ -21,6 +21,7 @@
 // Do not blind-refactor it. See docs/HANDOFF-management-ui.md.
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
+import { csrfHeaders, jsonHeaders } from "/assets/shared/js/http.js";
 import {
   DEFAULT_SUB_CROSSOVER_HZ,
   SUB_CROSSOVER_HZ_HI,
@@ -38,6 +39,7 @@ import {
   outputStatusClass,
   outputStepTitle,
   playbackResultMessage,
+  sensitivityTrimsFromGap,
   subwooferCrossoverBand,
   subwooferCrossoverFcHz,
   summedGroupFailureHint
@@ -48,7 +50,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     simple_gain_db: 12, advanced_gain_db: 12, max_parametric_bands: 8,
     min_freq_hz: 20, max_freq_hz: 20000, min_q: 0.2, max_q: 10, cut_max_q: 1.4,
     simple_bands: [], headroom_trim_max_db: 12,
-    volume_floor_min_db: -60, volume_floor_max_db: -10
+    // volume_floor_default_db is owned by the backend (volume_curve.
+    // DEFAULT_VOLUME_FLOOR_DB → /state limits) and read via volumeFloorDefault().
+    // These three are the payload-absent fallbacks only.
+    volume_floor_min_db: -60, volume_floor_max_db: -10, volume_floor_default_db: -50
   };
   var DEFAULT_SAVED_ID = 'stock:flat';
   var FLAT = function() {
@@ -77,7 +82,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var soundSettings = {
     headroom_trim_db: 0,
     match_loudness: false,
-    volume_floor_db: -50
+    volume_floor_db: volumeFloorDefault()
   };  // global output settings
   var volumeFloorDraftDb = null;
   var volumeFloorSaving = false;
@@ -169,16 +174,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return true;
     }
   })();
-  function csrfHeaders(headers) {
-    var out = headers || {};
-    var tokenEl = document.querySelector('meta[name=jts-csrf]');
-    var token = tokenEl ? tokenEl.content : '';
-    if (token) out['X-CSRF-Token'] = token;
-    return out;
-  }
-  function jsonHeaders() {
-    return csrfHeaders({'Content-Type': 'application/json'});
-  }
+  // csrfHeaders / jsonHeaders are imported from /assets/shared/js/http.js — the
+  // one cross-page owner of the CSRF/JSON plumbing. A conventions guard in
+  // tests/test_web_wizard_conventions.py keeps a local re-declaration from
+  // creeping back (same shared-by-promotion rule as escape.js / dialog.js).
   function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, Number(v) || 0)); }
   function clone(o) { return JSON.parse(JSON.stringify(o || {})); }
   function fmtDb(v) { v = Number(v) || 0; return (v > 0 ? '+' : '') + v.toFixed(1); }
@@ -596,7 +595,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function fmtTrim(v) { v = Number(v) || 0; return v > 0 ? '−' + v.toFixed(1) + ' dB' : 'Off'; }
   function fmtVolumeFloor(v) {
     v = Number(v);
-    if (!isFinite(v)) v = -50;
+    if (!isFinite(v)) v = volumeFloorDefault();
     return v.toFixed(1) + ' dB';
   }
   function volumeFloorLimits() {
@@ -606,10 +605,19 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!isFinite(floorMax)) floorMax = -10;
     return {min: floorMin, max: floorMax};
   }
+  // The reset/default volume floor, owned by the backend (volume_curve.
+  // DEFAULT_VOLUME_FLOOR_DB → /state limits.volume_floor_default_db). Single
+  // read point so the page never hardcodes the value; LIMIT_DEFAULTS supplies
+  // the payload-absent fallback.
+  function volumeFloorDefault() {
+    var value = Number(limits.volume_floor_default_db);
+    if (!isFinite(value)) value = Number(LIMIT_DEFAULTS.volume_floor_default_db);
+    return value;
+  }
   function savedVolumeFloorDb() {
     var bounds = volumeFloorLimits();
     var floor = Number(soundSettings.volume_floor_db);
-    if (!isFinite(floor)) floor = -50;
+    if (!isFinite(floor)) floor = volumeFloorDefault();
     return clamp(floor, bounds.min, bounds.max);
   }
   function coerceVolumeFloorDb(value) {
@@ -630,7 +638,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var node = el('set-volume-floor-readout');
     if (node) node.textContent = fmtVolumeFloor(value);
     var resetButton = el('view-body').querySelector('[data-act="reset-volume-floor"]');
-    if (resetButton) resetButton.disabled = Math.abs(value - (-50)) < 0.05;
+    if (resetButton) resetButton.disabled = Math.abs(value - volumeFloorDefault()) < 0.05;
     var saveButton = el('volume-floor-save-button');
     if (saveButton) {
       var dirty = volumeFloorDirty(value);
@@ -649,7 +657,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var floorBounds = volumeFloorLimits();
     var floorMin = floorBounds.min;
     var floorMax = floorBounds.max;
-    var defaultFloor = -50;
+    var defaultFloor = volumeFloorDefault();
     var floor = volumeFloorValue();
     var advancedOpen = trim > 0 || Math.abs(floor - defaultFloor) >= 0.05;
     var toneLabel = volumeFloorTone.active ? 'Stop tone' : 'Start tone';
@@ -1405,23 +1413,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     // Propose a starting level trim from the sensitivity gap so a hotter
     // compression/horn driver is never left at full level relative to the
     // woofer. The operator reviews/confirms the value; the server enforces the
-    // same fail-safe (baseline_profile.py:_derive_corrections). Only fill when
-    // the field is empty — never clobber an operator/research-supplied trim.
+    // same fail-safe (baseline_profile.py:_derive_corrections). The pure
+    // sensitivity→trim math lives in sensitivityTrimsFromGap (parity-pinned to
+    // that Python source); here we only collect the inputs and apply the result
+    // to empty fields — never clobbering an operator/research-supplied trim.
     var sensitivities = {};
     Object.keys(driversByRole).forEach(function(role) {
       var sens = manualNumberValue(driversByRole[role].sensitivity_db_2v83_1m);
-      if (sens != null) sensitivities[role] = sens;
+      if (sens != null) sensitivities[role] = sens;  // reference = min over ALL
     });
-    var roles = Object.keys(sensitivities);
-    if (roles.length < 2) return;
-    var reference = Math.min.apply(null, roles.map(function(role) {
-      return sensitivities[role];
-    }));
-    roles.forEach(function(role) {
+    var trims = sensitivityTrimsFromGap(sensitivities);
+    Object.keys(trims).forEach(function(role) {
       var setting = driverSetting(role);
       if (manualNumberValue(setting.gain_offset_db) != null) return;  // keep explicit
-      var trim = Math.round((reference - sensitivities[role]) * 10) / 10;  // <= 0
-      if (trim < 0) setting.gain_offset_db = trim;
+      setting.gain_offset_db = trims[role];
     });
   }
   function applyDriverResearchToManualSettings(payload) {
@@ -3529,7 +3534,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
 
   async function resetVolumeFloor() {
-    var floor = -50;
+    var floor = volumeFloorDefault();
     var floorInput = el('set-volume-floor');
     if (floorInput) floorInput.value = floor;
     setVolumeFloorDraft(floor);

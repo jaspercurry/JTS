@@ -16,6 +16,15 @@ const escapePath = new URL("../../deploy/assets/shared/js/escape.js", import.met
 const escapePreamble = readFileSync(escapePath, "utf8")
   .replace(/^export\s+\{[^}]+\};\s*$/gm, "")
   .replace(/^export\s+/gm, "");
+// http.js is the shared CSRF/JSON helper module. Inline its real definitions
+// (with `export` stripped) so csrfHeaders()/jsonHeaders() behave exactly as in
+// the browser. The lazy `import("/assets/shared/js/dialog.js")` inside
+// promptForControlToken parses but never runs — main.js only calls the two
+// header helpers, neither of which hits the token-prompt path.
+const httpPath = new URL("../../deploy/assets/shared/js/http.js", import.meta.url);
+const httpPreamble = readFileSync(httpPath, "utf8")
+  .replace(/^export\s+\{[^}]+\};\s*$/gm, "")
+  .replace(/^export\s+/gm, "");
 const activeSpeakerUiPath = new URL("../../deploy/assets/sound-profile/js/active-speaker-ui.js", import.meta.url);
 const activeSpeakerUiPreamble = readFileSync(activeSpeakerUiPath, "utf8")
   .replace(/^export\s+/gm, "");
@@ -44,6 +53,7 @@ const source = rawSource
     "const jtsConfirm = async (...args) => globalThis.__jtsConfirm ? globalThis.__jtsConfirm(...args) : true;\n")
   .replace(/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*measurement-audio\.js["'];\s*/m, "")
   .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*escape\.js["'];\s*/m, "")
+  .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*http\.js["'];\s*/m, "")
   .replace(/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*active-speaker-ui\.js["'];\s*/m, "")
   .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*eq-math\.js["'];\s*/m, "");
 if (/^import\s/m.test(source)) {
@@ -552,7 +562,7 @@ function setupHarness(fetchHandler, options = {}) {
   globalThis.fetch = fetchHandler;
 
   new Function(
-    escapePreamble + "\n" + eqMathPreamble + "\n" +
+    escapePreamble + "\n" + httpPreamble + "\n" + eqMathPreamble + "\n" +
       activeSpeakerUiPreamble + "\n" + measurementAudioPreamble + "\n" + source
   )();
 

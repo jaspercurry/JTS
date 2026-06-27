@@ -151,6 +151,7 @@ from jasper.sound.profile import (
     simple_bands_payload,
 )
 from jasper.sound.settings import (
+    DEFAULT_VOLUME_FLOOR_DB,
     HEADROOM_TRIM_MAX_DB,
     SoundSettings,
     VOLUME_FLOOR_MAX_DB,
@@ -251,6 +252,11 @@ def _state_payload(
             "headroom_trim_max_db": HEADROOM_TRIM_MAX_DB,
             "volume_floor_min_db": VOLUME_FLOOR_MIN_DB,
             "volume_floor_max_db": VOLUME_FLOOR_MAX_DB,
+            # The reset/default volume floor. One owner (volume_curve.
+            # DEFAULT_VOLUME_FLOOR_DB, re-exported via sound.settings) → this
+            # payload → the page, so the editor stops hardcoding -50 in five
+            # places that silently drift if the Python default ever changes.
+            "volume_floor_default_db": DEFAULT_VOLUME_FLOOR_DB,
         },
         "last_dsp_apply": last_dsp_apply,
         "dsp_write_epoch": dsp_write_epoch_from_state(last_dsp_apply),

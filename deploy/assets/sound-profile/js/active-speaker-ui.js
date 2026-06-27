@@ -36,6 +36,58 @@ export function humanRole(role) {
   }[role] || role || 'Channel';
 }
 
+// Sensitivity → level-trim derivation. PARITY CONTRACT with the Python source
+// jasper/active_speaker/baseline_profile.py::_derive_corrections (the
+// datasheet_trims block). The /sound/ form pre-fills a starting level trim from
+// the driver sensitivity gap (optimistic UI) so a hotter compression/horn driver
+// is never left at full level relative to the woofer; the server re-derives the
+// same fail-safe authoritatively on save. The two MUST agree, so the pure math
+// lives here behind one function and is pinned by scripts/check-sensitivity-trim-parity.mjs
+// against tests/fixtures/sensitivity_trim_fixture.json (the same fixture a Python
+// test asserts the source matches — the eq-math.js parity model).
+export var SENSITIVITY_TRIM_EPS_DB = 0.05;   // _SENSITIVITY_TRIM_EPS_DB
+export var MAX_DRIVER_ATTENUATION_DB = -60.0;  // _MAX_ATTENUATION_DB
+
+// Round to one decimal place. Driver sensitivities are datasheet values quoted
+// to one decimal, so the gap between two of them is already a multiple of 0.1 and
+// this round is effectively identity (it just clears IEEE-754 dust like
+// -3.9999999999999996 -> -4.0). On that realistic input domain Math.round matches
+// Python's round(x, 1) exactly (verified over 20k 1-decimal pairs); the half-up
+// vs round-half-to-even distinction only surfaces for contrived sub-decimal
+// sensitivities that don't occur on real spec sheets.
+function roundTenths(x) {
+  var rounded = Math.round(x * 10);
+  return (rounded === 0 ? 0 : rounded) / 10;  // normalize -0 to 0 for clean JSON compares
+}
+
+// Given a {role: sensitivity_db} map (only roles with a known datasheet
+// sensitivity), return {role: trim_db} attenuating the hotter drivers down to the
+// least-sensitive (reference) driver. Mirrors _derive_corrections exactly:
+//   - needs >= 2 known sensitivities, else {} (nothing to balance against)
+//   - reference = min(sensitivities); trim = reference - sensitivity (<= 0)
+//   - the reference driver and ties (trim within EPS of 0) stay at unity (omitted)
+//   - each trim is round(_,1) then floored at MAX_DRIVER_ATTENUATION_DB
+// Roles the caller wants to exclude (an explicit operator/research gain) must be
+// dropped from the input map before calling, matching the server's
+// explicit-gain-wins precedence.
+export function sensitivityTrimsFromGap(sensitivities) {
+  var roles = [];
+  var values = [];
+  Object.keys(sensitivities || {}).forEach(function(role) {
+    var sens = Number(sensitivities[role]);
+    if (Number.isFinite(sens)) { roles.push(role); values.push(sens); }
+  });
+  var trims = {};
+  if (roles.length < 2) return trims;
+  var reference = Math.min.apply(null, values);
+  roles.forEach(function(role, i) {
+    var trim = reference - values[i];  // <= 0 by construction
+    if (trim >= -SENSITIVITY_TRIM_EPS_DB) return;  // reference + ties stay at unity
+    trims[role] = Math.max(roundTenths(trim), MAX_DRIVER_ATTENUATION_DB);
+  });
+  return trims;
+}
+
 export function activeSpeakerStepState(step, ctx) {
   ctx = ctx || {};
   var hasLayout = !!ctx.hasLayout;
