@@ -984,3 +984,34 @@ requires_docs_when = [
 verification = [
   "pytest tests/test_control_server.py",
 ]
+
+[[subsystem]]
+id = "phone-mic-capture-relay"
+title = "Phone-mic capture relay (cloud transport for browser mic capture)"
+safety = "connectivity-risk"
+# The transport that moves browser phone-mic capture off the Pi's self-signed
+# cert onto a trusted Cloudflare Pages origin + a stateless E2E-encrypted relay
+# the Pi pulls from, feeding the EXISTING correction analysis. Three surfaces:
+# the Pi-side Python package, the Cloudflare Worker, and the static capture page.
+code = [
+  "jasper/capture_relay/spec.py",
+  "jasper/capture_relay/crypto.py",
+  "jasper/capture_relay/client.py",
+  "jasper/capture_relay/session.py",
+  "jasper/capture_relay/alignment.py",
+  "jasper/capture_relay/cues.py",
+  "relay/src/worker.js",
+  "capture-page/js/render.js",
+  "capture-page/js/crypto.js",
+  "capture-page/index.html",
+]
+docs = [
+  "docs/phone-mic-relay-plan.md",
+]
+requires_docs_when = [
+  "The relay API contract, the opaque-spec/blob invariant, the E2E wire format (AES-256-GCM, IV-prepended, plaintext SHA-256), the DATA-only renderer's component/theme allowlist, the capture-page CSP, a measurement-validity gate (realized-constraints / alignment-confidence / clock-drift), a failure cue, or the deploy steps change.",
+]
+verification = [
+  "python3 scripts/docs-impact.py --validate-only",
+  "pytest tests/test_capture_relay_spec.py tests/test_capture_relay_crypto.py tests/test_capture_relay_session.py tests/test_capture_relay_alignment.py tests/test_relay_worker_js.py tests/test_capture_page_js.py",
+]

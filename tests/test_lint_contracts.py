@@ -52,8 +52,17 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # "never crash the _tick / fail safe to buffered" idiom. Justified suppression
 # debt for the new resilience path; the same two markers push BOTH ceilings by 2
 # (each is a blind-except suppression). Narrowing later is welcome.
-MAX_NOQA_MARKERS = 803
-MAX_BLE001_MARKERS = 624
+# 2026-06-27 (+5 suppression markers, of which +3 blind-except): the phone-mic
+# capture relay (jasper/capture_relay/*) adds 2 urllib outbound-HTTPS-only
+# suppressions (S310, guarded by an https-scheme check in client.py/health.py)
+# and 3 blind-except suppressions in session.py — the no-silent-failure design:
+# cue on ANY failure then re-raise, a best-effort cue that must not mask the real
+# exception, and a best-effort purge (TTL is the backstop). All reviewed; one
+# further best-effort handler was narrowed to a typed except rather than
+# suppressed. (Marker strings are spelled out here, not written literally, so
+# this very comment does not inflate the count it documents.)
+MAX_NOQA_MARKERS = 808
+MAX_BLE001_MARKERS = 627
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

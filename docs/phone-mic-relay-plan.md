@@ -1,15 +1,22 @@
 # Phone-mic capture relay — design & build plan
 
-> **Status: design / build plan — not yet implemented.** This describes a
-> planned *replacement transport* for browser phone-microphone capture. The
-> current operational truth for `/correction/` (and `/balance/`, `/sync/`) is
-> [HANDOFF-correction.md](HANDOFF-correction.md): **today the capture page is
-> served from the Pi over a self-signed cert and uploads the WAV same-origin.**
-> This plan moves the capture page to a *trusted cloud origin* and routes the
-> WAV through a small, stateless, end-to-end-encrypted relay that the Pi pulls
-> from — feeding the **same** Pi-side analysis pipeline. Nothing here ships
-> until it is built and validated on real hardware. When built, this doc should
-> adopt the HANDOFF shape (current-state-first) with a `Last verified:` footer.
+> **Status: transport BUILT (hardware-free), not yet wired or deployed.** The
+> design below is settled; the transport — capture-spec schema, the Cloudflare
+> Worker + R2 relay, the static capture page, and the Pi-side
+> session/poll/pull/decrypt/verify wiring (`jasper/capture_relay/*`, `relay/`,
+> `capture-page/`) — has been implemented and is covered by hardware-free tests
+> (PRs landed 2026-06-27, build steps §14 1–8). **Still owed before this is
+> operational truth:** (a) the thin `correction_setup.py` daemon adapter that
+> calls `run_capture()` and feeds `MeasurementSession.on_capture_uploaded`, plus
+> a `/state` section + a `jasper-doctor` check; (b) **on-device validation** on a
+> real iPhone (Safari) + Android (Chrome) — the live `getUserMedia`/CSP/Wake-Lock
+> path is unit-tested only; (c) the cloud deploy (`wrangler deploy` the Worker +
+> R2 + Pages). The current operational truth for `/correction/` (and
+> `/balance/`, `/sync/`) remains [HANDOFF-correction.md](HANDOFF-correction.md):
+> the capture page is served from the Pi over a self-signed cert and uploads the
+> WAV same-origin. **Once the adapter lands and on-device validation passes, fold
+> this into the live correction flow and convert this doc to the HANDOFF shape
+> (current-state-first) with a `Last verified:` footer.**
 
 ---
 
@@ -481,4 +488,5 @@ corrections are unaffected) — say so in the UI when the relay is unreachable.
 
 ---
 
-Last updated: 2026-06-27 — design plan, not yet implemented.
+Last updated: 2026-06-27 — transport implemented (hardware-free); adapter +
+on-device validation + cloud deploy still owed (see Status banner).
