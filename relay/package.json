@@ -1,0 +1,13 @@
+{
+  "name": "jts-capture-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Stateless, opaque, end-to-end-encrypted dead-drop relay for JTS phone-mic capture (Cloudflare Worker + R2).",
+  "license": "Apache-2.0",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "node ../tests/js/relay_worker_test.mjs"
+  }
+}
