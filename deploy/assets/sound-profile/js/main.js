@@ -4318,21 +4318,32 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       identityAudition: !!options.identityAudition,
       message: options.message || 'Getting ' + humanRole(role) + ' ready.'
     };
-    var armed = await ensureCommissionArmed(role, {
-      identityAudition: !!options.identityAudition
-    });
-    if (!armed || !armed.ok) {
-      stopCommissionAutoRamp('');
+    var rampStarted = false;
+    try {
+      var armed = await ensureCommissionArmed(role, {
+        identityAudition: !!options.identityAudition
+      });
+      if (!armed || !armed.ok) {
+        stopCommissionAutoRamp('');
+        render();
+        return;
+      }
+      if (!commissionAutoRampCurrent(group.id, role, token)) return;
+      commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
+        message: options.message || 'Starting quiet continuous ' + humanRole(role) + ' test.'
+      });
+      status('Starting quiet continuous ' + humanRole(role) + ' test. Press Stop if anything sounds wrong.');
       render();
-      return;
+      rampStarted = true;
+      runCommissionAutoRamp(group.id, role, token);
+    } finally {
+      // runCommissionAutoRamp is fire-and-forget (not awaited): it owns its own
+      // stop/reset cycle. Only reset the flag here if the ramp never started —
+      // i.e. an unexpected throw occurred before we handed off to the loop.
+      if (!rampStarted && commissionAutoRamp.running && commissionAutoRamp.token === token) {
+        stopCommissionAutoRamp('');
+      }
     }
-    if (!commissionAutoRampCurrent(group.id, role, token)) return;
-    commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
-      message: options.message || 'Starting quiet continuous ' + humanRole(role) + ' test.'
-    });
-    status('Starting quiet continuous ' + humanRole(role) + ' test. Press Stop if anything sounds wrong.');
-    render();
-    runCommissionAutoRamp(group.id, role, token);
   }
   function setOutputDraft(next) {
     outputTopology.draft = next;
