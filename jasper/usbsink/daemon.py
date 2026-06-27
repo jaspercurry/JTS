@@ -31,6 +31,7 @@ import os
 import time
 from dataclasses import dataclass
 
+from jasper.camilla_config_contract import DEFAULT_LEAN_CAPTURE_FIFO
 from jasper.log_event import log_event
 
 from .audio_bridge import (
@@ -140,7 +141,7 @@ class DaemonConfig:
     # CamillaDSP File-captures (Stage 4b lean lane). Nothing sets "fifo"
     # yet; the lean lane is dormant until a lean-lane apply wires it.
     output_mode: str = "aloop"
-    fifo_path: str = "/run/jasper-usbsink/lean.pipe"
+    fifo_path: str = DEFAULT_LEAN_CAPTURE_FIFO
 
     @classmethod
     def from_env(cls) -> "DaemonConfig":
@@ -190,7 +191,7 @@ class DaemonConfig:
                 os.environ.get("JASPER_USBSINK_OUTPUT_MODE", "aloop"),
             ),
             fifo_path=os.environ.get(
-                "JASPER_USBSINK_FIFO_PATH", "/run/jasper-usbsink/lean.pipe",
+                "JASPER_USBSINK_FIFO_PATH", DEFAULT_LEAN_CAPTURE_FIFO,
             ),
         )
 

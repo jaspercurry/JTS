@@ -54,6 +54,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from jasper.camilla_config_contract import DEFAULT_LEAN_CAPTURE_FIFO
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -170,7 +171,7 @@ class AudioBridge:
         # lean lane); no PortAudio output stream is opened. Nothing sets
         # "fifo" yet — the lean lane stays dormant until a caller flips it.
         output_mode: str = "aloop",
-        fifo_path: str = "/run/jasper-usbsink/lean.pipe",
+        fifo_path: str = DEFAULT_LEAN_CAPTURE_FIFO,
     ) -> None:
         self._capture_device = capture_device
         self._playback_device = playback_device

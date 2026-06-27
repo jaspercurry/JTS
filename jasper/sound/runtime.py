@@ -344,26 +344,39 @@ def stage_lean_capture_config(
     """Emit + validate + classify a Stage-4b lean File-capture config WITHOUT
     live-loading it.
 
-    The smallest safe step toward the lean lane: it proves the lean config is
-    statically valid (``camilladsp --check``) and L0-graph-safe
-    (``classify_camilla_graph``) with zero audio risk. The isolated sibling of
-    :func:`load_profile_config` — it never touches the production ``/sound``
-    carrier path, never live-loads, and leaves ``emit_sound_config``'s solo
-    byte contract intact (the lean kwargs default to ``None`` for every
-    existing caller). It writes a dedicated staging file
-    (``sound_lean_staged.yml``); the mux wiring (gated on ``JASPER_LEAN_LANE``)
-    arms the pipe writer and live-loads it.
+    The smallest safe step toward the lean lane: it proves the lean *mechanics*
+    are sound — a File-capture source + the v4 async resampler + the unchanged
+    ``outputd_content_playback`` target are statically valid
+    (``camilladsp --check``) and L0-graph-safe (``classify_camilla_graph``) —
+    with zero audio risk. It never touches the production ``/sound`` carrier
+    path, never live-loads, and leaves ``emit_sound_config``'s solo byte
+    contract intact (the lean kwargs default to ``None`` for every existing
+    caller). It writes a dedicated staging file (``sound_lean_staged.yml``).
+
+    **Not playback-faithful (deliberately).** The staged config carries only the
+    saved *preference* profile filters — it does NOT preserve the household's
+    room-correction PEQs or output/headroom trim, which the live
+    :func:`load_profile_config` path reads from the currently-loaded config and
+    the sound settings. That's fine here because this artifact is only
+    ``--check``'d, never loaded. The mux wiring (gated on ``JASPER_LEAN_LANE``,
+    task #8) MUST re-emit the lean lane through the carrier — preserving room
+    PEQs + trim — before it live-loads anything, or a calibrated household
+    would lose its correction the instant the lane goes live.
 
     The lean config changes only CamillaDSP's CAPTURE (an ALSA fan-in lane → a
     ``File`` pipe source); the PLAYBACK stays ``outputd_content_playback``, so
     jasper-outputd needs zero change and the classifier (which keys on the
-    source marker + playback role, never ``capture.type``) classifies it
-    identically to a normal stereo sound config (``jts_generated_stereo``).
+    source marker + playback role, never ``capture.type``) classifies it like a
+    normal stereo sound config. ``topology=None`` lets the classifier load the
+    box's *real* saved topology — so on an active/roleful speaker this stereo
+    config is correctly REFUSED (``graph_unsafe``); lean staging for an active
+    box needs the Layer-A active emitter and is a follow-up.
 
     Returns a status dict, ``status`` one of:
       - ``"staged"``       — emitted, ``--check`` ok-to-apply, classify allowed.
       - ``"invalid"``      — ``camilladsp --check`` rejected the config.
-      - ``"graph_unsafe"`` — ``classify_camilla_graph`` refused (NOT allowed).
+      - ``"graph_unsafe"`` — ``classify_camilla_graph`` refused (NOT allowed,
+        e.g. a stereo config on an active/roleful topology).
     Never live-loads, never raises on a validation/classification miss — the
     miss is reported (via the status + a structured WARN), not swallowed. Only
     an ``emit_sound_config`` contract violation (a caller bug) raises.
