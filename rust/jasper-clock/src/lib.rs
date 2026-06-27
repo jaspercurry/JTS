@@ -145,10 +145,17 @@ pub struct DllConfig {
     pub max_error: f64,
     /// Hard-jump threshold: if a single RAW error exceeds this magnitude the
     /// loop has lost lock (an xrun, a device reset, a discontinuity) and is
-    /// re-initialised rather than slewed toward the new operating point. This
-    /// is PipeWire's `max_resync`. `max_resync >= max_error` so the slew clamp
-    /// engages first and the hard-jump is reserved for a frank discontinuity.
-    /// `0` (or non-finite) disables the jump.
+    /// re-initialised rather than slewed toward the new operating point.
+    ///
+    /// JTS DIVERGENCE from upstream (named after PipeWire's `max_resync`
+    /// concept but NOT its behavior): PipeWire, on `err > max_resync`, sets a
+    /// resync flag, clamps `err` to `max_error`, and *still* feeds it to
+    /// `spa_dll_update` (it keeps slewing). We instead re-initialise the loop
+    /// and skip the offending sample entirely — a frank discontinuity (xrun,
+    /// device reset) is better served by re-locking from scratch than by
+    /// slewing through a clamped spike. `max_resync >= max_error` so the slew
+    /// clamp engages first and the hard-jump is reserved for true
+    /// discontinuities. `0` (or non-finite) disables the jump.
     pub max_resync: f64,
 }
 
@@ -511,8 +518,11 @@ mod tests {
         );
     }
 
-    /// The ratio compensates the offset with the right magnitude AND sign: a
-    /// source running +50 ppm fast is matched by an output ratio ~50 ppm slow.
+    /// The ratio tracks the offset with the right magnitude AND sign: a source
+    /// running +50 ppm fast is matched by an output ratio ~50 ppm fast (SAME
+    /// direction). A faster-filling ring needs a faster consumer to hold the
+    /// fill level steady — the ratio nulls the standing error, it does not
+    /// invert the offset.
     #[test]
     fn tracks_a_constant_offset_without_standing_error() {
         for ppm in [-120.0, -50.0, 50.0, 120.0] {
@@ -523,7 +533,8 @@ mod tests {
                 "standing error should be driven out at {ppm} ppm, got {}",
                 dll.error_mean()
             );
-            // Output ratio runs opposite the source offset to cancel it.
+            // Output ratio runs the SAME direction as the source offset: a
+            // faster producer needs a faster consumer to hold the fill steady.
             assert!(
                 (dll.ratio_ppm() - ppm).abs() < 3.0,
                 "ratio should match ~{ppm} ppm, got {} ppm",
