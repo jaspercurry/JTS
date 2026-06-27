@@ -73,6 +73,7 @@ from jasper.log_event import log_event
 from . import librespot_state, mux_mode_persistence
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .control import restart_broker
+from .lean_lane import decide_lean_route, lean_lane_enabled
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
     airplay_playing,
@@ -212,6 +213,19 @@ class Mux:
         # temporarily own the fan-in gate without changing the household's
         # persisted manual-vs-auto source selection.
         self._test_fanin_label: str | None = None
+        # Stage-4b lean lane (default-OFF). Parsed ONCE at construction so the
+        # _tick hot path makes no env read per tick and the disabled path is
+        # provably byte-identical (the flag never flips mid-process: a switch
+        # is a deploy, which restarts mux). `_in_lean` tracks whether we have
+        # swapped CamillaDSP onto the lean File-capture config + armed the
+        # usbsink FIFO output, so enter/leave are idempotent across ticks.
+        self._lean_enabled = lean_lane_enabled()
+        self._in_lean = False
+        # Re-arm backoff: once an enter-lean attempt fails (FIFO can't open /
+        # lean config fails classify / arm restart failed), do not retry every
+        # tick — that would restart-storm the usbsink daemon. Stay on buffered
+        # until the source set changes (a fresh exclusive-USB edge clears it).
+        self._lean_enter_blocked = False
 
     async def run(self) -> None:
         logger.info(
@@ -270,10 +284,15 @@ class Mux:
 
         if self._test_fanin_label is not None:
             await self._reassert_test_fanin_label()
+            # A diagnostic lane owns fan-in; never the lean exclusive-USB path.
+            await self._settle_lean(current)
             return
 
         if self._manual_source is not None:
             await self._reassert_manual_source()
+            # Manual pin is not the auto exclusive-USB lean trigger; ensure we
+            # are off the lean config if we were on it.
+            await self._settle_lean(current)
             return
 
         target: Source | None = None
@@ -338,6 +357,9 @@ class Mux:
                         )
             if not selected:
                 self._state.playing = current
+                # Handoff didn't settle — never enter lean on an unsettled
+                # gate; leave lean if we were in it.
+                await self._settle_lean(current)
                 return
 
             # Pause every OTHER source that's currently active after
@@ -374,6 +396,171 @@ class Mux:
                 await self._usbsink_set_preempt(
                     False, reason="all_others_idle",
                 )
+
+        # Stage-4b lean lane: after the fan-in handoff has settled, decide
+        # whether USB qualifies for the low-latency File-capture path and
+        # enter/leave accordingly. Default-OFF and inert otherwise.
+        await self._settle_lean(current)
+
+    # ------------------------------------------------------------------
+    # Stage-4b lean lane — enter/leave ladders driven by decide_lean_route
+    # ------------------------------------------------------------------
+
+    async def _settle_lean(self, current: dict[Source, bool]) -> None:
+        """Drive the lean lane from the settled source state.
+
+        Default-OFF: when ``JASPER_LEAN_LANE`` is not ``enabled`` this returns
+        immediately and ``_tick`` is byte-identical to the pre-lean behavior.
+
+        On the enabled path it asks the pure ``decide_lean_route`` policy
+        whether USB is the sole active source AND the audible winner; ``lean``
+        runs the enter-lean ladder, anything else runs leave-lean (a NO-OP when
+        we were never in lean). Both ladders are idempotent across ticks via
+        ``self._in_lean``.
+
+        SCOPE: AUTO mode only. A manual source pin or an active diagnostic
+        (test) fan-in lane is treated as non-lean — those paths call this with
+        their own gate already owning fan-in, so the lean exclusive-USB
+        winner-takes-it semantics don't apply. They still get the leave-lean
+        restore (so a manual pin or a correction run while lean was live
+        unwinds the lean config).
+        """
+        if not self._lean_enabled:
+            return
+
+        manual_or_test = (
+            self._manual_source is not None or self._test_fanin_label is not None
+        )
+        if manual_or_test:
+            decision = decide_lean_route(
+                active_sources=(), winner=None, lean_enabled=True,
+            )
+        else:
+            decision = decide_lean_route(
+                active_sources=self._active_sources(current),
+                winner=self._winner,
+                lean_enabled=True,
+            )
+
+        if decision.route == "lean":
+            # Clear a prior enter-block only when the world changed enough to be
+            # worth another attempt — i.e. we are not already blocked-and-stable.
+            if self._in_lean:
+                return
+            if self._lean_enter_blocked:
+                # Already tried and failed for this exclusive-USB episode; stay
+                # on buffered until the source set changes (which routes us to
+                # the leave branch below and clears the block).
+                return
+            await self._enter_lean()
+        else:
+            # Any non-lean route clears the enter-block (a fresh exclusive-USB
+            # edge later gets a clean retry) and restores buffered if needed.
+            self._lean_enter_blocked = False
+            if self._in_lean:
+                await self._leave_lean(reason=decision.reason)
+
+    async def _enter_lean(self) -> None:
+        """Enter-lean ladder: arm the usbsink FIFO output, then swap CamillaDSP
+        to the carrier-preserved lean File-capture config. FAIL-LOUD -> buffered
+        on any failure (the speaker stays on the buffered path, which always
+        works).
+
+        Order matters: arm the FIFO output FIRST so the usbsink daemon is
+        writing the lean pipe before CamillaDSP File-captures it (a reader-first
+        File capture would otherwise spin on an empty pipe). If the config swap
+        then fails, we disarm the FIFO back to aloop so usbsink keeps feeding
+        the buffered fan-in lane.
+        """
+        from .usbsink import output_mode_reconcile as omr
+
+        arm = await asyncio.to_thread(
+            omr.set_output_mode, "fifo", reason="lean_enter",
+        )
+        if not arm.ok:
+            self._lean_enter_blocked = True
+            log_event(
+                logger,
+                "mux.lean_enter_failed",
+                stage="arm_fifo",
+                detail=arm.detail,
+                level=logging.WARNING,
+            )
+            return
+
+        try:
+            await self._lean_apply_config()
+        except Exception as e:  # noqa: BLE001
+            # Config swap failed (CarrierCannotHostEq / DspApplyError / camilla
+            # down). The apply engine already rolled CamillaDSP back to the prior
+            # buffered config; disarm the FIFO so usbsink returns to the aloop
+            # fan-in lane and we are fully back on buffered.
+            self._lean_enter_blocked = True
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(
+                    omr.set_output_mode, "aloop", reason="lean_enter_rollback",
+                )
+            log_event(
+                logger,
+                "mux.lean_enter_failed",
+                stage="apply_config",
+                detail=str(e),
+                level=logging.WARNING,
+            )
+            return
+
+        self._in_lean = True
+        log_event(logger, "mux.lean_entered")
+
+    async def _leave_lean(self, *, reason: str) -> None:
+        """Leave-lean ladder: restore the buffered config, then disarm the FIFO.
+
+        Restore ALWAYS SUCCEEDS by construction (restore_buffered_config
+        re-emits from saved intent and never REFUSES a stereo-host graph) — but
+        a transient CamillaDSP/broker outage can still make the live reload
+        raise. ORDERING IS LOAD-BEARING: only disarm the usbsink FIFO output
+        AFTER the buffered config restore actually succeeds. Disarming first (or
+        unconditionally) would leave CamillaDSP File-capturing the lean pipe
+        while usbsink is back on the aloop fan-in lane — a dead pipe, silent
+        music. So on a restore failure we keep the FIFO armed (the lean pipe
+        stays fed → audio keeps flowing through the lean config) and leave
+        ``_in_lean`` set so the NEXT non-lean tick retries the whole unwind.
+        Convergent, never silent.
+        """
+        from .usbsink import output_mode_reconcile as omr
+
+        try:
+            await self._lean_restore_config()
+        except Exception as e:  # noqa: BLE001
+            # Keep _in_lean=True and the FIFO armed; the next tick retries.
+            log_event(
+                logger,
+                "mux.lean_leave_config_failed",
+                reason=reason,
+                detail=str(e),
+                level=logging.WARNING,
+            )
+            return
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(
+                omr.set_output_mode, "aloop", reason=f"lean_leave_{reason}",
+            )
+        self._in_lean = False
+        log_event(logger, "mux.lean_left", reason=reason)
+
+    async def _lean_apply_config(self) -> None:
+        """Swap CamillaDSP to the carrier-preserved lean File-capture config.
+        Split out so tests can stub the CamillaDSP I/O."""
+        from .sound.runtime import apply_lean_capture_config
+
+        await apply_lean_capture_config()
+
+    async def _lean_restore_config(self) -> None:
+        """Restore the buffered sound config (NO-OP if not on lean). Split out
+        so tests can stub the CamillaDSP I/O."""
+        from .sound.runtime import restore_buffered_config
+
+        await restore_buffered_config()
 
     async def select_source(self, source: Source) -> dict[str, Any]:
         """Manual source selection from the web UI.

@@ -145,6 +145,7 @@ class _StereoHostCarrier:
         output_trim_db: float = 0.0,
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
+        capture_kwargs: dict | None = None,
     ) -> ReemitResult:
         # Refuse (typed, honest) before emitting/loading a flat program graph
         # when the saved topology assigns a protected tweeter. This is the
@@ -165,6 +166,23 @@ class _StereoHostCarrier:
         member_kwargs = self._resolve_member_kwargs(member_kwargs)
         self._validate_member_kwargs(member_kwargs)
 
+        # capture_kwargs (Stage-4b lean lane) swaps ONLY CamillaDSP's capture
+        # device (an ALSA fan-in lane -> a File pipe). It is otherwise the same
+        # carrier-preserved stereo re-emit — preference filters, the preserved
+        # room PEQs, output trim, and the member policy all fold in unchanged.
+        # None (every existing caller) is byte-identical: no extra kwargs reach
+        # emit_sound_config. emit_sound_config owns the File-capture fail-loud
+        # guards (rate_adjust + async resampler), so an invalid lean kwarg set
+        # raises there, not silently.
+        #
+        # Merge capture_kwargs ONTO member_kwargs (capture wins) rather than
+        # double-splatting: the solo member policy already supplies
+        # enable_rate_adjust/playback_pipe_path, and a double splat would raise
+        # "multiple values" on the overlap. The lean lane is solo by
+        # construction (exclusive USB), so the only overlap — enable_rate_adjust
+        # — matches the solo default (True); the merge is value-preserving.
+        emit_kwargs = dict(member_kwargs)
+        emit_kwargs.update(capture_kwargs or {})
         room_peqs = self._compute_room_peqs() if room_peqs is None else list(room_peqs)
         yaml = emit_sound_config(
             profile,
@@ -172,7 +190,7 @@ class _StereoHostCarrier:
             out_path=out_path,
             profile_id=profile_id,
             output_trim_db=output_trim_db,
-            **member_kwargs,
+            **emit_kwargs,
         )
         return ReemitResult(yaml=yaml, room_peq_count=len(room_peqs))
 
@@ -240,7 +258,21 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
         output_trim_db: float = 0.0,
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
+        capture_kwargs: dict | None = None,
     ) -> ReemitResult:
+        # The lean lane (capture_kwargs) is a SOLO File-capture stereo config;
+        # an active-leader program bake is a bonded pipe SINK on the synced
+        # chain (snapclient owns the rate). They are mutually exclusive
+        # topologies — refuse rather than emit a File-in/File-out free-running
+        # graph (emit_sound_config would also raise, but fail closed here with a
+        # household-readable reason).
+        if capture_kwargs:
+            raise CarrierCannotHostEq(
+                "lean_on_program_bake",
+                "This speaker is running the active-leader program bake for a "
+                "speaker group, so the low-latency lean lane isn't available — "
+                "ungroup it first. Your driver protection is unchanged.",
+            )
         member_kwargs = self._resolve_member_kwargs(member_kwargs)
         self._validate_member_kwargs(member_kwargs)
         room_peqs = self._compute_room_peqs() if room_peqs is None else list(room_peqs)
@@ -307,7 +339,18 @@ class _ActiveGraphCarrier:
         output_trim_db: float = 0.0,
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
+        capture_kwargs: dict | None = None,
     ) -> ReemitResult:
+        if capture_kwargs:
+            # A 2-channel File-capture lean config would collapse a roleful
+            # active graph (per-driver split + crossover + limiter + protective
+            # HP). The lean lane is for solo stereo hosts only — refuse.
+            raise CarrierCannotHostEq(
+                "lean_on_active",
+                "This speaker is running an active-crossover setup, so the "
+                "low-latency lean lane isn't available — it would drop your "
+                "crossover and driver protection. They are unchanged.",
+            )
         if not self._is_baseline:
             raise CarrierCannotHostEq(
                 "eq_on_active_not_wired",
@@ -361,6 +404,7 @@ class _UnknownCarrier:
         output_trim_db: float = 0.0,
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
+        capture_kwargs: dict | None = None,
     ) -> ReemitResult:
         raise CarrierCannotHostEq(
             "unknown_config",

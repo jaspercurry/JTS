@@ -71,15 +71,34 @@ usbsink bridge's normal snd-aloop lane uses the high-16 S16 view; the FIFO must
 | 4b-i | `decide_lean_route` pure routing policy ([`jasper/lean_lane.py`](../jasper/lean_lane.py)) | shipped, unwired |
 | 4b-ii | usbsink FIFO-output mode (`JASPER_USBSINK_OUTPUT_MODE=fifo`) | shipped, default-OFF |
 | 4b-iii | stage + validate + classify the lean config (`jasper.sound.runtime.stage_lean_capture_config`) — emit + `--check` + `classify_camilla_graph`, **no live-load** | shipped, default-OFF |
-| 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim), arm the usbsink FIFO output at runtime, and swap/restore via mux `_tick` (`decide_lean_route` → enter/leave-lean ladders, fail-loud → buffered) | **owed** |
+| 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim, [`jasper.sound.runtime.apply_lean_capture_config`](../jasper/sound/runtime.py)), arm the usbsink FIFO output at runtime ([`jasper.usbsink.output_mode_reconcile`](../jasper/usbsink/output_mode_reconcile.py) → writes `JASPER_USBSINK_OUTPUT_MODE` to `/var/lib/jasper/usbsink.env` + restarts via the broker), and swap/restore via mux `_tick` (`decide_lean_route` → `Mux._enter_lean`/`_leave_lean` ladders, fail-loud → buffered) | shipped, default-OFF, **24 h soak owed** |
 | 5 | shairport-sync built `--with-pipe` (capable binary; runtime AirPlay pipe lane is future, #1318-gated) | shipped, dormant |
 | 6 | `jasper-doctor` DAC USB sync-mode advisory (clock-coherence signal, *not* the chip-AEC gate) | shipped |
 
 **Going live is soak-gated.** `JASPER_LEAN_LANE` is opt-IN
-(`=enabled`), default-OFF, and is an *experiment knob* until 4b-iii/iv land and
-a **24 h on-device zero-xrun soak** passes — then it graduates to a
-prose-commented `.env.example` entry. Until then it is allowlisted in
-`tests/test_env_vars_codified.py::_UNCODIFIED`.
+(`=enabled`), default-OFF, and is an *experiment knob* until a **24 h on-device
+zero-xrun soak** passes — then it graduates to a prose-commented `.env.example`
+entry. Until then it is allowlisted in
+`tests/test_env_vars_codified.py::_UNCODIFIED`. 4b-iii/iv have landed
+(default-OFF); the soak is the remaining gate.
+
+**Live swap (4b-iv) carrier-fidelity + ladder.** The live lane-switch must NOT
+load the 4b-iii staged config — that one is preference-ONLY and would drop the
+household's room correction. `apply_lean_capture_config` instead re-emits the
+lean File-capture config THROUGH the graph carrier
+([`jasper.sound.graph_carrier`](../jasper/sound/graph_carrier.py),
+`reemit(..., capture_kwargs=...)`), so the preserved room PEQs + output trim
+ride along exactly like the durable `/sound` apply, then performs CamillaDSP's
+glitch-free `set_config_file_path` swap via `apply_dsp_config`. The lean lane is
+refused (typed `CarrierCannotHostEq`) on any non-solo-stereo-host graph
+(active / program-bake / unknown), so it can never collapse a roleful graph.
+`Mux._tick` calls `decide_lean_route` after the fan-in handoff settles (AUTO
+mode only; manual/test lanes route buffered) and runs the enter-lean ladder
+(arm FIFO → carrier-preserved config swap; fail-loud → disarm + buffered, with a
+per-episode re-arm block so a failure can't restart-storm the usbsink daemon) or
+the leave-lean ladder (`restore_buffered_config` re-emits the buffered config
+from saved intent — restore ALWAYS succeeds by construction — then disarms the
+FIFO; NO-OP fast path when not on the lean config).
 
 ## Optionality: chip-AEC AND software-AEC, each at the lean floor
 
@@ -112,7 +131,12 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-06-27 (4b-iii stage_lean_capture_config shipped; lean-lane emitter + FIFO mode + decision policy
-landed; resampler v4 object schema confirmed against the CamillaDSP v4.1.3
-config reference; outputd-unchanged topology confirmed against
+Last verified: 2026-06-27 (4b-iv live lane-switch shipped default-OFF:
+carrier-preserved `apply_lean_capture_config` / `restore_buffered_config`,
+the `output_mode_reconcile` runtime FIFO arm, and the `Mux._tick`
+enter/leave-lean ladders — all hardware-free-tested; 24 h on-device soak owed
+before graduating `JASPER_LEAN_LANE` out of the experiment allowlist. 4b-iii
+stage_lean_capture_config + lean-lane emitter + FIFO mode + decision policy
+landed earlier; resampler v4 object schema confirmed against the CamillaDSP
+v4.1.3 config reference; outputd-unchanged topology confirmed against
 `camilla_config_contract.DEFAULT_PLAYBACK_DEVICE` + `rust/jasper-outputd`).

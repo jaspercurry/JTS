@@ -686,3 +686,112 @@ def test_refusal_payload_is_typed_and_stable(reason_code):
         "reason_code": reason_code,
         "message": "household-readable message",
     }
+
+
+# --- Stage-4b lean lane: capture_kwargs carrier fidelity ----------------
+
+_LEAN_CAPTURE_KWARGS = {
+    "capture_pipe_path": "/run/jasper-usbsink/lean.pipe",
+    "resampler_type": "AsyncSinc",
+    "resampler_profile": "Balanced",
+    "enable_rate_adjust": True,
+}
+
+
+def test_lean_capture_kwargs_forward_to_emit_on_stereo_host(tmp_path):
+    # The fidelity fix: a stereo-host carrier re-emits the lean File-capture
+    # config WITH the preserved room PEQs + trim AND the lean capture kwargs —
+    # one carrier-preserved re-emit, not a raw emit that drops room correction.
+    with mock.patch(
+        "jasper.sound.graph_carrier.emit_sound_config", return_value="yaml"
+    ) as emit:
+        carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
+        carrier.reemit(
+            mock.sentinel.profile,
+            profile_id="id",
+            output_trim_db=2.5,
+            capture_kwargs=_LEAN_CAPTURE_KWARGS,
+        )
+    kw = emit.call_args.kwargs
+    assert kw["capture_pipe_path"] == "/run/jasper-usbsink/lean.pipe"
+    assert kw["resampler_type"] == "AsyncSinc"
+    assert kw["enable_rate_adjust"] is True
+    # Carrier fidelity: the trim + (here empty base) room PEQs still ride along.
+    assert kw["output_trim_db"] == 2.5
+    assert kw["room_peqs"] == []
+
+
+def test_lean_capture_kwargs_preserve_room_peqs_on_correction_host(tmp_path):
+    # A sound/correction host preserves its room PEQs THROUGH the lean re-emit —
+    # the exact regression the 4b-iii staged (preference-only) path warned about.
+    from jasper.camilla_config_contract import PeqFilter
+
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "sound_current.yml"
+    path.write_text(_flat_yaml())
+
+    peqs = [PeqFilter(freq=120.0, q=1.0, gain=-3.0)]
+    with mock.patch(
+        "jasper.sound.graph_carrier.emit_sound_config", return_value="yaml"
+    ) as emit, mock.patch(
+        "jasper.sound.graph_carrier.extract_room_peqs_from_config",
+        return_value=peqs,
+    ):
+        carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+        result = carrier.reemit(
+            mock.sentinel.profile,
+            profile_id="id",
+            capture_kwargs=_LEAN_CAPTURE_KWARGS,
+        )
+    assert result.room_peq_count == 1
+    assert emit.call_args.kwargs["room_peqs"] == peqs
+    assert emit.call_args.kwargs["capture_pipe_path"] == "/run/jasper-usbsink/lean.pipe"
+
+
+def test_lean_default_none_capture_kwargs_is_byte_identical(tmp_path):
+    # Every existing caller passes no capture_kwargs -> emit_sound_config sees no
+    # lean keys at all (byte-identical contract for the buffered re-emit).
+    with mock.patch(
+        "jasper.sound.graph_carrier.emit_sound_config", return_value="yaml"
+    ) as emit:
+        carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
+        carrier.reemit(mock.sentinel.profile, profile_id="id")
+    kw = emit.call_args.kwargs
+    assert "capture_pipe_path" not in kw
+    assert "resampler_type" not in kw
+
+
+def test_lean_refused_on_unknown_graph(tmp_path):
+    carrier = carrier_for_loaded_config(str(tmp_path / "gone.yml"), config_dir=tmp_path)
+    with pytest.raises(CarrierCannotHostEq) as exc:
+        carrier.reemit(mock.sentinel.profile, capture_kwargs=_LEAN_CAPTURE_KWARGS)
+    assert exc.value.reason_code == "unknown_config"
+
+
+def test_lean_refused_on_active_graph(tmp_path):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "sound_current.yml"
+    path.write_text(_active_baseline_yaml("mono", 2))
+    carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+    assert carrier.kind == "active"
+    with pytest.raises(CarrierCannotHostEq) as exc:
+        carrier.reemit(mock.sentinel.profile, capture_kwargs=_LEAN_CAPTURE_KWARGS)
+    assert exc.value.reason_code == "lean_on_active"
+
+
+def test_lean_refused_on_program_bake_graph(tmp_path):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "sound_current.yml"
+    path.write_text(_program_bake_yaml())
+    carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+    assert carrier.kind == "active_leader_program_bake"
+    with pytest.raises(CarrierCannotHostEq) as exc:
+        carrier.reemit(
+            mock.sentinel.profile,
+            member_kwargs={"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False},
+            capture_kwargs=_LEAN_CAPTURE_KWARGS,
+        )
+    assert exc.value.reason_code == "lean_on_program_bake"
