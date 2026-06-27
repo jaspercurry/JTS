@@ -208,6 +208,102 @@ export function activeCommissionGroup(topology) {
   return null;
 }
 
+// Map a backend commissioning-view next_action endpoint to the page's existing
+// click `data-act`. Only the two next_action ids the research footer can dispatch
+// on a clean draft (save the design draft / prepare the crossover preview) have a
+// direct button; every later-step pointer becomes "Continue".
+function nextActionAct(action) {
+  var endpoint = action && typeof action === 'object' ? String(action.endpoint || '') : '';
+  if (endpoint.indexOf('/design-draft') >= 0) return 'save-driver-design';
+  if (endpoint.indexOf('/crossover-preview') >= 0) return 'prepare-crossover-preview';
+  return '';
+}
+
+// Footer button descriptor for the active-speaker "research" and "map" setup
+// steps. The backend coordinator (build_commissioning_view) already decides the
+// single next obvious action from the SAVED state — `view.next_action` for the
+// research label and `view.output_identity.complete` for the map readiness — so
+// on a CLEAN draft the footer renders straight from that view-model instead of
+// re-deriving readiness in the browser (the old driverResearchStepSatisfied /
+// crossoverPreviewReadyForProtectedStaging / outputIdentityComplete duplication).
+//
+// The client still owns the cases the backend structurally cannot see, because
+// it only reads saved state:
+//   * `layoutDirty` / `draftDirty` / `saving` — unsaved edits in the browser.
+//   * the crossover-preview ENABLED refinement (`previewInputsReady`): the
+//     backend marks Preview crossover enabled whenever the saved design is
+//     ready, but the live topology may still be missing crossover points, so the
+//     page keeps the button disabled until those inputs exist (clicking an
+//     enabled-but-incomplete preview would only error). The LABEL still comes
+//     from the backend; only `disabled` is refined here.
+//
+// `view` is activeSpeaker.commissioningView (may be null before first load).
+// `client` carries the browser-only signals above plus a `clientFallback`
+// descriptor used when the view is unavailable or the draft is dirty/saving.
+// Returns {label, primary, disabled, act, step?, source} where source is
+// 'backend' on the clean view-model path and 'client' otherwise (so the parity
+// test can pin which path produced the footer).
+export function commissioningStepFooter(step, view, client) {
+  client = client || {};
+  var fallback = client.clientFallback || {};
+  fallback = {
+    label: String(fallback.label || ''),
+    primary: fallback.primary !== false,
+    disabled: !!fallback.disabled,
+    act: String(fallback.act || ''),
+    step: fallback.step ? String(fallback.step) : undefined,
+    source: 'client'
+  };
+  var dirty = !!client.layoutDirty || !!client.draftDirty || !!client.saving;
+  var nextAction = view && typeof view === 'object' && view.next_action &&
+    typeof view.next_action === 'object' ? view.next_action : null;
+
+  if (step === 'research') {
+    if (dirty || !nextAction) return fallback;
+    var act = nextActionAct(nextAction);
+    if (act === 'prepare-crossover-preview') {
+      return {
+        label: String(nextAction.label || 'Preview crossover'),
+        primary: true,
+        // Backend enables whenever the saved design is ready; keep it disabled
+        // until the live topology actually has the preview inputs.
+        disabled: !client.previewInputsReady,
+        act: act,
+        source: 'backend'
+      };
+    }
+    if (act === 'save-driver-design') {
+      return {
+        label: String(nextAction.label || 'Save values'),
+        primary: true,
+        disabled: false,
+        act: act,
+        source: 'backend'
+      };
+    }
+    // next_action points past the research step (confirm outputs, driver test,
+    // …) -> the saved design + preview are complete, so the footer advances.
+    return {label: 'Continue', primary: true, disabled: false,
+      act: 'output-step-next', step: 'research', source: 'backend'};
+  }
+
+  if (step === 'map') {
+    if (dirty || !view || typeof view !== 'object') return fallback;
+    var identity = view.output_identity && typeof view.output_identity === 'object' ?
+      view.output_identity : {};
+    if (identity.complete === true) {
+      return {label: 'Continue', primary: true, disabled: false,
+        act: 'output-step-next', step: 'map', source: 'backend'};
+    }
+    // Outputs still need confirming inside the step (the identity card owns that
+    // action); the footer is a disabled waiting affordance, not a CTA.
+    return {label: 'Confirm outputs', primary: true, disabled: true,
+      act: '', source: 'backend'};
+  }
+
+  return fallback;
+}
+
 // Bass-management crossover corner bounds. These MUST equal
 // jasper.active_speaker.profile.DEFAULT_SUB_CROSSOVER_HZ / SUB_CROSSOVER_HZ_LO /
 // _HI (and jasper.output_topology's SUB_CROSSOVER_HZ_* mirror). Duplicated here

@@ -30,6 +30,7 @@ import {
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
   commissionCardState,
+  commissioningStepFooter,
   commissionPayloadHasIssue,
   commissionPayloadFailure,
   defaultActiveSpeakerStep,
@@ -977,19 +978,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return target.speaker_group_id === groupId && target.role === role;
     }) || null;
   }
-  function outputAssignedMap(topology) {
-    var out = {};
-    outputGroups(topology).forEach(function(group) {
-      (group.channels || []).forEach(function(channel) {
-        if (channel.physical_output_index == null) return;
-        out[String(channel.physical_output_index)] = {
-          group: group.label || group.id,
-          role: channel.role || 'channel'
-        };
-      });
-    });
-    return out;
-  }
   function outputAssignedToOtherMap(topology, groupId, role) {
     var out = {};
     outputGroups(topology).forEach(function(group) {
@@ -1880,32 +1868,48 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (disabled ? ' disabled' : '') + '>' +
       escapeHtml(label) + '</button>';
   }
+  // Render a {label, primary, disabled, act, step} footer descriptor from
+  // commissioningStepFooter. An 'output-step-next' act carries the step; a
+  // bare act (save-driver-design / prepare-crossover-preview) is a direct
+  // click; an empty act is a disabled waiting affordance.
+  function renderStepFooterButton(desc) {
+    desc = desc || {};
+    if (desc.act === 'output-step-next') {
+      return renderOutputStepButton(desc.step || '', desc.label, desc.primary, desc.disabled);
+    }
+    return '<button type="button" class="btn ' +
+      escapeHtml(desc.primary !== false ? 'btn--primary' : 'btn--ghost') + '"' +
+      (desc.act ? ' data-act="' + escapeHtml(desc.act) + '"' : '') +
+      (desc.disabled ? ' disabled' : '') + '>' +
+      escapeHtml(desc.label || '') + '</button>';
+  }
   function renderDriverResearchStepFooter(topology) {
-    if (outputTopology.dirty) {
-      return '<button type="button" class="btn btn--primary" disabled>Save layout first</button>';
-    }
-    if (driverResearch.saving) {
-      return '<button type="button" class="btn btn--primary" disabled>Saving</button>';
-    }
-    if (driverResearch.dirty || !driverResearchStepSatisfied()) {
-      return '<button type="button" class="btn btn--primary" data-act="save-driver-design">Save values</button>';
-    }
-    if (activeCommissionGroup(topology) &&
-        !crossoverPreviewReadyForProtectedStaging(crossoverPreview.payload)) {
-      return '<button type="button" class="btn btn--primary" data-act="prepare-crossover-preview"' +
-        (driverResearchHasPreviewInputs(topology) ? '' : ' disabled') +
-        '>Preview crossover</button>';
-    }
-    return renderOutputStepButton('research', 'Continue', true);
+    // Clean-draft readiness comes from the backend commissioning view-model;
+    // the client fallback covers only the unsaved-edit cases it cannot see.
+    // A pending layout save blocks first; a draft save-in-flight is "Saving";
+    // an unsaved draft offers "Save values" (same act as the backend path).
+    var clientFallback = outputTopology.dirty ?
+      {label: 'Save layout first', primary: true, disabled: true} :
+      (driverResearch.saving ?
+        {label: 'Saving', primary: true, disabled: true} :
+        {label: 'Save values', primary: true, act: 'save-driver-design'});
+    return renderStepFooterButton(commissioningStepFooter('research',
+      activeSpeaker.commissioningView, {
+        layoutDirty: outputTopology.dirty,
+        draftDirty: driverResearch.dirty,
+        saving: driverResearch.saving,
+        previewInputsReady: driverResearchHasPreviewInputs(topology),
+        clientFallback: clientFallback
+      }));
   }
   function renderOutputMapStepFooter() {
-    if (outputTopology.dirty) {
-      return '<button type="button" class="btn btn--primary" data-act="save-output-topology">Save</button>';
-    }
-    if (!outputIdentityComplete()) {
-      return '<button type="button" class="btn btn--primary" disabled>Confirm outputs</button>';
-    }
-    return renderOutputStepButton('map', 'Continue', true);
+    var clientFallback = {label: 'Save', primary: true, disabled: false,
+      act: 'save-output-topology'};
+    return renderStepFooterButton(commissioningStepFooter('map',
+      activeSpeaker.commissioningView, {
+        layoutDirty: outputTopology.dirty,
+        clientFallback: clientFallback
+      }));
   }
   function outputTemplateKindFromAxes(layout, speakerMode) {
     if (layout !== 'mono' && layout !== 'stereo') return '';

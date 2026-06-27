@@ -266,9 +266,11 @@ runs automatically only when the configured AEC mic is present with
   design system ([`deploy/assets/app.css`](deploy/assets/app.css)).
   Applying emits a CamillaDSP config that preserves any active
   room-correction PEQs; Off turns off only preference shaping without
-  clearing room correction. A collapsed Advanced speaker setup card now
-  marks the active crossover commissioning lane as schema plus
-  startup-template only while the safety substrate is built. See
+  clearing room correction. A collapsed Speaker setup card hosts the
+  active-crossover commissioning flow — choose the speaker layout, enter
+  driver/crossover values, confirm the DAC outputs, then run the guarded
+  per-driver audible test and apply the active speaker profile (passive /
+  full-range speakers skip the driver test). See
   [docs/HANDOFF-sound-preferences.md](docs/HANDOFF-sound-preferences.md)
   for the composition contract, profile semantics, and observability
   hooks.

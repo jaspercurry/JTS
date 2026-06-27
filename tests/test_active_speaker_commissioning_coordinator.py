@@ -344,3 +344,32 @@ def test_commissioning_view_requires_crossover_preview_after_saved_values():
     assert view["driver_values"]["design_ready"] is True
     assert view["driver_values"]["preview_ready"] is False
     assert view["next_action"]["id"] == "preview_crossover"
+
+
+def test_research_next_action_endpoints_match_frontend_footer_dispatch():
+    """Pin the Python↔JS seam the /sound/ research footer depends on.
+
+    deploy/assets/sound-profile/js/active-speaker-ui.js (nextActionAct) maps a
+    research-step next_action to a click `data-act` purely by substring-matching
+    the endpoint: "/design-draft" -> save the draft, "/crossover-preview" ->
+    prepare the preview. If the coordinator ever renames these endpoints the
+    footer would silently fall back to "Continue", so assert the substrings
+    here (the JS side is pinned by tests/js/active_speaker_ui_test.mjs).
+    """
+
+    save_values = build_commissioning_view(
+        _topology(),
+        design_draft={"status": "not_saved"},
+        measurements={"summary": {"driver_checks_complete": False}},
+    )["next_action"]
+    assert save_values["id"] == "save_driver_values"
+    assert "/design-draft" in save_values["endpoint"]
+
+    preview = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview={"status": "not_prepared"},
+        measurements={"summary": {"driver_checks_complete": False}},
+    )["next_action"]
+    assert preview["id"] == "preview_crossover"
+    assert "/crossover-preview" in preview["endpoint"]

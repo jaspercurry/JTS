@@ -3623,7 +3623,7 @@ async function testFollowerModeRendersLocalDriverUi() {
 
   const html = harness.elements.get("view-body").innerHTML;
   // The local driver/crossover/commissioning surface renders as primary content,
-  // expanded (not tucked behind the solo box's "Advanced speaker setup" disclosure).
+  // expanded (not tucked behind the solo box's "Speaker setup" disclosure).
   for (const expected of ["Active crossover setup", "Test each driver"]) {
     if (!html.includes(expected)) {
       fail("follower /sound/ should render the local active-speaker UI", { expected, html });
@@ -3633,7 +3633,7 @@ async function testFollowerModeRendersLocalDriverUi() {
     "Create custom profile",
     "Try a stock profile",
     "data-act=\"new-draft\"",
-    "Advanced speaker setup",
+    "Speaker setup",
   ]) {
     if (html.includes(forbidden)) {
       fail("follower /sound/ should not render the content-EQ editor", { forbidden, html });

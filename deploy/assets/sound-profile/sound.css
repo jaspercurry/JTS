@@ -643,25 +643,6 @@
   }
   .driver-research__notes li + li { margin-top: 4px; }
   .driver-research__error { color: var(--status-danger); }
-  .output-lane {
-    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px;
-  }
-  .output-chip {
-    display: inline-flex; flex-direction: column; gap: 2px;
-    min-width: 7rem; padding: 7px 10px;
-    border-radius: var(--radius-sm);
-    background: color-mix(in oklch, var(--foreground) 2%, transparent);
-    box-shadow: inset 0 0 0 1px var(--border);
-    font-size: 12px; font-weight: 700; color: var(--foreground);
-    font-variant-numeric: tabular-nums;
-  }
-  .output-chip small {
-    font-size: 10px; font-weight: 600; color: var(--muted-foreground);
-  }
-  .output-chip--assigned {
-    background: color-mix(in oklch, var(--status-ok) 8%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--status-ok) 30%, transparent);
-  }
   .output-hardware-details {
     margin-top: 8px;
   }
