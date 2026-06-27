@@ -17,6 +17,7 @@ import {
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
   commissionPayloadFailure,
+  commissioningStepFooter,
   crossoverAlignmentSummary,
   defaultActiveSpeakerStep,
   levelMatchSummary,
@@ -311,6 +312,150 @@ const STEREO_WITH_SUB_UNSET_FC = {
   assert.equal(summedGroupFailureHint(null), SUMMED_TEST_GENERIC_RETRY_HINT);
   assert.equal(summedGroupFailureHint(undefined), SUMMED_TEST_GENERIC_RETRY_HINT);
   assert.equal(summedGroupFailureHint(null, { suppress: true }), "");
+}
+
+// --- commissioningStepFooter: backend view-model on the clean path ----------
+//
+// The research/map step footers used to re-derive readiness in the browser
+// (driverResearchStepSatisfied / crossoverPreviewReadyForProtectedStaging /
+// outputIdentityComplete). commissioningStepFooter consumes the backend
+// commissioning view-model on a CLEAN draft (`source:'backend'`) and only falls
+// back to the client descriptor for the dirty/saving cases the backend cannot
+// see (`source:'client'`). These tests pin that boundary.
+
+// Backend next_action == save the design draft -> footer renders that, verbatim
+// label, from the backend (not a client-derived "Save values").
+{
+  const f = commissioningStepFooter(
+    "research",
+    { next_action: { id: "save_driver_values", label: "Save values",
+      endpoint: "./active-speaker/design-draft", enabled: true } },
+    { previewInputsReady: true },
+  );
+  assert.equal(f.source, "backend");
+  assert.equal(f.act, "save-driver-design");
+  assert.equal(f.label, "Save values");
+  assert.equal(f.disabled, false);
+}
+
+// Backend next_action == preview the crossover -> footer renders that. The LABEL
+// is backend; the ENABLED state is refined by the client preview-inputs signal
+// (the one documented divergence the browser keeps owning).
+{
+  const ready = commissioningStepFooter(
+    "research",
+    { next_action: { id: "preview_crossover", label: "Preview crossover",
+      endpoint: "./active-speaker/crossover-preview", enabled: true } },
+    { previewInputsReady: true },
+  );
+  assert.equal(ready.source, "backend");
+  assert.equal(ready.act, "prepare-crossover-preview");
+  assert.equal(ready.label, "Preview crossover");
+  assert.equal(ready.disabled, false);
+
+  const missingInputs = commissioningStepFooter(
+    "research",
+    { next_action: { id: "preview_crossover", label: "Preview crossover",
+      endpoint: "./active-speaker/crossover-preview", enabled: true } },
+    { previewInputsReady: false },
+  );
+  // Backend says enabled; the client keeps it disabled until inputs exist.
+  assert.equal(missingInputs.source, "backend");
+  assert.equal(missingInputs.disabled, true);
+  assert.equal(missingInputs.label, "Preview crossover");
+}
+
+// Backend next_action points PAST the research step (confirm outputs etc.) ->
+// the saved design+preview are complete, so the footer advances ("Continue").
+{
+  const f = commissioningStepFooter(
+    "research",
+    { next_action: { id: "confirm_outputs", label: "Confirm outputs",
+      method: "GET", enabled: true } },
+    { previewInputsReady: true },
+  );
+  assert.equal(f.source, "backend");
+  assert.equal(f.act, "output-step-next");
+  assert.equal(f.step, "research");
+  assert.equal(f.label, "Continue");
+}
+
+// Dirty / saving draft -> the backend (which only reads saved state) cannot
+// reflect the unsaved edit, so the client fallback is used verbatim.
+{
+  const saving = commissioningStepFooter(
+    "research",
+    { next_action: { id: "preview_crossover", label: "Preview crossover",
+      endpoint: "./active-speaker/crossover-preview", enabled: true } },
+    { saving: true, previewInputsReady: true,
+      clientFallback: { label: "Saving", disabled: true } },
+  );
+  assert.equal(saving.source, "client");
+  assert.equal(saving.label, "Saving");
+  assert.equal(saving.disabled, true);
+
+  const draftDirty = commissioningStepFooter(
+    "research",
+    { next_action: { id: "preview_crossover", label: "Preview crossover",
+      endpoint: "./active-speaker/crossover-preview", enabled: true } },
+    { draftDirty: true, previewInputsReady: true,
+      clientFallback: { label: "Save values", act: "save-driver-design" } },
+  );
+  assert.equal(draftDirty.source, "client");
+  assert.equal(draftDirty.act, "save-driver-design");
+
+  const layoutDirty = commissioningStepFooter(
+    "research",
+    { next_action: { id: "save_driver_values", label: "Save values",
+      endpoint: "./active-speaker/design-draft", enabled: true } },
+    { layoutDirty: true, previewInputsReady: true,
+      clientFallback: { label: "Save layout first", disabled: true } },
+  );
+  assert.equal(layoutDirty.source, "client");
+  assert.equal(layoutDirty.label, "Save layout first");
+}
+
+// No view yet (pre-first-load) -> client fallback, never a guessed backend path.
+{
+  const f = commissioningStepFooter("research", null, {
+    clientFallback: { label: "Save values", act: "save-driver-design" },
+  });
+  assert.equal(f.source, "client");
+  assert.equal(f.act, "save-driver-design");
+}
+
+// Map step: readiness comes from the backend output_identity.complete signal.
+{
+  const incomplete = commissioningStepFooter(
+    "map",
+    { output_identity: { complete: false }, next_action: {} },
+    {},
+  );
+  assert.equal(incomplete.source, "backend");
+  assert.equal(incomplete.label, "Confirm outputs");
+  assert.equal(incomplete.disabled, true);
+  assert.equal(incomplete.act, ""); // waiting affordance: confirm in the card
+
+  const complete = commissioningStepFooter(
+    "map",
+    { output_identity: { complete: true }, next_action: {} },
+    {},
+  );
+  assert.equal(complete.source, "backend");
+  assert.equal(complete.act, "output-step-next");
+  assert.equal(complete.step, "map");
+  assert.equal(complete.label, "Continue");
+
+  // Dirty layout -> client "Save" fallback (the map card owns the save).
+  const dirty = commissioningStepFooter(
+    "map",
+    { output_identity: { complete: true } },
+    { layoutDirty: true,
+      clientFallback: { label: "Save", act: "save-output-topology" } },
+  );
+  assert.equal(dirty.source, "client");
+  assert.equal(dirty.act, "save-output-topology");
+  assert.equal(dirty.label, "Save");
 }
 
 console.log(JSON.stringify({ ok: true }));

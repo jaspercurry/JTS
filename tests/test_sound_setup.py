@@ -694,7 +694,11 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert 'data-protection-status="' not in js
     assert "headers: jsonHeaders()" in js
     assert "Saved speaker layout. No sound was played." in js
-    assert "data-act=\"save-output-topology\"" in js
+    # The map-step footer's dirty-layout fallback wires the save-layout action
+    # through the shared descriptor renderer (renderStepFooterButton emits the
+    # data-act attribute at runtime) rather than an inline data-act string.
+    assert "act: 'save-output-topology'" in js
+    assert "else if (act === 'save-output-topology')" in js
     assert "data-output-channel" in js
     assert "Assign each driver to one DAC channel. Play starts quiet and ramps." in js
     assert "Play a quiet ramp if needed, then confirm each DAC output." in js
