@@ -392,7 +392,8 @@ def snapserver_argv(cfg: GroupingConfig) -> list[str]:
 
     PURE: a deterministic function of `cfg`. snapserver reads the mixed
     program from the SNAPFIFO pipe source and streams it with the
-    configured codec and group/network buffer derived from cfg.buffer_ms.
+    configured codec and the group/network playout buffer (cfg.buffer_ms,
+    passed as the global ``--stream.buffer``).
     """
     # sampleformat is PINNED (codify, don't rely on snapserver defaults):
     # the whole chain is 48 kHz / S16 / stereo — CamillaDSP's File sink
@@ -405,12 +406,21 @@ def snapserver_argv(cfg: GroupingConfig) -> list[str]:
         f"&mode=create"
         f"&sampleformat=48000:16:2"
         f"&codec={cfg.codec}"
-        f"&buffer_ms={cfg.buffer_ms}"
     )
+    # buffer_ms is the GLOBAL `--stream.buffer` flag (snapcast's end-to-end
+    # capture->playout latency), NOT a `pipe://?...&buffer_ms=` source-URL
+    # query param. snapcast's pipe-source parser reads only name/mode/
+    # sampleformat/codec/chunk_ms and SILENTLY IGNORES an unknown query
+    # key, so a `&buffer_ms=` value is inert — the bond would run
+    # snapcast's 1000 ms default regardless. Do NOT move this back into the
+    # source URL (that was the latent bug: a configured 400 ms bond
+    # actually buffered 1000 ms).
     return [
         "snapserver",
         "--stream.source",
         source,
+        "--stream.buffer",
+        str(cfg.buffer_ms),
     ]
 
 
