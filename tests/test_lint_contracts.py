@@ -39,8 +39,15 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # reconcile path — the active-leader camilla#1 program-bake apply + camilla#2
 # re-seed, and the unbond active-leader restore — each a "never crash the
 # reconcile / fail safe to solo" handler matching the existing reconciler idiom.
+# 2026-06-27 (+1 suppression marker, blind-except): PR #1051's /sound topology
+# revision-compare-and-write TOCTOU fix wraps the critical section in a
+# fail-soft `except BaseException` guard ("surface unexpected failures"). The
+# baseline was not bumped when it merged, so main went red on this contract
+# (count 622 vs ceiling 621) — reconcile the count here. The suppression is the
+# established "never crash the critical write path" idiom; lowering the count by
+# narrowing it later is welcome.
 MAX_NOQA_MARKERS = 801
-MAX_BLE001_MARKERS = 621
+MAX_BLE001_MARKERS = 622
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 
