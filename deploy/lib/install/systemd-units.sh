@@ -9,6 +9,13 @@
 # Extracted from install.sh; functions assume install.sh globals and
 # set -euo pipefail from the sourcing shell.
 
+# Single canonical core-graph park list (JASPER_CORE_GRAPH_PARK_UNITS),
+# shared with the runtime recovery handler deploy/bin/jasper-camilla-recover.
+# Sourced REPO_DIR-relative from the rsync checkout (REPO_DIR is an assumed
+# install.sh global). park_audio_clients_for_core_graph_restart() iterates it.
+# shellcheck source=deploy/lib/jasper-core-graph-park-units.sh
+source "${REPO_DIR}/deploy/lib/jasper-core-graph-park-units.sh"
+
 WIZARD_UNITS=(
     jasper-web
     jasper-bluetooth-web
@@ -27,6 +34,11 @@ install_jasper_support_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-env-file.sh" \
         /usr/local/lib/jasper/jasper-env-file.sh
+    # Single canonical core-graph park list, sourced at runtime by
+    # /usr/local/sbin/jasper-camilla-recover (../lib has no sibling there).
+    install -m 0644 \
+        "${REPO_DIR}/deploy/lib/jasper-core-graph-park-units.sh" \
+        /usr/local/lib/jasper/jasper-core-graph-park-units.sh
     install -d -m 0755 /usr/local/lib/jasper/install
     install -m 0644 \
         "${REPO_DIR}"/deploy/lib/install/*.sh \
@@ -374,20 +386,10 @@ park_audio_clients_for_core_graph_restart() {
     # renderers are actively playing. Park the units that can hold fan-in,
     # Camilla, or outputd endpoints before restarting the core graph, then
     # let the existing restart/reconcile steps below restore the profile-
-    # appropriate runtime state.
+    # appropriate runtime state. The list is the single canonical
+    # JASPER_CORE_GRAPH_PARK_UNITS sourced at the top of this file.
     local unit
-    for unit in \
-        jasper-voice.service \
-        jasper-aec-bridge.service \
-        jasper-outputd.service \
-        jasper-camilla-crossover.service \
-        jasper-snapclient.service \
-        jasper-snapserver.service \
-        shairport-sync.service \
-        nqptp.service \
-        librespot.service \
-        bluealsa-aplay.service \
-        jasper-mux.service; do
+    for unit in "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
         systemctl stop "${unit}" 2>/dev/null || true
         systemctl reset-failed "${unit}" 2>/dev/null || true
     done
@@ -596,6 +598,11 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-env-file.sh" \
         /usr/local/lib/jasper/jasper-env-file.sh
+    # Single canonical core-graph park list, sourced at runtime by
+    # /usr/local/sbin/jasper-camilla-recover (../lib has no sibling there).
+    install -m 0644 \
+        "${REPO_DIR}/deploy/lib/jasper-core-graph-park-units.sh" \
+        /usr/local/lib/jasper/jasper-core-graph-park-units.sh
     # Installer-only sourced libs (install.sh sources them REPO_DIR-
     # relative from the rsync checkout; the installed copies mirror the
     # other deploy/lib files for on-Pi inspection/consistency).

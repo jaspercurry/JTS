@@ -30,6 +30,34 @@ DEV_SND_ROOT="${JASPER_DEV_SND_ROOT:-/dev/snd}"
 COOLDOWN_SEC="${JASPER_CAMILLA_RECOVER_COOLDOWN_SEC:-300}"
 STATE_FILE="${STATE_DIR}/camilla_recover_last_attempt"
 LOCK_DIR="${RUN_DIR}/jasper-camilla-recover.lock"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PARK_UNITS_LIB="${JASPER_CORE_GRAPH_PARK_UNITS_LIB:-}"
+
+# Source the single canonical core-graph park list
+# (JASPER_CORE_GRAPH_PARK_UNITS). Sibling-first (the repo checkout's
+# deploy/lib/ when this script runs from deploy/bin/, e.g. tests), then the
+# installed copy under /usr/local/lib/jasper/ for the deployed
+# /usr/local/sbin script which has no ../lib sibling — mirroring
+# jasper-aec-reconcile's load_env_file_lib. There is deliberately NO inline
+# fallback list: a missing fragment means a broken install, and re-inlining
+# the list here is exactly the duplication this consolidation removes. Fail
+# loud (exit 66) instead — the OnFailure= handler still surfaces it.
+load_core_graph_park_units() {
+    if [[ -z "$PARK_UNITS_LIB" ]]; then
+        if [[ -r "${SCRIPT_DIR}/../lib/jasper-core-graph-park-units.sh" ]]; then
+            PARK_UNITS_LIB="${SCRIPT_DIR}/../lib/jasper-core-graph-park-units.sh"
+        else
+            PARK_UNITS_LIB="/usr/local/lib/jasper/jasper-core-graph-park-units.sh"
+        fi
+    fi
+    if [[ ! -r "$PARK_UNITS_LIB" ]]; then
+        echo "jasper-camilla-recover: missing core-graph park-list library: ${PARK_UNITS_LIB}" >&2
+        exit 66
+    fi
+    # shellcheck source=deploy/lib/jasper-core-graph-park-units.sh
+    source "$PARK_UNITS_LIB"
+}
+load_core_graph_park_units
 
 usage() {
     cat <<'EOF'
@@ -211,20 +239,10 @@ write_attempt_stamp "$NOW"
 
 # Stop likely holders before restarting the core graph. These are the units
 # that can own fan-in, Camilla, outputd, or renderer ALSA endpoints during
-# deploy/runtime churn. Missing units are harmless on streambox or partial
-# installs.
-for unit in \
-    jasper-voice.service \
-    jasper-aec-bridge.service \
-    jasper-outputd.service \
-    jasper-camilla-crossover.service \
-    jasper-snapclient.service \
-    jasper-snapserver.service \
-    shairport-sync.service \
-    nqptp.service \
-    librespot.service \
-    bluealsa-aplay.service \
-    jasper-mux.service; do
+# deploy/runtime churn. The list is the single canonical
+# JASPER_CORE_GRAPH_PARK_UNITS sourced above. Missing units are harmless on
+# streambox or partial installs.
+for unit in "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
     unit_action stop "$unit"
 done
 
