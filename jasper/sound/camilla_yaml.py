@@ -22,17 +22,17 @@ from jasper.multiroom.channel_split import ChannelSplit, weave_channel_split
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
-    DEFAULT_CHUNKSIZE,
     DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
-    DEFAULT_TARGET_LEVEL,
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
     ensure_volume_limit_db,
     file_capture_resampler_yaml,
     is_async_resampler,
+    resolve_camilla_chunksize,
+    resolve_camilla_target_level,
 )
 from jasper.camilla_emit import emit_master_gain_pipeline
 from jasper.camilla_stereo_prefix import build_stereo_prefix
@@ -70,8 +70,8 @@ def emit_sound_config(
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
     playback_format: str = DEFAULT_PLAYBACK_FORMAT,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
-    chunksize: int = DEFAULT_CHUNKSIZE,
-    target_level: int = DEFAULT_TARGET_LEVEL,
+    chunksize: int | None = None,
+    target_level: int | None = None,
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     out_path: str | Path | None = None,
     profile_id: str | None = None,
@@ -134,6 +134,15 @@ def emit_sound_config(
     # Loud-output safety: refuse to emit a config whose master fader
     # could boost above full scale. Mirrors the active_speaker emitter.
     volume_limit_db = ensure_volume_limit_db(volume_limit_db)
+    # CamillaDSP latency knobs (G7): None → env-or-default, resolved at call
+    # time so a JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} systemd override applies
+    # on the next regeneration. Unset env → the literal defaults (1024/2048), so
+    # the emitted YAML is byte-identical absent an opt-in. An explicit caller
+    # value still wins.
+    if chunksize is None:
+        chunksize = resolve_camilla_chunksize()
+    if target_level is None:
+        target_level = resolve_camilla_target_level()
     if channel_delays_ms is not None:
         if len(channel_delays_ms) != 2:
             raise ValueError("channel_delays_ms must be a (left_ms, right_ms) pair")

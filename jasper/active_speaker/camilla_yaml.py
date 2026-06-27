@@ -21,17 +21,17 @@ from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
-    DEFAULT_CHUNKSIZE,
     DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
-    DEFAULT_TARGET_LEVEL,
     DEFAULT_VOLUME_LIMIT_DB,
     FilterSpec,
     PeqFilter,
     file_capture_resampler_yaml,
     is_async_resampler,
+    resolve_camilla_chunksize,
+    resolve_camilla_target_level,
     total_positive_boost_db,
 )
 from jasper.camilla_emit import (
@@ -880,8 +880,8 @@ def emit_active_speaker_startup_config(
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
     playback_format: str = DEFAULT_PLAYBACK_FORMAT,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
-    chunksize: int = DEFAULT_CHUNKSIZE,
-    target_level: int = DEFAULT_TARGET_LEVEL,
+    chunksize: int | None = None,
+    target_level: int | None = None,
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     startup_headroom_db: float = STARTUP_HEADROOM_DB,
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
@@ -909,6 +909,13 @@ def emit_active_speaker_startup_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
+    # CamillaDSP latency knobs (G7): None → env-or-default at call time so a
+    # JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} override applies on the next
+    # regeneration. Unset env → the literal defaults (byte-identical YAML).
+    if chunksize is None:
+        chunksize = resolve_camilla_chunksize()
+    if target_level is None:
+        target_level = resolve_camilla_target_level()
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
@@ -1150,8 +1157,8 @@ def emit_active_speaker_commissioning_config(
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
     playback_format: str = DEFAULT_PLAYBACK_FORMAT,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
-    chunksize: int = DEFAULT_CHUNKSIZE,
-    target_level: int = DEFAULT_TARGET_LEVEL,
+    chunksize: int | None = None,
+    target_level: int | None = None,
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     startup_headroom_db: float = STARTUP_HEADROOM_DB,
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
@@ -1187,6 +1194,13 @@ def emit_active_speaker_commissioning_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
+    # CamillaDSP latency knobs (G7): None → env-or-default at call time so a
+    # JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} override applies on the next
+    # regeneration. Unset env → the literal defaults (byte-identical YAML).
+    if chunksize is None:
+        chunksize = resolve_camilla_chunksize()
+    if target_level is None:
+        target_level = resolve_camilla_target_level()
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
@@ -1303,8 +1317,8 @@ def emit_active_speaker_baseline_config(
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
     playback_format: str = DEFAULT_PLAYBACK_FORMAT,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
-    chunksize: int = DEFAULT_CHUNKSIZE,
-    target_level: int = DEFAULT_TARGET_LEVEL,
+    chunksize: int | None = None,
+    target_level: int | None = None,
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     baseline_headroom_db: float = BASELINE_HEADROOM_DB,
     limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
@@ -1359,6 +1373,13 @@ def emit_active_speaker_baseline_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
+    # CamillaDSP latency knobs (G7): None → env-or-default at call time so a
+    # JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} override applies on the next
+    # regeneration. Unset env → the literal defaults (byte-identical YAML).
+    if chunksize is None:
+        chunksize = resolve_camilla_chunksize()
+    if target_level is None:
+        target_level = resolve_camilla_target_level()
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
     # Stage 4 File-CAPTURE lean-lane guard (mirror of jasper.sound.camilla_yaml).
@@ -1525,8 +1546,8 @@ def emit_active_speaker_driver_domain_config(
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
     playback_format: str = DEFAULT_PLAYBACK_FORMAT,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
-    chunksize: int = DEFAULT_CHUNKSIZE,
-    target_level: int = DEFAULT_TARGET_LEVEL,
+    chunksize: int | None = None,
+    target_level: int | None = None,
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
     out_path: str | Path | None = None,
@@ -1584,6 +1605,13 @@ def emit_active_speaker_driver_domain_config(
     capture_format = _yaml_string(capture_format, "capture_format")
     playback_format = _yaml_string(playback_format, "playback_format")
     sample_rate = _positive_int(sample_rate, "sample_rate")
+    # CamillaDSP latency knobs (G7): None → env-or-default at call time so a
+    # JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} override applies on the next
+    # regeneration. Unset env → the literal defaults (byte-identical YAML).
+    if chunksize is None:
+        chunksize = resolve_camilla_chunksize()
+    if target_level is None:
+        target_level = resolve_camilla_target_level()
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
@@ -1719,8 +1747,8 @@ def emit_active_speaker_program_bake_config(
     capture_device: str = DEFAULT_CAPTURE_DEVICE,
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
-    chunksize: int = DEFAULT_CHUNKSIZE,
-    target_level: int = DEFAULT_TARGET_LEVEL,
+    chunksize: int | None = None,
+    target_level: int | None = None,
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     out_path: str | Path | None = None,
     profile_id: str | None = None,

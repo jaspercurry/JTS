@@ -12,9 +12,10 @@ into the combined ``jasper-web`` process.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 # Defaults match the outputd topology. Generated correction and
@@ -29,6 +30,45 @@ DEFAULT_PLAYBACK_FORMAT = "S16_LE"
 DEFAULT_SAMPLE_RATE = 48000
 DEFAULT_CHUNKSIZE = 1024
 DEFAULT_TARGET_LEVEL = 2048
+
+
+def _resolve_camilla_int(env_var: str, default: int, env: Mapping[str, str]) -> int:
+    """Resolve a positive-int CamillaDSP latency knob from the environment.
+
+    Returns ``default`` when the var is unset OR malformed (non-int, zero,
+    negative) — a bad override must never produce a config that won't load, so
+    it degrades to the shipped default rather than raising. With the var unset
+    the result is byte-identical to the literal default, so threading these
+    through the emitters does not change any emitted YAML unless an operator
+    opts in. Read at emitter-call time so a systemd EnvironmentFile change takes
+    effect on the next config regeneration without a code edit.
+    """
+    raw = str(env.get(env_var, "")).strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def resolve_camilla_chunksize(env: Mapping[str, str] | None = None) -> int:
+    """CamillaDSP ``chunksize`` — ``JASPER_CAMILLA_CHUNKSIZE`` or
+    ``DEFAULT_CHUNKSIZE`` (1024). See :func:`_resolve_camilla_int`."""
+    return _resolve_camilla_int(
+        "JASPER_CAMILLA_CHUNKSIZE", DEFAULT_CHUNKSIZE,
+        os.environ if env is None else env,
+    )
+
+
+def resolve_camilla_target_level(env: Mapping[str, str] | None = None) -> int:
+    """CamillaDSP ``target_level`` — ``JASPER_CAMILLA_TARGET_LEVEL`` or
+    ``DEFAULT_TARGET_LEVEL`` (2048). See :func:`_resolve_camilla_int`."""
+    return _resolve_camilla_int(
+        "JASPER_CAMILLA_TARGET_LEVEL", DEFAULT_TARGET_LEVEL,
+        os.environ if env is None else env,
+    )
 # CamillaDSP defaults the main fader's maximum to +50 dB when omitted.
 # JTS treats 0 dB as the hard software ceiling; source/headroom logic
 # should attenuate below this, never boost above full scale.

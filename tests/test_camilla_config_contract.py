@@ -5,10 +5,57 @@
 from __future__ import annotations
 
 from jasper.camilla_config_contract import (
+    DEFAULT_CHUNKSIZE,
+    DEFAULT_TARGET_LEVEL,
     PeqFilter,
     parse_camilla_devices_config,
+    resolve_camilla_chunksize,
+    resolve_camilla_target_level,
     total_positive_boost_db,
 )
+
+
+def test_camilla_latency_knobs_default_to_literals_when_unset():
+    """G7: with the env vars unset the resolvers return the shipped literals, so
+    threading them through the emitters changes no emitted YAML."""
+    assert resolve_camilla_chunksize({}) == DEFAULT_CHUNKSIZE == 1024
+    assert resolve_camilla_target_level({}) == DEFAULT_TARGET_LEVEL == 2048
+
+
+def test_camilla_latency_knobs_read_env_override():
+    """A valid positive override is honored."""
+    assert resolve_camilla_chunksize({"JASPER_CAMILLA_CHUNKSIZE": "512"}) == 512
+    assert (
+        resolve_camilla_target_level({"JASPER_CAMILLA_TARGET_LEVEL": "1024"}) == 1024
+    )
+
+
+def test_camilla_latency_knobs_reject_malformed_to_default():
+    """A bad override must degrade to the default rather than produce a config
+    that won't load (non-int, zero, negative, blank all fall back)."""
+    for bad in ("", "  ", "bogus", "0", "-256", "1.5"):
+        assert resolve_camilla_chunksize({"JASPER_CAMILLA_CHUNKSIZE": bad}) == (
+            DEFAULT_CHUNKSIZE
+        ), bad
+        assert resolve_camilla_target_level(
+            {"JASPER_CAMILLA_TARGET_LEVEL": bad}
+        ) == DEFAULT_TARGET_LEVEL, bad
+
+
+def test_camilla_emitters_emit_byte_identical_yaml_when_env_unset(monkeypatch):
+    """The end-to-end byte-identical contract: the sound emitter with the None
+    sentinel (env unset) must equal the pre-G7 explicit-literal call."""
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
+
+    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
+    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
+    profile = SoundProfile()
+    explicit = emit_sound_config(
+        profile, chunksize=DEFAULT_CHUNKSIZE, target_level=DEFAULT_TARGET_LEVEL
+    )
+    sentinel = emit_sound_config(profile)  # None → resolve → defaults
+    assert sentinel == explicit
 
 
 def test_total_positive_boost_db_sums_only_boosts():
