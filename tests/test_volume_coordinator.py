@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+from jasper import bluealsa_probe
+from jasper import volume_coordinator as vc_mod
 from jasper.volume_coordinator import (
     AIRPLAY_DB_MAX,
     AIRPLAY_DB_MIN,
@@ -37,6 +39,13 @@ from jasper.volume_coordinator import (
 )
 from jasper.volume_diagnostics import read_diagnostics
 from jasper.volume_persistence import VolumePersistence, percent_to_db
+
+
+@pytest.fixture(autouse=True)
+def _reset_bluealsa_probe_state():
+    bluealsa_probe._reset_for_tests()
+    yield
+    bluealsa_probe._reset_for_tests()
 
 
 # ---------- mapping helpers -------------------------------------------------
@@ -1803,3 +1812,89 @@ async def test_usbsink_is_camilla_master(tmp_path):
     assert await coord._camilla_carries_level(Source.USBSINK) is True
     # Inverse check — spotify is still push-mode.
     assert await coord._camilla_carries_level(Source.SPOTIFY) is False
+
+
+# ---------- bluealsa transport-path probe goes through shared backoff -------
+#
+# _bluez_alsa_active_transport_path runs in jasper-control on every BT
+# volume set from the dial/web. It must reuse jasper.bluealsa_probe so a
+# D-Bus permission denial backs off process-wide instead of hammering the
+# system bus once per volume set. These tests fail if the helper reverts
+# to its own raw `bluealsa-cli list-pcms` subprocess.
+
+
+async def test_bluez_transport_path_parses_pcm_line(monkeypatch):
+    line = (
+        b"/org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/a2dpsnk/source PCM ...\n"
+    )
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return line, b""
+
+    async def fake_exec(*args, **kwargs):
+        return _Proc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    assert await vc_mod._bluez_alsa_active_transport_path() == (
+        "/org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/a2dpsnk/source"
+    )
+
+
+async def test_bluez_transport_path_returns_none_when_no_transport(monkeypatch):
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        return _Proc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    assert await vc_mod._bluez_alsa_active_transport_path() is None
+
+
+async def test_bluez_transport_path_suppresses_after_cli_failure(monkeypatch):
+    """A D-Bus rejection (rc!=0) must trip the shared backoff so the
+    second probe is short-circuited and does NOT spawn a subprocess.
+    Only true if the helper routes through bluealsa_probe.list_pcms."""
+    class _Proc:
+        returncode = 1
+
+        async def communicate(self):
+            return b"", b"permission denied"
+
+    calls = {"n": 0}
+
+    async def fake_exec(*args, **kwargs):
+        calls["n"] += 1
+        return _Proc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    assert await vc_mod._bluez_alsa_active_transport_path() is None
+    assert await vc_mod._bluez_alsa_active_transport_path() is None
+    assert calls["n"] == 1
+
+
+async def test_bluez_transport_path_shares_backoff_with_other_probes(monkeypatch):
+    """The backoff is process-wide: a failure recorded by any
+    bluealsa_probe consumer suppresses this helper's next probe without
+    spawning. Pins the 'shared module', not a per-caller, contract."""
+    calls = {"n": 0}
+
+    async def fake_exec(*args, **kwargs):
+        calls["n"] += 1
+        raise AssertionError("should not spawn while suppressed")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    # Pre-trip the shared backoff as if another consumer just failed.
+    bluealsa_probe.note_probe_failure("rc=1", vc_mod.logger)
+
+    assert await vc_mod._bluez_alsa_active_transport_path() is None
+    assert calls["n"] == 0
