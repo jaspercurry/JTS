@@ -61,8 +61,13 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # further best-effort handler was narrowed to a typed except rather than
 # suppressed. (Marker strings are spelled out here, not written literally, so
 # this very comment does not inflate the count it documents.)
-MAX_NOQA_MARKERS = 808
-MAX_BLE001_MARKERS = 627
+# 2026-06-27 (+1 blind-except): the /correction/ relay-capture daemon adapter
+# (jasper/web/correction_setup.py POST /relay/capture) adds one fail-loud
+# never-crash-the-background-loop handler around the async capture runner —
+# logs + surfaces the failure in /status, mirrors the existing
+# _schedule_measurement_sweep idiom in the same file. Pushes BOTH ceilings by 1.
+MAX_NOQA_MARKERS = 809
+MAX_BLE001_MARKERS = 628
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 
