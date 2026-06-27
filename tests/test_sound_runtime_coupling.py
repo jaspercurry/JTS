@@ -74,6 +74,23 @@ def _capture_reemit_coupling(monkeypatch, tmp_path, *, coupling_env: str | None)
     monkeypatch.setattr(runtime, "output_trim_db", lambda profile, settings: 0.0)
     monkeypatch.setattr(runtime, "load_sound_settings", lambda *a, **k: object())
 
+    # MB1: under =fifo the flat-profile noop must be SKIPPED so the apply
+    # actually flips the shared capture loopback->File. Spy load_profile_config
+    # (the apply reconcile delegates to) to prove it's reached under =fifo and
+    # NOT reached under loopback — without a full apply-engine fake.
+    class _ApplyState:
+        active_config_path = "applied.yml"
+        room_peq_count = 0
+
+        def to_dict(self):
+            return {}
+
+    async def _spy_apply(*a, **k):
+        seen["apply_called"] = True
+        return _ApplyState(), "applied.yml", None
+
+    monkeypatch.setattr(runtime, "load_profile_config", _spy_apply)
+
     result = asyncio.run(
         runtime.reconcile_current_dsp(
             config_dir=config_dir,
@@ -95,9 +112,11 @@ def test_reconcile_default_passes_empty_coupling(monkeypatch, tmp_path):
         monkeypatch, tmp_path, coupling_env=None
     )
     assert seen["fanin_coupling_capture_kwargs"] == {}
-    # Sanity: it short-circuited on the flat-profile noop (no apply engine).
+    # Sanity: loopback default still short-circuits on the flat-profile noop —
+    # no apply engine (byte-identical, the MB1 fix only changes the =fifo path).
     assert result["status"] == "skipped"
     assert result["reason"] == "flat_profile_noop"
+    assert seen.get("apply_called") is not True
 
 
 def test_reconcile_fifo_passes_file_capture_coupling(monkeypatch, tmp_path):
@@ -109,9 +128,12 @@ def test_reconcile_fifo_passes_file_capture_coupling(monkeypatch, tmp_path):
     assert kwargs["capture_pipe_path"].endswith("camilla.pipe")
     assert kwargs["resampler_type"] == "AsyncSinc"
     assert kwargs["enable_rate_adjust"] is True
-    # The dry-run reemit still ran; the noop short-circuit fired (the carrier
-    # returned a flat noop result regardless of the capture transport).
-    assert result["status"] == "skipped"
+    # MB1 regression guard: under =fifo a flat profile must NOT short-circuit on
+    # flat_profile_noop — the shared capture must flip loopback->File, so the
+    # apply actually runs. Before the fix the noop fired and left Camilla on the
+    # dead loopback while fan-in wrote the pipe -> silent outage.
+    assert seen.get("apply_called") is True
+    assert result["status"] == "reconciled"
 
 
 def test_reconcile_unknown_coupling_fails_safe_to_empty(monkeypatch, tmp_path):
