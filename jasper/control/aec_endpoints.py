@@ -31,7 +31,11 @@ from ..audio_validation import (
 from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..atomic_io import locked_update_env_file
 from ..audio_input_view import build_microphone_settings_view
-from ..chip_aec_policy import gate_from_runtime_env, resolve_chip_aec_dac_gate
+from ..chip_aec_policy import (
+    combine_mic_availability,
+    gate_from_runtime_env,
+    resolve_chip_aec_dac_gate,
+)
 from ..wake_models import WAKE_MODEL_FILE
 
 _AEC_MODE_FILE = "/var/lib/jasper/aec_mode.env"
@@ -386,15 +390,25 @@ def _chip_aec_gate(
     if runtime_gate is not None and (
         not testing_requested or runtime_gate.arm_allowed
     ):
-        gate = runtime_gate
+        dac_gate = runtime_gate
     else:
-        gate = resolve_chip_aec_dac_gate(
+        dac_gate = resolve_chip_aec_dac_gate(
             env.get("JASPER_AUDIO_DAC_ID", "unknown"),
             testing_requested=testing_requested,
         )
+    # Fold the input-mic fact into the DAC-only gate so blockers +
+    # recommended_action use chip_aec_policy's single canonical vocabulary
+    # (BLOCKER_MIC / BLOCKER_DAC). Do not re-add a parallel code scheme here.
+    gate = combine_mic_availability(
+        dac_gate,
+        mic_available=mic_available,
+        testing_requested=testing_requested,
+    )
     payload = gate.to_dict()
     payload["mic_available"] = mic_available
-    payload["production_available"] = bool(mic_available and gate.production_allowed)
+    payload["production_available"] = bool(
+        mic_available and gate.production_allowed
+    )
     payload["testing_available"] = bool(mic_available and gate.testing_allowed)
     payload["available"] = bool(
         mic_available
@@ -403,15 +417,6 @@ def _chip_aec_gate(
             or (testing_requested and gate.testing_allowed)
         )
     )
-    blockers: list[str] = []
-    if not mic_available:
-        blockers.append("mic_beam_plan")
-    dac_available_for_selection = gate.production_allowed or (
-        testing_requested and gate.testing_allowed
-    )
-    if not dac_available_for_selection:
-        blockers.append("dac_gate")
-    payload["blockers"] = blockers
     return payload
 
 
