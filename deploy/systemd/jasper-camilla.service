@@ -79,7 +79,33 @@ RestartSec=2
 Nice=-10
 IOSchedulingClass=realtime
 IOSchedulingPriority=4
+
+# Real-time scheduling (audio-latency foundation G1). CamillaDSP is the
+# in-line DSP node; an ordinary SCHED_OTHER slice lets it be preempted under
+# load, producing the short-read / xrun storms the fan-in chain reports. The
+# official v4.1.3 binary is built with audio_thread_priority and already
+# promotes its ALSA processing thread to RT within the LimitRTPRIO=99 ceiling
+# below; electing SCHED_FIFO on the unit puts the main thread at RT too.
+#
+# Priority 25 is deliberately BELOW the two sinks that must win the CPU when
+# the system is starved: jasper-fanin (30) and jasper-outputd (35). Camilla
+# feeds them, so if all three contend, the final-output owner and the summed
+# fan-in source preempt the DSP node — never the reverse. Keep this ordering
+# (25 < 30 < 35) intact if any priority is retuned.
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=25
 LimitRTPRIO=99
+
+# LimitRTTIME caps how long an RT thread may run without blocking before the
+# kernel sends SIGXCPU (G4, mandatory with G1). On a 1 GB Pi a runaway RT
+# thread at FIFO priority can starve PID 1 and trip the hardware watchdog into
+# a full reboot; the SIGXCPU bound turns that whole-system wedge into a single
+# crashed daemon that Restart=always revives. 200 ms is generous for a normal
+# Camilla period (well under a millisecond of compute) yet far below the ~60 s
+# watchdog window. This mirrors what PipeWire's RTKit enforces (RTTimeUSec) for
+# exactly the same reason. ALL three FIFO units (camilla, fanin, outputd) carry
+# this bound.
+LimitRTTIME=200000
 LimitMEMLOCK=infinity
 
 # CamillaDSP logs external, unstructured ALSA backend WARN lines. A degraded

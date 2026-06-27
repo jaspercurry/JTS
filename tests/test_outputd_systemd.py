@@ -68,6 +68,11 @@ def test_outputd_unit_has_audio_realtime_shape():
     assert _value_for(unit, "CPUSchedulingPolicy") == "fifo"
     assert _value_for(unit, "CPUSchedulingPriority") == "35"
     assert _value_for(unit, "OOMScoreAdjust") == "-950"
+    # G4: every FIFO unit caps RT-thread runaway so a spinning thread can't
+    # starve PID 1 and trip the hardware watchdog into a reboot. outputd owns
+    # the DAC write loop at the top FIFO priority (35), so this bound matters
+    # most here.
+    assert _value_for(unit, "LimitRTTIME") == "200000"
 
 
 def test_outputd_unit_runtime_and_exec_paths():
