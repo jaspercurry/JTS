@@ -66,9 +66,8 @@ URL surface (after nginx strips the /rooms/ prefix):
                     stuck same-channel pair is REPAIRED to left/right rather
                     than rejected (CSRF-verified)
   POST /trim        set the pair balance absolutely (target=pair,
-                    balance_db) or nudge one member's legacy pair-balance
-                    trim by ±delta_db (target self|peer); attenuate-only,
-                    clamped, applied via /grouping/set (CSRF-verified)
+                    balance_db); attenuate-only, clamped, applied via
+                    /grouping/set (CSRF-verified)
   POST /mains-highpass
                     toggle wireless-sub bass management for every reachable
                     member in this bond via /grouping/set (CSRF-verified)
@@ -1888,99 +1887,19 @@ def _set_pair_balance(handler: BaseHTTPRequestHandler, parsed: dict) -> None:
     )
 
 
-TRIM_STEP_LIMIT_DB = 3.0  # max single nudge; UI sends ±0.5
-
-
 def _set_member_trim(handler: BaseHTTPRequestHandler) -> None:
-    """Handle POST /trim: nudge one member's pair-balance trim.
+    """Handle POST /trim: set the pair balance absolutely.
 
-    Body ``{target: "self"|"peer", delta_db}`` — "peer" resolves the ONE
-    same-bond sibling server-side (same discovery as /swap), so the page
-    needs no peer addressing or trim state. Delta semantics (the UI
-    sends ±0.5): we GET the member's current grouping, clamp
-    current+delta into the validated range, and write it back through
-    the SAME ``/grouping/set`` surface the bond flow uses (member-side
-    validation + reconciler kick apply it to outputd's lane).
-    Attenuate-only is enforced by the member's validate_grouping; the
-    clamp here just keeps the arithmetic in range. Returns
-    ``{ok, trim_db}`` so the row shows the new value."""
-    from ..multiroom.config import TRIM_DB_MIN, TRIM_DB_MAX
-
+    Body ``{target: "pair", balance_db}`` — the rooms slider's only trim
+    write. Reads the JSON body and delegates to :func:`_set_pair_balance`,
+    which validates ``balance_db`` and rewrites both member trims through
+    the ``/grouping/set`` surface the bond flow uses."""
     parsed, err = _read_json_body(handler)
     if err is not None:
         _send_json(handler, {"ok": False, "error": err},
                    status=HTTPStatus.BAD_REQUEST)
         return
-    target = str(parsed.get("target") or "self").strip()
-    if target == "pair":
-        _set_pair_balance(handler, parsed)
-        return
-    try:
-        delta = float(parsed.get("delta_db"))
-    except (TypeError, ValueError):
-        _send_json(handler, {"ok": False, "error": "delta_db must be a number"},
-                   status=HTTPStatus.BAD_REQUEST)
-        return
-    if abs(delta) > TRIM_STEP_LIMIT_DB:
-        _send_json(handler, {"ok": False,
-                             "error": f"delta_db limited to ±{TRIM_STEP_LIMIT_DB}"},
-                   status=HTTPStatus.BAD_REQUEST)
-        return
-
-    known = _self_addresses()
-    addr = ""
-    if target == "peer":
-        own = read_grouping_state()
-        bond_id = str(own.get("bond_id") or "").strip()
-        if not own.get("enabled") or not bond_id:
-            _send_json(handler, {"ok": False, "error": "not in a bond"},
-                       status=HTTPStatus.BAD_REQUEST)
-            return
-        addr, current, perr = _resolve_bond_peer(own, known)
-        if perr:
-            _send_json(
-                handler,
-                {"ok": False, "error": f"trim {perr}"},
-                status=HTTPStatus.BAD_REQUEST,
-            )
-            return
-    else:
-        current = read_grouping_state()
-    if not current.get("enabled") or current.get("error"):
-        _send_json(handler, {"ok": False,
-                             "error": "member is not in an active bond"},
-                   status=HTTPStatus.BAD_REQUEST)
-        return
-
-    new_trim = round(
-        max(TRIM_DB_MIN, min(TRIM_DB_MAX,
-                             float(current.get("trim_db") or 0.0) + delta)),
-        1,
-    )
-    body = {
-        "enabled": True,
-        "role": str(current.get("role") or ""),
-        "channel": str(current.get("channel") or ""),
-        "bond_id": str(current.get("bond_id") or ""),
-        "leader_addr": str(current.get("leader_addr") or ""),
-        "trim_db": new_trim,
-    }
-    ok, detail = _post_grouping_to_member(
-        addr, body, known, token=_request_control_token(handler),
-    )
-    log_event(
-        logger,
-        "rooms.trim",
-        addr=addr or "(self)",
-        delta=f"{delta:.1f}",
-        new=f"{new_trim:.1f}",
-        ok=ok,
-    )
-    _send_json(
-        handler,
-        {"ok": ok, "trim_db": new_trim, "detail": detail},
-        status=HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY,
-    )
+    _set_pair_balance(handler, parsed)
 
 
 def _grouping_set_body(

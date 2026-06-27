@@ -2223,7 +2223,7 @@ def test_post_swap_repairs_a_same_channel_pair(monkeypatch):
 
 
 # ----------------------------------------------------------------------
-# POST /trim — pair-balance writes/nudges (attenuate-only).
+# POST /trim — pair-balance writes (attenuate-only).
 # ----------------------------------------------------------------------
 
 
@@ -2254,47 +2254,6 @@ def _post_trim(*, monkeypatch, body, self_grouping, speakers=(),
     h.rfile = BytesIO(raw)
     handler_cls.do_POST(h)
     return h, posts
-
-
-def test_post_trim_self_nudges_and_clamps_at_zero(monkeypatch):
-    """Delta semantics through the member's own /grouping/set; the clamp
-    keeps arithmetic in the attenuate-only range (0.0 ceiling)."""
-    base = {"enabled": True, "role": "leader", "channel": "left",
-            "bond_id": "b", "leader_addr": "", "trim_db": -0.5, "error": None}
-    h, posts = _post_trim(
-        monkeypatch=monkeypatch,
-        body={"target": "self", "delta_db": 0.5},
-        self_grouping=base,
-    )
-    assert h.status == 200
-    assert json.loads(h.wfile.getvalue())["trim_db"] == 0.0
-    assert posts[0][0] == ""  # loopback self
-    assert posts[0][1]["trim_db"] == 0.0
-    # ceiling: another +0.5 stays at 0.0 (never a boost)
-    h, posts = _post_trim(
-        monkeypatch=monkeypatch,
-        body={"target": "self", "delta_db": 0.5},
-        self_grouping={**base, "trim_db": 0.0},
-    )
-    assert json.loads(h.wfile.getvalue())["trim_db"] == 0.0
-
-
-def test_post_trim_peer_resolves_the_bond_sibling(monkeypatch):
-    h, posts = _post_trim(
-        monkeypatch=monkeypatch,
-        body={"target": "peer", "delta_db": -0.5},
-        self_grouping={"enabled": True, "role": "leader", "channel": "left",
-                       "bond_id": "b", "leader_addr": "", "trim_db": 0.0},
-        speakers=[{"address": "192.168.1.9"}],
-        peer_grouping={"192.168.1.9": {
-            "enabled": True, "role": "follower", "channel": "right",
-            "bond_id": "b", "leader_addr": "jts.local", "trim_db": -1.0,
-        }},
-    )
-    assert h.status == 200
-    assert json.loads(h.wfile.getvalue())["trim_db"] == -1.5
-    assert posts[0][0] == "192.168.1.9"
-    assert posts[0][1]["channel"] == "right"  # everything else preserved
 
 
 def test_post_trim_pair_writes_absolute_headroom_maximized_balance(monkeypatch):
