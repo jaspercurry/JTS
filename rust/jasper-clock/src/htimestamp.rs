@@ -189,18 +189,24 @@ impl HtimestampGuard {
 
     /// Is this reading a lie? See the module docs for the three cases.
     fn is_lie(&self, audio_ts_ns: i64, monotonic_now_ns: i64) -> bool {
+        // Do the differences in i128 so a garbage / extreme timestamp can never
+        // overflow i64 arithmetic (which panics in debug, wraps in release) —
+        // an out-of-range reading is itself a lie, and these range checks catch
+        // it without the overflow. The difference of two i64 always fits i128.
+        let audio = audio_ts_ns as i128;
+        let now = monotonic_now_ns as i128;
         // In the future beyond tolerance: the audio clock cannot legitimately
         // read ahead of the wall clock by more than scheduling jitter.
-        if audio_ts_ns > monotonic_now_ns + self.config.future_tolerance_ns {
+        if audio > now + self.config.future_tolerance_ns as i128 {
             return true;
         }
         // Impossibly stale: the timestamp has stalled / stopped updating.
         // (`monotonic_now - audio_ts` is the timestamp's age.)
-        if monotonic_now_ns - audio_ts_ns > self.config.max_age_ns {
+        if now - audio > self.config.max_age_ns as i128 {
             return true;
         }
         // Non-monotonic versus the last honest reading: a wrapped / reset
-        // device timestamp.
+        // device timestamp. (Direct i64 compare — no arithmetic to overflow.)
         if let Some(prev) = self.last_audio_ts_ns {
             if audio_ts_ns < prev {
                 return true;
@@ -380,5 +386,31 @@ mod tests {
         assert_eq!(s.total_lies, 1);
         assert!(!s.disabled);
         assert_eq!(s.consecutive_lies, 0);
+    }
+
+    #[test]
+    fn garbage_extreme_timestamps_never_panic_and_read_as_lies() {
+        // A driver feeding i64::MIN / i64::MAX timestamps must NEVER panic
+        // (debug overflow) nor wrap (release) — the out-of-range reading is
+        // itself a lie. Mirrors aec_clock's fail-soft-on-garbage contract.
+        let now = 1_000 * MS;
+        for (audio, mono) in [
+            (i64::MIN, now),
+            (i64::MAX, now),
+            (now, i64::MIN),
+            (now, i64::MAX),
+            (i64::MIN, i64::MAX),
+            (i64::MAX, i64::MIN),
+        ] {
+            // Fresh guard per case so disable-latching from a prior case can't
+            // mask whether THIS extreme reading is correctly distrusted.
+            let mut g = HtimestampGuard::default();
+            let verdict = g.evaluate(audio, mono); // must not panic / wrap
+            assert_ne!(
+                verdict,
+                HtimestampVerdict::Trust,
+                "extreme reading ({audio}, {mono}) must never be Trusted",
+            );
+        }
     }
 }
