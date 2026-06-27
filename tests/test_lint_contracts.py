@@ -46,8 +46,14 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # (count 622 vs ceiling 621) — reconcile the count here. The suppression is the
 # established "never crash the critical write path" idiom; lowering the count by
 # narrowing it later is welcome.
-MAX_NOQA_MARKERS = 801
-MAX_BLE001_MARKERS = 622
+# 2026-06-27 (+2 suppression markers, blind-except): PR #1073's 4b-iv lean-lane
+# mux wiring adds two fail-loud broad-except handlers in the enter/leave-lean
+# ladders — catch-broad -> fall back to the buffered lane + log, the established
+# "never crash the _tick / fail safe to buffered" idiom. Justified suppression
+# debt for the new resilience path; the same two markers push BOTH ceilings by 2
+# (each is a blind-except suppression). Narrowing later is welcome.
+MAX_NOQA_MARKERS = 803
+MAX_BLE001_MARKERS = 624
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

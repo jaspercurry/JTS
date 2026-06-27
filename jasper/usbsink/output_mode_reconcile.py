@@ -34,10 +34,10 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -118,24 +118,6 @@ def _render_env(text: str, mode: str) -> tuple[str, bool]:
     return "\n".join(new_lines) + "\n", changed
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        raise
-
-
 def _restart_usbsink(reason: str) -> tuple[bool, str]:
     """Restart the usbsink daemon through the broker. Returns (ok, detail).
     Lazy import keeps jasper-mux's dep graph free of the control package
@@ -207,7 +189,7 @@ def set_output_mode(
         return ArmResult(ok=True, changed=False, restarted=False, mode=mode)
 
     try:
-        _atomic_write(path, new_text)
+        atomic_write_text(path, new_text)
     except OSError as e:
         log_event(
             logger,
@@ -236,7 +218,7 @@ def set_output_mode(
         rollback_detail = ""
         try:
             if file_existed:
-                _atomic_write(path, existing)
+                atomic_write_text(path, existing)
             else:
                 path.unlink(missing_ok=True)
         except OSError as e:
