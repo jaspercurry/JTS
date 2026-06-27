@@ -13,6 +13,11 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from jasper.camilla_config_contract import (
+    DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
+    DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
+    DEFAULT_LEAN_CAPTURE_FIFO,
+)
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_PATH,
@@ -27,6 +32,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
 RECONCILE_PROFILE_ID = "reconcile-current-dsp"
+
+# Stage-4b lean-lane staging artifact. stage_lean_capture_config emits +
+# validates + classifies a lean File-capture config WITHOUT live-loading — the
+# smallest safe step that proves a lean config is statically valid and
+# L0-graph-safe with zero audio risk. The live-load + lane-arming is the mux
+# wiring's job (gated on JASPER_LEAN_LANE). See
+# docs/HANDOFF-audio-latency-foundation.md.
+LEAN_STAGED_CONFIG_NAME = "sound_lean_staged.yml"
 
 # The generated YAML header carries a cosmetic ``(id=<profile_id>)`` marker
 # (see ``jasper.sound.camilla_yaml.emit_sound_config`` — it is the ONLY place
@@ -319,3 +332,125 @@ async def reconcile_current_dsp(
             "apply": apply_state.to_dict(),
         }
     )
+
+
+def stage_lean_capture_config(
+    *,
+    profile_path: str | Path = PROFILE_PATH,
+    config_dir: str | Path = DEFAULT_CONFIG_DIR,
+    capture_pipe_path: str | None = None,
+    topology: Any = None,
+) -> dict[str, Any]:
+    """Emit + validate + classify a Stage-4b lean File-capture config WITHOUT
+    live-loading it.
+
+    The smallest safe step toward the lean lane: it proves the lean config is
+    statically valid (``camilladsp --check``) and L0-graph-safe
+    (``classify_camilla_graph``) with zero audio risk. The isolated sibling of
+    :func:`load_profile_config` — it never touches the production ``/sound``
+    carrier path, never live-loads, and leaves ``emit_sound_config``'s solo
+    byte contract intact (the lean kwargs default to ``None`` for every
+    existing caller). It writes a dedicated staging file
+    (``sound_lean_staged.yml``); the mux wiring (gated on ``JASPER_LEAN_LANE``)
+    arms the pipe writer and live-loads it.
+
+    The lean config changes only CamillaDSP's CAPTURE (an ALSA fan-in lane → a
+    ``File`` pipe source); the PLAYBACK stays ``outputd_content_playback``, so
+    jasper-outputd needs zero change and the classifier (which keys on the
+    source marker + playback role, never ``capture.type``) classifies it
+    identically to a normal stereo sound config (``jts_generated_stereo``).
+
+    Returns a status dict, ``status`` one of:
+      - ``"staged"``       — emitted, ``--check`` ok-to-apply, classify allowed.
+      - ``"invalid"``      — ``camilladsp --check`` rejected the config.
+      - ``"graph_unsafe"`` — ``classify_camilla_graph`` refused (NOT allowed).
+    Never live-loads, never raises on a validation/classification miss — the
+    miss is reported (via the status + a structured WARN), not swallowed. Only
+    an ``emit_sound_config`` contract violation (a caller bug) raises.
+    """
+
+    from jasper.active_speaker.runtime_contract import classify_camilla_graph
+    from jasper.dsp_apply import validate_camilla_config
+    from jasper.sound.camilla_yaml import emit_sound_config
+
+    config_path = Path(config_dir)
+    config_path.mkdir(parents=True, exist_ok=True)
+    staged_path = config_path / LEAN_STAGED_CONFIG_NAME
+    fifo = capture_pipe_path or DEFAULT_LEAN_CAPTURE_FIFO
+    profile = load_profile(profile_path)
+    render_id = str(time.time_ns())
+
+    # emit_sound_config's own guards (File capture requires enable_rate_adjust
+    # + an async resampler, and rejects a File-in/File-out config) make this
+    # fail-loud-correct: a guard violation here is a caller bug and SHOULD
+    # raise — it is never a runtime-degrade path. The resampler is the v4
+    # object form (AsyncSinc/Balanced); the deployed CamillaDSP rejects the
+    # pre-v2 scalar. Playback is UNCHANGED (outputd_content_playback default).
+    yaml = emit_sound_config(
+        profile,
+        out_path=staged_path,
+        profile_id=render_id,
+        capture_pipe_path=fifo,
+        resampler_type=DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
+        resampler_profile=DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
+        enable_rate_adjust=True,
+    )
+
+    # Static validity: camilladsp --check. No FIFO needed (a static YAML check
+    # opens no devices). MISSING (no binary on a dev host) is ok_to_apply, so
+    # the emitter stays exercisable hardware-free.
+    validation = validate_camilla_config(staged_path)
+    if not validation.ok_to_apply:
+        log_event(
+            logger,
+            "sound.lean_stage",
+            result="invalid",
+            candidate=str(staged_path),
+            capture_pipe=fifo,
+            detail=validation.error or validation.stderr_tail,
+            level=logging.WARNING,
+        )
+        return {
+            "status": "invalid",
+            "candidate_config_path": str(staged_path),
+            "capture_pipe_path": fifo,
+            "validator": validation.to_dict(),
+        }
+
+    # L0 re-prove: the lean config must classify as allowed (a normal stereo
+    # sound config) for the saved topology. Never stage an unproven graph.
+    graph = classify_camilla_graph(topology=topology, text=yaml)
+    if not graph.allowed:
+        log_event(
+            logger,
+            "sound.lean_stage",
+            result="graph_unsafe",
+            candidate=str(staged_path),
+            capture_pipe=fifo,
+            classification=graph.classification,
+            level=logging.WARNING,
+        )
+        return {
+            "status": "graph_unsafe",
+            "candidate_config_path": str(staged_path),
+            "capture_pipe_path": fifo,
+            "classification": graph.classification,
+            "issues": [dict(i) for i in graph.issues],
+        }
+
+    log_event(
+        logger,
+        "sound.lean_stage",
+        result="staged",
+        candidate=str(staged_path),
+        capture_pipe=fifo,
+        classification=graph.classification,
+        camilla_classification=graph.camilla_classification,
+    )
+    return {
+        "status": "staged",
+        "candidate_config_path": str(staged_path),
+        "capture_pipe_path": fifo,
+        "classification": graph.classification,
+        "camilla_classification": graph.camilla_classification,
+    }
