@@ -326,6 +326,19 @@ two-stream bridge below, so it understated the real figure):
 - outputd direct-DAC buffer: 3072 fr ≈ 64 ms
 - **Total**: ~250-300 ms end-to-end (computed)
 
+> **Tunable since the Stage 2 / Stage 4b latency work (2026-06-27).** The
+> bridge's dominant ~50-90 ms term is now adjustable on-device:
+> `JASPER_USBSINK_LATENCY` (the PortAudio latency hint — usually the biggest
+> single lever; `low`/`high`/float-seconds), `JASPER_USBSINK_QUEUE_MAXBLOCKS`,
+> and `JASPER_USBSINK_BLOCK_FRAMES`. Defaults preserve the historical behavior
+> exactly — lower them only while measuring + confirm no xruns. And
+> `JASPER_USBSINK_OUTPUT_MODE=fifo` switches the bridge to the **lean lane**: a
+> writer thread blocking-writes full S32_LE PCM to `JASPER_USBSINK_FIFO_PATH`
+> for CamillaDSP to File-capture directly, shedding the fan-in input ring.
+> Both are default-OFF (the lean lane is also soak-gated). Grammar lives in
+> `.env.example`; the lane design is in
+> [HANDOFF-audio-latency-foundation.md](HANDOFF-audio-latency-foundation.md).
+
 The shared downstream tail — fan-in output + CamillaDSP
 target-above-chunksize + outputd DAC ≈ 149 ms — is exactly the value
 the codebase already tracks as AirPlay's latency-compensation offset
@@ -1731,4 +1744,4 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-06-25
+Last verified: 2026-06-27
