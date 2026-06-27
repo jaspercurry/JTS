@@ -160,6 +160,26 @@ asserts the Python source matches the same fixture. The `js` CI job runs the nod
 check alongside the PEQ parity check; run it locally when touching either
 implementation so parity failures land before CI.
 
+### JS behavioural harnesses bridged through pytest (node-on-runner reliance)
+
+Some browser/Node modules are behaviourally tested by a Node harness that a
+pytest test invokes via `subprocess.run([node, harness])` with a
+`shutil.which("node")` skip-guard — e.g. `tests/test_relay_worker_js.py`,
+`tests/test_capture_page_js.py` (the phone-mic capture relay), and the
+pre-existing `tests/test_dialog_helper.py` / `tests/test_landing_page_html.py`.
+This keeps the JS behavioural gate inside the **`pytest-matrix`** lane with no
+extra CI wiring.
+
+The load-bearing assumption: **`pytest-matrix` runs on `ubuntu-latest`, which
+ships Node on `PATH`** (there is no `actions/setup-node` step in that job). The
+pre-existing `js` job calls bare `node` and is green, which proves the runner
+image provides it. If a future change gates these jobs behind an explicit Node
+install, or a runner image drops Node, these tests flip to **green-by-skip** —
+losing the JS coverage silently. If you touch that CI wiring, either keep Node
+preinstalled on the pytest runner or move these harnesses to a job that installs
+Node explicitly. (`scripts/check-js-syntax.sh` in the `js` job only
+`node --check`s syntax — it does not run the harnesses.)
+
 ---
 
 ## Optional ESP32 firmware builds
