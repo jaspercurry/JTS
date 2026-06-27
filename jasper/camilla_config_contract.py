@@ -142,15 +142,21 @@ def snd_aloop_rate_adjust_oscillation_reason(text: str) -> str | None:
     """Return why an emitted CamillaDSP config would re-introduce the
     rate_adjust + async-resampler oscillation on a snd-aloop capture, else None.
 
-    The MIRROR of the lean-lane File-capture guard. A File (named-pipe) capture
-    is clockless and REQUIRES enable_rate_adjust + an async resampler. A
-    snd-aloop ALSA capture (``plug:jasper_capture`` / ``hw:Loopback,...``) at
-    capture-rate == playback-rate is the OPPOSITE case: the loopback already
-    rate-tracks, so ``enable_rate_adjust: true`` with an async resampler makes
-    CamillaDSP's adjuster and the resampler fight, producing the metastable
-    AirPlay-dropout oscillation documented in
-    docs/HANDOFF (CamillaDSP rate_adjust + AsyncSinc). The safe shape is
-    enable_rate_adjust true AND NO async resampler block.
+    This is a TEST-TIME contract predicate, NOT a runtime emit-time guard: it has
+    no callers in the emit path, so it does not fail-loud at config generation.
+    The regression test in test_camilla_config_contract.py feeds it every
+    JTS-generated snd-aloop capture config to pin that the emitters never produce
+    the oscillation-prone shape; a genuinely NEW emitter path is only covered once
+    it is added to that test's fixtures. (Contrast the lean-lane File-capture
+    case, whose safe shape is the inverse — a clockless File named-pipe capture
+    REQUIRES enable_rate_adjust + an async resampler.)
+
+    A snd-aloop ALSA capture (``plug:jasper_capture`` / ``hw:Loopback,...``) at
+    capture-rate == playback-rate already rate-tracks via the loopback, so
+    ``enable_rate_adjust: true`` WITH an async resampler makes CamillaDSP's
+    adjuster and the resampler fight, producing the metastable AirPlay-dropout
+    oscillation documented in docs/HANDOFF (CamillaDSP rate_adjust + AsyncSinc).
+    The safe shape is enable_rate_adjust true AND NO async resampler block.
 
     Returns a one-clause reason string when the config is a JTS-generated
     snd-aloop capture config (single samplerate ⇒ capture == playback by
