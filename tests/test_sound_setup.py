@@ -2240,6 +2240,109 @@ def test_sound_output_topology_save_rejects_stale_revision(
     assert current["speaker_groups"] == []
 
 
+def test_sound_output_topology_save_serializes_concurrent_writers(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """Two writers racing the same revision: exactly one wins, no lost update.
+
+    ``_save_output_topology_payload`` runs under ``ThreadingHTTPServer`` (one
+    thread per request), so the revision-compare and the file write must be a
+    single critical section. This test parks writer A *inside*
+    ``save_output_topology`` (after it has read+validated the revision but
+    before it publishes the new file) while writer B begins. Without the lock,
+    B reads the still-original revision, passes the stale-check, and clobbers
+    A's write (the exact lost-update the revision guard exists to prevent).
+    With the lock, B blocks until A fully publishes, then observes the new
+    revision and raises ``OutputTopologyRevisionConflict``.
+    """
+
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+
+    # Seed a known starting topology and capture the revision both writers see.
+    save_output_topology(new_topology_draft(), path=path)
+    start_revision = sound_setup._output_topology_revision()
+
+    topology_a = _active_speaker_mono_topology_payload(
+        protection_status="software_guard_requested",
+        card_id="DAC_A",
+    )
+    topology_b = _active_speaker_mono_topology_payload(
+        protection_status="software_guard_requested",
+        card_id="DAC_B",
+    )
+
+    real_save = sound_setup.save_output_topology
+    a_in_critical_section = threading.Event()
+    release_a = threading.Event()
+
+    def parking_save(topology, *args, **kwargs):
+        # Only the first writer to reach the write parks; the parked writer is
+        # holding the critical section (it has already passed the revision
+        # compare). Releasing it after B has had its chance to run exercises
+        # the interleaving the lock must prevent.
+        if not a_in_critical_section.is_set():
+            a_in_critical_section.set()
+            assert release_a.wait(timeout=5.0), "writer A was never released"
+        return real_save(topology, *args, **kwargs)
+
+    monkeypatch.setattr(sound_setup, "save_output_topology", parking_save)
+
+    results: dict[str, object] = {}
+
+    def writer(name: str, topology: dict) -> None:
+        try:
+            sound_setup._save_output_topology_payload(
+                {
+                    "output_topology": topology,
+                    "topology_revision": start_revision,
+                },
+                require_revision=True,
+            )
+            results[name] = "saved"
+        except sound_setup.OutputTopologyRevisionConflict:
+            results[name] = "conflict"
+        except BaseException as exc:  # noqa: BLE001 - surface unexpected failures
+            results[name] = exc
+
+    thread_a = threading.Thread(target=writer, args=("A", topology_a))
+    thread_a.start()
+    assert a_in_critical_section.wait(timeout=5.0), "writer A never started saving"
+
+    # A is parked inside the write holding the lock. Start B; with the lock it
+    # must block on acquisition, so it cannot finish before we release A.
+    thread_b = threading.Thread(target=writer, args=("B", topology_b))
+    thread_b.start()
+    thread_b.join(timeout=0.5)
+    assert thread_b.is_alive(), (
+        "writer B completed while writer A held the critical section — the "
+        "compare-and-write is not serialized (TOCTOU)"
+    )
+
+    release_a.set()
+    thread_a.join(timeout=5.0)
+    thread_b.join(timeout=5.0)
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+
+    # Exactly one writer wins; the other sees the advanced revision and is
+    # rejected. No lost update: the persisted card_id is the winner's.
+    outcomes = sorted(
+        v for v in results.values() if isinstance(v, str)
+    )
+    unexpected = [v for v in results.values() if not isinstance(v, str)]
+    assert not unexpected, f"writer raised unexpectedly: {unexpected}"
+    assert outcomes == ["conflict", "saved"], results
+
+    winner = next(name for name, outcome in results.items() if outcome == "saved")
+    expected_card = {"A": "DAC_A", "B": "DAC_B"}[winner]
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["hardware"]["card_id"] == expected_card
+
+
 def test_sound_channel_identity_route_marks_saved_topology_only(
     monkeypatch,
     tmp_path: Path,

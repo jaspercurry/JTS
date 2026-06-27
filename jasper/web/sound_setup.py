@@ -207,6 +207,19 @@ class OutputTopologyRevisionConflict(ValueError):
     """Raised when a browser posts a topology based on stale saved state."""
 
 
+# Serializes the optimistic-concurrency revision-compare and the topology write
+# in ``_save_output_topology_payload``. The wizard runs on ThreadingHTTPServer
+# (one thread per request), so without this the compare and the write are a
+# TOCTOU: two concurrent POSTs can both read the same revision, both pass the
+# stale-check, and both write — the second silently clobbering the first (the
+# lost update the revision guard exists to prevent). The lock scope is just the
+# read+compare+write; ``save_output_topology`` is a self-contained atomic
+# tempfile+os.replace write (no subprocess, no re-entry into this module, no
+# nested acquisition of this lock), so holding it cannot deadlock or stall the
+# wizard on a blocking call.
+_output_topology_write_lock = threading.Lock()
+
+
 def _camilla():
     from jasper.camilla import CamillaController
 
@@ -315,40 +328,47 @@ def _save_output_topology_payload(
     *,
     require_revision: bool = False,
 ) -> dict[str, Any]:
-    if require_revision:
-        expected_revision = str(raw.get("topology_revision") or "")
-        current_revision = _output_topology_revision()
-        if not expected_revision or expected_revision != current_revision:
-            raise OutputTopologyRevisionConflict(
-                "speaker layout changed in another session; refresh hardware "
-                "before saving"
-            )
-    raw_topology = raw.get("output_topology", raw)
-    topology = OutputTopology.from_mapping(raw_topology)
-    topology, guards_changed = _active_speaker_request_missing_software_guards(topology)
-    save_output_topology(topology)
-    evaluation = topology.evaluation()
-    logger.info(
-        "event=sound.output_topology_save topology_id=%s status=%s "
-        "device_id=%s groups=%d assigned_outputs=%d blockers=%d warnings=%d "
-        "software_guards_requested=%s",
-        topology.topology_id,
-        evaluation["status"],
-        topology.hardware.device_id,
-        len(topology.speaker_groups),
-        evaluation["assigned_output_count"],
-        len(evaluation["blockers"]),
-        len(evaluation["warnings"]),
-        guards_changed,
-    )
-    return {
-        "output_topology": topology.to_dict(include_evaluation=True),
-        "topology_revision": _output_topology_revision(),
-        "output_hardware": _output_hardware_dict(),
-        "channel_identity": channel_identity_report(topology),
-        "clock_domain": clock_domain_report(topology),
-        "active_playback_route": _active_speaker_playback_route_payload(topology),
-    }
+    # Hold the write lock across the revision-compare AND the write so the two
+    # are one atomic critical section (see _output_topology_write_lock). Under
+    # ThreadingHTTPServer two concurrent saves would otherwise both read the
+    # same revision, both pass the stale-check, and both write — a lost update.
+    with _output_topology_write_lock:
+        if require_revision:
+            expected_revision = str(raw.get("topology_revision") or "")
+            current_revision = _output_topology_revision()
+            if not expected_revision or expected_revision != current_revision:
+                raise OutputTopologyRevisionConflict(
+                    "speaker layout changed in another session; refresh "
+                    "hardware before saving"
+                )
+        raw_topology = raw.get("output_topology", raw)
+        topology = OutputTopology.from_mapping(raw_topology)
+        topology, guards_changed = _active_speaker_request_missing_software_guards(
+            topology
+        )
+        save_output_topology(topology)
+        evaluation = topology.evaluation()
+        logger.info(
+            "event=sound.output_topology_save topology_id=%s status=%s "
+            "device_id=%s groups=%d assigned_outputs=%d blockers=%d warnings=%d "
+            "software_guards_requested=%s",
+            topology.topology_id,
+            evaluation["status"],
+            topology.hardware.device_id,
+            len(topology.speaker_groups),
+            evaluation["assigned_output_count"],
+            len(evaluation["blockers"]),
+            len(evaluation["warnings"]),
+            guards_changed,
+        )
+        return {
+            "output_topology": topology.to_dict(include_evaluation=True),
+            "topology_revision": _output_topology_revision(),
+            "output_hardware": _output_hardware_dict(),
+            "channel_identity": channel_identity_report(topology),
+            "clock_domain": clock_domain_report(topology),
+            "active_playback_route": _active_speaker_playback_route_payload(topology),
+        }
 
 
 def _reset_output_topology_payload() -> dict[str, Any]:
