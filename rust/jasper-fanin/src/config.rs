@@ -108,6 +108,51 @@ pub struct Config {
 
     /// Assistant loudness policy for the pre-DSP TTS socket.
     pub assistant_loudness: AssistantLoudnessConfig,
+
+    /// fan-in → CamillaDSP coupling transport. `Loopback` (the default) writes
+    /// the ALSA snd-aloop substream `output_pcm` exactly as today;
+    /// CamillaDSP dsnoop-captures it — byte-identical to the pre-coupling
+    /// daemon. `Fifo` writes a bounded named pipe (`camilla_fifo_path`) instead,
+    /// which CamillaDSP File-captures with an async resampler. The Python config
+    /// generator (`jasper.fanin_coupling`) is the cross-language source of truth;
+    /// this normalization MUST agree with `resolve_coupling` there.
+    /// Env: `JASPER_FANIN_CAMILLA_COUPLING` (`loopback` | `fifo`).
+    pub camilla_coupling: Coupling,
+
+    /// The shared-capture named pipe written under `Coupling::Fifo`. Unused for
+    /// `Loopback`. Default `/run/jasper-fanin/camilla.pipe`. Env:
+    /// `JASPER_FANIN_CAMILLA_FIFO`. DISTINCT from the lean lane's FIFO.
+    pub camilla_fifo_path: String,
+
+    /// Requested write-end pipe buffer size, in bytes, for `F_SETPIPE_SZ` under
+    /// `Coupling::Fifo`. The kernel rounds up to a power-of-two ≥ page size. A
+    /// small buffer (default 8192 ≈ 3-4 S32 periods) keeps the pipe DAC-paced —
+    /// it is the FIFO equivalent of the snd-aloop output ring depth.
+    /// Env: `JASPER_FANIN_FIFO_PIPE_BYTES`. Swept during the soak.
+    pub fifo_pipe_bytes: u32,
+}
+
+/// fan-in → CamillaDSP coupling transport. Mirrors `jasper.fanin_coupling`'s
+/// `loopback` / `fifo` selector. Fail-SAFE: an unset/unrecognized env value
+/// resolves to `Loopback` (the byte-identical-to-today path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coupling {
+    /// ALSA snd-aloop substream output; CamillaDSP dsnoop-captures it. Default.
+    Loopback,
+    /// Bounded named-pipe output; CamillaDSP File-captures it.
+    Fifo,
+}
+
+impl Coupling {
+    /// Normalize a raw `JASPER_FANIN_CAMILLA_COUPLING` value. Fail-safe to
+    /// `Loopback` on unset/empty/unknown — matches Python's `resolve_coupling`
+    /// so the daemon and the emitted config can never disagree on the transport.
+    fn from_env_value(raw: Option<&str>) -> Self {
+        match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            Some("fifo") => Coupling::Fifo,
+            _ => Coupling::Loopback,
+        }
+    }
 }
 
 impl Config {
@@ -182,6 +227,19 @@ impl Config {
 
         let loudness_defaults = AssistantLoudnessConfig::default();
 
+        // fan-in → CamillaDSP coupling. Default Loopback (byte-identical to
+        // today). Fail-safe normalization mirrors Python's resolve_coupling.
+        let camilla_coupling = Coupling::from_env_value(
+            std::env::var("JASPER_FANIN_CAMILLA_COUPLING")
+                .ok()
+                .as_deref(),
+        );
+        let camilla_fifo_path = env_str(
+            "JASPER_FANIN_CAMILLA_FIFO",
+            "/run/jasper-fanin/camilla.pipe",
+        );
+        let fifo_pipe_bytes = env_u32("JASPER_FANIN_FIFO_PIPE_BYTES", 8192)?;
+
         Ok(Self {
             output_pcm,
             music_output_pcm,
@@ -235,6 +293,9 @@ impl Config {
                     loudness_defaults.content_silence_lufs,
                 )?,
             },
+            camilla_coupling,
+            camilla_fifo_path,
+            fifo_pipe_bytes,
         })
     }
 }
@@ -627,6 +688,81 @@ mod tests {
                 assert_eq!(cfg.input_buffer_frames, 2048);
                 assert_eq!(cfg.output_buffer_frames, 3072);
             },
+        );
+    }
+
+    #[test]
+    fn coupling_defaults_to_loopback_when_unset() {
+        with_env(&[("JASPER_FANIN_CAMILLA_COUPLING", None)], || {
+            let cfg = Config::from_env().expect("defaults must parse");
+            assert_eq!(cfg.camilla_coupling, Coupling::Loopback);
+            // FIFO knobs still have sane defaults but are unused under Loopback.
+            assert_eq!(cfg.camilla_fifo_path, "/run/jasper-fanin/camilla.pipe");
+            assert_eq!(cfg.fifo_pipe_bytes, 8192);
+        });
+    }
+
+    #[test]
+    fn coupling_parses_fifo_case_insensitively() {
+        with_env(&[("JASPER_FANIN_CAMILLA_COUPLING", Some(" FiFo "))], || {
+            let cfg = Config::from_env().expect("fifo coupling must parse");
+            assert_eq!(cfg.camilla_coupling, Coupling::Fifo);
+        });
+    }
+
+    #[test]
+    fn coupling_unknown_value_fails_safe_to_loopback() {
+        // A typo must NEVER silently flip the shared realtime capture. Mirrors
+        // Python's resolve_coupling fail-safe.
+        with_env(&[("JASPER_FANIN_CAMILLA_COUPLING", Some("pipe"))], || {
+            let cfg = Config::from_env().expect("unknown coupling must parse");
+            assert_eq!(cfg.camilla_coupling, Coupling::Loopback);
+        });
+    }
+
+    #[test]
+    fn coupling_loopback_value_is_loopback() {
+        with_env(
+            &[("JASPER_FANIN_CAMILLA_COUPLING", Some("loopback"))],
+            || {
+                let cfg = Config::from_env().expect("loopback coupling must parse");
+                assert_eq!(cfg.camilla_coupling, Coupling::Loopback);
+            },
+        );
+    }
+
+    #[test]
+    fn fifo_path_and_pipe_bytes_override() {
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("fifo")),
+                ("JASPER_FANIN_CAMILLA_FIFO", Some("/run/custom.pipe")),
+                ("JASPER_FANIN_FIFO_PIPE_BYTES", Some("16384")),
+            ],
+            || {
+                let cfg = Config::from_env().expect("fifo overrides must parse");
+                assert_eq!(cfg.camilla_coupling, Coupling::Fifo);
+                assert_eq!(cfg.camilla_fifo_path, "/run/custom.pipe");
+                assert_eq!(cfg.fifo_pipe_bytes, 16384);
+            },
+        );
+    }
+
+    #[test]
+    fn coupling_from_env_value_normalization() {
+        // Direct unit test of the normalization, independent of the env plumbing.
+        assert_eq!(Coupling::from_env_value(None), Coupling::Loopback);
+        assert_eq!(Coupling::from_env_value(Some("")), Coupling::Loopback);
+        assert_eq!(Coupling::from_env_value(Some("  ")), Coupling::Loopback);
+        assert_eq!(Coupling::from_env_value(Some("fifo")), Coupling::Fifo);
+        assert_eq!(Coupling::from_env_value(Some("FIFO")), Coupling::Fifo);
+        assert_eq!(
+            Coupling::from_env_value(Some("loopback")),
+            Coupling::Loopback
+        );
+        assert_eq!(
+            Coupling::from_env_value(Some("garbage")),
+            Coupling::Loopback
         );
     }
 

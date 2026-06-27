@@ -52,7 +52,8 @@ use alsa::{Direction, ValueOr};
 use anyhow::{Context, Result};
 use log::{info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, Coupling};
+use crate::fifo::{FifoWriteOutcome, FifoWriter};
 use crate::tts::{TtsInput, TtsMixer};
 use crate::watchdog::Heartbeat;
 use crate::xrun_log::{XrunEvent, XrunSource};
@@ -67,9 +68,20 @@ pub const CHANNELS: u32 = 2;
 /// daemon.
 pub const FORMAT: Format = Format::S16LE;
 
+/// The final-output transport. `Alsa` (the default) writes the snd-aloop
+/// substream and is paced by the blocking ALSA `writei` — byte-identical to the
+/// pre-coupling daemon. `Fifo` writes a bounded named pipe and is paced by the
+/// blocking pipe `write` (DAC-paced backpressure via CamillaDSP's File capture).
+/// Both are the SOLE timing owner of the work loop in their respective modes
+/// (the single-pace-point invariant); only one is ever active.
+enum Output {
+    Alsa(PCM),
+    Fifo(FifoWriter),
+}
+
 pub struct Mixer {
     inputs: Vec<Input>,
-    output: PCM,
+    output: Output,
     /// Per-period scratch: i32 sum buffer absorbs the
     /// saturating-add accumulation before clamping back to i16
     /// in the output buffer. Holds `period_frames * CHANNELS` samples.
@@ -167,12 +179,39 @@ impl Mixer {
             );
         }
 
-        let output = open_output(&config.output_pcm, config)
-            .with_context(|| format!("opening output PCM {}", config.output_pcm))?;
-        info!(
-            "event=fanin.output.opened pcm={} period_frames={} buffer_frames={}",
-            config.output_pcm, config.period_frames, config.output_buffer_frames,
-        );
+        // Final-output transport. Loopback (default) opens the ALSA snd-aloop
+        // substream — byte-identical to today. Fifo ensures + lazily opens the
+        // bounded named pipe CamillaDSP File-captures (the lower-latency
+        // coupling). Exactly one is active.
+        let output = match config.camilla_coupling {
+            Coupling::Loopback => {
+                let pcm = open_output(&config.output_pcm, config)
+                    .with_context(|| format!("opening output PCM {}", config.output_pcm))?;
+                info!(
+                    "event=fanin.output.opened transport=alsa pcm={} period_frames={} buffer_frames={}",
+                    config.output_pcm, config.period_frames, config.output_buffer_frames,
+                );
+                Output::Alsa(pcm)
+            }
+            Coupling::Fifo => {
+                // The pipe is created here (producer owns it); the write end is
+                // opened reader-first lazily on the first period so startup is
+                // never gated on CamillaDSP being up.
+                let writer = FifoWriter::new(
+                    &config.camilla_fifo_path,
+                    config.period_frames,
+                    config.fifo_pipe_bytes,
+                )
+                .with_context(|| {
+                    format!("ensuring fan-in→camilla FIFO {}", config.camilla_fifo_path)
+                })?;
+                info!(
+                    "event=fanin.output.opened transport=fifo path={} period_frames={} requested_pipe_bytes={}",
+                    config.camilla_fifo_path, config.period_frames, config.fifo_pipe_bytes,
+                );
+                Output::Fifo(writer)
+            }
+        };
 
         // OPTIONAL music-only side-output (multi-room sync tap). Opened
         // BEST-EFFORT: a configured-but-unopenable music PCM must NEVER
@@ -249,23 +288,28 @@ impl Mixer {
     /// Transient errors (xruns) are handled inside `step()` without
     /// escalation.
     pub fn run(&mut self, shutdown: &AtomicBool, heartbeat: &Heartbeat) -> Result<()> {
-        // Prime the output: write one period of zeros so the kernel
-        // ring is non-empty when CamillaDSP / AEC bridge start reading.
-        // Without this prime, the first writei could see -EPIPE
-        // (underrun) before any data has been queued.
-        self.output_buf.fill(0);
-        write_output(
-            &self.output,
-            &self.output_buf,
-            &self.output_xrun_count,
-            &self.xrun_tx,
-        )?;
+        // Prime + start is ALSA-specific. The FIFO transport has no kernel ring
+        // to prime and no PREPARED→RUNNING transition; its write end opens
+        // reader-first lazily inside step() and paces on the pipe.
+        if let Output::Alsa(pcm) = &self.output {
+            // Prime the output: write one period of zeros so the kernel
+            // ring is non-empty when CamillaDSP / AEC bridge start reading.
+            // Without this prime, the first writei could see -EPIPE
+            // (underrun) before any data has been queued.
+            self.output_buf.fill(0);
+            write_output(
+                pcm,
+                &self.output_buf,
+                &self.output_xrun_count,
+                &self.xrun_tx,
+            )?;
 
-        // Start the output stream now that it's primed. (PCM::new
-        // with the default access creates the stream in PREPARED state;
-        // explicit start() puts it in RUNNING.)
-        if self.output.state() != State::Running {
-            self.output.start().context("starting output PCM")?;
+            // Start the output stream now that it's primed. (PCM::new
+            // with the default access creates the stream in PREPARED state;
+            // explicit start() puts it in RUNNING.)
+            if pcm.state() != State::Running {
+                pcm.start().context("starting output PCM")?;
+            }
         }
 
         info!(
@@ -349,16 +393,40 @@ impl Mixer {
         // 4. Clamp i32 sum -> i16 output.
         saturate_to_i16(&self.sum_buf, &mut self.output_buf);
 
-        // 5. Write to output (blocks; paces the loop).
-        write_output(
-            &self.output,
-            &self.output_buf,
-            &self.output_xrun_count,
-            &self.xrun_tx,
-        )?;
-
-        self.frames_written
-            .fetch_add(self.period_frames as u64, Ordering::Relaxed);
+        // 5. Write to output (blocks; paces the loop). Dispatch on transport:
+        //    - Alsa: blocking writei, returns when the loopback ring has room
+        //      (DAC-paced via the dsnoop consumer). Counts every period.
+        //    - Fifo: blocking pipe write, returns when the pipe has room
+        //      (DAC-paced via CamillaDSP's File capture). A reader-gone /
+        //      no-reader turn returns Waited (the bounded reopen-wait already
+        //      slept), dropping this period; we still return Ok so run() bumps
+        //      the heartbeat — the loop is alive and bounded, never wedged.
+        match &mut self.output {
+            Output::Alsa(pcm) => {
+                write_output(
+                    pcm,
+                    &self.output_buf,
+                    &self.output_xrun_count,
+                    &self.xrun_tx,
+                )?;
+                self.frames_written
+                    .fetch_add(self.period_frames as u64, Ordering::Relaxed);
+            }
+            Output::Fifo(writer) => {
+                match writer.write_period(&self.output_buf) {
+                    FifoWriteOutcome::Wrote => {
+                        self.frames_written
+                            .fetch_add(self.period_frames as u64, Ordering::Relaxed);
+                    }
+                    FifoWriteOutcome::Waited => {
+                        // No reader / reader-gone: the writer already waited a
+                        // bounded REOPEN_WAIT. Drop this period (CamillaDSP is
+                        // reloading or not yet up) — do NOT count frames. The
+                        // loop stays alive; the heartbeat is bumped by run().
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
