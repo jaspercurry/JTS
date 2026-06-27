@@ -41,6 +41,14 @@ RECONCILE_PROFILE_ID = "reconcile-current-dsp"
 # docs/HANDOFF-audio-latency-foundation.md.
 LEAN_STAGED_CONFIG_NAME = "sound_lean_staged.yml"
 
+# Stage-4b-iv lean-lane LIVE config. Unlike the staged artifact, this one is
+# carrier-preserved (room PEQs + output trim) and is the file actually loaded
+# into CamillaDSP when the lean lane goes live. A dedicated name (vs reusing
+# sound_current.yml) keeps the lean File-capture config distinct from the
+# buffered sound config on disk, so a restore can always re-derive the buffered
+# config from saved intent without clobbering the lean artifact.
+LEAN_LIVE_CONFIG_NAME = "sound_lean_current.yml"
+
 # The generated YAML header carries a cosmetic ``(id=<profile_id>)`` marker
 # (see ``jasper.sound.camilla_yaml.emit_sound_config`` — it is the ONLY place
 # ``profile_id`` reaches the emitted YAML). A wizard save stamps a wall-clock
@@ -467,3 +475,185 @@ def stage_lean_capture_config(
         "classification": graph.classification,
         "camilla_classification": graph.camilla_classification,
     }
+
+
+def lean_live_config_path(config_dir: str | Path) -> Path:
+    """Path of the carrier-preserved LIVE lean File-capture config."""
+
+    return Path(config_dir) / LEAN_LIVE_CONFIG_NAME
+
+
+async def apply_lean_capture_config(
+    *,
+    profile_path: str | Path = PROFILE_PATH,
+    config_dir: str | Path = DEFAULT_CONFIG_DIR,
+    camilla_factory: Callable[[], Any] = default_camilla_factory,
+    capture_pipe_path: str | None = None,
+) -> dict[str, Any]:
+    """Live-load the lean File-capture config, CARRIER-PRESERVED.
+
+    This is the enter-lean leg of the 4b-iv live lane-switch and the fidelity
+    fix the 4b-iii staged config deliberately deferred. Unlike
+    :func:`stage_lean_capture_config` (preference-only, never loaded), this
+    re-emits the lean config THROUGH the graph carrier — so the household's
+    room-correction PEQs and output/headroom trim ride along, exactly like the
+    durable :func:`load_profile_config` path — and then performs CamillaDSP's
+    glitch-free ``set_config_file_path`` swap via the shared validated
+    :func:`apply_dsp_config` engine.
+
+    The lean config swaps ONLY CamillaDSP's CAPTURE device (an ALSA fan-in lane
+    -> the usbsink File pipe); playback stays ``outputd_content_playback`` so
+    jasper-outputd and both AEC references are unchanged.
+
+    FAIL-LOUD. Raises (the caller's enter-lean ladder catches and falls back to
+    buffered) when:
+      - the loaded graph cannot host the lean stereo File-capture config
+        (active / program-bake / unknown / protected-tweeter flat) —
+        :class:`CarrierCannotHostEq`;
+      - ``camilladsp --check`` or the live reload rejects the config —
+        :class:`jasper.dsp_apply.DspApplyError` (with the prior config
+        rolled back by the apply engine).
+
+    Returns the apply state dict on success.
+    """
+
+    from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
+    from jasper.sound.graph_carrier import carrier_for_loaded_config
+
+    config_path = Path(config_dir)
+    config_path.mkdir(parents=True, exist_ok=True)
+    out_path = lean_live_config_path(config_path)
+    fifo = capture_pipe_path or DEFAULT_LEAN_CAPTURE_FIFO
+    profile = load_profile(profile_path)
+    settings = load_sound_settings()
+    trim_db = output_trim_db(profile, settings)
+    render_id = str(time.time_ns())
+    cam = camilla_factory()
+
+    # The carrier's File-capture kwargs: a File pipe source + the v4 async
+    # resampler + enable_rate_adjust (the real DAC playback clock disciplines
+    # the clockless File capture). emit_sound_config owns the fail-loud guards.
+    capture_kwargs = {
+        "capture_pipe_path": fifo,
+        "resampler_type": DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
+        "resampler_profile": DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
+        "enable_rate_adjust": True,
+    }
+
+    async with dsp_writer_lock(config_path):
+
+        async def _prepare() -> dict[str, Any]:
+            current_path = await cam.get_config_file_path(best_effort=False)
+            if not current_path:
+                raise RuntimeError("CamillaDSP did not report a loaded config path")
+            carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
+            # Carrier resolution + reemit are the single safety judgement: a
+            # non-stereo-host graph raises CarrierCannotHostEq here (BEFORE any
+            # load), preserving room PEQs + trim on the stereo-host path.
+            result = carrier.reemit(
+                profile,
+                out_path=out_path,
+                profile_id=render_id,
+                output_trim_db=trim_db,
+                capture_kwargs=capture_kwargs,
+            )
+            return {
+                "prior_config_path": current_path,
+                "room_peq_count": result.room_peq_count,
+            }
+
+        apply_state = await apply_dsp_config(
+            source="lean_enter",
+            candidate_path=out_path,
+            prepare=_prepare,
+            load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
+            get_current_config_path=lambda: cam.get_config_file_path(best_effort=True),
+            acquire_lock=False,
+        )
+
+    log_event(
+        logger,
+        "sound.lean_enter",
+        result="applied",
+        candidate=str(out_path),
+        capture_pipe=fifo,
+        active=apply_state.active_config_path,
+        room_peqs=apply_state.room_peq_count or 0,
+    )
+    return apply_state.to_dict()
+
+
+async def restore_buffered_config(
+    *,
+    profile_path: str | Path = PROFILE_PATH,
+    config_dir: str | Path = DEFAULT_CONFIG_DIR,
+    camilla_factory: Callable[[], Any] = default_camilla_factory,
+) -> dict[str, Any] | None:
+    """Leave-lean: restore the buffered (ALSA fan-in capture) sound config.
+
+    The unwind sibling of :func:`apply_lean_capture_config`. NO-OP fast path
+    when CamillaDSP is not on the lean config (the common case — the lean lane
+    is rarely live), so a buffered ``_tick`` never churns CamillaDSP. Returns
+    ``None`` for the no-op, the apply state dict when it actually restored.
+
+    RESTORE ALWAYS SUCCEEDS by construction (mirrors ``restore_solo_config``):
+    it re-emits the buffered sound config from SAVED INTENT (profile + settings)
+    through the carrier and loads it. The lean config is only ever applied on a
+    solo stereo-host graph, so the buffered re-emit is always a stereo-host
+    re-emit — the carrier cannot refuse it. A reload failure rolls back to the
+    prior (lean) config via the apply engine and re-raises, so the speaker is
+    never stranded on a half-applied graph.
+    """
+
+    from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
+    from jasper.sound.camilla_yaml import sound_config_path
+    from jasper.sound.graph_carrier import carrier_for_loaded_config
+
+    config_path = Path(config_dir)
+    lean_path = lean_live_config_path(config_path)
+    cam = camilla_factory()
+
+    async with dsp_writer_lock(config_path):
+        current_path = await cam.get_config_file_path(best_effort=True)
+        # Fast NO-OP: only act when CamillaDSP is actually on the lean config.
+        if not current_path or not _paths_match(current_path, lean_path):
+            return None
+
+        profile = load_profile(profile_path)
+        settings = load_sound_settings()
+        trim_db = output_trim_db(profile, settings)
+        out_path = sound_config_path(config_path)
+        render_id = str(time.time_ns())
+
+        def _prepare() -> dict[str, Any]:
+            # Re-emit the buffered config from saved intent (NO capture_kwargs =
+            # the default ALSA fan-in capture). carrier_for_loaded_config on the
+            # lean config resolves to the same stereo-host carrier that emitted
+            # it, so room PEQs are preserved on the buffered config too.
+            carrier = carrier_for_loaded_config(lean_path, config_dir=config_path)
+            result = carrier.reemit(
+                profile,
+                out_path=out_path,
+                profile_id=render_id,
+                output_trim_db=trim_db,
+            )
+            return {"room_peq_count": result.room_peq_count}
+
+        apply_state = await apply_dsp_config(
+            source="lean_leave",
+            candidate_path=out_path,
+            prepare=_prepare,
+            load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
+            get_current_config_path=lambda: cam.get_config_file_path(best_effort=True),
+            acquire_lock=False,
+        )
+
+    log_event(
+        logger,
+        "sound.lean_leave",
+        result="restored",
+        candidate=str(out_path),
+        active=apply_state.active_config_path,
+        room_peqs=apply_state.room_peq_count or 0,
+    )
+    return apply_state.to_dict()
