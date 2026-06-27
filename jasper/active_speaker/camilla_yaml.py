@@ -22,6 +22,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CHUNKSIZE,
+    DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
@@ -29,6 +30,8 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     FilterSpec,
     PeqFilter,
+    file_capture_resampler_yaml,
+    is_async_resampler,
     total_positive_boost_db,
 )
 from jasper.camilla_emit import (
@@ -42,7 +45,7 @@ from jasper.camilla_emit import (
     mono_sum_sources,
 )
 from jasper.camilla_stereo_prefix import emit_filter_spec
-from jasper.sound.camilla_yaml import _is_async_resampler, emit_sound_config
+from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
 from .profile import (
@@ -1312,6 +1315,7 @@ def emit_active_speaker_baseline_config(
     baseline_id: str | None = None,
     capture_pipe_path: str | None = None,
     resampler_type: str | None = None,
+    resampler_profile: str | None = DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
 ) -> str:
     """Build an accepted active-speaker baseline candidate.
 
@@ -1364,13 +1368,13 @@ def emit_active_speaker_baseline_config(
     # Layer A (split mixer + per-driver crossover/HP/limiter) is untouched.
     if capture_pipe_path is not None:
         capture_pipe_path = _yaml_string(capture_pipe_path, "capture_pipe_path")
-        if not _is_async_resampler(resampler_type):
+        if not is_async_resampler(resampler_type):
             raise ActiveSpeakerConfigError(
                 "capture_pipe_path (File-capture lean lane) requires an async "
-                "resampler (BalancedAsync/FastAsync/AccurateAsync/AsyncSinc/"
-                "AsyncPoly) — a clockless File capture has no clock for CamillaDSP "
-                "to rate-tune, so enable_rate_adjust steers the async resampler's "
-                f"ratio instead; got resampler_type={resampler_type!r}"
+                "resampler (AsyncSinc/AsyncPoly — CamillaDSP v4 vocabulary) — a "
+                "clockless File capture has no clock for CamillaDSP to rate-tune, "
+                "so enable_rate_adjust steers the async resampler's ratio instead; "
+                f"got resampler_type={resampler_type!r}"
             )
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     baseline_headroom_db = _finite_float(baseline_headroom_db, "baseline_headroom_db")
@@ -1455,7 +1459,9 @@ def emit_active_speaker_baseline_config(
     device: "{capture_device}"
     format: {capture_format}"""
     resampler_line = (
-        f"\n  resampler_type: {resampler_type}" if resampler_type is not None else ""
+        file_capture_resampler_yaml(resampler_type, resampler_profile)
+        if resampler_type is not None
+        else ""
     )
 
     yaml = f"""---

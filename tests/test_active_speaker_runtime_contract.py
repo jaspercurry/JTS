@@ -37,7 +37,11 @@ from jasper.active_speaker.runtime_contract import (
     flat_program_graph_blocked_reason,
     safe_graph_for_current_topology,
 )
-from jasper.camilla_config_contract import FilterSpec, PeqFilter
+from jasper.camilla_config_contract import (
+    DEFAULT_LEAN_CAPTURE_FIFO,
+    FilterSpec,
+    PeqFilter,
+)
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.profile import SimpleEq, SoundProfile
 
@@ -1343,8 +1347,8 @@ def _active_baseline_lean_yaml(layout: str = "mono", way: int = 2) -> str:
     return emit_active_speaker_baseline_config(
         ActiveSpeakerPreset.from_mapping(raw),
         playback_device=ACTIVE_PCM,
-        capture_pipe_path="/run/jasper/lean_capture.fifo",
-        resampler_type="BalancedAsync",
+        capture_pipe_path=DEFAULT_LEAN_CAPTURE_FIFO,
+        resampler_type="AsyncSinc",
         baseline_id=f"baseline-{layout}-{way}way",
     )
 
@@ -1361,8 +1365,10 @@ def test_active_baseline_file_capture_lean_variant_classifies_approved() -> None
     assert graph.allowed is True
     assert graph.details["baseline_candidate"] is True
     assert "type: File" in yaml
-    assert 'filename: "/run/jasper/lean_capture.fifo"' in yaml
-    assert "resampler_type: BalancedAsync" in yaml
+    assert f'filename: "{DEFAULT_LEAN_CAPTURE_FIFO}"' in yaml
+    assert "resampler:" in yaml
+    assert "type: AsyncSinc" in yaml
+    assert "profile: Balanced" in yaml
     assert "enable_rate_adjust: true" in yaml
     assert "volume_limit: 0.0" in yaml
     assert "emit_active_speaker_baseline_config" in yaml
@@ -1375,6 +1381,6 @@ def test_active_baseline_file_capture_requires_async_resampler() -> None:
             emit_active_speaker_baseline_config(
                 ActiveSpeakerPreset.from_mapping(raw),
                 playback_device=ACTIVE_PCM,
-                capture_pipe_path="/run/jasper/lean_capture.fifo",
+                capture_pipe_path=DEFAULT_LEAN_CAPTURE_FIFO,
                 resampler_type=bad,
             )
