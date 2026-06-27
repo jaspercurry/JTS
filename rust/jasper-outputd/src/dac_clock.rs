@@ -2,21 +2,25 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Observe-only software-AEC reference clock drift estimator.
+//! Observe-only DAC playout-clock drift observer.
 //!
-//! The software-AEC3 path (the `:9891` UDP reference outputd publishes, which
-//! the AEC bridge subtracts from the mic) degrades when the *reference's
-//! assumed clock* and the *speaker's actual playout clock* drift apart. The
-//! AEC bridge treats the reference stream as advancing at the nominal sample
-//! rate against wall-clock; the DAC's physical crystal does not. If they drift,
-//! the echo path the linear AEC models slips out from under it.
+//! MEASURES, in ppm, how far the speaker DAC's physical playout crystal drifts
+//! from nominal wall-clock — and nothing else. It owns no control over the
+//! audio path: it never resamples, never warps, never feeds its ratio back
+//! anywhere. It is a clock-domain *observability* surface — the same ppm every
+//! other DLL site reports (`clock.rate_diff`), for the one clock JTS otherwise
+//! can't see.
 //!
-//! This module MEASURES that drift in ppm and nothing else. It owns no control
-//! over the audio path — it never resamples, never warps, never feeds its ratio
-//! back anywhere. It is the "measure before you fix" foundation (research-doc
-//! increment 2 / audio-foundation review G2): surface the drift on `/state` +
-//! doctor first, decide whether it is material, and only then consider a
-//! compensating layer.
+//! **What it is NOT — read before acting on the number.** This is the DAC clock
+//! vs NOMINAL, *not* the DAC-vs-mic drift the software echo canceller actually
+//! faces (and `outputd`, the reference SENDER, structurally can't see the mic
+//! clock). WebRTC AEC3 also already self-compensates for render-vs-capture
+//! drift via its delay estimator (see `jasper/cli/aec_bridge.py`'s own note),
+//! so a large number here does NOT by itself justify a software-AEC resampling
+//! fix. Treat it as a diagnostic for clock-domain reasoning — distributed /
+//! multiroom sync, the chip-AEC reference, future rate-matched lanes — not as
+//! an action trigger on the software-AEC path. (Research-doc increment 2 /
+//! audio-foundation review G2: this is the "measure first" surface.)
 //!
 //! # The error signal
 //!
@@ -42,7 +46,7 @@
 //!   `ratio` settles at exactly the drift. We read that ratio's ppm and apply it
 //!   to **nothing** — only the virtual clock ever sees it.
 //!
-//! **Sign convention:** [`SoftwareAecRefClock::sro_ppm`] reports
+//! **Sign convention:** [`DacClockObserver::sro_ppm`] reports
 //! `(ratio - 1) * 1e6`. Positive ppm means the DAC clock runs fast relative to
 //! wall-clock (it clocks out more frames per real second than the nominal
 //! reference assumes); negative means slow.
@@ -50,7 +54,7 @@
 //! # Why a DLL and not the least-squares [`crate::aec_clock::SroEstimator`]
 //!
 //! The `SroEstimator` measures DAC-vs-chip-ref drift for the *chip-AEC* path; this
-//! is the *software-AEC* path against wall-clock — a distinct clock pair. Both
+//! is the *DAC-clock* path against wall-clock — a distinct clock pair. Both
 //! are observe-only, but this one composes the shared [`jasper_clock::Dll`] so
 //! the loop math (the spa_dll convergence + the variance-driven bandwidth + the
 //! resync hard-jump) is the one shared primitive, and the ppm here is directly
@@ -58,15 +62,16 @@
 
 use jasper_clock::{Dll, DllConfig, DllSnapshot};
 
-/// Below this absolute ppm the software-AEC reference is treated as
-/// clock-coherent (no compensation would help). Mirrors
-/// [`crate::aec_clock::SRO_COHERENT_PPM`] so the two AEC paths classify on the
-/// same threshold; PROVISIONAL pending on-hardware validation.
-pub const SRO_COHERENT_PPM: f64 = 5.0;
+/// Below this absolute ppm the DAC playout clock is reported as near-nominal
+/// (`steady`); at or beyond it, `drifting`. A DAC-clock-health threshold,
+/// deliberately distinct from the chip-AEC `SroEstimator`'s own
+/// `SRO_COHERENT_PPM` (a different clock pair and a different decision), so the
+/// two do not share one constant. PROVISIONAL pending more on-hardware data.
+pub const DAC_STEADY_PPM: f64 = 5.0;
 
 /// A snapshot a `/state` serializer can render without holding the estimator.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SoftwareAecRefSnapshot {
+pub struct DacClockSnapshot {
     /// `true` once the DLL has acquired lock on the drift; the ppm is only
     /// meaningful when locked.
     pub locked: bool,
@@ -83,26 +88,28 @@ pub struct SoftwareAecRefSnapshot {
     pub resync_count: u64,
 }
 
-impl SoftwareAecRefSnapshot {
-    /// Coherent (locked + within threshold), compensable (locked + beyond), or
-    /// fallback (not yet locked) — the same three-way verdict vocabulary as the
-    /// chip-AEC path, so a single doctor surface can read both.
+impl DacClockSnapshot {
+    /// DAC-clock health: `acquiring` (not yet locked), `steady` (locked +
+    /// within `DAC_STEADY_PPM` of nominal), or `drifting` (locked + beyond).
+    /// A DAC-clock-health classification — deliberately distinct from the
+    /// chip-AEC path's coherent/compensable verdict (a different clock pair and
+    /// decision), so the doctor surfaces the two separately.
     pub fn verdict(&self) -> &'static str {
         if !self.locked {
-            "fallback"
-        } else if self.sro_ppm.abs() < SRO_COHERENT_PPM {
-            "coherent"
+            "acquiring"
+        } else if self.sro_ppm.abs() < DAC_STEADY_PPM {
+            "steady"
         } else {
-            "compensable"
+            "drifting"
         }
     }
 }
 
-/// Observe-only software-AEC reference drift estimator. Composes a
+/// Observe-only DAC playout-clock drift observer. Composes a
 /// [`jasper_clock::Dll`] driven through a VIRTUAL closed loop (no audio path is
 /// touched). Pure: no ALSA, no threads, no audio side effects.
 #[derive(Debug)]
-pub struct SoftwareAecRefClock {
+pub struct DacClockObserver {
     dll: Dll,
     sample_rate: f64,
     /// Minimum elapsed-seconds delta between accepted samples. The DAC delay is
@@ -123,7 +130,7 @@ pub struct SoftwareAecRefClock {
     virtual_frames: f64,
 }
 
-impl SoftwareAecRefClock {
+impl DacClockObserver {
     /// Construct for a sink at `sample_rate` Hz. (`period_frames` is accepted
     /// for constructor symmetry with the other outputd estimators; the DLL
     /// timescale here is set by the ~1 Hz drift-sample cadence, not the audio
@@ -234,7 +241,7 @@ impl SoftwareAecRefClock {
     }
 
     /// An immutable snapshot for `/state` / doctor.
-    pub fn snapshot(&self) -> SoftwareAecRefSnapshot {
+    pub fn snapshot(&self) -> DacClockSnapshot {
         let DllSnapshot {
             ratio_ppm,
             error_mean,
@@ -244,7 +251,7 @@ impl SoftwareAecRefClock {
             resync_count,
             ..
         } = self.dll.snapshot();
-        SoftwareAecRefSnapshot {
+        DacClockSnapshot {
             locked,
             sro_ppm: ratio_ppm,
             error_mean,
@@ -265,7 +272,7 @@ mod tests {
     /// Drive `secs` seconds of paired snapshots where the DAC clock runs `ppm`
     /// relative to wall-clock. One snapshot per period (~50 Hz) so the
     /// decimation gate is exercised; only ~1/s is accepted.
-    fn drive(clock: &mut SoftwareAecRefClock, secs: u64, dac_ppm: f64) {
+    fn drive(clock: &mut DacClockObserver, secs: u64, dac_ppm: f64) {
         // ~50 Hz period cadence.
         let period_s = f64::from(PERIOD) / f64::from(RATE);
         let total_steps = (secs as f64 / period_s) as u64;
@@ -281,7 +288,7 @@ mod tests {
 
     #[test]
     fn coherent_clock_reads_near_zero_ppm_and_locks() {
-        let mut clock = SoftwareAecRefClock::new(RATE, PERIOD);
+        let mut clock = DacClockObserver::new(RATE, PERIOD);
         drive(&mut clock, 200, 0.0);
         let snap = clock.snapshot();
         assert!(snap.locked, "a coherent clock should lock: {snap:?}");
@@ -290,12 +297,12 @@ mod tests {
             "coherent clock ~0 ppm, got {}",
             snap.sro_ppm
         );
-        assert_eq!(snap.verdict(), "coherent");
+        assert_eq!(snap.verdict(), "steady");
     }
 
     #[test]
     fn fast_dac_reads_a_steady_offset() {
-        let mut clock = SoftwareAecRefClock::new(RATE, PERIOD);
+        let mut clock = DacClockObserver::new(RATE, PERIOD);
         // DAC runs +50 ppm fast → clocks out more frames than wall-clock
         // predicts. The virtual closed loop converges so its ratio reports the
         // drift directly: positive ppm == fast DAC (documented sign convention).
@@ -307,12 +314,12 @@ mod tests {
             "expected ~+50 ppm (fast DAC), got {}",
             snap.sro_ppm
         );
-        assert_eq!(snap.verdict(), "compensable");
+        assert_eq!(snap.verdict(), "drifting");
     }
 
     #[test]
     fn slow_dac_reads_a_negative_offset() {
-        let mut clock = SoftwareAecRefClock::new(RATE, PERIOD);
+        let mut clock = DacClockObserver::new(RATE, PERIOD);
         // A DAC running 80 ppm slow clocks out fewer frames than wall-clock
         // predicts → the loop ratio settles negative.
         drive(&mut clock, 400, -80.0);
@@ -323,12 +330,12 @@ mod tests {
             "expected ~-80 ppm (slow DAC), got {}",
             snap.sro_ppm
         );
-        assert_eq!(snap.verdict(), "compensable");
+        assert_eq!(snap.verdict(), "drifting");
     }
 
     #[test]
     fn decimates_sub_interval_calls() {
-        let mut clock = SoftwareAecRefClock::new(RATE, PERIOD);
+        let mut clock = DacClockObserver::new(RATE, PERIOD);
         // Feed 100 sub-second calls (all within the first second): the loop
         // accepts at most one, so it cannot have acquired lock.
         let dac_delay = 1024;
@@ -346,7 +353,7 @@ mod tests {
 
     #[test]
     fn non_monotonic_consumed_resets_history() {
-        let mut clock = SoftwareAecRefClock::new(RATE, PERIOD);
+        let mut clock = DacClockObserver::new(RATE, PERIOD);
         drive(&mut clock, 200, 0.0);
         assert!(clock.is_locked());
         // A snapshot where consumed regresses (device reset) past the interval:
@@ -358,7 +365,7 @@ mod tests {
 
     #[test]
     fn negative_or_nonfinite_elapsed_is_ignored() {
-        let mut clock = SoftwareAecRefClock::new(RATE, PERIOD);
+        let mut clock = DacClockObserver::new(RATE, PERIOD);
         clock.observe(48_000, 1024, -1.0);
         clock.observe(48_000, 1024, f64::NAN);
         assert_eq!(clock.snapshot().updates, 0);
@@ -366,7 +373,7 @@ mod tests {
 
     #[test]
     fn delay_exceeding_written_is_skipped_not_panic() {
-        let mut clock = SoftwareAecRefClock::new(RATE, PERIOD);
+        let mut clock = DacClockObserver::new(RATE, PERIOD);
         // delay > written → consumed would be negative → skip.
         clock.observe(100, 200, 1.0);
         assert_eq!(clock.snapshot().updates, 0);
