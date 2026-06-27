@@ -60,6 +60,7 @@ polkit.addRule(function(action, subject) {
         "jasper-grouping-reconcile-trailing.service",
         "jasper-camilla.service",
         "jasper-outputd.service",
+        "jasper-fanin.service",
         "jasper-doctor-json.service",
         "shairport-sync.service",
         "nqptp.service",
