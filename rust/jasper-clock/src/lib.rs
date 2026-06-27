@@ -31,6 +31,15 @@
 //! the caller's concern — this crate is the single shared loop primitive that
 //! every clock-domain boundary composes.
 //!
+//! # Companion: htimestamp distrust
+//!
+//! The crate also exports [`HtimestampGuard`] — the pure decision logic for
+//! distrusting `snd_pcm_htimestamp` (refine a delay with it, but verify each
+//! timestamp against `CLOCK_MONOTONIC` and stop trusting it after a run of
+//! lies). It is the generalised form of JTS's Apple-dongle delay-liar
+//! workaround. Same doctrine as the DLL: the ALSA FFI stays at the call site;
+//! this crate owns the host-free logic.
+//!
 //! # Units
 //!
 //! The loop is dimensionless: feed it the same error units every cycle and it
@@ -58,6 +67,12 @@
 //! ```
 
 #![forbid(unsafe_code)]
+
+mod htimestamp;
+
+pub use htimestamp::{
+    HtimestampGuard, HtimestampGuardConfig, HtimestampGuardStats, HtimestampVerdict,
+};
 
 /// PipeWire's bandwidth clamp (`SPA_DLL_BW_MAX` / `SPA_DLL_BW_MIN`). Wide to
 /// acquire lock fast, narrow once locked to reject jitter.
