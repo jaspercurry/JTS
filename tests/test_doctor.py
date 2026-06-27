@@ -5651,7 +5651,7 @@ def test_check_wifi_recover_timer_no_systemctl_skips(monkeypatch):
     assert "no systemctl" in r.detail
 
 
-# ---- check_dac_usb_sync_mode (Stage 6 C2 gate) ------------------------------
+# ---- check_dac_usb_sync_mode (Stage 6 clock-coherence advisory) -------------
 
 
 def _sync_mode_state(*syncs):
@@ -5696,7 +5696,9 @@ def test_dac_sync_mode_ok_for_sync_apple_dongle(monkeypatch):
     result = doctor.check_dac_usb_sync_mode()
     assert result.status == "ok"
     assert "synchronous USB playback endpoint" in result.detail
-    assert "chip-AEC eligible" in result.detail
+    # Advisory clock-coherence wording, not an enable/disable gate.
+    assert "clock-coherence observation only" in result.detail
+    assert "binding chip-AEC gate" in result.detail
 
 
 def test_dac_sync_mode_ok_for_adaptive_endpoint(monkeypatch):
@@ -5718,8 +5720,9 @@ def test_dac_sync_mode_warns_fail_closed_for_async(monkeypatch):
     )
     result = doctor.check_dac_usb_sync_mode()
     assert result.status == "warn"
-    assert "async DAC" in result.detail
-    assert "software AEC3" in result.detail
+    assert "async USB playback endpoint" in result.detail
+    # Reframed as advisory: the binding gate is DAC qual + outputd SRO verdict.
+    assert "outputd SRO verdict" in result.detail
 
 
 def test_dac_sync_mode_na_for_i2s_dac(monkeypatch):

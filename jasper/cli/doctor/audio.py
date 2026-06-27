@@ -563,14 +563,24 @@ def _apple_dongle_cards_from_state(
 
 @doctor_check(order=20.7, group="audio")
 def check_dac_usb_sync_mode() -> CheckResult:
-    """Classify the speaker DAC's USB sync mode — the output-side gate for
-    chip-AEC eligibility (C2 of the audio-latency foundation work).
+    """Classify the speaker DAC's USB sync mode as an advisory clock-coherence
+    observation for chip-AEC (Stage 6 of the audio-latency foundation work).
+
+    This is NOT the chip-AEC gate. USB sync mode is *one* clock-coherence
+    signal; the binding chip-AEC gate is DAC-profile qualification plus the
+    outputd SRO clock verdict (`resolve_chip_aec_dac_gate` in
+    jasper/chip_aec_policy.py), which never reads endpoint_sync. A
+    synchronous/adaptive endpoint and an approved DAC happen to agree on
+    today's Apple dongle, but that agreement is incidental — an
+    async-but-approved DAC would still pass the binding gate. Read this check
+    as a clock-coherence observation that helps explain a chip-AEC verdict,
+    never as an enable/disable switch.
 
     Chip-AEC assumes the speaker output and the mic reference share a clock
     domain. A USB Audio *playback* endpoint that is synchronous or adaptive
     (host-paced) keeps the DAC on the host clock the chip references; an
-    *asynchronous* endpoint runs its own crystal and drifts against the mic,
-    so chip-AEC must fail closed to software AEC3.
+    *asynchronous* endpoint runs its own crystal and can drift against the
+    mic.
 
     The endpoint sync tag is read once by the output-hardware reconciler from
     /proc/asound/card<N>/stream0 and persisted into
@@ -629,18 +639,22 @@ def check_dac_usb_sync_mode() -> CheckResult:
         f"{card}:{tag}" for card, tag in syncs if tag in {"SYNC", "ADAPTIVE"}
     ]
     if async_cards:
-        # Fail-closed but advisory: software AEC3 still cancels echo, so WARN
-        # (not FAIL) — the speaker keeps working, just not on chip-AEC.
+        # Advisory only: an async endpoint is a weak clock-coherence signal,
+        # but the binding chip-AEC gate is DAC qualification + the outputd SRO
+        # verdict (resolve_chip_aec_dac_gate), not this tag. WARN so a
+        # maintainer notices the drift risk; software AEC3 keeps echo cancelled
+        # either way.
         return CheckResult(
             "DAC USB sync mode", "warn",
-            "async DAC — chip-AEC not eligible; using software AEC3 "
-            f"(async playback endpoint on {','.join(async_cards)}; "
-            f"profile={dac_id})",
+            "async USB playback endpoint — weak clock coherence; chip-AEC is "
+            "still gated by DAC qualification + the outputd SRO verdict "
+            f"(async on {','.join(async_cards)}; profile={dac_id})",
         )
     return CheckResult(
         "DAC USB sync mode", "ok",
         f"synchronous USB playback endpoint ({', '.join(coherent)}); "
-        f"chip-AEC eligible on clock grounds (profile={dac_id})",
+        "clock-coherence observation only — the binding chip-AEC gate is "
+        f"DAC qualification + the outputd SRO verdict (profile={dac_id})",
     )
 
 
