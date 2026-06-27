@@ -96,10 +96,15 @@ RuntimeDirectory=jasper-fanin
 RuntimeDirectoryMode=0750
 
 # Configuration files — chain matches voice / aec / control daemons.
-# /etc/jasper/jasper.env is the operator's system-wide config;
-# the wizard-owned file is optional (no wizard for fanin in v1).
+# /etc/jasper/jasper.env is the operator's system-wide config.
+# The wizard/reconciler-owned /var/lib/jasper/fanin.env is loaded LAST
+# (after the Environment= defaults below) so its overrides win — systemd
+# applies a later EnvironmentFile= over an earlier Environment=. This is
+# load-bearing for jasper.fanin.buffer_reconcile: it writes the adaptive
+# JASPER_FANIN_OUTPUT_BUFFER_FRAMES override into that file, which MUST
+# beat the Environment="...=3072" default below. Keep the wizard file's
+# EnvironmentFile= line AFTER the Environment= lines (see end of section).
 EnvironmentFile=/etc/jasper/jasper.env
-EnvironmentFile=-/var/lib/jasper/fanin.env
 
 # Input ALSA buffer sizing — must absorb the WiFi delivery burst
 # pattern. Output buffering is split out below and intentionally kept
@@ -138,6 +143,13 @@ EnvironmentFile=-/var/lib/jasper/fanin.env
 # (e.g., a future PR with verified-tighter WiFi delivery).
 Environment="JASPER_FANIN_INPUT_BUFFER_FRAMES=4096"
 Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072"
+
+# Wizard/reconciler-owned overrides — loaded LAST so they win over the
+# Environment= defaults above (later EnvironmentFile= beats earlier
+# Environment=). jasper.fanin.buffer_reconcile is the single writer of the
+# adaptive JASPER_FANIN_OUTPUT_BUFFER_FRAMES override here. Optional (leading
+# `-`): absent on a fresh box, where the 3072 default above is live.
+EnvironmentFile=-/var/lib/jasper/fanin.env
 
 ExecStart=/opt/jasper/bin/jasper-fanin
 

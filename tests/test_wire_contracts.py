@@ -296,6 +296,14 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # test_control_socket_paths_agree_across_processes). Setting this
     # alone cannot move fan-in's socket.
     "JASPER_FANIN_CONTROL_SOCKET": "mux connect-path knob, not a fanin knob",
+    # Adaptive output-buffer orchestration knobs — Python-side, NOT read by the
+    # Rust daemon. JASPER_FANIN_ADAPTIVE_BUFFER is the mux/doctor master gate;
+    # JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES is the sweep target the reconciler
+    # RESOLVES into JASPER_FANIN_OUTPUT_BUFFER_FRAMES (which IS Rust-read). The
+    # daemon never reads the _ADAPTIVE_ names directly. See
+    # jasper/fanin/buffer_reconcile.py.
+    "JASPER_FANIN_ADAPTIVE_BUFFER": "mux/doctor gate; resolves to OUTPUT_BUFFER_FRAMES",
+    "JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES": "reconciler sweep target; resolves to OUTPUT_BUFFER_FRAMES",
 }
 
 # Script-local variables that *name the env file path itself* (e.g.
