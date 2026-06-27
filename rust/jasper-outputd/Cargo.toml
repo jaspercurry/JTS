@@ -10,6 +10,10 @@ rust-version = "1.75"
 
 [dependencies]
 jasper-tts-protocol = { path = "../jasper-tts-protocol" }
+# The shared clock-tracking DLL (spa_dll port). outputd composes it for the
+# observe-only software-AEC reference drift estimate (and, from Inc 3, the
+# converged chip-AEC SRO / content-bridge rate loops). Pure, no ALSA.
+jasper-clock = { path = "../jasper-clock" }
 # Same ALSA wrapper used by jasper-fanin. outputd's ALSA backend reads
 # Camilla's post-DSP loopback lane and writes the final DAC directly.
 alsa = "0.11"

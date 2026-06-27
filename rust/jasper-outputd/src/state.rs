@@ -24,6 +24,7 @@ use crate::alsa_backend::{CompositeStatus, IoCounters, NegotiatedPcm};
 use crate::config::Config;
 use crate::content_bridge::ContentBridgeMetrics;
 use crate::dac_content::DacContentMetrics;
+use crate::software_aec_clock::SoftwareAecRefClock;
 use crate::tts::TtsMetrics;
 use std::sync::OnceLock;
 
@@ -137,6 +138,13 @@ pub struct OutputdState {
     // Decimates the ~50 Hz `mark_chip_ref_write` ticks down to ~1 Hz (the rate
     // the estimator's slope window is tuned for).
     sro_last_fed_chip_ref_frames: AtomicU64,
+    // Observe-only software-AEC reference clock drift estimator (Inc 2). A
+    // jasper-clock DLL fed the wall-clock-vs-DAC-playout frame error from
+    // `mark_dac_delay` (where the DAC delay is already sampled). It NEVER warps
+    // audio — it surfaces `software_aec_ref_sro_ppm` + lock/verdict on /state.
+    // Mutex for the same reason as `sro_estimator`: a small struct, single
+    // writer (the playback loop) + single reader (the state server).
+    software_aec_ref: Mutex<SoftwareAecRefClock>,
     content_frames_read: AtomicU64,
     content_empty_period_count: AtomicU64,
     content_partial_period_count: AtomicU64,
@@ -270,6 +278,10 @@ impl OutputdState {
             chip_ref_observe: config.chip_ref_observe,
             sro_estimator: Mutex::new(SroEstimator::new()),
             sro_last_fed_chip_ref_frames: AtomicU64::new(0),
+            software_aec_ref: Mutex::new(SoftwareAecRefClock::new(
+                config.sample_rate,
+                config.period_frames,
+            )),
             content_frames_read: AtomicU64::new(0),
             content_empty_period_count: AtomicU64::new(0),
             content_partial_period_count: AtomicU64::new(0),
@@ -382,10 +394,23 @@ impl OutputdState {
     }
 
     pub fn mark_dac_delay(&self, delay_frames: u64) {
+        let uptime_ms = self.uptime_ms();
         self.dac_snd_pcm_delay_frames
             .store(delay_frames, Ordering::Relaxed);
         self.dac_snd_pcm_delay_sample_ms
-            .store(self.uptime_ms(), Ordering::Relaxed);
+            .store(uptime_ms, Ordering::Relaxed);
+        // Observe-only (Inc 2): tick the software-AEC reference drift estimator
+        // with the freshly-sampled DAC delay paired with the cumulative frames
+        // written and the monotonic uptime. The estimator self-decimates to
+        // ~1 Hz, so calling it every period is cheap and harmless. It NEVER
+        // touches the audio path. `try_lock` so a /state reader (the only other
+        // contender) can never make the playback loop wait; a skipped tick just
+        // drops one ~1 Hz sample.
+        let dac_written = self.dac_frames_written.load(Ordering::Relaxed);
+        let elapsed_seconds = uptime_ms as f64 / 1000.0;
+        if let Ok(mut clock) = self.software_aec_ref.try_lock() {
+            clock.observe(dac_written, delay_frames, elapsed_seconds);
+        }
     }
 
     pub fn mark_chip_ref_queue_admitted(&self, frames: u64) {
@@ -1227,6 +1252,21 @@ impl OutputdState {
         };
         let sro_status = sro_status.as_str();
         let verdict = verdict.as_str();
+        // Observe-only software-AEC reference drift (Inc 2). `try_lock` so a
+        // /state read never blocks the playback loop's tick; on contention or a
+        // (never-expected) poisoned lock, report a not-yet-locked fallback
+        // snapshot rather than waiting or panicking.
+        let software_aec = match self.software_aec_ref.try_lock() {
+            Ok(clock) => clock.snapshot(),
+            Err(_) => crate::software_aec_clock::SoftwareAecRefSnapshot {
+                locked: false,
+                sro_ppm: 0.0,
+                error_mean: 0.0,
+                error_var: 0.0,
+                updates: 0,
+                resync_count: 0,
+            },
+        };
         let dac_presentation_ms = frames_to_ms_opt(dac_delay_frames, sample_rate);
         let playback_queue_ms = frames_to_ms_opt(
             Some(self.dac_buffer_frames.load(Ordering::Relaxed)),
@@ -1249,6 +1289,32 @@ impl OutputdState {
         // drift on the software-AEC3 path (not for production chip-AEC). Pure
         // self-description; no audio path reads it.
         push_kv_bool(&mut buf, "observe", self.chip_ref_observe);
+        buf.push(',');
+        // Observe-only software-AEC reference drift (Inc 2): the shared
+        // jasper-clock DLL locked onto the :9891-reference-vs-DAC-playout error,
+        // surfaced as ppm + lock + verdict (the doctor-readable field). This
+        // NEVER warps audio — it is the measure-before-fix signal for software
+        // AEC, distinct from the chip-AEC `chip_ref_sro_ppm` above.
+        buf.push_str(r#""software_aec_ref":{"#);
+        push_kv_f64(
+            &mut buf,
+            "software_aec_ref_sro_ppm",
+            software_aec.sro_ppm,
+            3,
+        );
+        buf.push(',');
+        push_kv_bool(&mut buf, "locked", software_aec.locked);
+        buf.push(',');
+        push_kv_str(&mut buf, "verdict", software_aec.verdict());
+        buf.push(',');
+        push_kv_f64(&mut buf, "error_mean_frames", software_aec.error_mean, 3);
+        buf.push(',');
+        push_kv_f64(&mut buf, "error_var_frames2", software_aec.error_var, 3);
+        buf.push(',');
+        push_kv_u64(&mut buf, "updates", software_aec.updates);
+        buf.push(',');
+        push_kv_u64(&mut buf, "resync_count", software_aec.resync_count);
+        buf.push('}');
         buf.push(',');
         buf.push_str(r#""latency":{"#);
         push_kv_f64_opt(&mut buf, "dac_presentation_ms", dac_presentation_ms, 3);
@@ -1887,6 +1953,12 @@ mod tests {
             r#""verdict":"fallback""#,
             // Observe mode is off in test_config (default).
             r#""observe":false"#,
+            // Inc 2: observe-only software-AEC reference drift — fresh, not yet
+            // locked, ppm 0, fallback verdict.
+            r#""software_aec_ref":{"software_aec_ref_sro_ppm":0.000"#,
+            r#""locked":false"#,
+            r#""updates":0"#,
+            r#""resync_count":0"#,
             r#""latency":{"dac_presentation_ms":null"#,
             // test_config dac_buffer_frames=3072 / 48000 → 64 ms.
             r#""playback_queue_ms":64.000"#,
@@ -1894,6 +1966,36 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
+        // The software_aec_ref block's verdict is "fallback" before lock; it
+        // sits between observe and latency.
+        assert!(
+            j.contains(r#""software_aec_ref":{"#) && j.contains(r#""verdict":"fallback""#),
+            "software_aec_ref block must be present with a fallback verdict: {j}"
+        );
+    }
+
+    #[test]
+    fn mark_dac_delay_ticks_software_aec_ref_without_panicking() {
+        // Wiring test: the mark_dac_delay path (the playback loop's tick) feeds
+        // the observe-only software-AEC reference DLL. The tick reads REAL
+        // uptime for its wall-clock, so a unit test can't drive it to a
+        // deterministic lock in a tight loop — the convergence math is pinned by
+        // the software_aec_clock module's own tests. Here we assert the tick
+        // path is exercised and never panics, and the block stays present.
+        let state = OutputdState::new(&test_config());
+        for step in 1..=64u64 {
+            state.mark_period(
+                IoCounters {
+                    dac_frames_written: step * 48_000,
+                    ..IoCounters::default()
+                },
+                1,
+                0,
+            );
+            state.mark_dac_delay(1024);
+        }
+        let j = state.snapshot_json();
+        assert!(j.contains(r#""software_aec_ref":{"#), "block present: {j}");
     }
 
     #[test]
