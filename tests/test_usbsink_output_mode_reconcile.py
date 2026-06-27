@@ -81,19 +81,61 @@ def test_disarm_back_to_aloop(env_path, stub_broker):
     assert "JASPER_USBSINK_OUTPUT_MODE=aloop" in env_path.read_text()
 
 
-def test_arm_restart_failure_reports_not_ok(env_path, monkeypatch):
+def test_arm_restart_failure_rolls_back_env(env_path, monkeypatch):
     monkeypatch.setattr(
         "jasper.control.restart_broker.manage_units",
         lambda *a, **k: {"ok": False, "error": "broker down"},
     )
     r = omr.set_output_mode("fifo", reason="lean_enter", env_path=env_path)
-    # The env was written, but the restart failed -> ok=False so the caller
-    # falls back to buffered.
+    # SF-1: restart failed -> the env is ROLLED BACK so the persisted file never
+    # gets ahead of the running daemon (a later natural restart must NOT start in
+    # fifo, which would write a pipe nobody reads = silent USB audio). ok=False
+    # so the caller falls back to buffered.
     assert r.ok is False
-    assert r.changed is True
+    assert r.changed is False
     assert r.restarted is False
     assert "broker down" in r.detail
-    assert "JASPER_USBSINK_OUTPUT_MODE=fifo" in env_path.read_text()
+    # The file was absent before; rollback restores the absent state, not fifo.
+    assert not env_path.exists()
+
+
+def test_arm_restart_failure_rollback_restores_prior_content(env_path, monkeypatch):
+    env_path.write_text(
+        "JASPER_USBSINK_LATENCY=0.02\n"
+        "JASPER_USBSINK_OUTPUT_MODE=aloop\n"
+    )
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units",
+        lambda *a, **k: {"ok": False, "error": "broker down"},
+    )
+    r = omr.set_output_mode("fifo", reason="lean_enter", env_path=env_path)
+    assert r.ok is False
+    text = env_path.read_text()
+    # Rolled back to the prior aloop value + the operator key preserved; NOT fifo.
+    assert "JASPER_USBSINK_OUTPUT_MODE=aloop" in text
+    assert "JASPER_USBSINK_OUTPUT_MODE=fifo" not in text
+    assert "JASPER_USBSINK_LATENCY=0.02" in text
+
+
+def test_arm_restart_broker_import_failure_is_fail_soft(env_path, monkeypatch):
+    # SF-2: a missing/broken control package must degrade to ok=False (fail-soft),
+    # never raise out of set_output_mode into the caller's enter-lean tick.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "jasper.control" and "restart_broker" in (fromlist or ()):
+            raise ImportError("no control package here")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    r = omr.set_output_mode("fifo", reason="lean_enter", env_path=env_path)
+    assert r.ok is False
+    assert r.restarted is False
+    assert "restart_broker unavailable" in r.detail
+    # And the env was rolled back (no fifo persisted).
+    assert not env_path.exists()
 
 
 def test_arm_no_restart_flag_writes_only(env_path, stub_broker):

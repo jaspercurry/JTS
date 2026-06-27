@@ -139,8 +139,15 @@ def _atomic_write(path: Path, text: str) -> None:
 def _restart_usbsink(reason: str) -> tuple[bool, str]:
     """Restart the usbsink daemon through the broker. Returns (ok, detail).
     Lazy import keeps jasper-mux's dep graph free of the control package
-    on Pis where the gadget feature is off."""
-    from jasper.control import restart_broker
+    on Pis where the gadget feature is off. SF-2: the import is guarded so a
+    missing/broken control package degrades to a reported restart failure
+    (ok=False) instead of raising out of set_output_mode and defeating the
+    caller's fail-soft enter-lean ladder (which relies on the ArmResult, not an
+    exception, to fall back to buffered + arm the per-episode block)."""
+    try:
+        from jasper.control import restart_broker
+    except ImportError as e:
+        return False, f"restart_broker unavailable: {e}"
 
     resp = restart_broker.manage_units(
         USBSINK_UNIT, verb="restart", reason=reason, no_block=False, timeout=8.0,
@@ -185,6 +192,7 @@ def set_output_mode(
                          detail=f"invalid mode {mode!r}")
 
     path = Path(env_path)
+    file_existed = path.exists()
     try:
         existing = path.read_text(encoding="utf-8")
     except OSError:
@@ -217,14 +225,41 @@ def set_output_mode(
         return ArmResult(ok=True, changed=True, restarted=False, mode=mode)
 
     restarted, detail = _restart_usbsink(reason=reason)
+    if not restarted:
+        # SF-1: the env now carries `mode` but the daemon did NOT restart into
+        # it, so the persisted file is AHEAD of the running daemon. A later
+        # NATURAL restart (deploy, reboot, watchdog) would then start in `mode`
+        # — e.g. fifo writing a pipe nobody reads -> SILENT USB audio with no
+        # cue, the exact no-silent-failure invariant JTS treats as inviolable.
+        # Roll the env back to its prior state so the file never gets ahead of
+        # the running daemon; the caller falls back to buffered on ok=False.
+        rollback_detail = ""
+        try:
+            if file_existed:
+                _atomic_write(path, existing)
+            else:
+                path.unlink(missing_ok=True)
+        except OSError as e:
+            rollback_detail = f"; rollback_failed={e}"
+        log_event(
+            logger,
+            "usbsink.output_mode_arm",
+            result="restart_failed_rolled_back",
+            mode=mode,
+            reason=reason,
+            detail=(detail + rollback_detail) or None,
+            level=logging.WARNING,
+        )
+        return ArmResult(ok=False, changed=False, restarted=False, mode=mode,
+                         detail=detail + rollback_detail)
+
     log_event(
         logger,
         "usbsink.output_mode_arm",
-        result="armed" if restarted else "restart_failed",
+        result="armed",
         mode=mode,
         reason=reason,
         detail=detail or None,
-        level=logging.WARNING if not restarted else logging.INFO,
+        level=logging.INFO,
     )
-    return ArmResult(ok=restarted, changed=True, restarted=restarted, mode=mode,
-                     detail=detail)
+    return ArmResult(ok=True, changed=True, restarted=True, mode=mode, detail=detail)
