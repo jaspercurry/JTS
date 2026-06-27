@@ -1333,3 +1333,48 @@ def test_program_bake_not_selectable_as_solo_graph(tmp_path: Path) -> None:
     )
     assert decision.selected_config_path != str(config)
     assert decision.status != "preserve_current"
+
+
+# --- Stage 4: File-CAPTURE lean lane on the ACTIVE baseline (keeps Layer A) ---
+
+
+def _active_baseline_lean_yaml(layout: str = "mono", way: int = 2) -> str:
+    raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
+    return emit_active_speaker_baseline_config(
+        ActiveSpeakerPreset.from_mapping(raw),
+        playback_device=ACTIVE_PCM,
+        capture_pipe_path="/run/jasper/lean_capture.fifo",
+        resampler_type="BalancedAsync",
+        baseline_id=f"baseline-{layout}-{way}way",
+    )
+
+
+def test_active_baseline_file_capture_lean_variant_classifies_approved() -> None:
+    # The File-capture lean lane must classify IDENTICALLY to the ALSA-capture
+    # baseline: only devices.capture.type flips (Alsa->File), Layer A untouched,
+    # and the classifier never reads capture.type. Classifying approved proves
+    # Layer A (tweeter HP + per-driver limiter + non-positive gain) is intact.
+    topology = _active_topology("mono", "active_2_way")
+    yaml = _active_baseline_lean_yaml()
+    graph = classify_camilla_graph(topology=topology, text=yaml)
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    assert graph.allowed is True
+    assert graph.details["baseline_candidate"] is True
+    assert "type: File" in yaml
+    assert 'filename: "/run/jasper/lean_capture.fifo"' in yaml
+    assert "resampler_type: BalancedAsync" in yaml
+    assert "enable_rate_adjust: true" in yaml
+    assert "volume_limit: 0.0" in yaml
+    assert "emit_active_speaker_baseline_config" in yaml
+
+
+def test_active_baseline_file_capture_requires_async_resampler() -> None:
+    raw = _two_way_preset("mono")
+    for bad in ("Synchronous", None):
+        with pytest.raises(Exception, match="requires an async resampler"):
+            emit_active_speaker_baseline_config(
+                ActiveSpeakerPreset.from_mapping(raw),
+                playback_device=ACTIVE_PCM,
+                capture_pipe_path="/run/jasper/lean_capture.fifo",
+                resampler_type=bad,
+            )
