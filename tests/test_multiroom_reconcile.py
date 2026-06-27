@@ -290,10 +290,16 @@ def test_snapserver_argv_includes_codec():
     assert "codec=opus" in joined
 
 
-def test_snapserver_argv_includes_buffer_ms():
+def test_snapserver_argv_passes_buffer_as_stream_buffer_flag():
+    # buffer_ms is the GLOBAL --stream.buffer (snapcast's end-to-end
+    # playout buffer), NOT a pipe:// source-URL param. snapcast silently
+    # ignores an unknown &buffer_ms= query key, so the old URL form was
+    # inert and the bond ran snapcast's 1000 ms default.
     argv = snapserver_argv(_leader(buffer_ms=750))
-    joined = " ".join(argv)
-    assert "buffer_ms=750" in joined
+    assert "--stream.buffer" in argv
+    assert argv[argv.index("--stream.buffer") + 1] == "750"
+    # Regression guard: the inert source-URL param must never come back.
+    assert "buffer_ms=" not in " ".join(argv)
 
 
 def test_snapserver_argv_reads_the_fifo_source():
@@ -654,7 +660,9 @@ def test_assemble_args_invalid_clears_both():
 def test_assemble_args_codec_and_buffer_flow_into_server():
     d = _assemble_args(_leader(codec="opus", buffer_ms=750))
     assert "codec=opus" in d[SERVER_KEY]
-    assert "buffer_ms=750" in d[SERVER_KEY]
+    assert "--stream.buffer 750" in d[SERVER_KEY]
+    # The inert source-URL param must not be re-introduced.
+    assert "buffer_ms=" not in d[SERVER_KEY]
 
 
 # ---------- _write_args_file(): atomic, mode 0644, fail-soft ----------
