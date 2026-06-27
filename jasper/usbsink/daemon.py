@@ -33,7 +33,12 @@ from dataclasses import dataclass
 
 from jasper.log_event import log_event
 
-from .audio_bridge import AudioBridge, BridgeStats
+from .audio_bridge import (
+    BLOCK_FRAMES,
+    QUEUE_MAXBLOCKS,
+    AudioBridge,
+    BridgeStats,
+)
 from .preempt_listener import (
     DEFAULT_PORT as PREEMPT_DEFAULT_PORT,
     DEFAULT_STATE_PATH as PREEMPT_DEFAULT_STATE_PATH,
@@ -118,6 +123,17 @@ class DaemonConfig:
     preempt_port: int = PREEMPT_DEFAULT_PORT
     preempt_state_path: str = PREEMPT_DEFAULT_STATE_PATH
     control_url: str = VOLUME_DEFAULT_CONTROL_URL
+    # USB-bridge latency tuning knobs (Stage 2 of the audio-latency
+    # foundation work). Defaults mirror the audio_bridge constants, so an
+    # unset env is byte-for-byte the historical behavior. Lower
+    # queue_maxblocks (10 ms/block; 8 = 80 ms slack) and/or set `latency`
+    # to shave the gadget<->Pi USB-input latency (the dominant ~50-90 ms
+    # term) toward the <60 ms lip-sync target — tune + xrun-check on-device.
+    block_frames: int = BLOCK_FRAMES
+    queue_maxblocks: int = QUEUE_MAXBLOCKS
+    # PortAudio latency hint: "" = PortAudio default (high); else "low" /
+    # "high" / a float seconds string (e.g. "0.02").
+    latency: str = ""
 
     @classmethod
     def from_env(cls) -> "DaemonConfig":
@@ -153,7 +169,38 @@ class DaemonConfig:
             control_url=os.environ.get(
                 "JASPER_USBSINK_CONTROL_URL", VOLUME_DEFAULT_CONTROL_URL,
             ),
+            block_frames=int(os.environ.get(
+                "JASPER_USBSINK_BLOCK_FRAMES", str(BLOCK_FRAMES),
+            )),
+            queue_maxblocks=int(os.environ.get(
+                "JASPER_USBSINK_QUEUE_MAXBLOCKS", str(QUEUE_MAXBLOCKS),
+            )),
+            latency=os.environ.get("JASPER_USBSINK_LATENCY", ""),
         )
+
+
+def _parse_latency(raw: str) -> float | str | None:
+    """Parse JASPER_USBSINK_LATENCY into PortAudio's ``latency`` argument.
+
+    ``""`` (unset) -> None (don't pass it; PortAudio uses the device default
+    'high', the historical behavior). ``"low"`` / ``"high"`` pass through.
+    Anything else is parsed as float seconds (e.g. ``"0.02"``). A malformed
+    value falls back to None with a warning — a typo in the env must never
+    crash the audio daemon (fail-soft, mirrors the rest of usbsink config).
+    """
+    s = (raw or "").strip().lower()
+    if not s:
+        return None
+    if s in ("low", "high"):
+        return s
+    try:
+        return float(s)
+    except ValueError:
+        logger.warning(
+            "usbsink: ignoring invalid JASPER_USBSINK_LATENCY=%r (want "
+            "'low'/'high'/float-seconds)", raw,
+        )
+        return None
 
 
 class UsbSinkDaemon:
@@ -174,6 +221,9 @@ class UsbSinkDaemon:
             playback_device=config.playback_device,
             sample_rate=config.sample_rate,
             channels=config.channels,
+            block_frames=config.block_frames,
+            queue_maxblocks=config.queue_maxblocks,
+            latency=_parse_latency(config.latency),
         )
         # Preempt listener restores prior preempt state in start() —
         # before the bridge has actually opened streams, so an

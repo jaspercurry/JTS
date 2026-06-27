@@ -21,11 +21,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jasper.usbsink.audio_bridge import BridgeStats, BLOCK_FRAMES
+from jasper.usbsink.audio_bridge import BridgeStats, BLOCK_FRAMES, QUEUE_MAXBLOCKS
 from jasper.usbsink.daemon import (
     WATCHDOG_STALE_SEC,
     UsbSinkDaemon,
     DaemonConfig,
+    _parse_latency,
 )
 
 
@@ -181,6 +182,45 @@ def test_daemon_config_from_env_supports_independent_overrides(monkeypatch):
     cfg = DaemonConfig.from_env()
     assert cfg.capture_device == "my-pa-name"
     assert cfg.mixer_card == "my-short"
+
+
+def test_daemon_config_latency_knobs_default_to_bridge_constants(monkeypatch):
+    """Unset env preserves the historical behavior byte-for-byte."""
+    for k in (
+        "JASPER_USBSINK_QUEUE_MAXBLOCKS",
+        "JASPER_USBSINK_BLOCK_FRAMES",
+        "JASPER_USBSINK_LATENCY",
+    ):
+        monkeypatch.delenv(k, raising=False)
+    cfg = DaemonConfig.from_env()
+    assert cfg.queue_maxblocks == QUEUE_MAXBLOCKS
+    assert cfg.block_frames == BLOCK_FRAMES
+    assert cfg.latency == ""  # -> _parse_latency -> None (PortAudio default)
+
+
+def test_daemon_config_latency_knobs_overridable(monkeypatch):
+    monkeypatch.setenv("JASPER_USBSINK_QUEUE_MAXBLOCKS", "3")
+    monkeypatch.setenv("JASPER_USBSINK_BLOCK_FRAMES", "240")
+    monkeypatch.setenv("JASPER_USBSINK_LATENCY", "low")
+    cfg = DaemonConfig.from_env()
+    assert cfg.queue_maxblocks == 3
+    assert cfg.block_frames == 240
+    assert cfg.latency == "low"
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("", None),
+        ("   ", None),
+        ("low", "low"),
+        ("HIGH", "high"),
+        ("0.02", 0.02),
+        ("garbage", None),  # fail-soft: a typo must never crash the daemon
+    ],
+)
+def test_parse_latency(raw, expected):
+    assert _parse_latency(raw) == expected
 
 
 def test_daemon_wires_mixer_card_to_volume_bridge_and_state_publisher():

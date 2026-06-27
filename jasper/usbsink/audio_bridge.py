@@ -132,12 +132,20 @@ class AudioBridge:
         channels: int = CHANNELS,
         block_frames: int = BLOCK_FRAMES,
         queue_maxblocks: int = QUEUE_MAXBLOCKS,
+        latency: float | str | None = None,
     ) -> None:
         self._capture_device = capture_device
         self._playback_device = playback_device
         self._sample_rate = sample_rate
         self._channels = channels
         self._block_frames = block_frames
+        # PortAudio suggested output/input latency. None (default) means
+        # "don't pass it" — PortAudio then uses the device's default *high*
+        # latency, the historical behavior. A float (seconds) or 'low'/'high'
+        # tunes the gadget<->Pi stream buffering, which is the dominant
+        # USB-input latency term (~50-90 ms). Lower it on-device to approach
+        # the <60 ms lip-sync target; validate xrun-free under load.
+        self._latency = latency
         # PortAudio callback runs on a high-priority thread; we share
         # an int16 array buffer via a bounded queue. put_nowait/
         # get_nowait keep both callbacks lock-free.
@@ -194,6 +202,9 @@ class AudioBridge:
             # RMS + conversion, then queues bytes. Compared with
             # sd.InputStream + numpy buffers, this saves one allocation
             # per callback and keeps the per-frame Python work bounded.
+            # Only pass the latency hint when explicitly configured, so the
+            # default path is byte-for-byte the historical PortAudio default.
+            extra = {} if self._latency is None else {"latency": self._latency}
             self._in_stream = sd.RawInputStream(
                 device=self._capture_device,
                 samplerate=self._sample_rate,
@@ -201,6 +212,7 @@ class AudioBridge:
                 dtype="int32",  # UAC2 gadget descriptor c_ssize=4
                 blocksize=self._block_frames,
                 callback=self._capture_callback,
+                **extra,
             )
             self._out_stream = sd.RawOutputStream(
                 device=self._playback_device,
@@ -209,6 +221,7 @@ class AudioBridge:
                 dtype="int16",  # snd-aloop renderer-side convention
                 blocksize=self._block_frames,
                 callback=self._playback_callback,
+                **extra,
             )
             # Validate that PortAudio actually opened both streams at
             # the requested rate. UAC2 sample-rate negotiation is
