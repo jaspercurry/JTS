@@ -497,5 +497,6 @@ corrections are unaffected) — say so in the UI when the relay is unreachable.
 
 ---
 
-Last updated: 2026-06-27 — transport implemented (hardware-free); adapter +
-on-device validation + cloud deploy still owed (see Status banner).
+Last updated: 2026-06-27 — transport + `/correction/` adapter implemented
+(hardware-free, gated default-off); on-device validation, alignment-threshold
+tuning, cloud deploy, and an audible failure cue still owed (see Status banner).

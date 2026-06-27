@@ -98,8 +98,14 @@ def test_relay_enabled_gates_on_relay_base(monkeypatch):
 def test_capture_origin_default_and_override(monkeypatch):
     monkeypatch.delenv("JASPER_CAPTURE_ORIGIN", raising=False)
     assert adapter.capture_origin_from_env() == "capture.jasper.tech"
+    # Bare host is kept; a pasted scheme is stripped (tap_link prepends https://,
+    # so https://cap.example must not become https://https://cap.example).
+    monkeypatch.setenv("JASPER_CAPTURE_ORIGIN", "cap.example/")
+    assert adapter.capture_origin_from_env() == "cap.example"
     monkeypatch.setenv("JASPER_CAPTURE_ORIGIN", "https://cap.example/")
-    assert adapter.capture_origin_from_env() == "https://cap.example"
+    assert adapter.capture_origin_from_env() == "cap.example"
+    monkeypatch.setenv("JASPER_CAPTURE_ORIGIN", "http://cap.example")
+    assert adapter.capture_origin_from_env() == "cap.example"
 
 
 # --- open + run + store seam --------------------------------------------------
@@ -187,13 +193,33 @@ def test_endpoint_state_guard_rejects_wrong_state(monkeypatch):
         correction_setup._handle_relay_capture(None)
 
 
-def test_endpoint_route_registered_and_status_holder():
+def test_endpoint_route_is_registered():
+    # Pin route membership: deleting the allowlist line would 404 it silently.
     from jasper.web import correction_setup
 
-    # The route is reachable (in the POST allowlist) and /status surfaces the
-    # relay holder (None on the default flow).
+    assert "/relay/capture" in correction_setup._POST_ROUTES
+
+
+def test_status_holder_round_trips():
+    from jasper.web import correction_setup
+
     correction_setup._set_relay_capture(None)
     assert correction_setup._get_relay_capture() is None
     correction_setup._set_relay_capture({"tap_link": "https://capture.test/#x", "status": "awaiting_phone"})
     assert correction_setup._get_relay_capture()["status"] == "awaiting_phone"
+    correction_setup._set_relay_capture(None)  # reset
+
+
+def test_relay_capture_reentrancy_guard():
+    # Atomic claim: one in-flight capture blocks a second.
+    from jasper.web import correction_setup
+
+    correction_setup._set_relay_capture(None)
+    assert correction_setup._begin_relay_capture() is True  # first claims it
+    assert correction_setup._begin_relay_capture() is False  # second refused
+    correction_setup._set_relay_capture({"tap_link": "x", "status": "awaiting_phone"})
+    assert correction_setup._begin_relay_capture() is False  # still in flight
+    # A finished (complete/failed) holder does not block a new capture.
+    correction_setup._set_relay_capture({"tap_link": "x", "status": "complete"})
+    assert correction_setup._begin_relay_capture() is True
     correction_setup._set_relay_capture(None)  # reset

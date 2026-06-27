@@ -33,6 +33,7 @@ same-origin capture is used):
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,9 +55,18 @@ DEFAULT_CAPTURE_ORIGIN = "capture.jasper.tech"
 
 
 def capture_origin_from_env(env: dict[str, str] | None = None) -> str:
+    """The capture-page origin as a BARE host (no scheme).
+
+    `PiCaptureSession.tap_link` always prepends `https://`, so we strip a scheme
+    an operator may have pasted — `https://cap.example` must not become the dead
+    link `https://https://cap.example`. (The sibling JASPER_CAPTURE_RELAY_BASE is
+    scheme-bearing because the Pi-side client uses it as a full base URL; this one
+    is a host the tap-link composes.)
+    """
     source = env if env is not None else os.environ
     raw = (source.get(ENV_CAPTURE_ORIGIN) or DEFAULT_CAPTURE_ORIGIN).strip()
-    return raw.rstrip("/") or DEFAULT_CAPTURE_ORIGIN
+    raw = re.sub(r"^https?://", "", raw).rstrip("/")
+    return raw or DEFAULT_CAPTURE_ORIGIN
 
 
 def relay_enabled(env: dict[str, str] | None = None) -> bool:
