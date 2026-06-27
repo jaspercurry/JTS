@@ -500,6 +500,7 @@ docs = [
   "docs/audio-paths.md",
   "docs/HANDOFF-sound-preferences.md",
   "docs/HANDOFF-correction.md",
+  "docs/phone-mic-relay-plan.md",
   "docs/HANDOFF-dsp-graph-carrier.md",
 ]
 requires_docs_when = [
