@@ -6,7 +6,7 @@
 // the audio-conversion apply, and run-diagnostics. Each surfaces failure
 // honestly (button label or status text, plus console.error) — no silent paths.
 
-import { h } from "./dom.js";
+import { h } from "/assets/shared/js/dom.js";
 import { jsonHeaders } from "./api.js";
 import { postControlAction } from "/assets/shared/js/http.js";
 import { updateAudioQuality } from "./sections.js";

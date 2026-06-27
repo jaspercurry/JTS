@@ -393,22 +393,28 @@ _MODULE_DIR = _ASSETS_DIR / "system-status" / "js"
 # alongside the page modules so the "CSRF read from the meta tag" guarantee is
 # still asserted at its (new) canonical home.
 _SHARED_HTTP_JS = _ASSETS_DIR / "shared" / "js" / "http.js"
+_SHARED_DOM_JS = _ASSETS_DIR / "shared" / "js" / "dom.js"
 
 
 # The /system/ UI is a layered set of static ES modules. These guards scan
 # the combined module text so they survive refactors that move a string from
 # one module to another (only the layout, not the behaviour, should change).
+# The text-node DOM builder (h()/svg()) is no longer a per-page module — it
+# was promoted to the shared /assets/shared/js/dom.js owner — so it is folded
+# in via _system_js() below rather than listed here.
 _EXPECTED_MODULES = (
-    "dom", "format", "charts", "components", "sections",
+    "format", "charts", "components", "sections",
     "views", "api", "actions", "main",
 )
 
 
 def _system_js() -> str:
     parts = [(_MODULE_DIR / f"{name}.js").read_text() for name in _EXPECTED_MODULES]
-    # Include the shared http.js the modules import, so guards that follow a
-    # string into its shared home (CSRF meta read, X-CSRF-Token) still hold.
+    # Include the shared modules the page imports, so guards that follow a
+    # string into a shared home still hold: http.js (CSRF meta read,
+    # X-CSRF-Token) and dom.js (the text-node DOM builder).
     parts.append(_SHARED_HTTP_JS.read_text())
+    parts.append(_SHARED_DOM_JS.read_text())
     return "\n".join(parts)
 
 

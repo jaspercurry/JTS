@@ -7,7 +7,7 @@
 // These mirror the /system/ module graph and build everything with dom.js so
 // untrusted transcript strings remain text nodes.
 
-import { h, svg } from "./dom.js";
+import { h, svg } from "/assets/shared/js/dom.js";
 
 export function titledCard(title, opts = {}) {
   const body = h(`div.info-card${opts.accent ? ".info-card--accent" : ""}`);

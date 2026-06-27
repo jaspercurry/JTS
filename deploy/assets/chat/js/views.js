@@ -8,7 +8,7 @@
 // This module never uses innerHTML; all visible content is built with text
 // nodes through dom.js.
 
-import { h } from "./dom.js";
+import { h } from "/assets/shared/js/dom.js";
 import { actionButton, badge, header, livePill, table, titledCard } from "./components.js";
 
 const NO_USER_TRANSCRIPT = "No user transcript captured for this turn.";
