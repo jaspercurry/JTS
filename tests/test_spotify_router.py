@@ -694,3 +694,173 @@ def test_build_clients_dedupes_persistent_account_warnings(
     ]
     assert len(warnings) == 1
     assert len(suppressed) == 1
+
+
+# --- _ACCOUNT_FAILURE_LOG_CACHE eviction on recovery ---
+
+
+def test_failure_log_cache_evicted_on_recovery(tmp_path, monkeypatch, caplog):
+    """Core invariant: when an account transitions back to ACCOUNT_OK,
+    its failure-log entries are evicted so a future failure logs at WARNING
+    again rather than being silently suppressed as a DEBUG repeat.
+
+    Sequence:
+      1. build_clients → failure (revoked) → WARNING logged, key cached
+      2. build_clients → failure again → suppressed (DEBUG, key cached)
+      3. build_clients → SUCCESS (ok) → cache evicted for this account
+      4. build_clients → failure again → WARNING logged again (not suppressed)
+
+    Mutation check: removing the _evict_failure_log_cache call from the
+    ACCOUNT_OK path breaks step 4 — the failure is still suppressed (DEBUG)
+    even though the account recovered and failed again."""
+    import json
+    from unittest.mock import patch, MagicMock
+    from jasper import spotify_router as router_mod
+    from jasper.spotify_router import build_clients, ACCOUNT_OK
+    from jasper.accounts import Account, Registry
+
+    # A real-looking token cache so SpotifyPKCE reads it successfully
+    # when we want the "ok" path.
+    good_token = {
+        "access_token": "valid_token",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "refresh_token": "valid_refresh",
+        "scope": router_mod.SPOTIFY_SCOPE,
+        "expires_at": 9_999_999_999,  # far future
+    }
+    cache_path = tmp_path / "jasper.json"
+    registry = Registry(
+        accounts=[Account(name="jasper", cache_path=str(cache_path))],
+        default_name="jasper",
+    )
+    monkeypatch.setattr(router_mod, "_ACCOUNT_FAILURE_LOG_CACHE", {})
+    caplog.set_level(logging.DEBUG, logger="jasper.spotify_router")
+
+    failing_auth = MagicMock()
+    failing_auth.get_cached_token.side_effect = Exception("invalid_grant")
+
+    ok_auth = MagicMock()
+    ok_auth.get_cached_token.return_value = good_token
+
+    fake_spotify = MagicMock()
+
+    # Step 1: first failure → WARNING
+    cache_path.write_text("{}")  # file must exist for the cache-path check
+    with patch("spotipy.oauth2.SpotifyPKCE", return_value=failing_auth), \
+            patch("jasper.spotify_router._now", return_value=1000.0):
+        build_clients(registry, client_id="a" * 32, redirect_uri="https://x/cb")
+
+    # Step 2: second failure → suppressed (still within the interval)
+    with patch("spotipy.oauth2.SpotifyPKCE", return_value=failing_auth), \
+            patch("jasper.spotify_router._now", return_value=1005.0):
+        build_clients(registry, client_id="a" * 32, redirect_uri="https://x/cb")
+
+    # Step 3: account recovers → cache evicted
+    cache_path.write_text(json.dumps(good_token))
+    with patch("spotipy.oauth2.SpotifyPKCE", return_value=ok_auth), \
+            patch("spotipy.Spotify", return_value=fake_spotify), \
+            patch("jasper.spotify_router._now", return_value=1010.0):
+        result = build_clients(registry, client_id="a" * 32, redirect_uri="https://x/cb")
+    assert "jasper" in result.clients, "account should be ok after recovery"
+    assert result.statuses[0].state == ACCOUNT_OK
+
+    # Verify the cache was cleared for this account
+    assert not any(
+        k[0] == "jasper" for k in router_mod._ACCOUNT_FAILURE_LOG_CACHE
+    ), "recovery must evict all failure-log keys for the account"
+
+    # Step 4: account fails again after recovery → must log WARNING, not suppressed
+    caplog.clear()
+    cache_path.write_text("{}")
+    with patch("spotipy.oauth2.SpotifyPKCE", return_value=failing_auth), \
+            patch("jasper.spotify_router._now", return_value=1015.0):
+        build_clients(registry, client_id="a" * 32, redirect_uri="https://x/cb")
+
+    post_recovery_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and r.message.startswith("event=spotify.account_unavailable ")
+    ]
+    post_recovery_suppressed = [
+        r for r in caplog.records
+        if r.message.startswith("event=spotify.account_unavailable_suppressed ")
+    ]
+    assert len(post_recovery_warnings) == 1, (
+        "failure after recovery must log at WARNING again — cache was not evicted"
+    )
+    assert len(post_recovery_suppressed) == 0
+
+
+def test_failure_log_cache_eviction_does_not_affect_other_accounts(
+    tmp_path, monkeypatch,
+):
+    """Evicting one account's failure-log entries on recovery must not
+    clear entries for other accounts — those other accounts may still
+    be in a failure state and their dedup should be preserved.
+
+    Includes a PREFIX-named sibling ("jasper2") so the eviction's key
+    match must be EXACT, not a prefix. Mutation: changing
+    `k[0] == account_name` to `k[0].startswith(account_name)` wrongly
+    evicts "jasper2" when "jasper" recovers, and this test fails."""
+    from jasper import spotify_router as router_mod
+    from jasper.spotify_router import _evict_failure_log_cache
+
+    # Seed the cache: an unrelated account ("brittany") AND a sibling
+    # whose name has "jasper" as a prefix ("jasper2").
+    monkeypatch.setattr(router_mod, "_ACCOUNT_FAILURE_LOG_CACHE", {
+        ("jasper", "revoked", "refresh token revoked — re-link required", ""): 1000.0,
+        ("jasper", "error", "network error", ""): 1001.0,
+        ("brittany", "revoked", "refresh token revoked — re-link required", ""): 1002.0,
+        ("jasper2", "revoked", "refresh token revoked — re-link required", ""): 1003.0,
+    })
+
+    # Recover jasper → only jasper's exact-match entries evicted
+    _evict_failure_log_cache("jasper")
+
+    remaining = sorted(k[0] for k in router_mod._ACCOUNT_FAILURE_LOG_CACHE)
+    assert remaining == ["brittany", "jasper2"], (
+        "eviction of 'jasper' must leave 'brittany' AND prefix-sibling "
+        "'jasper2' intact — the key match must be exact, not a prefix"
+    )
+
+
+def test_failure_log_cache_hard_cap_bounds_never_recovering_account(
+    tmp_path, monkeypatch, caplog,
+):
+    """Backstop bound: an account that never recovers but keeps emitting
+    ACCOUNT_ERROR with varying detail strings (network errors with
+    changing addresses/ports/request-IDs → distinct cache keys) must not
+    grow the cache without limit. The hard cap drops oldest-first so the
+    cache never exceeds _ACCOUNT_FAILURE_LOG_CACHE_MAX.
+
+    Mutation: removing the _cap_failure_log_cache() call lets the cache
+    grow to the full number of distinct keys, and this test fails."""
+    from jasper import spotify_router as router_mod
+    from jasper.spotify_router import (
+        _ACCOUNT_FAILURE_LOG_CACHE_MAX, _log_account_unavailable, ACCOUNT_ERROR,
+    )
+    from jasper.accounts import Account
+
+    monkeypatch.setattr(router_mod, "_ACCOUNT_FAILURE_LOG_CACHE", {})
+    caplog.set_level(logging.DEBUG, logger="jasper.spotify_router")
+
+    account = Account(name="jasper")
+    # Emit far more distinct-detail failures than the cap allows. Each
+    # distinct detail string is a fresh key (first-seen → WARNING + insert).
+    n = _ACCOUNT_FAILURE_LOG_CACHE_MAX * 3
+    for i in range(n):
+        _log_account_unavailable(
+            account, ACCOUNT_ERROR, f"connection reset from 10.0.0.{i}:443",
+        )
+
+    size = len(router_mod._ACCOUNT_FAILURE_LOG_CACHE)
+    assert size <= _ACCOUNT_FAILURE_LOG_CACHE_MAX, (
+        f"cache grew to {size} entries despite the hard cap of "
+        f"{_ACCOUNT_FAILURE_LOG_CACHE_MAX} — never-recovering account is unbounded"
+    )
+    # Oldest-first drop: the most-recently inserted key must survive,
+    # the earliest must have been evicted.
+    keys = router_mod._ACCOUNT_FAILURE_LOG_CACHE
+    assert ("jasper", ACCOUNT_ERROR, f"connection reset from 10.0.0.{n - 1}:443", "") in keys
+    assert ("jasper", ACCOUNT_ERROR, "connection reset from 10.0.0.0:443", "") not in keys
