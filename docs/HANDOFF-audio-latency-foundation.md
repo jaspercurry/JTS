@@ -74,6 +74,7 @@ usbsink bridge's normal snd-aloop lane uses the high-16 S16 view; the FIFO must
 | 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim, [`jasper.sound.runtime.apply_lean_capture_config`](../jasper/sound/runtime.py)), arm the usbsink FIFO output at runtime ([`jasper.usbsink.output_mode_reconcile`](../jasper/usbsink/output_mode_reconcile.py) → writes `JASPER_USBSINK_OUTPUT_MODE` to `/var/lib/jasper/usbsink.env` + restarts via the broker), and swap/restore via mux `_tick` (`decide_lean_route` → `Mux._enter_lean`/`_leave_lean` ladders, fail-loud → buffered) | shipped, default-OFF, **24 h soak owed** |
 | 5 | shairport-sync built `--with-pipe` (capable binary; runtime AirPlay pipe lane is future, #1318-gated) | shipped, dormant |
 | 6 | `jasper-doctor` DAC USB sync-mode advisory (clock-coherence signal, *not* the chip-AEC gate) | shipped |
+| 7 | **fan-in → CamillaDSP FIFO coupling** (`JASPER_FANIN_CAMILLA_COUPLING=fifo`) — the SHARED-capture endgame: fan-in writes a bounded pipe, CamillaDSP File-captures it; transport ([`jasper/fanin/src/fifo.rs`](../rust/jasper-fanin/src/fifo.rs)) + flag ([`jasper/fanin/src/config.rs`](../rust/jasper-fanin/src/config.rs) `Coupling`) + generator helper ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)) | shipped, default-OFF, **NOT live-armed; soak owed** |
 
 **Going live is soak-gated.** `JASPER_LEAN_LANE` is opt-IN
 (`=enabled`), default-OFF, and is an *experiment knob* until a **24 h on-device
@@ -99,6 +100,69 @@ per-episode re-arm block so a failure can't restart-storm the usbsink daemon) or
 the leave-lean ladder (`restore_buffered_config` re-emits the buffered config
 from saved intent — restore ALWAYS succeeds by construction — then disarms the
 FIFO; NO-OP fast path when not on the lean config).
+
+## Stage 7 — fan-in → CamillaDSP FIFO coupling (the SHARED-capture endgame)
+
+The lean lane (Stage 4) bypasses the fan-in **mixer** entirely for a single
+exclusive wired source. The FIFO coupling is the convergence endgame for the
+**shared** path: the FULL fan-in mixer keeps running (every renderer lane, TTS,
+ducking, the music-only tap) and only how its *output* reaches CamillaDSP
+changes. Today fan-in writes the ALSA snd-aloop substream (`hw:Loopback,0,7`)
+and CamillaDSP dsnoop-captures it (`plug:jasper_capture`) — ~64 ms of loopback
+ring + a dsnoop hop. Under `JASPER_FANIN_CAMILLA_COUPLING=fifo`, fan-in writes a
+small bounded named pipe (default `/run/jasper-fanin/camilla.pipe`) that
+CamillaDSP File-captures with an async resampler + `enable_rate_adjust` (the real
+DAC clock disciplines the clockless File capture — the same shape the lean lane
+already uses). That trades the loopback ring for a ~3-period pipe (~21 ms @
+48 kHz S32). **Once it soaks, it supersedes BOTH the lean lane and the adaptive
+output-buffer shrink** — do NOT delete either yet (superseded *after* the soak,
+not before).
+
+**Pacing.** The mixer loop is paced ENTIRELY by its final blocking write — there
+is no sleep in `run()`. The coupling swaps the blocking ALSA `writei` for a
+blocking pipe `write`: when CamillaDSP (DAC-paced) hasn't drained, the small pipe
+fills and `write` blocks, giving the same DAC-paced backpressure at ~21 ms of
+pipe depth. The write is IN-BAND on the RT mixer thread (NOT the usbsink
+separate-thread + silence-synthesis shape — fan-in's mixer IS the producer and
+pacer, so there is no queue to starve). The watchdog is fed by
+`bump_progress()` after every `step()` exactly as today, including the bounded
+reopen-wait turns.
+
+**Format split (load-bearing).** fan-in mixes/outputs S16_LE internally;
+the shared capture is S32_LE. So the FIFO writer WIDENS each i16 sample to
+i32-LE (high-16 promotion, lossless, the same scaling the loopback `plug:` did),
+and the emitted File capture declares S32_LE. The wire format is pinned in
+[`jasper.fanin_coupling.FIFO_WIRE_FORMAT`](../jasper/fanin_coupling.py) so the
+Rust producer and the Python config consumer can never drift.
+
+**Reader-gone resilience (CamillaDSP reload).** Rust's std runtime sets SIGPIPE
+to `SIG_IGN`, so a write to a reader-gone pipe returns `EPIPE` rather than
+killing the process (we do NOT re-arm `SIG_DFL`). The writer handles `EPIPE`
+in-band: close the fd, reopen reader-first (non-blocking, `ENXIO`-retried, then
+clear `O_NONBLOCK` to block-and-pace) on the next turn, dropping the in-flight
+period. Each no-reader/reopen turn is bounded to ≤200 ms and returns `Waited` so
+the loop bumps the heartbeat and re-checks shutdown — it can never hot-spin nor
+wedge past the watchdog stale threshold. The pipe size is set with
+`F_SETPIPE_SZ` (best-effort; the kernel rounds up to a power-of-two ≥ page size)
+and the requested-vs-actual is logged (`event=fanin.fifo.pipe_sized`).
+
+**AEC note.** Production AEC reads outputd's UDP monitor (`:9891`), so removing
+the fan-in loopback write under `fifo` does not break production AEC. It DOES
+disable the `jasper_ref`/`jasper_capture` dsnoop diagnostic fallback — acceptable
+(fallback/diagnostic only), but worth knowing during the soak.
+
+**What's built vs owed.** Built and proven default-inert: the Rust transport
+([`fifo.rs`](../rust/jasper-fanin/src/fifo.rs)), the `Coupling` flag with
+fail-safe normalization matching Python ([`config.rs`](../rust/jasper-fanin/src/config.rs)),
+the generator helper that returns the File-capture kwargs under `fifo` and `{}`
+(byte-identical) under `loopback` ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)).
+**Owed (soak-gated, NOT yet wired):** the live-arming — the reconcile / base-config
+emit consulting `capture_kwargs_for_coupling` to put the File capture into the
+config CamillaDSP actually loads, and the mux/cutover coordination — mirrors how
+the lean lane shipped (generator → live-apply → mux-arm as separate gated
+increments). The helper has NO production caller yet by design, so the Python
+side is provably inert; the Rust side defaults to `Coupling::Loopback` (the
+`FifoWriter` is never constructed).
 
 ## Optionality: chip-AEC AND software-AEC, each at the lean floor
 
