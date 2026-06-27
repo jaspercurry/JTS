@@ -275,28 +275,30 @@ _STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
 })
 
 
-def _active_speaker_level_match_provisional() -> bool | None:
+def _active_speaker_level_match_provisional(
+    setup: dict[str, Any] | None,
+) -> bool | None:
     """Whether the APPLIED active-speaker baseline's per-driver level match is a
     datasheet estimate rather than a phone measurement.
 
-    Read off-disk (jasper-control runs non-root, group `jasper`) and fail-soft:
-    None when no active baseline is applied or the file is missing/unreadable;
-    the persisted `provisional` flag otherwise. Lets `/state` (and the landing
-    page) flag a provisional level match without importing the active-speaker
-    package onto the hot `/state` path.
+    Read from the SINGLE active-speaker readiness snapshot (`setup`) that the
+    caller already computed via `read_active_speaker_setup_status`, not from a
+    second off-disk open. That snapshot's `baseline_profile` summary derives
+    `provisional` from the same persisted state file
+    (`active_speaker_baseline_profile.json`) — re-reading it here was a duplicate
+    source that could drift. The `status == "applied"` gate is preserved: the
+    candidate only carries that status when it returns the persisted applied
+    profile verbatim (see `build_baseline_profile_candidate`), so `provisional`
+    then equals the on-disk value. Fail-soft: None when there is no applied
+    active baseline (passive speaker, unreadable topology, or a superseded /
+    not-yet-applied profile).
     """
-    path = (
-        os.environ.get("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE")
-        or "/var/lib/jasper/active_speaker_baseline_profile.json"
-    )
-    try:
-        with open(path, encoding="utf-8") as handle:
-            raw = json.load(handle)
-    except (FileNotFoundError, OSError, ValueError):
+    if not isinstance(setup, dict):
         return None
-    if not isinstance(raw, dict) or raw.get("status") != "applied":
+    profile = setup.get("baseline_profile")
+    if not isinstance(profile, dict) or profile.get("status") != "applied":
         return None
-    return bool(raw.get("provisional"))
+    return bool(profile.get("provisional"))
 
 
 def _active_speaker_output_safety_snapshot(
@@ -316,7 +318,7 @@ def _active_speaker_output_safety_snapshot(
         # Back-compat for the landing-page field name. This is now driven by the
         # shared setup contract, not by a filename-only heuristic.
         "safety_muted": not bool(setup.get("volume_allowed")),
-        "level_match_provisional": _active_speaker_level_match_provisional(),
+        "level_match_provisional": _active_speaker_level_match_provisional(setup),
         "source": "active_speaker.setup_status",
     }
 
