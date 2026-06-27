@@ -29,7 +29,8 @@ Public surface:
 """
 from __future__ import annotations
 
-from jasper.capture_relay import crypto
+from jasper.capture_relay import alignment, crypto
+from jasper.capture_relay.alignment import AlignmentError, assert_alignment_confident
 from jasper.capture_relay.client import RelayClient, RelayError
 from jasper.capture_relay.crypto import (
     DecryptError,
@@ -62,6 +63,7 @@ from jasper.capture_relay.spec import (
 __all__ = [
     "BUILDERS",
     "SHIPPED_KINDS",
+    "AlignmentError",
     "CaptureConstraints",
     "CaptureFailed",
     "CaptureSpec",
@@ -74,6 +76,8 @@ __all__ = [
     "PiCaptureSession",
     "RelayClient",
     "RelayError",
+    "alignment",
+    "assert_alignment_confident",
     "build_balance_burst_spec",
     "build_crossover_sweep_spec",
     "build_room_sweep_spec",
