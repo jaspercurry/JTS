@@ -53,11 +53,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "jasper-clock"
+version = "0.1.0"
+
+[[package]]
 name = "jasper-outputd"
 version = "0.1.0"
 dependencies = [
  "alsa",
  "anyhow",
+ "jasper-clock",
  "jasper-tts-protocol",
  "libc",
  "signal-hook",

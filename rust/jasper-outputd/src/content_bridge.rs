@@ -10,15 +10,15 @@
 //! nudging a precomputed windowed-sinc interpolator by a few ppm.
 
 use anyhow::{Context, Result};
+use jasper_clock::{Dll, DllConfig, DllSnapshot};
 
 use crate::config::ContentBridgeConfig;
+use crate::types::SAMPLE_RATE;
 
 const SINC_RADIUS_FRAMES: i64 = 16;
 const SINC_TAPS: usize = (SINC_RADIUS_FRAMES as usize) * 2 + 1;
 const SINC_PHASES: usize = 2048;
 const SINC_CUTOFF: f64 = 0.97;
-const PROPORTIONAL_PPM_PER_FRAME: f64 = 0.02;
-const INTEGRAL_PPM_PER_FRAME_PERIOD: f64 = 0.00005;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ContentBridgeMetrics {
@@ -39,6 +39,12 @@ pub struct ContentBridgeMetrics {
     pub ratio_clamp_count: u64,
     pub lock_count: u64,
     pub unlock_count: u64,
+    /// The shared-DLL rate-diff snapshot (Inc 4): the rate controller's loop
+    /// internals (ppm, error stats, bandwidth, the DLL's OWN lock/resync
+    /// counters) in the one consistent telemetry shape every DLL site publishes.
+    /// Distinct from the bridge-level `lock_count`/`resync_count`/`ratio_ppm`
+    /// above, which count ring/cursor events, not loop events.
+    pub rate_diff: DllSnapshot,
 }
 
 pub struct ContentBridge {
@@ -78,7 +84,7 @@ impl ContentBridge {
             period_frames,
             ring,
             sinc_table,
-            controller: RateController::new(config.max_adjust_ppm as f64),
+            controller: RateController::new(config.max_adjust_ppm as f64, period_frames as u32),
             next_input_frame: 0.0,
             locked: false,
             input_frames: 0,
@@ -211,6 +217,7 @@ impl ContentBridge {
             ratio_clamp_count: self.controller.clamp_count(),
             lock_count: self.lock_count,
             unlock_count: self.unlock_count,
+            rate_diff: self.controller.dll_snapshot(),
         }
     }
 
@@ -420,37 +427,51 @@ impl AudioRing {
     }
 }
 
+/// Drives the resampler ratio that holds the ring at `target_fill_frames`.
+///
+/// The loop math is the shared [`jasper_clock::Dll`] (Inc 3) — the same
+/// spa_dll second-order DLL every clock-domain boundary now composes, replacing
+/// the hand-rolled proportional+integral controller this used to carry. The
+/// DLL's third integrator gives zero steady-state fill error (the PI loop left
+/// a standing offset and could ring); its `max_error` slew clamp subsumes the
+/// old integral clamp.
+///
+/// Site-specific I/O stays local: the error SOURCE (`error_frames = fill -
+/// target`) and the resampler this ratio DRIVES are the bridge's concern; only
+/// the loop is shared. The bridge's `max_adjust_ppm` safety bound on how far the
+/// resampler may warp is preserved as an OUTPUT clamp around the DLL ratio.
 struct RateController {
+    dll: Dll,
     max_adjust_ppm: f64,
-    integral_error: f64,
     ratio_ppm: f64,
     clamp_count: u64,
 }
 
 impl RateController {
-    fn new(max_adjust_ppm: f64) -> Self {
+    fn new(max_adjust_ppm: f64, period_frames: u32) -> Self {
         Self {
+            dll: Dll::new(DllConfig::for_rate(period_frames, SAMPLE_RATE)),
             max_adjust_ppm,
-            integral_error: 0.0,
             ratio_ppm: 0.0,
             clamp_count: 0,
         }
     }
 
     fn reset(&mut self) {
-        self.integral_error = 0.0;
+        self.dll.reset();
         self.ratio_ppm = 0.0;
     }
 
     fn next_ratio(&mut self, error_frames: f64) -> f64 {
-        self.integral_error += error_frames;
-        let max_integral = self.max_adjust_ppm / INTEGRAL_PPM_PER_FRAME_PERIOD;
-        self.integral_error = self.integral_error.clamp(-max_integral, max_integral);
-
-        let requested_ppm = PROPORTIONAL_PPM_PER_FRAME * error_frames
-            + INTEGRAL_PPM_PER_FRAME_PERIOD * self.integral_error;
-        let clamped_ppm = requested_ppm.clamp(-self.max_adjust_ppm, self.max_adjust_ppm);
-        if (requested_ppm - clamped_ppm).abs() > f64::EPSILON {
+        // Negative feedback: a ring that is too full (`error_frames > 0`) must
+        // be drained by reading FASTER (ratio > 1). The DLL's `corr = 1 -
+        // (z2+z3)` produces ratio > 1 for a NEGATIVE input error, so feed
+        // `-error_frames`.
+        let raw_ppm = (self.dll.update(-error_frames) - 1.0) * 1_000_000.0;
+        // Preserve the bridge's safety bound on resampler warp: clamp the
+        // OUTPUT ppm to ±max_adjust_ppm and count when the clamp engages.
+        let clamped_ppm = raw_ppm.clamp(-self.max_adjust_ppm, self.max_adjust_ppm);
+        if (raw_ppm - clamped_ppm).abs() > f64::EPSILON {
             self.clamp_count += 1;
         }
         self.ratio_ppm = clamped_ppm;
@@ -463,6 +484,12 @@ impl RateController {
 
     fn clamp_count(&self) -> u64 {
         self.clamp_count
+    }
+
+    /// The shared-DLL snapshot — the consistent `clock.rate_diff` telemetry
+    /// shape (Inc 4) the state layer publishes for every DLL instance.
+    fn dll_snapshot(&self) -> DllSnapshot {
+        self.dll.snapshot()
     }
 }
 
@@ -578,6 +605,119 @@ mod tests {
         assert!(metrics.ratio_ppm > 0.0);
         assert_eq!(metrics.overrun_frames, 0);
         assert!(metrics.fill_frames < DEFAULT_CONTENT_BRIDGE_RING_FRAMES as u64);
+    }
+
+    /// The DLL win over the old proportional+integral controller (Inc 3): under
+    /// a constant rate offset the loop settles to a STEADY operating point and
+    /// stays there — it does not keep drifting (a runaway) or ring (oscillate),
+    /// and its ratio matches the source offset. The settled `ratio_ppm` is the
+    /// observable the old PI loop could not hold without a standing error.
+    #[test]
+    fn constant_offset_converges_to_a_steady_ratio() {
+        let mut bridge = ContentBridge::new(bridge_config(), 1024, 2).unwrap();
+        bridge.push_input(&silent_frames(
+            DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES as usize + SINC_RADIUS_FRAMES as usize + 1,
+        ));
+        let mut out = silent_frames(1024);
+        let mut carry = 0.0f64;
+        let feed = |bridge: &mut ContentBridge, carry: &mut f64, out: &mut [i16]| {
+            *carry += 1024.0 * 1.0001; // steady +100 ppm source
+            let frames = carry.floor() as usize;
+            *carry -= frames as f64;
+            bridge.push_input(&silent_frames(frames));
+            bridge.render_period(out);
+        };
+        // Warm up to lock.
+        for _ in 0..15_000 {
+            feed(&mut bridge, &mut carry, &mut out);
+        }
+        let ratio_mid = bridge.metrics().ratio_ppm;
+        let fill_mid = bridge.metrics().fill_frames as i64;
+        // Run a settled window.
+        for _ in 0..15_000 {
+            feed(&mut bridge, &mut carry, &mut out);
+        }
+        let metrics = bridge.metrics();
+        assert!(metrics.locked);
+        // Steady: the ratio barely moves between the two late checkpoints (no
+        // drift, no ringing) and the fill is not running away.
+        assert!(
+            (metrics.ratio_ppm - ratio_mid).abs() < 1.0,
+            "ratio must be steady at lock: {ratio_mid} -> {}",
+            metrics.ratio_ppm
+        );
+        assert!(
+            (metrics.fill_frames as i64 - fill_mid).abs() < 64,
+            "fill must hold steady (no runaway): {fill_mid} -> {}",
+            metrics.fill_frames
+        );
+        // And the ratio compensates the +100 ppm source (reader reads faster).
+        assert!(
+            metrics.ratio_ppm > 50.0 && metrics.ratio_ppm < 150.0,
+            "ratio should track ~+100 ppm, got {}",
+            metrics.ratio_ppm
+        );
+    }
+
+    /// Inc 3 transient: a brief fill excursion that stays WITHIN the ring's
+    /// safe bounds must be RIDDEN — the shared DLL's slew clamp keeps the loop
+    /// locked (no unlock) and does not hard-jump (no resync) on a momentary
+    /// wobble, then re-settles. This is distinct from the overrun/underfill
+    /// tests, which cross the hard thresholds on purpose; here the failure mode
+    /// guarded against is an over-sensitive resync/unlock firing on normal
+    /// source jitter.
+    #[test]
+    fn transient_fill_excursion_is_ridden_without_unlock_or_resync() {
+        let mut bridge = ContentBridge::new(bridge_config(), 1024, 2).unwrap();
+        bridge.push_input(&silent_frames(
+            DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES as usize + SINC_RADIUS_FRAMES as usize + 1,
+        ));
+        let mut out = silent_frames(1024);
+        let mut carry = 0.0f64;
+        let feed = |bridge: &mut ContentBridge, carry: &mut f64, out: &mut [i16], rate: f64| {
+            *carry += 1024.0 * rate;
+            let frames = carry.floor() as usize;
+            *carry -= frames as f64;
+            bridge.push_input(&silent_frames(frames));
+            bridge.render_period(out);
+        };
+        // Lock on a nominal (rate == 1.0) source.
+        for _ in 0..15_000 {
+            feed(&mut bridge, &mut carry, &mut out, 1.0);
+        }
+        assert!(bridge.metrics().locked, "precondition: the loop is locked");
+        let resyncs_before = bridge.metrics().resync_count;
+        let unlocks_before = bridge.metrics().unlock_count;
+
+        // A brief +1% excursion (~100 periods): pushes fill up transiently but
+        // stays well under the ring, then returns to nominal. A transient the
+        // loop must ride, NOT a hard overrun.
+        for _ in 0..100 {
+            feed(&mut bridge, &mut carry, &mut out, 1.01);
+            assert!(
+                (bridge.metrics().fill_frames as u64) < DEFAULT_CONTENT_BRIDGE_RING_FRAMES as u64,
+                "the excursion must stay within the ring (else it is an overrun, not a transient)"
+            );
+        }
+        // Recover to nominal and re-settle.
+        for _ in 0..15_000 {
+            feed(&mut bridge, &mut carry, &mut out, 1.0);
+        }
+        let metrics = bridge.metrics();
+        assert!(
+            metrics.locked,
+            "the loop must stay/return locked through the transient: {metrics:?}"
+        );
+        assert_eq!(
+            metrics.resync_count, resyncs_before,
+            "a within-bounds transient must NOT resync: {} -> {}",
+            resyncs_before, metrics.resync_count
+        );
+        assert_eq!(
+            metrics.unlock_count, unlocks_before,
+            "a within-bounds transient must NOT unlock: {} -> {}",
+            unlocks_before, metrics.unlock_count
+        );
     }
 
     #[test]

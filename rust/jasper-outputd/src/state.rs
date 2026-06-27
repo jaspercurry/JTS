@@ -23,8 +23,10 @@ use crate::aec_clock::SroEstimator;
 use crate::alsa_backend::{CompositeStatus, IoCounters, NegotiatedPcm};
 use crate::config::Config;
 use crate::content_bridge::ContentBridgeMetrics;
+use crate::dac_clock::DacClockObserver;
 use crate::dac_content::DacContentMetrics;
 use crate::tts::TtsMetrics;
+use jasper_clock::DllSnapshot;
 use std::sync::OnceLock;
 
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
@@ -84,6 +86,13 @@ pub struct OutputdState {
     content_bridge_ratio_clamp_count: AtomicU64,
     content_bridge_lock_count: AtomicU64,
     content_bridge_unlock_count: AtomicU64,
+    // The content-bridge rate controller's shared-DLL snapshot (Inc 4): the
+    // loop's OWN rate_diff (ppm, error stats, bandwidth, DLL-internal lock /
+    // resync counters), published in the one consistent telemetry shape. Mutex
+    // (not atomics) because it is a small multi-field Copy struct written once
+    // per period by `mark_content_bridge` and read only by the state server —
+    // mirrors the `sro_estimator` / `dac_clock` pattern.
+    content_bridge_rate_diff: Mutex<DllSnapshot>,
     dac_content_fifo: Option<String>,
     dac_content_channel: String,
     dac_content_highpass_hz: Option<f64>,
@@ -121,7 +130,7 @@ pub struct OutputdState {
     chip_ref_tee_open_error_count: AtomicU64,
     chip_ref_tee_write_error_count: AtomicU64,
     // Observe-only label (chip-AEC Layer 0): true when the reconciler armed
-    // the chip-ref writer purely to MEASURE drift on the software-AEC3 path
+    // the chip-ref writer purely to MEASURE drift on the DAC playout clock (vs nominal)
     // (not for production chip-AEC). Set once at construction from config;
     // changes no behavior — surfaced in the aec_clock block so /state can
     // self-describe why the chip-ref writer is running.
@@ -137,6 +146,13 @@ pub struct OutputdState {
     // Decimates the ~50 Hz `mark_chip_ref_write` ticks down to ~1 Hz (the rate
     // the estimator's slope window is tuned for).
     sro_last_fed_chip_ref_frames: AtomicU64,
+    // Observe-only DAC playout-clock drift observer (Inc 2). A
+    // jasper-clock DLL fed the wall-clock-vs-DAC-playout frame error from
+    // `mark_dac_delay` (where the DAC delay is already sampled). It NEVER warps
+    // audio — it surfaces `dac_clock_ppm` + lock/verdict on /state.
+    // Mutex for the same reason as `sro_estimator`: a small struct, single
+    // writer (the playback loop) + single reader (the state server).
+    dac_clock: Mutex<DacClockObserver>,
     content_frames_read: AtomicU64,
     content_empty_period_count: AtomicU64,
     content_partial_period_count: AtomicU64,
@@ -229,6 +245,7 @@ impl OutputdState {
             content_bridge_ratio_clamp_count: AtomicU64::new(0),
             content_bridge_lock_count: AtomicU64::new(0),
             content_bridge_unlock_count: AtomicU64::new(0),
+            content_bridge_rate_diff: Mutex::new(DllSnapshot::idle()),
             dac_content_fifo: config.dac_content_fifo.clone(),
             dac_content_channel: config.dac_content_channel.as_str().to_string(),
             dac_content_highpass_hz: config.dac_content_highpass_hz,
@@ -270,6 +287,10 @@ impl OutputdState {
             chip_ref_observe: config.chip_ref_observe,
             sro_estimator: Mutex::new(SroEstimator::new()),
             sro_last_fed_chip_ref_frames: AtomicU64::new(0),
+            dac_clock: Mutex::new(DacClockObserver::new(
+                config.sample_rate,
+                config.period_frames,
+            )),
             content_frames_read: AtomicU64::new(0),
             content_empty_period_count: AtomicU64::new(0),
             content_partial_period_count: AtomicU64::new(0),
@@ -382,10 +403,23 @@ impl OutputdState {
     }
 
     pub fn mark_dac_delay(&self, delay_frames: u64) {
+        let uptime_ms = self.uptime_ms();
         self.dac_snd_pcm_delay_frames
             .store(delay_frames, Ordering::Relaxed);
         self.dac_snd_pcm_delay_sample_ms
-            .store(self.uptime_ms(), Ordering::Relaxed);
+            .store(uptime_ms, Ordering::Relaxed);
+        // Observe-only (Inc 2): tick the DAC playout-clock drift observer
+        // with the freshly-sampled DAC delay paired with the cumulative frames
+        // written and the monotonic uptime. The estimator self-decimates to
+        // ~1 Hz, so calling it every period is cheap and harmless. It NEVER
+        // touches the audio path. `try_lock` so a /state reader (the only other
+        // contender) can never make the playback loop wait; a skipped tick just
+        // drops one ~1 Hz sample.
+        let dac_written = self.dac_frames_written.load(Ordering::Relaxed);
+        let elapsed_seconds = uptime_ms as f64 / 1000.0;
+        if let Ok(mut clock) = self.dac_clock.try_lock() {
+            clock.observe(dac_written, delay_frames, elapsed_seconds);
+        }
     }
 
     pub fn mark_chip_ref_queue_admitted(&self, frames: u64) {
@@ -575,6 +609,12 @@ impl OutputdState {
             .store(metrics.lock_count, Ordering::Relaxed);
         self.content_bridge_unlock_count
             .store(metrics.unlock_count, Ordering::Relaxed);
+        // The rate controller's shared-DLL rate_diff (Inc 4). `try_lock` so this
+        // per-period mark never blocks on a concurrent /state read; on the rare
+        // contention we skip one update (the next period refreshes it).
+        if let Ok(mut slot) = self.content_bridge_rate_diff.try_lock() {
+            *slot = metrics.rate_diff;
+        }
     }
 
     pub fn snapshot_json(&self) -> String {
@@ -760,6 +800,17 @@ impl OutputdState {
             "unlock_count",
             self.content_bridge_unlock_count.load(Ordering::Relaxed),
         );
+        buf.push(',');
+        // The rate controller's shared-DLL rate_diff (Inc 4) — the loop's OWN
+        // ppm / error stats / bandwidth / lock+resync counters, in the same
+        // shape every DLL site publishes. `try_lock`; on contention emit the
+        // idle placeholder rather than block or panic.
+        let cb_rate_diff = self
+            .content_bridge_rate_diff
+            .try_lock()
+            .map(|s| *s)
+            .unwrap_or_else(|_| DllSnapshot::idle());
+        push_dll_rate_diff(&mut buf, "rate_diff", &cb_rate_diff);
         buf.push('}');
         buf.push(',');
 
@@ -1227,6 +1278,26 @@ impl OutputdState {
         };
         let sro_status = sro_status.as_str();
         let verdict = verdict.as_str();
+        // Observe-only DAC playout-clock drift (Inc 2). `try_lock` so a
+        // /state read never blocks the playback loop's tick; on contention or a
+        // (never-expected) poisoned lock, report a not-yet-locked idle snapshot
+        // rather than waiting or panicking. We read BOTH the AEC-specific
+        // snapshot (the named ppm + verdict) and the raw shared-DLL snapshot
+        // (the Inc-4 rate_diff) under one lock acquisition.
+        let (dac_clock, dac_clock_rate_diff) = match self.dac_clock.try_lock() {
+            Ok(clock) => (clock.snapshot(), clock.dll_snapshot()),
+            Err(_) => (
+                crate::dac_clock::DacClockSnapshot {
+                    locked: false,
+                    sro_ppm: 0.0,
+                    error_mean: 0.0,
+                    error_var: 0.0,
+                    updates: 0,
+                    resync_count: 0,
+                },
+                DllSnapshot::idle(),
+            ),
+        };
         let dac_presentation_ms = frames_to_ms_opt(dac_delay_frames, sample_rate);
         let playback_queue_ms = frames_to_ms_opt(
             Some(self.dac_buffer_frames.load(Ordering::Relaxed)),
@@ -1246,9 +1317,30 @@ impl OutputdState {
         push_kv_str(&mut buf, "verdict_reason", &verdict_reason);
         buf.push(',');
         // Observe-only label: the chip-ref writer was armed purely to MEASURE
-        // drift on the software-AEC3 path (not for production chip-AEC). Pure
+        // drift on the DAC playout clock vs nominal (not chip-AEC). Pure
         // self-description; no audio path reads it.
         push_kv_bool(&mut buf, "observe", self.chip_ref_observe);
+        buf.push(',');
+        // Observe-only DAC playout-clock drift (Inc 2): the shared
+        // jasper-clock DLL locked onto the :9891-reference-vs-DAC-playout error,
+        // surfaced as ppm + lock + verdict (the doctor-readable field). This
+        // NEVER warps audio — it is the measure-before-fix signal for software
+        // AEC, distinct from the chip-AEC `chip_ref_sro_ppm` above.
+        buf.push_str(r#""dac_clock":{"#);
+        // AEC-specific surface: the named ppm + the doctor-readable verdict.
+        push_kv_f64(&mut buf, "dac_clock_ppm", dac_clock.sro_ppm, 3);
+        buf.push(',');
+        push_kv_bool(&mut buf, "locked", dac_clock.locked);
+        buf.push(',');
+        push_kv_str(&mut buf, "verdict", dac_clock.verdict());
+        buf.push(',');
+        // Shared rate_diff (Inc 4): the loop's full state in the one consistent
+        // shape — error stats, bandwidth, DLL lock/resync counters — so this DLL
+        // site reads identically to the content-bridge controller's. The named
+        // ppm above and `rate_diff.ppm` are the same value (the AEC surface
+        // keeps the named field for the doctor; the shape stays DRY).
+        push_dll_rate_diff(&mut buf, "rate_diff", &dac_clock_rate_diff);
+        buf.push('}');
         buf.push(',');
         buf.push_str(r#""latency":{"#);
         push_kv_f64_opt(&mut buf, "dac_presentation_ms", dac_presentation_ms, 3);
@@ -1452,6 +1544,36 @@ fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: us
         Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
         None => buf.push_str("null"),
     }
+}
+
+/// The ONE shared `clock.rate_diff` telemetry writer (Inc 4). Every DLL
+/// instance in outputd publishes its loop state through this single shape, so
+/// `/state` / doctor read every clock-domain boundary identically (mirrors
+/// PipeWire's `clock.rate_diff`). Emits a nested object under `key`:
+/// `{ppm, error_mean, error_var, bandwidth, locked, updates, lock_count,
+/// unlock_count, resync_count}`.
+fn push_dll_rate_diff(buf: &mut String, key: &str, snap: &DllSnapshot) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str(r#"":{"#);
+    push_kv_f64(buf, "ppm", snap.ratio_ppm, 3);
+    buf.push(',');
+    push_kv_f64(buf, "error_mean", snap.error_mean, 4);
+    buf.push(',');
+    push_kv_f64(buf, "error_var", snap.error_var, 4);
+    buf.push(',');
+    push_kv_f64(buf, "bandwidth", snap.bandwidth, 4);
+    buf.push(',');
+    push_kv_bool(buf, "locked", snap.locked);
+    buf.push(',');
+    push_kv_u64(buf, "updates", snap.updates);
+    buf.push(',');
+    push_kv_u64(buf, "lock_count", snap.lock_count);
+    buf.push(',');
+    push_kv_u64(buf, "unlock_count", snap.unlock_count);
+    buf.push(',');
+    push_kv_u64(buf, "resync_count", snap.resync_count);
+    buf.push('}');
 }
 
 const PACKED_I64_NONE: i64 = i64::MIN;
@@ -1887,6 +2009,15 @@ mod tests {
             r#""verdict":"fallback""#,
             // Observe mode is off in test_config (default).
             r#""observe":false"#,
+            // Inc 2: observe-only DAC playout-clock drift — fresh, not yet
+            // locked, ppm 0, acquiring verdict.
+            r#""dac_clock":{"dac_clock_ppm":0.000"#,
+            r#""locked":false"#,
+            // Inc 4: the shared rate_diff shape, idle placeholder values.
+            r#""rate_diff":{"ppm":0.000"#,
+            r#""bandwidth":0.1280"#,
+            r#""updates":0"#,
+            r#""resync_count":0"#,
             r#""latency":{"dac_presentation_ms":null"#,
             // test_config dac_buffer_frames=3072 / 48000 → 64 ms.
             r#""playback_queue_ms":64.000"#,
@@ -1894,13 +2025,97 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
+        // The dac_clock block's verdict is "acquiring" before lock; it
+        // sits between observe and latency.
+        assert!(
+            j.contains(r#""dac_clock":{"#) && j.contains(r#""verdict":"acquiring""#),
+            "dac_clock block must be present with an acquiring verdict: {j}"
+        );
+    }
+
+    #[test]
+    fn every_dll_site_publishes_the_same_rate_diff_shape() {
+        // Inc 4: both DLL instances (the content-bridge rate controller and the
+        // DAC-clock observer) publish their loop state through the
+        // single shared `rate_diff` writer. The shape must appear under BOTH
+        // blocks with the same field set, so /state / doctor read every
+        // clock-domain boundary identically.
+        let state = OutputdState::new(&test_config());
+        // Push a content-bridge metrics sample so its rate_diff slot is set.
+        state.mark_content_bridge(ContentBridgeMetrics {
+            locked: true,
+            ring_capacity_frames: 16_384,
+            target_fill_frames: 4096,
+            fill_frames: 4096,
+            min_fill_frames: 4000,
+            max_fill_frames: 4200,
+            ratio_ppm: 12.5,
+            input_frames: 1000,
+            output_frames: 1000,
+            silence_frames: 0,
+            underrun_frames: 0,
+            overrun_frames: 0,
+            resync_count: 0,
+            reset_count: 0,
+            ratio_clamp_count: 0,
+            lock_count: 1,
+            unlock_count: 0,
+            rate_diff: jasper_clock::DllSnapshot {
+                ratio: 1.000_05,
+                ratio_ppm: 50.0,
+                error_mean: -0.5,
+                error_var: 0.25,
+                bandwidth: 0.05,
+                locked: true,
+                updates: 1234,
+                lock_count: 1,
+                unlock_count: 0,
+                resync_count: 2,
+            },
+        });
+        let j = state.snapshot_json();
+        // Exactly two rate_diff objects: content_bridge + dac_clock.
+        assert_eq!(
+            j.matches(r#""rate_diff":{"ppm":"#).count(),
+            2,
+            "exactly two rate_diff blocks (one per DLL site) in {j}"
+        );
+        // The content-bridge rate_diff carries the loop's OWN values.
+        assert!(
+            j.contains(r#""rate_diff":{"ppm":50.000,"error_mean":-0.5000,"error_var":0.2500,"bandwidth":0.0500,"locked":true,"updates":1234,"lock_count":1,"unlock_count":0,"resync_count":2}"#),
+            "content_bridge rate_diff must carry the DLL snapshot fields: {j}"
+        );
+    }
+
+    #[test]
+    fn mark_dac_delay_ticks_dac_clock_without_panicking() {
+        // Wiring test: the mark_dac_delay path (the playback loop's tick) feeds
+        // the observe-only DAC-clock observer DLL. The tick reads REAL
+        // uptime for its wall-clock, so a unit test can't drive it to a
+        // deterministic lock in a tight loop — the convergence math is pinned by
+        // the dac_clock module's own tests. Here we assert the tick
+        // path is exercised and never panics, and the block stays present.
+        let state = OutputdState::new(&test_config());
+        for step in 1..=64u64 {
+            state.mark_period(
+                IoCounters {
+                    dac_frames_written: step * 48_000,
+                    ..IoCounters::default()
+                },
+                1,
+                0,
+            );
+            state.mark_dac_delay(1024);
+        }
+        let j = state.snapshot_json();
+        assert!(j.contains(r#""dac_clock":{"#), "block present: {j}");
     }
 
     #[test]
     fn snapshot_json_aec_clock_observe_reflects_config() {
         // The `observe` label is a pure passthrough of config.chip_ref_observe
         // (set by the reconciler when it armed the chip-ref writer for drift
-        // MEASUREMENT on the software-AEC3 path). It changes no behavior; this
+        // MEASUREMENT on the DAC playout clock (vs nominal)). It changes no behavior; this
         // pins both polarities so the wire contract can't silently drop it.
         let off = OutputdState::new(&test_config());
         assert!(
