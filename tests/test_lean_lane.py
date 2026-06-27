@@ -27,6 +27,16 @@ def test_usb_sole_active_and_winner_is_lean():
     assert (r.route, r.reason) == ("lean", "usb_exclusive")
 
 
+# --- list path: callers pass Mux._active_sources(current), which is a LIST.
+# A list never equals the (Source.USBSINK,) tuple, so without the defensive
+# tuple() normalization this would fail closed to "buffered". ---
+def test_list_active_sources_usb_exclusive_is_lean():
+    r = decide_lean_route(
+        active_sources=[USB], winner=USB, lean_enabled=True,
+    )
+    assert (r.route, r.reason) == ("lean", "usb_exclusive")
+
+
 # --- flag gating (default-OFF contract) ---
 def test_flag_off_forces_buffered_even_when_usb_exclusive():
     r = d([USB], USB, enabled=False)

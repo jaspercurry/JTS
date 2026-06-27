@@ -62,11 +62,12 @@ def decide_lean_route(
     set (``Mux._active_sources(current)``); ``winner`` is ``Mux._winner``;
     ``lean_enabled`` is the parsed default-OFF flag (:func:`lean_lane_enabled`).
     """
+    active = tuple(active_sources)
     if not lean_enabled:
         return LeanDecision("buffered", "flag_off")
-    if not active_sources:
+    if not active:
         return LeanDecision("buffered", "idle")
-    if active_sources != (Source.USBSINK,):
+    if active != (Source.USBSINK,):
         return LeanDecision("buffered", "not_exclusive")
     if winner != Source.USBSINK:
         return LeanDecision("buffered", "non_usb_winner")
