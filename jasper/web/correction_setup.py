@@ -1698,7 +1698,10 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     from jasper.capture_relay.health import relay_base_from_env
     from jasper.correction.session import SessionState
 
-    if not correction_adapter.relay_enabled():
+    # Gate on the configured relay origin (this also narrows it from str|None to
+    # str for the register call below — same as correction_adapter.relay_enabled).
+    relay_base = relay_base_from_env()
+    if relay_base is None:
         raise ValueError(
             "phone-mic relay capture is not configured — set "
             "JASPER_CAPTURE_RELAY_BASE (and deploy the relay + capture page), or "
@@ -1721,7 +1724,6 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if not _begin_relay_capture():
         raise ValueError("a phone-mic relay capture is already in progress")
 
-    relay_base = relay_base_from_env()
     capture_origin = correction_adapter.capture_origin_from_env()
     # Release the claimed slot if anything before the background spawn fails
     # (a failed register, etc.) — try/finally + a flag avoids a broad except.
