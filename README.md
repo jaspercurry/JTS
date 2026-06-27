@@ -814,9 +814,8 @@ reference. Currently:
 - [`HANDOFF-voice-music-control.md`](docs/HANDOFF-voice-music-control.md)
   — Source-aware transport (AirPlay/Spotify Connect) + volume
 - [`HANDOFF-volume.md`](docs/HANDOFF-volume.md) — Source-aware
-  volume coordinator and `/state.audio.gain_chain` ledger (one
-  canonical `listening_level`, dispatched to whichever source is active,
-  observed inbound at 1 Hz, plus the read-only common gain total)
+  volume coordinator (one canonical `listening_level`, dispatched to
+  whichever source is active, observed inbound at 1 Hz)
 - [`HANDOFF-source-capabilities.md`](docs/HANDOFF-source-capabilities.md)
   — Planned provider/source capability boundary for future music
   integrations: volume, transport, metadata, health, and contributor

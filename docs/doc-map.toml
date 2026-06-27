@@ -473,7 +473,6 @@ id = "volume-and-sound"
 title = "Volume coordination and sound preferences"
 safety = "audio-output-risk"
 code = [
-  "jasper/control/gain_chain.py",
   "jasper/control/state_aggregate.py",
   "jasper/volume_*.py",
   "jasper/volume_coordinator.py",
@@ -497,10 +496,10 @@ docs = [
   "docs/HANDOFF-dsp-graph-carrier.md",
 ]
 requires_docs_when = [
-  "The canonical listening level, source volume carrier, gain-chain ledger, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
+  "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
 ]
 verification = [
-  "pytest tests/test_gain_chain.py tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_assistant_loudness.py tests/test_audio_io.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py",
+  "pytest tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_assistant_loudness.py tests/test_audio_io.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py",
 ]
 
 [[subsystem]]

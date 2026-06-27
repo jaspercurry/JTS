@@ -230,10 +230,7 @@
 > active preference-EQ path keeps boosts at unity, matching the ordinary
 > `/sound` path; explicit output trim or match-loudness attenuation is the
 > only preference-layer global attenuation folded into
-> `active_baseline_headroom`. The runtime gain-chain ledger
-> (`/state.audio.gain_chain`, documented in
-> [HANDOFF-volume.md](HANDOFF-volume.md#state-gain-chain-ledger)) must make
-> any future baseline attenuation visible if this default ever changes.
+> `active_baseline_headroom`.
 > Per-driver gain prefers an explicit
 > `gain_offset_db`; when research gives none but declares sensitivities,
 > `_derive_corrections` fail-safes by attenuating the hotter drivers down to the
