@@ -492,7 +492,21 @@ render_asound_if_needed() {
     # discipline as the env writers (#827).
     [[ -d "$(dirname "$ASOUND_TEMPLATE")" ]] || install -d -m 0755 "$(dirname "$ASOUND_TEMPLATE")"
     tmp="$(mktemp "${ASOUND_TEMPLATE}.XXXXXX")"
-    jasper_asound_render_template "$ASOUND_SOURCE_TEMPLATE" "$tmp"
+    # Render to a temp and validate it BEFORE replacing the live template. A
+    # card-less recognized DAC makes jasper_asound_render_template fail closed
+    # (require_output_dac_card -> 64) — but set -e is suppressed here because
+    # the caller invokes this function in a `&& render_changed=1` list, so an
+    # ignored failure would fall straight through to the mv below and clobber
+    # the working /etc/asound.conf source with the empty temp (silent failure on
+    # the output path; defeats the helper's own fail-closed guard). Check the
+    # return AND reject an empty render, then preserve the existing template and
+    # fail loud rather than emit nothing.
+    if ! jasper_asound_render_template "$ASOUND_SOURCE_TEMPLATE" "$tmp" || [[ ! -s "$tmp" ]]; then
+        rm -f "$tmp"
+        log_event "asound_render_failed" \
+            "source_template=${ASOUND_SOURCE_TEMPLATE} output_dac_id=${OUTPUT_DAC_ID} output_dac_card=$(jasper_asound_log_token "$OUTPUT_DAC_CARD") preserved_existing=1"
+        return 1
+    fi
     chmod 0644 "$tmp"
 
     if [[ -f "$ASOUND_TEMPLATE" ]] && cmp -s "$tmp" "$ASOUND_TEMPLATE"; then

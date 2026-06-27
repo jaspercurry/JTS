@@ -1107,3 +1107,123 @@ def test_reconcile_restarts_when_only_outputd_runtime_env_changes(
     commands = _systemctl_log(tmp_path)
     assert "--no-block restart jasper-outputd.service" in commands
     assert "--no-block restart jasper-aec-reconcile.service" in commands
+
+
+def _stub_render_lib(tmp_path: Path, body: str) -> Path:
+    """A drop-in jasper-asound-render.sh whose template renderer is overridable.
+
+    Sources the real lib first (so jasper_asound_log_token et al. stay intact),
+    then redefines jasper_asound_render_template with the supplied body so a
+    test can drive the production failure shape — a card-less recognized DAC
+    makes the real renderer fail closed (require_output_dac_card -> 64) BEFORE
+    it opens the dest, which the reconciler must not paper over.
+    """
+    stub = tmp_path / "stub-asound-render.sh"
+    real = ROOT / "deploy" / "lib" / "jasper-asound-render.sh"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f"source {real}\n"
+        "jasper_asound_render_template() {\n"
+        f"{body}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    return stub
+
+
+def test_render_failure_preserves_live_template_and_fails_loud(tmp_path: Path):
+    """A failed template render must NOT clobber the working /etc/asound.conf.
+
+    Regression for the silent-failure bug: render_asound_if_needed invoked
+    jasper_asound_render_template and IGNORED its return value, then
+    unconditionally `mv`'d the temp over the live template. Because the caller
+    runs the function in a `&& render_changed=1` list, `set -e` is suppressed
+    inside it, so a fail-closed render (e.g. card-less recognized DAC ->
+    require_output_dac_card returns 64, dest never written) fell straight
+    through to the mv and replaced a working ALSA config with an empty file on
+    the audio OUTPUT path — exactly the class JTS forbids. Pin that on render
+    failure the existing template is left byte-for-byte intact AND the failure
+    is surfaced (event=...asound_render_failed).
+    """
+    good = "GOOD LIVE ALSA CONFIG — must survive a render failure\n"
+    # Stub renderer mirrors the production failure: write nothing, return 64
+    # (same exit code as require_output_dac_card on a card-less recognized DAC).
+    stub = _stub_render_lib(tmp_path, "    return 64")
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "render-fail",
+        initial_template=good,
+        extra_env={"JASPER_ASOUND_RENDER_LIB": str(stub)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    # The live template is untouched — NOT emptied, NOT partially written.
+    template_path = tmp_path / "asoundrc.jasper.template"
+    assert template_path.read_text(encoding="utf-8") == good
+    assert template_path.stat().st_size > 0
+    # Failure is loud: the structured event fired and the dac8x->asound render
+    # never reported success.
+    assert "event=audio_hardware_reconcile.asound_render_failed" in result.stderr
+    assert "preserved_existing=1" in result.stderr
+    assert "event=audio_hardware_reconcile.asound_rendered" not in result.stderr
+    # A clobber would have re-run the conf renderer against the empty template;
+    # the preserve path must not.
+    assert _render_log(tmp_path) == ""
+    # No stray temp left behind next to the template.
+    leftovers = list(template_path.parent.glob("asoundrc.jasper.template.*"))
+    assert leftovers == [], leftovers
+
+
+def test_render_empty_output_preserves_live_template(tmp_path: Path):
+    """A renderer that 'succeeds' (rc 0) but emits an empty file must not win.
+
+    Defense in depth for the same never-clobber-to-empty invariant: even if a
+    future helper regression returns 0 while writing nothing, the reconciler
+    rejects the empty render and keeps the working template rather than emitting
+    silence to the speaker.
+    """
+    good = "GOOD LIVE ALSA CONFIG — survives an empty render\n"
+    # rc 0 but the dest is truncated to empty.
+    stub = _stub_render_lib(tmp_path, '    : > "$2"\n    return 0')
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "render-empty",
+        initial_template=good,
+        extra_env={"JASPER_ASOUND_RENDER_LIB": str(stub)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    template_path = tmp_path / "asoundrc.jasper.template"
+    assert template_path.read_text(encoding="utf-8") == good
+    assert "event=audio_hardware_reconcile.asound_render_failed" in result.stderr
+    assert "event=audio_hardware_reconcile.asound_rendered" not in result.stderr
+    assert _render_log(tmp_path) == ""
+
+
+def test_render_success_still_writes_template(tmp_path: Path):
+    """The happy path is unchanged: a valid render replaces the template.
+
+    Guards against an over-eager fix that makes render_asound_if_needed treat
+    every render as a failure. A normal recognized-DAC reconcile must still
+    write the rendered outputd_dac block and run the conf renderer.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "render-ok",
+        initial_template="STALE PLACEHOLDER\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    assert "pcm.outputd_dac" in template
+    assert "card sndrpihifiberry" in template
+    _assert_no_empty_alsa_card(template)
+    assert "event=audio_hardware_reconcile.asound_rendered" in result.stderr
+    assert "event=audio_hardware_reconcile.asound_render_failed" not in result.stderr
+    assert _render_log(tmp_path) == "render\n"
