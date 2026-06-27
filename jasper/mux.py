@@ -853,6 +853,10 @@ class Mux:
     ) -> dict[str, Any]:
         current = current or self._state.playing
         active = self._active_source_name(current)
+        # Local import mirrors the adaptive ladder's pattern (keeps the control
+        # package off mux's module-load path); cached after first use.
+        from jasper.fanin import buffer_reconcile as br
+
         return {
             "mode": "manual" if self._manual_source is not None else "auto",
             "selected_source": (
@@ -865,6 +869,21 @@ class Mux:
             "sources": {
                 source.value: {"playing": bool(current.get(source, False))}
                 for source in MUSIC_SOURCES
+            },
+            # Review should-fix #1: surface the adaptive output-buffer mode so an
+            # operator sees the live shrink state from /state without ssh+journal.
+            # This is the mux's INTENDED state; fan-in's actual running buffer is
+            # in /state.renderers.fanin.output.buffer_frames (cross-check the two).
+            # Read-only status field — does not touch _tick, so the default-OFF
+            # byte-identical proof is unaffected; no env I/O while disabled.
+            "fanin_output_buffer": {
+                "adaptive_enabled": self._adaptive_buffer_enabled,
+                "shrunk": self._buffer_shrunk,
+                "frames": (
+                    br.shrunk_target_frames()
+                    if (self._adaptive_buffer_enabled and self._buffer_shrunk)
+                    else br.DEFAULT_OUTPUT_BUFFER_FRAMES
+                ),
             },
         }
 

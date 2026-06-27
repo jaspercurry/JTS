@@ -245,6 +245,9 @@ def _restart_fanin(reason: str) -> tuple[bool, str]:
     except ImportError as e:
         return False, f"restart_broker unavailable: {e}"
 
+    # timeout 8.0 (vs the broker default 5.0): fan-in is the shared summing
+    # daemon and its restart is heavier than a leaf renderer's, so give it more
+    # headroom before we declare the restart failed and roll back.
     resp = restart_broker.manage_units(
         FANIN_UNIT, verb="restart", reason=reason, no_block=False, timeout=8.0,
     )
