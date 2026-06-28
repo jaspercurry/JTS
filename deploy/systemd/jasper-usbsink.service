@@ -49,6 +49,21 @@ ExecStart=/opt/jasper/.venv/bin/jasper-usbsink
 Restart=on-failure
 RestartSec=2s
 Nice=-10
+# Join the zram-shielded audio tier. usbsink is a real-time music source whose
+# capture/playback run on fixed-deadline (~10 ms) PortAudio callbacks; off this
+# slice its pages can swap to zram, and zram-decompression jitter makes a callback
+# miss its deadline in bursts -> snd-aloop xruns -> the bounded queue overflows
+# (dropped_full). jts-audio.slice carries MemorySwapMax=0 (the swap shield) — a
+# MEMORY policy, not a CPU cap, so it respects the no-CPU-caps rule. usbsink was the
+# only music-path daemon left OUTSIDE this slice (diagnosed 2026-06-28 as the dominant
+# cause of the bursty USB-drop tail). OOMScoreAdjust sits below the output chain
+# (outputd -950 / camilla -900 / fanin -800): a killed source restarts and only USB
+# stops, whereas a killed output stops all audio.
+# Do NOT add CPUSchedulingPolicy=fifo to this unit — that unit-level RT change is what
+# SIGKILL-crash-looped jasper-aec-bridge on 2026-06-27; RT priority, if ever needed,
+# must be elected in-thread AFTER start() completes.
+Slice=jts-audio.slice
+OOMScoreAdjust=-600
 # Memory caps. ~22 MB Pss is the expected resident size when running;
 # 64 MiB hard cap catches any future memory leak before OOM-killer at
 # the cgroup boundary. MemoryHigh is the throttle threshold.
