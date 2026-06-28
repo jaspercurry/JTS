@@ -232,11 +232,50 @@ def test_endpoint_refuses_relay_with_usb_calibration(monkeypatch):
     assert correction_setup._get_relay_capture() is None  # slot not claimed
 
 
+def test_open_capture_is_kind_agnostic():
+    # The generic open_capture mints+registers ANY spec, so a new kind needs no
+    # per-kind adapter function — here the sync_marker spec, the second caller.
+    from jasper.capture_relay.spec import build_sync_marker_spec
+
+    backend = FakeRelayBackend()
+    client = RelayClient("https://relay.test", transport=backend)
+    rc = adapter.open_capture(
+        client,
+        build_sync_marker_spec(),
+        relay_base="https://relay.test",
+        capture_origin="capture.test",
+    )
+    stored = backend.sessions[rc.pi_session.session_id]
+    assert json.loads(stored["capture_spec"])["kind"] == "sync_marker"
+    assert rc.tap_link.startswith("https://capture.test/#")
+
+
+def test_sync_relay_endpoint_gate_and_precheck(monkeypatch):
+    import pytest
+
+    from jasper.web import correction_setup, sync_flow
+
+    # Inert when the relay isn't configured (default flow byte-identical).
+    monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
+    with pytest.raises(ValueError, match="not configured"):
+        correction_setup._handle_sync_relay_capture(None)
+
+    # Configured but no active sync session → the flow's own precheck refuses
+    # before any network call or slot claim.
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech")
+    sync_flow._state["phase"] = "idle"
+    correction_setup._set_relay_capture(None)
+    with pytest.raises(ValueError, match="no active sync session"):
+        correction_setup._handle_sync_relay_capture(None)
+    assert correction_setup._get_relay_capture() is None  # slot not claimed
+
+
 def test_endpoint_route_is_registered():
     # Pin route membership: deleting the allowlist line would 404 it silently.
     from jasper.web import correction_setup
 
     assert "/relay/capture" in correction_setup._POST_ROUTES
+    assert "/sync/relay-capture" in correction_setup._POST_ROUTES
 
 
 def test_status_holder_round_trips():

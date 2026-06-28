@@ -175,6 +175,7 @@ _POST_ROUTES = frozenset({
     "/sync/start",
     "/sync/play",
     "/sync/analyze",
+    "/sync/relay-capture",
     "/sync/apply",
     "/sync/stop",
     "/sync/reset",
@@ -280,6 +281,24 @@ def _run_relay_capture(kind: RelayCaptureKind, relay_base: str) -> dict[str, Any
     finally:
         if not spawned:
             _set_relay_capture(None)  # release the slot on any early failure
+
+
+def _require_relay_base() -> str:
+    """Return the configured relay origin, or raise the gated-off ValueError.
+
+    Called FIRST by every relay endpoint so it is inert (and the default on-Pi
+    flow byte-identical) until an operator sets JASPER_CAPTURE_RELAY_BASE. Also
+    narrows the value from str|None to str for the register call."""
+    from jasper.capture_relay.health import relay_base_from_env
+
+    relay_base = relay_base_from_env()
+    if relay_base is None:
+        raise ValueError(
+            "phone-mic relay capture is not configured — set "
+            "JASPER_CAPTURE_RELAY_BASE (and deploy the relay + capture page), or "
+            "use the on-Pi /correction/ capture flow"
+        )
+    return relay_base
 
 
 _start_in_progress = False
@@ -1810,18 +1829,9 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     default flow is unaffected while it is validated on hardware.
     """
     from jasper.capture_relay import correction_adapter
-    from jasper.capture_relay.health import relay_base_from_env
     from jasper.correction.session import SessionState
 
-    # Gate FIRST so the endpoint is inert when the relay isn't configured (the
-    # default on-Pi flow is byte-identical). Also narrows relay_base str|None→str.
-    relay_base = relay_base_from_env()
-    if relay_base is None:
-        raise ValueError(
-            "phone-mic relay capture is not configured — set "
-            "JASPER_CAPTURE_RELAY_BASE (and deploy the relay + capture page), or "
-            "use the on-Pi /correction/ capture flow"
-        )
+    relay_base = _require_relay_base()  # gated off until configured; inert otherwise
 
     sess = _get_or_create_session()
     if sess is None:
@@ -1874,6 +1884,43 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     )
     relay = _run_relay_capture(kind, relay_base)
     return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
+
+
+def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """POST /sync/relay-capture: capture the sync markers via the cloud relay (the
+    phone runs the capture page on jasper.tech) instead of a same-origin upload.
+
+    GATED + DEFAULT-OFF, like /relay/capture. The sync session window must already
+    be open (the /sync/ Start button → handle_start), exactly as the browser flow
+    requires before playing the marker. sync_flow owns the stimulus + analysis;
+    this just bridges the relay transport through the shared orchestrator. The
+    second real caller of the RelayCaptureKind seam — a new kind is a descriptor,
+    not a new handler. ON-DEVICE: the acoustic marker capture is not exercised
+    hardware-free (same status as the room relay)."""
+    from jasper.capture_relay import correction_adapter
+    from jasper.capture_relay.spec import build_sync_marker_spec
+
+    from . import sync_flow
+
+    relay_base = _require_relay_base()  # gated off until configured; inert otherwise
+    err = sync_flow.relay_precheck()
+    if err is not None:
+        raise ValueError(err)
+
+    def _open(client: RelayClient, base: str, capture_origin: str) -> RelayCapture:
+        return correction_adapter.open_capture(
+            client,
+            build_sync_marker_spec(),
+            relay_base=base,
+            capture_origin=capture_origin,
+        )
+
+    kind = RelayCaptureKind(
+        label="sync_marker",
+        open=_open,
+        run_and_consume=sync_flow.relay_run_and_consume,
+    )
+    return {"relay": _run_relay_capture(kind, relay_base)}
 
 
 def _maybe_restore_main_volume(sess, cam) -> None:
@@ -2533,6 +2580,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if path == "/relay/capture":
                     try:
                         self._send_json(_handle_relay_capture(self))
+                    except ValueError as e:
+                        self._send_client_error(str(e))
+                    return
+                if path == "/sync/relay-capture":
+                    try:
+                        self._send_json(_handle_sync_relay_capture(self))
                     except ValueError as e:
                         self._send_client_error(str(e))
                     return

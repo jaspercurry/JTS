@@ -48,7 +48,7 @@ from jasper.capture_relay.session import (
     register_session,
     run_capture,
 )
-from jasper.capture_relay.spec import build_room_sweep_spec
+from jasper.capture_relay.spec import CaptureSpec, build_room_sweep_spec
 
 ENV_CAPTURE_ORIGIN = "JASPER_CAPTURE_ORIGIN"
 DEFAULT_CAPTURE_ORIGIN = "capture.jasper.tech"
@@ -88,6 +88,28 @@ class RelayCapture:
     tap_link: str
 
 
+def open_capture(
+    client: RelayClient,
+    spec: CaptureSpec,
+    *,
+    relay_base: str,
+    capture_origin: str,
+    ttl_s: int = 900,
+) -> RelayCapture:
+    """Mint + register a relay capture for any `capture_spec`, kind-agnostic.
+
+    The relay mechanics (mint + register + tap-link) are identical for every
+    measurement kind; only the `spec` differs. Each flow builds its own spec
+    (room sweep, sync marker, crossover sweep, …) and calls this — so the adapter
+    never grows a per-kind function.
+    """
+    pi_session = mint_session(
+        spec, relay_base=relay_base, capture_origin=capture_origin, ttl_s=ttl_s
+    )
+    register_session(client, pi_session)
+    return RelayCapture(pi_session=pi_session, tap_link=pi_session.tap_link)
+
+
 def open_room_sweep_capture(
     client: RelayClient,
     *,
@@ -103,11 +125,9 @@ def open_room_sweep_capture(
     passes `measurement_session.current_position + 1`.
     """
     spec = build_room_sweep_spec(position=position, total_positions=total_positions)
-    pi_session = mint_session(
-        spec, relay_base=relay_base, capture_origin=capture_origin, ttl_s=ttl_s
+    return open_capture(
+        client, spec, relay_base=relay_base, capture_origin=capture_origin, ttl_s=ttl_s
     )
-    register_session(client, pi_session)
-    return RelayCapture(pi_session=pi_session, tap_link=pi_session.tap_link)
 
 
 def run_and_store(
