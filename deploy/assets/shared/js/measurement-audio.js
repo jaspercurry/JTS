@@ -224,7 +224,10 @@ export async function createBandpassRmsMeter(options = {}) {
 export async function createMonoRecorder(options = {}) {
   const sampleRate = options.sampleRate || DEFAULT_SAMPLE_RATE;
   const processorName = options.processorName || 'jts-mono-recorder';
-  const opened = await openMonoMic({sampleRate: sampleRate});
+  // deviceId is optional: empty → the OS default input (which is usually the
+  // USB-C measurement mic when one is plugged into the phone); set → that exact
+  // input, chosen via the capture page's device picker.
+  const opened = await openMonoMic({sampleRate: sampleRate, deviceId: options.deviceId || ''});
   let sourceNode = null;
   let workletNode = null;
   let stopState = null;

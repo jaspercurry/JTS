@@ -24,6 +24,10 @@ import { constraintDecision, verifyRealizedConstraints } from "./constraints.js"
 import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
 import { createMonoRecorder, float32ToWavBlob } from "./measurement-audio.js";
 
+// The input the household picked (empty = OS default, which is usually the USB-C
+// measurement mic when one is plugged into the phone). Set by the mic picker.
+let selectedDeviceId = "";
+
 function setStatus(message, kind = "info") {
   const el = document.getElementById("status");
   if (el) {
@@ -74,7 +78,10 @@ async function onStart(ctx) {
     setStatus("Starting microphone…", "info");
     // getUserMedia must be inside this user gesture (iOS). EC/AGC/NS are forced
     // off by measurement-audio's mono constraints.
-    recorder = await createMonoRecorder({ sampleRate: spec.sample_rate_hz || 48000 });
+    recorder = await createMonoRecorder({
+      sampleRate: spec.sample_rate_hz || 48000,
+      deviceId: selectedDeviceId,
+    });
 
     // Measurement validity is loud (step 6, §9): verify the REALIZED constraints
     // — WebKit has historically ignored echoCancellation:false. Decide per the
@@ -82,6 +89,14 @@ async function onStart(ctx) {
     const track = recorder.stream.getAudioTracks ? recorder.stream.getAudioTracks()[0] : null;
     const settings = track && track.getSettings ? track.getSettings() : {};
     const decision = constraintDecision(verifyRealizedConstraints(settings, spec), spec);
+    // Which mic actually recorded (track.label is the device name, available once
+    // permission is granted). The Pi uses this to decide whether a loaded vendor
+    // calibration applies — the phone built-in mic ⇒ refuse it, a USB measurement
+    // mic ⇒ apply it. It rides the opaque `armed` event below, not the E2E WAV.
+    const captureDevice = {
+      label: (track && track.label) || "",
+      device_id: settings.deviceId || "",
+    };
     if (decision.action === "refuse") {
       await recorder.close();
       recorder = null;
@@ -111,7 +126,7 @@ async function onStart(ctx) {
 
     // Drop `armed` so the Pi plays the stimulus inside our window. `degraded`
     // rides along so the Pi can mark a capability-fallback capture lower-confidence.
-    await client.postEvent({ armed: true, degraded: decision.degraded });
+    await client.postEvent({ armed: true, degraded: decision.degraded, device: captureDevice });
 
     // Record the full window (pre-roll + stimulus + post-roll).
     await new Promise((r) => setTimeout(r, recordWindowMs(spec)));
@@ -195,7 +210,50 @@ async function boot() {
       retry: () => onStart(ctx),
     },
   });
+  void buildMicPicker(screenEl);
   setStatus("Ready. Stand at your listening position and tap Start.", "info");
+}
+
+// Best-effort input picker for a USB-C measurement mic plugged into the phone.
+// Progressive enhancement: it appears only when the browser exposes ≥2 labeled
+// audio inputs (Android Chrome typically does). It stays hidden when labels are
+// gated behind mic permission (notably iOS Safari pre-permission) or there is one
+// input — there the OS default is used, which is the USB mic when one is plugged
+// in. Either way the actually-used device is reported in the `armed` event, so the
+// Pi's device-aware calibration gate works with or without this picker.
+async function buildMicPicker(beforeEl) {
+  const nav = typeof navigator !== "undefined" ? navigator : null;
+  if (!nav || !nav.mediaDevices || !nav.mediaDevices.enumerateDevices) return;
+  let devices;
+  try {
+    devices = await nav.mediaDevices.enumerateDevices();
+  } catch {
+    return; // enumerate blocked/unsupported — fall back to the OS default input
+  }
+  const inputs = devices.filter((d) => d.kind === "audioinput" && d.label);
+  if (inputs.length < 2) return; // nothing useful to choose; keep the OS default
+  const wrap = document.createElement("label");
+  wrap.className = "mic-picker";
+  wrap.append("Microphone: ");
+  const select = document.createElement("select");
+  const auto = document.createElement("option");
+  auto.value = "";
+  auto.textContent = "Automatic (recommended)";
+  select.appendChild(auto);
+  for (const d of inputs) {
+    const opt = document.createElement("option");
+    opt.value = d.deviceId;
+    opt.textContent = d.label; // browser-provided → textContent, never innerHTML
+    select.appendChild(opt);
+  }
+  select.value = selectedDeviceId;
+  select.addEventListener("change", () => {
+    selectedDeviceId = select.value;
+  });
+  wrap.appendChild(select);
+  if (beforeEl && beforeEl.parentNode) {
+    beforeEl.parentNode.insertBefore(wrap, beforeEl);
+  }
 }
 
 if (typeof document !== "undefined" && typeof window !== "undefined") {
