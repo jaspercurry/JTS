@@ -2212,6 +2212,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return asyncio.run_coroutine_threadsafe(
                     coro, _ensure_loop())
 
+            # The relay capture has different response semantics (a dict +
+            # ValueError → client error), and MUST be handled here inside the
+            # /sync/ prefix dispatch — the main do_POST ladder never sees /sync/*.
+            if path == "/sync/relay-capture":
+                try:
+                    self._send_json(_handle_sync_relay_capture(self))
+                except ValueError as e:
+                    self._send_client_error(str(e))
+                return
+
             try:
                 if path == "/sync/start":
                     with _session_lock:
@@ -2580,12 +2590,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if path == "/relay/capture":
                     try:
                         self._send_json(_handle_relay_capture(self))
-                    except ValueError as e:
-                        self._send_client_error(str(e))
-                    return
-                if path == "/sync/relay-capture":
-                    try:
-                        self._send_json(_handle_sync_relay_capture(self))
                     except ValueError as e:
                         self._send_client_error(str(e))
                     return
