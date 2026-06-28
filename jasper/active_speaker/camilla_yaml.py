@@ -1474,11 +1474,17 @@ def emit_active_speaker_baseline_config(
         metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
     # Capture source: ALSA Loopback (default, byte-identical) or the Stage-4 lean
-    # File/pipe capture. Mirror of jasper.sound.camilla_yaml; Layer A is downstream
-    # and unchanged either way.
+    # / FIFO-coupling named-pipe capture. Mirror of jasper.sound.camilla_yaml;
+    # Layer A is downstream and unchanged either way.
+    #
+    # MUST be `RawFile`, NOT `File` — CamillaDSP v4 has no `File` *capture*
+    # variant (see the matching note in jasper.sound.camilla_yaml.emit_sound_config;
+    # caught live on jts5 / CamillaDSP 4.1.3, 2026-06-27). An active-crossover
+    # speaker emits through THIS module, so this site — not just the solo one — is
+    # the live arm path on those boxes.
     if capture_pipe_path is not None:
         capture_yaml = f"""  capture:
-    type: File
+    type: RawFile
     channels: 2
     filename: "{capture_pipe_path}"
     format: {capture_format}"""

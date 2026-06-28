@@ -270,11 +270,21 @@ def emit_sound_config(
     device: "{playback_device}"
     format: {playback_format}"""
     # Capture source: ALSA loopback (solo — the default, byte-identical) or
-    # the Stage-4 lean-lane File/pipe capture fed by a timing-preserving
-    # source (USB / shairport pipe). Mirror of the playback if/else above.
+    # the Stage-4 lean-lane / FIFO-coupling named-pipe capture fed by a
+    # timing-preserving source (USB / shairport pipe / fan-in FIFO).
+    #
+    # MUST be `RawFile`, NOT `File`. CamillaDSP v4 has NO `File` *capture*
+    # variant (capture is Alsa/RawFile/WavFile/Stdin/SignalGenerator); `File`
+    # is a *playback*-only type (the multiroom sink at playback_pipe_path above).
+    # `type: File` here emitted a config CamillaDSP rejects with "unknown variant
+    # `File`" — a silent capture outage that slipped past build, review AND CI
+    # because no test ran `camilladsp --check`. Caught live on jts5 (CamillaDSP
+    # 4.1.3) 2026-06-27. RawFile reads raw interleaved PCM from the pipe; the
+    # apply's `--check` OPENS the pipe, so fan-in must already be writing it
+    # before the reconcile loads this config (fan-in-first arm ordering).
     if capture_pipe_path is not None:
         capture_yaml = f"""  capture:
-    type: File
+    type: RawFile
     channels: 2
     filename: "{capture_pipe_path}"
     format: {capture_format}"""

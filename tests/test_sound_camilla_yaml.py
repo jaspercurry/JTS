@@ -546,10 +546,15 @@ def test_channel_delays_reject_negative_or_non_finite_values():
 
 
 def test_file_capture_emits_lean_lane_shape():
-    """The File-CAPTURE lean lane — capture type File (a named pipe),
+    """The named-pipe CAPTURE lean lane — capture type RawFile (a named pipe),
     playback type Alsa (the REAL DAC), enable_rate_adjust true, an async
     resampler so the DAC clock can discipline the clockless capture, and the
-    0 dB ceiling preserved. The mirror of the File-SINK path."""
+    0 dB ceiling preserved. The mirror of the File-SINK *playback* path.
+
+    Capture is `RawFile`, NOT `File`: CamillaDSP v4 has no `File` capture
+    variant, so the old `type: File` here produced a config the DSP rejected
+    with "unknown variant `File`" (caught on jts5 / CamillaDSP 4.1.3,
+    2026-06-27). `File` remains the correct *playback*-sink type."""
     yaml = emit_sound_config(
         SoundProfile(enabled=False),
         capture_pipe_path=DEFAULT_LEAN_CAPTURE_FIFO,
@@ -559,7 +564,9 @@ def test_file_capture_emits_lean_lane_shape():
         chunksize=2048,
         target_level=4096,
     )
-    assert "type: File" in yaml
+    assert "type: RawFile" in yaml
+    # The invalid capture variant must never reappear (the regression).
+    assert "type: File" not in yaml
     assert f'filename: "{DEFAULT_LEAN_CAPTURE_FIFO}"' in yaml
     assert "type: Alsa" in yaml
     assert 'device: "hw:DAC8x,0"' in yaml

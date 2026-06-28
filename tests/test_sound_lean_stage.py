@@ -27,8 +27,9 @@ def test_stage_emits_valid_v4_lean_config(tmp_path):
     staged = tmp_path / LEAN_STAGED_CONFIG_NAME
     assert staged.exists()
     yaml = staged.read_text()
-    # Lean lane = File capture, v4 OBJECT resampler, playback UNCHANGED.
-    assert "type: File" in yaml
+    # Lean lane = RawFile capture, v4 OBJECT resampler, playback UNCHANGED.
+    # RawFile, not File — CamillaDSP v4 has no `File` capture variant.
+    assert "type: RawFile" in yaml
     assert "type: Alsa" in yaml  # playback stays ALSA
     assert "outputd_content_playback" in yaml
     assert "resampler:" in yaml

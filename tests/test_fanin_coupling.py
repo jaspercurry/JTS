@@ -125,8 +125,12 @@ def test_fifo_coupling_emits_file_capture_and_resampler():
     profile = SoundProfile()
     fifo_kwargs = capture_kwargs_for_coupling("fifo")
     cfg = emit_sound_config(profile, profile_id="x", **fifo_kwargs)
-    # File capture pointed at the fan-in pipe, NOT the dsnoop ALSA device.
-    assert "type: File" in cfg
+    # RawFile capture pointed at the fan-in pipe, NOT the dsnoop ALSA device.
+    # MUST be RawFile, NOT File — CamillaDSP v4 has no `File` capture variant
+    # (caught on jts5 / CamillaDSP 4.1.3, 2026-06-27); the old `type: File`
+    # here emitted a config the DSP rejects with "unknown variant `File`".
+    assert "type: RawFile" in cfg
+    assert "type: File" not in cfg
     assert DEFAULT_FANIN_CAMILLA_FIFO in cfg
     assert 'device: "plug:jasper_capture"' not in cfg
     # Async resampler + rate-adjust on, the clockless-File-capture safe shape.

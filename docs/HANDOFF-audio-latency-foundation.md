@@ -56,10 +56,38 @@ and active-speaker
 ([`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py))
 emitters both use them — one definition, no copy-paste twin.
 
+**CRITICAL — capture is `RawFile`, NOT `File` (the 2026-06-27 jts5 finding).**
+CamillaDSP v4 has **no `File` *capture* variant** (capture is one of
+`Alsa`/`RawFile`/`WavFile`/`Stdin`/`SignalGenerator`; `File` is a *playback*-only
+sink type — the multiroom snapserver pipe). Both emitters originally shipped
+`capture: {type: File}`, which the DSP rejects at load with *"unknown variant
+`File`"* — a **silent capture outage** that slipped past build, review AND CI
+because no test ran `camilladsp --check` (the string tests asserted the wrong
+`File` literal). Fixed to `type: RawFile` in both emitters + their tests, and
+validated on jts5 / CamillaDSP 4.1.3: with fan-in writing the pipe, `--check` on
+the RawFile config returns **"Config is valid."** Two consequences are **owed
+before `=fifo` (or the lean lane) can be the default**:
+
+1. **Fan-in-first arm ordering.** The apply's `camilladsp --check` (and the load)
+   OPENS the pipe, so fan-in must already be writing it before the reconcile
+   runs. The reconciler must restart fan-in (`=fifo`, creating the pipe) BEFORE
+   the Camilla reconcile, else `--check` fails *"Could not open input file …"*
+   and the apply fail-closes (no arm — verified both ways on jts5). This ordering
+   is **not yet built into the reconciler/boot path.**
+2. **Reconnect (RawFile EOF).** When fan-in restarts, the pipe writer closes →
+   CamillaDSP's RawFile capture hits EOF. Whether it re-opens or wedges is
+   **unvalidated**; the reconciler likely must restart/reload Camilla after a
+   fan-in restart under `=fifo`. Validate on-device before default-on.
+
+**Test gap (partly closed):** the string tests now assert `type: RawFile`
+(+ `File` absent) for capture, but the real gate is `camilladsp --check` on the
+generated config, which CI cannot run (no binary). An on-device `--check` probe
+(deploy check / `jasper-doctor`) is owed.
+
 **FIFO format:** the lean pipe carries full **S32_LE @ 48 kHz stereo** (the
 usbsink bridge's normal snd-aloop lane uses the high-16 S16 view; the FIFO must
-*not* — CamillaDSP's File capture defaults to S32_LE). One owner of the path:
-`DEFAULT_LEAN_CAPTURE_FIFO` (`/run/jasper-usbsink/lean.pipe`).
+*not* — the RawFile capture declares `format: S32_LE` explicitly). One owner of
+the path: `DEFAULT_LEAN_CAPTURE_FIFO` (`/run/jasper-usbsink/lean.pipe`).
 
 ## What's shipped vs owed
 
@@ -74,7 +102,7 @@ usbsink bridge's normal snd-aloop lane uses the high-16 S16 view; the FIFO must
 | 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim, [`jasper.sound.runtime.apply_lean_capture_config`](../jasper/sound/runtime.py)), arm the usbsink FIFO output at runtime ([`jasper.usbsink.output_mode_reconcile`](../jasper/usbsink/output_mode_reconcile.py) → writes `JASPER_USBSINK_OUTPUT_MODE` to `/var/lib/jasper/usbsink.env` + restarts via the broker), and swap/restore via mux `_tick` (`decide_lean_route` → `Mux._enter_lean`/`_leave_lean` ladders, fail-loud → buffered) | shipped, default-OFF, **24 h soak owed** |
 | 5 | shairport-sync built `--with-pipe` (capable binary; runtime AirPlay pipe lane is future, #1318-gated) | shipped, dormant |
 | 6 | `jasper-doctor` DAC USB sync-mode advisory (clock-coherence signal, *not* the chip-AEC gate) | shipped |
-| 7 | **fan-in → CamillaDSP FIFO coupling** (`JASPER_FANIN_CAMILLA_COUPLING=fifo`) — the SHARED-capture endgame: fan-in writes a bounded pipe, CamillaDSP File-captures it; transport ([`jasper/fanin/src/fifo.rs`](../rust/jasper-fanin/src/fifo.rs)) + flag ([`jasper/fanin/src/config.rs`](../rust/jasper-fanin/src/config.rs) `Coupling`) + generator helper ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)) | shipped, default-OFF, **live-armed (flag-gated); 24 h soak owed before default-on** |
+| 7 | **fan-in → CamillaDSP FIFO coupling** (`JASPER_FANIN_CAMILLA_COUPLING=fifo`) — the SHARED-capture endgame: fan-in writes a bounded pipe, CamillaDSP File-captures it; transport ([`jasper/fanin/src/fifo.rs`](../rust/jasper-fanin/src/fifo.rs)) + flag ([`jasper/fanin/src/config.rs`](../rust/jasper-fanin/src/config.rs) `Coupling`) + generator helper ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)) | shipped, default-OFF; capture-type bug (`File`→`RawFile`) fixed + `--check`-validated on jts5; **fan-in-first arm ordering + RawFile-EOF reconnect handling + on-device soak owed before default-on** |
 
 **Going live is soak-gated.** `JASPER_LEAN_LANE` is opt-IN
 (`=enabled`), default-OFF, and is an *experiment knob* until a **24 h on-device

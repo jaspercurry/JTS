@@ -71,8 +71,10 @@ async def test_apply_lean_loads_carrier_preserved_lean_config(tmp_path):
     lean_path = lean_live_config_path(tmp_path)
     assert lean_path.exists()
     yaml = lean_path.read_text()
-    # Lean File capture + v4 object resampler + UNCHANGED outputd playback.
-    assert "type: File" in yaml
+    # Lean RawFile capture + v4 object resampler + UNCHANGED outputd playback.
+    # RawFile, not File — CamillaDSP v4 has no `File` capture variant.
+    assert "type: RawFile" in yaml
+    assert "type: File" not in yaml
     assert 'filename: "/run/jasper-usbsink/lean.pipe"' in yaml
     assert "type: AsyncSinc" in yaml
     assert "outputd_content_playback" in yaml

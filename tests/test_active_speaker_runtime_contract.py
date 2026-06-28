@@ -1364,7 +1364,10 @@ def test_active_baseline_file_capture_lean_variant_classifies_approved() -> None
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
     assert graph.allowed is True
     assert graph.details["baseline_candidate"] is True
-    assert "type: File" in yaml
+    # RawFile, not File — CamillaDSP v4 has no `File` capture variant
+    # (the active carrier is the live arm path on a crossover speaker).
+    assert "type: RawFile" in yaml
+    assert "type: File" not in yaml
     assert f'filename: "{DEFAULT_LEAN_CAPTURE_FIFO}"' in yaml
     assert "resampler:" in yaml
     assert "type: AsyncSinc" in yaml
