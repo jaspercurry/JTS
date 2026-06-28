@@ -1122,10 +1122,12 @@ mod tests {
 
     #[test]
     fn catchup_drains_excess_down_to_one_period() {
-        // 5 periods → discard 4, leave 1 (the target).
-        assert_eq!(catchup_drain_periods(5 * TEST_PERIOD, TEST_PERIOD), 4);
-        // 8 periods → discard 7, leave 1.
-        assert_eq!(catchup_drain_periods(8 * TEST_PERIOD, TEST_PERIOD), 7);
+        // A resync only fires ABOVE the high-water (14 periods); once it does,
+        // the WHOLE excess over TARGET is discarded, leaving exactly one period.
+        // 15 periods (one over the high-water) → discard 14, leave 1.
+        assert_eq!(catchup_drain_periods(15 * TEST_PERIOD, TEST_PERIOD), 14);
+        // 16 periods (the full 4096-frame input buffer) → discard 15, leave 1.
+        assert_eq!(catchup_drain_periods(16 * TEST_PERIOD, TEST_PERIOD), 15);
     }
 
     #[test]
