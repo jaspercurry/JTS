@@ -193,6 +193,45 @@ def test_endpoint_state_guard_rejects_wrong_state(monkeypatch):
         correction_setup._handle_relay_capture(None)
 
 
+def test_relay_calibration_mismatch_helper():
+    import types
+
+    from jasper.web import correction_setup
+
+    assert correction_setup._relay_calibration_mismatch(None) is None
+    # A manual_upload curve is left to the operator (mirrors the browser guard,
+    # which also only catches registry-vendor mics).
+    manual = types.SimpleNamespace(provider="manual_upload", label="my mic")
+    assert correction_setup._relay_calibration_mismatch(manual) is None
+    # An external USB measurement-mic curve on a phone capture is refused, by name.
+    vendor = types.SimpleNamespace(provider="dayton_audio", label="Dayton Audio iMM-6")
+    msg = correction_setup._relay_calibration_mismatch(vendor)
+    assert msg is not None and "Dayton Audio iMM-6" in msg
+
+
+def test_endpoint_refuses_relay_with_usb_calibration(monkeypatch):
+    import types
+
+    import pytest
+
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech")
+    from jasper.correction.session import SessionState
+    from jasper.web import correction_setup
+
+    # Right state, but a USB-mic calibration is loaded — the phone relay would
+    # silently mis-apply it. Refuse before claiming the slot or any network call.
+    fake = types.SimpleNamespace(
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+        session_id="cap_y",
+        mic_calibration=types.SimpleNamespace(provider="minidsp", label="miniDSP UMIK-1"),
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: fake)
+    correction_setup._set_relay_capture(None)
+    with pytest.raises(ValueError, match="calibration"):
+        correction_setup._handle_relay_capture(None)
+    assert correction_setup._get_relay_capture() is None  # slot not claimed
+
+
 def test_endpoint_route_is_registered():
     # Pin route membership: deleting the allowlist line would 404 it silently.
     from jasper.web import correction_setup

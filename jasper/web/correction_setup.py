@@ -67,13 +67,20 @@ import os
 import re
 import threading
 import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from ..log_event import log_event
+
+if TYPE_CHECKING:
+    from jasper.capture_relay.client import RelayClient
+    from jasper.capture_relay.correction_adapter import RelayCapture
+    from jasper.capture_relay.session import PiCaptureSession
 from ._common import (
     begin_request,
     bonded_follower_active,
@@ -200,6 +207,81 @@ def _begin_relay_capture() -> bool:
             return False
         _relay_capture = {"status": "starting"}
         return True
+
+
+@dataclass(frozen=True)
+class RelayCaptureKind:
+    """Per-flow plug for the generic relay orchestrator (`_run_relay_capture`).
+
+    Each measurement flow (room sweep, sync, crossover, …) injects only what is
+    flow-specific — how to mint+register its relay capture, and how to run it +
+    consume the verified WAV (play its stimulus on `armed`, then analyze). The
+    orchestrator owns everything common: the single-slot re-entrancy guard,
+    bounded registration, the `/status.relay` holder, and the background-task
+    lifecycle. Adding a kind is a descriptor, not a fourth copy of the handler.
+
+    `open(client, relay_base, capture_origin) -> RelayCapture` mints+registers the
+    kind's `capture_spec`; `run_and_consume(client, pi_session)` awaits the phone
+    capture (with the kind's stimulus as the `on_armed` callback) and feeds the
+    verified WAV to the kind's existing analysis seam.
+    """
+
+    label: str
+    open: Callable[[RelayClient, str, str], "RelayCapture"]
+    run_and_consume: Callable[[RelayClient, PiCaptureSession], Awaitable[None]]
+
+
+def _run_relay_capture(kind: RelayCaptureKind, relay_base: str) -> dict[str, Any]:
+    """Own the common relay-capture lifecycle for any kind. The caller has already
+    gated on the relay being configured and run the kind's own state/calibration
+    prechecks; this claims the slot, registers, spawns the background runner, and
+    surfaces the tap-link. Mirrors the room handler's prior inline body so room
+    behavior is unchanged — kinds just differ by their injected open/run."""
+    from jasper.capture_relay import correction_adapter
+    from jasper.capture_relay.client import RelayClient
+
+    if not _begin_relay_capture():
+        raise ValueError("a phone-mic relay capture is already in progress")
+    capture_origin = correction_adapter.capture_origin_from_env()
+    spawned = False
+    try:
+        # Register in the foreground (the session must exist before the phone opens
+        # the tap-link), bounded so a slow/unreachable relay fails fast.
+        client = RelayClient(relay_base, timeout=_RELAY_REGISTER_TIMEOUT_S)
+        rc = kind.open(client, relay_base, capture_origin)
+
+        async def _run() -> None:
+            try:
+                await kind.run_and_consume(client, rc.pi_session)
+                _set_relay_capture(
+                    {"tap_link": rc.tap_link, "status": "complete", "kind": kind.label}
+                )
+            except Exception as exc:  # noqa: BLE001 — surface loudly; never crash the loop
+                # run_capture already logs event=capture_relay.failed with a
+                # traceback; this outer net also flips /status.relay to failed.
+                log_event(
+                    logger,
+                    "capture_relay.adapter_failed",
+                    level=logging.WARNING,
+                    exc_info=True,
+                    kind=kind.label,
+                    reason=type(exc).__name__,
+                )
+                _set_relay_capture(
+                    {"tap_link": rc.tap_link, "status": "failed", "kind": kind.label}
+                )
+
+        _set_relay_capture(
+            {"tap_link": rc.tap_link, "status": "awaiting_phone", "kind": kind.label}
+        )
+        asyncio.run_coroutine_threadsafe(_run(), _ensure_loop())
+        spawned = True
+        return {"tap_link": rc.tap_link, "status": "awaiting_phone"}
+    finally:
+        if not spawned:
+            _set_relay_capture(None)  # release the slot on any early failure
+
+
 _start_in_progress = False
 
 _ACTIVE_SESSION_STATES = frozenset({
@@ -890,6 +972,35 @@ def _calibration_device_mismatch(
             "measurement mic before measuring"
         )
     return None
+
+
+def _relay_calibration_mismatch(mic_calibration: Any) -> str | None:
+    """Detect a vendor measurement-mic calibration applied to a phone-mic RELAY
+    capture — the same silent, measurement-invalidating mismatch
+    `_calibration_device_mismatch` guards for the browser, but certain rather than
+    heuristic: a relay capture is recorded by the phone's own mic *by
+    construction* (the capture page forces the phone mic, no device picker), so
+    there is no device label to inspect — any external USB-mic curve is wrong.
+
+    Returns a refusal message when an external-vendor calibration is loaded, else
+    None. A `manual_upload` curve is left to the operator (mirrors the browser
+    guard, which also only catches registry-vendor mics).
+    """
+    if mic_calibration is None:
+        return None
+    from jasper.correction.calibration import SUPPORTED_MODELS
+    external_providers = {spec["provider"] for spec in SUPPORTED_MODELS.values()}
+    provider = str(getattr(mic_calibration, "provider", "") or "")
+    if provider not in external_providers:
+        return None
+    label = str(getattr(mic_calibration, "label", "") or provider)
+    return (
+        f"a {label} measurement-mic calibration is loaded, but the phone relay "
+        "records with the phone's own mic, so the calibration cannot apply — the "
+        "result would be silently mis-corrected. Start a session without a "
+        "calibration to measure with the phone, or capture this position with the "
+        "USB measurement mic via the on-Pi browser flow."
+    )
 
 
 def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -1699,12 +1810,11 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     default flow is unaffected while it is validated on hardware.
     """
     from jasper.capture_relay import correction_adapter
-    from jasper.capture_relay.client import RelayClient
     from jasper.capture_relay.health import relay_base_from_env
     from jasper.correction.session import SessionState
 
-    # Gate on the configured relay origin (this also narrows it from str|None to
-    # str for the register call below — same as correction_adapter.relay_enabled).
+    # Gate FIRST so the endpoint is inert when the relay isn't configured (the
+    # default on-Pi flow is byte-identical). Also narrows relay_base str|None→str.
     relay_base = relay_base_from_env()
     if relay_base is None:
         raise ValueError(
@@ -1723,78 +1833,47 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             "relay capture starts a measurement position; expected state "
             f"needs_noise_capture, got {sess.state.value}"
         )
+    # A relay capture is recorded by the PHONE's mic; a loaded USB measurement-mic
+    # calibration curve would be silently mis-applied to it. Refuse loudly.
+    mismatch = _relay_calibration_mismatch(sess.mic_calibration)
+    if mismatch is not None:
+        raise ValueError(mismatch)
 
-    # Refuse a second relay capture while one is in flight (double-tap → two
-    # relay sessions + a capture-file race for one position).
-    if not _begin_relay_capture():
-        raise ValueError("a phone-mic relay capture is already in progress")
-
-    capture_origin = correction_adapter.capture_origin_from_env()
-    # Release the claimed slot if anything before the background spawn fails
-    # (a failed register, etc.) — try/finally + a flag avoids a broad except.
-    spawned = False
-    try:
-        # Register in the foreground so the relay session is guaranteed to exist
-        # before the phone opens the tap-link (the page fetches the spec
-        # immediately). Bound the timeout so a slow/unreachable relay fails fast
-        # instead of hanging the request thread for the full 15 s default.
-        client = RelayClient(relay_base, timeout=_RELAY_REGISTER_TIMEOUT_S)
-        rc = correction_adapter.open_room_sweep_capture(
+    def _open(client: RelayClient, base: str, capture_origin: str) -> RelayCapture:
+        return correction_adapter.open_room_sweep_capture(
             client,
             position=sess.current_position + 1,
             total_positions=sess.total_positions,
-            relay_base=relay_base,
+            relay_base=base,
             capture_origin=capture_origin,
         )
+
+    async def _run_and_consume(
+        client: RelayClient, pi_session: PiCaptureSession
+    ) -> None:
+        # On `armed` (phone recording), play the sweep through the SAME
+        # measurement_window()/prepare_and_play_sweep path the browser flow uses
+        # (loud-output safety + renderer/voice pause preserved). run_capture's
+        # default 120 s timeout is intentionally ~ the AWAITING_CAPTURE watchdog;
+        # keep them aligned if either constant changes. Then feed the verified WAV
+        # to on_capture_uploaded — the identical seam a same-origin upload uses.
         capture_path = sess.capture_path_for_position(sess.current_position)
+        await asyncio.to_thread(
+            correction_adapter.run_and_store,
+            client,
+            pi_session,
+            capture_path,
+            on_armed=lambda: _schedule_measurement_sweep(
+                sess, _camilla(), from_state=SessionState.NEEDS_NOISE_CAPTURE
+            ),
+        )
+        await sess.on_capture_uploaded(capture_path)
 
-        def _on_armed() -> None:
-            # The phone is recording; play the sweep through the safe playback
-            # path (measurement_window pauses renderers/voice; prepare_and_play_
-            # sweep owns the loud-output-safe sweep). Same machinery as the
-            # browser flow.
-            _schedule_measurement_sweep(
-                sess, _camilla(), from_state=SessionState.NEEDS_NOISE_CAPTURE,
-            )
-
-        async def _run() -> None:
-            try:
-                # run_capture's default timeout (120 s) is intentionally ~ the
-                # session's AWAITING_CAPTURE watchdog so the two recovery paths
-                # agree; keep them aligned if either constant changes.
-                await asyncio.to_thread(
-                    correction_adapter.run_and_store,
-                    client,
-                    rc.pi_session,
-                    capture_path,
-                    on_armed=_on_armed,
-                )
-                await sess.on_capture_uploaded(capture_path)
-                _set_relay_capture({"tap_link": rc.tap_link, "status": "complete"})
-            except Exception as exc:  # noqa: BLE001 — surface loudly; never crash the loop
-                # run_capture already logs event=capture_relay.failed with a
-                # traceback; this outer net also flips /status.relay to failed.
-                log_event(
-                    logger,
-                    "capture_relay.adapter_failed",
-                    level=logging.WARNING,
-                    exc_info=True,
-                    session_id=sess.session_id,
-                    reason=type(exc).__name__,
-                )
-                _set_relay_capture({"tap_link": rc.tap_link, "status": "failed"})
-
-        _set_relay_capture({"tap_link": rc.tap_link, "status": "awaiting_phone"})
-        asyncio.run_coroutine_threadsafe(_run(), _ensure_loop())
-        spawned = True
-        return {
-            "session_id": sess.session_id,
-            "state": sess.state.value,
-            "relay": {"tap_link": rc.tap_link, "status": "awaiting_phone"},
-        }
-    finally:
-        if not spawned:
-            _set_relay_capture(None)  # release the slot on any early failure
+    kind = RelayCaptureKind(
+        label="room_sweep", open=_open, run_and_consume=_run_and_consume
+    )
+    relay = _run_relay_capture(kind, relay_base)
+    return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
 
 
 def _maybe_restore_main_volume(sess, cam) -> None:
