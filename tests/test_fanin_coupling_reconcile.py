@@ -184,3 +184,26 @@ def test_default_env_path_is_reconciler_owned_fanin_env():
     # Single-writer contract: same wizard-owned file the adaptive buffer + the
     # unit EnvironmentFile use.
     assert FANIN_ENV_PATH == "/var/lib/jasper/fanin.env"
+
+
+def test_cli_main_hydrates_env_files_before_reconciling(monkeypatch):
+    # The CLI/install shell does not pre-source the wizard env files, so main()
+    # MUST hydrate them before reconciling — else the triggered camilla reconcile
+    # emits with DEFAULT chunksize/target_level, silently resetting a tuned value
+    # (caught on JTS 2026-06-27). Assert the hydrate happens before the reconcile.
+    from jasper.fanin import coupling_reconcile as cr
+
+    order: list[str] = []
+    monkeypatch.setattr(
+        "jasper.env_load.load_env_files", lambda *a, **k: order.append("hydrate")
+    )
+
+    def fake_reconcile(*a, **k):
+        order.append("reconcile")
+        return cr.CouplingResult(ok=True, desired="loopback", changed=False,
+                                 direction="confirm")
+
+    monkeypatch.setattr(cr, "reconcile_coupling", fake_reconcile)
+    rc = cr.main(["loopback"])
+    assert rc == 0
+    assert order == ["hydrate", "reconcile"]

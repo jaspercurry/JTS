@@ -352,6 +352,15 @@ def main(argv: "list[str] | None" = None) -> int:
         help="write the env only; skip the daemon transition (staging).",
     )
     args = parser.parse_args(argv)
+    # Hydrate os.environ from the wizard-owned env files (same set the daemons
+    # load) BEFORE reconciling, so the camilla reconcile this triggers emits with
+    # the persisted JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} etc. — not their
+    # defaults. Without this, arming =fifo from a bare CLI/install shell silently
+    # RESET a tuned chunksize back to 1024 (caught on JTS 2026-06-27). setdefault
+    # semantics keep an explicit shell override winning. Mirrors jasper.cli.sound.
+    from jasper.env_load import load_env_files
+
+    load_env_files()
     result = reconcile_coupling(
         args.coupling, reason=args.reason, apply=not args.no_apply,
     )
