@@ -380,21 +380,24 @@ async def relay_run_and_consume(client: Any, pi_session: Any) -> None:
 
     # run_capture returns a CaptureResult (WAV + phone device); sync compares
     # arrival timing within one recording, so the device/calibration is irrelevant.
+    # On ANY failure release the held measurement window NOW (renderers/voice come
+    # back) and surface the error on /sync/status — otherwise the window stays held
+    # until the 240 s SESSION_MAX_S cap and the page shows a silent stuck
+    # "measuring". try/finally + a flag avoids a broad except; the exception still
+    # propagates so the orchestrator marks it failed (run_capture already logged
+    # event=capture_relay.failed).
+    analyzed = False
     try:
         capture = await asyncio.to_thread(
             run_capture, client, pi_session, on_armed=_on_armed
         )
         purge(client, pi_session)
         result = analyze_wav_bytes(capture.wav)
-    except Exception as exc:
-        # Release the held measurement window NOW (renderers/voice come back) and
-        # surface the error on /sync/status — otherwise the window would stay held
-        # until the 240 s SESSION_MAX_S cap and the page would show a silent,
-        # stuck "measuring". Then re-raise so the relay orchestrator marks it
-        # failed (and run_capture has already logged event=capture_relay.failed).
-        with _lock:
-            _reset_locked(f"phone-relay capture failed: {exc}")
-        raise
+        analyzed = True
+    finally:
+        if not analyzed:
+            with _lock:
+                _reset_locked("phone-relay capture failed")
     recommendation = recommend_channel_delays(result.delta_ms)
     with _lock:
         _state["result"] = result.to_dict()
