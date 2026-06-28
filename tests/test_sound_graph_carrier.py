@@ -839,7 +839,9 @@ def test_base_flat_fifo_coupling_emits_file_capture(tmp_path):
         profile_id="x",
         fanin_coupling_capture_kwargs=_FIFO_COUPLING_KWARGS,
     ).yaml
-    assert "type: File" in cfg
+    # RawFile, not File — CamillaDSP v4 has no `File` capture variant.
+    assert "type: RawFile" in cfg
+    assert "type: File" not in cfg
     assert _FANIN_PIPE in cfg
     assert 'device: "plug:jasper_capture"' not in cfg
     assert "type: AsyncSinc" in cfg
