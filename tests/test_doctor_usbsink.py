@@ -249,6 +249,136 @@ def test_usbsink_state_active_corrupt_state_is_fail(monkeypatch, tmp_path):
 
 
 # ----------------------------------------------------------------------
+# check_usbsink_state — optional rate_match block
+# ----------------------------------------------------------------------
+
+
+def _state_with(monkeypatch, tmp_path, payload: dict):
+    """Write a fresh active state.json with `payload` and run the check."""
+    _patch_active(monkeypatch, True)
+    _patch_libcomp_loaded(monkeypatch, True)
+    state_path = tmp_path / "state.json"
+    base = {
+        "playing": True,
+        "preempted": False,
+        "host_connected": True,
+        "rms_dbfs": -14.0,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    base.update(payload)
+    state_path.write_text(json.dumps(base))
+    with patch.object(doctor.usbsink, "Path") as mock_path:
+        def _path(p):
+            if p == "/run/jasper-usbsink/state.json":
+                return state_path
+            return Path(p)
+        mock_path.side_effect = _path
+        return doctor.check_usbsink_state()
+
+
+def test_usbsink_state_rate_match_absent_is_byte_identical(monkeypatch, tmp_path):
+    """No rate_match block (the default) → the ok line is exactly the legacy
+    one, with no rate-match text."""
+    r = _state_with(monkeypatch, tmp_path, {})
+    assert r.status == "ok"
+    assert "rate_match" not in r.detail
+    assert r.detail == (
+        "active, playing=True host_connected=True rms_dbfs=-14.0"
+    )
+
+
+def test_usbsink_state_rate_match_disabled_block_is_ignored(monkeypatch, tmp_path):
+    """An explicit {enabled: false} block (defensive) is not surfaced."""
+    r = _state_with(
+        monkeypatch, tmp_path, {"rate_match": {"enabled": False}},
+    )
+    assert r.status == "ok"
+    assert "rate_match" not in r.detail
+
+
+def test_usbsink_state_rate_match_locked_surfaces_on_ok_line(monkeypatch, tmp_path):
+    """Enabled + locked while playing → ok, with the ppm/locked/resync detail
+    appended to the same line operators already read."""
+    r = _state_with(
+        monkeypatch, tmp_path,
+        {"rate_match": {
+            "enabled": True, "ratio_ppm": 42.3, "err_frames": -1.0,
+            "locked": True, "resync_count": 3, "clamp_count": 0,
+            "qfill_frames": 1920,
+        }},
+    )
+    assert r.status == "ok"
+    assert "rate_match ppm=42.3" in r.detail
+    assert "locked=True" in r.detail
+    assert "resync=3" in r.detail
+
+
+def test_usbsink_state_rate_match_unlocked_while_playing_warns(monkeypatch, tmp_path):
+    """Enabled + NOT locked while playing+host_connected → warn with a tuning
+    hint (the loop isn't tracking)."""
+    r = _state_with(
+        monkeypatch, tmp_path,
+        {
+            "playing": True, "host_connected": True,
+            "rate_match": {
+                "enabled": True, "ratio_ppm": 500.0, "err_frames": 200.0,
+                "locked": False, "resync_count": 12, "clamp_count": 7,
+                "qfill_frames": 480,
+            },
+        },
+    )
+    assert r.status == "warn"
+    assert "not locked" in r.detail.lower()
+    assert "tune" in r.detail.lower()
+
+
+def test_usbsink_state_rate_match_unlocked_while_idle_is_ok(monkeypatch, tmp_path):
+    """Unlocked but NOT playing (host idle) → ok (no audio to track, the loop
+    is legitimately not engaged)."""
+    r = _state_with(
+        monkeypatch, tmp_path,
+        {
+            "playing": False, "host_connected": True,
+            "rate_match": {
+                "enabled": True, "ratio_ppm": 0.0, "err_frames": 0.0,
+                "locked": False, "resync_count": 0, "clamp_count": 0,
+                "qfill_frames": 0,
+            },
+        },
+    )
+    assert r.status == "ok"
+    assert "rate_match ppm=0.0" in r.detail
+
+
+def test_usbsink_state_rate_match_null_ppm_is_unknown(monkeypatch, tmp_path):
+    """A null ratio_ppm (non-finite at publish time) renders as 'unknown', not
+    a crash."""
+    r = _state_with(
+        monkeypatch, tmp_path,
+        {"rate_match": {
+            "enabled": True, "ratio_ppm": None, "err_frames": None,
+            "locked": True, "resync_count": 0, "clamp_count": 0,
+            "qfill_frames": 1920,
+        }},
+    )
+    assert r.status == "ok"
+    assert "rate_match ppm=unknown" in r.detail
+
+
+def test_usbsink_state_rate_match_malformed_ppm_warns(monkeypatch, tmp_path):
+    """A non-numeric ratio_ppm (schema drift) → warn, not a crash."""
+    r = _state_with(
+        monkeypatch, tmp_path,
+        {"rate_match": {
+            "enabled": True, "ratio_ppm": "fast",
+            "locked": True, "resync_count": 0,
+        }},
+    )
+    assert r.status == "warn"
+    assert "ratio_ppm not numeric" in r.detail
+
+
+# ----------------------------------------------------------------------
 # check_usbsink_card
 # ----------------------------------------------------------------------
 

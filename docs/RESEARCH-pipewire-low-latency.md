@@ -162,6 +162,20 @@ idea (see Part 3) — the software-AEC resampling follow-up was dropped because
 AEC3 self-compensates. Increment 6 (stage→barrier→swap) is the 4b-iv live
 wiring, in progress.
 
+**Shared resampler (2026-06-28):** the windowed-sinc interpolator that pairs
+with the `spa_dll` loop (PipeWire's `resample-native*.c` analogue, item 2
+above) is now its own shared crate, **`jasper-resampler`** — a pure crate
+(no I/O / no ALSA, same doctrine as `jasper-clock`, which it depends on for
+the `RateController`). `jasper-outputd`'s `content_bridge` *consumes* it
+(killing the duplicated sinc/ring/controller it used to embed), and the
+Python/usbsink drift rate-match (`docs/HANDOFF-usbsink.md` §3.4) consumes a
+**C++ mirror** of the same algorithm (`jasper_resampler/`, a pybind11 binding
+like `jasper_aec3`, because the repo has no PyO3/maturin to bind the Rust
+crate from Python). The two implementations are pinned bit-for-bit by
+`tests/test_resampler_contract.py` against a committed golden vector. So
+`spa_dll` is the one shared *loop* and `jasper-resampler` is the one shared
+*resampler*; usbsink is the first capture-follower consumer of both.
+
 **Convergence with the audio-foundation review** (`docs/HANDOFF-audio-latency-foundation.md`):
 increments 2/4 *are* that review's **G2**; PipeWire's `RLIMIT_RTTIME` point is its
 **G4**. The two independent investigations point at the same small set — strong
@@ -187,5 +201,6 @@ zero-copy. The borrow is the clock-tracking **algorithm**, not the architecture.
 `spa/include/spa/buffer/buffer.h` + `src/pipewire/mem.c` (zero-copy / `SCM_RIGHTS`);
 `docs.pipewire.org/page_scheduling.html`.
 
-Last verified: 2026-06-27 (PipeWire master; techniques traced to the cited
+Last verified: 2026-06-28 (added the shared-resampler note — jasper-resampler
+crate + its C++ usbsink mirror; PipeWire master; techniques traced to the cited
 source and design docs by a 4-area code-reading pass + synthesis).

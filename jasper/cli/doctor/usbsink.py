@@ -33,6 +33,23 @@ def _format_rms_dbfs(raw: object) -> tuple[str | None, str | None]:
     return f"{value:.1f}", None
 
 
+def _format_ratio_ppm(raw: object) -> tuple[str | None, str | None]:
+    """Schema-drift-safe formatter for the rate_match ratio_ppm field.
+
+    None (non-finite published as null) → "unknown". A numeric value →
+    one-decimal text. Anything non-numeric → an error string so the caller
+    can warn rather than crash on a malformed state file. Mirrors
+    _format_rms_dbfs."""
+    if raw is None:
+        return "unknown", None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None, f"rate_match.ratio_ppm not numeric: {raw!r}"
+    value = float(raw)
+    if not math.isfinite(value):
+        return None, f"rate_match.ratio_ppm not finite: {raw!r}"
+    return f"{value:.1f}", None
+
+
 def _systemd_is_active(unit: str) -> bool:
     """Wrapper around `systemctl is-active`. Cheap; ~5 ms per call."""
     return _run(["systemctl", "is-active", unit]).stdout.strip() == "active"
@@ -196,12 +213,43 @@ def check_usbsink_state() -> CheckResult:
             "warn",
             f"{rms_error} — schema drift?",
         )
-    return CheckResult(
-        "usbsink state", "ok",
+    base_detail = (
         f"active, playing={data.get('playing')} "
         f"host_connected={data.get('host_connected')} "
-        f"rms_dbfs={rms_text}",
+        f"rms_dbfs={rms_text}"
     )
+
+    # Optional drift rate-match health — only when the published state carries
+    # the rate_match block (stage enabled). Absent/off → byte-identical line.
+    rm = data.get("rate_match")
+    if isinstance(rm, dict) and rm.get("enabled"):
+        ppm_text, ppm_error = _format_ratio_ppm(rm.get("ratio_ppm"))
+        if ppm_error is not None:
+            return CheckResult(
+                "usbsink state", "warn", f"{base_detail}; {ppm_error} — schema drift?",
+            )
+        locked = bool(rm.get("locked"))
+        resync = rm.get("resync_count")
+        resync_text = resync if isinstance(resync, int) and not isinstance(resync, bool) else "?"
+        rm_detail = (
+            f"; rate_match ppm={ppm_text} locked={locked} resync={resync_text}"
+        )
+        # Warn when the loop is unlocked while audio is actively flowing
+        # (host connected + playing) — a sustained unlock there means the
+        # rate-match isn't tracking; suggest the tuning knobs. Note the loop
+        # can read "unlocked" under buffer jitter even while tracking, so this
+        # is a tuning hint, not a hard failure.
+        if (not locked) and data.get("playing") and data.get("host_connected"):
+            return CheckResult(
+                "usbsink state", "warn",
+                base_detail + rm_detail
+                + " — rate-match loop not locked while playing; tune "
+                "JASPER_USBSINK_RATE_MATCH_BW / _TARGET_MS or check "
+                "event=usbsink.ratematch.",
+            )
+        return CheckResult("usbsink state", "ok", base_detail + rm_detail)
+
+    return CheckResult("usbsink state", "ok", base_detail)
 
 @doctor_check(order=59, group="usbsink")
 def check_usbsink_card() -> CheckResult:

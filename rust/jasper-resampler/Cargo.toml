@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Pure windowed-sinc resampler + rate controller. The ONE shared
+# arbitrary-ratio resampling algorithm in the JTS audio daemons: the
+# precomputed Blackman-Harris windowed-sinc interpolator, the streaming
+# block resampler that keeps a fractional read cursor across calls, and the
+# rate controller that drives the ratio from a buffer-fill error (composing
+# the shared jasper-clock spa_dll loop). jasper-outputd's content_bridge
+# consumes it; the usbsink-side C++ binding mirrors the same math, pinned by a
+# cross-language contract test. See docs/RESEARCH-pipewire-low-latency.md.
+#
+# No I/O, no ALSA, no libasound, no threads — exactly like jasper-clock, so it
+# compiles and unit-tests on any host (CI + dev laptop; the daemons that
+# consume it link libasound, which is Linux-only). The ONLY dependency is the
+# sibling jasper-clock crate (the control law). Pin to the same edition the
+# production daemons use; CI builds it on Trixie-era rustc (1.85.0).
+
+[package]
+name = "jasper-resampler"
+version = "0.1.0"
+edition = "2021"
+description = "Pure windowed-sinc resampler + rate controller shared across the JTS audio daemons."
+license = "Apache-2.0"
+repository = "https://github.com/jaspercurry/JTS"
+authors = ["Jasper Curry <jaspercurry@gmail.com>"]
+rust-version = "1.75"
+
+[lib]
+name = "jasper_resampler"
+
+[dependencies]
+# The shared clock-tracking DLL (spa_dll port). The rate controller composes
+# it as its control law (same loop content_bridge used to embed). Pure, no ALSA.
+jasper-clock = { path = "../jasper-clock" }
