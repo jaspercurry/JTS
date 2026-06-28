@@ -532,119 +532,6 @@ when it cannot. For USB, the silencing-the-daemon approach gives us a
 clean local pause that does not depend on upstream host cooperation —
 the daemon silences its own output deterministically.
 
-### 3.4 Drift rate-match (`JASPER_USBSINK_RATE_MATCH`, default OFF)
-
-**Problem.** The USB host (e.g. a Mac) clock runs slightly faster or
-slower than the DAC (the Apple dongle). The capture callback enqueues at
-the host rate; the consumer (the fifo writer's `os.write`, paced by
-CamillaDSP reading the pipe at the DAC rate) drains at the DAC rate. When
-the host is faster, the queue accumulates and overflows → bursty
-`dropped_full` (audible under sustained play, worst on the lean fifo
-path). CamillaDSP's own `rate_adjust` can't fix it — that resamples
-fan-in's *output*; the drop is *upstream* at the usbsink.
-
-**Fix.** Resample the captured block host→DAC **at the single producer
-chokepoint** (`_capture_callback`) BEFORE it enters the queue, so fan-in
-and CamillaDSP stay spectators (one rate loop — two coupled loops would
-oscillate, the failure `tests/test_multiroom_rate_adjust.py` guards).
-This is PipeWire's capture-follower model, ported.
-
-**Where the control law comes from.** The loop is the shared
-`spa_dll` second-order DLL — the same one `jasper-outputd`'s
-`content_bridge` uses in production, lifted into the `jasper-resampler`
-crate. The Python/usbsink path can't link that Rust crate (no
-PyO3/maturin in the repo), so the algorithm is mirrored in C++
-(`jasper_resampler/`, a pybind11 binding exactly like `jasper_aec3`) and
-the two are pinned bit-for-bit by `tests/test_resampler_contract.py`. The
-windowed-sinc interpolator is the same one content_bridge uses, so the
-resample is the project's single resampling algorithm in two languages,
-not a third copy.
-
-**Sign (the load-bearing decision).** Define
-`buffered = enqueued_frames - drained_frames` (frame-accurate, NOT the
-coarse `qsize`), `target = round(target_ms/1000 * 48000)` (40 ms ⇒ 1920
-frames), `err = buffered - target`. Feed the DLL the **negated** error
-(`RateResampler.update(err)` negates internally), exactly as
-`content_bridge.rs RateController::next_ratio` does
-(`dll.update(-error_frames)`). A too-full buffer (`err > 0`) settles to
-`ratio > 1`; the resampler then advances its read cursor by `ratio` input
-frames per output frame, emitting **fewer** output frames — draining the
-buffer (consuming the host faster). One inversion total, located at the
-DLL's error input; this is mathematically PipeWire's capture `1.0/corr`.
-
-**Prime gate (why no acquisition churn).** content_bridge avoids feeding
-the DLL a giant cold-start error by seating its cursor AT target before
-engaging. usbsink does the same: while priming, the capture side passes
-audio through at ratio 1 AND the consumer is **paused** (emits silence,
-does not dequeue — see `_rate_match_consumer_paused`), so the buffer
-fills to `target` regardless of drift direction (a draining buffer could
-never fill when the host is slower than the DAC). Once buffered to target
-the loop engages with the first error ~0. A mid-stream collapse below the
-low-water mark (20% of target — a host pause/seek underran it) de-primes
-and resets the loop, so playback re-primes and the controller re-locks
-from a clean phase rather than slewing through the step (a seek is a
-step, not drift). `JASPER_USBSINK_RATE_MATCH_TARGET_MS` overflow/saturate
-runs for `RATE_MATCH_RESYNC_EXTREME_CALLBACKS` also force a daemon-side
-loop reset.
-
-**Knobs** (all wizard/env, default sized for a good starting point):
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `JASPER_USBSINK_RATE_MATCH` | `off` | master switch; OFF = byte-identical |
-| `JASPER_USBSINK_RATE_MATCH_TARGET_MS` | `40` | buffer fill the loop holds |
-| `JASPER_USBSINK_RATE_MATCH_BW` | `0.128` | DLL acquire bandwidth (`SPA_DLL_BW_MAX`) |
-| `JASPER_USBSINK_RATE_MATCH_MAX_ADJUST_PPM` | `500` | output ppm clamp (pitch-warp bound) |
-
-The DLL's per-cycle hard-resync is disabled for usbsink
-(`max_resync=0` passed to the binding) because the buffer signal's quantum
-is one block (== the default `max_resync`), so ordinary jitter would trip
-it constantly; the prime gate + daemon-side de-prime own discontinuity
-detection instead. Default construction of `RateResampler` still uses the
-Rust `DllConfig::for_rate` thresholds (the contract-test path).
-
-**Targets fifo mode.** The resampled block can be ±a few frames off one
-block; the fifo writer's `os.write` carries the full variable-length
-block correctly. In aloop mode the playback callback truncates a
-too-long block to `expected_bytes` (losing the tail), so rate-match is a
-fifo-lean-lane feature — it's wired for both modes (the binding is
-sample-width-aware: S16 for aloop, S32 for fifo, one exact path) but is
-intended for fifo.
-
-**Fail-soft.** The binding is lazily imported in the bridge ctor. If it
-isn't built (a dev laptop), the stage logs `usbsink.ratematch_unavailable`
-(WARN) and runs DISABLED — never crashing the realtime audio daemon. An
-unexpected resampler fault mid-stream disables the stage and passes the
-block through (`usbsink.ratematch_runtime_error`). Both use narrow
-exceptions (no blind-except debt).
-
-**Observability.**
-- `event=usbsink.ratematch reason=resync …` on each de-prime/resync
-  (off-cadence, so a seek leaves a breadcrumb), plus a `reason=periodic`
-  heartbeat every `DIAG_INTERVAL`. The `usbsink.diag` line also carries
-  the `rate_match_*` fields when the stage is on.
-- `/run/jasper-usbsink/state.json` gains an optional `rate_match` object
-  (`enabled/ratio_ppm/err_frames/locked/resync_count/clamp_count/
-  qfill_frames`) — present ONLY when enabled, so the default state.json is
-  byte-identical and the existing consumers (`source_state`, mux) are
-  untouched.
-- `jasper-doctor`'s `usbsink state` line appends
-  `rate_match ppm=… locked=… resync=…` when enabled, and warns (with a
-  tuning hint) if the loop is unlocked while playing+host_connected.
-
-**Honest tuning caveat.** The control law converges exactly to the host↔
-DAC drift on a clean fill signal (a closed-loop model verifies all drift
-directions, zero residual). The practical caveat is signal *resolution*:
-content_bridge feeds the loop a smooth, sub-frame cursor fill, whereas
-usbsink feeds it the buffered-frames depth, which carries the OS/scheduler
-jitter of a discrete handoff. The final loop tuning against the real
-pipe-timing jitter is the **on-device validation step**. Note the DLL's
-lock-verdict threshold is tuned for a smooth signal and may read
-"unlocked" under that jitter even while the ratio tracks correctly —
-treat `ratio_ppm` settling, not the lock flag, as the on-device
-convergence signal, and tune `_BW` / `_TARGET_MS` if `dropped_full` /
-`underrun` aren't both near zero under sustained real audio.
-
 ## 4. Component design (file map)
 
 ### 4.1 Boot-time gadget setup
@@ -1857,5 +1744,8 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-06-28 (added §3.4 drift rate-match — the
-capture-follower spa_dll resample stage, default OFF)
+Last verified: 2026-06-28 (removed §3.4 drift rate-match — the
+capture-follower spa_dll resample stage was cut as the wrong tool for the
+observed USB drops, which are consumer-pacing/clock-domain overflow, not
+±500 ppm drift; rate reconciliation will be redone in CamillaDSP
+rate_adjust / a fan-in per-lane resampler)

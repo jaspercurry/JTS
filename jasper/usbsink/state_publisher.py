@@ -12,24 +12,8 @@ State shape (read by jasper.source_state.usbsink_playing, the
       "preempted": bool,       mux has silenced us
       "host_connected": bool,  /proc/asound/UAC2Gadget present
       "rms_dbfs": float|null,  last finite observation; null before one exists
-      "updated_at": str,       ISO 8601 UTC
-      "rate_match": {          OPTIONAL — present only when the drift
-                              rate-match stage is enabled (absent by
-                              default, so the legacy state.json is
-                              byte-identical for the off path):
-        "enabled": bool,
-        "ratio_ppm": float|null,   null when non-finite
-        "err_frames": float|null,  null when non-finite
-        "locked": bool,
-        "resync_count": int,
-        "clamp_count": int,
-        "qfill_frames": int
-      }
+      "updated_at": str        ISO 8601 UTC
     }
-
-The existing consumers (source_state.usbsink_playing, mux) only read
-playing/preempted/host_connected/rms_dbfs, so the added optional block
-does not affect them.
 
 Atomic writes (tempfile + os.replace) so partial JSON never lands on
 disk. World-readable file mode (0644) so jasper-voice, jasper-control,
@@ -226,21 +210,6 @@ class StatePublisher:
             "rms_dbfs": _json_rms_dbfs(self._bridge.last_rms_dbfs),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        # Optional drift rate-match block — present ONLY when the stage is
-        # enabled, so the default state.json stays byte-identical and existing
-        # consumers are untouched. Float fields are null-safe for non-finite
-        # values (allow_nan=False JSON would otherwise raise).
-        if getattr(self._bridge, "rate_match_enabled", False):
-            s = self._bridge.stats
-            payload["rate_match"] = {
-                "enabled": True,
-                "ratio_ppm": _json_rms_dbfs(s.rate_match_ratio_ppm),
-                "err_frames": _json_rms_dbfs(s.rate_match_err_frames),
-                "locked": bool(s.rate_match_locked),
-                "resync_count": int(s.rate_match_resync_count),
-                "clamp_count": int(s.rate_match_clamp_count),
-                "qfill_frames": int(s.rate_match_qfill_frames),
-            }
         # State-change log surfaces preempted / host_connected edges
         # too, not just playing edges — both are useful in incident
         # debugging.

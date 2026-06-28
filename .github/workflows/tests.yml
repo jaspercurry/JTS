@@ -305,8 +305,8 @@ jobs:
         # The shared windowed-sinc resampler + rate controller. Pure Rust, no
         # libasound, so its pass-through / capture-follower frame-count /
         # streaming-continuity / loop-sign properties are the regression gate
-        # that the daemon path (content_bridge) and the C++ usbsink binding both
-        # mirror (pinned by tests/test_resampler_contract.py).
+        # for the daemon path (jasper-outputd's content_bridge), its sole
+        # consumer.
         working-directory: rust/jasper-resampler
         run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 

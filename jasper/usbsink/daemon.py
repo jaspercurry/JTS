@@ -37,10 +37,6 @@ from jasper.log_event import log_event
 from .audio_bridge import (
     BLOCK_FRAMES,
     QUEUE_MAXBLOCKS,
-    RATE_MATCH_BW,
-    RATE_MATCH_DEFAULT,
-    RATE_MATCH_MAX_ADJUST_PPM,
-    RATE_MATCH_TARGET_MS,
     AudioBridge,
     BridgeStats,
 )
@@ -146,16 +142,6 @@ class DaemonConfig:
     # yet; the lean lane is dormant until a lean-lane apply wires it.
     output_mode: str = "aloop"
     fifo_path: str = DEFAULT_LEAN_CAPTURE_FIFO
-    # Drift rate-match (default OFF). When on, the capture callback drives a
-    # capture-follower DLL off the buffer fill and resamples each block before
-    # fan-in, so the USB host↔DAC clock drift doesn't overflow the queue
-    # (dropped_full) on the lean fifo path. Byte-identical when off. The three
-    # tuning knobs mirror the audio_bridge RATE_MATCH_* defaults; see that
-    # module's docstring + docs/HANDOFF-usbsink.md for the design.
-    rate_match: bool = RATE_MATCH_DEFAULT
-    rate_match_target_ms: float = RATE_MATCH_TARGET_MS
-    rate_match_bw: float = RATE_MATCH_BW
-    rate_match_max_adjust_ppm: float = RATE_MATCH_MAX_ADJUST_PPM
 
     @classmethod
     def from_env(cls) -> "DaemonConfig":
@@ -207,26 +193,6 @@ class DaemonConfig:
             fifo_path=os.environ.get(
                 "JASPER_USBSINK_FIFO_PATH", DEFAULT_LEAN_CAPTURE_FIFO,
             ),
-            rate_match=_parse_bool_flag(
-                os.environ.get("JASPER_USBSINK_RATE_MATCH", ""),
-                default=RATE_MATCH_DEFAULT,
-                name="JASPER_USBSINK_RATE_MATCH",
-            ),
-            rate_match_target_ms=_parse_float_env(
-                os.environ.get("JASPER_USBSINK_RATE_MATCH_TARGET_MS", ""),
-                default=RATE_MATCH_TARGET_MS,
-                name="JASPER_USBSINK_RATE_MATCH_TARGET_MS",
-            ),
-            rate_match_bw=_parse_float_env(
-                os.environ.get("JASPER_USBSINK_RATE_MATCH_BW", ""),
-                default=RATE_MATCH_BW,
-                name="JASPER_USBSINK_RATE_MATCH_BW",
-            ),
-            rate_match_max_adjust_ppm=_parse_float_env(
-                os.environ.get("JASPER_USBSINK_RATE_MATCH_MAX_ADJUST_PPM", ""),
-                default=RATE_MATCH_MAX_ADJUST_PPM,
-                name="JASPER_USBSINK_RATE_MATCH_MAX_ADJUST_PPM",
-            ),
         )
 
 
@@ -274,53 +240,6 @@ def _parse_output_mode(raw: str) -> str:
     return "aloop"
 
 
-def _parse_bool_flag(raw: str, *, default: bool, name: str) -> bool:
-    """Parse an on/off env flag, fail-soft to `default` on garbage.
-
-    Accepts on/off/true/false/1/0/yes/no/enabled/disabled (case-insensitive).
-    Unset ("") → default. A malformed value logs a WARN and uses the default —
-    a typo must never crash the audio daemon NOR silently flip a default-OFF
-    safety knob (same shape as _parse_output_mode)."""
-    s = (raw or "").strip().lower()
-    if s == "":
-        return default
-    if s in ("1", "true", "yes", "on", "enabled"):
-        return True
-    if s in ("0", "false", "no", "off", "disabled"):
-        return False
-    log_event(
-        logger,
-        "usbsink.bool_flag_invalid",
-        var=name,
-        value=raw,
-        using="on" if default else "off",
-        level=logging.WARNING,
-    )
-    return default
-
-
-def _parse_float_env(raw: str, *, default: float, name: str) -> float:
-    """Parse a float env knob, fail-soft to `default` on garbage.
-
-    Unset ("") → default. A malformed value logs a WARN and uses the default
-    (mirrors _parse_latency's fail-soft — a typo never crashes the daemon)."""
-    s = (raw or "").strip()
-    if s == "":
-        return default
-    try:
-        return float(s)
-    except ValueError:
-        log_event(
-            logger,
-            "usbsink.float_env_invalid",
-            var=name,
-            value=raw,
-            using=default,
-            level=logging.WARNING,
-        )
-        return default
-
-
 class UsbSinkDaemon:
     """Runs the audio bridge under systemd, with watchdog patting tied
     to forward progress in the playback/output callback.
@@ -344,10 +263,6 @@ class UsbSinkDaemon:
             latency=_parse_latency(config.latency),
             output_mode=config.output_mode,
             fifo_path=config.fifo_path,
-            rate_match=config.rate_match,
-            rate_match_target_ms=config.rate_match_target_ms,
-            rate_match_bw=config.rate_match_bw,
-            rate_match_max_adjust_ppm=config.rate_match_max_adjust_ppm,
         )
         # Preempt listener restores prior preempt state in start() —
         # before the bridge has actually opened streams, so an
@@ -375,10 +290,6 @@ class UsbSinkDaemon:
         self._last_playback_progress_mono = now
         self._capture_idle_logged = False
         self._playback_stale_logged = False
-        # Rate-match breadcrumb: emit a dedicated event when the DLL resyncs
-        # (a host pause/seek stepped the buffer) so the journal records the
-        # discontinuity even between the slower diag-interval snapshots.
-        self._last_ratematch_resync_seen = 0
 
     @classmethod
     def from_env(cls) -> "UsbSinkDaemon":
@@ -544,30 +455,12 @@ class UsbSinkDaemon:
                 )
                 stats.last_playback_status = 0
 
-            # Rate-match breadcrumb on a resync (host pause/seek stepped the
-            # buffer). Emitted off-cadence so the discontinuity is recorded
-            # even between the slower diag snapshots. No-op when rate-match
-            # is off (resync_count stays 0).
-            if (
-                self._config.rate_match
-                and stats.rate_match_resync_count != self._last_ratematch_resync_seen
-            ):
-                log_event(
-                    logger,
-                    "usbsink.ratematch",
-                    reason="resync",
-                    resync_count=stats.rate_match_resync_count,
-                    ratio_ppm=f"{stats.rate_match_ratio_ppm:.1f}",
-                    err_frames=f"{stats.rate_match_err_frames:.0f}",
-                    qfill=stats.rate_match_qfill_frames,
-                    locked="true" if stats.rate_match_locked else "false",
-                )
-                self._last_ratematch_resync_seen = stats.rate_match_resync_count
-
             if now - last_log_mono >= DIAG_INTERVAL_SEC:
                 capture_idle_sec = now - self._last_capture_progress_mono
                 playback_idle_sec = now - self._last_playback_progress_mono
-                diag_fields = dict(
+                log_event(
+                    logger,
+                    "usbsink.diag",
                     rms_dbfs=f"{self._bridge.last_rms_dbfs:.1f}",
                     captured=stats.frames_captured,
                     played=stats.frames_played,
@@ -582,34 +475,6 @@ class UsbSinkDaemon:
                     playback_errs=stats.playback_errors,
                     preempted="true" if self._bridge.is_preempted else "false",
                 )
-                if self._config.rate_match:
-                    # Fold the rate-match state onto the same line operators
-                    # already read; omitted entirely when the stage is off.
-                    diag_fields.update(
-                        rate_match_ratio_ppm=f"{stats.rate_match_ratio_ppm:.1f}",
-                        rate_match_err_frames=f"{stats.rate_match_err_frames:.0f}",
-                        rate_match_qfill=stats.rate_match_qfill_frames,
-                        rate_match_locked=(
-                            "true" if stats.rate_match_locked else "false"
-                        ),
-                        rate_match_resync=stats.rate_match_resync_count,
-                        rate_match_clamp=stats.rate_match_clamp_count,
-                    )
-                log_event(logger, "usbsink.diag", **diag_fields)
-                # Also emit a periodic ratematch heartbeat so a steady,
-                # never-resyncing loop still leaves a breadcrumb of its ppm.
-                if self._config.rate_match:
-                    log_event(
-                        logger,
-                        "usbsink.ratematch",
-                        reason="periodic",
-                        ratio_ppm=f"{stats.rate_match_ratio_ppm:.1f}",
-                        err_frames=f"{stats.rate_match_err_frames:.0f}",
-                        qfill=stats.rate_match_qfill_frames,
-                        locked="true" if stats.rate_match_locked else "false",
-                        resync_count=stats.rate_match_resync_count,
-                        clamp_count=stats.rate_match_clamp_count,
-                    )
                 last_log_mono = now
 
     def _observe_bridge_progress(

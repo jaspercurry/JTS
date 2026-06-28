@@ -51,7 +51,6 @@ install_jasper() {
         --exclude='tests' --exclude='deploy' \
         --exclude='build' --exclude='*.egg-info' \
         "${REPO_DIR}/jasper" "${REPO_DIR}/jasper_aec3" \
-        "${REPO_DIR}/jasper_resampler" \
         "${REPO_DIR}/pyproject.toml" \
         "${INSTALL_DIR}/"
 
@@ -215,52 +214,6 @@ install_jasper() {
                 "${INSTALL_DIR}/jasper_aec3"
             mkdir -p "$(dirname "${marker}")"
             echo "${fingerprint}" > "${marker}"
-        fi
-    fi
-
-    # jasper_resampler — pybind11 binding for the windowed-sinc resampler +
-    # spa_dll rate controller (the C++ mirror of rust/jasper-resampler, consumed
-    # by jasper-usbsink's drift rate-match stage). Unlike jasper_aec3 it links
-    # NOTHING beyond libstdc++ (header-only math), so the build is the simple
-    # path: no vendored lib, no WEBRTC prefix, no abseil. The editable
-    # `pip install -e ${INSTALL_DIR}[full]` above does NOT pick it up (separate
-    # root distribution, exactly like jasper_aec3) — the explicit install is
-    # required. Same fingerprint-cache idiom as aec3 so the ~seconds -O3 compile
-    # is skipped on the ~80% of deploys that don't touch it.
-    #
-    # Escape hatch:
-    #   sudo rm /opt/jasper/.cache/jasper_resampler.installed.fingerprint
-    # then re-deploy → unconditional rebuild.
-    if [[ -d "${INSTALL_DIR}/jasper_resampler" ]]; then
-        local rs_marker="${INSTALL_DIR}/.cache/jasper_resampler.installed.fingerprint"
-        local rs_fingerprint
-        rs_fingerprint=$(
-            (
-                find "${INSTALL_DIR}/jasper_resampler" -type f \
-                    \( -name '*.cpp' -o -name '*.h' \
-                       -o -name '*.py' -o -name 'pyproject.toml' \
-                       -o -name 'setup.py' -o -name 'setup.cfg' \) \
-                    -exec stat -c '%Y %n' {} \; 2>/dev/null | sort
-                "${INSTALL_DIR}/.venv/bin/python" --version 2>&1
-            ) | sha256sum | awk '{print $1}'
-        )
-
-        local rs_needs_rebuild=1
-        if [[ -f "${rs_marker}" ]] \
-           && [[ "$(cat "${rs_marker}")" == "${rs_fingerprint}" ]] \
-           && "${INSTALL_DIR}/.venv/bin/python" -c "import jasper_resampler" 2>/dev/null; then
-            echo "==> jasper_resampler source unchanged, skipping rebuild"
-            echo "    (delete ${rs_marker} to force)"
-            rs_needs_rebuild=0
-        fi
-
-        if [[ "${rs_needs_rebuild}" == "1" ]]; then
-            # Tiny C++ -O3 compile, but contain it for OOM parity with aec3.
-            run_contained_build "jasper-resampler" -- \
-                "${INSTALL_DIR}/.venv/bin/pip" install --force-reinstall --no-deps \
-                "${INSTALL_DIR}/jasper_resampler"
-            mkdir -p "$(dirname "${rs_marker}")"
-            echo "${rs_fingerprint}" > "${rs_marker}"
         fi
     fi
 

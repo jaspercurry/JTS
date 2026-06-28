@@ -126,7 +126,6 @@ know whether the build was contained.
 | 5 | shairport-sync | `renderers.sh install_renderers` | `make` C autotools | full + streambox | yes (`kb_per_job=0.4 GB`) | yes |
 | 6 | nqptp | `renderers.sh install_renderers` | `make` C autotools | full + streambox | yes (`kb_per_job=0.4 GB`) | yes |
 | 7 | optional ESP32 firmware | `install.sh _build_firmware_if_stale` | PlatformIO | opt-in only | unchanged (opt-in) | **not yet** (see below) |
-| 8 | jasper_resampler pybind11 binding | `python-runtime.sh install_jasper` | `pip`→`cc1plus` −O3 | full | n/a (single ext, header-only) | yes |
 
 Before this slice, #1 was the only RAM-aware build, #3/#4 had a binary
 on/off low-memory cargo profile (flipping at 768 MB), #5/#6 were a
@@ -249,5 +248,6 @@ All read by `build-sandbox.sh`; all have safe defaults.
   resilience stages (the OOM ladder + cgroup slice this build policy
   complements but does not depend on).
 
-Last verified: 2026-06-28 (added build #8 — the jasper_resampler pybind11
-binding, contained like jasper_aec3)
+Last verified: 2026-06-28 (removed build #8 — the jasper_resampler pybind11
+binding was cut with the usbsink rate-match stage; the inventory is back to
+seven builds)

@@ -33,44 +33,6 @@ that CamillaDSP File-captures directly — collapsing the renderer →
 fan-in → dsnoop → Camilla hops into one pipe read. Nothing selects this
 mode yet; the lean lane stays dormant until a caller sets it.
 
-Optional drift rate-match stage (`rate_match=True`, default OFF). The
-USB host (the Mac) clock runs slightly faster/slower than the DAC; on
-the lean fifo path the faster-than-DAC stream accumulates and the queue
-overflows → `dropped_full` (audible under sustained play). When enabled,
-the SINGLE producer chokepoint — the capture callback — drives a
-capture-follower DLL (`jasper_clock.update`, via the C++/pybind11
-`jasper_resampler.RateResampler`) off the QUEUE FILL and resamples the
-captured block by the resulting ratio BEFORE it enters the queue, so
-fan-in and CamillaDSP's rate_adjust stay spectators (one rate loop, the
-design's whole point — avoids two coupled loops oscillating). The sign
-is the capture follower's: queue too full ⇒ ratio > 1 ⇒ FEWER output
-frames ⇒ the queue drains. A host pause/seek is a STEP in fill (not
-drift), so the DLL hard-resyncs on the excursion rather than slewing
-through it. When `rate_match` is off, every code path below is inert and
-the enqueued payload is byte-identical to today. The stage is intended
-for the fifo lean lane (where the writer's `os.write` carries the full
-variable-length block); in aloop mode the playback callback truncates a
-longer-than-block frame to `expected_bytes` (losing the tail), which
-partly defeats the point — so rate-match targets fifo mode. If the
-`jasper_resampler` extension is unavailable (a dev laptop without the
-built binding), the stage fails soft: it logs once and runs disabled,
-never crashing the realtime audio daemon.
-
-Tuning note (honest): the control law is the same spa_dll the outputd
-content_bridge uses in production, and it converges exactly to the host↔
-DAC drift on a clean fill signal (verified in a closed-loop model). The
-practical caveat is signal resolution — content_bridge feeds the loop a
-smooth, sub-frame *cursor* fill, whereas usbsink feeds the loop the
-buffered-frames depth (`enqueued - drained`), which carries the OS/
-scheduler jitter of a discrete handoff. The loop knobs (`bw`,
-`rate_match_target_ms`, `rate_match_max_adjust_ppm`) are sized for a good
-starting point (BW_MAX acquire, 40 ms target, ±500 ppm bound); the final
-loop tuning against the real pipe-timing jitter is the on-device
-validation step (and the DLL's lock-verdict threshold, tuned for a smooth
-signal, may read "unlocked" under that jitter even while the ratio tracks
-correctly — treat `ratio_ppm` settling, not the lock flag, as the
-on-device convergence signal).
-
 The bridge exposes minimal external surface:
   - `start()` / `stop()` for lifecycle
   - `set_preempted(bool)` for the mux preempt protocol
@@ -119,34 +81,6 @@ BLOCK_FRAMES = 480
 # brief stall in either direction (e.g. systemd reset_failed kick).
 QUEUE_MAXBLOCKS = 8
 
-# ---------------------------------------------------------------------------
-# Optional drift rate-match stage (default OFF). See the module docstring.
-# ---------------------------------------------------------------------------
-# Master switch. OFF by default → byte-identical to the historical bridge.
-RATE_MATCH_DEFAULT = False
-# Target queue fill the controller holds, in milliseconds. 40 ms @ 48 kHz =
-# 1920 frames — mid-depth of the 80 ms (8-block) queue, leaving symmetric
-# headroom to absorb a transient before either overflow or underrun. The
-# design's endorsed starting point; tune on-device.
-RATE_MATCH_TARGET_MS = 40.0
-# Acquire bandwidth for the DLL (PipeWire's SPA_DLL_BW_MAX). Wide to lock
-# fast; the loop narrows toward BW_MIN (0.016) once locked. Start here and
-# tune down if the queue-depth staircase makes convergence jittery.
-RATE_MATCH_BW = 0.128
-# Output ppm clamp — the hard bound on how far the resampler may ever warp
-# pitch, regardless of loop state (matches content_bridge's
-# DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM). Real host↔DAC drift is a handful
-# of ppm; 500 is generous slack that still rejects a runaway loop.
-RATE_MATCH_MAX_ADJUST_PPM = 500.0
-# Daemon-side hard-resync guards. The DLL self-resyncs on a single large
-# fill excursion, but at 10 ms (one-block) granularity a true underrun
-# (queue empty) or overflow (queue saturated) can be under-represented in
-# the per-cycle error. When the queue sits empty/full for this many
-# consecutive capture callbacks, force a full RateResampler.reset_loop() so
-# the controller re-locks from a clean phase rather than slewing. ~50
-# callbacks @ 100 Hz = ~0.5 s of a stuck extreme.
-RATE_MATCH_RESYNC_EXTREME_CALLBACKS = 50
-
 # FIFO lean-lane error-log throttle. The writer-thread counters
 # (fifo_reader_gone / fifo_errors) can move on every loop turn while
 # the reader is persistently absent (CamillaDSP down). Log the first
@@ -194,22 +128,6 @@ class BridgeStats:
     fifo_errors: int = 0
     fifo_reader_gone: int = 0
     last_fifo_write_mono: float = 0.0
-    # Drift rate-match (rate_match=True) telemetry. All zero/false when the
-    # stage is off. Written torn-but-benign from the capture callback (same
-    # convention as the counters above — only read for logging/state
-    # snapshots, never for a control decision on the audio thread).
-    #   rate_match_ratio_ppm   : last bounded resampler ratio in ppm.
-    #   rate_match_err_frames  : last fill error (queue depth - target), frames.
-    #   rate_match_locked      : DLL lock state.
-    #   rate_match_resync_count: lifetime DLL hard-resyncs (loop + daemon-forced).
-    #   rate_match_clamp_count : times the output ppm clamp engaged.
-    #   rate_match_qfill_frames: last observed queue depth in frames.
-    rate_match_ratio_ppm: float = 0.0
-    rate_match_err_frames: float = 0.0
-    rate_match_locked: bool = False
-    rate_match_resync_count: int = 0
-    rate_match_clamp_count: int = 0
-    rate_match_qfill_frames: int = 0
 
 
 class AudioBridge:
@@ -254,15 +172,6 @@ class AudioBridge:
         # "fifo" yet — the lean lane stays dormant until a caller flips it.
         output_mode: str = "aloop",
         fifo_path: str = DEFAULT_LEAN_CAPTURE_FIFO,
-        # Optional drift rate-match stage (default OFF). When True, the
-        # capture callback drives a capture-follower DLL off the queue fill
-        # and resamples each block before enqueue. See the module docstring.
-        # The four tuning knobs mirror the module RATE_MATCH_* constants;
-        # the daemon threads its env-parsed values through here.
-        rate_match: bool = RATE_MATCH_DEFAULT,
-        rate_match_target_ms: float = RATE_MATCH_TARGET_MS,
-        rate_match_bw: float = RATE_MATCH_BW,
-        rate_match_max_adjust_ppm: float = RATE_MATCH_MAX_ADJUST_PPM,
     ) -> None:
         self._capture_device = capture_device
         self._playback_device = playback_device
@@ -307,113 +216,6 @@ class AudioBridge:
         # bytes object, the same path becomes one memoryview slice
         # assignment (~1 µs). Sized for one full block at S16 stereo.
         self._silence_block = bytes(block_frames * channels * 2)
-
-        # ----- Drift rate-match stage (default OFF) ------------------------
-        # Resolve to an effective on/off here: the flag stays True only if the
-        # C++ extension imports AND the RateResampler constructs. A failure
-        # (dev laptop without the built binding, a bad knob) fails soft — log
-        # once and run disabled — so the realtime audio daemon NEVER crashes
-        # for a missing optional accelerator. Lazy import (never at module
-        # top) keeps the binding off the import path of every non-rate-match
-        # caller and off the RT-reachable hot path.
-        self._rate_match = bool(rate_match)
-        self._rate_ctl = None  # the jasper_resampler.RateResampler, or None
-        # Target queue fill in frames the controller holds the queue at.
-        self._rate_target_frames = max(
-            1, round(rate_match_target_ms / 1000.0 * sample_rate),
-        )
-        # Prime gate (content_bridge's lock discipline, ported). The DLL only
-        # behaves well when it sees SMALL errors; a cold start from an empty
-        # queue (err ~= -target) would otherwise trip the loop's resync
-        # threshold every cycle. So we PRIME first: while not primed, the
-        # capture side passes audio through at ratio 1 AND the consumer
-        # (playback callback / fifo writer) does NOT drain — it emits silence
-        # — so the queue fills to `target` regardless of drift direction (the
-        # host-slower case can't fill a draining queue). Once the queue
-        # reaches the prime level we engage the loop with the fill already AT
-        # target, so the first error is ~0 and the loop locks fast with no
-        # resync churn. A mid-stream collapse back below the low-water mark
-        # de-primes (and the controller resyncs) so a host pause/seek re-primes
-        # cleanly. `_rate_primed` is shared lock-free across the audio threads
-        # exactly like `_preempted`.
-        self._rate_primed = False
-        # Prime when the queue holds at least this many blocks (>= target).
-        self._rate_prime_blocks = max(
-            1, math.ceil(self._rate_target_frames / max(1, block_frames)),
-        )
-        # De-prime (and resync) if the primed buffer collapses below this — a
-        # true mid-stream underrun (host paused/seeked). 20% of target.
-        self._rate_low_water_frames = self._rate_target_frames * 0.20
-        # Frame-accurate buffered-frames signal. The control loop drives off
-        # this, NOT `qsize * block_frames` — the queue holds only ~8 blocks, so
-        # the qsize staircase has just 8 levels and a 480-frame (one-block)
-        # quantum, which lags the loop and makes it hunt (the spec's risk #5).
-        # Resolution matters because the resampler's actuation is sub-frame per
-        # block. We track it as two SINGLE-WRITER counters so it is race-free
-        # without a lock: the capture (producer) thread only ever adds to
-        # `_rate_enqueued_frames`, the consumer thread (playback callback / fifo
-        # writer) only ever adds to `_rate_drained_frames`, and the control
-        # reads `enqueued - drained`. A torn read of the other thread's counter
-        # is at most one block stale — benign for a loop that moves a few ppm
-        # per cycle. (qsize * block_frames is still published as the coarse
-        # `rate_match_qfill_frames` telemetry operators read.)
-        self._rate_enqueued_frames = 0
-        self._rate_drained_frames = 0
-        # Consecutive callbacks the buffer has been at an extreme (empty/full);
-        # drives the daemon-side hard-resync guard. See RATE_MATCH_RESYNC_*.
-        self._rate_extreme_run = 0
-        # Bridge-side resync tally. usbsink runs the DLL with max_resync=0 (its
-        # per-cycle resync is disabled — the coarse buffer signal would trip it
-        # constantly), so the meaningful discontinuity events are the daemon's
-        # OWN de-prime / extreme-run resets. We count those here and publish
-        # the combined (bridge + DLL) total as `rate_match_resync_count`, so a
-        # host pause/seek leaves a visible breadcrumb in /state + doctor + the
-        # event log even though the DLL's internal counter stays 0.
-        self._rate_resync_total = 0
-        if self._rate_match:
-            try:
-                from jasper_resampler import RateResampler
-
-                # bytes_per_sample follows the output mode: fifo enqueues full
-                # S32_LE blocks (4 bytes), aloop enqueues the S16 high-half (2).
-                bps = 4 if output_mode == "fifo" else 2
-                self._rate_ctl = RateResampler(
-                    bw=rate_match_bw,
-                    period_frames=block_frames,
-                    rate=sample_rate,
-                    channels=channels,
-                    max_adjust_ppm=rate_match_max_adjust_ppm,
-                    bytes_per_sample=bps,
-                    # Disable the DLL's per-cycle hard-resync: our control
-                    # signal is the queue depth, whose quantum is one block
-                    # (== the default max_resync), so ordinary queue jitter
-                    # would otherwise trip it every cycle. The prime gate keeps
-                    # the engaged error small and the de-prime / extreme-run
-                    # guards own true discontinuities (host pause/seek). Keep
-                    # the default max_error slew clamp (-1) for stability.
-                    max_resync=0.0,
-                )
-                log_event(
-                    logger,
-                    "usbsink.ratematch_enabled",
-                    target_frames=self._rate_target_frames,
-                    bw=rate_match_bw,
-                    max_adjust_ppm=rate_match_max_adjust_ppm,
-                    bytes_per_sample=bps,
-                    mode=output_mode,
-                )
-            except (ImportError, ValueError, RuntimeError, OSError) as e:
-                # Extension not built (laptop / pre-build Pi) or a bad knob.
-                # Disable and run byte-identical rather than crash the daemon.
-                self._rate_match = False
-                self._rate_ctl = None
-                log_event(
-                    logger,
-                    "usbsink.ratematch_unavailable",
-                    error=e,
-                    note="rate-match disabled; audio path unchanged",
-                    level=logging.WARNING,
-                )
 
         # Streams populated by start().
         self._in_stream = None  # type: Optional["sd.RawInputStream"]
@@ -612,14 +414,6 @@ class AudioBridge:
     def is_running(self) -> bool:
         return self._started
 
-    @property
-    def rate_match_enabled(self) -> bool:
-        """True when the drift rate-match stage is active (constructed and not
-        disabled by a fail-soft). The state publisher / doctor key their
-        optional rate_match surfaces off this so the default (off) output is
-        byte-identical."""
-        return self._rate_match and self._rate_ctl is not None
-
     # ------------------------------------------------------------------
     # PortAudio callbacks. These run on PortAudio's audio thread —
     # avoid logging on the hot path (a stuck logger.handler can wedge
@@ -688,196 +482,14 @@ class AudioBridge:
             payload = bytes(indata)  # full-width S32_LE interleaved stereo
         else:
             payload = bytes(s16_view)
-
-        # Drift rate-match: the SINGLE producer chokepoint. Resample the block
-        # by the capture-follower ratio the DLL derives from the buffer fill,
-        # BEFORE it enters the queue, so fan-in + CamillaDSP stay spectators.
-        # Inert (and the payload untouched) when the stage is off.
-        if self._rate_match and self._rate_ctl is not None:
-            payload = self._rate_match_block(payload)
-
         try:
             self._queue.put_nowait(payload)
-            # Count the actually-buffered frames for the rate-match fill signal
-            # (single-writer: only this producer thread touches enqueued). The
-            # resampled payload may be ±a few frames off block_frames, so count
-            # its real length, not `frames`. Only on a SUCCESSFUL put — a
-            # dropped-full block never enters the buffer.
-            if self._rate_match:
-                bytes_per_frame = self._channels * (
-                    S32_BYTES if self._output_mode == "fifo" else 2
-                )
-                if bytes_per_frame:
-                    self._rate_enqueued_frames += len(payload) // bytes_per_frame
         except queue.Full:
             # Output side is too slow or stalled. Drop this block — the
             # alternative (blocking the PortAudio thread) would
             # propagate stall pressure into the gadget side and cause
             # the host to see XRUNs. Counted for the diagnostic thread.
             self.stats.frames_dropped_full += frames
-
-    def _rate_match_block(self, payload: bytes) -> bytes:
-        """Resample one captured block by the capture-follower ratio.
-
-        Called from the RT capture callback (only when rate_match is on and
-        the resampler constructed). The control error is the buffer fill — the
-        causal overflow signal — measured BEFORE this block is enqueued.
-
-        Two phases (the prime gate; see the ctor's `_rate_primed` comment):
-
-        - NOT primed: pass the block through untouched (ratio 1, no DLL
-          update). The consumer is paused (emits silence, does not dequeue),
-          so the queue fills to the prime level regardless of drift direction.
-          When the queue reaches `_rate_prime_blocks`, flip `_rate_primed` so
-          the consumer resumes draining and the loop engages next callback —
-          with the fill already AT target, so the first error is ~0.
-
-        - Primed: drive the loop off the fill.
-            qfill_frames = queue depth in frames
-            err          = qfill_frames - target          (frames)
-            ratio        = ctl.update(err)   (negates err internally: a too-
-                                              full queue → ratio > 1 → fewer
-                                              output frames → the queue drains)
-          If the queue collapses below the low-water mark (a host pause/seek
-          underran it) we DE-PRIME and reset the loop, so playback re-primes
-          and the controller re-locks from a clean phase rather than slewing
-          through the step. As a backstop the daemon also forces a loop reset
-          when the queue sits at an extreme (empty or saturated) for
-          RATE_MATCH_RESYNC_EXTREME_CALLBACKS in a row — a sustained
-          underrun/overflow the per-cycle 10 ms-granular error under-represents.
-
-        Allocation discipline: resample_block returns a fresh `bytes`
-        (unavoidable, like the existing `bytes(view)` copy upstream); the
-        ~540 KB sinc table was built ONCE in the ctor, never here. On any
-        unexpected resampler error the stage disables itself and returns the
-        ORIGINAL payload unchanged (fail-soft — never wedge the RT thread,
-        never drop the block), surfacing it once at WARN.
-        """
-        try:
-            # Frame-accurate buffered depth (the control signal). Coarse
-            # qsize*block is published separately for operators.
-            buffered = self._rate_buffered_frames()
-            qsize = self._queue.qsize()
-            self.stats.rate_match_qfill_frames = qsize * self._block_frames
-
-            if not self._rate_primed:
-                # Filling the buffer with the consumer paused. Pass through;
-                # don't touch the loop. Engage once we've buffered to target,
-                # so the loop's first error is ~0 (fast lock, no resync churn).
-                if buffered >= self._rate_target_frames:
-                    self._rate_primed = True
-                    self._rate_extreme_run = 0
-                    log_event(
-                        logger,
-                        "usbsink.ratematch_primed",
-                        buffered_frames=int(buffered),
-                        target_frames=self._rate_target_frames,
-                    )
-                return payload
-
-            # Primed → loop engaged. A collapse to near-empty is a true
-            # discontinuity (host pause/seek): de-prime + reset so playback
-            # re-fills and the loop re-locks cleanly.
-            if buffered < self._rate_low_water_frames:
-                self._rate_primed = False
-                self._rate_extreme_run = 0
-                self._rate_ctl.reset_loop()
-                self._rate_resync_total += 1
-                self.stats.rate_match_resync_count = self._rate_resync_count()
-                self.stats.rate_match_locked = False
-                log_event(
-                    logger,
-                    "usbsink.ratematch_deprimed",
-                    buffered_frames=int(buffered),
-                    low_water=int(self._rate_low_water_frames),
-                    resync_count=self.stats.rate_match_resync_count,
-                    note="buffer underran; re-priming",
-                )
-                return payload
-
-            # Daemon-side hard-resync on a sustained extreme (saturated queue
-            # the per-cycle error under-represents). Empty is already handled
-            # by the de-prime branch above; this catches a stuck-full queue.
-            if qsize >= self._queue.maxsize:
-                self._rate_extreme_run += 1
-                if self._rate_extreme_run >= RATE_MATCH_RESYNC_EXTREME_CALLBACKS:
-                    self._rate_ctl.reset_loop()
-                    self._rate_resync_total += 1
-                    self._rate_extreme_run = 0
-            else:
-                self._rate_extreme_run = 0
-
-            err = float(buffered - self._rate_target_frames)
-            ratio = self._rate_ctl.update(err)
-            out = self._rate_ctl.resample_block(payload, ratio)
-
-            # Telemetry (torn-but-benign; read only for logs / state).
-            self.stats.rate_match_err_frames = err
-            self.stats.rate_match_ratio_ppm = self._rate_ctl.ratio_ppm()
-            self.stats.rate_match_locked = self._rate_ctl.is_locked()
-            self.stats.rate_match_resync_count = self._rate_resync_count()
-            self.stats.rate_match_clamp_count = self._rate_ctl.clamp_count()
-            return out
-        except (ValueError, RuntimeError, OSError) as e:
-            # An unexpected resampler fault (e.g. a misframed block from a
-            # host-side rate renegotiation). Disable the stage and pass the
-            # original payload through untouched — a glitchless degrade to the
-            # byte-identical path beats a wedged audio thread.
-            self._rate_match = False
-            log_event(
-                logger,
-                "usbsink.ratematch_runtime_error",
-                error=e,
-                note="rate-match disabled mid-stream; passing audio through",
-                level=logging.WARNING,
-            )
-            return payload
-
-    def _rate_match_consumer_paused(self) -> bool:
-        """True when the rate-match prime gate is holding the consumer back.
-
-        While priming, the consumer (playback callback / fifo writer) must NOT
-        dequeue — it emits silence so the queue can fill to the prime level
-        even when the host is slower than the DAC (a draining queue could
-        never reach target). Shared lock-free with the capture callback that
-        flips `_rate_primed`, exactly like `_preempted`. Always False when the
-        stage is off, so the consumer path is byte-identical in that case.
-        """
-        return self._rate_match and not self._rate_primed
-
-    def _rate_buffered_frames(self) -> float:
-        """Frame-accurate buffered depth = enqueued - drained.
-
-        Each side is a single-writer counter (producer adds enqueued, consumer
-        adds drained), so the subtraction is race-free up to a one-block-stale
-        read of the other thread's value. This is the loop's control signal —
-        far finer than the 8-level `qsize` staircase.
-        """
-        return float(self._rate_enqueued_frames - self._rate_drained_frames)
-
-    def _rate_resync_count(self) -> int:
-        """Combined resync total: the daemon-side de-prime/extreme resets PLUS
-        the DLL's own max_resync hard-jumps. For usbsink (max_resync=0) the
-        latter is always 0, so this is effectively the de-prime count; the sum
-        keeps the telemetry honest if the DLL threshold is ever re-enabled."""
-        dll = self._rate_ctl.resync_count() if self._rate_ctl is not None else 0
-        return self._rate_resync_total + dll
-
-    def _rate_count_drained(self, block: bytes) -> None:
-        """Add a dequeued block's frame count to the consumer-side tally.
-
-        Called from the consumer thread (playback callback / fifo writer) ONLY
-        when a real block was dequeued (not on preempt/underrun silence, which
-        do not remove anything from the queue). No-op when rate-match is off.
-        Single writer (the consumer thread), so no lock.
-        """
-        if not self._rate_match:
-            return
-        bytes_per_frame = self._channels * (
-            S32_BYTES if self._output_mode == "fifo" else 2
-        )
-        if bytes_per_frame:
-            self._rate_drained_frames += len(block) // bytes_per_frame
 
     def _playback_callback(self, outdata, frames, time_info, status) -> None:
         self.stats.playback_callbacks += 1
@@ -901,24 +513,13 @@ class AudioBridge:
         out_mv = memoryview(outdata).cast("b")
         silence_mv = memoryview(self._silence_block).cast("b")
 
-        # Rate-match prime gate: while the buffer is filling to target, do NOT
-        # dequeue — emit silence so the queue can reach the prime level (a
-        # draining queue could never fill when the host is slower than the
-        # DAC). Inert when rate-match is off (byte-identical path).
-        if self._rate_match_consumer_paused():
-            out_mv[:expected_bytes] = silence_mv[:expected_bytes]
-            return
-
         if self._preempted:
             # Silence the output buffer regardless of queue contents.
             # We DO still drain the queue (so backlogged frames don't
             # cause an ever-growing latency on un-preempt). Draining is
             # cheap (just a get_nowait that we throw away).
             try:
-                drained = self._queue.get_nowait()
-                # Keep the rate-match fill tally consistent — a drained block
-                # leaves the buffer even when its samples are discarded.
-                self._rate_count_drained(drained)
+                self._queue.get_nowait()
             except queue.Empty:
                 pass
             # Pre-allocated silence block — one slice-assignment
@@ -936,8 +537,6 @@ class AudioBridge:
             self.stats.frames_underrun += frames
             out_mv[:expected_bytes] = silence_mv[:expected_bytes]
             return
-        # A real block left the buffer — update the rate-match fill tally.
-        self._rate_count_drained(block)
 
         # Both ends are sized BLOCK_FRAMES; block should match
         # `frames * channels * 2` bytes. If a previous host-side rate
@@ -1055,34 +654,17 @@ class AudioBridge:
                     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
                     fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
 
-                # Rate-match prime gate: while the buffer fills to target, do
-                # NOT dequeue — write reader-paced silence so the queue can
-                # reach the prime level even when the host is slower than the
-                # DAC. The capture side flips `_rate_primed` once buffered.
-                # Inert (and never taken) when rate-match is off.
-                if self._rate_match_consumer_paused():
-                    # Re-check the stop flag at the same ~10 ms cadence the
-                    # queue.get(timeout=0.1) would, so shutdown stays prompt.
-                    if self._fifo_stop.wait(0.01):
-                        break
+                # Pull one block (short timeout so the stop flag is
+                # re-checked promptly and shutdown is never wedged on a
+                # starved queue).
+                try:
+                    block = self._queue.get(timeout=0.1)
+                except queue.Empty:
+                    # Host idle / not streaming yet: emit timing-accurate
+                    # silence so the lean lane never starves CamillaDSP
+                    # and the liveness counter keeps advancing.
                     block = silence
                     self.stats.fifo_underrun += self._block_frames
-                else:
-                    # Pull one block (short timeout so the stop flag is
-                    # re-checked promptly and shutdown is never wedged on a
-                    # starved queue).
-                    try:
-                        block = self._queue.get(timeout=0.1)
-                        # A real block left the buffer — keep the rate-match
-                        # fill tally consistent (single-writer: only this
-                        # writer thread touches drained).
-                        self._rate_count_drained(block)
-                    except queue.Empty:
-                        # Host idle / not streaming yet: emit timing-accurate
-                        # silence so the lean lane never starves CamillaDSP
-                        # and the liveness counter keeps advancing.
-                        block = silence
-                        self.stats.fifo_underrun += self._block_frames
 
                 if self._preempted:
                     # Mux preempt: write silence, drop the real block —

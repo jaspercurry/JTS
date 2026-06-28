@@ -72,6 +72,17 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # trigger the arm-failure rollback to loopback (return ok=False), never
 # propagate and leave the box half-armed (fan-in on the pipe, camilla on the old
 # config) with no recovery. Resilience-first on a production speaker. +1 BOTH.
+# 2026-06-28 (no change): the usbsink-edge rate-match stage + its tests
+# (jasper/usbsink/audio_bridge.py rate-match code, tests/test_usbsink_rate_match.py,
+# tests/test_resampler_contract.py) were cut as the wrong tool for the observed
+# USB drops. The removed code used only NARROW exception handlers (ImportError /
+# ValueError / RuntimeError / OSError — no blind-except), and the deleted test
+# files carried zero suppression markers, so the cut removed NO noqa / blind-
+# except markers from the scanned roots. Both ceilings stay where they were;
+# they cannot be lowered because the live count is still exactly at them.
+# (Marker strings are spelled out here, not written literally, so this comment
+# does not inflate the count it documents — same convention as the 2026-06-27
+# phone-mic entry above.)
 MAX_NOQA_MARKERS = 810
 MAX_BLE001_MARKERS = 629
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
