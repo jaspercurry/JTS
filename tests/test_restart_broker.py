@@ -114,6 +114,10 @@ def test_start_only_units_are_not_general_managed_units():
     assert restart_broker.START_ONLY_UNITS == frozenset({
         "jasper-audio-hardware-reconcile.service",
         "jasper-wifi-scan-repair.service",
+        # The non-root jasper-mux delegates the lean-lane CamillaDSP apply to
+        # this privileged oneshot via a (blocking) start — it owns
+        # camilladsp/configs; the sandboxed mux does not (EROFS otherwise).
+        "jasper-lean-apply.service",
     })
     assert restart_broker.START_ONLY_UNITS.isdisjoint(restart_broker.MANAGED_UNITS)
 

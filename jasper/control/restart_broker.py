@@ -136,6 +136,11 @@ MANAGED_UNITS = frozenset({
 START_ONLY_UNITS = frozenset({
     "jasper-audio-hardware-reconcile.service",
     "jasper-wifi-scan-repair.service",
+    # Privileged lean-lane CamillaDSP apply/restore oneshot. The non-root
+    # jasper-mux delegates the lean enter/leave config swap to it (it owns
+    # camilladsp/configs; the sandboxed mux does not — EROFS otherwise). The mux
+    # may only START it (Type=oneshot; a blocking start carries the verdict back).
+    "jasper-lean-apply.service",
 })
 
 POLKIT_MANAGE_UNITS = MANAGED_UNITS | START_ONLY_UNITS

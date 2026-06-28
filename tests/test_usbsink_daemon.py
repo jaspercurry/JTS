@@ -325,6 +325,37 @@ def test_watchdog_suppresses_when_playback_callback_stalls(caplog):
     )
 
 
+def test_fifo_mode_watchdog_bumps_on_no_reader_liveness_tick():
+    """In fifo mode the watchdog sentinel is fifo_writes + fifo_waiting_reader.
+    The bounded no-reader window at lean-enter (FIFO armed before CamillaDSP
+    opens the read end) advances ONLY fifo_waiting_reader; the watchdog must
+    still bump so the unit does not crash-loop while waiting for the reader."""
+    daemon = UsbSinkDaemon(DaemonConfig(output_mode="fifo"))
+    hb = _FakeHeartbeat()
+    now = 100.0
+    daemon._last_capture_progress_mono = now - WATCHDOG_STALE_SEC - 1.0
+    daemon._last_playback_progress_mono = now - 1.0
+    # No writes yet — only the no-reader liveness tick advanced.
+    stats = BridgeStats(fifo_writes=0, fifo_waiting_reader=3)
+    daemon._observe_bridge_progress(stats, hb, now)
+    assert hb.bumps == 1
+    assert daemon._last_playback_callbacks_seen == 3
+
+
+def test_fifo_mode_watchdog_stale_when_neither_counter_moves():
+    """If BOTH fifo_writes and fifo_waiting_reader are stalled (the writer
+    thread is genuinely dead — not merely waiting for a reader), the watchdog
+    must NOT bump so systemd can recover the unit."""
+    daemon = UsbSinkDaemon(DaemonConfig(output_mode="fifo"))
+    hb = _FakeHeartbeat()
+    now = 100.0
+    daemon._last_playback_progress_mono = now - WATCHDOG_STALE_SEC - 0.1
+    stats = BridgeStats(fifo_writes=0, fifo_waiting_reader=0)
+    daemon._observe_bridge_progress(stats, hb, now)
+    assert hb.bumps == 0
+    assert daemon._playback_stale_logged is True
+
+
 def test_capture_resume_logs_once_after_idle(caplog):
     daemon = UsbSinkDaemon(DaemonConfig())
     hb = _FakeHeartbeat()

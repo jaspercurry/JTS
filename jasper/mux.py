@@ -693,17 +693,38 @@ class Mux:
 
     async def _lean_apply_config(self) -> None:
         """Swap CamillaDSP to the carrier-preserved lean File-capture config.
-        Split out so tests can stub the CamillaDSP I/O."""
-        from .sound.runtime import apply_lean_capture_config
 
-        await apply_lean_capture_config()
+        DELEGATED, not in-process. The mux runs as the non-root ``jasper-mux``
+        user and does NOT own ``/var/lib/camilladsp/configs`` (writing it
+        in-process EROFS-fails under the sandbox). So the privileged apply is run
+        by the ``jasper-lean-apply`` oneshot, started BLOCKING through
+        jasper-control's restart broker — exactly how the usbsink FIFO arm is
+        delegated. A non-ok delegation raises so the enter-lean ladder's
+        ``except`` falls back to buffered. Split out so tests can stub it."""
+        from .sound import lean_apply_reconcile as lar
+
+        result = await asyncio.to_thread(
+            lar.delegate, lar.ACTION_ENTER, reason="lean_enter",
+        )
+        if not result.ok:
+            raise RuntimeError(f"lean apply delegation failed: {result.detail}")
 
     async def _lean_restore_config(self) -> None:
-        """Restore the buffered sound config (NO-OP if not on lean). Split out
-        so tests can stub the CamillaDSP I/O."""
-        from .sound.runtime import restore_buffered_config
+        """Restore the buffered sound config (NO-OP if not on lean).
 
-        await restore_buffered_config()
+        DELEGATED like :meth:`_lean_apply_config` — the buffered restore also
+        writes ``camilladsp/configs``, which the sandboxed mux cannot do
+        in-process. A non-ok delegation raises so the leave-lean ladder keeps
+        ``_in_lean`` set and the FIFO armed (the next tick retries the unwind);
+        the FIFO is only disarmed AFTER this returns cleanly. Split out so tests
+        can stub it."""
+        from .sound import lean_apply_reconcile as lar
+
+        result = await asyncio.to_thread(
+            lar.delegate, lar.ACTION_LEAVE, reason="lean_leave",
+        )
+        if not result.ok:
+            raise RuntimeError(f"lean restore delegation failed: {result.detail}")
 
     async def select_source(self, source: Source) -> dict[str, Any]:
         """Manual source selection from the web UI.

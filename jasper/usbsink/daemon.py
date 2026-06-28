@@ -494,7 +494,14 @@ class UsbSinkDaemon:
         """
         # Mode-agnostic forward-progress value for the watchdog sentinel.
         if self._config.output_mode == "fifo":
-            output_progress = stats.fifo_writes
+            # fifo_writes advances once a reader (CamillaDSP File-capture) is
+            # present; fifo_waiting_reader advances while the writer waits for
+            # one. Summing both counts "waiting for the reader" as forward
+            # progress, so the bounded no-reader window at lean-enter (FIFO
+            # armed before the camilla apply opens the read end) does NOT trip
+            # the watchdog and crash-loop the unit. See
+            # AudioBridge.Stats.fifo_waiting_reader.
+            output_progress = stats.fifo_writes + stats.fifo_waiting_reader
         else:
             output_progress = stats.playback_callbacks
         if output_progress > self._last_playback_callbacks_seen:

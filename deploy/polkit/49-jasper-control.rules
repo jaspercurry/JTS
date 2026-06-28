@@ -75,7 +75,8 @@ polkit.addRule(function(action, subject) {
 
     var START_ONLY_UNITS = [
         "jasper-audio-hardware-reconcile.service",
-        "jasper-wifi-scan-repair.service"
+        "jasper-wifi-scan-repair.service",
+        "jasper-lean-apply.service"
     ];
 
     // start / stop / restart / try-restart / reset-failed all flow through

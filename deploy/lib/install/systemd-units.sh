@@ -75,6 +75,13 @@ install_local_audio_graph_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-doctor-json.service" \
         "${SYSTEMD_DIR}/jasper-doctor-json.service"
+    # Privileged lean-lane CamillaDSP apply/restore oneshot. The non-root
+    # jasper-mux delegates the lean enter/leave config swap to it via the
+    # restart broker's start verb (it owns camilladsp/configs; the sandboxed
+    # mux cannot write there — EROFS otherwise). On-demand only — not enabled.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-lean-apply.service" \
+        "${SYSTEMD_DIR}/jasper-lean-apply.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-audio-hardware-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"

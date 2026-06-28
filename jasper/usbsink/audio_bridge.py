@@ -128,6 +128,18 @@ class BridgeStats:
     fifo_errors: int = 0
     fifo_reader_gone: int = 0
     last_fifo_write_mono: float = 0.0
+    # No-reader liveness tick. The writer thread advances this on EVERY
+    # ENXIO ("no reader yet") retry while it waits for CamillaDSP to open the
+    # File-capture end of the pipe. The lean-enter ladder ARMS this FIFO mode
+    # BEFORE the camilla apply runs, so there is a normal bounded window where
+    # the pipe has no reader. Without this tick fifo_writes would not advance,
+    # the daemon's watchdog (which reads the output-progress sentinel) would go
+    # stale at WATCHDOG_STALE_SEC, systemd would restart the unit, and the next
+    # boot re-enters the same no-reader window -> crash-loop (observed 3
+    # restarts in ~9 s, then unit failed). Counting "waiting for the reader" as
+    # forward progress keeps the daemon alive across that window; the writer
+    # still does no audio work until a reader appears.
+    fifo_waiting_reader: int = 0
 
 
 class AudioBridge:
@@ -634,9 +646,16 @@ class AudioBridge:
                         )
                     except OSError as e:
                         if e.errno == errno.ENXIO:
-                            # No reader (CamillaDSP not up / reloading).
-                            # Wait and retry; do NOT block the open so
-                            # daemon start is never gated on the reader.
+                            # No reader (CamillaDSP not up / reloading, or the
+                            # normal lean-enter window where the FIFO is armed
+                            # BEFORE the camilla apply opens the read end).
+                            # Wait and retry; do NOT block the open so daemon
+                            # start is never gated on the reader. Advance the
+                            # no-reader liveness tick so the watchdog sentinel
+                            # keeps moving — otherwise an idle no-reader window
+                            # would falsely fire the watchdog and crash-loop the
+                            # unit (see Stats.fifo_waiting_reader).
+                            self.stats.fifo_waiting_reader += 1
                             self._fifo_stop.wait(0.2)
                             continue
                         self.stats.fifo_errors += 1
