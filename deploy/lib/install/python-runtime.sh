@@ -303,6 +303,11 @@ install_jasper() {
     migrate_grouping
     migrate_speaker_room
     migrate_control_host_bind_seed
+    # Relocate JASPER_FANIN_CAMILLA_COUPLING out of jasper.env into the
+    # reconciler-owned fanin.env (jasper.fanin.coupling_reconcile is its single
+    # writer). No-op on a fresh box (the flag is unset) and on a box already
+    # using fanin.env; only moves a hand-set experimental-phase value.
+    migrate_fanin_coupling
 }
 
 install_streambox_jasper() {

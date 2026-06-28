@@ -66,8 +66,14 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # never-crash-the-background-loop handler around the async capture runner —
 # logs + surfaces the failure in /status, mirrors the existing
 # _schedule_measurement_sweep idiom in the same file. Pushes BOTH ceilings by 1.
-MAX_NOQA_MARKERS = 809
-MAX_BLE001_MARKERS = 628
+# 2026-06-27 (+1 blind-except): the fan-in coupling reconciler
+# (jasper/fanin/coupling_reconcile.py _reconcile_camilla) wraps the CamillaDSP
+# reconcile in a fail-safe handler — an UNEXPECTED reconcile exception must
+# trigger the arm-failure rollback to loopback (return ok=False), never
+# propagate and leave the box half-armed (fan-in on the pipe, camilla on the old
+# config) with no recovery. Resilience-first on a production speaker. +1 BOTH.
+MAX_NOQA_MARKERS = 810
+MAX_BLE001_MARKERS = 629
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

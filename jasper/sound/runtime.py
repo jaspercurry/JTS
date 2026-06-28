@@ -18,7 +18,12 @@ from jasper.camilla_config_contract import (
     DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
     DEFAULT_LEAN_CAPTURE_FIFO,
 )
-from jasper.fanin_coupling import coupling_capture_kwargs_from_env
+from jasper.fanin_coupling import (
+    FIFO_PATH_ENV_VAR,
+    capture_kwargs_for_coupling,
+    coupling_capture_kwargs_from_env,
+    resolve_fifo_path,
+)
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_PATH,
@@ -115,6 +120,24 @@ def _paths_match(left: str | Path, right: str | Path) -> bool:
         return Path(left) == Path(right)
 
 
+def _resolve_coupling_capture_kwargs(coupling: str | None) -> dict[str, object]:
+    """Coupling capture kwargs for a (re)emit.
+
+    ``coupling is None`` (every existing caller) reads the live process env —
+    byte-identical to before this override existed. An explicit value is what the
+    coupling reconciler (:mod:`jasper.fanin.coupling_reconcile`) passes: it has
+    just rewritten ``fanin.env`` under this process, so this process's
+    ``os.environ`` may be stale; the explicit value makes the emit match the
+    persisted intent without mutating process-global state.
+    """
+    if coupling is None:
+        return coupling_capture_kwargs_from_env()
+    return capture_kwargs_for_coupling(
+        coupling,
+        fifo_path=resolve_fifo_path(os.environ.get(FIFO_PATH_ENV_VAR)),
+    )
+
+
 async def load_profile_config(
     profile: SoundProfile,
     *,
@@ -127,6 +150,7 @@ async def load_profile_config(
     output_trim_db: float = 0.0,
     profile_id: str | None = None,
     writer_lock_held: bool = False,
+    coupling: str | None = None,
 ) -> tuple[Any, Path, SoundProfile]:
     """Render and load ``profile`` on top of the currently loaded DSP graph.
 
@@ -165,11 +189,12 @@ async def load_profile_config(
     ):
         pre_carrier.reemit(profile, output_trim_db=output_trim_db)
 
-    # SHARED fan-in→Camilla coupling: resolve the File-capture kwargs ONCE from
-    # the env (JASPER_FANIN_CAMILLA_COUPLING / _FIFO). Default loopback -> {} ->
-    # byte-identical emit. Every carrier applies it (the active baseline too);
-    # the lean-lane / grouped-pipe-sink precedence lives in the carrier.
-    coupling_capture_kwargs = coupling_capture_kwargs_from_env()
+    # SHARED fan-in→Camilla coupling: resolve the File-capture kwargs ONCE
+    # (explicit override from the coupling reconciler, else the live env).
+    # Default loopback -> {} -> byte-identical emit. Every carrier applies it
+    # (the active baseline too); the lean-lane / grouped-pipe-sink precedence
+    # lives in the carrier.
+    coupling_capture_kwargs = _resolve_coupling_capture_kwargs(coupling)
 
     async def _prepare_config() -> dict[str, Any]:
         current_path = await cam.get_config_file_path(best_effort=False)
@@ -215,6 +240,7 @@ async def reconcile_current_dsp(
     config_dir: str | Path = DEFAULT_CONFIG_DIR,
     camilla_factory: Callable[[], Any] = default_camilla_factory,
     force: bool = False,
+    coupling: str | None = None,
 ) -> dict[str, Any]:
     """Refresh the current JTS-owned generated DSP graph from saved intent.
 
@@ -269,7 +295,7 @@ async def reconcile_current_dsp(
         try:
             # Same coupling kwargs the durable load_profile_config emit uses
             # below, so the dry-run YAML matches what gets written.
-            coupling_capture_kwargs = coupling_capture_kwargs_from_env()
+            coupling_capture_kwargs = _resolve_coupling_capture_kwargs(coupling)
             dry = carrier.reemit(
                 profile,
                 profile_id=RECONCILE_PROFILE_ID,
@@ -345,6 +371,7 @@ async def reconcile_current_dsp(
             output_trim_db=trim_db,
             profile_id=RECONCILE_PROFILE_ID,
             writer_lock_held=True,
+            coupling=coupling,
         )
     return _log_reconcile_result(
         {

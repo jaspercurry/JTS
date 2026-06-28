@@ -31,7 +31,10 @@ class _FakeCamilla:
         return self._path
 
 
-def _capture_reemit_coupling(monkeypatch, tmp_path, *, coupling_env: str | None):
+def _capture_reemit_coupling(
+    monkeypatch, tmp_path, *, coupling_env: str | None,
+    coupling_override: str | None = None,
+):
     """Run reconcile_current_dsp far enough to call carrier.reemit once and
     return the ``fanin_coupling_capture_kwargs`` it was given.
 
@@ -87,6 +90,7 @@ def _capture_reemit_coupling(monkeypatch, tmp_path, *, coupling_env: str | None)
 
     async def _spy_apply(*a, **k):
         seen["apply_called"] = True
+        seen["apply_coupling"] = k.get("coupling")
         return _ApplyState(), "applied.yml", None
 
     monkeypatch.setattr(runtime, "load_profile_config", _spy_apply)
@@ -95,6 +99,7 @@ def _capture_reemit_coupling(monkeypatch, tmp_path, *, coupling_env: str | None)
         runtime.reconcile_current_dsp(
             config_dir=config_dir,
             camilla_factory=lambda: _FakeCamilla(str(current)),
+            coupling=coupling_override,
         )
     )
     return result, seen
@@ -144,17 +149,53 @@ def test_reconcile_unknown_coupling_fails_safe_to_empty(monkeypatch, tmp_path):
     assert seen["fanin_coupling_capture_kwargs"] == {}
 
 
-def test_load_profile_config_resolves_coupling_from_env(monkeypatch):
-    # The other chokepoint (the durable apply) resolves the SAME env helper. We
-    # assert the call site references coupling_capture_kwargs_from_env so the two
-    # paths cannot drift (the dry-run reconcile and the durable apply must agree
-    # or the unchanged-detection breaks).
+def test_both_chokepoints_resolve_coupling_through_one_helper(monkeypatch):
+    # Both chokepoints (the durable apply + the dry-run reconcile) resolve the
+    # coupling through the SAME shared helper (_resolve_coupling_capture_kwargs),
+    # so the dry-run YAML and the durable apply can never disagree (which would
+    # break unchanged-detection) — and an explicit override threads to both.
     import inspect
 
     src = inspect.getsource(runtime.load_profile_config)
-    assert "coupling_capture_kwargs_from_env()" in src
+    assert "_resolve_coupling_capture_kwargs(coupling)" in src
     assert "fanin_coupling_capture_kwargs=coupling_capture_kwargs" in src
-    # And reconcile's dry-run uses the same resolver.
     reconcile_src = inspect.getsource(runtime.reconcile_current_dsp)
-    assert "coupling_capture_kwargs_from_env()" in reconcile_src
+    assert "_resolve_coupling_capture_kwargs(coupling)" in reconcile_src
     del monkeypatch
+
+
+def test_resolver_helper_override_beats_env(monkeypatch):
+    # The explicit coupling override is what the coupling reconciler passes
+    # (its os.environ may be stale after it just rewrote fanin.env).
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
+    fifo_kwargs = runtime._resolve_coupling_capture_kwargs("fifo")
+    assert "capture_pipe_path" in fifo_kwargs and fifo_kwargs["enable_rate_adjust"]
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "fifo")
+    assert runtime._resolve_coupling_capture_kwargs("loopback") == {}
+    # None falls through to the env (every existing caller's behavior).
+    assert "capture_pipe_path" in runtime._resolve_coupling_capture_kwargs(None)
+
+
+def test_reconcile_explicit_fifo_override_arms_regardless_of_env(monkeypatch, tmp_path):
+    # coupling="fifo" passed to reconcile_current_dsp emits the File capture even
+    # when the env says loopback (the reconciler's stale-env-proof path), and the
+    # override threads to the durable apply (apply_coupling).
+    result, seen = _capture_reemit_coupling(
+        monkeypatch, tmp_path, coupling_env="loopback", coupling_override="fifo",
+    )
+    kwargs = seen["fanin_coupling_capture_kwargs"]
+    assert kwargs["capture_pipe_path"].endswith("camilla.pipe")
+    assert seen["apply_called"] is True
+    assert seen["apply_coupling"] == "fifo"
+    assert result["status"] == "reconciled"
+
+
+def test_reconcile_explicit_loopback_override_beats_fifo_env(monkeypatch, tmp_path):
+    # coupling="loopback" override emits the ALSA capture even when env=fifo;
+    # the flat profile then correctly short-circuits (loopback is byte-identical).
+    result, seen = _capture_reemit_coupling(
+        monkeypatch, tmp_path, coupling_env="fifo", coupling_override="loopback",
+    )
+    assert seen["fanin_coupling_capture_kwargs"] == {}
+    assert result["reason"] == "flat_profile_noop"
+    assert seen.get("apply_called") is not True
