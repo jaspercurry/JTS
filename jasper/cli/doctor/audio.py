@@ -1448,10 +1448,14 @@ def check_fanin_coupling() -> CheckResult:
 
     label = "fan-in coupling"
     coupling = read_persisted_coupling()
-    config_path = _active_camilla_config_path() or Path(
+    # _active_camilla_config_path returns (statefile, active_config_path|None);
+    # the active path is what CamillaDSP actually loaded. Fall back to the JTS
+    # sound config when the statefile names nothing.
+    _, active_path = _active_camilla_config_path()
+    config_path = Path(active_path) if active_path else Path(
         "/var/lib/camilladsp/configs/sound_current.yml"
     )
-    capture = _loaded_capture_type(Path(config_path))
+    capture = _loaded_capture_type(config_path)
     if capture is None:
         # No JTS config loaded yet (fresh box / non-JTS graph) — nothing to
         # contradict the intent. Report the intent so the comb has a verdict.

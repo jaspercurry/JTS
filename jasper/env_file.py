@@ -7,8 +7,11 @@
 The single home for "rewrite one ``KEY=value`` line in a wizard/reconciler-owned
 ``/var/lib/jasper/*.env`` file without disturbing the operator's other lines."
 Several reconcilers own exactly one key in a shared multi-reader env file and
-must upsert it order-preservingly (so a co-reader's lines, comments, and blank
-lines survive byte-for-byte). :mod:`jasper.fanin.coupling_reconcile` is the first
+must upsert it order-preservingly: a co-reader's **comments and blank lines
+survive verbatim** and assignment order is preserved. Assignment lines are
+canonicalized to ``KEY=value`` on any rewrite (key-side spacing in a
+hand-written ``KEY = value`` is normalized) — harmless because every writer here
+emits clean ``KEY=value`` and that is the systemd ``EnvironmentFile`` form. :mod:`jasper.fanin.coupling_reconcile` is the first
 consumer. :mod:`jasper.fanin.buffer_reconcile` and
 :mod:`jasper.usbsink.output_mode_reconcile` predate this module and still carry
 equivalent private ``_parse_env`` / ``_render_*`` copies; migrating those two
@@ -71,9 +74,10 @@ def read_value(text: str, key: str) -> str | None:
 def upsert(text: str, key: str, value: str) -> tuple[str, bool]:
     """Set ``key=value``, replacing the first assignment in place or appending.
 
-    Returns ``(new_text, changed)``; ``changed`` is False iff the file already
-    carried exactly ``key=value`` (so the caller can skip a redundant write +
-    restart). The result always ends in a single trailing newline.
+    Returns ``(new_text, changed)``; ``changed`` is False iff the key's existing
+    value already RESOLVES to ``value`` (quotes/whitespace aside), so the caller
+    can skip a redundant write + restart. ``new_text`` is only authoritative when
+    ``changed`` is True; the result always ends in a single trailing newline.
     """
     lines = parse_env_lines(text)
     new_lines: list[tuple[str, str | None]] = []
@@ -87,9 +91,11 @@ def upsert(text: str, key: str, value: str) -> tuple[str, bool]:
                 continue
             found = True
             if v.strip().strip("'\"") == value:
-                # Already the desired value: keep the line VERBATIM so
-                # changed=False means byte-identical (no needless write/restart,
-                # and a quoted/spaced form the operator wrote is preserved).
+                # Already the desired value -> changed=False, so the caller skips
+                # the write/restart (and discards this text). We keep the parsed
+                # value side as-written (quotes preserved); key-side spacing is
+                # canonicalized to KEY=value, which only surfaces if some OTHER
+                # key forces a rewrite — acceptable per the module docstring.
                 new_lines.append((k, v))
             else:
                 changed = True

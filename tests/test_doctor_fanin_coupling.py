@@ -64,7 +64,11 @@ def _run_check(monkeypatch, *, coupling, cfg_text, tmp_path):
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
         lambda *a, **k: coupling,
     )
-    monkeypatch.setattr(audio, "_active_camilla_config_path", lambda: str(cfg))
+    # _active_camilla_config_path returns (statefile, active_config_path|None) —
+    # mock the REAL tuple shape (a str-only mock masked a production TypeError).
+    monkeypatch.setattr(
+        audio, "_active_camilla_config_path", lambda: (cfg.parent, str(cfg))
+    )
     return audio.check_fanin_coupling()
 
 

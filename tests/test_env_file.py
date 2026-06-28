@@ -44,6 +44,27 @@ def test_upsert_quoted_value_compares_unquoted():
     assert new == 'B="2"\n'
 
 
+def test_upsert_spaced_input_is_changed_false_value_resolves():
+    # Documented limitation: a hand-written `KEY = value` already resolving to
+    # the desired value yields changed=False, so the caller SKIPS the write and
+    # discards new_text. We pin the contract that matters (no spurious rewrite)
+    # rather than a byte-exact string.
+    new, changed = env_file.upsert("B = 2\n", "B", "2")
+    assert changed is False
+    assert env_file.read_value(new, "B") == "2"
+
+
+def test_upsert_rewrite_canonicalizes_assignments_but_keeps_comments():
+    # When a rewrite IS triggered, assignment lines canonicalize to KEY=value
+    # (key-side spacing dropped) but comments + blanks survive verbatim.
+    new, changed = env_file.upsert("# note\nA = 1\n\nB=2\n", "B", "9")
+    assert changed is True
+    assert "# note" in new and "\n\n" in new  # comment + blank verbatim
+    # Other assignments still resolve correctly (key-side spacing canonicalized).
+    assert env_file.read_value(new, "A") == "1"
+    assert env_file.read_value(new, "B") == "9"
+
+
 def test_remove_strips_key_preserving_others():
     new, changed = env_file.remove("A=1\n# c\nB=2\n", "A")
     assert changed is True
