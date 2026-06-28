@@ -259,7 +259,9 @@ def _run_relay_capture(kind: RelayCaptureKind, relay_base: str) -> dict[str, Any
                 )
             except Exception as exc:  # noqa: BLE001 — surface loudly; never crash the loop
                 # run_capture already logs event=capture_relay.failed with a
-                # traceback; this outer net also flips /status.relay to failed.
+                # traceback; this outer net also flips /status.relay to failed and
+                # carries the operator-facing reason (e.g. a device/calibration
+                # mismatch) so the jts3/jts5 status page can show why.
                 log_event(
                     logger,
                     "capture_relay.adapter_failed",
@@ -268,9 +270,12 @@ def _run_relay_capture(kind: RelayCaptureKind, relay_base: str) -> dict[str, Any
                     kind=kind.label,
                     reason=type(exc).__name__,
                 )
-                _set_relay_capture(
-                    {"tap_link": rc.tap_link, "status": "failed", "kind": kind.label}
-                )
+                _set_relay_capture({
+                    "tap_link": rc.tap_link,
+                    "status": "failed",
+                    "kind": kind.label,
+                    "error": str(exc),
+                })
 
         _set_relay_capture(
             {"tap_link": rc.tap_link, "status": "awaiting_phone", "kind": kind.label}
@@ -993,33 +998,40 @@ def _calibration_device_mismatch(
     return None
 
 
-def _relay_calibration_mismatch(mic_calibration: Any) -> str | None:
-    """Detect a vendor measurement-mic calibration applied to a phone-mic RELAY
-    capture — the same silent, measurement-invalidating mismatch
-    `_calibration_device_mismatch` guards for the browser, but certain rather than
-    heuristic: a relay capture is recorded by the phone's own mic *by
-    construction* (the capture page forces the phone mic, no device picker), so
-    there is no device label to inspect — any external USB-mic curve is wrong.
+def _relay_device_calibration_block(
+    mic_calibration: Any, device: dict[str, Any] | None
+) -> str | None:
+    """Whether to REFUSE a phone-relay capture because a loaded mic calibration
+    can't be trusted for the mic the phone actually used.
 
-    Returns a refusal message when an external-vendor calibration is loaded, else
-    None. A `manual_upload` curve is left to the operator (mirrors the browser
-    guard, which also only catches registry-vendor mics).
+    A relay capture is recorded by whatever input the phone selected — its
+    built-in mic, OR a USB-C measurement mic plugged into the phone. A loaded
+    vendor calibration curve is valid only for that USB measurement mic, never the
+    phone's built-in. We can't know which until the phone records, so this runs
+    POST-capture against the phone-reported `device` (the same built-in-vs-USB
+    decision the same-origin browser flow makes via `_calibration_device_mismatch`):
+
+      - no calibration loaded            → allow (nothing to mis-apply);
+      - calibration loaded, no device    → refuse (can't verify the mic — an older
+                                            capture page, or a non-compliant client);
+      - calibration loaded, device given → defer to `_calibration_device_mismatch`
+                                            (refuse a built-in-mic label, allow the
+                                            USB measurement mic the curve is for).
+
+    Returns a refusal message, or None to allow. The calibration itself is applied
+    Pi-side during analysis (`MeasurementSession._smooth_capture`); this only gates
+    whether the capture is trustworthy to analyze.
     """
     if mic_calibration is None:
         return None
-    from jasper.correction.calibration import SUPPORTED_MODELS
-    external_providers = {spec["provider"] for spec in SUPPORTED_MODELS.values()}
-    provider = str(getattr(mic_calibration, "provider", "") or "")
-    if provider not in external_providers:
-        return None
-    label = str(getattr(mic_calibration, "label", "") or provider)
-    return (
-        f"a {label} measurement-mic calibration is loaded, but the phone relay "
-        "records with the phone's own mic, so the calibration cannot apply — the "
-        "result would be silently mis-corrected. Start a session without a "
-        "calibration to measure with the phone, or capture this position with the "
-        "USB measurement mic via the on-Pi browser flow."
-    )
+    label = (device or {}).get("label") or (device or {}).get("browser_label")
+    if not label:
+        return (
+            "a measurement-mic calibration is loaded, but the phone didn't report "
+            "which mic it used — update the capture page, or remove the calibration "
+            "to measure with the phone's own mic"
+        )
+    return _calibration_device_mismatch(mic_calibration, device)
 
 
 def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -1843,11 +1855,9 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             "relay capture starts a measurement position; expected state "
             f"needs_noise_capture, got {sess.state.value}"
         )
-    # A relay capture is recorded by the PHONE's mic; a loaded USB measurement-mic
-    # calibration curve would be silently mis-applied to it. Refuse loudly.
-    mismatch = _relay_calibration_mismatch(sess.mic_calibration)
-    if mismatch is not None:
-        raise ValueError(mismatch)
+    # The mic-calibration / device check runs POST-capture (in _run_and_consume),
+    # not here: the phone's mic — its built-in, or a USB-C measurement mic plugged
+    # into it — isn't known until it records and reports its device.
 
     def _open(client: RelayClient, base: str, capture_origin: str) -> RelayCapture:
         return correction_adapter.open_room_sweep_capture(
@@ -1865,10 +1875,9 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # measurement_window()/prepare_and_play_sweep path the browser flow uses
         # (loud-output safety + renderer/voice pause preserved). run_capture's
         # default 120 s timeout is intentionally ~ the AWAITING_CAPTURE watchdog;
-        # keep them aligned if either constant changes. Then feed the verified WAV
-        # to on_capture_uploaded — the identical seam a same-origin upload uses.
+        # keep them aligned if either constant changes.
         capture_path = sess.capture_path_for_position(sess.current_position)
-        await asyncio.to_thread(
+        result = await asyncio.to_thread(
             correction_adapter.run_and_store,
             client,
             pi_session,
@@ -1877,6 +1886,13 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 sess, _camilla(), from_state=SessionState.NEEDS_NOISE_CAPTURE
             ),
         )
+        # Device-aware calibration gate (the phone's mic is known only now): refuse
+        # a loaded vendor curve on the phone's built-in mic, allow it for the
+        # matching USB measurement mic. The curve itself is applied Pi-side in
+        # on_capture_uploaded → _smooth_capture — never at record time.
+        block = _relay_device_calibration_block(sess.mic_calibration, result.device)
+        if block is not None:
+            raise ValueError(block)
         await sess.on_capture_uploaded(capture_path)
 
     kind = RelayCaptureKind(

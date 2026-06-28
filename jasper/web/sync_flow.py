@@ -378,9 +378,13 @@ async def relay_run_and_consume(client: Any, pi_session: Any) -> None:
         )
         fut.result(timeout=10.0)
 
-    wav = await asyncio.to_thread(run_capture, client, pi_session, on_armed=_on_armed)
+    # run_capture returns a CaptureResult (WAV + phone device); sync compares
+    # arrival timing within one recording, so the device/calibration is irrelevant.
+    capture = await asyncio.to_thread(
+        run_capture, client, pi_session, on_armed=_on_armed
+    )
     purge(client, pi_session)
-    result = analyze_wav_bytes(wav)
+    result = analyze_wav_bytes(capture.wav)
     recommendation = recommend_channel_delays(result.delta_ms)
     with _lock:
         _state["result"] = result.to_dict()

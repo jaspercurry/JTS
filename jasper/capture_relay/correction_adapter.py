@@ -42,6 +42,7 @@ from typing import Any
 from jasper.capture_relay.client import RelayClient
 from jasper.capture_relay.health import relay_base_from_env
 from jasper.capture_relay.session import (
+    CaptureResult,
     PiCaptureSession,
     mint_session,
     purge,
@@ -138,22 +139,23 @@ def run_and_store(
     on_armed: Callable[[], None],
     play_cue: Callable[[str], None] | None = None,
     **run_kwargs: Any,  # poll_interval_s / timeout_s / sleep / monotonic — run_capture validates
-) -> Path:
+) -> CaptureResult:
     """Run the relay capture, write the verified WAV to `capture_path`, purge the
-    relay session, and return the path. The caller then feeds it to the existing
-    analysis: ``await measurement_session.on_capture_uploaded(path)`` — the same
+    relay session, and return the `CaptureResult` (WAV + phone-reported device).
+    The caller then runs any device/calibration check on `result.device` and feeds
+    the path to ``await measurement_session.on_capture_uploaded(path)`` — the same
     seam a same-origin ``/upload-capture`` POST uses.
 
     Raises loudly (CaptureTimeout / CaptureAborted / CaptureFailed / RelayError)
     exactly as `run_capture` does — the caller surfaces the failure on the page
     and (when wired) cues it.
     """
-    wav = run_capture(
+    result = run_capture(
         client, pi_session, on_armed=on_armed, play_cue=play_cue, **run_kwargs
     )
     path = Path(capture_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(wav)
+    path.write_bytes(result.wav)
     # Best-effort delete now that we have the verified bytes (TTL is the backstop).
     purge(client, pi_session)
-    return path
+    return result

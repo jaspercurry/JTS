@@ -74,8 +74,11 @@ class FakeRelayBackend:
                 return RelayResponse(204, {}, b"")
         return jr(404, {"error": "not_found"})
 
-    def phone_arm(self, sid):
-        self.sessions[sid]["event"] = {"armed": True}
+    def phone_arm(self, sid, device=None):
+        event = {"armed": True}
+        if device is not None:
+            event["device"] = device
+        self.sessions[sid]["event"] = event
 
     def phone_upload(self, sid, content_key, wav):
         iv = os.urandom(crypto.IV_BYTES)
@@ -137,9 +140,11 @@ def test_run_and_store_feeds_the_verified_wav(tmp_path):
         relay_base="https://relay.test", capture_origin="capture.test",
     )
     wav = b"RIFF" + bytes(range(200)) * 4
+    device = {"label": "iPhone Microphone"}
     armed_calls = []
-    # The phone arms (it is recording) before the Pi's first poll.
-    backend.phone_arm(rc.pi_session.session_id)
+    # The phone arms (it is recording) before the Pi's first poll, reporting which
+    # mic it used.
+    backend.phone_arm(rc.pi_session.session_id, device=device)
 
     def on_armed():
         # The host plays the stimulus; the phone finishes its window and uploads.
@@ -151,9 +156,11 @@ def test_run_and_store_feeds_the_verified_wav(tmp_path):
         client, rc.pi_session, out,
         on_armed=on_armed, poll_interval_s=0.0, timeout_s=5.0, sleep=lambda _s: None,
     )
-    # Written verbatim to the per-position path the host then feeds to analysis.
-    assert result == out
+    # WAV written verbatim to the per-position path the host feeds to analysis; the
+    # CaptureResult also carries the phone-reported device for the cal gate.
     assert out.read_bytes() == wav
+    assert result.wav == wav
+    assert result.device == device
     assert armed_calls == [True]  # stimulus fired exactly once
     # Relay session purged after the verified pull.
     assert rc.pi_session.session_id not in backend.sessions
@@ -193,43 +200,28 @@ def test_endpoint_state_guard_rejects_wrong_state(monkeypatch):
         correction_setup._handle_relay_capture(None)
 
 
-def test_relay_calibration_mismatch_helper():
+def test_relay_device_calibration_block():
+    # Device-aware, POST-capture: the phone may use its built-in mic OR a USB-C
+    # measurement mic plugged into it, so the decision keys off the reported device.
     import types
 
     from jasper.web import correction_setup
 
-    assert correction_setup._relay_calibration_mismatch(None) is None
-    # A manual_upload curve is left to the operator (mirrors the browser guard,
-    # which also only catches registry-vendor mics).
-    manual = types.SimpleNamespace(provider="manual_upload", label="my mic")
-    assert correction_setup._relay_calibration_mismatch(manual) is None
-    # An external USB measurement-mic curve on a phone capture is refused, by name.
-    vendor = types.SimpleNamespace(provider="dayton_audio", label="Dayton Audio iMM-6")
-    msg = correction_setup._relay_calibration_mismatch(vendor)
-    assert msg is not None and "Dayton Audio iMM-6" in msg
-
-
-def test_endpoint_refuses_relay_with_usb_calibration(monkeypatch):
-    import types
-
-    import pytest
-
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech")
-    from jasper.correction.session import SessionState
-    from jasper.web import correction_setup
-
-    # Right state, but a USB-mic calibration is loaded — the phone relay would
-    # silently mis-apply it. Refuse before claiming the slot or any network call.
-    fake = types.SimpleNamespace(
-        state=SessionState.NEEDS_NOISE_CAPTURE,
-        session_id="cap_y",
-        mic_calibration=types.SimpleNamespace(provider="minidsp", label="miniDSP UMIK-1"),
+    block = correction_setup._relay_device_calibration_block
+    vendor = types.SimpleNamespace(
+        provider="dayton_audio", model="iMM-6", label="Dayton Audio iMM-6"
     )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: fake)
-    correction_setup._set_relay_capture(None)
-    with pytest.raises(ValueError, match="calibration"):
-        correction_setup._handle_relay_capture(None)
-    assert correction_setup._get_relay_capture() is None  # slot not claimed
+    # No calibration loaded → always allow (nothing to mis-apply).
+    assert block(None, None) is None
+    assert block(None, {"label": "iPhone Microphone"}) is None
+    # Calibration loaded but the phone reported no device → refuse (can't verify).
+    msg = block(vendor, None)
+    assert msg is not None and "didn't report" in msg
+    # Calibration loaded + the phone's built-in mic → refuse (would mis-correct).
+    assert block(vendor, {"label": "iPhone Microphone"}) is not None
+    # Calibration loaded + the matching USB measurement mic → allow; the curve is
+    # applied Pi-side during analysis.
+    assert block(vendor, {"label": "UMIK-1"}) is None
 
 
 def test_open_capture_is_kind_agnostic():
