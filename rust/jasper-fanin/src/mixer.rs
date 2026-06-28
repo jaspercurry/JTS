@@ -81,22 +81,20 @@ const CATCHUP_TARGET_PERIODS: i64 = 1;
 ///
 /// The tuning constraint is two-sided, reasoned on ring OCCUPANCY (what
 /// `avail_update` reports on a capture PCM — frames readable), NOT inter-burst
-/// gap time:
-///   - It MUST sit above the worst-case peak OCCUPANCY of a HEALTHY networked
-///     lane, or we would clip legitimately-buffered audio. Two effects stack:
-///     (a) a WiFi-bursty AirPlay lane deposits an A-MPDU burst of ~4 packets
-///     ≈ 5.5 periods into its ring at once (then drains back at the DAC rate);
-///     (b) a scheduling stall delays OUR drain — worst-case ~36.8 ms ≈ 6.9
-///     periods on a stressed stock Pi 5 (PREEMPT_RT not yet in, gated on soak;
-///     see HANDOFF-fan-in-daemon.md). A stall coinciding with a burst is thus
-///     ~5.5 + 6.9 ≈ 12.4 periods of peak occupancy on a healthy lane.
-///   - It MUST sit below the input buffer depth (16 periods / 4096 frames, the
-///     "0 xruns over 4.5 min" sizing) so the resync fires before overrun.
-/// 14 periods (~75 ms) clears the ~12.4-period healthy burst+stall peak with
-/// ~1.6-period margin and still leaves 2 periods under the 16-period buffer. A
-/// free-running lane grows MONOTONICALLY (its producer's average rate exceeds
-/// ours), so it always crosses this; a healthy lane's burst+stall peak stays
-/// below it.
+/// gap time. Lower bound: it MUST sit above the worst-case peak occupancy of a
+/// HEALTHY networked lane, or we would clip legitimately-buffered audio. Two
+/// effects stack — a WiFi-bursty AirPlay lane deposits an A-MPDU burst of ~4
+/// packets (~5.5 periods) into its ring at once (then drains back at the DAC
+/// rate), and a scheduling stall delays OUR drain (worst-case ~36.8 ms ≈ 6.9
+/// periods on a stressed stock Pi 5, PREEMPT_RT not yet in; see
+/// HANDOFF-fan-in-daemon.md) — so a stall coinciding with a burst is ~5.5 + 6.9
+/// ≈ 12.4 periods of peak occupancy on a healthy lane. Upper bound: it MUST sit
+/// below the input buffer depth (16 periods / 4096 frames, the "0 xruns over
+/// 4.5 min" sizing) so the resync fires before overrun. 14 periods (~75 ms)
+/// clears the ~12.4-period healthy burst+stall peak with ~1.6-period margin and
+/// still leaves 2 periods under the 16-period buffer. A free-running lane grows
+/// MONOTONICALLY (its producer's average rate exceeds ours), so it always
+/// crosses this; a healthy lane's burst+stall peak stays below it.
 ///
 /// NOT drift correction: this is a controlled, occasional drop-resync at the
 /// residual drift rate, not a drop-FREE resampler (that is the later per-lane
@@ -1189,6 +1187,10 @@ mod tests {
     }
 
     #[test]
+    // The asserts compare named const tuning parameters — that IS the regression
+    // guard (a future edit that violates the bracket makes assert!(false) panic).
+    // clippy::assertions_on_constants would otherwise flag the const comparison.
+    #[allow(clippy::assertions_on_constants)]
     fn catchup_high_water_brackets_burst_stall_occupancy_and_buffer() {
         // Guard the two-sided tuning relationship that keeps the catch-up from
         // (a) clipping a healthy networked lane's peak ring OCCUPANCY, or

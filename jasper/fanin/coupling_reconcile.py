@@ -51,6 +51,7 @@ daemon (a brief all-source glitch), which is why it is change-gated, not polled.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,7 +71,7 @@ FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 FANIN_UNIT = "jasper-fanin.service"
 
 # A daemon op (fan-in restart or camilla reconcile) returns (ok, detail).
-DaemonOp = "Callable[[], tuple[bool, str]]"
+DaemonOp = Callable[[], tuple[bool, str]]
 
 
 @dataclass(frozen=True)
