@@ -118,6 +118,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    # Hydrate os.environ from the wizard-owned env files (same set the daemons
+    # load, fanin.env wins last) so a reconcile run from the CLI / install.sh —
+    # neither of which pre-sources those files — sees the persisted
+    # JASPER_FANIN_CAMILLA_COUPLING. Without this, a deploy on a coupling=fifo
+    # box would re-emit a loopback capture while fan-in writes the pipe (a silent
+    # split-brain). setdefault semantics keep an explicit shell override winning.
+    from jasper.env_load import load_env_files
+
+    load_env_files()
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))

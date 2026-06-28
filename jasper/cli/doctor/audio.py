@@ -1405,6 +1405,73 @@ def check_fanin_tts_drops() -> CheckResult:
     )
 
 
+def _loaded_capture_type(config_path: Path) -> str | None:
+    """The ``devices.capture.type`` of a CamillaDSP config, or None if the file
+    is absent/unreadable or has no capture block. A tiny indent-aware scan (no
+    YAML dep): find the 2-space ``capture:`` device block, return its first
+    4-space ``type:`` value."""
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    in_capture = False
+    for raw in text.splitlines():
+        is_2space = raw.startswith("  ") and not raw.startswith("   ")
+        if is_2space and raw.strip() == "capture:":
+            in_capture = True
+            continue
+        if in_capture:
+            if raw.startswith("    ") and raw.strip().startswith("type:"):
+                return raw.split(":", 1)[1].strip()
+            # A sibling 2-space key (playback:/resampler:/...) or any dedent ends
+            # the capture block — never read a sibling block's `type:` (e.g. a
+            # `playback: {type: File}` sink) as the capture type.
+            if is_2space or (raw[:1] not in (" ", "") and raw.strip()):
+                in_capture = False
+    return None
+
+
+@doctor_check(order=51.7, group="audio")
+def check_fanin_coupling() -> CheckResult:
+    """The fan-in → CamillaDSP coupling intent (``fanin.env``) must match the
+    loaded CamillaDSP capture.
+
+    A mismatch is a half-applied arm/disarm: the dangerous one is
+    intent=loopback but a ``RawFile`` config is loaded — CamillaDSP then reads a
+    pipe no writer feeds and crash-loops on its statefile config (the jts5
+    2026-06-27 failure mode). The fix is to re-run the ordered reconciler:
+    ``jasper-fanin-coupling-reconcile <intent>``. Default loopback boxes report
+    a one-line OK so the comb proves the check ran.
+    """
+    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin_coupling import COUPLING_FIFO
+
+    label = "fan-in coupling"
+    coupling = read_persisted_coupling()
+    # _active_camilla_config_path returns (statefile, active_config_path|None);
+    # the active path is what CamillaDSP actually loaded. Fall back to the JTS
+    # sound config when the statefile names nothing.
+    _, active_path = _active_camilla_config_path()
+    config_path = Path(active_path) if active_path else Path(
+        "/var/lib/camilladsp/configs/sound_current.yml"
+    )
+    capture = _loaded_capture_type(config_path)
+    if capture is None:
+        # No JTS config loaded yet (fresh box / non-JTS graph) — nothing to
+        # contradict the intent. Report the intent so the comb has a verdict.
+        return CheckResult(label, "ok", f"intent={coupling}; no loaded capture to compare")
+    expected = "RawFile" if coupling == COUPLING_FIFO else "Alsa"
+    if capture == expected:
+        return CheckResult(label, "ok", f"{coupling} (capture={capture})")
+    return CheckResult(
+        label,
+        "warn",
+        f"intent={coupling} but loaded capture={capture} (expected {expected}); "
+        f"half-applied transition — run: "
+        f"sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile {coupling}",
+    )
+
+
 @doctor_check(order=52, group="audio")
 def check_outputd_service() -> CheckResult:
     """Validate the outputd final-output-owner daemon.

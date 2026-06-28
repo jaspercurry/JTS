@@ -68,6 +68,55 @@ pub const CHANNELS: u32 = 2;
 /// daemon.
 pub const FORMAT: Format = Format::S16LE;
 
+/// Per-input catch-up target, in WHOLE periods. The fill we want a lane's
+/// capture ring to sit at right before the per-period read. One period is
+/// the steady state for a lane clocked off the local DAC (its producer and
+/// our consumer share the DAC clock, so its ring never grows).
+const CATCHUP_TARGET_PERIODS: i64 = 1;
+
+/// Per-input catch-up high-water, in WHOLE periods. A lane whose readable
+/// backlog exceeds this is treated as FREE-RUNNING relative to our DAC-paced
+/// drain (today only the USB lane: the host clock feeds it, while we read at
+/// the DAC rate) and bounded-resynced down to TARGET.
+///
+/// The tuning constraint is two-sided, reasoned on ring OCCUPANCY (what
+/// `avail_update` reports on a capture PCM — frames readable), NOT inter-burst
+/// gap time. Lower bound: it MUST sit above the worst-case peak occupancy of a
+/// HEALTHY networked lane, or we would clip legitimately-buffered audio. Two
+/// effects stack — a WiFi-bursty AirPlay lane deposits an A-MPDU burst of ~4
+/// packets (~5.5 periods) into its ring at once (then drains back at the DAC
+/// rate), and a scheduling stall delays OUR drain (worst-case ~36.8 ms ≈ 6.9
+/// periods on a stressed stock Pi 5, PREEMPT_RT not yet in; see
+/// HANDOFF-fan-in-daemon.md) — so a stall coinciding with a burst is ~5.5 + 6.9
+/// ≈ 12.4 periods of peak occupancy on a healthy lane. Upper bound: it MUST sit
+/// below the input buffer depth (16 periods / 4096 frames, the "0 xruns over
+/// 4.5 min" sizing) so the resync fires before overrun. 14 periods (~75 ms)
+/// clears the ~12.4-period healthy burst+stall peak with ~1.6-period margin and
+/// still leaves 2 periods under the 16-period buffer. A free-running lane grows
+/// MONOTONICALLY (its producer's average rate exceeds ours), so it always
+/// crosses this; a healthy lane's burst+stall peak stays below it.
+///
+/// NOT drift correction: this is a controlled, occasional drop-resync at the
+/// residual drift rate, not a drop-FREE resampler (that is the later per-lane
+/// adaptive resampler). Honest tradeoff: a backed-up lane loses a bounded
+/// chunk of audio at each resync instead of cascading into an upstream
+/// producer overflow.
+const CATCHUP_HIGH_WATER_PERIODS: i64 = 14;
+
+/// Hard cap on whole periods discarded in a single resync, so a pathological
+/// `avail` (driver fault, or a huge buffer) can't turn the bounded
+/// read-and-drop into an unbounded syscall spin inside the hot loop. A lane
+/// further behind than this finishes resyncing over the next few periods —
+/// still bounded per period.
+const CATCHUP_MAX_DRAIN_PERIODS: i64 = 64;
+
+/// Emit the rate-limited `event=fanin.input.catchup` log on the 1st resync
+/// for a lane and then every Nth, so a chronically free-running lane can't
+/// spam the journal. A resync only fires when a lane crosses the high-water,
+/// which is already infrequent; this is defense-in-depth against a wedged
+/// producer. Count-based (not time-based) so the hot loop never reads a clock.
+const CATCHUP_LOG_EVERY: u64 = 64;
+
 /// The final-output transport. `Alsa` (the default) writes the snd-aloop
 /// substream and is paced by the blocking ALSA `writei` — byte-identical to the
 /// pre-coupling daemon. `Fifo` writes a bounded named pipe and is paced by the
@@ -157,10 +206,21 @@ pub struct Input {
     pcm: PCM,
     pub label: String,
     pub pcm_name: String,
-    /// Per-input read buffer (i16 interleaved stereo).
+    /// Per-input read buffer (i16 interleaved stereo). Reused as the
+    /// discard scratch by the catch-up drain — no per-period allocation.
     read_buf: Vec<i16>,
     pub xrun_count: Arc<AtomicU64>,
     pub frames_read: Arc<AtomicU64>,
+    /// Cumulative frames DISCARDED by the bounded catch-up resync on this
+    /// lane (see `drain_input_excess`). Non-zero only on a free-running
+    /// lane (the USB host-clock lane); stays 0 forever on DAC-locked lanes.
+    /// A growing value is the operator's "this lane is drifting and we are
+    /// drop-resyncing it" signal — surfaced via STATUS, never escalated.
+    pub catchup_resync_frames: Arc<AtomicU64>,
+    /// Cumulative catch-up resync EVENTS (each is one high-water crossing
+    /// that discarded ≥1 period). Paired with `catchup_resync_frames` so
+    /// STATUS shows both how often and how much.
+    pub catchup_events: Arc<AtomicU64>,
 }
 
 impl Mixer {
@@ -397,6 +457,17 @@ impl Mixer {
         let period_frames = self.period_frames as usize;
         let selected_input = self.selected_input_index.load(Ordering::Relaxed);
         for (idx, input) in self.inputs.iter_mut().enumerate() {
+            // Bounded catch-up resync BEFORE the period read, for EVERY lane
+            // regardless of selection. A free-running lane (the USB host-clock
+            // lane) backs its capture ring up past the high-water; we discard
+            // the excess down to one period here so the upstream producer never
+            // overflows and back-pressure can reach the host. A DAC-locked lane
+            // sits at one period and this is a single `avail_update` no-op.
+            // INTENTIONALLY independent of `input_selected` below: a de-selected
+            // (muxed-out) free-running lane STILL backs up and must be drained,
+            // so do NOT move this under the selection gate. Drop-controlled,
+            // not drop-free — see the constant docs.
+            drain_input_excess(input, period_frames);
             let frames = read_input(input, period_frames, &self.xrun_tx)?;
             if !input_selected(selected_input, idx, &input.label) {
                 continue;
@@ -509,6 +580,33 @@ fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool 
     selected_input == -1 || selected_input == input_index as i32 || label == "correction"
 }
 
+/// Pure decision for the bounded catch-up resync: given the frames a lane
+/// currently has readable (`avail`) and the period size, how many WHOLE
+/// periods should be discarded to bring the ring down to `CATCHUP_TARGET_PERIODS`?
+///
+/// Returns 0 unless `avail` exceeds `CATCHUP_HIGH_WATER_PERIODS` — so a
+/// healthy DAC-locked lane (ring ~1 period) never drains. When it does fire:
+///   - WHOLE periods only — discarding a fractional period would shear the
+///     stream and desync this lane from its siblings in the per-period sum.
+///   - Leaves at least `CATCHUP_TARGET_PERIODS` readable, so the immediately
+///     following normal read in `step()` still gets a full period (the
+///     resync never induces an underrun).
+///   - Capped at `CATCHUP_MAX_DRAIN_PERIODS` so a bogus `avail` can't spin
+///     the hot loop on syscalls.
+///
+/// Pure (no ALSA) for unit testability — `drain_input_excess` does the I/O.
+fn catchup_drain_periods(avail: i64, period_frames: i64) -> i64 {
+    debug_assert!(period_frames > 0);
+    let high_water = period_frames * CATCHUP_HIGH_WATER_PERIODS;
+    if avail <= high_water {
+        return 0;
+    }
+    let target = period_frames * CATCHUP_TARGET_PERIODS;
+    // avail > high_water >= target ⇒ (avail - target) > 0.
+    let excess_periods = (avail - target) / period_frames; // floor
+    excess_periods.min(CATCHUP_MAX_DRAIN_PERIODS)
+}
+
 fn open_input(pcm_name: &str, label: &str, config: &Config) -> Result<Input> {
     // Non-blocking so a silent renderer's substream doesn't stall
     // the work loop. read_input handles -EAGAIN as "no data; treat
@@ -529,6 +627,8 @@ fn open_input(pcm_name: &str, label: &str, config: &Config) -> Result<Input> {
         read_buf: vec![0i16; period_samples],
         xrun_count: Arc::new(AtomicU64::new(0)),
         frames_read: Arc::new(AtomicU64::new(0)),
+        catchup_resync_frames: Arc::new(AtomicU64::new(0)),
+        catchup_events: Arc::new(AtomicU64::new(0)),
     })
 }
 
@@ -577,6 +677,102 @@ fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
         pcm.hw_params(&hwp).context("installing HwParams")?;
     }
     Ok(())
+}
+
+/// Bounded per-input catch-up resync. Called once per lane per period,
+/// BEFORE the normal `read_input`.
+///
+/// ## Why this exists
+///
+/// Every lane is read exactly one period per work-loop iteration, and the
+/// loop is paced by the blocking OUTPUT write (the local DAC clock). A lane
+/// whose producer is clocked off the *same* DAC (every networked renderer:
+/// AirPlay / Spotify / Bluetooth / TTS) keeps its capture ring at ~one
+/// period forever — it can't outrun a consumer on its own clock. The USB
+/// lane is different: its producer is the host (Mac) clock, and the gadget's
+/// async feedback currently tracks the snd-aloop jiffies timer, not the DAC,
+/// so a small residual rate gap accumulates. With a strict one-period read
+/// and no catch-up, that excess never drains — the ring fills monotonically
+/// until it overruns, by which point the *upstream* usbsink producer queue
+/// has already overflowed (dropped_full) because back-pressure never reached
+/// the host.
+///
+/// This drains the excess down to one period when a lane's readable backlog
+/// crosses the high-water, so the ring stays bounded and back-pressure can
+/// propagate. It is GENERIC per-input: it only ever fires for a lane that
+/// actually backs up. A DAC-locked lane sits at one period and this is a
+/// single non-blocking `avail_update` — no reads, no effect.
+///
+/// ## Honesty
+///
+/// Drop-CONTROLLED, not drop-FREE: a backed-up lane loses a few ms of audio
+/// at each resync (an occasional discard at the residual drift rate), traded
+/// against a cascading upstream overflow. True drop-free for the mixed path
+/// is the later per-lane adaptive resampler; this does NOT resample.
+///
+/// ## RT-safety
+///
+/// No allocation (discards into the lane's existing `read_buf` scratch) and
+/// no blocking (`avail_update` is a non-blocking query; the discard `readi`
+/// only ever reads frames `avail_update` already reported ready). The number
+/// of discard reads is capped per call (`CATCHUP_MAX_DRAIN_PERIODS`). The
+/// log is count-gated, so the common no-resync path touches no clock and
+/// emits nothing.
+fn drain_input_excess(input: &mut Input, period_frames: usize) {
+    // Non-blocking query of how many frames are readable right now.
+    // EAGAIN/error here just means "no usable reading right now" — leave
+    // the normal read_input path to handle recovery; never block or panic.
+    let avail = match input.pcm.avail_update() {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    let to_drain = catchup_drain_periods(avail, period_frames as i64);
+    if to_drain == 0 {
+        return; // healthy lane — the overwhelmingly common path.
+    }
+
+    let io = match input.pcm.io_i16() {
+        Ok(io) => io,
+        Err(_) => return,
+    };
+    // Discard whole periods into the existing read_buf scratch (reused; no
+    // allocation). read_input overwrites read_buf next, so trashing it here
+    // is safe. On non-blocking capture, readi returns Err(EAGAIN) the instant
+    // the ring drops below one period (it drained faster than avail claimed) —
+    // that Err arm is the normal early-stop. Ok(0) is a defensive guard for a
+    // 0-frame return that shouldn't occur here. The 0..to_drain bound (≤ MAX)
+    // means it can never spin regardless.
+    let mut discarded_frames: u64 = 0;
+    for _ in 0..to_drain {
+        match io.readi(&mut input.read_buf) {
+            Ok(0) => break,
+            Ok(n) => discarded_frames += n as u64,
+            Err(_) => break,
+        }
+    }
+    if discarded_frames == 0 {
+        return;
+    }
+
+    input
+        .catchup_resync_frames
+        .fetch_add(discarded_frames, Ordering::Relaxed);
+    let events = input.catchup_events.fetch_add(1, Ordering::Relaxed) + 1;
+    // Rate-limited: 1st event for this lane, then every Nth. Count-based so
+    // the hot loop reads no clock. Logged outside any tight inner loop.
+    if events == 1 || events % CATCHUP_LOG_EVERY == 0 {
+        warn!(
+            "event=fanin.input.catchup label={} discarded_frames={} avail_frames={} \
+             target_frames={} events={} total_resync_frames={} \
+             (free-running lane drop-resync; not drop-free)",
+            input.label,
+            discarded_frames,
+            avail,
+            period_frames * (CATCHUP_TARGET_PERIODS as usize),
+            events,
+            input.catchup_resync_frames.load(Ordering::Relaxed),
+        );
+    }
 }
 
 /// Read up to `requested_frames` from `input`. Returns the number of
@@ -900,5 +1096,141 @@ mod tests {
         assert!(input_selected(1, 4, "correction"));
         assert!(!input_selected(-2, 0, "spotify"));
         assert!(input_selected(-2, 4, "correction"));
+    }
+
+    // ---- Catch-up resync decision (pure; no ALSA). The production default
+    //      period is 256 frames. These pin the constants + the floor/cap math
+    //      so a healthy lane never drains and a free-running lane resyncs to
+    //      exactly one period without inducing an underrun.
+
+    const TEST_PERIOD: i64 = 256;
+
+    #[test]
+    fn catchup_no_drain_at_or_below_high_water() {
+        // A DAC-locked lane sits ~1 period; jitter up to (and including) the
+        // high-water must NEVER drain — that is the invariant that keeps the
+        // networked lanes' behavior unchanged.
+        for periods in 0..=CATCHUP_HIGH_WATER_PERIODS {
+            assert_eq!(
+                catchup_drain_periods(periods * TEST_PERIOD, TEST_PERIOD),
+                0,
+                "avail={} periods must not drain",
+                periods,
+            );
+        }
+    }
+
+    #[test]
+    fn catchup_drains_excess_down_to_one_period() {
+        // A resync only fires ABOVE the high-water (14 periods); once it does,
+        // the WHOLE excess over TARGET is discarded, leaving exactly one period.
+        // 15 periods (one over the high-water) → discard 14, leave 1.
+        assert_eq!(catchup_drain_periods(15 * TEST_PERIOD, TEST_PERIOD), 14);
+        // 16 periods (the full 4096-frame input buffer) → discard 15, leave 1.
+        assert_eq!(catchup_drain_periods(16 * TEST_PERIOD, TEST_PERIOD), 15);
+    }
+
+    #[test]
+    fn catchup_leaves_at_least_target_and_makes_progress() {
+        // For every avail above the high-water: after discarding the planned
+        // whole periods the remainder is >= target (never an induced underrun)
+        // and strictly less than avail (we always make progress).
+        let target = CATCHUP_TARGET_PERIODS * TEST_PERIOD;
+        for periods in (CATCHUP_HIGH_WATER_PERIODS + 1)..200 {
+            let avail = periods * TEST_PERIOD;
+            let drained = catchup_drain_periods(avail, TEST_PERIOD);
+            assert!(drained > 0, "avail={} must drain", avail);
+            let remaining = avail - drained * TEST_PERIOD;
+            assert!(
+                remaining >= target,
+                "avail={} drained={} remaining={} < target={}",
+                avail,
+                drained,
+                remaining,
+                target,
+            );
+        }
+    }
+
+    #[test]
+    fn catchup_fractional_excess_is_floored() {
+        // Just over the high-water by less than a period: the excess over
+        // target floors, so we never discard a period we don't fully have
+        // and never dip below target.
+        let target = CATCHUP_TARGET_PERIODS * TEST_PERIOD;
+        let avail = CATCHUP_HIGH_WATER_PERIODS * TEST_PERIOD + (TEST_PERIOD - 1);
+        let drained = catchup_drain_periods(avail, TEST_PERIOD);
+        let remaining = avail - drained * TEST_PERIOD;
+        assert!(
+            remaining >= target,
+            "remaining={} < target={}",
+            remaining,
+            target
+        );
+    }
+
+    #[test]
+    fn catchup_is_bounded_by_max() {
+        // A pathological backlog caps at MAX so the hot loop can't spin on
+        // discard syscalls; the rest finishes over subsequent periods.
+        assert_eq!(
+            catchup_drain_periods(10_000 * TEST_PERIOD, TEST_PERIOD),
+            CATCHUP_MAX_DRAIN_PERIODS,
+        );
+    }
+
+    #[test]
+    fn catchup_zero_or_negative_avail_never_drains() {
+        // avail_update can momentarily report 0; a negative (odd driver
+        // state) must also be a clean no-op rather than underflow.
+        assert_eq!(catchup_drain_periods(0, TEST_PERIOD), 0);
+        assert_eq!(catchup_drain_periods(-1, TEST_PERIOD), 0);
+        assert_eq!(catchup_drain_periods(-10_000, TEST_PERIOD), 0);
+    }
+
+    #[test]
+    // The asserts compare named const tuning parameters — that IS the regression
+    // guard (a future edit that violates the bracket makes assert!(false) panic).
+    // clippy::assertions_on_constants would otherwise flag the const comparison.
+    #[allow(clippy::assertions_on_constants)]
+    fn catchup_high_water_brackets_burst_stall_occupancy_and_buffer() {
+        // Guard the two-sided tuning relationship that keeps the catch-up from
+        // (a) clipping a healthy networked lane's peak ring OCCUPANCY, or
+        // (b) firing too late to prevent an overrun.
+        //
+        // Lower bound: reasoned on OCCUPANCY (avail = frames readable on a
+        // capture PCM), NOT inter-burst gap time. A healthy AirPlay lane's
+        // worst-case peak fill STACKS two effects: an A-MPDU burst deposit
+        // (~4 packets ≈ 5.5 periods at 256/48 kHz) plus a scheduling stall that
+        // delays our drain (~36.8 ms ≈ 6.9 periods, stressed stock Pi 5;
+        // PREEMPT_RT not yet in). Peak ≈ 5.5 + 6.9 ≈ 12.4 periods. The
+        // high-water must sit ABOVE that so a healthy burst+stall never trips a
+        // resync. Use ceil = 13 periods as the documented ceiling.
+        const AIRPLAY_BURST_PERIODS: i64 = 6; // ~5.5, ceil
+        const SCHED_STALL_PERIODS: i64 = 7; // ~6.9, ceil (36.8 ms stressed Pi 5)
+        const HEALTHY_PEAK_OCCUPANCY_PERIODS: i64 = AIRPLAY_BURST_PERIODS + SCHED_STALL_PERIODS; // 13
+        assert!(
+            CATCHUP_HIGH_WATER_PERIODS > HEALTHY_PEAK_OCCUPANCY_PERIODS,
+            "high_water={} must clear the healthy burst+stall peak occupancy ({} periods)",
+            CATCHUP_HIGH_WATER_PERIODS,
+            HEALTHY_PEAK_OCCUPANCY_PERIODS,
+        );
+        // Occupancy at exactly the healthy peak must NOT drain.
+        assert_eq!(
+            catchup_drain_periods(HEALTHY_PEAK_OCCUPANCY_PERIODS * TEST_PERIOD, TEST_PERIOD),
+            0,
+            "a healthy burst+stall occupancy peak must never be drop-resynced",
+        );
+
+        // Upper bound: the high-water must sit below the default input buffer
+        // depth (4096 frames = 16 periods at 256) with margin, so the resync
+        // fires before the ring overruns.
+        const DEFAULT_INPUT_BUFFER_PERIODS: i64 = 16; // 4096 / 256
+        assert!(
+            CATCHUP_HIGH_WATER_PERIODS < DEFAULT_INPUT_BUFFER_PERIODS,
+            "high_water={} must stay under the input buffer ({} periods)",
+            CATCHUP_HIGH_WATER_PERIODS,
+            DEFAULT_INPUT_BUFFER_PERIODS,
+        );
     }
 }

@@ -109,6 +109,12 @@ pub struct InputSnapshotSource {
     pub pcm_name: String,
     pub frames_read: Arc<AtomicU64>,
     pub xrun_count: Arc<AtomicU64>,
+    /// Cumulative frames discarded by the bounded catch-up resync on this
+    /// lane (mixer's `drain_input_excess`). 0 on DAC-locked lanes; growing
+    /// only on a free-running lane (the USB host-clock lane).
+    pub catchup_resync_frames: Arc<AtomicU64>,
+    /// Cumulative catch-up resync events (high-water crossings) on this lane.
+    pub catchup_events: Arc<AtomicU64>,
 }
 
 pub struct StateServerConfig {
@@ -142,6 +148,8 @@ impl StateServer {
                 pcm_name: inp.pcm_name.clone(),
                 frames_read: Arc::clone(&inp.frames_read),
                 xrun_count: Arc::clone(&inp.xrun_count),
+                catchup_resync_frames: Arc::clone(&inp.catchup_resync_frames),
+                catchup_events: Arc::clone(&inp.catchup_events),
             })
             .collect();
         Self {
@@ -365,6 +373,22 @@ impl StateServer {
                 &mut buf,
                 "xrun_count",
                 input.xrun_count.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            // Catch-up resync counters (mixer's drain_input_excess). Both
+            // stay 0 on a DAC-locked lane; a growing pair is the operator's
+            // "this lane is free-running and we're drop-resyncing it" signal
+            // (today only the USB host-clock lane). Never escalated.
+            push_kv_u64(
+                &mut buf,
+                "catchup_resync_frames",
+                input.catchup_resync_frames.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "catchup_events",
+                input.catchup_events.load(Ordering::Relaxed),
             );
             buf.push('}');
         }
@@ -640,12 +664,16 @@ mod tests {
                     pcm_name: "hw:Loopback,1,0".to_string(),
                     frames_read: Arc::new(AtomicU64::new(12345)),
                     xrun_count: Arc::new(AtomicU64::new(0)),
+                    catchup_resync_frames: Arc::new(AtomicU64::new(0)),
+                    catchup_events: Arc::new(AtomicU64::new(0)),
                 },
                 InputSnapshotSource {
                     label: "airplay".to_string(),
                     pcm_name: "hw:Loopback,1,1".to_string(),
                     frames_read: Arc::new(AtomicU64::new(0)),
                     xrun_count: Arc::new(AtomicU64::new(2)),
+                    catchup_resync_frames: Arc::new(AtomicU64::new(1536)),
+                    catchup_events: Arc::new(AtomicU64::new(2)),
                 },
             ],
             output_pcm: "hw:Loopback,0,7".to_string(),
@@ -716,6 +744,20 @@ mod tests {
         assert!(j.contains(r#""frames_read":12345"#));
         assert!(j.contains(r#""xrun_count":2"#)); // airplay
         assert!(j.contains(r#""pcm":"hw:Loopback,1,0""#));
+        // Catch-up resync counters surfaced per input. spotify (DAC-locked)
+        // is 0; airplay's fixture stands in for a free-running lane.
+        assert!(
+            j.contains(r#""catchup_resync_frames":0"#),
+            "missing catchup_resync_frames=0 (spotify): {j}"
+        );
+        assert!(
+            j.contains(r#""catchup_resync_frames":1536"#),
+            "missing catchup_resync_frames=1536 (airplay fixture): {j}"
+        );
+        assert!(
+            j.contains(r#""catchup_events":2"#),
+            "missing catchup_events=2 (airplay fixture): {j}"
+        );
     }
 
     #[test]

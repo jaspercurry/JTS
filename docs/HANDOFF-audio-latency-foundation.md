@@ -65,24 +65,35 @@ sink type — the multiroom snapserver pipe). Both emitters originally shipped
 because no test ran `camilladsp --check` (the string tests asserted the wrong
 `File` literal). Fixed to `type: RawFile` in both emitters + their tests, and
 validated on jts5 / CamillaDSP 4.1.3: with fan-in writing the pipe, `--check` on
-the RawFile config returns **"Config is valid."** Two consequences are **owed
-before `=fifo` (or the lean lane) can be the default**:
+the RawFile config returns **"Config is valid."** The ordered transition is now
+owned by a reconciler ([`jasper.fanin.coupling_reconcile`](../jasper/fanin/coupling_reconcile.py),
+CLI `jasper-fanin-coupling-reconcile <loopback|fifo>`):
 
-1. **Fan-in-first arm ordering.** The apply's `camilladsp --check` (and the load)
-   OPENS the pipe, so fan-in must already be writing it before the reconcile
-   runs. The reconciler must restart fan-in (`=fifo`, creating the pipe) BEFORE
-   the Camilla reconcile, else `--check` fails *"Could not open input file …"*
-   and the apply fail-closes (no arm — verified both ways on jts5). This ordering
-   is **not yet built into the reconciler/boot path.**
-2. **Reconnect (RawFile EOF).** When fan-in restarts, the pipe writer closes →
-   CamillaDSP's RawFile capture hits EOF. Whether it re-opens or wedges is
-   **unvalidated**; the reconciler likely must restart/reload Camilla after a
-   fan-in restart under `=fifo`. Validate on-device before default-on.
+1. **Fan-in-first arm ordering — BUILT.** The apply's `camilladsp --check` (and
+   the load) OPENS the pipe, so on ARM the reconciler writes `=fifo` → restarts
+   fan-in (creates+writes the pipe) → reconciles CamillaDSP (RawFile). On DISARM
+   it reverses: reconcile CamillaDSP to Alsa FIRST → then restart fan-in to
+   loopback, so disarming never strands camilla on a RawFile config whose pipe
+   has lost its writer (the crash-loop). Any ARM failure rolls the whole box back
+   to loopback. On a clean reboot the systemd order (fan-in `Before` camilla)
+   gives the same rendezvous, so an armed box survives a cold boot with no
+   reconciler run (validated on jts5: `camilla NRestarts=0`).
+2. **Reconnect (RawFile EOF) — characterized + self-healing.** fan-in
+   auto-reopens the pipe on `reader_gone` (a CamillaDSP reload); a fan-in restart
+   EOFs camilla's RawFile capture, which self-heals via camilla's own restart
+   (a brief gap, `reopen_count`/`dropped_periods` in `/state`). A *coordinated*
+   reload (so a fan-in bounce is gap-free) is a possible smoothing follow-up, not
+   a blocker.
 
-**Test gap (partly closed):** the string tests now assert `type: RawFile`
-(+ `File` absent) for capture, but the real gate is `camilladsp --check` on the
-generated config, which CI cannot run (no binary). An on-device `--check` probe
-(deploy check / `jasper-doctor`) is owed.
+**Observability:** `/state .fanin.output.fifo.{path,requested/actual_pipe_bytes,
+dropped_periods,reopen_count}` + transport; `jasper-doctor`'s
+`check_fanin_coupling` warns when the persisted intent (`fanin.env`) and the
+loaded CamillaDSP capture disagree (the half-applied / crash-loop precursor).
+**Test gap:** the string tests assert `type: RawFile` (+ `File` absent); the real
+`camilladsp --check` gate runs on-device (the deploy's sound reconcile, now
+env-hydrated so it sees the persisted coupling — [`jasper.cli.sound`](../jasper/cli/sound.py)).
+**Owed before flipping the default to `fifo`:** the 24 h zero-xrun on-device soak
+and the real `<60 ms` USB measurement (needs a wired USB source).
 
 **FIFO format:** the lean pipe carries full **S32_LE @ 48 kHz stereo** (the
 usbsink bridge's normal snd-aloop lane uses the high-16 S16 view; the FIFO must
@@ -102,7 +113,7 @@ the path: `DEFAULT_LEAN_CAPTURE_FIFO` (`/run/jasper-usbsink/lean.pipe`).
 | 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim, [`jasper.sound.runtime.apply_lean_capture_config`](../jasper/sound/runtime.py)), arm the usbsink FIFO output at runtime ([`jasper.usbsink.output_mode_reconcile`](../jasper/usbsink/output_mode_reconcile.py) → writes `JASPER_USBSINK_OUTPUT_MODE` to `/var/lib/jasper/usbsink.env` + restarts via the broker), and swap/restore via mux `_tick` (`decide_lean_route` → `Mux._enter_lean`/`_leave_lean` ladders, fail-loud → buffered) | shipped, default-OFF, **24 h soak owed** |
 | 5 | shairport-sync built `--with-pipe` (capable binary; runtime AirPlay pipe lane is future, #1318-gated) | shipped, dormant |
 | 6 | `jasper-doctor` DAC USB sync-mode advisory (clock-coherence signal, *not* the chip-AEC gate) | shipped |
-| 7 | **fan-in → CamillaDSP FIFO coupling** (`JASPER_FANIN_CAMILLA_COUPLING=fifo`) — the SHARED-capture endgame: fan-in writes a bounded pipe, CamillaDSP File-captures it; transport ([`jasper/fanin/src/fifo.rs`](../rust/jasper-fanin/src/fifo.rs)) + flag ([`jasper/fanin/src/config.rs`](../rust/jasper-fanin/src/config.rs) `Coupling`) + generator helper ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)) | shipped, default-OFF; capture-type bug (`File`→`RawFile`) fixed + `--check`-validated on jts5; **fan-in-first arm ordering + RawFile-EOF reconnect handling + on-device soak owed before default-on** |
+| 7 | **fan-in → CamillaDSP FIFO coupling** (`JASPER_FANIN_CAMILLA_COUPLING=fifo`) — the SHARED-capture endgame: fan-in writes a bounded pipe, CamillaDSP File-captures it; transport ([`jasper/fanin/src/fifo.rs`](../rust/jasper-fanin/src/fifo.rs)) + flag ([`jasper/fanin/src/config.rs`](../rust/jasper-fanin/src/config.rs) `Coupling`) + generator helper ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)) | shipped, default-OFF; capture-type `RawFile` fixed + `--check`-validated on jts5; ordered arm/disarm reconciler (`jasper-fanin-coupling-reconcile`) + doctor drift check; **24 h soak + real `<60 ms` USB measurement owed before default-on** |
 
 **Going live is soak-gated.** `JASPER_LEAN_LANE` is opt-IN
 (`=enabled`), default-OFF, and is an *experiment knob* until a **24 h on-device
@@ -191,12 +202,15 @@ CamillaDSP actually loads — and the flat-profile reconcile noop is coupling-aw
 so it arms even a flat speaker (the MB1 fix; otherwise fan-in writes the pipe
 while Camilla keeps the dead loopback → silent outage). Default `loopback` → `{}`
 → byte-identical emit, and the Rust side defaults to `Coupling::Loopback` (the
-`FifoWriter` is never constructed) — so unset is provably inert. What remains
-before flipping the default to `fifo`: observability is wired (fan-in STATUS +
-`/state`: transport, reader-gone/reopen, dropped-period, pipe size), and the
-24 h on-device zero-xrun **soak** (the ~1-period drop per Camilla reload, the
-usbsink term, the <60 ms measurement on jts5) — then delete the now-redundant
-lean lane + adaptive-shrink.
+`FifoWriter` is never constructed) — so unset is provably inert. The ORDERED
+arm/disarm is owned by [`jasper.fanin.coupling_reconcile`](../jasper/fanin/coupling_reconcile.py)
+(CLI `jasper-fanin-coupling-reconcile`): arm restarts fan-in then reconciles
+camilla; disarm reconciles camilla then restarts fan-in; an arm failure rolls the
+box back to loopback. `jasper-doctor`'s `check_fanin_coupling` flags persisted-vs-
+loaded drift. What remains before flipping the default to `fifo`: the 24 h
+on-device zero-xrun **soak** (the ~1-period drop per Camilla reload, the usbsink
+term, the real `<60 ms` measurement on jts5) — then delete the now-redundant lean
+lane + adaptive-shrink.
 
 ## Optionality: chip-AEC AND software-AEC, each at the lean floor
 

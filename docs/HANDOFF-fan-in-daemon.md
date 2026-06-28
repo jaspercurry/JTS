@@ -393,11 +393,11 @@ manually selected or while the mux has temporarily selected `NONE`.
   "selection_mode": "select",
   "selected_input": "airplay",
   "inputs": [
-    {"label": "spotify", "pcm": "hw:Loopback,1,0", "frames_read": 0, "xrun_count": 0},
-    {"label": "airplay", "pcm": "hw:Loopback,1,1", "frames_read": 5928432, "xrun_count": 0},
-    {"label": "bluealsa", "pcm": "hw:Loopback,1,2", "frames_read": 0, "xrun_count": 0},
-    {"label": "usbsink", "pcm": "hw:Loopback,1,3", "frames_read": 0, "xrun_count": 0},
-    {"label": "correction", "pcm": "hw:Loopback,1,4", "frames_read": 0, "xrun_count": 0}
+    {"label": "spotify", "pcm": "hw:Loopback,1,0", "frames_read": 0, "xrun_count": 0, "catchup_resync_frames": 0, "catchup_events": 0},
+    {"label": "airplay", "pcm": "hw:Loopback,1,1", "frames_read": 5928432, "xrun_count": 0, "catchup_resync_frames": 0, "catchup_events": 0},
+    {"label": "bluealsa", "pcm": "hw:Loopback,1,2", "frames_read": 0, "xrun_count": 0, "catchup_resync_frames": 0, "catchup_events": 0},
+    {"label": "usbsink", "pcm": "hw:Loopback,1,3", "frames_read": 0, "xrun_count": 0, "catchup_resync_frames": 0, "catchup_events": 0},
+    {"label": "correction", "pcm": "hw:Loopback,1,4", "frames_read": 0, "xrun_count": 0, "catchup_resync_frames": 0, "catchup_events": 0}
   ],
   "output": {
     "pcm": "hw:Loopback,0,7",
@@ -611,6 +611,57 @@ inter-arrival distribution; if max gap is materially below 40 ms,
 queue capacity by ~43 ms. Treat that as an explicit experiment, not a
 cleanup default, and don't tune below `2048` without also confirming
 the WiFi gap distribution stays under ~20 ms in your environment.
+
+#### Per-input catch-up resync — free-running lanes (the USB lane)
+
+The work loop reads exactly **one period per lane per iteration** and is
+paced by the blocking output write (the local DAC clock). A lane whose
+producer is clocked off that *same* DAC — every networked renderer
+(AirPlay / Spotify / Bluetooth) and the TTS lane — keeps its capture ring
+at ~one period in steady state: it cannot out-produce a consumer that runs
+on its own clock. (Its ring can fill *transiently* under a WiFi burst, but
+drains back at the DAC rate — that's the buffer-sizing story above.)
+
+The **USB input lane is different.** Its producer is the host (Mac) clock,
+not the DAC. The UAC2 gadget's async feedback currently tracks the
+snd-aloop jiffies timer (what usbsink consumes), not the DAC, so a small
+*residual* rate gap accumulates. With a strict one-period read and no
+catch-up, that excess never drains: the lane's snd-aloop ring fills
+**monotonically** until it overruns — and by then the *upstream* usbsink
+producer queue has already overflowed (`dropped_full`, with `underrun=0`),
+because back-pressure never reached the host. The networked lanes never
+hit this; only a free-running lane does.
+
+`mixer.rs::drain_input_excess` fixes this with a **bounded per-input
+catch-up**. Once per lane per period, before the normal read, it checks
+`avail_update()`; if a lane's readable backlog exceeds a high-water
+(`CATCHUP_HIGH_WATER_PERIODS = 14` periods ≈ 75 ms at 256-frame periods),
+it discards whole periods down to a target (`CATCHUP_TARGET_PERIODS = 1`
+period) via a bounded read-and-drop into the lane's existing scratch buffer
+(no allocation), capped at `CATCHUP_MAX_DRAIN_PERIODS = 64` reads. The
+high-water is chosen to sit **above** the worst-case healthy-lane occupancy
+(`HEALTHY_PEAK_OCCUPANCY_PERIODS = 13` — an AirPlay burst stacked on a
+stressed-Pi-5 scheduler stall; see "Input buffer sizing" above) so a
+healthy lane is never trimmed, and **below** the 16-period input buffer
+(`DEFAULT_INPUT_BUFFER_PERIODS`) so the resync fires before an overrun.
+Both bounds are pinned by the occupancy-guard test in `mixer.rs`. It is
+generic per-input but only ever fires for a lane that actually backs up
+monotonically — i.e. the USB lane.
+
+**This is drop-CONTROLLED, not drop-FREE.** A free-running lane loses a
+bounded chunk of audio at each resync (an occasional discard at the
+residual drift rate), traded against the far worse cascading upstream
+overflow it replaces. True drop-free for the mixed path is the later
+per-lane adaptive resampler; the catch-up does **not** resample.
+
+**Observability**: each input in the `STATUS` JSON carries
+`catchup_resync_frames` (cumulative frames discarded on that lane) and
+`catchup_events` (cumulative high-water crossings). Both stay `0` forever
+on a DAC-locked lane; a growing pair on `usbsink` is the operator's "this
+lane is free-running and we're drop-resyncing it" signal. A rate-limited
+`event=fanin.input.catchup` log line (1st event, then every 64th) names
+the lane and the discarded/avail/target frames. Neither is ever escalated
+— the catch-up keeps the speaker playing, it never restarts a daemon.
 
 ## asoundrc changes (`deploy/alsa/asoundrc.jasper`)
 
@@ -959,4 +1010,4 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-06-12 (fan-in-owned one-shot TTS/duck IPC, bounded idle-TTL duck release, outputd final-sink ownership, and assistant loudness ownership rechecked).
+Last verified: 2026-06-28 (added the bounded per-input catch-up resync for free-running lanes (`mixer.rs::drain_input_excess`) — the USB-lane upstream-overflow fix — plus its `catchup_resync_frames`/`catchup_events` STATUS counters; pacing, input-buffer sizing, TTS/duck IPC, and outputd ownership rechecked against current code).

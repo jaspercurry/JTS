@@ -114,6 +114,18 @@ build_install_rust_daemon() {
             "$(dirname "${cache_dir}")/jasper-clock/"
         chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-clock"
     fi
+    # Same for the shared resampler crate (jasper-resampler) so jasper-outputd's
+    # `path = "../jasper-resampler"` resolves. jasper-resampler itself depends on
+    # `path = "../jasper-clock"`, which the block above already stages as a
+    # sibling — so this single rsync covers the transitive dep. Guarded by
+    # existence so a branch predating the crate still builds.
+    if [[ -d "${REPO_DIR}/rust/jasper-resampler" ]]; then
+        rsync -a --delete \
+            --exclude='target/' \
+            "${REPO_DIR}/rust/jasper-resampler/" \
+            "$(dirname "${cache_dir}")/jasper-resampler/"
+        chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-resampler"
+    fi
     chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     local -a cargo_env=()

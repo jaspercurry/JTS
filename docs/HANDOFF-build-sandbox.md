@@ -248,4 +248,6 @@ All read by `build-sandbox.sh`; all have safe defaults.
   resilience stages (the OOM ladder + cgroup slice this build policy
   complements but does not depend on).
 
-Last verified: 2026-06-21
+Last verified: 2026-06-28 (removed build #8 — the jasper_resampler pybind11
+binding was cut with the usbsink rate-match stage; the inventory is back to
+seven builds)

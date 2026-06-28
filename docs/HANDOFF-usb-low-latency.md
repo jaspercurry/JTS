@@ -1,0 +1,74 @@
+# Handoff: USB-in low latency — the USB-only (lean-fifo) path
+
+What it takes to get the **lowest** latency for USB-in, and why the shared
+(fan-in) path can't get there. Written after the Phase 1 catch-up drop fix
+(2026-06-28), which made USB near-drop-free but revealed the latency cost.
+
+## The latency problem (measured, shared/fan-in path)
+
+With USB routed through the shared mixer (the one-path design), the steady-state
+Mac→DAC budget measured on jts.local is **~70–100 ms, and variable** — not the
+<60 ms target. Contributors:
+
+| Stage | Latency | Note |
+|---|---|---|
+| usbsink lane snd-aloop ring | **5–75 ms (sawtooth)** | the catch-up lets a free-running lane fill 1→14 periods before resyncing (`CATCHUP_HIGH_WATER_PERIODS=14`); measured at 43 ms mid-soak |
+| usbsink→fan-in snd-aloop hop | ~one ring | first loopback |
+| fan-in→CamillaDSP snd-aloop hop | ~one ring | second loopback (current `loopback` coupling) |
+| CamillaDSP chunksize | ~5–20 ms | depends on the active chunksize |
+| jasper-outputd DAC buffer | **20.7 ms** | `snd_pcm_delay`, buffer/period 512/256 |
+
+Two structural costs dominate: the **catch-up sawtooth** (a drop-control tradeoff —
+the high-water of 14 periods is sized to never false-trigger a healthy AirPlay
+burst+stall, so it inherently buffers up to ~75 ms on the USB lane) and the **two
+snd-aloop hops**. Neither is cheaply removable on the shared path.
+
+## The USB-only answer: the lean-fifo path
+
+When USB is the *sole* active source, route it through the already-built lean lane
+instead of the mixer:
+
+```
+usbsink (OUTPUT_MODE=fifo) → /run/jasper-usbsink/lean.pipe → CamillaDSP RawFile-capture
+   (enable_rate_adjust + AsyncSinc) → jasper-outputd → DAC
+```
+
+This **deletes both snd-aloop hops AND the catch-up sawtooth**: CamillaDSP's async
+resampler becomes the rate-correcting consumer disciplined by the real DAC clock, so
+the pipe sits at a small fixed fill (no sawtooth, no drift overflow). Estimated
+budget: CamillaDSP chunksize (~5 ms) + a small fifo + outputd DAC (~15–21 ms) ≈
+**<40 ms achievable**, stable.
+
+Tradeoff: the lean lane **bypasses the fan-in mixer**, so it is SOLO-only — AirPlay/
+Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared.
+
+## What needs to be done (ordered)
+
+1. **Arm the lean lane through the mux ladder, not raw env.** Wire `decide_lean_route`
+   (`jasper/lean_lane.py`) + `JASPER_LEAN_LANE=enabled` so the mux flips USB→lean-fifo
+   when USB is solo and back to the shared mixer when another source or TTS starts
+   (solo-gated, fail-loud→buffered). The pieces exist (tasks 4b-ii/iii/iv); validate the
+   live switch end-to-end and the TTS-while-solo handoff.
+2. **Drive the camilla side via the existing lean-config path** (`jasper/usbsink/
+   output_mode_reconcile.py` + the lean RawFile capture in `jasper/camilla_config_contract.py`
+   — RawFile, not File; the jts5 fix). Confirm `--check` valid and no crash-loop.
+3. **Tune the buffer floors to the DAC's real floor.** outputd DAC 512/256 = 20.7 ms is
+   not the floor — the Apple dongle measured clean to 384/128 (~15 ms) and likely lower.
+   CamillaDSP chunksize to its CPU floor (256). This is the **#27 codification**: the DAC's
+   safe buffer floor belongs in its `DacProfile` (`jasper/audio_hardware/dac.py`) so a new
+   DAC is declaration-only and zero per-user config; outputd reads the active profile's
+   floor. Tier-aware chunksize (Pi 5 low / Pi Zero safe).
+4. **Measure end-to-end on jts.local** (Mac→USB, solo): target <60 ms, ideally <40 ms,
+   stable; confirm drop-free under sustained play + transitions; soak.
+5. **Cross-platform + cross-DAC reliability** (the product bar): repeat the solo lean-fifo
+   measurement on Windows + a second DAC. The lean-fifo's correctness rests on CamillaDSP's
+   async resampler (host-agnostic, DAC-agnostic — it targets whatever DAC clock), so it
+   should hold, but prove it.
+
+## Why not just lower the catch-up high-water?
+Lowering `CATCHUP_HIGH_WATER_PERIODS` would shrink the shared-path sawtooth but
+re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-period
+peak) — trading latency for drops on every source. The lean-fifo gets low latency
+*without* that tradeoff because it removes the sawtooth mechanism entirely.
+
+Last verified: 2026-06-28

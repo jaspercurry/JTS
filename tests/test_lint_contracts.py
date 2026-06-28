@@ -66,8 +66,25 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # never-crash-the-background-loop handler around the async capture runner —
 # logs + surfaces the failure in /status, mirrors the existing
 # _schedule_measurement_sweep idiom in the same file. Pushes BOTH ceilings by 1.
-MAX_NOQA_MARKERS = 809
-MAX_BLE001_MARKERS = 628
+# 2026-06-27 (+1 blind-except): the fan-in coupling reconciler
+# (jasper/fanin/coupling_reconcile.py _reconcile_camilla) wraps the CamillaDSP
+# reconcile in a fail-safe handler — an UNEXPECTED reconcile exception must
+# trigger the arm-failure rollback to loopback (return ok=False), never
+# propagate and leave the box half-armed (fan-in on the pipe, camilla on the old
+# config) with no recovery. Resilience-first on a production speaker. +1 BOTH.
+# 2026-06-28 (no change): the usbsink-edge rate-match stage + its tests
+# (jasper/usbsink/audio_bridge.py rate-match code, tests/test_usbsink_rate_match.py,
+# tests/test_resampler_contract.py) were cut as the wrong tool for the observed
+# USB drops. The removed code used only NARROW exception handlers (ImportError /
+# ValueError / RuntimeError / OSError — no blind-except), and the deleted test
+# files carried zero suppression markers, so the cut removed NO noqa / blind-
+# except markers from the scanned roots. Both ceilings stay where they were;
+# they cannot be lowered because the live count is still exactly at them.
+# (Marker strings are spelled out here, not written literally, so this comment
+# does not inflate the count it documents — same convention as the 2026-06-27
+# phone-mic entry above.)
+MAX_NOQA_MARKERS = 810
+MAX_BLE001_MARKERS = 629
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

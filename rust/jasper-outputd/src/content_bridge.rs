@@ -10,15 +10,18 @@
 //! nudging a precomputed windowed-sinc interpolator by a few ppm.
 
 use anyhow::{Context, Result};
-use jasper_clock::{Dll, DllConfig, DllSnapshot};
+use jasper_clock::DllSnapshot;
+// The windowed-sinc interpolator, the audio ring, and the rate controller now
+// live in the shared `jasper-resampler` crate (extracted from here so the
+// usbsink C++ binding and this daemon share one algorithm). content_bridge
+// keeps its own lock / prefill / underfill / resync state machine and metrics
+// below; only the reusable primitives are imported. `RADIUS_FRAMES` is aliased
+// to the old local name to keep this module's references unchanged.
+use jasper_resampler::RADIUS_FRAMES as SINC_RADIUS_FRAMES;
+use jasper_resampler::{AudioRing, RateController, SincTable};
 
 use crate::config::ContentBridgeConfig;
 use crate::types::SAMPLE_RATE;
-
-const SINC_RADIUS_FRAMES: i64 = 16;
-const SINC_TAPS: usize = (SINC_RADIUS_FRAMES as usize) * 2 + 1;
-const SINC_PHASES: usize = 2048;
-const SINC_CUTOFF: f64 = 0.97;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ContentBridgeMetrics {
@@ -52,7 +55,7 @@ pub struct ContentBridge {
     channels: usize,
     period_frames: usize,
     ring: AudioRing,
-    sinc_table: Vec<[f64; SINC_TAPS]>,
+    sinc_table: SincTable,
     controller: RateController,
     next_input_frame: f64,
     locked: bool,
@@ -77,14 +80,18 @@ impl ContentBridge {
         let period_frames = period_frames as usize;
         let ring = AudioRing::new(config.ring_frames as usize, channels)
             .context("creating content bridge ring")?;
-        let sinc_table = build_sinc_table();
+        let sinc_table = SincTable::new();
         Ok(Self {
             config,
             channels,
             period_frames,
             ring,
             sinc_table,
-            controller: RateController::new(config.max_adjust_ppm as f64, period_frames as u32),
+            controller: RateController::new(
+                config.max_adjust_ppm as f64,
+                period_frames as u32,
+                SAMPLE_RATE,
+            ),
             next_input_frame: 0.0,
             locked: false,
             input_frames: 0,
@@ -329,214 +336,10 @@ impl ContentBridge {
     }
 
     fn interpolate_channel(&self, pos: f64, channel: usize) -> i16 {
-        let center = pos.floor() as i64;
-        let frac = pos - center as f64;
-        let phase = ((frac * SINC_PHASES as f64).floor() as usize).min(SINC_PHASES - 1);
-        let coeffs = &self.sinc_table[phase];
-        let mut acc = 0.0f64;
-        for (tap, coeff) in coeffs.iter().enumerate().take(SINC_TAPS) {
-            let offset = tap as i64 - SINC_RADIUS_FRAMES;
-            let frame = center + offset;
-            acc += self.ring.sample(frame, channel) as f64 * coeff;
-        }
-        clamp_i16(acc)
+        // Delegates to the shared windowed-sinc kernel; the table + ring are the
+        // jasper-resampler primitives this module now composes.
+        self.sinc_table.interpolate(&self.ring, pos, channel)
     }
-}
-
-struct AudioRing {
-    data: Vec<i16>,
-    channels: usize,
-    capacity_frames: usize,
-    read_frame: u64,
-    write_frame: u64,
-}
-
-impl AudioRing {
-    fn new(capacity_frames: usize, channels: usize) -> Result<Self> {
-        if capacity_frames == 0 {
-            anyhow::bail!("content bridge ring capacity must be > 0");
-        }
-        let samples = capacity_frames
-            .checked_mul(channels)
-            .context("content bridge ring sample capacity overflow")?;
-        Ok(Self {
-            data: vec![0; samples],
-            channels,
-            capacity_frames,
-            read_frame: 0,
-            write_frame: 0,
-        })
-    }
-
-    fn capacity_frames(&self) -> usize {
-        self.capacity_frames
-    }
-
-    fn fill_frames(&self) -> usize {
-        (self.write_frame - self.read_frame) as usize
-    }
-
-    fn read_frame(&self) -> u64 {
-        self.read_frame
-    }
-
-    fn write_frame(&self) -> u64 {
-        self.write_frame
-    }
-
-    fn push_interleaved(&mut self, samples: &[i16]) -> u64 {
-        let frames = samples.len() / self.channels;
-        let mut dropped = 0u64;
-        for frame in 0..frames {
-            if self.fill_frames() == self.capacity_frames {
-                self.read_frame += 1;
-                dropped += 1;
-            }
-            let dst = (self.write_frame as usize % self.capacity_frames) * self.channels;
-            let src = frame * self.channels;
-            self.data[dst..dst + self.channels].copy_from_slice(&samples[src..src + self.channels]);
-            self.write_frame += 1;
-        }
-        dropped
-    }
-
-    fn clear(&mut self) {
-        self.read_frame = self.write_frame;
-    }
-
-    fn drop_before(&mut self, frame: i64) {
-        if frame <= 0 {
-            return;
-        }
-        let frame = frame as u64;
-        if frame > self.read_frame {
-            self.read_frame = frame.min(self.write_frame);
-        }
-    }
-
-    fn sample(&self, frame: i64, channel: usize) -> i16 {
-        if frame < 0 {
-            return 0;
-        }
-        let frame = frame as u64;
-        if frame < self.read_frame || frame >= self.write_frame {
-            return 0;
-        }
-        let idx = (frame as usize % self.capacity_frames) * self.channels + channel;
-        self.data[idx]
-    }
-}
-
-/// Drives the resampler ratio that holds the ring at `target_fill_frames`.
-///
-/// The loop math is the shared [`jasper_clock::Dll`] (Inc 3) — the same
-/// spa_dll second-order DLL every clock-domain boundary now composes, replacing
-/// the hand-rolled proportional+integral controller this used to carry. The
-/// DLL's third integrator gives zero steady-state fill error (the PI loop left
-/// a standing offset and could ring); its `max_error` slew clamp subsumes the
-/// old integral clamp.
-///
-/// Site-specific I/O stays local: the error SOURCE (`error_frames = fill -
-/// target`) and the resampler this ratio DRIVES are the bridge's concern; only
-/// the loop is shared. The bridge's `max_adjust_ppm` safety bound on how far the
-/// resampler may warp is preserved as an OUTPUT clamp around the DLL ratio.
-struct RateController {
-    dll: Dll,
-    max_adjust_ppm: f64,
-    ratio_ppm: f64,
-    clamp_count: u64,
-}
-
-impl RateController {
-    fn new(max_adjust_ppm: f64, period_frames: u32) -> Self {
-        Self {
-            dll: Dll::new(DllConfig::for_rate(period_frames, SAMPLE_RATE)),
-            max_adjust_ppm,
-            ratio_ppm: 0.0,
-            clamp_count: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.dll.reset();
-        self.ratio_ppm = 0.0;
-    }
-
-    fn next_ratio(&mut self, error_frames: f64) -> f64 {
-        // Negative feedback: a ring that is too full (`error_frames > 0`) must
-        // be drained by reading FASTER (ratio > 1). The DLL's `corr = 1 -
-        // (z2+z3)` produces ratio > 1 for a NEGATIVE input error, so feed
-        // `-error_frames`.
-        let raw_ppm = (self.dll.update(-error_frames) - 1.0) * 1_000_000.0;
-        // Preserve the bridge's safety bound on resampler warp: clamp the
-        // OUTPUT ppm to ±max_adjust_ppm and count when the clamp engages.
-        let clamped_ppm = raw_ppm.clamp(-self.max_adjust_ppm, self.max_adjust_ppm);
-        if (raw_ppm - clamped_ppm).abs() > f64::EPSILON {
-            self.clamp_count += 1;
-        }
-        self.ratio_ppm = clamped_ppm;
-        1.0 + clamped_ppm / 1_000_000.0
-    }
-
-    fn ratio_ppm(&self) -> f64 {
-        self.ratio_ppm
-    }
-
-    fn clamp_count(&self) -> u64 {
-        self.clamp_count
-    }
-
-    /// The shared-DLL snapshot — the consistent `clock.rate_diff` telemetry
-    /// shape (Inc 4) the state layer publishes for every DLL instance.
-    fn dll_snapshot(&self) -> DllSnapshot {
-        self.dll.snapshot()
-    }
-}
-
-fn sinc(x: f64) -> f64 {
-    if x.abs() < 1.0e-8 {
-        1.0
-    } else {
-        let pix = std::f64::consts::PI * x;
-        pix.sin() / pix
-    }
-}
-
-fn blackman_harris(x: f64) -> f64 {
-    const A0: f64 = 0.35875;
-    const A1: f64 = 0.48829;
-    const A2: f64 = 0.14128;
-    const A3: f64 = 0.01168;
-    let phase = 2.0 * std::f64::consts::PI * x;
-    A0 - A1 * phase.cos() + A2 * (2.0 * phase).cos() - A3 * (3.0 * phase).cos()
-}
-
-fn build_sinc_table() -> Vec<[f64; SINC_TAPS]> {
-    let mut table = Vec::with_capacity(SINC_PHASES);
-    for phase in 0..SINC_PHASES {
-        let frac = phase as f64 / SINC_PHASES as f64;
-        let mut coeffs = [0.0f64; SINC_TAPS];
-        let mut norm = 0.0f64;
-        for (tap, coeff) in coeffs.iter_mut().enumerate() {
-            let offset = tap as i64 - SINC_RADIUS_FRAMES;
-            let distance = frac - offset as f64;
-            *coeff = sinc(distance * SINC_CUTOFF)
-                * SINC_CUTOFF
-                * blackman_harris(tap as f64 / (SINC_TAPS - 1) as f64);
-            norm += *coeff;
-        }
-        if norm.abs() > 1.0e-9 {
-            for coeff in &mut coeffs {
-                *coeff /= norm;
-            }
-        }
-        table.push(coeffs);
-    }
-    table
-}
-
-fn clamp_i16(value: f64) -> i16 {
-    value.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16
 }
 
 fn is_power_of_two(value: u64) -> bool {

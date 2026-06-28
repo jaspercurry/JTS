@@ -915,6 +915,47 @@ migrate_voice_provider() {
     rm -f "${jasper_env}.bak"
 }
 
+# Move JASPER_FANIN_CAMILLA_COUPLING out of jasper.env into the
+# reconciler-owned /var/lib/jasper/fanin.env. The coupling reconciler
+# (jasper.fanin.coupling_reconcile) is the single writer of this key in
+# fanin.env (the same file jasper-fanin + jasper-mux load, fanin.env
+# winning over the unit Environment= defaults). During the experimental
+# phase the flag may have been hand-set in jasper.env; this relocates it
+# so there is one owner and no shadowing. Mirrors migrate_voice_provider.
+# fanin.env carries no secrets (buffer frames + coupling mode), so 0644.
+migrate_fanin_coupling() {
+    local jasper_env="${ENV_DIR}/jasper.env"
+    local wizard_env="${STATE_DIR}/fanin.env"
+
+    [[ -f "${jasper_env}" ]] || return 0
+    local line
+    line=$(grep -E '^JASPER_FANIN_CAMILLA_COUPLING=' "${jasper_env}" || true)
+    [[ -z "${line}" ]] && return 0
+
+    local stale_value="${line#JASPER_FANIN_CAMILLA_COUPLING=}"
+    stale_value="${stale_value%[$'\r\n ']*}"
+
+    ensure_state_dir
+
+    if [[ -f "${wizard_env}" ]] && grep -qE '^JASPER_FANIN_CAMILLA_COUPLING=' "${wizard_env}"; then
+        sed -i.bak '/^JASPER_FANIN_CAMILLA_COUPLING=/d' "${jasper_env}"
+        rm -f "${jasper_env}.bak"
+        echo "  migrate_fanin_coupling: removed stale JASPER_FANIN_CAMILLA_COUPLING"
+        echo "    line from ${jasper_env} (wizard file already canonical)"
+        return 0
+    fi
+
+    if [[ -n "${stale_value}" ]]; then
+        touch "${wizard_env}"
+        chmod 0644 "${wizard_env}"
+        echo "JASPER_FANIN_CAMILLA_COUPLING=${stale_value}" >> "${wizard_env}"
+        echo "  migrate_fanin_coupling: moved JASPER_FANIN_CAMILLA_COUPLING=${stale_value}"
+        echo "    from ${jasper_env} to ${wizard_env}"
+    fi
+    sed -i.bak '/^JASPER_FANIN_CAMILLA_COUPLING=/d' "${jasper_env}"
+    rm -f "${jasper_env}.bak"
+}
+
 # Seed /var/lib/jasper/wifi_guardian.env from the currently-active WiFi
 # profile if no stash exists yet. This is the migration hook for the
 # WiFi profile guardian (docs/HANDOFF-resilience.md "Hardware-event

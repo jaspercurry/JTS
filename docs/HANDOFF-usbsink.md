@@ -1744,4 +1744,8 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-06-27
+Last verified: 2026-06-28 (removed §3.4 drift rate-match — the
+capture-follower spa_dll resample stage was cut as the wrong tool for the
+observed USB drops, which are consumer-pacing/clock-domain overflow, not
+±500 ppm drift; rate reconciliation will be redone in CamillaDSP
+rate_adjust / a fan-in per-lane resampler)
