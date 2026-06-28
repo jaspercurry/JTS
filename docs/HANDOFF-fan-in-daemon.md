@@ -635,15 +635,18 @@ hit this; only a free-running lane does.
 `mixer.rs::drain_input_excess` fixes this with a **bounded per-input
 catch-up**. Once per lane per period, before the normal read, it checks
 `avail_update()`; if a lane's readable backlog exceeds a high-water
-(`CATCHUP_HIGH_WATER_PERIODS = 12` periods ≈ 64 ms), it discards whole
-periods down to a target (`CATCHUP_TARGET_PERIODS = 1` period) via a
-bounded read-and-drop into the lane's existing scratch buffer (no
-allocation), capped at `CATCHUP_MAX_DRAIN_PERIODS = 64` reads. The
-high-water is chosen to sit **above** the worst-case AirPlay burst
-transient (~40 ms ≈ 7.5 periods; see "Input buffer sizing" above) so a
-healthy lane is never trimmed, and **below** the 16-period input buffer so
-the resync fires before an overrun. It is generic per-input but only ever
-fires for a lane that actually backs up monotonically — i.e. the USB lane.
+(`CATCHUP_HIGH_WATER_PERIODS = 14` periods ≈ 75 ms at 256-frame periods),
+it discards whole periods down to a target (`CATCHUP_TARGET_PERIODS = 1`
+period) via a bounded read-and-drop into the lane's existing scratch buffer
+(no allocation), capped at `CATCHUP_MAX_DRAIN_PERIODS = 64` reads. The
+high-water is chosen to sit **above** the worst-case healthy-lane occupancy
+(`HEALTHY_PEAK_OCCUPANCY_PERIODS = 13` — an AirPlay burst stacked on a
+stressed-Pi-5 scheduler stall; see "Input buffer sizing" above) so a
+healthy lane is never trimmed, and **below** the 16-period input buffer
+(`DEFAULT_INPUT_BUFFER_PERIODS`) so the resync fires before an overrun.
+Both bounds are pinned by the occupancy-guard test in `mixer.rs`. It is
+generic per-input but only ever fires for a lane that actually backs up
+monotonically — i.e. the USB lane.
 
 **This is drop-CONTROLLED, not drop-FREE.** A free-running lane loses a
 bounded chunk of audio at each resync (an occasional discard at the
