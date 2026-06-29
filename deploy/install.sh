@@ -198,7 +198,7 @@ detect_hardware_tier() {
     # The 2 GB split is the one tier-owned constant: it separates the jts2
     # OOM band (where _webrtc_compile_jobs caps at -j1) from parallel-build
     # headroom.
-    local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB:-786432}"
+    local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB:-1200000}"
     local tier
     if (( mem_kb == 0 )); then
         tier="unknown"
@@ -368,6 +368,8 @@ Run for real from a Pi-local checkout:
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. The real install fails
     fast on a non-arm64 architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1.
+    Low-RAM hosts may enable temporary high-priority build swap for the
+    heavy source/Rust build window, removed automatically on exit.
     See docs/install-hardware-tier-and-staleness.md.
 
 2. System packages
@@ -406,6 +408,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      run RAM-bounded and cgroup-contained via
      deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
      never a live daemon. See docs/HANDOFF-build-sandbox.md.
+   - On low-RAM hosts, park audio/runtime daemons before Rust builds so
+     the build has room without inducing service restart storms.
 
 4. Runtime files and state
    - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
@@ -481,10 +485,12 @@ Profile guard:
 
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. Build strategy keys off
-    RAM (the Rust low-memory profile under 768 MB; the WebRTC AEC3 -j
+    RAM (the Rust low-memory profile under ~1.2 GB; the WebRTC AEC3 -j
     cap budgets ~1.5 GB/job). The real install fails fast on a non-arm64
-    architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1. See
-    docs/install-hardware-tier-and-staleness.md.
+    architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1. Low-RAM hosts
+    may enable temporary high-priority build swap for the heavy source/Rust
+    build window, removed automatically on exit.
+    See docs/install-hardware-tier-and-staleness.md.
 
 1. System packages
    - apt-get update.
@@ -535,6 +541,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      via deploy/lib/install/build-sandbox.sh, so an OOM during an
      in-service update kills only the build, never a live daemon.
      See docs/HANDOFF-build-sandbox.md.
+   - On low-RAM hosts, park audio/runtime daemons before Rust builds so
+     the build has room without inducing service restart storms.
 
 3. Runtime files and state
    - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
@@ -2224,6 +2232,8 @@ main() {
         require_root
         persist_install_profile "${install_profile}"
         require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
+        setup_build_swap_if_needed
+        trap cleanup_build_swap EXIT
         create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
         install_streambox_deps
         install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
@@ -2237,6 +2247,7 @@ main() {
         ensure_outputd_camilla_statefile
         ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
         migrate_secrets_phase4b  # WS1 Phase 4b: streambox Spotify creds/cache path
+        park_low_memory_build_units
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_streambox_systemd_units
@@ -2266,6 +2277,8 @@ main() {
     require_root
     persist_install_profile "${install_profile}"
     require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
+    setup_build_swap_if_needed
+    trap cleanup_build_swap EXIT
     create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
     install_deps
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
@@ -2278,6 +2291,7 @@ main() {
     render_outputd_cutover_config
     ensure_outputd_camilla_statefile
     ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
+    park_low_memory_build_units
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_systemd_units

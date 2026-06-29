@@ -558,6 +558,24 @@ fi
 if [[ -n "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-}" ]]; then
     install_env="${install_env} JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=$(shell_quote "$JASPER_ACCEPT_INSTALL_PROFILE_CHANGE")"
 fi
+for key in \
+    JASPER_BUILD_SANDBOX \
+    JASPER_BUILD_SANDBOX_OOM_SCORE_ADJ \
+    JASPER_BUILD_SANDBOX_MEMORY_HIGH \
+    JASPER_BUILD_SANDBOX_MEMORY_MAX \
+    JASPER_BUILD_SANDBOX_CPU_WEIGHT \
+    JASPER_BUILD_SANDBOX_IO_WEIGHT \
+    JASPER_BUILD_SANDBOX_RUNTIME_MAX \
+    JASPER_BUILD_SWAP \
+    JASPER_BUILD_SWAP_PATH \
+    JASPER_BUILD_SWAP_SIZE_MB \
+    JASPER_BUILD_SWAP_PRIORITY \
+    JASPER_RUST_LOW_MEMORY_BUILD
+do
+    if [[ -n "${!key:-}" ]]; then
+        install_env="${install_env} ${key}=$(shell_quote "${!key}")"
+    fi
+done
 
 # Capture the Pi's clock right before install so the post-install OOM scan
 # can bound its kernel-log window precisely (plain ssh, no sudo needed).

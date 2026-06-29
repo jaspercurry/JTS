@@ -10,27 +10,25 @@ near-empty, so they are WiFi-burst headroom for AirPlay/Spotify, NOT a latency
 source — shrinking the input ring would only cut burst headroom for networked
 sources. The OUTPUT buffer is different: fan-in's ``writei()`` blocks until the
 DAC-paced CamillaDSP pull opens room, so a steady source keeps the output
-buffer near-FULL. That ~64 ms (default 3072 frames @ 48 kHz) is the real,
-shrinkable end-to-end latency for an exclusive wired source. This module
-shrinks it when USB is the sole active winner and restores the full default
-otherwise.
+buffer near-FULL. The old 3072-frame default was therefore a real latency
+source. The production default is now 1024 frames (~21 ms at 48 kHz), validated
+on JTS2 with the low-latency Apple-DAC Camilla path (chunksize=256,
+target_level=1536). This module remains as the single safe writer for lab
+overrides and for older deployments that still carry a larger persisted value.
 
-FLOOR. CamillaDSP must always be able to read a full 1024-frame chunk from the
-dsnoop capture side, so the output buffer cannot go below chunk + headroom
-(``MIN_OUTPUT_BUFFER_FRAMES`` = 1536). fan-in's own ``Config::from_env`` also
-hard-rejects anything below ``2 × period_frames`` (512 at the default 256-frame
-period). 1536 satisfies both and is the default shrunk target; it is a named
-constant and env-overridable (``JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES``) for the
-soak sweep. We REJECT a requested value below the floor rather than clamp it —
-writing an unstartable buffer into the persisted env would brick the daemon on
-its next natural restart (the same no-silent-failure invariant the usbsink FIFO
-arm protects).
+FLOOR. 1024 frames is the production floor. fan-in's own ``Config::from_env``
+also hard-rejects anything below ``2 × period_frames`` (512 at the default
+256-frame period), but values below 1024 are lab-only until a real hardware
+soak proves they do not cause AirPlay tears or Camilla underruns. We REJECT a
+requested value below the floor rather than clamp it — writing an unvalidated
+buffer into the persisted env could break the daemon on its next natural
+restart (the same no-silent-failure invariant the usbsink FIFO arm protects).
 
 IDIOM. Mirrors ``jasper.usbsink.output_mode_reconcile``: the reconciler is the
 single writer of ``JASPER_FANIN_OUTPUT_BUFFER_FRAMES`` in the unit's
 wizard-owned ``EnvironmentFile`` (``/var/lib/jasper/fanin.env``), and the
 daemon reads the resolved env on its next start. The file is loaded by the unit
-AFTER the hardcoded ``Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072"``,
+AFTER the hardcoded ``Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024"``,
 so the override wins (systemd applies a later ``EnvironmentFile=`` over an
 earlier ``Environment=``).
 
@@ -64,10 +62,8 @@ into the AirPlay A/V sync offset, and ``jasper-mux.service`` loads it as an
 those co-readers are undisturbed. The AirPlay offset is unaffected in practice:
 the shrink fires ONLY when USB is the sole source (AirPlay is not playing), and
 ``jasper-apply-airplay-mode`` re-reads the file at config-apply time, not
-per-frame — by the time AirPlay plays again the buffer has been restored to
-3072. The doctor's ``check_fanin_service`` reads
-``JASPER_FANIN_ADAPTIVE_BUFFER`` and softens its hard "output buffer must be
-3072" check to a warn while a floor-valid shrink is active.
+per-frame. The doctor's ``check_fanin_service`` accepts the 1024-frame
+production floor and fails values below it.
 
 Fail-soft on the I/O write (a bad byte must not crash the caller's tick), but
 the RESULT carries ``ok`` so the caller's fail-safe ladder can keep/restore the
@@ -90,29 +86,25 @@ FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 OUTPUT_BUFFER_KEY = "JASPER_FANIN_OUTPUT_BUFFER_FRAMES"
 FANIN_UNIT = "jasper-fanin.service"
 
-# The full, default output buffer (~64 ms @ 48 kHz). Mirrors the value
+# The default output buffer (~21 ms @ 48 kHz). Mirrors the value
 # hardcoded in deploy/systemd/jasper-fanin.service's Environment= line and
 # jasper_fanin::config's documented default. A "restore" writes nothing and
 # unlinks the override line so the unit's own default reasserts.
-DEFAULT_OUTPUT_BUFFER_FRAMES = 3072
+DEFAULT_OUTPUT_BUFFER_FRAMES = 1024
 
-# Hard floor: CamillaDSP reads a full 1024-frame chunk from the dsnoop capture
-# side, so the output buffer needs chunk + headroom. 1536 = 1024 + 512; it also
-# clears fan-in's own 2×period_frames hard min (512 at the 256-frame default).
-# A request below this is REJECTED, never clamped — persisting an unstartable
-# buffer would brick the daemon on its next natural restart.
-MIN_OUTPUT_BUFFER_FRAMES = 1536
+# Production floor. Sub-1024 is deliberately kept out of defaults until a
+# hardware soak proves it is clean across the active DAC/Camilla paths.
+MIN_OUTPUT_BUFFER_FRAMES = 1024
 
 # Default shrunk target for the exclusive-wired-USB path. Env-overridable so the
-# on-device soak can sweep 3072 -> 2048 -> 1536 -> (1024, expected to fail the
-# floor) without a redeploy.
+# on-device soak can sweep candidate values without a redeploy.
 _SHRUNK_FRAMES_ENV = "JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES"
 
 
 def shrunk_target_frames() -> int:
     """The frame count the adaptive path shrinks the output buffer to.
 
-    ``MIN_OUTPUT_BUFFER_FRAMES`` (1536) by default; overridable via
+    ``MIN_OUTPUT_BUFFER_FRAMES`` (1024) by default; overridable via
     ``JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES`` for the soak sweep. A malformed or
     below-floor override falls back to the floor with a warning rather than
     risking an unstartable value (``set_fanin_output_buffer`` would reject it
@@ -166,7 +158,7 @@ class BufferResult:
 def read_output_buffer(path: str | os.PathLike = FANIN_ENV_PATH) -> int | None:
     """The currently-written ``JASPER_FANIN_OUTPUT_BUFFER_FRAMES``, or None if
     the file/key is absent or unparseable as an int. None means "no override —
-    the unit's default 3072 is live"."""
+    the unit's default 1024 is live"."""
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError:
@@ -314,10 +306,9 @@ def set_fanin_output_buffer(
     """Write ``JASPER_FANIN_OUTPUT_BUFFER_FRAMES=<frames>`` and restart the
     daemon.
 
-    ``frames`` MUST be >= ``MIN_OUTPUT_BUFFER_FRAMES`` (1536). A below-floor
+    ``frames`` MUST be >= ``MIN_OUTPUT_BUFFER_FRAMES`` (1024). A below-floor
     value returns ``ok=False`` WITHOUT touching the file — never write an
-    unstartable buffer (CamillaDSP could not read a full 1024-frame chunk, and
-    the persisted value would brick the daemon on its next natural restart).
+    unvalidated buffer that would take effect on the next natural restart.
 
     No-op fast path: when the env file already carries ``frames``, skips the
     restart and returns ``ok=True, changed=False`` so a re-armed tick does not
@@ -348,7 +339,7 @@ def restore_fanin_output_buffer(
 ) -> BufferResult:
     """Restore the FULL default output buffer by stripping the override line.
 
-    The unit's hardcoded ``Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072"``
+    The unit's hardcoded ``Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024"``
     then reasserts as the single source of truth for the full value. NO-OP
     (``ok=True, changed=False``) when no override is present — the common
     steady-state path, so a default-OFF / already-full tick never restarts the

@@ -237,7 +237,7 @@ async def check_camilla_websocket(cfg: Config) -> CheckResult:
         try:
             clipped = await asyncio.to_thread(client.status.clipped_samples)
             clipped_msg = f" clipped_samples={clipped}"
-        except Exception:  # noqa: BLE001
+        except (OSError, RuntimeError, TimeoutError, ValueError):
             clipped_msg = " clipped_samples=?"
         if float(vol) > DEFAULT_VOLUME_LIMIT_DB + 0.1:
             return CheckResult(
@@ -251,7 +251,7 @@ async def check_camilla_websocket(cfg: Config) -> CheckResult:
             f"{cfg.camilla_host}:{cfg.camilla_port} volume={vol:.1f} dB"
             f"{clipped_msg}",
         )
-    except Exception as e:  # noqa: BLE001
+    except (ImportError, OSError, RuntimeError, TimeoutError, ValueError) as e:
         return CheckResult(
             "CamillaDSP websocket", "fail",
             f"can't reach {cfg.camilla_host}:{cfg.camilla_port}: {e}. "
@@ -344,7 +344,7 @@ def check_mic_capture(cfg: Config) -> CheckResult:
                 f"recording from {cfg.mic_device} but signal is very low (peak={peak})",
             )
         return CheckResult("mic capture", "ok", f"peak={peak} from {cfg.mic_device}")
-    except Exception as e:  # noqa: BLE001
+    except (ImportError, OSError, RuntimeError, ValueError) as e:
         if _jasper_voice_active():
             return CheckResult(
                 "mic capture", "ok",
@@ -408,7 +408,7 @@ def check_tts_open(cfg: Config) -> CheckResult:
             f"{int(info.get('default_samplerate', 0))} Hz, "
             f"out channels {info.get('max_output_channels')})",
         )
-    except Exception as e:  # noqa: BLE001
+    except (ImportError, OSError, RuntimeError, ValueError, TypeError) as e:
         return CheckResult(
             "tts output", "fail",
             f"can't enumerate {cfg.tts_device}: {e}. "
@@ -533,7 +533,7 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
 def _output_hardware_state_or_none() -> OutputHardwareState | None:
     try:
         return _load_output_hardware_state()
-    except Exception:  # noqa: BLE001
+    except (OSError, ValueError, TypeError):
         return None
 
 
@@ -1133,7 +1133,7 @@ def check_fanin_service() -> CheckResult:
             if sock is not None:
                 try:
                     sock.close()
-                except Exception:  # noqa: BLE001
+                except OSError:
                     pass
             if attempt == 0:
                 time.sleep(0.1)
@@ -1235,34 +1235,15 @@ def check_fanin_service() -> CheckResult:
             f"check /var/lib/jasper/fanin.env and "
             f"JASPER_FANIN_INPUT_BUFFER_FRAMES.",
         )
-    # Adaptive fan-in output-buffer (default-OFF experiment): when
-    # JASPER_FANIN_ADAPTIVE_BUFFER=enabled, jasper-mux deliberately shrinks the
-    # output buffer below 3072 (down to the 1536 floor) while USB is the sole
-    # source — see jasper.fanin.buffer_reconcile. A shrunk-but-floor-valid value
-    # is the EXPECTED soak state, not a misconfiguration, so report it as warn
-    # rather than the hard fail used for an unexplained drift. The floor (1536)
-    # and the >3072 / below-floor cases below still fail.
-    _adaptive_on = (
-        os.environ.get("JASPER_FANIN_ADAPTIVE_BUFFER", "").strip().lower()
-        == "enabled"
-    )
-    if _adaptive_on and 1536 <= output_buffer_frames < 3072:
-        return CheckResult(
-            "jasper-fanin service",
-            "warn",
-            f"active with JASPER_FANIN_ADAPTIVE_BUFFER=enabled and runtime "
-            f"output_buffer_frames={output_buffer_frames} (adaptive shrink "
-            f"active; floor 1536). Expected during the latency soak — restore "
-            f"defaults by unsetting the flag.",
-        )
-    if output_buffer_frames < 3072:
+    if output_buffer_frames < 1024:
         return CheckResult(
             "jasper-fanin service",
             "fail",
             f"active, but runtime output_buffer_frames={output_buffer_frames} is below "
-            f"3072. CamillaDSP short-read warnings were observed with "
-            f"1024 and 2048-frame fan-in output buffers; production is "
-            f"validated at 3072. Check /var/lib/jasper/fanin.env and "
+            f"1024. The 1024-frame fan-in output queue is the production "
+            f"floor validated on the low-latency Camilla path; lower values "
+            f"need fresh hardware validation before shipping. Check "
+            f"/var/lib/jasper/fanin.env and "
             f"JASPER_FANIN_OUTPUT_BUFFER_FRAMES.",
         )
     if output_buffer_frames > 3072:

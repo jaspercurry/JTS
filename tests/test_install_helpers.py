@@ -21,6 +21,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1200,6 +1201,68 @@ def test_build_manifest_not_written_during_python_runtime_install():
     )
 
 
+def test_aec3_fingerprint_is_content_based_not_mtime_based(tmp_path):
+    install_dir = tmp_path / "opt" / "jasper"
+    package_dir = install_dir / "jasper_aec3"
+    src_dir = package_dir / "src"
+    py_dir = package_dir / "jasper_aec3"
+    venv_bin = install_dir / ".venv" / "bin"
+    src_dir.mkdir(parents=True)
+    py_dir.mkdir(parents=True)
+    venv_bin.mkdir(parents=True)
+    (package_dir / "pyproject.toml").write_text("[project]\nname='x'\n")
+    (src_dir / "aec3_binding.cpp").write_text("int one = 1;\n")
+    (py_dir / "__init__.py").write_text("HAS_V2 = True\n")
+    (venv_bin / "python").symlink_to(sys.executable)
+
+    first = _run_install_snippet(
+        "INSTALL_DIR="
+        + shlex.quote(str(install_dir))
+        + "; jasper_aec3_source_fingerprint",
+        deploy_env={
+            "WEBRTC_AEC3_COMMIT": "commit",
+            "WEBRTC_AEC3_SHA256": "sha",
+        },
+    )
+    assert first.returncode == 0, first.stderr
+    baseline = first.stdout.strip()
+    assert baseline.startswith("content-v1:")
+
+    os.utime(src_dir / "aec3_binding.cpp", None)
+    second = _run_install_snippet(
+        "INSTALL_DIR="
+        + shlex.quote(str(install_dir))
+        + "; jasper_aec3_source_fingerprint",
+        deploy_env={
+            "WEBRTC_AEC3_COMMIT": "commit",
+            "WEBRTC_AEC3_SHA256": "sha",
+        },
+    )
+    assert second.returncode == 0, second.stderr
+    assert second.stdout.strip() == baseline
+
+    (src_dir / "aec3_binding.cpp").write_text("int one = 2;\n")
+    changed = _run_install_snippet(
+        "INSTALL_DIR="
+        + shlex.quote(str(install_dir))
+        + "; jasper_aec3_source_fingerprint",
+        deploy_env={
+            "WEBRTC_AEC3_COMMIT": "commit",
+            "WEBRTC_AEC3_SHA256": "sha",
+        },
+    )
+    assert changed.returncode == 0, changed.stderr
+    assert changed.stdout.strip() != baseline
+
+
+def test_aec3_rebuild_cache_migrates_legacy_marker_once():
+    python_runtime = _PYTHON_RUNTIME_LIB.read_text(encoding="utf-8")
+    assert "content-v1:" in python_runtime
+    assert "legacy cache marker imported cleanly" in python_runtime
+    assert "! grep -q '^content-v1:'" in python_runtime
+    assert "jasper_aec3_import_probe" in python_runtime
+
+
 def test_build_manifest_is_the_final_main_mutation():
     """In both main() paths the manifest is written immediately before the
     (non-mutating) run_doctor_summary, after the build steps, and nothing
@@ -1433,6 +1496,92 @@ def test_build_sandbox_props_without_meminfo_still_protects(tmp_path):
     assert "OOMScoreAdjust" not in result.stdout
     assert "MemoryHigh" not in result.stdout
     assert "MemorySwapMax" not in result.stdout
+
+
+def test_build_swap_auto_follows_low_memory_threshold(tmp_path):
+    low = tmp_path / "low-meminfo"
+    low.write_text("MemTotal:       1014768 kB\n", encoding="utf-8")
+    standard = tmp_path / "standard-meminfo"
+    standard.write_text("MemTotal:       2031616 kB\n", encoding="utf-8")
+
+    low_result = _run_contained_build(
+        "build_swap_required",
+        extra_env={"JASPER_BUILD_MEMINFO_FILE": str(low)},
+    )
+    standard_result = _run_contained_build(
+        "build_swap_required",
+        extra_env={"JASPER_BUILD_MEMINFO_FILE": str(standard)},
+    )
+
+    assert low_result.returncode == 0
+    assert standard_result.returncode == 1
+
+
+def test_build_swap_setup_and_cleanup_use_high_priority_swap(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "calls.log"
+    swap_path = tmp_path / "jasper-build.swap"
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:       1014768 kB\n", encoding="utf-8")
+
+    for name in ("mkswap", "swapon", "swapoff"):
+        script = fake_bin / name
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '%s %s\\n' {name!r} \"$*\" >> {shlex.quote(str(log))}\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+
+    fallocate = fake_bin / "fallocate"
+    fallocate.write_text(
+        "#!/usr/bin/env bash\n"
+        "while [[ $# -gt 0 ]]; do\n"
+        "  case \"$1\" in -l) shift 2 ;; *) path=\"$1\"; shift ;;\n"
+        "  esac\n"
+        "done\n"
+        "printf x > \"$path\"\n",
+        encoding="utf-8",
+    )
+    fallocate.chmod(0o755)
+
+    result = _run_contained_build(
+        "setup_build_swap_if_needed && "
+        "[[ -f ${JASPER_BUILD_SWAP_PATH} ]] && "
+        "cleanup_build_swap && "
+        "[[ ! -e ${JASPER_BUILD_SWAP_PATH} ]]",
+        extra_env={
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "JASPER_BUILD_MEMINFO_FILE": str(meminfo),
+            "JASPER_BUILD_SWAP_PATH": str(swap_path),
+            "JASPER_BUILD_SWAP_SIZE_MB": "1",
+            "JASPER_BUILD_SWAP_PRIORITY": "201",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    calls = log.read_text(encoding="utf-8")
+    assert f"mkswap {swap_path}" in calls
+    assert f"swapon -p 201 {swap_path}" in calls
+    assert f"swapoff {swap_path}" in calls
+
+
+def test_low_memory_build_parks_runtime_units_before_rust_builds():
+    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
+    systemd_units = (_INSTALL_LIB_DIR / "systemd-units.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "park_low_memory_build_units" in systemd_units
+    assert "jasper-control.service" in systemd_units
+    assert "jasper-system-web.service" in systemd_units
+    assert "jasper-fanin.service" in systemd_units
+    main_body = re.search(r"\nmain\(\) \{\n(.*?)\n\}", install_sh, re.DOTALL)
+    assert main_body is not None
+    assert (
+        main_body.group(1).index("park_low_memory_build_units")
+        < main_body.group(1).index("build_install_jasper_fanin")
+    )
 
 
 # --- run_contained_build: graceful degradation, no double-run ----------

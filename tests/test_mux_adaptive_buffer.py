@@ -150,8 +150,8 @@ async def test_shrink_on_exclusive_usb(tmp_path, patched_probes, monkeypatch):
     await m._tick()
     assert m._winner is Source.USBSINK
     assert m._buffer_shrunk is True
-    # Shrunk to the floor target (default 1536).
-    assert rec.set_calls and rec.set_calls[0][0] == 1536
+    # Shrunk to the floor target (default 1024).
+    assert rec.set_calls and rec.set_calls[0][0] == 1024
 
 
 @pytest.mark.asyncio
@@ -227,7 +227,7 @@ async def test_below_floor_override_rejected_stays_full(
     tmp_path, patched_probes, monkeypatch,
 ):
     # A genuinely below-floor sweep value is resolved up to the floor by
-    # shrunk_target_frames, so the reconciler is asked for 1536, not 1024 — the
+    # shrunk_target_frames, so the reconciler is asked for 1024, not 512 — the
     # shrink succeeds at the floor rather than no-opping. This pins that the
     # mux never asks the reconciler for an unstartable value.
     rec = _patch_reconcile(monkeypatch, set_ok=True, restore_ok=True)
@@ -235,7 +235,7 @@ async def test_below_floor_override_rejected_stays_full(
     m = _make_mux(tmp_path, adaptive_enabled=True)
     _stub_probes(patched_probes, usbsink=True)
     await m._tick()
-    assert rec.set_calls[0][0] == 1536
+    assert rec.set_calls[0][0] == 1024
     assert m._buffer_shrunk is True
 
 

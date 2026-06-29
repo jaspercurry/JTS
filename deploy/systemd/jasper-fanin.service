@@ -102,7 +102,7 @@ RuntimeDirectoryMode=0750
 # applies a later EnvironmentFile= over an earlier Environment=. This is
 # load-bearing for jasper.fanin.buffer_reconcile: it writes the adaptive
 # JASPER_FANIN_OUTPUT_BUFFER_FRAMES override into that file, which MUST
-# beat the Environment="...=3072" default below. Keep the wizard file's
+# beat the Environment="...=1024" default below. Keep the wizard file's
 # EnvironmentFile= line AFTER the Environment= lines (see end of section).
 EnvironmentFile=/etc/jasper/jasper.env
 
@@ -131,24 +131,25 @@ EnvironmentFile=/etc/jasper/jasper.env
 # Trade-off: up to ~85 ms of input-side queue capacity, same as the
 # dmix layer had. This is headroom, not a fixed delay added to every
 # frame: actual queued audio depends on the writer/reader fill level,
-# and shairport can observe snd-aloop delay on its private lane. fanin's
-# The output side is kept much smaller than the input side, but not at
-# the absolute minimum: 1024 flooded CamillaDSP short-read warnings,
-# and 2048 still produced intermittent 1023/1024 reads during active
-# AirPlay. 3072 keeps two extra Camilla chunks of safety without
-# turning this into the 4096-frame input burst absorber.
+# and shairport can observe snd-aloop delay on its private lane.
+#
+# The output side is intentionally smaller than the input burst absorber.
+# 1024 frames (~21 ms) is validated on the low-latency Apple-DAC path with
+# CamillaDSP chunksize=256/target_level=1536. That older 3072-frame default
+# was needed when the downstream Camilla path used a 1024-frame chunk; with
+# the DAC floor applied, it is latency without useful headroom.
 #
 # Read at runtime by jasper_fanin::config::Config::from_env().
 # Override via /var/lib/jasper/fanin.env if you need to retune
 # (e.g., a future PR with verified-tighter WiFi delivery).
 Environment="JASPER_FANIN_INPUT_BUFFER_FRAMES=4096"
-Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072"
+Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024"
 
 # Wizard/reconciler-owned overrides — loaded LAST so they win over the
 # Environment= defaults above (later EnvironmentFile= beats earlier
 # Environment=). jasper.fanin.buffer_reconcile is the single writer of the
 # adaptive JASPER_FANIN_OUTPUT_BUFFER_FRAMES override here. Optional (leading
-# `-`): absent on a fresh box, where the 3072 default above is live.
+# `-`): absent on a fresh box, where the 1024 default above is live.
 EnvironmentFile=-/var/lib/jasper/fanin.env
 
 ExecStart=/opt/jasper/bin/jasper-fanin

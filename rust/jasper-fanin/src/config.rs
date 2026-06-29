@@ -200,7 +200,7 @@ impl Config {
             "JASPER_FANIN_BUFFER_FRAMES",
             4096,
         )?;
-        let output_buffer_frames = env_u32("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", 3072)?;
+        let output_buffer_frames = env_u32("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", 1024)?;
 
         // Sanity: buffer sizes must be >= 2 × period_frames per the
         // standard ALSA convention (the period is what wakes the
@@ -489,7 +489,7 @@ mod tests {
                 assert_eq!(cfg.sample_rate, 48_000);
                 assert_eq!(cfg.period_frames, 256);
                 assert_eq!(cfg.input_buffer_frames, 4096);
-                assert_eq!(cfg.output_buffer_frames, 3072);
+                assert_eq!(cfg.output_buffer_frames, 1024);
                 assert_eq!(
                     cfg.tts_socket_path.as_deref(),
                     Some("/run/jasper-fanin/tts.sock")
@@ -686,7 +686,7 @@ mod tests {
             || {
                 let cfg = Config::from_env().expect("legacy env must parse");
                 assert_eq!(cfg.input_buffer_frames, 2048);
-                assert_eq!(cfg.output_buffer_frames, 3072);
+                assert_eq!(cfg.output_buffer_frames, 1024);
             },
         );
     }

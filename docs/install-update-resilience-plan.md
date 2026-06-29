@@ -117,7 +117,7 @@ below are confirmed data points, not the whole space.
   (MemoryMax/MemoryHigh/MemorySwapMax/OOMScoreAdjust) for heavy Pi-side work. A
   memory-contained-execution pattern already exists in the repo.
 - `deploy/lib/install/rust-daemons.sh` — a low-memory build profile (jobs=1,
-  opt-level=2, lto=false) gated at 768 MB via `rust_build_memtotal_kb`.
+  opt-level=0, lto=false) gated at ~1.2 GB via `rust_build_memtotal_kb`.
   Per-builder and ad hoc; there's no single hardware-tier build strategy. (The
   PR #899 webrtc fix added a second, graduated instance — `_webrtc_compile_jobs`
   in `deploy/install.sh`.)
@@ -221,7 +221,7 @@ Investigate and propose (with trade-offs) before implementing:
   from a GitHub release; HANDOFF-supply-chain.md owns provenance) instead of
   source-building on tiny Pis at all?
 - A unified, RAM/CPU-aware build-parallelism + opt-level policy rather than the
-  current per-builder ad hoc (rust-daemons.sh's 768 MB on/off vs the webrtc
+  current per-builder ad hoc (rust-daemons.sh's ~1.2 GB on/off vs the webrtc
   graduated -j). One helper, one place, tested across SKUs.
 
 Diagnose with evidence; follow AGENTS.md (prior art first, surgical, pin claims

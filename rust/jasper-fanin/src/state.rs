@@ -61,7 +61,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use log::{info, warn};
 
-use crate::mixer::{CouplingObservability, Mixer};
+use crate::mixer::{CouplingObservability, Mixer, OUTPUT_DELAY_UNAVAILABLE};
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
 
@@ -85,6 +85,7 @@ pub struct StateServer {
     output_pcm: String,
     output_frames_written: Arc<AtomicU64>,
     output_xrun_count: Arc<AtomicU64>,
+    output_delay_frames: Arc<AtomicU64>,
     /// Coupling transport echo + (under fifo) the shared FIFO counters. Cloned
     /// from the mixer so STATUS reads the same atomics the work loop writes.
     coupling: CouplingObservability,
@@ -159,6 +160,7 @@ impl StateServer {
             output_pcm,
             output_frames_written: Arc::clone(&mixer.frames_written),
             output_xrun_count: Arc::clone(&mixer.output_xrun_count),
+            output_delay_frames: Arc::clone(&mixer.output_delay_frames),
             coupling: mixer.coupling.clone(),
             music_output_pcm,
             music_frames_written: Arc::clone(&mixer.music_frames_written),
@@ -417,6 +419,19 @@ impl StateServer {
             self.output_xrun_count.load(Ordering::Relaxed),
         );
         buf.push(',');
+        let output_delay_frames = match self.output_delay_frames.load(Ordering::Relaxed) {
+            OUTPUT_DELAY_UNAVAILABLE => None,
+            frames => Some(frames),
+        };
+        push_kv_u64_opt(&mut buf, "snd_pcm_delay_frames", output_delay_frames);
+        buf.push(',');
+        push_kv_f64_opt(
+            &mut buf,
+            "snd_pcm_delay_ms",
+            output_delay_frames.map(|frames| (frames as f64) * 1000.0 / (self.sample_rate as f64)),
+            3,
+        );
+        buf.push(',');
 
         // coupling transport echo. `transport:"loopback"` (default) carries no
         // fifo block — byte-identical observability to the pre-coupling daemon.
@@ -608,6 +623,16 @@ fn push_kv_u64(buf: &mut String, key: &str, value: u64) {
     buf.push_str(&value.to_string());
 }
 
+fn push_kv_u64_opt(buf: &mut String, key: &str, value: Option<u64>) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str(r#"":"#);
+    match value {
+        Some(value) => buf.push_str(&value.to_string()),
+        None => buf.push_str("null"),
+    }
+}
+
 fn push_kv_bool(buf: &mut String, key: &str, value: bool) {
     buf.push('"');
     buf.push_str(key);
@@ -679,6 +704,7 @@ mod tests {
             output_pcm: "hw:Loopback,0,7".to_string(),
             output_frames_written: Arc::new(AtomicU64::new(98765)),
             output_xrun_count: Arc::new(AtomicU64::new(1)),
+            output_delay_frames: Arc::new(AtomicU64::new(1024)),
             coupling: CouplingObservability {
                 transport: "loopback",
                 fifo: None,
@@ -767,6 +793,8 @@ mod tests {
         assert!(j.contains(r#""pcm":"hw:Loopback,0,7""#));
         assert!(j.contains(r#""sample_rate":48000"#));
         assert!(j.contains(r#""frames_written":98765"#));
+        assert!(j.contains(r#""snd_pcm_delay_frames":1024"#));
+        assert!(j.contains(r#""snd_pcm_delay_ms":21.333"#));
     }
 
     #[test]

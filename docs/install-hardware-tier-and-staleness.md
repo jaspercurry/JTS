@@ -100,7 +100,7 @@ thresholds and no shared vocabulary:
 
 | Guard | Where | Shape | Threshold |
 |---|---|---|---|
-| Rust low-memory profile | `deploy/lib/install/rust-daemons.sh` `rust_low_memory_build_enabled` / `rust_cargo_build_env` | binary on/off (jobs=1, lto=false, codegen-units=16, opt=2) | `< 786432 kB` (768 MB), `RUST_LOW_MEMORY_BUILD_THRESHOLD_KB` |
+| Rust low-memory profile | `deploy/lib/install/rust-daemons.sh` `rust_low_memory_build_enabled` / `rust_cargo_build_env` | binary on/off (jobs=1, lto=false, codegen-units=16, opt=0) | `< 1200000 kB` (~1.2 GB), `RUST_LOW_MEMORY_BUILD_THRESHOLD_KB` |
 | WebRTC AEC3 `-j` cap | `deploy/install.sh` `_webrtc_compile_jobs` | graduated `-j` | `~1.5 GB / job`, clamped `[1, nproc]` (point-fixed in PR #899 after the jts2 OOM) |
 
 Plus two more readers of the same `MemTotal` for *runtime* tuning —
@@ -287,7 +287,7 @@ assert result.stdout.strip() == "streambox"
 ```
 
 and similarly injects `MemTotal` to assert the Rust low-memory profile
-flips at 768 MB. **This is the whole matrix mechanism** — synthetic
+flips at ~1.2 GB. **This is the whole matrix mechanism** — synthetic
 system files + sourced-helper invocation. Extend it to a tier table:
 
 | RAM (MemTotal) | nproc | arch | Expected tier | rust profile | webrtc `-j` | arch guard |
@@ -380,12 +380,13 @@ and a dedicated test pins that the guard does *not* fire during
 **Pins it** with a tier-matrix test mirroring
 `test_install_profile_tiers.py`.
 
-**Explicitly out of scope (handed to siblings, with this note as the
-shared map):**
+**Follow-up map:**
 
-- Converging `rust_low_memory_build_enabled` / `_webrtc_compile_jobs` /
-  the memory-resilience readers onto the one tier helper, and provisioning
-  temporary build swap on `low`/`constrained` tiers → **Workstream A**.
+- `rust_low_memory_build_enabled` now covers 1 GB hosts, and low-memory
+  installs provision temporary high-priority build swap plus park runtime
+  units before Rust builds. Remaining Workstream A cleanup is converging
+  `_webrtc_compile_jobs` / memory-resilience readers onto the one tier
+  helper.
 - Gating the build manifest on verified success; rollback; broadening
   post-deploy verification beyond the management surface → **Workstream B
   (landed)**, see

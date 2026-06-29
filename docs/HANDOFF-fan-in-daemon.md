@@ -71,10 +71,36 @@ truth); adding a future HDMI source is
 "assign the next free private substream" rather than "fight contention."
 
 Net latency saving over the retired dmix topology: ~85 ms of
-renderer-side queueing. With the fan-in output queue, output dmix, and
-current CamillaDSP `target_level: 2048`, the fixed downstream delay
-shairport must compensate is now ~171 ms instead of ~192 ms. The saving
-survives any future PipeWire migration.
+renderer-side queueing. With the current 1024-frame fan-in output queue,
+the fixed downstream delay shairport must compensate is 1024 frames
+smaller than the old 3072-frame default. The saving survives any future
+PipeWire migration.
+
+## 2026-06-29 JTS2 output-buffer retune
+
+JTS2 (Pi 5, Apple USB-C dongle DAC, AirPlay source) was live-retuned after
+the DAC-latency-floor work moved CamillaDSP to `chunksize=256`,
+`target_level=1536` and outputd to `period=256`, DAC buffer `512`.
+
+Findings:
+
+- `JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024` is stable on this path. Initial
+  listening and counter watch were clean, and a post-rollback 3-minute
+  monitor showed zero new fan-in input/output xruns, zero outputd content
+  xrun/empty/partial/EAGAIN deltas, zero DAC xruns, zero Camilla playback
+  underruns, and zero shairport underruns.
+- `JASPER_FANIN_OUTPUT_BUFFER_FRAMES=512` is not stable. It failed within
+  about 40 seconds: fan-in reported `output.buffer_frames=512` and
+  `output.xrun_count=2876`. That is a hard no for production defaults on
+  this hardware path.
+- The 1024 result is an audio-stability finding, not a video-sync proof.
+  The user observed AirPlay video lip-sync problems from the computer even
+  after the 1024 audio counters were clean. Keep A/V sync validation
+  separate from xrun/underrun validation.
+
+So the production floor for the loopback fan-in output buffer is 1024
+frames (~21.3 ms at 48 kHz). Sub-1024 values remain lab-only and must not
+be codified without a new hardware soak and A/V sync check.
 
 For future playback sources, this doc owns the topology details, but
 the cross-cutting contributor checklist lives in
@@ -177,8 +203,10 @@ CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongl
   carry a renderer-dmix term. The current derivation compensates
   CamillaDSP's `target_level` above `chunksize`, the fan-in output
   buffer, and outputd's DAC buffer, so the cutover offset is
-  `-0.149333` with the current `target_level: 2048`, fan-in output
-  buffer `3072`, and outputd DAC buffer `3072`.
+  `-0.106667` with generic `target_level: 2048`, fan-in output buffer
+  `1024`, and outputd DAC buffer `3072`; on JTS2's low-latency Apple
+  profile (`256/1536`, fan-in `1024`, outputd DAC `512`) it is
+  `-0.058667`.
 
 ### What this adds
 
@@ -403,9 +431,11 @@ manually selected or while the mux has temporarily selected `NONE`.
     "pcm": "hw:Loopback,0,7",
     "sample_rate": 48000,
     "period_frames": 256,
-    "buffer_frames": 3072,
+    "buffer_frames": 1024,
     "frames_written": 5928432,
-    "xrun_count": 0
+    "xrun_count": 0,
+    "snd_pcm_delay_frames": 1024,
+    "snd_pcm_delay_ms": 21.333
   },
   "watchdog": {
     "pings_sent": 142,
@@ -474,7 +504,7 @@ JASPER_FANIN_INPUT_RENDERERS=spotify|airplay|bluealsa|usbsink|correction   # inf
 JASPER_FANIN_SAMPLE_RATE=48000
 JASPER_FANIN_PERIOD_FRAMES=256                                  # ~5.3 ms at 48k
 JASPER_FANIN_INPUT_BUFFER_FRAMES=4096                            # ~85 ms input burst absorber — see "Buffer sizing" below
-JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072                           # ~64 ms output queue toward CamillaDSP/AEC
+JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024                           # ~21 ms output queue toward CamillaDSP/AEC
 JASPER_FANIN_TTS_SOCKET=/run/jasper-fanin/tts.sock                # production TTS IPC; "disabled" is rollback/lab only
 JASPER_FANIN_TTS_MAX_PENDING_FRAMES=96000                         # 2 s at 48 kHz
 JASPER_FANIN_TTS_PROGRAM_DUCK_DB=${JASPER_DUCK_DB:--25}           # override only for lab retuning
@@ -561,10 +591,12 @@ The original Phase 2 design defaulted to one shared
 floor for stable dmix-replacement shapes." On 2026-05-26 we found
 that floor was too low for the **input** side under the real-world
 AirPlay-on-WiFi delivery pattern. The production unit now sets
-`JASPER_FANIN_INPUT_BUFFER_FRAMES=4096` (~85 ms) and keeps
-`JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072` (~64 ms) so CamillaDSP can
-consistently read full 1024-frame chunks while WiFi burst absorption
-still does not become the downstream fanin→CamillaDSP/AEC queue.
+`JASPER_FANIN_INPUT_BUFFER_FRAMES=4096` (~85 ms). On 2026-06-29 JTS2
+testing, the output side was trimmed to
+`JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024` (~21 ms): 1024 held cleanly on
+AirPlay while 512 produced immediate output xruns. WiFi burst absorption
+therefore stays on the input side instead of becoming downstream
+fanin→CamillaDSP/AEC queueing.
 
 **The mechanism (kept here for future reference)**:
 
@@ -1010,4 +1042,10 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-06-28 (added the bounded per-input catch-up resync for free-running lanes (`mixer.rs::drain_input_excess`) — the USB-lane upstream-overflow fix — plus its `catchup_resync_frames`/`catchup_events` STATUS counters; pacing, input-buffer sizing, TTS/duck IPC, and outputd ownership rechecked against current code).
+Last verified: 2026-06-29 (JTS2 AirPlay retune: fan-in output 1024 clean,
+512 failed fast with fan-in output xruns; low-latency Apple path offset is
+`-0.058667`. 2026-06-28 also added the bounded per-input catch-up resync
+for free-running lanes (`mixer.rs::drain_input_excess`) — the USB-lane
+upstream-overflow fix — plus its `catchup_resync_frames`/`catchup_events`
+STATUS counters; pacing, input-buffer sizing, TTS/duck IPC, and outputd
+ownership rechecked against current code).

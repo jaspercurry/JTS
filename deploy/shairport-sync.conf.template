@@ -64,8 +64,8 @@ general = {
     // WiFi burst absorption and jasper-outputd owns the DAC.
     // This offset tells shairport about the fixed downstream delay
     // invisible to its ALSA handle so video/multi-room sync stays
-    // honest. Renders as -0.149333 with the production values
-    // (chunksize=1024, target_level=2048, fan-in output=3072,
+    // honest. Renders as -0.106667 with the production values
+    // (chunksize=1024, target_level=2048, fan-in output=1024,
     // outputd DAC=3072).
     audio_backend_latency_offset_in_seconds = __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__;
     // Default 0.15 s is too tight for snd-aloop -> CamillaDSP -> outputd

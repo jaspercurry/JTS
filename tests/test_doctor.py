@@ -2890,7 +2890,7 @@ def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
 def _fanin_status_payload(
     *,
     input_buffer_frames: int = 4096,
-    output_buffer_frames: int = 3072,
+    output_buffer_frames: int = 1024,
     progress_age_ms: int = 2,
 ) -> bytes:
     return json.dumps({
@@ -3054,7 +3054,7 @@ def test_check_fanin_service_ok_with_expected_status(monkeypatch):
     r = doctor.check_fanin_service()
     assert r.status == "ok"
     assert "input_buffer_frames=4096" in r.detail
-    assert "output_buffer_frames=3072" in r.detail
+    assert "output_buffer_frames=1024" in r.detail
     assert "tts_enabled=true" in r.detail
     assert "assistant_loudness_decision=False" in r.detail
 
@@ -3131,8 +3131,6 @@ def test_check_fanin_service_fails_when_status_socket_unreachable(monkeypatch):
 
 
 def test_check_fanin_service_fails_on_small_runtime_buffers(monkeypatch):
-    # Default-OFF: no adaptive flag, so a shrunk output buffer is unexplained
-    # drift and hard-fails.
     monkeypatch.delenv("JASPER_FANIN_ADAPTIVE_BUFFER", raising=False)
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
@@ -3145,39 +3143,37 @@ def test_check_fanin_service_fails_on_small_runtime_buffers(monkeypatch):
 
     _patch_fanin_status_socket(
         monkeypatch,
-        _fanin_status_payload(output_buffer_frames=2048),
+        _fanin_status_payload(output_buffer_frames=512),
     )
     r = doctor.check_fanin_service()
     assert r.status == "fail"
-    assert "output_buffer_frames=2048" in r.detail
+    assert "output_buffer_frames=512" in r.detail
 
 
-def test_check_fanin_service_adaptive_shrink_is_warn_not_fail(monkeypatch):
-    # JASPER_FANIN_ADAPTIVE_BUFFER=enabled: a floor-valid shrunk output buffer
-    # is the expected soak state, reported as warn not fail.
-    monkeypatch.setenv("JASPER_FANIN_ADAPTIVE_BUFFER", "enabled")
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _fanin_status_payload(output_buffer_frames=1536),
-    )
-    r = doctor.check_fanin_service()
-    assert r.status == "warn"
-    assert "adaptive shrink active" in r.detail
-
-
-def test_check_fanin_service_adaptive_below_floor_still_fails(monkeypatch):
-    # Even with the flag on, a value BELOW the 1536 floor is unstartable-class
-    # and still hard-fails — the warn carve-out only covers floor..<3072.
-    monkeypatch.setenv("JASPER_FANIN_ADAPTIVE_BUFFER", "enabled")
+def test_check_fanin_service_accepts_new_low_latency_output_default(monkeypatch):
+    monkeypatch.delenv("JASPER_FANIN_ADAPTIVE_BUFFER", raising=False)
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
         monkeypatch,
         _fanin_status_payload(output_buffer_frames=1024),
     )
     r = doctor.check_fanin_service()
-    assert r.status == "fail"
+    assert r.status == "ok"
     assert "output_buffer_frames=1024" in r.detail
+
+
+def test_check_fanin_service_adaptive_below_floor_still_fails(monkeypatch):
+    # Even with the legacy adaptive flag on, a value below the production floor
+    # still hard-fails.
+    monkeypatch.setenv("JASPER_FANIN_ADAPTIVE_BUFFER", "enabled")
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _fanin_status_payload(output_buffer_frames=512),
+    )
+    r = doctor.check_fanin_service()
+    assert r.status == "fail"
+    assert "output_buffer_frames=512" in r.detail
 
 
 def test_outputd_service_fails_when_disabled(monkeypatch):

@@ -41,6 +41,8 @@ _INSTALL_LIB_DIR = _INSTALL_SH.parent / "lib" / "install"
 # --dry-run plan output (after whitespace normalization).
 _STEP_TO_PLAN_MARKER = {
     "hardware_tier_preflight": "Hardware tier",
+    "setup_build_swap_if_needed": "temporary high-priority build swap",
+    "park_low_memory_build_units": "park audio/runtime daemons before Rust builds",
     "create_jasper_service_users": "non-root service users",
     "install_deps": "apt-get update",
     "persist_install_profile": "Persist the install profile tier",
