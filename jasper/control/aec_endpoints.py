@@ -268,7 +268,7 @@ def _xvf_firmware_update_status() -> dict[str, Any]:
             service_active=_unit_active(_XVF_FIRMWARE_UPDATE_SERVICE),
             last_update=_read_xvf_firmware_update_state(),
         )
-    except Exception as exc:  # noqa: BLE001
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
         return {
             "schema_version": 1,
             "state": "unknown",

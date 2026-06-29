@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,13 @@ UPDATE_UNITS = (
     "jasper-aec-init.service",
 )
 RECONCILE_UNIT = "jasper-aec-reconcile.service"
+EXPECTED_UPDATE_ERRORS = (
+    OSError,
+    RuntimeError,
+    subprocess.SubprocessError,
+    TimeoutError,
+    urllib.error.URLError,
+)
 
 
 def _write_state(
@@ -139,7 +147,7 @@ def _download_and_verify(target: xvf3800.FirmwareUpdateTarget, dest: Path) -> st
 def _reconcile_after_failure() -> str:
     try:
         _run(["systemctl", "restart", RECONCILE_UNIT], timeout=45.0)
-    except Exception as exc:  # noqa: BLE001 - preserve the original update error
+    except (OSError, subprocess.SubprocessError) as exc:
         return str(exc)
     return ""
 
@@ -219,7 +227,7 @@ def update(target_id: str = "") -> dict[str, Any]:
         )
         _run(["systemctl", "restart", RECONCILE_UNIT], timeout=45.0)
         cleanup_needed = False
-    except Exception as exc:
+    except EXPECTED_UPDATE_ERRORS as exc:
         if cleanup_needed:
             cleanup_error = _reconcile_after_failure()
             if cleanup_error:
@@ -254,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result = update(args.target)
-    except Exception as exc:  # noqa: BLE001 - CLI must persist any failure
+    except EXPECTED_UPDATE_ERRORS as exc:
         _write_state(state="failed", detail="Firmware update failed.", error=str(exc))
         print(f"jasper-xvf-firmware-update: {exc}", file=sys.stderr)
         return 1
