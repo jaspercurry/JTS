@@ -9,10 +9,11 @@ Wants=network-online.target jasper-fanin.service
 # that wasn't followed by a `start`, or a clean shutdown path inside
 # shairport itself — would, with Restart=on-failure, leave the device
 # silently invisible to AirPlay clients until the next reboot.
-# Restart=always covers crash AND clean-exit paths. Start-limit guard
-# stops genuine config breakage from infinite-restart-looping.
-StartLimitIntervalSec=60
-StartLimitBurst=5
+# Restart=always covers crash AND clean-exit paths. The start-limit guard
+# is intentionally generous so transient OOM/update pressure does not park
+# AirPlay permanently, while genuine config breakage still stops looping.
+StartLimitIntervalSec=600
+StartLimitBurst=20
 
 [Service]
 # Stage 2 audio-protection: pages never swap to zram. See
@@ -41,7 +42,7 @@ Nice=-10
 IOSchedulingClass=realtime
 IOSchedulingPriority=4
 Restart=always
-RestartSec=2
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

@@ -4,6 +4,8 @@ Description=Jasper smart-speaker room correction wizard (web)
 Requires=jasper-correction-web.socket
 After=jasper-correction-web.socket network-online.target time-sync.target
 Wants=network-online.target time-sync.target
+StartLimitIntervalSec=600
+StartLimitBurst=20
 
 [Service]
 Type=notify
