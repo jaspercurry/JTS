@@ -110,7 +110,7 @@ the path: `DEFAULT_LEAN_CAPTURE_FIFO` (`/run/jasper-usbsink/lean.pipe`).
 | 4b-i | `decide_lean_route` pure routing policy ([`jasper/lean_lane.py`](../jasper/lean_lane.py)) | shipped, unwired |
 | 4b-ii | usbsink FIFO-output mode (`JASPER_USBSINK_OUTPUT_MODE=fifo`) | shipped, default-OFF |
 | 4b-iii | stage + validate + classify the lean config (`jasper.sound.runtime.stage_lean_capture_config`) — emit + `--check` + `classify_camilla_graph`, **no live-load** | shipped, default-OFF |
-| 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim, [`jasper.sound.runtime.apply_lean_capture_config`](../jasper/sound/runtime.py)), arm the usbsink FIFO output at runtime ([`jasper.usbsink.output_mode_reconcile`](../jasper/usbsink/output_mode_reconcile.py) → writes `JASPER_USBSINK_OUTPUT_MODE` to `/var/lib/jasper/usbsink.env` + restarts via the broker), and swap/restore via mux `_tick` (`decide_lean_route` → `Mux._enter_lean`/`_leave_lean` ladders, fail-loud → buffered) | shipped, default-OFF, **24 h soak owed** |
+| 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim, [`jasper.sound.runtime.apply_lean_capture_config`](../jasper/sound/runtime.py)), arm the usbsink FIFO output at runtime ([`jasper.usbsink.output_mode_reconcile`](../jasper/usbsink/output_mode_reconcile.py) → writes `JASPER_USBSINK_OUTPUT_MODE` to `/var/lib/jasper/usbsink.env` + restarts via the broker), and swap/restore via mux `_tick` (`decide_lean_route` → `Mux._enter_lean`/`_leave_lean` ladders, fail-loud → buffered). **The camilla-config apply/restore is DELEGATED** ([`jasper.sound.lean_apply_reconcile`](../jasper/sound/lean_apply_reconcile.py) → the `jasper-lean-apply` root oneshot, blocking-started via the broker) — the non-root `jasper-mux` cannot write `/var/lib/camilladsp/configs` (EROFS), so it never applies in-process | shipped, default-OFF, **24 h soak owed** |
 | 5 | shairport-sync built `--with-pipe` (capable binary; runtime AirPlay pipe lane is future, #1318-gated) | shipped, dormant |
 | 6 | `jasper-doctor` DAC USB sync-mode advisory (clock-coherence signal, *not* the chip-AEC gate) | shipped |
 | 7 | **fan-in → CamillaDSP FIFO coupling** (`JASPER_FANIN_CAMILLA_COUPLING=fifo`) — the SHARED-capture endgame: fan-in writes a bounded pipe, CamillaDSP File-captures it; transport ([`jasper/fanin/src/fifo.rs`](../rust/jasper-fanin/src/fifo.rs)) + flag ([`jasper/fanin/src/config.rs`](../rust/jasper-fanin/src/config.rs) `Coupling`) + generator helper ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)) | shipped, default-OFF; capture-type `RawFile` fixed + `--check`-validated on jts5; ordered arm/disarm reconciler (`jasper-fanin-coupling-reconcile`) + doctor drift check; **24 h soak + real `<60 ms` USB measurement owed before default-on** |
@@ -139,6 +139,36 @@ per-episode re-arm block so a failure can't restart-storm the usbsink daemon) or
 the leave-lean ladder (`restore_buffered_config` re-emits the buffered config
 from saved intent — restore ALWAYS succeeds by construction — then disarms the
 FIFO; NO-OP fast path when not on the lean config).
+
+**Privileged delegation (the EROFS fix).** Both legs' *config swap* writes
+`/var/lib/camilladsp/configs` (the generated YAML + the shared `.dsp_apply.lock`).
+`jasper-mux` runs as the non-root `jasper-mux` user under `ProtectSystem=strict`
+and does NOT own that dir (only `jasper-web` does, per WS1 Phase 3b-3), so an
+in-process apply `[Errno 30] EROFS`-fails on a privilege-separated box. The mux
+therefore DELEGATES the apply/restore to the `jasper-lean-apply` root oneshot —
+mirroring how it already delegates the usbsink FIFO restart through the restart
+broker. `Mux._lean_apply_config`/`_lean_restore_config` →
+[`jasper.sound.lean_apply_reconcile.delegate`](../jasper/sound/lean_apply_reconcile.py)
+writes the intent (`enter`|`leave`) to `/var/lib/jasper/lean.env` (a path the mux
+owns) and BLOCKING-starts `jasper-lean-apply.service` via the broker `start`
+verb (`no_block=False`, so the oneshot's exit code is the synchronous
+success/failure verdict the ladder needs). The oneshot
+([`jasper-lean-apply`](../jasper/sound/lean_apply_reconcile.py) `main`) runs the
+real `apply_lean_capture_config`/`restore_buffered_config` at full privilege.
+`jasper-lean-apply.service` is a broker `START_ONLY_UNITS` entry — the mux may
+only START it. The mux gains NO `camilladsp/configs` write; the privilege
+boundary stays intact. The leave-lean ordering invariant is preserved: the FIFO
+is disarmed only AFTER the delegated restore returns ok.
+
+**usbsink FIFO no-reader hardening.** Because enter-lean arms the FIFO BEFORE
+the camilla apply opens the read end, the usbsink writer has a normal bounded
+no-reader window. The writer thread now advances a `fifo_waiting_reader` liveness
+tick on every `ENXIO` retry, and the daemon's fifo-mode watchdog sentinel is
+`fifo_writes + fifo_waiting_reader` — so "waiting for the reader" counts as
+forward progress and the unit does NOT go watchdog-stale and crash-loop while the
+apply is in flight (previously 3 restarts in ~9 s, then unit failed). A genuinely
+dead writer (neither counter moving) still trips the watchdog so systemd can
+recover.
 
 ## Stage 7 — fan-in → CamillaDSP FIFO coupling (the SHARED-capture endgame)
 
@@ -243,7 +273,10 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-06-27 (4b-iv live lane-switch shipped default-OFF:
+Last verified: 2026-06-28 (4b-iv camilla apply/restore DELEGATED to the
+`jasper-lean-apply` root oneshot via the restart broker — the non-root
+`jasper-mux` cannot write `camilladsp/configs` (EROFS); usbsink FIFO no-reader
+window hardened against watchdog crash-loop. Earlier 4b-iv landing, 2026-06-27:
 carrier-preserved `apply_lean_capture_config` / `restore_buffered_config`,
 the `output_mode_reconcile` runtime FIFO arm, and the `Mux._tick`
 enter/leave-lean ladders — all hardware-free-tested; 24 h on-device soak owed

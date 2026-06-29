@@ -1,0 +1,50 @@
+[Unit]
+Description=Privileged CamillaDSP lean-lane apply/restore (delegated by jasper-mux)
+Documentation=file:/opt/jasper/docs/HANDOFF-audio-latency-foundation.md
+# WS1 privilege boundary — docs/HANDOFF-privilege-separation.md.
+#
+# The Stage-4b lean lane swaps CamillaDSP's CAPTURE config, which writes
+# /var/lib/camilladsp/configs (the generated-config dir + the shared
+# .dsp_apply.lock + the carrier-preserved lean YAML). jasper-mux runs as the
+# non-root jasper-mux user with ReadWritePaths that do NOT include
+# camilladsp/configs (only jasper-web owns that, per Phase 3b-3), so an
+# in-process apply EROFS-fails. Rather than widen the mux's write surface, the
+# mux DELEGATES the apply to THIS oneshot (it runs root + Group=jasper, so it
+# can write the group-jasper 2775 configs dir), started BLOCKING via
+# jasper-control's restart broker. A blocking `systemctl start` of a oneshot
+# returns the ExecStart rc, so the mux's enter/leave ladder gets a synchronous
+# success/failure verdict (fail-loud -> buffered). Started on demand, never
+# enabled — hence no [Install] section.
+After=jasper-camilla.service jasper-fanin.service
+Wants=jasper-camilla.service
+
+[Service]
+Type=oneshot
+# root (no User=) so the camilladsp/configs write + .dsp_apply.lock create
+# succeed; Group=jasper so any file it creates inherits the group the
+# generated-config dir's setgid bit expects (same posture as the existing
+# /sound/ and /correction/ writers).
+Group=jasper
+# UMask=0007 so any group-writable file this oneshot creates stays writable in
+# place by the jasper group (matches jasper-mux.service's WS1 group-writer
+# posture). Generated configs are replaced via atomic tempfile+rename in the
+# setgid dir today, so this is consistency insurance, not a fix for a live path.
+UMask=0007
+# The wizard-owned env files the daemons load, so the emit reads persisted
+# tuning (camilla chunksize/target level, fan-in coupling) not bare defaults.
+# jasper-lean-apply ALSO re-hydrates os.environ from these in-process via
+# load_env_files(); loading them here keeps systemd's view consistent.
+#
+# NOTE: the lean INTENT file (/var/lib/jasper/lean.env, JASPER_LEAN_ACTION) is
+# deliberately NOT an EnvironmentFile= here — it carries a transient enter|leave
+# signal, not durable config, so it stays off the global config surface (and out
+# of jasper.env_load.ENV_FILES). The CLI reads it directly via read_action().
+EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/fanin.env
+# The CLI reads JASPER_LEAN_ACTION (enter|leave) from /var/lib/jasper/lean.env;
+# the mux's delegation wrote it just before this start. Exits non-zero on any
+# failure so the broker's blocking start carries the verdict back to the mux
+# ladder.
+ExecStart=/opt/jasper/.venv/bin/jasper-lean-apply
+StandardOutput=journal
+StandardError=journal

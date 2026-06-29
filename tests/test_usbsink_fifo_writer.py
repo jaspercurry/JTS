@@ -201,6 +201,33 @@ def test_fifo_writer_waits_for_reader_then_writes(tmp_path):
     assert got and len(got[0]) == 32
 
 
+def test_fifo_writer_advances_liveness_while_waiting_for_reader(tmp_path):
+    """No-reader hardening: while the writer spins on ENXIO (FIFO armed before
+    CamillaDSP opens the read end — the normal lean-enter window), it advances
+    fifo_waiting_reader so the daemon watchdog sentinel keeps moving and the
+    unit does NOT crash-loop. fifo_writes stays 0 (no audio work happened)."""
+    fifo = str(tmp_path / "lean.pipe")
+    os.mkfifo(fifo)
+    b = AudioBridge(output_mode="fifo", fifo_path=fifo, block_frames=4, channels=2)
+    b._queue.put_nowait(bytes(32))
+    wt = threading.Thread(target=b._fifo_writer_loop, daemon=True)
+    wt.start()
+    try:
+        # Writer is spinning on ENXIO (no reader). The wait is 0.2 s per turn,
+        # so a few turns elapse here and the liveness tick advances.
+        time.sleep(0.5)
+        assert wt.is_alive(), "writer died with no reader present"
+        assert b.stats.fifo_waiting_reader >= 1, (
+            "no-reader liveness tick did not advance — watchdog would go stale"
+        )
+        # No audio was written while waiting.
+        assert b.stats.fifo_writes == 0
+    finally:
+        b._fifo_stop.set()
+        wt.join(timeout=3.0)
+        assert not wt.is_alive()
+
+
 def test_fifo_writer_reopens_after_reader_goes_away(tmp_path):
     """A reader that closes (CamillaDSP reload) → BrokenPipeError → the
     writer closes + reopens and keeps serving the next reader. Proves the
