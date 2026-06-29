@@ -19,17 +19,30 @@ from jasper.camilla_config_contract import (
 
 
 def test_camilla_latency_knobs_default_to_literals_when_unset():
-    """G7: with the env vars unset the resolvers return the shipped literals, so
-    threading them through the emitters changes no emitted YAML."""
-    assert resolve_camilla_chunksize({}) == DEFAULT_CHUNKSIZE == 1024
-    assert resolve_camilla_target_level({}) == DEFAULT_TARGET_LEVEL == 2048
+    """G7: with the env vars unset and no profile floor the resolvers return the
+    shipped literals. ``profile_floor=None`` pins the no-floor path so this tests
+    pure env-vs-default behavior independent of any active-DAC state on the host."""
+    assert resolve_camilla_chunksize({}, profile_floor=None) == DEFAULT_CHUNKSIZE == 1024
+    assert (
+        resolve_camilla_target_level({}, profile_floor=None)
+        == DEFAULT_TARGET_LEVEL
+        == 2048
+    )
 
 
 def test_camilla_latency_knobs_read_env_override():
     """A valid positive override is honored."""
-    assert resolve_camilla_chunksize({"JASPER_CAMILLA_CHUNKSIZE": "512"}) == 512
     assert (
-        resolve_camilla_target_level({"JASPER_CAMILLA_TARGET_LEVEL": "1024"}) == 1024
+        resolve_camilla_chunksize(
+            {"JASPER_CAMILLA_CHUNKSIZE": "512"}, profile_floor=None
+        )
+        == 512
+    )
+    assert (
+        resolve_camilla_target_level(
+            {"JASPER_CAMILLA_TARGET_LEVEL": "1024"}, profile_floor=None
+        )
+        == 1024
     )
 
 
@@ -37,11 +50,11 @@ def test_camilla_latency_knobs_reject_malformed_to_default():
     """A bad override must degrade to the default rather than produce a config
     that won't load (non-int, zero, negative, blank all fall back)."""
     for bad in ("", "  ", "bogus", "0", "-256", "1.5"):
-        assert resolve_camilla_chunksize({"JASPER_CAMILLA_CHUNKSIZE": bad}) == (
-            DEFAULT_CHUNKSIZE
-        ), bad
+        assert resolve_camilla_chunksize(
+            {"JASPER_CAMILLA_CHUNKSIZE": bad}, profile_floor=None
+        ) == DEFAULT_CHUNKSIZE, bad
         assert resolve_camilla_target_level(
-            {"JASPER_CAMILLA_TARGET_LEVEL": bad}
+            {"JASPER_CAMILLA_TARGET_LEVEL": bad}, profile_floor=None
         ) == DEFAULT_TARGET_LEVEL, bad
 
 
@@ -91,18 +104,133 @@ def test_camilla_latency_knobs_none_floor_keeps_global_default():
 
 def test_camilla_emitters_emit_byte_identical_yaml_when_env_unset(monkeypatch):
     """The end-to-end byte-identical contract: the sound emitter with the None
-    sentinel (env unset) must equal the pre-G7 explicit-literal call."""
+    sentinel (env unset, no resolvable profile) must equal the pre-G7
+    explicit-literal call."""
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SoundProfile
 
     monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
     monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
+    # Point profile resolution at an absent state file so no floor resolves —
+    # the global-default (byte-identical) path.
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH", "/nonexistent/jts-output-hardware.json"
+    )
     profile = SoundProfile()
     explicit = emit_sound_config(
         profile, chunksize=DEFAULT_CHUNKSIZE, target_level=DEFAULT_TARGET_LEVEL
     )
     sentinel = emit_sound_config(profile)  # None → resolve → defaults
     assert sentinel == explicit
+
+
+# --- #27: the active DAC profile floor reaches a GENERATED CamillaDSP config ---
+# The keystone claim the prior tests did NOT cover: not "the resolver returns N"
+# but "a config GENERATED for the Apple-dongle profile actually carries
+# chunksize 256 / target_level 1024." These run the live emitters (sound +
+# active-speaker) with the active output-hardware state staged, then parse the
+# emitted YAML's devices: block — proving the floor is in the config a daemon
+# would load, with the operator-env > profile-floor > global precedence.
+
+
+def _stage_output_profile(monkeypatch, tmp_path, profile_id: str) -> None:
+    """Write an output-hardware state file the generators resolve the floor from.
+
+    Mirrors what jasper-audio-hardware-reconcile writes to
+    /run/jasper-output-hardware/output_hardware.json; the generators read the
+    active profile id from it (env-independent) and look up its codified floor.
+    """
+    from jasper.output_hardware import OutputHardwareState, write_state
+
+    state_path = tmp_path / "output_hardware.json"
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_path))
+    write_state(
+        OutputHardwareState(
+            profile_id=profile_id,
+            profile_label=profile_id,
+            status="ready",
+            physical_output_count=2,
+        ),
+        state_path,
+    )
+
+
+def _generated_sound_devices(monkeypatch, tmp_path, profile_id: str) -> dict:
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
+
+    _stage_output_profile(monkeypatch, tmp_path, profile_id)
+    return parse_camilla_devices_config(emit_sound_config(SoundProfile()))
+
+
+def test_generated_sound_config_uses_apple_dongle_floor(monkeypatch, tmp_path):
+    """Apple-dongle profile => generated CamillaDSP config carries 256 / 1024."""
+    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
+    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
+    parsed = _generated_sound_devices(monkeypatch, tmp_path, "apple_usb_c_dongle")
+    assert parsed["chunksize"] == 256
+    assert parsed["target_level"] == 1024
+
+
+def test_generated_sound_config_dac8x_uses_global_default(monkeypatch, tmp_path):
+    """DAC8x declares no floor => the generated config keeps 1024 / 2048."""
+    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
+    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
+    parsed = _generated_sound_devices(monkeypatch, tmp_path, "hifiberry_dac8x")
+    assert parsed["chunksize"] == DEFAULT_CHUNKSIZE == 1024
+    assert parsed["target_level"] == DEFAULT_TARGET_LEVEL == 2048
+
+
+def test_generated_sound_config_operator_env_beats_profile_floor(
+    monkeypatch, tmp_path
+):
+    """Operator JASPER_CAMILLA_CHUNKSIZE wins over the Apple profile floor in the
+    actually-generated config (the precedence claim, proven end-to-end)."""
+    monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", "384")
+    monkeypatch.setenv("JASPER_CAMILLA_TARGET_LEVEL", "1536")
+    parsed = _generated_sound_devices(monkeypatch, tmp_path, "apple_usb_c_dongle")
+    assert parsed["chunksize"] == 384
+    assert parsed["target_level"] == 1536
+
+
+def test_generated_sound_config_no_state_file_uses_global_default(
+    monkeypatch, tmp_path
+):
+    """No resolvable profile (state file absent) => global default, unchanged."""
+    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
+    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH", str(tmp_path / "absent.json")
+    )
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
+
+    parsed = parse_camilla_devices_config(emit_sound_config(SoundProfile()))
+    assert parsed["chunksize"] == DEFAULT_CHUNKSIZE
+    assert parsed["target_level"] == DEFAULT_TARGET_LEVEL
+
+
+def test_generated_active_speaker_baseline_uses_apple_dongle_floor(
+    monkeypatch, tmp_path
+):
+    """The active-speaker baseline generator (the install.sh runtime-safe-graph
+    and jasper-control path) also carries the Apple-dongle floor."""
+    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
+    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
+    _stage_output_profile(monkeypatch, tmp_path, "apple_usb_c_dongle")
+    from jasper.active_speaker import (
+        ActiveSpeakerPreset,
+        emit_active_speaker_baseline_config,
+    )
+    from tests.test_active_speaker_profile import _two_way_preset
+
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
+    yaml = emit_active_speaker_baseline_config(
+        preset, playback_device="outputd_active_content_playback"
+    )
+    parsed = parse_camilla_devices_config(yaml)
+    assert parsed["chunksize"] == 256
+    assert parsed["target_level"] == 1024
 
 
 def test_total_positive_boost_db_sums_only_boosts():

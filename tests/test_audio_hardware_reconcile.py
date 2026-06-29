@@ -1255,37 +1255,111 @@ def test_reconcile_apple_emits_codified_latency_floor(tmp_path: Path):
     ) in result.stderr
 
 
+def _outputd_env_key_present(outputd_env: str, key: str) -> bool:
+    return any(
+        re.match(rf"^\s*{re.escape(key)}\s*=", line)
+        for line in outputd_env.splitlines()
+    )
+
+
 def test_reconcile_dac8x_clears_floor_keys_no_profile_floor(tmp_path: Path):
-    # A DAC8x declares NO floor — the reconciler clears the keys so the shipped
-    # global default applies and no stale floor from a prior DAC lingers.
+    # A DAC8x declares NO floor — the reconciler does not write the keys, so the
+    # shipped global default applies. (When a prior DAC left a floor in
+    # outputd.env, the keys are dropped — see
+    # test_reconcile_no_floor_drops_stale_floor_keys.)
     result = _run_reconcile(tmp_path, DAC8X_AND_APPLE_LISTING, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    assert "JASPER_CAMILLA_CHUNKSIZE=''" in outputd_env
-    assert "JASPER_CAMILLA_TARGET_LEVEL=''" in outputd_env
-    assert "JASPER_OUTPUTD_PERIOD_FRAMES=''" in outputd_env
-    assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=''" in outputd_env
+    # No floor for this DAC and no prior entry => the key is simply absent. It is
+    # NOT written as an empty `KEY=`: an empty assignment in outputd.env (loaded
+    # AFTER jasper.env) would override any operator value with empty.
+    for key in (
+        "JASPER_CAMILLA_CHUNKSIZE",
+        "JASPER_CAMILLA_TARGET_LEVEL",
+        "JASPER_OUTPUTD_PERIOD_FRAMES",
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
+    ):
+        assert not _outputd_env_key_present(outputd_env, key), key
 
 
-def test_reconcile_operator_env_override_wins_over_profile_floor(tmp_path: Path):
-    # Operator set JASPER_CAMILLA_CHUNKSIZE in jasper.env (loaded first by the
-    # unit). The reconciler must NOT write the profile floor into outputd.env
-    # for that key — it clears it so outputd.env can't shadow the operator value.
+def test_reconcile_no_floor_drops_stale_floor_keys(tmp_path: Path):
+    # A DAC with no declared floor must DROP a stale floor a prior DAC wrote into
+    # outputd.env, not leave it as `=''` (which would clobber an operator value)
+    # and not leave the stale numbers.
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env=(
+            "JASPER_CAMILLA_CHUNKSIZE=256\n"
+            "JASPER_CAMILLA_TARGET_LEVEL=1024\n"
+            "JASPER_OUTPUTD_PERIOD_FRAMES=256\n"
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512\n"
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    for key in (
+        "JASPER_CAMILLA_CHUNKSIZE",
+        "JASPER_CAMILLA_TARGET_LEVEL",
+        "JASPER_OUTPUTD_PERIOD_FRAMES",
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
+    ):
+        assert not _outputd_env_key_present(outputd_env, key), key
+
+
+def test_reconcile_operator_env_override_survives_reconciler(tmp_path: Path):
+    # The HIGH inversion fix: operator set JASPER_OUTPUTD_DAC_BUFFER_FRAMES (and
+    # JASPER_CAMILLA_CHUNKSIZE) in jasper.env (loaded FIRST by the unit). The
+    # reconciler must NOT write an empty `KEY=` into outputd.env (loaded AFTER),
+    # which would override the operator's value with empty and make Rust fall
+    # back to its default — silently discarding the tune. It must DROP the key
+    # from outputd.env entirely so the operator's jasper.env value survives.
     # Keys the operator did NOT set still get the profile floor.
     result = _run_reconcile(
         tmp_path,
         APPLE_LISTING,
         "--reason",
         "test",
-        initial_env="JASPER_CAMILLA_CHUNKSIZE=512\n",
+        initial_env=(
+            "JASPER_CAMILLA_CHUNKSIZE=512\n"
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=4096\n"
+        ),
     )
 
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    # Operator-set key: cleared in outputd.env so jasper.env's 512 wins.
-    assert "JASPER_CAMILLA_CHUNKSIZE=''" in outputd_env
+    # Operator-set keys: ABSENT from outputd.env (not `=''`) so jasper.env wins.
+    assert not _outputd_env_key_present(outputd_env, "JASPER_CAMILLA_CHUNKSIZE")
+    assert not _outputd_env_key_present(
+        outputd_env, "JASPER_OUTPUTD_DAC_BUFFER_FRAMES"
+    )
     # Non-overridden keys: profile floor still emitted.
     assert "JASPER_CAMILLA_TARGET_LEVEL=1024" in outputd_env
     assert "JASPER_OUTPUTD_PERIOD_FRAMES=256" in outputd_env
-    assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512" in outputd_env
+
+
+def test_reconcile_operator_outputd_override_dropped_even_when_pre_seeded(
+    tmp_path: Path,
+):
+    # Defense in depth for the HIGH fix: even when a PRIOR reconcile already
+    # wrote the floor into outputd.env, a later reconcile that sees the operator
+    # override in jasper.env must REMOVE the outputd.env copy (so the operator's
+    # earlier-loaded value is no longer shadowed), not leave it `=''` or stale.
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=4096\n",
+        initial_outputd_env="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert not _outputd_env_key_present(
+        outputd_env, "JASPER_OUTPUTD_DAC_BUFFER_FRAMES"
+    )

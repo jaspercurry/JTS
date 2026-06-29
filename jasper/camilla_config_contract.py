@@ -32,11 +32,59 @@ DEFAULT_CHUNKSIZE = 1024
 DEFAULT_TARGET_LEVEL = 2048
 
 
+# Sentinel distinguishing "caller did not pass profile_floor → auto-resolve the
+# active DAC's codified floor" from an explicit ``profile_floor=None`` ("no
+# floor, keep the global default" — the byte-identical contract path the
+# emitters' own None-sentinel relies on). Auto-resolution reads the DacProfile
+# registry directly, so the floor reaches EVERY live generation path (install.sh
+# runtime-safe-graph, the ExecStartPre statefile guards, and jasper-control's
+# sound / active-speaker generation) regardless of whether that path happens to
+# have outputd.env in its environment — the #27 keystone fix.
+class _Unset:
+    __slots__ = ()
+
+
+_UNSET = _Unset()
+
+
+def _active_camilla_floor(field: str) -> int | None:
+    """Resolve the active output DAC profile's codified CamillaDSP floor field.
+
+    Reads the resolved output-hardware state the audio-hardware reconciler
+    writes (``/run/jasper-output-hardware/output_hardware.json``, overridable
+    via ``JASPER_OUTPUT_HARDWARE_STATE_PATH``) — the SAME profile resolution
+    ``jasper.output_hardware`` / the reconciler use to pick a profile id — and
+    returns that profile's ``LatencyFloor.<field>`` (``camilla_chunksize`` or
+    ``camilla_target_level``), or ``None`` when the state is unreadable, the
+    profile is unknown, or the DAC declares no floor. Best-effort and
+    env-independent on purpose: a fresh box reproduces the tuned floor with no
+    per-user config, and a box whose state file is not yet written simply keeps
+    the global default rather than failing config generation. Import of the
+    hardware modules is deferred so this contract module stays import-cheap for
+    the socket-activated web surfaces that never call it.
+    """
+    try:
+        from jasper.audio_hardware.dac import latency_floor_for
+        from jasper.output_hardware import load_state
+    except ImportError:
+        return None
+    # load_state is itself fail-soft (OSError / JSONDecodeError → None); it does
+    # not raise for a missing or malformed state file. No floor when the state is
+    # unreadable or the profile is unknown / declares no floor.
+    state = load_state()
+    if state is None or not state.profile_id:
+        return None
+    floor = latency_floor_for(state.profile_id)
+    if floor is None:
+        return None
+    return getattr(floor, field, None)
+
+
 def _resolve_camilla_int(
     env_var: str,
     default: int,
     env: Mapping[str, str],
-    profile_floor: int | None = None,
+    profile_floor: int | None,
 ) -> int:
     """Resolve a positive-int CamillaDSP latency knob with floor precedence.
 
@@ -68,11 +116,20 @@ def _resolve_camilla_int(
 
 def resolve_camilla_chunksize(
     env: Mapping[str, str] | None = None,
-    profile_floor: int | None = None,
+    profile_floor: int | None | _Unset = _UNSET,
 ) -> int:
     """CamillaDSP ``chunksize`` — ``JASPER_CAMILLA_CHUNKSIZE`` or the active
-    DAC's ``profile_floor`` or ``DEFAULT_CHUNKSIZE`` (1024). See
-    :func:`_resolve_camilla_int`."""
+    DAC's profile floor or ``DEFAULT_CHUNKSIZE`` (1024).
+
+    ``profile_floor`` left unset (the live-emitter default) auto-resolves the
+    active output DAC profile's codified floor from the registry, so every live
+    generation path gets the floor with operator-env > profile-floor > global
+    precedence. Pass ``profile_floor=None`` explicitly to force the no-floor
+    (global-default) path — the byte-identical contract used by tests and by the
+    pre-#27 explicit-literal call. See :func:`_resolve_camilla_int`.
+    """
+    if isinstance(profile_floor, _Unset):
+        profile_floor = _active_camilla_floor("camilla_chunksize")
     return _resolve_camilla_int(
         "JASPER_CAMILLA_CHUNKSIZE", DEFAULT_CHUNKSIZE,
         os.environ if env is None else env,
@@ -82,11 +139,18 @@ def resolve_camilla_chunksize(
 
 def resolve_camilla_target_level(
     env: Mapping[str, str] | None = None,
-    profile_floor: int | None = None,
+    profile_floor: int | None | _Unset = _UNSET,
 ) -> int:
     """CamillaDSP ``target_level`` — ``JASPER_CAMILLA_TARGET_LEVEL`` or the
-    active DAC's ``profile_floor`` or ``DEFAULT_TARGET_LEVEL`` (2048). See
-    :func:`_resolve_camilla_int`."""
+    active DAC's profile floor or ``DEFAULT_TARGET_LEVEL`` (2048).
+
+    ``profile_floor`` left unset (the live-emitter default) auto-resolves the
+    active output DAC profile's codified floor from the registry. Pass
+    ``profile_floor=None`` explicitly to force the no-floor (global-default)
+    path. See :func:`resolve_camilla_chunksize` and :func:`_resolve_camilla_int`.
+    """
+    if isinstance(profile_floor, _Unset):
+        profile_floor = _active_camilla_floor("camilla_target_level")
     return _resolve_camilla_int(
         "JASPER_CAMILLA_TARGET_LEVEL", DEFAULT_TARGET_LEVEL,
         os.environ if env is None else env,
