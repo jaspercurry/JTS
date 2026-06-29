@@ -2177,8 +2177,28 @@ run_doctor_summary() {
         return 0
     fi
     echo
+    if build_swap_required; then
+        echo "=== low-memory deploy health pre-flight ==="
+        if "${REPO_DIR}/deploy/bin/jasper-deploy-health"; then
+            echo "✓ low-memory deploy health checks pass."
+        else
+            echo
+            echo "─────────────────────────────────────────────────────────────"
+            echo " low-memory deploy health reports failures (see above)."
+            echo " Install finished, but core runtime health isn't clean."
+            echo " Re-run after fixing: sudo ${REPO_DIR}/deploy/bin/jasper-deploy-health"
+            echo "─────────────────────────────────────────────────────────────"
+        fi
+        return 0
+    fi
+
     echo "=== jasper-doctor pre-flight ==="
-    if /opt/jasper/.venv/bin/jasper-doctor; then
+    local doctor_status
+    set +e
+    /opt/jasper/.venv/bin/jasper-doctor
+    doctor_status=$?
+    set -e
+    if (( doctor_status == 0 )); then
         echo "✓ all critical doctor checks pass."
     else
         echo
@@ -2235,6 +2255,7 @@ main() {
         setup_build_swap_if_needed
         trap cleanup_build_swap EXIT
         create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
+        park_low_memory_build_units
         install_streambox_deps
         install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
         install_camilladsp
@@ -2247,7 +2268,6 @@ main() {
         ensure_outputd_camilla_statefile
         ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
         migrate_secrets_phase4b  # WS1 Phase 4b: streambox Spotify creds/cache path
-        park_low_memory_build_units
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_streambox_systemd_units
@@ -2280,6 +2300,7 @@ main() {
     setup_build_swap_if_needed
     trap cleanup_build_swap EXIT
     create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
+    park_low_memory_build_units
     install_deps
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
     install_camilladsp
@@ -2291,7 +2312,6 @@ main() {
     render_outputd_cutover_config
     ensure_outputd_camilla_statefile
     ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
-    park_low_memory_build_units
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_systemd_units

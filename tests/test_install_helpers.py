@@ -1567,7 +1567,7 @@ def test_build_swap_setup_and_cleanup_use_high_priority_swap(tmp_path):
     assert f"swapoff {swap_path}" in calls
 
 
-def test_low_memory_build_parks_runtime_units_before_rust_builds():
+def test_low_memory_build_parks_runtime_units_before_python_and_rust_builds():
     install_sh = _INSTALL_SH.read_text(encoding="utf-8")
     systemd_units = (_INSTALL_LIB_DIR / "systemd-units.sh").read_text(
         encoding="utf-8"
@@ -1580,8 +1580,24 @@ def test_low_memory_build_parks_runtime_units_before_rust_builds():
     assert main_body is not None
     assert (
         main_body.group(1).index("park_low_memory_build_units")
+        < main_body.group(1).index("install_jasper")
+    )
+    assert (
+        main_body.group(1).index("park_low_memory_build_units")
         < main_body.group(1).index("build_install_jasper_fanin")
     )
+
+
+def test_low_memory_install_uses_lightweight_health_probe_instead_of_doctor():
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    start = text.index("run_doctor_summary()")
+    end = text.index("\n}\n\nmain()", start)
+    body = text[start:end]
+
+    assert "build_swap_required" in body
+    assert "jasper-deploy-health" in body
+    low_memory_body = body[body.index("if build_swap_required; then"):body.index("fi\n\n    echo \"=== jasper-doctor")]
+    assert "jasper-doctor" not in low_memory_body
 
 
 # --- run_contained_build: graceful degradation, no double-run ----------

@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+#
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Lightweight deploy-time health probe for low-memory JTS boxes.
+
+Full jasper-doctor is intentionally broad: it imports provider, wake,
+integration, web, and hardware modules, and it can momentarily be too much
+for a 1 GB full speaker immediately after a deploy restart. This probe is the
+deploy gate's small answer to a smaller question: did the install leave the
+core control/audio path running, progressing, and xrun-free?
+
+Stdlib-only by design. It must stay cheap enough to run while the box is under
+memory pressure, before we have evidence that the heavier Python stack is safe.
+"""
+from __future__ import annotations
+
+import json
+import socket
+import subprocess
+import sys
+from typing import Any
+
+
+REQUIRED_ACTIVE_UNITS = (
+    "nginx.service",
+    "jasper-control.service",
+    "jasper-fanin.service",
+    "jasper-outputd.service",
+    "jasper-camilla.service",
+    "jasper-mux.service",
+    "jasper-input.service",
+    "shairport-sync.service",
+    "nqptp.service",
+    "bluealsa.service",
+    "bluealsa-aplay.service",
+)
+
+REQUIRED_ACTIVE_SOCKETS = (
+    "jasper-web.socket",
+    "jasper-system-web.socket",
+)
+
+OBSERVED_OPTIONAL_UNITS = (
+    "jasper-voice.service",
+    "jasper-aec-bridge.service",
+    "bt-agent.service",
+)
+
+FANIN_SOCKET = "/run/jasper-fanin/control.sock"
+OUTPUTD_SOCKET = "/run/jasper-outputd/control.sock"
+MAX_PROGRESS_AGE_MS = 2_000
+
+
+def _systemctl_is_active(unit: str) -> str:
+    proc = subprocess.run(
+        ["systemctl", "is-active", unit],
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
+    return (proc.stdout or proc.stderr).strip() or f"rc={proc.returncode}"
+
+
+def _status_json(path: str) -> dict[str, Any]:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1.0)
+        sock.connect(path)
+        sock.sendall(b"STATUS\n")
+        chunks: list[bytes] = []
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{path} returned non-object JSON")
+    return payload
+
+
+def _nested_int(payload: dict[str, Any], path: tuple[str, ...]) -> int:
+    cur: Any = payload
+    for key in path:
+        if not isinstance(cur, dict):
+            raise RuntimeError(".".join(path) + " is not present")
+        cur = cur.get(key)
+    if not isinstance(cur, int):
+        raise RuntimeError(".".join(path) + f" is {cur!r}, not an int")
+    return cur
+
+
+def _progress_age_ms(payload: dict[str, Any]) -> int:
+    watchdog = payload.get("watchdog")
+    if not isinstance(watchdog, dict):
+        raise RuntimeError("watchdog status missing")
+    age = watchdog.get("last_progress_age_ms")
+    if not isinstance(age, int):
+        raise RuntimeError(f"watchdog.last_progress_age_ms is {age!r}")
+    return age
+
+
+def _line(status: str, name: str, detail: str) -> None:
+    print(f"{status:<4} {name:<28} {detail}")
+
+
+def main() -> int:
+    failures = 0
+    warnings = 0
+    print("low-memory deploy health")
+
+    for unit in REQUIRED_ACTIVE_UNITS:
+        state = _systemctl_is_active(unit)
+        if state == "active":
+            _line("OK", unit, state)
+        else:
+            failures += 1
+            _line("FAIL", unit, state)
+
+    for socket_unit in REQUIRED_ACTIVE_SOCKETS:
+        state = _systemctl_is_active(socket_unit)
+        if state == "active":
+            _line("OK", socket_unit, state)
+        else:
+            failures += 1
+            _line("FAIL", socket_unit, state)
+
+    for unit in OBSERVED_OPTIONAL_UNITS:
+        state = _systemctl_is_active(unit)
+        if state == "active":
+            _line("OK", unit, state)
+        else:
+            warnings += 1
+            _line("WARN", unit, state)
+
+    try:
+        fanin = _status_json(FANIN_SOCKET)
+        output_xruns = _nested_int(fanin, ("output", "xrun_count"))
+        input_xruns = sum(
+            int(inp.get("xrun_count", 0))
+            for inp in fanin.get("inputs", [])
+            if isinstance(inp, dict)
+        )
+        age = _progress_age_ms(fanin)
+        if output_xruns == 0 and input_xruns == 0 and age <= MAX_PROGRESS_AGE_MS:
+            _line(
+                "OK",
+                "jasper-fanin STATUS",
+                f"output_xruns=0 input_xruns=0 progress_age_ms={age}",
+            )
+        else:
+            failures += 1
+            _line(
+                "FAIL",
+                "jasper-fanin STATUS",
+                (
+                    f"output_xruns={output_xruns} input_xruns={input_xruns} "
+                    f"progress_age_ms={age}"
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001
+        failures += 1
+        _line("FAIL", "jasper-fanin STATUS", str(exc))
+
+    try:
+        outputd = _status_json(OUTPUTD_SOCKET)
+        backend = outputd.get("backend")
+        content_xruns = _nested_int(outputd, ("content", "xrun_count"))
+        dac_xruns = _nested_int(outputd, ("dac", "xrun_count"))
+        content_empty = _nested_int(outputd, ("content", "empty_periods"))
+        content_eagain = _nested_int(outputd, ("content", "eagain_count"))
+        age = _progress_age_ms(outputd)
+        if (
+            backend == "alsa"
+            and content_xruns == 0
+            and dac_xruns == 0
+            and content_empty == 0
+            and content_eagain == 0
+            and age <= MAX_PROGRESS_AGE_MS
+        ):
+            _line(
+                "OK",
+                "jasper-outputd STATUS",
+                "backend=alsa xruns=0/0 empty=0 eagain=0 "
+                f"progress_age_ms={age}",
+            )
+        else:
+            failures += 1
+            _line(
+                "FAIL",
+                "jasper-outputd STATUS",
+                (
+                    f"backend={backend!r} xruns={content_xruns}/{dac_xruns} "
+                    f"empty={content_empty} eagain={content_eagain} "
+                    f"progress_age_ms={age}"
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001
+        failures += 1
+        _line("FAIL", "jasper-outputd STATUS", str(exc))
+
+    if failures:
+        print(f"deploy health failed: {failures} failure(s), {warnings} warning(s)")
+        return 1
+    print(f"deploy health passed: 0 failure(s), {warnings} warning(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

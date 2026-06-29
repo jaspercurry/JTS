@@ -426,8 +426,26 @@ surface_system_health() {
     echo "    Covers voice, AEC bridge, and renderers. A function idle"
     echo "    because its hardware is absent (e.g. no mic) may read ! or ✗"
     echo "    here today; Workstream C reclassifies those as expected-idle."
-    run_remote_sudo '/opt/jasper/.venv/bin/jasper-doctor 2>/dev/null || true' \
-        2>/dev/null || echo "    (jasper-doctor unavailable — skipped)"
+    local health_cmd
+    printf -v health_cmd '%s\n' \
+        'set -euo pipefail' \
+        "mem_kb=\$(awk '/^MemTotal:/ { print \$2; exit }' /proc/meminfo 2>/dev/null || true)" \
+        'case "${mem_kb}" in' \
+        '    ""|*[!0-9]*) low_memory=0 ;;' \
+        '    *) if (( mem_kb < 1200000 )); then low_memory=1; else low_memory=0; fi ;;' \
+        'esac' \
+        'if [[ "${low_memory}" == "1" ]]; then' \
+        '    probe=__JASPER_DEPLOY_HEALTH_PROBE__' \
+        '    if [[ ! -x "${probe}" ]]; then' \
+        '        exit 127' \
+        '    fi' \
+        '    "${probe}"' \
+        'else' \
+        '    /opt/jasper/.venv/bin/jasper-doctor' \
+        'fi'
+    health_cmd="${health_cmd/__JASPER_DEPLOY_HEALTH_PROBE__/$(shell_quote "${REMOTE_REPO_DIR}/deploy/bin/jasper-deploy-health")}"
+    run_remote_sudo "bash -lc $(shell_quote "${health_cmd}") 2>/dev/null || true" \
+        2>/dev/null || echo "    (post-deploy health probe unavailable — skipped)"
 }
 
 # Capture git info BEFORE rsync (which excludes .git/).
@@ -613,19 +631,15 @@ if [[ "$install_rc" -ne 0 ]]; then
 fi
 
 # install.sh returned success, but a production daemon may have been
-# collaterally OOM-killed mid-build (report_oom_collateral already printed
-# a loud per-unit ✗ warning above). We SURFACE this, we do not gate on it:
-# the build OOM is HISTORY, while pass/fail is decided by END STATE — the
-# management-surface probe (nginx/control), verify_manifest_advanced, and
-# the advisory doctor below. A daemon that systemd already restarted must
-# not fail an otherwise-healthy deploy (the inverse false-failure trap on a
-# 1 GB Pi); one still down is caught by those end-state gates. Problem #5
-# asks the tooling to "say so, not exit silently" — surfacing satisfies it.
+# collaterally OOM-killed mid-install (report_oom_collateral already printed
+# a loud per-unit ✗ warning above). We continue through the end-state
+# checks so the transcript includes manifest/management/doctor evidence,
+# but a production-daemon OOM is not merge-quality deploy hygiene: the
+# final verification block below fails after all evidence has been surfaced.
 if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
-    echo "  ⚠ a live production daemon was OOM-killed during the build (above)." >&2
-    echo "    The deploy continues; end-state health is checked below. If the" >&2
-    echo "    box is now unhealthy the gates will fail. Free RAM / Workstream A" >&2
-    echo "    bounds build memory so this stops happening." >&2
+    echo "  ⚠ a live production daemon was OOM-killed during install (above)." >&2
+    echo "    Continuing through end-state checks so the failure has complete" >&2
+    echo "    evidence, then the deploy verification will fail." >&2
 fi
 
 echo "==> Build manifest now on Pi:"
@@ -784,7 +798,25 @@ if [[ "$SUDO_INTERACTIVE" == "1" ]]; then
     echo "     passwordless sudo for full verification, BRINGUP Phase 2.5)"
 else
     verify_manifest_advanced
+    HEALTH_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
+    [[ -z "${HEALTH_START_EPOCH:-}" ]] && HEALTH_START_EPOCH=0
     surface_system_health
+    if [[ "${HEALTH_START_EPOCH}" != "0" ]]; then
+        report_oom_collateral "$HEALTH_START_EPOCH"
+    fi
+    if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
+        finish_airplay_health_maintenance
+        trap - EXIT
+        echo "─────────────────────────────────────────────────────────────" >&2
+        echo " DEPLOY VERIFICATION FAILED: a live production daemon was" >&2
+        echo " OOM-killed during this deploy. The Pi may have recovered," >&2
+        echo " but this is not clean enough to merge." >&2
+        echo " Diagnose on the Pi:" >&2
+        echo "   sudo /opt/jasper/.venv/bin/jasper-doctor" >&2
+        echo "   journalctl -k --since @${DEPLOY_START_EPOCH} --no-pager | grep -Ei 'oom|killed process'" >&2
+        echo "─────────────────────────────────────────────────────────────" >&2
+        exit 1
+    fi
 fi
 
 finish_airplay_health_maintenance

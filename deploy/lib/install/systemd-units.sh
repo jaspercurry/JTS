@@ -466,7 +466,7 @@ reset_failed_core_graph_restart_targets() {
 park_low_memory_build_units() {
     build_swap_required || return 0
     _build_sandbox_log "low_memory_build_park" \
-        "stopping runtime units before constrained Rust builds"
+        "stopping runtime units before constrained install/build steps"
     park_audio_clients_for_core_graph_restart
     local unit
     for unit in \
