@@ -714,13 +714,13 @@ async def restore_buffered_config(
 
     async with dsp_writer_lock(config_path):
         current_path = await cam.get_config_file_path(best_effort=True)
-        live_on_lean = bool(current_path) and _paths_match(current_path, lean_path)
+        live_on_lean = current_path is not None and _paths_match(current_path, lean_path)
         # Independent on-disk evidence: a crash between enter and leave can leave
         # the persisted statefile pointing at lean even when the live read is
         # momentarily unavailable. Re-point in that case too so the strand is
         # never carried into the next camilla restart.
         persisted = _statefile_config_path(statefile_path)
-        statefile_on_lean = bool(persisted) and _paths_match(persisted, lean_path)
+        statefile_on_lean = persisted is not None and _paths_match(persisted, lean_path)
         if not live_on_lean and not statefile_on_lean:
             return None
 
