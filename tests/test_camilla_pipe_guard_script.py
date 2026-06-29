@@ -77,12 +77,17 @@ def _run(
     timeout="0.3",
     runtime_helper=True,
     runtime_block=False,
+    capture_root=None,
 ):
     env = dict(os.environ)
     env["JASPER_CAMILLA_STATEFILE"] = str(statefile or tmp_path / "statefile.yml")
     env["JASPER_CAMILLA_BASE_CONFIG"] = str(base or tmp_path / "base.yml")
     env["JASPER_GROUPING_SNAPFIFO"] = str(fifo or tmp_path / SNAPFIFO_NAME)
     env["JASPER_PIPE_GUARD_PROBE_TIMEOUT"] = timeout
+    # Treat the test's tmp dir as the "runtime" root so a capture pipe under it
+    # is classified the way /run/jasper-usbsink/lean.pipe is on the Pi.
+    if capture_root is not None:
+        env["JASPER_PIPE_GUARD_CAPTURE_ROOT"] = str(capture_root)
     if runtime_helper:
         env["JASPER_RUNTIME_SAFE_GRAPH"] = str(_runtime_safe_graph_script(tmp_path))
     else:
@@ -119,6 +124,28 @@ def _solo_config(tmp_path: Path) -> Path:
     return cfg
 
 
+def _lean_capture_config(tmp_path: Path, capture_pipe: Path) -> Path:
+    """A solo-PLAYBACK config whose CAPTURE source is a RawFile named pipe
+    under /run — the incident shape. Playback is ordinary ALSA (solo); only
+    the capture pipe can go dead when usbsink/fan-in reverts off the lean lane.
+    """
+    cfg = tmp_path / "sound_lean_current.yml"
+    cfg.write_text(
+        "devices:\n"
+        "  capture:\n"
+        "    type: RawFile\n"
+        "    channels: 2\n"
+        f'    filename: "{capture_pipe}"\n'
+        "    format: S16_LE\n"
+        "  playback:\n"
+        "    type: Alsa\n"
+        "    channels: 2\n"
+        '    device: "outputd_content_playback"\n'
+        "    format: S16_LE\n"
+    )
+    return cfg
+
+
 def test_solo_config_is_a_noop(tmp_path):
     cfg = _solo_config(tmp_path)
     statefile = _write_statefile(tmp_path, cfg)
@@ -127,6 +154,58 @@ def test_solo_config_is_a_noop(tmp_path):
     assert r.returncode == 0
     assert "event=camilla_pipe_guard.ok reason=solo_config" in r.stderr
     assert statefile.read_text() == before  # untouched
+
+
+def test_lean_config_with_absent_capture_pipe_repairs_to_base(tmp_path):
+    """THE INCIDENT class: statefile points at the lean config whose RawFile
+    CAPTURE pipe under /run is GONE (usbsink reverted to aloop). A camilla
+    restart would crash-loop on the absent pipe. The guard re-points first."""
+    capture_root = tmp_path / "run"
+    capture_root.mkdir()
+    capture_pipe = capture_root / "lean.pipe"  # never created → absent
+    cfg = _lean_capture_config(tmp_path, capture_pipe)
+    base = tmp_path / "base.yml"
+    base.write_text("devices: {}\n")
+    statefile = _write_statefile(tmp_path, cfg)
+    r = _run(
+        tmp_path,
+        statefile=statefile,
+        base=base,
+        capture_root=str(capture_root) + "/",
+    )
+    assert r.returncode == 0
+    assert "event=camilla_pipe_guard.repaired reason=capture_pipe_absent" in r.stderr
+    assert f"config_path: {base}" in statefile.read_text()
+    assert "volume: -20.0" in statefile.read_text()  # other keys preserved
+
+
+def test_lean_config_with_present_capture_pipe_is_noop(tmp_path):
+    """A lean config whose capture pipe EXISTS is healthy — the producer is
+    feeding it. The guard must not touch the statefile."""
+    capture_root = tmp_path / "run"
+    capture_root.mkdir()
+    capture_pipe = capture_root / "lean.pipe"
+    os.mkfifo(capture_pipe)
+    cfg = _lean_capture_config(tmp_path, capture_pipe)
+    statefile = _write_statefile(tmp_path, cfg)
+    before = statefile.read_text()
+    r = _run(tmp_path, statefile=statefile, capture_root=str(capture_root) + "/")
+    assert r.returncode == 0
+    # Capture pipe present → falls through to the playback solo-config check.
+    assert "event=camilla_pipe_guard.ok reason=solo_config" in r.stderr
+    assert statefile.read_text() == before
+
+
+def test_solo_alsa_capture_is_never_touched(tmp_path):
+    """An ordinary ALSA-capture solo config has no /run capture pipe — the
+    capture check must skip it entirely (no false repair on the steady state)."""
+    cfg = _solo_config(tmp_path)  # ALSA capture, no RawFile/filename
+    statefile = _write_statefile(tmp_path, cfg)
+    before = statefile.read_text()
+    r = _run(tmp_path, statefile=statefile, capture_root="/run/")
+    assert r.returncode == 0
+    assert "event=camilla_pipe_guard.ok reason=solo_config" in r.stderr
+    assert statefile.read_text() == before
 
 
 def test_pipe_config_with_dead_fifo_repairs_to_base(tmp_path):

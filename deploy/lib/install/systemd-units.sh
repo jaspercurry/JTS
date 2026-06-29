@@ -45,63 +45,70 @@ install_jasper_support_files() {
         /usr/local/lib/jasper/install/
 }
 
+# Core audio-graph unit + helper-binary install table. One row per file:
+# "<mode> <src-relative-to-REPO_DIR> <dst>". Driven by a transactional loop
+# (install_local_audio_graph_unit_files) so a single failed `install` cannot
+# abort the sequence and silently skip a LATER unit — the 2026-06 deploy hazard
+# where a newly-added unit never landed on the first deploy because an earlier
+# step failed under `set -euo pipefail`. The loop attempts EVERY row, then
+# fails at the end if any row failed (so a genuine error still surfaces), and a
+# daemon-reload is guaranteed by the caller regardless.
+#
+# Annotations preserved from the prior flat form:
+#   jasper-camilla-crossover.service — camilla#2 endpoint-crossover (:1235),
+#     INERT: installed but NOT enabled; a later reconciler PR arms it only on
+#     an active leader. docs/HANDOFF-distributed-active.md "Stage B".
+#   jasper-doctor-json.service — WS1 Phase 3b-2 root oneshot capturing
+#     jasper-doctor --json for /system/diagnostics (non-root jasper-control
+#     triggers it via polkit). On-demand only — not enabled.
+#   jasper-camilla-pipe-guard — ExecStartPre chain-breaker: re-points the
+#     statefile off a dead PLAYBACK/CAPTURE pipe config before camilla launches.
+#   jasper-camilla-crossover-guard — like the pipe-guard but repairs ONLY to the
+#     re-proven driver-domain graph (never flat — a flat crossover would send
+#     full-range to the tweeter). Shipped alongside the dormant crossover unit.
+JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
+    "0644 deploy/systemd/jasper-camilla.service ${SYSTEMD_DIR}/jasper-camilla.service"
+    "0644 deploy/systemd/jasper-camilla-recover.service ${SYSTEMD_DIR}/jasper-camilla-recover.service"
+    "0644 deploy/systemd/jasper-camilla-crossover.service ${SYSTEMD_DIR}/jasper-camilla-crossover.service"
+    "0644 deploy/systemd/jasper-fanin.service ${SYSTEMD_DIR}/jasper-fanin.service"
+    "0644 deploy/systemd/jasper-outputd.service ${SYSTEMD_DIR}/jasper-outputd.service"
+    "0644 deploy/systemd/jasper-control.service ${SYSTEMD_DIR}/jasper-control.service"
+    "0644 deploy/systemd/jasper-doctor-json.service ${SYSTEMD_DIR}/jasper-doctor-json.service"
+    "0644 deploy/systemd/jasper-audio-hardware-reconcile.service ${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
+    "0755 deploy/bin/jasper-audio-hardware-reconcile /usr/local/sbin/jasper-audio-hardware-reconcile"
+    "0755 deploy/bin/jasper-output-hardware-hotplug /usr/local/sbin/jasper-output-hardware-hotplug"
+    "0755 deploy/bin/jasper-outputd-failure-reconcile /usr/local/sbin/jasper-outputd-failure-reconcile"
+    "0755 deploy/bin/jasper-camilla-pipe-guard /usr/local/sbin/jasper-camilla-pipe-guard"
+    "0755 deploy/bin/jasper-camilla-recover /usr/local/sbin/jasper-camilla-recover"
+    "0755 deploy/bin/jasper-camilla-crossover-guard /usr/local/sbin/jasper-camilla-crossover-guard"
+)
+
 install_local_audio_graph_unit_files() {
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \
-        "${SYSTEMD_DIR}/jasper-camilla.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-camilla-recover.service" \
-        "${SYSTEMD_DIR}/jasper-camilla-recover.service"
-    # camilla#2 — endpoint-crossover instance (:1235). INERT: installed but
-    # NOT enabled; a later reconciler PR arms it only on an active leader.
-    # docs/HANDOFF-distributed-active.md "Stage B".
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-camilla-crossover.service" \
-        "${SYSTEMD_DIR}/jasper-camilla-crossover.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-fanin.service" \
-        "${SYSTEMD_DIR}/jasper-fanin.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-outputd.service" \
-        "${SYSTEMD_DIR}/jasper-outputd.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-control.service" \
-        "${SYSTEMD_DIR}/jasper-control.service"
-    # WS1 Phase 3b-2: root oneshot that captures jasper-doctor --json at full
-    # fidelity for /system/diagnostics (the non-root jasper-control triggers it
-    # via polkit). On-demand only — not enabled.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-doctor-json.service" \
-        "${SYSTEMD_DIR}/jasper-doctor-json.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-audio-hardware-reconcile.service" \
-        "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-audio-hardware-reconcile" \
-        /usr/local/sbin/jasper-audio-hardware-reconcile
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-output-hardware-hotplug" \
-        /usr/local/sbin/jasper-output-hardware-hotplug
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-outputd-failure-reconcile" \
-        /usr/local/sbin/jasper-outputd-failure-reconcile
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-camilla-pipe-guard" \
-        /usr/local/sbin/jasper-camilla-pipe-guard
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-camilla-recover" \
-        /usr/local/sbin/jasper-camilla-recover
-    # camilla#2's crossover guard. Like the pipe-guard it breaks a dead-pipe
-    # restart loop BEFORE launch, but repairs ONLY to the re-proven
-    # driver-domain (Layer-A-intact) graph — never flat (a flat crossover
-    # would send full-range to the tweeter). Shipped now alongside the
-    # dormant unit so the later reconciler PR can arm the unit without also
-    # adding its guard. docs/HANDOFF-distributed-active.md "Stage B".
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-camilla-crossover-guard" \
-        /usr/local/sbin/jasper-camilla-crossover-guard
+    # Transactional: attempt EVERY row even if one fails, so a newly-added unit
+    # at the END of the table still lands on the first deploy. Failures are
+    # collected and re-raised after the loop; the caller's daemon-reload runs
+    # regardless. Each `install` is guarded with `|| failed=...` so `set -e`
+    # from the sourcing shell cannot short-circuit the loop.
+    local failed="" row mode src dst
+    for row in "${JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS[@]}"; do
+        read -r mode src dst <<<"${row}"
+        if ! install -m "${mode}" "${REPO_DIR}/${src}" "${dst}"; then
+            echo "  ERROR: failed to install ${dst} (from ${src})" >&2
+            failed="${failed}${failed:+, }${dst}"
+        fi
+    done
+    # Guaranteed daemon-reload: even if a row failed and `set -e` later aborts
+    # the caller before its central daemon-reload, the units that DID land are
+    # now known to systemd — so a newly-added unit takes effect on this deploy
+    # rather than waiting for the next reboot. Best-effort (the caller reloads
+    # again centrally; a transient reload miss here must not mask a row failure).
+    systemctl daemon-reload 2>/dev/null || true
+    if [[ -n "${failed}" ]]; then
+        echo "  ERROR: core audio-graph unit install failed for: ${failed}" >&2
+        return 1
+    fi
 }
 
 install_streambox_web_unit_files() {
@@ -395,6 +402,30 @@ park_audio_clients_for_core_graph_restart() {
     done
 }
 
+# The two always-on core-graph units the install path RESTARTS in place (never
+# parked, because they ARE the graph being restarted). Both carry a
+# StartLimitBurst guard; jasper-fanin escalates to StartLimitAction=reboot.
+# JASPER_CORE_GRAPH_PARK_UNITS already reset-failed the PARKED clients (incl.
+# outputd); these are the restart TARGETS it deliberately omits.
+JASPER_CORE_GRAPH_RESTART_TARGETS=(
+    jasper-fanin.service
+    jasper-camilla.service
+)
+
+reset_failed_core_graph_restart_targets() {
+    # Deploy-churn guard: a prior deploy can leave jasper-fanin (or camilla) in
+    # a `failed` state with its StartLimit counter at/near the burst — e.g. a
+    # transient EBUSY/config error during the previous install window. A bare
+    # `systemctl restart` then immediately re-trips the burst, and
+    # jasper-fanin's StartLimitAction=reboot would REBOOT THE PI mid-deploy.
+    # reset-failed clears the failed state and the start-limit counter so the
+    # restart below starts from a clean slate. Best-effort; never fatal.
+    local unit
+    for unit in "${JASPER_CORE_GRAPH_RESTART_TARGETS[@]}"; do
+        systemctl reset-failed "${unit}" 2>/dev/null || true
+    done
+}
+
 park_streambox_brain_units() {
     # Converting from a full speaker to streambox must park local brain
     # surfaces while keeping renderer/DSP/source surfaces alive.
@@ -426,6 +457,7 @@ start_streambox_runtime_units() {
         jasper-outputd.service jasper-audio-hardware-reconcile.service \
         jasper-control.service
     park_audio_clients_for_core_graph_restart
+    reset_failed_core_graph_restart_targets
     /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
     systemctl restart jasper-fanin.service 2>/dev/null || true
@@ -1007,6 +1039,7 @@ install_systemd_units() {
     # grouping, and renderer restart steps below restore the appropriate
     # runtime state once the graph is coherent.
     park_audio_clients_for_core_graph_restart
+    reset_failed_core_graph_restart_targets
     /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
 
