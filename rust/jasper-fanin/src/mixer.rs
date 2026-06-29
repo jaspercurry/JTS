@@ -701,24 +701,62 @@ fn resampler_lane_not_found(
     Some(input_labels.join(","))
 }
 
+/// Resolve the input resampler's burst-ring capacity (frames) from the scalar
+/// knobs.
+///
+/// `requested` is the explicit `input_resampler_ring_frames` env override
+/// (non-zero pins it) OR, when `0`, the lane's ALSA `input_buffer_frames` (the
+/// prior implicit behaviour — already sized for the worst-case burst+stall
+/// occupancy). The result is floored to the resampler's STRUCTURAL minimum
+/// (`target + warm-up cushion + period + radius + 1`) so a tiny configured value
+/// can never make `LaneResampler::new` reject the ring. Raising the ring (vs the
+/// `target` latency setpoint) buys burst headroom WITHOUT adding latency — the
+/// Fix-2 lever for the residual overrun.
+///
+/// Pure over primitives (no ALSA, no `Config`) so it is unit-testable on a
+/// non-Linux host via the macOS-ALSA-scratch convention.
+fn resampler_ring_frames(
+    requested_ring_frames: u32,
+    input_buffer_frames: u32,
+    target_frames: u32,
+    warmup_cushion_frames: u32,
+    period_frames: u32,
+) -> usize {
+    let radius = jasper_resampler::RADIUS_FRAMES as usize;
+    let min_ring = target_frames as usize
+        + warmup_cushion_frames as usize
+        + period_frames as usize
+        + radius
+        + 1;
+    let requested = if requested_ring_frames > 0 {
+        requested_ring_frames as usize
+    } else {
+        input_buffer_frames as usize
+    };
+    requested.max(min_ring)
+}
+
 /// Build the per-input resampler for the clock-crossing lane, or `None` on a
 /// construction failure (which we log and degrade past — the lane just runs the
-/// catch-up fallback). Sizes the resampler's input ring to the lane's ALSA
-/// input buffer so it has the same burst headroom the catch-up path assumed.
+/// catch-up fallback). Sizes the resampler's input ring for burst headroom and
+/// seats a warm-up cushion that removes the cold-start lock→silence→relock
+/// thrash (see `lane_resampler.rs`).
 fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
+    let ring_frames = resampler_ring_frames(
+        config.input_resampler_ring_frames,
+        config.input_buffer_frames,
+        config.input_resampler_target_frames,
+        config.input_resampler_warmup_cushion_frames,
+        config.period_frames,
+    );
+    let cushion = config.input_resampler_warmup_cushion_frames as usize;
     let target = config.input_resampler_target_frames as usize;
-    // The input ring must hold the target fill plus burst+stall headroom. Reuse
-    // the lane's configured ALSA input buffer depth as the ring size (it is
-    // already sized for the worst-case burst+stall occupancy); floor it so a
-    // tiny configured buffer still satisfies LaneResampler::new's minimum.
-    let radius = jasper_resampler::RADIUS_FRAMES as usize;
-    let min_ring = target + config.period_frames as usize + radius + 1;
-    let ring_frames = (config.input_buffer_frames as usize).max(min_ring);
     match LaneResampler::new(
         CHANNELS as usize,
         config.period_frames,
         config.sample_rate,
         target,
+        cushion,
         config.input_resampler_max_adjust_ppm as f64,
         ring_frames,
     ) {
@@ -726,12 +764,12 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
             // Canonical arming line the operator greps for to confirm the
             // DEFAULT-OFF feature engaged on this lane. Keep the event name and
             // the lane/target/max-ppm fields stable — jasper-trace / doc point
-            // at them. ring_frames is extra diagnostic detail.
+            // at them. warmup_cushion + ring_frames are extra diagnostic detail.
             info!(
                 "event=fanin.resampler.armed lane={} target_frames={} \
-                 max_adjust_ppm={} ring_frames={} (DLL-steered to DAC clock; \
-                 catch-up drain bypassed on this lane)",
-                label, target, config.input_resampler_max_adjust_ppm, ring_frames,
+                 warmup_cushion_frames={} max_adjust_ppm={} ring_frames={} \
+                 (DLL-steered to DAC clock; catch-up drain bypassed on this lane)",
+                label, target, cushion, config.input_resampler_max_adjust_ppm, ring_frames,
             );
             Some(r)
         }
@@ -1366,6 +1404,51 @@ mod tests {
         assert_eq!(
             resampler_lane_not_found(true, "usb", &labels),
             Some("spotify,airplay,usbsink,correction".to_string()),
+        );
+    }
+
+    #[test]
+    fn resampler_ring_frames_derives_floors_and_overrides() {
+        let radius = jasper_resampler::RADIUS_FRAMES as usize;
+        let min_ring = |target: u32, cushion: u32, period: u32| {
+            target as usize + cushion as usize + period as usize + radius + 1
+        };
+
+        // requested=0 → derive from the ALSA input buffer (the prior implicit
+        // behaviour) when that exceeds the structural minimum.
+        assert_eq!(
+            resampler_ring_frames(0, 4096, 512, 256, 256),
+            4096,
+            "0 derives the ring from input_buffer_frames"
+        );
+
+        // A non-zero override pins the capacity (the Fix-2 burst-headroom knob),
+        // independent of the ALSA input buffer.
+        assert_eq!(
+            resampler_ring_frames(8192, 4096, 512, 256, 256),
+            8192,
+            "explicit ring_frames overrides the derived value"
+        );
+
+        // Both the derived and the override path floor to the structural minimum
+        // so LaneResampler::new can never reject the ring.
+        let floor = min_ring(512, 256, 256);
+        assert_eq!(
+            resampler_ring_frames(0, 64, 512, 256, 256),
+            floor,
+            "a tiny input buffer floors to the structural minimum"
+        );
+        assert_eq!(
+            resampler_ring_frames(100, 64, 512, 256, 256),
+            floor,
+            "a tiny explicit override also floors to the structural minimum"
+        );
+
+        // The warm-up cushion is part of the minimum (Fix-1 ↔ Fix-2 coupling):
+        // a bigger cushion raises the floor.
+        assert!(
+            resampler_ring_frames(0, 0, 512, 512, 256) > resampler_ring_frames(0, 0, 512, 256, 256),
+            "a larger cushion raises the ring floor"
         );
     }
 

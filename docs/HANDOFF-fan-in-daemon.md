@@ -510,8 +510,10 @@ JASPER_FANIN_TTS_MAX_PENDING_FRAMES=96000                         # 2 s at 48 kH
 JASPER_FANIN_TTS_PROGRAM_DUCK_DB=${JASPER_DUCK_DB:--25}           # override only for lab retuning
 JASPER_FANIN_INPUT_RESAMPLER=                                     # DEFAULT-OFF per-input adaptive resampler on the clock-crossing (USB) lane; only "enabled" arms it. See "Per-input resampler" below.
 JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink                         # which lane label the resampler arms on when enabled
-JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512                    # ring fill the resampler holds the armed lane at (~10.7 ms at 48 k)
+JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512                    # ring fill the resampler holds the armed lane at (~10.7 ms at 48 k) — the LATENCY setpoint
 JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM=500                   # hard pitch-warp clamp on the host↔DAC rate correction
+JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=256            # extra frames the cursor seats ABOVE target on (re)lock, drained back over ~1 s; kills the cold-start lock→silence→relock thrash. Does NOT change steady-state latency. See "Per-input resampler" below.
+JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES=0                        # input-ring burst headroom; 0 = derive from INPUT_BUFFER_FRAMES, non-zero pins an explicit capacity. Raise to absorb input bursts without adding latency (cuts residual overrun).
 ```
 
 The list-shaped env vars (`JASPER_FANIN_INPUT_PCMS`,
@@ -706,6 +708,33 @@ fixed fill (`JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES`, default 512 ≈
 bypassed *on that lane only*. Capture-follower sign: a host feeding faster
 than the DAC settles to `ratio > 1` (drain), holding the ring at target.
 
+**Cold-start warm-up cushion (`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`,
+default 256 = one period).** On every (re)lock the resampler PRIMES its ring to
+`target + cushion` before producing any output and seats the read cursor at that
+deeper fill, with the DLL starting from its nominal 1.0 ratio (at/near lock, not
+acquiring from an empty integrator far off the operating point). The DLL — whose
+target is still `TARGET_FRAMES` — then drains the cushion back to the latency
+setpoint over the first ~second. The cushion is the headroom that keeps the
+jittery first seconds of host arrival from dipping the cursor-relative fill below
+the underfill→silence floor. On-device the first ~12 s after arming previously
+inserted ~27,000 silence frames across ~62 lock→silence→relock cycles before
+settling; the cushion removes that cold-start transient (the steady-state DLL
+was already proven to hold once locked). It does **not** change steady-state
+latency — only the seating depth on lock. The prime is bounded
+(`max_prime_periods` ≈ 1 s of periods): a slow-but-real producer that never
+accumulates the full cushion still falls through and locks at whatever safe
+depth is buffered, so a real stream can never wedge in prime-silence.
+
+**Burst headroom (`JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES`, default 0 =
+derive).** The input ring's capacity is the burst absorber ABOVE the `target`
+setpoint — distinct from `TARGET_FRAMES` (which sets latency). `0` derives it
+from the lane's `INPUT_BUFFER_FRAMES` (the prior implicit behaviour, floored to
+the structural minimum `target + cushion + period + radius + 1`); a non-zero
+value pins an explicit capacity. Raise it to absorb input bursts that would
+otherwise spike the ring above capacity and drop oldest-first (the residual
+`overrun_frames` / usbsink `dropped_full` the on-device counters showed) — more
+headroom, no added latency.
+
 **DEFAULT-OFF and inert when off.** Only `JASPER_FANIN_INPUT_RESAMPLER=enabled`
 (exact literal) arms it, and only on the lane named
 `JASPER_FANIN_INPUT_RESAMPLER_LANE` (default `usbsink`). When off, no
@@ -732,7 +761,8 @@ on. A growing `unlock_count` is the drop-free analogue of a catch-up event
 (the resampler starved and fell back to silence rather than reading past the
 buffer); a growing `overrun_frames` means the host outran the ring. Arming
 emits a one-time `event=fanin.resampler.armed lane=… target_frames=…
-max_adjust_ppm=…` INFO line. If the feature is enabled but
+warmup_cushion_frames=… max_adjust_ppm=… ring_frames=…` INFO line. If the
+feature is enabled but
 `JASPER_FANIN_INPUT_RESAMPLER_LANE` names no live input lane (a typo, or a
 non-USB build), NO resampler is constructed and a one-time
 `event=fanin.resampler.noop reason=lane_not_found requested=… available=[…]`
@@ -1105,9 +1135,15 @@ Last verified: 2026-06-29 (JTS2 AirPlay retune: fan-in output 1024 clean,
 resampler for the clock-crossing/USB lane (`src/lane_resampler.rs`,
 `JASPER_FANIN_INPUT_RESAMPLER=enabled`) plus `event=fanin.resampler.armed`,
 one-time `event=fanin.resampler.noop reason=lane_not_found` WARNs, and nested
-`resampler.fill_frames`/`target_fill_frames` STATUS observability; pacing,
-input-buffer sizing, TTS/duck IPC, output-buffer STATUS, and outputd ownership
-rechecked against current code. Engagement audit confirmed
-`mixer.rs::step` calls `read_into_resampler_and_render` whenever the lane has a
-resampler, before the selection gate. Resampler hardware validation is tracked
-in the USB low-latency handoff.)
+`resampler.fill_frames`/`target_fill_frames` STATUS observability. Resampler
+hardware follow-up added warm-up and overrun tuning:
+`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES` and
+`JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES` (0 = derive from
+`INPUT_BUFFER_FRAMES`, floored to the structural minimum). The arming line now
+includes `warmup_cushion_frames`/`ring_frames`; DEFAULT-OFF is unchanged and
+the catch-up resync stays the default + fallback. Pacing, input-buffer sizing,
+TTS/duck IPC, output-buffer STATUS, and outputd ownership rechecked against
+current code. Engagement audit confirmed `mixer.rs::step` calls
+`read_into_resampler_and_render` whenever the lane has a resampler, before the
+selection gate. Resampler hardware validation is tracked in the USB
+low-latency handoff.)

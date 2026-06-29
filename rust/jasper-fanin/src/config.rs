@@ -160,6 +160,30 @@ pub struct Config {
     /// content_bridge's default. Env:
     /// `JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM`.
     pub input_resampler_max_adjust_ppm: u32,
+
+    /// Warm-up cushion: the extra frames the input resampler seats its read
+    /// cursor ABOVE `input_resampler_target_frames` on each (re)lock, drained
+    /// back to the target by the DLL over the first ~second. This removes the
+    /// cold-start lock→silence→relock thrash (~27k silence frames / ~62 relock
+    /// cycles seen on-device for the first ~12 s after arming) by giving the
+    /// jittery first seconds of host arrival a full burst of headroom above the
+    /// underfill→silence floor. It does NOT change the steady-state latency (the
+    /// loop's target is still `input_resampler_target_frames`). Default 256
+    /// frames = one render period at 256/48 kHz (~5.3 ms of seating headroom).
+    /// Env: `JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`.
+    pub input_resampler_warmup_cushion_frames: u32,
+
+    /// Input-ring capacity (frames) for the input resampler's burst buffer — the
+    /// headroom ABOVE the target setpoint that absorbs input bursts before they
+    /// overflow. Distinct from `input_resampler_target_frames` (the latency
+    /// setpoint): raising THIS does not add latency, it only adds burst
+    /// absorption. `0` (the default) means "derive from the lane's ALSA input
+    /// buffer" (`input_buffer_frames`), floored to the resampler's structural
+    /// minimum; a non-zero value pins an explicit capacity. Bumped from the old
+    /// implicit 4096 to cut the residual `overrun_frames` / usbsink
+    /// `dropped_full` (~0.137% / ~0.26% on-device) from bursts spiking the ring.
+    /// Env: `JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES`.
+    pub input_resampler_ring_frames: u32,
 }
 
 /// fan-in → CamillaDSP coupling transport. Mirrors `jasper.fanin_coupling`'s
@@ -285,6 +309,14 @@ impl Config {
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", 512)?;
         let input_resampler_max_adjust_ppm =
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", 500)?;
+        // One render period of warm-up cushion by default (256 frames ≈ 5.3 ms
+        // of seating headroom). See the field docs for why this kills the
+        // cold-start thrash without changing steady-state latency.
+        let input_resampler_warmup_cushion_frames =
+            env_u32("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", 256)?;
+        // 0 = derive the burst ring from the lane's ALSA input buffer (the prior
+        // implicit behaviour); a non-zero value pins an explicit capacity.
+        let input_resampler_ring_frames = env_u32("JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES", 0)?;
 
         Ok(Self {
             output_pcm,
@@ -346,6 +378,8 @@ impl Config {
             input_resampler_lane_label,
             input_resampler_target_frames,
             input_resampler_max_adjust_ppm,
+            input_resampler_warmup_cushion_frames,
+            input_resampler_ring_frames,
         })
     }
 }
@@ -558,6 +592,10 @@ mod tests {
                 assert_eq!(cfg.input_resampler_lane_label, "usbsink");
                 assert_eq!(cfg.input_resampler_target_frames, 512);
                 assert_eq!(cfg.input_resampler_max_adjust_ppm, 500);
+                // Warm-up cushion defaults to one render period; the burst ring
+                // is derived (0 → from the ALSA input buffer) unless pinned.
+                assert_eq!(cfg.input_resampler_warmup_cushion_frames, 256);
+                assert_eq!(cfg.input_resampler_ring_frames, 0);
             },
         );
     }
@@ -594,6 +632,11 @@ mod tests {
                 ("JASPER_FANIN_INPUT_RESAMPLER_LANE", Some("usbsink2")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("768")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("300")),
+                (
+                    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
+                    Some("384"),
+                ),
+                ("JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES", Some("8192")),
             ],
             || {
                 let cfg = Config::from_env().expect("parses");
@@ -601,6 +644,8 @@ mod tests {
                 assert_eq!(cfg.input_resampler_lane_label, "usbsink2");
                 assert_eq!(cfg.input_resampler_target_frames, 768);
                 assert_eq!(cfg.input_resampler_max_adjust_ppm, 300);
+                assert_eq!(cfg.input_resampler_warmup_cushion_frames, 384);
+                assert_eq!(cfg.input_resampler_ring_frames, 8192);
             },
         );
     }

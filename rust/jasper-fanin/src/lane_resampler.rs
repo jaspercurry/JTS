@@ -130,13 +130,33 @@ pub struct LaneResampler {
     sinc_table: SincTable,
     controller: RateController,
     /// Target buffered frames the controller holds the ring at (the small fixed
-    /// fill that replaces the catch-up sawtooth).
+    /// fill that replaces the catch-up sawtooth). The DLL disciplines the
+    /// *steady-state* fill toward this; the latency setpoint.
     target_fill_frames: usize,
+    /// Extra frames the cursor is seated ABOVE `target_fill_frames` at lock
+    /// time, then drained back to target by the DLL over the first ~second.
+    /// This is the WARM-UP cushion: it is the headroom that keeps the first
+    /// jittery seconds of host arrival from dipping the cursor-relative fill
+    /// below `minimum_safe_fill` and thrashing lock→silence→relock. It does
+    /// NOT change the steady-state latency (the loop's target is still
+    /// `target_fill_frames`); it only changes the seating depth on (re)lock.
+    warmup_cushion_frames: usize,
     /// Output ppm safety bound (also drives the minimum-safe-fill margin).
     max_adjust_ppm: f64,
     /// Fractional read cursor in the ring's monotonic frame space.
     next_input_frame: f64,
     locked: bool,
+    /// Consecutive render periods spent priming (unlocked, waiting for the
+    /// deep prefill). Bounds the prime: once it exceeds `max_prime_periods`
+    /// with *some* input buffered, `try_lock` falls through and seats at
+    /// whatever safe depth is available, so a slow/sparse-but-real producer
+    /// can never wedge in silence forever waiting for the full cushion.
+    prime_periods: u32,
+    /// Max consecutive priming periods before the fall-through lock. Bounded so
+    /// the deep prefill never deadlocks on input that arrives just under the
+    /// cushion threshold. `0` disables the fall-through (prime strictly to the
+    /// full cushion) — used by tests that want the deterministic deep-prime.
+    max_prime_periods: u32,
     // Lifetime counters mirrored into observability atomics on update.
     input_frames: Arc<AtomicU64>,
     output_frames: Arc<AtomicU64>,
@@ -155,17 +175,26 @@ impl LaneResampler {
     /// `period_frames` per render, holding the ring at `target_fill_frames` and
     /// bounding pitch warp to `±max_adjust_ppm`.
     ///
+    /// `warmup_cushion_frames` is the extra depth the cursor is seated above
+    /// `target_fill_frames` on (re)lock; the DLL drains it back to target over
+    /// the first ~second. It removes the cold-start lock→silence→relock thrash
+    /// (the ~27k silence frames / ~62 relock cycles seen on-device) by ensuring
+    /// the first jittery seconds of host arrival can lose up to a full burst
+    /// without dipping below `minimum_safe_fill`. It does NOT change the
+    /// steady-state latency. One render period is the recommended value.
+    ///
     /// `ring_frames` is the input buffer depth: it MUST exceed
-    /// `target_fill_frames` plus one render period plus the kernel radius, or a
-    /// healthy steady state would overrun. Returns an error string (rather than
-    /// a typed error) so the caller can log-and-fall-back without a new error
-    /// enum — a construction failure here must degrade to "no resampler", never
-    /// crash the daemon.
+    /// `target_fill_frames` plus the warm-up cushion plus one render period plus
+    /// the kernel radius, or the deep prefill could not seat. Returns an error
+    /// string (rather than a typed error) so the caller can log-and-fall-back
+    /// without a new error enum — a construction failure here must degrade to
+    /// "no resampler", never crash the daemon.
     pub fn new(
         channels: usize,
         period_frames: u32,
         sample_rate: u32,
         target_fill_frames: usize,
+        warmup_cushion_frames: usize,
         max_adjust_ppm: f64,
         ring_frames: usize,
     ) -> Result<Self, String> {
@@ -177,15 +206,23 @@ impl LaneResampler {
             return Err("lane resampler period_frames must be > 0".to_string());
         }
         let radius = RADIUS_FRAMES as usize;
-        let min_ring = target_fill_frames + period_frames + radius + 1;
+        // The ring must hold the deepest seating the lock ever uses (target +
+        // warm-up cushion) plus one period of fresh arrival plus the kernel
+        // radius, or the deep prefill could never accumulate.
+        let min_ring = target_fill_frames + warmup_cushion_frames + period_frames + radius + 1;
         if ring_frames < min_ring {
             return Err(format!(
                 "lane resampler ring_frames={ring_frames} too small; need >= {min_ring} \
-                 (target_fill={target_fill_frames} + period={period_frames} + radius={radius} + 1)"
+                 (target_fill={target_fill_frames} + warmup_cushion={warmup_cushion_frames} \
+                 + period={period_frames} + radius={radius} + 1)"
             ));
         }
         let ring = AudioRing::new(ring_frames, channels)
             .map_err(|e| format!("lane resampler ring: {e}"))?;
+        // Bound the deep prime so a slow-but-real producer can never wedge in
+        // silence: after ~1 s of priming with some input buffered, fall through
+        // and seat at whatever safe depth exists. 1 s of periods at this rate.
+        let max_prime_periods = (sample_rate / period_frames.max(1) as u32).max(1);
         Ok(Self {
             channels,
             period_frames,
@@ -193,9 +230,12 @@ impl LaneResampler {
             sinc_table: SincTable::new(),
             controller: RateController::new(max_adjust_ppm, period_frames as u32, sample_rate),
             target_fill_frames,
+            warmup_cushion_frames,
             max_adjust_ppm,
             next_input_frame: 0.0,
             locked: false,
+            prime_periods: 0,
+            max_prime_periods,
             input_frames: Arc::new(AtomicU64::new(0)),
             output_frames: Arc::new(AtomicU64::new(0)),
             silence_frames: Arc::new(AtomicU64::new(0)),
@@ -256,8 +296,12 @@ impl LaneResampler {
         if !self.locked {
             // While priming, the buffered-input depth IS the fill the operator
             // watches climb toward the startup prefill — publish it so STATUS
-            // shows the lane filling before it locks.
+            // shows the lane filling before it locks. Count priming periods so
+            // the deep prefill falls through for a slow producer (see try_lock).
             self.publish_fill(self.ring.fill_frames() as u64);
+            if self.ring.fill_frames() > 0 {
+                self.prime_periods = self.prime_periods.saturating_add(1);
+            }
             self.try_lock();
         }
         if !self.locked {
@@ -323,20 +367,51 @@ impl LaneResampler {
         self.controller.reset();
         self.next_input_frame = 0.0;
         self.locked = false;
+        self.prime_periods = 0;
     }
 
-    /// Lock once enough input has buffered to seat the cursor `target_fill`
-    /// behind the write head with kernel headroom. Until then `render_period`
-    /// emits silence (the lane simply hasn't started, exactly like an idle
-    /// renderer's snd-aloop substream).
+    /// Lock once enough input has buffered to seat the cursor `target_fill +
+    /// warm-up cushion` behind the write head with kernel headroom. Until then
+    /// `render_period` emits silence (the lane simply hasn't started, exactly
+    /// like an idle renderer's snd-aloop substream).
+    ///
+    /// The seating is deliberately DEEPER than the steady-state target: the DLL
+    /// (whose target is `target_fill_frames`) drains the cushion back to the
+    /// latency setpoint over the first second, but during that drain the
+    /// cursor-relative fill stays well clear of `minimum_safe_fill`, so the
+    /// jittery first seconds of host arrival cannot underflow → silence →
+    /// relock. The DLL starts from its nominal (1.0) ratio — it acquires from
+    /// at/near lock, not from an empty integrator far off the operating point.
+    ///
+    /// Bounded prime: if the full cushion never accumulates (a slow-but-real
+    /// producer delivering just under one period per render) the loop would sit
+    /// silent forever. After `max_prime_periods` priming periods with at least
+    /// the safe minimum buffered, fall through and seat at whatever depth is
+    /// available so a real stream always starts.
     fn try_lock(&mut self) {
-        if self.ring.fill_frames() < self.startup_prefill_frames() {
+        let fill = self.ring.fill_frames();
+        let deep_prefill = self.startup_prefill_frames();
+        // Fall-through seat depth once the bounded prime expires: the most we
+        // can safely seat given what's buffered, never below the safe minimum
+        // (so we don't lock straight into an underfill→silence) and never above
+        // the full cushion depth.
+        let prime_expired =
+            self.max_prime_periods > 0 && self.prime_periods >= self.max_prime_periods;
+        let seat = if fill >= deep_prefill {
+            // Enough for the full warm-up cushion.
+            self.target_fill_frames + self.warmup_cushion_frames
+        } else if prime_expired && fill > self.minimum_safe_fill_frames() + RADIUS_FRAMES as usize {
+            // Slow producer: seat at whatever we have, headroom for the kernel.
+            fill - (RADIUS_FRAMES as usize + 1)
+        } else {
+            // Keep priming.
             return;
-        }
-        self.next_input_frame = (self.ring.write_frame() - self.target_fill_frames as u64) as f64;
+        };
+        self.next_input_frame = (self.ring.write_frame() - seat as u64) as f64;
         let keep_from = self.next_input_frame.floor() as i64 - RADIUS_FRAMES - 1;
         self.ring.drop_before(keep_from);
         self.locked = true;
+        self.prime_periods = 0;
         self.controller.reset();
         self.lock_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -359,8 +434,10 @@ impl LaneResampler {
         (self.period_frames as f64 * max_ratio).ceil() as usize + RADIUS_FRAMES as usize + 1
     }
 
+    /// Frames the ring must hold before the deep (full-cushion) lock seats the
+    /// cursor at `target + warm-up cushion` with kernel headroom.
     fn startup_prefill_frames(&self) -> usize {
-        self.target_fill_frames + RADIUS_FRAMES as usize + 1
+        self.target_fill_frames + self.warmup_cushion_frames + RADIUS_FRAMES as usize + 1
     }
 
     fn publish_ratio(&self) {
@@ -383,11 +460,21 @@ mod tests {
     const RATE: u32 = 48_000;
     const PERIOD: u32 = 256;
     const TARGET: usize = 512;
+    /// Warm-up cushion used in tests (one render period — the production
+    /// default). Seats the cursor at `TARGET + CUSHION` on lock.
+    const CUSHION: usize = PERIOD as usize;
     const MAX_PPM: f64 = 500.0;
     const RING: usize = 8192;
 
     fn build() -> LaneResampler {
-        LaneResampler::new(2, PERIOD, RATE, TARGET, MAX_PPM, RING).expect("resampler builds")
+        LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, RING)
+            .expect("resampler builds")
+    }
+
+    /// Frames that must be buffered for the deep (full-cushion) lock to seat:
+    /// `TARGET + CUSHION + radius + 1`, plus a little slack the tests push.
+    fn deep_prefill() -> usize {
+        TARGET + CUSHION + RADIUS_FRAMES as usize + 1
     }
 
     /// Deterministic interleaved stereo tone, bounded inside i16.
@@ -403,14 +490,33 @@ mod tests {
         out
     }
 
+    /// A phase-continuous tone so streaming pushes don't repeat from 0 (used by
+    /// the cold-start models where successive bursts must be one signal).
+    fn tone_at(phase: usize, frames: usize) -> Vec<i16> {
+        let mut out = Vec::with_capacity(frames * 2);
+        for n in 0..frames {
+            let t = (phase + n) as f64;
+            out.push(clamp_i16(8000.0 * (t * 0.013).sin()));
+            out.push(clamp_i16(7000.0 * (t * 0.019).cos()));
+        }
+        out
+    }
+
     #[test]
     fn rejects_undersized_ring_and_zero_dims() {
-        // Ring smaller than target+period+radius+1 must be rejected, not silently
-        // overrun in steady state.
-        assert!(LaneResampler::new(2, PERIOD, RATE, TARGET, MAX_PPM, TARGET).is_err());
-        assert!(LaneResampler::new(0, PERIOD, RATE, TARGET, MAX_PPM, RING).is_err());
-        assert!(LaneResampler::new(2, 0, RATE, TARGET, MAX_PPM, RING).is_err());
-        assert!(LaneResampler::new(2, PERIOD, RATE, TARGET, MAX_PPM, RING).is_ok());
+        // Ring smaller than target+cushion+period+radius+1 must be rejected, not
+        // silently unable to seat the deep prefill.
+        assert!(LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, TARGET).is_err());
+        assert!(LaneResampler::new(0, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, RING).is_err());
+        assert!(LaneResampler::new(2, 0, RATE, TARGET, CUSHION, MAX_PPM, RING).is_err());
+        assert!(LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, RING).is_ok());
+        // The cushion is part of the minimum ring: a ring that would fit
+        // target+period+radius but NOT the cushion is rejected.
+        let just_under = TARGET + PERIOD as usize + RADIUS_FRAMES as usize + 1;
+        assert!(
+            LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, just_under).is_err(),
+            "ring must include the warm-up cushion in its minimum"
+        );
     }
 
     #[test]
@@ -422,9 +528,9 @@ mod tests {
         assert!(out.iter().all(|&s| s == 0));
         assert_eq!(r.lock_count.load(Ordering::Relaxed), 0);
 
-        // Push enough to prefill, then render: should lock and emit a full
-        // period of real audio.
-        r.push_input(&tone(TARGET + PERIOD as usize + 64));
+        // Push enough to prefill (TARGET + cushion + headroom), then render:
+        // should lock and emit a full period of real audio.
+        r.push_input(&tone(deep_prefill() + 64));
         let n = r.render_period(&mut out);
         assert_eq!(n, PERIOD as usize, "locked render emits a full period");
         assert_eq!(r.lock_count.load(Ordering::Relaxed), 1);
@@ -439,8 +545,8 @@ mod tests {
         let mut r = build();
         let mut out = vec![0i16; PERIOD as usize * 2];
         let block = tone(PERIOD as usize);
-        // Prefill.
-        r.push_input(&tone(TARGET + PERIOD as usize));
+        // Prefill to the deep-cushion threshold so the lane locks.
+        r.push_input(&tone(deep_prefill()));
         for _ in 0..2000 {
             r.push_input(&block);
             r.render_period(&mut out);
@@ -468,19 +574,22 @@ mod tests {
 
         let mut out = vec![0i16; PERIOD as usize * 2];
         let block = tone(PERIOD as usize);
-        r.push_input(&tone(TARGET + PERIOD as usize));
+        r.push_input(&tone(deep_prefill()));
         for _ in 0..500 {
             r.push_input(&block);
             r.render_period(&mut out);
         }
         assert!(r.locked, "on-rate lane must lock");
         let fill = obs.fill_frames.load(Ordering::Relaxed);
-        // Held within one period of target — the DLL drives steady-state fill
-        // error to ~0; a one-period band absorbs the cursor's fractional walk.
+        // Held within one period of target — the DLL drains the warm-up cushion
+        // back to the latency setpoint within the first second, well before the
+        // 500-render mark, then holds steady-state fill error to ~0; a one-period
+        // band absorbs the cursor's fractional walk.
         let target = TARGET as i64;
         assert!(
             (fill as i64 - target).abs() <= PERIOD as i64,
-            "published fill={fill} must hold near target={target} when locked"
+            "published fill={fill} must hold near target={target} when locked \
+             (cushion must have drained back to the setpoint)"
         );
     }
 
@@ -512,7 +621,7 @@ mod tests {
         // ppm fast by occasionally pushing an extra frame.
         let mut r = build();
         let mut out = vec![0i16; PERIOD as usize * 2];
-        r.push_input(&tone(TARGET + PERIOD as usize));
+        r.push_input(&tone(deep_prefill()));
         let block = tone(PERIOD as usize);
         let extra = tone(1);
         let mut acc = 0.0f64;
@@ -549,12 +658,12 @@ mod tests {
     fn reset_reprimes_cleanly() {
         let mut r = build();
         let mut out = vec![0i16; PERIOD as usize * 2];
-        r.push_input(&tone(TARGET + PERIOD as usize + 64));
+        r.push_input(&tone(deep_prefill() + 64));
         assert_eq!(r.render_period(&mut out), PERIOD as usize);
         r.reset();
         // After reset, silent until re-prefilled.
         assert_eq!(r.render_period(&mut out), 0);
-        r.push_input(&tone(TARGET + PERIOD as usize + 64));
+        r.push_input(&tone(deep_prefill() + 64));
         assert_eq!(
             r.render_period(&mut out),
             PERIOD as usize,
@@ -572,6 +681,164 @@ mod tests {
         assert!(
             out.iter().all(|&s| s == 0),
             "silence fills the whole buffer"
+        );
+    }
+
+    /// WARM-UP FIX, part 1: the resampler primes the ring to `TARGET + cushion`
+    /// (the deep prefill) BEFORE it produces any real output. A ring that has
+    /// only reached the OLD threshold (`TARGET + radius`, no cushion) must still
+    /// be priming — silent — proving the first output waits for the deeper fill.
+    #[test]
+    fn primes_to_target_plus_cushion_before_first_output() {
+        let mut r = build();
+        let mut out = vec![0i16; PERIOD as usize * 2];
+
+        // Fill to just past the OLD (no-cushion) prefill but below the new deep
+        // prefill: must still be priming (no lock, silence, 0 real frames).
+        let old_threshold = TARGET + RADIUS_FRAMES as usize + 1; // pre-cushion lock point
+        assert!(old_threshold < deep_prefill());
+        r.push_input(&tone(old_threshold));
+        assert_eq!(
+            r.render_period(&mut out),
+            0,
+            "must still prime below the cushion threshold"
+        );
+        assert!(!r.locked, "no lock until the deep prefill seats");
+        assert_eq!(r.lock_count.load(Ordering::Relaxed), 0);
+
+        // Top up past the deep prefill: now it locks and emits real audio, and
+        // the cursor is seated at the deep (target+cushion) fill.
+        r.push_input(&tone(CUSHION + PERIOD as usize));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize, "locks now");
+        assert_eq!(r.lock_count.load(Ordering::Relaxed), 1);
+    }
+
+    /// WARM-UP FIX, part 2 (the headline): a cold start (EMPTY ring) fed STEADY
+    /// on-rate input emits ZERO silence after the initial prime, with NO
+    /// lock→silence→relock thrash. This is the regression that pins the
+    /// ~27k-silence / ~62-relock cold-start glitch the on-device counters
+    /// surfaced. With the deep-seated cushion the lane locks once and holds.
+    #[test]
+    fn coldstart_steady_input_emits_zero_silence_after_prime() {
+        let mut r = build();
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        let period = PERIOD as usize;
+
+        // Drive the DAC-paced loop from an empty ring: each render pushes one
+        // on-rate period THEN renders. Count silence emitted AFTER the lane has
+        // locked (the prime's leading silence is expected and fine).
+        let mut phase = 0usize;
+        let mut locked_at: Option<usize> = None;
+        for i in 0..3000usize {
+            r.push_input(&tone_at(phase, period));
+            phase += period;
+            let n = r.render_period(&mut out);
+            if r.locked && locked_at.is_none() {
+                locked_at = Some(i);
+            }
+            if let Some(lock_i) = locked_at {
+                // Once locked on a steady on-rate producer, every subsequent
+                // render must be a full real period — never a silence frame.
+                if i > lock_i {
+                    assert_eq!(
+                        n, period,
+                        "post-lock render {i} fell back to silence (warm-up thrash)"
+                    );
+                }
+            }
+        }
+        assert!(locked_at.is_some(), "must lock on a steady producer");
+        // It locked exactly once and never unlocked — no thrash.
+        assert_eq!(
+            r.lock_count.load(Ordering::Relaxed),
+            1,
+            "steady cold-start must lock exactly once"
+        );
+        assert_eq!(
+            r.unlock_count.load(Ordering::Relaxed),
+            0,
+            "steady cold-start must never unlock (no silence thrash)"
+        );
+    }
+
+    /// WARM-UP FIX, part 3: a slow-but-real producer (delivers JUST under one
+    /// period per render for a while) must NOT wedge forever in prime-silence —
+    /// the bounded prime falls through and locks at whatever safe depth exists.
+    #[test]
+    fn slow_producer_falls_through_and_locks_within_the_prime_bound() {
+        // A tiny rate so max_prime_periods is small and the test is fast: at
+        // 4800 Hz / 256 period, max_prime_periods = 18.
+        let mut r = LaneResampler::new(2, PERIOD, 4_800, TARGET, CUSHION, MAX_PPM, RING).unwrap();
+        let max_prime = r.max_prime_periods;
+        assert!(max_prime >= 1);
+        let mut out = vec![0i16; PERIOD as usize * 2];
+
+        // Feed enough to clear minimum_safe_fill (so a fall-through CAN seat) but
+        // never enough for the full cushion: ~ (TARGET) frames, just below the
+        // deep prefill.
+        let min_safe = r.minimum_safe_fill_frames();
+        let buffered = min_safe + RADIUS_FRAMES as usize + 8; // safely above the floor
+        assert!(
+            buffered < r.startup_prefill_frames(),
+            "below the deep prefill"
+        );
+        r.push_input(&tone(buffered));
+
+        // Render up to the prime bound + 1: the lane must lock by then via the
+        // fall-through path (not stay silent forever waiting for the cushion).
+        let mut locked = false;
+        for _ in 0..(max_prime + 2) {
+            r.render_period(&mut out);
+            if r.locked {
+                locked = true;
+                break;
+            }
+        }
+        assert!(
+            locked,
+            "a slow-but-real producer must lock via the bounded-prime fall-through"
+        );
+    }
+
+    /// OVERRUN FIX: a burst larger than the ring's headroom (capacity − target)
+    /// overruns a tight ring but is fully ABSORBED by a larger one. This pins
+    /// the residual `overrun_frames` / usbsink `dropped_full` the on-device
+    /// counters showed (input bursts spiking the ring above capacity). The
+    /// LATENCY setpoint (`target_fill_frames`) is identical in both — only the
+    /// burst headroom (`ring_frames`) differs.
+    #[test]
+    fn larger_ring_absorbs_a_burst_a_tight_ring_overruns() {
+        // Tight ring: just past the construction minimum (no real burst room).
+        let tight = TARGET + CUSHION + PERIOD as usize + RADIUS_FRAMES as usize + 1;
+        // Roomy ring: lots of headroom above the target setpoint.
+        let roomy = 16_384usize;
+        // A burst that exceeds the tight ring's headroom in one push (a big
+        // catch-up read after a host stall).
+        let burst = tight + 1024;
+
+        let mut tight_r =
+            LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, tight).unwrap();
+        let mut roomy_r =
+            LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, roomy).unwrap();
+        // Both lock at the same target.
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        tight_r.push_input(&tone(deep_prefill() + 64));
+        roomy_r.push_input(&tone(deep_prefill() + 64));
+        tight_r.render_period(&mut out);
+        roomy_r.render_period(&mut out);
+        assert_eq!(tight_r.target_fill_frames, roomy_r.target_fill_frames);
+
+        // Slam the burst into both.
+        tight_r.push_input(&tone(burst));
+        roomy_r.push_input(&tone(burst));
+        assert!(
+            tight_r.overrun_frames.load(Ordering::Relaxed) > 0,
+            "a burst past the tight ring's headroom must overrun"
+        );
+        assert_eq!(
+            roomy_r.overrun_frames.load(Ordering::Relaxed),
+            0,
+            "the larger ring must absorb the same burst with no overrun"
         );
     }
 }
