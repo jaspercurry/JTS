@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.atomic_io import atomic_write_text
+from jasper.env_file import read_value, upsert
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -66,21 +67,6 @@ class ArmResult:
     detail: str = ""
 
 
-def _parse_env(text: str) -> "list[tuple[str, str | None]]":
-    """Parse env-file lines into (key, value) for assignments, or
-    (raw_line, None) for comments/blanks/malformed lines we preserve
-    verbatim. Order-preserving so an operator's file isn't reshuffled."""
-    out: list[tuple[str, str | None]] = []
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            out.append((raw, None))
-            continue
-        key, _, value = stripped.partition("=")
-        out.append((key.strip(), value))
-    return out
-
-
 def read_output_mode(path: str | os.PathLike = USBSINK_ENV_PATH) -> str | None:
     """The currently-written ``JASPER_USBSINK_OUTPUT_MODE``, or None if the
     file/key is absent. Does NOT validate — a malformed value is returned
@@ -90,32 +76,7 @@ def read_output_mode(path: str | os.PathLike = USBSINK_ENV_PATH) -> str | None:
         text = Path(path).read_text(encoding="utf-8")
     except OSError:
         return None
-    for key, value in _parse_env(text):
-        if value is not None and key == OUTPUT_MODE_KEY:
-            return value.strip().strip("'\"")
-    return None
-
-
-def _render_env(text: str, mode: str) -> tuple[str, bool]:
-    """Upsert ``OUTPUT_MODE_KEY=mode`` into ``text``, preserving every other
-    line. Returns (new_text, changed)."""
-    lines = _parse_env(text)
-    new_lines: list[str] = []
-    found = False
-    changed = False
-    for key, value in lines:
-        if value is not None and key == OUTPUT_MODE_KEY:
-            found = True
-            if value.strip().strip("'\"") != mode:
-                changed = True
-            new_lines.append(f"{OUTPUT_MODE_KEY}={mode}")
-        else:
-            # Preserve assignments and comment/blank lines verbatim.
-            new_lines.append(f"{key}={value}" if value is not None else key)
-    if not found:
-        new_lines.append(f"{OUTPUT_MODE_KEY}={mode}")
-        changed = True
-    return "\n".join(new_lines) + "\n", changed
+    return read_value(text, OUTPUT_MODE_KEY)
 
 
 def _restart_usbsink(reason: str) -> tuple[bool, str]:
@@ -179,7 +140,7 @@ def set_output_mode(
         existing = path.read_text(encoding="utf-8")
     except OSError:
         existing = ""
-    new_text, changed = _render_env(existing, mode)
+    new_text, changed = upsert(existing, OUTPUT_MODE_KEY, mode)
 
     if not changed:
         # Already at the requested mode. Nothing to write, nothing to
