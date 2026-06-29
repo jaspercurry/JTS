@@ -45,6 +45,50 @@ def test_camilla_latency_knobs_reject_malformed_to_default():
         ) == DEFAULT_TARGET_LEVEL, bad
 
 
+def test_camilla_latency_knobs_use_profile_floor_when_env_unset():
+    """#27: with the operator env unset, the active DAC's profile floor wins
+    over the global default."""
+    assert resolve_camilla_chunksize({}, profile_floor=256) == 256
+    assert resolve_camilla_target_level({}, profile_floor=1024) == 1024
+
+
+def test_camilla_latency_knobs_operator_env_beats_profile_floor():
+    """#27 precedence: explicit operator env > active DacProfile floor."""
+    assert (
+        resolve_camilla_chunksize(
+            {"JASPER_CAMILLA_CHUNKSIZE": "512"}, profile_floor=256
+        )
+        == 512
+    )
+    assert (
+        resolve_camilla_target_level(
+            {"JASPER_CAMILLA_TARGET_LEVEL": "2048"}, profile_floor=1024
+        )
+        == 2048
+    )
+
+
+def test_camilla_latency_knobs_malformed_env_falls_back_to_profile_floor():
+    """A bad operator override degrades to the profile floor (not the global
+    default) when a floor is present — still never an unloadable config."""
+    for bad in ("", "bogus", "0", "-1"):
+        assert (
+            resolve_camilla_chunksize(
+                {"JASPER_CAMILLA_CHUNKSIZE": bad}, profile_floor=256
+            )
+            == 256
+        ), bad
+
+
+def test_camilla_latency_knobs_none_floor_keeps_global_default():
+    """profile_floor=None is the non-breaking path — byte-identical to the
+    no-floor behavior."""
+    assert resolve_camilla_chunksize({}, profile_floor=None) == DEFAULT_CHUNKSIZE
+    assert (
+        resolve_camilla_target_level({}, profile_floor=None) == DEFAULT_TARGET_LEVEL
+    )
+
+
 def test_camilla_emitters_emit_byte_identical_yaml_when_env_unset(monkeypatch):
     """The end-to-end byte-identical contract: the sound emitter with the None
     sentinel (env unset) must equal the pre-G7 explicit-literal call."""

@@ -55,6 +55,54 @@ class MixerControl:
 
 
 @dataclass(frozen=True)
+class LatencyFloor:
+    """A DAC's measured stable buffer floor — the per-DAC latency codification.
+
+    The lowest CamillaDSP + outputd buffering a given DAC tolerates xrun-free,
+    captured as DATA on the profile so a fresh box reproduces the tuned floor
+    with zero per-user config (the #27 codification — see
+    docs/HANDOFF-usb-low-latency.md). Before this, the only per-DAC tuning was
+    a live ``jasper.env`` override on jts.local (the codify-don't-memorize
+    anti-pattern), so a fresh box silently got the conservative global default.
+
+    The CamillaDSP floor is a (chunksize, target_level) PAIR: ``target_level``
+    is the resampler's steady-state fill and must be ~4x ``chunksize`` so the
+    adjuster has headroom (chunk 256 -> target 1024; 1024 -> 2048). A smaller
+    target relative to chunk starves the resampler and re-introduces dropouts,
+    so the pairing is validated, not just documented.
+    """
+
+    camilla_chunksize: int
+    camilla_target_level: int
+    outputd_period_frames: int
+    outputd_dac_buffer_frames: int
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("camilla_chunksize", self.camilla_chunksize),
+            ("camilla_target_level", self.camilla_target_level),
+            ("outputd_period_frames", self.outputd_period_frames),
+            ("outputd_dac_buffer_frames", self.outputd_dac_buffer_frames),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be > 0, got {value}")
+        if self.camilla_target_level < 4 * self.camilla_chunksize:
+            raise ValueError(
+                "camilla_target_level must be >= 4 x camilla_chunksize "
+                f"({4 * self.camilla_chunksize}), got {self.camilla_target_level}"
+            )
+        # The DAC ring must hold at least two periods so the writer is never
+        # one short read from an underrun (mirrors outputd's own min-buffer
+        # guard in rust/jasper-outputd/src/config.rs).
+        if self.outputd_dac_buffer_frames < 2 * self.outputd_period_frames:
+            raise ValueError(
+                "outputd_dac_buffer_frames must be >= 2 x outputd_period_frames "
+                f"({2 * self.outputd_period_frames}), got "
+                f"{self.outputd_dac_buffer_frames}"
+            )
+
+
+@dataclass(frozen=True)
 class ChannelMapEntry:
     """One CamillaDSP-output → physical-DAC-channel routing hop for the active lane.
 
@@ -106,6 +154,12 @@ class DacProfile:
     chip_aec_detail: str = ""
     udev_rule: str | None = None
     dtoverlay: str | None = None
+    # The DAC's measured stable buffer floor, or None to use the global
+    # default (non-breaking: an undeclared DAC keeps shipping the conservative
+    # global default). The reconciler emits this profile floor into the
+    # wizard-owned env, so a fresh box reproduces the tuned floor with no
+    # per-user config (#27).
+    latency_floor: LatencyFloor | None = None
 
     def __post_init__(self) -> None:
         if not _ID_RE.match(self.id):
@@ -256,6 +310,16 @@ APPLE_USB_C_DONGLE = DacProfile(
     chip_aec_qualification="approved",
     chip_aec_detail="Apple USB-C dongle is the measured known-good chip-AEC baseline",
     udev_rule="deploy/udev/99-jasper-apple-dongle.rules",
+    # Measured stable floor on jts.local (the value the live jasper.env
+    # override currently produces): CamillaDSP chunk 256 / target 1024,
+    # outputd period 256 / dac_buffer 512. Codifies the only per-DAC tuning
+    # that existed so a fresh Apple-dongle box gets the same low latency.
+    latency_floor=LatencyFloor(
+        camilla_chunksize=256,
+        camilla_target_level=1024,
+        outputd_period_frames=256,
+        outputd_dac_buffer_frames=512,
+    ),
 )
 
 HIFIBERRY_DAC8X = DacProfile(
@@ -459,6 +523,21 @@ def active_outputd_lane_channels_for(profile_id: str) -> int | None:
     return profile.active_outputd_lane_channels
 
 
+def latency_floor_for(profile_id: str) -> LatencyFloor | None:
+    """Return the profile-declared stable buffer floor, or None.
+
+    The reconciler shells out to this (mirroring
+    :func:`active_outputd_lane_channels_for`) to emit the active DAC's floor
+    into the wizard-owned env. None means "use the global default" — the
+    non-breaking path for any DAC that has not declared a measured floor.
+    """
+
+    profile = by_id(profile_id)
+    if profile is None:
+        return None
+    return profile.latency_floor
+
+
 def mixer_control_groups_for(
     profile_id: str,
 ) -> tuple[tuple[MixerControl, ...], ...] | None:
@@ -498,6 +577,7 @@ __all__ = [
     "HIFIBERRY_DAC8X_ID",
     "HIFIBERRY_DAC8X_STUDIO",
     "HIFIBERRY_DAC8X_STUDIO_ID",
+    "LatencyFloor",
     "MixerControl",
     "REGISTRY",
     "all_profiles",

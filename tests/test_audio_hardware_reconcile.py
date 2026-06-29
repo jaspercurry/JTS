@@ -540,6 +540,12 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         # active-lane marker is cleared here too. Seeding it keeps the
         # steady state truly unchanged (no spurious outputd restart).
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
+        # The Apple dongle's codified latency floor (#27) is part of the
+        # steady state now — seed it so a second reconcile is a true no-op.
+        "JASPER_CAMILLA_CHUNKSIZE=256\n"
+        "JASPER_CAMILLA_TARGET_LEVEL=1024\n"
+        "JASPER_OUTPUTD_PERIOD_FRAMES=256\n"
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512\n"
     )
     result = _run_reconcile(
         tmp_path,
@@ -1227,3 +1233,59 @@ def test_render_success_still_writes_template(tmp_path: Path):
     assert "event=audio_hardware_reconcile.asound_rendered" in result.stderr
     assert "event=audio_hardware_reconcile.asound_render_failed" not in result.stderr
     assert _render_log(tmp_path) == "render\n"
+
+
+# --- #27 per-DAC latency floor emit ------------------------------------------
+
+
+def test_reconcile_apple_emits_codified_latency_floor(tmp_path: Path):
+    # An Apple dongle declares a measured floor; the reconciler emits all four
+    # floor keys into the wizard-owned outputd.env (mirroring the channel write).
+    result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_CAMILLA_CHUNKSIZE=256" in outputd_env
+    assert "JASPER_CAMILLA_TARGET_LEVEL=1024" in outputd_env
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES=256" in outputd_env
+    assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512" in outputd_env
+    assert (
+        "event=audio_hardware_reconcile.latency_floor "
+        "reason=test output_dac_id=apple_usb_c_dongle camilla_chunksize=256"
+    ) in result.stderr
+
+
+def test_reconcile_dac8x_clears_floor_keys_no_profile_floor(tmp_path: Path):
+    # A DAC8x declares NO floor — the reconciler clears the keys so the shipped
+    # global default applies and no stale floor from a prior DAC lingers.
+    result = _run_reconcile(tmp_path, DAC8X_AND_APPLE_LISTING, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_CAMILLA_CHUNKSIZE=''" in outputd_env
+    assert "JASPER_CAMILLA_TARGET_LEVEL=''" in outputd_env
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES=''" in outputd_env
+    assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=''" in outputd_env
+
+
+def test_reconcile_operator_env_override_wins_over_profile_floor(tmp_path: Path):
+    # Operator set JASPER_CAMILLA_CHUNKSIZE in jasper.env (loaded first by the
+    # unit). The reconciler must NOT write the profile floor into outputd.env
+    # for that key — it clears it so outputd.env can't shadow the operator value.
+    # Keys the operator did NOT set still get the profile floor.
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_CAMILLA_CHUNKSIZE=512\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    # Operator-set key: cleared in outputd.env so jasper.env's 512 wins.
+    assert "JASPER_CAMILLA_CHUNKSIZE=''" in outputd_env
+    # Non-overridden keys: profile floor still emitted.
+    assert "JASPER_CAMILLA_TARGET_LEVEL=1024" in outputd_env
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES=256" in outputd_env
+    assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512" in outputd_env

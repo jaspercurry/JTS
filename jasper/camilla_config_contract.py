@@ -32,42 +32,65 @@ DEFAULT_CHUNKSIZE = 1024
 DEFAULT_TARGET_LEVEL = 2048
 
 
-def _resolve_camilla_int(env_var: str, default: int, env: Mapping[str, str]) -> int:
-    """Resolve a positive-int CamillaDSP latency knob from the environment.
+def _resolve_camilla_int(
+    env_var: str,
+    default: int,
+    env: Mapping[str, str],
+    profile_floor: int | None = None,
+) -> int:
+    """Resolve a positive-int CamillaDSP latency knob with floor precedence.
 
-    Returns ``default`` when the var is unset OR malformed (non-int, zero,
-    negative) — a bad override must never produce a config that won't load, so
-    it degrades to the shipped default rather than raising. With the var unset
-    the result is byte-identical to the literal default, so threading these
-    through the emitters does not change any emitted YAML unless an operator
-    opts in. Read at emitter-call time so a systemd EnvironmentFile change takes
-    effect on the next config regeneration without a code edit.
+    Precedence: explicit operator env > active DacProfile floor > global
+    default. ``profile_floor`` is the active DAC's codified floor value (None
+    when the DAC declares no floor — the non-breaking path that keeps the
+    global default). An explicit operator override still wins so a Pi can be
+    hand-tuned past its profile floor for testing.
+
+    Returns ``default`` (or ``profile_floor`` when given) when the var is unset
+    OR malformed (non-int, zero, negative) — a bad override must never produce a
+    config that won't load, so it degrades rather than raising. With the env var
+    unset and no profile floor the result is byte-identical to the literal
+    default, so threading these through the emitters does not change any emitted
+    YAML unless an operator opts in or the active DAC declares a floor. Read at
+    emitter-call time so a systemd EnvironmentFile change takes effect on the
+    next config regeneration without a code edit.
     """
+    fallback = default if profile_floor is None else profile_floor
     raw = str(env.get(env_var, "")).strip()
     if not raw:
-        return default
+        return fallback
     try:
         value = int(raw)
     except ValueError:
-        return default
-    return value if value > 0 else default
+        return fallback
+    return value if value > 0 else fallback
 
 
-def resolve_camilla_chunksize(env: Mapping[str, str] | None = None) -> int:
-    """CamillaDSP ``chunksize`` — ``JASPER_CAMILLA_CHUNKSIZE`` or
-    ``DEFAULT_CHUNKSIZE`` (1024). See :func:`_resolve_camilla_int`."""
+def resolve_camilla_chunksize(
+    env: Mapping[str, str] | None = None,
+    profile_floor: int | None = None,
+) -> int:
+    """CamillaDSP ``chunksize`` — ``JASPER_CAMILLA_CHUNKSIZE`` or the active
+    DAC's ``profile_floor`` or ``DEFAULT_CHUNKSIZE`` (1024). See
+    :func:`_resolve_camilla_int`."""
     return _resolve_camilla_int(
         "JASPER_CAMILLA_CHUNKSIZE", DEFAULT_CHUNKSIZE,
         os.environ if env is None else env,
+        profile_floor,
     )
 
 
-def resolve_camilla_target_level(env: Mapping[str, str] | None = None) -> int:
-    """CamillaDSP ``target_level`` — ``JASPER_CAMILLA_TARGET_LEVEL`` or
-    ``DEFAULT_TARGET_LEVEL`` (2048). See :func:`_resolve_camilla_int`."""
+def resolve_camilla_target_level(
+    env: Mapping[str, str] | None = None,
+    profile_floor: int | None = None,
+) -> int:
+    """CamillaDSP ``target_level`` — ``JASPER_CAMILLA_TARGET_LEVEL`` or the
+    active DAC's ``profile_floor`` or ``DEFAULT_TARGET_LEVEL`` (2048). See
+    :func:`_resolve_camilla_int`."""
     return _resolve_camilla_int(
         "JASPER_CAMILLA_TARGET_LEVEL", DEFAULT_TARGET_LEVEL,
         os.environ if env is None else env,
+        profile_floor,
     )
 # CamillaDSP defaults the main fader's maximum to +50 dB when omitted.
 # JTS treats 0 dB as the hard software ceiling; source/headroom logic

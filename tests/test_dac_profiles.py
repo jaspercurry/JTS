@@ -19,6 +19,7 @@ from jasper.audio_hardware.dac import (
     HIFIBERRY_DAC8X_STUDIO,
     HIFIBERRY_DAC8X_STUDIO_ID,
     DacProfile,
+    LatencyFloor,
 )
 
 
@@ -383,3 +384,78 @@ def test_registry_children_reference_known_profiles() -> None:
     known = set(dac.known_profile_ids())
     for profile in dac.all_profiles():
         assert set(profile.child_profile_ids) <= known
+
+
+# --- #27 per-DAC latency floor ------------------------------------------------
+
+
+def test_latency_floor_pair_invariant_rejects_target_below_4x_chunk() -> None:
+    # The CamillaDSP floor is a (chunksize, target_level) PAIR: target must be
+    # >= 4x chunk so the resampler has fill headroom. 256/1023 is just shy.
+    with pytest.raises(ValueError, match="camilla_target_level must be >= 4 x"):
+        LatencyFloor(
+            camilla_chunksize=256,
+            camilla_target_level=1023,
+            outputd_period_frames=256,
+            outputd_dac_buffer_frames=512,
+        )
+
+
+def test_latency_floor_accepts_exactly_4x_chunk() -> None:
+    floor = LatencyFloor(
+        camilla_chunksize=256,
+        camilla_target_level=1024,
+        outputd_period_frames=256,
+        outputd_dac_buffer_frames=512,
+    )
+    assert floor.camilla_target_level == 4 * floor.camilla_chunksize
+
+
+def test_latency_floor_rejects_dac_buffer_below_two_periods() -> None:
+    with pytest.raises(ValueError, match="outputd_dac_buffer_frames must be >= 2 x"):
+        LatencyFloor(
+            camilla_chunksize=256,
+            camilla_target_level=1024,
+            outputd_period_frames=256,
+            outputd_dac_buffer_frames=511,
+        )
+
+
+def test_latency_floor_rejects_nonpositive_values() -> None:
+    with pytest.raises(ValueError, match="must be > 0"):
+        LatencyFloor(
+            camilla_chunksize=0,
+            camilla_target_level=1024,
+            outputd_period_frames=256,
+            outputd_dac_buffer_frames=512,
+        )
+
+
+def test_apple_dongle_declares_the_measured_floor() -> None:
+    # The codified floor must match the value the jts.local jasper.env override
+    # currently produces, so removing that override is behavior-preserving.
+    assert APPLE_USB_C_DONGLE.latency_floor == LatencyFloor(
+        camilla_chunksize=256,
+        camilla_target_level=1024,
+        outputd_period_frames=256,
+        outputd_dac_buffer_frames=512,
+    )
+
+
+def test_latency_floor_for_round_trips_for_bash() -> None:
+    floor = dac.latency_floor_for(APPLE_USB_C_DONGLE_ID)
+    assert floor is not None
+    # The bash reconciler reads exactly these four ints, space-separated.
+    assert (
+        floor.camilla_chunksize,
+        floor.camilla_target_level,
+        floor.outputd_period_frames,
+        floor.outputd_dac_buffer_frames,
+    ) == (256, 1024, 256, 512)
+
+
+def test_latency_floor_for_is_none_for_undeclared_and_unknown() -> None:
+    # A DAC that declares no floor (DAC8x) keeps the global default — None is
+    # the non-breaking signal the reconciler treats as "use shipped default".
+    assert dac.latency_floor_for(HIFIBERRY_DAC8X_ID) is None
+    assert dac.latency_floor_for("no_such_dac") is None
