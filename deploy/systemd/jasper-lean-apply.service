@@ -25,6 +25,11 @@ Type=oneshot
 # generated-config dir's setgid bit expects (same posture as the existing
 # /sound/ and /correction/ writers).
 Group=jasper
+# UMask=0007 so any group-writable file this oneshot creates stays writable in
+# place by the jasper group (matches jasper-mux.service's WS1 group-writer
+# posture). Generated configs are replaced via atomic tempfile+rename in the
+# setgid dir today, so this is consistency insurance, not a fix for a live path.
+UMask=0007
 # The wizard-owned env files the daemons load, so the emit reads persisted
 # tuning (camilla chunksize/target level, fan-in coupling) not bare defaults.
 # jasper-lean-apply ALSO re-hydrates os.environ from these in-process via

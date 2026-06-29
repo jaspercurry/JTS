@@ -23,6 +23,7 @@ import pytest
 
 from jasper.usbsink.audio_bridge import BridgeStats, BLOCK_FRAMES, QUEUE_MAXBLOCKS
 from jasper.usbsink.daemon import (
+    FIFO_NO_READER_GRACE_SEC,
     WATCHDOG_STALE_SEC,
     UsbSinkDaemon,
     DaemonConfig,
@@ -335,6 +336,8 @@ def test_fifo_mode_watchdog_bumps_on_no_reader_liveness_tick():
     now = 100.0
     daemon._last_capture_progress_mono = now - WATCHDOG_STALE_SEC - 1.0
     daemon._last_playback_progress_mono = now - 1.0
+    # Within the bounded grace window after the fifo bridge started.
+    daemon._fifo_started_mono = now
     # No writes yet — only the no-reader liveness tick advanced.
     stats = BridgeStats(fifo_writes=0, fifo_waiting_reader=3)
     daemon._observe_bridge_progress(stats, hb, now)
@@ -351,6 +354,24 @@ def test_fifo_mode_watchdog_stale_when_neither_counter_moves():
     now = 100.0
     daemon._last_playback_progress_mono = now - WATCHDOG_STALE_SEC - 0.1
     stats = BridgeStats(fifo_writes=0, fifo_waiting_reader=0)
+    daemon._observe_bridge_progress(stats, hb, now)
+    assert hb.bumps == 0
+    assert daemon._playback_stale_logged is True
+
+
+def test_fifo_mode_watchdog_stale_after_grace_when_only_waiting_reader():
+    """Past the bounded no-reader grace window, fifo_waiting_reader no longer
+    counts as liveness — a PERMANENT no-reader (e.g. CamillaDSP died and never
+    re-opened the lean pipe) goes stale so systemd can recover, instead of
+    being masked forever by the waiting-for-reader tick."""
+    daemon = UsbSinkDaemon(DaemonConfig(output_mode="fifo"))
+    hb = _FakeHeartbeat()
+    now = 100.0
+    # The fifo bridge started long enough ago that the grace window has expired.
+    daemon._fifo_started_mono = now - FIFO_NO_READER_GRACE_SEC - 1.0
+    daemon._last_playback_progress_mono = now - WATCHDOG_STALE_SEC - 0.1
+    # Still only waiting for a reader (no real writes) — not liveness post-grace.
+    stats = BridgeStats(fifo_writes=0, fifo_waiting_reader=50)
     daemon._observe_bridge_progress(stats, hb, now)
     assert hb.bumps == 0
     assert daemon._playback_stale_logged is True

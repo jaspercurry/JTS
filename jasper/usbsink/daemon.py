@@ -76,6 +76,16 @@ WATCHDOG_STALE_SEC = 8.0
 # INFO-only state, not a recovery decision.
 CAPTURE_IDLE_LOG_SEC = WATCHDOG_STALE_SEC
 
+# Bounded grace for the fifo-mode no-reader window. At lean-enter the daemon
+# is restarted into fifo mode and starts writing the pipe BEFORE the mux's
+# delegated CamillaDSP apply opens the read end; the writer waits (ENXIO),
+# advancing fifo_waiting_reader but not fifo_writes. We count that wait as
+# liveness ONLY for this many seconds after the fifo bridge starts — generous
+# enough to cover the broker-bounded apply handoff (the delegated start blocks
+# up to ~20 s) — after which a permanent no-reader (e.g. CamillaDSP died) once
+# again trips the watchdog instead of being masked forever.
+FIFO_NO_READER_GRACE_SEC = 25.0
+
 
 @dataclass
 class DaemonConfig:
@@ -288,6 +298,10 @@ class UsbSinkDaemon:
         self._last_playback_callbacks_seen = 0
         self._last_capture_progress_mono = now
         self._last_playback_progress_mono = now
+        # Anchor for the bounded fifo no-reader grace (FIFO_NO_READER_GRACE_SEC).
+        # output_mode is fixed at construction, so for a fifo-mode daemon this is
+        # the fifo bridge start.
+        self._fifo_started_mono = now
         self._capture_idle_logged = False
         self._playback_stale_logged = False
 
@@ -496,12 +510,17 @@ class UsbSinkDaemon:
         if self._config.output_mode == "fifo":
             # fifo_writes advances once a reader (CamillaDSP File-capture) is
             # present; fifo_waiting_reader advances while the writer waits for
-            # one. Summing both counts "waiting for the reader" as forward
-            # progress, so the bounded no-reader window at lean-enter (FIFO
-            # armed before the camilla apply opens the read end) does NOT trip
-            # the watchdog and crash-loop the unit. See
-            # AudioBridge.Stats.fifo_waiting_reader.
-            output_progress = stats.fifo_writes + stats.fifo_waiting_reader
+            # one. Count "waiting for the reader" as forward progress ONLY
+            # during the bounded grace window after this fifo bridge started,
+            # so the no-reader window at lean-enter (FIFO armed before the
+            # delegated camilla apply opens the read end) does NOT crash-loop
+            # the unit — while a PERMANENT no-reader past the handoff (e.g.
+            # CamillaDSP died) still goes stale and trips recovery instead of
+            # being masked forever. See AudioBridge.Stats.fifo_waiting_reader.
+            in_grace = now - self._fifo_started_mono < FIFO_NO_READER_GRACE_SEC
+            output_progress = stats.fifo_writes + (
+                stats.fifo_waiting_reader if in_grace else 0
+            )
         else:
             output_progress = stats.playback_callbacks
         if output_progress > self._last_playback_callbacks_seen:
