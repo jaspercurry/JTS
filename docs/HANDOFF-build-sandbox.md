@@ -51,14 +51,17 @@ window:
 
 - The OOMScoreAdjust ladder in the unit files
   (`jasper-voice` −500, `jasper-camilla` −900, `jasper-outputd` −950,
-  `jasper-control` −600, `jasper-fanin` −800) and the live-write in
+  `jasper-control` −600, `nginx` −450, `jasper-fanin` −800) and the live-write in
   `migrate_memory_resilience` (`_apply_jts_oom_score_adj_live`) both run
   **at the end of `main()` — after every build**. During the build the
   running daemons sit at whatever their *currently-installed* (old) units
   set. On a far-behind box those old units predate the ladder entirely
   (adj 0), so they are prime OOM victims exactly when a build is running.
-- **nginx is never in the ladder** (stock Debian unit, adj 0) — it was
-  the first thing killed on jts2.
+- nginx is package-owned, so old installs did not have the JTS recovery
+  drop-in yet (adj 0, no restart policy) — it was the first thing killed
+  on jts2. Current installs add `nginx.service.d/jts-recovery.conf`, but
+  containment still matters for boxes updating from before that drop-in
+  exists.
 - `jts-audio.slice`'s `MemorySwapMax=0` and the per-unit `MemoryMax`/
   `MemoryHigh` directives are **silent no-ops until the memory cgroup
   controller is enabled** (Stage 2, requires a reboot after
@@ -248,6 +251,6 @@ All read by `build-sandbox.sh`; all have safe defaults.
   resilience stages (the OOM ladder + cgroup slice this build policy
   complements but does not depend on).
 
-Last verified: 2026-06-28 (removed build #8 — the jasper_resampler pybind11
-binding was cut with the usbsink rate-match stage; the inventory is back to
-seven builds)
+Last verified: 2026-06-29 (nginx recovery/OOM drop-in added; build #8 —
+the jasper_resampler pybind11 binding — remains removed with the usbsink
+rate-match stage, so the inventory stays at seven builds)

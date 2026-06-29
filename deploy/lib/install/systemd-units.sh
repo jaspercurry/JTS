@@ -25,9 +25,34 @@ WIZARD_UNITS=(
     jasper-chat-web
 )
 
+cleanup_legacy_recovery_window_dropins() {
+    # 2026-06-29: jts2 received these ad hoc drop-ins during an emergency
+    # targeted recovery. The policy now lives in repo-owned unit files, so a
+    # normal deploy should remove the temporary override before daemon-reload.
+    local unit dropin dir
+    local -a units=(
+        librespot
+        nqptp
+        shairport-sync
+        bt-agent
+        jasper-mux
+        "${WIZARD_UNITS[@]}"
+    )
+    for unit in "${units[@]}"; do
+        dir="${SYSTEMD_DIR}/${unit}.service.d"
+        dropin="${dir}/jts-recovery-window.conf"
+        if [[ -e "${dropin}" ]]; then
+            rm -f "${dropin}"
+            rmdir "${dir}" 2>/dev/null || true
+            echo "  removed legacy ad hoc recovery drop-in for ${unit}.service"
+        fi
+    done
+}
+
 install_jasper_support_files() {
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
+    cleanup_legacy_recovery_window_dropins
     install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
         /usr/local/lib/jasper/jasper-asound-render.sh
@@ -74,6 +99,7 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
     "0644 deploy/systemd/jasper-outputd.service ${SYSTEMD_DIR}/jasper-outputd.service"
     "0644 deploy/systemd/jasper-control.service ${SYSTEMD_DIR}/jasper-control.service"
     "0644 deploy/systemd/jasper-doctor-json.service ${SYSTEMD_DIR}/jasper-doctor-json.service"
+    "0644 deploy/systemd/jasper-xvf-firmware-update.service ${SYSTEMD_DIR}/jasper-xvf-firmware-update.service"
     "0644 deploy/systemd/jasper-audio-hardware-reconcile.service ${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
     "0755 deploy/bin/jasper-audio-hardware-reconcile /usr/local/sbin/jasper-audio-hardware-reconcile"
     "0755 deploy/bin/jasper-output-hardware-hotplug /usr/local/sbin/jasper-output-hardware-hotplug"
@@ -319,6 +345,9 @@ install_renderer_source_unit_files() {
         "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-output.conf" \
         "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-output.conf"
     install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf" \
+        "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-restart.conf"
+    install -m 0644 \
         "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-slice.conf" \
         "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-slice.conf"
     install -d -m 0755 "${SYSTEMD_DIR}/bluealsa.service.d"
@@ -386,6 +415,14 @@ install_streambox_audio_slices() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/ssh.service.d/oom-protection.conf" \
         "${SYSTEMD_DIR}/ssh.service.d/oom-protection.conf"
+
+    # nginx is the package-owned management front door. Give it local
+    # recovery semantics and a moderate OOM bias so a transient OOM cannot
+    # leave http://<speaker>.local dark until someone SSHes in.
+    install -d -m 0755 "${SYSTEMD_DIR}/nginx.service.d"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/nginx.service.d/jts-recovery.conf" \
+        "${SYSTEMD_DIR}/nginx.service.d/jts-recovery.conf"
 }
 
 park_audio_clients_for_core_graph_restart() {
@@ -582,6 +619,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-doctor-json.service" \
         "${SYSTEMD_DIR}/jasper-doctor-json.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-xvf-firmware-update.service" \
+        "${SYSTEMD_DIR}/jasper-xvf-firmware-update.service"
     # jasper-input: third-party HID accessory bridge (Anticater VK-01
     # volume knob today; future macro pads / foot pedals). Reads
     # /dev/input/event* via python-evdev, translates known devices'

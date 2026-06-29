@@ -13,14 +13,14 @@ After=network.target
 # it dies cleanly, shairport stays up but every new session fails to
 # negotiate the PTP clock. Match shairport's always-on stance: keep
 # nqptp running across crashes AND clean exits.
-StartLimitIntervalSec=60
-StartLimitBurst=5
+StartLimitIntervalSec=600
+StartLimitBurst=20
 
 [Service]
 ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
 ExecStart=/usr/local/bin/nqptp
 Restart=always
-RestartSec=2
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

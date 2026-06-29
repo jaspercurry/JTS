@@ -337,6 +337,7 @@ def _parked_as_bonded_follower() -> bool:
 
 
 _RUNTIME_STATE_UNITS = (
+    "nginx.service",
     "jasper-outputd.service",
     "jasper-fanin.service",
     "jasper-camilla.service",
@@ -344,9 +345,12 @@ _RUNTIME_STATE_UNITS = (
     "jasper-aec-bridge.service",
     "jasper-control.service",
     "jasper-mux.service",
+    "nqptp.service",
     "shairport-sync.service",
     "librespot.service",
+    "bluealsa.service",
     "bluealsa-aplay.service",
+    "bt-agent.service",
 )
 
 def _service_runtime_states() -> dict[str, dict[str, object]] | None:

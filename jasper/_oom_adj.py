@@ -35,6 +35,7 @@ EXPECTED: dict[str, int] = {
     "jasper-aec-bridge": -700,  # real-time mic processing
     "jasper-control": -600,     # recovery surface (HTTP dashboard)
     "jasper-voice": -500,       # largest blast radius (LLM session)
+    "nginx": -450,              # management front door; recoverable
     "jasper-mux": -300,         # transient-graceful (latest-source-wins)
     "jasper-input": -300,       # direct USB still works without bridge
     "ssh": -250,                # recovery path; moderately protected

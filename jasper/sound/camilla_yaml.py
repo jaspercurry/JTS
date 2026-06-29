@@ -368,6 +368,17 @@ pipeline:
     return yaml
 
 
+def emit_flat_outputd_cutover_config(*, out_path: str | Path | None = None) -> str:
+    """Emit the flat outputd startup graph through the production generator.
+
+    Fresh plain-flat installs boot through this graph. Keeping it on the same
+    emitter as ordinary sound configs means the active DAC profile's latency
+    floor reaches first boot without adding a second Camilla/outputd path.
+    """
+
+    return emit_sound_config(SoundProfile(enabled=False), out_path=out_path)
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     # Sound configs (including the bonded-leader pipe config grouping_leader.yml)
     # are read off-disk by the non-root jasper-control /state leader-pipe health

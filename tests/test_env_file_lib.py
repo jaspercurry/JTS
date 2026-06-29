@@ -151,6 +151,45 @@ def test_env_file_set_preserves_existing_ownership_before_rename(
     assert args[1] != str(env_file)
 
 
+def test_env_file_unset_removes_key(tmp_path: Path) -> None:
+    """jasper_env_file_unset must REMOVE the key (not write it empty).
+
+    The #27 HIGH fix relies on this: when an operator sets a floor key in an
+    earlier-loaded EnvironmentFile, the reconciler-owned later file must DROP
+    the key so an empty `KEY=` assignment can't override the operator value.
+    """
+    env_file = tmp_path / "outputd.env"
+    env_file.write_text("KEEP=1\nDROP=stale\nKEEP2=2\n")
+    result = _bash(f'jasper_env_file_unset "{env_file}" DROP')
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_text() == "KEEP=1\nKEEP2=2\n"
+    # Crucially NOT left as an empty assignment.
+    assert "DROP=" not in env_file.read_text()
+
+
+def test_env_file_unset_removes_all_duplicate_lines(tmp_path: Path) -> None:
+    env_file = tmp_path / "outputd.env"
+    env_file.write_text("DROP=a\nKEEP=1\nDROP=b\n")
+    result = _bash(f'jasper_env_file_unset "{env_file}" DROP')
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_text() == "KEEP=1\n"
+
+
+def test_env_file_unset_noop_when_key_absent(tmp_path: Path) -> None:
+    env_file = tmp_path / "outputd.env"
+    env_file.write_text("KEEP=1\n")
+    result = _bash(f'jasper_env_file_unset "{env_file}" MISSING')
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_text() == "KEEP=1\n"
+
+
+def test_env_file_unset_noop_when_file_absent(tmp_path: Path) -> None:
+    env_file = tmp_path / "absent.env"
+    result = _bash(f'jasper_env_file_unset "{env_file}" KEY')
+    assert result.returncode == 0, result.stderr
+    assert not env_file.exists()
+
+
 def test_reconcilers_source_shared_lib_and_never_printf_q() -> None:
     """Drift guard: both reconcilers must load jasper-env-file.sh and
     must not regrow a local `printf %q` (the bash-5.2 comma bug) or a

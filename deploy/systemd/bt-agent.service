@@ -2,6 +2,10 @@
 Description=Jasper Bluetooth no-code pairing agent
 Requires=bluetooth.service
 After=bluetooth.service
+# Safe to restart after transient Bluetooth/OOM churn; finite so a broken
+# BlueZ stack does not spin forever.
+StartLimitIntervalSec=600
+StartLimitBurst=20
 
 [Service]
 Type=simple
@@ -12,7 +16,7 @@ ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
 ExecStart=/opt/jasper/.venv/bin/jasper-bluetooth-agent
 TimeoutStopSec=10s
 Restart=always
-RestartSec=2
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

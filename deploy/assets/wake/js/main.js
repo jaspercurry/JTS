@@ -25,7 +25,7 @@
 // cached module bakes in no secret. The slider uses an explicit Save button
 // rather than apply-on-change so a drag doesn't restart jasper-voice per pixel.
 
-import { jsonHeaders } from "/assets/shared/js/http.js";
+import { jsonHeaders, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 
 const LAYERS = ["raw", "dtln", "chip_aec"];
@@ -35,6 +35,7 @@ const dirty = {};
 let ignorePollUntil = 0;
 let lastServerThreshold = null;
 let profileChoices = {};
+let firmwareUpdateBusy = false;
 
 const el = (id) => document.getElementById(id);
 
@@ -56,6 +57,37 @@ function choicesByProfile(settings) {
   const validation = (settings.advanced || {}).validation_profile || {};
   if (validation.profile) out[validation.profile] = validation;
   return out;
+}
+
+function firmwareMeta(fw) {
+  const target = fw.target || {};
+  const current = fw.current || {};
+  const bits = [];
+  if (current.geometry) bits.push("Detected " + current.geometry + " geometry");
+  if (target.filename) bits.push("Downloads " + target.filename);
+  if (target.sha256) bits.push("SHA256 " + target.sha256.slice(0, 12) + "...");
+  return bits.join(" · ") || "—";
+}
+
+function applyFirmwareUpdateStatus(s) {
+  const fw = s.firmware_update || {};
+  const card = el("firmware-update-card");
+  const button = el("firmware-update-button");
+  if (!card || !button) return;
+  const state = fw.state || "unknown";
+  const show = ["update_required", "updating", "failed", "unknown", "unsupported", "current"].includes(state);
+  card.hidden = !show;
+  card.dataset.state = state;
+  setText("firmware-update-title", fw.title || "Microphone firmware");
+  setText("firmware-update-detail", fw.detail || "—");
+  setText("firmware-update-meta", firmwareMeta(fw));
+  const action = fw.action || {};
+  button.textContent = action.label || "Download and update firmware";
+  button.disabled = firmwareUpdateBusy || !action.enabled;
+  if (state === "updating") {
+    button.textContent = "Updating…";
+    button.disabled = true;
+  }
 }
 
 function applyProfileStatus(s) {
@@ -146,6 +178,7 @@ function applyState(s) {
 
   applyProfileStatus(s);
   applyMicStatus(s);
+  applyFirmwareUpdateStatus(s);
 
   setText("fusion-summary", fusion.summary || "—");
   LAYERS.forEach((name) => {
@@ -201,6 +234,10 @@ async function pollDetection() {
     });
     setText("echo-status-title", "Disconnected");
     setText("echo-status-detail", "Could not reach jasper-control.");
+    const fwCard = el("firmware-update-card");
+    const fwButton = el("firmware-update-button");
+    if (fwCard) fwCard.hidden = true;
+    if (fwButton) fwButton.disabled = true;
     setText("mic-status-name", "Disconnected");
     setText("mic-status-firmware", "—");
     setText("mic-status-mode", "—");
@@ -344,6 +381,32 @@ saveBtn.addEventListener("click", async () => {
   saveBtn.textContent = "Save";
   setTimeout(pollDetection, 500);
 });
+
+const firmwareButton = el("firmware-update-button");
+if (firmwareButton) {
+  firmwareButton.addEventListener("click", async () => {
+    if (!(await jtsConfirm(
+      "Update microphone firmware?\n\n" +
+        "JTS will download the hash-pinned firmware from Seeed's GitHub, " +
+        "stop voice briefly, flash the microphone over DFU, then reconcile AEC. " +
+        "Keep the microphone plugged in until the update finishes.",
+      { danger: true },
+    ))) {
+      return;
+    }
+    firmwareUpdateBusy = true;
+    firmwareButton.disabled = true;
+    firmwareButton.textContent = "Starting…";
+    try {
+      const body = await postJSON("firmware/update", {});
+      applyState(body);
+    } catch (err) {
+      await jtsAlert("Firmware update failed to start: " + err.message);
+    }
+    firmwareUpdateBusy = false;
+    setTimeout(pollDetection, 500);
+  });
+}
 
 // Model-picker form: disable submit so the restart-in-progress is visible
 // before the redirect (the redirect fires before the daemon is back up).

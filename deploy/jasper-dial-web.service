@@ -4,6 +4,8 @@ Description=Jasper accessories hub (web wizards for rotary dial + BT HID pairing
 Requires=jasper-dial-web.socket
 After=jasper-dial-web.socket network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=20
 
 [Service]
 Type=notify

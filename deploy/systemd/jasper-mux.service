@@ -2,6 +2,11 @@
 Description=Jasper renderer source-arbiter (auto/manual source selection)
 After=jasper-fanin.service librespot.service shairport-sync.service bluealsa.service
 Wants=jasper-fanin.service librespot.service shairport-sync.service bluealsa.service
+# Source arbitration is safe to restart after transient OOM/update pressure.
+# Keep a finite limit for real config/code loops, but do not park after a
+# short burst while the box is still reclaiming memory.
+StartLimitIntervalSec=600
+StartLimitBurst=20
 
 [Service]
 Type=simple
@@ -20,7 +25,7 @@ EnvironmentFile=-/var/lib/jasper/fanin.env
 ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
 ExecStart=/opt/jasper/.venv/bin/jasper-mux
 Restart=always
-RestartSec=2
+RestartSec=5
 # WS1 Phase 3b — user drop (3b-1). Non-root service user in the shared `jasper`
 # group: lets mux reach the restart broker socket (/run/jasper-control, group
 # jasper) for its librespot-stall recovery — it is a non-root broker client now

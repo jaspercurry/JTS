@@ -6,6 +6,8 @@ Description=Jasper system dashboard (web at /system/)
 Requires=jasper-system-web.socket
 After=jasper-system-web.socket network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=20
 
 [Service]
 Type=notify

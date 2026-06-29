@@ -474,9 +474,10 @@ _PID_MAP = {
     "jasper-aec-bridge": "1004",
     "jasper-control": "1005",
     "jasper-voice": "1006",
-    "jasper-mux": "1007",
-    "jasper-input": "1008",
-    "ssh": "1009",
+    "nginx": "1007",
+    "jasper-mux": "1008",
+    "jasper-input": "1009",
+    "ssh": "1010",
 }
 
 _EXPECTED_CONFIG = {
@@ -486,6 +487,7 @@ _EXPECTED_CONFIG = {
     "jasper-aec-bridge": "-700",
     "jasper-control": "-600",
     "jasper-voice": "-500",
+    "nginx": "-450",
     "jasper-mux": "-300",
     "jasper-input": "-300",
     "ssh": "-250",
@@ -553,8 +555,8 @@ def test_oom_score_adj_skips_units_not_installed_on_streambox():
     assert r.status == "ok", r.detail
     for unit in absent:
         assert unit not in r.detail
-    # The remaining 6 installed daemons are still verified.
-    assert "6 critical daemons protected" in r.detail
+    # The remaining 7 installed daemons are still verified.
+    assert "7 critical daemons protected" in r.detail
 
 
 def test_oom_score_adj_warns_on_present_drift_with_others_absent():
@@ -591,8 +593,9 @@ def test_oom_score_adj_warns_on_present_drift_with_others_absent():
 _LIVE_OK = {
     "1001": "-950", "1002": "-900", "1003": "-800",
     "1004": "-700", "1005": "-600", "1006": "-500",
-    "1007": "-300", "1008": "-300",
-    "1009": "-250",   # ssh recovery path, still killable
+    "1007": "-450",
+    "1008": "-300", "1009": "-300",
+    "1010": "-250",   # ssh recovery path, still killable
 }
 
 
@@ -609,7 +612,7 @@ def test_oom_score_adj_all_match():
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
     assert r.status == "ok"
-    assert "9 critical daemons protected" in r.detail
+    assert "10 critical daemons protected" in r.detail
 
 
 def test_oom_score_adj_warns_if_sshd_drifts():
@@ -619,7 +622,7 @@ def test_oom_score_adj_warns_if_sshd_drifts():
     def fake_read(self):
         pid_str = str(self).split("/")[2]
         live = dict(_LIVE_OK)
-        live["1009"] = "0"  # sshd drifted to default
+        live["1010"] = "0"  # sshd drifted to default
         return live.get(pid_str, "0") + "\n"
 
     # Also reflect the drift in the unit file's configured value, so
@@ -641,7 +644,7 @@ def test_oom_score_adj_ignores_openssh_listener_self_protection():
     def fake_read(self):
         pid_str = str(self).split("/")[2]
         live = dict(_LIVE_OK)
-        live["1009"] = "-1000"
+        live["1010"] = "-1000"
         return live.get(pid_str, "0") + "\n"
 
     with patch.object(doctor._shared, "_run",

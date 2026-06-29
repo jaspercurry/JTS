@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import json
 from typing import Any
 
 from ..audio_profile_state import (
@@ -41,6 +42,8 @@ from ..wake_models import WAKE_MODEL_FILE
 _AEC_MODE_FILE = "/var/lib/jasper/aec_mode.env"
 _WAKE_MODEL_FILE = WAKE_MODEL_FILE
 _JASPER_ENV_FILE = "/etc/jasper/jasper.env"
+_XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
+_XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
 
 # Default leg policy — must match deploy/install.sh's reconcile_aec_state
 # and deploy/bin/jasper-aec-reconcile's ensure_mode_file. Raw is on
@@ -234,6 +237,64 @@ def _aec_bridge_active() -> bool:
         return result.stdout.strip() == "active"
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+def _unit_active(unit: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", unit],
+            capture_output=True, text=True, timeout=2.0,
+        )
+        return result.stdout.strip() == "active"
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _read_xvf_firmware_update_state() -> dict[str, Any]:
+    try:
+        with open(_XVF_FIRMWARE_UPDATE_STATE_FILE) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _xvf_firmware_update_status() -> dict[str, Any]:
+    try:
+        from ..mics import xvf3800
+        profile = xvf3800.detect_runtime_profile()
+        return xvf3800.firmware_update_status(
+            profile,
+            service_active=_unit_active(_XVF_FIRMWARE_UPDATE_SERVICE),
+            last_update=_read_xvf_firmware_update_state(),
+        )
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
+        return {
+            "schema_version": 1,
+            "state": "unknown",
+            "required": False,
+            "updating": False,
+            "title": "Microphone firmware status unavailable",
+            "detail": str(exc),
+            "current": {},
+            "target": None,
+            "last_update": _read_xvf_firmware_update_state(),
+            "action": {
+                "enabled": False,
+                "label": "Download and update firmware",
+                "danger": True,
+            },
+        }
+
+
+def _start_xvf_firmware_update() -> None:
+    subprocess.run(
+        ["systemctl", "start", "--no-block", _XVF_FIRMWARE_UPDATE_SERVICE],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+    )
 
 
 def _kick_aec_reconciler() -> None:
@@ -522,6 +583,7 @@ def _aec_full_status() -> dict:
         "audio_profile": profile_status["audio_profile"],
         "microphone": profile_status["microphone"],
         "validation": _audio_validation_summary(**validation_filters),
+        "firmware_update": _xvf_firmware_update_status(),
     }
     payload["mic_settings"] = build_microphone_settings_view(payload)
     return payload

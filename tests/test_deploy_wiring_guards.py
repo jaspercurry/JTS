@@ -281,7 +281,85 @@ def test_wizard_socket_ports_match_nginx_upstreams():
 
 
 # ----------------------------------------------------------------------
-# 5 — deploy-to-pi.sh post-install verification wiring (Workstream B)
+# 5 — recoverable service policy
+# ----------------------------------------------------------------------
+
+_RECOVERABLE_ALWAYS_ON_UNITS = (
+    _DEPLOY / "systemd" / "nginx.service.d" / "jts-recovery.conf",
+    _DEPLOY / "systemd" / "bluealsa-aplay.service.d" / "jts-restart.conf",
+    _DEPLOY / "systemd" / "bluealsa.service.d" / "jts-restart.conf",
+    _DEPLOY / "systemd" / "bt-agent.service",
+    _DEPLOY / "systemd" / "librespot.service",
+    _DEPLOY / "systemd" / "nqptp.service",
+    _DEPLOY / "systemd" / "shairport-sync.service",
+    _DEPLOY / "systemd" / "jasper-mux.service",
+)
+
+_RECOVERABLE_SOCKET_WEB_UNITS = (
+    _DEPLOY / "jasper-web.service",
+    _DEPLOY / "jasper-web-streambox.service",
+    _DEPLOY / "jasper-bluetooth-web.service",
+    _DEPLOY / "jasper-correction-web.service",
+    _DEPLOY / "jasper-dial-web.service",
+    _DEPLOY / "jasper-system-web.service",
+    _DEPLOY / "jasper-chat-web.service",
+)
+
+
+def test_recoverable_always_on_services_restart_with_generous_limit():
+    """Transient OOM/update pressure should not park safe services forever."""
+    for path in _RECOVERABLE_ALWAYS_ON_UNITS:
+        text = path.read_text(encoding="utf-8")
+        assert "Restart=always" in text, path
+        assert "RestartSec=5" in text, path
+        assert "StartLimitIntervalSec=600" in text, path
+        assert "StartLimitBurst=20" in text, path
+
+
+def test_socket_web_services_have_generous_start_limit():
+    """Socket web daemons exit on idle, but should retry through OOM bursts."""
+    for path in _RECOVERABLE_SOCKET_WEB_UNITS:
+        text = path.read_text(encoding="utf-8")
+        assert "Restart=on-failure" in text, path
+        assert "StartLimitIntervalSec=600" in text, path
+        assert "StartLimitBurst=20" in text, path
+
+
+def test_package_owned_recovery_dropins_are_installed():
+    install_text = "\n".join(
+        p.read_text(encoding="utf-8") for p in _INSTALL_SCRIPTS
+    )
+    for rel in (
+        "deploy/systemd/nginx.service.d/jts-recovery.conf",
+        "deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf",
+    ):
+        assert rel in install_text
+
+
+def test_legacy_ad_hoc_recovery_window_dropins_are_removed():
+    install_text = "\n".join(
+        p.read_text(encoding="utf-8") for p in _INSTALL_SCRIPTS
+    )
+    assert "cleanup_legacy_recovery_window_dropins" in install_text
+    assert "jts-recovery-window.conf" in install_text
+    for unit in (
+        "librespot",
+        "nqptp",
+        "shairport-sync",
+        "bt-agent",
+        "jasper-mux",
+        "jasper-web",
+        "jasper-bluetooth-web",
+        "jasper-correction-web",
+        "jasper-dial-web",
+        "jasper-system-web",
+        "jasper-chat-web",
+    ):
+        assert unit in install_text
+
+
+# ----------------------------------------------------------------------
+# 6 — deploy-to-pi.sh post-install verification wiring (Workstream B)
 # ----------------------------------------------------------------------
 #
 # The transactional-update fix rests on deploy-to-pi.sh actually invoking
