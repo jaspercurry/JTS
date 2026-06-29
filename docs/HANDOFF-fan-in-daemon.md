@@ -723,10 +723,24 @@ syscalls + interpolation, count-gated logging) but only hardware confirms it.
 
 **Observability**: when armed, the lane's STATUS object gains a nested
 `resampler` block — `armed`, `input_frames`, `output_frames`,
-`silence_frames`, `overrun_frames`, `ratio_ppm`, `lock_count`,
-`unlock_count`. Absent for every unarmed lane. A growing `unlock_count` is
-the drop-free analogue of a catch-up event (the resampler starved and fell
-back to silence rather than reading past the buffer).
+`silence_frames`, `overrun_frames`, `ratio_ppm`, `fill_frames`,
+`target_fill_frames`, `lock_count`, `unlock_count`. Absent for every unarmed
+lane. The engagement-proof gauge is `fill_frames` vs. `target_fill_frames`:
+once locked, `fill_frames` sits steady near `target_fill_frames` (the DLL is
+holding the ring), and `ratio_ppm` shows the live pitch-warp the loop settled
+on. A growing `unlock_count` is the drop-free analogue of a catch-up event
+(the resampler starved and fell back to silence rather than reading past the
+buffer); a growing `overrun_frames` means the host outran the ring. Arming
+emits a one-time `event=fanin.resampler.armed lane=… target_frames=…
+max_adjust_ppm=…` INFO line. If the feature is enabled but
+`JASPER_FANIN_INPUT_RESAMPLER_LANE` names no live input lane (a typo, or a
+non-USB build), NO resampler is constructed and a one-time
+`event=fanin.resampler.noop reason=lane_not_found requested=… available=[…]`
+WARN names the available labels — so an operator who set the env var but sees
+no effect can tell the flag was read but matched nothing (vs. silently
+no-op'd). A construction failure logs `event=fanin.resampler.noop
+reason=construction_failed …` and falls back to the catch-up drain on that
+lane.
 
 **Observability**: each input in the `STATUS` JSON carries
 `catchup_resync_frames` (cumulative frames discarded on that lane) and
@@ -1089,7 +1103,11 @@ Last verified: 2026-06-29 (JTS2 AirPlay retune: fan-in output 1024 clean,
 `-0.058667`. 2026-06-28 added the bounded per-input catch-up resync
 (`mixer.rs::drain_input_excess`) and the DEFAULT-OFF per-input adaptive
 resampler for the clock-crossing/USB lane (`src/lane_resampler.rs`,
-`JASPER_FANIN_INPUT_RESAMPLER=enabled`) with nested `resampler` STATUS
-observability; pacing, input-buffer sizing, TTS/duck IPC, output-buffer
-STATUS, and outputd ownership rechecked against current code. Resampler
-hardware validation is tracked in the USB low-latency handoff.)
+`JASPER_FANIN_INPUT_RESAMPLER=enabled`) plus `event=fanin.resampler.armed`,
+one-time `event=fanin.resampler.noop reason=lane_not_found` WARNs, and nested
+`resampler.fill_frames`/`target_fill_frames` STATUS observability; pacing,
+input-buffer sizing, TTS/duck IPC, output-buffer STATUS, and outputd ownership
+rechecked against current code. Engagement audit confirmed
+`mixer.rs::step` calls `read_into_resampler_and_render` whenever the lane has a
+resampler, before the selection gate. Resampler hardware validation is tracked
+in the USB low-latency handoff.)

@@ -435,6 +435,17 @@ impl StateServer {
                 let ratio_ppm = (r.ratio_milli_ppm.load(Ordering::Relaxed) as i64) as f64 / 1000.0;
                 push_kv_f64(&mut buf, "ratio_ppm", ratio_ppm, 2);
                 buf.push(',');
+                // Live ring fill (current) vs. the configured hold target — the
+                // operator's "the resampler engaged and is tracking" proof: a
+                // fill_frames steady near target_fill_frames = locked & holding.
+                push_kv_u64(
+                    &mut buf,
+                    "fill_frames",
+                    r.fill_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(&mut buf, "target_fill_frames", r.target_fill_frames);
+                buf.push(',');
                 push_kv_u64(&mut buf, "lock_count", r.lock_count.load(Ordering::Relaxed));
                 buf.push(',');
                 push_kv_u64(
@@ -765,6 +776,10 @@ mod tests {
                         ratio_milli_ppm: Arc::new(AtomicU64::new(120_000)),
                         lock_count: Arc::new(AtomicU64::new(1)),
                         unlock_count: Arc::new(AtomicU64::new(0)),
+                        // Held near target (520 vs 512) — the "engaged & tracking"
+                        // shape STATUS surfaces.
+                        fill_frames: Arc::new(AtomicU64::new(520)),
+                        target_fill_frames: 512,
                     }),
                 },
             ],
@@ -871,6 +886,16 @@ mod tests {
         assert!(
             j.contains(r#""ratio_ppm":120.00"#),
             "milli-ppm atomic must reinterpret to ppm: {j}"
+        );
+        // Live ring fill (current) + the configured hold target — the
+        // engagement-proof gauge an operator reads off /state.fanin.
+        assert!(
+            j.contains(r#""fill_frames":520"#),
+            "missing live resampler fill_frames: {j}"
+        );
+        assert!(
+            j.contains(r#""target_fill_frames":512"#),
+            "missing resampler target_fill_frames: {j}"
         );
         assert!(
             j.contains(r#""lock_count":1"#),

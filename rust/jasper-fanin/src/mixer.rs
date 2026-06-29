@@ -288,6 +288,23 @@ impl Mixer {
             );
         }
 
+        // DEFAULT-OFF feature: if the resampler is armed by env but its
+        // configured lane label matched no live input, NO `LaneResampler` was
+        // constructed above — the feature silently no-ops. Surface that ONCE
+        // (the review's flagged-missing diagnostic) so an operator who set the
+        // env var can see WHY they observed no effect, with the available
+        // labels to fix the typo.
+        if let Some(available) = resampler_lane_not_found(
+            config.input_resampler_enabled,
+            &config.input_resampler_lane_label,
+            &config.input_renderers,
+        ) {
+            warn!(
+                "event=fanin.resampler.noop reason=lane_not_found requested={} available=[{}]",
+                config.input_resampler_lane_label, available,
+            );
+        }
+
         // Final-output transport. Loopback (default) opens the ALSA snd-aloop
         // substream — byte-identical to today. Fifo ensures + lazily opens the
         // bounded named pipe CamillaDSP File-captures (the lower-latency
@@ -659,6 +676,31 @@ fn catchup_drain_periods(avail: i64, period_frames: i64) -> i64 {
     excess_periods.min(CATCHUP_MAX_DRAIN_PERIODS)
 }
 
+/// Pure decision for the "armed but lane label not found" no-op warning.
+///
+/// Returns `Some(available_labels_csv)` when the resampler is ENABLED but its
+/// configured `lane_label` matches NONE of the live `input_labels` — the state
+/// in which the feature silently does nothing because `Mixer::new` constructs
+/// no `LaneResampler`. Returns `None` (no warning) when the feature is off, or
+/// when the label DOES match a live lane (the normal armed path). The returned
+/// CSV is the human-facing "here are the labels you could have meant" hint.
+///
+/// Pulled out as a pure function (no ALSA) so the once-only warning decision is
+/// unit-testable on a non-Linux host via the macOS-ALSA-scratch convention.
+fn resampler_lane_not_found(
+    enabled: bool,
+    lane_label: &str,
+    input_labels: &[String],
+) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    if input_labels.iter().any(|l| l == lane_label) {
+        return None;
+    }
+    Some(input_labels.join(","))
+}
+
 /// Build the per-input resampler for the clock-crossing lane, or `None` on a
 /// construction failure (which we log and degrade past — the lane just runs the
 /// catch-up fallback). Sizes the resampler's input ring to the lane's ALSA
@@ -681,8 +723,12 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
         ring_frames,
     ) {
         Ok(r) => {
+            // Canonical arming line the operator greps for to confirm the
+            // DEFAULT-OFF feature engaged on this lane. Keep the event name and
+            // the lane/target/max-ppm fields stable — jasper-trace / doc point
+            // at them. ring_frames is extra diagnostic detail.
             info!(
-                "event=fanin.input.resampler_armed label={} target_frames={} \
+                "event=fanin.resampler.armed lane={} target_frames={} \
                  max_adjust_ppm={} ring_frames={} (DLL-steered to DAC clock; \
                  catch-up drain bypassed on this lane)",
                 label, target, config.input_resampler_max_adjust_ppm, ring_frames,
@@ -691,7 +737,7 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
         }
         Err(e) => {
             warn!(
-                "event=fanin.input.resampler_disabled label={} detail={} — \
+                "event=fanin.resampler.noop reason=construction_failed lane={} detail={} — \
                  falling back to catch-up drain on this lane",
                 label, e,
             );
@@ -1294,6 +1340,33 @@ mod tests {
         let mut out = vec![0i16; 2];
         saturate_to_i16(&sum, &mut out);
         assert_eq!(out, vec![i16::MAX, i16::MAX]);
+    }
+
+    #[test]
+    fn resampler_lane_not_found_only_warns_when_armed_and_missing() {
+        let labels = vec![
+            "spotify".to_string(),
+            "airplay".to_string(),
+            "usbsink".to_string(),
+            "correction".to_string(),
+        ];
+        // Disabled → never warn, regardless of label.
+        assert_eq!(resampler_lane_not_found(false, "usbsink", &labels), None);
+        assert_eq!(resampler_lane_not_found(false, "nope", &labels), None);
+        // Enabled + label present → armed normally, no warning.
+        assert_eq!(resampler_lane_not_found(true, "usbsink", &labels), None);
+        assert_eq!(resampler_lane_not_found(true, "spotify", &labels), None);
+        // Enabled + label absent → warn, returning the available-labels CSV the
+        // operator can use to fix the typo.
+        assert_eq!(
+            resampler_lane_not_found(true, "usbsink_typo", &labels),
+            Some("spotify,airplay,usbsink,correction".to_string()),
+        );
+        // The match is exact (a substring must NOT count as found).
+        assert_eq!(
+            resampler_lane_not_found(true, "usb", &labels),
+            Some("spotify,airplay,usbsink,correction".to_string()),
+        );
     }
 
     #[test]

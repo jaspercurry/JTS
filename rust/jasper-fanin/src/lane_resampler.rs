@@ -105,6 +105,16 @@ pub struct LaneResamplerObservability {
     /// growing value means the resampler is starving (target too low or a host
     /// stall) and falling back to silence rather than reading past the buffer.
     pub unlock_count: Arc<AtomicU64>,
+    /// Current ring fill, in frames, as of the last render period — the live
+    /// "how full is the input buffer" gauge. Held near `target_fill_frames` by
+    /// the DLL when locked; this is the operator's "the resampler is tracking"
+    /// proof (a steady value near target = engaged & holding, a value drifting
+    /// away from target = losing lock). Published every `render_period`.
+    pub fill_frames: Arc<AtomicU64>,
+    /// The configured target fill the controller holds the ring at (static for
+    /// the lane's life). Paired with `fill_frames` so STATUS shows current vs.
+    /// target without the reader having to know the config.
+    pub target_fill_frames: u64,
 }
 
 /// A per-input windowed-sinc resampler that turns a free-running (host-clocked)
@@ -135,6 +145,9 @@ pub struct LaneResampler {
     ratio_milli_ppm: Arc<AtomicU64>,
     lock_count: Arc<AtomicU64>,
     unlock_count: Arc<AtomicU64>,
+    /// Live ring fill in frames, republished every `render_period` so STATUS
+    /// can show the buffer is being held near target.
+    fill_frames: Arc<AtomicU64>,
 }
 
 impl LaneResampler {
@@ -190,6 +203,7 @@ impl LaneResampler {
             ratio_milli_ppm: Arc::new(AtomicU64::new(0)),
             lock_count: Arc::new(AtomicU64::new(0)),
             unlock_count: Arc::new(AtomicU64::new(0)),
+            fill_frames: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -204,6 +218,8 @@ impl LaneResampler {
             ratio_milli_ppm: Arc::clone(&self.ratio_milli_ppm),
             lock_count: Arc::clone(&self.lock_count),
             unlock_count: Arc::clone(&self.unlock_count),
+            fill_frames: Arc::clone(&self.fill_frames),
+            target_fill_frames: self.target_fill_frames as u64,
         }
     }
 
@@ -238,6 +254,10 @@ impl LaneResampler {
         debug_assert_eq!(out.len(), self.period_frames * self.channels);
 
         if !self.locked {
+            // While priming, the buffered-input depth IS the fill the operator
+            // watches climb toward the startup prefill — publish it so STATUS
+            // shows the lane filling before it locks.
+            self.publish_fill(self.ring.fill_frames() as u64);
             self.try_lock();
         }
         if !self.locked {
@@ -254,6 +274,9 @@ impl LaneResampler {
         }
 
         let fill = self.ring.write_frame() as f64 - self.next_input_frame;
+        // Locked: the cursor-relative fill is what the DLL disciplines toward
+        // target — the value that proves engagement. Publish it for STATUS.
+        self.publish_fill(fill.max(0.0) as u64);
         let minimum_safe_fill = self.minimum_safe_fill_frames() as f64;
         if fill < minimum_safe_fill {
             self.unlock_for_underfill();
@@ -346,6 +369,10 @@ impl LaneResampler {
         self.ratio_milli_ppm
             .store(milli_ppm as u64, Ordering::Relaxed);
     }
+
+    fn publish_fill(&self, frames: u64) {
+        self.fill_frames.store(frames, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]
@@ -422,6 +449,60 @@ mod tests {
         // Ratio stays within the clamp and near unity (no standing offset).
         let ppm = r.controller.ratio_ppm();
         assert!(ppm.abs() <= MAX_PPM + 1e-6, "ratio within clamp: {ppm}");
+    }
+
+    #[test]
+    fn observability_publishes_fill_near_target_when_locked() {
+        // The STATUS "ring fill" gauge: once locked on an on-rate producer, the
+        // published fill_frames must sit near the configured target (proving the
+        // resampler is engaged and holding the buffer), and target_fill_frames
+        // must echo the construction value.
+        let mut r = build();
+        let obs = r.observability();
+        assert_eq!(
+            obs.target_fill_frames, TARGET as u64,
+            "target echoes construction value"
+        );
+        // Before any render: fill is 0 (nothing published yet).
+        assert_eq!(obs.fill_frames.load(Ordering::Relaxed), 0);
+
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        let block = tone(PERIOD as usize);
+        r.push_input(&tone(TARGET + PERIOD as usize));
+        for _ in 0..500 {
+            r.push_input(&block);
+            r.render_period(&mut out);
+        }
+        assert!(r.locked, "on-rate lane must lock");
+        let fill = obs.fill_frames.load(Ordering::Relaxed);
+        // Held within one period of target — the DLL drives steady-state fill
+        // error to ~0; a one-period band absorbs the cursor's fractional walk.
+        let target = TARGET as i64;
+        assert!(
+            (fill as i64 - target).abs() <= PERIOD as i64,
+            "published fill={fill} must hold near target={target} when locked"
+        );
+    }
+
+    #[test]
+    fn observability_publishes_fill_during_prefill() {
+        // Before locking, the published fill must track the buffered-input depth
+        // so the operator sees the lane filling toward the prefill threshold —
+        // a "starting up" signal distinct from a stuck-at-zero dead lane.
+        let mut r = build();
+        let obs = r.observability();
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        // Push less than the prefill threshold: stays unlocked, but fill is
+        // published as the partial buffered depth (non-zero, below target).
+        let partial = TARGET / 2;
+        r.push_input(&tone(partial));
+        assert_eq!(r.render_period(&mut out), 0, "still priming → silence");
+        assert!(!r.locked);
+        assert_eq!(
+            obs.fill_frames.load(Ordering::Relaxed),
+            partial as u64,
+            "prefill fill tracks buffered-input depth"
+        );
     }
 
     #[test]
