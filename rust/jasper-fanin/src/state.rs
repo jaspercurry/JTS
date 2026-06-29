@@ -61,8 +61,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use log::{info, warn};
 
-use crate::mixer::{CouplingObservability, Mixer, OUTPUT_DELAY_UNAVAILABLE};
 use crate::lane_resampler::LaneResamplerObservability;
+use crate::mixer::{CouplingObservability, Mixer, OUTPUT_DELAY_UNAVAILABLE};
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
 

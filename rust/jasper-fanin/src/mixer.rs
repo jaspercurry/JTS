@@ -739,8 +739,8 @@ fn resampler_ring_frames(
 /// Build the per-input resampler for the clock-crossing lane, or `None` on a
 /// construction failure (which we log and degrade past — the lane just runs the
 /// catch-up fallback). Sizes the resampler's input ring for burst headroom and
-/// seats a warm-up cushion that removes the cold-start lock→silence→relock
-/// thrash (see `lane_resampler.rs`).
+/// holds a warm-up cushion above the base target during acquisition/steady
+/// state (see `lane_resampler.rs`).
 fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
     let ring_frames = resampler_ring_frames(
         config.input_resampler_ring_frames,
@@ -763,13 +763,20 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
         Ok(r) => {
             // Canonical arming line the operator greps for to confirm the
             // DEFAULT-OFF feature engaged on this lane. Keep the event name and
-            // the lane/target/max-ppm fields stable — jasper-trace / doc point
-            // at them. warmup_cushion + ring_frames are extra diagnostic detail.
+            // the lane/base target/held target/max-ppm fields stable —
+            // jasper-trace / doc point at them. warmup_cushion + ring_frames
+            // are extra diagnostic detail.
+            let held_target = target + cushion;
             info!(
-                "event=fanin.resampler.armed lane={} target_frames={} \
+                "event=fanin.resampler.armed lane={} target_frames={} held_target_frames={} \
                  warmup_cushion_frames={} max_adjust_ppm={} ring_frames={} \
                  (DLL-steered to DAC clock; catch-up drain bypassed on this lane)",
-                label, target, cushion, config.input_resampler_max_adjust_ppm, ring_frames,
+                label,
+                target,
+                held_target,
+                cushion,
+                config.input_resampler_max_adjust_ppm,
+                ring_frames,
             );
             Some(r)
         }
@@ -1038,12 +1045,52 @@ fn read_input(
     }
 }
 
-/// Cap on whole periods drained from an ARMED lane in one `step()` call. Like
-/// `CATCHUP_MAX_DRAIN_PERIODS`, this bounds the syscall work per period so a
+/// Cap on period-equivalent work for the ARMED lane drain in one `step()` call.
+/// Like `CATCHUP_MAX_DRAIN_PERIODS`, this bounds syscall work per period so a
 /// pathological `avail` (driver fault) can't spin the hot loop. Frames beyond
 /// the cap stay in the kernel ring and are read next period — the resampler's
 /// own ring is the rate buffer, so leaving a little behind is harmless.
 const RESAMPLER_MAX_READ_PERIODS: i64 = 64;
+
+/// Return the bounded number of currently readable frames that the armed-lane
+/// drain should pull into the resampler this period. Pure helper for the
+/// real-time cap math; ALSA I/O happens in `read_into_resampler_and_render`.
+fn resampler_read_budget_frames(avail: Frames, period_frames: usize) -> usize {
+    if avail <= 0 {
+        return 0;
+    }
+    let max_frames = period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
+    (avail as usize).min(max_frames)
+}
+
+fn recover_resampler_input_xrun(
+    input: &mut Input,
+    error: alsa::Error,
+    period_frames: usize,
+    xrun_tx: &Sender<XrunEvent>,
+    operation: &str,
+) -> Result<()> {
+    let count = input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
+    warn!(
+        "event=fanin.xrun source=input label={} count={} op={} (resampler lane)",
+        input.label, count, operation,
+    );
+    let _ = xrun_tx.send(XrunEvent {
+        source: XrunSource::Input,
+        label: input.label.clone(),
+        frames: period_frames as u32,
+        count,
+    });
+    input
+        .pcm
+        .try_recover(error, true)
+        .context("recovering resampler input xrun")?;
+    if let Some(r) = input.resampler.as_mut() {
+        r.reset();
+    }
+    input.read_buf.fill(0);
+    Ok(())
+}
 
 /// Read all currently-available frames from an ARMED lane into its resampler,
 /// then render exactly one DAC-paced period into `read_buf`. Returns the number
@@ -1055,10 +1102,10 @@ const RESAMPLER_MAX_READ_PERIODS: i64 = 64;
 /// for the armed lane. Rate reconciliation lives in the resampler (DLL-steered
 /// to the DAC clock); the catch-up drain is intentionally bypassed here.
 ///
-/// RT-safety: bounded syscalls (`avail_update` once, then ≤
-/// `RESAMPLER_MAX_READ_PERIODS` `readi`s of frames already reported ready), no
-/// allocation (reads into the existing `read_buf` scratch, pushes into the
-/// resampler's pre-sized ring), no blocking (non-blocking capture). An
+/// RT-safety: bounded syscalls (`avail_update` probes plus reads of frames
+/// already reported ready, capped at `RESAMPLER_MAX_READ_PERIODS` periods
+/// total), no allocation (reads into the existing `read_buf` scratch, pushes
+/// into the resampler's pre-sized ring), no blocking (non-blocking capture). An
 /// `EPIPE`/`ESTRPIPE` overrun recovers + resets the resampler (a discontinuity)
 /// and renders silence for this period.
 fn read_into_resampler_and_render(
@@ -1066,68 +1113,97 @@ fn read_into_resampler_and_render(
     period_frames: usize,
     xrun_tx: &Sender<XrunEvent>,
 ) -> Result<usize> {
-    // How many frames are readable right now. EAGAIN/error → treat as "no new
-    // input this period"; the resampler renders from what it already buffers.
-    let avail = input.pcm.avail_update().unwrap_or(0).max(0);
-    if avail > 0 {
-        let io = input
-            .pcm
-            .io_i16()
-            .context("getting i16 IO handle for resampler input")?;
-        let mut periods_read = 0i64;
-        // Read whole periods into read_buf and push each into the resampler.
-        // Bounded by both `avail` and the per-call cap.
-        loop {
-            if periods_read >= RESAMPLER_MAX_READ_PERIODS {
-                break;
-            }
-            match io.readi(&mut input.read_buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    input.frames_read.fetch_add(n as u64, Ordering::Relaxed);
-                    let samples = n * (CHANNELS as usize);
-                    if let Some(r) = input.resampler.as_mut() {
-                        r.push_input(&input.read_buf[..samples]);
-                    }
-                    periods_read += 1;
-                    // Short read means the ring just emptied below a full period
-                    // — nothing more to drain this iteration.
-                    if n < period_frames {
-                        break;
-                    }
-                }
+    let mut read_budget_remaining =
+        period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
+    if read_budget_remaining > 0 {
+        // Drain every frame ALSA reports ready, including final partial periods.
+        // Re-check after each drained snapshot so frames that arrive during this
+        // step do not sit in the kernel ring for a full extra render period.
+        // The total work remains bounded by `read_budget_remaining`.
+        let mut stop_drain = false;
+        while read_budget_remaining > 0 && !stop_drain {
+            let avail = match input.pcm.avail_update() {
+                Ok(avail) => avail,
                 Err(e) => {
                     let errno = e.errno();
                     if errno == libc::EAGAIN {
                         break;
                     } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
-                        // Lane overrun: a discontinuity. Recover the PCM and
-                        // reset the resampler so it re-primes from fresh input
-                        // rather than interpolating across the gap.
-                        let count = input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
-                        warn!(
-                            "event=fanin.xrun source=input label={} count={} (resampler lane)",
-                            input.label, count,
-                        );
-                        let _ = xrun_tx.send(XrunEvent {
-                            source: XrunSource::Input,
-                            label: input.label.clone(),
-                            frames: period_frames as u32,
-                            count,
-                        });
-                        input
-                            .pcm
-                            .try_recover(e, true)
-                            .context("recovering resampler input xrun")?;
-                        if let Some(r) = input.resampler.as_mut() {
-                            r.reset();
-                        }
+                        recover_resampler_input_xrun(
+                            input,
+                            e,
+                            period_frames,
+                            xrun_tx,
+                            "avail_update",
+                        )?;
                         break;
                     } else {
                         return Err(e).context(format!(
-                            "reading from resampler input {} ({})",
+                            "querying resampler input {} ({})",
                             input.label, input.pcm_name
                         ));
+                    }
+                }
+            };
+            let mut frames_remaining =
+                resampler_read_budget_frames(avail, period_frames).min(read_budget_remaining);
+            if frames_remaining == 0 {
+                break;
+            }
+            while frames_remaining > 0 {
+                let frames_to_read = frames_remaining.min(period_frames);
+                let samples_to_read = frames_to_read * (CHANNELS as usize);
+                let read_result = {
+                    let io = input
+                        .pcm
+                        .io_i16()
+                        .context("getting i16 IO handle for resampler input")?;
+                    io.readi(&mut input.read_buf[..samples_to_read])
+                };
+                match read_result {
+                    Ok(0) => {
+                        stop_drain = true;
+                        break;
+                    }
+                    Ok(n) => {
+                        input.frames_read.fetch_add(n as u64, Ordering::Relaxed);
+                        let samples = n * (CHANNELS as usize);
+                        if let Some(r) = input.resampler.as_mut() {
+                            r.push_input(&input.read_buf[..samples]);
+                        }
+                        frames_remaining = frames_remaining.saturating_sub(n);
+                        read_budget_remaining = read_budget_remaining.saturating_sub(n);
+                        // Short read means the ring emptied earlier than
+                        // `avail_update` claimed; stop rather than spin.
+                        if n < frames_to_read {
+                            stop_drain = true;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let errno = e.errno();
+                        if errno == libc::EAGAIN {
+                            stop_drain = true;
+                            break;
+                        } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+                            // Lane overrun: a discontinuity. Recover the PCM and
+                            // reset the resampler so it re-primes from fresh input
+                            // rather than interpolating across the gap.
+                            recover_resampler_input_xrun(
+                                input,
+                                e,
+                                period_frames,
+                                xrun_tx,
+                                "readi",
+                            )?;
+                            stop_drain = true;
+                            break;
+                        } else {
+                            return Err(e).context(format!(
+                                "reading from resampler input {} ({})",
+                                input.label, input.pcm_name
+                            ));
+                        }
                     }
                 }
             }
@@ -1449,6 +1525,30 @@ mod tests {
         assert!(
             resampler_ring_frames(0, 0, 512, 512, 256) > resampler_ring_frames(0, 0, 512, 256, 256),
             "a larger cushion raises the ring floor"
+        );
+    }
+
+    #[test]
+    fn resampler_read_budget_drains_partials_and_caps_pathological_backlog() {
+        // The armed lane must pull the final partial period too. A one-period
+        // read loop leaves this residue behind and lets the USB snd-aloop lane
+        // fill even though the resampler's own ring has room.
+        assert_eq!(
+            resampler_read_budget_frames(TEST_PERIOD + 17, TEST_PERIOD as usize),
+            (TEST_PERIOD + 17) as usize,
+        );
+        assert_eq!(
+            resampler_read_budget_frames(TEST_PERIOD - 1, TEST_PERIOD as usize),
+            (TEST_PERIOD - 1) as usize,
+        );
+        assert_eq!(resampler_read_budget_frames(0, TEST_PERIOD as usize), 0);
+        assert_eq!(resampler_read_budget_frames(-1, TEST_PERIOD as usize), 0);
+
+        let cap = (TEST_PERIOD as usize) * (RESAMPLER_MAX_READ_PERIODS as usize);
+        assert_eq!(
+            resampler_read_budget_frames(10_000 * TEST_PERIOD, TEST_PERIOD as usize),
+            cap,
+            "read budget must stay bounded on bogus/pathological avail"
         );
     }
 

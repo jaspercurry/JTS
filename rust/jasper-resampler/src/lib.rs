@@ -344,8 +344,25 @@ impl RateController {
     /// nominal rate: content_bridge passes `outputd`'s 48000, the usbsink path
     /// passes its capture rate.
     pub fn new(max_adjust_ppm: f64, period_frames: u32, rate: u32) -> Self {
+        Self::with_max_resync(max_adjust_ppm, period_frames, rate, None)
+    }
+
+    /// Construct a controller, optionally overriding the DLL hard-resync
+    /// threshold. `None` keeps [`DllConfig::for_rate`]'s default; `Some(0.0)`
+    /// disables hard resync so large but valid buffer-fill excursions slew back
+    /// through the normal clamp instead of repeatedly resetting the loop.
+    pub fn with_max_resync(
+        max_adjust_ppm: f64,
+        period_frames: u32,
+        rate: u32,
+        max_resync_frames: Option<f64>,
+    ) -> Self {
+        let mut config = DllConfig::for_rate(period_frames, rate);
+        if let Some(max_resync) = max_resync_frames {
+            config.max_resync = max_resync;
+        }
         Self {
-            dll: Dll::new(DllConfig::for_rate(period_frames, rate)),
+            dll: Dll::new(config),
             max_adjust_ppm,
             ratio_ppm: 0.0,
             clamp_count: 0,
@@ -609,7 +626,7 @@ mod tests {
     use super::*;
 
     const RATE: u32 = 48_000;
-    const PERIOD: u32 = 480; // 10 ms at 48 kHz — the usbsink block size.
+    const PERIOD: u32 = 480; // 10 ms at 48 kHz streaming-block example.
 
     /// Deterministic interleaved stereo test signal: two summed sines plus a
     /// slow linear sweep, distinct per channel. Bounded well inside i16 so the
@@ -940,6 +957,22 @@ mod tests {
         // And it re-locks cleanly afterward.
         run_rate_loop(&mut ctl, 30.0, 60_000);
         assert!(ctl.is_locked(), "loop re-locks after a resync");
+    }
+
+    #[test]
+    fn rate_controller_can_slew_large_fill_error_without_resync() {
+        let mut ctl = RateController::with_max_resync(10.0, PERIOD, RATE, Some(0.0));
+        let ratio = ctl.next_ratio(PERIOD as f64 * 4.0);
+        assert_eq!(
+            ctl.resync_count(),
+            0,
+            "large but valid buffer-fill errors should slew, not hard-resync"
+        );
+        assert!(
+            ratio > 1.0,
+            "positive fill error must consume input faster even past one period"
+        );
+        assert_eq!(ctl.ratio_ppm(), 10.0, "safety clamp still applies");
     }
 
     #[test]

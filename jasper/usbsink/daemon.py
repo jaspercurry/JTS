@@ -126,10 +126,11 @@ class DaemonConfig:
     control_url: str = VOLUME_DEFAULT_CONTROL_URL
     # USB-bridge latency tuning knobs (Stage 2 of the audio-latency
     # foundation work). Defaults mirror the audio_bridge constants, so an
-    # unset env is byte-for-byte the historical behavior. Lower
-    # queue_maxblocks (10 ms/block; 8 = 80 ms slack) and/or set `latency`
-    # to shave the gadget<->Pi USB-input latency (the dominant ~50-90 ms
-    # term) toward the <60 ms lip-sync target — tune + xrun-check on-device.
+    # unset env uses the measured period-aligned default. Tune
+    # queue_maxblocks (256 frames/block by default; 16 ≈ 85 ms slack) and/or
+    # set `latency` to shave the gadget<->Pi USB-input latency (the dominant
+    # ~50-90 ms term) toward the <60 ms lip-sync target — tune + xrun-check
+    # on-device.
     block_frames: int = BLOCK_FRAMES
     queue_maxblocks: int = QUEUE_MAXBLOCKS
     # PortAudio latency hint: "" = PortAudio default (high); else "low" /

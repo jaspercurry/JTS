@@ -313,7 +313,8 @@ the original "~120-150 ms" predated both the outputd cutover and the
 two-stream bridge below, so it understated the real figure):
 - Host → gadget USB endpoint: ~3-5 ms
 - `jasper-usbsink` bridge: ~50-90 ms (two PortAudio streams at the
-  PortAudio default `latency='high'`, joined by the 8-block queue —
+  PortAudio default `latency='high'`, joined by the 16-block
+  period-aligned queue —
   the host-clock↔Pi-clock crossing; the dominant USB-*specific* term
   and the one never profiled on hardware)
 - snd-aloop usbsink lane → fan-in: ~5-10 ms (the fan-in *input* buffer,
@@ -330,8 +331,12 @@ two-stream bridge below, so it understated the real figure):
 > bridge's dominant ~50-90 ms term is now adjustable on-device:
 > `JASPER_USBSINK_LATENCY` (the PortAudio latency hint — usually the biggest
 > single lever; `low`/`high`/float-seconds), `JASPER_USBSINK_QUEUE_MAXBLOCKS`,
-> and `JASPER_USBSINK_BLOCK_FRAMES`. Defaults preserve the historical behavior
-> exactly — lower them only while measuring + confirm no xruns. And
+> and `JASPER_USBSINK_BLOCK_FRAMES`. The default bridge block is now 256 frames
+> (one fan-in period) with 16 queued blocks, preserving roughly the old
+> 8×480-frame slack while avoiding period-mismatch bunching that overflowed the
+> bridge queue before the per-input resampler could absorb it. Keep
+> `JASPER_USBSINK_LATENCY` unset/`high` unless a hardware soak proves a lower
+> hint has zero playback callback errors. And
 > `JASPER_USBSINK_OUTPUT_MODE=fifo` switches the bridge to the **lean lane**: a
 > writer thread blocking-writes full S32_LE PCM to `JASPER_USBSINK_FIFO_PATH`
 > for CamillaDSP to File-capture directly, shedding the fan-in input ring.

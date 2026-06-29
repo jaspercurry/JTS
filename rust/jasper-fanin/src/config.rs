@@ -161,15 +161,14 @@ pub struct Config {
     /// `JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM`.
     pub input_resampler_max_adjust_ppm: u32,
 
-    /// Warm-up cushion: the extra frames the input resampler seats its read
-    /// cursor ABOVE `input_resampler_target_frames` on each (re)lock, drained
-    /// back to the target by the DLL over the first ~second. This removes the
-    /// cold-start lock→silence→relock thrash (~27k silence frames / ~62 relock
-    /// cycles seen on-device for the first ~12 s after arming) by giving the
-    /// jittery first seconds of host arrival a full burst of headroom above the
-    /// underfill→silence floor. It does NOT change the steady-state latency (the
-    /// loop's target is still `input_resampler_target_frames`). Default 256
-    /// frames = one render period at 256/48 kHz (~5.3 ms of seating headroom).
+    /// Warm-up cushion: extra frames the input resampler adds to the DLL hold
+    /// target for the armed lane. The earlier c57 path seated the cursor above
+    /// `input_resampler_target_frames` and then drained back to the base target;
+    /// hardware showed that intentional startup over-consumption can lock/unlock
+    /// on the real bursty USB feed. The cushion is now held, so the actual
+    /// steady setpoint is `input_resampler_target_frames + cushion`. Default
+    /// 1024 frames = ~21.3 ms of conservative extra headroom; this remains
+    /// DEFAULT-OFF until the USB soak/cold-start/audibility hardware gate passes.
     /// Env: `JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`.
     pub input_resampler_warmup_cushion_frames: u32,
 
@@ -309,11 +308,11 @@ impl Config {
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", 512)?;
         let input_resampler_max_adjust_ppm =
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", 500)?;
-        // One render period of warm-up cushion by default (256 frames ≈ 5.3 ms
-        // of seating headroom). See the field docs for why this kills the
-        // cold-start thrash without changing steady-state latency.
+        // Four render periods of held warm-up cushion by default (1024 frames
+        // ≈ 21.3 ms). Conservative while DEFAULT-OFF; production enablement is
+        // gated on the USB soak/cold-start/audibility hardware pass.
         let input_resampler_warmup_cushion_frames =
-            env_u32("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", 256)?;
+            env_u32("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", 1024)?;
         // 0 = derive the burst ring from the lane's ALSA input buffer (the prior
         // implicit behaviour); a non-zero value pins an explicit capacity.
         let input_resampler_ring_frames = env_u32("JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES", 0)?;
@@ -592,9 +591,10 @@ mod tests {
                 assert_eq!(cfg.input_resampler_lane_label, "usbsink");
                 assert_eq!(cfg.input_resampler_target_frames, 512);
                 assert_eq!(cfg.input_resampler_max_adjust_ppm, 500);
-                // Warm-up cushion defaults to one render period; the burst ring
-                // is derived (0 → from the ALSA input buffer) unless pinned.
-                assert_eq!(cfg.input_resampler_warmup_cushion_frames, 256);
+                // Warm-up cushion defaults to conservative held headroom; the
+                // burst ring is derived (0 → from the ALSA input buffer) unless
+                // pinned.
+                assert_eq!(cfg.input_resampler_warmup_cushion_frames, 1024);
                 assert_eq!(cfg.input_resampler_ring_frames, 0);
             },
         );
