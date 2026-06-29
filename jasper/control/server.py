@@ -344,8 +344,9 @@ def _active_speaker_grouping_block() -> dict[str, Any] | None:
 # bread-and-butter low-impact controls stay open (the dial never calls
 # these). poweroff/reboot = power loop; mic/mute = defeats the privacy-mic
 # promise; grouping/set = hijacks output routing; restart/voice|audio =
-# disrupt playback + the assistant. WS1 Phase 2 added the two restart routes
-# and made the gate mandatory (control_token.ensure_token() at startup, below).
+# disrupt playback + the assistant; aec/firmware/update downloads and flashes
+# microphone firmware. WS1 Phase 2 added the two restart routes and made the
+# gate mandatory (control_token.ensure_token() at startup, below).
 _TOKEN_GATED_ROUTES = frozenset({
     "/system/poweroff",
     "/system/reboot",
@@ -353,6 +354,7 @@ _TOKEN_GATED_ROUTES = frozenset({
     "/system/restart/audio",
     "/mic/mute",
     "/grouping/set",
+    "/aec/firmware/update",
 })
 
 
@@ -578,6 +580,10 @@ _server_aec_bridge_active_wrapper = _aec_bridge_active
 
 def _kick_aec_reconciler() -> None:
     _aec_endpoints._kick_aec_reconciler()
+
+
+def _start_xvf_firmware_update() -> None:
+    _aec_endpoints._start_xvf_firmware_update()
 
 
 _aec_fresh_jasper_env_impl = _aec_endpoints._fresh_jasper_env
@@ -1946,11 +1952,12 @@ def _make_handler(
             # household credential (X-JTS-Household), which each member verifies
             # against its own persisted copy — NOT the per-device CSRF token a
             # leader can't hold for a follower. Accept EITHER on this route only;
-            # the other gated routes (poweroff/reboot/restart/mic-mute) are
-            # browser->own-speaker and stay control-token-only. household_credential
-            # is fail-safe (absent => accept) so the first bond, which DISTRIBUTES
-            # the secret over this very route, isn't rejected by the gate it
-            # installs. See docs/HANDOFF-control-plane-auth.md §6.
+            # the other gated routes (poweroff/reboot/restart/mic-mute/firmware
+            # update) are browser->own-speaker and stay control-token-only.
+            # household_credential is fail-safe (absent => accept) so the first
+            # bond, which DISTRIBUTES the secret over this very route, isn't
+            # rejected by the gate it installs. See
+            # docs/HANDOFF-control-plane-auth.md §6.
             if self.path == "/grouping/set" and household_credential.verify(
                 self.headers.get("X-JTS-Household")
             ):
@@ -2846,6 +2853,36 @@ def _make_handler(
             self._send_json({"threshold": threshold})
             return
 
+        def _post_aec_firmware_update(self) -> None:
+            status = _aec_full_status()
+            firmware = status.get("firmware_update")
+            action = firmware.get("action") if isinstance(firmware, dict) else {}
+            if not isinstance(action, dict) or not action.get("enabled"):
+                detail = (
+                    firmware.get("detail")
+                    if isinstance(firmware, dict) else
+                    "microphone firmware update is not available"
+                )
+                self._send_json({"error": detail}, status=409)
+                return
+            try:
+                _start_xvf_firmware_update()
+            except (OSError, subprocess.SubprocessError) as e:
+                self._send_json(
+                    {"error": f"firmware update start failed: {e}"},
+                    status=502,
+                )
+                return
+            log_event(
+                logger,
+                "aec.firmware_update.start",
+                client=self.address_string(),
+                target=(firmware.get("target") or {}).get("id")
+                if isinstance(firmware, dict) else "",
+            )
+            self._send_json(_aec_full_status())
+            return
+
         def _post_debug(self) -> None:
             # /system Debug card: raise one subsystem to DEBUG
             # logging. Additive-only + auto-expiring (jasper/
@@ -3078,6 +3115,7 @@ def _make_handler(
             "/aec/leg": "_post_aec_leg",
             "/aec/profile": "_post_aec_profile",
             "/aec/threshold": "_post_aec_threshold",
+            "/aec/firmware/update": "_post_aec_firmware_update",
             "/debug": "_post_debug",
             "/system/audio-quality": "_post_system_audio_quality",
             "/system/restart/voice": "_post_system_action",

@@ -136,6 +136,7 @@ MANAGED_UNITS = frozenset({
 START_ONLY_UNITS = frozenset({
     "jasper-audio-hardware-reconcile.service",
     "jasper-wifi-scan-repair.service",
+    "jasper-xvf-firmware-update.service",
 })
 
 POLKIT_MANAGE_UNITS = MANAGED_UNITS | START_ONLY_UNITS

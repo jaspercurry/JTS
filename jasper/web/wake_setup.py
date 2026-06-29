@@ -51,6 +51,8 @@ URL surface (after nginx strips the /wake/ prefix):
   GET  /                page render
   GET  /detection.json  proxy jasper-control /aec — includes the
                         backend-owned mic_settings view model
+  POST /firmware/update proxy jasper-control /aec/firmware/update — start
+                        a required mic firmware update job
   POST /profile         body {profile: str} — set canonical input profile
   POST /layer/aec       body {enabled: bool} — legacy compatibility shim
                         for the old software-AEC3 toggle; not rendered
@@ -91,6 +93,7 @@ from ._common import (
     canonical_header,
     canonical_page,
     csrf_field_html,
+    forward_control_token_headers,
     proxy_get,
     proxy_post,
     read_env_file,
@@ -262,6 +265,15 @@ def _echo_card_html() -> str:
     <div class="echo-status">
       <div class="echo-status__title" id="echo-status-title">checking…</div>
       <div class="echo-status__detail" id="echo-status-detail">—</div>
+    </div>
+    <div class="firmware-update" id="firmware-update-card" hidden>
+      <div class="firmware-update__copy">
+        <div class="firmware-update__title" id="firmware-update-title">Firmware update</div>
+        <div class="firmware-update__detail" id="firmware-update-detail">—</div>
+        <div class="firmware-update__meta" id="firmware-update-meta">—</div>
+      </div>
+      <button class="btn btn--primary" type="button"
+              id="firmware-update-button" disabled>Download and update firmware</button>
     </div>
     {_profile_rows_html(_ECHO_PROFILES)}
     <div class="mic-status-warning" id="echo-status-warning" hidden></div>
@@ -686,6 +698,21 @@ def _apply_profile(profile: str, *, control_base: str) -> tuple[int, bytes]:
     )
 
 
+def _start_firmware_update(
+    *,
+    control_base: str,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    """Forward the mic firmware-update action to jasper-control."""
+    return proxy_post(
+        "/aec/firmware/update",
+        control_base=control_base,
+        timeout=5.0,
+        body=b"{}",
+        headers=headers,
+    )
+
+
 # ----------------------------------------------------------------------
 # HTTP handler.
 # ----------------------------------------------------------------------
@@ -752,6 +779,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     reject_csrf(self)
                     return
                 self._handle_sensitivity()
+                return
+            if path == "/firmware/update":
+                if not guard_mutating_request(self):
+                    reject_csrf(self)
+                    return
+                status, body = _start_firmware_update(
+                    control_base=cfg["control_base"],
+                    headers=forward_control_token_headers(self),
+                )
+                send_proxy_json(self, body, status=status)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 

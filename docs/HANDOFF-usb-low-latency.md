@@ -16,7 +16,7 @@ Mac→DAC budget measured on jts.local is **~70–100 ms, and variable** — not
 | usbsink→fan-in snd-aloop hop | ~one ring | first loopback |
 | fan-in→CamillaDSP snd-aloop hop | ~one ring | second loopback (current `loopback` coupling) |
 | CamillaDSP chunksize | ~5–20 ms | depends on the active chunksize |
-| jasper-outputd DAC buffer | **20.7 ms** | `snd_pcm_delay`, buffer/period 512/256 |
+| jasper-outputd DAC buffer | **~64 ms shipped default** | `snd_pcm_delay`, buffer/period 3072/1024 (the conservative global default); the Apple-dongle codified floor is 512/256 ≈ 20.7 ms |
 
 Two structural costs dominate: the **catch-up sawtooth** (a drop-control tradeoff —
 the high-water of 14 periods is sized to never false-trigger a healthy AirPlay
@@ -52,12 +52,46 @@ Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared
 2. **Drive the camilla side via the existing lean-config path** (`jasper/usbsink/
    output_mode_reconcile.py` + the lean RawFile capture in `jasper/camilla_config_contract.py`
    — RawFile, not File; the jts5 fix). Confirm `--check` valid and no crash-loop.
-3. **Tune the buffer floors to the DAC's real floor.** outputd DAC 512/256 = 20.7 ms is
-   not the floor — the Apple dongle measured clean to 384/128 (~15 ms) and likely lower.
-   CamillaDSP chunksize to its CPU floor (256). This is the **#27 codification**: the DAC's
-   safe buffer floor belongs in its `DacProfile` (`jasper/audio_hardware/dac.py`) so a new
-   DAC is declaration-only and zero per-user config; outputd reads the active profile's
-   floor. Tier-aware chunksize (Pi 5 low / Pi Zero safe).
+3. **Tune the buffer floors to the DAC's real floor.** DONE (the #27 codification, landed
+   2026-06-28). The DAC's stable buffer floor is now DATA on its `DacProfile`
+   (`jasper/audio_hardware/dac.py`: the `LatencyFloor` dataclass + the optional
+   `latency_floor` field), so a new DAC is declaration-only and zero per-user config.
+   The shipped *global* default stays conservative — CamillaDSP chunk 1024 / target 2048,
+   outputd period 1024 / dac_buffer 3072 (~64 ms) — and any DAC with no declared floor
+   keeps it (non-breaking). The **Apple-dongle profile** declares the measured floor
+   CamillaDSP chunk 256 / target 1024, outputd period 256 / dac_buffer 512 (≈ 20.7 ms),
+   the value the jts.local `jasper.env` override previously produced by hand. The floor is
+   a CamillaDSP (chunksize, target_level) PAIR — target must be ≥ 4x chunk so the resampler
+   has fill headroom (chunk 256 → target 1024), enforced in `LatencyFloor.__post_init__`.
+   Two consumers read the floor, each on its own path:
+   - **The Python CamillaDSP config emitters** (`jasper/sound/camilla_yaml.py` +
+     `jasper/active_speaker/camilla_yaml.py`) resolve the floor *directly from the
+     active output DAC profile* — `resolve_camilla_chunksize` /
+     `resolve_camilla_target_level` read the resolved output-hardware state
+     (`/run/jasper-output-hardware/output_hardware.json`, the SAME state the
+     reconciler / `jasper.output_hardware` use to pick a profile id) and look up that
+     profile's `LatencyFloor`. This is env-independent on purpose: it reaches EVERY
+     live generation path — `install.sh`'s `runtime-safe-graph`, the
+     `jasper-camilla` ExecStartPre statefile guards, and `jasper-control`'s sound /
+     active-speaker generation — none of which load `outputd.env`. Precedence is
+     `JASPER_CAMILLA_CHUNKSIZE`/`_TARGET_LEVEL` (explicit operator env) > active
+     profile floor > global default; a state file that is absent or unreadable simply
+     keeps the global default (a fresh box before the reconciler's first write is
+     non-breaking, never an unloadable config).
+   - **jasper-outputd (Rust)** reads `JASPER_OUTPUTD_PERIOD_FRAMES` /
+     `_DAC_BUFFER_FRAMES`, which `jasper-audio-hardware-reconcile` emits from the
+     active profile via `latency_floor_for(...)` into the wizard-owned `outputd.env`
+     (mirroring the `JASPER_OUTPUTD_ACTIVE_CHANNELS` write). It also mirrors the two
+     CamillaDSP keys there for observability. **Operator override precedence:** the
+     outputd unit loads `jasper.env` BEFORE `outputd.env`, so when an operator sets a
+     floor key in `jasper.env` the reconciler must *remove* that key from
+     `outputd.env` entirely — writing it empty would override the operator's value
+     with empty (and Rust would fall back to its hardcoded default, silently
+     discarding the tune). The reconciler drops the key (via `jasper_env_file_unset`)
+     so the operator's earlier-loaded value wins. A DAC with no declared floor likewise
+     drops the keys so a stale floor from a previously-attached DAC cannot linger.
+   DEFERRED: tier-aware chunksize (Pi 5 low / Pi Zero safe) and an install-time xrun
+   auto-sweep — not yet built.
 4. **Measure end-to-end on jts.local** (Mac→USB, solo): target <60 ms, ideally <40 ms,
    stable; confirm drop-free under sustained play + transitions; soak.
 5. **Cross-platform + cross-DAC reliability** (the product bar): repeat the solo lean-fifo
@@ -71,4 +105,5 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-06-28
+Last verified: 2026-06-29 (#27 latency-floor codification: emitters wired to the
+active profile floor end-to-end; operator-override precedence corrected)

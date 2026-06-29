@@ -147,8 +147,11 @@ def build_microphone_settings_view(status: Mapping[str, Any]) -> dict[str, Any]:
     gate = _mapping(status.get("chip_aec_gate"))
     legs = _mapping(status.get("legs"))
     software = _mapping(status.get("software_aec3"))
+    firmware_update = _mapping(status.get("firmware_update"))
 
     mic_view = _mic_view(mic, gate)
+    if firmware_update:
+        mic_view["firmware_update"] = dict(firmware_update)
     echo_view = _echo_view(
         mic_view=mic_view,
         profile=profile,

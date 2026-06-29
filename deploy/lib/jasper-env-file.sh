@@ -124,3 +124,36 @@ jasper_env_file_set() {
     chmod "$file_mode" "$tmp"
     mv "$tmp" "$file"
 }
+
+# jasper_env_file_unset FILE KEY [FILE_MODE] [DIR_MODE]
+# Atomically REMOVE every KEY= line from FILE (no-op when FILE or the key is
+# absent). Distinct from `jasper_env_file_set FILE KEY ""`, which leaves an
+# explicit `KEY=` empty assignment: that empty assignment, in a file systemd
+# loads via EnvironmentFile= AFTER an earlier file, OVERRIDES the earlier
+# value with empty rather than deferring to it. When an operator-set key in an
+# earlier-loaded file (jasper.env) must win, the reconciler-owned later file
+# (outputd.env) must DROP the key entirely so systemd never sees a shadowing
+# assignment — that is what this helper provides. Returns 0 always; sets nothing
+# new. Modes default to the historical 0600/0755 posture.
+jasper_env_file_unset() {
+    local file="$1" key="$2"
+    local file_mode="${3:-0600}" dir_mode="${4:-0755}"
+    local dir tmp
+
+    [[ -f "$file" ]] || return 0
+    if ! grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
+        return 0
+    fi
+    dir="$(dirname "$file")"
+    [[ -d "$dir" ]] || install -d -m "$dir_mode" "$dir"
+    tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
+    awk -v key="$key" '
+        $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { next }
+        { print }
+    ' "$file" > "$tmp"
+    if [[ -e "$file" ]]; then
+        chown --reference="$file" "$tmp" 2>/dev/null || true
+    fi
+    chmod "$file_mode" "$tmp"
+    mv "$tmp" "$file"
+}

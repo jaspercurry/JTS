@@ -470,6 +470,99 @@ if width:
 PY
 }
 
+# Resolve a recognized DAC's codified stable buffer floor via the Python
+# DacProfile registry (latency_floor_for). Prints four space-separated ints
+# "CAMILLA_CHUNKSIZE CAMILLA_TARGET_LEVEL OUTPUTD_PERIOD OUTPUTD_DAC_BUFFER" for
+# a DAC that declares a floor, or nothing for a DAC with no declared floor
+# (keeps the shipped global defaults) or when Python is unavailable. Mirrors
+# active_lane_channels_for_dac: the registry is the single source of truth, the
+# bash side just shells out to read DATA.
+latency_floor_for_dac() {
+    local dac_id="$1"
+    if [[ -z "$dac_id" ]] || ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+        return 0
+    fi
+    JASPER_DAC_ID_QUERY="$dac_id" "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
+import os
+
+from jasper.audio_hardware.dac import latency_floor_for
+
+floor = latency_floor_for(os.environ["JASPER_DAC_ID_QUERY"])
+if floor is not None:
+    print(
+        floor.camilla_chunksize,
+        floor.camilla_target_level,
+        floor.outputd_period_frames,
+        floor.outputd_dac_buffer_frames,
+    )
+PY
+}
+
+# Emit the active DAC's codified latency floor into the wizard-owned outputd.env
+# (#27), mirroring the JASPER_OUTPUTD_ACTIVE_CHANNELS profile write. An operator
+# override in jasper.env still wins: jasper-outputd loads jasper.env BEFORE
+# outputd.env, so writing the profile floor unconditionally would clobber a
+# hand-set value. Precedence is operator jasper.env > profile floor > default.
+# A DAC with no declared floor (latency_floor None) drops these keys so a stale
+# floor from a previously-attached DAC cannot linger and the global default
+# applies. Sets the LATENCY_FLOOR_CHANGED global to 1 when outputd.env changed.
+LATENCY_FLOOR_CHANGED=0
+apply_latency_floor_env() {
+    LATENCY_FLOOR_CHANGED=0
+    local dac_id="$1"
+    local floor camilla_chunk camilla_target outputd_period outputd_buffer
+    floor="$(latency_floor_for_dac "$dac_id")"
+    if [[ -n "$floor" ]]; then
+        read -r camilla_chunk camilla_target outputd_period outputd_buffer <<<"$floor"
+    else
+        camilla_chunk="" camilla_target="" outputd_period="" outputd_buffer=""
+    fi
+    _emit_floor_key "JASPER_CAMILLA_CHUNKSIZE" "$camilla_chunk"
+    _emit_floor_key "JASPER_CAMILLA_TARGET_LEVEL" "$camilla_target"
+    _emit_floor_key "JASPER_OUTPUTD_PERIOD_FRAMES" "$outputd_period"
+    _emit_floor_key "JASPER_OUTPUTD_DAC_BUFFER_FRAMES" "$outputd_buffer"
+    log_event "latency_floor" \
+        "output_dac_id=${dac_id} camilla_chunksize=${camilla_chunk:-default} camilla_target_level=${camilla_target:-default} outputd_period_frames=${outputd_period:-default} outputd_dac_buffer_frames=${outputd_buffer:-default} changed=${LATENCY_FLOOR_CHANGED}"
+}
+
+# Write one floor key into outputd.env, honoring operator jasper.env > profile
+# floor > default.
+#
+# Operator-set in jasper.env: outputd.env must DROP the key (not write it empty).
+# Both files feed jasper-outputd via EnvironmentFile= with outputd.env loaded
+# LAST, so an explicit empty `KEY=` in outputd.env would OVERRIDE the operator's
+# jasper.env value with empty and Rust would silently fall back to its hardcoded
+# default — discarding the tune. Removing the key entirely lets the operator's
+# earlier-loaded value win (the HIGH inversion fix).
+#
+# Not operator-set: write the profile floor (empty value => unset, dropping any
+# stale floor from a previously-attached DAC so the global default applies).
+_emit_floor_key() {
+    local key="$1" value="$2"
+    if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$ENV_FILE" 2>/dev/null \
+        || [[ -z "$value" ]]; then
+        # Either the operator set this key in jasper.env (drop the reconciler
+        # copy so the operator's earlier-loaded value is not shadowed by an
+        # empty assignment), OR this DAC declares no floor for the key (drop it
+        # so a stale floor from a previously-attached DAC cannot linger; the
+        # global default then applies in the generators / Rust). Both are a
+        # REMOVE, never an empty-write. jasper_env_file_unset is a no-op when
+        # the key is already absent.
+        if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$OUTPUTD_ENV_FILE" 2>/dev/null; then
+            jasper_env_file_unset "$OUTPUTD_ENV_FILE" "$key" 0640 0750
+            LATENCY_FLOOR_CHANGED=1
+        fi
+        return 0
+    fi
+    # set_env_file_var_if_changed returns 1 (no-op) when unchanged; mark the
+    # change flag without letting that nonzero status abort the function under
+    # set -e (the trailing return 0 keeps _emit_floor_key returning 0).
+    if set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "$key" "$value"; then
+        LATENCY_FLOOR_CHANGED=1
+    fi
+    return 0
+}
+
 print_env() {
     printf 'DONGLE_CARD=%s\n' "$(quote_env_value "$DONGLE_CARD")"
     printf 'APPLE_DONGLE_PRESENT=%s\n' "$(quote_env_value "$APPLE_DONGLE_PRESENT")"
@@ -681,6 +774,17 @@ env_changed=0
 set_env_var_if_changed "JASPER_AUDIO_DAC_ID" "$OUTPUT_DAC_ID" && env_changed=1
 set_env_var_if_changed "JASPER_AUDIO_DAC_CARD" "$OUTPUT_DAC_CARD" && env_changed=1
 apply_audio_runtime_env && env_changed=1
+# Emit the active DAC's codified latency floor (#27). For a recognized DAC this
+# is its profile floor (or cleared when the profile declares none); for an
+# unrecognized/parked DAC clear any stale floor with an empty id.
+if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
+    apply_latency_floor_env "$OUTPUT_DAC_ID"
+else
+    apply_latency_floor_env ""
+fi
+if [[ "$LATENCY_FLOOR_CHANGED" == "1" ]]; then
+    env_changed=1
+fi
 
 render_changed=0
 render_asound_if_needed && render_changed=1

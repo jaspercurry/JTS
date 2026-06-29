@@ -116,7 +116,8 @@ A gated request without a matching `X-JTS-Token` header gets a `403
 {"error":"control_token_required"}` (compared in constant time via
 `hmac.compare_digest`). **Volume, transport, source, and the AEC knobs stay
 ungated** — the dial's low-impact controls, which it relies on and which never
-call the gated routes.
+call the gated routes. The XVF3800 firmware-update route is gated because it
+downloads and flashes microphone firmware.
 
 **What it does and does not protect.** Because the token is auto-delivered to
 the dashboard over the same LAN, a determined device on the LAN that fetches the

@@ -618,6 +618,45 @@ def test_aec_full_status_chip_available_tracks_firmware(
     assert server._aec_full_status()["legs"]["chip_aec"]["available"] is True
 
 
+def test_aec_full_status_surfaces_required_xvf_firmware_update(
+    aec_mode_file, wake_model_file, monkeypatch,
+):
+    aec_mode_file.write_text(
+        "JASPER_AUDIO_INPUT_PROFILE=auto\n"
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=0\n"
+    )
+    monkeypatch.setattr(server, "_aec_bridge_active", lambda: False)
+    monkeypatch.setattr(aec_endpoints, "_unit_active", lambda unit: False)
+    monkeypatch.setattr(aec_endpoints, "_read_xvf_firmware_update_state", lambda: {})
+    _stub_xvf_runtime(
+        monkeypatch,
+        variant=xvf3800.VARIANT_2CH,
+        present=True,
+        channels=2,
+    )
+    monkeypatch.setattr(
+        server,
+        "_fresh_jasper_env",
+        lambda: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
+    )
+
+    status = server._aec_full_status()
+
+    assert status["firmware_update"]["state"] == "update_required"
+    assert status["firmware_update"]["required"] is True
+    assert status["firmware_update"]["action"]["enabled"] is True
+    assert status["firmware_update"]["target"]["id"] == "legacy_square_6ch"
+    assert status["firmware_update"]["target"]["sha256"] == (
+        xvf3800.FIRMWARE_KNOWN_GOOD_SHA256
+    )
+    assert status["mic_settings"]["mic"]["firmware_update"]["state"] == (
+        "update_required"
+    )
+
+
 def test_aec_full_status_auto_profile_resolves_chip_when_available(
     aec_mode_file, wake_model_file, monkeypatch,
 ):

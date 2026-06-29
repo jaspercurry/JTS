@@ -38,8 +38,17 @@ DISPLAY_NAME = "Seeed ReSpeaker XVF3800 (USB UA/Flex)"
 # the ReSpeaker Flex linear/circular USB firmware enumerates by firmware
 # family, e.g. `L16K6Ch` for the 16 kHz linear 6-channel build.
 ALSA_CARD_NAME = "Array"
+FLEX_LINEAR_2CH_ALSA_CARD_NAME = "L16K2Ch"
 FLEX_LINEAR_ALSA_CARD_NAME = "L16K6Ch"
-ALSA_CARD_NAMES = (ALSA_CARD_NAME, FLEX_LINEAR_ALSA_CARD_NAME)
+FLEX_CIRCULAR_2CH_ALSA_CARD_NAME = "C16K2Ch"
+FLEX_CIRCULAR_ALSA_CARD_NAME = "C16K6Ch"
+ALSA_CARD_NAMES = (
+    ALSA_CARD_NAME,
+    FLEX_LINEAR_2CH_ALSA_CARD_NAME,
+    FLEX_LINEAR_ALSA_CARD_NAME,
+    FLEX_CIRCULAR_2CH_ALSA_CARD_NAME,
+    FLEX_CIRCULAR_ALSA_CARD_NAME,
+)
 
 
 # ---------------------------------------------------------------------
@@ -99,7 +108,7 @@ class FirmwareVariant:
     bld_msg: str               # BLD_MSG string the chip reports (xvf_host BLD_MSG)
     capture_channels: int      # USB capture endpoint channel count
     raw_mic_indices: tuple[int, ...]  # capture channels carrying raw PDM mic data
-    geometry: str              # square/linear; chip beams and DoA are geometry-specific
+    geometry: str              # square/linear/circular; beams/DoA are geometry-specific
     usb_vid_pid: str = USB_VID_PID
     alsa_card_name: str = ALSA_CARD_NAME
     chip_beam_plan_id: str | None = None
@@ -184,6 +193,39 @@ class RuntimeProfile:
 RECOMMENDED_CAPTURE_CHANNELS = 6
 
 
+@dataclass(frozen=True)
+class FirmwareUpdateTarget:
+    """One firmware update JTS can perform without guessing geometry."""
+
+    target_id: str
+    from_variant_ids: tuple[str, ...]
+    to_variant_id: str
+    label: str
+    geometry: str
+    filename: str
+    url: str
+    sha256: str
+    expected_size_bytes: int
+    upstream_dir_url: str
+    expected_capture_channels: int = RECOMMENDED_CAPTURE_CHANNELS
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.target_id,
+            "from_variant_ids": list(self.from_variant_ids),
+            "to_variant_id": self.to_variant_id,
+            "label": self.label,
+            "geometry": self.geometry,
+            "filename": self.filename,
+            "url": self.url,
+            "sha256": self.sha256,
+            "expected_size_bytes": self.expected_size_bytes,
+            "upstream_dir_url": self.upstream_dir_url,
+            "expected_capture_channels": self.expected_capture_channels,
+            "dfu_alt_setting": DFU_ALT_SETTING,
+        }
+
+
 SQUARE_FIXED_150_210_PLAN = ChipBeamPlan(
     plan_id="xvf_square_fixed_150_210",
     display_name="Square/circular fixed 150/210 ASR beams",
@@ -223,6 +265,16 @@ VARIANT_6CH = FirmwareVariant(
     geometry="square",
     chip_beam_plan_id=SQUARE_FIXED_150_210_PLAN.plan_id,
 )
+VARIANT_FLEX_LINEAR_2CH = FirmwareVariant(
+    variant_id="xvf3800_flex_linear_2ch",
+    display_name="ReSpeaker Flex XVF3800 LINEAR-4 16 kHz 2-channel",
+    bld_msg="ua-io16-2ch-lin",
+    capture_channels=2,
+    raw_mic_indices=(),
+    geometry="linear",
+    usb_vid_pid=FLEX_USB_VID_PID,
+    alsa_card_name=FLEX_LINEAR_2CH_ALSA_CARD_NAME,
+)
 VARIANT_FLEX_LINEAR_6CH = FirmwareVariant(
     variant_id="xvf3800_flex_linear_6ch",
     display_name="ReSpeaker Flex XVF3800 LINEAR-4 16 kHz 6-channel",
@@ -233,13 +285,44 @@ VARIANT_FLEX_LINEAR_6CH = FirmwareVariant(
     usb_vid_pid=FLEX_USB_VID_PID,
     alsa_card_name=FLEX_LINEAR_ALSA_CARD_NAME,
 )
+VARIANT_FLEX_CIRCULAR_2CH = FirmwareVariant(
+    variant_id="xvf3800_flex_circular_2ch",
+    display_name="ReSpeaker Flex XVF3800 Circular-4 16 kHz 2-channel",
+    bld_msg="ua-io16-2ch-cir",
+    capture_channels=2,
+    raw_mic_indices=(),
+    geometry="circular",
+    usb_vid_pid=FLEX_USB_VID_PID,
+    alsa_card_name=FLEX_CIRCULAR_2CH_ALSA_CARD_NAME,
+)
+VARIANT_FLEX_CIRCULAR_6CH = FirmwareVariant(
+    variant_id="xvf3800_flex_circular_6ch",
+    display_name="ReSpeaker Flex XVF3800 Circular-4 16 kHz 6-channel",
+    bld_msg="ua-io16-6ch-cir",
+    capture_channels=6,
+    raw_mic_indices=(2, 3, 4, 5),
+    geometry="circular",
+    usb_vid_pid=FLEX_USB_VID_PID,
+    alsa_card_name=FLEX_CIRCULAR_ALSA_CARD_NAME,
+)
 
 # Required for the reconciler-managed XVF AEC profiles. The bridge opens
 # the 6-channel capture shape for both chip-AEC (fixed beams on ch0/1)
 # and the software-AEC fallback (raw-ish ch1 plus raw mic legs).
 RECOMMENDED_FIRMWARE = VARIANT_6CH
-SUPPORTED_6CH_FIRMWARE = (VARIANT_6CH, VARIANT_FLEX_LINEAR_6CH)
-FIRMWARE_VARIANTS = (VARIANT_2CH, VARIANT_6CH, VARIANT_FLEX_LINEAR_6CH)
+SUPPORTED_6CH_FIRMWARE = (
+    VARIANT_6CH,
+    VARIANT_FLEX_LINEAR_6CH,
+    VARIANT_FLEX_CIRCULAR_6CH,
+)
+FIRMWARE_VARIANTS = (
+    VARIANT_2CH,
+    VARIANT_6CH,
+    VARIANT_FLEX_LINEAR_2CH,
+    VARIANT_FLEX_LINEAR_6CH,
+    VARIANT_FLEX_CIRCULAR_2CH,
+    VARIANT_FLEX_CIRCULAR_6CH,
+)
 VARIANTS_BY_BLD_MSG = {variant.bld_msg: variant for variant in FIRMWARE_VARIANTS}
 VARIANTS_BY_ID = {variant.variant_id: variant for variant in FIRMWARE_VARIANTS}
 
@@ -297,17 +380,23 @@ DFU_ALT_SETTING = 1
 # accurate.
 FIRMWARE_KNOWN_GOOD_AS_OF = "2026-05-15"
 FIRMWARE_BLOB_6CH = "respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin"
-FIRMWARE_BLOB_FLEX_LINEAR_6CH = "respeaker_flex_usb_l16k6ch_v1.0.0.bin"
+FIRMWARE_KNOWN_GOOD_SIZE_BYTES = 933888
+FIRMWARE_BLOB_FLEX_LINEAR_6CH = "respeaker_flex_usb_l16k6ch_v1.0.1.bin"
+FIRMWARE_BLOB_FLEX_CIRCULAR_6CH = "respeaker_flex_usb_c16k6ch_v1.0.1.bin"
+FIRMWARE_KNOWN_GOOD_SHA256 = (
+    "8dd27762ebd87a28f0b4546f1634ece5e7eae308375d66952f7a9e3fb948266a"
+)
 # Built from sw_xvf3800 commit `a1f70651e992d6f0bcff655b26925d33999b9c2d`.
 # The chip reports this via `xvf_host BLD_REPO_HASH` — useful to
 # verify after a flash that you actually wrote what you intended.
 FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH = "a1f70651e992d6f0bcff655b26925d33999b9c2d"
-FIRMWARE_FLEX_LINEAR_KNOWN_GOOD_AS_OF = "2026-06-19"
+FIRMWARE_FLEX_KNOWN_GOOD_AS_OF = "2026-06-29"
+FIRMWARE_FLEX_KNOWN_GOOD_SIZE_BYTES = 929792
 FIRMWARE_FLEX_LINEAR_KNOWN_GOOD_SHA256 = (
-    "136727693ce56cb77953a7db76ec51602971793ff43e42939d89217c305e2ac8"
+    "85743239b4c4b069fb153b4a23f29dde9c29f34768b47601fa92daaaf09f2a99"
 )
-FIRMWARE_FLEX_LINEAR_KNOWN_GOOD_BLD_REPO_HASH = (
-    "4b339d00721937451ee487759c04e2acb3215793"
+FIRMWARE_FLEX_CIRCULAR_KNOWN_GOOD_SHA256 = (
+    "731e3ff77f092dbf301db41f652f02fee762ed634e80bd443811771c76f75af7"
 )
 
 # Upstream firmware directory. Single canonical source for blobs.
@@ -326,6 +415,53 @@ FIRMWARE_RAW_URL_FLEX_LINEAR_6CH = (
     "https://github.com/respeaker/reSpeaker_Flex"
     f"/raw/main/xmos_firmwares/usb/{FIRMWARE_BLOB_FLEX_LINEAR_6CH}"
 )
+FIRMWARE_RAW_URL_FLEX_CIRCULAR_6CH = (
+    "https://github.com/respeaker/reSpeaker_Flex"
+    f"/raw/main/xmos_firmwares/usb/{FIRMWARE_BLOB_FLEX_CIRCULAR_6CH}"
+)
+
+
+FIRMWARE_UPDATE_TARGETS = (
+    FirmwareUpdateTarget(
+        target_id="legacy_square_6ch",
+        from_variant_ids=(VARIANT_2CH.variant_id,),
+        to_variant_id=VARIANT_6CH.variant_id,
+        label="Legacy square/circular XVF3800 USB 6-channel",
+        geometry="square",
+        filename=FIRMWARE_BLOB_6CH,
+        url=FIRMWARE_RAW_URL_6CH,
+        sha256=FIRMWARE_KNOWN_GOOD_SHA256,
+        expected_size_bytes=FIRMWARE_KNOWN_GOOD_SIZE_BYTES,
+        upstream_dir_url=FIRMWARE_UPSTREAM_DIR_URL,
+    ),
+    FirmwareUpdateTarget(
+        target_id="flex_linear_6ch",
+        from_variant_ids=(VARIANT_FLEX_LINEAR_2CH.variant_id,),
+        to_variant_id=VARIANT_FLEX_LINEAR_6CH.variant_id,
+        label="ReSpeaker Flex LINEAR-4 16 kHz 6-channel",
+        geometry="linear",
+        filename=FIRMWARE_BLOB_FLEX_LINEAR_6CH,
+        url=FIRMWARE_RAW_URL_FLEX_LINEAR_6CH,
+        sha256=FIRMWARE_FLEX_LINEAR_KNOWN_GOOD_SHA256,
+        expected_size_bytes=FIRMWARE_FLEX_KNOWN_GOOD_SIZE_BYTES,
+        upstream_dir_url=FIRMWARE_UPSTREAM_FLEX_DIR_URL,
+    ),
+    FirmwareUpdateTarget(
+        target_id="flex_circular_6ch",
+        from_variant_ids=(VARIANT_FLEX_CIRCULAR_2CH.variant_id,),
+        to_variant_id=VARIANT_FLEX_CIRCULAR_6CH.variant_id,
+        label="ReSpeaker Flex Circular-4 16 kHz 6-channel",
+        geometry="circular",
+        filename=FIRMWARE_BLOB_FLEX_CIRCULAR_6CH,
+        url=FIRMWARE_RAW_URL_FLEX_CIRCULAR_6CH,
+        sha256=FIRMWARE_FLEX_CIRCULAR_KNOWN_GOOD_SHA256,
+        expected_size_bytes=FIRMWARE_FLEX_KNOWN_GOOD_SIZE_BYTES,
+        upstream_dir_url=FIRMWARE_UPSTREAM_FLEX_DIR_URL,
+    ),
+)
+FIRMWARE_UPDATE_TARGETS_BY_ID = {
+    target.target_id: target for target in FIRMWARE_UPDATE_TARGETS
+}
 
 
 # ---------------------------------------------------------------------
@@ -411,13 +547,116 @@ def variant_for_card(
     card: str,
     capture_channel_count: int | None,
 ) -> FirmwareVariant | None:
+    if card == FLEX_LINEAR_2CH_ALSA_CARD_NAME and capture_channel_count == 2:
+        return VARIANT_FLEX_LINEAR_2CH
     if card == FLEX_LINEAR_ALSA_CARD_NAME and capture_channel_count == 6:
         return VARIANT_FLEX_LINEAR_6CH
+    if card == FLEX_CIRCULAR_2CH_ALSA_CARD_NAME and capture_channel_count == 2:
+        return VARIANT_FLEX_CIRCULAR_2CH
+    if card == FLEX_CIRCULAR_ALSA_CARD_NAME and capture_channel_count == 6:
+        return VARIANT_FLEX_CIRCULAR_6CH
     if card == ALSA_CARD_NAME and capture_channel_count == 6:
         return VARIANT_6CH
     if card == ALSA_CARD_NAME and capture_channel_count == 2:
         return VARIANT_2CH
     return None
+
+
+def firmware_update_target_for_profile(
+    profile: RuntimeProfile,
+) -> FirmwareUpdateTarget | None:
+    """Return the safe update target for this exact detected mic profile."""
+
+    variant_id = profile.variant_id
+    if not variant_id:
+        return None
+    for target in FIRMWARE_UPDATE_TARGETS:
+        if variant_id in target.from_variant_ids:
+            return target
+    return None
+
+
+def firmware_update_status(
+    profile: RuntimeProfile | None = None,
+    *,
+    service_active: bool = False,
+    last_update: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the read-only firmware update card for /wake/.
+
+    This is intentionally declarative: it decides whether JTS knows a safe,
+    hash-pinned update for the detected geometry. It does not download or flash.
+    """
+
+    profile = profile or detect_runtime_profile()
+    target = firmware_update_target_for_profile(profile)
+    current = profile.as_dict()
+    last = dict(last_update or {})
+    last_state = str(last.get("state") or "")
+    if service_active:
+        state = "updating"
+        title = "Updating microphone firmware"
+        detail = str(last.get("detail") or "Firmware update is running.")
+        required = True
+    elif last_state == "failed" and target is not None:
+        state = "failed"
+        title = "Microphone firmware update failed"
+        detail = str(
+            last.get("error") or last.get("detail") or
+            "The previous firmware update failed. You can retry the update."
+        )
+        required = True
+    elif not profile.present:
+        state = "no_mic"
+        title = "No microphone firmware update"
+        detail = "Connect a supported XVF3800 microphone before updating firmware."
+        required = False
+    elif profile.capture_channels == RECOMMENDED_CAPTURE_CHANNELS:
+        state = "current"
+        title = "Microphone firmware is current"
+        detail = f"{profile.display_name} exposes the required 6-channel capture path."
+        required = False
+    elif target is not None:
+        state = "update_required"
+        title = "Microphone firmware update required"
+        detail = (
+            f"{profile.display_name} exposes {profile.capture_channels} capture "
+            "channels. Hardware echo cancellation requires the 6-channel "
+            f"{target.geometry} firmware."
+        )
+        required = True
+    elif profile.variant is not None:
+        state = "unsupported"
+        title = "No safe firmware update is available"
+        detail = (
+            f"{profile.display_name} was detected, but JTS has no hash-pinned "
+            "firmware update manifest for this exact geometry."
+        )
+        required = False
+    else:
+        state = "unknown"
+        title = "Microphone firmware is unknown"
+        detail = (
+            "A supported XVF-like microphone is present, but JTS cannot identify "
+            "its geometry and firmware. Firmware updates are disabled."
+        )
+        required = False
+    return {
+        "schema_version": 1,
+        "state": state,
+        "required": required,
+        "updating": service_active,
+        "title": title,
+        "detail": detail,
+        "current": current,
+        "target": target.as_dict() if target else None,
+        "last_update": last,
+        "action": {
+            "enabled": bool(target and not service_active),
+            "label": "Download and update firmware",
+            "danger": True,
+        },
+    }
 
 
 def chip_beam_plan(plan_id: str | None) -> ChipBeamPlan | None:
