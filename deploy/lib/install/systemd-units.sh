@@ -76,6 +76,9 @@ install_local_audio_graph_unit_files() {
         "${REPO_DIR}/deploy/systemd/jasper-doctor-json.service" \
         "${SYSTEMD_DIR}/jasper-doctor-json.service"
     install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-xvf-firmware-update.service" \
+        "${SYSTEMD_DIR}/jasper-xvf-firmware-update.service"
+    install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-audio-hardware-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
     install -m 0755 \
@@ -550,6 +553,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-doctor-json.service" \
         "${SYSTEMD_DIR}/jasper-doctor-json.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-xvf-firmware-update.service" \
+        "${SYSTEMD_DIR}/jasper-xvf-firmware-update.service"
     # jasper-input: third-party HID accessory bridge (Anticater VK-01
     # volume knob today; future macro pads / foot pedals). Reads
     # /dev/input/event* via python-evdev, translates known devices'

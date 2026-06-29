@@ -245,6 +245,27 @@ def test_install_sh_routes_outputd_statefile_through_runtime_contract():
     assert "config_path: /etc/camilladsp/outputd-cutover.yml" not in body
 
 
+def test_install_sh_writes_output_hardware_before_flat_statefile_seed():
+    """Fresh-flat startup needs output_hardware.json before rendering the base
+    graph and before runtime-safe-graph writes outputd-statefile.yml."""
+    body = INSTALL_SH.read_text()
+    assert "ensure_output_hardware_state" in body
+    assert "render_outputd_cutover_config" in body
+    assert "emit_flat_outputd_cutover_config" in body
+
+    normal_install = body.index("install_jasper\n")
+    state = body.index("ensure_output_hardware_state", normal_install)
+    render = body.index("render_outputd_cutover_config", state)
+    seed = body.index("ensure_outputd_camilla_statefile", render)
+    assert normal_install < state < render < seed
+
+    streambox_install = body.index("install_streambox_jasper\n")
+    state = body.index("ensure_output_hardware_state", streambox_install)
+    render = body.index("render_outputd_cutover_config", state)
+    seed = body.index("ensure_outputd_camilla_statefile", render)
+    assert streambox_install < state < render < seed
+
+
 def test_unit_documents_no_config_recovery_path():
     """The recovery path for "bad correction wedges the speaker" is
     to add --no_config to the ExecStart args. Pin the inline doc so

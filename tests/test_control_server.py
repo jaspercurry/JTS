@@ -1057,6 +1057,62 @@ def test_aec_profile_restarts_reconciler(
     ]
 
 
+def test_aec_firmware_update_starts_when_required(
+    monkeypatch, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    starts = []
+    status_payload = {
+        "firmware_update": {
+            "state": "update_required",
+            "detail": "2-channel firmware detected",
+            "target": {"id": "legacy_square_6ch"},
+            "action": {"enabled": True},
+        }
+    }
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: status_payload)
+    monkeypatch.setattr(
+        srv_mod, "_start_xvf_firmware_update", lambda: starts.append("start"),
+    )
+
+    status, body = _post(f"{base}/aec/firmware/update", {})
+
+    assert status == 200
+    assert body == status_payload
+    assert starts == ["start"]
+
+
+def test_aec_firmware_update_refuses_when_not_available(
+    monkeypatch, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    starts = []
+    monkeypatch.setattr(
+        srv_mod,
+        "_aec_full_status",
+        lambda: {
+            "firmware_update": {
+                "state": "current",
+                "detail": "Microphone firmware is current",
+                "action": {"enabled": False},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        srv_mod, "_start_xvf_firmware_update", lambda: starts.append("start"),
+    )
+
+    status, body = _post(f"{base}/aec/firmware/update", {})
+
+    assert status == 409
+    assert body["error"] == "Microphone firmware is current"
+    assert starts == []
+
+
 # ---------- POST /grouping/set (the bond-forming control endpoint) ----------
 
 
@@ -4654,6 +4710,7 @@ def test_grouping_set_stays_in_token_gated_routes():
         "/system/restart/audio",
         "/mic/mute",
         "/grouping/set",
+        "/aec/firmware/update",
     })
 
 
@@ -4864,6 +4921,7 @@ def test_household_credential_not_accepted_on_other_gated_routes(
     for route in (
         "/system/poweroff", "/system/reboot", "/mic/mute",
         "/system/restart/voice", "/system/restart/audio",
+        "/aec/firmware/update",
     ):
         status, body = _post(
             f"{base}{route}", {"muted": True},

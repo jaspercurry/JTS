@@ -69,6 +69,45 @@
   line-height: 1.45;
   margin-top: 0.18rem;
 }
+.firmware-update {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.85rem;
+  align-items: center;
+  margin: 0 0 0.85rem;
+  padding: 0.75rem;
+  border: 1px solid color-mix(in oklch, var(--status-warn) 35%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--status-warn) 9%, var(--card));
+}
+.firmware-update[data-state="current"] {
+  border-color: color-mix(in oklch, var(--status-ok) 35%, var(--border));
+  background: color-mix(in oklch, var(--status-ok) 7%, var(--card));
+}
+.firmware-update[data-state="unknown"],
+.firmware-update[data-state="unsupported"],
+.firmware-update[data-state="failed"] {
+  border-color: color-mix(in oklch, var(--status-danger) 35%, var(--border));
+  background: color-mix(in oklch, var(--status-danger) 7%, var(--card));
+}
+.firmware-update__title {
+  color: var(--foreground);
+  font-size: 0.95rem;
+  font-weight: 650;
+}
+.firmware-update__detail {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.4;
+  margin-top: 0.12rem;
+}
+.firmware-update__meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  margin-top: 0.22rem;
+  overflow-wrap: anywhere;
+}
 .profile-row {
   display: flex;
   align-items: center;
@@ -120,6 +159,12 @@
   }
   .profile-row {
     align-items: flex-start;
+  }
+  .firmware-update {
+    grid-template-columns: 1fr;
+  }
+  .firmware-update .btn {
+    width: 100%;
   }
   .profile-row .badge {
     margin-top: 0.05rem;

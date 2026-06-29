@@ -127,7 +127,7 @@ def test_camilla_emitters_emit_byte_identical_yaml_when_env_unset(monkeypatch):
 # --- #27: the active DAC profile floor reaches a GENERATED CamillaDSP config ---
 # The keystone claim the prior tests did NOT cover: not "the resolver returns N"
 # but "a config GENERATED for the Apple-dongle profile actually carries
-# chunksize 256 / target_level 1024." These run the live emitters (sound +
+# chunksize 256 / target_level 1536." These run the live emitters (sound +
 # active-speaker) with the active output-hardware state staged, then parse the
 # emitted YAML's devices: block — proving the floor is in the config a daemon
 # would load, with the operator-env > profile-floor > global precedence.
@@ -164,12 +164,34 @@ def _generated_sound_devices(monkeypatch, tmp_path, profile_id: str) -> dict:
 
 
 def test_generated_sound_config_uses_apple_dongle_floor(monkeypatch, tmp_path):
-    """Apple-dongle profile => generated CamillaDSP config carries 256 / 1024."""
+    """Apple-dongle profile => generated CamillaDSP config carries 256 / 1536."""
     monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
     monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
     parsed = _generated_sound_devices(monkeypatch, tmp_path, "apple_usb_c_dongle")
     assert parsed["chunksize"] == 256
-    assert parsed["target_level"] == 1024
+    assert parsed["target_level"] == 1536
+
+
+def test_fresh_flat_outputd_cutover_uses_apple_dongle_floor(monkeypatch, tmp_path):
+    """Fresh flat startup config is generated with the active profile floor.
+
+    This pins the #27 blocker: the installed flat cutover path must not keep
+    booting an Apple-dongle box at the static 1024 / 2048 default.
+    """
+    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
+    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
+    _stage_output_profile(monkeypatch, tmp_path, "apple_usb_c_dongle")
+
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    out = tmp_path / "outputd-cutover.yml"
+    parsed = parse_camilla_devices_config(
+        emit_flat_outputd_cutover_config(out_path=out)
+    )
+    assert out.exists()
+    assert parsed["chunksize"] == 256
+    assert parsed["target_level"] == 1536
+    assert parsed["playback_device"] == "outputd_content_playback"
 
 
 def test_generated_sound_config_dac8x_uses_global_default(monkeypatch, tmp_path):
@@ -230,7 +252,7 @@ def test_generated_active_speaker_baseline_uses_apple_dongle_floor(
     )
     parsed = parse_camilla_devices_config(yaml)
     assert parsed["chunksize"] == 256
-    assert parsed["target_level"] == 1024
+    assert parsed["target_level"] == 1536
 
 
 def test_total_positive_boost_db_sums_only_boosts():

@@ -57,6 +57,8 @@ _STEP_TO_PLAN_MARKER = {
     "set_usb_gadget_mode": "USB gadget dtoverlay",
     "tune_wifi_for_airplay": "Disable WiFi power-save on the active wlan0",
     "install_jasper": "Copy Python source",
+    "ensure_output_hardware_state": "Write output hardware state before Camilla statefile seed",
+    "render_outputd_cutover_config": "Render outputd flat startup config with active DAC latency floor",
     "build_install_jasper_fanin": "jasper-fanin Rust daemon",
     "build_install_jasper_outputd": "jasper-outputd daemon from rust/jasper-outputd",
     "install_systemd_units": "Enable socket-activated setup wizards",

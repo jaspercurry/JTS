@@ -1246,7 +1246,7 @@ def test_reconcile_apple_emits_codified_latency_floor(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_CAMILLA_CHUNKSIZE=256" in outputd_env
-    assert "JASPER_CAMILLA_TARGET_LEVEL=1024" in outputd_env
+    assert "JASPER_CAMILLA_TARGET_LEVEL=1536" in outputd_env
     assert "JASPER_OUTPUTD_PERIOD_FRAMES=256" in outputd_env
     assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512" in outputd_env
     assert (
