@@ -89,6 +89,22 @@ CLI `jasper-fanin-coupling-reconcile <loopback|fifo>`):
 dropped_periods,reopen_count}` + transport; `jasper-doctor`'s
 `check_fanin_coupling` warns when the persisted intent (`fanin.env`) and the
 loaded CamillaDSP capture disagree (the half-applied / crash-loop precursor).
+
+**Dangling-lean strand — two-layer floor (2026-06).** A crash BETWEEN
+enter-lean and leave-lean can leave CamillaDSP's persisted `--statefile`
+pointing at the lean RawFile config while its `/run` capture pipe is gone (the
+producer reverted to the aloop lane). A camilla restart then reloads the
+dangling config and crash-loops on the absent pipe. Two independent fixes guard
+this: (1) **runtime** — `restore_buffered_config` (leave-lean) re-points off
+lean whenever the LIVE camilla config OR the on-disk statefile names lean, so it
+no longer no-ops on the live read alone (`event=sound.lean_leave trigger=strand`
+when the on-disk statefile drove the repair); (2) **boot-time floor** —
+`jasper-camilla-pipe-guard` (ExecStartPre) inspects the statefile config's
+RawFile CAPTURE filename and, if it is an absent `/run` pipe, re-points the
+statefile to the base config before camilla launches
+(`event=camilla_pipe_guard.repaired reason=capture_pipe_absent`). The pipe-guard
+is the durable floor: even if the runtime path is skipped (process killed before
+leave-lean), the next restart cannot crash-loop.
 **Test gap:** the string tests assert `type: RawFile` (+ `File` absent); the real
 `camilladsp --check` gate runs on-device (the deploy's sound reconcile, now
 env-hydrated so it sees the persisted coupling — [`jasper.cli.sound`](../jasper/cli/sound.py)).

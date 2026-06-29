@@ -39,6 +39,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
 RECONCILE_PROFILE_ID = "reconcile-current-dsp"
 
+# CamillaDSP's persisted --statefile (the path it reloads on every restart).
+# The runtime never WRITES this file (camilla owns it, persisting its loaded
+# config path continuously); leave-lean reads it to break the dangling-lean
+# strand: if a crash between enter and leave left the statefile pointing at
+# the lean File-capture config, the persisted path is dangling and a camilla
+# restart would crash-loop on the absent pipe. Reading it lets leave-lean
+# re-point camilla (and therefore the statefile camilla re-persists) off lean
+# even when the live get_config_file_path read is momentarily unavailable.
+DEFAULT_CAMILLA_STATEFILE = Path("/var/lib/camilladsp/outputd-statefile.yml")
+_STATEFILE_CONFIG_PATH_RE = re.compile(
+    r"""^[ \t]*config_path:[ \t]*["']?([^"'\n]+?)["']?[ \t]*$""",
+    re.MULTILINE,
+)
+
 # Stage-4b lean-lane staging artifact. stage_lean_capture_config emits +
 # validates + classifies a lean File-capture config WITHOUT live-loading — the
 # smallest safe step that proves a lean config is statically valid and
@@ -118,6 +132,26 @@ def _paths_match(left: str | Path, right: str | Path) -> bool:
         return Path(left).resolve() == Path(right).resolve()
     except OSError:
         return Path(left) == Path(right)
+
+
+def _statefile_config_path(statefile_path: str | Path) -> str | None:
+    """The ``config_path:`` CamillaDSP persisted in its ``--statefile``.
+
+    Returns ``None`` when the statefile is absent/unreadable/has no
+    ``config_path`` — every caller treats that as "no independent evidence
+    of a dangling lean strand" and falls back to the live camilla read.
+    Best-effort: never raises (it runs in the leave-lean unwind path).
+    """
+
+    try:
+        text = Path(statefile_path).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    m = _STATEFILE_CONFIG_PATH_RE.search(text)
+    if not m:
+        return None
+    value = m.group(1).strip()
+    return value or None
 
 
 def _resolve_coupling_capture_kwargs(coupling: str | None) -> dict[str, object]:
@@ -634,21 +668,40 @@ async def restore_buffered_config(
     profile_path: str | Path = PROFILE_PATH,
     config_dir: str | Path = DEFAULT_CONFIG_DIR,
     camilla_factory: Callable[[], Any] = default_camilla_factory,
+    statefile_path: str | Path = DEFAULT_CAMILLA_STATEFILE,
 ) -> dict[str, Any] | None:
     """Leave-lean: restore the buffered (ALSA fan-in capture) sound config.
 
-    The unwind sibling of :func:`apply_lean_capture_config`. NO-OP fast path
-    when CamillaDSP is not on the lean config (the common case — the lean lane
-    is rarely live), so a buffered ``_tick`` never churns CamillaDSP. Returns
-    ``None`` for the no-op, the apply state dict when it actually restored.
+    The unwind sibling of :func:`apply_lean_capture_config`. Re-points
+    CamillaDSP off the lean File-capture config whenever the lean config is the
+    persisted/live one — re-emitting the buffered config from SAVED INTENT and
+    loading it. Returns ``None`` for the no-op, the apply state dict when it
+    actually restored.
+
+    DANGLING-LEAN STRAND (the incident): the lean config's RawFile CAPTURE is a
+    named pipe under ``/run``; if usbsink/fan-in later reverts off the lean lane
+    the pipe disappears, and a camilla restart that reloads the persisted lean
+    config crash-loops on the absent pipe. A pure live-``get_config_file_path``
+    check is not enough: a crash BETWEEN enter and leave can leave the statefile
+    pointing at lean while the live read is momentarily unavailable. So we treat
+    the lean config as "needs restoring" when **either** CamillaDSP is live on it
+    **or** the on-disk ``--statefile`` still names it. Loading the buffered
+    config moves both the live graph and the statefile (which camilla
+    re-persists) off lean — UNCONDITIONALLY relative to the live read alone, so a
+    crash between enter and leave cannot strand the dangling config. The
+    pipe-guard ExecStartPre is the boot-time floor under this; this is the
+    runtime sibling that fixes it before a restart is even needed.
+
+    The genuine NO-OP stays narrow: CamillaDSP is live on a NON-lean config AND
+    the statefile names a NON-lean config (the common steady state). That
+    protects a user's room-correction profile applied outside the lean lane from
+    being clobbered by a buffered re-emit.
 
     RESTORE ALWAYS SUCCEEDS by construction (mirrors ``restore_solo_config``):
-    it re-emits the buffered sound config from SAVED INTENT (profile + settings)
-    through the carrier and loads it. The lean config is only ever applied on a
-    solo stereo-host graph, so the buffered re-emit is always a stereo-host
-    re-emit — the carrier cannot refuse it. A reload failure rolls back to the
-    prior (lean) config via the apply engine and re-raises, so the speaker is
-    never stranded on a half-applied graph.
+    the lean config is only ever applied on a solo stereo-host graph, so the
+    buffered re-emit is always a stereo-host re-emit — the carrier cannot refuse
+    it. A reload failure rolls back to the prior config via the apply engine and
+    re-raises, so the speaker is never stranded on a half-applied graph.
     """
 
     from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
@@ -661,8 +714,14 @@ async def restore_buffered_config(
 
     async with dsp_writer_lock(config_path):
         current_path = await cam.get_config_file_path(best_effort=True)
-        # Fast NO-OP: only act when CamillaDSP is actually on the lean config.
-        if not current_path or not _paths_match(current_path, lean_path):
+        live_on_lean = current_path is not None and _paths_match(current_path, lean_path)
+        # Independent on-disk evidence: a crash between enter and leave can leave
+        # the persisted statefile pointing at lean even when the live read is
+        # momentarily unavailable. Re-point in that case too so the strand is
+        # never carried into the next camilla restart.
+        persisted = _statefile_config_path(statefile_path)
+        statefile_on_lean = persisted is not None and _paths_match(persisted, lean_path)
+        if not live_on_lean and not statefile_on_lean:
             return None
 
         profile = load_profile(profile_path)
@@ -704,6 +763,10 @@ async def restore_buffered_config(
         logger,
         "sound.lean_leave",
         result="restored",
+        # "strand" = the live read was off-lean but the persisted statefile
+        # still named lean (a crash between enter and leave) — surface it so
+        # the recovery is visible, not silent.
+        trigger="strand" if not live_on_lean else "live",
         candidate=str(out_path),
         active=apply_state.active_config_path,
         room_peqs=apply_state.room_peq_count or 0,

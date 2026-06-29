@@ -845,6 +845,19 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   stays bonded so the next reconcile re-applies the bond when snapserver
   is healthy; `event=camilla_pipe_guard.*` + the `leader pipe` doctor
   check surface the degraded state.
+  **Second dead-pipe class — lean CAPTURE pipe (2026-06):** the same
+  guard also inspects the statefile config's RawFile CAPTURE source. The
+  lean / FIFO-coupling lane captures from a named pipe under `/run`
+  (`/run/jasper-usbsink/lean.pipe`, `/run/jasper-fanin/camilla.pipe`); if
+  usbsink/fan-in reverts off the lean lane the pipe disappears, and a
+  camilla restart that reloads the persisted lean config crash-loops on
+  the absent capture pipe (THE incident). When the config's capture
+  filename is a `/run` pipe that does not exist, the guard re-points the
+  statefile to the base config too (`event=camilla_pipe_guard.repaired
+  reason=capture_pipe_absent`). The runtime sibling that prevents the
+  strand in the first place is `restore_buffered_config` (leave-lean),
+  which now re-points off lean whenever the live OR persisted config names
+  lean — see [HANDOFF-audio-latency-foundation.md](HANDOFF-audio-latency-foundation.md).
   **PR-2 (built 2026-06-11):** outputd grew a TTS server
   (`rust/jasper-outputd/src/tts.rs`) speaking fanin's exact newline-framed
   wire protocol (GAIN / PREPARE_ASSISTANT / SEGMENT_* / AUDIO /

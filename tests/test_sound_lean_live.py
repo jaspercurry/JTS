@@ -184,6 +184,127 @@ async def test_restore_always_succeeds_even_from_lean_only_graph(tmp_path):
     assert result["result"] == "success"
 
 
+def _write_statefile(tmp_path: Path, config_path) -> Path:
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f'config_path: "{config_path}"\nvolume:\n- 0.0\n')
+    return statefile
+
+
+@pytest.mark.asyncio
+async def test_restore_repoints_dangling_statefile_strand_when_live_off_lean(tmp_path):
+    """THE INCIDENT durability fix: a crash BETWEEN enter and leave can leave the
+    persisted --statefile pointing at the lean (RawFile /run pipe) config while
+    the LIVE camilla read is off-lean (e.g. the box already restarted onto a
+    non-lean config, or the read is momentarily unavailable). restore must NOT
+    no-op on the live read alone — it re-points off lean so the dangling strand
+    is never carried into the next camilla restart (which would crash-loop)."""
+    lean_path = lean_live_config_path(tmp_path)
+    # Seed a lean config on disk (as if a prior enter emitted it).
+    cam_seed = _FakeCamilla(str(BASE_CONFIG_PATH))
+    await apply_lean_capture_config(
+        profile_path=tmp_path / "noprofile.json",
+        config_dir=tmp_path,
+        camilla_factory=_factory(cam_seed),
+    )
+    assert lean_path.exists()
+
+    # Live camilla is NOT on lean (off-lean read), but the persisted statefile
+    # STILL names the lean config — the dangling strand.
+    statefile = _write_statefile(tmp_path, lean_path)
+    cam = _FakeCamilla(str(BASE_CONFIG_PATH))  # off-lean live read
+
+    result = await restore_buffered_config(
+        profile_path=tmp_path / "noprofile.json",
+        config_dir=tmp_path,
+        camilla_factory=_factory(cam),
+        statefile_path=statefile,
+    )
+    # Re-pointed off lean: the buffered config was loaded (which moves the
+    # statefile camilla re-persists off the dangling lean path).
+    assert result is not None
+    buffered = sound_config_path(tmp_path)
+    assert cam.path == str(buffered)
+    assert cam.loads == [str(buffered)]
+
+
+@pytest.mark.asyncio
+async def test_restore_repoints_strand_even_when_camilla_unreachable_read(tmp_path):
+    """When the live read is unavailable (None) but the statefile names lean,
+    restore still proceeds — so a transient broker outage during leave cannot
+    silently strand the dangling config."""
+    lean_path = lean_live_config_path(tmp_path)
+    cam_seed = _FakeCamilla(str(BASE_CONFIG_PATH))
+    await apply_lean_capture_config(
+        profile_path=tmp_path / "noprofile.json",
+        config_dir=tmp_path,
+        camilla_factory=_factory(cam_seed),
+    )
+    statefile = _write_statefile(tmp_path, lean_path)
+    cam = _FakeCamilla(None)  # live read returns None (best-effort unavailable)
+
+    result = await restore_buffered_config(
+        profile_path=tmp_path / "noprofile.json",
+        config_dir=tmp_path,
+        camilla_factory=_factory(cam),
+        statefile_path=statefile,
+    )
+    assert result is not None
+    buffered = sound_config_path(tmp_path)
+    assert cam.loads == [str(buffered)]
+
+
+@pytest.mark.asyncio
+async def test_restore_noop_when_statefile_names_nonlean_and_live_off_lean(tmp_path):
+    """The genuine NO-OP must stay narrow: live camilla off lean AND the
+    statefile also names a NON-lean config (the steady state, e.g. a user's
+    room-correction profile applied outside the lean lane). restore must NOT
+    clobber it with a buffered re-emit."""
+    correction = tmp_path / "correction_profile.yml"
+    correction.write_text("devices: {}\n")
+    statefile = _write_statefile(tmp_path, correction)  # statefile off lean
+    cam = _FakeCamilla(str(correction))  # live read off lean
+
+    result = await restore_buffered_config(
+        profile_path=tmp_path / "noprofile.json",
+        config_dir=tmp_path,
+        camilla_factory=_factory(cam),
+        statefile_path=statefile,
+    )
+    assert result is None
+    assert cam.loads == []
+
+
+@pytest.mark.asyncio
+async def test_restore_never_persists_run_capture_config_after_restore(tmp_path):
+    """The guard pin: after a restore, neither the LIVE camilla config nor the
+    config camilla would persist may be a /run-capture (lean) config. The whole
+    point of the strand fix is that a restore never LEAVES the dangling lean
+    config as the persisted path."""
+    lean_path = lean_live_config_path(tmp_path)
+    cam = _FakeCamilla(str(BASE_CONFIG_PATH))
+    await apply_lean_capture_config(
+        profile_path=tmp_path / "noprofile.json",
+        config_dir=tmp_path,
+        camilla_factory=_factory(cam),
+    )
+    # camilla is now live on lean (a real enter). Statefile mirrors that.
+    statefile = _write_statefile(tmp_path, lean_path)
+    assert cam.path == str(lean_path)
+
+    await restore_buffered_config(
+        profile_path=tmp_path / "noprofile.json",
+        config_dir=tmp_path,
+        camilla_factory=_factory(cam),
+        statefile_path=statefile,
+    )
+    # Live camilla is off lean now, and the config it holds (what it would
+    # persist to the statefile) is NOT the /run-capture lean config.
+    assert cam.path != str(lean_path)
+    final_yaml = Path(cam.path).read_text()
+    assert "/run/jasper-usbsink/lean.pipe" not in final_yaml
+    assert "type: RawFile" not in final_yaml
+
+
 def test_lean_live_config_name_is_jts_generated():
     # The leave-lean restore resolves the carrier for the lean config; it MUST
     # be recognized as JTS-generated or restore would fail closed to unknown.
