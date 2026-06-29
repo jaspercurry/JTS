@@ -74,8 +74,11 @@ class FakeRelayBackend:
                 return RelayResponse(204, {}, b"")
         return jr(404, {"error": "not_found"})
 
-    def phone_arm(self, sid):
-        self.sessions[sid]["event"] = {"armed": True}
+    def phone_arm(self, sid, device=None):
+        event = {"armed": True}
+        if device is not None:
+            event["device"] = device
+        self.sessions[sid]["event"] = event
 
     def phone_upload(self, sid, content_key, wav):
         iv = os.urandom(crypto.IV_BYTES)
@@ -137,9 +140,11 @@ def test_run_and_store_feeds_the_verified_wav(tmp_path):
         relay_base="https://relay.test", capture_origin="capture.test",
     )
     wav = b"RIFF" + bytes(range(200)) * 4
+    device = {"label": "iPhone Microphone"}
     armed_calls = []
-    # The phone arms (it is recording) before the Pi's first poll.
-    backend.phone_arm(rc.pi_session.session_id)
+    # The phone arms (it is recording) before the Pi's first poll, reporting which
+    # mic it used.
+    backend.phone_arm(rc.pi_session.session_id, device=device)
 
     def on_armed():
         # The host plays the stimulus; the phone finishes its window and uploads.
@@ -151,9 +156,11 @@ def test_run_and_store_feeds_the_verified_wav(tmp_path):
         client, rc.pi_session, out,
         on_armed=on_armed, poll_interval_s=0.0, timeout_s=5.0, sleep=lambda _s: None,
     )
-    # Written verbatim to the per-position path the host then feeds to analysis.
-    assert result == out
+    # WAV written verbatim to the per-position path the host feeds to analysis; the
+    # CaptureResult also carries the phone-reported device for the cal gate.
     assert out.read_bytes() == wav
+    assert result.wav == wav
+    assert result.device == device
     assert armed_calls == [True]  # stimulus fired exactly once
     # Relay session purged after the verified pull.
     assert rc.pi_session.session_id not in backend.sessions
@@ -193,11 +200,74 @@ def test_endpoint_state_guard_rejects_wrong_state(monkeypatch):
         correction_setup._handle_relay_capture(None)
 
 
+def test_relay_device_calibration_block():
+    # Device-aware, POST-capture: the phone may use its built-in mic OR a USB-C
+    # measurement mic plugged into it, so the decision keys off the reported device.
+    import types
+
+    from jasper.web import correction_setup
+
+    block = correction_setup._relay_device_calibration_block
+    vendor = types.SimpleNamespace(
+        provider="dayton_audio", model="iMM-6", label="Dayton Audio iMM-6"
+    )
+    # No calibration loaded → always allow (nothing to mis-apply).
+    assert block(None, None) is None
+    assert block(None, {"label": "iPhone Microphone"}) is None
+    # Calibration loaded but the phone reported no device → refuse (can't verify).
+    msg = block(vendor, None)
+    assert msg is not None and "didn't report" in msg
+    # Calibration loaded + the phone's built-in mic → refuse (would mis-correct).
+    assert block(vendor, {"label": "iPhone Microphone"}) is not None
+    # Calibration loaded + the matching USB measurement mic → allow; the curve is
+    # applied Pi-side during analysis.
+    assert block(vendor, {"label": "UMIK-1"}) is None
+
+
+def test_open_capture_is_kind_agnostic():
+    # The generic open_capture mints+registers ANY spec, so a new kind needs no
+    # per-kind adapter function — here the sync_marker spec, the second caller.
+    from jasper.capture_relay.spec import build_sync_marker_spec
+
+    backend = FakeRelayBackend()
+    client = RelayClient("https://relay.test", transport=backend)
+    rc = adapter.open_capture(
+        client,
+        build_sync_marker_spec(),
+        relay_base="https://relay.test",
+        capture_origin="capture.test",
+    )
+    stored = backend.sessions[rc.pi_session.session_id]
+    assert json.loads(stored["capture_spec"])["kind"] == "sync_marker"
+    assert rc.tap_link.startswith("https://capture.test/#")
+
+
+def test_sync_relay_endpoint_gate_and_precheck(monkeypatch):
+    import pytest
+
+    from jasper.web import correction_setup, sync_flow
+
+    # Inert when the relay isn't configured (default flow byte-identical).
+    monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
+    with pytest.raises(ValueError, match="not configured"):
+        correction_setup._handle_sync_relay_capture(None)
+
+    # Configured but no active sync session → the flow's own precheck refuses
+    # before any network call or slot claim.
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech")
+    sync_flow._state["phase"] = "idle"
+    correction_setup._set_relay_capture(None)
+    with pytest.raises(ValueError, match="no active sync session"):
+        correction_setup._handle_sync_relay_capture(None)
+    assert correction_setup._get_relay_capture() is None  # slot not claimed
+
+
 def test_endpoint_route_is_registered():
     # Pin route membership: deleting the allowlist line would 404 it silently.
     from jasper.web import correction_setup
 
     assert "/relay/capture" in correction_setup._POST_ROUTES
+    assert "/sync/relay-capture" in correction_setup._POST_ROUTES
 
 
 def test_status_holder_round_trips():

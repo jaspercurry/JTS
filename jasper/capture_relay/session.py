@@ -133,6 +133,22 @@ class PollState:
     integrity: dict | None
     aborted: bool = False
     abort_reason: str = ""
+    device: dict | None = None
+
+
+@dataclass(frozen=True)
+class CaptureResult:
+    """A verified relay capture: the WAV plus the phone-reported capture device.
+
+    `device` is the small, NON-secret metadata the phone posts in its `armed`
+    event (e.g. `{"label": "UMIK-1", "device_id": "..."}`) — it rides the opaque
+    event channel (the relay passes it through without parsing), NOT the E2E WAV
+    blob. The Pi uses it to decide whether a loaded mic calibration applies (a
+    phone built-in mic ⇒ refuse a vendor curve; the matching USB measurement mic ⇒
+    apply it). `None` when the phone reports no device (older capture page)."""
+
+    wav: bytes
+    device: dict | None = None
 
 
 def classify_status(status_payload: dict) -> PollState:
@@ -142,6 +158,7 @@ def classify_status(status_payload: dict) -> PollState:
     armed = bool(event.get("armed"))
     aborted = bool(event.get("aborted"))
     abort_reason = str(event.get("abort_reason") or event.get("reason") or "")
+    device = event.get("device") if isinstance(event.get("device"), dict) else None
     ready = status_payload.get("state") == "ready"
     integrity = status_payload.get("integrity")
     return PollState(
@@ -150,6 +167,7 @@ def classify_status(status_payload: dict) -> PollState:
         integrity=integrity,
         aborted=aborted,
         abort_reason=abort_reason,
+        device=device,
     )
 
 
@@ -163,8 +181,11 @@ def run_capture(
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
     play_cue: Callable[[str], None] | None = None,
-) -> bytes:
-    """Poll the relay until the phone uploads; pull, decrypt, verify, return WAV.
+) -> CaptureResult:
+    """Poll the relay until the phone uploads; pull, decrypt, verify, return it.
+
+    Returns a `CaptureResult` (the verified WAV + the phone-reported capture
+    device). The device rides the opaque `armed` event, not the E2E WAV blob.
 
     `on_armed` fires exactly once, when the phone's `armed` flag is first seen —
     the host plays the stimulus then. Raises loudly — never a silent hang or a
@@ -220,12 +241,15 @@ def _poll_until_capture(
     timeout_s: float,
     sleep: Callable[[float], None],
     monotonic: Callable[[], float],
-) -> bytes:
+) -> CaptureResult:
     deadline = monotonic() + timeout_s
     armed_fired = False
+    capture_device: dict | None = None
     while True:
         status = client.status(session.session_id, session.pull_token)
         state = classify_status(status)
+        if state.device is not None:
+            capture_device = state.device  # phone-reported mic; persists to ready
 
         if state.aborted:
             raise CaptureAborted(
@@ -258,8 +282,9 @@ def _poll_until_capture(
                 "capture_relay.captured",
                 session_id=session.session_id,
                 wav_bytes=len(wav),
+                device=(capture_device or {}).get("label") or "",
             )
-            return wav
+            return CaptureResult(wav=wav, device=capture_device)
 
         if monotonic() >= deadline:
             raise CaptureTimeout(

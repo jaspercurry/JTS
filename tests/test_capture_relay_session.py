@@ -105,8 +105,11 @@ class FakeRelayBackend:
         return jr(404, {"error": "not_found"})
 
     # --- phone simulation ---
-    def phone_arm(self, sid):
-        self.sessions[sid]["event"] = {"armed": True}
+    def phone_arm(self, sid, device=None):
+        event = {"armed": True}
+        if device is not None:
+            event["device"] = device
+        self.sessions[sid]["event"] = event
 
     def phone_abort(self, sid, reason="backgrounded"):
         self.sessions[sid]["event"] = {"aborted": True, "abort_reason": reason}
@@ -195,8 +198,29 @@ def test_full_round_trip_returns_decrypted_wav():
         timeout_s=5.0,
         sleep=lambda _s: None,
     )
-    assert result == wav  # bit-identical, decrypted + verified
+    assert result.wav == wav  # bit-identical, decrypted + verified
+    assert result.device is None  # phone reported no device this time
     assert armed_calls == [True]  # on_armed fired exactly once
+
+
+def test_device_flows_from_armed_event():
+    # The phone's reported capture device rides the opaque `armed` event through
+    # to the CaptureResult, so the Pi can make the device-aware calibration call.
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    wav = b"RIFF" + bytes(range(64))
+    device = {"label": "UMIK-1", "device_id": "abc"}
+    backend.phone_arm(session.session_id, device=device)
+
+    def on_armed():
+        backend.phone_upload(session.session_id, session.content_key, wav)
+
+    result = run_capture(
+        client, session, on_armed=on_armed,
+        poll_interval_s=0.0, timeout_s=5.0, sleep=lambda _s: None,
+    )
+    assert result.wav == wav
+    assert result.device == device
 
 
 def test_timeout_is_loud():
@@ -273,7 +297,7 @@ def test_on_armed_not_fired_until_phone_arms():
         timeout_s=5.0,
         sleep=lambda _s: None,
     )
-    assert result == wav
+    assert result.wav == wav
     assert armed_calls == [3]  # fired on the poll where armed first appeared
 
 

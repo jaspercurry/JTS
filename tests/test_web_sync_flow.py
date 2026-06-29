@@ -84,3 +84,32 @@ def test_apply_without_token_passes_none(analyzed):
     payload, status = sync_flow.handle_apply(FakeHandler())
     assert status == 200 and payload["ok"]
     assert analyzed[0]["token"] is None
+
+
+def test_relay_run_and_consume_failure_releases_window(monkeypatch):
+    """A phone-relay sync capture that fails must release the held measurement
+    window (renderers/voice come back) and surface an error on /sync/status,
+    rather than hang until the 240 s SESSION_MAX_S cap with a silent stuck
+    'measuring' session. Pins the resilience fix from the adversarial review."""
+    import asyncio
+
+    import jasper.capture_relay.session as relay_session
+    from jasper.web import sync_flow
+
+    released = []
+    sync_flow._state.update({
+        "phase": "measuring", "error": "", "members": None, "result": None,
+        "recommendation": None, "playback": None,
+        "release_window": lambda: released.append(True),
+    })
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("relay died mid-capture")
+
+    monkeypatch.setattr(relay_session, "run_capture", _boom)
+    with pytest.raises(RuntimeError):
+        asyncio.run(sync_flow.relay_run_and_consume(object(), object()))
+
+    assert released == [True]  # held window released on failure
+    assert sync_flow._state["phase"] == "idle"  # reset, not stuck "measuring"
+    assert "failed" in sync_flow._state["error"]  # visible on /sync/status

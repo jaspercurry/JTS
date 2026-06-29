@@ -1,31 +1,52 @@
 # Phone-mic capture relay — design & build plan
 
 > **Status: BUILT (hardware-free), gated default-off, not yet validated on
-> device or deployed.** The design below is settled; the transport — capture-spec
-> schema, the Cloudflare Worker + R2 relay, the static capture page, and the
-> Pi-side session/poll/pull/decrypt/verify wiring (`jasper/capture_relay/*`,
-> `relay/`, `capture-page/`) — is implemented and covered by hardware-free tests
-> (PRs landed 2026-06-27, build steps §14 1–8). The `correction_setup.py` daemon
-> adapter (`jasper/capture_relay/correction_adapter.py` + `POST /relay/capture`),
-> the `/state.capture_relay` section, and the `jasper-doctor` "Phone-mic relay"
-> check have also landed — the relay capture endpoint is **gated + default-off**
-> (inert unless `JASPER_CAPTURE_RELAY_BASE` is set), so the standard on-Pi flow is
-> byte-identical until an operator opts in. **Still owed before this is
-> operational truth:** (a) **on-device validation** on a real iPhone (Safari) +
-> Android (Chrome) — the live `getUserMedia`/CSP/Wake-Lock path *and* the daemon
-> adapter's background sweep playback are unit-tested only; (b) tuning the
-> alignment-confidence threshold against on-device sweeps (a deploy-time env knob,
-> `JASPER_CAPTURE_ALIGNMENT_THRESHOLD`); (c) the cloud deploy (`wrangler deploy`
-> the Worker + R2 + Pages); (d) an audible failure cue from the correction daemon
-> (a jasper-web → jasper-voice cue bridge — the registry cues exist but jasper-web
-> has no cue channel yet; failures currently surface on the capture page +
-> `/status.relay` + `event=capture_relay.*` logs). The current operational truth
-> for `/correction/` (and `/balance/`, `/sync/`) remains
-> [HANDOFF-correction.md](HANDOFF-correction.md): the capture page is served from
-> the Pi over a self-signed cert and uploads the WAV same-origin. **Once on-device
-> validation passes and the relay is deployed, make the relay path the default and
-> convert this doc to the HANDOFF shape (current-state-first) with a
-> `Last verified:` footer.**
+> device or deployed.** The transport (capture-spec schema, Cloudflare Worker + R2
+> relay, static capture page, Pi-side session/poll/pull/decrypt/verify) and the
+> daemon adapters are implemented and covered by hardware-free tests. The relay
+> capture path is **gated + default-off** (inert unless `JASPER_CAPTURE_RELAY_BASE`
+> is set), so the standard on-Pi flow is byte-identical until an operator opts in.
+>
+> **Kinds wired today:** room correction (`POST /relay/capture`) and **sync**
+> (`POST /sync/relay-capture`) — both ride one kind-agnostic seam
+> (`RelayCaptureKind` + `_run_relay_capture` in `correction_setup.py`); a new kind
+> is a descriptor, not a new handler. **A USB-C measurement mic plugged into the
+> phone is supported:** the calibration is applied **Pi-side during analysis,
+> never at record time** (it's a post-hoc FR correction in
+> `MeasurementSession._smooth_capture`); the phone records raw and reports *which*
+> mic it used in the opaque `armed` event, and a device-aware gate
+> (`_relay_device_calibration_block`, POST-capture) refuses a vendor curve on the
+> phone's built-in mic but allows it for the matching USB mic. The per-mic serial
+> stays operator-entered on the speaker's calibration page (`getUserMedia` can't
+> read it); the capture page only reports the device label + offers a best-effort
+> mic picker.
+>
+> **Deferred (seam-ready, documented):** the **crossover** relay kind — when it
+> lands it MUST add its OWN calibration guard at
+> `web_measurement.capture_calibration` (it loads by `calibration_id`, NOT
+> `session.mic_calibration`, so the room/sync gate won't cover it — same silent
+> mis-calibration class on a different path); **balance burst** — needs new
+> non-interactive L/R level analysis (no existing consumer; the live balance flow
+> is interactive); the **room-correction page's forked capture helper** — AGENTS
+> forbids migrating it onto the shared module without an on-device browser pass.
+> The **sync relay** currently requires the sync session to be started first from a
+> device that can reach the Pi (the cert-blocked phone can't press Start) — a
+> 2-device flow; a phone-only bootstrap (like the room relay's auto-create) is a
+> follow-up.
+>
+> **Still owed before operational:** (a) **on-device validation** on a real iPhone
+> (Safari) + Android (Chrome) — the capture-page device picker's
+> enumerate/permission/label behavior, the live `getUserMedia`/CSP/Wake-Lock path,
+> and the background sweep/marker playback are unit-tested only; (b) tuning
+> `JASPER_CAPTURE_ALIGNMENT_THRESHOLD` against on-device sweeps; (c) the cloud
+> deploy (`wrangler deploy` the Worker + R2 + Pages); (d) an audible failure cue
+> (jasper-web → jasper-voice bridge; failures currently surface on the capture page
+> + `/status.relay` + `event=capture_relay.*` logs). **Validate on jts3/jts5, never
+> the production jts.local.** The current operational truth for the on-Pi
+> `/correction/`, `/balance/`, `/sync/` flows remains
+> [HANDOFF-correction.md](HANDOFF-correction.md) (same-origin self-signed-cert
+> capture). **Once validated + deployed, make the relay the default and convert
+> this doc to the HANDOFF shape with a `Last verified:` footer.**
 
 ---
 
@@ -497,6 +518,9 @@ corrections are unaffected) — say so in the UI when the relay is unreachable.
 
 ---
 
-Last updated: 2026-06-27 — transport + `/correction/` adapter implemented
-(hardware-free, gated default-off); on-device validation, alignment-threshold
+Last updated: 2026-06-28 — `/correction/` + `/sync/` relay kinds (kind-agnostic
+seam) and USB-C-mic-on-phone support (Pi-side device-aware calibration gate +
+capture-page picker) implemented (hardware-free, gated default-off). Deferred:
+crossover relay (needs its own `calibration_id` guard), balance burst, room-helper
+dedupe. On-device validation (iPhone/Android, on jts3/jts5), alignment-threshold
 tuning, cloud deploy, and an audible failure cue still owed (see Status banner).
