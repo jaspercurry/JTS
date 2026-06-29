@@ -99,6 +99,26 @@ Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared
    async resampler (host-agnostic, DAC-agnostic — it targets whatever DAC clock), so it
    should hold, but prove it.
 
+## The shared-path alternative: per-input resampler (DEFAULT-OFF, first cut)
+
+The lean-fifo above is SOLO-only. The *one-path* answer keeps USB in the
+shared fan-in mixer but removes the catch-up sawtooth on that lane by
+reconciling the host rate to the DAC clock at the fan-in **input edge** — a
+per-input windowed-sinc resampler, DLL-steered to the DAC clock
+(`rust/jasper-fanin/src/lane_resampler.rs`, composing the shared
+`jasper-resampler` `AudioRing`/`SincTable`/`RateController`, the same crate
+`content_bridge` uses). Moving reconciliation here also leaves CamillaDSP
+DAC-paced without `rate_adjust` on the clockless USB input — dissolving the
+underrun class that `rate_adjust` produced on-device. It is **DEFAULT-OFF**
+behind `JASPER_FANIN_INPUT_RESAMPLER=enabled` (see HANDOFF-fan-in-daemon.md
+"Per-input adaptive resampler") and is a **first cut owing on-device
+real-time validation** — drop-free under sustained USB play + transitions,
+latency below the catch-up sawtooth, lock stability, soak. It removes one
+snd-aloop hop's worth of sawtooth but NOT the second snd-aloop hop or the
+DAC buffer, so its floor is higher than the lean-fifo's; the eventual goal is
+to make it good enough to delete the lean lane (the "converge to one path"
+step), but that is gated on this validation.
+
 ## Why not just lower the catch-up high-water?
 Lowering `CATCHUP_HIGH_WATER_PERIODS` would shrink the shared-path sawtooth but
 re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-period
@@ -106,4 +126,8 @@ peak) — trading latency for drops on every source. The lean-fifo gets low late
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
 Last verified: 2026-06-29 (#27 latency-floor codification: emitters wired to the
-active profile floor end-to-end; operator-override precedence corrected)
+active profile floor end-to-end; operator-override precedence corrected.
+Shared-path per-input resampler alternative lives in
+`rust/jasper-fanin/src/lane_resampler.rs`, DEFAULT-OFF behind
+`JASPER_FANIN_INPUT_RESAMPLER=enabled`, and still requires the hardware
+drop-free/glitch-free validation described above.)

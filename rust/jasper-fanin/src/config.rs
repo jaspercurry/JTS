@@ -130,6 +130,36 @@ pub struct Config {
     /// it is the FIFO equivalent of the snd-aloop output ring depth.
     /// Env: `JASPER_FANIN_FIFO_PIPE_BYTES`. Swept during the soak.
     pub fifo_pipe_bytes: u32,
+
+    /// DEFAULT-OFF: arm the per-input adaptive resampler on the clock-crossing
+    /// (USB) lane (`src/lane_resampler.rs`). When `false` (the default — env
+    /// unset / empty / anything but `enabled`), the per-lane read path is
+    /// byte-for-byte today's strict one-period read + catch-up drain. When
+    /// `true`, the lane named `resampler_lane_label` is DLL-steered to the DAC
+    /// clock (drop-free reconciliation, replacing the catch-up sawtooth on that
+    /// lane). HIGH-RISK / real-time path: keep OFF until validated on-device.
+    /// Env: `JASPER_FANIN_INPUT_RESAMPLER` (`enabled` to arm).
+    pub input_resampler_enabled: bool,
+
+    /// The lane LABEL (matched against `input_renderers`) the input resampler
+    /// arms on when enabled. Only ONE lane crosses a foreign clock today (USB),
+    /// so this is a single label, not a set. A label with no matching input is
+    /// a no-op (logged once). Env: `JASPER_FANIN_INPUT_RESAMPLER_LANE`
+    /// (default `usbsink`).
+    pub input_resampler_lane_label: String,
+
+    /// Target buffered frames the input resampler holds the armed lane's ring
+    /// at — the small fixed fill that replaces the catch-up sawtooth. Smaller =
+    /// lower latency but less jitter headroom before an underfill→silence.
+    /// Default 512 frames (~10.7 ms at 48 kHz, two periods at 256). Env:
+    /// `JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES`.
+    pub input_resampler_target_frames: u32,
+
+    /// Output ppm clamp on the input resampler's pitch warp — the hard safety
+    /// bound on how far the host↔DAC rate gap may ever be corrected. Matches
+    /// content_bridge's default. Env:
+    /// `JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM`.
+    pub input_resampler_max_adjust_ppm: u32,
 }
 
 /// fan-in → CamillaDSP coupling transport. Mirrors `jasper.fanin_coupling`'s
@@ -240,6 +270,22 @@ impl Config {
         );
         let fifo_pipe_bytes = env_u32("JASPER_FANIN_FIFO_PIPE_BYTES", 8192)?;
 
+        // DEFAULT-OFF per-input adaptive resampler (clock-crossing/USB lane).
+        // Fail-safe: only the exact literal `enabled` (case-insensitive) arms
+        // it; unset / empty / anything else stays OFF (byte-identical to today).
+        let input_resampler_enabled = matches!(
+            std::env::var("JASPER_FANIN_INPUT_RESAMPLER")
+                .ok()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("enabled")
+        );
+        let input_resampler_lane_label = env_str("JASPER_FANIN_INPUT_RESAMPLER_LANE", "usbsink");
+        let input_resampler_target_frames =
+            env_u32("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", 512)?;
+        let input_resampler_max_adjust_ppm =
+            env_u32("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", 500)?;
+
         Ok(Self {
             output_pcm,
             music_output_pcm,
@@ -296,6 +342,10 @@ impl Config {
             camilla_coupling,
             camilla_fifo_path,
             fifo_pipe_bytes,
+            input_resampler_enabled,
+            input_resampler_lane_label,
+            input_resampler_target_frames,
+            input_resampler_max_adjust_ppm,
         })
     }
 }
@@ -499,6 +549,58 @@ mod tests {
                 assert_eq!(cfg.assistant_loudness.assistant_offset_lu, 1.5);
                 assert_eq!(cfg.assistant_loudness.max_peak_dbfs, -3.0);
                 assert_eq!(cfg.assistant_loudness.default_silence_target_lufs, -41.0);
+                // Per-input adaptive resampler is DEFAULT-OFF — the whole point
+                // of the feature flag (HIGH-RISK real-time path).
+                assert!(
+                    !cfg.input_resampler_enabled,
+                    "input resampler must default OFF"
+                );
+                assert_eq!(cfg.input_resampler_lane_label, "usbsink");
+                assert_eq!(cfg.input_resampler_target_frames, 512);
+                assert_eq!(cfg.input_resampler_max_adjust_ppm, 500);
+            },
+        );
+    }
+
+    #[test]
+    fn input_resampler_only_armed_by_exact_enabled_literal() {
+        // Fail-safe: ONLY the literal `enabled` (case-insensitive) arms it.
+        for raw in ["enabled", "ENABLED", " Enabled "] {
+            with_env(&[("JASPER_FANIN_INPUT_RESAMPLER", Some(raw))], || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(
+                    cfg.input_resampler_enabled,
+                    "{raw:?} should arm the resampler"
+                );
+            });
+        }
+        // Anything else (including truthy-looking values) stays OFF.
+        for raw in ["", "1", "true", "on", "yes", "disabled", "garbage"] {
+            with_env(&[("JASPER_FANIN_INPUT_RESAMPLER", Some(raw))], || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(
+                    !cfg.input_resampler_enabled,
+                    "{raw:?} must NOT arm the resampler (only `enabled` does)"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn input_resampler_knobs_parse_overrides() {
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_LANE", Some("usbsink2")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("768")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("300")),
+            ],
+            || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(cfg.input_resampler_enabled);
+                assert_eq!(cfg.input_resampler_lane_label, "usbsink2");
+                assert_eq!(cfg.input_resampler_target_frames, 768);
+                assert_eq!(cfg.input_resampler_max_adjust_ppm, 300);
             },
         );
     }

@@ -54,6 +54,7 @@ use log::{info, warn};
 
 use crate::config::{Config, Coupling};
 use crate::fifo::{FifoWriteOutcome, FifoWriter};
+use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
 use crate::tts::{TtsInput, TtsMixer};
 use crate::watchdog::Heartbeat;
 use crate::xrun_log::{XrunEvent, XrunSource};
@@ -227,6 +228,12 @@ pub struct Input {
     /// that discarded ≥1 period). Paired with `catchup_resync_frames` so
     /// STATUS shows both how often and how much.
     pub catchup_events: Arc<AtomicU64>,
+    /// OPTIONAL per-input adaptive resampler (DEFAULT-OFF). `Some` only on the
+    /// configured clock-crossing lane when `JASPER_FANIN_INPUT_RESAMPLER` is
+    /// `enabled`. When `Some`, this lane is rate-reconciled to the DAC clock
+    /// (drop-free) instead of catch-up-drained; when `None` (the default for
+    /// every lane), the read path is byte-for-byte today's behaviour.
+    resampler: Option<LaneResampler>,
 }
 
 impl Mixer {
@@ -239,7 +246,18 @@ impl Mixer {
 
         let mut inputs = Vec::with_capacity(config.input_pcms.len());
         for (label, pcm_name) in config.input_renderers.iter().zip(&config.input_pcms) {
-            match open_input(pcm_name, label, config) {
+            // DEFAULT-OFF: build a per-input resampler ONLY for the configured
+            // clock-crossing lane AND only when explicitly enabled. Every other
+            // lane (and every lane when the feature is off) gets `None` — the
+            // byte-identical-to-today path. A construction failure degrades to
+            // `None` with a warning rather than failing the daemon.
+            let resampler =
+                if config.input_resampler_enabled && label == &config.input_resampler_lane_label {
+                    build_lane_resampler(label, config)
+                } else {
+                    None
+                };
+            match open_input(pcm_name, label, config, resampler) {
                 Ok(input) => {
                     info!(
                         "event=fanin.input.opened label={} pcm={} period_frames={} buffer_frames={}",
@@ -464,18 +482,30 @@ impl Mixer {
         let period_frames = self.period_frames as usize;
         let selected_input = self.selected_input_index.load(Ordering::Relaxed);
         for (idx, input) in self.inputs.iter_mut().enumerate() {
-            // Bounded catch-up resync BEFORE the period read, for EVERY lane
-            // regardless of selection. A free-running lane (the USB host-clock
-            // lane) backs its capture ring up past the high-water; we discard
-            // the excess down to one period here so the upstream producer never
-            // overflows and back-pressure can reach the host. A DAC-locked lane
-            // sits at one period and this is a single `avail_update` no-op.
-            // INTENTIONALLY independent of `input_selected` below: a de-selected
-            // (muxed-out) free-running lane STILL backs up and must be drained,
-            // so do NOT move this under the selection gate. Drop-controlled,
-            // not drop-free — see the constant docs.
-            drain_input_excess(input, period_frames);
-            let frames = read_input(input, period_frames, &self.xrun_tx)?;
+            let frames = if input.resampler.is_some() {
+                // ARMED clock-crossing lane (DEFAULT-OFF; only the USB lane when
+                // enabled). The resampler OWNS rate reconciliation: read ALL
+                // available frames into it (DLL-steered to the DAC clock) and
+                // render exactly one DAC-paced period. The catch-up drain is
+                // bypassed here on purpose — the resampler holds the ring at a
+                // small fixed fill (no sawtooth), which is the whole point.
+                read_into_resampler_and_render(input, period_frames, &self.xrun_tx)?
+            } else {
+                // DEFAULT path — byte-for-byte today's behaviour.
+                //
+                // Bounded catch-up resync BEFORE the period read, for EVERY lane
+                // regardless of selection. A free-running lane (the USB host-clock
+                // lane) backs its capture ring up past the high-water; we discard
+                // the excess down to one period here so the upstream producer never
+                // overflows and back-pressure can reach the host. A DAC-locked lane
+                // sits at one period and this is a single `avail_update` no-op.
+                // INTENTIONALLY independent of `input_selected` below: a de-selected
+                // (muxed-out) free-running lane STILL backs up and must be drained,
+                // so do NOT move this under the selection gate. Drop-controlled,
+                // not drop-free — see the constant docs.
+                drain_input_excess(input, period_frames);
+                read_input(input, period_frames, &self.xrun_tx)?
+            };
             if !input_selected(selected_input, idx, &input.label) {
                 continue;
             }
@@ -562,6 +592,14 @@ fn store_output_delay(pcm: &PCM, delay_frames: &AtomicU64) {
     }
 }
 
+impl Input {
+    /// The lane's resampler observability handles for STATUS, or `None` when no
+    /// resampler is armed on this lane (the default — DEFAULT-OFF feature).
+    pub fn resampler_observability(&self) -> Option<LaneResamplerObservability> {
+        self.resampler.as_ref().map(|r| r.observability())
+    }
+}
+
 /// Sum input samples into the running i32 accumulator with saturating
 /// arithmetic. Pulled out for unit testability — no ALSA needed.
 fn mix_into(sum: &mut [i32], input: &[i16]) {
@@ -621,7 +659,53 @@ fn catchup_drain_periods(avail: i64, period_frames: i64) -> i64 {
     excess_periods.min(CATCHUP_MAX_DRAIN_PERIODS)
 }
 
-fn open_input(pcm_name: &str, label: &str, config: &Config) -> Result<Input> {
+/// Build the per-input resampler for the clock-crossing lane, or `None` on a
+/// construction failure (which we log and degrade past — the lane just runs the
+/// catch-up fallback). Sizes the resampler's input ring to the lane's ALSA
+/// input buffer so it has the same burst headroom the catch-up path assumed.
+fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
+    let target = config.input_resampler_target_frames as usize;
+    // The input ring must hold the target fill plus burst+stall headroom. Reuse
+    // the lane's configured ALSA input buffer depth as the ring size (it is
+    // already sized for the worst-case burst+stall occupancy); floor it so a
+    // tiny configured buffer still satisfies LaneResampler::new's minimum.
+    let radius = jasper_resampler::RADIUS_FRAMES as usize;
+    let min_ring = target + config.period_frames as usize + radius + 1;
+    let ring_frames = (config.input_buffer_frames as usize).max(min_ring);
+    match LaneResampler::new(
+        CHANNELS as usize,
+        config.period_frames,
+        config.sample_rate,
+        target,
+        config.input_resampler_max_adjust_ppm as f64,
+        ring_frames,
+    ) {
+        Ok(r) => {
+            info!(
+                "event=fanin.input.resampler_armed label={} target_frames={} \
+                 max_adjust_ppm={} ring_frames={} (DLL-steered to DAC clock; \
+                 catch-up drain bypassed on this lane)",
+                label, target, config.input_resampler_max_adjust_ppm, ring_frames,
+            );
+            Some(r)
+        }
+        Err(e) => {
+            warn!(
+                "event=fanin.input.resampler_disabled label={} detail={} — \
+                 falling back to catch-up drain on this lane",
+                label, e,
+            );
+            None
+        }
+    }
+}
+
+fn open_input(
+    pcm_name: &str,
+    label: &str,
+    config: &Config,
+    resampler: Option<LaneResampler>,
+) -> Result<Input> {
     // Non-blocking so a silent renderer's substream doesn't stall
     // the work loop. read_input handles -EAGAIN as "no data; treat
     // as silence."
@@ -643,6 +727,7 @@ fn open_input(pcm_name: &str, label: &str, config: &Config) -> Result<Input> {
         frames_read: Arc::new(AtomicU64::new(0)),
         catchup_resync_frames: Arc::new(AtomicU64::new(0)),
         catchup_events: Arc::new(AtomicU64::new(0)),
+        resampler,
     })
 }
 
@@ -867,6 +952,115 @@ fn read_input(
             }
         }
     }
+}
+
+/// Cap on whole periods drained from an ARMED lane in one `step()` call. Like
+/// `CATCHUP_MAX_DRAIN_PERIODS`, this bounds the syscall work per period so a
+/// pathological `avail` (driver fault) can't spin the hot loop. Frames beyond
+/// the cap stay in the kernel ring and are read next period — the resampler's
+/// own ring is the rate buffer, so leaving a little behind is harmless.
+const RESAMPLER_MAX_READ_PERIODS: i64 = 64;
+
+/// Read all currently-available frames from an ARMED lane into its resampler,
+/// then render exactly one DAC-paced period into `read_buf`. Returns the number
+/// of real (non-silence) frames the render produced — `period_frames` when the
+/// resampler is locked, `0` while it is priming or underfilled (the lane is
+/// silent, exactly as an idle renderer's substream is today).
+///
+/// This REPLACES the `drain_input_excess` + strict-one-period `read_input` pair
+/// for the armed lane. Rate reconciliation lives in the resampler (DLL-steered
+/// to the DAC clock); the catch-up drain is intentionally bypassed here.
+///
+/// RT-safety: bounded syscalls (`avail_update` once, then ≤
+/// `RESAMPLER_MAX_READ_PERIODS` `readi`s of frames already reported ready), no
+/// allocation (reads into the existing `read_buf` scratch, pushes into the
+/// resampler's pre-sized ring), no blocking (non-blocking capture). An
+/// `EPIPE`/`ESTRPIPE` overrun recovers + resets the resampler (a discontinuity)
+/// and renders silence for this period.
+fn read_into_resampler_and_render(
+    input: &mut Input,
+    period_frames: usize,
+    xrun_tx: &Sender<XrunEvent>,
+) -> Result<usize> {
+    // How many frames are readable right now. EAGAIN/error → treat as "no new
+    // input this period"; the resampler renders from what it already buffers.
+    let avail = input.pcm.avail_update().unwrap_or(0).max(0);
+    if avail > 0 {
+        let io = input
+            .pcm
+            .io_i16()
+            .context("getting i16 IO handle for resampler input")?;
+        let mut periods_read = 0i64;
+        // Read whole periods into read_buf and push each into the resampler.
+        // Bounded by both `avail` and the per-call cap.
+        loop {
+            if periods_read >= RESAMPLER_MAX_READ_PERIODS {
+                break;
+            }
+            match io.readi(&mut input.read_buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    input.frames_read.fetch_add(n as u64, Ordering::Relaxed);
+                    let samples = n * (CHANNELS as usize);
+                    if let Some(r) = input.resampler.as_mut() {
+                        r.push_input(&input.read_buf[..samples]);
+                    }
+                    periods_read += 1;
+                    // Short read means the ring just emptied below a full period
+                    // — nothing more to drain this iteration.
+                    if n < period_frames {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let errno = e.errno();
+                    if errno == libc::EAGAIN {
+                        break;
+                    } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+                        // Lane overrun: a discontinuity. Recover the PCM and
+                        // reset the resampler so it re-primes from fresh input
+                        // rather than interpolating across the gap.
+                        let count = input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
+                        warn!(
+                            "event=fanin.xrun source=input label={} count={} (resampler lane)",
+                            input.label, count,
+                        );
+                        let _ = xrun_tx.send(XrunEvent {
+                            source: XrunSource::Input,
+                            label: input.label.clone(),
+                            frames: period_frames as u32,
+                            count,
+                        });
+                        input
+                            .pcm
+                            .try_recover(e, true)
+                            .context("recovering resampler input xrun")?;
+                        if let Some(r) = input.resampler.as_mut() {
+                            r.reset();
+                        }
+                        break;
+                    } else {
+                        return Err(e).context(format!(
+                            "reading from resampler input {} ({})",
+                            input.label, input.pcm_name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // Render exactly one DAC-paced period into read_buf for the mixer to sum.
+    let real_frames = match input.resampler.as_mut() {
+        Some(r) => r.render_period(&mut input.read_buf),
+        None => {
+            // Unreachable in practice (only called when resampler.is_some()),
+            // but stay safe: emit silence.
+            input.read_buf.fill(0);
+            0
+        }
+    };
+    Ok(real_frames)
 }
 
 /// Write a full period to the output. Retries on transient xrun via

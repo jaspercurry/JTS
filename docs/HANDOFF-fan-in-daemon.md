@@ -508,6 +508,10 @@ JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024                           # ~21 ms output
 JASPER_FANIN_TTS_SOCKET=/run/jasper-fanin/tts.sock                # production TTS IPC; "disabled" is rollback/lab only
 JASPER_FANIN_TTS_MAX_PENDING_FRAMES=96000                         # 2 s at 48 kHz
 JASPER_FANIN_TTS_PROGRAM_DUCK_DB=${JASPER_DUCK_DB:--25}           # override only for lab retuning
+JASPER_FANIN_INPUT_RESAMPLER=                                     # DEFAULT-OFF per-input adaptive resampler on the clock-crossing (USB) lane; only "enabled" arms it. See "Per-input resampler" below.
+JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink                         # which lane label the resampler arms on when enabled
+JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512                    # ring fill the resampler holds the armed lane at (~10.7 ms at 48 k)
+JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM=500                   # hard pitch-warp clamp on the host↔DAC rate correction
 ```
 
 The list-shaped env vars (`JASPER_FANIN_INPUT_PCMS`,
@@ -683,8 +687,46 @@ monotonically — i.e. the USB lane.
 **This is drop-CONTROLLED, not drop-FREE.** A free-running lane loses a
 bounded chunk of audio at each resync (an occasional discard at the
 residual drift rate), traded against the far worse cascading upstream
-overflow it replaces. True drop-free for the mixed path is the later
-per-lane adaptive resampler; the catch-up does **not** resample.
+overflow it replaces. The drop-free successor — the per-lane adaptive
+resampler — now exists behind a flag (next section); the catch-up itself
+does **not** resample and stays the default + fallback.
+
+### Per-input adaptive resampler — the drop-FREE successor (DEFAULT-OFF)
+
+`mixer.rs` can instead reconcile the clock-crossing (USB) lane to the DAC
+clock with a per-input windowed-sinc resampler (`src/lane_resampler.rs`),
+**DLL-steered** to the DAC clock — the drop-free alternative the catch-up's
+own docstring defers to. It composes the EXACT shared primitives
+`jasper-outputd`'s `content_bridge.rs` uses (`AudioRing` + `SincTable` +
+`RateController` from the `jasper-resampler` crate), so the DLL control law
+(the spa_dll second-order loop, variance-adaptive bandwidth, `max_resync`
+hard-jump) is shared, not reimplemented. When armed, the lane holds a small
+fixed fill (`JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES`, default 512 ≈
+10.7 ms) instead of the 5–75 ms catch-up sawtooth, and the catch-up drain is
+bypassed *on that lane only*. Capture-follower sign: a host feeding faster
+than the DAC settles to `ratio > 1` (drain), holding the ring at target.
+
+**DEFAULT-OFF and inert when off.** Only `JASPER_FANIN_INPUT_RESAMPLER=enabled`
+(exact literal) arms it, and only on the lane named
+`JASPER_FANIN_INPUT_RESAMPLER_LANE` (default `usbsink`). When off, no
+resampler is constructed, the per-lane path is byte-for-byte the
+catch-up+strict-read above, and the STATUS shape is unchanged. The catch-up
+is intentionally KEPT as the fallback; deleting it is a later,
+validation-gated step.
+
+**HIGH-RISK / real-time.** This is a first cut on the audio hot path that
+**needs on-device real-time validation** (drop-free under sustained USB play
++ transitions, latency < the catch-up sawtooth, soak, lock stability,
+underfill behaviour). Keep it OFF in production until that lands. RT-safety
+is designed in (no hot-path allocation, no blocking, bounded per-period
+syscalls + interpolation, count-gated logging) but only hardware confirms it.
+
+**Observability**: when armed, the lane's STATUS object gains a nested
+`resampler` block — `armed`, `input_frames`, `output_frames`,
+`silence_frames`, `overrun_frames`, `ratio_ppm`, `lock_count`,
+`unlock_count`. Absent for every unarmed lane. A growing `unlock_count` is
+the drop-free analogue of a catch-up event (the resampler starved and fell
+back to silence rather than reading past the buffer).
 
 **Observability**: each input in the `STATUS` JSON carries
 `catchup_resync_frames` (cumulative frames discarded on that lane) and
@@ -1044,8 +1086,10 @@ follow-on if/when warranted.
 
 Last verified: 2026-06-29 (JTS2 AirPlay retune: fan-in output 1024 clean,
 512 failed fast with fan-in output xruns; low-latency Apple path offset is
-`-0.058667`. 2026-06-28 also added the bounded per-input catch-up resync
-for free-running lanes (`mixer.rs::drain_input_excess`) — the USB-lane
-upstream-overflow fix — plus its `catchup_resync_frames`/`catchup_events`
-STATUS counters; pacing, input-buffer sizing, TTS/duck IPC, and outputd
-ownership rechecked against current code).
+`-0.058667`. 2026-06-28 added the bounded per-input catch-up resync
+(`mixer.rs::drain_input_excess`) and the DEFAULT-OFF per-input adaptive
+resampler for the clock-crossing/USB lane (`src/lane_resampler.rs`,
+`JASPER_FANIN_INPUT_RESAMPLER=enabled`) with nested `resampler` STATUS
+observability; pacing, input-buffer sizing, TTS/duck IPC, output-buffer
+STATUS, and outputd ownership rechecked against current code. Resampler
+hardware validation is tracked in the USB low-latency handoff.)

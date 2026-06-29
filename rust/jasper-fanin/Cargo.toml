@@ -13,6 +13,12 @@ rust-version = "1.75"
 # language-choice rationale.
 [dependencies]
 jasper-tts-protocol = { path = "../jasper-tts-protocol" }
+# The ONE shared windowed-sinc resampler + DLL rate controller (same crate
+# jasper-outputd's content_bridge consumes). Pure, no ALSA — used here for the
+# DEFAULT-OFF per-input adaptive resampler on the clock-crossing (USB) lane,
+# DLL-steered to the DAC clock. See src/lane_resampler.rs and
+# docs/HANDOFF-usb-low-latency.md.
+jasper-resampler = { path = "../jasper-resampler" }
 # Idiomatic Rust wrapper around libasound — the daemon's primary I/O
 # surface. Mature crate, used by most Rust ALSA projects (paplay,
 # pulse-pipewire-bridge, etc.). Compiles against Trixie's

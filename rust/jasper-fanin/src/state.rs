@@ -62,6 +62,7 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 
 use crate::mixer::{CouplingObservability, Mixer, OUTPUT_DELAY_UNAVAILABLE};
+use crate::lane_resampler::LaneResamplerObservability;
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
 
@@ -116,6 +117,10 @@ pub struct InputSnapshotSource {
     pub catchup_resync_frames: Arc<AtomicU64>,
     /// Cumulative catch-up resync events (high-water crossings) on this lane.
     pub catchup_events: Arc<AtomicU64>,
+    /// OPTIONAL per-input adaptive-resampler observability. `Some` only on the
+    /// configured clock-crossing lane when the DEFAULT-OFF input resampler is
+    /// armed; `None` (and absent from STATUS) for every lane otherwise.
+    pub resampler: Option<LaneResamplerObservability>,
 }
 
 pub struct StateServerConfig {
@@ -151,6 +156,7 @@ impl StateServer {
                 xrun_count: Arc::clone(&inp.xrun_count),
                 catchup_resync_frames: Arc::clone(&inp.catchup_resync_frames),
                 catchup_events: Arc::clone(&inp.catchup_events),
+                resampler: inp.resampler_observability(),
             })
             .collect();
         Self {
@@ -392,6 +398,52 @@ impl StateServer {
                 "catchup_events",
                 input.catchup_events.load(Ordering::Relaxed),
             );
+            // OPTIONAL per-input adaptive resampler (DEFAULT-OFF). Rendered as a
+            // nested object only when armed on this lane — absent for every lane
+            // when the feature is off, so the default STATUS shape is unchanged.
+            if let Some(r) = &input.resampler {
+                buf.push(',');
+                buf.push_str(r#""resampler":{"#);
+                push_kv_bool(&mut buf, "armed", r.armed);
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "input_frames",
+                    r.input_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "output_frames",
+                    r.output_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "silence_frames",
+                    r.silence_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "overrun_frames",
+                    r.overrun_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // Stored as i64 milli-ppm in a u64 atomic; reinterpret + scale
+                // back to ppm for display.
+                let ratio_ppm = (r.ratio_milli_ppm.load(Ordering::Relaxed) as i64) as f64 / 1000.0;
+                push_kv_f64(&mut buf, "ratio_ppm", ratio_ppm, 2);
+                buf.push(',');
+                push_kv_u64(&mut buf, "lock_count", r.lock_count.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "unlock_count",
+                    r.unlock_count.load(Ordering::Relaxed),
+                );
+                buf.push('}');
+            }
             buf.push('}');
         }
         buf.push(']');
@@ -691,6 +743,8 @@ mod tests {
                     xrun_count: Arc::new(AtomicU64::new(0)),
                     catchup_resync_frames: Arc::new(AtomicU64::new(0)),
                     catchup_events: Arc::new(AtomicU64::new(0)),
+                    // No resampler armed on this lane (the default).
+                    resampler: None,
                 },
                 InputSnapshotSource {
                     label: "airplay".to_string(),
@@ -699,6 +753,19 @@ mod tests {
                     xrun_count: Arc::new(AtomicU64::new(2)),
                     catchup_resync_frames: Arc::new(AtomicU64::new(1536)),
                     catchup_events: Arc::new(AtomicU64::new(2)),
+                    // A lane WITH an armed resampler (fixture only — exercises
+                    // the STATUS rendering path). ratio = +120 ppm → 120000
+                    // milli-ppm stored in the u64 atomic.
+                    resampler: Some(LaneResamplerObservability {
+                        armed: true,
+                        input_frames: Arc::new(AtomicU64::new(48000)),
+                        output_frames: Arc::new(AtomicU64::new(47988)),
+                        silence_frames: Arc::new(AtomicU64::new(256)),
+                        overrun_frames: Arc::new(AtomicU64::new(0)),
+                        ratio_milli_ppm: Arc::new(AtomicU64::new(120_000)),
+                        lock_count: Arc::new(AtomicU64::new(1)),
+                        unlock_count: Arc::new(AtomicU64::new(0)),
+                    }),
                 },
             ],
             output_pcm: "hw:Loopback,0,7".to_string(),
@@ -783,6 +850,38 @@ mod tests {
         assert!(
             j.contains(r#""catchup_events":2"#),
             "missing catchup_events=2 (airplay fixture): {j}"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_resampler_block_present_only_when_armed() {
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        // The armed lane (airplay fixture) renders a nested resampler object
+        // with its counters; ratio reinterprets the milli-ppm atomic to ppm.
+        assert!(
+            j.contains(r#""resampler":{"#),
+            "armed lane must render a resampler block: {j}"
+        );
+        assert!(j.contains(r#""armed":true"#), "missing armed flag: {j}");
+        assert!(
+            j.contains(r#""input_frames":48000"#),
+            "missing resampler input_frames: {j}"
+        );
+        assert!(
+            j.contains(r#""ratio_ppm":120.00"#),
+            "milli-ppm atomic must reinterpret to ppm: {j}"
+        );
+        assert!(
+            j.contains(r#""lock_count":1"#),
+            "missing resampler lock_count: {j}"
+        );
+        // EXACTLY one resampler block — the spotify lane (None) must NOT render
+        // one, keeping the default STATUS shape unchanged for unarmed lanes.
+        assert_eq!(
+            j.matches(r#""resampler":{"#).count(),
+            1,
+            "only the armed lane may render a resampler block: {j}"
         );
     }
 
