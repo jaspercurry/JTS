@@ -11,14 +11,13 @@ must upsert it order-preservingly: a co-reader's **comments and blank lines
 survive verbatim** and assignment order is preserved. Assignment lines are
 canonicalized to ``KEY=value`` on any rewrite (key-side spacing in a
 hand-written ``KEY = value`` is normalized) — harmless because every writer here
-emits clean ``KEY=value`` and that is the systemd ``EnvironmentFile`` form. :mod:`jasper.fanin.coupling_reconcile` is the first
-consumer. :mod:`jasper.fanin.buffer_reconcile` and
-:mod:`jasper.usbsink.output_mode_reconcile` predate this module and still carry
-equivalent private ``_parse_env`` / ``_render_*`` copies; migrating those two
-onto this helper is a clean, behavior-preserving follow-up (for the
-single-assignment files those reconcilers produce the rendering is identical) —
-deliberately NOT done in the same change as the coupling work, to keep the
-blast radius off two shipped, live audio-path reconcilers.
+emits clean ``KEY=value`` and that is the systemd ``EnvironmentFile`` form. The
+consumers are :mod:`jasper.fanin.coupling_reconcile`,
+:mod:`jasper.fanin.buffer_reconcile`, and
+:mod:`jasper.usbsink.output_mode_reconcile` — the latter two predated this
+module and carried equivalent private ``_parse_env`` / ``_render_*`` copies until
+they were migrated onto this helper (behavior-preserving: for the
+single-assignment files those reconcilers produce the rendering is identical).
 
 Scope is deliberately small: parse, read one key, upsert one key, remove one
 key. It is NOT a general env-file framework (no interpolation, no multi-line

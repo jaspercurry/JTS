@@ -81,6 +81,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.atomic_io import atomic_write_text
+from jasper.env_file import read_value, remove, upsert
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -162,21 +163,6 @@ class BufferResult:
     detail: str = ""
 
 
-def _parse_env(text: str) -> "list[tuple[str, str | None]]":
-    """Parse env-file lines into (key, value) for assignments, or
-    (raw_line, None) for comments/blanks/malformed lines we preserve
-    verbatim. Order-preserving so an operator's file isn't reshuffled."""
-    out: list[tuple[str, str | None]] = []
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            out.append((raw, None))
-            continue
-        key, _, value = stripped.partition("=")
-        out.append((key.strip(), value))
-    return out
-
-
 def read_output_buffer(path: str | os.PathLike = FANIN_ENV_PATH) -> int | None:
     """The currently-written ``JASPER_FANIN_OUTPUT_BUFFER_FRAMES``, or None if
     the file/key is absent or unparseable as an int. None means "no override —
@@ -185,51 +171,13 @@ def read_output_buffer(path: str | os.PathLike = FANIN_ENV_PATH) -> int | None:
         text = Path(path).read_text(encoding="utf-8")
     except OSError:
         return None
-    for key, value in _parse_env(text):
-        if value is not None and key == OUTPUT_BUFFER_KEY:
-            try:
-                return int(value.strip().strip("'\""))
-            except ValueError:
-                return None
-    return None
-
-
-def _render_set(text: str, frames: int) -> tuple[str, bool]:
-    """Upsert ``OUTPUT_BUFFER_KEY=frames`` into ``text``, preserving every
-    other line. Returns (new_text, changed)."""
-    lines = _parse_env(text)
-    new_lines: list[str] = []
-    found = False
-    changed = False
-    for key, value in lines:
-        if value is not None and key == OUTPUT_BUFFER_KEY:
-            found = True
-            if value.strip().strip("'\"") != str(frames):
-                changed = True
-            new_lines.append(f"{OUTPUT_BUFFER_KEY}={frames}")
-        else:
-            new_lines.append(f"{key}={value}" if value is not None else key)
-    if not found:
-        new_lines.append(f"{OUTPUT_BUFFER_KEY}={frames}")
-        changed = True
-    return "\n".join(new_lines) + "\n", changed
-
-
-def _render_restore(text: str) -> tuple[str, bool]:
-    """Strip the ``OUTPUT_BUFFER_KEY`` override from ``text``, preserving every
-    other line. Returns (new_text, changed). Removing the line (rather than
-    writing 3072) lets the unit's own ``Environment=`` default reassert as the
-    single source of truth for the full value."""
-    lines = _parse_env(text)
-    new_lines: list[str] = []
-    changed = False
-    for key, value in lines:
-        if value is not None and key == OUTPUT_BUFFER_KEY:
-            changed = True
-            continue  # drop the override line
-        new_lines.append(f"{key}={value}" if value is not None else key)
-    body = "\n".join(new_lines)
-    return (body + "\n" if body else ""), changed
+    raw = read_value(text, OUTPUT_BUFFER_KEY)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 def _restart_fanin(reason: str) -> tuple[bool, str]:
@@ -278,9 +226,9 @@ def _apply(
         existing = ""
 
     if frames is None:
-        new_text, changed = _render_restore(existing)
+        new_text, changed = remove(existing, OUTPUT_BUFFER_KEY)
     else:
-        new_text, changed = _render_set(existing, frames)
+        new_text, changed = upsert(existing, OUTPUT_BUFFER_KEY, str(frames))
 
     if not changed:
         # Already at the requested state. Nothing to write, nothing to restart.
