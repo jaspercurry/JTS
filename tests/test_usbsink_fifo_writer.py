@@ -283,6 +283,31 @@ def test_ensure_fifo_creates_pipe(tmp_path):
     b._ensure_fifo(fifo)
 
 
+def test_ensure_fifo_publishes_pipe_to_jasper_group(tmp_path, monkeypatch):
+    import grp
+
+    class Group:
+        gr_gid = 1234
+
+    chown_calls: list[tuple[str, int, int]] = []
+    chmod_calls: list[tuple[str, int]] = []
+
+    monkeypatch.setattr(grp, "getgrnam", lambda name: Group())
+    monkeypatch.setattr(
+        os, "chown", lambda path, uid, gid: chown_calls.append((path, uid, gid))
+    )
+    monkeypatch.setattr(
+        os, "chmod", lambda path, mode: chmod_calls.append((path, mode))
+    )
+
+    fifo = str(tmp_path / "lean.pipe")
+    b = AudioBridge(output_mode="fifo", fifo_path=fifo)
+    b._ensure_fifo(fifo)
+
+    assert chown_calls == [(fifo, -1, 1234)]
+    assert chmod_calls == [(fifo, 0o660)]
+
+
 def test_ensure_fifo_rejects_non_fifo_path(tmp_path):
     import pytest
 

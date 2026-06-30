@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import types
@@ -126,6 +127,22 @@ async def test_public_play_cue_reports_playback_failure() -> None:
     assert await wl.play_cue("cant_connect") == "play_failed"
 
 
+async def test_public_play_cue_reports_busy_when_output_active() -> None:
+    from jasper.voice_daemon import WakeLoop
+
+    class _FakeCues:
+        async def play(self, _slug: str) -> bool:
+            raise AssertionError("busy cue must not play")
+
+    wl = WakeLoop.for_tests()
+    wl._cues = _FakeCues()
+    turn = await wl._output_gate.begin_turn()
+    try:
+        assert await wl.play_cue("cant_connect") == "busy"
+    finally:
+        await wl._output_gate.end_turn(turn)
+
+
 async def test_play_cue_prepares_loudness_context_before_duck_and_play() -> None:
     from jasper.assistant_loudness import silence_target_lufs_for_level
     from jasper.voice_daemon import WakeLoop
@@ -225,6 +242,36 @@ async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() ->
     )
 
 
+async def test_dynamic_text_prerender_does_not_block_turn_claim() -> None:
+    from jasper.voice_daemon import WakeLoop
+
+    events: list[str] = []
+    turn_task: asyncio.Task | None = None
+
+    class _Cues:
+        async def prerender_text(self, _text: str) -> bool:
+            nonlocal turn_task
+            events.append("rendered")
+            turn_task = asyncio.create_task(wl._begin_turn_output_episode())
+            await asyncio.sleep(0)
+            events.append(f"turn_active={wl._output_gate.active_kind}")
+            return True
+
+        async def speak_text_guarded(self, _text: str, _should_play) -> bool:
+            raise AssertionError("stale dynamic text must not write")
+
+    wl = WakeLoop.for_tests()
+    wl._cues = _Cues()
+
+    assert await wl._play_dynamic_text("Your research is ready.") is False
+    assert events == ["rendered", "turn_active=turn"]
+    assert turn_task is not None
+    await asyncio.wait_for(turn_task, timeout=1.0)
+
+    await wl._output_gate.end_turn(wl._turn_output_episode)
+    wl._turn_output_episode = None
+
+
 async def test_mute_click_prepares_loudness_context_before_write() -> None:
     from jasper.assistant_loudness import silence_target_lufs_for_level
     from jasper.voice_daemon import WakeLoop
@@ -262,3 +309,50 @@ async def test_mute_click_prepares_loudness_context_before_write() -> None:
     segment = events[1][1]
     assert segment["segment_kind"] == "cue"
     assert segment["source_profile"].provider == "jts"
+
+
+async def test_mute_click_skips_when_output_active() -> None:
+    from jasper.voice_daemon import WakeLoop
+
+    class _Tts:
+        async def write_segment(self, *_args, **_kwargs) -> None:
+            raise AssertionError("mute click must not write during active output")
+
+    wl = WakeLoop.for_tests()
+    wl._tts = _Tts()
+    turn = await wl._output_gate.begin_turn()
+    try:
+        await wl._play_mute_click(going_on=True)
+    finally:
+        await wl._output_gate.end_turn(turn)
+
+
+async def test_listening_chirp_writes_inside_turn_episode() -> None:
+    from jasper.voice_daemon import WakeLoop
+
+    events: list[tuple[bytes, dict]] = []
+
+    class _Tts:
+        async def write_segment(self, pcm: bytes, **kwargs) -> None:
+            events.append((pcm, kwargs))
+
+    wl = WakeLoop.for_tests()
+    wl._tts = _Tts()
+    wl._chirp_on_pcm = b"wake"
+    profile = object()
+    wl._chirp_on_profile = profile
+    turn = await wl._output_gate.begin_turn()
+    try:
+        await wl._play_listening_chirp(going_on=True)
+    finally:
+        await wl._output_gate.end_turn(turn)
+
+    assert events == [
+        (
+            b"wake",
+            {
+                "segment_kind": "chirp",
+                "source_profile": profile,
+            },
+        )
+    ]

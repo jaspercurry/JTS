@@ -74,6 +74,10 @@ from .voice.prompt import (  # noqa: F401
 )
 from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
 from .voice.provider_state import read_barge_in_enabled
+from .voice.output_gate import (
+    AssistantOutputEpisode,
+    AssistantOutputGate,
+)
 from .voice.turn_playback import (  # noqa: F401
     _idle_watchdog,
     _play_responses,
@@ -86,6 +90,7 @@ logger = logging.getLogger(__name__)
 EX_CONFIG_EXIT = 78
 VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT
 VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
+INTERNAL_ERROR_CUE_SLUG = "internal_error"
 # Primary microphone could not be opened at startup (os.EX_NOINPUT). A
 # DISTINCT code from EX_CONFIG (78) so the unit, doctor, and /state can
 # tell "no usable mic" from "no provider configured". Listed in
@@ -835,6 +840,8 @@ class WakeLoop:
         self._condition_refreshed_at: float = 0.0
         self._connection = connection
         self._ducker = ducker
+        self._output_gate = AssistantOutputGate()
+        self._turn_output_episode: AssistantOutputEpisode | None = None
         # Direct camilla handle for `CueDuck` (snapshot-based duck
         # around dynamic-text cues). Optional for back-compat with
         # tests / out-of-tree callers; without it, dynamic-text cues
@@ -1231,6 +1238,8 @@ class WakeLoop:
         self._condition_refreshed_at = 0.0
         self._connection = _TestConnection()
         self._ducker = _TestDucker()
+        self._output_gate = AssistantOutputGate()
+        self._turn_output_episode = None
         self._camilla = None
         self._content_activity = _TestContentActivity()
         self._usage_store = _TestUsageStore()
@@ -1406,7 +1415,24 @@ class WakeLoop:
         from .cues.registry import find as _find
         if _find(slug) is None:
             return "unknown_slug"
-        played = await self._play_cue(slug)
+        if self._output_gate.is_active:
+            log_event(
+                logger,
+                "cue.play_busy",
+                slug=slug,
+                active_kind=self._output_gate.active_kind,
+            )
+            return "busy"
+        episode = await self._output_gate.begin_if_idle("admin")
+        if episode is None:
+            log_event(
+                logger,
+                "cue.play_busy",
+                slug=slug,
+                active_kind=self._output_gate.active_kind,
+            )
+            return "busy"
+        played = await self._play_cue_owned(slug, episode)
         return "ok" if played else "play_failed"
 
     async def play_supervisor_cue(self, slug: str) -> str:
@@ -1422,6 +1448,8 @@ class WakeLoop:
         will fire `cant_connect` reactively anyway."""
         if self._state is State.SESSION:
             return "skipped_session_active"
+        if self._output_gate.is_active:
+            return "skipped_output_active"
         return await self.play_cue(slug)
 
     def set_research_scheduler(
@@ -1449,11 +1477,11 @@ class WakeLoop:
         """
         text = announcement_text(timer)
         deadline = asyncio.get_event_loop().time() + 5.0
-        while self._state is State.SESSION:
+        while self._state is State.SESSION or self._output_gate.is_active:
             if asyncio.get_event_loop().time() >= deadline:
                 logger.warning(
-                    "timer announce: skipped (id=%s) — session still "
-                    "active after 5s grace window",
+                    "timer announce: skipped (id=%s) — assistant output "
+                    "still active after 5s grace window",
                     timer.id,
                 )
                 return
@@ -1472,7 +1500,7 @@ class WakeLoop:
         returns to WAKE, then drained by _end_turn_inner.
         """
         async with self._research_announce_lock:
-            if self._state is State.SESSION:
+            if self._state is State.SESSION or self._output_gate.is_active:
                 self._queue_pending_research(job)
                 return
             await self._speak_research_job(job)
@@ -1508,10 +1536,10 @@ class WakeLoop:
         )
 
     async def _drain_pending_research(self) -> None:
-        if self._state is State.SESSION:
+        if self._state is State.SESSION or self._output_gate.is_active:
             return
         async with self._research_announce_lock:
-            if self._state is State.SESSION:
+            if self._state is State.SESSION or self._output_gate.is_active:
                 return
             while self._pending_research and self._state is State.WAKE:
                 batch = self._pending_research
@@ -1525,7 +1553,7 @@ class WakeLoop:
                     await self._speak_research_job(job)
 
     async def _speak_research_job(self, job: ResearchJob) -> None:
-        if self._state is State.SESSION:
+        if self._state is State.SESSION or self._output_gate.is_active:
             self._queue_pending_research(job)
             return
         text: str | None
@@ -1629,6 +1657,9 @@ class WakeLoop:
                 job_id=job.id,
                 reason=reason,
             )
+            if reason == "session_active":
+                self._queue_pending_research(job)
+                return
             await self._read_research_job_immediately(job)
             return
 
@@ -1728,6 +1759,23 @@ class WakeLoop:
             assistant_text,
             data_json={"kind": "research", "job_id": job.id},
         )
+        self._clear_pending_research(job.id)
+
+    def _clear_pending_research(self, job_id: str) -> None:
+        before = len(self._pending_research)
+        if before == 0:
+            return
+        self._pending_research = [
+            job for job in self._pending_research if job.id != job_id
+        ]
+        cleared = before - len(self._pending_research)
+        if cleared:
+            log_event(
+                logger,
+                "research.announce_pending_cleared",
+                job_id=job_id,
+                count=cleared,
+            )
 
     def _research_failure_cooldown_remaining(self) -> float:
         last = self._last_research_failure_announce_at
@@ -1862,35 +1910,66 @@ class WakeLoop:
         if self._cues is None:
             logger.warning("dynamic text play skipped: cues unavailable")
             return False
-        await self._prepare_feedback_loudness_context(kind="dynamic_text")
-        if isinstance(self._ducker, FanInDucker):
-            played = False
+        prerender_text = getattr(self._cues, "prerender_text", None)
+        if callable(prerender_text):
             try:
-                await self._ducker.duck()
-                await self._cues.speak_text(text)
-                played = True
+                if not await prerender_text(text):
+                    logger.warning("dynamic text play failed: prerender failed")
+                    return False
             except Exception as e:  # noqa: BLE001
-                logger.warning("dynamic text play failed: %s", e)
-            finally:
-                await self._ducker.restore()
-            return played
-        if self._camilla is None:
-            # No camilla handle — degrade to unducked playback rather
-            # than crash. The user hears the cue over un-ducked music
-            # which is loud but recoverable; better than silence.
-            try:
-                await self._cues.speak_text(text)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("dynamic text play failed: %s", e)
+                logger.warning("dynamic text play failed: prerender failed: %s", e)
                 return False
+        episode = await self._output_gate.begin_if_idle("proactive")
+        if episode is None:
+            log_event(
+                logger,
+                "dynamic_text.skipped",
+                reason="output_active",
+                active_kind=self._output_gate.active_kind,
+            )
+            return False
+
+        def _episode_current() -> bool:
+            return self._output_gate.is_current(episode)
+
+        async def _speak() -> bool:
+            speak_guarded = getattr(self._cues, "speak_text_guarded", None)
+            if callable(speak_guarded):
+                return bool(await speak_guarded(text, _episode_current))
+            if not _episode_current():
+                return False
+            await self._cues.speak_text(text)
             return True
-        async with CueDuck(self._camilla, self._cfg.duck_db):
-            try:
-                await self._cues.speak_text(text)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("dynamic text play failed: %s", e)
-                return False
-        return True
+
+        try:
+            await self._prepare_feedback_loudness_context(kind="dynamic_text")
+            if isinstance(self._ducker, FanInDucker):
+                played = False
+                try:
+                    await self._ducker.duck()
+                    played = await _speak()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("dynamic text play failed: %s", e)
+                finally:
+                    await self._ducker.restore()
+                return played
+            if self._camilla is None:
+                # No camilla handle — degrade to unducked playback rather
+                # than crash. The user hears the cue over un-ducked music
+                # which is loud but recoverable; better than silence.
+                try:
+                    return await _speak()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("dynamic text play failed: %s", e)
+                    return False
+            async with CueDuck(self._camilla, self._cfg.duck_db):
+                try:
+                    return await _speak()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("dynamic text play failed: %s", e)
+                    return False
+        finally:
+            await self._output_gate.end(episode)
 
     async def _play_cue(self, slug: str) -> bool:
         """Best-effort cue playback. Ducks music via CamillaDSP for
@@ -1934,25 +2013,45 @@ class WakeLoop:
                     level=logging.WARNING,
                 )
             return False
+        episode = await self._output_gate.begin_if_idle("admin")
+        if episode is None:
+            log_event(
+                logger,
+                "cue.skipped",
+                reason="output_active",
+                slug=slug,
+                active_kind=self._output_gate.active_kind,
+            )
+            return False
+        return await self._play_cue_owned(slug, episode)
+
+    async def _play_cue_owned(
+        self,
+        slug: str,
+        episode: AssistantOutputEpisode,
+    ) -> bool:
         played = False
         try:
-            await self._prepare_feedback_loudness_context(kind="cue", slug=slug)
             try:
-                await self._ducker.duck()
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "cue %s: duck failed (cue will play unducked): %s",
-                    slug, e,
-                )
-            try:
-                played = await self._cues.play(slug)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("cue %s play failed: %s", slug, e)
+                await self._prepare_feedback_loudness_context(kind="cue", slug=slug)
+                try:
+                    await self._ducker.duck()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "cue %s: duck failed (cue will play unducked): %s",
+                        slug, e,
+                    )
+                try:
+                    played = await self._cues.play(slug)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("cue %s play failed: %s", slug, e)
+            finally:
+                try:
+                    await self._ducker.restore()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("cue %s restore failed: %s", slug, e)
         finally:
-            try:
-                await self._ducker.restore()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("cue %s restore failed: %s", slug, e)
+            await self._output_gate.end(episode)
         return played
 
     async def run(self) -> None:
@@ -2182,6 +2281,14 @@ class WakeLoop:
     async def _play_mute_click(self, *, going_on: bool) -> None:
         """Best-effort. If the TTS stream isn't open or write fails,
         the visual feedback on the web UI is enough — never raise."""
+        if self._output_gate.is_active:
+            log_event(
+                logger,
+                "mute_click.skipped",
+                reason="output_active",
+                active_kind=self._output_gate.active_kind,
+            )
+            return
         try:
             await self._prepare_feedback_loudness_context(kind="mute_click")
             pcm = (
@@ -2886,6 +2993,7 @@ class WakeLoop:
             # as before assistant TTS. The chirp is fire-and-forget
             # below, so waiting for _begin_turn's prepare would race it
             # back onto the no-context fallback.
+            await self._begin_turn_output_episode()
             await self._prepare_assistant_loudness_context()
             # "Now listening" chirp. Fire-and-forget so it plays in
             # parallel with `_begin_turn` opening rather than adding
@@ -2939,11 +3047,17 @@ class WakeLoop:
             # problem if the connection actually dropped into
             # paused/failed mid-acquire; otherwise play the honest,
             # low-alarm internal-error cue.
+            try:
+                await self._cleanup_after_failed_begin()
+            except Exception as cleanup_error:  # noqa: BLE001
+                logger.warning(
+                    "turn acquire cleanup failed before failure cue: %s",
+                    cleanup_error,
+                )
             if self._connection.is_paused():
                 await self._play_cue("cant_connect")
             else:
-                await self._play_cue("internal_error")
-            await self._cleanup_after_failed_begin()
+                await self._play_cue(INTERNAL_ERROR_CUE_SLUG)
             self._acquire_buffer.clear()
         finally:
             # Flip the flag last — the main loop checks it on every
@@ -3424,16 +3538,17 @@ class WakeLoop:
             return "CAP"
         if self._connection.is_paused():
             return "PAUSED"
-        await self._prepare_assistant_loudness_context()
-        self._create_fire_and_forget_task(
-            self._play_listening_chirp(going_on=True),
-            name="listening-chirp-on",
-        )
         if source:
             self._active_manual_source = source
             self._acquiring = True
             self._acquire_buffer.clear()
         try:
+            await self._begin_turn_output_episode()
+            await self._prepare_assistant_loudness_context()
+            self._create_fire_and_forget_task(
+                self._play_listening_chirp(going_on=True),
+                name="listening-chirp-on",
+            )
             if source:
                 await self._begin_turn(pre_roll=False)
             else:
@@ -3512,6 +3627,11 @@ class WakeLoop:
             "connection_paused": self._connection.is_paused(),
             "mic_muted": self._mic_muted,
             "duck_active": self._ducker.is_ducked,
+            "assistant_output": {
+                "active": self._output_gate.is_active,
+                "kind": self._output_gate.active_kind,
+                "epoch": self._output_gate.epoch,
+            },
             "manual_mic_sources": sorted(self._manual_mics),
             "active_manual_mic_source": self._active_manual_source,
             "music_dbfs": (
@@ -3585,6 +3705,7 @@ class WakeLoop:
         text_context: str | None = None,
     ) -> None:
         import time as _time
+        await self._begin_turn_output_episode()
         # Anchor on the actual wake-fire moment (set in
         # _handle_wake_frame) so sched_lag captures the gap between
         # wake firing and this coroutine getting picked up by the
@@ -3728,26 +3849,39 @@ class WakeLoop:
         self._state = State.SESSION
         self._arm_turn_background_end()
 
+    async def _begin_turn_output_episode(self) -> None:
+        if self._turn_output_episode is not None and self._output_gate.is_current(
+            self._turn_output_episode,
+        ):
+            return
+        self._turn_output_episode = await self._output_gate.begin_turn()
+
     async def _cleanup_after_failed_begin(self) -> None:
-        if self._turn is not None:
-            try:
-                await self._turn.release()
-            except Exception:  # noqa: BLE001
-                pass
-        await self._ducker.restore()
-        self._volume_coordinator.note_voice_session(False)
-        self._content_activity.resume()
-        await self._tts.resume_content_meter()
-        if self._session_id is not None:
-            self._usage_store.close_session(self._session_id, 0, 0)
-        self._turn = None
-        self._session_id = None
-        self._bg_tasks = set()
-        self._bg_end_scheduled = False
-        self._active_manual_source = None
-        self._acquiring = False
-        self._state = State.WAKE
-        self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
+        try:
+            if self._turn is not None:
+                try:
+                    await self._turn.release()
+                except Exception:  # noqa: BLE001
+                    pass
+            await self._ducker.restore()
+            self._volume_coordinator.note_voice_session(False)
+            self._content_activity.resume()
+            await self._tts.resume_content_meter()
+            if self._session_id is not None:
+                self._usage_store.close_session(self._session_id, 0, 0)
+            self._turn = None
+            self._session_id = None
+            self._bg_tasks = set()
+            self._bg_end_scheduled = False
+            self._active_manual_source = None
+            self._acquiring = False
+            self._state = State.WAKE
+            self._refractory_until = (
+                asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
+            )
+        finally:
+            await self._output_gate.end_turn(self._turn_output_episode)
+            self._turn_output_episode = None
 
     async def _end_turn(self, reason: str = "ended") -> None:
         # Re-entrancy guard. The teardown (_end_turn_inner) runs many
@@ -3985,6 +4119,8 @@ class WakeLoop:
         self._session_id = None
         self._active_manual_source = None
         self._state = State.WAKE
+        await self._output_gate.end_turn(self._turn_output_episode)
+        self._turn_output_episode = None
         if research_window_job is not None:
             self._research_window_active = False
             self._research_window_job = None

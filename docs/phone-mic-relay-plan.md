@@ -98,9 +98,11 @@ Every line here is a conclusion we earned the hard way. Treat it as settled:
   renewed forever, via a trust-anchor you run. That is what cannot be maintained.
 - The relay is **O(1) and dumb** — *one* static page + *one* stateless Worker +
   object store serves the **entire fleet identically**. No per-device record, no
-  cert, nothing to renew, no powerful secret to guard. A million Pis hit the same
-  ~100 lines. Its maintenance does **not** grow with fleet size. That property is
-  the reason it wins.
+  cert, and nothing to renew. Production may add one shared Pi registration
+  secret to prevent arbitrary internet clients from minting sessions, but that
+  secret does not decrypt audio and does not create per-device state. A million
+  Pis hit the same ~100 lines. Its maintenance does **not** grow with fleet size.
+  That property is the reason it wins.
 
 ---
 
@@ -357,8 +359,11 @@ key-holding origin**:
   before it hits storage, so a leaked token cannot fill the bucket) and the Pi.
 - **Per-session rate limit** on the endpoints so a leaked `upload_token` cannot
   hammer the bucket within its TTL.
-- **Short TTL + delete-after-pull.** The relay holds no powerful secret and issues
-  nothing; its compromise is bounded to short-lived ciphertext + non-secret specs.
+- **Optional Pi registration secret.** A Cloudflare Worker secret can gate
+  `POST /sessions` so only configured Pis mint sessions; the value lives outside
+  the open-source repo and is not an audio decryption key.
+- **Short TTL + delete-after-pull.** Relay compromise is bounded to short-lived
+  ciphertext + non-secret specs.
 
 ---
 
@@ -518,9 +523,10 @@ corrections are unaffected) — say so in the UI when the relay is unreachable.
 
 ---
 
-Last updated: 2026-06-28 — `/correction/` + `/sync/` relay kinds (kind-agnostic
-seam) and USB-C-mic-on-phone support (Pi-side device-aware calibration gate +
-capture-page picker) implemented (hardware-free, gated default-off). Deferred:
-crossover relay (needs its own `calibration_id` guard), balance burst, room-helper
-dedupe. On-device validation (iPhone/Android, on jts3/jts5), alignment-threshold
-tuning, cloud deploy, and an audible failure cue still owed (see Status banner).
+Last updated: 2026-06-30 — `/correction/` + `/sync/` relay kinds
+(kind-agnostic seam), USB-C-mic-on-phone support (Pi-side device-aware
+calibration gate + capture-page picker), and optional Pi registration secret
+implemented (hardware-free). Deferred: crossover relay (needs its own
+`calibration_id` guard), balance burst, room-helper dedupe. On-device validation
+(iPhone/Android, on jts3/jts5), alignment-threshold tuning, and an audible
+failure cue still owed (see Status banner).

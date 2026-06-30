@@ -227,6 +227,34 @@ install_jasper() {
         echo "starting jasper-voice — there is no default."
         echo
     fi
+    # Existing boxes have a frozen first-install jasper.env. Add the relay keys
+    # if they predate the relay rollout, but keep the public default inert. Jasper
+    # fleet deploys opt in by forwarding these values from gitignored .env.local
+    # or shell env; an explicit blank/custom value on the Pi is operator intent.
+    if [[ -n "${JASPER_CAPTURE_RELAY_BASE:-}" ]]; then
+        set_jasper_env_value JASPER_CAPTURE_RELAY_BASE "${JASPER_CAPTURE_RELAY_BASE}"
+        echo "  capture relay: configured from deploy environment"
+    elif ! grep -qE '^JASPER_CAPTURE_RELAY_BASE=' "${ENV_DIR}/jasper.env"; then
+        printf 'JASPER_CAPTURE_RELAY_BASE=\n' >> "${ENV_DIR}/jasper.env"
+        echo "  capture relay: disabled"
+    fi
+    if [[ -n "${JASPER_CAPTURE_ORIGIN:-}" ]]; then
+        set_jasper_env_value JASPER_CAPTURE_ORIGIN "${JASPER_CAPTURE_ORIGIN}"
+        echo "  capture origin: configured from deploy environment"
+    elif ! grep -qE '^JASPER_CAPTURE_ORIGIN=' "${ENV_DIR}/jasper.env"; then
+        printf 'JASPER_CAPTURE_ORIGIN=\n' >> "${ENV_DIR}/jasper.env"
+        echo "  capture origin: unset"
+    fi
+    if [[ -n "${JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN:-}" ]]; then
+        set_jasper_env_value \
+            JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN \
+            "${JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN}"
+        echo "  capture relay registration token: configured from deploy environment"
+    elif ! grep -qE '^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=' "${ENV_DIR}/jasper.env"; then
+        printf 'JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=\n' >> "${ENV_DIR}/jasper.env"
+        echo "  capture relay registration token: unset"
+    fi
+    chmod 0640 "${ENV_DIR}/jasper.env"
     sed -i \
         -e '/^JASPER_SPOTIFY_DEVICE_NAME=/d' \
         -e '/^JASPER_AIRPLAY_DEVICE_NAME=/d' \

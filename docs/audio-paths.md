@@ -330,6 +330,14 @@ Python owns only provider source profiles:
   loudness context before ducking, so fan-in uses the current content
   baseline or listening-level-derived silence target instead of falling
   back to its built-in quiet-room target.
+- `jasper-voice` serializes assistant-owned output before it reaches
+  fan-in. One voice turn owns the wake chirp, live assistant TTS, and
+  end chirp as a single output episode. Proactive/admin speech (timer,
+  research, supervisor, and `/cue/play`) starts only when no turn or
+  other assistant episode is active. Dynamic text cache-fills before
+  claiming a proactive episode, then checks the episode epoch again
+  before writing so stale speech cannot reach the TTS lane after a
+  newer turn has claimed output.
 - Profiles are advisory. If a profile is missing or malformed, the mix owner
   uses conservative built-in fallback source loudness/peak values and
   still clamps the final gain.
@@ -596,7 +604,9 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-25 (active-crossover summed-test live level,
+Last verified: 2026-06-30 (assistant output episode ownership rechecked
+against `jasper.voice.output_gate`, `jasper/voice_daemon.py`, and
+`tests/test_voice_output_gate.py`; active-crossover summed-test live level,
 audible-only validation evidence, backend watchdog, and backend-owned
 save/apply product handoff rechecked against `sound_setup.py`,
 `deploy/assets/sound-profile/js/main.js`, and the focused sound setup tests.

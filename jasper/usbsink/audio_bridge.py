@@ -582,6 +582,27 @@ class AudioBridge:
                     f"usbsink: fifo path {path!r} exists and is not a FIFO"
                 )
 
+        # CamillaDSP preflight runs from jasper-mux under the shared
+        # `jasper` group. The FIFO producer owns creation, so it must also
+        # publish group-readable permissions rather than leaving a root:root
+        # pipe that only the final root-owned Camilla runtime could open.
+        try:
+            import grp
+
+            jasper_gid = grp.getgrnam("jasper").gr_gid
+        except KeyError:
+            return
+        try:
+            os.chown(path, -1, jasper_gid)
+            os.chmod(path, 0o660)
+        except PermissionError as e:
+            st = os.stat(path)
+            if st.st_gid != jasper_gid or not (st.st_mode & 0o040):
+                raise RuntimeError(
+                    f"usbsink: fifo path {path!r} is not readable by group "
+                    "`jasper`"
+                ) from e
+
     def _fifo_writer_loop(self) -> None:
         """Drain the bounded queue and blocking-write S32_LE PCM to the
         FIFO that CamillaDSP File-captures. Runs on a plain (non-realtime)

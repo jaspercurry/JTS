@@ -15,9 +15,9 @@ not live session state:
     decrypt dependency is importable.
 
 Both read `JASPER_CAPTURE_RELAY_BASE` — the deploy-time relay origin the Pi pulls
-from (the same value the future `correction_setup.py` adapter will pass to
-`mint_session(relay_base=...)`). Until it is set, the speaker uses the existing
-on-Pi same-origin capture; the doctor check skips cleanly rather than warning.
+from — plus the optional `JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN` registration
+gate. Until the base is set, the speaker uses the existing on-Pi same-origin
+capture; the doctor check skips cleanly rather than warning.
 """
 from __future__ import annotations
 
@@ -26,7 +26,10 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from jasper.capture_relay.client import RELAY_USER_AGENT
+
 ENV_RELAY_BASE = "JASPER_CAPTURE_RELAY_BASE"
+ENV_RELAY_REGISTRATION_TOKEN = "JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN"
 
 
 def relay_base_from_env(env: dict[str, str] | None = None) -> str | None:
@@ -36,10 +39,22 @@ def relay_base_from_env(env: dict[str, str] | None = None) -> str | None:
     return base or None
 
 
+def relay_registration_token_from_env(env: dict[str, str] | None = None) -> str | None:
+    """Optional Pi-side registration secret, or None when unconfigured."""
+    source = env if env is not None else os.environ
+    token = (source.get(ENV_RELAY_REGISTRATION_TOKEN) or "").strip()
+    return token or None
+
+
 def relay_config_from_env(env: dict[str, str] | None = None) -> dict[str, Any]:
     """Fast, network-free config snapshot for `/state.capture_relay`."""
     base = relay_base_from_env(env)
-    return {"configured": base is not None, "relay_base": base}
+    token = relay_registration_token_from_env(env)
+    return {
+        "configured": base is not None,
+        "relay_base": base,
+        "registration_secret_configured": token is not None,
+    }
 
 
 def probe_relay_health(base_url: str, *, timeout: float = 2.0) -> tuple[bool, str]:
@@ -52,7 +67,14 @@ def probe_relay_health(base_url: str, *, timeout: float = 2.0) -> tuple[bool, st
         return False, f"relay base must be https://, got {base_url!r}"
     url = base_url.rstrip("/") + "/healthz"
     try:
-        req = urllib.request.Request(url, method="GET")
+        req = urllib.request.Request(
+            url,
+            method="GET",
+            headers={
+                "Accept": "application/json",
+                "User-Agent": RELAY_USER_AGENT,
+            },
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             body = resp.read(64).decode("utf-8", "replace").strip()
             if resp.status == 200:

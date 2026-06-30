@@ -22,6 +22,7 @@ import urllib.parse
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from jasper.capture_relay import client as relay_client_module
 from jasper.capture_relay import crypto
 from jasper.capture_relay.client import RelayClient, RelayError, RelayResponse
 from jasper.capture_relay.cues import (
@@ -310,6 +311,7 @@ def test_client_register_body_shape():
     def transport(method, url, headers, body):
         seen["method"] = method
         seen["url"] = url
+        seen["headers"] = dict(headers)
         seen["body"] = json.loads(body)
         return RelayResponse(201, {}, b'{"state":"pending"}')
 
@@ -326,6 +328,109 @@ def test_client_register_body_shape():
     assert seen["url"] == "https://relay.test/sessions"
     assert seen["body"]["capture_spec"] == '{"kind":"room_sweep"}'
     assert seen["body"]["max_upload_bytes"] == 123
+    assert relay_client_module.REGISTRATION_TOKEN_HEADER not in seen["headers"]
+
+
+def test_client_register_sends_registration_token_only_when_configured():
+    calls = []
+
+    def transport(method, url, headers, body):
+        calls.append((method, url, dict(headers)))
+        return RelayResponse(201, {}, b'{"state":"pending"}')
+
+    client = RelayClient(
+        "https://relay.test/",
+        transport=transport,
+        registration_token=" pi-secret ",
+    )
+    client.register(
+        session_id="cap_1",
+        capture_spec_json='{"kind":"room_sweep"}',
+        upload_token="up",
+        pull_token="pu",
+        ttl_s=900,
+        max_upload_bytes=123,
+    )
+    client.status("cap_1", "pu")
+
+    register_headers = calls[0][2]
+    status_headers = calls[1][2]
+    assert (
+        register_headers[relay_client_module.REGISTRATION_TOKEN_HEADER]
+        == "pi-secret"
+    )
+    assert relay_client_module.REGISTRATION_TOKEN_HEADER not in status_headers
+
+
+def test_urllib_transport_sends_cloudflare_safe_defaults(monkeypatch):
+    seen = {}
+
+    class _Resp:
+        status = 200
+        headers = {}
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def _urlopen(req, *, timeout):
+        seen["headers"] = {k.lower(): v for k, v in req.header_items()}
+        seen["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr(relay_client_module.urllib.request, "urlopen", _urlopen)
+
+    resp = relay_client_module._urllib_transport(
+        "GET",
+        "https://relay.test/sessions/cap_1/status",
+        {"Authorization": "Bearer pull-token"},
+        None,
+        timeout=3.5,
+    )
+
+    assert resp.status == 200
+    assert seen["timeout"] == 3.5
+    assert seen["headers"]["authorization"] == "Bearer pull-token"
+    assert seen["headers"]["user-agent"] == relay_client_module.RELAY_USER_AGENT
+    assert seen["headers"]["accept"] == "application/json"
+
+
+def test_urllib_transport_preserves_explicit_user_agent(monkeypatch):
+    seen = {}
+
+    class _Resp:
+        status = 200
+        headers = {}
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def _urlopen(req, *, timeout):
+        seen["headers"] = {k.lower(): v for k, v in req.header_items()}
+        return _Resp()
+
+    monkeypatch.setattr(relay_client_module.urllib.request, "urlopen", _urlopen)
+
+    relay_client_module._urllib_transport(
+        "GET",
+        "https://relay.test/healthz",
+        {"User-Agent": "Custom/1", "Accept": "text/plain"},
+        None,
+    )
+
+    assert seen["headers"]["user-agent"] == "Custom/1"
+    assert seen["headers"]["accept"] == "text/plain"
 
 
 def test_client_raises_relay_error_on_non_2xx():

@@ -285,6 +285,48 @@ async def test_confirmation_guard_ladder_reads_immediately(gate: str):
     assert scheduler.read == ["job12345"]
 
 
+async def test_confirmation_guard_session_active_holds_without_immediate_read():
+    from jasper.voice_daemon import State
+
+    wl = _wake_loop()
+    wl._state = State.WAKE
+    spoken: list[str] = []
+
+    async def _play(text: str) -> bool:
+        spoken.append(text)
+        wl._state = State.SESSION
+        return True
+
+    scheduler = _MarkingScheduler()
+    wl._play_dynamic_text = _play
+    wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
+
+    await wl.announce_research_ready(_job())
+
+    assert spoken == ["Your research is ready — want me to read it now?"]
+    assert [job.id for job in wl._pending_research] == ["job12345"]
+    assert scheduler.announced == ["job12345"]
+    assert scheduler.read == []
+
+
+def test_record_research_delivery_clears_stale_pending_job():
+    wl = _wake_loop()
+    job = _job()
+    other = _job(id="other", result="Other result.")
+    recorded: list[tuple[str | None, str | None]] = []
+    wl._pending_research = [job, other]
+
+    def _record(user_text, assistant_text, **_kwargs):
+        recorded.append((user_text, assistant_text))
+
+    wl._record_conversation_turn = _record
+
+    wl.record_research_delivery(job, job.result, "yes")
+
+    assert recorded == [("research cooktops", "Use induction if you want fast response.")]
+    assert [pending.id for pending in wl._pending_research] == ["other"]
+
+
 async def test_confirmation_silence_dismisses_without_model_commit(caplog):
     wl = _wake_loop()
     turn = _put_in_session(wl, bytes_sent=299_520)

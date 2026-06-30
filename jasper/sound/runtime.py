@@ -127,6 +127,18 @@ def _paths_match(left: str | Path, right: str | Path) -> bool:
         return Path(left) == Path(right)
 
 
+def lean_live_config_path(config_dir: str | Path) -> Path:
+    """Path of the carrier-preserved LIVE lean File-capture config."""
+
+    return Path(config_dir) / LEAN_LIVE_CONFIG_NAME
+
+
+def is_lean_live_config_path(path: str | Path | None, config_dir: str | Path) -> bool:
+    """Return whether ``path`` is the active USB lean-lane config."""
+
+    return path is not None and _paths_match(path, lean_live_config_path(config_dir))
+
+
 def _statefile_config_path(statefile_path: str | Path) -> str | None:
     """The ``config_path:`` CamillaDSP persisted in its ``--statefile``.
 
@@ -178,11 +190,6 @@ async def load_profile_config(
     config_path = Path(config_dir)
     config_path.mkdir(parents=True, exist_ok=True)
     render_id = profile_id if profile_id is not None else str(time.time_ns())
-    out_path = (
-        sound_audition_config_path(config_path)
-        if audition
-        else sound_config_path(config_path)
-    )
     cam = camilla_factory()
 
     # Fast pre-check: refuse non-hostable graphs before recording an apply failure
@@ -191,12 +198,27 @@ async def load_profile_config(
     pre_path = await cam.get_config_file_path(best_effort=False)
     if not pre_path:
         raise RuntimeError("CamillaDSP did not report a loaded config path")
+    pre_on_lean = is_lean_live_config_path(pre_path, config_path)
+    out_path = (
+        lean_live_config_path(config_path)
+        if pre_on_lean
+        else (
+            sound_audition_config_path(config_path)
+            if audition
+            else sound_config_path(config_path)
+        )
+    )
+    active_lean_capture_kwargs = lean_capture_kwargs() if pre_on_lean else None
     pre_carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
     if (
         not pre_carrier.can_host_eq
         or pre_carrier.kind in {"active", "active_leader_program_bake"}
     ):
-        pre_carrier.reemit(profile, output_trim_db=output_trim_db)
+        pre_carrier.reemit(
+            profile,
+            output_trim_db=output_trim_db,
+            capture_kwargs=active_lean_capture_kwargs,
+        )
 
     # SHARED fan-in→Camilla coupling: resolve the File-capture kwargs ONCE
     # (explicit override from the coupling reconciler, else the live env).
@@ -209,12 +231,18 @@ async def load_profile_config(
         current_path = await cam.get_config_file_path(best_effort=False)
         if not current_path:
             raise RuntimeError("CamillaDSP did not report a loaded config path")
+        current_on_lean = is_lean_live_config_path(current_path, config_path)
+        if current_on_lean != pre_on_lean:
+            raise RuntimeError(
+                "CamillaDSP capture topology changed during sound apply; retry"
+            )
         carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
         result = carrier.reemit(
             profile,
             out_path=out_path,
             profile_id=render_id,
             output_trim_db=output_trim_db,
+            capture_kwargs=active_lean_capture_kwargs,
             fanin_coupling_capture_kwargs=coupling_capture_kwargs,
         )
         return {
@@ -271,7 +299,7 @@ async def reconcile_current_dsp(
     trim_db = output_trim_db(profile, settings)
     sound_filter_count = len(build_sound_filters(profile))
     cam = camilla_factory()
-    out_path = sound_config_path(config_path)
+    default_out_path = sound_config_path(config_path)
     audition_path = sound_audition_config_path(config_path)
 
     async with dsp_writer_lock(config_path):
@@ -282,7 +310,7 @@ async def reconcile_current_dsp(
                     "status": "skipped",
                     "reason": "camilla_config_path_missing",
                     "current_config_path": None,
-                    "candidate_config_path": str(out_path),
+                    "candidate_config_path": str(default_out_path),
                     "output_trim_db": trim_db,
                     "sound_filter_count": sound_filter_count,
                 }
@@ -300,6 +328,15 @@ async def reconcile_current_dsp(
                 }
             )
 
+        current_on_lean = is_lean_live_config_path(current_path, config_path)
+        out_path = (
+            lean_live_config_path(config_path)
+            if current_on_lean
+            else sound_config_path(config_path)
+        )
+        active_lean_capture_kwargs = (
+            lean_capture_kwargs() if current_on_lean else None
+        )
         carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
         try:
             # Same coupling kwargs the durable load_profile_config emit uses
@@ -309,6 +346,7 @@ async def reconcile_current_dsp(
                 profile,
                 profile_id=RECONCILE_PROFILE_ID,
                 output_trim_db=trim_db,
+                capture_kwargs=active_lean_capture_kwargs,
                 fanin_coupling_capture_kwargs=coupling_capture_kwargs,
             )
         except CarrierCannotHostEq as exc:
@@ -333,6 +371,7 @@ async def reconcile_current_dsp(
             # through to the YAML-diff below so the arm actually applies (it still
             # returns `unchanged` if the File capture is already loaded).
             and not coupling_capture_kwargs
+            and not active_lean_capture_kwargs
             and carrier.kind == "base_flat"
             and sound_filter_count == 0
             and trim_db == 0.0
@@ -528,13 +567,6 @@ def stage_lean_capture_config(
         "classification": graph.classification,
         "camilla_classification": graph.camilla_classification,
     }
-
-
-def lean_live_config_path(config_dir: str | Path) -> Path:
-    """Path of the carrier-preserved LIVE lean File-capture config."""
-
-    return Path(config_dir) / LEAN_LIVE_CONFIG_NAME
-
 
 async def apply_lean_capture_config(
     *,

@@ -22,7 +22,7 @@ import { RelayClient } from "./relay-client.js";
 import { importContentKey, encryptWav } from "./crypto.js";
 import { constraintDecision, verifyRealizedConstraints } from "./constraints.js";
 import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
-import { createMonoRecorder, float32ToWavBlob } from "./measurement-audio.js";
+import { createMonoRecorder, float32ToWavBlob } from "./measurement-audio.js?v=20260630-1";
 
 // The input the household picked (empty = OS default, which is usually the USB-C
 // measurement mic when one is plugged into the phone). Set by the mic picker.

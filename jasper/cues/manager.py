@@ -30,7 +30,7 @@ import asyncio
 import logging
 import os
 import wave
-from typing import Any
+from typing import Any, Callable
 
 from ..assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
 from ..log_event import log_event
@@ -323,6 +323,21 @@ class AudioCueManager:
             return False
 
     async def speak_text(self, text: str) -> bool:
+        return await self._speak_text(text)
+
+    async def speak_text_guarded(
+        self,
+        text: str,
+        should_play: Callable[[], bool],
+    ) -> bool:
+        return await self._speak_text(text, should_play=should_play)
+
+    async def _speak_text(
+        self,
+        text: str,
+        *,
+        should_play: Callable[[], bool] | None = None,
+    ) -> bool:
         """Render arbitrary `text` via TTS and play through TtsPlayout.
 
         Used for dynamic content — timer fire announcements with the
@@ -348,6 +363,9 @@ class AudioCueManager:
         path = dynamic_text_path(
             self._sounds_dir, text, self._voice, self._model,
         )
+        if should_play is not None and not should_play():
+            logger.info("cue speak_text: skipped stale dynamic text")
+            return False
         if not os.path.isfile(path):
             try:
                 await asyncio.to_thread(
@@ -362,6 +380,9 @@ class AudioCueManager:
             pcm, audio_duration_sec = self._read_wav_pcm(path)
         except (OSError, wave.Error) as e:
             logger.warning("cue speak_text: could not read %s: %s", path, e)
+            return False
+        if should_play is not None and not should_play():
+            logger.info("cue speak_text: skipped stale dynamic text")
             return False
 
         try:

@@ -335,6 +335,51 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
     assert await _drive(paused=True) == ["cant_connect"]
 
 
+async def test_turn_open_failure_releases_output_gate_before_cue():
+    wl = WakeLoop.for_tests()
+    played: list[tuple[str, str | None]] = []
+
+    async def _win(**_kwargs) -> str:
+        return "WIN"
+
+    async def _noop(*_args, **_kwargs) -> None:
+        return None
+
+    async def _begin_boom() -> None:
+        raise RuntimeError("turn open failed")
+
+    class _Conn:
+        def is_paused(self) -> bool:
+            return False
+
+    class _Cues:
+        async def play(self, slug: str) -> bool:
+            played.append((slug, wl._output_gate.active_kind))
+            return True
+
+    wl._wake_late_cancelled = lambda *_a, **_k: False
+    wl._peer_arbitrate = _win
+    wl._prepare_assistant_loudness_context = _noop
+    wl._play_listening_chirp = _noop
+    wl._begin_turn = _begin_boom
+    wl._connection = _Conn()
+    wl._cues = _Cues()
+
+    try:
+        await wl._arbitrate_acquire_drain(
+            score=0.9,
+            rms_dbfs=-30.0,
+            spend_allowed=True,
+            conn_paused=False,
+            can_serve=True,
+        )
+    finally:
+        await wl._cancel_fire_and_forget_tasks()
+
+    assert played == [("internal_error", "admin")]
+    assert wl._output_gate.active_kind is None
+
+
 def test_session_status_surfaces_usage_tracking_degraded():
     """session_status() exposes the UsageStore write-health so /state.voice (and
     the spend-cap UI) can show that spend recording is degraded — the S1 signal.

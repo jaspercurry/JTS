@@ -6,8 +6,10 @@
 //
 // This is the entire relay: one Cloudflare Worker + one R2 bucket serving the
 // whole fleet identically. It is O(1) and security-minimal by construction — no
-// per-device record, no cert, nothing to renew, and no powerful secret to guard.
-// See docs/phone-mic-relay-plan.md §§2, 4, 7, 8.
+// per-device record, no cert, and nothing to renew. Production may set one
+// optional fleet registration secret so only configured Pis can mint sessions;
+// that secret never decrypts audio and is not part of the open-source repo. See
+// docs/phone-mic-relay-plan.md §§2, 4, 7, 8.
 //
 // LOAD-BEARING INVARIANTS (enforced by tests/js/relay_worker_test.mjs):
 //
@@ -52,6 +54,7 @@ const RATE_WINDOW_MS = 10_000;
 const RATE_MAX_REQUESTS = 80;
 
 const DEFAULT_CAPTURE_ORIGINS = "https://capture.jasper.tech";
+const REGISTRATION_TOKEN_HEADER = "X-JTS-Relay-Registration-Token";
 
 // --- Storage abstraction ------------------------------------------------------
 // The router is storage-agnostic so it is unit-testable with an in-memory store.
@@ -190,6 +193,20 @@ async function authorize(meta, request, which) {
   const presented = await sha256Hex(token);
   const expected =
     which === "upload" ? meta.upload_token_hash : meta.pull_token_hash;
+  return timingSafeEqualHex(presented, expected);
+}
+
+async function registrationAuthorized(env, request) {
+  const expectedToken = String(env.RELAY_REGISTRATION_TOKEN || "").trim();
+  if (!expectedToken) return true;
+
+  const presentedToken = (request.headers.get(REGISTRATION_TOKEN_HEADER) || "").trim();
+  if (!presentedToken) return false;
+
+  const [presented, expected] = await Promise.all([
+    sha256Hex(presentedToken),
+    sha256Hex(expectedToken),
+  ]);
   return timingSafeEqualHex(presented, expected);
 }
 
@@ -457,6 +474,9 @@ export async function handle(request, store, env) {
   if (parts.length === 1 && parts[0] === "sessions") {
     if (request.method !== "POST") {
       return json({ error: "method_not_allowed" }, 405, cors);
+    }
+    if (!(await registrationAuthorized(env, request))) {
+      return json({ error: "registration_unauthorized" }, 401, cors);
     }
     if (await registrationRateLimited(env, request)) {
       return json({ error: "rate_limited" }, 429, cors);

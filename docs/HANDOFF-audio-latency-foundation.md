@@ -201,6 +201,30 @@ when not on the lean config). The adaptive-buffer consumer uses the same source
 decision to shrink/restore fan-in's output buffer, so the exclusive-USB policy no
 longer has two homes.
 
+**Systemd hardening dependency:** because mux owns the live lean swap while
+running under `ProtectSystem=strict`, `jasper-mux.service` MUST include
+`/var/lib/camilladsp/configs` in `ReadWritePaths`. Without that grant, mux can
+arm FIFO and restart `jasper-usbsink`, then fail before `apply_dsp_config` can
+create `.dsp_apply.lock` / `sound_lean_current.yml`, producing audible USB
+dropouts from repeated FIFO arm/rollback restarts. Guarded by
+`tests/test_mux.py::test_mux_service_can_write_lean_camilla_config_dir`.
+
+**FIFO runtime ownership dependency:** `jasper-usbsink` owns creation of
+`/run/jasper-usbsink/lean.pipe`, but mux runs the CamillaDSP preflight before
+loading the lean config. The pipe must therefore be group-readable by `jasper`
+(`root:jasper`, `0660`), not root-only, or `camilladsp --check` rejects the
+config with `Permission denied` and mux falls back through audible restarts.
+Guarded by `tests/test_usbsink_fifo_writer.py::test_ensure_fifo_publishes_pipe_to_jasper_group`.
+
+**Idle is not a lean-leave signal by itself:** `jasper-usbsink`'s published
+`playing` bit is RMS-based and can drop during quiet passages. Once mux has
+entered the FIFO lane, an `idle` route only unwinds lean when the USB sink state
+is stale/missing or the gadget is gone; a fresh, connected-but-quiet USB state
+keeps the FIFO lane latched. Competing sources, manual pins, and diagnostic
+lanes still leave immediately. Guarded by
+`tests/test_mux.py::test_lean_idle_leave_deferred_when_usb_state_is_fresh` and
+`tests/test_source_state.py::test_usbsink_fresh_host_connected_accepts_quiet_connected_state`.
+
 ## Current JTS2 low-latency AirPlay budget (2026-06-29)
 
 JTS2's live low-latency Apple-dongle path after the DAC-floor retune:

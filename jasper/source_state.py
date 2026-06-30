@@ -19,10 +19,12 @@ when daemons change.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import json
 import logging
 import os
 import re
+from typing import Any
 
 from . import bluealsa_probe
 from . import librespot_state
@@ -44,6 +46,7 @@ _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
 # import graph (jasper-mux doesn't need to import the usbsink daemon
 # just to know where its state file is).
 USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
+USBSINK_STATE_FRESH_SEC = 5.0
 
 
 async def spotify_playing(
@@ -163,13 +166,49 @@ async def usbsink_playing(state_path: str = USBSINK_STATE_PATH) -> bool:
     feature is disabled or the daemon hasn't started yet) and
     malformed JSON both resolve to False, matching the fail-soft
     convention of the other probes."""
+    data = read_usbsink_state(state_path)
+    if data is None:
+        return False
+    return bool(data.get("playing", False))
+
+
+def read_usbsink_state(state_path: str = USBSINK_STATE_PATH) -> dict[str, Any] | None:
+    """Read jasper-usbsink's small JSON state file, fail-soft."""
     try:
         with open(state_path) as f:
             data = json.load(f)
     except (FileNotFoundError, OSError, json.JSONDecodeError) as e:
         logger.debug("usbsink_playing probe failed: %s", e)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def usbsink_state_fresh_host_connected(
+    state_path: str = USBSINK_STATE_PATH,
+    *,
+    max_age_sec: float = USBSINK_STATE_FRESH_SEC,
+) -> bool:
+    """True when the USB sink daemon is freshly publishing a present gadget.
+
+    This is deliberately weaker than ``usbsink_playing``: a host can be
+    connected and momentarily RMS-quiet between tracks. Mux's lean FIFO lane uses
+    this to avoid tearing down the low-latency pipe on ordinary quiet passages,
+    while still leaving lean if the daemon/state disappears.
+    """
+    data = read_usbsink_state(state_path)
+    if not data or not data.get("host_connected", False):
         return False
-    return bool(data.get("playing", False))
+    raw_updated = data.get("updated_at")
+    if not isinstance(raw_updated, str):
+        return False
+    try:
+        updated = datetime.fromisoformat(raw_updated)
+    except ValueError:
+        return False
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - updated.astimezone(timezone.utc)).total_seconds()
+    return age <= max_age_sec
 
 
 async def bluetooth_playing() -> bool:

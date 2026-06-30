@@ -325,13 +325,13 @@ def server_with_coordinator(monkeypatch):
 
 @pytest.fixture
 def server_with_voice_socket(monkeypatch):
-    """Server fixture for /session/* endpoints: stubs out the UDS round-trip
+    """Server fixture for voice UDS endpoints: stubs out the UDS round-trip
     by monkey-patching _voice_socket_command. Yields (base, responses, received).
     Push dicts onto responses to control the next reply; default {"result":"OK"}."""
     voice_responses: list[dict] = []
     received_cmds: list[str] = []
 
-    async def fake_command(socket_path, cmd):
+    async def fake_command(socket_path, cmd, **_kwargs):
         received_cmds.append(cmd)
         return voice_responses.pop(0) if voice_responses else {"result": "OK"}
 
@@ -3264,6 +3264,17 @@ def test_session_start_busy_409(server_with_voice_socket):
     status, body = _post(f"{base}/session/start", None)
     assert status == 409
     assert body["result"] == "BUSY"
+
+
+def test_cue_play_busy_409(server_with_voice_socket):
+    base, voice_responses, received = server_with_voice_socket
+    voice_responses.append({"result": "busy"})
+
+    status, body = _post(f"{base}/cue/play", {"slug": "cant_connect"})
+
+    assert status == 409
+    assert body["result"] == "busy"
+    assert received == ["CUE_PLAY cant_connect"]
 
 
 def test_session_start_cap_503(server_with_voice_socket):

@@ -447,13 +447,12 @@ def test_source_selector_uses_control_endpoints() -> None:
     assert "source-button.playing::after" in html
 
 
-def test_room_correction_card_uses_http_preflight() -> None:
+def test_room_correction_card_uses_room_handoff() -> None:
     html = _index_html()
 
-    assert 'id="correction-card" href="/correction/"' in html
+    assert 'id="correction-card" href="/correction/room/"' in html
     assert "data-https" not in html
-    assert "HTTPS warning" in html
-    assert "walkthrough" in html
+    assert "Phone measurement relay" in html
 
 
 def test_room_correction_preflight_switches_to_https() -> None:
@@ -503,6 +502,8 @@ def test_room_correction_preflight_uses_canonical_design() -> None:
 
 def test_nginx_serves_correction_preflight_on_http_only() -> None:
     nginx = _NGINX_PATH.read_text(encoding="utf-8")
+    http_nginx = nginx[:nginx.index("# HTTPS server block")]
+    https_nginx = nginx[nginx.index("listen 443") :]
     preflight_block = _nginx_location_block(nginx, "location = /correction/")
     proceed_block = _nginx_location_block(nginx, "location = /correction/proceed")
     room_block = _nginx_location_block(nginx, "location = /correction/proceed/room")
@@ -511,7 +512,8 @@ def test_nginx_serves_correction_preflight_on_http_only() -> None:
         "location = /correction/proceed/crossover",
     )
     bass_block = _nginx_location_block(nginx, "location = /correction/proceed/bass")
-    https_block = _nginx_location_block(nginx, "location /correction/")
+    http_proxy_block = _nginx_location_block(http_nginx, "location /correction/")
+    https_block = _nginx_location_block(https_nginx, "location /correction/")
 
     assert "location = /correction" in nginx
     assert "return 302 /correction/;" in nginx
@@ -527,9 +529,10 @@ def test_nginx_serves_correction_preflight_on_http_only() -> None:
     assert "return 302 https://$host/correction/bass/$is_args$args;" in bass_block
     for block in (proceed_block, room_block, crossover_block, bass_block):
         _assert_strong_no_cache(block)
+    assert "proxy_pass http://127.0.0.1:8770/;" in http_proxy_block
+    assert "client_max_body_size 32m;" in http_proxy_block
     assert "proxy_pass http://127.0.0.1:8770/;" in https_block
     assert "return 302 http://$host$request_uri;" in nginx
-    https_nginx = nginx[nginx.index("listen 443") :]
     catchall_block = _nginx_location_block(https_nginx, "location /")
     _assert_strong_no_cache(catchall_block)
     assert "return 302 http://$host$request_uri;" in catchall_block
