@@ -6,7 +6,7 @@
 **Predecessor project**: [PiCorrect](https://github.com/jaspercurry/PiCorrect) — proves the
 UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 
-> ### Current operational truth (updated 2026-06-24)
+> ### Current operational truth (updated 2026-06-30)
 >
 > USB Audio Input is shipped and off by default. The installer writes
 > the gadget overlay/config and requires reboot for the host-facing
@@ -27,6 +27,10 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > Spotify, Bluetooth, and correction audio into substream 7 for
 > CamillaDSP/AEC. Diagrams below that show direct writes to
 > `hw:Loopback,0,0` are historical.
+> The bridge defaults to one fan-in period per callback
+> (`JASPER_USBSINK_BLOCK_FRAMES=256`) and a 16-block PortAudio queue,
+> avoiding period-mismatch bunching while preserving roughly the old
+> 8×480-frame slack.
 >
 > Cross-cutting source metadata lives in `jasper/music_sources.py`:
 > `Source.USBSINK` uses `VolumeMode.CAMILLA_MASTER`, so CamillaDSP is
@@ -75,7 +79,7 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 >
 > 1. **RMS scratch buffer pre-allocated.** The capture callback in
 >    [`audio_bridge.py`](../jasper/usbsink/audio_bridge.py) no longer
->    allocates a float64 array per 10 ms block — it uses a scratch
+>    allocates a float64 array per bridge block — it uses a scratch
 >    buffer sized once in `__init__` and reuses it. The S32→S16
 >    conversion is now a stride view (`arr.view(np.int16)[1::2]`)
 >    rather than an allocation. Eliminates the realtime-thread malloc
@@ -1749,8 +1753,10 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-06-28 (removed §3.4 drift rate-match — the
-capture-follower spa_dll resample stage was cut as the wrong tool for the
-observed USB drops, which are consumer-pacing/clock-domain overflow, not
-±500 ppm drift; rate reconciliation will be redone in CamillaDSP
-rate_adjust / a fan-in per-lane resampler)
+Last verified: 2026-06-30 (current operational truth rechecked against
+`jasper/usbsink/audio_bridge.py`: default bridge block is 256 frames with
+16 queued blocks; removed §3.4 drift rate-match — the capture-follower
+spa_dll resample stage was cut as the wrong tool for the observed USB
+drops, which are consumer-pacing/clock-domain overflow, not ±500 ppm
+drift; rate reconciliation will be redone in CamillaDSP rate_adjust / a
+fan-in per-lane resampler)
