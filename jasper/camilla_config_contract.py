@@ -88,11 +88,13 @@ def _resolve_camilla_int(
 ) -> int:
     """Resolve a positive-int CamillaDSP latency knob with floor precedence.
 
-    Precedence: explicit operator env > active DacProfile floor > global
+    Precedence: max(explicit operator env, active DacProfile floor) > global
     default. ``profile_floor`` is the active DAC's codified floor value (None
     when the DAC declares no floor — the non-breaking path that keeps the
-    global default). An explicit operator override still wins so a Pi can be
-    hand-tuned past its profile floor for testing.
+    global default). An explicit operator override can raise latency above the
+    profile floor for testing, but a stale or over-aggressive value below the
+    measured floor is clamped back up. That makes the DacProfile value a true
+    safety/stability floor, not only a fresh-box default.
 
     Returns ``default`` (or ``profile_floor`` when given) when the var is unset
     OR malformed (non-int, zero, negative) — a bad override must never produce a
@@ -111,7 +113,11 @@ def _resolve_camilla_int(
         value = int(raw)
     except ValueError:
         return fallback
-    return value if value > 0 else fallback
+    if value <= 0:
+        return fallback
+    if profile_floor is not None and value < profile_floor:
+        return profile_floor
+    return value
 
 
 def resolve_camilla_chunksize(
@@ -123,10 +129,10 @@ def resolve_camilla_chunksize(
 
     ``profile_floor`` left unset (the live-emitter default) auto-resolves the
     active output DAC profile's codified floor from the registry, so every live
-    generation path gets the floor with operator-env > profile-floor > global
-    precedence. Pass ``profile_floor=None`` explicitly to force the no-floor
-    (global-default) path — the byte-identical contract used by tests and by the
-    pre-#27 explicit-literal call. See :func:`_resolve_camilla_int`.
+    generation path gets the floor with max(operator-env, profile-floor) >
+    global precedence. Pass ``profile_floor=None`` explicitly to force the
+    no-floor (global-default) path — the byte-identical contract used by tests
+    and by the pre-#27 explicit-literal call. See :func:`_resolve_camilla_int`.
     """
     if isinstance(profile_floor, _Unset):
         profile_floor = _active_camilla_floor("camilla_chunksize")

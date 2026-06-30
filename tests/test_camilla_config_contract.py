@@ -65,8 +65,8 @@ def test_camilla_latency_knobs_use_profile_floor_when_env_unset():
     assert resolve_camilla_target_level({}, profile_floor=1024) == 1024
 
 
-def test_camilla_latency_knobs_operator_env_beats_profile_floor():
-    """#27 precedence: explicit operator env > active DacProfile floor."""
+def test_camilla_latency_knobs_operator_env_can_raise_above_profile_floor():
+    """#27 precedence: explicit operator env can raise above the floor."""
     assert (
         resolve_camilla_chunksize(
             {"JASPER_CAMILLA_CHUNKSIZE": "512"}, profile_floor=256
@@ -78,6 +78,27 @@ def test_camilla_latency_knobs_operator_env_beats_profile_floor():
             {"JASPER_CAMILLA_TARGET_LEVEL": "2048"}, profile_floor=1024
         )
         == 2048
+    )
+
+
+def test_camilla_latency_knobs_clamp_operator_env_below_profile_floor():
+    """Saved/stale env below a measured DAC floor is clamped to the floor.
+
+    This pins the jts5 256/512 saved-profile gap: once the Apple DAC declares
+    256/1536, an old ``JASPER_CAMILLA_TARGET_LEVEL=512`` must not keep
+    regenerated CamillaDSP configs below the measured floor.
+    """
+    assert (
+        resolve_camilla_chunksize(
+            {"JASPER_CAMILLA_CHUNKSIZE": "128"}, profile_floor=256
+        )
+        == 256
+    )
+    assert (
+        resolve_camilla_target_level(
+            {"JASPER_CAMILLA_TARGET_LEVEL": "512"}, profile_floor=1536
+        )
+        == 1536
     )
 
 
@@ -130,7 +151,7 @@ def test_camilla_emitters_emit_byte_identical_yaml_when_env_unset(monkeypatch):
 # chunksize 256 / target_level 1536." These run the live emitters (sound +
 # active-speaker) with the active output-hardware state staged, then parse the
 # emitted YAML's devices: block — proving the floor is in the config a daemon
-# would load, with the operator-env > profile-floor > global precedence.
+# would load, with max(operator-env, profile-floor) > global precedence.
 
 
 def _stage_output_profile(monkeypatch, tmp_path, profile_id: str) -> None:
@@ -203,15 +224,25 @@ def test_generated_sound_config_dac8x_uses_global_default(monkeypatch, tmp_path)
     assert parsed["target_level"] == DEFAULT_TARGET_LEVEL == 2048
 
 
-def test_generated_sound_config_operator_env_beats_profile_floor(
+def test_generated_sound_config_operator_env_can_raise_above_profile_floor(
     monkeypatch, tmp_path
 ):
-    """Operator JASPER_CAMILLA_CHUNKSIZE wins over the Apple profile floor in the
-    actually-generated config (the precedence claim, proven end-to-end)."""
+    """Operator env can raise above the Apple floor in generated config."""
     monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", "384")
     monkeypatch.setenv("JASPER_CAMILLA_TARGET_LEVEL", "1536")
     parsed = _generated_sound_devices(monkeypatch, tmp_path, "apple_usb_c_dongle")
     assert parsed["chunksize"] == 384
+    assert parsed["target_level"] == 1536
+
+
+def test_generated_sound_config_clamps_stale_env_below_apple_dongle_floor(
+    monkeypatch, tmp_path,
+):
+    """A saved-profile re-render must lift old 256/512 env to 256/1536."""
+    monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", "256")
+    monkeypatch.setenv("JASPER_CAMILLA_TARGET_LEVEL", "512")
+    parsed = _generated_sound_devices(monkeypatch, tmp_path, "apple_usb_c_dongle")
+    assert parsed["chunksize"] == 256
     assert parsed["target_level"] == 1536
 
 

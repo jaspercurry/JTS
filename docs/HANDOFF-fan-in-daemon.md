@@ -508,6 +508,12 @@ JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024                           # ~21 ms output
 JASPER_FANIN_TTS_SOCKET=/run/jasper-fanin/tts.sock                # production TTS IPC; "disabled" is rollback/lab only
 JASPER_FANIN_TTS_MAX_PENDING_FRAMES=96000                         # 2 s at 48 kHz
 JASPER_FANIN_TTS_PROGRAM_DUCK_DB=${JASPER_DUCK_DB:--25}           # override only for lab retuning
+JASPER_FANIN_INPUT_RESAMPLER=                                     # DEFAULT-OFF per-input adaptive resampler on the clock-crossing (USB) lane; only "enabled" arms it. See "Per-input resampler" below.
+JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink                         # which lane label the resampler arms on when enabled
+JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512                    # base ring-fill target for the armed lane (~10.7 ms at 48 k)
+JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM=500                   # hard pitch-warp clamp on the host↔DAC rate correction
+JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1024           # extra held headroom added to TARGET_FRAMES; actual DLL target is target+cushion. See "Per-input resampler" below.
+JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES=0                        # input-ring burst headroom; 0 = derive from INPUT_BUFFER_FRAMES, non-zero pins an explicit capacity. Raise to absorb input bursts without adding latency (cuts residual overrun).
 ```
 
 The list-shaped env vars (`JASPER_FANIN_INPUT_PCMS`,
@@ -683,8 +689,101 @@ monotonically — i.e. the USB lane.
 **This is drop-CONTROLLED, not drop-FREE.** A free-running lane loses a
 bounded chunk of audio at each resync (an occasional discard at the
 residual drift rate), traded against the far worse cascading upstream
-overflow it replaces. True drop-free for the mixed path is the later
-per-lane adaptive resampler; the catch-up does **not** resample.
+overflow it replaces. The drop-free successor — the per-lane adaptive
+resampler — now exists behind a flag (next section); the catch-up itself
+does **not** resample and stays the default + fallback.
+
+### Per-input adaptive resampler — the drop-FREE successor (DEFAULT-OFF)
+
+`mixer.rs` can instead reconcile the clock-crossing (USB) lane to the DAC
+clock with a per-input windowed-sinc resampler (`src/lane_resampler.rs`),
+**DLL-steered** to the DAC clock — the drop-free alternative the catch-up's
+own docstring defers to. It composes the EXACT shared primitives
+`jasper-outputd`'s `content_bridge.rs` uses (`AudioRing` + `SincTable` +
+`RateController` from the `jasper-resampler` crate), so the DLL control law
+(the spa_dll second-order loop and variance-adaptive bandwidth) is shared, not
+reimplemented. The input-lane instance disables the shared controller's
+one-period hard-resync because USB burst fill excursions larger than one render
+period are valid buffer state, not discontinuities; real discontinuities still
+reset the lane on PCM xrun (including xrun reported by `avail_update`) /
+explicit idle reset. When armed, the lane holds a small fixed fill
+(`JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES` +
+`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`, defaults 512 + 1024 =
+1536 frames ≈ 32 ms) instead of the 5–75 ms catch-up sawtooth, and the catch-up
+drain is bypassed *on that lane only*. Capture-follower sign: a host feeding
+faster than the DAC settles to `ratio > 1` (drain), holding the ring at target.
+The armed-lane read path drains every frame ALSA reports readable, including
+final partial periods, into the resampler's input ring; it re-checks readable
+depth after each drained snapshot until empty or the bounded 64-period work cap
+is reached. The kernel lane should therefore never fill/overflow in steady
+state under the validated callback cadence.
+
+**Cold-start warm-up cushion (`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`,
+default 1024 = four periods).** On every (re)lock the resampler PRIMES its ring to
+`target + cushion` before producing any output, seats the read cursor at that
+deeper fill, and holds that deeper fill as the DLL target. The earlier c57 path
+seated deep but then drained the cushion back to `TARGET_FRAMES`; hardware
+showed that over-consumption can enter a cold-start limit cycle on the real
+bursty USB feed even though steady-input tests pass. Holding the cushion keeps
+the jittery first seconds of host arrival above the underfill→silence floor. The
+tradeoff is explicit: the cushion adds fixed latency while armed (four periods
+by default), but avoids a startup drain transient. The first locked render
+period is ramped from silence to de-click the cold zero→audio edge. The held
+four-period cushion is the current conservative DEFAULT-OFF candidate; hardware
+must still prove `lock_count=1` / `unlock_count=0` on the bursty USB feed before
+it can become production-default behavior. The prime is bounded
+(`max_prime_periods` ≈ 1 s of periods): a slow-but-real producer that never
+accumulates the full cushion still falls through and locks at whatever safe
+depth is buffered, so a real stream can never wedge in prime-silence.
+
+**Burst headroom (`JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES`, default 0 =
+derive).** The input ring's capacity is the burst absorber ABOVE the `target`
+setpoint — distinct from `TARGET_FRAMES` (which sets latency). `0` derives it
+from the lane's `INPUT_BUFFER_FRAMES` (the prior implicit behaviour, floored to
+the structural minimum `target + cushion + period + radius + 1`); a non-zero
+value pins an explicit capacity. Raise it to absorb input bursts that would
+otherwise spike the ring above capacity and drop oldest-first (the residual
+`overrun_frames` / usbsink `dropped_full` the on-device counters showed) — more
+headroom, no added latency.
+
+**DEFAULT-OFF and inert when off.** Only `JASPER_FANIN_INPUT_RESAMPLER=enabled`
+(exact literal) arms it, and only on the lane named
+`JASPER_FANIN_INPUT_RESAMPLER_LANE` (default `usbsink`). When off, no
+resampler is constructed, the per-lane path is byte-for-byte the
+catch-up+strict-read above, and the STATUS shape is unchanged. The catch-up
+is intentionally KEPT as the fallback; deleting it is a later,
+validation-gated step.
+
+**HIGH-RISK / real-time.** This is a first cut on the audio hot path that
+**needs on-device real-time validation** (drop-free under sustained USB play
++ transitions, latency < the catch-up sawtooth, soak, lock stability,
+underfill behaviour). Keep it OFF in production until that lands. RT-safety
+is designed in (no hot-path allocation, no blocking, bounded per-period
+syscalls + interpolation, count-gated logging) but only hardware confirms it.
+
+**Observability**: when armed, the lane's STATUS object gains a nested
+`resampler` block — `armed`, `input_frames`, `output_frames`,
+`silence_frames`, `overrun_frames`, `ratio_ppm`, `fill_frames`,
+`target_fill_frames`, `lock_count`, `unlock_count`. Absent for every unarmed
+lane. The engagement-proof gauge is `fill_frames` vs. `target_fill_frames`:
+once locked, `fill_frames` sits steady near `target_fill_frames` (the DLL is
+holding the ring). `target_fill_frames` is the actual controller target (base
+target plus held warm-up cushion), and `ratio_ppm` shows the live pitch-warp the
+loop settled on. A growing `unlock_count` is the drop-free analogue of a
+catch-up event (the resampler starved and fell back to silence rather than
+reading past the buffer); a growing `overrun_frames` means the host outran the
+ring. Arming emits a one-time `event=fanin.resampler.armed lane=…
+target_frames=… held_target_frames=… warmup_cushion_frames=…
+max_adjust_ppm=… ring_frames=…` INFO line. If the
+feature is enabled but
+`JASPER_FANIN_INPUT_RESAMPLER_LANE` names no live input lane (a typo, or a
+non-USB build), NO resampler is constructed and a one-time
+`event=fanin.resampler.noop reason=lane_not_found requested=… available=[…]`
+WARN names the available labels — so an operator who set the env var but sees
+no effect can tell the flag was read but matched nothing (vs. silently
+no-op'd). A construction failure logs `event=fanin.resampler.noop
+reason=construction_failed …` and falls back to the catch-up drain on that
+lane.
 
 **Observability**: each input in the `STATUS` JSON carries
 `catchup_resync_frames` (cumulative frames discarded on that lane) and
@@ -1008,9 +1107,11 @@ follow-on if/when warranted.
   default jiffies-driven timer is sufficient. The PCM clock on the
   output substream is the same as the loopback's, which is the same
   as today's path.
-- **Resampling between inputs and output.** All inputs declared at
-  48 kHz S16_LE (the substream rate); each renderer's plug wrapper
-  handles its own native-rate conversion before reaching the substream.
+- **General native-rate conversion between inputs and output.** All inputs are
+  still declared at 48 kHz S16_LE (the substream rate); each renderer's plug
+  wrapper handles its own native-rate conversion before reaching the substream.
+  The optional default-off USB-lane resampler above is clock reconciliation for
+  the one foreign-clock input, not a general sample-rate conversion layer.
 
 ## References
 
@@ -1044,8 +1145,19 @@ follow-on if/when warranted.
 
 Last verified: 2026-06-29 (JTS2 AirPlay retune: fan-in output 1024 clean,
 512 failed fast with fan-in output xruns; low-latency Apple path offset is
-`-0.058667`. 2026-06-28 also added the bounded per-input catch-up resync
-for free-running lanes (`mixer.rs::drain_input_excess`) — the USB-lane
-upstream-overflow fix — plus its `catchup_resync_frames`/`catchup_events`
-STATUS counters; pacing, input-buffer sizing, TTS/duck IPC, and outputd
-ownership rechecked against current code).
+`-0.058667`; fan-in output 1024 is clean, 512 failed fast with fan-in output
+xruns. Per-input resampler state: DEFAULT-OFF behind
+`JASPER_FANIN_INPUT_RESAMPLER=enabled`; `mixer.rs::step` drains the armed lane
+through `read_into_resampler_and_render` before selection gating. The c57 build
+proved steady-state viability (DLL lock held and USB drops fell ~7x vs catch-up,
+1.80% to 0.26%) but was not production-clean: residual `dropped_full` came from
+not emptying the armed ALSA lane each period, and the cushion-drain warm-up
+backfired on the real bursty USB feed. Current follow-up drains readable ALSA
+frames to empty under a bounded recheck loop, including partial periods; resets
+on `avail_update`/`readi` xrun; holds warm-up cushion as part of the DLL target
+(`target + cushion`) instead of draining it back to the base target; and ramps
+the first locked period from silence. STATUS includes output-buffer delay plus
+nested `resampler` counters/fill. Pending hardware gates before default-on or
+catch-up replacement: `dropped_full=0` over a 10-min steady USB soak, 1 lock / 0
+unlocks / no audible cold-start silence, digital-tap audibility verification,
+jts.local and jts3 coverage, and the merge gate.)

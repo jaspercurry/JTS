@@ -6,7 +6,7 @@
 **Predecessor project**: [PiCorrect](https://github.com/jaspercurry/PiCorrect) — proves the
 UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 
-> ### Current operational truth (updated 2026-06-24)
+> ### Current operational truth (updated 2026-06-30)
 >
 > USB Audio Input is shipped and off by default. The installer writes
 > the gadget overlay/config and requires reboot for the host-facing
@@ -27,6 +27,10 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > Spotify, Bluetooth, and correction audio into substream 7 for
 > CamillaDSP/AEC. Diagrams below that show direct writes to
 > `hw:Loopback,0,0` are historical.
+> The bridge defaults to one fan-in period per callback
+> (`JASPER_USBSINK_BLOCK_FRAMES=256`) and a 16-block PortAudio queue,
+> avoiding period-mismatch bunching while preserving roughly the old
+> 8×480-frame slack.
 >
 > Cross-cutting source metadata lives in `jasper/music_sources.py`:
 > `Source.USBSINK` uses `VolumeMode.CAMILLA_MASTER`, so CamillaDSP is
@@ -75,7 +79,7 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 >
 > 1. **RMS scratch buffer pre-allocated.** The capture callback in
 >    [`audio_bridge.py`](../jasper/usbsink/audio_bridge.py) no longer
->    allocates a float64 array per 10 ms block — it uses a scratch
+>    allocates a float64 array per bridge block — it uses a scratch
 >    buffer sized once in `__init__` and reuses it. The S32→S16
 >    conversion is now a stride view (`arr.view(np.int16)[1::2]`)
 >    rather than an allocation. Eliminates the realtime-thread malloc
@@ -313,7 +317,8 @@ the original "~120-150 ms" predated both the outputd cutover and the
 two-stream bridge below, so it understated the real figure):
 - Host → gadget USB endpoint: ~3-5 ms
 - `jasper-usbsink` bridge: ~50-90 ms (two PortAudio streams at the
-  PortAudio default `latency='high'`, joined by the 8-block queue —
+  PortAudio default `latency='high'`, joined by the 16-block
+  period-aligned queue —
   the host-clock↔Pi-clock crossing; the dominant USB-*specific* term
   and the one never profiled on hardware)
 - snd-aloop usbsink lane → fan-in: ~5-10 ms (the fan-in *input* buffer,
@@ -330,8 +335,12 @@ two-stream bridge below, so it understated the real figure):
 > bridge's dominant ~50-90 ms term is now adjustable on-device:
 > `JASPER_USBSINK_LATENCY` (the PortAudio latency hint — usually the biggest
 > single lever; `low`/`high`/float-seconds), `JASPER_USBSINK_QUEUE_MAXBLOCKS`,
-> and `JASPER_USBSINK_BLOCK_FRAMES`. Defaults preserve the historical behavior
-> exactly — lower them only while measuring + confirm no xruns. And
+> and `JASPER_USBSINK_BLOCK_FRAMES`. The default bridge block is now 256 frames
+> (one fan-in period) with 16 queued blocks, preserving roughly the old
+> 8×480-frame slack while avoiding period-mismatch bunching that overflowed the
+> bridge queue before the per-input resampler could absorb it. Keep
+> `JASPER_USBSINK_LATENCY` unset/`high` unless a hardware soak proves a lower
+> hint has zero playback callback errors. And
 > `JASPER_USBSINK_OUTPUT_MODE=fifo` switches the bridge to the **lean lane**: a
 > writer thread blocking-writes full S32_LE PCM to `JASPER_USBSINK_FIFO_PATH`
 > for CamillaDSP to File-capture directly, shedding the fan-in input ring.
@@ -1744,8 +1753,10 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-06-28 (removed §3.4 drift rate-match — the
-capture-follower spa_dll resample stage was cut as the wrong tool for the
-observed USB drops, which are consumer-pacing/clock-domain overflow, not
-±500 ppm drift; rate reconciliation will be redone in CamillaDSP
-rate_adjust / a fan-in per-lane resampler)
+Last verified: 2026-06-30 (current operational truth rechecked against
+`jasper/usbsink/audio_bridge.py`: default bridge block is 256 frames with
+16 queued blocks; removed §3.4 drift rate-match — the capture-follower
+spa_dll resample stage was cut as the wrong tool for the observed USB
+drops, which are consumer-pacing/clock-domain overflow, not ±500 ppm
+drift; rate reconciliation will be redone in CamillaDSP rate_adjust / a
+fan-in per-lane resampler)

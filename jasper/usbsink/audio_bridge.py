@@ -71,15 +71,18 @@ CHANNELS = 2
 # full-width S32_LE PCM (CamillaDSP File-captures at S32_LE), so the
 # per-block byte size is frames * channels * S32_BYTES.
 S32_BYTES = 4
-# Block size = 10 ms. Small enough that preempt + host pause/resume
-# transitions land within one mux tick; large enough that PortAudio's
-# per-callback overhead is amortized.
-BLOCK_FRAMES = 480
+# Block size = one fan-in render period. Hardware validation of the USB input
+# resampler showed the old 480-frame bridge blocks could still bunch playback
+# callbacks against fan-in's 256-frame drain cadence, overflowing the bounded
+# capture→playback queue before the resampler could absorb the rate mismatch.
+# Keeping the bridge block period-aligned lets fan-in drain each producer block
+# without a partial-period tail.
+BLOCK_FRAMES = 256
 
-# Queue capacity in blocks. At 10 ms/block, 8 blocks = 80 ms of slack
-# before the output side starts dropping frames. Sized to absorb a
-# brief stall in either direction (e.g. systemd reset_failed kick).
-QUEUE_MAXBLOCKS = 8
+# Queue capacity in blocks. At 256 frames/block, 16 blocks ≈ 85 ms of slack,
+# intentionally near the old 8×480-frame budget while preserving the smaller
+# period-aligned bridge blocks.
+QUEUE_MAXBLOCKS = 16
 
 # FIFO lean-lane error-log throttle. The writer-thread counters
 # (fifo_reader_gone / fifo_errors) can move on every loop turn while
@@ -197,7 +200,7 @@ class AudioBridge:
 
         # Pre-allocated scratch buffer for in-place RMS computation in
         # the capture callback. The callback runs on PortAudio's
-        # realtime audio thread at ~100 Hz — any per-call malloc here
+        # realtime audio thread at ~188 Hz — any per-call malloc here
         # risks contending with the rest of the Pi for memory and
         # producing audible dropouts (especially on a 1 GB Pi under
         # load). Squaring is done into this buffer via np.square(out=)
@@ -211,8 +214,8 @@ class AudioBridge:
         # preempt / underrun paths. Without this, those paths fell back
         # to a Python-level zero-fill loop
         # (`for i in range(len(mv)): mv[i] = 0`) — ~1920 byte
-        # assignments at 100 Hz on the realtime audio thread, ~38-77%
-        # of the 10 ms callback budget on a Pi 5. With a pre-allocated
+        # assignments at the PortAudio callback cadence, a large share
+        # of the callback budget on a Pi 5. With a pre-allocated
         # bytes object, the same path becomes one memoryview slice
         # assignment (~1 µs). Sized for one full block at S16 stereo.
         self._silence_block = bytes(block_frames * channels * 2)
@@ -524,7 +527,7 @@ class AudioBridge:
                 pass
             # Pre-allocated silence block — one slice-assignment
             # instead of a Python-level zero-fill loop. The loop
-            # version cost ~38-77% of the 10 ms callback budget; the
+            # version consumed a large share of the callback budget; the
             # slice copy is microseconds.
             out_mv[:expected_bytes] = silence_mv[:expected_bytes]
             return
