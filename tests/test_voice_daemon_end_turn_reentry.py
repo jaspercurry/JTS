@@ -235,3 +235,73 @@ def test_end_turn_concurrent_callers_teardown_once():
     assert wl._usage_store.close_calls == 1
     assert turn.end_input_calls == 1
     assert turn.release_calls == 1
+
+
+def test_background_task_completion_ends_turn_without_new_mic_frame():
+    """Manual push-to-talk sources stop producing frames on button release.
+
+    The frame-loop guard still catches completed playback/watchdog tasks for
+    always-on mics, but a remote mic must not need a second button press just
+    to notice that response playback drained. The background task callback
+    should schedule the same teardown path by itself.
+    """
+    from jasper.voice_daemon import State
+
+    wl = _make_wakeloop()
+    turn = wl._turn
+
+    async def drive():
+        finished_task = asyncio.create_task(asyncio.sleep(0), name="finished-bg")
+        wl._bg_tasks = {finished_task}
+        wl._arm_turn_background_end()
+
+        await finished_task
+        for _ in range(20):
+            if wl._state is State.WAKE:
+                return
+            pending = list(wl._fire_and_forget)
+            if pending:
+                await asyncio.gather(*pending)
+            else:
+                await asyncio.sleep(0)
+
+    asyncio.run(drive())
+
+    assert wl._state is State.WAKE
+    assert wl._turn is None
+    assert wl._usage_store.close_calls == 1
+    assert turn.end_input_calls == 1
+    assert turn.release_calls == 1
+
+
+def test_simultaneous_background_task_completion_schedules_one_teardown():
+    """Multiple completed bg tasks should coalesce to one _end_turn task."""
+    from jasper.voice_daemon import State, WakeLoop
+
+    wl = WakeLoop.for_tests()
+    wl._state = State.SESSION
+    wl._turn = object()
+    calls = 0
+
+    async def fake_end_turn(reason="ended"):
+        nonlocal calls
+        calls += 1
+
+    wl._end_turn = fake_end_turn
+
+    async def drive():
+        task_a = asyncio.create_task(asyncio.sleep(0), name="bg-a")
+        task_b = asyncio.create_task(asyncio.sleep(0), name="bg-b")
+        wl._bg_tasks = {task_a, task_b}
+        wl._arm_turn_background_end()
+        await asyncio.gather(task_a, task_b)
+        for _ in range(10):
+            pending = list(wl._fire_and_forget)
+            if pending:
+                await asyncio.gather(*pending)
+                return
+            await asyncio.sleep(0)
+
+    asyncio.run(drive())
+
+    assert calls == 1
