@@ -26,9 +26,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from jasper.atomic_io import atomic_write_text
-from jasper.audio_runtime_plan import apply_capture_precedence
+from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_precedence
 from jasper.sound.camilla_yaml import (
     emit_sound_config,
     extract_room_peqs_from_config,
@@ -183,8 +184,8 @@ class _StereoHostCarrier:
         # "multiple values" on the overlap. The lean lane is solo by
         # construction (exclusive USB), so the only overlap — enable_rate_adjust
         # — matches the solo default (True); the merge is value-preserving.
-        emit_kwargs = dict(member_kwargs)
-        emit_kwargs.update(capture_kwargs or {})
+        emit_kwargs = cast(EmitSoundConfigKwargs, dict(member_kwargs))
+        emit_kwargs.update(cast(EmitSoundConfigKwargs, capture_kwargs or {}))
         # fanin_coupling_capture_kwargs (JASPER_FANIN_CAMILLA_COUPLING=fifo) is
         # the SHARED fan-in→Camilla hop: source/topology-agnostic, always-on for
         # every stereo-host emit, so EVERY carrier applies it (contrast the lean

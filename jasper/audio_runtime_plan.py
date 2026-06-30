@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, TypedDict, cast
 
 from jasper.audio_hardware.dac import by_id as dac_profile_by_id
 from jasper.audio_hardware.dac import latency_floor_for
@@ -118,6 +118,19 @@ _ACTIVE_LEADER_FIFO_DETAIL = (
     "the ALSA fan-in loopback. Keep the coupling on loopback until the grouped "
     "FIFO capture topology is designed."
 )
+
+
+class EmitSoundConfigKwargs(TypedDict, total=False):
+    """Subset of ``emit_sound_config`` kwargs owned by runtime routing."""
+
+    room_peqs_right: Any
+    channel_delays_ms: Any
+    channel_split: Any
+    capture_pipe_path: str | None
+    playback_pipe_path: str | None
+    resampler_type: str | None
+    resampler_profile: str | None
+    enable_rate_adjust: bool
 
 
 @dataclass(frozen=True)
@@ -621,7 +634,7 @@ def usbsink_output_mode_action(mode: str) -> RuntimeEnvAction:
     return RuntimeEnvAction("set", USBSINK_OUTPUT_MODE_KEY, normalized)
 
 
-def lean_capture_kwargs(capture_pipe_path: str | None = None) -> dict[str, object]:
+def lean_capture_kwargs(capture_pipe_path: str | None = None) -> EmitSoundConfigKwargs:
     """Return CamillaDSP RawFile-capture kwargs for the USB-only lean lane."""
 
     return {
@@ -636,7 +649,7 @@ def fanin_coupling_capture_kwargs(
     coupling: str | None = None,
     *,
     env: Mapping[str, str] | None = None,
-) -> dict[str, object]:
+) -> EmitSoundConfigKwargs:
     """Return CamillaDSP capture kwargs for the shared fan-in coupling.
 
     ``coupling=None`` means read the live env, matching ordinary sound/correction
@@ -647,11 +660,17 @@ def fanin_coupling_capture_kwargs(
     """
 
     if coupling is None:
-        return coupling_capture_kwargs_from_env(dict(os.environ if env is None else env))
+        return cast(
+            EmitSoundConfigKwargs,
+            coupling_capture_kwargs_from_env(dict(os.environ if env is None else env)),
+        )
     source = os.environ if env is None else env
-    return capture_kwargs_for_coupling(
-        coupling,
-        fifo_path=resolve_fifo_path(source.get(FIFO_PATH_ENV_VAR)),
+    return cast(
+        EmitSoundConfigKwargs,
+        capture_kwargs_for_coupling(
+            coupling,
+            fifo_path=resolve_fifo_path(source.get(FIFO_PATH_ENV_VAR)),
+        ),
     )
 
 
@@ -661,7 +680,7 @@ def apply_capture_precedence(
     *,
     lean_capture_kwargs: Mapping[str, object] | None,
     member_kwargs: Mapping[str, object] | None,
-) -> dict[str, object]:
+) -> EmitSoundConfigKwargs:
     """Apply capture-precedence policy to an ``emit_sound_config`` kwargs dict.
 
     The shared fan-in FIFO coupling applies only when no more-specific capture
@@ -681,10 +700,10 @@ def apply_capture_precedence(
         or lean_capture_kwargs
         or member_kwargs_are_pipe_sink(dict(member_kwargs or {}))
     ):
-        return dict(emit_kwargs)
+        return cast(EmitSoundConfigKwargs, dict(emit_kwargs))
     merged = dict(emit_kwargs)
     merged.update(fanin_coupling_capture_kwargs)
-    return merged
+    return cast(EmitSoundConfigKwargs, merged)
 
 
 def resolve_fanin_output_buffer_target(

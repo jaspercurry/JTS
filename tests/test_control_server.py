@@ -4282,8 +4282,8 @@ def test_get_mic_reports_voice_starting_when_socket_missing(
     starting state instead of the permanent-offline 503 shape."""
     import jasper.control.server as srv_mod
 
-    async def missing_socket(socket_path, cmd, *, timeout=5.0):  # noqa: ARG001
-        raise FileNotFoundError(socket_path)
+    async def missing_socket(_socket_path, _cmd, **_kwargs):
+        raise FileNotFoundError(_socket_path)
 
     monkeypatch.setattr(srv_mod, "_voice_socket_command", missing_socket)
     monkeypatch.setattr(
@@ -4313,8 +4313,8 @@ def test_get_mic_reports_offline_when_socket_missing_and_unit_not_starting(
 ):
     import jasper.control.server as srv_mod
 
-    async def missing_socket(socket_path, cmd, *, timeout=5.0):  # noqa: ARG001
-        raise FileNotFoundError(socket_path)
+    async def missing_socket(_socket_path, _cmd, **_kwargs):
+        raise FileNotFoundError(_socket_path)
 
     monkeypatch.setattr(srv_mod, "_voice_socket_command", missing_socket)
     monkeypatch.setattr(srv_mod, "_voice_starting_mic_payload", lambda: None)
@@ -4332,7 +4332,7 @@ def test_voice_starting_mic_payload_reads_transient_systemd_state():
     import subprocess as sp
     import jasper.control.server as srv_mod
 
-    def fake_run(argv, **kw):  # noqa: ARG001
+    def fake_run(argv, **_kw):
         return sp.CompletedProcess(
             argv,
             0,

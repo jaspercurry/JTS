@@ -1791,7 +1791,7 @@ def _make_handler(
                     status=503,
                 )
                 return
-            except Exception as e:  # noqa: BLE001
+            except (RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
                 logger.exception("mic STATUS failed")
                 self._send_json({"error": str(e)}, status=502)
                 return
