@@ -311,10 +311,9 @@ into `usbsink_substream`. Bridging UAC2Gadget → fan-in is a tiny daemon
 (~80 lines of sounddevice code) and keeps CamillaDSP's capture
 configuration unchanged.
 
-Latency budget (updated 2026-06-04 for the `jasper-outputd`
-architecture; computed from buffer sizes, **not** hardware-measured —
-the original "~120-150 ms" predated both the outputd cutover and the
-two-stream bridge below, so it understated the real figure):
+Latency budget (updated 2026-06-30 for the fan-in 1024-frame production
+floor and DAC-profile latency floors; computed from buffer sizes, **not**
+hardware-measured):
 - Host → gadget USB endpoint: ~3-5 ms
 - `jasper-usbsink` bridge: ~50-90 ms (two PortAudio streams at the
   PortAudio default `latency='high'`, joined by the 16-block
@@ -324,12 +323,15 @@ two-stream bridge below, so it understated the real figure):
 - snd-aloop usbsink lane → fan-in: ~5-10 ms (the fan-in *input* buffer,
   4096 fr ≈ 85 ms, is WiFi-burst-absorption headroom for AirPlay; a
   steady USB writer leaves it near-empty, so it adds ~0 ms here)
-- fan-in output buffer: 3072 fr ≈ 64 ms
-- CamillaDSP: chunksize 1024 (~21 ms) + target_level above chunksize
-  (1024 fr ≈ 21 ms) ≈ 43 ms
+- fan-in output buffer: 1024 fr ≈ 21 ms
+- CamillaDSP / outputd: conservative global defaults are still chunk
+  1024 / target 2048 and outputd DAC buffer 3072, but the active DAC
+  profile may lower them. The Apple USB-C dongle profile is chunk
+  256 / target 1536, outputd period 256 / DAC buffer 512.
 - outputd content bridge (`direct`): ~0 ms
-- outputd direct-DAC buffer: 3072 fr ≈ 64 ms
-- **Total**: ~250-300 ms end-to-end (computed)
+- **Total**: still above the <60 ms video target on the shared path,
+  dominated by the bridge term plus downstream buffers; use the lean/FIFO
+  path for USB-only low-latency experiments.
 
 > **Tunable since the Stage 2 / Stage 4b latency work (2026-06-27).** The
 > bridge's dominant ~50-90 ms term is now adjustable on-device:
@@ -344,16 +346,17 @@ two-stream bridge below, so it understated the real figure):
 > `JASPER_USBSINK_OUTPUT_MODE=fifo` switches the bridge to the **lean lane**: a
 > writer thread blocking-writes full S32_LE PCM to `JASPER_USBSINK_FIFO_PATH`
 > for CamillaDSP to File-capture directly, shedding the fan-in input ring.
-> Both are default-OFF (the lean lane is also soak-gated). Grammar lives in
-> `.env.example`; the lane design is in
+> Both are default-OFF (the lean lane is also soak-gated). Env action
+> validation lives in `jasper.audio_runtime_plan.usbsink_output_mode_action`;
+> the reconciler still owns the env write, restart, and rollback. Grammar lives
+> in `.env.example`; the lane design is in
 > [HANDOFF-audio-latency-foundation.md](HANDOFF-audio-latency-foundation.md).
 
-The shared downstream tail — fan-in output + CamillaDSP
-target-above-chunksize + outputd DAC ≈ 149 ms — is exactly the value
-the codebase already tracks as AirPlay's latency-compensation offset
-(`-0.149333 s`; see `deploy/bin/jasper-apply-airplay-mode` and
-[HANDOFF-airplay.md](HANDOFF-airplay.md)). It is identical for every
-source — it is not USB-specific.
+The shared downstream tail is no longer one fixed global number: fan-in
+output is the 1024-frame production floor, while CamillaDSP/outputd floors
+come from the active DAC profile. See
+[HANDOFF-audio-latency-foundation.md](HANDOFF-audio-latency-foundation.md)
+for the current low-latency Apple-dongle budget.
 
 That's well within "music streaming" expectations. It is **not** good
 for video: ~250-300 ms of audio lag is far past the ~125 ms A/V-sync
@@ -1755,8 +1758,10 @@ checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
 Last verified: 2026-06-30 (current operational truth rechecked against
 `jasper/usbsink/audio_bridge.py`: default bridge block is 256 frames with
-16 queued blocks; removed §3.4 drift rate-match — the capture-follower
-spa_dll resample stage was cut as the wrong tool for the observed USB
-drops, which are consumer-pacing/clock-domain overflow, not ±500 ppm
-drift; rate reconciliation will be redone in CamillaDSP rate_adjust / a
-fan-in per-lane resampler)
+16 queued blocks; USB output-mode env action now lives in
+`jasper.audio_runtime_plan`; current-state latency prose updated for the
+1024-frame fan-in output floor and DAC-profile latency floors. 2026-06-28
+removed §3.4 drift rate-match — the capture-follower spa_dll resample stage
+was cut as the wrong tool for the observed USB drops, which are
+consumer-pacing/clock-domain overflow, not ±500 ppm drift; rate reconciliation
+will be redone in CamillaDSP rate_adjust / a fan-in per-lane resampler)

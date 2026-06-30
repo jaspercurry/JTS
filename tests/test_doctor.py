@@ -19,6 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from jasper import audio_runtime_plan
 from jasper.audio_profile_state import MicProbe
 from jasper import wake_models
 from jasper.cli import doctor
@@ -3195,6 +3196,42 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     assert "content_eagain_count=1" in r.detail
     assert "content_bridge=direct" in r.detail
     assert "speaker_reference_source=outputd_final_electrical" in r.detail
+
+
+def test_audio_runtime_plan_doctor_warns_on_shadowed_knob(monkeypatch):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={"JASPER_CAMILLA_CHUNKSIZE": "512"},
+        outputd_env={"JASPER_CAMILLA_CHUNKSIZE": "256"},
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_mode="solo",
+    )
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+
+    r = doctor.check_audio_runtime_plan()
+
+    assert r.status == "warn"
+    assert "one knob has two homes" in r.detail
+
+
+def test_audio_runtime_plan_doctor_fails_unsupported_route(monkeypatch):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "fifo"},
+        route_mode="active_leader",
+    )
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+
+    r = doctor.check_audio_runtime_plan()
+
+    assert r.status == "fail"
+    assert "active multiroom leader" in r.detail
 
 
 def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):

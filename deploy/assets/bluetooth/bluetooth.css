@@ -131,6 +131,7 @@
 }
 .device .badge.connected  { --tone: var(--status-ok); }
 .device .badge.connecting { --tone: var(--status-warn); }
+.device .badge.linked     { --tone: var(--status-warn); }
 .device .badge.paired     { --tone: var(--status-idle); }
 
 /* RSSI + battery readouts on the right of a paired row. */

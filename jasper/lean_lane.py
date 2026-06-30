@@ -11,13 +11,12 @@ async resampler), and the rest of the chain (outputd content lane → DAC,
 plus the AEC reference) is unchanged. See
 docs/HANDOFF-audio-latency-foundation.md.
 
-This module owns ONLY the decision — "does USB qualify for the lean path
-right now?" — as a pure function of mux state + a default-OFF feature flag.
-All the I/O (arming the FIFO output, swapping CamillaDSP to the File-capture
-config) lives in mux/the reconciler and is gated on this decision. Splitting
-the hard-to-get-right exclusivity logic into a pure, fully-tested function
-mirrors how ``restore_action`` is split out of ``restore_solo_config`` in
-``jasper.multiroom.leader_config``.
+This module is now the Stage-4 compatibility wrapper around
+``jasper.audio_runtime_plan.decide_source_low_latency_route``. That plan-layer
+function owns the source-exclusivity decision so lean-lane and adaptive-buffer
+consumers do not grow separate copies. All the I/O (arming the FIFO output,
+swapping CamillaDSP to the File-capture config) still lives in mux/the
+reconciler and is gated on this decision.
 
 Default-OFF and inert: until ``JASPER_LEAN_LANE=enabled`` AND a caller wires
 this in, ``decide_lean_route`` returns ``"buffered"`` for every input, so the
@@ -28,6 +27,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from .audio_runtime_plan import decide_source_low_latency_route
 from .music_sources import Source
 
 
@@ -62,16 +62,14 @@ def decide_lean_route(
     set (``Mux._active_sources(current)``); ``winner`` is ``Mux._winner``;
     ``lean_enabled`` is the parsed default-OFF flag (:func:`lean_lane_enabled`).
     """
-    active = tuple(active_sources)
-    if not lean_enabled:
-        return LeanDecision("buffered", "flag_off")
-    if not active:
-        return LeanDecision("buffered", "idle")
-    if active != (Source.USBSINK,):
-        return LeanDecision("buffered", "not_exclusive")
-    if winner != Source.USBSINK:
-        return LeanDecision("buffered", "non_usb_winner")
-    return LeanDecision("lean", "usb_exclusive")
+    decision = decide_source_low_latency_route(
+        active_sources=active_sources,
+        winner=winner,
+        enabled=lean_enabled,
+        exclusive_source=Source.USBSINK.value,
+    )
+    route = "lean" if decision.route == "low_latency" else "buffered"
+    return LeanDecision(route, decision.reason)
 
 
 def lean_lane_enabled() -> bool:

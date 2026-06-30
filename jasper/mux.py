@@ -73,7 +73,8 @@ from jasper.log_event import log_event
 from . import librespot_state, mux_mode_persistence
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .control import restart_broker
-from .lean_lane import decide_lean_route, lean_lane_enabled
+from .audio_runtime_plan import SourceRouteDecision, decide_source_low_latency_route
+from .lean_lane import lean_lane_enabled
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
     airplay_playing,
@@ -244,12 +245,12 @@ class Mux:
         # Adaptive fan-in OUTPUT-buffer (default-OFF). The convergence
         # replacement for the lean lane: instead of swapping CamillaDSP onto a
         # File-capture config, it just shrinks fan-in's near-FULL output buffer
-        # (the real ~64 ms latency lever) when USB is the sole exclusive winner,
-        # and restores the full default otherwise. Reuses decide_lean_route's
-        # exclusivity logic. SEPARATE from the lean lane above — both stay
-        # default-OFF and are not entangled; lean-lane deletion is a follow-up
-        # gated on measurement. Parsed ONCE here so the _tick hot path makes no
-        # env read per tick and the disabled path is provably byte-identical.
+        # when USB is the sole exclusive winner, and restores the full default
+        # otherwise. It consumes the same source-route decision as the lean lane;
+        # the two mechanisms still stay separately feature-gated until the
+        # measured FIFO/capture endgame lets us delete the older lane.
+        # Parsed ONCE here so the _tick hot path makes no env read per tick and
+        # the disabled path is provably byte-identical.
         # `_buffer_shrunk` tracks whether we have the shrunk override armed, so
         # shrink/restore are idempotent across ticks (act only on the edge).
         self._adaptive_buffer_enabled = _adaptive_buffer_enabled()
@@ -317,16 +318,14 @@ class Mux:
         if self._test_fanin_label is not None:
             await self._reassert_test_fanin_label()
             # A diagnostic lane owns fan-in; never the lean exclusive-USB path.
-            await self._settle_lean(current)
-            await self._settle_adaptive_buffer(current)
+            await self._settle_low_latency_audio(current)
             return
 
         if self._manual_source is not None:
             await self._reassert_manual_source()
             # Manual pin is not the auto exclusive-USB lean trigger; ensure we
             # are off the lean config if we were on it.
-            await self._settle_lean(current)
-            await self._settle_adaptive_buffer(current)
+            await self._settle_low_latency_audio(current)
             return
 
         target: Source | None = None
@@ -393,8 +392,7 @@ class Mux:
                 self._state.playing = current
                 # Handoff didn't settle — never enter lean on an unsettled
                 # gate; leave lean if we were in it.
-                await self._settle_lean(current)
-                await self._settle_adaptive_buffer(current)
+                await self._settle_low_latency_audio(current)
                 return
 
             # Pause every OTHER source that's currently active after
@@ -432,22 +430,46 @@ class Mux:
                     False, reason="all_others_idle",
                 )
 
-        # Stage-4b lean lane: after the fan-in handoff has settled, decide
-        # whether USB qualifies for the low-latency File-capture path and
-        # enter/leave accordingly. Default-OFF and inert otherwise.
-        await self._settle_lean(current)
-        # Adaptive fan-in output-buffer: the convergence replacement for the
-        # lean lane above. Same exclusivity gate, but instead of a CamillaDSP
-        # config swap it shrinks/restores fan-in's output buffer. Default-OFF
-        # and inert otherwise; SEPARATE from the lean lane (both can be off, one
-        # on, or — in a lab — both on without entangling).
-        await self._settle_adaptive_buffer(current)
+        await self._settle_low_latency_audio(current)
+
+    async def _settle_low_latency_audio(self, current: dict[Source, bool]) -> None:
+        """Drive optional low-latency consumers from one source-route decision."""
+        if not (self._lean_enabled or self._adaptive_buffer_enabled):
+            return
+        decision = self._source_low_latency_decision(current)
+        await self._settle_lean(decision)
+        await self._settle_adaptive_buffer(decision)
+
+    def _source_low_latency_decision(
+        self,
+        current: dict[Source, bool],
+    ) -> SourceRouteDecision:
+        """Single source-route policy for lean/adaptive low-latency consumers."""
+        manual_or_test = (
+            self._manual_source is not None or self._test_fanin_label is not None
+        )
+        if manual_or_test:
+            return decide_source_low_latency_route(
+                active_sources=(),
+                winner=None,
+                enabled=True,
+                exclusive_source=Source.USBSINK.value,
+            )
+        return decide_source_low_latency_route(
+            active_sources=tuple(self._active_sources(current)),
+            winner=self._winner,
+            enabled=True,
+            exclusive_source=Source.USBSINK.value,
+        )
 
     # ------------------------------------------------------------------
-    # Adaptive fan-in output-buffer — shrink/restore driven by decide_lean_route
+    # Adaptive fan-in output-buffer — consumer of the shared source-route policy
     # ------------------------------------------------------------------
 
-    async def _settle_adaptive_buffer(self, current: dict[Source, bool]) -> None:
+    async def _settle_adaptive_buffer(
+        self,
+        decision: SourceRouteDecision,
+    ) -> None:
         """Drive the adaptive fan-in output-buffer from the settled state.
 
         Default-OFF: when ``JASPER_FANIN_ADAPTIVE_BUFFER`` is not ``enabled``
@@ -455,9 +477,9 @@ class Mux:
         pre-adaptive behavior (the flag is parsed once at construction, so the
         hot path makes no env read).
 
-        On the enabled path it reuses the pure ``decide_lean_route`` policy
-        (exclusive wired-USB sole-active-winner -> ``lean`` -> shrink; any
-        networked/mixed/idle/manual/test route -> restore the full buffer).
+        On the enabled path it consumes the shared source-route policy
+        (exclusive wired-USB sole-active-winner -> ``low_latency`` -> shrink;
+        any networked/mixed/idle/manual/test route -> restore the full buffer).
         Idempotent across ticks via ``self._buffer_shrunk`` (act only on the
         edge). FAIL-SAFE: every failure path keeps/restores the FULL buffer.
 
@@ -469,21 +491,7 @@ class Mux:
         if not self._adaptive_buffer_enabled:
             return
 
-        manual_or_test = (
-            self._manual_source is not None or self._test_fanin_label is not None
-        )
-        if manual_or_test:
-            decision = decide_lean_route(
-                active_sources=(), winner=None, lean_enabled=True,
-            )
-        else:
-            decision = decide_lean_route(
-                active_sources=self._active_sources(current),
-                winner=self._winner,
-                lean_enabled=True,
-            )
-
-        if decision.route == "lean":
+        if decision.route == "low_latency":
             if self._buffer_shrunk:
                 return
             if self._buffer_shrink_blocked:
@@ -546,20 +554,19 @@ class Mux:
         log_event(logger, "mux.adaptive_buffer_restored", reason=reason)
 
     # ------------------------------------------------------------------
-    # Stage-4b lean lane — enter/leave ladders driven by decide_lean_route
+    # Stage-4b lean lane — consumer of the shared source-route policy
     # ------------------------------------------------------------------
 
-    async def _settle_lean(self, current: dict[Source, bool]) -> None:
+    async def _settle_lean(self, decision: SourceRouteDecision) -> None:
         """Drive the lean lane from the settled source state.
 
         Default-OFF: when ``JASPER_LEAN_LANE`` is not ``enabled`` this returns
         immediately and ``_tick`` is byte-identical to the pre-lean behavior.
 
-        On the enabled path it asks the pure ``decide_lean_route`` policy
-        whether USB is the sole active source AND the audible winner; ``lean``
-        runs the enter-lean ladder, anything else runs leave-lean (a NO-OP when
-        we were never in lean). Both ladders are idempotent across ticks via
-        ``self._in_lean``.
+        On the enabled path it consumes the shared source-route policy:
+        ``low_latency`` runs the enter-lean ladder, anything else runs
+        leave-lean (a NO-OP when we were never in lean). Both ladders are
+        idempotent across ticks via ``self._in_lean``.
 
         SCOPE: AUTO mode only. A manual source pin or an active diagnostic
         (test) fan-in lane is treated as non-lean — those paths call this with
@@ -571,21 +578,7 @@ class Mux:
         if not self._lean_enabled:
             return
 
-        manual_or_test = (
-            self._manual_source is not None or self._test_fanin_label is not None
-        )
-        if manual_or_test:
-            decision = decide_lean_route(
-                active_sources=(), winner=None, lean_enabled=True,
-            )
-        else:
-            decision = decide_lean_route(
-                active_sources=self._active_sources(current),
-                winner=self._winner,
-                lean_enabled=True,
-            )
-
-        if decision.route == "lean":
+        if decision.route == "low_latency":
             # Clear a prior enter-block only when the world changed enough to be
             # worth another attempt — i.e. we are not already blocked-and-stable.
             if self._in_lean:
