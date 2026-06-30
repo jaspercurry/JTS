@@ -573,7 +573,8 @@ id = "audio-latency-lean-lane"
 title = "Audio-latency foundation / lean File-capture lane"
 safety = "boot-risk"
 code = [
-  "jasper/lean_lane.py",
+  "jasper/audio_runtime_plan.py",
+  "jasper/mux.py",
   "jasper/camilla_config_contract.py",
   "jasper/sound/camilla_yaml.py",
   "jasper/active_speaker/camilla_yaml.py",
@@ -587,7 +588,7 @@ requires_docs_when = [
   "The USB-only lean-fifo route, its solo-only/mux-ladder arming, or the DAC-floor codification plan changes (see HANDOFF-usb-low-latency.md).",
 ]
 verification = [
-  "pytest tests/test_sound_camilla_yaml.py tests/test_lean_lane.py tests/test_active_speaker_runtime_contract.py",
+  "pytest tests/test_audio_runtime_plan.py tests/test_mux_lean_lane.py tests/test_sound_camilla_yaml.py tests/test_active_speaker_runtime_contract.py",
 ]
 
 [[subsystem]]
@@ -940,13 +941,17 @@ verification = [
 id = "privilege-separation"
 title = "Daemon hardening + privilege separation (WS1)"
 safety = "boot-risk"
-# Code scope is deliberately the hardening drift-guard, NOT the unit files: the
-# repo pins each jasper unit to exactly one subsystem (its runtime doc), so the
-# units are not re-routed here. The privilege-separation doc is the cross-cutting
-# threat-model/ADR — discoverable from the README atlas and each unit's inline
-# `# WS1 ...` comment; changing the stanza means changing the guard, which
-# routes here.
+# Code scope is deliberately the restart-broker boundary plus the hardening
+# drift-guard, NOT every unit file: the repo pins each jasper unit to exactly one
+# subsystem (its runtime doc), so the units are not re-routed here. The
+# privilege-separation doc is the cross-cutting threat-model/ADR — discoverable
+# from the README atlas and each unit's inline `# WS1 ...` comment; changing the
+# broker boundary or hardening stanza routes here.
 code = [
+  "jasper/control/restart_broker.py",
+  "deploy/polkit/49-jasper-control.rules",
+  "tests/test_restart_broker.py",
+  "tests/test_polkit_jasper_control.py",
   "tests/test_systemd_hardening.py",
 ]
 docs = [

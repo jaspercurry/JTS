@@ -13,16 +13,9 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper.camilla_config_contract import (
-    DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
-    DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
-    DEFAULT_LEAN_CAPTURE_FIFO,
-)
-from jasper.fanin_coupling import (
-    FIFO_PATH_ENV_VAR,
-    capture_kwargs_for_coupling,
-    coupling_capture_kwargs_from_env,
-    resolve_fifo_path,
+from jasper.audio_runtime_plan import (
+    fanin_coupling_capture_kwargs,
+    lean_capture_kwargs,
 )
 from jasper.log_event import log_event
 from jasper.sound.profile import (
@@ -154,24 +147,6 @@ def _statefile_config_path(statefile_path: str | Path) -> str | None:
     return value or None
 
 
-def _resolve_coupling_capture_kwargs(coupling: str | None) -> dict[str, object]:
-    """Coupling capture kwargs for a (re)emit.
-
-    ``coupling is None`` (every existing caller) reads the live process env —
-    byte-identical to before this override existed. An explicit value is what the
-    coupling reconciler (:mod:`jasper.fanin.coupling_reconcile`) passes: it has
-    just rewritten ``fanin.env`` under this process, so this process's
-    ``os.environ`` may be stale; the explicit value makes the emit match the
-    persisted intent without mutating process-global state.
-    """
-    if coupling is None:
-        return coupling_capture_kwargs_from_env()
-    return capture_kwargs_for_coupling(
-        coupling,
-        fifo_path=resolve_fifo_path(os.environ.get(FIFO_PATH_ENV_VAR)),
-    )
-
-
 async def load_profile_config(
     profile: SoundProfile,
     *,
@@ -228,7 +203,7 @@ async def load_profile_config(
     # Default loopback -> {} -> byte-identical emit. Every carrier applies it
     # (the active baseline too); the lean-lane / grouped-pipe-sink precedence
     # lives in the carrier.
-    coupling_capture_kwargs = _resolve_coupling_capture_kwargs(coupling)
+    coupling_capture_kwargs = fanin_coupling_capture_kwargs(coupling)
 
     async def _prepare_config() -> dict[str, Any]:
         current_path = await cam.get_config_file_path(best_effort=False)
@@ -329,7 +304,7 @@ async def reconcile_current_dsp(
         try:
             # Same coupling kwargs the durable load_profile_config emit uses
             # below, so the dry-run YAML matches what gets written.
-            coupling_capture_kwargs = _resolve_coupling_capture_kwargs(coupling)
+            coupling_capture_kwargs = fanin_coupling_capture_kwargs(coupling)
             dry = carrier.reemit(
                 profile,
                 profile_id=RECONCILE_PROFILE_ID,
@@ -477,7 +452,8 @@ def stage_lean_capture_config(
     config_path = Path(config_dir)
     config_path.mkdir(parents=True, exist_ok=True)
     staged_path = config_path / LEAN_STAGED_CONFIG_NAME
-    fifo = capture_pipe_path or DEFAULT_LEAN_CAPTURE_FIFO
+    capture_kwargs = lean_capture_kwargs(capture_pipe_path)
+    fifo = str(capture_kwargs["capture_pipe_path"])
     profile = load_profile(profile_path)
     render_id = str(time.time_ns())
 
@@ -491,10 +467,7 @@ def stage_lean_capture_config(
         profile,
         out_path=staged_path,
         profile_id=render_id,
-        capture_pipe_path=fifo,
-        resampler_type=DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
-        resampler_profile=DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
-        enable_rate_adjust=True,
+        **capture_kwargs,
     )
 
     # Static validity: camilladsp --check. No FIFO needed (a static YAML check
@@ -603,7 +576,8 @@ async def apply_lean_capture_config(
     config_path = Path(config_dir)
     config_path.mkdir(parents=True, exist_ok=True)
     out_path = lean_live_config_path(config_path)
-    fifo = capture_pipe_path or DEFAULT_LEAN_CAPTURE_FIFO
+    capture_kwargs = lean_capture_kwargs(capture_pipe_path)
+    fifo = str(capture_kwargs["capture_pipe_path"])
     profile = load_profile(profile_path)
     settings = load_sound_settings()
     trim_db = output_trim_db(profile, settings)
@@ -612,13 +586,8 @@ async def apply_lean_capture_config(
 
     # The carrier's File-capture kwargs: a File pipe source + the v4 async
     # resampler + enable_rate_adjust (the real DAC playback clock disciplines
-    # the clockless File capture). emit_sound_config owns the fail-loud guards.
-    capture_kwargs = {
-        "capture_pipe_path": fifo,
-        "resampler_type": DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
-        "resampler_profile": DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
-        "enable_rate_adjust": True,
-    }
+    # the clockless File capture). The runtime plan owns the exact kwargs;
+    # emit_sound_config owns the fail-loud guards.
 
     async with dsp_writer_lock(config_path):
 
@@ -746,7 +715,7 @@ async def restore_buffered_config(
                 out_path=out_path,
                 profile_id=render_id,
                 output_trim_db=trim_db,
-                fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
+                fanin_coupling_capture_kwargs=fanin_coupling_capture_kwargs(),
             )
             return {"room_peq_count": result.room_peq_count}
 

@@ -186,6 +186,58 @@ def test_happy_path_restart(broker):
     assert calls == [["systemctl", "restart", "--no-block", "jasper-voice.service"]]
 
 
+def test_self_restart_is_queued_after_other_units(broker, monkeypatch):
+    """A wizard restart list may include jasper-control itself. The broker
+    must queue voice/mux first so killing control cannot cancel them."""
+    sock_path, calls, _ = broker
+    popen_calls: list[list[str]] = []
+
+    class _FakePopen:
+        pid = 12345
+
+    def fake_popen(argv, **kwargs):
+        popen_calls.append(list(argv))
+        assert kwargs["start_new_session"] is True
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is subprocess.DEVNULL
+        return _FakePopen()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    resp = restart_broker.request_restart(
+        "jasper-voice",
+        "jasper-control",
+        "jasper-mux",
+        verb="restart",
+        reason="spotify setup",
+        socket_path=sock_path,
+    )
+
+    assert resp["ok"] is True
+    assert resp["self_deferred"] is True
+    assert resp["confirmed"] is False
+    assert resp["status"] == "queued_unconfirmed"
+    assert resp["rc"] is None
+    assert resp["units"] == [
+        "jasper-voice.service",
+        "jasper-control.service",
+        "jasper-mux.service",
+    ]
+    assert calls == [[
+        "systemctl",
+        "restart",
+        "--no-block",
+        "jasper-voice.service",
+        "jasper-mux.service",
+    ]]
+    assert popen_calls == [[
+        "systemctl",
+        "restart",
+        "--no-block",
+        "jasper-control.service",
+    ]]
+
+
 def test_enable_now_maps_through_broker(broker):
     sock_path, calls, _ = broker
     resp = restart_broker.request_restart(

@@ -73,8 +73,11 @@ from jasper.log_event import log_event
 from . import librespot_state, mux_mode_persistence
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .control import restart_broker
-from .audio_runtime_plan import SourceRouteDecision, decide_source_low_latency_route
-from .lean_lane import lean_lane_enabled
+from .audio_runtime_plan import (
+    SourceRouteDecision,
+    decide_source_low_latency_route,
+    low_latency_feature_flags,
+)
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
     airplay_playing,
@@ -130,21 +133,6 @@ def _spotify_preempt_restart_disabled() -> bool:
     return os.environ.get(
         "JASPER_MUX_SPOTIFY_PREEMPT_RESTART", "",
     ).strip().lower() == "disabled"
-
-
-def _adaptive_buffer_enabled() -> bool:
-    """``JASPER_FANIN_ADAPTIVE_BUFFER`` — default OFF, opt-IN.
-
-    Only the exact literal ``enabled`` (case-insensitive, stripped) turns it
-    on; everything else (unset, ``disabled``, ``1``, ``true``, …) stays off.
-    Opt-IN polarity (the inverse of mux's opt-OUT ``=disabled`` escape hatches)
-    because the adaptive output-buffer shrink is new/experimental and restarts
-    the SHARED fan-in daemon: an unset flag must be inert until the on-device
-    soak gate passes. Mirrors :func:`jasper.lean_lane.lean_lane_enabled`.
-    """
-    return os.environ.get(
-        "JASPER_FANIN_ADAPTIVE_BUFFER", "",
-    ).strip().lower() == "enabled"
 
 
 def _usbsink_preempt_disabled() -> bool:
@@ -235,7 +223,8 @@ class Mux:
         # is a deploy, which restarts mux). `_in_lean` tracks whether we have
         # swapped CamillaDSP onto the lean File-capture config + armed the
         # usbsink FIFO output, so enter/leave are idempotent across ticks.
-        self._lean_enabled = lean_lane_enabled()
+        low_latency_flags = low_latency_feature_flags()
+        self._lean_enabled = low_latency_flags.lean_lane
         self._in_lean = False
         # Re-arm backoff: once an enter-lean attempt fails (FIFO can't open /
         # lean config fails classify / arm restart failed), do not retry every
@@ -253,7 +242,7 @@ class Mux:
         # the disabled path is provably byte-identical.
         # `_buffer_shrunk` tracks whether we have the shrunk override armed, so
         # shrink/restore are idempotent across ticks (act only on the edge).
-        self._adaptive_buffer_enabled = _adaptive_buffer_enabled()
+        self._adaptive_buffer_enabled = low_latency_flags.adaptive_buffer
         self._buffer_shrunk = False
         # Re-arm backoff, mirroring the lean enter-block: a failed shrink (env
         # write or fanin restart failed) must not restart-storm the shared

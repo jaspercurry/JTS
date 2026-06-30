@@ -48,12 +48,13 @@ Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared
    computes one shared source-route decision from
    `jasper.audio_runtime_plan.decide_source_low_latency_route`; the lean lane
    (`JASPER_LEAN_LANE=enabled`) and adaptive fan-in buffer consume that same
-   USB-solo verdict. The compatibility wrapper `jasper.lean_lane.decide_lean_route`
-   still returns the old `lean`/`buffered` vocabulary for Stage-4 tests. Validate
-   the live switch end-to-end and the TTS-while-solo handoff before default-on.
+   USB-solo verdict, and `jasper.audio_runtime_plan.low_latency_feature_flags`
+   is the single parser for both opt-in gates. Validate the live switch
+   end-to-end and the TTS-while-solo handoff before default-on.
 2. **Drive the camilla side via the existing lean-config path** (`jasper/usbsink/
-   output_mode_reconcile.py` + the lean RawFile capture in `jasper/camilla_config_contract.py`
-   — RawFile, not File; the jts5 fix). Confirm `--check` valid and no crash-loop.
+   output_mode_reconcile.py` + the plan-owned `lean_capture_kwargs` RawFile
+   capture shape — RawFile, not File; the jts5 fix). Confirm `--check` valid
+   and no crash-loop.
 3. **Tune the buffer floors to the DAC's real floor.** DONE (the #27 codification, landed
    2026-06-28). The DAC's stable buffer floor is now DATA on its `DacProfile`
    (`jasper/audio_hardware/dac.py`: the `LatencyFloor` dataclass + the optional
@@ -108,6 +109,7 @@ peak) — trading latency for drops on every source. The lean-fifo gets low late
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
 Last verified: 2026-06-30 (mux lean/adaptive consumers now share
-`jasper.audio_runtime_plan.decide_source_low_latency_route`; #27 latency-floor
+`jasper.audio_runtime_plan.decide_source_low_latency_route`; lean RawFile
+capture kwargs are plan-owned via `lean_capture_kwargs`; #27 latency-floor
 codification still wired to the active profile floor end-to-end with
 operator-override precedence corrected)
