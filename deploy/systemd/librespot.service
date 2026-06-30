@@ -6,8 +6,8 @@ Wants=network-online.target jasper-fanin.service
 # Always-on renderer: same logic as shairport-sync — Spotify Connect
 # must be advertised on the LAN whenever the speaker is up, including
 # after a clean exit (which Restart=on-failure ignores by design).
-StartLimitIntervalSec=60
-StartLimitBurst=5
+StartLimitIntervalSec=600
+StartLimitBurst=20
 
 [Service]
 # Stage 2 audio-protection: pages never swap to zram. See
@@ -71,7 +71,7 @@ ExecStart=/usr/bin/librespot \
     --disable-audio-cache \
     --onevent /usr/local/bin/jasper-librespot-event
 Restart=always
-RestartSec=2
+RestartSec=5
 MemoryHigh=150M
 MemoryMax=200M
 Nice=-5

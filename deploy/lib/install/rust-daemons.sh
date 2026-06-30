@@ -12,7 +12,7 @@
 FANIN_BIN="/opt/jasper/bin/jasper-fanin"
 OUTPUTD_BIN="/opt/jasper/bin/jasper-outputd"
 OUTPUTD_SOURCE_MISSING_ERROR="ERROR: jasper-outputd source missing"
-RUST_LOW_MEMORY_BUILD_THRESHOLD_KB=786432
+RUST_LOW_MEMORY_BUILD_THRESHOLD_KB=1200000
 
 rust_build_memtotal_kb() {
     local meminfo="${JASPER_RUST_MEMINFO_FILE:-/proc/meminfo}"
@@ -50,14 +50,15 @@ rust_cargo_build_env() {
         return 0
     fi
 
-    # Zero-class streamboxes have enough CPU for the runtime daemons, but not
-    # enough RAM to compile the normal release profile with fat LTO. Keep the
-    # full-speaker profile untouched and only relax Cargo on low-memory hosts.
+    # 1 GB and Zero-class boxes have enough CPU for the runtime daemons, but not
+    # enough RAM to reliably compile the normal release profile with fat LTO or
+    # LLVM's heavier optimization passes. Keep 2 GB+ full speakers on the
+    # normal release profile and relax Cargo only on constrained hosts.
     printf '%s\n' \
         "CARGO_BUILD_JOBS=1" \
         "CARGO_PROFILE_RELEASE_LTO=false" \
         "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" \
-        "CARGO_PROFILE_RELEASE_OPT_LEVEL=2"
+        "CARGO_PROFILE_RELEASE_OPT_LEVEL=0"
 }
 
 build_install_rust_daemon() {
@@ -104,6 +105,30 @@ build_install_rust_daemon() {
         "${REPO_DIR}/rust/jasper-tts-protocol/" \
         "$(dirname "${cache_dir}")/jasper-tts-protocol/"
     chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-tts-protocol"
+    # Same for the shared clock crate (jasper-clock) so jasper-outputd's
+    # `path = "../jasper-clock"` resolves. Guarded by existence so a branch
+    # predating the crate still builds (its daemons don't depend on it).
+    if [[ -d "${REPO_DIR}/rust/jasper-clock" ]]; then
+        rsync -a --delete \
+            --exclude='target/' \
+            "${REPO_DIR}/rust/jasper-clock/" \
+            "$(dirname "${cache_dir}")/jasper-clock/"
+        chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-clock"
+    fi
+    # Same for the shared resampler crate (jasper-resampler) so the
+    # `path = "../jasper-resampler"` dep of jasper-outputd (content_bridge) AND
+    # jasper-fanin (the DEFAULT-OFF per-input lane resampler) resolves.
+    # jasper-resampler itself depends on `path = "../jasper-clock"`, which the
+    # block above already stages as a sibling — so this single rsync covers the
+    # transitive dep. Guarded by existence so a branch predating the crate still
+    # builds.
+    if [[ -d "${REPO_DIR}/rust/jasper-resampler" ]]; then
+        rsync -a --delete \
+            --exclude='target/' \
+            "${REPO_DIR}/rust/jasper-resampler/" \
+            "$(dirname "${cache_dir}")/jasper-resampler/"
+        chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-resampler"
+    fi
     chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     local -a cargo_env=()
@@ -112,7 +137,7 @@ build_install_rust_daemon() {
         cargo_env+=("${cargo_arg}")
     done < <(rust_cargo_build_env)
     if [[ "${#cargo_env[@]}" -gt 0 ]]; then
-        echo "  ${name}: low-memory Rust build profile active ($(rust_build_memtotal_kb) kB RAM; lto=false, codegen-units=16, jobs=1)"
+        echo "  ${name}: low-memory Rust build profile active ($(rust_build_memtotal_kb) kB RAM; opt-level=0, lto=false, codegen-units=16, jobs=1)"
     fi
 
     # Contain the sudo -> pi -> cargo -> rustc subtree: cargo manages its

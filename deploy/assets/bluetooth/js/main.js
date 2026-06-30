@@ -231,14 +231,18 @@ function renderDevices() {
   });
 
   document.getElementById('paired-list').innerHTML = paired.length
-    ? paired.map(d => deviceRow(d, true)).join('')
+    ? paired.map(d => deviceRow(d)).join('')
     : '<div class="empty">No paired devices yet.</div>';
   document.getElementById('other-list').innerHTML = other.length
-    ? other.map(d => deviceRow(d, false)).join('')
+    ? other.map(d => deviceRow(d)).join('')
     : '<div class="empty">Nothing nearby. Try scanning.</div>';
 }
 
-function deviceRow(d, isPaired) {
+function deviceRow(d) {
+  const isPaired = !!d.paired;
+  const canRemoveUnpaired = !isPaired && (
+    !!d.connected || !!d.trusted || !!d.servicesResolved
+  );
   // Bluez fills Alias with a MAC-shaped string when the remote
   // doesn't broadcast a name — server side filters those out into
   // empty `name`, so we cleanly fall back to a placeholder here
@@ -252,7 +256,11 @@ function deviceRow(d, isPaired) {
   const metaLine = hasName ? '' :
     `<div class="meta">${escapeHtml(d.address)}</div>`;
   let badges = '';
-  if (d.connected && d.servicesResolved === false) {
+  // BLE HID devices can open a GATT link before pairing. JTS accessory
+  // features are not usable until BlueZ has a paired record.
+  if ((d.connected || d.trusted) && !d.paired) {
+    badges += '<span class="badge linked">Pair required</span>';
+  } else if (d.connected && d.servicesResolved === false) {
     badges += '<span class="badge connecting">Connecting</span>';
   } else if (d.connected) {
     badges += '<span class="badge connected">Connected</span>';
@@ -266,6 +274,9 @@ function deviceRow(d, isPaired) {
     actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}">Forget</button>`;
   } else {
     actions = `<button class="btn btn--primary" data-action="pair" data-mac="${escapeHtml(d.address)}">Pair</button>`;
+    if (canRemoveUnpaired) {
+      actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}">Remove</button>`;
+    }
   }
   // Metrics. Render each label only when bluez actually has a value
   // for it — surfacing a "—" placeholder suggests we're polling for
@@ -431,7 +442,7 @@ async function connectDevice(mac, connect) {
 }
 
 async function forget(mac, label) {
-  if (!await jtsConfirm(`Forget "${label}"? You'll need to re-pair to use it.`, {danger: true})) return;
+  if (!await jtsConfirm(`Remove "${label}" from JTS? You'll need to pair it again to use it.`, {danger: true})) return;
   const r = await fetch('forget', {
     method: 'POST', headers: jsonHeaders(),
     body: JSON.stringify({mac}),

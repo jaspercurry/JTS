@@ -390,6 +390,15 @@ thinks the system is healthy.
   cannot converge. `jasper-doctor`'s `check_start_limit_action` surfaces
   drift if a Debian/RPi-OS update removes either the reboot directives or
   Camilla's recovery handler.
+
+  **Recoverable front-door/renderers (2026-06-29):**
+  nginx, the socket-activated web daemons, source renderers, Bluetooth
+  agent, and `jasper-mux` use a generous finite start-limit window
+  (`StartLimitIntervalSec=600`, `StartLimitBurst=20`; package-owned
+  services get JTS drop-ins). This is intentionally not "restart forever":
+  transient OOM/update pressure should not park safe services, but genuine
+  config/code loops still stop loudly for the operator.
+
   **T5.1 circuit breaker** (2026-06-10): `StartLimitAction=reboot`
   alone is unbounded across boots — a *permanent* daemon failure
   (corrupt config, dead binary) would reboot the Pi every ~2-5
@@ -493,10 +502,13 @@ JTS ladder, descending priority:
 
 | Daemon | OOMScoreAdjust | Rationale |
 |---|---|---|
+| `jasper-outputd` | -950 | Final DAC owner; killing it means speaker silence |
 | `jasper-camilla` | -900 | Silence is the worst possible UX |
+| `jasper-fanin` | -800 | Renderer audio convergence point |
 | `jasper-aec-bridge` | -700 | Real-time mic processing |
 | `jasper-control` | -600 | Recovery surface (operator can't reach /system/ without it) |
 | `jasper-voice` | -500 | Largest blast radius (~150 MB Pss; bound by Stage 2's MemoryMax once cgroup memory lands) |
+| `nginx` | -450 | Management front door; package-owned, recoverable, protected below control/voice/audio |
 | `jasper-mux`, `jasper-input`, `jasper-wiim-remote-mic` | -300 | Restartable control/accessory daemons; mux outage is now user-visible because fan-in starts safe/closed until mux selects a lane; WiiM mic is profile-gated and loss falls back to the normal voice mic path |
 | `sshd` | -250 | Recovery path; moderately protected, but SSH-launched diagnostics stay killable |
 
@@ -1327,8 +1339,9 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-06-26 (WiiM Remote 2 BLE mic adapter added to the
-restartable accessory/OOM/memory-limit inventory; Camilla start-limit recovery contract rechecked
+Last verified: 2026-06-29 (nginx added to the OOM ladder via package
+drop-in; recoverable front-door/web/renderer start-limit windows rechecked;
+WiiM Remote 2 BLE mic adapter remains in the restartable accessory/OOM/memory-limit inventory; Camilla start-limit recovery contract rechecked
 against `deploy/systemd/jasper-camilla.service`,
 `deploy/systemd/jasper-camilla-recover.service`,
 `deploy/bin/jasper-camilla-recover`, and `jasper-doctor` resilience policy;

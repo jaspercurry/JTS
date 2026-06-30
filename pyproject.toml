@@ -112,6 +112,14 @@ full = [
     # jasper.peering.discovery so the package is import-cheap when
     # peering is OFF (the default). ~5-8 MB Pss when active.
     "zeroconf>=0.149,<1.0",
+    # jasper.capture_relay.crypto: AES-256-GCM decryption of the phone-mic
+    # capture blob the Pi pulls from the relay (the page encrypts with
+    # WebCrypto; the Pi decrypts here before feeding the existing room/
+    # balance/sync/crossover analysis). pyca/cryptography is the standard
+    # AEAD implementation — never roll our own — and is already present
+    # transitively via google-auth/httpx; pinned here because we import it
+    # directly. aarch64 wheels exist for PiOS Trixie, so no Pi-side build.
+    "cryptography>=42",
 ]
 
 dev = [
@@ -158,8 +166,10 @@ jasper-aec-tune = "jasper.cli.aec_tune:main"
 jasper-aec-bridge = "jasper.cli.aec_bridge:main"
 jasper-aec-sweep-config = "jasper.cli.aec_sweep_config:main"
 jasper-xvf-profile = "jasper.cli.xvf_profile:main"
+jasper-xvf-firmware-update = "jasper.cli.xvf_firmware_update:main"
 jasper-audio-validate = "jasper.audio_validation:main"
 jasper-audio-hw-validate = "jasper.audio_validation:hardware_main"
+jasper-audio-config = "jasper.cli.audio_config:main"
 jasper-usbsink = "jasper.cli.usbsink_main:main"
 jasper-dial-onboard = "jasper.cli.dial_onboard:main"
 jasper-dial-web = "jasper.web.dial_setup:main"
@@ -180,6 +190,7 @@ jasper-airplay-web = "jasper.web.airplay_setup:main"
 jasper-sources-web = "jasper.web.sources_setup:main"
 jasper-sound = "jasper.cli.sound:main"
 jasper-sound-web = "jasper.web.sound_setup:main"
+jasper-fanin-coupling-reconcile = "jasper.fanin.coupling_reconcile:main"
 jasper-system-web = "jasper.web.system_setup:main"
 jasper-chat-web = "jasper.web.chat_setup:main"
 jasper-system-soak = "jasper.cli.system_soak:main"
@@ -240,8 +251,6 @@ ignore = ["E701", "E731", "E402"]
 # uint16). Ruff resolves those forward-ref strings as names and
 # false-flags them as undefined; they are already `# type: ignore`.
 "jasper/bluetooth/agent.py" = ["F821"]
-# BaseHTTPRequestHandler dispatch methods intentionally use do_GET/do_POST.
-"jasper/web/chat_setup.py" = ["N802"]
 
 [tool.mypy]
 python_version = "3.11"

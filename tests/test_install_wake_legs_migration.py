@@ -48,7 +48,8 @@ def test_chip_aec_hand_set_device_migrates_to_boolean(tmp_path):
     """A legacy hand-set JASPER_MIC_DEVICE_CHIP_AEC_* in jasper.env
     translates to JASPER_WAKE_LEG_CHIP_AEC=1 in aec_mode.env, and the
     underlying device + enable vars are stripped (reconciler becomes the
-    sole writer)."""
+    sole writer). Extra beam opt-ins require custom so the reconciler does
+    not collapse them back to the one-detector chip-AEC profile."""
     env_dir = tmp_path / "etc"
     env_dir.mkdir()
     (env_dir / "jasper.env").write_text(
@@ -59,8 +60,10 @@ def test_chip_aec_hand_set_device_migrates_to_boolean(tmp_path):
     proc = _run_migrate(tmp_path)
     assert proc.returncode == 0, proc.stderr
     mode = (tmp_path / "state" / "aec_mode.env").read_text()
-    assert "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec" in mode
+    assert "JASPER_AUDIO_INPUT_PROFILE=custom" in mode
     assert "JASPER_WAKE_LEG_CHIP_AEC=1" in mode
+    assert "JASPER_WAKE_LEG_CHIP_AEC_150=1" in mode
+    assert "JASPER_WAKE_LEG_CHIP_AEC_210=1" in mode
     jasper_env = (env_dir / "jasper.env").read_text()
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150" not in jasper_env
     assert "JASPER_MIC_DEVICE_CHIP_AEC_210" not in jasper_env
@@ -79,6 +82,8 @@ def test_chip_aec_defaults_off_when_only_other_legs_present(tmp_path):
     assert "JASPER_AUDIO_INPUT_PROFILE=xvf_software_aec3" in mode
     assert "JASPER_WAKE_LEG_RAW=1" in mode        # raw preserved
     assert "JASPER_WAKE_LEG_CHIP_AEC=0" in mode   # chip defaulted off
+    assert "JASPER_WAKE_LEG_CHIP_AEC_150=0" in mode
+    assert "JASPER_WAKE_LEG_CHIP_AEC_210=0" in mode
 
 
 def test_migrate_no_op_when_no_underlying_vars(tmp_path):
@@ -116,6 +121,7 @@ def test_chip_aec_boolean_not_overwritten_when_already_set(tmp_path):
     assert "JASPER_AUDIO_INPUT_PROFILE=xvf_software_aec3" in mode
     assert "JASPER_WAKE_LEG_CHIP_AEC=0" in mode      # preserved, not bumped
     assert "JASPER_WAKE_LEG_CHIP_AEC=1" not in mode
+    assert "JASPER_WAKE_LEG_CHIP_AEC_150=0" in mode
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150" not in (
         env_dir / "jasper.env"
     ).read_text()

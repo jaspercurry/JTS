@@ -354,8 +354,9 @@ PY
 
 # Migrate hand-set wake-detection leg env vars from
 # /etc/jasper/jasper.env into the wizard-owned
-# /var/lib/jasper/aec_mode.env. The /system "Wake detection" card
-# owns these as booleans (JASPER_WAKE_LEG_RAW, _DTLN); the
+# /var/lib/jasper/aec_mode.env. The /wake "Wake detection" card
+# owns these as booleans (JASPER_WAKE_LEG_RAW, _DTLN,
+# _CHIP_AEC, _CHIP_AEC_150, _CHIP_AEC_210); the
 # reconciler maps them back to the underlying device/enable vars
 # the bridge + voice each read at startup.
 #
@@ -421,18 +422,36 @@ migrate_wake_legs_config() {
         want_dtln="1"
     fi
 
-    # Chip-AEC beams: a hand-set chip device var OR the enabled flag is
-    # enough signal to preserve intent. New in the chip-AEC promotion;
-    # almost always a no-op (nobody hand-set these before), but mirrors
-    # the raw/DTLN translation so the reconciler stays the sole writer.
+    # Chip-AEC: the low-level enabled flag preserves the base chip-AEC
+    # profile. Hand-set per-beam device vars additionally preserve the
+    # advanced extra wake-detector opt-ins. If a wizard-owned file already
+    # says chip-AEC is off, trust that higher-level intent and do not
+    # resurrect per-beam detectors from stale /etc/jasper/jasper.env lines.
     local want_chip_aec="0"
     if [[ -n "${chip_150_value}" || -n "${chip_210_value}" \
           || "${chip_enabled_value}" == "1" ]]; then
         want_chip_aec="1"
     fi
+    local want_chip_aec_150="0"
+    [[ -n "${chip_150_value}" ]] && want_chip_aec_150="1"
+    local want_chip_aec_210="0"
+    [[ -n "${chip_210_value}" ]] && want_chip_aec_210="1"
+    local existing_chip_aec_line existing_chip_aec_value
+    existing_chip_aec_line=$(grep -E '^JASPER_WAKE_LEG_CHIP_AEC=' "${wizard_env}" 2>/dev/null || true)
+    existing_chip_aec_value="${existing_chip_aec_line#JASPER_WAKE_LEG_CHIP_AEC=}"
+    existing_chip_aec_value="${existing_chip_aec_value%[$'\r\n ']*}"
+    if [[ -n "${existing_chip_aec_line}" && "${existing_chip_aec_value}" != "1" ]]; then
+        want_chip_aec_150="0"
+        want_chip_aec_210="0"
+    fi
 
     local want_profile="custom"
-    if [[ "${want_chip_aec}" == "1" ]]; then
+    if [[ "${want_chip_aec_150}" == "1" || "${want_chip_aec_210}" == "1" ]]; then
+        # Extra chip beams are advanced opt-ins. Named chip-AEC profiles reset
+        # them to the one-detector default, so legacy installs carrying
+        # hand-set beam device vars must migrate to custom to preserve intent.
+        want_profile="custom"
+    elif [[ "${want_chip_aec}" == "1" ]]; then
         want_profile="xvf_chip_aec"
     elif [[ "${want_raw}" == "1" && "${want_dtln}" == "0" ]]; then
         want_profile="xvf_software_aec3"
@@ -460,6 +479,16 @@ migrate_wake_legs_config() {
         echo "JASPER_WAKE_LEG_CHIP_AEC=${want_chip_aec}" >> "${wizard_env}"
         echo "  migrate_wake_legs_config: set JASPER_WAKE_LEG_CHIP_AEC=${want_chip_aec}"
         echo "    from prior JASPER_MIC_DEVICE_CHIP_AEC_150=${chip_150_value:-<unset>}, _210=${chip_210_value:-<unset>}, JASPER_AEC_CHIP_AEC_ENABLED=${chip_enabled_value:-<unset>}"
+    fi
+    if ! grep -qE '^JASPER_WAKE_LEG_CHIP_AEC_150=' "${wizard_env}"; then
+        echo "JASPER_WAKE_LEG_CHIP_AEC_150=${want_chip_aec_150}" >> "${wizard_env}"
+        echo "  migrate_wake_legs_config: set JASPER_WAKE_LEG_CHIP_AEC_150=${want_chip_aec_150}"
+        echo "    from prior JASPER_MIC_DEVICE_CHIP_AEC_150=${chip_150_value:-<unset>}"
+    fi
+    if ! grep -qE '^JASPER_WAKE_LEG_CHIP_AEC_210=' "${wizard_env}"; then
+        echo "JASPER_WAKE_LEG_CHIP_AEC_210=${want_chip_aec_210}" >> "${wizard_env}"
+        echo "  migrate_wake_legs_config: set JASPER_WAKE_LEG_CHIP_AEC_210=${want_chip_aec_210}"
+        echo "    from prior JASPER_MIC_DEVICE_CHIP_AEC_210=${chip_210_value:-<unset>}"
     fi
 
     sed -i.bak '/^JASPER_MIC_DEVICE_RAW=/d' "${jasper_env}"
@@ -912,6 +941,47 @@ migrate_voice_provider() {
         echo "    from ${jasper_env} to ${wizard_env}"
     fi
     sed -i.bak '/^JASPER_VOICE_PROVIDER=/d' "${jasper_env}"
+    rm -f "${jasper_env}.bak"
+}
+
+# Move JASPER_FANIN_CAMILLA_COUPLING out of jasper.env into the
+# reconciler-owned /var/lib/jasper/fanin.env. The coupling reconciler
+# (jasper.fanin.coupling_reconcile) is the single writer of this key in
+# fanin.env (the same file jasper-fanin + jasper-mux load, fanin.env
+# winning over the unit Environment= defaults). During the experimental
+# phase the flag may have been hand-set in jasper.env; this relocates it
+# so there is one owner and no shadowing. Mirrors migrate_voice_provider.
+# fanin.env carries no secrets (buffer frames + coupling mode), so 0644.
+migrate_fanin_coupling() {
+    local jasper_env="${ENV_DIR}/jasper.env"
+    local wizard_env="${STATE_DIR}/fanin.env"
+
+    [[ -f "${jasper_env}" ]] || return 0
+    local line
+    line=$(grep -E '^JASPER_FANIN_CAMILLA_COUPLING=' "${jasper_env}" || true)
+    [[ -z "${line}" ]] && return 0
+
+    local stale_value="${line#JASPER_FANIN_CAMILLA_COUPLING=}"
+    stale_value="${stale_value%[$'\r\n ']*}"
+
+    ensure_state_dir
+
+    if [[ -f "${wizard_env}" ]] && grep -qE '^JASPER_FANIN_CAMILLA_COUPLING=' "${wizard_env}"; then
+        sed -i.bak '/^JASPER_FANIN_CAMILLA_COUPLING=/d' "${jasper_env}"
+        rm -f "${jasper_env}.bak"
+        echo "  migrate_fanin_coupling: removed stale JASPER_FANIN_CAMILLA_COUPLING"
+        echo "    line from ${jasper_env} (wizard file already canonical)"
+        return 0
+    fi
+
+    if [[ -n "${stale_value}" ]]; then
+        touch "${wizard_env}"
+        chmod 0644 "${wizard_env}"
+        echo "JASPER_FANIN_CAMILLA_COUPLING=${stale_value}" >> "${wizard_env}"
+        echo "  migrate_fanin_coupling: moved JASPER_FANIN_CAMILLA_COUPLING=${stale_value}"
+        echo "    from ${jasper_env} to ${wizard_env}"
+    fi
+    sed -i.bak '/^JASPER_FANIN_CAMILLA_COUPLING=/d' "${jasper_env}"
     rm -f "${jasper_env}.bak"
 }
 

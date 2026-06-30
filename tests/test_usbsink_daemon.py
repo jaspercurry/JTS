@@ -21,11 +21,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jasper.usbsink.audio_bridge import BridgeStats, BLOCK_FRAMES
+from jasper.usbsink.audio_bridge import BridgeStats, BLOCK_FRAMES, QUEUE_MAXBLOCKS
 from jasper.usbsink.daemon import (
     WATCHDOG_STALE_SEC,
     UsbSinkDaemon,
     DaemonConfig,
+    _parse_latency,
 )
 
 
@@ -183,6 +184,54 @@ def test_daemon_config_from_env_supports_independent_overrides(monkeypatch):
     assert cfg.mixer_card == "my-short"
 
 
+def test_daemon_config_latency_knobs_default_to_bridge_constants(monkeypatch):
+    """Unset env preserves the historical behavior byte-for-byte."""
+    for k in (
+        "JASPER_USBSINK_QUEUE_MAXBLOCKS",
+        "JASPER_USBSINK_BLOCK_FRAMES",
+        "JASPER_USBSINK_LATENCY",
+    ):
+        monkeypatch.delenv(k, raising=False)
+    cfg = DaemonConfig.from_env()
+    assert cfg.queue_maxblocks == QUEUE_MAXBLOCKS
+    assert cfg.block_frames == BLOCK_FRAMES
+    assert cfg.latency == ""  # -> _parse_latency -> None (PortAudio default)
+
+
+def test_daemon_config_latency_knobs_overridable(monkeypatch):
+    monkeypatch.setenv("JASPER_USBSINK_QUEUE_MAXBLOCKS", "3")
+    monkeypatch.setenv("JASPER_USBSINK_BLOCK_FRAMES", "240")
+    monkeypatch.setenv("JASPER_USBSINK_LATENCY", "low")
+    cfg = DaemonConfig.from_env()
+    assert cfg.queue_maxblocks == 3
+    assert cfg.block_frames == 240
+    assert cfg.latency == "low"
+
+
+def test_daemon_config_latency_knobs_clamp_to_floor(monkeypatch):
+    """queue_maxblocks=0 -> unbounded queue.Queue (OOM risk); floor at 1."""
+    monkeypatch.setenv("JASPER_USBSINK_QUEUE_MAXBLOCKS", "0")
+    monkeypatch.setenv("JASPER_USBSINK_BLOCK_FRAMES", "0")
+    cfg = DaemonConfig.from_env()
+    assert cfg.queue_maxblocks == 1
+    assert cfg.block_frames == 1
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("", None),
+        ("   ", None),
+        ("low", "low"),
+        ("HIGH", "high"),
+        ("0.02", 0.02),
+        ("garbage", None),  # fail-soft: a typo must never crash the daemon
+    ],
+)
+def test_parse_latency(raw, expected):
+    assert _parse_latency(raw) == expected
+
+
 def test_daemon_wires_mixer_card_to_volume_bridge_and_state_publisher():
     """Regression test for the production bug on 2026-05-23: the
     daemon was passing capture_device to VolumeBridge as the card
@@ -305,3 +354,69 @@ def test_capture_resume_logs_once_after_idle(caplog):
     assert any("event=usbsink.capture_resumed" in m for m in messages)
     assert daemon._capture_idle_logged is False
     assert hb.bumps == 2
+
+
+# ----------------------------------------------------------------------
+# Watchdog sentinel selection by output_mode. In the Stage-4b lean lane
+# (output_mode="fifo") there is no PortAudio playback callback, so the
+# fifo writer thread's fifo_writes counter is the liveness sentinel; in
+# aloop mode the sentinel is playback_callbacks and fifo_writes is moot.
+# ----------------------------------------------------------------------
+
+
+def test_watchdog_fifo_mode_bumps_on_fifo_writes_not_playback_callbacks():
+    """fifo mode: advancing fifo_writes pats the heartbeat; advancing
+    playback_callbacks alone (which never happens in fifo mode, but
+    guard it anyway) does NOT."""
+    daemon = UsbSinkDaemon(DaemonConfig(output_mode="fifo"))
+    hb = _FakeHeartbeat()
+    now = 100.0
+    daemon._last_capture_progress_mono = now - 1.0
+    daemon._last_playback_progress_mono = now - 1.0
+
+    # fifo_writes advancing → heartbeat patted.
+    daemon._observe_bridge_progress(
+        BridgeStats(fifo_writes=1, frames_output=BLOCK_FRAMES),
+        hb,
+        now,
+    )
+    assert hb.bumps == 1
+    assert daemon._last_playback_callbacks_seen == 1
+
+    # playback_callbacks advancing while fifo_writes holds steady → NO
+    # bump (fifo_writes is the sentinel in fifo mode).
+    daemon._observe_bridge_progress(
+        BridgeStats(fifo_writes=1, playback_callbacks=5),
+        hb,
+        now + 1.0,
+    )
+    assert hb.bumps == 1
+
+
+def test_watchdog_aloop_mode_ignores_fifo_writes():
+    """aloop mode (default): playback_callbacks is the sentinel;
+    advancing fifo_writes alone does NOT pat the heartbeat, and
+    advancing playback_callbacks does."""
+    daemon = UsbSinkDaemon(DaemonConfig(output_mode="aloop"))
+    hb = _FakeHeartbeat()
+    now = 100.0
+    daemon._last_capture_progress_mono = now - 1.0
+    daemon._last_playback_progress_mono = now - 1.0
+
+    # fifo_writes advancing while playback_callbacks holds → NO bump.
+    daemon._observe_bridge_progress(
+        BridgeStats(fifo_writes=7),
+        hb,
+        now,
+    )
+    assert hb.bumps == 0
+    assert daemon._last_playback_callbacks_seen == 0
+
+    # playback_callbacks advancing → heartbeat patted.
+    daemon._observe_bridge_progress(
+        BridgeStats(playback_callbacks=1, frames_output=BLOCK_FRAMES),
+        hb,
+        now + 1.0,
+    )
+    assert hb.bumps == 1
+    assert daemon._last_playback_callbacks_seen == 1

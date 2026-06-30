@@ -275,28 +275,30 @@ _STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
 })
 
 
-def _active_speaker_level_match_provisional() -> bool | None:
+def _active_speaker_level_match_provisional(
+    setup: dict[str, Any] | None,
+) -> bool | None:
     """Whether the APPLIED active-speaker baseline's per-driver level match is a
     datasheet estimate rather than a phone measurement.
 
-    Read off-disk (jasper-control runs non-root, group `jasper`) and fail-soft:
-    None when no active baseline is applied or the file is missing/unreadable;
-    the persisted `provisional` flag otherwise. Lets `/state` (and the landing
-    page) flag a provisional level match without importing the active-speaker
-    package onto the hot `/state` path.
+    Read from the SINGLE active-speaker readiness snapshot (`setup`) that the
+    caller already computed via `read_active_speaker_setup_status`, not from a
+    second off-disk open. That snapshot's `baseline_profile` summary derives
+    `provisional` from the same persisted state file
+    (`active_speaker_baseline_profile.json`) — re-reading it here was a duplicate
+    source that could drift. The `status == "applied"` gate is preserved: the
+    candidate only carries that status when it returns the persisted applied
+    profile verbatim (see `build_baseline_profile_candidate`), so `provisional`
+    then equals the on-disk value. Fail-soft: None when there is no applied
+    active baseline (passive speaker, unreadable topology, or a superseded /
+    not-yet-applied profile).
     """
-    path = (
-        os.environ.get("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE")
-        or "/var/lib/jasper/active_speaker_baseline_profile.json"
-    )
-    try:
-        with open(path, encoding="utf-8") as handle:
-            raw = json.load(handle)
-    except (FileNotFoundError, OSError, ValueError):
+    if not isinstance(setup, dict):
         return None
-    if not isinstance(raw, dict) or raw.get("status") != "applied":
+    profile = setup.get("baseline_profile")
+    if not isinstance(profile, dict) or profile.get("status") != "applied":
         return None
-    return bool(raw.get("provisional"))
+    return bool(profile.get("provisional"))
 
 
 def _active_speaker_output_safety_snapshot(
@@ -316,7 +318,7 @@ def _active_speaker_output_safety_snapshot(
         # Back-compat for the landing-page field name. This is now driven by the
         # shared setup contract, not by a filename-only heuristic.
         "safety_muted": not bool(setup.get("volume_allowed")),
-        "level_match_provisional": _active_speaker_level_match_provisional(),
+        "level_match_provisional": _active_speaker_level_match_provisional(setup),
         "source": "active_speaker.setup_status",
     }
 
@@ -342,8 +344,9 @@ def _active_speaker_grouping_block() -> dict[str, Any] | None:
 # bread-and-butter low-impact controls stay open (the dial never calls
 # these). poweroff/reboot = power loop; mic/mute = defeats the privacy-mic
 # promise; grouping/set = hijacks output routing; restart/voice|audio =
-# disrupt playback + the assistant. WS1 Phase 2 added the two restart routes
-# and made the gate mandatory (control_token.ensure_token() at startup, below).
+# disrupt playback + the assistant; aec/firmware/update downloads and flashes
+# microphone firmware. WS1 Phase 2 added the two restart routes and made the
+# gate mandatory (control_token.ensure_token() at startup, below).
 _TOKEN_GATED_ROUTES = frozenset({
     "/system/poweroff",
     "/system/reboot",
@@ -351,6 +354,7 @@ _TOKEN_GATED_ROUTES = frozenset({
     "/system/restart/audio",
     "/mic/mute",
     "/grouping/set",
+    "/aec/firmware/update",
 })
 
 
@@ -578,6 +582,10 @@ def _kick_aec_reconciler() -> None:
     _aec_endpoints._kick_aec_reconciler()
 
 
+def _start_xvf_firmware_update() -> None:
+    _aec_endpoints._start_xvf_firmware_update()
+
+
 _aec_fresh_jasper_env_impl = _aec_endpoints._fresh_jasper_env
 
 
@@ -692,6 +700,7 @@ async def _get_state(
     camilla_host: str,
     camilla_port: int,
     voice_socket_path: str,
+    ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return await _state_aggregate._get_state(
         camilla_host=camilla_host,
@@ -704,6 +713,7 @@ async def _get_state(
         dial_heartbeat=_dial_heartbeat,
         dial_probe=_probe_dial_reachable,
         read_transit_state_func=read_transit_state,
+        ha_status_snapshot=ha_status_snapshot,
     )
 
 
@@ -1349,6 +1359,7 @@ def _make_handler(
     voice_socket_path: str,
     sampler: Any = None,
     airplay_health_sampler: Any = None,
+    ha_status_cache: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
 
     # One probe instance per handler — it's stateless (just closes
@@ -1357,6 +1368,10 @@ def _make_handler(
     # camilla), but passing None there keeps the construction uniform.
     duck_active_probe = _make_duck_active_probe(voice_socket_path)
     state_response_cache = _SingleFlightTTLCache(STATE_RESPONSE_CACHE_TTL_SEC)
+    if ha_status_cache is None:
+        from .ha_status_cache import HomeAssistantStatusCache
+
+        ha_status_cache = HomeAssistantStatusCache()
 
     async def _set_op(percent: int):
         async def _op(coord):
@@ -1847,6 +1862,7 @@ def _make_handler(
                         camilla_host=camilla_host,
                         camilla_port=camilla_port,
                         voice_socket_path=voice_socket_path,
+                        ha_status_snapshot=ha_status_cache.snapshot,
                     )),
                 )
             except Exception as e:  # noqa: BLE001
@@ -1896,22 +1912,15 @@ def _make_handler(
             # Sampler may be None in tests / direct CLI invocation;
             # surface an empty history rather than 500.
             from .system_metrics import read_build_info
-            from .. import home_assistant as _ha_mod
             from ..speaker_name import read_state as _read_speaker_name_state
             from ..voice.provider_state import read_active_provider
 
-            # HA probe is async + slow-ish (~50-200 ms typical against
-            # a healthy local HA, fails fast on unreachable). Run it
-            # via asyncio.run so the rest of /system/snapshot stays
-            # synchronous like the existing handler.
             try:
-                # Same env-file-direct read as /state.home_assistant
-                # above — wizard saves must reflect immediately in the
-                # dashboard without restarting jasper-control.
-                ha_status = asyncio.run(_ha_mod.probe_status_from_env())
+                ha_status = ha_status_cache.snapshot()
             except Exception:  # noqa: BLE001
                 # Fail-soft per the existing aggregator convention —
                 # never break /system/snapshot because HA is wedged.
+                logger.exception("home assistant status snapshot failed")
                 ha_status = {
                     "configured": False, "connected": False, "url": "",
                     "instance_name": None, "version": None,
@@ -2042,11 +2051,12 @@ def _make_handler(
             # household credential (X-JTS-Household), which each member verifies
             # against its own persisted copy — NOT the per-device CSRF token a
             # leader can't hold for a follower. Accept EITHER on this route only;
-            # the other gated routes (poweroff/reboot/restart/mic-mute) are
-            # browser->own-speaker and stay control-token-only. household_credential
-            # is fail-safe (absent => accept) so the first bond, which DISTRIBUTES
-            # the secret over this very route, isn't rejected by the gate it
-            # installs. See docs/HANDOFF-control-plane-auth.md §6.
+            # the other gated routes (poweroff/reboot/restart/mic-mute/firmware
+            # update) are browser->own-speaker and stay control-token-only.
+            # household_credential is fail-safe (absent => accept) so the first
+            # bond, which DISTRIBUTES the secret over this very route, isn't
+            # rejected by the gate it installs. See
+            # docs/HANDOFF-control-plane-auth.md §6.
             if self.path == "/grouping/set" and household_credential.verify(
                 self.headers.get("X-JTS-Household")
             ):
@@ -2942,6 +2952,36 @@ def _make_handler(
             self._send_json({"threshold": threshold})
             return
 
+        def _post_aec_firmware_update(self) -> None:
+            status = _aec_full_status()
+            firmware = status.get("firmware_update")
+            action = firmware.get("action") if isinstance(firmware, dict) else {}
+            if not isinstance(action, dict) or not action.get("enabled"):
+                detail = (
+                    firmware.get("detail")
+                    if isinstance(firmware, dict) else
+                    "microphone firmware update is not available"
+                )
+                self._send_json({"error": detail}, status=409)
+                return
+            try:
+                _start_xvf_firmware_update()
+            except (OSError, subprocess.SubprocessError) as e:
+                self._send_json(
+                    {"error": f"firmware update start failed: {e}"},
+                    status=502,
+                )
+                return
+            log_event(
+                logger,
+                "aec.firmware_update.start",
+                client=self.address_string(),
+                target=(firmware.get("target") or {}).get("id")
+                if isinstance(firmware, dict) else "",
+            )
+            self._send_json(_aec_full_status())
+            return
+
         def _post_debug(self) -> None:
             # /system Debug card: raise one subsystem to DEBUG
             # logging. Additive-only + auto-expiring (jasper/
@@ -3174,6 +3214,7 @@ def _make_handler(
             "/aec/leg": "_post_aec_leg",
             "/aec/profile": "_post_aec_profile",
             "/aec/threshold": "_post_aec_threshold",
+            "/aec/firmware/update": "_post_aec_firmware_update",
             "/debug": "_post_debug",
             "/system/audio-quality": "_post_system_audio_quality",
             "/system/restart/voice": "_post_system_action",
@@ -3473,7 +3514,9 @@ def main(argv: list[str] | None = None) -> int:
     grouping_supervisor.start_supervisor()
     # After-the-fact multiroom cascade timeline: scans existing structured
     # journal events into a small /state ring so restart chains are
-    # reconstructable without fetching raw logs first.
+    # reconstructable without fetching raw logs first. Solo-gated (skips the
+    # journalctl scan when no bond is configured) and off via
+    # JASPER_MULTIROOM_CASCADE_TIMELINE=disabled.
     from ..multiroom import cascade_timeline
     cascade_timeline.start_sampler()
     # Runtime debug toggle: clear an expired session left on disk, or

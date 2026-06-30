@@ -13,7 +13,7 @@
 //    the page, never masquerades as a disconnect); a card whose data is
 //    unchanged is skipped (no churn, no lost text selection).
 
-import { h } from "./dom.js";
+import { h } from "/assets/shared/js/dom.js";
 import {
   header, livePill, titledCard, choiceCard, actionButton, collapsible,
 } from "./components.js";

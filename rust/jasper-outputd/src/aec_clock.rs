@@ -47,6 +47,20 @@
 //! `dac_seconds` against `chip_ref_seconds` over the window. We use a window
 //! rather than a single long-baseline delta so a one-off implausible sample
 //! does not dominate, while still being simple and allocation-free.
+//!
+//! ## Why this is least-squares, not the shared [`jasper_clock::Dll`]
+//!
+//! The Inc-3 convergence put the *content-bridge rate controller* — a genuine
+//! control loop — onto the shared DLL. This estimator stays least-squares on
+//! purpose. It is a pure *wide-range offset measurement*, not a loop: it must
+//! report any plausible drift across the full ±`MAX_PLAUSIBLE_PPM` band
+//! faithfully. A DLL tuned for small audio drifts (its `max_error` slew clamp +
+//! `max_resync` hard-jump) collapses mid-range offsets (≈500–5000 ppm) toward
+//! zero — verified empirically while prototyping the conversion — which would
+//! silently report a genuinely *compensable* clock mismatch as *coherent*. That
+//! is a regression on the chip-AEC path, so least-squares (which measures the
+//! whole range without convergence dynamics) is kept here. The shared primitive
+//! is for loops; this is an observer.
 
 /// Below this absolute ppm a locked estimate is treated as clock-coherent;
 /// the chip reference needs no compensation. (Layer-1 verdict threshold.)

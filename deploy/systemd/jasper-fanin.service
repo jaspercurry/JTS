@@ -67,6 +67,13 @@ LimitMEMLOCK=infinity
 CPUSchedulingPolicy=fifo
 CPUSchedulingPriority=30
 
+# LimitRTTIME bounds RT-thread runaway (audio-latency foundation G4). A FIFO
+# thread that spins without blocking can starve PID 1 on the 1 GB Pi and trip
+# the hardware watchdog into a full reboot; SIGXCPU at 200 ms turns that into a
+# single crashed daemon that Restart=on-failure revives instead. Mirrors
+# PipeWire RTKit's RTTimeUSec. Carried by every FIFO unit (camilla/fanin/outputd).
+LimitRTTIME=200000
+
 # Hardening — matches the conventions of jasper-camilla,
 # jasper-aec-bridge, jasper-voice. Defense in depth.
 NoNewPrivileges=true
@@ -89,10 +96,15 @@ RuntimeDirectory=jasper-fanin
 RuntimeDirectoryMode=0750
 
 # Configuration files — chain matches voice / aec / control daemons.
-# /etc/jasper/jasper.env is the operator's system-wide config;
-# the wizard-owned file is optional (no wizard for fanin in v1).
+# /etc/jasper/jasper.env is the operator's system-wide config.
+# The wizard/reconciler-owned /var/lib/jasper/fanin.env is loaded LAST
+# (after the Environment= defaults below) so its overrides win — systemd
+# applies a later EnvironmentFile= over an earlier Environment=. This is
+# load-bearing for jasper.fanin.buffer_reconcile: it writes the adaptive
+# JASPER_FANIN_OUTPUT_BUFFER_FRAMES override into that file, which MUST
+# beat the Environment="...=1024" default below. Keep the wizard file's
+# EnvironmentFile= line AFTER the Environment= lines (see end of section).
 EnvironmentFile=/etc/jasper/jasper.env
-EnvironmentFile=-/var/lib/jasper/fanin.env
 
 # Input ALSA buffer sizing — must absorb the WiFi delivery burst
 # pattern. Output buffering is split out below and intentionally kept
@@ -119,18 +131,26 @@ EnvironmentFile=-/var/lib/jasper/fanin.env
 # Trade-off: up to ~85 ms of input-side queue capacity, same as the
 # dmix layer had. This is headroom, not a fixed delay added to every
 # frame: actual queued audio depends on the writer/reader fill level,
-# and shairport can observe snd-aloop delay on its private lane. fanin's
-# The output side is kept much smaller than the input side, but not at
-# the absolute minimum: 1024 flooded CamillaDSP short-read warnings,
-# and 2048 still produced intermittent 1023/1024 reads during active
-# AirPlay. 3072 keeps two extra Camilla chunks of safety without
-# turning this into the 4096-frame input burst absorber.
+# and shairport can observe snd-aloop delay on its private lane.
+#
+# The output side is intentionally smaller than the input burst absorber.
+# 1024 frames (~21 ms) is validated on the low-latency Apple-DAC path with
+# CamillaDSP chunksize=256/target_level=1536. That older 3072-frame default
+# was needed when the downstream Camilla path used a 1024-frame chunk; with
+# the DAC floor applied, it is latency without useful headroom.
 #
 # Read at runtime by jasper_fanin::config::Config::from_env().
 # Override via /var/lib/jasper/fanin.env if you need to retune
 # (e.g., a future PR with verified-tighter WiFi delivery).
 Environment="JASPER_FANIN_INPUT_BUFFER_FRAMES=4096"
-Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072"
+Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024"
+
+# Wizard/reconciler-owned overrides — loaded LAST so they win over the
+# Environment= defaults above (later EnvironmentFile= beats earlier
+# Environment=). jasper.fanin.buffer_reconcile is the single writer of the
+# adaptive JASPER_FANIN_OUTPUT_BUFFER_FRAMES override here. Optional (leading
+# `-`): absent on a fresh box, where the 1024 default above is live.
+EnvironmentFile=-/var/lib/jasper/fanin.env
 
 ExecStart=/opt/jasper/bin/jasper-fanin
 

@@ -64,6 +64,24 @@ def test_device_actions_use_data_attributes_not_inline_js():
     assert "onclick=" not in html
 
 
+def test_connected_unpaired_ble_devices_do_not_render_as_ready():
+    """A BLE accessory can be radio-linked before it is paired. The UI should
+    not describe that state as plain Connected, because JTS cannot use the
+    accessory profile until BlueZ has a pair record."""
+    js = _MODULE_JS.read_text()
+    assert "(d.paired ? paired : other).push(d)" in js
+    assert "function deviceRow(d)" in js
+    assert "const isPaired = !!d.paired" in js
+    assert "const canRemoveUnpaired = !isPaired" in js
+    assert "deviceRow(d, true)" not in js
+    assert "deviceRow(d, false)" not in js
+    assert "(d.connected || d.trusted) && !d.paired" in js
+    assert "Pair required" in js
+    assert 'badge linked' in js
+    assert ">Remove</button>" in js
+    assert 'data-action="forget"' in js
+
+
 def test_bluetooth_module_has_no_code_entry_flow():
     js = _MODULE_JS.read_text()
     assert "confirm_passkey" not in js

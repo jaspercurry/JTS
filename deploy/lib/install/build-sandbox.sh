@@ -49,6 +49,8 @@
 BUILD_SANDBOX_KB_PER_JOB_CPP=1500000   # C++ -O3 (webrtc-audio-processing)
 # shellcheck disable=SC2034
 BUILD_SANDBOX_KB_PER_JOB_C=400000      # C -O2 autotools (shairport-sync, nqptp)
+BUILD_SWAP_CREATED=0
+BUILD_SWAP_PATH_ACTIVE=""
 
 # clamp(memtotal_kb / kb_per_job, 1, nproc). All args injectable so the
 # math is unit-testable across the full Pi SKU range and per-toolchain
@@ -79,6 +81,115 @@ build_sandbox_jobs() {
     memtotal_kb="$(awk '/^MemTotal:/ { print $2; exit }' "${meminfo}" 2>/dev/null || true)"
     ncpu="${JASPER_BUILD_NPROC:-$(nproc 2>/dev/null || echo 1)}"
     _ram_bounded_jobs "${memtotal_kb:-0}" "${ncpu:-1}" "${kb_per_job}"
+}
+
+build_swap_memtotal_kb() {
+    local meminfo="${JASPER_BUILD_MEMINFO_FILE:-/proc/meminfo}"
+    awk '/^MemTotal:/ { print $2; exit }' "${meminfo}" 2>/dev/null || true
+}
+
+build_swap_required() {
+    local setting="${JASPER_BUILD_SWAP:-auto}"
+    case "${setting}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+        0|false|FALSE|no|NO|off|OFF)
+            return 1
+            ;;
+        ""|auto|AUTO)
+            ;;
+        *)
+            echo "  WARN: invalid JASPER_BUILD_SWAP=${setting}; using auto" >&2
+            ;;
+    esac
+
+    local mem_kb threshold_kb
+    mem_kb="$(build_swap_memtotal_kb)"
+    threshold_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB:-1200000}"
+    case "${mem_kb}:${threshold_kb}" in
+        *[!0-9:]*|":")
+            return 1
+            ;;
+    esac
+    [[ "${mem_kb}" -lt "${threshold_kb}" ]]
+}
+
+_build_swap_cmd() {
+    local name="$1"
+    if command -v "${name}" >/dev/null 2>&1; then
+        command -v "${name}"
+    elif [[ -x "/sbin/${name}" ]]; then
+        printf '/sbin/%s\n' "${name}"
+    elif [[ -x "/usr/sbin/${name}" ]]; then
+        printf '/usr/sbin/%s\n' "${name}"
+    else
+        return 1
+    fi
+}
+
+setup_build_swap_if_needed() {
+    build_swap_required || return 0
+
+    local path="${JASPER_BUILD_SWAP_PATH:-/var/tmp/jasper-build.swap}"
+    local size_mb="${JASPER_BUILD_SWAP_SIZE_MB:-2048}"
+    local priority="${JASPER_BUILD_SWAP_PRIORITY:-200}"
+    case "${size_mb}:${priority}" in
+        *[!0-9:]*|":")
+            echo "  ERROR: invalid build swap size/priority: size=${size_mb} priority=${priority}" >&2
+            return 2
+            ;;
+    esac
+
+    if grep -qsE "^${path//\//\\/}[[:space:]]" /proc/swaps 2>/dev/null; then
+        _build_sandbox_log "swap_present" "path=${path} already active"
+        return 0
+    fi
+
+    local swapon_cmd swapoff_cmd mkswap_cmd
+    swapon_cmd="$(_build_swap_cmd swapon)" || {
+        echo "  ERROR: swapon not found; cannot create low-memory build swap" >&2
+        return 1
+    }
+    swapoff_cmd="$(_build_swap_cmd swapoff)" || {
+        echo "  ERROR: swapoff not found; cannot safely clean build swap" >&2
+        return 1
+    }
+    mkswap_cmd="$(_build_swap_cmd mkswap)" || {
+        echo "  ERROR: mkswap not found; cannot create low-memory build swap" >&2
+        return 1
+    }
+
+    install -d -m 0755 "$(dirname "${path}")"
+    rm -f "${path}"
+    if command -v fallocate >/dev/null 2>&1; then
+        fallocate -l "${size_mb}M" "${path}" 2>/dev/null \
+            || dd if=/dev/zero of="${path}" bs=1M count="${size_mb}" status=none
+    else
+        dd if=/dev/zero of="${path}" bs=1M count="${size_mb}" status=none
+    fi
+    chmod 0600 "${path}"
+    "${mkswap_cmd}" "${path}" >/dev/null
+    "${swapon_cmd}" -p "${priority}" "${path}"
+    BUILD_SWAP_CREATED=1
+    BUILD_SWAP_PATH_ACTIVE="${path}"
+    _build_sandbox_log "swap_enabled" \
+        "path=${path} size_mb=${size_mb} priority=${priority} mem_kb=$(build_swap_memtotal_kb)"
+}
+
+cleanup_build_swap() {
+    [[ "${BUILD_SWAP_CREATED:-0}" == "1" ]] || return 0
+    local path="${BUILD_SWAP_PATH_ACTIVE:-}"
+    [[ -n "${path}" ]] || return 0
+    local swapoff_cmd
+    if swapoff_cmd="$(_build_swap_cmd swapoff)"; then
+        "${swapoff_cmd}" "${path}" >/dev/null 2>&1 \
+            || _build_sandbox_log "swapoff_failed" "path=${path}"
+    fi
+    rm -f "${path}"
+    BUILD_SWAP_CREATED=0
+    BUILD_SWAP_PATH_ACTIVE=""
+    _build_sandbox_log "swap_removed" "path=${path}"
 }
 
 # Default MemoryHigh (soft throttle): ~85% of MemTotal, leaving headroom

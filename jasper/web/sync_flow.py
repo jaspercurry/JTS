@@ -331,6 +331,94 @@ def handle_stop() -> tuple[dict, int]:
     return {"ok": True}, HTTPStatus.OK
 
 
+# --- phone-mic relay path ----------------------------------------------------
+# Same measurement as the browser flow (play L/R markers, analyze the recording),
+# but the phone records via the cloud relay instead of a same-origin upload — for
+# households whose phone browser can't reach the Pi's self-signed cert. The sync
+# session window must already be open (handle_start), exactly as the browser flow
+# requires before /sync/play. ON-DEVICE: marker timing inside the phone window is
+# acoustic and not exercised hardware-free (same status as the room relay).
+
+
+async def _play_marker_once(wav_path: str) -> None:
+    proc = await _start_playback(wav_path)
+    with _lock:
+        _state["playback"] = {"proc": proc}
+    asyncio.get_running_loop().create_task(_watch_playback(proc))
+
+
+def relay_precheck() -> str | None:
+    """Whether a phone-relay sync capture can start now. The browser flow's
+    handle_start must have opened the session window first (phase == measuring),
+    so the relay capture only swaps the recording transport. Returns an error
+    message or None."""
+    with _lock:
+        if _state["phase"] != "measuring":
+            return "no active sync session — open /sync/ and press Start first"
+    return None
+
+
+async def relay_run_and_consume(client: Any, pi_session: Any) -> None:
+    """Run a phone-relay sync capture and consume the verified WAV exactly as
+    handle_analyze does. On `armed` (phone recording), play the markers through
+    the held session window; then analyze and release the window on success."""
+    from jasper.capture_relay.session import purge, run_capture
+    from jasper.multiroom.sync_measure import (
+        analyze_wav_bytes,
+        recommend_channel_delays,
+    )
+
+    loop = asyncio.get_running_loop()
+
+    def _on_armed() -> None:
+        # Called from run_capture's poll thread; play the markers on the loop and
+        # wait only for the spawn (not for the ~2 s playback to finish).
+        fut = asyncio.run_coroutine_threadsafe(
+            _play_marker_once(_marker_wav_path()), loop
+        )
+        fut.result(timeout=10.0)
+
+    # run_capture returns a CaptureResult (WAV + phone device); sync compares
+    # arrival timing within one recording, so the device/calibration is irrelevant.
+    # On ANY failure release the held measurement window NOW (renderers/voice come
+    # back) and surface the error on /sync/status — otherwise the window stays held
+    # until the 240 s SESSION_MAX_S cap and the page shows a silent stuck
+    # "measuring". try/finally + a flag avoids a broad except; the exception still
+    # propagates so the orchestrator marks it failed (run_capture already logged
+    # event=capture_relay.failed).
+    analyzed = False
+    try:
+        capture = await asyncio.to_thread(
+            run_capture, client, pi_session, on_armed=_on_armed
+        )
+        purge(client, pi_session)
+        result = analyze_wav_bytes(capture.wav)
+        analyzed = True
+    finally:
+        if not analyzed:
+            with _lock:
+                _reset_locked("phone-relay capture failed")
+    recommendation = recommend_channel_delays(result.delta_ms)
+    with _lock:
+        _state["result"] = result.to_dict()
+        _state["recommendation"] = recommendation.to_dict()
+        if result.ok:
+            _state["phase"] = "analyzed"
+            release = _state.get("release_window")
+            _state["release_window"] = None
+        else:
+            release = None
+    if release is not None:
+        release()
+    log_event(
+        logger,
+        "sync.relay_analyzed",
+        ok=result.ok,
+        delta_ms=f"{result.delta_ms:.3f}",
+        confidence=f"{result.confidence:.3f}",
+    )
+
+
 _PAGE_CSS = """
 .sync-card { max-width: 620px; }
 .sync-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }

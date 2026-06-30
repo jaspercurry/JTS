@@ -54,7 +54,7 @@ from .conversation_history import (
 )
 from .watchdog import Heartbeat
 from .timers import Timer, announcement_text
-from .research import DONE, FAILED, ResearchJob, ResearchScheduler
+from .research import DONE, FAILED, RESEARCH_EMPTY_RESULT_TEXT, ResearchJob, ResearchScheduler
 from .usage import (
     SpendCap,
     UsageStore,
@@ -333,10 +333,6 @@ RESEARCH_READY_CONFIRMATION_TEXT = (
 )
 RESEARCH_CONFIRMATION_REFRACTORY_SEC = 0.35
 RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC = 20.0
-RESEARCH_EMPTY_RESULT_TEXT = (
-    "Sorry, that research finished without a readable answer. "
-    "Please ask me again."
-)
 
 # Silero speech-probability threshold for marking "the user has
 # actually spoken" within a turn. Decoupled from

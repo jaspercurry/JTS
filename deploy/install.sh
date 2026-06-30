@@ -198,7 +198,7 @@ detect_hardware_tier() {
     # The 2 GB split is the one tier-owned constant: it separates the jts2
     # OOM band (where _webrtc_compile_jobs caps at -j1) from parallel-build
     # headroom.
-    local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB:-786432}"
+    local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB:-1200000}"
     local tier
     if (( mem_kb == 0 )); then
         tier="unknown"
@@ -368,6 +368,8 @@ Run for real from a Pi-local checkout:
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. The real install fails
     fast on a non-arm64 architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1.
+    Low-RAM hosts may enable temporary high-priority build swap for the
+    heavy source/Rust build window, removed automatically on exit.
     See docs/install-hardware-tier-and-staleness.md.
 
 2. System packages
@@ -406,6 +408,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      run RAM-bounded and cgroup-contained via
      deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
      never a live daemon. See docs/HANDOFF-build-sandbox.md.
+   - On low-RAM hosts, park audio/runtime daemons before Rust builds so
+     the build has room without inducing service restart storms.
 
 4. Runtime files and state
    - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
@@ -418,6 +422,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      docs, Avahi service templates, systemd units, renderer configs,
      udev rules, ALSA templates, and helper binaries.
    - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
+   - Write output hardware state before Camilla statefile seed.
+   - Render outputd flat startup config with active DAC latency floor.
    - Move HA/Spotify integration secrets into
      /var/lib/jasper-intsecrets (streambox keeps only the Spotify side
      active, but shares the same migration/forward path).
@@ -479,10 +485,12 @@ Profile guard:
 
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. Build strategy keys off
-    RAM (the Rust low-memory profile under 768 MB; the WebRTC AEC3 -j
+    RAM (the Rust low-memory profile under ~1.2 GB; the WebRTC AEC3 -j
     cap budgets ~1.5 GB/job). The real install fails fast on a non-arm64
-    architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1. See
-    docs/install-hardware-tier-and-staleness.md.
+    architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1. Low-RAM hosts
+    may enable temporary high-priority build swap for the heavy source/Rust
+    build window, removed automatically on exit.
+    See docs/install-hardware-tier-and-staleness.md.
 
 1. System packages
    - apt-get update.
@@ -533,6 +541,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      via deploy/lib/install/build-sandbox.sh, so an OOM during an
      in-service update kills only the build, never a live daemon.
      See docs/HANDOFF-build-sandbox.md.
+   - On low-RAM hosts, park audio/runtime daemons before Rust builds so
+     the build has room without inducing service restart storms.
 
 3. Runtime files and state
    - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
@@ -548,6 +558,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      landing pages, nginx config, Avahi service templates, systemd
      units, udev rules, ALSA templates, and helper binaries.
    - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
+   - Write output hardware state before Camilla statefile seed.
+   - Render outputd flat startup config with active DAC latency floor.
 
 4. Config and migrations
    - Seed /etc/jasper/jasper.env on fresh installs.
@@ -1056,10 +1068,11 @@ EOF
     fi
 
     # CamillaDSP captures plug:jasper_capture (fan-in summed substream 7).
-    # v1.yml writes to pcm.jasper_out for pre-outputd rollback;
-    # outputd-cutover.yml writes to outputd_content_playback so
-    # jasper-outputd owns the DAC on current main. Neither yaml needs
-    # substitution — install_alsa() handles the dongle name in
+    # v1.yml writes to pcm.jasper_out for pre-outputd rollback. The flat
+    # outputd startup graph is copied here as a fallback/template, then
+    # regenerated after the Python package is installed and the current output
+    # hardware state has been observed so the active DAC's latency floor reaches
+    # fresh first boot. install_alsa() handles the dongle name in
     # /etc/asound.conf.
     install -m 0644 \
         "${REPO_DIR}/deploy/camilladsp/v1.yml" \
@@ -1085,6 +1098,53 @@ EOF
     # jasper-voice while WebRTC AEC3 is bypassed. Old aec-bridge.yml is
     # removed if present from a prior install.
     rm -f "${CAMILLA_CONF}/aec-bridge.yml"
+}
+
+ensure_output_hardware_state() {
+    # The CamillaDSP latency floor resolver reads the same output-hardware
+    # state file the reconciler owns. A fresh install must write it before the
+    # flat startup graph is generated or the generator falls back to the
+    # conservative global 1024/2048 default.
+    local output
+    echo "  Writing output hardware state before Camilla statefile seed"
+    if ! output="$(JASPER_OUTPUT_HARDWARE_STATE_PATH=/run/jasper-output-hardware/output_hardware.json \
+        JASPER_APLAY="${JASPER_APLAY:-aplay}" \
+        /opt/jasper/.venv/bin/python -m jasper.output_hardware --write 2>&1)"; then
+        printf '%s\n' "${output}"
+        return 1
+    fi
+    printf '%s\n' "${output}"
+}
+
+render_outputd_cutover_config() {
+    # Design call for #27: generate the seeded flat startup config through the
+    # production outputd graph, with the active DAC profile's Camilla floor, not
+    # a bypass or a hand-edited static YAML. The active-speaker runtime contract
+    # below still decides whether flat is legal for the saved topology.
+    local output
+    echo "  Rendering outputd flat startup config with active DAC latency floor"
+    if ! output="$(/opt/jasper/.venv/bin/python - <<'PY' 2>&1
+from pathlib import Path
+
+from jasper.camilla_config_contract import parse_camilla_devices_config
+from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+path = Path("/etc/camilladsp/outputd-cutover.yml")
+yaml = emit_flat_outputd_cutover_config(out_path=path)
+path.chmod(0o644)
+devices = parse_camilla_devices_config(yaml)
+print(
+    "rendered outputd-cutover.yml "
+    f"path={path} "
+    f"chunksize={devices.get('chunksize')} "
+    f"target_level={devices.get('target_level')}"
+)
+PY
+    )"; then
+        printf '%s\n' "${output}"
+        return 1
+    fi
+    printf '%s\n' "${output}"
 }
 
 ensure_outputd_camilla_statefile() {
@@ -1510,7 +1570,7 @@ install_journald_persistent_storage() {
 
 reconcile_aec_state() {
     ensure_state_dir
-    # Five keys live in aec_mode.env, all owned by the /wake/
+    # These keys live in aec_mode.env, all owned by the /wake/
     # input-profile / wake-detection cards:
     #   - JASPER_AUDIO_INPUT_PROFILE  canonical profile selection
     #                                 (auto, xvf_chip_aec,
@@ -1520,20 +1580,26 @@ reconcile_aec_state() {
     #   - JASPER_AEC_MODE             master AEC bridge toggle
     #   - JASPER_WAKE_LEG_RAW         additive raw chip-direct leg (~5 MB)
     #   - JASPER_WAKE_LEG_DTLN        additive DTLN neural leg (~75 MB)
-    #   - JASPER_WAKE_LEG_CHIP_AEC    XVF3800 chip-AEC beam legs (opt-in,
-    #                                 hardware-conditional, mutually
+    #   - JASPER_WAKE_LEG_CHIP_AEC    XVF3800 chip-AEC profile gate
+    #                                 (hardware-conditional, mutually
     #                                 exclusive with raw/DTLN)
+    #   - JASPER_WAKE_LEG_CHIP_AEC_150 optional extra 150° chip-AEC wake
+    #                                  detector (~30 MB)
+    #   - JASPER_WAKE_LEG_CHIP_AEC_210 optional extra 210° chip-AEC wake
+    #                                  detector (~30 MB)
     #   - JASPER_AEC_CHIP_REF_OBSERVE opt-in: on the software-AEC3 path,
     #                                 arm outputd's chip-ref writer FOR
     #                                 MEASUREMENT ONLY so the Layer-0 SRO
     #                                 drift estimator gets fed (mic path
     #                                 stays software AEC3). Default off.
     # Defaults: profile auto. On approved XVF3800 + output-DAC hardware that
-    # resolves to chip-AEC (no stacked software AEC/raw/DTLN). When chip-AEC
-    # is unavailable it falls back to the software-AEC3 profile (AEC on, raw
-    # fallback on, DTLN off). Unapproved DACs use the explicit
-    # xvf_chip_aec_testing profile; auto never selects testing. DTLN remains
-    # an explicit custom/lab leg because it is heavy on a 1 GB Pi.
+    # resolves to chip-AEC with only the primary/session wake detector active
+    # (no stacked software AEC/raw/DTLN and no extra chip beams). When
+    # chip-AEC is unavailable it falls back to the software-AEC3 profile
+    # (AEC on, raw fallback on, DTLN off). Unapproved DACs use the explicit
+    # xvf_chip_aec_testing profile; auto never selects testing. DTLN and
+    # extra chip beams remain explicit custom/lab legs because they add
+    # detector memory on a 1 GB Pi.
     #
     # On upgrade, the reconciler's ensure_mode_file appends any
     # missing keys with these same defaults — preserving an
@@ -1542,7 +1608,7 @@ reconcile_aec_state() {
     # env vars in /etc/jasper/jasper.env runs separately in
     # migrate_wake_legs_config.
     if [[ ! -f "${STATE_DIR}/aec_mode.env" ]]; then
-        printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' \
+        printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_WAKE_LEG_CHIP_AEC_150=0\nJASPER_WAKE_LEG_CHIP_AEC_210=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' \
             > "${STATE_DIR}/aec_mode.env"
         chmod 0644 "${STATE_DIR}/aec_mode.env"
     fi
@@ -2117,8 +2183,28 @@ run_doctor_summary() {
         return 0
     fi
     echo
+    if build_swap_required; then
+        echo "=== low-memory deploy health pre-flight ==="
+        if "${REPO_DIR}/deploy/bin/jasper-deploy-health"; then
+            echo "✓ low-memory deploy health checks pass."
+        else
+            echo
+            echo "─────────────────────────────────────────────────────────────"
+            echo " low-memory deploy health reports failures (see above)."
+            echo " Install finished, but core runtime health isn't clean."
+            echo " Re-run after fixing: sudo ${REPO_DIR}/deploy/bin/jasper-deploy-health"
+            echo "─────────────────────────────────────────────────────────────"
+        fi
+        return 0
+    fi
+
     echo "=== jasper-doctor pre-flight ==="
-    if /opt/jasper/.venv/bin/jasper-doctor; then
+    local doctor_status
+    set +e
+    /opt/jasper/.venv/bin/jasper-doctor
+    doctor_status=$?
+    set -e
+    if (( doctor_status == 0 )); then
         echo "✓ all critical doctor checks pass."
     else
         echo
@@ -2172,7 +2258,10 @@ main() {
         require_root
         persist_install_profile "${install_profile}"
         require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
+        setup_build_swap_if_needed
+        trap cleanup_build_swap EXIT
         create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
+        park_low_memory_build_units
         install_streambox_deps
         install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
         install_camilladsp
@@ -2180,6 +2269,8 @@ main() {
         set_usb_gadget_mode
         tune_wifi_for_airplay
         install_streambox_jasper
+        ensure_output_hardware_state
+        render_outputd_cutover_config
         ensure_outputd_camilla_statefile
         ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
         migrate_secrets_phase4b  # WS1 Phase 4b: streambox Spotify creds/cache path
@@ -2212,7 +2303,10 @@ main() {
     require_root
     persist_install_profile "${install_profile}"
     require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
+    setup_build_swap_if_needed
+    trap cleanup_build_swap EXIT
     create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
+    park_low_memory_build_units
     install_deps
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
     install_camilladsp
@@ -2220,6 +2314,8 @@ main() {
     set_usb_gadget_mode
     tune_wifi_for_airplay
     install_jasper
+    ensure_output_hardware_state
+    render_outputd_cutover_config
     ensure_outputd_camilla_statefile
     ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units

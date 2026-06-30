@@ -21,6 +21,11 @@ RESEARCH_ANSWER_INSTRUCTIONS = (
     "markdown, bullets, citations, links, or preambles unless essential."
 )
 
+RESEARCH_EMPTY_RESULT_TEXT = (
+    "Sorry, that research finished without a readable answer. "
+    "Please ask me again."
+)
+
 
 @dataclass(frozen=True)
 class ResearchRequest:

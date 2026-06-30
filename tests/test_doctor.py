@@ -19,6 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from jasper import audio_runtime_plan
 from jasper.audio_profile_state import MicProbe
 from jasper import wake_models
 from jasper.cli import doctor
@@ -200,6 +201,90 @@ def test_check_service_runtime_state_warns_on_restart_count(monkeypatch):
 
     assert r.status == "warn"
     assert "jasper-voice.service NRestarts=2" in r.detail
+
+
+# -------------------------------------------------- active WiFi connection
+
+
+def _nmcli_active_run(stdout: str):
+    """Build a fake `_run` returning ``stdout`` for any nmcli invocation.
+
+    Records the argv it was called with so tests can assert the field
+    order requested from nmcli."""
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *a, **kw):
+        calls.append(list(argv))
+
+        class FakeRun:
+            returncode = 0
+            stdout = ""
+
+        FakeRun.stdout = stdout
+        return FakeRun()
+
+    fake_run.calls = calls  # type: ignore[attr-defined]
+    return fake_run
+
+
+def test_active_wifi_connection_simple(monkeypatch):
+    """Plain SSID with no colon resolves to (name, device)."""
+    # nmcli -t -f TYPE,DEVICE,NAME connection show --active
+    stdout = "802-11-wireless:wlan0:HomeWiFi\n"
+    monkeypatch.setattr(doctor.network, "_run", _nmcli_active_run(stdout))
+
+    name, device = doctor.network._active_wifi_connection("nmcli")
+
+    assert name == "HomeWiFi"
+    assert device == "wlan0"
+
+
+def test_active_wifi_connection_handles_colon_in_ssid(monkeypatch):
+    """An SSID containing a literal colon must still be matched.
+
+    Real-world SSIDs like ``Home:2.4G`` / ``AT&T:5G`` appear in
+    nmcli -t output with the colon escaped as ``\\:``. With the old
+    NAME-first field order (``NAME,TYPE,DEVICE``) this row mis-parsed —
+    the first ``\\:`` was treated as a field boundary, TYPE landed on
+    ``2.4G`` (not a wifi type), and the active connection was silently
+    missed, returning (None, None) for a valid profile. This test pins
+    the colon-safe TYPE,DEVICE,NAME order + unescape and FAILS on the
+    old order."""
+    # As emitted by `nmcli -t -f TYPE,DEVICE,NAME connection show --active`:
+    # the NAME field's literal colon is backslash-escaped.
+    stdout = "802-11-wireless:wlan0:Home\\:2.4G\n"
+    fake_run = _nmcli_active_run(stdout)
+    monkeypatch.setattr(doctor.network, "_run", fake_run)
+
+    name, device = doctor.network._active_wifi_connection("nmcli")
+
+    assert name == "Home:2.4G", "colon-containing SSID must be unescaped, not dropped"
+    assert device == "wlan0"
+    # The variable-content NAME field must be requested last so fixed-format
+    # TYPE/DEVICE tokens parse unambiguously.
+    assert "TYPE,DEVICE,NAME" in fake_run.calls[0]
+
+
+def test_active_wifi_connection_no_wifi_row(monkeypatch):
+    """Only a non-wifi (ethernet) active connection → (None, None)."""
+    stdout = "802-3-ethernet:eth0:Wired connection 1\n"
+    monkeypatch.setattr(doctor.network, "_run", _nmcli_active_run(stdout))
+
+    assert doctor.network._active_wifi_connection("nmcli") == (None, None)
+
+
+def test_active_wifi_connection_nonzero_returncode(monkeypatch):
+    """nmcli failure → (None, None), not a crash."""
+
+    def fake_run(argv, *a, **kw):
+        class FakeRun:
+            returncode = 1
+            stdout = ""
+
+        return FakeRun()
+
+    monkeypatch.setattr(doctor.network, "_run", fake_run)
+    assert doctor.network._active_wifi_connection("nmcli") == (None, None)
 
 
 # ----------------------------------------------------------------- grouping
@@ -2806,7 +2891,7 @@ def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
 def _fanin_status_payload(
     *,
     input_buffer_frames: int = 4096,
-    output_buffer_frames: int = 3072,
+    output_buffer_frames: int = 1024,
     progress_age_ms: int = 2,
 ) -> bytes:
     return json.dumps({
@@ -2970,7 +3055,7 @@ def test_check_fanin_service_ok_with_expected_status(monkeypatch):
     r = doctor.check_fanin_service()
     assert r.status == "ok"
     assert "input_buffer_frames=4096" in r.detail
-    assert "output_buffer_frames=3072" in r.detail
+    assert "output_buffer_frames=1024" in r.detail
     assert "tts_enabled=true" in r.detail
     assert "assistant_loudness_decision=False" in r.detail
 
@@ -3047,6 +3132,7 @@ def test_check_fanin_service_fails_when_status_socket_unreachable(monkeypatch):
 
 
 def test_check_fanin_service_fails_on_small_runtime_buffers(monkeypatch):
+    monkeypatch.delenv("JASPER_FANIN_ADAPTIVE_BUFFER", raising=False)
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
         monkeypatch,
@@ -3058,11 +3144,37 @@ def test_check_fanin_service_fails_on_small_runtime_buffers(monkeypatch):
 
     _patch_fanin_status_socket(
         monkeypatch,
-        _fanin_status_payload(output_buffer_frames=2048),
+        _fanin_status_payload(output_buffer_frames=512),
     )
     r = doctor.check_fanin_service()
     assert r.status == "fail"
-    assert "output_buffer_frames=2048" in r.detail
+    assert "output_buffer_frames=512" in r.detail
+
+
+def test_check_fanin_service_accepts_new_low_latency_output_default(monkeypatch):
+    monkeypatch.delenv("JASPER_FANIN_ADAPTIVE_BUFFER", raising=False)
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _fanin_status_payload(output_buffer_frames=1024),
+    )
+    r = doctor.check_fanin_service()
+    assert r.status == "ok"
+    assert "output_buffer_frames=1024" in r.detail
+
+
+def test_check_fanin_service_adaptive_below_floor_still_fails(monkeypatch):
+    # Even with the legacy adaptive flag on, a value below the production floor
+    # still hard-fails.
+    monkeypatch.setenv("JASPER_FANIN_ADAPTIVE_BUFFER", "enabled")
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _fanin_status_payload(output_buffer_frames=512),
+    )
+    r = doctor.check_fanin_service()
+    assert r.status == "fail"
+    assert "output_buffer_frames=512" in r.detail
 
 
 def test_outputd_service_fails_when_disabled(monkeypatch):
@@ -3084,6 +3196,42 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     assert "content_eagain_count=1" in r.detail
     assert "content_bridge=direct" in r.detail
     assert "speaker_reference_source=outputd_final_electrical" in r.detail
+
+
+def test_audio_runtime_plan_doctor_warns_on_shadowed_knob(monkeypatch):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={"JASPER_CAMILLA_CHUNKSIZE": "512"},
+        outputd_env={"JASPER_CAMILLA_CHUNKSIZE": "256"},
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_mode="solo",
+    )
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+
+    r = doctor.check_audio_runtime_plan()
+
+    assert r.status == "warn"
+    assert "one knob has two homes" in r.detail
+
+
+def test_audio_runtime_plan_doctor_fails_unsupported_route(monkeypatch):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "fifo"},
+        route_mode="active_leader",
+    )
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+
+    r = doctor.check_audio_runtime_plan()
+
+    assert r.status == "fail"
+    assert "active multiroom leader" in r.detail
 
 
 def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):
@@ -3972,8 +4120,8 @@ def test_check_wifi_guardian_ok_when_stash_matches_active(
     )
     monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
     _patch_doctor_nmcli(monkeypatch, [
-        # connection show --active
-        "Home:802-11-wireless\n",
+        # connection show --active (TYPE,DEVICE,NAME)
+        "802-11-wireless:wlan0:Home\n",
         # connection show Home (ssid lookup)
         "802-11-wireless.ssid:Home\n",
     ])
@@ -3987,8 +4135,8 @@ def test_check_wifi_guardian_ok_ethernet_only(monkeypatch, tmp_path):
     Pi. Don't warn — there's nothing to recover and nothing to drift."""
     monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(tmp_path / "missing.env"))
     _patch_doctor_nmcli(monkeypatch, [
-        # connection show --active → no wifi line
-        "eth0:802-3-ethernet\n",
+        # connection show --active → no wifi line (TYPE,DEVICE,NAME)
+        "802-3-ethernet:eth0:Wired connection 1\n",
     ])
     r = doctor.check_wifi_guardian()
     assert r.status == "ok"
@@ -4002,7 +4150,7 @@ def test_check_wifi_guardian_warns_when_stash_missing_but_active(
     Warn so the dashboard / system check surfaces the recovery gap."""
     monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(tmp_path / "missing.env"))
     _patch_doctor_nmcli(monkeypatch, [
-        "Home:802-11-wireless\n",
+        "802-11-wireless:wlan0:Home\n",
         "802-11-wireless.ssid:Home\n",
     ])
     r = doctor.check_wifi_guardian()
@@ -4021,12 +4169,38 @@ def test_check_wifi_guardian_warns_on_ssid_drift(monkeypatch, tmp_path):
     )
     monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
     _patch_doctor_nmcli(monkeypatch, [
-        "Cafe:802-11-wireless\n",
+        "802-11-wireless:wlan0:Cafe\n",
         "802-11-wireless.ssid:Cafe\n",
     ])
     r = doctor.check_wifi_guardian()
     assert r.status == "warn"
     assert "Home" in r.detail and "Cafe" in r.detail
+
+
+def test_check_wifi_guardian_matches_colon_ssid(monkeypatch, tmp_path):
+    """A profile NAME with a literal colon (e.g. "Home:5G") must be
+    matched, not silently treated as "no active WiFi".
+
+    Regression for the same colon-parse bug as C10-1: the guardian check
+    used to run its own NAME-first nmcli probe, which mis-split an escaped
+    "\\:" and reported a bogus "no recovery stash"/"no WiFi" state for a
+    valid profile. It now reuses the colon-safe _active_wifi_connection.
+    The SSID value lookup is forced to fail so the check falls back to the
+    (unescaped) profile name, pinning the helper's output end-to-end."""
+    stash = tmp_path / "wifi_guardian.env"
+    stash.write_text(
+        "JASPER_WIFI_SSID=Home:5G\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
+    )
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
+    _patch_doctor_nmcli(monkeypatch, [
+        # active connection: NAME "Home:5G" arrives colon-escaped from nmcli -t
+        "802-11-wireless:wlan0:Home\\:5G\n",
+        # ssid value lookup fails → fall back to the unescaped profile name
+        _mock_nmcli_proc(returncode=1),
+    ])
+    r = doctor.check_wifi_guardian()
+    assert r.status == "ok"
+    assert "Home:5G" in r.detail
 
 
 def test_check_wifi_guardian_warns_when_active_wifi_missing(
@@ -4069,8 +4243,9 @@ def test_check_wifi_guardian_registered_in_sync_checks():
 
 
 def test_check_wifi_link_local_ipv6_ok(monkeypatch):
+    # nmcli -t -f TYPE,DEVICE,NAME connection show --active
     _patch_doctor_nmcli(monkeypatch, [
-        "Home:802-11-wireless:wlan0\n",
+        "802-11-wireless:wlan0:Home\n",
         "link-local\n",
         "2: wlan0    inet6 fe80::1/64 scope link\n",
     ])
@@ -4080,20 +4255,25 @@ def test_check_wifi_link_local_ipv6_ok(monkeypatch):
 
 
 def test_check_wifi_link_local_ipv6_warns_when_profile_ignores_ipv6(monkeypatch):
+    # Profile NAME carries a literal colon (e.g. "Home:5G"); it arrives
+    # escaped as "\:" in nmcli -t output and must be unescaped, not dropped.
     _patch_doctor_nmcli(monkeypatch, [
-        "Home Speaker:802-11-wireless:wlan0\n",
+        "802-11-wireless:wlan0:Home\\:5G\n",
         "ignore\n",
     ])
     r = doctor.check_wifi_link_local_ipv6()
     assert r.status == "warn"
     assert "ipv6.method=ignore" in r.detail
     assert "Apple clients" in r.detail
-    assert "nmcli connection modify 'Home Speaker' ipv6.method link-local" in r.detail
+    # Profile resolved with its colon intact (shlex.quote leaves a colon
+    # name unquoted — colons need no shell escaping).
+    assert "active WiFi profile 'Home:5G'" in r.detail
+    assert "nmcli connection modify Home:5G ipv6.method link-local" in r.detail
 
 
 def test_check_wifi_link_local_ipv6_warns_when_link_local_missing(monkeypatch):
     _patch_doctor_nmcli(monkeypatch, [
-        "Home:802-11-wireless:wlan0\n",
+        "802-11-wireless:wlan0:Home\n",
         "auto\n",
         "",
     ])
@@ -4842,30 +5022,42 @@ def test_assess_wake_legs_dtln_skip_warns():
 def test_assess_wake_legs_chip_aec_does_not_false_warn_on_cleared_raw():
     """Chip-AEC mutual exclusion: the reconciler clears raw/DTLN *device*
     vars when chip is on but preserves their booleans as wizard intent. So
-    raw=True can coexist with chip_aec=True, and the armed set is the two
-    chip beams + on — with NO 'off' leg. The doctor must expect the chip
-    set (not 'off'), or it would false-warn 'off not running' on every
-    chip-AEC install. This is the regression this fix prevents."""
+    raw=True can coexist with chip_aec=True, and the default armed set is
+    the primary chip beam on the "on" leg — with NO "off" leg and no extra
+    beam detectors. This is the resource regression this fix prevents."""
     r = doctor._assess_wake_legs(
         "auto", raw=True, dtln=False,
-        armed_runtime={"on", "chip_aec_150", "chip_aec_210"},
+        armed_runtime={"on"},
         chip_aec=True,
     )
     assert r.status == "ok", r.detail
-    assert "3 leg(s) armed" in r.detail
-    assert "chip_aec_150" in r.detail
+    assert "1 leg(s) armed" in r.detail
+    assert "off" not in r.detail
 
 
-def test_assess_wake_legs_chip_aec_warns_when_beams_not_armed():
-    """Chip-AEC configured on but the beams aren't armed (chip not on the
-    6-ch firmware, or bridge down) → warn naming the missing beams, with a
-    6-ch-firmware hint."""
+def test_assess_wake_legs_chip_aec_warns_when_enabled_extra_beams_not_armed():
+    """Extra chip-AEC beam toggles are explicit. When configured but not
+    armed, warn naming the missing beams."""
     r = doctor._assess_wake_legs(
         "auto", raw=True, dtln=False, armed_runtime={"on"}, chip_aec=True,
+        chip_aec_150=True, chip_aec_210=True,
     )
     assert r.status == "warn"
     assert "chip_aec_150" in r.detail and "chip_aec_210" in r.detail
     assert "6-ch firmware" in r.detail
+
+
+def test_assess_wake_legs_chip_aec_warns_on_unexpected_extra_beams():
+    """Default chip-AEC should arm only the primary beam; extra armed
+    beams are resource burn, so doctor should not report ok."""
+    r = doctor._assess_wake_legs(
+        "auto", raw=True, dtln=False,
+        armed_runtime={"on", "chip_aec_150"},
+        chip_aec=True,
+    )
+    assert r.status == "warn"
+    assert "unexpected wake legs" in r.detail
+    assert "chip_aec_150" in r.detail
 
 
 def test_assess_wake_legs_chip_aec_intent_when_daemon_unreachable():
@@ -4875,7 +5067,7 @@ def test_assess_wake_legs_chip_aec_intent_when_daemon_unreachable():
         "auto", raw=True, dtln=False, armed_runtime=None, chip_aec=True,
     )
     assert r.status == "ok"
-    assert "chip_aec_150" in r.detail
+    assert "primary_chip_beam" in r.detail
     # raw is on but mutual exclusion means it isn't part of the chip config.
     assert "raw" not in r.detail
 
@@ -5533,3 +5725,173 @@ def test_check_wifi_recover_timer_no_systemctl_skips(monkeypatch):
     r = doctor.check_wifi_recover_timer()
     assert r.status == "ok"
     assert "no systemctl" in r.detail
+
+
+# ---- check_dac_usb_sync_mode (Stage 6 clock-coherence advisory) -------------
+
+
+def _sync_mode_state(*syncs):
+    """An OutputHardwareState with one Apple playback child per sync tag."""
+    return OutputHardwareState(
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        profile_label="Apple USB-C audio adapter",
+        status="ready",
+        physical_output_count=2,
+        apple_dac_count=len(syncs),
+        child_devices=tuple(
+            OutputCardFact(
+                card_id=f"A{i or ''}",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                endpoint_sync=tag,
+                has_playback=True,
+            )
+            for i, tag in enumerate(syncs)
+        ),
+    )
+
+
+def test_dac_sync_mode_skips_when_no_xvf_mic(monkeypatch):
+    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: False)
+    # Must short-circuit before reading output state when chip-AEC is moot.
+    monkeypatch.setattr(
+        doctor.audio, "_output_hardware_state_or_none",
+        lambda: (_ for _ in ()).throw(AssertionError("must not probe")),
+    )
+    result = doctor.check_dac_usb_sync_mode()
+    assert result.status == "ok"
+    assert "no XVF3800 mic present" in result.detail
+
+
+def test_dac_sync_mode_ok_for_sync_apple_dongle(monkeypatch):
+    # Mirrors the real jts capture: Apple dongle reports (SYNC).
+    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
+    monkeypatch.setattr(
+        doctor.audio, "_output_hardware_state_or_none",
+        lambda: _sync_mode_state("SYNC"),
+    )
+    result = doctor.check_dac_usb_sync_mode()
+    assert result.status == "ok"
+    assert "synchronous USB playback endpoint" in result.detail
+    # Advisory clock-coherence wording, not an enable/disable gate.
+    assert "clock-coherence observation only" in result.detail
+    assert "binding chip-AEC gate" in result.detail
+
+
+def test_dac_sync_mode_ok_for_adaptive_endpoint(monkeypatch):
+    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
+    monkeypatch.setattr(
+        doctor.audio, "_output_hardware_state_or_none",
+        lambda: _sync_mode_state("ADAPTIVE"),
+    )
+    result = doctor.check_dac_usb_sync_mode()
+    assert result.status == "ok"
+    assert "synchronous USB playback endpoint" in result.detail
+
+
+def test_dac_sync_mode_warns_fail_closed_for_async(monkeypatch):
+    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
+    monkeypatch.setattr(
+        doctor.audio, "_output_hardware_state_or_none",
+        lambda: _sync_mode_state("ASYNC"),
+    )
+    result = doctor.check_dac_usb_sync_mode()
+    assert result.status == "warn"
+    assert "async USB playback endpoint" in result.detail
+    # Reframed as advisory: the binding gate is DAC qual + outputd SRO verdict.
+    assert "outputd SRO verdict" in result.detail
+
+
+def test_dac_sync_mode_na_for_i2s_dac(monkeypatch):
+    # HiFiBerry/I2S HAT: known DAC profile, no USB endpoint sync tag.
+    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
+    state = OutputHardwareState(
+        profile_id="hifiberry_dac8x",
+        profile_label="HiFiBerry DAC8x",
+        status="ready",
+        physical_output_count=8,
+        child_devices=(
+            OutputCardFact(
+                card_id="DAC8x",
+                device_id="hifiberry_dac8x",
+                endpoint_sync=None,
+                has_playback=True,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        doctor.audio, "_output_hardware_state_or_none", lambda: state
+    )
+    result = doctor.check_dac_usb_sync_mode()
+    assert result.status == "ok"
+    assert "I2S clock slave" in result.detail
+
+
+def test_dac_sync_mode_warns_when_state_unavailable(monkeypatch):
+    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
+    monkeypatch.setattr(
+        doctor.audio, "_output_hardware_state_or_none", lambda: None
+    )
+    result = doctor.check_dac_usb_sync_mode()
+    assert result.status == "warn"
+    assert "output hardware state unavailable" in result.detail
+
+
+# --- G3: outputd xrun-rate WARN tier (audio-latency foundation) ---
+
+def _xrun_section(rate_per_hour, last_xrun_age_ms):
+    """Minimal outputd STATUS content/dac section for the xrun-rate helper."""
+    return {
+        "xrun_count": 0,
+        "xrun_rate_per_hour": rate_per_hour,
+        "last_xrun_age_ms": last_xrun_age_ms,
+    }
+
+
+def test_outputd_xrun_warning_none_when_no_recent_xrun():
+    """last_xrun_age_ms=null (no xrun ever) → never warn, regardless of rate."""
+    quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
+    assert doctor.audio._outputd_xrun_rate_warning(quiet, quiet) is None
+
+
+def test_outputd_xrun_warning_suppressed_for_stale_burst():
+    """A high all-time rate whose last xrun is OLD (a cleared deploy-time
+    burst) must NOT warn — the WARN is for a sustained, *current* problem."""
+    stale = _xrun_section(
+        rate_per_hour=50.0,
+        last_xrun_age_ms=doctor.audio._OUTPUTD_XRUN_RECENT_AGE_MS + 1,
+    )
+    assert doctor.audio._outputd_xrun_rate_warning(stale, stale) is None
+
+
+def test_outputd_xrun_warning_suppressed_for_recent_single_blip():
+    """A recent xrun with a LOW sustained rate (one transient blip) must not
+    warn — only a rate at/above the threshold qualifies."""
+    blip = _xrun_section(
+        rate_per_hour=doctor.audio._OUTPUTD_XRUN_RATE_WARN_PER_HOUR - 0.1,
+        last_xrun_age_ms=1000,
+    )
+    assert doctor.audio._outputd_xrun_rate_warning(blip, blip) is None
+
+
+def test_outputd_xrun_warning_fires_on_recent_sustained_rate():
+    """Recent xrun AND a sustained rate at/above threshold → warn, naming the
+    offending lane and both fields."""
+    hot = _xrun_section(
+        rate_per_hour=doctor.audio._OUTPUTD_XRUN_RATE_WARN_PER_HOUR,
+        last_xrun_age_ms=2000,
+    )
+    quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
+    reason = doctor.audio._outputd_xrun_rate_warning(quiet, hot)
+    assert reason is not None
+    assert "dac" in reason
+    assert "xrun_rate_per_hour" in reason
+    assert "last_xrun_age_ms" in reason
+
+
+def test_outputd_xrun_warning_reports_worst_lane():
+    """When both lanes qualify, the higher-rate lane is reported."""
+    content = _xrun_section(rate_per_hour=8.0, last_xrun_age_ms=1000)
+    dac = _xrun_section(rate_per_hour=40.0, last_xrun_age_ms=1000)
+    reason = doctor.audio._outputd_xrun_rate_warning(content, dac)
+    assert reason is not None
+    assert reason.startswith("dac ")

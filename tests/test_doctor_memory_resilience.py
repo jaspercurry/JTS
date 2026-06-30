@@ -25,6 +25,8 @@ from unittest.mock import MagicMock, patch
 from jasper.cli import doctor
 from jasper.conversation_history import (
     CAPTURE_ENABLED_ENV,
+    DEFAULT_RETENTION_DAYS,
+    DEFAULT_RETENTION_MAX_ROWS,
     ConversationStore,
     ConversationTurn,
     DB_PATH_ENV,
@@ -472,9 +474,10 @@ _PID_MAP = {
     "jasper-aec-bridge": "1004",
     "jasper-control": "1005",
     "jasper-voice": "1006",
-    "jasper-mux": "1007",
-    "jasper-input": "1008",
-    "ssh": "1009",
+    "nginx": "1007",
+    "jasper-mux": "1008",
+    "jasper-input": "1009",
+    "ssh": "1010",
 }
 
 _EXPECTED_CONFIG = {
@@ -484,6 +487,7 @@ _EXPECTED_CONFIG = {
     "jasper-aec-bridge": "-700",
     "jasper-control": "-600",
     "jasper-voice": "-500",
+    "nginx": "-450",
     "jasper-mux": "-300",
     "jasper-input": "-300",
     "ssh": "-250",
@@ -551,8 +555,8 @@ def test_oom_score_adj_skips_units_not_installed_on_streambox():
     assert r.status == "ok", r.detail
     for unit in absent:
         assert unit not in r.detail
-    # The remaining 6 installed daemons are still verified.
-    assert "6 critical daemons protected" in r.detail
+    # The remaining 7 installed daemons are still verified.
+    assert "7 critical daemons protected" in r.detail
 
 
 def test_oom_score_adj_warns_on_present_drift_with_others_absent():
@@ -589,8 +593,9 @@ def test_oom_score_adj_warns_on_present_drift_with_others_absent():
 _LIVE_OK = {
     "1001": "-950", "1002": "-900", "1003": "-800",
     "1004": "-700", "1005": "-600", "1006": "-500",
-    "1007": "-300", "1008": "-300",
-    "1009": "-250",   # ssh recovery path, still killable
+    "1007": "-450",
+    "1008": "-300", "1009": "-300",
+    "1010": "-250",   # ssh recovery path, still killable
 }
 
 
@@ -607,7 +612,7 @@ def test_oom_score_adj_all_match():
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
     assert r.status == "ok"
-    assert "9 critical daemons protected" in r.detail
+    assert "10 critical daemons protected" in r.detail
 
 
 def test_oom_score_adj_warns_if_sshd_drifts():
@@ -617,7 +622,7 @@ def test_oom_score_adj_warns_if_sshd_drifts():
     def fake_read(self):
         pid_str = str(self).split("/")[2]
         live = dict(_LIVE_OK)
-        live["1009"] = "0"  # sshd drifted to default
+        live["1010"] = "0"  # sshd drifted to default
         return live.get(pid_str, "0") + "\n"
 
     # Also reflect the drift in the unit file's configured value, so
@@ -639,7 +644,7 @@ def test_oom_score_adj_ignores_openssh_listener_self_protection():
     def fake_read(self):
         pid_str = str(self).split("/")[2]
         live = dict(_LIVE_OK)
-        live["1009"] = "-1000"
+        live["1010"] = "-1000"
         return live.get(pid_str, "0") + "\n"
 
     with patch.object(doctor._shared, "_run",
@@ -1446,7 +1451,9 @@ def test_conversation_history_state_reads_store_summary(monkeypatch, tmp_path):
     assert snap["capture_enabled"] is True
     assert snap["turn_count"] == 1
     assert snap["last_write_age_seconds"] is not None
-    assert snap["retention"] == {"days": 30, "max_rows": None}
+    # max_rows is absent from the env file, so it resolves to the code
+    # default rather than disabling the row-count guard.
+    assert snap["retention"] == {"days": 30, "max_rows": DEFAULT_RETENTION_MAX_ROWS}
 
 
 def test_conversation_history_state_disabled_missing_db_is_not_unavailable(
@@ -1458,11 +1465,16 @@ def test_conversation_history_state_disabled_missing_db_is_not_unavailable(
     settings_path.write_text(f"{CAPTURE_ENABLED_ENV}=0\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings_path))
 
+    # Neither retention var is set, so both bounds resolve to the code
+    # defaults that keep the store bounded out of the box.
     assert state_aggregate._conversation_history_state() == {
         "capture_enabled": False,
         "turn_count": None,
         "last_write_age_seconds": None,
-        "retention": {"days": None, "max_rows": None},
+        "retention": {
+            "days": DEFAULT_RETENTION_DAYS,
+            "max_rows": DEFAULT_RETENTION_MAX_ROWS,
+        },
     }
 
 

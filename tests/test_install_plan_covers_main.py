@@ -41,6 +41,8 @@ _INSTALL_LIB_DIR = _INSTALL_SH.parent / "lib" / "install"
 # --dry-run plan output (after whitespace normalization).
 _STEP_TO_PLAN_MARKER = {
     "hardware_tier_preflight": "Hardware tier",
+    "setup_build_swap_if_needed": "temporary high-priority build swap",
+    "park_low_memory_build_units": "park audio/runtime daemons before Rust builds",
     "create_jasper_service_users": "non-root service users",
     "install_deps": "apt-get update",
     "persist_install_profile": "Persist the install profile tier",
@@ -57,6 +59,8 @@ _STEP_TO_PLAN_MARKER = {
     "set_usb_gadget_mode": "USB gadget dtoverlay",
     "tune_wifi_for_airplay": "Disable WiFi power-save on the active wlan0",
     "install_jasper": "Copy Python source",
+    "ensure_output_hardware_state": "Write output hardware state before Camilla statefile seed",
+    "render_outputd_cutover_config": "Render outputd flat startup config with active DAC latency floor",
     "build_install_jasper_fanin": "jasper-fanin Rust daemon",
     "build_install_jasper_outputd": "jasper-outputd daemon from rust/jasper-outputd",
     "install_systemd_units": "Enable socket-activated setup wizards",

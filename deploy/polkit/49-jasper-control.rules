@@ -60,6 +60,7 @@ polkit.addRule(function(action, subject) {
         "jasper-grouping-reconcile-trailing.service",
         "jasper-camilla.service",
         "jasper-outputd.service",
+        "jasper-fanin.service",
         "jasper-doctor-json.service",
         "shairport-sync.service",
         "nqptp.service",
@@ -74,7 +75,8 @@ polkit.addRule(function(action, subject) {
 
     var START_ONLY_UNITS = [
         "jasper-audio-hardware-reconcile.service",
-        "jasper-wifi-scan-repair.service"
+        "jasper-wifi-scan-repair.service",
+        "jasper-xvf-firmware-update.service"
     ];
 
     // start / stop / restart / try-restart / reset-failed all flow through

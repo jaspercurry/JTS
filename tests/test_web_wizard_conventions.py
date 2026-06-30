@@ -655,3 +655,100 @@ def test_modules_do_not_redefine_the_shared_html_escaper():
         "(or escapeAttr / the escapeText alias) from /assets/shared/js/escape.js "
         "instead:\n" + "\n".join(offenders)
     )
+
+
+# The text-node DOM builder (h() / svg()) is the entire basis of the
+# "untrusted strings never reach innerHTML" safety argument: string children
+# become text nodes, so transcripts, provider names, device labels, etc. are
+# escaped by the DOM. It was copy-pasted across the /chat/ and /system/ module
+# graphs (and had already drifted — `catch (_)` vs `catch`, divergent comments)
+# before it was promoted to the shared module at /assets/shared/js/dom.js (same
+# shared-by-promotion path as dialog.js / escape.js / http.js). Pages now import
+# h/svg from there. This test keeps the duplication from creeping back: no
+# canonical module may re-declare its own h()/svg() builder again — dom.js is
+# the one home for the XSS-safety primitive.
+_SHARED_DOM_MODULE = Path("deploy/assets/shared/js/dom.js")
+_LOCAL_DOM_BUILDER_DEF_RE = re.compile(r"function\s+(?:h|svg)\b")
+
+
+def test_shared_dom_module_exists_and_exports_the_builder():
+    """The drift test below is only meaningful once the shared home exists and
+    exports the names pages import."""
+    assert _SHARED_DOM_MODULE.is_file(), (
+        f"{_SHARED_DOM_MODULE} (shared text-node DOM builder) is missing"
+    )
+    src = _SHARED_DOM_MODULE.read_text()
+    assert re.search(r"export\s+function\s+h\b", src), (
+        "dom.js must export h"
+    )
+    assert re.search(r"export\s+function\s+svg\b", src), (
+        "dom.js must export svg"
+    )
+
+
+def test_modules_do_not_redefine_the_shared_dom_builder():
+    """No deploy/assets module re-declares h()/svg() now that the shared dom.js
+    owns the text-node DOM builder — they import from /assets/shared/js/dom.js
+    instead. dom.js itself is the canonical definition and is exempt."""
+    assert WEB_MODULE_FILES, "expected web ES modules to scan"
+    offenders = []
+    for path in WEB_MODULE_FILES:
+        if path.resolve() == _SHARED_DOM_MODULE.resolve():
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if _LOCAL_DOM_BUILDER_DEF_RE.search(line):
+                offenders.append(f"{path}:{lineno}: {line.strip()}")
+    assert offenders == [], (
+        "these modules redefine the shared text-node DOM builder — import "
+        "h/svg from /assets/shared/js/dom.js instead (it is the one home for "
+        "the XSS-safety primitive):\n" + "\n".join(offenders)
+    )
+
+
+# The CSRF/JSON fetch helpers (csrfHeaders / jsonHeaders) were promoted to the
+# shared module at /assets/shared/js/http.js (same shared-by-promotion path as
+# escape.js / dialog.js). The /sound/ editor used to carry a local copy; it now
+# imports from http.js. This test keeps the duplication from creeping back: no
+# canonical module may re-declare its own csrfHeaders/jsonHeaders again — http.js
+# is the one home. Mirrors the escapeHtml drift guard above. (Matches function
+# declarations and var/let/const assignments, NOT the `import { csrfHeaders,
+# jsonHeaders }` statement, so importing the shared helpers stays allowed.)
+_SHARED_HTTP_MODULE = Path("deploy/assets/shared/js/http.js")
+_LOCAL_HTTP_HELPER_DEF_RE = re.compile(
+    r"(?:function\s+(?:csrfHeaders|jsonHeaders)\b"
+    r"|(?:var|let|const)\s+(?:csrfHeaders|jsonHeaders)\s*=)"
+)
+
+
+def test_shared_http_module_exists_and_exports_the_csrf_helpers():
+    """The drift test below is only meaningful once the shared home exists and
+    exports the names pages import."""
+    assert _SHARED_HTTP_MODULE.is_file(), (
+        f"{_SHARED_HTTP_MODULE} (shared CSRF/JSON fetch helpers) is missing"
+    )
+    src = _SHARED_HTTP_MODULE.read_text()
+    assert re.search(r"export\s+function\s+csrfHeaders\b", src), (
+        "http.js must export csrfHeaders"
+    )
+    assert re.search(r"export\s+function\s+jsonHeaders\b", src), (
+        "http.js must export jsonHeaders"
+    )
+
+
+def test_modules_do_not_redefine_the_shared_csrf_helpers():
+    """No deploy/assets module re-declares csrfHeaders/jsonHeaders now that the
+    shared http.js owns them — they import from /assets/shared/js/http.js
+    instead. http.js itself is the canonical definition and is exempt."""
+    assert WEB_MODULE_FILES, "expected web ES modules to scan"
+    offenders = []
+    for path in WEB_MODULE_FILES:
+        if path.resolve() == _SHARED_HTTP_MODULE.resolve():
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if _LOCAL_HTTP_HELPER_DEF_RE.search(line):
+                offenders.append(f"{path}:{lineno}: {line.strip()}")
+    assert offenders == [], (
+        "these modules redefine the shared CSRF/JSON fetch helpers — import "
+        "csrfHeaders / jsonHeaders from /assets/shared/js/http.js instead:\n"
+        + "\n".join(offenders)
+    )

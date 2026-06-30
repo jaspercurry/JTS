@@ -163,6 +163,17 @@ def test_sched_fifo_and_mlockall_settings():
     assert _value_for(unit, "LimitMEMLOCK") == "infinity"
 
 
+def test_rt_runtime_bounded_by_limit_rttime():
+    """Every FIFO unit caps RT-thread runaway with LimitRTTIME (audio-latency
+    foundation G4). Without it, a spinning FIFO thread can starve PID 1 on the
+    1 GB Pi and trip the hardware watchdog into a full reboot; the 200 ms
+    SIGXCPU bound reduces that whole-system wedge to one crashed daemon. This is
+    mandatory wherever CPUSchedulingPolicy=fifo is set."""
+    unit = _read_unit()
+    assert _value_for(unit, "CPUSchedulingPolicy") == "fifo"
+    assert _value_for(unit, "LimitRTTIME") == "200000"
+
+
 def test_runtime_directory():
     """`RuntimeDirectory=jasper-fanin` makes systemd create
     /run/jasper-fanin/ on start and remove it on stop. The UDS
@@ -251,9 +262,9 @@ def test_input_buffer_frames_sized_for_wifi_burst_absorption():
 
 def test_output_buffer_frames_stays_latency_bounded():
     """Output ALSA ring should not inherit the large input burst
-    absorber. 3072 frames (~64 ms at 48 kHz) gives CamillaDSP enough
-    read margin without turning the fanin→CamillaDSP/AEC leg into a
-    large hidden queue; WiFi burst absorption belongs on input lanes."""
+    absorber. 1024 frames (~21 ms at 48 kHz) is the validated default on
+    the low-latency Camilla path; WiFi burst absorption belongs on input
+    lanes."""
     unit = _read_unit()
     match = re.search(
         r'^\s*Environment\s*=\s*"?JASPER_FANIN_OUTPUT_BUFFER_FRAMES=(\d+)"?',
@@ -265,7 +276,7 @@ def test_output_buffer_frames_stays_latency_bounded():
         "separately from the input burst absorber"
     )
     val = int(match.group(1))
-    assert val == 3072
+    assert val == 1024
 
 
 def test_hardening_directives_present():

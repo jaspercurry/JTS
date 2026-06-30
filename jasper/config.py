@@ -220,10 +220,10 @@ class Config:
     manual_mic_sources: MappingProxyType[str, str]
     mic_device_raw: str
     mic_device_dtln: str
-    # Optional XVF3800 chip-AEC beam legs (the fixed 150°/210° ASR beams
-    # the bridge forwards on UDP 9887/9888). Empty by default → the leg is
-    # not built; the AEC reconciler sets these from JASPER_WAKE_LEG_CHIP_AEC
-    # only on 6-channel firmware. See docs/HANDOFF-mic-fusion-architecture.md.
+    # Optional XVF3800 extra chip-AEC wake detector legs (the fixed 150°/210°
+    # ASR beams the bridge may forward on UDP 9887/9888). Empty by default →
+    # the leg is not built; the AEC reconciler sets these only from the
+    # per-beam JASPER_WAKE_LEG_CHIP_AEC_150/_210 custom toggles.
     mic_device_chip_aec_150: str
     mic_device_chip_aec_210: str
     aec_chip_aec_enabled: bool
@@ -572,19 +572,13 @@ class Config:
             # See docs/HANDOFF-mic-quality-v2.md "Triple-stream
             # architecture plan" for context.
             mic_device_dtln=_env("JASPER_MIC_DEVICE_DTLN", ""),
-            # JASPER_MIC_DEVICE_CHIP_AEC_150 / _210: optional fourth/fifth
-            # wake legs carrying the XVF3800's hardware-AEC ASR beams (fixed
-            # at 150° / 210°), which the bridge forwards on UDP 9887 / 9888
-            # when the chip is driven into production chip-AEC mode. When set
-            # (typically `udp:9887` / `udp:9888`), WakeLoop spawns a
-            # WakeWordDetector per beam and OR-gates their fires with the
-            # software legs. HARDWARE-CONDITIONAL + opt-in: the AEC reconciler
-            # only sets these from JASPER_WAKE_LEG_CHIP_AEC on 6-channel
-            # firmware, and clears JASPER_MIC_DEVICE_RAW/_DTLN at the same
-            # time (single-chip mutual exclusion). Empty / absent → the leg
-            # is not built (byte-identical to a no-chip install). See
-            # docs/HANDOFF-mic-fusion-architecture.md §2.4 +
-            # docs/CHIP-AEC-EXPERIMENT.md.
+            # JASPER_MIC_DEVICE_CHIP_AEC_150 / _210: optional extra wake
+            # detector legs carrying the XVF3800's hardware-AEC ASR beams
+            # (fixed at 150° / 210°), which the bridge forwards on UDP 9887 /
+            # 9888 only when the matching advanced custom toggle is on. The
+            # chip-AEC profile itself uses the primary/session UDP leg at
+            # :9876; it does not imply extra WakeWordDetector instances.
+            # Empty / absent → the leg is not built.
             mic_device_chip_aec_150=_env("JASPER_MIC_DEVICE_CHIP_AEC_150", ""),
             mic_device_chip_aec_210=_env("JASPER_MIC_DEVICE_CHIP_AEC_210", ""),
             aec_chip_aec_enabled=_env_bool(

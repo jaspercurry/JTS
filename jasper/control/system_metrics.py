@@ -110,6 +110,8 @@ EXTRA_SERVICE_GROUPS = {
 # The dashboard surfaces this state so the next person doesn't have
 # to ask why.
 CGROUP_CONTROLLERS_FILE = "/sys/fs/cgroup/cgroup.controllers"
+CGROUP_MEMORY_CURRENT_FILE = "/sys/fs/cgroup/memory.current"
+CGROUP_MEMORY_STAT_FILE = "/sys/fs/cgroup/memory.stat"
 
 # /proc/stat per-core lines. Each "cpuN" line reports cumulative
 # jiffies in user/nice/system/idle/iowait/irq/softirq/steal/guest/
@@ -183,6 +185,7 @@ class SystemSampler:
         # Memory-cgroup-controller state. None on non-Linux; True/False
         # on Linux based on /sys/fs/cgroup/cgroup.controllers.
         self._memory_cgroup_enabled: bool | None = None
+        self._memory_cgroup_snapshot: dict[str, float] | None = None
         self._last_sample_at: float | None = None
         self._stopped = False
         self._thread = threading.Thread(
@@ -251,6 +254,11 @@ class SystemSampler:
                     # override; True when /sys/fs/cgroup/cgroup.controllers
                     # lists "memory".
                     "memory_cgroup_enabled": self._memory_cgroup_enabled,
+                    "memory_cgroup": (
+                        dict(self._memory_cgroup_snapshot)
+                        if self._memory_cgroup_snapshot is not None
+                        else None
+                    ),
                 },
                 # Per-service cgroup stats. List of
                 #   {"name": "jasper-voice", "group": "Voice",
@@ -302,6 +310,7 @@ class SystemSampler:
         )
         per_core = self._tick_per_core()
         memory_cgroup = self._read_memory_cgroup_enabled()
+        memory_cgroup_snapshot = self._read_cgroup_memory_breakdown()
         with self._lock:
             self._append(self._t, time.time())
             self._append(self._mem_available_mb, mem["available_mb"])
@@ -328,6 +337,7 @@ class SystemSampler:
             self._services_snapshot = services
             self._per_core_pct = per_core
             self._memory_cgroup_enabled = memory_cgroup
+            self._memory_cgroup_snapshot = memory_cgroup_snapshot
             self._last_sample_at = time.time()
 
     def _tick_vcgencmd(self) -> None:
@@ -772,6 +782,64 @@ class SystemSampler:
         except OSError:
             return None
         return "memory" in controllers
+
+    @staticmethod
+    def _read_cgroup_memory_breakdown(
+        current_file: str = CGROUP_MEMORY_CURRENT_FILE,
+        stat_file: str = CGROUP_MEMORY_STAT_FILE,
+    ) -> dict[str, float] | None:
+        """Root cgroup memory.current plus memory.stat anon/file/kernel split.
+
+        Values are bytes in cgroup-v2. Return None when the memory controller
+        is unavailable so the dashboard can omit the breakdown cleanly.
+        """
+
+        try:
+            with open(current_file) as f:
+                total_bytes = int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+        stats: dict[str, int] = {}
+        try:
+            with open(stat_file) as f:
+                for raw in f:
+                    parts = raw.split()
+                    if len(parts) != 2:
+                        continue
+                    try:
+                        stats[parts[0]] = int(parts[1])
+                    except ValueError:
+                        continue
+        except OSError:
+            return None
+        kernel_bytes = stats.get("kernel")
+        if kernel_bytes is None:
+            kernel_bytes = sum(
+                stats.get(key, 0)
+                for key in (
+                    "kernel_stack",
+                    "pagetables",
+                    "percpu",
+                    "sock",
+                    "shmem",
+                    "slab",
+                )
+            )
+        anon_bytes = stats.get("anon", 0)
+        file_bytes = stats.get("file", 0)
+        known_bytes = anon_bytes + file_bytes + kernel_bytes
+        other_bytes = max(0, total_bytes - known_bytes)
+
+        def mb(value: int) -> float:
+            return round(value / (1024 * 1024), 1)
+
+        return {
+            "total_mb": mb(total_bytes),
+            "anon_mb": mb(anon_bytes),
+            "file_mb": mb(file_bytes),
+            "kernel_mb": mb(kernel_bytes),
+            "other_mb": mb(other_bytes),
+        }
 
     def _tick_per_core(
         self, stat_path: str = PROC_STAT,

@@ -431,9 +431,12 @@ reordering better than the prior flat enumeration):
 
 - Status line (sampler health)
 - 6 metric tiles: Memory, Load, CPU, Temp, Fan (if present), Disk —
-  sparklines where history is useful
+  sparklines where history is useful. Memory also shows root cgroup-v2
+  total / anon / file / kernel / other buckets when the controller is
+  available.
 - Software (sha · branch · install date · uptime · voice provider)
-- Home Assistant connection status
+- Home Assistant connection status (including a "Checking" transient while
+  the child-process probe cache refreshes)
 - AirPlay health (status, recent drop/xrun summary, fan-in/outputd/Camilla
   state, including outputd cgroup memory)
 - Audio conversion (Medium/Best ALSA rate-converter preference)
@@ -1409,20 +1412,25 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-06-26 (`/wake/` now presents microphone, echo
-cancellation, wake-word, and advanced fusion settings as separate concerns;
-verified against `jasper/web/wake_setup.py`, `deploy/assets/wake/js/main.js`,
-and `tests/test_web_wake_setup.py`. Prior pass 2026-06-25: correction
-preflight/proceed redirects and the
-HTTPS catch-all are temporary + no-store so iOS Safari does not cache stale
-local hostname or scheme rules; verified against `deploy/nginx-jasper.conf`,
-`deploy/nginx-jasper-streambox.conf`, and `tests/test_landing_page_html.py`.
-Prior pass 2026-06-21: `/chat/` is a dedicated socket-activated
-read-only conversation-history shell on port 8787, with `/data.json`,
-`/state.chat`, a doctor check, and a static ES-module paired-turn renderer.
-The Prompt 5 renderer is verified by static/pytest coverage; it still needs the
-PR's explicit on-device browser pass for render + filter behavior. Verified by
-`tests/test_chat_setup.py`, `tests/test_web_wizard_conventions.py`,
+Last verified: 2026-06-30 (`/system/` memory tile now surfaces root
+cgroup-v2 memory buckets and the Home Assistant card handles the child-cache
+"Checking" state; rechecked against `jasper/control/system_metrics.py`,
+`jasper/control/ha_status_cache.py`, `jasper/control/server.py`, and
+`deploy/assets/system-status/js/sections.js`. Prior pass 2026-06-26:
+`/wake/` now presents microphone, echo cancellation, wake-word, and advanced
+fusion settings as separate concerns; verified against
+`jasper/web/wake_setup.py`, `deploy/assets/wake/js/main.js`, and
+`tests/test_web_wake_setup.py`. Prior pass 2026-06-25: correction
+preflight/proceed redirects and the HTTPS catch-all are temporary + no-store so
+iOS Safari does not cache stale local hostname or scheme rules; verified
+against `deploy/nginx-jasper.conf`, `deploy/nginx-jasper-streambox.conf`, and
+`tests/test_landing_page_html.py`. Prior pass 2026-06-21: `/chat/` is a
+dedicated socket-activated read-only conversation-history shell on port 8787,
+with `/data.json`, `/state.chat`, a doctor check, and a static ES-module
+paired-turn renderer. The Prompt 5 renderer is verified by static/pytest
+coverage; it still needs the PR's explicit on-device browser pass for render +
+filter behavior. Verified by `tests/test_chat_setup.py`,
+`tests/test_web_wizard_conventions.py`,
 `tests/test_web_design_system.py`, `tests/test_web_json_island.py`,
 `tests/test_chat_plumbing.py`, `tests/test_doctor_management_surface.py`, and
 `tests/test_doctor_memory_resilience.py`. Prior pass 2026-06-16:

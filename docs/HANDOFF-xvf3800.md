@@ -35,6 +35,7 @@ below.
 |---|---|
 | Identify the chip / board | §1 Hardware identity |
 | Flash a different firmware (DFU) | §2 Firmware variants |
+| Productized "update required" button in the AEC UI | §2.5 DFU flashing — alt-setting semantics |
 | Mic won't register as a USB device at all (Flex / XIAO board) | §2.8 — ships in I2S mode; flash USB firmware via BOOT-button Safe Mode |
 | Understand the 6-channel USB capture layout | §3 Channel layout |
 | Set a vendor parameter (gain, NS, AEC) | §4 Parameter space, §6 reference tables |
@@ -128,7 +129,7 @@ the firmware interface.
 | `respeaker_xvf3800_usb_dfu_firmware_v2.0.5.bin` | "2-channel" | 2 | Early production stable. |
 | `respeaker_xvf3800_usb_dfu_firmware_v2.0.6.bin` | "2-channel" | 2 | Adds `DOA_VALUE` command, fixes a WS2812 bug, raises DAC output 0 dB → +6 dB. **Has `SAVE_CONFIGURATION` brick hazard — see §5.1.** |
 | `respeaker_xvf3800_usb_dfu_firmware_v2.0.7.bin` | "2-channel" | 2 | Adds `LED_RING_COLOR` for per-LED control. |
-| `respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin` | **"6-channel"** | **6** | **The one JTS uses.** Adds raw mics on USB-OUT channels 2–5. |
+| `respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin` | **"6-channel"** | **6** | **The one JTS uses.** Adds raw mics on USB-OUT channels 2–5. SHA256 `8dd27762ebd87a28f0b4546f1634ece5e7eae308375d66952f7a9e3fb948266a`. |
 | (PR #11, unmerged) | `usb_dfu_firmware_v2.0.9.bin` | 2 | Adds fixed-beam support and "enhanced device finding" for Windows. Not in `master`. |
 | (PR #13, unmerged) | `usb_dfu_firmware_v2.0.10.bin` | 6 @ 48 kHz | The first attempt at 48 kHz 6-channel firmware. Not in `master`; treat as experimental until merged. |
 
@@ -148,11 +149,11 @@ DoA would be using square geometry on linear hardware.
 
 | Filename | Geometry / rate / channels | Runtime identity | Notes |
 |---|---|---|---|
-| `respeaker_flex_usb_l16k6ch_v1.0.0.bin` | **linear, 16 kHz, 6 capture channels** | `BLD_MSG=ua-io16-6ch-lin`, USB `2886:0022`, ALSA `L16K6Ch` | **JTS jts5 Flex LINEAR-4 known-good as of 2026-06-19.** SHA256 `136727693ce56cb77953a7db76ec51602971793ff43e42939d89217c305e2ac8`; observed `BLD_REPO_HASH=4b339d00721937451ee487759c04e2acb3215793`. |
-| `respeaker_flex_usb_l16k2ch_v1.0.0.bin` | linear, 16 kHz, 2 capture channels | USB `2886:0022` | Removes raw mic channels; not enough for JTS software-AEC/fusion work. |
-| `respeaker_flex_usb_l48k2ch_v1.0.0.bin` | linear, 48 kHz, 2 capture channels | USB `2886:0022` | Not validated for JTS; no raw channels. |
-| `respeaker_flex_usb_c16k6ch_v1.0.0.bin` | circular, 16 kHz, 6 capture channels | USB `2886:0022` | Correct geometry family for Flex circular, not the LINEAR-4 board. |
-| `respeaker_flex_usb_c16k2ch_v1.0.0.bin` / `c48k2ch` | circular, 2 capture channels | USB `2886:0022` | Not enough for JTS raw-mic fusion. |
+| `respeaker_flex_usb_l16k6ch_v1.0.1.bin` | **linear, 16 kHz, 6 capture channels** | `BLD_MSG=ua-io16-6ch-lin`, USB `2886:0022`, ALSA `L16K6Ch` | JTS hash-pinned updater target as of 2026-06-29. Size `929792`; SHA256 `85743239b4c4b069fb153b4a23f29dde9c29f34768b47601fa92daaaf09f2a99`. Prior jts5 Flex LINEAR-4 hardware verification used v1.0.0 on 2026-06-19. |
+| `respeaker_flex_usb_l16k2ch_v1.0.1.bin` | linear, 16 kHz, 2 capture channels | USB `2886:0022` | Removes raw mic channels; not enough for JTS software-AEC/fusion work. |
+| `respeaker_flex_usb_l48k2ch_v1.0.1.bin` | linear, 48 kHz, 2 capture channels | USB `2886:0022` | Not validated for JTS; no raw channels. |
+| `respeaker_flex_usb_c16k6ch_v1.0.1.bin` | circular, 16 kHz, 6 capture channels | USB `2886:0022` | JTS hash-pinned updater target as of 2026-06-29. Size `929792`; SHA256 `731e3ff77f092dbf301db41f652f02fee762ed634e80bd443811771c76f75af7`. |
+| `respeaker_flex_usb_c16k2ch_v1.0.1.bin` / `c48k2ch` | circular, 2 capture channels | USB `2886:0022` | Not enough for JTS raw-mic fusion. |
 
 Source: [Flex upstream USB firmware listing](https://github.com/respeaker/reSpeaker_Flex/tree/main/xmos_firmwares/usb) and the [Seeed Flex wiki](https://wiki.seeedstudio.com/respeaker_flex/), which explicitly documents linear and circular array variants.
 
@@ -224,6 +225,18 @@ the chip flashes itself in place.
 **The correct flash command is `dfu-util -R -e -a 1`.** Writes to
 alt 0 silently no-op — the chip stays on whatever firmware it had.
 
+JTS productizes the routine 2-ch → 6-ch upgrade through the AEC section of
+the `/wake/` setup UI. The `/aec` control status reports the detected XVF
+geometry and whether a hash-pinned update manifest exists. If the connected
+mic is a supported 2-channel legacy square/circular, Flex linear, or Flex
+circular board, the UI shows a required firmware update button. Pressing it
+starts the root-only `jasper-xvf-firmware-update.service`, which downloads the
+blob from Seeed's upstream GitHub repo at runtime, verifies the pinned SHA256,
+flashes DFU alt 1, waits for the expected 6-channel runtime profile, then kicks
+`jasper-aec-reconcile.service`. JTS intentionally does **not** redistribute
+the firmware blob; the shipped contract is URL + SHA256 + byte size + exact
+geometry.
+
 ```sh
 sudo apt install -y dfu-util
 sudo dfu-util -l                                   # confirm alt=1 is visible
@@ -253,7 +266,7 @@ legacy square firmware and the Flex linear firmware:
 Only channels 2-5 are geometry-agnostic. Channels 0/1 and any DoA
 or fixed-beam configuration depend on the firmware's compiled mic
 geometry. `ua-io16-6ch-sqr` is the square/circular board build;
-`ua-io16-6ch-lin` is the Flex LINEAR-4 build JTS verified on jts5
+`ua-io16-6ch-lin` is the Flex LINEAR-4 build family JTS verified on jts5
 on 2026-06-19. Flashing the square build onto a linear board can
 still expose six capture channels, but the chip processed beams are
 not trustworthy for wake/AEC tuning.
@@ -262,7 +275,7 @@ Operational rule for JTS:
 
 - Square/circular board: existing `Array` / `2886:001a` /
   `ua-io16-6ch-sqr` assumptions apply.
-- Flex LINEAR-4: flash `respeaker_flex_usb_l16k6ch_v1.0.0.bin`,
+- Flex LINEAR-4: flash `respeaker_flex_usb_l16k6ch_v1.0.1.bin`,
   expect ALSA `L16K6Ch`, and begin retuning with `xvf_software_aec3`
   / raw-mic corpus legs. Treat `chip_aec_150` / `chip_aec_210` as
   unvalidated legacy square-board beam labels until a Flex-specific
@@ -373,7 +386,7 @@ connectors:
    semantics; [BRINGUP.md](../BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu)
    has the full operator procedure incl. the download URL):
    ```sh
-   sudo dfu-util -R -e -a 1 -D respeaker_flex_usb_l16k6ch_v1.0.0.bin
+   sudo dfu-util -R -e -a 1 -D respeaker_flex_usb_l16k6ch_v1.0.1.bin
    ```
 5. After the reset it re-enumerates as `2886:0022` / card `L16K6Ch`
    with 6 capture channels — verify with `cat /proc/asound/cards` and
@@ -498,8 +511,8 @@ In the recommended `xvf_chip_aec` profile, `jasper-aec-init` applies a
 volatile chip-AEC profile instead: `SHF_BYPASS=0`, fixed gated
 150°/210° ASR beams, and `AUDIO_MGR_OP_L/R=[7,0]/[7,1]`. The bridge
 captures those two beam outputs, forwards the selected primary beam to
-voice on `:9876`, and emits both fixed beams on `:9887`/`:9888` for
-wake scoring.
+voice on `:9876`, and emits fixed beams on `:9887`/`:9888` only when
+the optional extra wake/scoring detectors are enabled.
 
 Ch 0 vs ch 1 is canonical XVF3800 territory:
 - **Seeed's own example code**: 2-channel `arecord`, takes the
@@ -1601,4 +1614,17 @@ In rough order of how often we reach for each:
 
 ---
 
-Last verified: 2026-06-19 (Flex / XIAO I2S-default variants, BOOT-button Safe Mode entry, the "won't register as USB" troubleshooting signature, and the Linear-4 mic-geometry caveat validated on Flex Linear-4 + XIAO; Flex LINEAR-4 USB identity PID 2886:0022, ALSA L16K6Ch, and `ua-io16-6ch-lin` verified on jts5. Prior 2026-06-18 pass: DFU link, software fallback OP_R non-silent routing, and production/corpus chip-AEC routing restore/readback.)
+Last verified: 2026-06-30 (chip-AEC bridge routing language rechecked
+against `jasper/cli/aec_bridge.py` and `deploy/bin/jasper-aec-reconcile`:
+the default production profile forwards the primary/session beam on `:9876`;
+optional `:9887`/`:9888` wake/scoring emitters require explicit runtime env.
+Prior 2026-06-29 pass: productized `/wake/` AEC firmware updater code/static
+path reviewed; legacy 6-channel SHA256/size and jts2 normal-runtime 2-ch →
+6-ch manual DFU flow verified; Flex v1.0.1 upstream filenames/sizes/SHA256s
+verified against GitHub. Prior 2026-06-19 pass: Flex / XIAO I2S-default
+variants, BOOT-button Safe Mode entry, the "won't register as USB"
+troubleshooting signature, and the Linear-4 mic-geometry caveat validated on
+Flex Linear-4 + XIAO; Flex LINEAR-4 USB identity PID 2886:0022, ALSA L16K6Ch,
+and `ua-io16-6ch-lin` verified on jts5. Prior 2026-06-18 pass: DFU link,
+software fallback OP_R non-silent routing, and production/corpus chip-AEC
+routing restore/readback.)

@@ -31,12 +31,11 @@ def _cfg(**overrides):
 def test_auto_disables_openai_noise_reduction_for_chip_aec_input():
     policy = build_effective_speech_input_policy(_cfg(
         mic_device="udp:9876",
-        mic_device_chip_aec_150="udp:9887",
-        mic_device_chip_aec_210="udp:9888",
         aec_chip_aec_enabled=True,
     ))
 
     assert policy.input_contract.profile == "xvf_chip_aec"
+    assert policy.input_contract.beamformed is True
     assert policy.input_contract.already_processed is True
     assert policy.openai_noise_reduction is None
     assert policy.openai_noise_reduction_source == "auto_processed_input"

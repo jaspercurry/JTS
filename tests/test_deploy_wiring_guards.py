@@ -281,7 +281,85 @@ def test_wizard_socket_ports_match_nginx_upstreams():
 
 
 # ----------------------------------------------------------------------
-# 5 — deploy-to-pi.sh post-install verification wiring (Workstream B)
+# 5 — recoverable service policy
+# ----------------------------------------------------------------------
+
+_RECOVERABLE_ALWAYS_ON_UNITS = (
+    _DEPLOY / "systemd" / "nginx.service.d" / "jts-recovery.conf",
+    _DEPLOY / "systemd" / "bluealsa-aplay.service.d" / "jts-restart.conf",
+    _DEPLOY / "systemd" / "bluealsa.service.d" / "jts-restart.conf",
+    _DEPLOY / "systemd" / "bt-agent.service",
+    _DEPLOY / "systemd" / "librespot.service",
+    _DEPLOY / "systemd" / "nqptp.service",
+    _DEPLOY / "systemd" / "shairport-sync.service",
+    _DEPLOY / "systemd" / "jasper-mux.service",
+)
+
+_RECOVERABLE_SOCKET_WEB_UNITS = (
+    _DEPLOY / "jasper-web.service",
+    _DEPLOY / "jasper-web-streambox.service",
+    _DEPLOY / "jasper-bluetooth-web.service",
+    _DEPLOY / "jasper-correction-web.service",
+    _DEPLOY / "jasper-dial-web.service",
+    _DEPLOY / "jasper-system-web.service",
+    _DEPLOY / "jasper-chat-web.service",
+)
+
+
+def test_recoverable_always_on_services_restart_with_generous_limit():
+    """Transient OOM/update pressure should not park safe services forever."""
+    for path in _RECOVERABLE_ALWAYS_ON_UNITS:
+        text = path.read_text(encoding="utf-8")
+        assert "Restart=always" in text, path
+        assert "RestartSec=5" in text, path
+        assert "StartLimitIntervalSec=600" in text, path
+        assert "StartLimitBurst=20" in text, path
+
+
+def test_socket_web_services_have_generous_start_limit():
+    """Socket web daemons exit on idle, but should retry through OOM bursts."""
+    for path in _RECOVERABLE_SOCKET_WEB_UNITS:
+        text = path.read_text(encoding="utf-8")
+        assert "Restart=on-failure" in text, path
+        assert "StartLimitIntervalSec=600" in text, path
+        assert "StartLimitBurst=20" in text, path
+
+
+def test_package_owned_recovery_dropins_are_installed():
+    install_text = "\n".join(
+        p.read_text(encoding="utf-8") for p in _INSTALL_SCRIPTS
+    )
+    for rel in (
+        "deploy/systemd/nginx.service.d/jts-recovery.conf",
+        "deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf",
+    ):
+        assert rel in install_text
+
+
+def test_legacy_ad_hoc_recovery_window_dropins_are_removed():
+    install_text = "\n".join(
+        p.read_text(encoding="utf-8") for p in _INSTALL_SCRIPTS
+    )
+    assert "cleanup_legacy_recovery_window_dropins" in install_text
+    assert "jts-recovery-window.conf" in install_text
+    for unit in (
+        "librespot",
+        "nqptp",
+        "shairport-sync",
+        "bt-agent",
+        "jasper-mux",
+        "jasper-web",
+        "jasper-bluetooth-web",
+        "jasper-correction-web",
+        "jasper-dial-web",
+        "jasper-system-web",
+        "jasper-chat-web",
+    ):
+        assert unit in install_text
+
+
+# ----------------------------------------------------------------------
+# 6 — deploy-to-pi.sh post-install verification wiring (Workstream B)
 # ----------------------------------------------------------------------
 #
 # The transactional-update fix rests on deploy-to-pi.sh actually invoking
@@ -346,21 +424,34 @@ def test_deploy_manifest_gate_checks_verified_status_and_sha():
     assert "exit 1" in body  # a non-advanced manifest fails the deploy
 
 
-def test_deploy_production_oom_is_surfaced_not_gated_on_success():
-    """A production-daemon OOM during the build is SURFACED loudly, but a
-    daemon systemd already restarted must NOT fail an otherwise-healthy
-    deploy (the inverse false-failure trap). Pass/fail is owned by the
-    end-state gates (management probe + verify_manifest_advanced); the OOM
-    is history. So OOM_PRODUCTION_HIT may be referenced in the scan and the
-    install-FAILURE block, but never in a success-path exit gate. The
-    success path begins at the "Build manifest now on Pi" marker."""
+def test_deploy_production_oom_is_gated_after_end_state_evidence():
+    """A production-daemon OOM during deploy is SURFACED loudly and then
+    fails verification after the end-state gates have run. That keeps the
+    transcript useful while preventing a deploy that killed a live service
+    from looking merge-clean just because systemd restarted it."""
     text = _DEPLOY_TO_PI.read_text()
     assert "report_oom_collateral" in text  # surfacing happens
     success_path = text[text.index("Build manifest now on Pi"):]
-    assert "OOM_PRODUCTION_HIT" not in success_path, (
-        "a production-OOM that recovered must not gate an otherwise-healthy "
-        "deploy — surface it, let the management-probe + manifest gates decide"
+    assert "verify_manifest_advanced" in success_path
+    assert "surface_system_health" in success_path
+    assert 'if [[ "$OOM_PRODUCTION_HIT" == "1" ]]' in success_path
+    assert "DEPLOY VERIFICATION FAILED: a live production daemon was" in success_path
+    assert success_path.index("surface_system_health") < success_path.index(
+        'if [[ "$OOM_PRODUCTION_HIT" == "1" ]]'
     )
+
+
+def test_deploy_post_health_uses_lightweight_probe_on_low_memory_hosts():
+    """The post-deploy doctor runs after install.sh has removed temporary
+    build swap. On a 1 GB Pi we use a cheap deploy-health probe instead of
+    importing the full doctor graph beside freshly restarted services."""
+    text = _DEPLOY_TO_PI.read_text()
+    start = text.index("surface_system_health() {")
+    body = text[start: text.index("\n}", start)]
+    assert "MemTotal" in body
+    assert "1200000" in body
+    assert "jasper-deploy-health" in body
+    assert "/opt/jasper/.venv/bin/jasper-doctor" in body
 
 
 def test_deploy_verification_skipped_cleanly_under_interactive_sudo():

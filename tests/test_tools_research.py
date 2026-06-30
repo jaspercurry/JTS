@@ -205,3 +205,41 @@ async def test_read_research_result_no_uses_saved_line_when_capture_disabled(
     assert result["text"] == "Okay, I've saved it for you."
     assert sched.announced == ["no456"]
     assert sched.read == []
+
+
+# ---------------------------------------------------------------------------
+# Single-constant dedup: empty-result fallback
+# ---------------------------------------------------------------------------
+
+def test_research_empty_result_text_single_source() -> None:
+    """RESEARCH_EMPTY_RESULT_TEXT must be a single constant shared by both
+    jasper.research (the canonical home) and jasper.tools.research (the tool
+    that uses it).  Identity — not just equality — confirms no re-inline
+    duplication.  If this test fails, someone re-inlined the string literal.
+    """
+    from jasper.research import RESEARCH_EMPTY_RESULT_TEXT as pkg_const
+    from jasper.tools.research import RESEARCH_EMPTY_RESULT_TEXT as tool_const
+
+    assert tool_const is pkg_const, (
+        "jasper.tools.research.RESEARCH_EMPTY_RESULT_TEXT is not the same "
+        "object as jasper.research.RESEARCH_EMPTY_RESULT_TEXT — "
+        "the empty-result fallback string has been re-duplicated"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_research_result_yes_uses_empty_result_constant_when_job_has_no_text():
+    """When decision='yes' and job.result is empty/None, the tool must return
+    RESEARCH_EMPTY_RESULT_TEXT — not a re-inlined copy of the same string.
+    """
+    from jasper.research import RESEARCH_EMPTY_RESULT_TEXT
+
+    job = _job("empty99", status=DONE, result=None)
+    sched = _DecisionScheduler(job)
+    read_result = _by_name(make_research_tools(sched), "read_research_result")
+
+    result = await read_result(job_id="empty99", decision="yes")
+
+    assert result["ok"] is True
+    assert result["text"] == RESEARCH_EMPTY_RESULT_TEXT
+    assert sched.announced == ["empty99"]

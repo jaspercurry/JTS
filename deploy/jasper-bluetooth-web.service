@@ -7,6 +7,8 @@ After=jasper-bluetooth-web.socket network-online.target bluetooth.service
 # Wants= (not Requires=) so a bluetoothd restart doesn't cascade-stop
 # us; the engine reconnects to the system bus on the next request.
 Wants=network-online.target bluetooth.service
+StartLimitIntervalSec=600
+StartLimitBurst=20
 
 [Service]
 # Type=notify — daemon sends READY=1 after fd adoption. WATCHDOG=1

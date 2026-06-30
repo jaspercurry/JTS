@@ -69,6 +69,8 @@ import os
 import shutil
 
 from .. import atomic_io
+from ..audio_runtime_plan import coupling_supported_for_route
+from ..fanin.coupling_reconcile import read_persisted_coupling
 from ..log_event import log_event
 from . import follower_config
 from .config import GroupingConfig
@@ -201,6 +203,16 @@ async def precheck_active_leader(
                 f"{binary} is not installed — an active leader cannot host the "
                 "wireless pair; refusing to bond (no camilla#1/#2 DAC conflict)",
             )
+
+    coupling_support = coupling_supported_for_route(
+        read_persisted_coupling(), "active_leader"
+    )
+    if not coupling_support.supported:
+        raise ActiveLeaderError(
+            coupling_support.reason,
+            coupling_support.detail
+            + " Run `jasper-fanin-coupling-reconcile loopback` before bonding.",
+        )
 
     # STRICT topology load (fail-closed). Both re-proofs below pass this topology
     # explicitly to classify_camilla_graph, so a fail-SOFT loader would hand them

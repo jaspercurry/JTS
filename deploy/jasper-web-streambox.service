@@ -5,6 +5,8 @@ Description=Jasper streambox web setup service (Spotify + AirPlay + Sources + Sp
 Requires=jasper-web.socket
 After=jasper-web.socket network-online.target time-sync.target
 Wants=network-online.target time-sync.target
+StartLimitIntervalSec=600
+StartLimitBurst=20
 
 [Service]
 Type=notify

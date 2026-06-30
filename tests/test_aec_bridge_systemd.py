@@ -12,6 +12,41 @@ REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-aec-bridge.service"
 
 
+def _value_for(unit_text: str, key: str) -> str | None:
+    for line in unit_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("["):
+            continue
+        if "=" not in stripped:
+            continue
+        k, _, v = stripped.partition("=")
+        if k.strip() == key:
+            return v.strip()
+    return None
+
+
+def test_bridge_does_not_elect_process_wide_rt_to_avoid_rttime_startup_kill() -> None:
+    """Regression guard for the 2026-06-27 jts finding: the G6 attempt elected a
+    process-wide SCHED_FIFO policy plus a 200 ms RTTIME cap, but the bridge's
+    CPU-heavy startup (DTLN / WebRTC-AEC3 model load runs >200 ms) hit the RTTIME
+    hard limit while scheduled FIFO and was SIGKILLed (status=9/KILL) in a crash
+    loop. jts3 has no XVF mic, so process-wide bridge RT was never exercised
+    pre-merge. The bridge must run SCHED_OTHER (it keeps Nice=-10 + realtime IO).
+    A future RT election must set the policy on the steady-state audio thread
+    AFTER model load, never process-wide via systemd."""
+    unit = UNIT_PATH.read_text()
+    assert _value_for(unit, "CPUSchedulingPolicy") is None, (
+        "the AEC bridge must NOT set a process-wide RT policy — FIFO RTTIME-kills "
+        "its model-loading startup (see the unit comment / 2026-06-27 jts finding)."
+    )
+    assert _value_for(unit, "CPUSchedulingPriority") is None
+    assert _value_for(unit, "LimitRTTIME") is None
+    # Pre-existing knobs stay (harmless with no policy elected); the softer
+    # scheduling boosts the bridge always had remain.
+    assert _value_for(unit, "LimitRTPRIO") == "99"
+    assert _value_for(unit, "Nice") == "-10"
+
+
 def test_bridge_sources_wake_corpus_env_after_system_env() -> None:
     """The recorder UI writes optional corpus-output flags under
     /var/lib/jasper because jasper-web cannot write /etc. The bridge

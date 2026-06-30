@@ -381,6 +381,8 @@ def _write_mode_with_legs(
     raw: str = "1",
     dtln: str = "0",
     chip_aec: str | None = None,
+    chip_aec_150: str | None = None,
+    chip_aec_210: str | None = None,
     chip_ref_observe: str | None = None,
 ) -> None:
     body = (
@@ -392,6 +394,10 @@ def _write_mode_with_legs(
     # appends the default (0) — exercising the pre-chip-AEC upgrade path.
     if chip_aec is not None:
         body += f"JASPER_WAKE_LEG_CHIP_AEC={chip_aec}\n"
+    if chip_aec_150 is not None:
+        body += f"JASPER_WAKE_LEG_CHIP_AEC_150={chip_aec_150}\n"
+    if chip_aec_210 is not None:
+        body += f"JASPER_WAKE_LEG_CHIP_AEC_210={chip_aec_210}\n"
     # Same upgrade-path contract for the opt-in observe key.
     if chip_ref_observe is not None:
         body += f"JASPER_AEC_CHIP_REF_OBSERVE={chip_ref_observe}\n"
@@ -485,8 +491,9 @@ def test_fresh_auto_profile_uses_chip_aec_on_supported_6ch_xvf(tmp_path: Path) -
     assert "JASPER_AUDIO_INPUT_PROFILE=auto" in mode
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_MIC_DEVICE=udp:9876" in body
-    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
 
@@ -601,7 +608,8 @@ def test_testing_chip_profile_arms_uncalibrated_output_dac_as_testing(
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_MIC_DEVICE=udp:9876" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
-    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_TESTING_REQUESTED=1" in body
     assert "JASPER_AEC_CHIP_AEC_DAC_ID=mystery_usb_audio" in body
@@ -633,8 +641,8 @@ def test_explicit_chip_profile_uses_static_hifiberry_known_good(
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_MIC_DEVICE=udp:9876" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
-    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
-    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in body
     assert "JASPER_OUTPUTD_CHIP_REF_OBSERVE=0" in body
@@ -694,7 +702,7 @@ def test_auto_profile_uses_outputd_coherent_verdict_for_uncodified_dac(
     assert result.returncode == 0, result.stderr
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
-    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
 
 
@@ -915,13 +923,12 @@ def test_dtln_alone_is_valid_config(tmp_path: Path) -> None:
     assert "JASPER_AEC_DTLN_ENABLED=1" in body
 
 
-# ---------- Chip-AEC beam legs (chip-AEC promotion P2) --------------------
-# JASPER_WAKE_LEG_CHIP_AEC (one boolean) maps to BOTH chip-beam mic device
-# vars + the JASPER_AEC_CHIP_AEC_ENABLED bridge/init signal, and is
-# mutually exclusive with raw/DTLN (single-chip Option-A). Default off, so
-# any install that hasn't opted in keeps the same runtime shape. The
-# reconciler also owns outputd's chip-reference fanout when chip-AEC is
-# active; outputd must restart when those producer vars change.
+# ---------- Chip-AEC profile + optional beam legs -------------------------
+# JASPER_WAKE_LEG_CHIP_AEC selects the chip-AEC profile carrier
+# (JASPER_AEC_CHIP_AEC_ENABLED=1 and primary/session audio on :9876), while
+# JASPER_WAKE_LEG_CHIP_AEC_150/_210 are independent advanced opt-ins for
+# extra openWakeWord detector instances. Chip-AEC remains mutually exclusive
+# with raw/DTLN (single-chip Option-A).
 
 
 def test_ensure_mode_file_seeds_chip_aec_default(tmp_path: Path) -> None:
@@ -931,6 +938,8 @@ def test_ensure_mode_file_seeds_chip_aec_default(tmp_path: Path) -> None:
     _run_reconcile(tmp_path, "--reason", "test")
     body = (tmp_path / "aec_mode.env").read_text()
     assert "JASPER_WAKE_LEG_CHIP_AEC=0" in body
+    assert "JASPER_WAKE_LEG_CHIP_AEC_150=0" in body
+    assert "JASPER_WAKE_LEG_CHIP_AEC_210=0" in body
 
 
 def test_ensure_mode_file_appends_missing_chip_aec_key(tmp_path: Path) -> None:
@@ -946,22 +955,23 @@ def test_ensure_mode_file_appends_missing_chip_aec_key(tmp_path: Path) -> None:
     body = (tmp_path / "aec_mode.env").read_text()
     assert "JASPER_WAKE_LEG_DTLN=1" in body            # preserved
     assert "JASPER_WAKE_LEG_CHIP_AEC=0" in body        # appended
+    assert "JASPER_WAKE_LEG_CHIP_AEC_150=0" in body    # appended
+    assert "JASPER_WAKE_LEG_CHIP_AEC_210=0" in body    # appended
     assert "JASPER_AUDIO_INPUT_PROFILE=custom" in body  # raw+DTLN is custom
 
 
-def test_chip_aec_on_sets_chip_vars_and_clears_raw_dtln(tmp_path: Path) -> None:
-    """AEC auto + 6-ch + CHIP_AEC=1 → sets both chip-beam UDP devices +
-    JASPER_AEC_CHIP_AEC_ENABLED=1, and CLEARS raw/DTLN even though their
-    booleans are on (single-chip mutual exclusion: the bridge can't emit
-    the software legs and the chip beams at the same time)."""
+def test_chip_aec_on_sets_carrier_and_clears_raw_dtln(tmp_path: Path) -> None:
+    """AEC auto + 6-ch + CHIP_AEC=1 sets the chip-AEC carrier but leaves
+    extra chip-beam detector device vars empty unless their per-beam
+    booleans are on."""
     _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n")
     _write_mode_with_legs(tmp_path, mode="auto", raw="1", dtln="1", chip_aec="1")
     _write_card(tmp_path, channels=6)
     _run_reconcile(tmp_path, "--reason", "test")
     body = (tmp_path / "jasper.env").read_text()
-    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
-    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
     assert "JASPER_AEC_REF_SOURCE=outputd_udp" in body
     assert "JASPER_AEC_OUTPUTD_REF_UDP_HOST=127.0.0.1" in body
     assert "JASPER_AEC_OUTPUTD_REF_UDP_PORT=9891" in body
@@ -975,6 +985,34 @@ def test_chip_aec_on_sets_chip_vars_and_clears_raw_dtln(tmp_path: Path) -> None:
     assert "JASPER_AEC_DTLN_ENABLED=1" not in body
     commands = _systemctl_log(tmp_path)
     assert "restart jasper-outputd.service" in commands
+
+
+def test_chip_aec_extra_beam_toggles_set_chip_device_vars(tmp_path: Path) -> None:
+    _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n")
+    _write_mode_with_legs(
+        tmp_path,
+        mode="auto",
+        raw="1",
+        dtln="1",
+        chip_aec="1",
+        chip_aec_150="1",
+        chip_aec_210="1",
+    )
+    (tmp_path / "aec_mode.env").write_text(
+        (tmp_path / "aec_mode.env").read_text()
+        + "JASPER_AUDIO_INPUT_PROFILE=custom\n"
+    )
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+    assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
 
 
 def test_flex_linear_auto_discovers_card_but_does_not_arm_square_chip_beams(
@@ -1061,7 +1099,7 @@ def test_profile_managed_mic_swap_rederives_stale_aec_card(
     assert "JASPER_AEC_MIC_DEVICE=Array" in body
     assert "JASPER_MIC_DEVICE=udp:9876" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
-    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in body
     assert "plughw:CARD=L16K6Ch,DEV=0" not in body
 

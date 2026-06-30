@@ -76,8 +76,9 @@ _PROFILE_CHOICE_SPECS = (
         badge="Chip AEC",
         confirm_title="Use hardware echo cancellation?",
         confirm_body=(
-            "This uses the active mic profile's validated hardware AEC beam plan "
-            "and disables the software raw/DTLN wake legs."
+            "This uses the active mic profile's validated hardware AEC beam "
+            "as the primary session path. Extra chip-beam wake detectors stay "
+            "off unless you enable them below."
         ),
     ),
     ProfileChoiceSpec(
@@ -146,10 +147,13 @@ def build_microphone_settings_view(status: Mapping[str, Any]) -> dict[str, Any]:
     profile = _mapping(status.get("audio_profile"))
     gate = _mapping(status.get("chip_aec_gate"))
     legs = _mapping(status.get("legs"))
+    raw_intent = _mapping(status.get("raw_intent"))
     software = _mapping(status.get("software_aec3"))
-    wake_word = _mapping(status.get("wake_word"))
+    firmware_update = _mapping(status.get("firmware_update"))
 
     mic_view = _mic_view(mic, gate)
+    if firmware_update:
+        mic_view["firmware_update"] = dict(firmware_update)
     echo_view = _echo_view(
         mic_view=mic_view,
         profile=profile,
@@ -165,10 +169,10 @@ def build_microphone_settings_view(status: Mapping[str, Any]) -> dict[str, Any]:
             profile=profile,
             mic=mic,
             legs=legs,
+            raw_intent=raw_intent,
             software=software,
             echo_mode=str(echo_view.get("mode") or ""),
         ),
-        "wake": _wake_view(wake_word, status.get("threshold")),
         "advanced": _advanced_view(profile=profile, gate=gate, mic_view=mic_view),
     }
 
@@ -184,11 +188,6 @@ def _mic_view(mic: Mapping[str, Any], gate: Mapping[str, Any]) -> dict[str, Any]
     firmware = _mapping(mic.get("firmware"))
     firmware_label = str(firmware.get("label") or "unknown")
     chip_capable = bool(gate.get("mic_available"))
-    warnings = [
-        str(item)
-        for item in mic.get("warnings", [])
-        if str(item).strip()
-    ] if isinstance(mic.get("warnings"), list) else []
 
     if not detected:
         kind = "none"
@@ -224,7 +223,6 @@ def _mic_view(mic: Mapping[str, Any], gate: Mapping[str, Any]) -> dict[str, Any]
         "chip_aec_capable": chip_capable,
         "chip_beam_plan": str(mic.get("chip_beam_plan") or ""),
         "capabilities": capabilities,
-        "warnings": warnings,
     }
 
 
@@ -383,6 +381,7 @@ def _fusion_view(
     profile: Mapping[str, Any],
     mic: Mapping[str, Any],
     legs: Mapping[str, Any],
+    raw_intent: Mapping[str, Any],
     software: Mapping[str, Any],
     echo_mode: str,
 ) -> dict[str, Any]:
@@ -407,48 +406,103 @@ def _fusion_view(
 
     chip_on = bool(_mapping(legs.get("chip_aec")).get("configured"))
     aec3_bypassed = bool(software.get("bypassed"))
+    dtln_confirm = {
+        "title": "Enable DTLN neural AEC?",
+        "body": (
+            "+~75 MB RAM, +~25% one core. Recommended for 2 GB Pis.\n"
+            "jasper-voice + bridge will restart (~15 s)."
+        ),
+        "danger": False,
+    }
+    extra_chip_confirm = {
+        "title": "Add an extra chip-AEC wake detector?",
+        "body": (
+            "The chip-AEC profile already uses the primary beam for session "
+            "audio. This starts another openWakeWord instance for experiments "
+            "and costs about 30 MB RAM.\n"
+            "jasper-voice + bridge will restart (~15 s)."
+        ),
+        "danger": False,
+    }
     toggles = [
         _fusion_toggle(
             "raw",
-            "Direct/raw wake stream",
-            "Parallel raw mic wake scoring for software-AEC experiments.",
+            "Chip-direct fallback",
+            "Adds the chip-direct mic as a parallel wake detector when software AEC3 is active.",
+            "~5 MB · negligible",
             _mapping(legs.get("raw")),
+            checked=_custom_checked(
+                custom,
+                raw_intent,
+                "leg_raw",
+                _mapping(legs.get("raw")),
+            ),
             enabled=not chip_on and not bridge_unavailable,
             disabled_reason=(
                 "Advanced wake streams require the AEC bridge."
                 if bridge_unavailable
-                else "Paused while hardware AEC beams are active." if chip_on else ""
+                else "Software streams are bypassed by hardware AEC." if chip_on else ""
             ),
         ),
         _fusion_toggle(
             "dtln",
-            "DTLN neural stream",
-            "Optional neural cleanup stream. Higher CPU and memory cost.",
+            "DTLN neural AEC",
+            "Neural cleanup as an optional wake stream. Recommended only on 2 GB Pi.",
+            "~75 MB · ~25% core",
             _mapping(legs.get("dtln")),
+            checked=_custom_checked(
+                custom,
+                raw_intent,
+                "leg_dtln",
+                _mapping(legs.get("dtln")),
+            ),
             enabled=not chip_on and not bridge_unavailable,
             disabled_reason=(
                 "Advanced wake streams require the AEC bridge."
                 if bridge_unavailable
-                else "Paused while hardware AEC beams are active." if chip_on else ""
+                else "Software streams are bypassed by hardware AEC." if chip_on else ""
             ),
+            confirm=dtln_confirm,
         ),
         _fusion_toggle(
-            "chip_aec",
-            "Hardware beam scoring",
-            "XVF3800 chip-AEC beam streams used for wake scoring.",
-            _mapping(legs.get("chip_aec")),
-            enabled=(
-                not bridge_unavailable
-                and bool(_mapping(legs.get("chip_aec")).get("production_available"))
+            "chip_aec_150",
+            "Extra chip beam 150°",
+            "Adds a wake detector on the XVF3800 150° hardware-AEC beam.",
+            "~30 MB · light",
+            _mapping(legs.get("chip_aec_150")),
+            checked=_custom_checked(
+                custom,
+                raw_intent,
+                "leg_chip_aec_150",
+                _mapping(legs.get("chip_aec_150")),
             ),
+            enabled=not bridge_unavailable and bool(_mapping(legs.get("chip_aec_150")).get("available")),
             disabled_reason=(
                 "Advanced wake streams require the AEC bridge."
                 if bridge_unavailable
-                else
-                "Use the validation profile first."
-                if not bool(_mapping(legs.get("chip_aec")).get("production_available"))
-                else ""
+                else str(_mapping(legs.get("chip_aec_150")).get("disabled_reason") or "")
             ),
+            confirm=extra_chip_confirm,
+        ),
+        _fusion_toggle(
+            "chip_aec_210",
+            "Extra chip beam 210°",
+            "Adds a wake detector on the XVF3800 210° hardware-AEC beam.",
+            "~30 MB · light",
+            _mapping(legs.get("chip_aec_210")),
+            checked=_custom_checked(
+                custom,
+                raw_intent,
+                "leg_chip_aec_210",
+                _mapping(legs.get("chip_aec_210")),
+            ),
+            enabled=not bridge_unavailable and bool(_mapping(legs.get("chip_aec_210")).get("available")),
+            disabled_reason=(
+                "Advanced wake streams require the AEC bridge."
+                if bridge_unavailable
+                else str(_mapping(legs.get("chip_aec_210")).get("disabled_reason") or "")
+            ),
+            confirm=extra_chip_confirm,
         ),
     ]
     if aec3_bypassed:
@@ -461,38 +515,54 @@ def _fusion_view(
         "toggles": toggles,
     }
 
+def _custom_checked(
+    custom: bool,
+    raw_intent: Mapping[str, Any],
+    key: str,
+    leg: Mapping[str, Any],
+) -> bool:
+    """Checkbox state: named profiles show applied defaults; custom shows intent."""
+
+    if custom and key in raw_intent:
+        return bool(raw_intent.get(key))
+    return bool(leg.get("configured"))
+
+
 def _fusion_toggle(
     toggle_id: str,
     label: str,
     description: str,
+    cost: str,
     leg: Mapping[str, Any],
     *,
+    checked: bool | None = None,
     enabled: bool,
     disabled_reason: str,
+    confirm: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    checked = bool(leg.get("configured"))
-    return {
+    applied = bool(leg.get("configured"))
+    if checked is None:
+        checked = applied
+    status = str(leg.get("status") or "")
+    if checked and not applied and status == "off":
+        status = "starting"
+    if not status:
+        status = "active" if leg.get("active") else "on" if checked else "off"
+    out = {
         "id": toggle_id,
         "label": label,
         "description": description,
+        "cost": cost,
         "checked": checked,
+        "applied": applied,
         "enabled": enabled,
-        "status": "on" if checked else "off",
+        "active": bool(leg.get("active")),
+        "status": status,
         "disabled_reason": disabled_reason,
     }
-
-
-def _wake_view(wake_word: Mapping[str, Any], threshold: Any) -> dict[str, Any]:
-    try:
-        threshold_value = float(threshold)
-    except (TypeError, ValueError):
-        threshold_value = None
-    return {
-        "label": str(wake_word.get("label") or ""),
-        "pronunciation": str(wake_word.get("pronunciation") or ""),
-        "model": str(wake_word.get("model") or ""),
-        "threshold": threshold_value,
-    }
+    if confirm is not None:
+        out["confirm"] = dict(confirm)
+    return out
 
 
 def _advanced_view(

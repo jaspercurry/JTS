@@ -1,0 +1,27 @@
+[Unit]
+Description=Download and update XVF3800 microphone firmware
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/jasper/jasper.env
+ExecStart=/opt/jasper/.venv/bin/jasper-xvf-firmware-update
+TimeoutStartSec=180
+
+# Runs as root because DFU, service stop/start, and reconciler handoff are
+# privileged hardware operations. This unit is only started by explicit user
+# action through jasper-control's scoped polkit allowlist.
+User=root
+Group=root
+UMask=0022
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/jasper
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+

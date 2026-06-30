@@ -346,3 +346,35 @@ def check_correction_cert_hostname() -> CheckResult:
         "warning. Redeploy (bash scripts/deploy-to-pi.sh) to regenerate "
         "the leaf cert after converging the hostname.",
     )
+
+
+@doctor_check(order=32.5, group="correction")
+def check_capture_relay() -> CheckResult:
+    """Phone-mic capture relay (cloud transport for browser mic capture).
+
+    Skip-if-not-configured: until JASPER_CAPTURE_RELAY_BASE is set the speaker
+    uses the on-Pi same-origin capture, so this reports OK/skipped. When
+    configured, confirm the AEAD decrypt dependency is importable and the relay's
+    /healthz is reachable (a relay outage breaks NEW measurements only — existing
+    corrections are unaffected)."""
+    label = "Phone-mic relay"
+    try:
+        from jasper.capture_relay import health
+    except ImportError as e:
+        return CheckResult(label, "fail", f"capture_relay subsystem import failed: {e}")
+
+    base = health.relay_base_from_env()
+    if not base:
+        return CheckResult(
+            label, "ok",
+            "not configured (skipped — set JASPER_CAPTURE_RELAY_BASE to route "
+            "phone-mic capture through the cloud relay; on-Pi capture used otherwise)",
+        )
+    reachable, detail = health.probe_relay_health(base)
+    if reachable:
+        return CheckResult(label, "ok", f"{base} {detail}")
+    return CheckResult(
+        label, "warn",
+        f"{base} {detail} — new phone-mic measurements need the relay; "
+        "existing applied corrections are unaffected",
+    )

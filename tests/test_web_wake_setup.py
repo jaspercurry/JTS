@@ -102,9 +102,10 @@ def test_render_has_no_legacy_chrome():
 
 def test_render_uses_canonical_toggle_for_each_layer():
     html = _render()
-    for key in ("raw", "dtln", "chip_aec"):
+    for key in ("raw", "dtln", "chip_aec_150", "chip_aec_210"):
         assert f'id="layer-{key}"' in html
     assert 'id="layer-aec"' not in html
+    assert 'id="layer-chip_aec"' not in html
     # toggle_html renders the shared checkbox toggle.
     assert 'class="toggle"' in html
 

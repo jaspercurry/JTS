@@ -74,6 +74,8 @@ OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
 # bonded-leader AirPlay offset delta. ABSENT/empty on solo + followers,
 # so a non-bonded speaker derives the byte-identical solo offset.
 GROUPING_AIRPLAY_ENV_FILE="${JASPER_GROUPING_AIRPLAY_ENV_FILE:-/var/lib/jasper/grouping-airplay.env}"
+FANIN_STATUS_SOCKET="${JASPER_FANIN_STATUS_SOCKET:-/run/jasper-fanin/control.sock}"
+OUTPUTD_STATUS_SOCKET="${JASPER_OUTPUTD_STATUS_SOCKET:-/run/jasper-outputd/control.sock}"
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
 DEFAULT_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES=4096
 
@@ -153,7 +155,7 @@ fanin_output_buffer_frames() {
     if [[ "$value" =~ ^[0-9]+$ ]]; then
         printf '%s\n' "$value"
     else
-        printf '3072\n'
+        printf '1024\n'
     fi
 }
 
@@ -186,10 +188,94 @@ positive_int_or_default() {
     fi
 }
 
+nonnegative_int_or_empty() {
+    local value="$1"
+    value="${value//[[:space:]]/}"
+    value="${value%\"}"
+    value="${value#\"}"
+    value="${value%\'}"
+    value="${value#\'}"
+    if [[ "$value" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$value"
+    fi
+}
+
+status_json_value() {
+    local socket="$1"
+    local dotted_path="$2"
+    local python="${JASPER_STATUS_PYTHON:-}"
+    if [[ -z "$python" ]]; then
+        if [[ -x /opt/jasper/.venv/bin/python ]]; then
+            python=/opt/jasper/.venv/bin/python
+        elif command -v python3 >/dev/null 2>&1; then
+            python=python3
+        else
+            return 0
+        fi
+    fi
+    [[ -S "$socket" ]] || return 0
+    "$python" - "$socket" "$dotted_path" <<'PY' 2>/dev/null || true
+import json
+import socket
+import sys
+
+sock_path, dotted_path = sys.argv[1], sys.argv[2]
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    sock.settimeout(1.0)
+    sock.connect(sock_path)
+    sock.sendall(b"STATUS\n")
+    chunks = []
+    while True:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+finally:
+    sock.close()
+
+value = json.loads(b"".join(chunks).decode("utf-8"))
+for part in dotted_path.split("."):
+    if not isinstance(value, dict):
+        sys.exit(0)
+    value = value.get(part)
+if isinstance(value, bool) or value is None:
+    sys.exit(0)
+if isinstance(value, (int, float, str)):
+    print(value)
+PY
+}
+
 outputd_dac_buffer_frames() {
     local value
     value="$(env_file_value "$OUTPUTD_ENV_FILE" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || true)"
     positive_int_or_default "$value" "$DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES"
+}
+
+fanin_output_latency_frames() {
+    local value
+    value="$(status_json_value "$FANIN_STATUS_SOCKET" output.snd_pcm_delay_frames || true)"
+    value="$(nonnegative_int_or_empty "$value")"
+    if [[ -n "$value" ]]; then
+        echo "jasper-apply-airplay-mode: using fanin STATUS output.snd_pcm_delay_frames=$value" >&2
+        printf '%s\n' "$value"
+    else
+        echo "jasper-apply-airplay-mode: fanin STATUS delay unavailable; using configured output buffer fallback" >&2
+        fanin_output_buffer_frames
+    fi
+}
+
+outputd_dac_latency_frames() {
+    local value
+    value="$(status_json_value "$OUTPUTD_STATUS_SOCKET" dac.snd_pcm_delay_frames || true)"
+    value="$(nonnegative_int_or_empty "$value")"
+    if [[ -n "$value" ]]; then
+        echo "jasper-apply-airplay-mode: using outputd STATUS dac.snd_pcm_delay_frames=$value" >&2
+        printf '%s\n' "$value"
+    else
+        echo "jasper-apply-airplay-mode: outputd STATUS delay unavailable; using configured DAC buffer fallback" >&2
+        outputd_dac_buffer_frames
+    fi
 }
 
 outputd_content_bridge_mode() {
@@ -260,9 +346,9 @@ derive_audio_backend_latency_offset() {
     local sample_rate
     local chunksize
     local target_level
-    local fanin_output_buffer
+    local fanin_output_latency
     local outputd_content_bridge
-    local outputd_dac_buffer
+    local outputd_dac_latency
     local bonded_extra_sec
 
     config="$(camilla_config_path)"
@@ -291,8 +377,11 @@ derive_audio_backend_latency_offset() {
 
     # Fan-in output queue (between jasper-fanin and CamillaDSP/AEC).
     # This is downstream of shairport's private input lane, so it is
-    # also invisible to shairport's snd_pcm_delay().
-    fanin_output_buffer="$(fanin_output_buffer_frames)"
+    # also invisible to shairport's snd_pcm_delay(). Prefer the live
+    # ALSA delay surfaced by jasper-fanin STATUS; fall back to the
+    # configured buffer size while the daemon is unavailable or on an
+    # older build without that field.
+    fanin_output_latency="$(fanin_output_latency_frames)"
 
     # outputd's optional content bridge intentionally holds post-Camilla
     # content at a target fill before the DAC-paced final mix. This is
@@ -300,11 +389,13 @@ derive_audio_backend_latency_offset() {
     # lab mode enables the bridge.
     outputd_content_bridge="$(outputd_content_bridge_latency_frames)"
 
-    # outputd's DAC buffer is downstream of shairport's private lane
+    # outputd's DAC queue is downstream of shairport's private lane
     # and of CamillaDSP. shairport cannot observe it via
     # snd_pcm_delay(), so account for the branch-owned output owner
-    # explicitly.
-    outputd_dac_buffer="$(outputd_dac_buffer_frames)"
+    # explicitly. Prefer outputd's live snd_pcm_delay over the configured
+    # buffer size because ALSA/DAC presentation delay can be larger than
+    # the requested buffer.
+    outputd_dac_latency="$(outputd_dac_latency_frames)"
 
     # Bonded-leader-only extra delay (seconds): the Snapcast round-trip
     # playout buffer. 0.0 unless jasper-grouping-reconcile wrote it for an
@@ -314,9 +405,9 @@ derive_audio_backend_latency_offset() {
     awk -v sample_rate="$sample_rate" \
         -v chunksize="$chunksize" \
         -v target_level="$target_level" \
-        -v fanin_output_buffer="$fanin_output_buffer" \
+        -v fanin_output_latency="$fanin_output_latency" \
         -v outputd_content_bridge="$outputd_content_bridge" \
-        -v outputd_dac_buffer="$outputd_dac_buffer" \
+        -v outputd_dac_latency="$outputd_dac_latency" \
         -v bonded_extra_sec="$bonded_extra_sec" '
         BEGIN {
             if (sample_rate <= 0) {
@@ -327,12 +418,12 @@ derive_audio_backend_latency_offset() {
             #   (target_level - chunksize)   ← CamillaDSP playback buffer
             #                                   above its implicit one-chunk
             #                                   baseline.
-            #   + fanin_output_buffer        ← jasper-fanin output queue
+            #   + fanin_output_latency       ← jasper-fanin output queue
             #                                   between the private AirPlay
             #                                   lane and CamillaDSP/AEC.
             #   + outputd_content_bridge     ← optional jasper-outputd
             #                                   content bridge target fill.
-            #   + outputd_dac_buffer         ← jasper-outputd direct-DAC
+            #   + outputd_dac_latency        ← jasper-outputd direct-DAC
             #                                   playback queue.
             #
             # NB: any single-quote (apostrophe) in this comment block would
@@ -340,7 +431,7 @@ derive_audio_backend_latency_offset() {
             # the script — bash 2026-05-25 lesson, do not paraphrase.
             # shairport feeds this many frames early so audio still emerges
             # from the speaker at the AirPlay-scheduled time.
-            invisible_frames = (target_level - chunksize) + fanin_output_buffer + outputd_content_bridge + outputd_dac_buffer
+            invisible_frames = (target_level - chunksize) + fanin_output_latency + outputd_content_bridge + outputd_dac_latency
             # bonded_extra_sec is a wall-clock buffer (the Snapcast round-
             # trip on a bonded leader), added in seconds; 0 on solo.
             offset = -((invisible_frames / sample_rate) + bonded_extra_sec)

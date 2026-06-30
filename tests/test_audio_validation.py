@@ -372,8 +372,6 @@ def _active_chip_inputs() -> dict:
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
-            "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
-            "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",
             "JASPER_XVF_VARIANT": "xvf3800_legacy_square_6ch",
             "JASPER_XVF_GEOMETRY": "square",
             "JASPER_XVF_CHIP_BEAM_PLAN": "xvf_square_fixed_150_210",
@@ -420,11 +418,11 @@ def _active_chip_inputs() -> dict:
                 "frames_processed": 42,
                 "ref_starved_frames": 0,
                 "queue_drops": {"mic": 0, "chip": 0, "raw0": 0, "usb": 0, "ref": 0},
-                "udp_send_drops_by_leg": {"on": 0, "chip_aec_150": 0, "chip_aec_210": 0},
-                "packets_sent_by_leg": {"on": 10, "chip_aec_150": 10, "chip_aec_210": 10},
+                "udp_send_drops_by_leg": {"on": 0},
+                "packets_sent_by_leg": {"on": 10},
             },
         },
-        "voice_wake_legs": {"on", "chip_aec_150", "chip_aec_210"},
+        "voice_wake_legs": {"on"},
         "bridge_journal_text": "",
     }
 
@@ -533,6 +531,35 @@ def test_chip_aec_readiness_snapshot_uses_schema_helper_without_full_pass():
     assert artifact.checks["measured_drift_delay"]["status"] == "not_run"
     assert artifact.recommendation == "run_hardware_validation"
     assert "readiness_snapshot" in artifact.notes[0]
+
+
+def test_chip_aec_readiness_accepts_explicit_extra_wake_beams():
+    inputs = _active_chip_inputs()
+    inputs["system_env"] = {
+        **inputs["system_env"],
+        "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
+        "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",
+    }
+    inputs["voice_wake_legs"] = {"on", "chip_aec_150", "chip_aec_210"}
+
+    artifact = audio_validation.build_chip_aec_readiness_artifact(**inputs)
+
+    assert artifact.checks["wake_legs"]["status"] == "pass"
+    assert artifact.checks["wake_legs"]["expected"] == [
+        "chip_aec_150",
+        "chip_aec_210",
+        "on",
+    ]
+
+
+def test_chip_aec_readiness_fails_unexpected_extra_wake_beams():
+    inputs = _active_chip_inputs()
+    inputs["voice_wake_legs"] = {"on", "chip_aec_150"}
+
+    artifact = audio_validation.build_chip_aec_readiness_artifact(**inputs)
+
+    assert artifact.checks["wake_legs"]["status"] == "fail"
+    assert artifact.checks["wake_legs"]["expected"] == ["on"]
 
 
 def test_chip_aec_readiness_requires_calibrated_output_dac():

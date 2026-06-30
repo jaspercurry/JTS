@@ -147,17 +147,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
+name = "jasper-clock"
+version = "0.1.0"
+
+[[package]]
 name = "jasper-fanin"
 version = "0.1.0"
 dependencies = [
  "alsa",
  "anyhow",
  "env_logger",
+ "jasper-resampler",
  "jasper-tts-protocol",
  "libc",
  "log",
  "sd-notify",
  "signal-hook",
+]
+
+[[package]]
+name = "jasper-resampler"
+version = "0.1.0"
+dependencies = [
+ "jasper-clock",
 ]
 
 [[package]]

@@ -266,9 +266,11 @@ runs automatically only when the configured AEC mic is present with
   design system ([`deploy/assets/app.css`](deploy/assets/app.css)).
   Applying emits a CamillaDSP config that preserves any active
   room-correction PEQs; Off turns off only preference shaping without
-  clearing room correction. A collapsed Advanced speaker setup card now
-  marks the active crossover commissioning lane as schema plus
-  startup-template only while the safety substrate is built. See
+  clearing room correction. A collapsed Speaker setup card hosts the
+  active-crossover commissioning flow — choose the speaker layout, enter
+  driver/crossover values, confirm the DAC outputs, then run the guarded
+  per-driver audible test and apply the active speaker profile (passive /
+  full-range speakers skip the driver test). See
   [docs/HANDOFF-sound-preferences.md](docs/HANDOFF-sound-preferences.md)
   for the composition contract, profile semantics, and observability
   hooks.
@@ -419,7 +421,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-peering.md            Multi-Pi wake arbitration (off by default)
   HANDOFF-persistent-live-session.md
   HANDOFF-voice-music-control.md
-  HANDOFF-volume.md             Source-aware volume coordinator + gain-chain ledger
+  HANDOFF-volume.md             Source-aware volume coordinator
   multi-user-spotify.md
   audit-pending-followups.md    Open Tier 2/3 follow-ups
   ...                           additional HANDOFF, proposal, research,
@@ -523,12 +525,17 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/conversation-history-plan.md](docs/conversation-history-plan.md) | Maintainers / AI | Execution plan for the first JTS **Feature** (per the extensibility doctrine): a household-visible `/chat` log of perceived-command-in / response-back with local capture controls. Native-first transcript capture, a dedicated `ConversationStore`, static ES-module page, `/state.chat`, doctor coverage, and opt-in / mic-mute-gated / retention-capped privacy are implemented; Gemini transcript capture and richer filtering remain deferred. |
 | [docs/examples/tool_pack_starter.py](docs/examples/tool_pack_starter.py) | Trusted tool-pack contributors | Non-production postcard example of a copyable capability pack: `CapabilityPack`, `CatalogPack`, explicit `ToolDefinition`, `PythonExecutor`, labels, timeout, risk flags, and deps/build shape. Tests import it so the example cannot drift from the real boundary. |
 | [docs/install-update-resilience-plan.md](docs/install-update-resilience-plan.md) | Maintainers / AI | **Planning brief (not operational truth).** Problems + open questions for hardening the install/update flow across Pi hardware tiers (512 MB–16 GB), fresh-vs-in-service-update, large version jumps, and runtime hot-plug/unplug. Origin: a 2026-06-21 jts2 update that OOM-killed the build (and nginx/voice) mid-install. Carries four ready-to-paste workstream prompts (memory-safe builds, atomic/recoverable updates, hot-plug resilience, tier-aware install + testing). |
+| [docs/HANDOFF-runtime-memory.md](docs/HANDOFF-runtime-memory.md) | Maintainers / AI | **Operational.** Current always-on runtime memory decisions: chip-AEC defaults to one wake detector, optional chip beams are explicit custom opt-ins, `/system/` Home Assistant status runs through a child-process cache, the dashboard shows root cgroup memory buckets, and the remaining high-leverage RAM options are tracked without turning them into scattered TODOs. |
+| [docs/phone-mic-relay-plan.md](docs/phone-mic-relay-plan.md) | Maintainers / AI | **Design + build plan (`/correction/` + `/sync/` relay + USB-C-mic-on-phone BUILT, gated default-off; on-device validation + cloud deploy pending).** How to capture the phone mic in a browser for room/balance/sync/crossover measurement on iOS + Android with **no trusted cert on the Pi and no per-device cloud infra**: a static capture page on a trusted origin (jasper.tech) + a stateless, end-to-end-encrypted **dead-drop relay** the Pi pulls from (O(1) for the whole fleet, vs the rejected O(N) per-Pi-cert path). A Pi-owned **opaque `capture_spec`** (kind/duration/constraints/stimulus/UI) keeps one page + one relay agnostic across measurement types; **server-driven UI as data, not code** (the security boundary); the relay also carries the single-screen "Start → Pi plays + phone records" handshake. WebRTC LAN-direct passthrough validated but deferred. |
 | [docs/HANDOFF-install-update-transaction.md](docs/HANDOFF-install-update-transaction.md) | Maintainers / AI | **Operational** (Workstream B, landed). How a JTS update is a transaction: the build manifest is the verified-install marker (written last, gated by `set -e`, so a failed update never advertises a SHA it isn't running), deploy verification covers voice/AEC/renderers via `jasper-doctor` (broken-vs-idle), and collateral OOM kills are surfaced/gated. Includes the rollback/A-B analysis (cheapest "never worse than before"; full A-B deferred) and the Workstream-C seam. |
 | [docs/install-hardware-tier-and-staleness.md](docs/install-hardware-tier-and-staleness.md) | Maintainers / AI | **Design note + recommendation (Workstream D output).** Findings on making the installer hardware-tier-aware (RAM/CPU/arch detected up front, orthogonal to the full/streambox *profile*) and the version-skew risk question. Bottom line: migrations are convergent so being far behind is not a migration-pile-up risk; it amplifies risk via cold build caches (the OOM-prone WebRTC/Cargo rebuilds) — so stepwise updates are rejected in favor of safe builds (A) + atomic updates (B). Includes the cross-SKU test strategy and the scoped tier-detection/arch-guard PR. |
 | [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Contributor "files to know" register + the original top-five framing (priority list superseded by LAUNCH-READINESS.md) |
 | [docs/REVIEW-google-oss-readiness.md](docs/REVIEW-google-oss-readiness.md) | Maintainers / OSS reviewers | Historical point-in-time OSS-readiness review; not current operational truth |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
 | [docs/HANDOFF-speaker-output-reference.md](docs/HANDOFF-speaker-output-reference.md) | Audio / voice architects | Chosen direction for a JTS-native output owner, true speaker-output reference, TTS playout ledger, and robust assistant-speech barge-in |
+| [docs/HANDOFF-audio-latency-foundation.md](docs/HANDOFF-audio-latency-foundation.md) | Audio architects | Local-audio-latency work: the lean File-capture lane (Stage 4, default-OFF, soak-gated), USB-input bridge latency, the snapcast bond buffer, the CamillaDSP v4 resampler object schema, chip/software AEC optionality, and the hard rules against re-architecting the topology |
+| [docs/HANDOFF-usb-low-latency.md](docs/HANDOFF-usb-low-latency.md) | Audio architects | **Forward plan (not shipped).** Why the shared fan-in mixer path can't reach the USB-in latency target (the catch-up sawtooth + two snd-aloop hops measured at ~70–100 ms) and the USB-only answer: route a solo USB source through the already-built lean-fifo lane (CamillaDSP RawFile capture, async resampler disciplined by the DAC clock) to delete both hops and the sawtooth. Records the ordered work remaining (mux-ladder arm, end-to-end + cross-platform measurement). The per-DAC stable buffer floor is now codified as `DacProfile.latency_floor` data (the #27 keystone — a fresh box reproduces the tuned floor declaration-only). Sequel to the Phase 1 catch-up drop fix |
+| [docs/RESEARCH-pipewire-low-latency.md](docs/RESEARCH-pipewire-low-latency.md) | Audio architects | Research artifact: how PipeWire's *actual* source achieves low latency + clock resilience (the `spa_dll` delay-locked loop, driver/follower double-buffered quantum, timer/headroom ALSA model, xrun recovery, zero-copy), a JTS verdict per technique, and a principle-aligned adoption plan centered on lifting one shared DLL primitive. We do NOT use PipeWire — this mines its algorithms, not its architecture |
 | [docs/AEC-DIAG-*.md](docs/AEC-DIAG-06-xvf-format-level-profile.md) | Audio diagnostics | Dated AEC diagnostic notes and active probe runbooks for the outputd/chip-ref/XVF timing investigation. Current entry point: `AEC-DIAG-06-xvf-format-level-profile.md` |
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
 | [docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md) | Operator bringing up a Zero 2 W streambox | Lab runbook for cheap Zero-class JTS: the streambox install profile (local renderers, DSP, shared capability-gated UI) plus the planned `active_crossover` output topology. "Endpoint behaviour" is now the runtime multiroom follower role, not a separate install tier |
@@ -813,9 +820,8 @@ reference. Currently:
 - [`HANDOFF-voice-music-control.md`](docs/HANDOFF-voice-music-control.md)
   — Source-aware transport (AirPlay/Spotify Connect) + volume
 - [`HANDOFF-volume.md`](docs/HANDOFF-volume.md) — Source-aware
-  volume coordinator and `/state.audio.gain_chain` ledger (one
-  canonical `listening_level`, dispatched to whichever source is active,
-  observed inbound at 1 Hz, plus the read-only common gain total)
+  volume coordinator (one canonical `listening_level`, dispatched to
+  whichever source is active, observed inbound at 1 Hz)
 - [`HANDOFF-source-capabilities.md`](docs/HANDOFF-source-capabilities.md)
   — Planned provider/source capability boundary for future music
   integrations: volume, transport, metadata, health, and contributor

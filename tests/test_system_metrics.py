@@ -59,6 +59,7 @@ def test_snapshot_shape_with_no_samples_yet() -> None:
     # both inert until first tick has run.
     assert cur["per_core_cpu_pct"] == []
     assert cur["memory_cgroup_enabled"] is None
+    assert cur["memory_cgroup"] is None
 
 
 def test_append_rotates_after_history_points() -> None:
@@ -779,6 +780,28 @@ def test_read_memory_cgroup_enabled_returns_none_when_file_missing(tmp_path) -> 
     ) is None
 
 
+def test_read_cgroup_memory_breakdown_parses_stat_split(tmp_path) -> None:
+    current = tmp_path / "memory.current"
+    stat = tmp_path / "memory.stat"
+    current.write_text(str(256 * 1024 * 1024) + "\n")
+    stat.write_text(
+        "anon 104857600\n"
+        "file 52428800\n"
+        "kernel 26214400\n"
+    )
+
+    assert SystemSampler._read_cgroup_memory_breakdown(
+        str(current),
+        str(stat),
+    ) == {
+        "total_mb": 256.0,
+        "anon_mb": 100.0,
+        "file_mb": 50.0,
+        "kernel_mb": 25.0,
+        "other_mb": 81.0,
+    }
+
+
 # ---------- snapshot integration of new fields --------------------------
 
 
@@ -812,12 +835,23 @@ def test_tick_populates_per_core_and_cgroup_in_snapshot(tmp_path) -> None:
         return_value=[12.5, 87.5, 33.0, 50.0],
     ), patch.object(
         SystemSampler, "_read_memory_cgroup_enabled", return_value=False,
+    ), patch.object(
+        SystemSampler,
+        "_read_cgroup_memory_breakdown",
+        return_value={
+            "total_mb": 1536.0,
+            "anon_mb": 900.0,
+            "file_mb": 300.0,
+            "kernel_mb": 120.0,
+            "other_mb": 216.0,
+        },
     ):
         s._tick()
     snap = s.snapshot()
     cur = snap["current"]
     assert cur["per_core_cpu_pct"] == [12.5, 87.5, 33.0, 50.0]
     assert cur["memory_cgroup_enabled"] is False
+    assert cur["memory_cgroup"]["anon_mb"] == 900.0
 
 
 # ---------- build manifest ----------------------------------------------
@@ -902,7 +936,17 @@ def test_snapshot_endpoint_returns_metrics_and_build(monkeypatch) -> None:
         lambda *a, **kw: {"JASPER_GIT_SHA": "test123"},
     )
 
-    handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock", sampler)
+    class FakeHaStatus:
+        def snapshot(self):
+            return {"configured": False, "connected": False, "error": None}
+
+    handler = _make_handler(
+        "127.0.0.1",
+        1234,
+        "/nonexistent.sock",
+        sampler,
+        ha_status_cache=FakeHaStatus(),
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -925,7 +969,17 @@ def test_snapshot_endpoint_handles_missing_sampler() -> None:
     """If the sampler hasn't been wired in (legacy code path), the
     endpoint returns metrics=None rather than 500ing. Lets tests +
     dev environments work without booting the sampler thread."""
-    handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock", None)
+    class FakeHaStatus:
+        def snapshot(self):
+            return {"configured": False, "connected": False, "error": None}
+
+    handler = _make_handler(
+        "127.0.0.1",
+        1234,
+        "/nonexistent.sock",
+        None,
+        ha_status_cache=FakeHaStatus(),
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

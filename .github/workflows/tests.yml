@@ -183,6 +183,9 @@ jobs:
           node tests/js/sound_profile_harness.mjs deploy/assets/sound-profile/js/main.js
           node tests/js/dialog_harness.mjs deploy/assets/shared/js/dialog.js
           node scripts/check-peq-parity.mjs
+          node scripts/check-balance-trim-parity.mjs
+          node tests/js/correction_render_harness.mjs deploy/assets/correction/js/main.js
+          node scripts/check-sensitivity-trim-parity.mjs
 
   rust:
     # CI formats, lints, compiles, and tests the Rust audio daemons — the
@@ -230,6 +233,8 @@ jobs:
         run: |
           set -euo pipefail
           for crate in \
+            rust/jasper-clock \
+            rust/jasper-resampler \
             rust/jasper-tts-protocol \
             rust/jasper-fanin \
             rust/jasper-outputd \
@@ -248,10 +253,24 @@ jobs:
         if: steps.rust-needed.outputs.run == 'true'
         with:
           workspaces: |
+            rust/jasper-clock
+            rust/jasper-resampler
             rust/jasper-fanin
             rust/jasper-outputd
             rust/jasper-dual-dac-lab
             rust/jasper-tts-protocol
+
+      - name: jasper-clock — clippy
+        if: steps.rust-needed.outputs.run == 'true'
+        working-directory: rust/jasper-clock
+        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
+
+      - name: jasper-resampler — clippy
+        if: steps.rust-needed.outputs.run == 'true'
+        # Pure windowed-sinc resampler + rate controller (depends on
+        # jasper-clock). No ALSA, so this clippy/test runs on any host.
+        working-directory: rust/jasper-resampler
+        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
 
       - name: jasper-tts-protocol — clippy
         if: steps.rust-needed.outputs.run == 'true'
@@ -272,6 +291,24 @@ jobs:
         if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-dual-dac-lab
         run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
+
+      - name: jasper-clock — build + test (pure DLL crate; no ALSA)
+        if: steps.rust-needed.outputs.run == 'true'
+        # The shared clock primitive (spa_dll port). Pure Rust, no libasound,
+        # so this is the crate whose convergence/no-oscillation properties are
+        # the regression gate for every consumer's loop math.
+        working-directory: rust/jasper-clock
+        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
+
+      - name: jasper-resampler — build + test (pure resampler crate; no ALSA)
+        if: steps.rust-needed.outputs.run == 'true'
+        # The shared windowed-sinc resampler + rate controller. Pure Rust, no
+        # libasound, so its pass-through / capture-follower frame-count /
+        # streaming-continuity / loop-sign properties are the regression gate
+        # for the daemon path (jasper-outputd's content_bridge), its sole
+        # consumer.
+        working-directory: rust/jasper-resampler
+        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
       - name: jasper-tts-protocol — build + test (shared wire-protocol crate)
         if: steps.rust-needed.outputs.run == 'true'

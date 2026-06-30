@@ -42,6 +42,16 @@ from pybind11.setup_helpers import Pybind11Extension, build_ext
 from setuptools import setup
 
 
+BINDING_COMPILE_ARGS = ["-O0", "-g0"]
+"""Compile policy for the tiny pybind glue translation units.
+
+The WebRTC DSP implementation is already built separately; these files mostly
+marshal Python calls into that library. Keeping the wrapper at -O0 and stripping
+debug info materially reduces cc1plus peak pressure on 1 GB Pi deploys without
+changing the optimized WebRTC audio-processing archive.
+"""
+
+
 def _pkg_config(*flags: str, pkg: str = "webrtc-audio-processing-1") -> list[str]:
     out = subprocess.check_output(
         ["pkg-config", *flags, pkg], text=True
@@ -66,7 +76,7 @@ def _build_v1_extension() -> Pybind11Extension:
         include_dirs=include_dirs,
         library_dirs=library_dirs,
         libraries=libraries,
-        extra_compile_args=extra_compile_args + ["-O3"],
+        extra_compile_args=extra_compile_args + BINDING_COMPILE_ARGS,
         extra_link_args=extra_link_args,
         cxx_std=17,
     )
@@ -191,7 +201,7 @@ def _build_v2_extension(prefix: Path) -> Pybind11Extension:
     ] + extra_include
 
     extra_compile_args = [
-        "-O3",
+        *BINDING_COMPILE_ARGS,
         # Required by libwebrtc internal headers:
         "-DWEBRTC_LIBRARY_IMPL",
         "-DWEBRTC_POSIX",

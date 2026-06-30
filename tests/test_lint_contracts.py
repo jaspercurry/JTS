@@ -39,8 +39,52 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # reconcile path — the active-leader camilla#1 program-bake apply + camilla#2
 # re-seed, and the unbond active-leader restore — each a "never crash the
 # reconcile / fail safe to solo" handler matching the existing reconciler idiom.
-MAX_NOQA_MARKERS = 801
-MAX_BLE001_MARKERS = 621
+# 2026-06-27 (+1 suppression marker, blind-except): PR #1051's /sound topology
+# revision-compare-and-write TOCTOU fix wraps the critical section in a
+# fail-soft `except BaseException` guard ("surface unexpected failures"). The
+# baseline was not bumped when it merged, so main went red on this contract
+# (count 622 vs ceiling 621) — reconcile the count here. The suppression is the
+# established "never crash the critical write path" idiom; lowering the count by
+# narrowing it later is welcome.
+# 2026-06-27 (+2 suppression markers, blind-except): PR #1073's 4b-iv lean-lane
+# mux wiring adds two fail-loud broad-except handlers in the enter/leave-lean
+# ladders — catch-broad -> fall back to the buffered lane + log, the established
+# "never crash the _tick / fail safe to buffered" idiom. Justified suppression
+# debt for the new resilience path; the same two markers push BOTH ceilings by 2
+# (each is a blind-except suppression). Narrowing later is welcome.
+# 2026-06-27 (+5 suppression markers, of which +3 blind-except): the phone-mic
+# capture relay (jasper/capture_relay/*) adds 2 urllib outbound-HTTPS-only
+# suppressions (S310, guarded by an https-scheme check in client.py/health.py)
+# and 3 blind-except suppressions in session.py — the no-silent-failure design:
+# cue on ANY failure then re-raise, a best-effort cue that must not mask the real
+# exception, and a best-effort purge (TTL is the backstop). All reviewed; one
+# further best-effort handler was narrowed to a typed except rather than
+# suppressed. (Marker strings are spelled out here, not written literally, so
+# this very comment does not inflate the count it documents.)
+# 2026-06-27 (+1 blind-except): the /correction/ relay-capture daemon adapter
+# (jasper/web/correction_setup.py POST /relay/capture) adds one fail-loud
+# never-crash-the-background-loop handler around the async capture runner —
+# logs + surfaces the failure in /status, mirrors the existing
+# _schedule_measurement_sweep idiom in the same file. Pushes BOTH ceilings by 1.
+# 2026-06-27 (+1 blind-except): the fan-in coupling reconciler
+# (jasper/fanin/coupling_reconcile.py _reconcile_camilla) wraps the CamillaDSP
+# reconcile in a fail-safe handler — an UNEXPECTED reconcile exception must
+# trigger the arm-failure rollback to loopback (return ok=False), never
+# propagate and leave the box half-armed (fan-in on the pipe, camilla on the old
+# config) with no recovery. Resilience-first on a production speaker. +1 BOTH.
+# 2026-06-28 (no change): the usbsink-edge rate-match stage + its tests
+# (jasper/usbsink/audio_bridge.py rate-match code, tests/test_usbsink_rate_match.py,
+# tests/test_resampler_contract.py) were cut as the wrong tool for the observed
+# USB drops. The removed code used only NARROW exception handlers (ImportError /
+# ValueError / RuntimeError / OSError — no blind-except), and the deleted test
+# files carried zero suppression markers, so the cut removed NO noqa / blind-
+# except markers from the scanned roots. Both ceilings stay where they were;
+# they cannot be lowered because the live count is still exactly at them.
+# (Marker strings are spelled out here, not written literally, so this comment
+# does not inflate the count it documents — same convention as the 2026-06-27
+# phone-mic entry above.)
+MAX_NOQA_MARKERS = 810
+MAX_BLE001_MARKERS = 629
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

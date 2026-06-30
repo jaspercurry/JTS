@@ -81,6 +81,16 @@ install_renderers() {
         need_build=1
     elif ! /usr/local/bin/shairport-sync -V 2>&1 | grep -q "AirPlay2"; then
         need_build=1
+    elif ! /usr/local/bin/shairport-sync -V 2>&1 | grep -qE -- '-pipe(-|$)'; then
+        # The pipe output backend (--with-pipe) was added to the configure
+        # line; an older source build (or apt AP1) lacks it. shairport-sync's
+        # -V feature string gains a "pipe" feature token only when the backend
+        # is compiled in, so this forces exactly one rebuild on upgrade and is
+        # a no-op once the pipe-capable binary is installed. The pattern
+        # matches the token whether it is followed by another "-<feature>"
+        # token or sits at the end of the string, so a future trim of the -V
+        # feature list cannot leave us rebuilding on every deploy.
+        need_build=1
     fi
     if [[ "$need_build" == "1" ]]; then
         echo "Building shairport-sync ${SHAIRPORT_SYNC_VERSION} with AirPlay 2..."
@@ -104,6 +114,7 @@ install_renderers() {
                 --with-alsa --with-soxr --with-avahi \
                 --with-ssl=openssl --with-systemd \
                 --with-airplay-2 \
+                --with-pipe \
                 --with-metadata --with-dbus-interface \
                 --with-mpris-interface
             # RAM-bounded + cgroup-contained C build (BUILD_SANDBOX_KB_PER_JOB_C

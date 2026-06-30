@@ -425,16 +425,64 @@ def test_aec_loop_emits_raw0_when_raw0_q_passed(monkeypatch):
     assert len(call.args[0]) == OUT_FRAME_BYTES
 
 
-def test_aec_loop_chip_aec_mode_repoints_primary_and_skips_software_aec(monkeypatch):
+def test_aec_loop_chip_aec_mode_defaults_to_primary_only(monkeypatch):
     """Production chip-AEC mode forwards the selected chip beam into
-    :9876 and emits both fixed beams on :9887/:9888 without running the
-    WebRTC/DTLN software legs."""
+    :9876 without opening extra fixed-beam wake detector outputs."""
+    import socket as real_socket
+    from jasper.mics import xvf3800
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+    monkeypatch.delenv("JASPER_MIC_DEVICE_CHIP_AEC_150", raising=False)
+    monkeypatch.delenv("JASPER_MIC_DEVICE_CHIP_AEC_210", raising=False)
+
+    aec_sock = _mock_socket()
+    raw_sock = _mock_socket()
+    raw0_sock = _mock_socket()
+    socket_factory = MagicMock(side_effect=[aec_sock, raw_sock, raw0_sock])
+    monkeypatch.setattr(real_socket, "socket", socket_factory)
+
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    chip_150_frames = [
+        bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)
+    ]
+    chip_210_frames = [
+        bytes([i + 150]) * (FRAME_SAMPLES * 2) for i in range(1, 5)
+    ]
+    engine = MagicMock()
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ(mic_frames),
+        engine,
+        chip_aec_qs={
+            "chip_aec_150": _ScriptedMicQ(chip_150_frames),
+            "chip_aec_210": _ScriptedMicQ(chip_210_frames),
+        },
+        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
+        production_chip_aec_enabled=True,
+        chip_aec_primary_leg="chip_aec_150",
+    )
+
+    engine.process.assert_not_called()
+    raw_sock.sendto.assert_not_called()
+    aec_sock.sendto.assert_called_once_with(
+        b"".join(chip_150_frames), (OUT_HOST, OUT_PORT),
+    )
+    assert socket_factory.call_count == 3
+
+
+def test_aec_loop_chip_aec_extra_beams_are_explicit_opt_in(monkeypatch):
+    """The reconciler advertises optional chip-beam wake detector channels
+    with JASPER_MIC_DEVICE_CHIP_AEC_*; only then does the bridge emit them."""
     import socket as real_socket
     from jasper.cli.aec_bridge import OUT_PORT_CHIP_AEC_150, OUT_PORT_CHIP_AEC_210
     from jasper.mics import xvf3800
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+    monkeypatch.setenv("JASPER_MIC_DEVICE_CHIP_AEC_150", "udp:9887")
+    monkeypatch.setenv("JASPER_MIC_DEVICE_CHIP_AEC_210", "udp:9888")
 
     aec_sock = _mock_socket()
     raw_sock = _mock_socket()

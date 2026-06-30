@@ -4,12 +4,10 @@
 
 from jasper.local_sources import (
     local_source_lifecycle,
-    local_source_advertise_units,
     local_source_audio_refresh_units,
     local_source_lifecycles,
     local_source_park_units,
     local_source_restore_units,
-    local_source_runtime_units,
 )
 from jasper.music_sources import MUSIC_SOURCE_SPECS, Source
 
@@ -25,7 +23,6 @@ def test_every_declared_music_source_has_lifecycle():
 def test_usb_runtime_includes_host_visible_gadget_owner():
     lifecycle = local_source_lifecycle(Source.USBSINK)
     assert "jasper-usbsink-init.service" in lifecycle.runtime_units
-    assert "jasper-usbsink-init.service" in local_source_runtime_units()
 
 
 def test_usb_parking_includes_host_visible_gadget_owner():
@@ -44,10 +41,6 @@ def test_usb_restore_uses_intent_unit_not_init_unit():
     units = local_source_restore_units()
     assert "jasper-usbsink.service" in units
     assert "jasper-usbsink-init.service" not in units
-
-
-def test_advertise_units_capture_usb_gadget():
-    assert "jasper-usbsink-init.service" in local_source_advertise_units()
 
 
 def test_audio_refresh_units_stay_at_renderer_boundary():

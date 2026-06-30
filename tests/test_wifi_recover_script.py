@@ -151,6 +151,15 @@ def test_active_wifi_systemd_tick_is_silent_and_cheap(tmp_path):
     assert _read(paths["guardian_log"]) == ""
     assert _read(paths["python_log"]) == ""
     assert "connection show --active" in _read(paths["nmcli_log"])
+    # Cost contract (#1033): even a healthy active-WiFi tick reads the
+    # recent kernel log to catch the brcmfmac scan-suppression wedge that
+    # NetworkManager still reports as "active". Pin that the `journalctl -k`
+    # probe runs on EVERY tick — removing it (e.g. only checking on the
+    # no-active path) must fail here, since that is the silent regression
+    # this assertion guards against.
+    journalctl_args = _read(paths["journalctl_log"])
+    assert journalctl_args != ""
+    assert "-k --since" in journalctl_args
 
 
 def test_manual_active_wifi_reports_steady(tmp_path):

@@ -4,8 +4,12 @@
 
 from __future__ import annotations
 
+import json
 import os
+import socket
 import subprocess
+import tempfile
+import threading
 import textwrap
 from pathlib import Path
 
@@ -45,6 +49,8 @@ def _render(
     fanin_output_buffer_frames: int | None = None,
     jasper_env_content: str = "",
     grouping_airplay_content: str | None = None,
+    fanin_status_socket: Path | None = None,
+    outputd_status_socket: Path | None = None,
 ) -> tuple[str, subprocess.CompletedProcess[str]]:
     template = tmp_path / "shairport-sync.conf.template"
     target = tmp_path / "shairport-sync.conf"
@@ -107,6 +113,12 @@ def _render(
             "JASPER_CAMILLA_STATEFILE": str(statefile),
             "JASPER_CAMILLA_DEFAULT_CONFIG": str(camilla),
             "JASPER_GROUPING_AIRPLAY_ENV_FILE": str(grouping_airplay_env),
+            "JASPER_FANIN_STATUS_SOCKET": str(
+                fanin_status_socket or tmp_path / "no-fanin-status.sock"
+            ),
+            "JASPER_OUTPUTD_STATUS_SOCKET": str(
+                outputd_status_socket or tmp_path / "no-outputd-status.sock"
+            ),
         }
     )
 
@@ -121,10 +133,75 @@ def _render(
     return target.read_text(), result
 
 
+class _FakeStatusSocket:
+    def __init__(self, path: Path, payload: dict):
+        # AF_UNIX socket paths are short on macOS. Keep the actual socket
+        # under /tmp even when pytest's tmp_path is deeply nested.
+        self._tmpdir = Path(tempfile.mkdtemp(prefix="jts-airplay-"))
+        self.path = self._tmpdir / path.name
+        self.payload = payload
+        self._ready = threading.Event()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def __enter__(self) -> Path:
+        self._thread.start()
+        assert self._ready.wait(timeout=2), f"fake status socket did not bind: {self.path}"
+        return self.path
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stop.set()
+        try:
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(0.2)
+            client.connect(str(self.path))
+            client.close()
+        except OSError:
+            pass
+        self._thread.join(timeout=2)
+
+    def _serve(self) -> None:
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(self.path))
+        server.listen()
+        server.settimeout(0.2)
+        self._ready.set()
+        try:
+            while not self._stop.is_set():
+                try:
+                    conn, _addr = server.accept()
+                except TimeoutError:
+                    continue
+                with conn:
+                    conn.settimeout(0.2)
+                    try:
+                        conn.recv(1024)
+                    except OSError:
+                        pass
+                    try:
+                        conn.sendall(json.dumps(self.payload).encode("utf-8") + b"\n")
+                    except BrokenPipeError:
+                        pass
+        finally:
+            server.close()
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+            try:
+                self._tmpdir.rmdir()
+            except OSError:
+                pass
+
+
 def test_airplay_renderer_derives_latency_offset_from_camilla_target(tmp_path: Path):
     # target_level=4096, chunksize=1024 -> 3072 Camilla frames.
-    # fan-in output=3072; outputd DAC=3072.
-    # Total invisible = 9216 / 48000 = 0.192000 s.
+    # fan-in output=1024; outputd DAC=3072.
+    # Total invisible = 7168 / 48000 = 0.149333 s.
     rendered, result = _render(
         tmp_path,
         """
@@ -139,15 +216,15 @@ def test_airplay_renderer_derives_latency_offset_from_camilla_target(tmp_path: P
     assert 'name = "Unit Test";' in rendered
     assert 'disable_synchronization = "no";' in rendered
     assert 'output_device = "shairport_substream";' in rendered
-    assert "audio_backend_latency_offset_in_seconds = -0.192000;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
     assert "__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__" not in rendered
     assert "renderer device 'shairport_substream'" in result.stderr
-    assert "latency offset -0.192000s" in result.stderr
+    assert "latency offset -0.149333s" in result.stderr
 
 
 def test_airplay_renderer_updates_offset_when_target_level_changes(tmp_path: Path):
-    # target=2048 -> 1024 Camilla frames; fan-in output=3072;
-    # outputd DAC=3072. Total = 7168 / 48000 = 0.149333 s.
+    # target=2048 -> 1024 Camilla frames; fan-in output=1024;
+    # outputd DAC=3072. Total = 5120 / 48000 = 0.106667 s.
     rendered, _ = _render(
         tmp_path,
         """
@@ -159,12 +236,12 @@ def test_airplay_renderer_updates_offset_when_target_level_changes(tmp_path: Pat
         """,
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
 
 
 def test_airplay_renderer_missing_target_level_matches_camilla_default(tmp_path: Path):
     # target_level absent -> defaults to chunksize -> no Camilla extra.
-    # fan-in output=3072; outputd DAC=3072 -> 0.128000 s.
+    # fan-in output=1024; outputd DAC=3072 -> 0.085333 s.
     rendered, _ = _render(
         tmp_path,
         """
@@ -175,12 +252,12 @@ def test_airplay_renderer_missing_target_level_matches_camilla_default(tmp_path:
         """,
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.128000;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.085333;" in rendered
 
 
 def test_airplay_renderer_falls_back_when_outputd_env_missing(tmp_path: Path):
     # No outputd env -> service default DAC buffer=3072. Camilla +
-    # fan-in output + default outputd DAC = -(9216 / 48000) = -0.192000.
+    # fan-in output + default outputd DAC = -(7168 / 48000) = -0.149333.
     rendered, _ = _render(
         tmp_path,
         """
@@ -193,7 +270,7 @@ def test_airplay_renderer_falls_back_when_outputd_env_missing(tmp_path: Path):
         outputd_env=NO_OUTPUTD_ENV,
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.192000;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
 
 
 def test_airplay_renderer_picks_up_alternate_outputd_dac_buffer_size(tmp_path: Path):
@@ -209,8 +286,58 @@ def test_airplay_renderer_picks_up_alternate_outputd_dac_buffer_size(tmp_path: P
         outputd_env=_outputd_env(dac_buffer_frames=1024),
     )
 
-    # CamillaDSP 3072 + fan-in output 3072 + outputd DAC 1024 = 7168 frames.
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+    # CamillaDSP 3072 + fan-in output 1024 + outputd DAC 1024 = 5120 frames.
+    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
+
+
+def test_airplay_renderer_prefers_live_outputd_dac_delay(tmp_path: Path):
+    with _FakeStatusSocket(
+        tmp_path / "outputd.sock",
+        {"dac": {"snd_pcm_delay_frames": 1024}},
+    ) as outputd_status:
+        rendered, _ = _render(
+            tmp_path,
+            """
+            devices:
+              samplerate: 48000
+              chunksize: 1024
+              queuelimit: 4
+              target_level: 2048
+            """,
+            outputd_env=_outputd_env(dac_buffer_frames=512),
+            fanin_output_buffer_frames=1024,
+            outputd_status_socket=outputd_status,
+        )
+
+    # CamillaDSP 1024 + fan-in fallback 1024 + live outputd DAC 1024.
+    assert "audio_backend_latency_offset_in_seconds = -0.064000;" in rendered
+
+
+def test_airplay_renderer_prefers_live_fanin_output_delay(tmp_path: Path):
+    with _FakeStatusSocket(
+        tmp_path / "fanin.sock",
+        {"output": {"snd_pcm_delay_frames": 1536}},
+    ) as fanin_status, _FakeStatusSocket(
+        tmp_path / "outputd.sock",
+        {"dac": {"snd_pcm_delay_frames": 1024}},
+    ) as outputd_status:
+        rendered, _ = _render(
+            tmp_path,
+            """
+            devices:
+              samplerate: 48000
+              chunksize: 1024
+              queuelimit: 4
+              target_level: 2048
+            """,
+            outputd_env=_outputd_env(dac_buffer_frames=512),
+            fanin_output_buffer_frames=1024,
+            fanin_status_socket=fanin_status,
+            outputd_status_socket=outputd_status,
+        )
+
+    # CamillaDSP 1024 + live fan-in output 1536 + live outputd DAC 1024.
+    assert "audio_backend_latency_offset_in_seconds = -0.074667;" in rendered
 
 
 def test_airplay_renderer_direct_content_bridge_adds_no_latency(tmp_path: Path):
@@ -226,7 +353,7 @@ def test_airplay_renderer_direct_content_bridge_adds_no_latency(tmp_path: Path):
         outputd_env=_outputd_env(content_bridge="direct"),
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.192000;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
 
 
 def test_airplay_renderer_rate_match_content_bridge_adds_target_fill(tmp_path: Path):
@@ -245,8 +372,8 @@ def test_airplay_renderer_rate_match_content_bridge_adds_target_fill(tmp_path: P
         ),
     )
 
-    # CamillaDSP 1024 + fan-in output 3072 + bridge 4096 + DAC 3072.
-    assert "audio_backend_latency_offset_in_seconds = -0.234667;" in rendered
+    # CamillaDSP 1024 + fan-in output 1024 + bridge 4096 + DAC 3072.
+    assert "audio_backend_latency_offset_in_seconds = -0.192000;" in rendered
 
 
 def test_airplay_renderer_rate_match_bridge_target_is_configurable(tmp_path: Path):
@@ -265,8 +392,8 @@ def test_airplay_renderer_rate_match_bridge_target_is_configurable(tmp_path: Pat
         ),
     )
 
-    # CamillaDSP 1024 + fan-in output 3072 + bridge 2048 + DAC 3072.
-    assert "audio_backend_latency_offset_in_seconds = -0.192000;" in rendered
+    # CamillaDSP 1024 + fan-in output 1024 + bridge 2048 + DAC 3072.
+    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
 
 
 def test_airplay_renderer_ignores_stale_outputd_knobs_in_jasper_env(tmp_path: Path):
@@ -289,7 +416,7 @@ def test_airplay_renderer_ignores_stale_outputd_knobs_in_jasper_env(tmp_path: Pa
 
     # outputd.service applies packaged outputd defaults after /etc/jasper,
     # so the renderer must not let stale /etc outputd knobs add a bridge term.
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
 
 
 def test_airplay_renderer_warns_on_unknown_bridge_mode(tmp_path: Path):
@@ -305,7 +432,7 @@ def test_airplay_renderer_warns_on_unknown_bridge_mode(tmp_path: Path):
         outputd_env="JASPER_OUTPUTD_CONTENT_BRIDGE=pipewire\n",
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
     assert "invalid JASPER_OUTPUTD_CONTENT_BRIDGE" in result.stderr
 
 
@@ -322,7 +449,7 @@ def test_airplay_renderer_falls_back_on_invalid_outputd_dac_buffer(tmp_path: Pat
         outputd_env='JASPER_OUTPUTD_DAC_BUFFER_FRAMES="not-a-number"\n',
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.192000;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
 
 
 def test_airplay_renderer_reads_fanin_output_buffer_from_env_file(tmp_path: Path):
@@ -356,28 +483,28 @@ def test_airplay_solo_offset_unchanged_without_grouping_env(tmp_path: Path):
     # byte-identical production offset. The bonded Snapcast term must never
     # leak into a non-bonded speaker's AirPlay timing.
     rendered, _ = _render(tmp_path, _PROD_CAMILLA)
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
 
 
 def test_airplay_bonded_leader_adds_snapcast_buffer(tmp_path: Path):
     # Active bonded leader: jasper-grouping-reconcile writes the Snapcast
     # playout buffer (400 ms default) as the extra delay. The offset becomes
-    # the solo 0.149333 + 0.400 = 0.549333, so the leader's own output lands
+    # the solo 0.106667 + 0.400 = 0.506667, so the leader's own output lands
     # back on the AirPlay anchor despite the round-trip buffer.
     rendered, result = _render(
         tmp_path,
         _PROD_CAMILLA,
         grouping_airplay_content="JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC=0.400000\n",
     )
-    assert "audio_backend_latency_offset_in_seconds = -0.549333;" in rendered
-    assert "latency offset -0.549333s" in result.stderr
+    assert "audio_backend_latency_offset_in_seconds = -0.506667;" in rendered
+    assert "latency offset -0.506667s" in result.stderr
 
 
 def test_airplay_empty_grouping_env_is_solo(tmp_path: Path):
     # A cleared (empty) grouping-airplay.env — the unbonded state the
     # reconciler writes on unbond — is treated as solo, not an error.
     rendered, _ = _render(tmp_path, _PROD_CAMILLA, grouping_airplay_content="")
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
 
 
 def test_airplay_blank_bonded_delay_value_is_solo(tmp_path: Path):
@@ -386,7 +513,7 @@ def test_airplay_blank_bonded_delay_value_is_solo(tmp_path: Path):
         _PROD_CAMILLA,
         grouping_airplay_content="JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC=\n",
     )
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
 
 
 def test_airplay_ignores_garbage_bonded_delay(tmp_path: Path):
@@ -401,7 +528,7 @@ def test_airplay_ignores_garbage_bonded_delay(tmp_path: Path):
             ),
         )
         assert (
-            "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+            "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
         ), f"garbage value {bad!r} should fall back to the solo offset"
 
 

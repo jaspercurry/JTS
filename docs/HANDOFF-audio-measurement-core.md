@@ -85,22 +85,27 @@ The product is three tiers:
 
 ### The gaps (worktree-confirmed)
 - ~~**Active-speaker measurement loop is built but UNWIRED.**~~ **CLOSED.**
-  The measurement loop *is* wired: `/sound/active-speaker/driver-capture` and
-  `/summed-capture` call `commissioning_capture.record_driver_acoustic_capture`
-  / `record_summed_acoustic_capture`, which run `driver_acoustics` and persist
-  the real acoustic verdict block into measurement state (the 2026-06-19 audit
-  inspected a pre-wiring snapshot — the wiring landed 2026-06-18). **L1 then
-  closed the level-match loop (2026-06-20):** each per-driver capture also
+  The measurement loop *is* wired. The live browser mic-capture surface is the
+  HTTPS `/correction/crossover/` page: `postWav('driver-capture' | 'summed-capture')`
+  → `correction_crossover_backend` → `web_measurement.record_driver_capture` /
+  `record_summed_capture`, which run `driver_acoustics`
+  (`record_driver_acoustic_capture` / `record_summed_acoustic_capture`) and
+  persist the real acoustic verdict block into measurement state (the 2026-06-19
+  audit inspected a pre-wiring snapshot — the wiring landed 2026-06-18). **L1
+  then closed the level-match loop (2026-06-20):** each per-driver capture also
   records an **overlap-band level** at the crossover Fc, and
   `baseline_profile._measured_level_trims` chains the driver-to-driver overlap
   deltas into a per-driver attenuation that **overrides** the datasheet
   sensitivity trim (fail-closed to the datasheet, marked *provisional*, when a
   capture is silent/clipped/low-SNR/missing). **Product routing changed
-  2026-06-23:** the capture endpoints/core remain available, but the core
-  `/sound/` active-crossover walkthrough no longer exposes browser mic capture;
-  it uses by-ear driver and combined confirmations, then should hand users to a
-  separate HTTPS measurement/correction experience for acoustic proof. See
-  "L1 measured level match" below.
+  2026-06-23:** the core `/sound/` active-crossover walkthrough does not expose
+  browser mic capture (it is plain HTTP and cannot `getUserMedia`); it uses
+  by-ear driver and combined confirmations, then hands users to the HTTPS
+  `/correction/crossover/` measurement experience for acoustic proof. The old
+  `/sound/active-speaker/driver-capture` + `/summed-capture` routes — a verbatim
+  duplicate of the `web_measurement` capture path that nothing reached after the
+  move — were deleted (Codex-week review C4a-1). See "L1 measured level match"
+  below.
 - ~~**`DriverSpec.sensitivity_db` is stored but never read to set gain.**~~
   **CLOSED.** `baseline_profile._derive_corrections` derives an interim per-driver
   trim from the declared sensitivities (the ~25 dB woofer/horn gap is
@@ -351,8 +356,8 @@ can never authorize a phase decision:
    `GET /active-speaker/crossover-alignment` previews the proposal + the surfaced
    per-driver/summed FR curves (the maintainer tweaks Fc/slope by hand — this
    feature NEVER auto-rewrites Fc/slope). To **apply** a polarity decision, the
-   operator captures the summed crossover with the chosen `polarity` (the existing
-   `/active-speaker/summed-capture` already carries it), which
+   operator captures the summed crossover with the chosen `polarity` (the live
+   `/correction/crossover/` summed-capture path already carries it), which
    `baseline_profile._derive_corrections` folds into the per-driver `corrections`
    (`inverted`) exactly like L1's measured level trim — the measurement *is* the
    apply, no separate confirm endpoint. The recompiled baseline re-proves the

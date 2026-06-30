@@ -108,6 +108,18 @@ RestartSec=2
 Nice=-10
 IOSchedulingClass=realtime
 IOSchedulingPriority=4
+
+# AEC-bridge intentionally does NOT elect SCHED_FIFO. The G6 attempt
+# (CPUSchedulingPolicy=fifo + LimitRTTIME=200000) crash-looped the bridge: its
+# CPU-heavy startup (DTLN / WebRTC-AEC3 model load runs >200 ms) hit the RTTIME
+# hard limit while scheduled FIFO and was SIGKILLed (status=9/KILL) before it
+# finished starting — caught live on jts 2026-06-27 (jts3 has no XVF mic, so
+# process-wide bridge RT was never exercised pre-merge). The bridge keeps its
+# Nice=-10 + realtime IO priority (above) and runs SCHED_OTHER as it always
+# did. A future RT election must set the policy on the steady-state audio thread
+# AFTER model load — not process-wide via systemd, which schedules the heavy
+# init under FIFO too. LimitRTPRIO=99 stays (harmless with no policy elected) so
+# that future option needs no unit change.
 LimitRTPRIO=99
 LimitMEMLOCK=infinity
 

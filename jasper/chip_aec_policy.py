@@ -30,6 +30,18 @@ ACTION_RUN_TESTING_AND_VALIDATE = "run_chip_aec_testing_and_validate"
 ACTION_USE_SOFTWARE_OR_TEST = "use_software_aec3_or_enable_testing"
 ACTION_FIX_MIC_PROFILE = "fix_mic_profile_before_chip_aec"
 
+# Canonical machine codes for ChipAecGate.blockers — one stable vocabulary
+# every consumer switches on. The two subsystems that can gate chip-AEC are
+# the input mic (no validated XVF beam plan) and the output DAC (no codified
+# chip-AEC timing). recommended_action reasons over these exact codes, so any
+# surface that injects a blocker (e.g. jasper-control folding in mic
+# availability via combine_mic_availability) MUST use them rather than a
+# parallel scheme. Human-facing text rides ChipAecGate.detail / the
+# per-subsystem status fields, never the code list.
+BLOCKER_MIC = "mic"
+BLOCKER_DAC = "dac"
+CHIP_AEC_BLOCKER_CODES = frozenset({BLOCKER_MIC, BLOCKER_DAC})
+
 SOURCE_STATIC = "static"
 SOURCE_OUTPUTD_AEC_CLOCK = "outputd_aec_clock"
 SOURCE_OPERATOR_TESTING = "explicit_testing"
@@ -87,12 +99,18 @@ class ChipAecGate:
 
     @property
     def recommended_action(self) -> str:
+        # A missing/unvalidated mic beam plan blocks chip-AEC outright, so it
+        # dominates the DAC's own status: no DAC approval can make chip-AEC
+        # usable without a mic that supports it. Callers that only resolve the
+        # DAC side (resolve_chip_aec_dac_gate / gate_from_runtime_env) never
+        # carry BLOCKER_MIC, so their action is unchanged; only a caller that
+        # folds the mic fact in via combine_mic_availability reaches this.
+        if BLOCKER_MIC in self.blockers:
+            return ACTION_FIX_MIC_PROFILE
         if self.status == STATUS_APPROVED:
             return ACTION_USE_CHIP_AEC
         if self.status == STATUS_TESTING:
             return ACTION_RUN_TESTING_AND_VALIDATE
-        if "mic" in self.blockers:
-            return ACTION_FIX_MIC_PROFILE
         return ACTION_USE_SOFTWARE_OR_TEST
 
     def to_dict(self) -> dict[str, object]:
@@ -292,7 +310,7 @@ def resolve_chip_aec_dac_gate(
         auto_allowed=False,
         arm_allowed=False,
         trial_allowed=True,
-        blockers=("dac",),
+        blockers=(BLOCKER_DAC,),
     )
 
 
@@ -340,7 +358,7 @@ def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
         auto_allowed = False
         arm_allowed = False
         trial_allowed = True
-        blockers = ("dac",)
+        blockers = (BLOCKER_DAC,)
     if testing_requested and gate_status == STATUS_NEEDS_CALIBRATION:
         trial_allowed = True
     return ChipAecGate(
@@ -352,4 +370,46 @@ def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
         arm_allowed=arm_allowed,
         trial_allowed=trial_allowed,
         blockers=blockers,
+    )
+
+
+def combine_mic_availability(
+    gate: ChipAecGate,
+    *,
+    mic_available: bool,
+    testing_requested: bool = False,
+) -> ChipAecGate:
+    """Fold the input-mic fact into a DAC-only gate, in one vocabulary.
+
+    ``resolve_chip_aec_dac_gate`` / ``gate_from_runtime_env`` only know the
+    output-DAC side, so their ``blockers`` carry at most ``BLOCKER_DAC``. The
+    input-mic side (a validated XVF beam plan) is observed separately by the
+    caller. This helper merges that fact in so the returned gate's
+    ``blockers`` and ``recommended_action`` are correct and use the single
+    canonical vocabulary (``CHIP_AEC_BLOCKER_CODES``) — rather than the caller
+    layering a parallel code scheme onto the serialized dict.
+
+    The DAC blocker is recomputed from the gate's allow-flags against the
+    *requested selection* (production, or testing when ``testing_requested``)
+    so the reported blockers match what would actually block arming that
+    selection; the gating logic itself is unchanged.
+    """
+
+    blockers: list[str] = []
+    if not mic_available:
+        blockers.append(BLOCKER_MIC)
+    dac_available_for_selection = gate.production_allowed or (
+        testing_requested and gate.testing_allowed
+    )
+    if not dac_available_for_selection:
+        blockers.append(BLOCKER_DAC)
+    return ChipAecGate(
+        dac_id=gate.dac_id,
+        status=gate.status,
+        source=gate.source,
+        detail=gate.detail,
+        auto_allowed=gate.auto_allowed,
+        arm_allowed=gate.arm_allowed,
+        trial_allowed=gate.trial_allowed,
+        blockers=tuple(blockers),
     )

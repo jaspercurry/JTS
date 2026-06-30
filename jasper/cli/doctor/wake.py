@@ -137,25 +137,27 @@ def _voice_wake_legs_runtime() -> "set[str] | None":
 
 def _assess_wake_legs(
     aec_mode: str, raw: bool, dtln: bool, armed_runtime: "set[str] | None",
-    *, chip_aec: bool = False,
+    *, chip_aec: bool = False, chip_aec_150: bool = False,
+    chip_aec_210: bool = False,
 ) -> CheckResult:
     """Compare configured wake-leg intent against what jasper-voice
     actually opened. Pure (the runtime set is passed in) so it's
     unit-testable without the HTTP round-trip.
 
     Maps the operator/config vocabulary to jasper.wake_legs tokens: the
-    aec3 master is "on", the "raw" toggle is the chip-direct "off" leg,
-    "dtln" is "dtln", and "chip_aec" is the pair of XVF3800 hardware-AEC
-    beam legs (chip_aec_150 + chip_aec_210). `armed_runtime` is None when
+    primary/session master is "on", the "raw" toggle is the chip-direct
+    "off" leg, "dtln" is "dtln", and the optional XVF3800 fixed hardware-AEC
+    beam detectors are "chip_aec_150" / "chip_aec_210". `armed_runtime` is None when
     the daemon is unreachable — then we report configured intent (the
     behaviour before the runtime cross-check existed).
 
     Chip-AEC is single-chip mutually exclusive with raw/DTLN: when it's on,
     the reconciler clears the raw/DTLN device vars *regardless* of their
     booleans (it preserves the booleans as wizard intent), so the effective
-    leg set is the two chip beams + the primary "on" carrier. We must NOT
-    expect "off"/"dtln" in that mode, or this check would false-warn that
-    they're "not running" when they are intentionally off."""
+    leg set is the primary "on" carrier plus only the chip beams explicitly
+    enabled in advanced settings. We must NOT expect "off"/"dtln" in that
+    mode, or this check would false-warn that they're "not running" when
+    they are intentionally off."""
     hint = "Toggle at http://jts.local/wake/ (Wake detection card)."
     if aec_mode != "auto":
         return CheckResult(
@@ -163,8 +165,14 @@ def _assess_wake_legs(
             f"n/a — AEC mode is {aec_mode}; additive legs require AEC on",
         )
     if chip_aec:
-        configured = ["aec3", "chip_aec_150", "chip_aec_210"]
-        expected = {"on", "chip_aec_150", "chip_aec_210"}
+        configured = ["primary_chip_beam"]
+        expected = {"on"}
+        if chip_aec_150:
+            configured.append("chip_aec_150")
+            expected.add("chip_aec_150")
+        if chip_aec_210:
+            configured.append("chip_aec_210")
+            expected.add("chip_aec_210")
     else:
         configured = [name for name, on in
                       (("aec3", True), ("raw", raw), ("dtln", dtln)) if on]
@@ -188,6 +196,15 @@ def _assess_wake_legs(
             f"(bridge down, chip not on 6-ch firmware, or see `journalctl "
             f"-u jasper-voice | grep event=wake.leg_skipped`). {hint}",
         )
+    unexpected = armed_runtime - expected
+    if unexpected:
+        return CheckResult(
+            "Wake legs", "warn",
+            f"configured {sorted(expected)} but jasper-voice also armed "
+            f"unexpected wake legs {sorted(unexpected)}; this usually means "
+            f"stale runtime env or an old daemon is burning extra wake-word "
+            f"instances. {hint}",
+        )
     return CheckResult(
         "Wake legs", "ok",
         f"{len(armed_runtime)} leg(s) armed: "
@@ -210,12 +227,16 @@ def check_wake_legs_configured() -> CheckResult:
     raw = _wake_leg_setting("JASPER_WAKE_LEG_RAW", True)
     dtln = _wake_leg_setting("JASPER_WAKE_LEG_DTLN", False)
     chip_aec = _wake_leg_setting("JASPER_WAKE_LEG_CHIP_AEC", False)
+    chip_aec_150 = _wake_leg_setting("JASPER_WAKE_LEG_CHIP_AEC_150", False)
+    chip_aec_210 = _wake_leg_setting("JASPER_WAKE_LEG_CHIP_AEC_210", False)
     effective = resolve_audio_input_intent(
         AecIntent(
             mode=aec_mode,
             raw_enabled=raw,
             dtln_enabled=dtln,
             chip_aec_enabled=chip_aec,
+            chip_aec_150_enabled=chip_aec_150,
+            chip_aec_210_enabled=chip_aec_210,
             profile_selection=_aec_profile_setting(),
         ),
         chip_available=_chip_aec_available_for_doctor(),
@@ -231,4 +252,6 @@ def check_wake_legs_configured() -> CheckResult:
         effective.dtln_enabled,
         armed_runtime,
         chip_aec=effective.chip_aec_enabled,
+        chip_aec_150=effective.chip_aec_150_enabled,
+        chip_aec_210=effective.chip_aec_210_enabled,
     )

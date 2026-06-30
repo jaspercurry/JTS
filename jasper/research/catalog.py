@@ -50,8 +50,3 @@ def provider_by_id(provider_id: str) -> TextProviderEntry | None:
         if entry.id == provider_id:
             return entry
     return None
-
-
-def default_model(provider_id: str) -> str:
-    entry = provider_by_id(provider_id)
-    return entry.default_model if entry is not None else ""

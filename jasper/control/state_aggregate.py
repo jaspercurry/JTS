@@ -43,7 +43,6 @@ from . import (
 )
 from .aec_endpoints import _aec_full_status
 from .dial import _dial_heartbeat, _probe_dial_reachable
-from .gain_chain import build_gain_chain_snapshot
 from .uds import _local_status_json, _mux_socket_command, _voice_socket_command
 
 logger = logging.getLogger(__name__)
@@ -68,6 +67,29 @@ _CAMILLA_PROBE_TIMEOUT_SEC = 2.0
 # one), converting an unbounded hang into a logged, bounded failure so the
 # bounded-worker control plane can never be parked indefinitely on /state.
 _STATE_AGGREGATE_BUDGET_SEC = 20.0
+_default_ha_status_cache: Any | None = None
+
+
+def _ha_failed_status(error: str = "probe failed") -> dict[str, Any]:
+    return {
+        "configured": False,
+        "connected": False,
+        "url": "",
+        "instance_name": None,
+        "version": None,
+        "error": error,
+    }
+
+
+def _default_ha_status_snapshot() -> dict[str, Any]:
+    """Child-process HA status snapshot for direct state-aggregate callers."""
+
+    global _default_ha_status_cache
+    if _default_ha_status_cache is None:
+        from .ha_status_cache import HomeAssistantStatusCache
+
+        _default_ha_status_cache = HomeAssistantStatusCache()
+    return _default_ha_status_cache.snapshot()
 
 
 def _safe_audio_quality_state() -> dict[str, Any]:
@@ -314,6 +336,20 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _capture_relay_config() -> dict[str, Any]:
+    """Network-free phone-mic-relay config snapshot for `/state.capture_relay`.
+
+    Reads ``JASPER_CAPTURE_RELAY_BASE`` from os.environ DIRECTLY (a deploy-time
+    value) so jasper-control never imports the capture_relay package's numpy/scipy
+    deps just for a config field. The doctor (on-demand) imports
+    capture_relay.health to actively probe reachability. This MUST stay in
+    lockstep with capture_relay.health.relay_config_from_env — pinned by
+    tests/test_capture_relay_health.py.
+    """
+    base = (os.environ.get("JASPER_CAPTURE_RELAY_BASE") or "").strip().rstrip("/")
+    return {"configured": bool(base), "relay_base": base or None}
+
+
 async def _get_state(
     *,
     camilla_host: str,
@@ -326,6 +362,7 @@ async def _get_state(
     dial_heartbeat: dict[str, Any] = _dial_heartbeat,
     dial_probe: Callable[..., Any] = _probe_dial_reachable,
     read_transit_state_func: Callable[[], dict] = read_transit_state,
+    ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Aggregate state across daemons for GET /state. Each section
     fails soft — voice unreachable / camilla restarting / dial never
@@ -478,15 +515,18 @@ async def _get_state(
             return None
 
     async def _ha_status() -> dict:
-        """Probe the configured HA instance for /state. Fails soft —
-        unconfigured returns {configured: false}; unreachable returns
-        {connected: false, error: ...}. Reads the jasper-intsecrets
-        home_assistant.env directly (not os.environ) so wizard saves are reflected
-        immediately rather than waiting for jasper-control to restart —
-        the wizard only restarts jasper-voice. See
-        `jasper.home_assistant.probe_status_from_env`."""
-        from .. import home_assistant
-        return await home_assistant.probe_status_from_env()
+        """HA status for /state via the child-process cache boundary.
+
+        The cache reads the wizard env-file signature fresh, so saves are
+        reflected without restarting jasper-control, while HA/httpx imports
+        stay in the short-lived probe child instead of the control daemon.
+        """
+        snapshot = ha_status_snapshot or _default_ha_status_snapshot
+        try:
+            return snapshot()
+        except Exception:  # noqa: BLE001
+            logger.exception("home assistant state snapshot failed")
+            return _ha_failed_status()
 
     # Snapshot dial heartbeat early so the parallel reachability probe
     # has a stable IP target even if the UDP listener mutates the dict
@@ -658,15 +698,6 @@ async def _get_state(
         mux_status=mux_st,
         diagnostics=_read_volume_diagnostics(),
     )
-    gain_chain = build_gain_chain_snapshot(
-        active_source=active_source,
-        volume_policy=volume_policy,
-        camilla_status=camilla_st,
-        sound_profile=sound_profile,
-        fanin_status=fanin_st,
-        outputd_status=outputd_st,
-        log_changes=True,
-    )
 
     # Build the dial section from the snapshot taken before the gather
     # so age_seconds is consistent with whatever IP the probe targeted.
@@ -765,6 +796,8 @@ async def _get_state(
     from ..mic_presence import read_mic_presence
     mic_presence = read_mic_presence()
 
+    capture_relay_state = _capture_relay_config()
+
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
@@ -833,7 +866,6 @@ async def _get_state(
             "main_volume_db": camilla_st["main_volume_db"],
             "listening_level_percent": listening_level,
             "volume_policy": volume_policy,
-            "gain_chain": gain_chain,
             "playback_rms_dbfs": camilla_st["playback_rms_dbfs"],
             "playback_peak_dbfs": camilla_st["playback_peak_dbfs"],
             "clipped_samples": camilla_st["clipped_samples"],
@@ -953,4 +985,7 @@ async def _get_state(
         # Async research summary. Counts and timestamps only; no prompt or
         # answer text leaves the local store through /state.
         "research": research_state,
+        # Phone-mic capture relay config snapshot (network-free; the doctor
+        # probes reachability on demand). {configured, relay_base}.
+        "capture_relay": capture_relay_state,
     }

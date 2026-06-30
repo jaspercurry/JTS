@@ -123,6 +123,14 @@ _UNCODIFIED = {
     "JASPER_AEC_USB_MIC_RATE",
     "JASPER_AEC_USB_MIXER_CARD",
     "JASPER_AEC_XVF_RAW0_DTLN_SIZE",
+    # -- Lean low-latency lane master gate (Stage 4b). Experimental,
+    #    default-OFF, opt-IN (=enabled). The lean File-capture path is not
+    #    yet wired into the live mux and must pass a 24 h on-device
+    #    zero-xrun soak before it goes live; until then it is an experiment
+    #    knob, not an operator surface. Graduates to a prose-commented
+    #    .env.example entry when the mux wiring lands and the soak passes.
+    #    See docs/HANDOFF-audio-latency-foundation.md.
+    "JASPER_LEAN_LANE",
     # -- Active-follower round-trip snd-aloop loopback device overrides
     #    (distributed-active Slice 3). Paired snd-aloop substream wiring
     #    with safe code defaults on both ends (snapclient writes

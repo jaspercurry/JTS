@@ -52,6 +52,42 @@ def _value_for(unit_text: str, key: str) -> str | None:
     return None
 
 
+def test_unit_elects_rt_below_the_sinks_and_bounds_rttime():
+    """Audio-latency foundation G1+G4. CamillaDSP must run SCHED_FIFO so it
+    isn't preempted under load (the source of the fan-in short-read/xrun
+    storms), but BELOW the two sinks that have to win the CPU when the system
+    is starved: jasper-fanin (30) and jasper-outputd (35). Camilla feeds them,
+    so the ordering 25 < 30 < 35 must hold — verify it against the sibling
+    units, not just a literal. LimitRTPRIO=99 gives the binary's
+    audio_thread_priority promotion headroom; LimitRTTIME=200000 (200 ms) bounds
+    a runaway RT thread to a SIGXCPU instead of a watchdog reboot (mandatory
+    with G1)."""
+    unit = UNIT_PATH.read_text()
+    assert _value_for(unit, "CPUSchedulingPolicy") == "fifo"
+    camilla_prio = int(_value_for(unit, "CPUSchedulingPriority"))
+    assert camilla_prio == 25
+    assert _value_for(unit, "LimitRTPRIO") == "99"
+    assert _value_for(unit, "LimitRTTIME") == "200000"
+
+    systemd_dir = UNIT_PATH.parent
+    fanin_prio = int(
+        _value_for(
+            (systemd_dir / "jasper-fanin.service").read_text(),
+            "CPUSchedulingPriority",
+        )
+    )
+    outputd_prio = int(
+        _value_for(
+            (systemd_dir / "jasper-outputd.service").read_text(),
+            "CPUSchedulingPriority",
+        )
+    )
+    assert camilla_prio < fanin_prio < outputd_prio, (
+        f"Camilla ({camilla_prio}) must stay below fan-in ({fanin_prio}) and "
+        f"outputd ({outputd_prio}) so the sinks win the CPU when starved."
+    )
+
+
 def test_unit_passes_cutover_statefile_to_camilladsp():
     """The outputd topology uses a separate Camilla statefile so
     rollback to pre-outputd code can keep the user's normal correction statefile
@@ -207,6 +243,27 @@ def test_install_sh_routes_outputd_statefile_through_runtime_contract():
     assert "--write-statefile" in body
     assert "tweeter/protected role" in body
     assert "config_path: /etc/camilladsp/outputd-cutover.yml" not in body
+
+
+def test_install_sh_writes_output_hardware_before_flat_statefile_seed():
+    """Fresh-flat startup needs output_hardware.json before rendering the base
+    graph and before runtime-safe-graph writes outputd-statefile.yml."""
+    body = INSTALL_SH.read_text()
+    assert "ensure_output_hardware_state" in body
+    assert "render_outputd_cutover_config" in body
+    assert "emit_flat_outputd_cutover_config" in body
+
+    normal_install = body.index("install_jasper\n")
+    state = body.index("ensure_output_hardware_state", normal_install)
+    render = body.index("render_outputd_cutover_config", state)
+    seed = body.index("ensure_outputd_camilla_statefile", render)
+    assert normal_install < state < render < seed
+
+    streambox_install = body.index("install_streambox_jasper\n")
+    state = body.index("ensure_output_hardware_state", streambox_install)
+    render = body.index("render_outputd_cutover_config", state)
+    seed = body.index("ensure_outputd_camilla_statefile", render)
+    assert streambox_install < state < render < seed
 
 
 def test_unit_documents_no_config_recovery_path():

@@ -1029,30 +1029,18 @@ class OpenAIRealtimeConnection:
         active turn time, not socket-open wall clock."""
         self._billable_activity_meter = meter
 
-    def set_uptime_meter(self, meter) -> None:
-        """Back-compatible alias for ``set_billable_activity_meter``."""
-        self.set_billable_activity_meter(meter)
-
     def _mark_billable_activity_started(self) -> None:
         meter = self._billable_activity_meter
         if meter is None or self._billable_activity_interval_open:
             return
-        mark = getattr(meter, "mark_started", None)
-        if callable(mark):
-            mark()
-        else:
-            meter.mark_connected()
+        meter.mark_started()
         self._billable_activity_interval_open = True
 
     def _mark_billable_activity_ended(self) -> None:
         meter = self._billable_activity_meter
         if meter is None or not self._billable_activity_interval_open:
             return
-        mark = getattr(meter, "mark_ended", None)
-        if callable(mark):
-            mark()
-        else:
-            meter.mark_disconnected()
+        meter.mark_ended()
         self._billable_activity_interval_open = False
 
     def _maybe_fire_escalation_cue(self) -> None:

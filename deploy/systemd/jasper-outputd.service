@@ -34,6 +34,14 @@ LimitMEMLOCK=infinity
 CPUSchedulingPolicy=fifo
 CPUSchedulingPriority=35
 
+# LimitRTTIME bounds RT-thread runaway (audio-latency foundation G4). outputd
+# owns the DAC write loop at the highest FIFO priority in the chain (35); a
+# spinning RT thread here would be the most likely to starve PID 1 and trip the
+# hardware watchdog into a reboot. SIGXCPU at 200 ms turns that whole-system
+# wedge into a single crashed daemon (Restart=on-failure revives it). Mirrors
+# PipeWire RTKit's RTTimeUSec. Carried by every FIFO unit (camilla/fanin/outputd).
+LimitRTTIME=200000
+
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=read-only

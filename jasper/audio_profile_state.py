@@ -53,6 +53,8 @@ class AecIntent:
     raw_enabled: bool = True
     dtln_enabled: bool = False
     chip_aec_enabled: bool = False
+    chip_aec_150_enabled: bool = False
+    chip_aec_210_enabled: bool = False
     profile_selection: str = ""
 
 
@@ -141,6 +143,8 @@ def infer_audio_input_profile(intent: AecIntent) -> str:
     mode = (intent.mode or "auto").strip().strip("'\"").lower()
     if mode != "auto":
         return PROFILE_DIRECT_MIC
+    if intent.chip_aec_150_enabled or intent.chip_aec_210_enabled:
+        return PROFILE_CUSTOM
     if intent.chip_aec_enabled:
         return PROFILE_XVF_CHIP_AEC
     if intent.raw_enabled and not intent.dtln_enabled:
@@ -176,6 +180,8 @@ def profile_env_updates(profile: str) -> dict[str, str]:
             "JASPER_WAKE_LEG_RAW": "1",
             "JASPER_WAKE_LEG_DTLN": "0",
             "JASPER_WAKE_LEG_CHIP_AEC": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC_150": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC_210": "0",
         })
     elif normalized in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}:
         updates.update({
@@ -183,6 +189,8 @@ def profile_env_updates(profile: str) -> dict[str, str]:
             "JASPER_WAKE_LEG_RAW": "0",
             "JASPER_WAKE_LEG_DTLN": "0",
             "JASPER_WAKE_LEG_CHIP_AEC": "1",
+            "JASPER_WAKE_LEG_CHIP_AEC_150": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC_210": "0",
         })
     elif normalized == PROFILE_XVF_SOFTWARE_AEC3:
         updates.update({
@@ -190,6 +198,8 @@ def profile_env_updates(profile: str) -> dict[str, str]:
             "JASPER_WAKE_LEG_RAW": "1",
             "JASPER_WAKE_LEG_DTLN": "0",
             "JASPER_WAKE_LEG_CHIP_AEC": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC_150": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC_210": "0",
         })
     elif normalized == PROFILE_DIRECT_MIC:
         updates.update({
@@ -197,6 +207,8 @@ def profile_env_updates(profile: str) -> dict[str, str]:
             "JASPER_WAKE_LEG_RAW": "0",
             "JASPER_WAKE_LEG_DTLN": "0",
             "JASPER_WAKE_LEG_CHIP_AEC": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC_150": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC_210": "0",
         })
     return updates
 
@@ -219,6 +231,8 @@ def resolve_audio_input_intent(
                 raw_enabled=False,
                 dtln_enabled=False,
                 chip_aec_enabled=True,
+                chip_aec_150_enabled=False,
+                chip_aec_210_enabled=False,
                 profile_selection=selection,
             )
         return AecIntent(
@@ -226,6 +240,8 @@ def resolve_audio_input_intent(
             raw_enabled=True,
             dtln_enabled=False,
             chip_aec_enabled=False,
+            chip_aec_150_enabled=False,
+            chip_aec_210_enabled=False,
             profile_selection=selection,
         )
     if selection in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}:
@@ -234,6 +250,8 @@ def resolve_audio_input_intent(
             raw_enabled=False,
             dtln_enabled=False,
             chip_aec_enabled=True,
+            chip_aec_150_enabled=False,
+            chip_aec_210_enabled=False,
             profile_selection=selection,
         )
     if selection == PROFILE_XVF_SOFTWARE_AEC3:
@@ -242,6 +260,8 @@ def resolve_audio_input_intent(
             raw_enabled=True,
             dtln_enabled=False,
             chip_aec_enabled=False,
+            chip_aec_150_enabled=False,
+            chip_aec_210_enabled=False,
             profile_selection=selection,
         )
     if selection == PROFILE_DIRECT_MIC:
@@ -250,6 +270,8 @@ def resolve_audio_input_intent(
             raw_enabled=False,
             dtln_enabled=False,
             chip_aec_enabled=False,
+            chip_aec_150_enabled=False,
+            chip_aec_210_enabled=False,
             profile_selection=selection,
         )
     return AecIntent(
@@ -257,6 +279,8 @@ def resolve_audio_input_intent(
         raw_enabled=intent.raw_enabled,
         dtln_enabled=intent.dtln_enabled,
         chip_aec_enabled=intent.chip_aec_enabled,
+        chip_aec_150_enabled=intent.chip_aec_150_enabled,
+        chip_aec_210_enabled=intent.chip_aec_210_enabled,
         profile_selection=PROFILE_CUSTOM,
     )
 
@@ -524,8 +548,7 @@ def build_audio_profile_status(
         and gate_permitted
         and not aec_device_mismatch
         and runtime.chip_enabled
-        and runtime.chip_aec_150_device
-        and runtime.chip_aec_210_device
+        and runtime.primary_device.startswith("udp:")
     )
     applied_raw_enabled = bool(runtime.raw_device)
     applied_dtln_enabled = bool(runtime.dtln_enabled or runtime.dtln_device)
@@ -567,7 +590,11 @@ def build_audio_profile_status(
             if requested_profile == PROFILE_XVF_CHIP_AEC_TESTING
             else "Chip-AEC runtime env is applied."
         )
-        wake_legs = ["Primary chip beam", "Chip AEC 150", "Chip AEC 210"]
+        wake_legs = ["Primary chip beam"]
+        if runtime.chip_aec_150_device:
+            wake_legs.append("Chip AEC 150")
+        if runtime.chip_aec_210_device:
+            wake_legs.append("Chip AEC 210")
     else:
         if software_runtime_active:
             processing_mode = "Software AEC3"

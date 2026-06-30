@@ -540,6 +540,12 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         # active-lane marker is cleared here too. Seeding it keeps the
         # steady state truly unchanged (no spurious outputd restart).
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
+        # The Apple dongle's codified latency floor (#27) is part of the
+        # steady state now — seed it so a second reconcile is a true no-op.
+        "JASPER_CAMILLA_CHUNKSIZE=256\n"
+        "JASPER_CAMILLA_TARGET_LEVEL=1536\n"
+        "JASPER_OUTPUTD_PERIOD_FRAMES=256\n"
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512\n"
     )
     result = _run_reconcile(
         tmp_path,
@@ -1107,3 +1113,262 @@ def test_reconcile_restarts_when_only_outputd_runtime_env_changes(
     commands = _systemctl_log(tmp_path)
     assert "--no-block restart jasper-outputd.service" in commands
     assert "--no-block restart jasper-aec-reconcile.service" in commands
+
+
+def _stub_render_lib(tmp_path: Path, body: str) -> Path:
+    """A drop-in jasper-asound-render.sh whose template renderer is overridable.
+
+    Sources the real lib first (so jasper_asound_log_token et al. stay intact),
+    then redefines jasper_asound_render_template with the supplied body so a
+    test can drive the production failure shape — a card-less recognized DAC
+    makes the real renderer fail closed (require_output_dac_card -> 64) BEFORE
+    it opens the dest, which the reconciler must not paper over.
+    """
+    stub = tmp_path / "stub-asound-render.sh"
+    real = ROOT / "deploy" / "lib" / "jasper-asound-render.sh"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f"source {real}\n"
+        "jasper_asound_render_template() {\n"
+        f"{body}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    return stub
+
+
+def test_render_failure_preserves_live_template_and_fails_loud(tmp_path: Path):
+    """A failed template render must NOT clobber the working /etc/asound.conf.
+
+    Regression for the silent-failure bug: render_asound_if_needed invoked
+    jasper_asound_render_template and IGNORED its return value, then
+    unconditionally `mv`'d the temp over the live template. Because the caller
+    runs the function in a `&& render_changed=1` list, `set -e` is suppressed
+    inside it, so a fail-closed render (e.g. card-less recognized DAC ->
+    require_output_dac_card returns 64, dest never written) fell straight
+    through to the mv and replaced a working ALSA config with an empty file on
+    the audio OUTPUT path — exactly the class JTS forbids. Pin that on render
+    failure the existing template is left byte-for-byte intact AND the failure
+    is surfaced (event=...asound_render_failed).
+    """
+    good = "GOOD LIVE ALSA CONFIG — must survive a render failure\n"
+    # Stub renderer mirrors the production failure: write nothing, return 64
+    # (same exit code as require_output_dac_card on a card-less recognized DAC).
+    stub = _stub_render_lib(tmp_path, "    return 64")
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "render-fail",
+        initial_template=good,
+        extra_env={"JASPER_ASOUND_RENDER_LIB": str(stub)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    # The live template is untouched — NOT emptied, NOT partially written.
+    template_path = tmp_path / "asoundrc.jasper.template"
+    assert template_path.read_text(encoding="utf-8") == good
+    assert template_path.stat().st_size > 0
+    # Failure is loud: the structured event fired and the dac8x->asound render
+    # never reported success.
+    assert "event=audio_hardware_reconcile.asound_render_failed" in result.stderr
+    assert "preserved_existing=1" in result.stderr
+    assert "event=audio_hardware_reconcile.asound_rendered" not in result.stderr
+    # A clobber would have re-run the conf renderer against the empty template;
+    # the preserve path must not.
+    assert _render_log(tmp_path) == ""
+    # No stray temp left behind next to the template.
+    leftovers = list(template_path.parent.glob("asoundrc.jasper.template.*"))
+    assert leftovers == [], leftovers
+
+
+def test_render_empty_output_preserves_live_template(tmp_path: Path):
+    """A renderer that 'succeeds' (rc 0) but emits an empty file must not win.
+
+    Defense in depth for the same never-clobber-to-empty invariant: even if a
+    future helper regression returns 0 while writing nothing, the reconciler
+    rejects the empty render and keeps the working template rather than emitting
+    silence to the speaker.
+    """
+    good = "GOOD LIVE ALSA CONFIG — survives an empty render\n"
+    # rc 0 but the dest is truncated to empty.
+    stub = _stub_render_lib(tmp_path, '    : > "$2"\n    return 0')
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "render-empty",
+        initial_template=good,
+        extra_env={"JASPER_ASOUND_RENDER_LIB": str(stub)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    template_path = tmp_path / "asoundrc.jasper.template"
+    assert template_path.read_text(encoding="utf-8") == good
+    assert "event=audio_hardware_reconcile.asound_render_failed" in result.stderr
+    assert "event=audio_hardware_reconcile.asound_rendered" not in result.stderr
+    assert _render_log(tmp_path) == ""
+
+
+def test_render_success_still_writes_template(tmp_path: Path):
+    """The happy path is unchanged: a valid render replaces the template.
+
+    Guards against an over-eager fix that makes render_asound_if_needed treat
+    every render as a failure. A normal recognized-DAC reconcile must still
+    write the rendered outputd_dac block and run the conf renderer.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "render-ok",
+        initial_template="STALE PLACEHOLDER\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    assert "pcm.outputd_dac" in template
+    assert "card sndrpihifiberry" in template
+    _assert_no_empty_alsa_card(template)
+    assert "event=audio_hardware_reconcile.asound_rendered" in result.stderr
+    assert "event=audio_hardware_reconcile.asound_render_failed" not in result.stderr
+    assert _render_log(tmp_path) == "render\n"
+
+
+# --- #27 per-DAC latency floor emit ------------------------------------------
+
+
+def test_reconcile_apple_emits_codified_latency_floor(tmp_path: Path):
+    # An Apple dongle declares a measured floor; the reconciler emits all four
+    # floor keys into the wizard-owned outputd.env (mirroring the channel write).
+    result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_CAMILLA_CHUNKSIZE=256" in outputd_env
+    assert "JASPER_CAMILLA_TARGET_LEVEL=1536" in outputd_env
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES=256" in outputd_env
+    assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512" in outputd_env
+    assert (
+        "event=audio_hardware_reconcile.latency_floor "
+        "reason=test output_dac_id=apple_usb_c_dongle camilla_chunksize=256"
+    ) in result.stderr
+
+
+def test_reconciler_gets_latency_floor_actions_from_runtime_plan() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert "jasper.cli.audio_config" in text
+    assert "outputd-floor-actions" in text
+    assert "latency_floor_for_dac()" not in text
+    assert "from jasper.audio_hardware.dac import latency_floor_for" not in text
+
+
+def _outputd_env_key_present(outputd_env: str, key: str) -> bool:
+    return any(
+        re.match(rf"^\s*{re.escape(key)}\s*=", line)
+        for line in outputd_env.splitlines()
+    )
+
+
+def test_reconcile_dac8x_clears_floor_keys_no_profile_floor(tmp_path: Path):
+    # A DAC8x declares NO floor — the reconciler does not write the keys, so the
+    # shipped global default applies. (When a prior DAC left a floor in
+    # outputd.env, the keys are dropped — see
+    # test_reconcile_no_floor_drops_stale_floor_keys.)
+    result = _run_reconcile(tmp_path, DAC8X_AND_APPLE_LISTING, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    # No floor for this DAC and no prior entry => the key is simply absent. It is
+    # NOT written as an empty `KEY=`: an empty assignment in outputd.env (loaded
+    # AFTER jasper.env) would override any operator value with empty.
+    for key in (
+        "JASPER_CAMILLA_CHUNKSIZE",
+        "JASPER_CAMILLA_TARGET_LEVEL",
+        "JASPER_OUTPUTD_PERIOD_FRAMES",
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
+    ):
+        assert not _outputd_env_key_present(outputd_env, key), key
+
+
+def test_reconcile_no_floor_drops_stale_floor_keys(tmp_path: Path):
+    # A DAC with no declared floor must DROP a stale floor a prior DAC wrote into
+    # outputd.env, not leave it as `=''` (which would clobber an operator value)
+    # and not leave the stale numbers.
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env=(
+            "JASPER_CAMILLA_CHUNKSIZE=256\n"
+            "JASPER_CAMILLA_TARGET_LEVEL=1024\n"
+            "JASPER_OUTPUTD_PERIOD_FRAMES=256\n"
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512\n"
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    for key in (
+        "JASPER_CAMILLA_CHUNKSIZE",
+        "JASPER_CAMILLA_TARGET_LEVEL",
+        "JASPER_OUTPUTD_PERIOD_FRAMES",
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
+    ):
+        assert not _outputd_env_key_present(outputd_env, key), key
+
+
+def test_reconcile_operator_env_override_survives_reconciler(tmp_path: Path):
+    # The HIGH inversion fix: operator set JASPER_OUTPUTD_DAC_BUFFER_FRAMES (and
+    # JASPER_CAMILLA_CHUNKSIZE) in jasper.env (loaded FIRST by the unit). The
+    # reconciler must NOT write an empty `KEY=` into outputd.env (loaded AFTER),
+    # which would override the operator's value with empty and make Rust fall
+    # back to its default — silently discarding the tune. It must DROP the key
+    # from outputd.env entirely so the operator's jasper.env value survives.
+    # Keys the operator did NOT set still get the profile floor.
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env=(
+            "JASPER_CAMILLA_CHUNKSIZE=512\n"
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=4096\n"
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    # Operator-set keys: ABSENT from outputd.env (not `=''`) so jasper.env wins.
+    assert not _outputd_env_key_present(outputd_env, "JASPER_CAMILLA_CHUNKSIZE")
+    assert not _outputd_env_key_present(
+        outputd_env, "JASPER_OUTPUTD_DAC_BUFFER_FRAMES"
+    )
+    # Non-overridden keys: profile floor still emitted.
+    assert "JASPER_CAMILLA_TARGET_LEVEL=1536" in outputd_env
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES=256" in outputd_env
+
+
+def test_reconcile_operator_outputd_override_dropped_even_when_pre_seeded(
+    tmp_path: Path,
+):
+    # Defense in depth for the HIGH fix: even when a PRIOR reconcile already
+    # wrote the floor into outputd.env, a later reconcile that sees the operator
+    # override in jasper.env must REMOVE the outputd.env copy (so the operator's
+    # earlier-loaded value is no longer shadowed), not leave it `=''` or stale.
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=4096\n",
+        initial_outputd_env="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert not _outputd_env_key_present(
+        outputd_env, "JASPER_OUTPUTD_DAC_BUFFER_FRAMES"
+    )

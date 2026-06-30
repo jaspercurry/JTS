@@ -133,13 +133,19 @@
 > playing sound, reloading CamillaDSP, or storing wizard progress; target
 > selection, artifact verification, and floor-audio confirmation remain
 > explicit operator-selected actions.
-> `/sound/active-speaker/driver-measurement`,
-> `/sound/active-speaker/driver-capture`,
-> `/sound/active-speaker/summed-validation`, and
-> `/sound/active-speaker/summed-capture` now persist the first product-grade
-> measurement evidence through `jasper.active_speaker.measurement` at
+> `/sound/active-speaker/driver-measurement` and
+> `/sound/active-speaker/summed-validation` (by-ear confirmations), plus the
+> HTTPS browser mic-capture path `/correction/crossover/` driver-capture /
+> summed-capture (`correction_crossover_backend` →
+> `web_measurement.record_driver_capture` / `record_summed_capture`), persist
+> the first product-grade measurement evidence through
+> `jasper.active_speaker.measurement` at
 > `/var/lib/jasper/active_speaker_measurements.json` with kind
-> `jts_active_speaker_measurements`. Driver evidence is bound to the current
+> `jts_active_speaker_measurements`. (The old `/sound/active-speaker/driver-capture`
+> + `/summed-capture` mic routes were a verbatim duplicate of the
+> `web_measurement` capture path that nothing reached after the move to
+> `/correction/`; they were deleted — Codex-week review C4a-1. `/sound/` is plain
+> HTTP and cannot `getUserMedia`.) Driver evidence is bound to the current
 > saved physical target fingerprint: topology id, detected hardware, active
 > speaker group/mode, driver role, assigned DAC output, and current identity
 > confirmation. The mic-capture path accepts a bounded browser WAV upload (or a
@@ -224,10 +230,7 @@
 > active preference-EQ path keeps boosts at unity, matching the ordinary
 > `/sound` path; explicit output trim or match-loudness attenuation is the
 > only preference-layer global attenuation folded into
-> `active_baseline_headroom`. The runtime gain-chain ledger
-> (`/state.audio.gain_chain`, documented in
-> [HANDOFF-volume.md](HANDOFF-volume.md#state-gain-chain-ledger)) must make
-> any future baseline attenuation visible if this default ever changes.
+> `active_baseline_headroom`.
 > Per-driver gain prefers an explicit
 > `gain_offset_db`; when research gives none but declares sensitivities,
 > `_derive_corrections` fail-safes by attenuating the hotter drivers down to the
@@ -755,7 +758,7 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   any audible output → fail closed, do not unmute.
 - **Stage 5 — per-driver floor unmute, woofer→tweeter, operator-confirmed
   (built; runnable via `jasper-active-speaker commission-ramp` **or** the
-  `/sound/` Advanced-speaker-setup → "Test each driver" step, which renders the
+  `/sound/` Speaker setup → "Test each driver" step, which renders the
   Start-tone commission card for an active 2/3-way group; passive/full-range
   groups have no separate active driver test —
   POST `/active-speaker/commission-{load,ramp-step,ramp-ack,ramp-abort}` +

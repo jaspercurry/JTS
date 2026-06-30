@@ -19,6 +19,13 @@ session_artifacts = [
   # HANDOFF-barge-in.md. Not a canonical scan target; retire when barge-in ships.
   "docs/barge-in-build-prompts.md",
 ]
+# Prior-art research artifacts: long-lived studies kept as reference (each
+# tagged `Status: research` in-doc), not canonical operational scan targets.
+# They satisfy the no-orphan-doc invariant without routing a future maintainer
+# to them as current operational truth.
+research = [
+  "docs/RESEARCH-pipewire-low-latency.md",
+]
 
 [[subsystem]]
 id = "ci-and-branch-protection"
@@ -131,6 +138,7 @@ docs = [
   "AGENTS.md",
   "QUICKSTART.md",
   "BRINGUP.md",
+  "docs/HANDOFF-runtime-memory.md",
   "docs/HANDOFF-supply-chain.md",
   "docs/HANDOFF-build-sandbox.md",
   "docs/HANDOFF-resilience.md",
@@ -377,6 +385,8 @@ code = [
   "jasper/aec_engines/**",
   "jasper/audio_profile_state.py",
   "jasper/audio_validation.py",
+  "jasper/audio_input_view.py",
+  "jasper/control/aec_endpoints.py",
   "jasper/mics/**",
   "jasper/xvf/**",
   "jasper/chip_aec_experiment.py",
@@ -395,6 +405,7 @@ docs = [
   "docs/AEC-DIAG-04-timing-results.md",
   "docs/AEC-DIAG-06-xvf-format-level-profile.md",
   "docs/HANDOFF-aec.md",
+  "docs/HANDOFF-runtime-memory.md",
   "docs/HANDOFF-barge-in.md",
   # The reconciler is the single writer of the mic presence-gate marker;
   # a change to its park/start paths must route here.
@@ -473,7 +484,6 @@ id = "volume-and-sound"
 title = "Volume coordination and sound preferences"
 safety = "audio-output-risk"
 code = [
-  "jasper/control/gain_chain.py",
   "jasper/control/state_aggregate.py",
   "jasper/volume_*.py",
   "jasper/volume_coordinator.py",
@@ -494,13 +504,14 @@ docs = [
   "docs/audio-paths.md",
   "docs/HANDOFF-sound-preferences.md",
   "docs/HANDOFF-correction.md",
+  "docs/phone-mic-relay-plan.md",
   "docs/HANDOFF-dsp-graph-carrier.md",
 ]
 requires_docs_when = [
-  "The canonical listening level, source volume carrier, gain-chain ledger, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
+  "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
 ]
 verification = [
-  "pytest tests/test_gain_chain.py tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_assistant_loudness.py tests/test_audio_io.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py",
+  "pytest tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_assistant_loudness.py tests/test_audio_io.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py",
 ]
 
 [[subsystem]]
@@ -551,12 +562,36 @@ docs = [
   "docs/audio-paths.md",
   "docs/HANDOFF-fan-in-daemon.md",
   "docs/HANDOFF-volume.md",
+  "docs/HANDOFF-audio-latency-foundation.md",
 ]
+
 requires_docs_when = [
   "Gadget enablement, reboot requirements, USB source state, host volume observation, preemption, or source-lane wiring changes.",
 ]
 verification = [
   "pytest tests/test_usbsink_daemon.py tests/test_usbsink_audio_bridge.py tests/test_usbsink_volume_bridge.py tests/test_usbsink_state.py tests/test_sources_setup_usbsink.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py",
+]
+
+[[subsystem]]
+id = "audio-latency-lean-lane"
+title = "Audio-latency foundation / lean File-capture lane"
+safety = "boot-risk"
+code = [
+  "jasper/lean_lane.py",
+  "jasper/camilla_config_contract.py",
+  "jasper/sound/camilla_yaml.py",
+  "jasper/active_speaker/camilla_yaml.py",
+]
+docs = [
+  "docs/HANDOFF-audio-latency-foundation.md",
+  "docs/HANDOFF-usb-low-latency.md",
+]
+requires_docs_when = [
+  "The lean File-capture lane topology, the CamillaDSP resampler schema/vocabulary, the FIFO format/path contract, the lean-lane feature flag, the chip/software AEC optionality, or the no-re-architect rules change.",
+  "The USB-only lean-fifo route, its solo-only/mux-ladder arming, or the DAC-floor codification plan changes (see HANDOFF-usb-low-latency.md).",
+]
+verification = [
+  "pytest tests/test_sound_camilla_yaml.py tests/test_lean_lane.py tests/test_active_speaker_runtime_contract.py",
 ]
 
 [[subsystem]]
@@ -653,11 +688,14 @@ title = "Home Assistant integration"
 safety = "safe-ci"
 code = [
   "jasper/home_assistant.py",
+  "jasper/control/ha_probe_child.py",
+  "jasper/control/ha_status_cache.py",
   "jasper/tools/home_assistant.py",
   "jasper/web/home_assistant_setup.py",
 ]
 docs = [
   "docs/HANDOFF-homeassistant.md",
+  "docs/HANDOFF-runtime-memory.md",
 ]
 requires_docs_when = [
   "Conversation API usage, wizard setup flow, token handling, tool prompt/answer behavior, or observability surfaces change.",
@@ -839,6 +877,8 @@ code = [
   "jasper/control/debug_control.py",
   "jasper/control/state_aggregate.py",
   "jasper/control/system_*.py",
+  "jasper/control/ha_probe_child.py",
+  "jasper/control/ha_status_cache.py",
   "jasper/control/shairport_supervisor.py",
   "jasper/control/airplay_health.py",
   "jasper/control/bootloop_guard_state.py",
@@ -874,6 +914,7 @@ docs = [
   "docs/HANDOFF-tier5-watchdog-liveness.md",
   "docs/HANDOFF-airplay.md",
   "docs/HANDOFF-management-ui.md",
+  "docs/HANDOFF-runtime-memory.md",
 ]
 requires_docs_when = [
   "Watchdog, OOM, restart, dashboard health, AirPlay mode/health, or systemd unit resilience behavior changes.",
@@ -954,4 +995,36 @@ requires_docs_when = [
 ]
 verification = [
   "pytest tests/test_control_server.py",
+]
+
+[[subsystem]]
+id = "phone-mic-capture-relay"
+title = "Phone-mic capture relay (cloud transport for browser mic capture)"
+safety = "connectivity-risk"
+# The transport that moves browser phone-mic capture off the Pi's self-signed
+# cert onto a trusted Cloudflare Pages origin + a stateless E2E-encrypted relay
+# the Pi pulls from, feeding the EXISTING correction analysis. Three surfaces:
+# the Pi-side Python package, the Cloudflare Worker, and the static capture page.
+code = [
+  "jasper/capture_relay/spec.py",
+  "jasper/capture_relay/crypto.py",
+  "jasper/capture_relay/client.py",
+  "jasper/capture_relay/session.py",
+  "jasper/capture_relay/alignment.py",
+  "jasper/capture_relay/cues.py",
+  "jasper/capture_relay/correction_adapter.py",
+  "relay/src/worker.js",
+  "capture-page/js/render.js",
+  "capture-page/js/crypto.js",
+  "capture-page/index.html",
+]
+docs = [
+  "docs/phone-mic-relay-plan.md",
+]
+requires_docs_when = [
+  "The relay API contract, the opaque-spec/blob invariant, the E2E wire format (AES-256-GCM, IV-prepended, plaintext SHA-256), the DATA-only renderer's component/theme allowlist, the capture-page CSP, a measurement-validity gate (realized-constraints / alignment-confidence / clock-drift), a failure cue, or the deploy steps change.",
+]
+verification = [
+  "python3 scripts/docs-impact.py --validate-only",
+  "pytest tests/test_capture_relay_spec.py tests/test_capture_relay_crypto.py tests/test_capture_relay_session.py tests/test_capture_relay_alignment.py tests/test_relay_worker_js.py tests/test_capture_page_js.py",
 ]

@@ -74,6 +74,18 @@ reassert using the household credential; off via
 `JASPER_GROUPING_SUPERVISOR=disabled`). Auto-unwind to solo is deliberately
 NOT built — disband stays one tap on /rooms until a real non-converging
 failure shape is observed.
+After-the-fact observability for restart cascades is owned by
+`jasper.multiroom.cascade_timeline` — a bounded `/state` ring that scans the
+existing `multiroom.reconcile.*` / `restart_broker.*` /
+`grouping_supervisor.*` journal lines so an operator can answer "what kicked
+what?" without a raw log bundle. It is **solo-gated** (a speaker with no bond
+configured produces no bond cascade, so `_tick` skips the per-unit
+`journalctl` scan and only re-reads the cheap grouping env; the scan resumes
+the moment a bond is configured) and, like the sibling supervisors, has an
+off-switch — `JASPER_MULTIROOM_CASCADE_TIMELINE=disabled` (exact match,
+case-insensitive; any other value warns and stays enabled). Surface:
+`/state.resilience.multiroom_cascade` (`{"enabled": false}` when disabled or
+not yet running).
 A leader whose bond apply did not land reads `degraded` with "active
 CamillaDSP config does not write the snapserver pipe".
 **The retired outputd-as-producer machinery was REMOVED on 2026-06-11** (the
@@ -456,6 +468,17 @@ question is not "does WiFi work" but "what buffer size + codec hold
 L/R sync on this household's WiFi" — that is what the §8 spike
 measures.
 
+> **Note (2026-06-27):** until the Stage-0 latency fix, the configured
+> `buffer_ms` was **inert** — it was passed as a `pipe://…&buffer_ms=`
+> *source-URL query param*, which snapcast silently ignores, so every bond
+> actually ran snapcast's **1000 ms** global default regardless of the
+> configured value. It is now routed through the global `--stream.buffer
+> <ms>` flag (`reconcile.py:snapserver_argv`), so the configured value
+> finally takes effect. Any on-device buffer-sizing observation recorded
+> *before* this fix was made against the 1000 ms default, not the value in
+> the config — re-measure before trusting earlier `buffer_ms` conclusions
+> (including the §8 spike numbers).
+
 This mirrors what the mature open-source players landed on. Both
 Music Assistant and (effectively) Home Assistant draw a hard line:
 **grouping/control is the platform's job; audio sync is the engine's
@@ -830,6 +853,19 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   stays bonded so the next reconcile re-applies the bond when snapserver
   is healthy; `event=camilla_pipe_guard.*` + the `leader pipe` doctor
   check surface the degraded state.
+  **Second dead-pipe class — lean CAPTURE pipe (2026-06):** the same
+  guard also inspects the statefile config's RawFile CAPTURE source. The
+  lean / FIFO-coupling lane captures from a named pipe under `/run`
+  (`/run/jasper-usbsink/lean.pipe`, `/run/jasper-fanin/camilla.pipe`); if
+  usbsink/fan-in reverts off the lean lane the pipe disappears, and a
+  camilla restart that reloads the persisted lean config crash-loops on
+  the absent capture pipe (THE incident). When the config's capture
+  filename is a `/run` pipe that does not exist, the guard re-points the
+  statefile to the base config too (`event=camilla_pipe_guard.repaired
+  reason=capture_pipe_absent`). The runtime sibling that prevents the
+  strand in the first place is `restore_buffered_config` (leave-lean),
+  which now re-points off lean whenever the live OR persisted config names
+  lean — see [HANDOFF-audio-latency-foundation.md](HANDOFF-audio-latency-foundation.md).
   **PR-2 (built 2026-06-11):** outputd grew a TTS server
   (`rust/jasper-outputd/src/tts.rs`) speaking fanin's exact newline-framed
   wire protocol (GAIN / PREPARE_ASSISTANT / SEGMENT_* / AUDIO /
@@ -2075,13 +2111,14 @@ correction exclusion), tests/test_measurement_volume_guard.py
 (Camilla/Snapcast snapshot-normalize-restore), and
 tests/test_multiroom_snapcast_rpc.py (Snapcast volume/mute RPC seams).
 Updated 2026-06-24: `/rooms/`
-now exposes pair balance as one centered slider (the UI clamps the ordinary
-household adjustment to ±6 dB; the backend/grouping safety envelope remains the
-validated attenuate-only -24..0 dB contract). `POST /trim` still
-supports the legacy `target=self|peer` ±0.5 dB nudge, but the page uses
+now exposes pair balance as one centered slider (the UI accepts ±24 dB,
+controlled by `BALANCE_MIN_DB`/`BALANCE_MAX_DB` in `grouping-view.js`;
+the backend/grouping safety envelope remains the validated attenuate-only
+-24..0 dB contract). `POST /trim` takes only
 `target=pair` + signed `balance_db`, which rewrites BOTH member trims
 absolutely and re-normalizes wasted attenuation so one side is always
-0 dB. `JASPER_GROUPING_TRIM_DB` remains wizard/bond-owned intent — the LOUDER
+0 dB. (The legacy `target=self|peer` ±0.5 dB nudge was removed once the
+slider replaced it — it had no remaining caller.) `JASPER_GROUPING_TRIM_DB` remains wizard/bond-owned intent — the LOUDER
 speaker trims down, never a boost; outputd re-validates fail-closed. For dumb endpoints the
 reconciler derives `JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB` into
 grouping-outputd.env (empty on solo = unset to env_f32) and outputd
@@ -2700,7 +2737,7 @@ deferred/unmeasured until the spike runs on hardware.)
 ---
 
 Last verified: 2026-06-26 (`/rooms/` backend-owned stereo-pair intent,
-primary subwoofer-control hiding, ±6 dB UI balance range, and fresh
+primary subwoofer-control hiding, ±24 dB UI balance range (reverted from ±6 dB after PR #1034; verified against `deploy/assets/rooms/js/grouping-view.js` `BALANCE_MIN_DB`/`BALANCE_MAX_DB`), and fresh
 pair/unbond trim reset rechecked against `jasper/web/rooms_setup.py`,
 `deploy/assets/rooms/js/main.js`, `deploy/assets/rooms/js/grouping-view.js`,
 `tests/test_web_rooms_setup.py`, and live jts4/jts5 browser + SSH trim
@@ -2727,3 +2764,9 @@ grouping oneshot timeout rechecked against `jasper.multiroom.reconcile` and
 `deploy/systemd/jasper-grouping-reconcile.service`; wireless-sub 2.1 path from
 2026-06-23 unchanged; snapclient journal rate limit rechecked against
 `deploy/systemd/jasper-snapclient.service`)
+
+Stage-0 update 2026-06-27: `buffer_ms` was inert (passed as a snapcast
+`pipe://…&buffer_ms=` source-URL param it silently ignores, so bonds ran the
+1000 ms default); now routed via `--stream.buffer` in
+`reconcile.py:snapserver_argv` so the configured value takes effect. Pre-fix
+buffer-sizing observations predate any real buffer change.

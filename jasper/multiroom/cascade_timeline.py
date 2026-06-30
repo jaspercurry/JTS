@@ -9,11 +9,34 @@ This sampler keeps the last few multiroom/restart supervisor decisions in
 memory so an operator can reconstruct "what kicked what" from ``/state``
 without SSHing into journald first. It is intentionally small: no log bundle,
 no raw journal retention, no unbounded history.
+
+Solo gate: the events this ring captures (``multiroom.reconcile.*``,
+``restart_broker.*``, ``grouping_supervisor.*``) chiefly fire on a speaker
+that is part of a multiroom bond. (``restart_broker.*`` is the exception —
+the broker also serves solo in-process callers such as wifi-scan-repair,
+/sources/, /correction/, wake-corpus, and active-speaker startup — so the
+solo gate intentionally trades away capturing those non-multiroom restarts,
+which are not what this multiroom-cascade ring exists to reconstruct.) A solo
+speaker (no grouping configured — the overwhelmingly common single-speaker
+household) has no bond cascade to reconstruct, so ``_tick`` skips the
+per-unit ``journalctl`` subprocess work and only re-reads the cheap grouping
+env (one file read) each cycle. The moment a bond is configured the scan
+resumes with no restart. A configured-but-invalid (fail-LOUD) bond is
+intentionally NOT treated as solo: its reconcile events are exactly what an
+operator debugging the broken bond wants in the ring.
+
+Disable knob: set ``JASPER_MULTIROOM_CASCADE_TIMELINE=disabled`` in
+/etc/jasper/jasper.env and restart jasper-control. Mirrors
+JASPER_GROUPING_SUPERVISOR / JASPER_SHAIRPORT_SUPERVISOR /
+JASPER_SYSTEM_SUPERVISOR (exact match, case-insensitive; anything else logs
+a warning and stays enabled). When disabled the daemon thread never starts —
+``/state`` reports ``{"enabled": False}``.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
 import subprocess
 import threading
@@ -21,6 +44,8 @@ import time
 from collections import deque
 from collections.abc import Callable
 from typing import Any
+
+from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +163,26 @@ JournalRecord = tuple[float, str]
 JournalReader = Callable[[str, float, float], list[JournalRecord]]
 
 
+def _default_grouped() -> bool:
+    """True when this speaker has multiroom grouping configured.
+
+    The solo gate: a speaker with no bond configured produces none of the
+    events this ring captures, so there is nothing to scan for. Uses
+    :func:`jasper.multiroom.config.is_enabled` (a single env-file read) so a
+    configured-but-invalid (fail-LOUD) bond still counts as grouped — its
+    reconcile events are the ones an operator most wants in the ring. Fail-
+    soft to ``True`` (keep scanning) so a transient read error never silently
+    blinds the timeline. Imported lazily to keep this module import-light.
+    """
+    try:
+        from .config import is_enabled
+
+        return is_enabled()
+    except Exception:  # noqa: BLE001 — observability must never crash control
+        logger.debug("cascade timeline grouped-check failed", exc_info=True)
+        return True
+
+
 class CascadeTimelineSampler:
     """Journal-driven bounded event ring for multiroom restart cascades."""
 
@@ -148,12 +193,14 @@ class CascadeTimelineSampler:
         journal_lookback_sec: float = JOURNAL_LOOKBACK_SEC,
         ring_size: int = EVENT_RING_SIZE,
         journal_reader: JournalReader | None = None,
+        grouped_check: Callable[[], bool] | None = None,
         time_func: Callable[[], float] = time.time,
     ) -> None:
         self._journal_interval = journal_interval_sec
         self._journal_lookback = max(0.0, journal_lookback_sec)
         self._time = time_func
         self._journal_reader = journal_reader or self._read_journal_lines
+        self._grouped_check = grouped_check or _default_grouped
         now = self._time()
         start = max(0.0, now - self._journal_lookback)
         self._journal_since = {unit: start for unit in JOURNAL_UNITS}
@@ -197,6 +244,16 @@ class CascadeTimelineSampler:
 
     def _tick(self) -> None:
         now = self._time()
+        if not self._grouped_check():
+            # Solo speaker: none of the captured event families fire, so skip
+            # the per-unit journalctl subprocess work. Advance the cursors to
+            # `now` so a later bond resumes from a fresh, bounded window
+            # instead of replaying a stale backlog. Leave `_last_scan_at`
+            # untouched: /state then honestly distinguishes "skipped (solo)"
+            # from "scanned, found nothing".
+            for unit in JOURNAL_UNITS:
+                self._journal_since[unit] = now
+            return
         for unit in JOURNAL_UNITS:
             since = self._journal_since.get(unit, now)
             try:
@@ -270,12 +327,29 @@ def _journal_realtime_seconds(value: Any, fallback: float) -> float:
 _sampler: CascadeTimelineSampler | None = None
 
 
-def start_sampler() -> CascadeTimelineSampler:
-    """Start the singleton sampler used by jasper-control."""
+def start_sampler() -> CascadeTimelineSampler | None:
+    """Start the singleton sampler used by jasper-control.
+
+    No-op returning ``None`` when ``JASPER_MULTIROOM_CASCADE_TIMELINE=disabled``
+    (exact match, case-insensitive). Mirrors the sibling supervisors'
+    off-switch handling; any other value logs a warning and stays enabled.
+    Idempotent — the sole caller is jasper-control's single-threaded ``main()``.
+    """
     global _sampler
-    if _sampler is None:
-        _sampler = CascadeTimelineSampler()
-        _sampler.start()
+    if _sampler is not None:
+        return _sampler
+    mode = os.environ.get("JASPER_MULTIROOM_CASCADE_TIMELINE", "auto").lower()
+    if mode == "disabled":
+        log_event(logger, "cascade_timeline.disabled")
+        return None
+    if mode != "auto":
+        logger.warning(
+            "JASPER_MULTIROOM_CASCADE_TIMELINE=%r unrecognized; "
+            "treating as 'auto'. Use 'disabled' to turn the timeline off.",
+            mode,
+        )
+    _sampler = CascadeTimelineSampler()
+    _sampler.start()
     return _sampler
 
 

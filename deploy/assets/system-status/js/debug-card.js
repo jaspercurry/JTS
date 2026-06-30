@@ -15,7 +15,7 @@
 // Text content goes through dom.js (escaped by construction) — no
 // innerHTML path. The collapsible's open state survives row re-renders.
 
-import { h } from "./dom.js";
+import { h } from "/assets/shared/js/dom.js";
 import { collapsible } from "./components.js";
 import { getJSON, jsonHeaders } from "./api.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";

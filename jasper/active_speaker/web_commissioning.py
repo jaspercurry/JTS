@@ -50,7 +50,6 @@ from jasper.active_speaker.measurement import (
     load_measurement_state,
     record_driver_measurement,
     record_summed_test_artifact,
-    record_summed_validation,
 )
 from jasper.active_speaker.safe_playback import (
     arm_safe_playback_session,
@@ -155,7 +154,7 @@ def _dict_items(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _config_paths_match(a: str | None, b: str | None) -> bool:
+def _config_paths_match(a: str | Path | None, b: str | Path | None) -> bool:
     if not a or not b:
         return False
     try:
@@ -1699,24 +1698,26 @@ async def _play_summed_commission_tone(
             commissioning_load=load_payload,
         )
 
+    from jasper.correction.playback import play_sweep
+
     fanin_gate: dict[str, Any] | None = None
     rollback: dict[str, Any] | None = None
     rollback_issue: dict[str, str] | None = None
     try:
         fanin_gate = _commission_tone_select_fanin_lane()
-        completed = subprocess.run(
-            ["aplay", "-D", COMMISSION_TONE_ALSA_DEVICE, "-q", str(wav_path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=duration_s + 1.0,
-            check=False,
+        # Off-loop playback: ``play_sweep`` runs ``aplay`` via
+        # ``asyncio.create_subprocess_exec`` and awaits it, so the shared
+        # correction loop stays responsive (status polls, SSE progress, the
+        # safe-playback TTL deadman) for the whole stimulus instead of being
+        # blocked by a synchronous ``subprocess.run``. Matches the capture-sweep
+        # path above. Same command/device/WAV and the same ``duration_s + 1.0``
+        # deadman bound; ``play_sweep`` raises ``SweepPlaybackError``
+        # (a ``RuntimeError``) on non-zero exit or timeout, caught below.
+        await play_sweep(
+            wav_path,
+            alsa_device=COMMISSION_TONE_ALSA_DEVICE,
+            timeout_s=duration_s + 1.0,
         )
-        if completed.returncode != 0:
-            detail = (completed.stderr or "").strip().splitlines()
-            raise RuntimeError(
-                detail[0][:160] if detail else f"aplay exited {completed.returncode}"
-            )
         playback_result = dict(artifact_playback)
         playback_result.update({
             "status": "completed",
@@ -1898,24 +1899,3 @@ async def start_summed_test(
         "measurements": measurement_payload,
         "commission": commission_status_payload(),
     }
-
-
-def record_summed_result(raw: dict[str, Any]) -> dict[str, Any]:
-    """Record one operator/audible summed crossover result."""
-
-    if not isinstance(raw, dict):
-        raise ValueError("summed validation request must be an object")
-    topology = load_output_topology()
-    payload = record_summed_validation(
-        topology,
-        raw,
-        calibration_level=load_calibration_level_state(),
-    )
-    log_event(
-        logger,
-        "active_speaker.web_summed_validation",
-        status=payload.get("status"),
-        group_id=raw.get("speaker_group_id"),
-        outcome=raw.get("outcome"),
-    )
-    return payload

@@ -15,6 +15,7 @@ from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
+    OutputTopologyError,
     save_output_topology,
 )
 from tests.test_active_speaker_baseline_profile import (
@@ -325,3 +326,57 @@ def test_active_speaker_setup_rederives_baseline_freshness(
         "baseline_summed_validation_missing",
     }
     assert stale["baseline_profile"]["revalidation"]["required"] is True
+
+
+# --- C3b-2: the two documented fail-closed branches ---
+#
+# The module docstring promises "an unreadable topology OR unreadable baseline
+# profile returns a blocked snapshot instead of silently treating the speaker as
+# ready." Both branches were asserted by no test, so a refactor that turned
+# either catch fail-OPEN (e.g. returning volume_allowed=True) would silently
+# unblock volume/mute/grouping on a misconfigured active speaker. These pin them.
+
+
+def test_unreadable_topology_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise() -> OutputTopology:
+        raise OutputTopologyError("topology JSON is corrupt")
+
+    monkeypatch.setattr(setup_mod, "load_output_topology_strict", _raise)
+
+    status = setup_mod.read_active_speaker_setup_status(
+        active_config_path="/var/lib/camilladsp/configs/sound_current.yml",
+    )
+
+    assert status["volume_allowed"] is False
+    assert status["grouping_allowed"] is False
+    assert status["safety_muted"] is True
+    assert status["reason"] == "output_topology_unreadable"
+    assert "output_topology_unreadable" in {
+        issue["code"] for issue in status["issues"]
+    }
+
+
+def test_unreadable_baseline_profile_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _save_topology(monkeypatch, tmp_path, _active_topology())
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    config_path.write_text("pipeline: []\n", encoding="utf-8")
+
+    def _raise(*_args, **_kwargs):
+        raise ValueError("baseline candidate could not be derived")
+
+    monkeypatch.setattr(setup_mod, "build_baseline_profile_candidate", _raise)
+
+    status = setup_mod.read_active_speaker_setup_status(
+        active_config_path=str(config_path),
+    )
+
+    assert status["volume_allowed"] is False
+    assert status["grouping_allowed"] is False
+    assert status["safety_muted"] is True
+    assert "active_baseline_profile_unreadable" in {
+        issue["code"] for issue in status["issues"]
+    }

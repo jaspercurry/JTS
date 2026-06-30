@@ -12,7 +12,7 @@ import pytest
 import jasper.research as research
 from jasper.research import catalog as research_catalog
 from jasper.research import ResearchRequest, ResearchResult
-from jasper.research.catalog import TextProviderEntry, default_model, provider_by_id
+from jasper.research.catalog import TextProviderEntry, provider_by_id
 from jasper.research.providers import openai_research
 
 
@@ -76,9 +76,8 @@ def test_catalog_helpers():
 
     assert entry is not None
     assert entry.model_env == "JASPER_RESEARCH_OPENAI_MODEL"
-    assert default_model("openai") == openai_research.DEFAULT_MODEL
+    assert entry.default_model == openai_research.DEFAULT_MODEL
     assert provider_by_id("missing") is None
-    assert default_model("missing") == ""
 
 
 def test_catalog_rejects_duplicate_provider_ids():

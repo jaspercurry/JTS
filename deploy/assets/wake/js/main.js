@@ -25,16 +25,18 @@
 // cached module bakes in no secret. The slider uses an explicit Save button
 // rather than apply-on-change so a drag doesn't restart jasper-voice per pixel.
 
-import { jsonHeaders } from "/assets/shared/js/http.js";
+import { jsonHeaders, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 
-const LAYERS = ["raw", "dtln", "chip_aec"];
+const LAYERS = ["raw", "dtln", "chip_aec_150", "chip_aec_210"];
 const POLL_MS = 3000;
 
 const dirty = {};
 let ignorePollUntil = 0;
 let lastServerThreshold = null;
 let profileChoices = {};
+let fusionToggles = {};
+let firmwareUpdateBusy = false;
 
 const el = (id) => document.getElementById(id);
 
@@ -56,6 +58,37 @@ function choicesByProfile(settings) {
   const validation = (settings.advanced || {}).validation_profile || {};
   if (validation.profile) out[validation.profile] = validation;
   return out;
+}
+
+function firmwareMeta(fw) {
+  const target = fw.target || {};
+  const current = fw.current || {};
+  const bits = [];
+  if (current.geometry) bits.push("Detected " + current.geometry + " geometry");
+  if (target.filename) bits.push("Downloads " + target.filename);
+  if (target.sha256) bits.push("SHA256 " + target.sha256.slice(0, 12) + "...");
+  return bits.join(" · ") || "—";
+}
+
+function applyFirmwareUpdateStatus(s) {
+  const fw = s.firmware_update || {};
+  const card = el("firmware-update-card");
+  const button = el("firmware-update-button");
+  if (!card || !button) return;
+  const state = fw.state || "unknown";
+  const show = ["update_required", "updating", "failed", "unknown", "unsupported", "current"].includes(state);
+  card.hidden = !show;
+  card.dataset.state = state;
+  setText("firmware-update-title", fw.title || "Microphone firmware");
+  setText("firmware-update-detail", fw.detail || "—");
+  setText("firmware-update-meta", firmwareMeta(fw));
+  const action = fw.action || {};
+  button.textContent = action.label || "Download and update firmware";
+  button.disabled = firmwareUpdateBusy || !action.enabled;
+  if (state === "updating") {
+    button.textContent = "Updating…";
+    button.disabled = true;
+  }
 }
 
 function applyProfileStatus(s) {
@@ -143,9 +176,11 @@ function applyState(s) {
   ((fusion && fusion.toggles) || []).forEach((toggle) => {
     if (toggle && toggle.id) toggles[toggle.id] = toggle;
   });
+  fusionToggles = toggles;
 
   applyProfileStatus(s);
   applyMicStatus(s);
+  applyFirmwareUpdateStatus(s);
 
   setText("fusion-summary", fusion.summary || "—");
   LAYERS.forEach((name) => {
@@ -158,7 +193,10 @@ function applyState(s) {
       input.disabled = !toggle.enabled;
     }
     const reason = toggle.disabled_reason || "";
-    el("layer-status-" + name).textContent = reason || (toggle.status || "—");
+    setText("layer-name-" + name, toggle.label);
+    setText("layer-desc-" + name, toggle.description);
+    setText("layer-meta-" + name, toggle.cost);
+    setText("layer-status-" + name, reason || (toggle.status || "—"));
     row.classList.toggle("is-disabled", input.disabled);
   });
 
@@ -191,7 +229,7 @@ async function pollDetection() {
     applyState(await r.json());
   } catch (e) {
     LAYERS.forEach((name) => {
-      el("layer-status-" + name).textContent = "Disconnected";
+      setText("layer-status-" + name, "Disconnected");
     });
     profileInputs().forEach((input) => {
       input.disabled = true;
@@ -201,6 +239,10 @@ async function pollDetection() {
     });
     setText("echo-status-title", "Disconnected");
     setText("echo-status-detail", "Could not reach jasper-control.");
+    const fwCard = el("firmware-update-card");
+    const fwButton = el("firmware-update-button");
+    if (fwCard) fwCard.hidden = true;
+    if (fwButton) fwButton.disabled = true;
     setText("mic-status-name", "Disconnected");
     setText("mic-status-firmware", "—");
     setText("mic-status-mode", "—");
@@ -276,36 +318,20 @@ profileInputs().forEach((input) => {
   });
 });
 
-// Wire each advanced stream toggle. DTLN and hardware beam scoring get an
-// extra confirm because both carry a real restart/resource cost.
+// Wire each advanced stream toggle. Confirm text comes from the backend view
+// model so the browser does not own per-channel resource policy.
 LAYERS.forEach((name) => {
   el("layer-" + name).addEventListener("change", async () => {
     const cb = el("layer-" + name);
-    if (
-      name === "dtln" &&
-      cb.checked &&
-      !(await jtsConfirm(
-        "Enable DTLN neural AEC?\n\n" +
-          "+~75 MB RAM, +~25% one core. Recommended for 2 GB Pis.\n" +
-          "jasper-voice + bridge will restart (~15 s).",
-      ))
-    ) {
-      cb.checked = false;
-      return;
-    }
-    if (
-      name === "chip_aec" &&
-      cb.checked &&
-      !(await jtsConfirm(
-        "Use the chip-AEC beams as the wake layers?\n\n" +
-          "This switches to the mic array's hardware echo-cancelled " +
-          "beam plan and PAUSES the raw + DTLN layers — the chip " +
-          "can't do both at once.\n" +
-          "jasper-voice + bridge will restart (~15 s).",
-      ))
-    ) {
-      cb.checked = false;
-      return;
+    const confirm = (fusionToggles[name] || {}).confirm;
+    if (cb.checked && confirm) {
+      const message = [confirm.title || "", confirm.body || ""]
+        .filter(Boolean)
+        .join("\n\n");
+      if (!(await jtsConfirm(message, { danger: !!confirm.danger }))) {
+        cb.checked = false;
+        return;
+      }
     }
     postLayer(name, cb.checked);
   });
@@ -344,6 +370,32 @@ saveBtn.addEventListener("click", async () => {
   saveBtn.textContent = "Save";
   setTimeout(pollDetection, 500);
 });
+
+const firmwareButton = el("firmware-update-button");
+if (firmwareButton) {
+  firmwareButton.addEventListener("click", async () => {
+    if (!(await jtsConfirm(
+      "Update microphone firmware?\n\n" +
+        "JTS will download the hash-pinned firmware from Seeed's GitHub, " +
+        "stop voice briefly, flash the microphone over DFU, then reconcile AEC. " +
+        "Keep the microphone plugged in until the update finishes.",
+      { danger: true },
+    ))) {
+      return;
+    }
+    firmwareUpdateBusy = true;
+    firmwareButton.disabled = true;
+    firmwareButton.textContent = "Starting…";
+    try {
+      const body = await postJSON("firmware/update", {});
+      applyState(body);
+    } catch (err) {
+      await jtsAlert("Firmware update failed to start: " + err.message);
+    }
+    firmwareUpdateBusy = false;
+    setTimeout(pollDetection, 500);
+  });
+}
 
 // Model-picker form: disable submit so the restart-in-progress is visible
 // before the redirect (the redirect fires before the daemon is back up).

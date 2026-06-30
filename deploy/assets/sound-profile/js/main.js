@@ -21,6 +21,7 @@
 // Do not blind-refactor it. See docs/HANDOFF-management-ui.md.
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
+import { csrfHeaders, jsonHeaders } from "/assets/shared/js/http.js";
 import {
   DEFAULT_SUB_CROSSOVER_HZ,
   SUB_CROSSOVER_HZ_HI,
@@ -29,6 +30,7 @@ import {
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
   commissionCardState,
+  commissioningStepFooter,
   commissionPayloadHasIssue,
   commissionPayloadFailure,
   defaultActiveSpeakerStep,
@@ -38,8 +40,10 @@ import {
   outputStatusClass,
   outputStepTitle,
   playbackResultMessage,
+  sensitivityTrimsFromGap,
   subwooferCrossoverBand,
-  subwooferCrossoverFcHz
+  subwooferCrossoverFcHz,
+  summedGroupFailureHint
 } from "/assets/sound-profile/js/active-speaker-ui.js";
 import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js";
 (function() {
@@ -47,7 +51,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     simple_gain_db: 12, advanced_gain_db: 12, max_parametric_bands: 8,
     min_freq_hz: 20, max_freq_hz: 20000, min_q: 0.2, max_q: 10, cut_max_q: 1.4,
     simple_bands: [], headroom_trim_max_db: 12,
-    volume_floor_min_db: -60, volume_floor_max_db: -10
+    // volume_floor_default_db is owned by the backend (volume_curve.
+    // DEFAULT_VOLUME_FLOOR_DB → /state limits) and read via volumeFloorDefault().
+    // These three are the payload-absent fallbacks only.
+    volume_floor_min_db: -60, volume_floor_max_db: -10, volume_floor_default_db: -50
   };
   var DEFAULT_SAVED_ID = 'stock:flat';
   var FLAT = function() {
@@ -76,7 +83,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var soundSettings = {
     headroom_trim_db: 0,
     match_loudness: false,
-    volume_floor_db: -50
+    volume_floor_db: volumeFloorDefault()
   };  // global output settings
   var volumeFloorDraftDb = null;
   var volumeFloorSaving = false;
@@ -168,16 +175,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return true;
     }
   })();
-  function csrfHeaders(headers) {
-    var out = headers || {};
-    var tokenEl = document.querySelector('meta[name=jts-csrf]');
-    var token = tokenEl ? tokenEl.content : '';
-    if (token) out['X-CSRF-Token'] = token;
-    return out;
-  }
-  function jsonHeaders() {
-    return csrfHeaders({'Content-Type': 'application/json'});
-  }
+  // csrfHeaders / jsonHeaders are imported from /assets/shared/js/http.js — the
+  // one cross-page owner of the CSRF/JSON plumbing. A conventions guard in
+  // tests/test_web_wizard_conventions.py keeps a local re-declaration from
+  // creeping back (same shared-by-promotion rule as escape.js / dialog.js).
   function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, Number(v) || 0)); }
   function clone(o) { return JSON.parse(JSON.stringify(o || {})); }
   function fmtDb(v) { v = Number(v) || 0; return (v > 0 ? '+' : '') + v.toFixed(1); }
@@ -595,7 +596,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function fmtTrim(v) { v = Number(v) || 0; return v > 0 ? '−' + v.toFixed(1) + ' dB' : 'Off'; }
   function fmtVolumeFloor(v) {
     v = Number(v);
-    if (!isFinite(v)) v = -50;
+    if (!isFinite(v)) v = volumeFloorDefault();
     return v.toFixed(1) + ' dB';
   }
   function volumeFloorLimits() {
@@ -605,10 +606,19 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!isFinite(floorMax)) floorMax = -10;
     return {min: floorMin, max: floorMax};
   }
+  // The reset/default volume floor, owned by the backend (volume_curve.
+  // DEFAULT_VOLUME_FLOOR_DB → /state limits.volume_floor_default_db). Single
+  // read point so the page never hardcodes the value; LIMIT_DEFAULTS supplies
+  // the payload-absent fallback.
+  function volumeFloorDefault() {
+    var value = Number(limits.volume_floor_default_db);
+    if (!isFinite(value)) value = Number(LIMIT_DEFAULTS.volume_floor_default_db);
+    return value;
+  }
   function savedVolumeFloorDb() {
     var bounds = volumeFloorLimits();
     var floor = Number(soundSettings.volume_floor_db);
-    if (!isFinite(floor)) floor = -50;
+    if (!isFinite(floor)) floor = volumeFloorDefault();
     return clamp(floor, bounds.min, bounds.max);
   }
   function coerceVolumeFloorDb(value) {
@@ -629,7 +639,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var node = el('set-volume-floor-readout');
     if (node) node.textContent = fmtVolumeFloor(value);
     var resetButton = el('view-body').querySelector('[data-act="reset-volume-floor"]');
-    if (resetButton) resetButton.disabled = Math.abs(value - (-50)) < 0.05;
+    if (resetButton) resetButton.disabled = Math.abs(value - volumeFloorDefault()) < 0.05;
     var saveButton = el('volume-floor-save-button');
     if (saveButton) {
       var dirty = volumeFloorDirty(value);
@@ -648,7 +658,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var floorBounds = volumeFloorLimits();
     var floorMin = floorBounds.min;
     var floorMax = floorBounds.max;
-    var defaultFloor = -50;
+    var defaultFloor = volumeFloorDefault();
     var floor = volumeFloorValue();
     var advancedOpen = trim > 0 || Math.abs(floor - defaultFloor) >= 0.05;
     var toneLabel = volumeFloorTone.active ? 'Stop tone' : 'Start tone';
@@ -967,19 +977,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return targets.find(function(target) {
       return target.speaker_group_id === groupId && target.role === role;
     }) || null;
-  }
-  function outputAssignedMap(topology) {
-    var out = {};
-    outputGroups(topology).forEach(function(group) {
-      (group.channels || []).forEach(function(channel) {
-        if (channel.physical_output_index == null) return;
-        out[String(channel.physical_output_index)] = {
-          group: group.label || group.id,
-          role: channel.role || 'channel'
-        };
-      });
-    });
-    return out;
   }
   function outputAssignedToOtherMap(topology, groupId, role) {
     var out = {};
@@ -1404,23 +1401,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     // Propose a starting level trim from the sensitivity gap so a hotter
     // compression/horn driver is never left at full level relative to the
     // woofer. The operator reviews/confirms the value; the server enforces the
-    // same fail-safe (baseline_profile.py:_derive_corrections). Only fill when
-    // the field is empty — never clobber an operator/research-supplied trim.
+    // same fail-safe (baseline_profile.py:_derive_corrections). The pure
+    // sensitivity→trim math lives in sensitivityTrimsFromGap (parity-pinned to
+    // that Python source); here we only collect the inputs and apply the result
+    // to empty fields — never clobbering an operator/research-supplied trim.
     var sensitivities = {};
     Object.keys(driversByRole).forEach(function(role) {
       var sens = manualNumberValue(driversByRole[role].sensitivity_db_2v83_1m);
-      if (sens != null) sensitivities[role] = sens;
+      if (sens != null) sensitivities[role] = sens;  // reference = min over ALL
     });
-    var roles = Object.keys(sensitivities);
-    if (roles.length < 2) return;
-    var reference = Math.min.apply(null, roles.map(function(role) {
-      return sensitivities[role];
-    }));
-    roles.forEach(function(role) {
+    var trims = sensitivityTrimsFromGap(sensitivities);
+    Object.keys(trims).forEach(function(role) {
       var setting = driverSetting(role);
       if (manualNumberValue(setting.gain_offset_db) != null) return;  // keep explicit
-      var trim = Math.round((reference - sensitivities[role]) * 10) / 10;  // <= 0
-      if (trim < 0) setting.gain_offset_db = trim;
+      setting.gain_offset_db = trims[role];
     });
   }
   function applyDriverResearchToManualSettings(payload) {
@@ -1874,32 +1868,48 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (disabled ? ' disabled' : '') + '>' +
       escapeHtml(label) + '</button>';
   }
+  // Render a {label, primary, disabled, act, step} footer descriptor from
+  // commissioningStepFooter. An 'output-step-next' act carries the step; a
+  // bare act (save-driver-design / prepare-crossover-preview) is a direct
+  // click; an empty act is a disabled waiting affordance.
+  function renderStepFooterButton(desc) {
+    desc = desc || {};
+    if (desc.act === 'output-step-next') {
+      return renderOutputStepButton(desc.step || '', desc.label, desc.primary, desc.disabled);
+    }
+    return '<button type="button" class="btn ' +
+      escapeHtml(desc.primary !== false ? 'btn--primary' : 'btn--ghost') + '"' +
+      (desc.act ? ' data-act="' + escapeHtml(desc.act) + '"' : '') +
+      (desc.disabled ? ' disabled' : '') + '>' +
+      escapeHtml(desc.label || '') + '</button>';
+  }
   function renderDriverResearchStepFooter(topology) {
-    if (outputTopology.dirty) {
-      return '<button type="button" class="btn btn--primary" disabled>Save layout first</button>';
-    }
-    if (driverResearch.saving) {
-      return '<button type="button" class="btn btn--primary" disabled>Saving</button>';
-    }
-    if (driverResearch.dirty || !driverResearchStepSatisfied()) {
-      return '<button type="button" class="btn btn--primary" data-act="save-driver-design">Save values</button>';
-    }
-    if (activeCommissionGroup(topology) &&
-        !crossoverPreviewReadyForProtectedStaging(crossoverPreview.payload)) {
-      return '<button type="button" class="btn btn--primary" data-act="prepare-crossover-preview"' +
-        (driverResearchHasPreviewInputs(topology) ? '' : ' disabled') +
-        '>Preview crossover</button>';
-    }
-    return renderOutputStepButton('research', 'Continue', true);
+    // Clean-draft readiness comes from the backend commissioning view-model;
+    // the client fallback covers only the unsaved-edit cases it cannot see.
+    // A pending layout save blocks first; a draft save-in-flight is "Saving";
+    // an unsaved draft offers "Save values" (same act as the backend path).
+    var clientFallback = outputTopology.dirty ?
+      {label: 'Save layout first', primary: true, disabled: true} :
+      (driverResearch.saving ?
+        {label: 'Saving', primary: true, disabled: true} :
+        {label: 'Save values', primary: true, act: 'save-driver-design'});
+    return renderStepFooterButton(commissioningStepFooter('research',
+      activeSpeaker.commissioningView, {
+        layoutDirty: outputTopology.dirty,
+        draftDirty: driverResearch.dirty,
+        saving: driverResearch.saving,
+        previewInputsReady: driverResearchHasPreviewInputs(topology),
+        clientFallback: clientFallback
+      }));
   }
   function renderOutputMapStepFooter() {
-    if (outputTopology.dirty) {
-      return '<button type="button" class="btn btn--primary" data-act="save-output-topology">Save</button>';
-    }
-    if (!outputIdentityComplete()) {
-      return '<button type="button" class="btn btn--primary" disabled>Confirm outputs</button>';
-    }
-    return renderOutputStepButton('map', 'Continue', true);
+    var clientFallback = {label: 'Save', primary: true, disabled: false,
+      act: 'save-output-topology'};
+    return renderStepFooterButton(commissioningStepFooter('map',
+      activeSpeaker.commissioningView, {
+        layoutDirty: outputTopology.dirty,
+        clientFallback: clientFallback
+      }));
   }
   function outputTemplateKindFromAxes(layout, speakerMode) {
     if (layout !== 'mono' && layout !== 'stereo') return '';
@@ -2377,28 +2387,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderPreviewIssues(issues) {
     return renderIssueList(issues, 5);
-  }
-  function summedTestRetryHint(issues) {
-    issues = Array.isArray(issues) ? issues : [];
-    if (!issues.length) return '';
-    var codes = issues.map(function(issue) {
-      return String(issue && issue.code || '');
-    });
-    if (codes.indexOf('tone_backend_failed') >= 0) {
-      return 'JTS could not prepare the combined test audio. Retry after the setup finishes; if it fails again, open System status.';
-    }
-    if (codes.indexOf('summed_commission_load_failed') >= 0 ||
-        codes.indexOf('safe_session_not_armed') >= 0) {
-      return 'JTS could not open the quiet combined-test path. Press Play combined test to retry.';
-    }
-    if (codes.indexOf('summed_test_artifact_missing') >= 0 ||
-        codes.indexOf('summed_test_playback_incomplete') >= 0) {
-      return 'The combined test did not finish. Press Play combined test to retry.';
-    }
-    if (codes.indexOf('summed_test_output_mismatch') >= 0) {
-      return 'The last combined test did not match the saved speaker outputs. Press Play combined test to retry; if it fails again, re-check Confirm outputs.';
-    }
-    return 'The last combined test did not play. Press Play combined test to try again.';
   }
   function renderCrossoverPreviewRows(payload) {
     var groups = Array.isArray(payload.groups) ? payload.groups : [];
@@ -3036,11 +3024,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         (canRecord ?
           'Run the combined speaker test first. It uses the prepared crossover setup at the level you choose.' :
           'Test each driver first, then test the combined speaker.'));
-      var latestTestIssues = latestTest && Array.isArray(latestTest.issues)
-        ? latestTest.issues : [];
-      var retryHint = !hasAudibleTest ?
-        (groupView && groupView.failure_message || summedTestRetryHint(latestTestIssues)) :
-        '';
+      // Backend owns the per-failure-code copy (groupView.failure_message); the
+      // helper falls back to ONE generic line only when the view is unavailable.
+      var retryHint = summedGroupFailureHint(groupView, { suppress: hasAudibleTest });
       return '<div class="active-speaker-validation__group">' +
         '<div class="row-between">' +
           '<div><p class="setting-row__title">' + escapeHtml(group.label || group.id || 'Speaker') + '</p>' +
@@ -3552,7 +3538,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
 
   async function resetVolumeFloor() {
-    var floor = -50;
+    var floor = volumeFloorDefault();
     var floorInput = el('set-volume-floor');
     if (floorInput) floorInput.value = floor;
     setVolumeFloorDraft(floor);
@@ -4155,19 +4141,23 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         render();
         return {ok: false, payload: payload, error: failure};
       }
+      // Success path is inside the try so a throw from the refresh/render calls
+      // is handled like any other postCommission error instead of rejecting the
+      // un-awaited runCommissionAutoRamp promise (which would wedge the
+      // single-flight flag — the symmetric half of the C3a-7 fix).
+      if (payload && payload.measurements) {
+        patchActiveSpeaker({measurements: payload.measurements});
+      }
+      await refreshCommissionState();
+      await refreshCommissioningView();
+      if (showBusy) patchActiveSpeaker({commissionBusy: ''});
+      render();
+      return {ok: true, payload: payload};
     } catch (e) {
       patchActiveSpeaker({commissionBusy: '', commissionError: String(e.message || e)});
       render();
       return {ok: false, error: String(e.message || e)};
     }
-    if (payload && payload.measurements) {
-      patchActiveSpeaker({measurements: payload.measurements});
-    }
-    await refreshCommissionState();
-    await refreshCommissioningView();
-    if (showBusy) patchActiveSpeaker({commissionBusy: ''});
-    render();
-    return {ok: true, payload: payload};
   }
   async function commissionArm(role, options) {
     options = options || {};
@@ -4263,43 +4253,54 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     render();
   }
   async function runCommissionAutoRamp(groupId, role, token) {
-    while (commissionAutoRampCurrent(groupId, role, token)) {
-      var result = await commissionStep(role, {
-        confirm: false,
-        busyLabel: '',
-        autoRetryPending: !!commissionPendingStep(),
-        identityAudition: !!commissionAutoRamp.identityAudition
-      });
-      if (!commissionAutoRampCurrent(groupId, role, token)) return;
-      if (!result || !result.ok) {
-        var stopMessage = result && result.error ?
-          result.error : 'Stopped. JTS could not play the driver test.';
-        if (result && result.payload &&
-            commissionPayloadHasIssue(result.payload, 'commission_ramp_at_limit')) {
-          stopCommissionAutoRamp(stopMessage);
-          patchActiveSpeaker({commissionBusy: '', commissionError: stopMessage});
-          status(stopMessage, true);
-          render();
+    try {
+      while (commissionAutoRampCurrent(groupId, role, token)) {
+        var result = await commissionStep(role, {
+          confirm: false,
+          busyLabel: '',
+          autoRetryPending: !!commissionPendingStep(),
+          identityAudition: !!commissionAutoRamp.identityAudition
+        });
+        if (!commissionAutoRampCurrent(groupId, role, token)) return;
+        if (!result || !result.ok) {
+          var stopMessage = result && result.error ?
+            result.error : 'Stopped. JTS could not play the driver test.';
+          if (result && result.payload &&
+              commissionPayloadHasIssue(result.payload, 'commission_ramp_at_limit')) {
+            stopCommissionAutoRamp(stopMessage);
+            patchActiveSpeaker({commissionBusy: '', commissionError: stopMessage});
+            status(stopMessage, true);
+            render();
+            return;
+          }
+          await stopAndAbortCommissionAutoRamp(stopMessage);
           return;
         }
-        await stopAndAbortCommissionAutoRamp(stopMessage);
-        return;
+        if (!commissionAutoRampCurrent(groupId, role, token)) {
+          await stopAndAbortCommissionAutoRamp('Stopped because the active driver test changed.');
+          return;
+        }
+        var payload = result.payload || {};
+        var level = Number(payload.next_gain_db);
+        commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
+          stepCount: commissionAutoRamp.stepCount + 1,
+          levelDbfs: isFinite(level) ? level : commissionAutoRamp.levelDbfs,
+          message: 'Tone is playing for ' + humanRole(role) + '.'
+        });
+        render();
+        await sleepMs(COMMISSION_RAMP_LISTEN_MS);
+        if (!commissionAutoRampCurrent(groupId, role, token)) return;
+        await sleepMs(COMMISSION_RAMP_NEXT_PULSE_MS);
       }
-      if (!commissionAutoRampCurrent(groupId, role, token)) {
-        await stopAndAbortCommissionAutoRamp('Stopped because the active driver test changed.');
-        return;
+    } finally {
+      // Single-flight release for ALL loop exits — normal completion, the
+      // drift-based commissionAutoRampCurrent()-false returns, and any uncaught
+      // throw (e.g. a render() error on a happy-path step). Token-guarded so we
+      // only clear OUR own run: a newer run (or an explicit stop, which both
+      // bump the token) leaves commissionAutoRamp.token !== token, so we skip.
+      if (commissionAutoRamp.running && commissionAutoRamp.token === token) {
+        stopCommissionAutoRamp('');
       }
-      var payload = result.payload || {};
-      var level = Number(payload.next_gain_db);
-      commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
-        stepCount: commissionAutoRamp.stepCount + 1,
-        levelDbfs: isFinite(level) ? level : commissionAutoRamp.levelDbfs,
-        message: 'Tone is playing for ' + humanRole(role) + '.'
-      });
-      render();
-      await sleepMs(COMMISSION_RAMP_LISTEN_MS);
-      if (!commissionAutoRampCurrent(groupId, role, token)) return;
-      await sleepMs(COMMISSION_RAMP_NEXT_PULSE_MS);
     }
   }
   async function startCommissionAutoRamp(role, options) {
@@ -4332,21 +4333,34 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       identityAudition: !!options.identityAudition,
       message: options.message || 'Getting ' + humanRole(role) + ' ready.'
     };
-    var armed = await ensureCommissionArmed(role, {
-      identityAudition: !!options.identityAudition
-    });
-    if (!armed || !armed.ok) {
-      stopCommissionAutoRamp('');
+    var rampStarted = false;
+    try {
+      var armed = await ensureCommissionArmed(role, {
+        identityAudition: !!options.identityAudition
+      });
+      if (!armed || !armed.ok) {
+        stopCommissionAutoRamp('');
+        render();
+        return;
+      }
+      if (!commissionAutoRampCurrent(group.id, role, token)) return;
+      commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
+        message: options.message || 'Starting quiet continuous ' + humanRole(role) + ' test.'
+      });
+      status('Starting quiet continuous ' + humanRole(role) + ' test. Press Stop if anything sounds wrong.');
       render();
-      return;
+      rampStarted = true;
+      runCommissionAutoRamp(group.id, role, token);
+    } finally {
+      // runCommissionAutoRamp is fire-and-forget (not awaited). Once we've handed
+      // off, its own try/finally releases the single-flight flag for every loop
+      // exit, so we only reset here if the ramp never started — i.e. an
+      // unexpected throw occurred before handoff. Token-guarded so we never clear
+      // a newer run's flag.
+      if (!rampStarted && commissionAutoRamp.running && commissionAutoRamp.token === token) {
+        stopCommissionAutoRamp('');
+      }
     }
-    if (!commissionAutoRampCurrent(group.id, role, token)) return;
-    commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
-      message: options.message || 'Starting quiet continuous ' + humanRole(role) + ' test.'
-    });
-    status('Starting quiet continuous ' + humanRole(role) + ' test. Press Stop if anything sounds wrong.');
-    render();
-    runCommissionAutoRamp(group.id, role, token);
   }
   function setOutputDraft(next) {
     outputTopology.draft = next;
@@ -5131,7 +5145,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     errors.forEach(function(error) {
       if (error && error.id) ids.push(String(error.id));
     });
-    var count = errors.length || ids.length || 1;
+    var count = errors.length || 1;
     var msg = 'Reset speaker setup, but JTS could not clear ' + count +
       ' active-speaker setup artifact' + (count === 1 ? '' : 's');
     if (ids.length) msg += ': ' + ids.join(', ');

@@ -139,6 +139,47 @@ fixture (and adds filter-theory sanity probes). The `js` CI job runs the node
 check as part of the browser-module harness set; run it locally when touching
 either implementation so parity failures land before CI.
 
+## Sensitivity → level-trim parity (JS ↔ Python)
+
+The /sound/ active-crossover form pre-fills a starting per-driver level trim
+from the driver sensitivity gap (optimistic UI,
+[`deploy/assets/sound-profile/js/active-speaker-ui.js`](../deploy/assets/sound-profile/js/active-speaker-ui.js)
+`sensitivityTrimsFromGap`); the server re-derives the same fail-safe
+authoritatively on save
+([`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py)
+`_derive_corrections`, the `datasheet_trims` block).
+[`tests/fixtures/sensitivity_trim_fixture.json`](../tests/fixtures/sensitivity_trim_fixture.json)
+is the shared contract:
+
+```sh
+node scripts/check-sensitivity-trim-parity.mjs   # asserts the JS matches the fixture
+```
+
+`tests/test_active_speaker_baseline_profile.py::test_sensitivity_trim_matches_shared_parity_fixture`
+asserts the Python source matches the same fixture. The `js` CI job runs the node
+check alongside the PEQ parity check; run it locally when touching either
+implementation so parity failures land before CI.
+
+### JS behavioural harnesses bridged through pytest (node-on-runner reliance)
+
+Some browser/Node modules are behaviourally tested by a Node harness that a
+pytest test invokes via `subprocess.run([node, harness])` with a
+`shutil.which("node")` skip-guard — e.g. `tests/test_relay_worker_js.py`,
+`tests/test_capture_page_js.py` (the phone-mic capture relay), and the
+pre-existing `tests/test_dialog_helper.py` / `tests/test_landing_page_html.py`.
+This keeps the JS behavioural gate inside the **`pytest-matrix`** lane with no
+extra CI wiring.
+
+The load-bearing assumption: **`pytest-matrix` runs on `ubuntu-latest`, which
+ships Node on `PATH`** (there is no `actions/setup-node` step in that job). The
+pre-existing `js` job calls bare `node` and is green, which proves the runner
+image provides it. If a future change gates these jobs behind an explicit Node
+install, or a runner image drops Node, these tests flip to **green-by-skip** —
+losing the JS coverage silently. If you touch that CI wiring, either keep Node
+preinstalled on the pytest runner or move these harnesses to a job that installs
+Node explicitly. (`scripts/check-js-syntax.sh` in the `js` job only
+`node --check`s syntax — it does not run the harnesses.)
+
 ---
 
 ## Optional ESP32 firmware builds

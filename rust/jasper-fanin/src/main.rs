@@ -26,6 +26,8 @@
 //! clicks, add ramping in the mixer with tests and doctor visibility.
 
 mod config;
+mod fifo;
+mod lane_resampler;
 mod loudness;
 mod mixer;
 mod playout;

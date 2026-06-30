@@ -16,13 +16,14 @@ from dataclasses import dataclass
 
 from .base import (
     RESEARCH_ANSWER_INSTRUCTIONS,
+    RESEARCH_EMPTY_RESULT_TEXT,
     ResearchError,
     ResearchRequest,
     ResearchResult,
     TextLLMClient,
     TextLLMProvider,
 )
-from .catalog import PROVIDERS, TextProviderEntry, default_model, provider_by_id
+from .catalog import PROVIDERS, TextProviderEntry, provider_by_id
 from .scheduler import (
     DEFAULT_CONCURRENCY,
     DEFAULT_DB_PATH,
@@ -94,6 +95,7 @@ __all__ = [
     "FAILED",
     "PROVIDERS",
     "RESEARCH_ANSWER_INSTRUCTIONS",
+    "RESEARCH_EMPTY_RESULT_TEXT",
     "RUNNING",
     "ResearchError",
     "ResearchJob",
@@ -106,6 +108,5 @@ __all__ = [
     "TextLLMProvider",
     "TextProviderEntry",
     "active_research_provider",
-    "default_model",
     "provider_by_id",
 ]

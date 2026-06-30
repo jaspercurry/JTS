@@ -1,0 +1,53 @@
+{
+  "_comment": "JS<->Python parity contract for the sensitivity->level-trim derivation. The /sound/ active-crossover form pre-fills a starting per-driver gain trim from the driver sensitivity gap (optimistic UI), and the server re-derives the same fail-safe authoritatively on save (jasper/active_speaker/baseline_profile.py::_derive_corrections, the datasheet_trims block). The two MUST agree. tests/test_active_speaker_baseline_profile.py asserts the Python source reproduces expected_trims; scripts/check-sensitivity-trim-parity.mjs asserts deploy/assets/sound-profile/js/active-speaker-ui.js::sensitivityTrimsFromGap reproduces it. Sensitivities are datasheet values quoted to one decimal (the realistic input domain); expected_trims omits the reference (least-sensitive) driver and any role inside the eps band (those stay at unity / 0 dB). Mirrors the eq-math.js parity model.",
+  "cases": [
+    {
+      "name": "two_way_basic",
+      "way_count": 2,
+      "sensitivities": { "woofer": 88.0, "tweeter": 92.0 },
+      "expected_trims": { "tweeter": -4.0 }
+    },
+    {
+      "name": "three_way_two_hotter",
+      "way_count": 3,
+      "sensitivities": { "woofer": 86.0, "mid": 90.5, "tweeter": 95.0 },
+      "expected_trims": { "mid": -4.5, "tweeter": -9.0 }
+    },
+    {
+      "name": "fractional_gap_rounds_to_tenth",
+      "way_count": 2,
+      "sensitivities": { "woofer": 89.5, "tweeter": 92.3 },
+      "expected_trims": { "tweeter": -2.8 }
+    },
+    {
+      "name": "three_way_reference_tie_stays_at_unity",
+      "way_count": 3,
+      "sensitivities": { "woofer": 87.0, "mid": 87.0, "tweeter": 93.0 },
+      "expected_trims": { "tweeter": -6.0 }
+    },
+    {
+      "name": "equal_sensitivities_no_trims",
+      "way_count": 2,
+      "sensitivities": { "woofer": 90.0, "tweeter": 90.0 },
+      "expected_trims": {}
+    },
+    {
+      "name": "within_eps_stays_at_unity",
+      "way_count": 2,
+      "sensitivities": { "woofer": 90.0, "tweeter": 90.04 },
+      "expected_trims": {}
+    },
+    {
+      "name": "extreme_gap_clamps_to_max_attenuation",
+      "way_count": 2,
+      "sensitivities": { "woofer": 30.0, "tweeter": 95.0 },
+      "expected_trims": { "tweeter": -60.0 }
+    },
+    {
+      "name": "single_sensitivity_no_reference",
+      "way_count": 2,
+      "sensitivities": { "tweeter": 92.0 },
+      "expected_trims": {}
+    }
+  ]
+}

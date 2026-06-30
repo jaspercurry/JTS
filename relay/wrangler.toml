@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cloudflare Worker config for the phone-mic capture relay (build step 2).
+# Deploy with `wrangler deploy` from this directory. See relay/README.md for the
+# one-time bucket + lifecycle-rule + custom-domain setup.
+
+name = "jts-capture-relay"
+main = "src/worker.js"
+compatibility_date = "2026-06-01"
+
+# Same-fleet, single relay. The Worker is stateless; all durable state is in R2.
+workers_dev = false
+
+[vars]
+# Comma-separated allowlist of capture-page origins permitted to make CORS
+# requests (the phone fetches the spec / posts events / PUTs the blob from here).
+# The Pi's own pull-side calls are server-to-server and need no CORS.
+CAPTURE_ORIGIN = "https://capture.jasper.tech"
+
+# R2 object store: holds the opaque session metadata (meta/<id>) and the
+# encrypted blob (blob/<id>). Strong read-after-write consistency covers the
+# Pi's poll loop. Create once: `wrangler r2 bucket create jts-capture-relay`.
+[[r2_buckets]]
+binding = "RELAY_BUCKET"
+bucket_name = "jts-capture-relay"
+
+# Atomic rate limit backing BOTH the per-session phone-facing endpoints (GET
+# spec / POST event / PUT blob, keyed by session id) and the per-IP open
+# registration limit (keyed `reg:<cf-connecting-ip>`), so neither a leaked
+# upload_token nor a registration flood can hammer the bucket. `period` must be
+# 10 or 60; `namespace_id` must be unique within your account. If this binding is
+# absent the Worker falls back to a per-isolate in-memory counter (see
+# rateLimited() in worker.js) that never writes R2.
+[[ratelimit]]
+name = "RELAY_RATELIMIT"
+namespace_id = "1001"
+simple = { limit = 80, period = 10 }
+
+# A custom domain (e.g. relay.jasper.tech) is configured in the Cloudflare
+# dashboard (Workers & Pages -> this worker -> Settings -> Domains & Routes) or
+# via `[[routes]]` once the zone is attached. Kept out of source so a fork does
+# not inherit a domain it does not own.

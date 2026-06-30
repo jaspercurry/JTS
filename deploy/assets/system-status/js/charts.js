@@ -7,7 +7,7 @@
 // Tone is the single colour knob. A chart sets `--tone` on its root and
 // the CSS (app.css --status-*) reads it.
 
-import { svg, h } from "./dom.js";
+import { svg, h } from "/assets/shared/js/dom.js";
 import { toneForPercent } from "./format.js";
 
 function toneVar(tone) {

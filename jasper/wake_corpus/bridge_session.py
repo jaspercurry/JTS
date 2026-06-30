@@ -1716,6 +1716,14 @@ def _normalize_chip_primary_leg(value: object) -> str:
     return leg if leg in CHIP_AEC_LEGS else "chip_aec_150"
 
 
+def _metadata_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return parse_env_bool(str(value), default=False)
+
+
 def _primary_on_leg_overlay(
     *,
     active_audio_profile: Mapping[str, Any] | None,
@@ -1727,13 +1735,19 @@ def _primary_on_leg_overlay(
     In the default profile it is WebRTC AEC3; in production chip-AEC mode the
     bridge forwards the selected chip beam into the same UDP carrier.
     """
-    if not isinstance(active_audio_profile, Mapping):
-        return None
-    if (
-        active_audio_profile.get("active")
-        not in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}
-        or active_audio_profile.get("state") != "active"
-    ):
+    profile_reports_chip = bool(
+        isinstance(active_audio_profile, Mapping)
+        and active_audio_profile.get("active")
+        in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}
+        and active_audio_profile.get("state") == "active"
+    )
+    runtime_reports_chip = False
+    if isinstance(runtime_audio_env, Mapping):
+        runtime_reports_chip = bool(
+            _metadata_bool(runtime_audio_env.get("chip_enabled"))
+            and _metadata_bool(runtime_audio_env.get("bridge_active"))
+        )
+    if not (profile_reports_chip or runtime_reports_chip):
         return None
     primary_leg = _normalize_chip_primary_leg(
         runtime_audio_env.get("chip_primary_leg")
@@ -1766,11 +1780,12 @@ def _capture_plan_runtime_context() -> tuple[dict[str, Any] | None, dict[str, An
         runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
         mic_probe, _ = _mic_probe_and_identity()
         chip_gate = _chip_aec_gate_for_status(system_env, intent)
+        bridge_active = aec_bridge_active()
         profile_status = build_audio_profile_status(
             intent,
             runtime,
             mic_probe,
-            bridge_active=aec_bridge_active(),
+            bridge_active=bridge_active,
             chip_available=_mic_chip_aec_available(mic_probe),
             chip_gate=chip_gate,
         )
@@ -1782,7 +1797,9 @@ def _capture_plan_runtime_context() -> tuple[dict[str, Any] | None, dict[str, An
             level=logging.DEBUG,
         )
         return None, None
-    return profile_status["audio_profile"], asdict(runtime)
+    runtime_dict = asdict(runtime)
+    runtime_dict["bridge_active"] = bridge_active
+    return profile_status["audio_profile"], runtime_dict
 
 
 def _capture_plan_leg_detail(

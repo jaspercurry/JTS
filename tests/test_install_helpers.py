@@ -21,6 +21,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -858,6 +859,39 @@ def test_shairport_build_completes_before_old_binary_is_removed():
     assert idx_fetch < idx_build < idx_stop < idx_remove < idx_make_install
 
 
+def test_shairport_configure_enables_airplay2_and_pipe_backend():
+    """The shairport-sync source build must compile in BOTH AirPlay 2 and
+    the pipe output backend. AirPlay 2 is the whole reason we source-build
+    (Trixie apt is AP1-only); --with-pipe ships the pipe backend dormant so a
+    future shairport->pipe->reader low-latency path needs no rebuild. The flag
+    lives only on the ./configure line in renderers.sh; this contract test is
+    what keeps a refactor of that long multi-line invocation from silently
+    dropping a backend, and couples the flag to its rebuild-force trigger."""
+    text = _RENDERERS_LIB.read_text(encoding="utf-8")
+
+    # Isolate the shairport ./configure invocation (a backslash-continued
+    # multi-line command) so we don't match nqptp's separate ./configure.
+    match = re.search(
+        r"\./configure --sysconfdir=/etc(?P<flags>(?:.*\\\n)*.*--with-mpris-interface)",
+        text,
+    )
+    assert match is not None, "shairport ./configure line not found in renderers.sh"
+    flags = match.group("flags")
+
+    assert "--with-airplay-2" in flags
+    assert "--with-pipe" in flags
+    # --with-stdout is intentionally NOT built (no planned stdout pipeline;
+    # the design target is a named-pipe reader, not shairport-as-a-pipe-stage).
+    assert "--with-stdout" not in flags
+
+    # The rebuild trigger must feature-detect the pipe backend, or a flag-only
+    # change is a silent no-op on already-built Pis (-V already has "AirPlay2").
+    # The pattern is anchored so the "pipe" token matches whether it is
+    # followed by another feature token or sits at the end of the -V string,
+    # so a future trim of the feature list can't cause an infinite rebuild.
+    assert "grep -qE -- '-pipe(-|$)'" in text
+
+
 def test_install_curl_fetches_are_bounded_and_retried():
     """Every direct multi-MB curl in install.sh (and its sourced
     deploy/lib/install/ libs) carries bounded retries and a transfer
@@ -1167,6 +1201,68 @@ def test_build_manifest_not_written_during_python_runtime_install():
     )
 
 
+def test_aec3_fingerprint_is_content_based_not_mtime_based(tmp_path):
+    install_dir = tmp_path / "opt" / "jasper"
+    package_dir = install_dir / "jasper_aec3"
+    src_dir = package_dir / "src"
+    py_dir = package_dir / "jasper_aec3"
+    venv_bin = install_dir / ".venv" / "bin"
+    src_dir.mkdir(parents=True)
+    py_dir.mkdir(parents=True)
+    venv_bin.mkdir(parents=True)
+    (package_dir / "pyproject.toml").write_text("[project]\nname='x'\n")
+    (src_dir / "aec3_binding.cpp").write_text("int one = 1;\n")
+    (py_dir / "__init__.py").write_text("HAS_V2 = True\n")
+    (venv_bin / "python").symlink_to(sys.executable)
+
+    first = _run_install_snippet(
+        "INSTALL_DIR="
+        + shlex.quote(str(install_dir))
+        + "; jasper_aec3_source_fingerprint",
+        deploy_env={
+            "WEBRTC_AEC3_COMMIT": "commit",
+            "WEBRTC_AEC3_SHA256": "sha",
+        },
+    )
+    assert first.returncode == 0, first.stderr
+    baseline = first.stdout.strip()
+    assert baseline.startswith("content-v1:")
+
+    os.utime(src_dir / "aec3_binding.cpp", None)
+    second = _run_install_snippet(
+        "INSTALL_DIR="
+        + shlex.quote(str(install_dir))
+        + "; jasper_aec3_source_fingerprint",
+        deploy_env={
+            "WEBRTC_AEC3_COMMIT": "commit",
+            "WEBRTC_AEC3_SHA256": "sha",
+        },
+    )
+    assert second.returncode == 0, second.stderr
+    assert second.stdout.strip() == baseline
+
+    (src_dir / "aec3_binding.cpp").write_text("int one = 2;\n")
+    changed = _run_install_snippet(
+        "INSTALL_DIR="
+        + shlex.quote(str(install_dir))
+        + "; jasper_aec3_source_fingerprint",
+        deploy_env={
+            "WEBRTC_AEC3_COMMIT": "commit",
+            "WEBRTC_AEC3_SHA256": "sha",
+        },
+    )
+    assert changed.returncode == 0, changed.stderr
+    assert changed.stdout.strip() != baseline
+
+
+def test_aec3_rebuild_cache_migrates_legacy_marker_once():
+    python_runtime = _PYTHON_RUNTIME_LIB.read_text(encoding="utf-8")
+    assert "content-v1:" in python_runtime
+    assert "legacy cache marker imported cleanly" in python_runtime
+    assert "! grep -q '^content-v1:'" in python_runtime
+    assert "jasper_aec3_import_probe" in python_runtime
+
+
 def test_build_manifest_is_the_final_main_mutation():
     """In both main() paths the manifest is written immediately before the
     (non-mutating) run_doctor_summary, after the build steps, and nothing
@@ -1400,6 +1496,108 @@ def test_build_sandbox_props_without_meminfo_still_protects(tmp_path):
     assert "OOMScoreAdjust" not in result.stdout
     assert "MemoryHigh" not in result.stdout
     assert "MemorySwapMax" not in result.stdout
+
+
+def test_build_swap_auto_follows_low_memory_threshold(tmp_path):
+    low = tmp_path / "low-meminfo"
+    low.write_text("MemTotal:       1014768 kB\n", encoding="utf-8")
+    standard = tmp_path / "standard-meminfo"
+    standard.write_text("MemTotal:       2031616 kB\n", encoding="utf-8")
+
+    low_result = _run_contained_build(
+        "build_swap_required",
+        extra_env={"JASPER_BUILD_MEMINFO_FILE": str(low)},
+    )
+    standard_result = _run_contained_build(
+        "build_swap_required",
+        extra_env={"JASPER_BUILD_MEMINFO_FILE": str(standard)},
+    )
+
+    assert low_result.returncode == 0
+    assert standard_result.returncode == 1
+
+
+def test_build_swap_setup_and_cleanup_use_high_priority_swap(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "calls.log"
+    swap_path = tmp_path / "jasper-build.swap"
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:       1014768 kB\n", encoding="utf-8")
+
+    for name in ("mkswap", "swapon", "swapoff"):
+        script = fake_bin / name
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '%s %s\\n' {name!r} \"$*\" >> {shlex.quote(str(log))}\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+
+    fallocate = fake_bin / "fallocate"
+    fallocate.write_text(
+        "#!/usr/bin/env bash\n"
+        "while [[ $# -gt 0 ]]; do\n"
+        "  case \"$1\" in -l) shift 2 ;; *) path=\"$1\"; shift ;;\n"
+        "  esac\n"
+        "done\n"
+        "printf x > \"$path\"\n",
+        encoding="utf-8",
+    )
+    fallocate.chmod(0o755)
+
+    result = _run_contained_build(
+        "setup_build_swap_if_needed && "
+        "[[ -f ${JASPER_BUILD_SWAP_PATH} ]] && "
+        "cleanup_build_swap && "
+        "[[ ! -e ${JASPER_BUILD_SWAP_PATH} ]]",
+        extra_env={
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "JASPER_BUILD_MEMINFO_FILE": str(meminfo),
+            "JASPER_BUILD_SWAP_PATH": str(swap_path),
+            "JASPER_BUILD_SWAP_SIZE_MB": "1",
+            "JASPER_BUILD_SWAP_PRIORITY": "201",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    calls = log.read_text(encoding="utf-8")
+    assert f"mkswap {swap_path}" in calls
+    assert f"swapon -p 201 {swap_path}" in calls
+    assert f"swapoff {swap_path}" in calls
+
+
+def test_low_memory_build_parks_runtime_units_before_python_and_rust_builds():
+    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
+    systemd_units = (_INSTALL_LIB_DIR / "systemd-units.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "park_low_memory_build_units" in systemd_units
+    assert "jasper-control.service" in systemd_units
+    assert "jasper-system-web.service" in systemd_units
+    assert "jasper-fanin.service" in systemd_units
+    main_body = re.search(r"\nmain\(\) \{\n(.*?)\n\}", install_sh, re.DOTALL)
+    assert main_body is not None
+    assert (
+        main_body.group(1).index("park_low_memory_build_units")
+        < main_body.group(1).index("install_jasper")
+    )
+    assert (
+        main_body.group(1).index("park_low_memory_build_units")
+        < main_body.group(1).index("build_install_jasper_fanin")
+    )
+
+
+def test_low_memory_install_uses_lightweight_health_probe_instead_of_doctor():
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    start = text.index("run_doctor_summary()")
+    end = text.index("\n}\n\nmain()", start)
+    body = text[start:end]
+
+    assert "build_swap_required" in body
+    assert "jasper-deploy-health" in body
+    low_memory_body = body[body.index("if build_swap_required; then"):body.index("fi\n\n    echo \"=== jasper-doctor")]
+    assert "jasper-doctor" not in low_memory_body
 
 
 # --- run_contained_build: graceful degradation, no double-run ----------

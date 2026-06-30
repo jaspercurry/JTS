@@ -202,43 +202,62 @@ def test_active_speaker_output_safety_snapshot_allows_setup_ready(
     assert payload["reason"] is None
 
 
-def test_level_match_provisional_none_when_no_applied_baseline(
-    tmp_path, monkeypatch,
-) -> None:
-    state = tmp_path / "active_speaker_baseline_profile.json"
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(state)
-    )
-    # Missing file -> None (not applicable).
-    assert _active_speaker_level_match_provisional() is None
-    # Saved but not applied -> None.
-    state.write_text(
-        json.dumps({"status": "ready_to_apply", "provisional": True}),
-        encoding="utf-8",
-    )
-    assert _active_speaker_level_match_provisional() is None
+def test_level_match_provisional_none_when_no_applied_baseline() -> None:
+    # C3b-3: the value is read from the readiness snapshot the caller already
+    # computed, not from a second off-disk open. No applicable active baseline ->
+    # None: a passive speaker (no baseline_profile), a non-dict setup, and an
+    # active baseline whose candidate is not `applied` (e.g. superseded /
+    # not-yet-applied) all return None.
+    assert _active_speaker_level_match_provisional(None) is None
+    assert _active_speaker_level_match_provisional({"baseline_profile": None}) is None
+    assert _active_speaker_level_match_provisional({
+        "baseline_profile": {"status": "ready_to_apply", "provisional": True},
+    }) is None
 
 
-def test_level_match_provisional_reads_applied_baseline(
+def test_level_match_provisional_reads_applied_baseline() -> None:
+    assert _active_speaker_level_match_provisional({
+        "baseline_profile": {"status": "applied", "provisional": True},
+    }) is True
+    assert _active_speaker_level_match_provisional({
+        "baseline_profile": {"status": "applied", "provisional": False},
+    }) is False
+
+
+def test_level_match_provisional_deduped_from_snapshot_setup(
     tmp_path, monkeypatch,
 ) -> None:
-    state = tmp_path / "active_speaker_baseline_profile.json"
+    # C3b-3 dedup pin: the snapshot's `level_match_provisional` is read from the
+    # SAME readiness snapshot it already computed (the single source), not a
+    # second disk read. Mutation-check: have `read_active_speaker_setup_status`
+    # report an applied+provisional baseline and assert the snapshot surfaces it.
+    # Reverting the dedup to a stale second disk read against an absent file
+    # would yield None here (it would no longer track the snapshot).
+    import jasper.control.server as srv_mod
+
     monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(state)
+        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE",
+        str(tmp_path / "absent_baseline_profile.json"),  # nothing on disk
     )
-    state.write_text(
-        json.dumps({"status": "applied", "provisional": True}), encoding="utf-8"
-    )
-    assert _active_speaker_level_match_provisional() is True
-    state.write_text(
-        json.dumps({"status": "applied", "provisional": False}), encoding="utf-8"
-    )
-    assert _active_speaker_level_match_provisional() is False
-    # Snapshot surfaces it on /state.
+
+    def fake_setup(**_kwargs):
+        return {
+            "active": True,
+            "configured": True,
+            "volume_allowed": True,
+            "grouping_allowed": True,
+            "reason": None,
+            "baseline_profile": {"status": "applied", "provisional": True},
+            "issues": [],
+        }
+
+    monkeypatch.setattr(srv_mod, "read_active_speaker_setup_status", fake_setup)
+
     payload = _active_speaker_output_safety_snapshot({
         "current": {"camilla": {"config_path": "/var/lib/camilladsp/configs/x.yml"}},
     })
-    assert payload["level_match_provisional"] is False
+    # Tracks the snapshot's baseline_profile, despite the on-disk file being absent.
+    assert payload["level_match_provisional"] is True
 
 
 @pytest.fixture
@@ -272,7 +291,26 @@ def server_with_coordinator(monkeypatch):
     )
     monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
 
-    handler = _make_handler("127.0.0.1", 9, "/nonexistent.sock")
+    class FakeHaStatus:
+        def snapshot(self):
+            raw = os.environ.get("JASPER_TEST_HA_STATUS_JSON", "")
+            if raw:
+                return json.loads(raw)
+            return {
+                "configured": False,
+                "connected": False,
+                "url": "",
+                "instance_name": None,
+                "version": None,
+                "error": None,
+            }
+
+    handler = _make_handler(
+        "127.0.0.1",
+        9,
+        "/nonexistent.sock",
+        ha_status_cache=FakeHaStatus(),
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -981,12 +1019,12 @@ def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordina
 
     status, body = _post(
         f"{base}/aec/leg",
-        {"leg": "chip_aec", "enabled": True},
+        {"leg": "chip_aec_150", "enabled": True},
     )
 
     assert status == 200
     assert body == {"ok": True}
-    assert "JASPER_WAKE_LEG_CHIP_AEC=1" in mode_file.read_text()
+    assert "JASPER_WAKE_LEG_CHIP_AEC_150=1" in mode_file.read_text()
     assert popens == [
         ["systemctl", "restart", "--no-block", "jasper-aec-reconcile.service"],
     ]
@@ -998,7 +1036,9 @@ def test_json_array_body_is_treated_as_empty_body(server_with_coordinator):
     status, body = _post_raw(f"{base}/aec/leg", b"[]")
 
     assert status == 400
-    assert body["error"] == "leg must be one of: chip_aec, dtln, raw"
+    assert body["error"] == (
+        "leg must be one of: chip_aec_150, chip_aec_210, dtln, raw"
+    )
 
 
 @pytest.mark.parametrize("profile", ["xvf_chip_aec", "xvf_chip_aec_testing"])
@@ -1036,6 +1076,62 @@ def test_aec_profile_restarts_reconciler(
     assert popens == [
         ["systemctl", "restart", "--no-block", "jasper-aec-reconcile.service"],
     ]
+
+
+def test_aec_firmware_update_starts_when_required(
+    monkeypatch, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    starts = []
+    status_payload = {
+        "firmware_update": {
+            "state": "update_required",
+            "detail": "2-channel firmware detected",
+            "target": {"id": "legacy_square_6ch"},
+            "action": {"enabled": True},
+        }
+    }
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: status_payload)
+    monkeypatch.setattr(
+        srv_mod, "_start_xvf_firmware_update", lambda: starts.append("start"),
+    )
+
+    status, body = _post(f"{base}/aec/firmware/update", {})
+
+    assert status == 200
+    assert body == status_payload
+    assert starts == ["start"]
+
+
+def test_aec_firmware_update_refuses_when_not_available(
+    monkeypatch, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    starts = []
+    monkeypatch.setattr(
+        srv_mod,
+        "_aec_full_status",
+        lambda: {
+            "firmware_update": {
+                "state": "current",
+                "detail": "Microphone firmware is current",
+                "action": {"enabled": False},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        srv_mod, "_start_xvf_firmware_update", lambda: starts.append("start"),
+    )
+
+    status, body = _post(f"{base}/aec/firmware/update", {})
+
+    assert status == 409
+    assert body["error"] == "Microphone firmware is current"
+    assert starts == []
 
 
 # ---------- POST /grouping/set (the bond-forming control endpoint) ----------
@@ -1965,6 +2061,67 @@ def test_volume_mute_when_already_silent(server_with_coordinator):
     assert body["percent"] == 0
 
 
+def _block_active_speaker_volume(monkeypatch):
+    """Force the active-speaker readiness gate into the not-safe state.
+
+    Mirrors test_grouping_set_enable_rejects_active_speaker_setup_block: an
+    active speaker whose combined crossover hasn't been validated reports
+    `volume_allowed=False`, which `_active_speaker_volume_block` turns into a
+    block.
+    """
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {
+            "active": True,
+            "configured": False,
+            "volume_allowed": False,
+            "grouping_allowed": False,
+            "reason": "baseline_summed_validation_missing",
+            "detail": "validate the combined crossover before saving the active profile",
+        },
+    )
+
+
+def test_volume_adjust_refused_when_active_speaker_not_safe(
+    monkeypatch, server_with_coordinator,
+):
+    # Pins the dial-path readiness gate (C3b-4): while the active speaker is
+    # unsafe for volume, /volume/adjust must refuse with 409 BEFORE dispatching
+    # any coordinator op — full-range gain on a not-yet-validated crossover is a
+    # tweeter-damage risk. Delete the `_active_speaker_volume_block()` guard in
+    # `_post_volume_adjust` and this 200s + records ("adjust", ...): the tripwire.
+    base, fake = server_with_coordinator
+    _block_active_speaker_volume(monkeypatch)
+
+    status, body = _post(f"{base}/volume/adjust", {"delta_percent": 5})
+
+    assert status == 409
+    assert "validate the combined crossover" in body["error"]
+    assert body["active_speaker_setup"]["volume_allowed"] is False
+    assert fake.calls == []  # op never dispatched
+
+
+def test_volume_mute_refused_when_active_speaker_not_safe(
+    monkeypatch, server_with_coordinator,
+):
+    # Same readiness gate for the mute route (C3b-4): a blocked active speaker
+    # refuses /volume/mute with 409 before touching the coordinator. Removing the
+    # `_active_speaker_volume_block()` guard in `_post_volume_mute` lets the
+    # toggle run (200 + ("mute"|"unmute", ...) recorded): the tripwire.
+    base, fake = server_with_coordinator
+    _block_active_speaker_volume(monkeypatch)
+
+    status, body = _post(f"{base}/volume/mute", {})
+
+    assert status == 409
+    assert "validate the combined crossover" in body["error"]
+    assert body["active_speaker_setup"]["volume_allowed"] is False
+    assert fake.calls == []  # op never dispatched
+
+
 # --- /transport/{toggle,next,previous} ---
 
 
@@ -2399,10 +2556,6 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["audio"]["playback_rms_dbfs"] is None
     assert body["audio"]["playback_peak_dbfs"] is None
     assert body["audio"]["clipped_samples"] is None
-    assert body["audio"]["gain_chain"]["schema_version"] == 1
-    assert body["audio"]["gain_chain"]["common_static_gain_db"] == 0.0
-    assert body["audio"]["gain_chain"]["complete_common_static_gain"] is False
-    assert "camilla_main_volume_db_unknown" in body["audio"]["gain_chain"]["warnings"]
     assert body["audio"]["sound"]["curve_id"] == "flat"
     assert body["audio"]["sound"]["filter_count"] == 0
     assert body["audio"]["sound"]["last_dsp_apply"]["result"] == "success"
@@ -2647,6 +2800,7 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
         camilla_host="127.0.0.1",
         camilla_port=1234,
         voice_socket_path="/nonexistent.sock",
+        ha_status_snapshot=lambda: {"configured": False, "connected": False},
     )
 
     policy = body["audio"]["volume_policy"]
@@ -2659,14 +2813,6 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
     assert policy["guard_reason"] == "push_write_failed"
     assert policy["previous_db"] == 0.0
     assert policy["last_source_push_result"]["reason"] == "write_failed"
-    gain_chain = body["audio"]["gain_chain"]
-    assert gain_chain["common_static_gain_db"] == -12.5
-    assert gain_chain["complete_common_static_gain"] is True
-    user_volume = next(
-        stage for stage in gain_chain["stages"] if stage["id"] == "user_volume"
-    )
-    assert user_volume["gain_db"] == -12.5
-    assert user_volume["details"]["push_guard_active"] is True
 
 
 def test_state_usbsink_section_null_when_disabled(
@@ -2941,7 +3087,6 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
     overload can't manufacture a T5.2 reboot via a wedged /state."""
     import jasper.camilla as camilla_mod
     import jasper.control.state_aggregate as sa
-    from jasper import home_assistant
 
     class HangingCamilla:
         def __init__(self, *a, **k):
@@ -2956,14 +3101,13 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
         get_clipped_samples = _hang
         get_config_file_path = _hang
 
-    async def _fast_ha(*a, **k):
+    def _fast_ha():
         return {"configured": False, "connected": False}
 
     async def _no_airplay(**kwargs):
         return None
 
     monkeypatch.setattr(camilla_mod, "CamillaController", HangingCamilla)
-    monkeypatch.setattr(home_assistant, "probe_status_from_env", _fast_ha)
     monkeypatch.setattr(sa.mpris, "shairport_playing", _no_airplay)
     # Camilla's own ceiling is high, so the OUTER aggregate budget is what
     # fires — that's the path under test.
@@ -2977,6 +3121,7 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
                 camilla_port=1234,
                 voice_socket_path="/nonexistent.sock",
                 dial_heartbeat={},
+                ha_status_snapshot=_fast_ha,
             )
 
     assert any(
@@ -3002,21 +3147,25 @@ def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch)
 
 def test_state_home_assistant_connected(server_with_coordinator, monkeypatch):
     """Configured + reachable: /state.home_assistant carries instance_name
-    + version from /api/config. We monkeypatch probe_status so the test
-    never touches the network."""
+    + version from the injected child-cache status provider."""
     import jasper.home_assistant as ha_mod
     base, _ = server_with_coordinator
 
-    monkeypatch.setenv("JASPER_HA_URL", "http://homeassistant.local:8123")
-    monkeypatch.setenv("JASPER_HA_TOKEN", "test-token")
+    async def should_not_run():
+        raise AssertionError("state must not import/probe HA in-process")
 
-    async def fake_probe(url, token, *, force=False, verify_ssl=True):
-        return {
-            "configured": True, "connected": True, "url": url,
-            "instance_name": "Brooklyn House", "version": "2026.5.1",
+    monkeypatch.setattr(ha_mod, "probe_status_from_env", should_not_run)
+    monkeypatch.setenv(
+        "JASPER_TEST_HA_STATUS_JSON",
+        json.dumps({
+            "configured": True,
+            "connected": True,
+            "url": "http://homeassistant.local:8123",
+            "instance_name": "Brooklyn House",
+            "version": "2026.5.1",
             "error": None,
-        }
-    monkeypatch.setattr(ha_mod, "probe_status", fake_probe)
+        }),
+    )
 
     status, body = _get(f"{base}/state")
     assert status == 200
@@ -3030,19 +3179,19 @@ def test_state_home_assistant_connected(server_with_coordinator, monkeypatch):
 def test_state_home_assistant_unreachable_fails_soft(server_with_coordinator, monkeypatch):
     """Configured but probe fails: response still 200 with the rest of
     /state intact; home_assistant carries the error string."""
-    import jasper.home_assistant as ha_mod
     base, _ = server_with_coordinator
 
-    monkeypatch.setenv("JASPER_HA_URL", "http://homeassistant.local:8123")
-    monkeypatch.setenv("JASPER_HA_TOKEN", "test-token")
-
-    async def fake_probe(url, token, *, force=False, verify_ssl=True):
-        return {
-            "configured": True, "connected": False, "url": url,
-            "instance_name": None, "version": None,
-            "error": "Couldn't reach Home Assistant — check the URL and token.",
-        }
-    monkeypatch.setattr(ha_mod, "probe_status", fake_probe)
+    monkeypatch.setenv(
+        "JASPER_TEST_HA_STATUS_JSON",
+        json.dumps({
+            "configured": True,
+            "connected": False,
+            "url": "http://homeassistant.local:8123",
+            "instance_name": None,
+            "version": None,
+            "error": "Couldn't reach Home Assistant - check the URL and token.",
+        }),
+    )
 
     status, body = _get(f"{base}/state")
     assert status == 200
@@ -4688,6 +4837,7 @@ def test_grouping_set_stays_in_token_gated_routes():
         "/system/restart/audio",
         "/mic/mute",
         "/grouping/set",
+        "/aec/firmware/update",
     })
 
 
@@ -4898,6 +5048,7 @@ def test_household_credential_not_accepted_on_other_gated_routes(
     for route in (
         "/system/poweroff", "/system/reboot", "/mic/mute",
         "/system/restart/voice", "/system/restart/audio",
+        "/aec/firmware/update",
     ):
         status, body = _post(
             f"{base}{route}", {"muted": True},

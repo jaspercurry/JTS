@@ -25,6 +25,7 @@ from ...audio_hardware.dac import (
 from ...camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from ...config import Config
 from ...env_load import parse_env_file
+from ...mics import xvf3800
 from ...output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
@@ -236,7 +237,7 @@ async def check_camilla_websocket(cfg: Config) -> CheckResult:
         try:
             clipped = await asyncio.to_thread(client.status.clipped_samples)
             clipped_msg = f" clipped_samples={clipped}"
-        except Exception:  # noqa: BLE001
+        except (OSError, RuntimeError, TimeoutError, ValueError):
             clipped_msg = " clipped_samples=?"
         if float(vol) > DEFAULT_VOLUME_LIMIT_DB + 0.1:
             return CheckResult(
@@ -250,7 +251,7 @@ async def check_camilla_websocket(cfg: Config) -> CheckResult:
             f"{cfg.camilla_host}:{cfg.camilla_port} volume={vol:.1f} dB"
             f"{clipped_msg}",
         )
-    except Exception as e:  # noqa: BLE001
+    except (ImportError, OSError, RuntimeError, TimeoutError, ValueError) as e:
         return CheckResult(
             "CamillaDSP websocket", "fail",
             f"can't reach {cfg.camilla_host}:{cfg.camilla_port}: {e}. "
@@ -343,7 +344,7 @@ def check_mic_capture(cfg: Config) -> CheckResult:
                 f"recording from {cfg.mic_device} but signal is very low (peak={peak})",
             )
         return CheckResult("mic capture", "ok", f"peak={peak} from {cfg.mic_device}")
-    except Exception as e:  # noqa: BLE001
+    except (ImportError, OSError, RuntimeError, ValueError) as e:
         if _jasper_voice_active():
             return CheckResult(
                 "mic capture", "ok",
@@ -407,7 +408,7 @@ def check_tts_open(cfg: Config) -> CheckResult:
             f"{int(info.get('default_samplerate', 0))} Hz, "
             f"out channels {info.get('max_output_channels')})",
         )
-    except Exception as e:  # noqa: BLE001
+    except (ImportError, OSError, RuntimeError, ValueError, TypeError) as e:
         return CheckResult(
             "tts output", "fail",
             f"can't enumerate {cfg.tts_device}: {e}. "
@@ -532,7 +533,7 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
 def _output_hardware_state_or_none() -> OutputHardwareState | None:
     try:
         return _load_output_hardware_state()
-    except Exception:  # noqa: BLE001
+    except (OSError, ValueError, TypeError):
         return None
 
 
@@ -558,6 +559,103 @@ def _apple_dongle_cards_from_state(
         child.card_id for child in state.child_devices
         if child.device_id == APPLE_USB_C_DONGLE_DEVICE_ID and child.card_id
     ]
+
+
+@doctor_check(order=20.7, group="audio")
+def check_dac_usb_sync_mode() -> CheckResult:
+    """Classify the speaker DAC's USB sync mode as an advisory clock-coherence
+    observation for chip-AEC (Stage 6 of the audio-latency foundation work).
+
+    This is NOT the chip-AEC gate. USB sync mode is *one* clock-coherence
+    signal; the binding chip-AEC gate is DAC-profile qualification plus the
+    outputd SRO clock verdict (`resolve_chip_aec_dac_gate` in
+    jasper/chip_aec_policy.py), which never reads endpoint_sync. A
+    synchronous/adaptive endpoint and an approved DAC happen to agree on
+    today's Apple dongle, but that agreement is incidental — an
+    async-but-approved DAC would still pass the binding gate. Read this check
+    as a clock-coherence observation that helps explain a chip-AEC verdict,
+    never as an enable/disable switch.
+
+    Chip-AEC assumes the speaker output and the mic reference share a clock
+    domain. A USB Audio *playback* endpoint that is synchronous or adaptive
+    (host-paced) keeps the DAC on the host clock the chip references; an
+    *asynchronous* endpoint runs its own crystal and can drift against the
+    mic.
+
+    The endpoint sync tag is read once by the output-hardware reconciler from
+    /proc/asound/card<N>/stream0 and persisted into
+    OutputHardwareState.child_devices[*].endpoint_sync; this check only
+    classifies it, against the *selected output DAC's* card (never the XVF
+    mic's, which has its own stream0).
+
+    Skip-if-not-applicable: with no XVF3800 mic present, chip-AEC is
+    irrelevant and this reports 'skipped'. I2S/HAT DACs (no USB endpoint,
+    clock slave on the I2S bus) report 'n/a — I2S' as OK.
+    """
+    if not xvf3800.is_present():
+        return CheckResult(
+            "DAC USB sync mode", "ok",
+            "skipped — no XVF3800 mic present, chip-AEC not applicable",
+        )
+
+    state = _output_hardware_state_or_none()
+    dac_id = _effective_output_dac_id(state)
+    if state is None:
+        return CheckResult(
+            "DAC USB sync mode", "warn",
+            "output hardware state unavailable — run "
+            "`sudo systemctl start jasper-audio-hardware-reconcile`",
+        )
+
+    # Sync tags across the DAC's playback child cards (one for a single DAC,
+    # two for the dual-Apple pair). I2S DACs report "" (no USB tag).
+    syncs = [
+        (child.card_id, (child.endpoint_sync or "").upper())
+        for child in state.child_devices
+        if child.has_playback
+    ]
+    if not syncs:
+        return CheckResult(
+            "DAC USB sync mode", "warn",
+            f"no playback child cards in output state (profile={dac_id})",
+        )
+
+    # I2S / HAT DAC: a known DAC profile with no USB endpoint sync tag — its
+    # clock coherence is governed by the I2S frame clock, not a USB tag.
+    if all(tag == "" for _card, tag in syncs):
+        if dac_id not in {"", "unknown"}:
+            return CheckResult(
+                "DAC USB sync mode", "ok",
+                f"n/a — {dac_id} is not a USB DAC (I2S clock slave); "
+                "USB sync mode does not gate chip-AEC",
+            )
+        return CheckResult(
+            "DAC USB sync mode", "warn",
+            "no USB endpoint sync tag and DAC profile is unknown",
+        )
+
+    async_cards = [card for card, tag in syncs if tag == "ASYNC"]
+    coherent = [
+        f"{card}:{tag}" for card, tag in syncs if tag in {"SYNC", "ADAPTIVE"}
+    ]
+    if async_cards:
+        # Advisory only: an async endpoint is a weak clock-coherence signal,
+        # but the binding chip-AEC gate is DAC qualification + the outputd SRO
+        # verdict (resolve_chip_aec_dac_gate), not this tag. WARN so a
+        # maintainer notices the drift risk; software AEC3 keeps echo cancelled
+        # either way.
+        return CheckResult(
+            "DAC USB sync mode", "warn",
+            "async USB playback endpoint — weak clock coherence; chip-AEC is "
+            "still gated by DAC qualification + the outputd SRO verdict "
+            f"(async on {','.join(async_cards)}; profile={dac_id})",
+        )
+    return CheckResult(
+        "DAC USB sync mode", "ok",
+        f"synchronous USB playback endpoint ({', '.join(coherent)}); "
+        "clock-coherence observation only — the binding chip-AEC gate is "
+        f"DAC qualification + the outputd SRO verdict (profile={dac_id})",
+    )
 
 
 @doctor_check(order=21, group="audio")
@@ -790,6 +888,54 @@ def _outputd_active_channels_from_env(env: dict[str, str]) -> int | None:
         return None
     return value if 2 <= value <= 8 else None
 
+
+# outputd STATUS reports, per content/dac section, an all-time xrun_count plus
+# two rolling fields the daemon already computes: xrun_rate_per_hour (count /
+# uptime-hours) and last_xrun_age_ms (ms since the most recent xrun, null when
+# none). The doctor WARN keys on BOTH so it flags a *sustained, current*
+# problem — a high rate alone could be a long-ago burst diluting slowly as
+# uptime grows, and a recent single xrun alone is a normal transient. Only a
+# rate that's still meaningfully high AND a recent xrun is worth a yellow line.
+_OUTPUTD_XRUN_RATE_WARN_PER_HOUR = 6.0
+_OUTPUTD_XRUN_RECENT_AGE_MS = 300_000  # 5 minutes
+
+
+def _outputd_xrun_rate_warning(
+    content: dict[str, object],
+    dac: dict[str, object],
+) -> str | None:
+    """Return a one-clause WARN reason when either outputd lane shows a
+    sustained xrun rate with a recent xrun, else None.
+
+    Keyed on the daemon-computed ``xrun_rate_per_hour`` and ``last_xrun_age_ms``
+    so a burst that has since cleared (recent-but-low-rate, or high-rate but
+    stale) does NOT warn. Both sections are checked independently; the worst
+    qualifying lane is reported.
+    """
+
+    def _f(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    worst: tuple[float, str] | None = None
+    for label, section in (("content", content), ("dac", dac)):
+        if not isinstance(section, dict):
+            continue
+        rate = _f(section.get("xrun_rate_per_hour"))
+        age = _f(section.get("last_xrun_age_ms"))  # null → None → no recent xrun
+        if rate is None or age is None:
+            continue
+        if rate >= _OUTPUTD_XRUN_RATE_WARN_PER_HOUR and age <= _OUTPUTD_XRUN_RECENT_AGE_MS:
+            reason = (
+                f"{label} xrun_rate_per_hour={rate:.1f} "
+                f"(last_xrun_age_ms={int(age)})"
+            )
+            if worst is None or rate > worst[0]:
+                worst = (rate, reason)
+    return worst[1] if worst else None
+
+
 @doctor_check(order=50, group="audio")
 def check_fanin_asound_wiring() -> CheckResult:
     """Verify the deployed ALSA graph is the fan-in graph.
@@ -987,7 +1133,7 @@ def check_fanin_service() -> CheckResult:
             if sock is not None:
                 try:
                     sock.close()
-                except Exception:  # noqa: BLE001
+                except OSError:
                     pass
             if attempt == 0:
                 time.sleep(0.1)
@@ -1089,14 +1235,15 @@ def check_fanin_service() -> CheckResult:
             f"check /var/lib/jasper/fanin.env and "
             f"JASPER_FANIN_INPUT_BUFFER_FRAMES.",
         )
-    if output_buffer_frames < 3072:
+    if output_buffer_frames < 1024:
         return CheckResult(
             "jasper-fanin service",
             "fail",
             f"active, but runtime output_buffer_frames={output_buffer_frames} is below "
-            f"3072. CamillaDSP short-read warnings were observed with "
-            f"1024 and 2048-frame fan-in output buffers; production is "
-            f"validated at 3072. Check /var/lib/jasper/fanin.env and "
+            f"1024. The 1024-frame fan-in output queue is the production "
+            f"floor validated on the low-latency Camilla path; lower values "
+            f"need fresh hardware validation before shipping. Check "
+            f"/var/lib/jasper/fanin.env and "
             f"JASPER_FANIN_OUTPUT_BUFFER_FRAMES.",
         )
     if output_buffer_frames > 3072:
@@ -1236,6 +1383,105 @@ def check_fanin_tts_drops() -> CheckResult:
         "`journalctl -u jasper-fanin | grep tts_command_dropped` and the "
         "voice daemon's `paced` turn accounting; an unpaced writer or a "
         "pacing regression is the usual cause.",
+    )
+
+
+def _loaded_capture_type(config_path: Path) -> str | None:
+    """The ``devices.capture.type`` of a CamillaDSP config, or None if the file
+    is absent/unreadable or has no capture block. A tiny indent-aware scan (no
+    YAML dep): find the 2-space ``capture:`` device block, return its first
+    4-space ``type:`` value."""
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    in_capture = False
+    for raw in text.splitlines():
+        is_2space = raw.startswith("  ") and not raw.startswith("   ")
+        if is_2space and raw.strip() == "capture:":
+            in_capture = True
+            continue
+        if in_capture:
+            if raw.startswith("    ") and raw.strip().startswith("type:"):
+                return raw.split(":", 1)[1].strip()
+            # A sibling 2-space key (playback:/resampler:/...) or any dedent ends
+            # the capture block — never read a sibling block's `type:` (e.g. a
+            # `playback: {type: File}` sink) as the capture type.
+            if is_2space or (raw[:1] not in (" ", "") and raw.strip()):
+                in_capture = False
+    return None
+
+
+@doctor_check(order=51.6, group="audio")
+def check_audio_runtime_plan() -> CheckResult:
+    """Explainable SSOT check for audio latency/coupling knobs."""
+
+    from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
+
+    plan = build_audio_runtime_plan_from_system()
+    summary = (
+        f"profile={plan.profile_id}, route={plan.route_mode}, "
+        f"coupling={plan.setting('JASPER_FANIN_CAMILLA_COUPLING').value}, "
+        f"camilla={plan.setting('JASPER_CAMILLA_CHUNKSIZE').value}/"
+        f"{plan.setting('JASPER_CAMILLA_TARGET_LEVEL').value}, "
+        f"outputd={plan.setting('JASPER_OUTPUTD_PERIOD_FRAMES').value}/"
+        f"{plan.setting('JASPER_OUTPUTD_DAC_BUFFER_FRAMES').value}, "
+        f"fanin={plan.setting('JASPER_FANIN_INPUT_BUFFER_FRAMES').value}/"
+        f"{plan.setting('JASPER_FANIN_OUTPUT_BUFFER_FRAMES').value}"
+    )
+    if plan.errors:
+        return CheckResult(
+            "audio runtime plan",
+            "fail",
+            summary + "; " + "; ".join(plan.errors),
+        )
+    if plan.warnings:
+        return CheckResult(
+            "audio runtime plan",
+            "warn",
+            summary + "; " + "; ".join(plan.warnings[:3]),
+        )
+    return CheckResult("audio runtime plan", "ok", summary)
+
+
+@doctor_check(order=51.7, group="audio")
+def check_fanin_coupling() -> CheckResult:
+    """The fan-in → CamillaDSP coupling intent (``fanin.env``) must match the
+    loaded CamillaDSP capture.
+
+    A mismatch is a half-applied arm/disarm: the dangerous one is
+    intent=loopback but a ``RawFile`` config is loaded — CamillaDSP then reads a
+    pipe no writer feeds and crash-loops on its statefile config (the jts5
+    2026-06-27 failure mode). The fix is to re-run the ordered reconciler:
+    ``jasper-fanin-coupling-reconcile <intent>``. Default loopback boxes report
+    a one-line OK so the comb proves the check ran.
+    """
+    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin_coupling import COUPLING_FIFO
+
+    label = "fan-in coupling"
+    coupling = read_persisted_coupling()
+    # _active_camilla_config_path returns (statefile, active_config_path|None);
+    # the active path is what CamillaDSP actually loaded. Fall back to the JTS
+    # sound config when the statefile names nothing.
+    _, active_path = _active_camilla_config_path()
+    config_path = Path(active_path) if active_path else Path(
+        "/var/lib/camilladsp/configs/sound_current.yml"
+    )
+    capture = _loaded_capture_type(config_path)
+    if capture is None:
+        # No JTS config loaded yet (fresh box / non-JTS graph) — nothing to
+        # contradict the intent. Report the intent so the comb has a verdict.
+        return CheckResult(label, "ok", f"intent={coupling}; no loaded capture to compare")
+    expected = "RawFile" if coupling == COUPLING_FIFO else "Alsa"
+    if capture == expected:
+        return CheckResult(label, "ok", f"{coupling} (capture={capture})")
+    return CheckResult(
+        label,
+        "warn",
+        f"intent={coupling} but loaded capture={capture} (expected {expected}); "
+        f"half-applied transition — run: "
+        f"sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile {coupling}",
     )
 
 
@@ -1473,6 +1719,7 @@ def check_outputd_service() -> CheckResult:
         )
     content_xruns = int(content.get("xrun_count", 0) or 0)
     dac_xruns = int(dac.get("xrun_count", 0) or 0)
+    xrun_warning = _outputd_xrun_rate_warning(content, dac)
     content_empty = int(content.get("empty_periods", 0) or 0)
     content_partial = int(content.get("partial_periods", 0) or 0)
     content_eagain = int(content.get("eagain_count", 0) or 0)
@@ -1589,6 +1836,16 @@ def check_outputd_service() -> CheckResult:
             f"active but tts.pending_frames={tts_pending} (>2s). "
             f"over_budget_streak_ms={tts_over_budget_streak_ms}. "
             "TTS producer may be outrunning outputd playback.",
+        )
+    if xrun_warning is not None:
+        return CheckResult(
+            "jasper-outputd",
+            "warn",
+            f"active but {xrun_warning}. xruns={content_xruns}/{dac_xruns}. "
+            "A sustained, recent xrun rate means audible dropouts — check "
+            "CPU contention (jasper-camilla RT scheduling), DAC buffer sizing "
+            "(JASPER_OUTPUTD_DAC_BUFFER_FRAMES), and "
+            "`journalctl -u jasper-outputd | grep xrun`.",
         )
     return CheckResult(
         "jasper-outputd",

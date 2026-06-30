@@ -417,12 +417,30 @@ def test_zero_class_rust_build_uses_low_memory_cargo_profile(tmp_path: Path):
     assert "CARGO_BUILD_JOBS=1" in env.stdout
     assert "CARGO_PROFILE_RELEASE_LTO=false" in env.stdout
     assert "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" in env.stdout
-    assert "CARGO_PROFILE_RELEASE_OPT_LEVEL=2" in env.stdout
+    assert "CARGO_PROFILE_RELEASE_OPT_LEVEL=0" in env.stdout
 
 
-def test_full_speaker_rust_build_keeps_release_profile(tmp_path: Path):
+def test_one_gb_full_speaker_rust_build_uses_low_memory_profile(tmp_path: Path):
     meminfo = tmp_path / "meminfo"
     meminfo.write_text("MemTotal:        1014768 kB\n")
+
+    detected = _run_install_helper(
+        f"JASPER_RUST_MEMINFO_FILE={shlex.quote(str(meminfo))} "
+        "rust_low_memory_build_enabled"
+    )
+    env = _run_install_helper(
+        f"JASPER_RUST_MEMINFO_FILE={shlex.quote(str(meminfo))} "
+        "rust_cargo_build_env"
+    )
+
+    assert detected.returncode == 0, detected.stderr
+    assert "CARGO_BUILD_JOBS=1" in env.stdout
+    assert "CARGO_PROFILE_RELEASE_LTO=false" in env.stdout
+
+
+def test_two_gb_full_speaker_rust_build_keeps_release_profile(tmp_path: Path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:        2031616 kB\n")
 
     detected = _run_install_helper(
         f"JASPER_RUST_MEMINFO_FILE={shlex.quote(str(meminfo))} "

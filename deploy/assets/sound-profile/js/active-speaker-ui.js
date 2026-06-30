@@ -36,6 +36,58 @@ export function humanRole(role) {
   }[role] || role || 'Channel';
 }
 
+// Sensitivity → level-trim derivation. PARITY CONTRACT with the Python source
+// jasper/active_speaker/baseline_profile.py::_derive_corrections (the
+// datasheet_trims block). The /sound/ form pre-fills a starting level trim from
+// the driver sensitivity gap (optimistic UI) so a hotter compression/horn driver
+// is never left at full level relative to the woofer; the server re-derives the
+// same fail-safe authoritatively on save. The two MUST agree, so the pure math
+// lives here behind one function and is pinned by scripts/check-sensitivity-trim-parity.mjs
+// against tests/fixtures/sensitivity_trim_fixture.json (the same fixture a Python
+// test asserts the source matches — the eq-math.js parity model).
+export var SENSITIVITY_TRIM_EPS_DB = 0.05;   // _SENSITIVITY_TRIM_EPS_DB
+export var MAX_DRIVER_ATTENUATION_DB = -60.0;  // _MAX_ATTENUATION_DB
+
+// Round to one decimal place. Driver sensitivities are datasheet values quoted
+// to one decimal, so the gap between two of them is already a multiple of 0.1 and
+// this round is effectively identity (it just clears IEEE-754 dust like
+// -3.9999999999999996 -> -4.0). On that realistic input domain Math.round matches
+// Python's round(x, 1) exactly (verified over 20k 1-decimal pairs); the half-up
+// vs round-half-to-even distinction only surfaces for contrived sub-decimal
+// sensitivities that don't occur on real spec sheets.
+function roundTenths(x) {
+  var rounded = Math.round(x * 10);
+  return (rounded === 0 ? 0 : rounded) / 10;  // normalize -0 to 0 for clean JSON compares
+}
+
+// Given a {role: sensitivity_db} map (only roles with a known datasheet
+// sensitivity), return {role: trim_db} attenuating the hotter drivers down to the
+// least-sensitive (reference) driver. Mirrors _derive_corrections exactly:
+//   - needs >= 2 known sensitivities, else {} (nothing to balance against)
+//   - reference = min(sensitivities); trim = reference - sensitivity (<= 0)
+//   - the reference driver and ties (trim within EPS of 0) stay at unity (omitted)
+//   - each trim is round(_,1) then floored at MAX_DRIVER_ATTENUATION_DB
+// Roles the caller wants to exclude (an explicit operator/research gain) must be
+// dropped from the input map before calling, matching the server's
+// explicit-gain-wins precedence.
+export function sensitivityTrimsFromGap(sensitivities) {
+  var roles = [];
+  var values = [];
+  Object.keys(sensitivities || {}).forEach(function(role) {
+    var sens = Number(sensitivities[role]);
+    if (Number.isFinite(sens)) { roles.push(role); values.push(sens); }
+  });
+  var trims = {};
+  if (roles.length < 2) return trims;
+  var reference = Math.min.apply(null, values);
+  roles.forEach(function(role, i) {
+    var trim = reference - values[i];  // <= 0 by construction
+    if (trim >= -SENSITIVITY_TRIM_EPS_DB) return;  // reference + ties stay at unity
+    trims[role] = Math.max(roundTenths(trim), MAX_DRIVER_ATTENUATION_DB);
+  });
+  return trims;
+}
+
 export function activeSpeakerStepState(step, ctx) {
   ctx = ctx || {};
   var hasLayout = !!ctx.hasLayout;
@@ -88,14 +140,12 @@ export function commissionCardState(commission, group, checkedRoles) {
   commission = commission || {};
   var load = commission.commission_load || {};
   var ramp = commission.ramp || {};
-  var floor = commission.floor || {};
   var target = load.target || {};
   var pending = ramp.pending && typeof ramp.pending === 'object' ? ramp.pending : null;
   var roles = activeCommissionRolesForGroup(group);
   var armed = load.status === 'loaded';
   var stale = load.status === 'stale' ||
     (load.runtime_status && load.runtime_status.status === 'stale');
-  var floorStatus = floor.status || 'floor_required';
   var awaitingAck = armed && !!pending;
   var confirmed = Array.isArray(checkedRoles) ?
     checkedRoles :
@@ -116,7 +166,6 @@ export function commissionCardState(commission, group, checkedRoles) {
     armedRole: armed ? (target.role || null) : null,
     armedGainDb: armed ? target.audible_gain_db : null,
     startRole: nextRole,
-    floorStatus: floorStatus,
     awaitingAck: awaitingAck,
     pendingRole: pending ? pending.role : null,
     pendingGainDb: pending ? pending.gain_db : null,
@@ -157,6 +206,102 @@ export function activeCommissionGroup(topology) {
     if (mode === 'active_2_way' || mode === 'active_3_way') return groups[i];
   }
   return null;
+}
+
+// Map a backend commissioning-view next_action endpoint to the page's existing
+// click `data-act`. Only the two next_action ids the research footer can dispatch
+// on a clean draft (save the design draft / prepare the crossover preview) have a
+// direct button; every later-step pointer becomes "Continue".
+function nextActionAct(action) {
+  var endpoint = action && typeof action === 'object' ? String(action.endpoint || '') : '';
+  if (endpoint.indexOf('/design-draft') >= 0) return 'save-driver-design';
+  if (endpoint.indexOf('/crossover-preview') >= 0) return 'prepare-crossover-preview';
+  return '';
+}
+
+// Footer button descriptor for the active-speaker "research" and "map" setup
+// steps. The backend coordinator (build_commissioning_view) already decides the
+// single next obvious action from the SAVED state — `view.next_action` for the
+// research label and `view.output_identity.complete` for the map readiness — so
+// on a CLEAN draft the footer renders straight from that view-model instead of
+// re-deriving readiness in the browser (the old driverResearchStepSatisfied /
+// crossoverPreviewReadyForProtectedStaging / outputIdentityComplete duplication).
+//
+// The client still owns the cases the backend structurally cannot see, because
+// it only reads saved state:
+//   * `layoutDirty` / `draftDirty` / `saving` — unsaved edits in the browser.
+//   * the crossover-preview ENABLED refinement (`previewInputsReady`): the
+//     backend marks Preview crossover enabled whenever the saved design is
+//     ready, but the live topology may still be missing crossover points, so the
+//     page keeps the button disabled until those inputs exist (clicking an
+//     enabled-but-incomplete preview would only error). The LABEL still comes
+//     from the backend; only `disabled` is refined here.
+//
+// `view` is activeSpeaker.commissioningView (may be null before first load).
+// `client` carries the browser-only signals above plus a `clientFallback`
+// descriptor used when the view is unavailable or the draft is dirty/saving.
+// Returns {label, primary, disabled, act, step?, source} where source is
+// 'backend' on the clean view-model path and 'client' otherwise (so the parity
+// test can pin which path produced the footer).
+export function commissioningStepFooter(step, view, client) {
+  client = client || {};
+  var fallback = client.clientFallback || {};
+  fallback = {
+    label: String(fallback.label || ''),
+    primary: fallback.primary !== false,
+    disabled: !!fallback.disabled,
+    act: String(fallback.act || ''),
+    step: fallback.step ? String(fallback.step) : undefined,
+    source: 'client'
+  };
+  var dirty = !!client.layoutDirty || !!client.draftDirty || !!client.saving;
+  var nextAction = view && typeof view === 'object' && view.next_action &&
+    typeof view.next_action === 'object' ? view.next_action : null;
+
+  if (step === 'research') {
+    if (dirty || !nextAction) return fallback;
+    var act = nextActionAct(nextAction);
+    if (act === 'prepare-crossover-preview') {
+      return {
+        label: String(nextAction.label || 'Preview crossover'),
+        primary: true,
+        // Backend enables whenever the saved design is ready; keep it disabled
+        // until the live topology actually has the preview inputs.
+        disabled: !client.previewInputsReady,
+        act: act,
+        source: 'backend'
+      };
+    }
+    if (act === 'save-driver-design') {
+      return {
+        label: String(nextAction.label || 'Save values'),
+        primary: true,
+        disabled: false,
+        act: act,
+        source: 'backend'
+      };
+    }
+    // next_action points past the research step (confirm outputs, driver test,
+    // …) -> the saved design + preview are complete, so the footer advances.
+    return {label: 'Continue', primary: true, disabled: false,
+      act: 'output-step-next', step: 'research', source: 'backend'};
+  }
+
+  if (step === 'map') {
+    if (dirty || !view || typeof view !== 'object') return fallback;
+    var identity = view.output_identity && typeof view.output_identity === 'object' ?
+      view.output_identity : {};
+    if (identity.complete === true) {
+      return {label: 'Continue', primary: true, disabled: false,
+        act: 'output-step-next', step: 'map', source: 'backend'};
+    }
+    // Outputs still need confirming inside the step (the identity card owns that
+    // action); the footer is a disabled waiting affordance, not a CTA.
+    return {label: 'Confirm outputs', primary: true, disabled: true,
+      act: '', source: 'backend'};
+  }
+
+  return fallback;
 }
 
 // Bass-management crossover corner bounds. These MUST equal
@@ -383,9 +528,25 @@ export const NEARFIELD_LEVEL_MATCH_GUIDANCE =
   'plays — keep the same distance for every driver. You can skip this and finish ' +
   'by ear; JTS then uses the datasheet levels.';
 
-export function nearfieldCaptureHint(roleLabel) {
-  return 'Optional — hold the phone 2–5 cm from the ' + (roleLabel || 'driver') +
-    ', centred, to capture its tone for a measured level match.';
+// Single generic fallback for the combined-test failure line when the backend
+// commissioning view is unavailable (e.g. its fetch failed). The per-failure-code
+// copy is OWNED by the backend coordinator (commissioning_coordinator.summed_test_
+// failure_message, surfaced as combined_groups[].failure_message); the browser must
+// not re-derive a parallel per-code ladder — that drifted ("to retry" vs "to try
+// again"). When the view is present, render its failure_message; otherwise this.
+export const SUMMED_TEST_GENERIC_RETRY_HINT =
+  'The last combined test did not play. Press Play combined test to try again.';
+
+// Resolve the failure hint shown under a combined-test group. The backend
+// groupView.failure_message is authoritative when present (and may be ''); the
+// generic string is only the degraded-view fallback. `suppress` is true once an
+// audible test exists (no failure to report).
+export function summedGroupFailureHint(groupView, { suppress = false } = {}) {
+  if (suppress) return '';
+  if (groupView && typeof groupView === 'object') {
+    return String(groupView.failure_message || '');
+  }
+  return SUMMED_TEST_GENERIC_RETRY_HINT;
 }
 
 function levelMatchSourceLabel(source) {

@@ -31,6 +31,7 @@ from typing import Any, Mapping
 from .audio_profile_state import (
     AecIntent,
     MicProbe,
+    RuntimeAecEnv,
     build_audio_profile_status,
     parse_env_bool,
     runtime_env_from_mapping,
@@ -75,7 +76,7 @@ DEFAULT_SYSTEM_ENV_PATH = Path("/etc/jasper/jasper.env")
 DEFAULT_BUILD_MANIFEST_PATH = Path("/var/lib/jasper/build.txt")
 DEFAULT_BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
 DEFAULT_OUTPUTD_STATUS_SOCKET = Path("/run/jasper-outputd/control.sock")
-EXPECTED_CHIP_WAKE_LEGS = ("on", "chip_aec_150", "chip_aec_210")
+DEFAULT_CHIP_WAKE_LEGS = ("on",)
 CHIP_AEC_PROFILE_READBACK_COMMANDS = (
     "SHF_BYPASS",
     "AUDIO_MGR_SYS_DELAY",
@@ -502,6 +503,12 @@ def _intent_from_env(env: Mapping[str, str]) -> AecIntent:
         dtln_enabled=parse_env_bool(env.get("JASPER_WAKE_LEG_DTLN", "0"), False),
         chip_aec_enabled=parse_env_bool(
             env.get("JASPER_WAKE_LEG_CHIP_AEC", "0"), False,
+        ),
+        chip_aec_150_enabled=parse_env_bool(
+            env.get("JASPER_WAKE_LEG_CHIP_AEC_150", "0"), False,
+        ),
+        chip_aec_210_enabled=parse_env_bool(
+            env.get("JASPER_WAKE_LEG_CHIP_AEC_210", "0"), False,
         ),
         profile_selection=env.get("JASPER_AUDIO_INPUT_PROFILE", ""),
     )
@@ -935,11 +942,7 @@ def _runtime_env_check(runtime: Any) -> dict[str, JsonValue]:
         "chip_aec_210_device": getattr(runtime, "chip_aec_210_device", ""),
         "chip_primary_leg": getattr(runtime, "chip_primary_leg", ""),
     }
-    if (
-        observed["chip_enabled"]
-        and observed["chip_aec_150_device"]
-        and observed["chip_aec_210_device"]
-    ):
+    if observed["chip_enabled"] and str(observed["primary_device"]).startswith("udp:"):
         return _check("pass", summary="Reconciler-applied chip-AEC env is present.", observed=observed)
     return _check(
         "fail",
@@ -1079,8 +1082,20 @@ def _dac_reference_check(outputd_status: Mapping[str, Any] | None) -> dict[str, 
     )
 
 
-def _wake_legs_check(voice_wake_legs: set[str] | None) -> dict[str, JsonValue]:
-    expected = set(EXPECTED_CHIP_WAKE_LEGS)
+def _expected_chip_wake_legs(runtime: RuntimeAecEnv) -> set[str]:
+    expected = set(DEFAULT_CHIP_WAKE_LEGS)
+    if runtime.chip_aec_150_device:
+        expected.add("chip_aec_150")
+    if runtime.chip_aec_210_device:
+        expected.add("chip_aec_210")
+    return expected
+
+
+def _wake_legs_check(
+    runtime: RuntimeAecEnv,
+    voice_wake_legs: set[str] | None,
+) -> dict[str, JsonValue]:
+    expected = _expected_chip_wake_legs(runtime)
     if voice_wake_legs is None:
         return _check(
             "unknown",
@@ -1088,16 +1103,24 @@ def _wake_legs_check(voice_wake_legs: set[str] | None) -> dict[str, JsonValue]:
             expected=sorted(expected),
         )
     missing = expected - voice_wake_legs
-    if not missing:
+    unexpected = voice_wake_legs - expected
+    if not missing and not unexpected:
         return _check(
             "pass",
-            summary="jasper-voice has armed the chip-AEC wake legs.",
+            summary="jasper-voice has armed the expected chip-AEC wake legs.",
+            observed=sorted(voice_wake_legs),
+            expected=sorted(expected),
+        )
+    if unexpected:
+        return _check(
+            "fail",
+            summary="jasper-voice has armed unexpected chip-AEC wake legs.",
             observed=sorted(voice_wake_legs),
             expected=sorted(expected),
         )
     return _check(
         "fail",
-        summary="jasper-voice has not armed every chip-AEC wake leg.",
+        summary="jasper-voice has not armed every expected chip-AEC wake leg.",
         observed=sorted(voice_wake_legs),
         expected=sorted(expected),
     )
@@ -1738,7 +1761,7 @@ def build_chip_aec_readiness_artifact(
         "runtime_env": _runtime_env_check(runtime),
         "service_state": _service_state_check(service_states),
         "dac_reference": _dac_reference_check(outputd_status),
-        "wake_legs": _wake_legs_check(voice_wake_legs),
+        "wake_legs": _wake_legs_check(runtime, voice_wake_legs),
         "bridge_counters": _bridge_stats_check(bridge_stats, now),
         "measured_drift_delay": _measured_drift_delay_check(bridge_journal_text),
     }

@@ -106,8 +106,6 @@ def _wire_billable_activity_meter(
 
     set_meter = getattr(connection, "set_billable_activity_meter", None)
     if not callable(set_meter):
-        set_meter = getattr(connection, "set_uptime_meter", None)
-    if not callable(set_meter):
         log_event(
             logger,
             "pricing.flat_rate_meter_unavailable",
@@ -128,6 +126,39 @@ def _wire_billable_activity_meter(
     logger.info(
         "realtime activity meter: enabled for %s at $%.2f/hour",
         provider, flat_per_hour_usd,
+    )
+    return True
+
+
+def _warn_if_research_model_unpriced(
+    research_model: str,
+    *,
+    pricing_overrides,
+) -> bool:
+    """Warn (and report) when the research model has no rate.
+
+    Mirrors the voice-model unpriced guard in ``run`` and the
+    ``_wire_billable_activity_meter`` shape: if ``JASPER_RESEARCH_OPENAI_MODEL``
+    is overridden to a model with no rate, research cost records $0 and the
+    daily spend cap silently under-counts. Make it observable. Returns ``True``
+    when the warning fired (the model is unpriced), ``False`` otherwise — so the
+    decision is unit-testable without standing up the daemon.
+    """
+    research_pricing = pricing_for_model(research_model, overrides=pricing_overrides)
+    if not research_pricing.label.startswith("unpriced:"):
+        return False
+    log_event(
+        logger,
+        "pricing.unpriced",
+        model=research_model,
+        surface="research",
+        note=(
+            "no rate for the research model; research cost will read "
+            "$0 and the daily spend cap cannot bound it until you add a "
+            "jasper/data/model_pricing.json row (or a "
+            "/var/lib/jasper/pricing.json override)"
+        ),
+        level=logging.WARNING,
     )
     return True
 
@@ -726,27 +757,10 @@ async def run() -> None:
             usage_provider=active_research.provider_id,
             usage_model=str(getattr(active_research.client, "model", "")),
         )
-        # Mirror the voice-model unpriced guard: if JASPER_RESEARCH_OPENAI_MODEL
-        # is overridden to a model with no rate, research cost records $0 and
-        # the daily spend cap silently under-counts. Make it observable.
-        research_model = str(getattr(active_research.client, "model", ""))
-        research_pricing = pricing_for_model(
-            research_model, overrides=pricing_overrides,
+        _warn_if_research_model_unpriced(
+            str(getattr(active_research.client, "model", "")),
+            pricing_overrides=pricing_overrides,
         )
-        if research_pricing.label.startswith("unpriced:"):
-            log_event(
-                logger,
-                "pricing.unpriced",
-                model=research_model,
-                surface="research",
-                note=(
-                    "no rate for the research model; research cost will read "
-                    "$0 and the daily spend cap cannot bound it until you add a "
-                    "jasper/data/model_pricing.json row (or a "
-                    "/var/lib/jasper/pricing.json override)"
-                ),
-                level=logging.WARNING,
-            )
     research_configured = research_scheduler is not None
 
     # Cue manager — built early so timer tools can pre-render their

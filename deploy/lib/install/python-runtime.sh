@@ -141,58 +141,24 @@ install_jasper() {
         # WEBRTC_AEC3_V2_PREFIX into the env that setup.py reads.
         build_webrtc_v2_for_aec3
 
-        # Fingerprint-cache the C++ rebuild: skip pip install when
-        # nothing the binding depends on has changed.
-        #
-        # Why this exists: --force-reinstall (kept below) forces a
-        # full pip-side rebuild whose --no-cache-defeat is the only
-        # way to guarantee setup.py sees WEBRTC_AEC3_V2_PREFIX (pip's
-        # wheel cache doesn't key on env vars). But the actual C++
-        # compile of aec3_binding_v2.cpp at -O3 takes 1-3 min on Pi 5
-        # with ~430 MB peak RAM on cc1plus — wasteful on the ~80%
-        # of deploys that don't touch jasper_aec3/.
-        #
-        # Fingerprint inputs (any change → rebuild):
-        #   - mtime + name of every .cpp/.h/.py/pyproject.toml in
-        #     jasper_aec3/
-        #   - mtime of the vendored libwebrtc-audio-processing-2.a
-        #     (rebuilt rarely by build_webrtc_v2_for_aec3)
-        #   - Python version (ABI break → rebuild)
-        #   - WEBRTC_AEC3_V2_PREFIX value (cache path change → rebuild)
-        #
-        # Defense-in-depth: even on cache hit, verify the module
-        # imports cleanly — catches accidentally-deleted .so files
-        # or partial installs between deploys.
-        #
-        # Escape hatch: `sudo rm /opt/jasper/.cache/jasper_aec3.installed.fingerprint`
-        # then re-deploy → unconditional rebuild.
         local marker="${INSTALL_DIR}/.cache/jasper_aec3.installed.fingerprint"
         local fingerprint
-        fingerprint=$(
-            (
-                find "${INSTALL_DIR}/jasper_aec3" -type f \
-                    \( -name '*.cpp' -o -name '*.h' \
-                       -o -name '*.py' -o -name 'pyproject.toml' \
-                       -o -name 'setup.py' -o -name 'setup.cfg' \) \
-                    -exec stat -c '%Y %n' {} \; 2>/dev/null | sort
-                # Vendored static archive — null if build_webrtc_v2_for_aec3
-                # didn't set the prefix, which means we'd be building
-                # the v1-only binding (still want to fingerprint that).
-                if [[ -n "${JASPER_WEBRTC_V2_PREFIX:-}" ]]; then
-                    find "${JASPER_WEBRTC_V2_PREFIX}" -name 'libwebrtc-audio-processing-2.a' \
-                        -exec stat -c '%Y %n' {} \; 2>/dev/null
-                fi
-                "${INSTALL_DIR}/.venv/bin/python" --version 2>&1
-                echo "WEBRTC_PREFIX=${JASPER_WEBRTC_V2_PREFIX:-}"
-            ) | sha256sum | awk '{print $1}'
-        )
+        fingerprint="$(jasper_aec3_source_fingerprint)"
 
         local needs_rebuild=1
         if [[ -f "${marker}" ]] \
            && [[ "$(cat "${marker}")" == "${fingerprint}" ]] \
-           && "${INSTALL_DIR}/.venv/bin/python" -c "import jasper_aec3" 2>/dev/null; then
+           && jasper_aec3_import_probe; then
             echo "==> jasper_aec3 source + env unchanged, skipping rebuild"
             echo "    (delete ${marker} to force)"
+            needs_rebuild=0
+        elif [[ -f "${marker}" ]] \
+             && ! grep -q '^content-v1:' "${marker}" \
+             && jasper_aec3_import_probe; then
+            echo "==> jasper_aec3 legacy cache marker imported cleanly; adopting content fingerprint"
+            echo "    (delete ${marker} to force a rebuild)"
+            mkdir -p "$(dirname "${marker}")"
+            echo "${fingerprint}" > "${marker}"
             needs_rebuild=0
         fi
 
@@ -204,9 +170,9 @@ install_jasper() {
             # the vendored v2 build completes. Forcing a rebuild is the
             # simplest way to guarantee setup.py sees the env var and builds
             # both extensions.
-            # cc1plus compiles aec3_binding_v2.cpp at -O3 (~430 MB peak);
-            # contain it so an OOM kills only this build, never a live
-            # daemon. The env is passed via `env` (part of argv) so it
+            # cc1plus compiles the pybind wrapper translation units; contain
+            # it so an OOM kills only this build, never a live daemon. The env
+            # is passed via `env` (part of argv) so it
             # survives independently of systemd-run scope env inheritance.
             run_contained_build "jasper-aec3" -- \
                 env "WEBRTC_AEC3_V2_PREFIX=${JASPER_WEBRTC_V2_PREFIX:-}" \
@@ -303,6 +269,62 @@ install_jasper() {
     migrate_grouping
     migrate_speaker_room
     migrate_control_host_bind_seed
+    # Relocate JASPER_FANIN_CAMILLA_COUPLING out of jasper.env into the
+    # reconciler-owned fanin.env (jasper.fanin.coupling_reconcile is its single
+    # writer). No-op on a fresh box (the flag is unset) and on a box already
+    # using fanin.env; only moves a hand-set experimental-phase value.
+    migrate_fanin_coupling
+}
+
+jasper_aec3_import_probe() {
+    local require_v2=0
+    if [[ -n "${JASPER_WEBRTC_V2_PREFIX:-}" ]]; then
+        require_v2=1
+    fi
+    JASPER_AEC3_REQUIRE_V2="${require_v2}" "${INSTALL_DIR}/.venv/bin/python" - <<'PY' 2>/dev/null
+import importlib
+import os
+
+import jasper_aec3
+
+importlib.import_module("jasper_aec3._aec3")
+if os.environ.get("JASPER_AEC3_REQUIRE_V2") == "1":
+    importlib.import_module("jasper_aec3._aec3_v2")
+PY
+}
+
+jasper_aec3_source_fingerprint() {
+    # Content, ABI, and vendored-source identity fingerprint for the compiled
+    # jasper_aec3 extensions. The old cache used mtimes after rsync, so every
+    # deploy could force a pybind rebuild on 1 GB Pis even when AEC3 source
+    # bytes were unchanged. Keep setup.py out of this key: build-policy edits
+    # such as lower optimization flags should not invalidate an already
+    # importable runtime binary.
+    (
+        if [[ -d "${INSTALL_DIR}/jasper_aec3" ]]; then
+            find "${INSTALL_DIR}/jasper_aec3" -type f \
+                \( -path '*/jasper_aec3/*.py' \
+                   -o -path '*/src/*.cpp' \
+                   -o -path '*/src/*.h' \
+                   -o -name 'pyproject.toml' \) \
+                -print 2>/dev/null \
+                | LC_ALL=C sort \
+                | while IFS= read -r path; do
+                    sha256sum "${path}"
+                done || true
+        fi
+        "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
+import sys
+import sysconfig
+
+print(f"python={sys.version_info.major}.{sys.version_info.minor}")
+print(f"ext_suffix={sysconfig.get_config_var('EXT_SUFFIX') or ''}")
+PY
+        pkg-config --modversion webrtc-audio-processing-1 2>/dev/null \
+            | sed 's/^/webrtc1=/' || true
+        echo "webrtc2=${WEBRTC_AEC3_COMMIT:-}:${WEBRTC_AEC3_SHA256:-}"
+        echo "webrtc2_prefix=${JASPER_WEBRTC_V2_PREFIX:-}"
+    ) | sha256sum | awk '{print "content-v1:" $1}'
 }
 
 install_streambox_jasper() {

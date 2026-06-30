@@ -61,7 +61,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use log::{info, warn};
 
-use crate::mixer::Mixer;
+use crate::lane_resampler::LaneResamplerObservability;
+use crate::mixer::{CouplingObservability, Mixer, OUTPUT_DELAY_UNAVAILABLE};
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
 
@@ -85,6 +86,10 @@ pub struct StateServer {
     output_pcm: String,
     output_frames_written: Arc<AtomicU64>,
     output_xrun_count: Arc<AtomicU64>,
+    output_delay_frames: Arc<AtomicU64>,
+    /// Coupling transport echo + (under fifo) the shared FIFO counters. Cloned
+    /// from the mixer so STATUS reads the same atomics the work loop writes.
+    coupling: CouplingObservability,
     /// Music-only side-output (multi-room sync tap) — shared with the
     /// mixer. `None` pcm = solo speaker (tap disabled).
     music_output_pcm: Option<String>,
@@ -106,6 +111,16 @@ pub struct InputSnapshotSource {
     pub pcm_name: String,
     pub frames_read: Arc<AtomicU64>,
     pub xrun_count: Arc<AtomicU64>,
+    /// Cumulative frames discarded by the bounded catch-up resync on this
+    /// lane (mixer's `drain_input_excess`). 0 on DAC-locked lanes; growing
+    /// only on a free-running lane (the USB host-clock lane).
+    pub catchup_resync_frames: Arc<AtomicU64>,
+    /// Cumulative catch-up resync events (high-water crossings) on this lane.
+    pub catchup_events: Arc<AtomicU64>,
+    /// OPTIONAL per-input adaptive-resampler observability. `Some` only on the
+    /// configured clock-crossing lane when the DEFAULT-OFF input resampler is
+    /// armed; `None` (and absent from STATUS) for every lane otherwise.
+    pub resampler: Option<LaneResamplerObservability>,
 }
 
 pub struct StateServerConfig {
@@ -139,6 +154,9 @@ impl StateServer {
                 pcm_name: inp.pcm_name.clone(),
                 frames_read: Arc::clone(&inp.frames_read),
                 xrun_count: Arc::clone(&inp.xrun_count),
+                catchup_resync_frames: Arc::clone(&inp.catchup_resync_frames),
+                catchup_events: Arc::clone(&inp.catchup_events),
+                resampler: inp.resampler_observability(),
             })
             .collect();
         Self {
@@ -148,6 +166,8 @@ impl StateServer {
             output_pcm,
             output_frames_written: Arc::clone(&mixer.frames_written),
             output_xrun_count: Arc::clone(&mixer.output_xrun_count),
+            output_delay_frames: Arc::clone(&mixer.output_delay_frames),
+            coupling: mixer.coupling.clone(),
             music_output_pcm,
             music_frames_written: Arc::clone(&mixer.music_frames_written),
             music_output_drops: Arc::clone(&mixer.music_output_drops),
@@ -362,6 +382,79 @@ impl StateServer {
                 "xrun_count",
                 input.xrun_count.load(Ordering::Relaxed),
             );
+            buf.push(',');
+            // Catch-up resync counters (mixer's drain_input_excess). Both
+            // stay 0 on a DAC-locked lane; a growing pair is the operator's
+            // "this lane is free-running and we're drop-resyncing it" signal
+            // (today only the USB host-clock lane). Never escalated.
+            push_kv_u64(
+                &mut buf,
+                "catchup_resync_frames",
+                input.catchup_resync_frames.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "catchup_events",
+                input.catchup_events.load(Ordering::Relaxed),
+            );
+            // OPTIONAL per-input adaptive resampler (DEFAULT-OFF). Rendered as a
+            // nested object only when armed on this lane — absent for every lane
+            // when the feature is off, so the default STATUS shape is unchanged.
+            if let Some(r) = &input.resampler {
+                buf.push(',');
+                buf.push_str(r#""resampler":{"#);
+                push_kv_bool(&mut buf, "armed", r.armed);
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "input_frames",
+                    r.input_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "output_frames",
+                    r.output_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "silence_frames",
+                    r.silence_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "overrun_frames",
+                    r.overrun_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // Stored as i64 milli-ppm in a u64 atomic; reinterpret + scale
+                // back to ppm for display.
+                let ratio_ppm = (r.ratio_milli_ppm.load(Ordering::Relaxed) as i64) as f64 / 1000.0;
+                push_kv_f64(&mut buf, "ratio_ppm", ratio_ppm, 2);
+                buf.push(',');
+                // Live ring fill (current) vs. the configured hold target — the
+                // operator's "the resampler engaged and is tracking" proof: a
+                // fill_frames steady near target_fill_frames = locked & holding.
+                push_kv_u64(
+                    &mut buf,
+                    "fill_frames",
+                    r.fill_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(&mut buf, "target_fill_frames", r.target_fill_frames);
+                buf.push(',');
+                push_kv_u64(&mut buf, "lock_count", r.lock_count.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "unlock_count",
+                    r.unlock_count.load(Ordering::Relaxed),
+                );
+                buf.push('}');
+            }
             buf.push('}');
         }
         buf.push(']');
@@ -388,6 +481,60 @@ impl StateServer {
             "xrun_count",
             self.output_xrun_count.load(Ordering::Relaxed),
         );
+        buf.push(',');
+        let output_delay_frames = match self.output_delay_frames.load(Ordering::Relaxed) {
+            OUTPUT_DELAY_UNAVAILABLE => None,
+            frames => Some(frames),
+        };
+        push_kv_u64_opt(&mut buf, "snd_pcm_delay_frames", output_delay_frames);
+        buf.push(',');
+        push_kv_f64_opt(
+            &mut buf,
+            "snd_pcm_delay_ms",
+            output_delay_frames.map(|frames| (frames as f64) * 1000.0 / (self.sample_rate as f64)),
+            3,
+        );
+        buf.push(',');
+
+        // coupling transport echo. `transport:"loopback"` (default) carries no
+        // fifo block — byte-identical observability to the pre-coupling daemon.
+        // `transport:"fifo"` adds a `fifo` block with the shared-capture pipe
+        // path, the requested + kernel-resolved pipe size, and the reopen /
+        // dropped-period counters (a growing dropped_periods while CamillaDSP is
+        // up means the shared capture is starving — jasper-doctor's actionable
+        // signal). actual_pipe_bytes is 0 when the write end is not currently
+        // open (reader absent / CamillaDSP reloading).
+        push_kv_str(&mut buf, "transport", self.coupling.transport);
+        if let Some(fifo) = &self.coupling.fifo {
+            buf.push(',');
+            buf.push_str(r#""fifo":{"#);
+            push_kv_str(&mut buf, "path", &fifo.path);
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "requested_pipe_bytes",
+                fifo.requested_pipe_bytes as u64,
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "actual_pipe_bytes",
+                fifo.actual_pipe_bytes.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "reopen_count",
+                fifo.reopen_count.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "dropped_periods",
+                fifo.dropped_periods.load(Ordering::Relaxed),
+            );
+            buf.push('}');
+        }
         buf.push('}');
         buf.push(',');
 
@@ -539,6 +686,16 @@ fn push_kv_u64(buf: &mut String, key: &str, value: u64) {
     buf.push_str(&value.to_string());
 }
 
+fn push_kv_u64_opt(buf: &mut String, key: &str, value: Option<u64>) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str(r#"":"#);
+    match value {
+        Some(value) => buf.push_str(&value.to_string()),
+        None => buf.push_str("null"),
+    }
+}
+
 fn push_kv_bool(buf: &mut String, key: &str, value: bool) {
     buf.push('"');
     buf.push_str(key);
@@ -595,17 +752,45 @@ mod tests {
                     pcm_name: "hw:Loopback,1,0".to_string(),
                     frames_read: Arc::new(AtomicU64::new(12345)),
                     xrun_count: Arc::new(AtomicU64::new(0)),
+                    catchup_resync_frames: Arc::new(AtomicU64::new(0)),
+                    catchup_events: Arc::new(AtomicU64::new(0)),
+                    // No resampler armed on this lane (the default).
+                    resampler: None,
                 },
                 InputSnapshotSource {
                     label: "airplay".to_string(),
                     pcm_name: "hw:Loopback,1,1".to_string(),
                     frames_read: Arc::new(AtomicU64::new(0)),
                     xrun_count: Arc::new(AtomicU64::new(2)),
+                    catchup_resync_frames: Arc::new(AtomicU64::new(1536)),
+                    catchup_events: Arc::new(AtomicU64::new(2)),
+                    // A lane WITH an armed resampler (fixture only — exercises
+                    // the STATUS rendering path). ratio = +120 ppm → 120000
+                    // milli-ppm stored in the u64 atomic.
+                    resampler: Some(LaneResamplerObservability {
+                        armed: true,
+                        input_frames: Arc::new(AtomicU64::new(48000)),
+                        output_frames: Arc::new(AtomicU64::new(47988)),
+                        silence_frames: Arc::new(AtomicU64::new(256)),
+                        overrun_frames: Arc::new(AtomicU64::new(0)),
+                        ratio_milli_ppm: Arc::new(AtomicU64::new(120_000)),
+                        lock_count: Arc::new(AtomicU64::new(1)),
+                        unlock_count: Arc::new(AtomicU64::new(0)),
+                        // Held near target (520 vs 512) — the "engaged & tracking"
+                        // shape STATUS surfaces.
+                        fill_frames: Arc::new(AtomicU64::new(520)),
+                        target_fill_frames: 512,
+                    }),
                 },
             ],
             output_pcm: "hw:Loopback,0,7".to_string(),
             output_frames_written: Arc::new(AtomicU64::new(98765)),
             output_xrun_count: Arc::new(AtomicU64::new(1)),
+            output_delay_frames: Arc::new(AtomicU64::new(1024)),
+            coupling: CouplingObservability {
+                transport: "loopback",
+                fifo: None,
+            },
             music_output_pcm: Some("hw:Loopback,0,6".to_string()),
             music_frames_written: Arc::new(AtomicU64::new(54321)),
             music_output_drops: Arc::new(AtomicU64::new(3)),
@@ -617,6 +802,22 @@ mod tests {
             output_buffer_frames: 2048,
             tts_metrics: Some(TtsMetrics::new(96_000)),
         }
+    }
+
+    fn make_fifo_test_server() -> StateServer {
+        use crate::mixer::FifoObservability;
+        let mut server = make_test_server();
+        server.coupling = CouplingObservability {
+            transport: "fifo",
+            fifo: Some(FifoObservability {
+                path: "/run/jasper-fanin/camilla.pipe".to_string(),
+                requested_pipe_bytes: 8192,
+                reopen_count: Arc::new(AtomicU64::new(2)),
+                dropped_periods: Arc::new(AtomicU64::new(7)),
+                actual_pipe_bytes: Arc::new(AtomicU64::new(8192)),
+            }),
+        };
+        server
     }
 
     #[test]
@@ -651,6 +852,62 @@ mod tests {
         assert!(j.contains(r#""frames_read":12345"#));
         assert!(j.contains(r#""xrun_count":2"#)); // airplay
         assert!(j.contains(r#""pcm":"hw:Loopback,1,0""#));
+        // Catch-up resync counters surfaced per input. spotify (DAC-locked)
+        // is 0; airplay's fixture stands in for a free-running lane.
+        assert!(
+            j.contains(r#""catchup_resync_frames":0"#),
+            "missing catchup_resync_frames=0 (spotify): {j}"
+        );
+        assert!(
+            j.contains(r#""catchup_resync_frames":1536"#),
+            "missing catchup_resync_frames=1536 (airplay fixture): {j}"
+        );
+        assert!(
+            j.contains(r#""catchup_events":2"#),
+            "missing catchup_events=2 (airplay fixture): {j}"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_resampler_block_present_only_when_armed() {
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        // The armed lane (airplay fixture) renders a nested resampler object
+        // with its counters; ratio reinterprets the milli-ppm atomic to ppm.
+        assert!(
+            j.contains(r#""resampler":{"#),
+            "armed lane must render a resampler block: {j}"
+        );
+        assert!(j.contains(r#""armed":true"#), "missing armed flag: {j}");
+        assert!(
+            j.contains(r#""input_frames":48000"#),
+            "missing resampler input_frames: {j}"
+        );
+        assert!(
+            j.contains(r#""ratio_ppm":120.00"#),
+            "milli-ppm atomic must reinterpret to ppm: {j}"
+        );
+        // Live ring fill (current) + the configured hold target — the
+        // engagement-proof gauge an operator reads off /state.fanin.
+        assert!(
+            j.contains(r#""fill_frames":520"#),
+            "missing live resampler fill_frames: {j}"
+        );
+        assert!(
+            j.contains(r#""target_fill_frames":512"#),
+            "missing resampler target_fill_frames: {j}"
+        );
+        assert!(
+            j.contains(r#""lock_count":1"#),
+            "missing resampler lock_count: {j}"
+        );
+        // EXACTLY one resampler block — the spotify lane (None) must NOT render
+        // one, keeping the default STATUS shape unchanged for unarmed lanes.
+        assert_eq!(
+            j.matches(r#""resampler":{"#).count(),
+            1,
+            "only the armed lane may render a resampler block: {j}"
+        );
     }
 
     #[test]
@@ -660,6 +917,56 @@ mod tests {
         assert!(j.contains(r#""pcm":"hw:Loopback,0,7""#));
         assert!(j.contains(r#""sample_rate":48000"#));
         assert!(j.contains(r#""frames_written":98765"#));
+        assert!(j.contains(r#""snd_pcm_delay_frames":1024"#));
+        assert!(j.contains(r#""snd_pcm_delay_ms":21.333"#));
+    }
+
+    #[test]
+    fn snapshot_json_loopback_transport_has_no_fifo_block() {
+        // Default coupling: transport=loopback, NO fifo block — byte-identical
+        // observability to the pre-coupling daemon.
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        assert!(
+            j.contains(r#""transport":"loopback""#),
+            "missing transport: {j}"
+        );
+        assert!(
+            !j.contains(r#""fifo":"#),
+            "loopback must emit no fifo block: {j}"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_fifo_transport_reports_observability() {
+        // =fifo: transport + the shared FIFO observability counters.
+        let server = make_fifo_test_server();
+        let j = server.snapshot_json();
+        assert!(
+            j.contains(r#""transport":"fifo""#),
+            "missing transport: {j}"
+        );
+        assert!(j.contains(r#""fifo":{"#), "missing fifo block: {j}");
+        assert!(
+            j.contains(r#""path":"/run/jasper-fanin/camilla.pipe""#),
+            "missing fifo path: {j}"
+        );
+        assert!(
+            j.contains(r#""requested_pipe_bytes":8192"#),
+            "missing requested_pipe_bytes: {j}"
+        );
+        assert!(
+            j.contains(r#""actual_pipe_bytes":8192"#),
+            "missing actual_pipe_bytes: {j}"
+        );
+        assert!(
+            j.contains(r#""reopen_count":2"#),
+            "missing reopen_count: {j}"
+        );
+        assert!(
+            j.contains(r#""dropped_periods":7"#),
+            "missing dropped_periods: {j}"
+        );
     }
 
     #[test]

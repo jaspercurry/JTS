@@ -55,7 +55,16 @@ CTRL_ATTR_VERSION = 3
 NLM_F_REQUEST = 0x01
 NLM_F_ACK = 0x04
 NLMSG_ERROR = 0x02
+NLMSG_DONE = 0x03
 NETLINK_TIMEOUT_S = 5.0
+# Bound on recv() iterations while waiting for the ACK of a single
+# request. The kernel answers an NLM_F_ACK request with exactly one
+# NLMSG_ERROR (errno 0 == ACK). The socket timeout is the primary
+# backstop, but a chatty netlink socket (multicast notifications,
+# unexpected message types) could otherwise keep recv() returning data
+# and spin this loop until the timeout. This cap fails the repair fast
+# and deterministically instead of relying on timing alone.
+NETLINK_MAX_RECV_ITERS = 32
 _REPAIR_LOCK = threading.Lock()
 
 
@@ -461,16 +470,35 @@ def send_crit_proto_stop(iface: str, *, dry_run: bool = False) -> dict[str, Any]
             attrs,
         )
         sock.send(msg)
-        while True:
+        # Wait for the kernel's ACK (a single NLMSG_ERROR with errno 0).
+        # Bound the loop explicitly: terminate on the ACK, on an
+        # end-of-dump NLMSG_DONE, or after NETLINK_MAX_RECV_ITERS reads,
+        # so unexpected message types can't spin us until the timeout.
+        for _ in range(NETLINK_MAX_RECV_ITERS):
             data = sock.recv(65535)
             for nlmsg_type, _flags, _seq, _pid, payload in iter_netlink_messages(data):
                 if nlmsg_type == NLMSG_ERROR:
+                    # Raises on a real error; returns here only on errno 0.
                     _raise_netlink_error(
                         payload,
                         "send NL80211_CMD_CRIT_PROTOCOL_STOP",
                     )
                     result["ack"] = True
                     return result
+                if nlmsg_type == NLMSG_DONE:
+                    # End of a (degenerate) dump without an ACK: stop now
+                    # rather than re-reading. Treat as "no ACK seen".
+                    raise RuntimeError(
+                        "NL80211_CMD_CRIT_PROTOCOL_STOP: kernel ended the "
+                        "response (NLMSG_DONE) without an ACK"
+                    )
+                # NLMSG_NOOP (0x01) and any other unexpected type are
+                # ignored; we keep reading until the ACK, the iteration
+                # cap, or the socket timeout.
+        raise RuntimeError(
+            "NL80211_CMD_CRIT_PROTOCOL_STOP: no ACK after "
+            f"{NETLINK_MAX_RECV_ITERS} netlink reads"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

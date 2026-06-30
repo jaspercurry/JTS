@@ -1,0 +1,140 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
+// Harness for the capture page's relay client (build step 3). Asserts the
+// phone-side request contract (URLs, upload-token bearer auth, integrity
+// headers, body) against a mock fetch — no network. Prints {"ok":true}.
+//
+//   node tests/js/capture_relay_client_test.mjs
+
+import assert from "node:assert/strict";
+
+import { RelayClient, RelayError } from "../../capture-page/js/relay-client.js";
+
+let passed = 0;
+function ok() {
+  passed += 1;
+}
+
+function mockFetch(handler) {
+  const calls = [];
+  const fn = async (url, init) => {
+    calls.push({ url, init });
+    return handler(url, init, calls.length - 1);
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+function res(status, body, { isJson = true } = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async json() {
+      if (!isJson) throw new Error("not json");
+      return body;
+    },
+  };
+}
+
+function makeClient(fetchImpl) {
+  return new RelayClient({
+    baseUrl: "https://relay.test/",
+    sessionId: "sess-1",
+    uploadToken: "up-token",
+    fetchImpl,
+  });
+}
+
+async function testFetchSpec() {
+  const spec = { kind: "room_sweep", duration_ms: 11500 };
+  const f = mockFetch(() => res(200, spec));
+  const client = makeClient(f);
+  const got = await client.fetchSpec();
+  assert.deepEqual(got, spec);
+  const call = f.calls[0];
+  assert.equal(call.url, "https://relay.test/sessions/sess-1/spec");
+  assert.equal(call.init.method, "GET");
+  assert.equal(call.init.headers.Authorization, "Bearer up-token");
+  ok();
+}
+
+async function testPostEvent() {
+  const f = mockFetch(() => res(200, { ok: true }));
+  const client = makeClient(f);
+  await client.postEvent({ armed: true });
+  const call = f.calls[0];
+  assert.equal(call.url, "https://relay.test/sessions/sess-1/event");
+  assert.equal(call.init.method, "POST");
+  assert.equal(call.init.headers["Content-Type"], "application/json");
+  assert.equal(call.init.headers.Authorization, "Bearer up-token");
+  assert.deepEqual(JSON.parse(call.init.body), { armed: true });
+  ok();
+}
+
+async function testPutBlob() {
+  const f = mockFetch(() => res(200, { ok: true, state: "ready" }));
+  const client = makeClient(f);
+  const blob = new Uint8Array([10, 20, 30, 40]);
+  await client.putBlob(blob, 3, "a".repeat(64));
+  const call = f.calls[0];
+  assert.equal(call.url, "https://relay.test/sessions/sess-1/blob");
+  assert.equal(call.init.method, "PUT");
+  assert.equal(call.init.headers["Content-Type"], "application/octet-stream");
+  assert.equal(call.init.headers["X-Plaintext-Length"], "3");
+  assert.equal(call.init.headers["X-Plaintext-Sha256"], "a".repeat(64));
+  assert.equal(call.init.headers["Content-Length"], "4");
+  assert.deepEqual([...call.init.body], [...blob]);
+  ok();
+}
+
+async function testErrorThrowsRelayError() {
+  const f = mockFetch(() => res(429, { error: "rate_limited" }));
+  const client = makeClient(f);
+  await assert.rejects(
+    () => client.fetchSpec(),
+    (err) => {
+      assert.ok(err instanceof RelayError);
+      assert.equal(err.status, 429);
+      assert.equal(err.message, "rate_limited");
+      return true;
+    },
+  );
+  ok();
+}
+
+async function testConstructorValidates() {
+  assert.throws(() => new RelayClient({ sessionId: "x", uploadToken: "y" }), /baseUrl/);
+  assert.throws(
+    () => new RelayClient({ baseUrl: "x", uploadToken: "y" }),
+    /sessionId/,
+  );
+  ok();
+}
+
+const tests = [
+  testFetchSpec,
+  testPostEvent,
+  testPutBlob,
+  testErrorThrowsRelayError,
+  testConstructorValidates,
+];
+
+let failure = null;
+for (const t of tests) {
+  try {
+    await t();
+  } catch (e) {
+    failure = { test: t.name, error: String(e && e.stack ? e.stack : e) };
+    break;
+  }
+}
+
+if (failure) {
+  console.error(failure.error);
+  console.log(JSON.stringify({ ok: false, ...failure }));
+  process.exit(1);
+} else {
+  console.log(JSON.stringify({ ok: true, passed }));
+}

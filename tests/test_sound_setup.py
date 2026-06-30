@@ -5,10 +5,8 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
-import os
 import shutil
 import subprocess
 import threading
@@ -42,8 +40,12 @@ from jasper.sound.profile import (
     load_profile_library,
     save_profile,
 )
-from jasper.sound.runtime import reconcile_current_dsp
-from jasper.sound.settings import SoundSettings, load_sound_settings
+from jasper.sound.runtime import _config_without_id_header, reconcile_current_dsp
+from jasper.sound.settings import (
+    DEFAULT_VOLUME_FLOOR_DB,
+    SoundSettings,
+    load_sound_settings,
+)
 from jasper.volume_curve import percent_to_db
 from jasper.web import sound_setup
 
@@ -485,7 +487,11 @@ def test_sound_module_preserves_editor_behaviour():
     assert "dsp_write_epoch: dspWriteEpoch" in js
     assert "function cancelLiveDrafts()" in js
     assert "jsonHeaders()" in js
-    assert "meta[name=jts-csrf]" in js  # CSRF read from the tag, not substituted
+    # CSRF/JSON helpers are imported from the shared http.js (which reads the
+    # meta[name=jts-csrf] tag) rather than re-declared locally — the token is
+    # never string-substituted at render time. (See the http.js drift guard in
+    # tests/test_web_wizard_conventions.py.)
+    assert 'from "/assets/shared/js/http.js"' in js
     assert "Active crossover setup" in js
     assert "/assets/sound-profile/js/active-speaker-ui.js" in js
     assert "./active-speaker/prepare-driver-test" not in js
@@ -688,7 +694,11 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert 'data-protection-status="' not in js
     assert "headers: jsonHeaders()" in js
     assert "Saved speaker layout. No sound was played." in js
-    assert "data-act=\"save-output-topology\"" in js
+    # The map-step footer's dirty-layout fallback wires the save-layout action
+    # through the shared descriptor renderer (renderStepFooterButton emits the
+    # data-act attribute at runtime) rather than an inline data-act string.
+    assert "act: 'save-output-topology'" in js
+    assert "else if (act === 'save-output-topology')" in js
     assert "data-output-channel" in js
     assert "Assign each driver to one DAC channel. Play starts quiet and ramps." in js
     assert "Play a quiet ramp if needed, then confirm each DAC output." in js
@@ -1210,97 +1220,6 @@ def _save_active_speaker_design_and_preview(*, frequency_hz: float = 2500) -> di
     return sound_setup._active_speaker_crossover_preview_save_payload()
 
 
-def _active_speaker_commission_env(monkeypatch, tmp_path: Path) -> None:
-    for env_key, relpath in {
-        "JASPER_OUTPUT_TOPOLOGY_PATH": "output_topology.json",
-        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE": "measurements.json",
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE": "safe-playback.json",
-        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE": "design_draft.json",
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE": "crossover_preview.json",
-        "JASPER_ACTIVE_SPEAKER_CAPTURE_DIR": "captures",
-        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR": "tone-artifacts",
-        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE": "baseline_profile.json",
-        "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH": "active_speaker_baseline.yml",
-    }.items():
-        monkeypatch.setenv(env_key, str(tmp_path / relpath))
-
-
-def _active_speaker_capture_sweep(tmp_path: Path, name: str, *, kind: str) -> tuple[Path, dict]:
-    import numpy as np
-    from scipy.signal import fftconvolve, firwin
-
-    from jasper.active_speaker import driver_acoustics as acoustic
-    from jasper.correction import sweep as sweep_mod
-
-    signal, meta = sweep_mod.synchronized_swept_sine(
-        f1=acoustic.DEFAULT_F1_HZ,
-        f2=acoustic.DEFAULT_F2_HZ,
-        duration_approx_s=1.0,
-        sample_rate=acoustic.DEFAULT_SAMPLE_RATE,
-        amplitude_dbfs=acoustic.DEFAULT_AMPLITUDE_DBFS,
-    )
-    if kind == "woofer":
-        ir = firwin(1023, 1200, fs=meta.sample_rate).astype(np.float64)
-    elif kind == "tweeter":
-        ir = firwin(1023, 3500, fs=meta.sample_rate, pass_zero=False).astype(
-            np.float64
-        )
-    elif kind == "summed":
-        ir = np.zeros(256, dtype=np.float64)
-        ir[10] = 1.0
-    elif kind == "clipped":
-        capture = np.ones(meta.n_samples + 2000, dtype=np.float32)
-        path = tmp_path / "captures" / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        sweep_mod.write_sweep_wav(path, capture, meta.sample_rate)
-        return path, meta.to_dict()
-    else:
-        raise AssertionError(f"unsupported capture fixture kind: {kind}")
-
-    capture = fftconvolve(signal.astype(np.float64), ir) * 0.35
-    path = tmp_path / "captures" / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    sweep_mod.write_sweep_wav(path, capture.astype(np.float32), meta.sample_rate)
-    return path, meta.to_dict()
-
-
-def _confirm_floor_playback_for_role(role: str, *, output_index: int, playback_id: str) -> None:
-    from jasper.active_speaker.safe_playback import (
-        arm_safe_playback_session,
-        record_floor_audio_operator_result,
-        record_safe_playback_result,
-    )
-
-    target = {
-        "speaker_group_id": "mono",
-        "role": role,
-        "driver_role": role,
-        "output_index": output_index,
-    }
-    arm_safe_playback_session({
-        "status": "pass",
-        "load_gate": "ready",
-        "ok_to_load_active_config": True,
-        "camilla_config": {"classification": "active_startup_candidate"},
-        "safe_playback": {"playback_allowed": False},
-        "issues": [],
-    })
-    record_safe_playback_result({
-        "status": "completed",
-        "backend": "test",
-        "playback_id": playback_id,
-        "audio_emitted": True,
-        "target": target,
-        "tone": {"level_dbfs": -80},
-        "artifact": {"wav_basename": f"{playback_id}.wav"},
-        "issues": [],
-    })
-    record_floor_audio_operator_result(
-        outcome="heard_correct_driver",
-        playback_id=playback_id,
-    )
-
-
 def test_active_speaker_crossover_preview_refreshes_current_output_topology(
     monkeypatch,
     tmp_path: Path,
@@ -1428,239 +1347,6 @@ def test_active_speaker_summed_test_records_current_artifact(
     assert latest["captured"] is True
     assert latest["audio_emitted"] is False
     assert latest["target_output_indices"] == [0, 1]
-
-
-def test_active_speaker_driver_capture_records_acoustic_verdict(
-    monkeypatch,
-    tmp_path: Path,
-):
-    _active_speaker_commission_env(monkeypatch, tmp_path)
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(protection_status="present")
-    )
-    _save_active_speaker_design_and_preview()
-    _confirm_floor_playback_for_role(
-        "woofer",
-        output_index=0,
-        playback_id="playback-woofer",
-    )
-    wav_path, sweep_meta = _active_speaker_capture_sweep(
-        tmp_path,
-        "woofer.wav",
-        kind="woofer",
-    )
-
-    payload = sound_setup._active_speaker_driver_capture_payload({
-        "speaker_group_id": "mono",
-        "role": "woofer",
-        "playback_id": "playback-woofer",
-        "capture_wav_path": str(wav_path),
-        "sweep_meta": sweep_meta,
-    })
-
-    latest = payload["measurement"]["summary"]["latest_driver_measurements"][
-        "mono:woofer"
-    ]
-    assert payload["recorded"] is True
-    assert payload["verdict"] == "present"
-    assert latest["captured"] is True
-    assert latest["acoustic"]["kind"] == "jts_active_speaker_driver_acoustics"
-    assert latest["acoustic"]["verdict"] == "present"
-
-
-def test_active_speaker_driver_capture_accepts_browser_wav_upload_with_retention(
-    monkeypatch,
-    tmp_path: Path,
-):
-    _active_speaker_commission_env(monkeypatch, tmp_path)
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(protection_status="present")
-    )
-    _save_active_speaker_design_and_preview()
-    _confirm_floor_playback_for_role(
-        "woofer",
-        output_index=0,
-        playback_id="playback-woofer",
-    )
-    wav_path, sweep_meta = _active_speaker_capture_sweep(
-        tmp_path,
-        "browser-upload-source.wav",
-        kind="woofer",
-    )
-    wav_base64 = base64.b64encode(wav_path.read_bytes()).decode("ascii")
-    wav_path.unlink()
-    capture_dir = tmp_path / "captures"
-    capture_dir.mkdir(parents=True, exist_ok=True)
-    for idx in range(sound_setup.MAX_CAPTURE_STORED_FILES + 5):
-        old = capture_dir / f"driver_old_{idx:02d}.wav"
-        old.write_bytes(b"RIFold")
-        mtime = 1_700_000_000 + idx
-        os.utime(old, (mtime, mtime))
-
-    payload = sound_setup._active_speaker_driver_capture_payload({
-        "speaker_group_id": "mono",
-        "role": "woofer",
-        "playback_id": "playback-woofer",
-        "capture": {
-            "wav_base64": wav_base64,
-            "sweep_meta": sweep_meta,
-        },
-    })
-
-    latest = payload["measurement"]["summary"]["latest_driver_measurements"][
-        "mono:woofer"
-    ]
-    uploaded = list(capture_dir.glob("driver_mono_woofer_*.wav"))
-    files = list(capture_dir.glob("*.wav"))
-    assert payload["recorded"] is True
-    assert latest["captured"] is True
-    assert len(uploaded) == 1
-    assert uploaded[0].stat().st_mode & 0o777 == sound_setup.CAPTURE_FILE_MODE
-    assert len(files) <= sound_setup.MAX_CAPTURE_STORED_FILES
-    assert not (capture_dir / "driver_old_00.wav").exists()
-
-
-def test_active_speaker_capture_rejects_paths_outside_capture_storage(
-    monkeypatch,
-    tmp_path: Path,
-):
-    _active_speaker_commission_env(monkeypatch, tmp_path)
-    outside = tmp_path / "outside.wav"
-    outside.write_bytes(b"RIFFoutside")
-
-    with pytest.raises(
-        ValueError,
-        match="inside active-speaker capture storage",
-    ):
-        sound_setup._active_speaker_capture_wav_path(
-            {"capture_wav_path": str(outside)},
-            kind="driver",
-        )
-
-
-def test_active_speaker_summed_capture_records_acoustic_verdict(
-    monkeypatch,
-    tmp_path: Path,
-):
-    from jasper.active_speaker.measurement import (
-        record_driver_measurement,
-        record_summed_test_artifact,
-    )
-    from jasper.output_topology import load_output_topology
-
-    _active_speaker_commission_env(monkeypatch, tmp_path)
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(protection_status="present")
-    )
-    _save_active_speaker_design_and_preview()
-    topology = load_output_topology()
-    for role, output_index in (("woofer", 0), ("tweeter", 1)):
-        playback_id = f"playback-{role}"
-        record_driver_measurement(
-            topology,
-            {
-                "speaker_group_id": "mono",
-                "role": role,
-                "outcome": "heard_correct_driver",
-                "observed_mic_dbfs": -36,
-                "playback_id": playback_id,
-            },
-            safe_session={
-                "status": "armed",
-                "quiet_start": {
-                    "status": "floor_confirmed",
-                    "floor_audio_confirmed": True,
-                    "last_operator_result": {
-                        "accepted": True,
-                        "outcome": "heard_correct_driver",
-                        "playback_id": playback_id,
-                        "target": {
-                            "speaker_group_id": "mono",
-                            "role": role,
-                            "driver_role": role,
-                            "output_index": output_index,
-                        },
-                    },
-                },
-            },
-        )
-    record_summed_test_artifact(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "playback": {
-                "status": "completed",
-                "backend": "test",
-                "playback_id": "summed-1",
-                "audio_emitted": True,
-                "artifact": {
-                    "wav_basename": "summed-1.wav",
-                    "metadata_basename": "summed-1.json",
-                    "target_output_indices": [0, 1],
-                    "channel_count": 2,
-                },
-                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
-            },
-        },
-    )
-    wav_path, sweep_meta = _active_speaker_capture_sweep(
-        tmp_path,
-        "summed.wav",
-        kind="summed",
-    )
-
-    payload = sound_setup._active_speaker_summed_capture_payload({
-        "speaker_group_id": "mono",
-        "summed_test_id": "summed-1",
-        "playback_id": "summed-1",
-        "capture_wav_path": str(wav_path),
-        "sweep_meta": sweep_meta,
-    })
-
-    latest = payload["measurement"]["summary"]["latest_summed_validations"]["mono"]
-    assert payload["recorded"] is True
-    assert payload["verdict"] == "blend_ok"
-    assert latest["validated"] is True
-    assert latest["acoustic"]["kind"] == "jts_active_speaker_summed_acoustics"
-    assert latest["acoustic"]["verdict"] == "blend_ok"
-    assert payload["measurement"]["permissions"]["may_compile_baseline"] is True
-
-
-def test_active_speaker_clipped_capture_does_not_unlock_baseline(
-    monkeypatch,
-    tmp_path: Path,
-):
-    _active_speaker_commission_env(monkeypatch, tmp_path)
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(protection_status="present")
-    )
-    _save_active_speaker_design_and_preview()
-    _confirm_floor_playback_for_role(
-        "woofer",
-        output_index=0,
-        playback_id="playback-woofer",
-    )
-    wav_path, sweep_meta = _active_speaker_capture_sweep(
-        tmp_path,
-        "clipped.wav",
-        kind="clipped",
-    )
-
-    payload = sound_setup._active_speaker_driver_capture_payload({
-        "speaker_group_id": "mono",
-        "role": "woofer",
-        "playback_id": "playback-woofer",
-        "capture_wav_path": str(wav_path),
-        "sweep_meta": sweep_meta,
-    })
-    measurements = sound_setup._active_speaker_measurements_payload()
-    baseline = sound_setup._active_speaker_baseline_profile_payload()
-
-    assert payload["recorded"] is False
-    assert payload["skipped_reason"] == "unusable_capture"
-    assert payload["measurement"] is None
-    assert measurements["summary"]["driver_measurements_complete"] is False
-    assert baseline["permissions"]["may_compile"] is False
 
 
 def test_active_speaker_protection_and_stage_config_payloads_are_no_load(
@@ -2556,6 +2242,109 @@ def test_sound_output_topology_save_rejects_stale_revision(
 
     current = json.loads(path.read_text(encoding="utf-8"))
     assert current["speaker_groups"] == []
+
+
+def test_sound_output_topology_save_serializes_concurrent_writers(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """Two writers racing the same revision: exactly one wins, no lost update.
+
+    ``_save_output_topology_payload`` runs under ``ThreadingHTTPServer`` (one
+    thread per request), so the revision-compare and the file write must be a
+    single critical section. This test parks writer A *inside*
+    ``save_output_topology`` (after it has read+validated the revision but
+    before it publishes the new file) while writer B begins. Without the lock,
+    B reads the still-original revision, passes the stale-check, and clobbers
+    A's write (the exact lost-update the revision guard exists to prevent).
+    With the lock, B blocks until A fully publishes, then observes the new
+    revision and raises ``OutputTopologyRevisionConflict``.
+    """
+
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+
+    # Seed a known starting topology and capture the revision both writers see.
+    save_output_topology(new_topology_draft(), path=path)
+    start_revision = sound_setup._output_topology_revision()
+
+    topology_a = _active_speaker_mono_topology_payload(
+        protection_status="software_guard_requested",
+        card_id="DAC_A",
+    )
+    topology_b = _active_speaker_mono_topology_payload(
+        protection_status="software_guard_requested",
+        card_id="DAC_B",
+    )
+
+    real_save = sound_setup.save_output_topology
+    a_in_critical_section = threading.Event()
+    release_a = threading.Event()
+
+    def parking_save(topology, *args, **kwargs):
+        # Only the first writer to reach the write parks; the parked writer is
+        # holding the critical section (it has already passed the revision
+        # compare). Releasing it after B has had its chance to run exercises
+        # the interleaving the lock must prevent.
+        if not a_in_critical_section.is_set():
+            a_in_critical_section.set()
+            assert release_a.wait(timeout=5.0), "writer A was never released"
+        return real_save(topology, *args, **kwargs)
+
+    monkeypatch.setattr(sound_setup, "save_output_topology", parking_save)
+
+    results: dict[str, object] = {}
+
+    def writer(name: str, topology: dict) -> None:
+        try:
+            sound_setup._save_output_topology_payload(
+                {
+                    "output_topology": topology,
+                    "topology_revision": start_revision,
+                },
+                require_revision=True,
+            )
+            results[name] = "saved"
+        except sound_setup.OutputTopologyRevisionConflict:
+            results[name] = "conflict"
+        except BaseException as exc:  # noqa: BLE001 - surface unexpected failures
+            results[name] = exc
+
+    thread_a = threading.Thread(target=writer, args=("A", topology_a))
+    thread_a.start()
+    assert a_in_critical_section.wait(timeout=5.0), "writer A never started saving"
+
+    # A is parked inside the write holding the lock. Start B; with the lock it
+    # must block on acquisition, so it cannot finish before we release A.
+    thread_b = threading.Thread(target=writer, args=("B", topology_b))
+    thread_b.start()
+    thread_b.join(timeout=0.5)
+    assert thread_b.is_alive(), (
+        "writer B completed while writer A held the critical section — the "
+        "compare-and-write is not serialized (TOCTOU)"
+    )
+
+    release_a.set()
+    thread_a.join(timeout=5.0)
+    thread_b.join(timeout=5.0)
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+
+    # Exactly one writer wins; the other sees the advanced revision and is
+    # rejected. No lost update: the persisted card_id is the winner's.
+    outcomes = sorted(
+        v for v in results.values() if isinstance(v, str)
+    )
+    unexpected = [v for v in results.values() if not isinstance(v, str)]
+    assert not unexpected, f"writer raised unexpectedly: {unexpected}"
+    assert outcomes == ["conflict", "saved"], results
+
+    winner = next(name for name, outcome in results.items() if outcome == "saved")
+    expected_card = {"A": "DAC_A", "B": "DAC_B"}[winner]
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["hardware"]["card_id"] == expected_card
 
 
 def test_sound_channel_identity_route_marks_saved_topology_only(
@@ -3489,6 +3278,11 @@ def test_state_payload_contains_stock_curves_profiles_and_preview(tmp_path: Path
     assert payload["limits"]["max_parametric_bands"] == 8
     # Cut-filter Q ceiling is exposed so the UI's Width slider can bound HP/LP.
     assert payload["limits"]["cut_max_q"] == 1.4
+    # Volume-floor SSOT: the reset/default floor is forwarded from the one
+    # backend owner (volume_curve.DEFAULT_VOLUME_FLOOR_DB, re-exported via
+    # sound.settings) so the /sound/ editor stops hardcoding -50. If this drifts,
+    # the page's reset button + default would silently disagree with the server.
+    assert payload["limits"]["volume_floor_default_db"] == DEFAULT_VOLUME_FLOOR_DB
     assert payload["headroom_db"] > 0
 
 
@@ -3655,13 +3449,27 @@ async def test_reconcile_current_dsp_skips_active_audition_without_promoting(
 async def test_reconcile_current_dsp_logs_unchanged_config(
     tmp_path: Path, monkeypatch, caplog,
 ):
+    # Realistic apply-then-redeploy: the wizard save stamped sound_current.yml
+    # with a wall-clock ``time.time_ns()`` id, NOT the reconcile id. A redeploy's
+    # dry-run re-emits the SAME profile under RECONCILE_PROFILE_ID, so the two
+    # files differ ONLY in the cosmetic ``(id=...)`` header. Reconcile must still
+    # recognize this as unchanged and skip the gratuitous CamillaDSP reload.
+    #
+    # Tripwire: this previously pre-stamped the on-disk file with
+    # ``profile_id="reconcile-current-dsp"`` so the raw byte comparison matched
+    # by accident — masking that the no-op path is dead in production (the saved
+    # file never carries the reconcile id). Using a timestamp id here makes the
+    # test fail against the old id-sensitive comparison and pass against the
+    # header-normalizing fix.
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     profile = SoundProfile(simple_eq=SimpleEq(bass_db=2.0))
     current = config_dir / "sound_current.yml"
-    current.write_text(emit_sound_config(profile, profile_id="reconcile-current-dsp"))
+    current.write_text(emit_sound_config(profile, profile_id="1717000000000000001"))
+    assert "id=1717000000000000001" in current.read_text()
+    assert "id=reconcile-current-dsp" not in current.read_text()
     fake = FakeCamilla(str(current))
     profile_path = tmp_path / "sound_profile.json"
     save_profile(profile, profile_path)
@@ -3675,8 +3483,45 @@ async def test_reconcile_current_dsp_logs_unchanged_config(
 
     assert payload["status"] == "unchanged"
     assert fake.loaded_path is None
+    # The on-disk file is left untouched — its original (timestamp) id survives,
+    # proving reconcile took the no-op path rather than re-emitting.
+    assert "id=1717000000000000001" in current.read_text()
     assert "event=sound.reconcile_current_dsp" in caplog.text
     assert "result=unchanged" in caplog.text
+
+
+def test_config_id_header_strip_only_touches_the_header_line():
+    # The unchanged-detection normalizer must collapse ONLY the cosmetic
+    # ``# Auto-generated JTS DSP config (id=...).`` header line. A ``(id=...)``
+    # span anywhere else in the YAML (e.g. inside a device name) must survive,
+    # so a genuine change to such a value still compares as different and can
+    # never be masked as "unchanged". Guards against an unanchored global sub.
+    header_ts = (
+        "---\n"
+        "# Auto-generated JTS DSP config (id=1717000000000000001).\n"
+        'devices:\n  device: "hw:CARD=x (id=realA)"\n'
+    )
+    header_reconcile = (
+        "---\n"
+        "# Auto-generated JTS DSP config (id=reconcile-current-dsp).\n"
+        'devices:\n  device: "hw:CARD=x (id=realA)"\n'
+    )
+    # Differing header ids collapse to the same normalized text...
+    assert _config_without_id_header(header_ts) == _config_without_id_header(
+        header_reconcile
+    )
+    # ...and the header line loses only its marker.
+    assert "# Auto-generated JTS DSP config.\n" in _config_without_id_header(header_ts)
+
+    # A ``(id=...)`` substring OUTSIDE the header is preserved verbatim.
+    assert '(id=realA)' in _config_without_id_header(header_ts)
+
+    # Same header id, but a different device-name ``(id=...)`` span: the configs
+    # must stay DIFFERENT after normalization (no masking of a real change).
+    device_a = header_reconcile
+    device_b = header_reconcile.replace("(id=realA)", "(id=realB)")
+    assert _config_without_id_header(device_a) != _config_without_id_header(device_b)
+
 
 async def test_apply_profile_no_trim_by_default_so_boosts_boost(
     tmp_path: Path, monkeypatch

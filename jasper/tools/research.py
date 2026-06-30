@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from ..conversation_history import read_settings as read_conversation_settings
 from . import tool
+from ..research import RESEARCH_EMPTY_RESULT_TEXT
 
 if TYPE_CHECKING:
     from ..research import ResearchJob, ResearchScheduler
@@ -118,10 +119,7 @@ def make_research_tools(
             scheduler.mark_read(job.id)
             text = (job.result or "").strip()
             if not text:
-                text = (
-                    "Sorry, that research finished without a readable answer. "
-                    "Please ask me again."
-                )
+                text = RESEARCH_EMPTY_RESULT_TEXT
             _record_delivery(record_delivery, job, text, normalized)
             return {
                 "ok": True,

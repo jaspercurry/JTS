@@ -51,13 +51,19 @@ URL surface (after nginx strips the /wake/ prefix):
   GET  /                page render
   GET  /detection.json  proxy jasper-control /aec — includes the
                         backend-owned mic_settings view model
+  POST /firmware/update proxy jasper-control /aec/firmware/update — start
+                        a required mic firmware update job
   POST /profile         body {profile: str} — set canonical input profile
   POST /layer/aec       body {enabled: bool} — legacy compatibility shim
                         for the old software-AEC3 toggle; not rendered
   POST /layer/raw       body {enabled: bool} — set chip-direct leg
   POST /layer/dtln      body {enabled: bool} — set DTLN leg
-  POST /layer/chip_aec  body {enabled: bool} — set chip-AEC beam legs
-                        (one toggle arms both fixed 150°/210° beams)
+  POST /layer/chip_aec_150 body {enabled: bool} — set optional 150° chip
+                        beam wake detector
+  POST /layer/chip_aec_210 body {enabled: bool} — set optional 210° chip
+                        beam wake detector
+  POST /layer/chip_aec  body {enabled: bool} — legacy compatibility shim
+                        that sets both optional chip beam detectors
   POST /sensitivity     body {value: float}  — set wake threshold
   POST /save            write wake_model.env + restart voice daemon
 
@@ -91,6 +97,7 @@ from ._common import (
     canonical_header,
     canonical_page,
     csrf_field_html,
+    forward_control_token_headers,
     proxy_get,
     proxy_post,
     read_env_file,
@@ -222,10 +229,16 @@ _FUSION_LAYERS = (
         "~75 MB · ~25% core",
     ),
     (
-        "chip_aec",
-        "Hardware beam scoring",
-        "XVF3800 chip-AEC beam streams used for wake scoring.",
-        "~10 MB · light",
+        "chip_aec_150",
+        "Extra chip beam 150°",
+        "Optional wake scoring on the XVF3800 150° hardware-AEC beam.",
+        "~30 MB · light",
+    ),
+    (
+        "chip_aec_210",
+        "Extra chip beam 210°",
+        "Optional wake scoring on the XVF3800 210° hardware-AEC beam.",
+        "~30 MB · light",
     ),
 )
 
@@ -263,6 +276,15 @@ def _echo_card_html() -> str:
       <div class="echo-status__title" id="echo-status-title">checking…</div>
       <div class="echo-status__detail" id="echo-status-detail">—</div>
     </div>
+    <div class="firmware-update" id="firmware-update-card" hidden>
+      <div class="firmware-update__copy">
+        <div class="firmware-update__title" id="firmware-update-title">Firmware update</div>
+        <div class="firmware-update__detail" id="firmware-update-detail">—</div>
+        <div class="firmware-update__meta" id="firmware-update-meta">—</div>
+      </div>
+      <button class="btn btn--primary" type="button"
+              id="firmware-update-button" disabled>Download and update firmware</button>
+    </div>
     {_profile_rows_html(_ECHO_PROFILES)}
     <div class="mic-status-warning" id="echo-status-warning" hidden></div>
   </div>
@@ -276,9 +298,9 @@ def _advanced_fusion_html() -> str:
         rows.append(f"""
   <div class="layer-row" id="layer-row-{key}">
     <div class="layer-body">
-      <div class="layer-name">{html.escape(name)}</div>
-      <div class="layer-desc">{html.escape(desc)}</div>
-      <div class="layer-meta">{html.escape(meta)}</div>
+      <div class="layer-name" id="layer-name-{key}">{html.escape(name)}</div>
+      <div class="layer-desc" id="layer-desc-{key}">{html.escape(desc)}</div>
+      <div class="layer-meta" id="layer-meta-{key}">{html.escape(meta)}</div>
       <div class="layer-status" id="layer-status-{key}">—</div>
     </div>
     {toggle_html(f"layer-{key}", disabled=True)}
@@ -613,7 +635,7 @@ def _apply_layer(
     layer: str, enabled: bool, *, control_base: str,
 ) -> tuple[int, bytes]:
     """Translate a /layer/<name> POST into jasper-control's
-    /aec/toggle (software AEC3) or /aec/leg (raw/dtln/chip) call.
+    /aec/toggle (software AEC3) or /aec/leg (raw/dtln/chip beam) call.
 
     The software-AEC3 toggle is flip-only on the control side. We read the current
     mode and only POST when it differs from the requested state, so
@@ -651,15 +673,25 @@ def _apply_layer(
         return proxy_post(
             "/aec/toggle", control_base=control_base, timeout=5.0,
         )
-    if layer in ("raw", "dtln", "chip_aec"):
-        # chip_aec is one wizard toggle that arms BOTH fixed beams; the
-        # /aec/leg handler + reconciler fan the single boolean out to
-        # JASPER_MIC_DEVICE_CHIP_AEC_150/_210.
+    if layer in ("raw", "dtln", "chip_aec_150", "chip_aec_210"):
         return proxy_post(
             "/aec/leg",
             control_base=control_base, timeout=5.0,
             body=json.dumps({"leg": layer, "enabled": enabled}).encode(),
         )
+    if layer == "chip_aec":
+        # Legacy compatibility for older browser bundles/bookmarks: the
+        # old single chip toggle now maps to both explicit extra-beam toggles.
+        status, body = 200, b"{}"
+        for beam in ("chip_aec_150", "chip_aec_210"):
+            status, body = proxy_post(
+                "/aec/leg",
+                control_base=control_base, timeout=5.0,
+                body=json.dumps({"leg": beam, "enabled": enabled}).encode(),
+            )
+            if status != 200:
+                return status, body
+        return status, body
     return 400, b'{"error":"unknown layer"}'
 
 
@@ -686,12 +718,27 @@ def _apply_profile(profile: str, *, control_base: str) -> tuple[int, bytes]:
     )
 
 
+def _start_firmware_update(
+    *,
+    control_base: str,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    """Forward the mic firmware-update action to jasper-control."""
+    return proxy_post(
+        "/aec/firmware/update",
+        control_base=control_base,
+        timeout=5.0,
+        body=b"{}",
+        headers=headers,
+    )
+
+
 # ----------------------------------------------------------------------
 # HTTP handler.
 # ----------------------------------------------------------------------
 
 
-_VALID_LAYERS = ("aec", "raw", "dtln", "chip_aec")
+_VALID_LAYERS = ("aec", "raw", "dtln", "chip_aec_150", "chip_aec_210", "chip_aec")
 _VALID_PROFILES = valid_profile_ids()
 
 
@@ -752,6 +799,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     reject_csrf(self)
                     return
                 self._handle_sensitivity()
+                return
+            if path == "/firmware/update":
+                if not guard_mutating_request(self):
+                    reject_csrf(self)
+                    return
+                status, body = _start_firmware_update(
+                    control_base=cfg["control_base"],
+                    headers=forward_control_token_headers(self),
+                )
+                send_proxy_json(self, body, status=status)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
