@@ -263,7 +263,7 @@ def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
     if check is not None:
         try:
             return "active_leader" if bool(check()) else "solo"
-        except Exception as e:  # noqa: BLE001 - safety check must not crash CLI
+        except (OSError, RuntimeError, TypeError, ValueError) as e:
             log_event(
                 logger,
                 "fanin.coupling_reconcile",
@@ -277,7 +277,7 @@ def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
         from jasper.multiroom.config import load_config
 
         return route_mode_from_grouping_config(load_config())
-    except Exception as e:  # noqa: BLE001 - unreadable grouping => not active leader
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as e:
         log_event(
             logger,
             "fanin.coupling_reconcile",
