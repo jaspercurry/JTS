@@ -46,8 +46,8 @@ const MAX_SESSION_ID_LEN = 128;
 const MAX_TOKEN_LEN = 512;
 
 // Per-session fallback rate limit (used only when env.RELAY_RATELIMIT binding is
-// absent — production uses the binding, which is atomic). Phone-facing endpoints
-// only; the Pi's pull_token poll is not limited.
+// absent — production uses Cloudflare's managed Rate Limit binding).
+// Phone-facing endpoints only; the Pi's pull_token poll is not limited.
 const RATE_WINDOW_MS = 10_000;
 const RATE_MAX_REQUESTS = 80;
 

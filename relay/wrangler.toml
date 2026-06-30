@@ -26,14 +26,14 @@ CAPTURE_ORIGIN = "https://capture.jasper.tech"
 binding = "RELAY_BUCKET"
 bucket_name = "jts-capture-relay"
 
-# Atomic rate limit backing BOTH the per-session phone-facing endpoints (GET
-# spec / POST event / PUT blob, keyed by session id) and the per-IP open
-# registration limit (keyed `reg:<cf-connecting-ip>`), so neither a leaked
-# upload_token nor a registration flood can hammer the bucket. `period` must be
-# 10 or 60; `namespace_id` must be unique within your account. If this binding is
-# absent the Worker falls back to a per-isolate in-memory counter (see
+# Cloudflare-managed rate limit backing BOTH the per-session phone-facing
+# endpoints (GET spec / POST event / PUT blob, keyed by session id) and the
+# per-IP open registration limit (keyed `reg:<cf-connecting-ip>`), so neither a
+# leaked upload_token nor a registration flood can hammer the bucket. `period`
+# must be 10 or 60; `namespace_id` must be unique within your account. If this
+# binding is absent the Worker falls back to a per-isolate in-memory counter (see
 # rateLimited() in worker.js) that never writes R2.
-[[ratelimit]]
+[[ratelimits]]
 name = "RELAY_RATELIMIT"
 namespace_id = "1001"
 simple = { limit = 80, period = 10 }
