@@ -511,6 +511,7 @@ class VolumeCoordinator:
                         source,
                         level,
                         context=f"observe_{source.value}_push_confirmed",
+                        include_live_guard=True,
                     )
                 return  # no-op; nothing to update
             logger.info(
@@ -528,6 +529,7 @@ class VolumeCoordinator:
                     source,
                     level,
                     context=f"observe_{source.value}_push_confirmed",
+                    include_live_guard=True,
                 )
 
     async def _sync_camilla_observed_level(
@@ -1575,44 +1577,28 @@ class VolumeCoordinator:
             return False
         record = self._persistence.load()
         previous_db = record.main_volume_db if record is not None else None
-        _current_db, current_mute = await self._read_camilla_volume_and_mute()
-        volume_guard_active = (
+        current_db, current_mute = await self._read_camilla_volume_and_mute()
+        persisted_guard_active = (
             previous_db is not None
             and previous_db < -RECONCILE_DRIFT_DB
         )
+        live_guard_active = (
+            current_db is not None
+            and current_db < -RECONCILE_DRIFT_DB
+        )
+        volume_guard_active = persisted_guard_active or live_guard_active
         mute_guard_active = current_mute is True
         if not volume_guard_active and not mute_guard_active:
             return False
-        cleared = await self._set_camilla_db(
-            0.0,
-            context=context,
-            persist=True,
+        effective_previous_db = (
+            previous_db if persisted_guard_active else current_db
         )
-        if cleared:
+        if await self._duck_active() is True:
             volume_diagnostics.record_push_guard_clear(
                 source,
                 level=level,
-                previous_db=previous_db,
-                context=context,
-                ok=True,
-            )
-            log_event(
-                logger,
-                "volume.push_guard_cleared",
-                # `level` collides with log_event's level= param → fields=.
-                fields={
-                    "source": source.value,
-                    "level": level,
-                    "previous_db": "unknown" if previous_db is None else f"{previous_db:.1f}",
-                    "previous_mute": "unknown" if current_mute is None else str(current_mute).lower(),
-                    "context": context,
-                },
-            )
-        else:
-            volume_diagnostics.record_push_guard_clear(
-                source,
-                level=level,
-                previous_db=previous_db,
+                previous_db=effective_previous_db,
+                reason=volume_diagnostics.GUARD_CLEAR_DEFERRED_DUCK_ACTIVE,
                 context=context,
                 ok=False,
             )
@@ -1624,15 +1610,92 @@ class VolumeCoordinator:
                 fields={
                     "source": source.value,
                     "level": level,
-                    "previous_db": "unknown" if previous_db is None else f"{previous_db:.1f}",
-                    "previous_mute": "unknown" if current_mute is None else str(current_mute).lower(),
+                    "previous_db": (
+                        "unknown"
+                        if effective_previous_db is None
+                        else f"{effective_previous_db:.1f}"
+                    ),
+                    "previous_mute": (
+                        "unknown"
+                        if current_mute is None
+                        else str(current_mute).lower()
+                    ),
+                    "context": context,
+                    "reason": "duck_active",
+                },
+            )
+            return False
+        cleared = await self._set_camilla_db(
+            0.0,
+            context=context,
+            persist=True,
+        )
+        if cleared:
+            volume_diagnostics.record_push_guard_clear(
+                source,
+                level=level,
+                previous_db=effective_previous_db,
+                context=context,
+                ok=True,
+            )
+            log_event(
+                logger,
+                "volume.push_guard_cleared",
+                # `level` collides with log_event's level= param → fields=.
+                fields={
+                    "source": source.value,
+                    "level": level,
+                    "previous_db": (
+                        "unknown"
+                        if effective_previous_db is None
+                        else f"{effective_previous_db:.1f}"
+                    ),
+                    "previous_mute": (
+                        "unknown"
+                        if current_mute is None
+                        else str(current_mute).lower()
+                    ),
+                    "context": context,
+                },
+            )
+        else:
+            volume_diagnostics.record_push_guard_clear(
+                source,
+                level=level,
+                previous_db=effective_previous_db,
+                context=context,
+                ok=False,
+            )
+            log_event(
+                logger,
+                "volume.push_guard_clear_failed",
+                level=logging.WARNING,
+                # `level` field collides with log_event's level= param → fields=.
+                fields={
+                    "source": source.value,
+                    "level": level,
+                    "previous_db": (
+                        "unknown"
+                        if effective_previous_db is None
+                        else f"{effective_previous_db:.1f}"
+                    ),
+                    "previous_mute": (
+                        "unknown"
+                        if current_mute is None
+                        else str(current_mute).lower()
+                    ),
                     "context": context,
                 },
             )
         return bool(cleared)
 
     async def _confirm_push_mode_carrier(
-        self, source: Source, level: int, *, context: str,
+        self,
+        source: Source,
+        level: int,
+        *,
+        context: str,
+        include_live_guard: bool = False,
     ) -> bool:
         """Keep Camilla's final carrier consistent for push-mode sources.
 
@@ -1650,11 +1713,16 @@ class VolumeCoordinator:
                 persist=True,
             )
 
-        _current_db, current_mute = await self._read_camilla_volume_and_mute()
+        current_db, current_mute = await self._read_camilla_volume_and_mute()
         record = self._persistence.load()
         previous_db = record.main_volume_db if record is not None else None
         needs_clear = (
             current_mute is True
+            or (
+                include_live_guard
+                and current_db is not None
+                and current_db < -RECONCILE_DRIFT_DB
+            )
             or (
                 previous_db is not None
                 and previous_db < -RECONCILE_DRIFT_DB

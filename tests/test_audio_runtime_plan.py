@@ -12,6 +12,7 @@ from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
     FANIN_OUTPUT_BUFFER_KEY,
     MIN_FANIN_OUTPUT_BUFFER_FRAMES,
+    apply_capture_precedence,
     DEFAULT_FANIN_INPUT_BUFFER_FRAMES,
     DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES,
     DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
@@ -20,7 +21,10 @@ from jasper.audio_runtime_plan import (
     coupling_supported_for_route,
     decide_source_low_latency_route,
     fanin_coupling_action,
+    fanin_coupling_capture_kwargs,
     fanin_output_buffer_action,
+    lean_capture_kwargs,
+    low_latency_feature_flags,
     outputd_latency_floor_actions,
     resolve_fanin_output_buffer_target,
     usbsink_output_mode_action,
@@ -231,6 +235,64 @@ def test_usbsink_output_mode_action_rejects_unknown_mode():
         raise AssertionError("unknown usbsink output mode was accepted")
 
 
+def test_lean_capture_kwargs_emit_plan_owned_rawfile_shape():
+    kwargs = lean_capture_kwargs()
+
+    assert kwargs["capture_pipe_path"] == "/run/jasper-usbsink/lean.pipe"
+    assert kwargs["resampler_type"] == "AsyncSinc"
+    assert kwargs["resampler_profile"] == "Balanced"
+    assert kwargs["enable_rate_adjust"] is True
+
+
+def test_fanin_coupling_capture_kwargs_explicit_intent_beats_env(monkeypatch):
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_FIFO", "/run/custom.pipe")
+
+    kwargs = fanin_coupling_capture_kwargs("fifo")
+
+    assert kwargs["capture_pipe_path"] == "/run/custom.pipe"
+    assert kwargs["resampler_type"] == "AsyncSinc"
+    assert kwargs["enable_rate_adjust"] is True
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "fifo")
+    assert fanin_coupling_capture_kwargs("loopback") == {}
+    assert "capture_pipe_path" in fanin_coupling_capture_kwargs(None)
+
+
+def test_capture_precedence_applies_fanin_coupling_when_no_stronger_capture():
+    base = {"enable_rate_adjust": True, "playback_pipe_path": None}
+    coupling = {"capture_pipe_path": "/run/jasper-fanin/camilla.pipe"}
+
+    merged = apply_capture_precedence(
+        base,
+        coupling,
+        lean_capture_kwargs=None,
+        member_kwargs=base,
+    )
+
+    assert merged["capture_pipe_path"] == "/run/jasper-fanin/camilla.pipe"
+    assert base == {"enable_rate_adjust": True, "playback_pipe_path": None}
+
+
+def test_capture_precedence_lean_and_grouped_sink_block_fanin_coupling():
+    base = {"enable_rate_adjust": True, "playback_pipe_path": None}
+    coupling = {"capture_pipe_path": "/run/jasper-fanin/camilla.pipe"}
+    lean = {"capture_pipe_path": "/run/jasper-usbsink/lean.pipe"}
+    grouped = {"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False}
+
+    assert "capture_pipe_path" not in apply_capture_precedence(
+        base,
+        coupling,
+        lean_capture_kwargs=lean,
+        member_kwargs=base,
+    )
+    assert "capture_pipe_path" not in apply_capture_precedence(
+        grouped,
+        coupling,
+        lean_capture_kwargs=None,
+        member_kwargs=grouped,
+    )
+
+
 def test_fanin_output_buffer_target_resolves_lab_override():
     assert resolve_fanin_output_buffer_target({}).frames == MIN_FANIN_OUTPUT_BUFFER_FRAMES
     assert (
@@ -331,6 +393,31 @@ def test_source_low_latency_route_is_usb_exclusive_only():
     assert (mixed.route, mixed.reason) == ("buffered", "not_exclusive")
 
 
+def test_source_low_latency_route_reports_non_exclusive_edges():
+    non_usb = decide_source_low_latency_route(
+        active_sources=("airplay",),
+        winner="airplay",
+        enabled=True,
+    )
+    usb_not_winner = decide_source_low_latency_route(
+        active_sources=("usbsink",),
+        winner=None,
+        enabled=True,
+    )
+    idle = decide_source_low_latency_route(
+        active_sources=(),
+        winner=None,
+        enabled=True,
+    )
+
+    assert (non_usb.route, non_usb.reason) == ("buffered", "not_exclusive")
+    assert (usb_not_winner.route, usb_not_winner.reason) == (
+        "buffered",
+        "non_usb_winner",
+    )
+    assert (idle.route, idle.reason) == ("buffered", "idle")
+
+
 def test_source_low_latency_route_accepts_source_enum_values():
     from jasper.music_sources import Source
 
@@ -343,6 +430,32 @@ def test_source_low_latency_route_accepts_source_enum_values():
     assert decision.route == "low_latency"
     assert decision.active_sources == ("usbsink",)
     assert decision.winner == "usbsink"
+
+
+def test_low_latency_feature_flags_are_exact_opt_in_literals():
+    on_values = ("enabled", "ENABLED", " enabled ")
+    off_values = ("", "disabled", "1", "true")
+
+    for value in on_values:
+        flags = low_latency_feature_flags(
+            {"JASPER_LEAN_LANE": value, "JASPER_FANIN_ADAPTIVE_BUFFER": value},
+        )
+        assert flags.lean_lane is True
+        assert flags.adaptive_buffer is True
+
+    for value in off_values:
+        flags = low_latency_feature_flags(
+            {"JASPER_LEAN_LANE": value, "JASPER_FANIN_ADAPTIVE_BUFFER": value},
+        )
+        assert flags.lean_lane is False
+        assert flags.adaptive_buffer is False
+
+
+def test_low_latency_feature_flags_default_off():
+    flags = low_latency_feature_flags({})
+
+    assert flags.lean_lane is False
+    assert flags.adaptive_buffer is False
 
 
 def test_packaged_systemd_defaults_match_plan_constants():

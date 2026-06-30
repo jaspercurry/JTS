@@ -15,6 +15,7 @@ explain the current intent.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
@@ -25,13 +26,24 @@ from jasper.audio_runtime_overrides import (
     load_runtime_overrides,
     runtime_overrides_path,
 )
-from jasper.camilla_config_contract import DEFAULT_CHUNKSIZE, DEFAULT_TARGET_LEVEL
+from jasper.camilla_config_contract import (
+    DEFAULT_CHUNKSIZE,
+    DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
+    DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
+    DEFAULT_LEAN_CAPTURE_FIFO,
+    DEFAULT_TARGET_LEVEL,
+)
 from jasper.env_load import read_env_file_state
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_FIFO,
     COUPLING_LOOPBACK,
+    FIFO_PATH_ENV_VAR,
+    capture_kwargs_for_coupling,
+    coupling_capture_kwargs_from_env,
+    member_kwargs_are_pipe_sink,
     resolve_coupling,
+    resolve_fifo_path,
 )
 
 
@@ -209,6 +221,14 @@ class SourceRouteDecision:
 
 
 @dataclass(frozen=True)
+class LowLatencyFeatureFlags:
+    """Parsed opt-in gates for experimental low-latency consumers."""
+
+    lean_lane: bool
+    adaptive_buffer: bool
+
+
+@dataclass(frozen=True)
 class AudioRuntimePlan:
     """Resolved audio settings plus route-policy errors."""
 
@@ -336,9 +356,32 @@ def decide_source_low_latency_route(
     return SourceRouteDecision("low_latency", "usb_exclusive", active, winner_id)
 
 
+def low_latency_feature_flags(
+    env: Mapping[str, str] | None = None,
+) -> LowLatencyFeatureFlags:
+    """Return default-off low-latency feature gates from ``env``.
+
+    These flags intentionally share one parser because they consume the same
+    source-route policy. Only the exact literal ``enabled`` (case-insensitive,
+    stripped) turns either experiment on; unset, ``disabled``, ``1``, and
+    ``true`` all stay off.
+    """
+
+    if env is None:
+        env = os.environ
+    return LowLatencyFeatureFlags(
+        lean_lane=_enabled_literal(env.get("JASPER_LEAN_LANE")),
+        adaptive_buffer=_enabled_literal(env.get("JASPER_FANIN_ADAPTIVE_BUFFER")),
+    )
+
+
 def _source_id(source: Any) -> str:
     value = getattr(source, "value", source)
     return str(value).strip()
+
+
+def _enabled_literal(raw: str | None) -> bool:
+    return (raw or "").strip().lower() == "enabled"
 
 
 def build_audio_runtime_plan_from_system(
@@ -576,6 +619,72 @@ def usbsink_output_mode_action(mode: str) -> RuntimeEnvAction:
     if normalized not in _VALID_USBSINK_OUTPUT_MODES:
         raise ValueError(f"invalid usbsink output mode {mode!r}")
     return RuntimeEnvAction("set", USBSINK_OUTPUT_MODE_KEY, normalized)
+
+
+def lean_capture_kwargs(capture_pipe_path: str | None = None) -> dict[str, object]:
+    """Return CamillaDSP RawFile-capture kwargs for the USB-only lean lane."""
+
+    return {
+        "capture_pipe_path": capture_pipe_path or DEFAULT_LEAN_CAPTURE_FIFO,
+        "resampler_type": DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
+        "resampler_profile": DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
+        "enable_rate_adjust": True,
+    }
+
+
+def fanin_coupling_capture_kwargs(
+    coupling: str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Return CamillaDSP capture kwargs for the shared fan-in coupling.
+
+    ``coupling=None`` means read the live env, matching ordinary sound/correction
+    emits. An explicit coupling is used by the coupling reconciler immediately
+    after it rewrites ``fanin.env``; process env may still be stale, so the
+    explicit value wins while the FIFO path still comes from the supplied/live
+    env.
+    """
+
+    if coupling is None:
+        return coupling_capture_kwargs_from_env(dict(os.environ if env is None else env))
+    source = os.environ if env is None else env
+    return capture_kwargs_for_coupling(
+        coupling,
+        fifo_path=resolve_fifo_path(source.get(FIFO_PATH_ENV_VAR)),
+    )
+
+
+def apply_capture_precedence(
+    emit_kwargs: Mapping[str, object],
+    fanin_coupling_capture_kwargs: Mapping[str, object] | None,
+    *,
+    lean_capture_kwargs: Mapping[str, object] | None,
+    member_kwargs: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Apply capture-precedence policy to an ``emit_sound_config`` kwargs dict.
+
+    The shared fan-in FIFO coupling applies only when no more-specific capture
+    topology already owns this emit:
+
+    - a live lean capture wins because it is the more-exclusive USB-only path;
+    - a grouped/member pipe sink wins because its playback pipe owns rate
+      tracking and is mutually exclusive with a rate-adjusted File capture;
+    - otherwise the fan-in coupling capture kwargs overwrite capture-side keys.
+
+    Empty coupling kwargs keep the input kwargs unchanged apart from returning a
+    detached ``dict`` for callers to mutate safely.
+    """
+
+    if (
+        not fanin_coupling_capture_kwargs
+        or lean_capture_kwargs
+        or member_kwargs_are_pipe_sink(dict(member_kwargs or {}))
+    ):
+        return dict(emit_kwargs)
+    merged = dict(emit_kwargs)
+    merged.update(fanin_coupling_capture_kwargs)
+    return merged
 
 
 def resolve_fanin_output_buffer_target(

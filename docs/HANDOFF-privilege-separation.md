@@ -214,6 +214,11 @@ the 3b polkit rule will grant `jasper-control`; the broker enforces the narrower
 start-only semantics so authz and the polkit grant can't drift. Pinned by
 [`tests/test_restart_broker.py`](../tests/test_restart_broker.py) (verb
 vocabulary, unit allowlist, peer-cred auth, wire contract, root fallback).
+Restart requests that include `jasper-control.service` are split inside the
+broker: all non-control units are queued first, then `jasper-control` is
+restarted as a detached `--no-block` self-restart so the broker can still return
+an answer. This covers wizard saves that need to restart voice/control/mux
+together; a wedged or unreachable broker still fails soft as described below.
 
 ### Phase 3b — Tier-A user drop
 
@@ -532,14 +537,17 @@ activation when Wi-Fi is down), `jasper-aec-reconcile` (remove
 
 **Accepted trade — the broker becomes a restart *dependency*.** Once the
 clients are non-root, `manage_units`' root fallback is structurally gone
-(`geteuid() != 0`), so the broker is the only path. A wedged or mid-restart
+(`geteuid() != 0`), so the broker is the only path. A wedged or unavailable
 `jasper-control` therefore means an in-flight wizard config-save restart
-*fails* (fail-soft: logged `event=restart_broker.unavailable`, the wizard's
-own warning fires, the config still persisted) rather than falling back to a
-direct `systemctl`. This is the deliberate cost of one auditable privileged
-boundary, and it is bounded: `jasper-control` is the most heavily supervised
-daemon (Tier-1 watchdog + `StartLimitAction=reboot`), its own restart stays
-systemd's job, and the failure is observable, not silent. With 3b-2 landed,
+*fails* (fail-soft: logged `event=restart_broker.unavailable`, the wizard's own
+warning fires, the config still persisted) rather than falling back to a direct
+`systemctl`. A reachable broker can, however, safely process restart requests
+that include `jasper-control` itself: it queues the other units first, then
+detaches its own `--no-block` restart so the client still gets a verdict. This
+is the deliberate cost of one auditable privileged boundary, and it is bounded:
+`jasper-control` is the most heavily supervised daemon (Tier-1 watchdog +
+`StartLimitAction=reboot`), and the failure is observable, not silent. With
+3b-2 landed,
 `jasper-control`'s *own* supervisor/debug restarts (they call `systemctl`
 directly, not the broker) are now polkit-authorized — noted in the
 `HANDOFF-resilience.md` Tier-3 / system-supervisor sections and the

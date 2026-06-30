@@ -237,6 +237,13 @@ point the source slider has proven it is carrying the user's intent, so
 leaving the downstream fallback attenuation in place would make
 "Spotify 100%" still sound like the older guarded level.
 
+The Ducker is the exception: if a voice/TTS duck is actively holding
+Camilla, a push confirmation does **not** count as a real guard clear.
+The coordinator records a failed/deferred clear and leaves the guard
+persisted so the next observer tick can retry after the duck releases.
+That keeps the repair behind the scenes without letting persistence
+claim Camilla is pinned at 0 dB while the live graph is still attenuated.
+
 USB is different from Spotify/Bluetooth: the Mac/PC host slider is an
 observed input, but not the final speaker-volume carrier. When USB is
 active, a host-side observation updates `listening_level` and then
@@ -664,4 +671,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-06-26 (reconciler mute-intent semantics checked against `VolumeCoordinator.maybe_reconcile_camilla` and `tests/test_volume_coordinator.py::test_reconcile_preserves_toggle_mute_restore_level`; prior 2026-06-22 pass covered volume floor calibration checked against `jasper.volume_curve`, `/sound/` settings, and the focused volume/sound pytest suite; prior 2026-06-21 pass covered gain-chain ledger against `jasper.control.gain_chain`, `jasper.control.state_aggregate`, and JTS3 `/state.audio.gain_chain`; prior 2026-06-17 pass covered librespot state-file reader mode against `jasper-librespot-event`, prior 2026-06-14 pass covered active-speaker baseline `volume_limit` guard against `camilla_yaml.py`, and prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)
+Last verified: 2026-06-30 (duck-deferred push-guard clear and live/persisted guard recovery checked against `jasper.volume_coordinator`, `jasper.volume_diagnostics`, and focused pytest; prior 2026-06-26 pass covered reconciler mute-intent semantics against `VolumeCoordinator.maybe_reconcile_camilla` and `tests/test_volume_coordinator.py::test_reconcile_preserves_toggle_mute_restore_level`; prior 2026-06-22 pass covered volume floor calibration against `jasper.volume_curve`, `/sound/` settings, and the focused volume/sound pytest suite; prior 2026-06-21 pass covered gain-chain ledger against `jasper.control.gain_chain`, `jasper.control.state_aggregate`, and JTS3 `/state.audio.gain_chain`; prior 2026-06-17 pass covered librespot state-file reader mode against `jasper-librespot-event`, prior 2026-06-14 pass covered active-speaker baseline `volume_limit` guard against `camilla_yaml.py`, and prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)

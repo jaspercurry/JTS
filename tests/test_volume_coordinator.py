@@ -566,6 +566,64 @@ async def test_observe_spotify_same_level_clears_degraded_guard(tmp_path):
     assert record.main_volume_db == pytest.approx(0.0)
 
 
+async def test_observe_spotify_clear_deferred_during_duck_keeps_guard(
+    tmp_path, monkeypatch,
+):
+    """A push confirmation during an active duck is not a real carrier
+    clear. Keep the guard persisted so the observer can retry later."""
+    diag_path = tmp_path / "volume_policy.json"
+    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
+    coord, cam, persistence = _coord(
+        tmp_path, active={"spotactive": True}, db=-13.0,
+    )
+    coord._level = 90
+    persistence.save_listening_level(90)
+    persistence.save_now(-13.0)
+
+    async def probe():
+        return True
+
+    coord._duck_active_probe = probe
+
+    await coord.observe_source_volume(Source.SPOTIFY, 90)
+
+    assert cam.set_calls == []
+    record = persistence.load()
+    assert record is not None
+    assert record.listening_level == 90
+    assert record.main_volume_db == pytest.approx(-13.0)
+    diag = read_diagnostics(str(diag_path))
+    assert diag["last_clear_event"]["ok"] is False
+    assert diag["last_clear_event"]["reason"] == "clear_deferred_duck_active"
+    assert diag.get("push_guard", {}).get("active") is not False
+
+
+async def test_observe_spotify_repairs_live_guard_after_false_clear(
+    tmp_path,
+):
+    """Recover from the legacy split-brain: persistence claimed the push
+    guard was clear, but live Camilla was still attenuating the path."""
+    coord, cam, persistence = _coord(
+        tmp_path, active={"spotactive": True}, db=-13.0,
+    )
+    coord._level = 90
+    persistence.save_listening_level(90)
+    persistence.save_now(0.0)
+
+    async def probe():
+        return False
+
+    coord._duck_active_probe = probe
+
+    await coord.observe_source_volume(Source.SPOTIFY, 90)
+
+    assert cam.set_calls[-1] == pytest.approx(0.0)
+    record = persistence.load()
+    assert record is not None
+    assert record.listening_level == 90
+    assert record.main_volume_db == pytest.approx(0.0)
+
+
 async def test_successful_push_dispatch_clears_degraded_guard(
     tmp_path, monkeypatch,
 ):

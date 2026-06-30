@@ -76,6 +76,7 @@ from typing import Any
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
+_SELF_UNIT = "jasper-control.service"
 
 # The broker socket. jasper-control declares RuntimeDirectory=jasper-control,
 # so /run/jasper-control exists owned by the unit's user (root in this PR;
@@ -211,6 +212,57 @@ def _build_argv(verb: str, units: list[str], *, no_block: bool) -> list[str]:
     return argv
 
 
+def _run_systemctl_request(
+    verb: str,
+    units: list[str],
+    *,
+    no_block: bool,
+    exec_timeout: float,
+) -> tuple[int | None, str, bool]:
+    """Execute a validated request and return ``(rc, stderr, self_deferred)``.
+    ``rc=None`` means the control self-restart was queued but cannot be
+    confirmed without risking the broker dying before it replies.
+
+    Restarting jasper-control from inside jasper-control is special: a single
+    ``systemctl restart voice control mux`` can kill the broker before systemd
+    has queued the later units. Queue non-self units first, then fire the
+    control restart as a detached no-block command so the broker can answer.
+    """
+    if verb == "restart" and _SELF_UNIT in units:
+        non_self_units = [u for u in units if u != _SELF_UNIT]
+        if non_self_units:
+            first = subprocess.run(
+                _build_argv(verb, non_self_units, no_block=no_block),
+                check=False,
+                timeout=exec_timeout,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if first.returncode != 0:
+                return first.returncode, (first.stderr or "").strip(), False
+
+        subprocess.Popen(
+            _build_argv(verb, [_SELF_UNIT], no_block=True),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        return None, "", True
+
+    proc = subprocess.run(
+        _build_argv(verb, units, no_block=no_block),
+        check=False,
+        timeout=exec_timeout,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return proc.returncode, (proc.stderr or "").strip(), False
+
+
 def _unit_allowed_for_verb(unit: str, verb: str) -> bool:
     return unit in MANAGED_UNITS or (verb == "start" and unit in START_ONLY_UNITS)
 
@@ -316,16 +368,14 @@ class _BrokerHandler(StreamRequestHandler):
         reason = str(req.get("reason") or "")
         no_block = bool(req.get("no_block", True))
         exec_timeout = _clamp_exec_timeout(req.get("exec_timeout"))
-        argv = _build_argv(verb, units, no_block=no_block)
         log_event(
             logger, "restart_broker.request", verb=verb,
             units=",".join(units), reason=reason or "-",
             peer_uid=uid, peer_pid=pid, no_block=no_block,
         )
         try:
-            proc = subprocess.run(
-                argv, check=False, timeout=exec_timeout,
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            rc, err, self_deferred = _run_systemctl_request(
+                verb, units, no_block=no_block, exec_timeout=exec_timeout,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             log_event(
@@ -334,20 +384,27 @@ class _BrokerHandler(StreamRequestHandler):
             )
             self._reply({"ok": False, "error": f"systemctl invocation failed: {exc}"})
             return
-        rc = proc.returncode
-        err = (proc.stderr or "").strip()
-        if rc != 0:
+        if self_deferred:
+            log_event(
+                logger, "restart_broker.self_restart_deferred",
+                verb=verb, units=_SELF_UNIT, result="queued_unconfirmed",
+            )
+        queued_unconfirmed = self_deferred and rc is None
+        if rc is not None and rc != 0:
             log_event(
                 logger, "restart_broker.exec_nonzero", verb=verb,
                 units=",".join(units), rc=rc, detail=err[:200],
                 level=logging.WARNING,
             )
         self._reply({
-            "ok": rc == 0,
+            "ok": queued_unconfirmed or rc == 0,
             "action": verb,
             "units": units,
             "rc": rc,
-            "stderr": err[:500] if rc != 0 else "",
+            "stderr": err[:500] if rc is not None and rc != 0 else "",
+            "self_deferred": self_deferred,
+            "confirmed": not queued_unconfirmed,
+            "status": "queued_unconfirmed" if queued_unconfirmed else "confirmed",
         })
 
     def _reply(self, payload: dict[str, Any]) -> None:
