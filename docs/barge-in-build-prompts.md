@@ -94,9 +94,9 @@ Implement:
    AEC-cleaned mic frame; on a sustained speech run >= JASPER_VAD_BARGE_IN_THRESHOLD
    (mirror the existing wake-tail arming constants), set the turn's interrupt
    event (the wait_for_interrupt path that turn_playback._play_responses awaits).
-   Detection MUST run INLINE in the frame handler — NOT as a WakeLoop._bg_task:
-   _handle_session_frame ends the turn when any _bg_tasks entry completes
-   (`if any(t.done() for t in self._bg_tasks): await self._end_turn()`).
+   Detection MUST run INLINE in the frame handler — NOT as a `WakeLoop._bg_task`:
+   WakeLoop treats any completed `_bg_tasks` entry as turn-over through the
+   background completion watcher, with `_handle_session_frame` as a backup.
 2. Fix the drain-tail gap: in jasper/voice/turn_playback.py, _play_responses
    races the interrupt only inside the `async for` chunk loop; extend the race
    to also cover the `await tts.wait_drained()` window (the most common barge-in

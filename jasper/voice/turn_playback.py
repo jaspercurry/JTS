@@ -256,11 +256,11 @@ async def _idle_watchdog(
     Coordinates with ``_play_responses``: the consumer awaits
     ``tts.wait_drained()`` after its final write, while this watchdog
     polls ``expected_drain_at()`` cooperatively. Both consult the same
-    drain anchor, so whichever observes "drained" first triggers
-    ``_end_turn`` (via the bg-task done check at
-    ``_handle_session_frame``). End-of-turn drain timing is logged
-    by ``_end_turn`` itself so observability is symmetric across
-    whichever side wins the race."""
+    drain anchor, so whichever observes "drained" first completes its
+    background task and lets WakeLoop schedule ``_end_turn``. The
+    session-frame done-task check remains as a backup for always-on mic
+    frames. End-of-turn drain timing is logged by ``_end_turn`` itself
+    so observability is symmetric across whichever side wins the race."""
     while True:
         await asyncio.sleep(0.25)
         if turn.turn_lost():

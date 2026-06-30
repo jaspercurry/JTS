@@ -925,8 +925,9 @@ Independent of the leg refactor — land anytime.
 
 **Landmines for 0.2–0.3 (verified in-code; preserved through 0.3, keep preserving):**
 - the leg loops stay standalone tasks cancelled in `run()`'s `finally`,
-  never added to `_bg_tasks` (the session-frame handler treats any done
-  `_bg_tasks` task as turn-over);
+  never added to `_bg_tasks` (WakeLoop treats any done `_bg_tasks` task
+  as turn-over via the background completion watcher and session-frame
+  backup);
 - post-fire, `.reset()` **every** leg's detector (openWakeWord smoothing);
 - only the `off` leg runs `_shadow_vad_score_raw` in SESSION state —
   generalize via a per-leg flag, don't drop it;
