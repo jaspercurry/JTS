@@ -25,4 +25,4 @@ if (( delay_i > 60 )); then
 fi
 
 sleep "${delay_i}"
-systemctl restart --no-block jasper-grouping-reconcile.service
+systemctl --no-block restart jasper-grouping-reconcile.service

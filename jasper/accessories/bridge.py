@@ -58,6 +58,9 @@ DEFAULT_CONTROL_URL = "http://127.0.0.1:8780"
 # Coalesce window for rotation events. At 20 Hz detents (the VK-01's
 # fast-spin rate), this collapses ~4 events into one HTTP call.
 COALESCE_WINDOW_SEC = 0.08
+HOLD_REPEAT_INITIAL_DELAY_SEC = 0.30
+HOLD_REPEAT_INTERVAL_SEC = 0.16
+HOLD_START_RETRY_SEC = 0.20
 
 
 # Async poster signature: (method, path, body-dict-or-None) -> ControlResponse.
@@ -137,7 +140,9 @@ async def _post_once(
     device_name: str,
     key_name: str,
     profile_id: str | None = None,
-) -> None:
+    *,
+    emit_log: bool = True,
+) -> ControlResponse | None:
     """Fire-once HTTP call for a non-coalescing key (mute, etc.)."""
     try:
         resp = await post(
@@ -145,27 +150,219 @@ async def _post_once(
             action.path,
             action.body or None,
         )
-        fields = {
-            "device": device_name,
-            "key": key_name,
-            "path": action.path,
-            "status": resp.status,
-        }
-        if profile_id:
-            fields["profile"] = profile_id
-        log_event(logger, "knob.action", fields=fields)
+        if emit_log:
+            _log_key_action(
+                "knob.action",
+                action,
+                device_name,
+                key_name,
+                profile_id,
+                status=resp.status,
+            )
+        return resp
     except ControlError as e:
-        fields = {
-            "device": device_name,
-            "key": key_name,
-            "err": str(e),
-        }
-        if profile_id:
-            fields["profile"] = profile_id
-        log_event(
-            logger, "knob.action.failed",
-            level=logging.WARNING, fields=fields,
+        if emit_log:
+            _log_key_action(
+                "knob.action.failed",
+                action,
+                device_name,
+                key_name,
+                profile_id,
+                err=str(e),
+                level=logging.WARNING,
+            )
+        return None
+
+
+def _log_key_action(
+    event: str,
+    action: KeyAction,
+    device_name: str,
+    key_name: str,
+    profile_id: str | None,
+    *,
+    status: int | None = None,
+    err: str | None = None,
+    level: int = logging.INFO,
+) -> None:
+    fields = {
+        "device": device_name,
+        "key": key_name,
+        "path": action.path,
+    }
+    if status is not None:
+        fields["status"] = status
+    if err is not None:
+        fields["err"] = err
+    if profile_id:
+        fields["profile"] = profile_id
+    log_event(logger, event, level=level, fields=fields)
+
+
+def _is_retryable_hold_start(action: KeyAction, resp: ControlResponse | None) -> bool:
+    return (
+        action.method == "POST"
+        and action.path == "/session/start"
+        and resp is not None
+        and resp.status == 409
+    )
+
+
+class _HoldController:
+    """Stateful press/release dispatcher for HoldAction.
+
+    Physical push-to-talk buttons have two useful properties that a bare
+    "POST on press, POST on release" mapping cannot express:
+
+      * Press can arrive while the previous voice turn is still closing; keep
+        retrying START while the key remains held instead of forcing the user
+        to tap once and hold again.
+      * Release should only send END if START actually succeeded. Otherwise a
+        quick press during a busy turn becomes a harmless no-op, not a stray
+        409-generating END.
+    """
+
+    def __init__(
+        self,
+        post: Poster,
+        action: HoldAction,
+        device_name: str,
+        key_name: str,
+        profile_id: str | None = None,
+    ) -> None:
+        self._post = post
+        self._action = action
+        self._device_name = device_name
+        self._key_name = key_name
+        self._profile_id = profile_id
+        self._pressed = False
+        self._started = False
+        self._released = asyncio.Event()
+        self._start_task: asyncio.Task | None = None
+
+    async def press(self) -> None:
+        if self._pressed:
+            return
+        self._pressed = True
+        self._started = False
+        self._released.clear()
+        resp = await _post_once(
+            self._post,
+            self._action.on_press,
+            self._device_name,
+            self._key_name,
+            self._profile_id,
         )
+        if resp is not None and resp.ok:
+            self._started = True
+            return
+        if not _is_retryable_hold_start(self._action.on_press, resp):
+            return
+        _log_key_action(
+            "knob.hold.retry",
+            self._action.on_press,
+            self._device_name,
+            self._key_name,
+            self._profile_id,
+            status=resp.status,
+        )
+        self._start_task = asyncio.create_task(self._retry_until_ready())
+
+    async def release(self) -> None:
+        if not self._pressed and not self._started:
+            return
+        self._pressed = False
+        self._released.set()
+        if self._start_task is not None:
+            try:
+                await self._start_task
+            except asyncio.CancelledError:
+                pass
+            self._start_task = None
+        if self._started:
+            await _post_once(
+                self._post,
+                self._action.on_release,
+                self._device_name,
+                self._key_name,
+                self._profile_id,
+            )
+            self._started = False
+
+    async def _retry_until_ready(self) -> None:
+        while self._pressed:
+            try:
+                await asyncio.wait_for(
+                    self._released.wait(),
+                    timeout=HOLD_START_RETRY_SEC,
+                )
+            except asyncio.TimeoutError:
+                pass
+            else:
+                return
+            if not self._pressed:
+                return
+            resp = await _post_once(
+                self._post,
+                self._action.on_press,
+                self._device_name,
+                self._key_name,
+                self._profile_id,
+                emit_log=False,
+            )
+            if resp is not None and resp.ok:
+                _log_key_action(
+                    "knob.action",
+                    self._action.on_press,
+                    self._device_name,
+                    self._key_name,
+                    self._profile_id,
+                    status=resp.status,
+                )
+                self._started = True
+                return
+            if not _is_retryable_hold_start(self._action.on_press, resp):
+                return
+
+
+class _RepeatController:
+    """Host-side hold repeat for coalesced volume-style actions."""
+
+    def __init__(self, coalescer: _Coalescer) -> None:
+        self._coalescer = coalescer
+        self._pressed = False
+        self._task: asyncio.Task | None = None
+
+    @property
+    def pressed(self) -> bool:
+        return self._pressed
+
+    def press(self) -> None:
+        self._coalescer.hit()
+        if self._pressed:
+            return
+        self._pressed = True
+        self._task = asyncio.create_task(self._repeat_loop())
+
+    async def release(self) -> None:
+        self._pressed = False
+        if self._task is None:
+            return
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        self._task = None
+
+    async def _repeat_loop(self) -> None:
+        try:
+            await asyncio.sleep(HOLD_REPEAT_INITIAL_DELAY_SEC)
+            while self._pressed:
+                self._coalescer.hit()
+                await asyncio.sleep(HOLD_REPEAT_INTERVAL_SEC)
+        except asyncio.CancelledError:
+            return
 
 
 class _TapCounter:
@@ -341,8 +538,9 @@ async def _read_device(
     )
 
     coalescers: dict[int, _Coalescer] = {}
+    repeaters: dict[int, _RepeatController] = {}
     tap_counters: dict[int, _TapCounter] = {}
-    active_holds: dict[int, tuple[HoldAction, str]] = {}
+    hold_controllers: dict[int, _HoldController] = {}
     tasks: set[asyncio.Task] = set()  # retain non-coalescing dispatch tasks
 
     try:
@@ -355,17 +553,19 @@ async def _read_device(
             key_name = _key_name(ev.code)
             if isinstance(action, HoldAction):
                 if ev.value == 1:
-                    target = action.on_press
-                    active_holds[ev.code] = (action, key_name)
+                    controller = hold_controllers.get(ev.code)
+                    if controller is None:
+                        controller = _HoldController(
+                            post, action, device.name, key_name, device.id,
+                        )
+                        hold_controllers[ev.code] = controller
+                    await controller.press()
                 elif ev.value == 0:
-                    target = action.on_release
-                    active_holds.pop(ev.code, None)
+                    controller = hold_controllers.get(ev.code)
+                    if controller is not None:
+                        await controller.release()
                 else:
                     continue
-                # Hold actions encode stateful press→release edges
-                # (e.g. push-to-talk). Preserve wire order instead of
-                # firing independent tasks that can race each other.
-                await _post_once(post, target, device.name, key_name, device.id)
                 continue
             if isinstance(action, TapAction):
                 if ev.value != 1:  # taps are press-only; ignore release + autorepeat
@@ -378,13 +578,24 @@ async def _read_device(
                     tap_counters[ev.code] = tc
                 tc.hit()
             elif action.coalesce:
-                if ev.value not in (1, 2):  # press + autorepeat; ignore release
+                if ev.value not in (0, 1, 2):  # press/repeat/release only
                     continue
                 cz = coalescers.get(ev.code)
                 if cz is None:
                     cz = _Coalescer(post, action, device.name, device.id)
                     coalescers[ev.code] = cz
-                cz.hit()
+                repeater = repeaters.get(ev.code)
+                if repeater is None:
+                    repeater = _RepeatController(cz)
+                    repeaters[ev.code] = repeater
+                if ev.value == 1:
+                    repeater.press()
+                elif ev.value == 0:
+                    await repeater.release()
+                elif not repeater.pressed:
+                    # Defensive fallback for devices that emit EV_KEY
+                    # repeat without a visible press edge.
+                    cz.hit()
             else:
                 if ev.value != 1:  # press only; ignore release + autorepeat
                     continue
@@ -404,11 +615,12 @@ async def _read_device(
             reason=str(e),
         )
     finally:
-        for _code, (action, key_name) in list(active_holds.items()):
-            await _post_once(
-                post, action.on_release, device.name, key_name, device.id,
-            )
-        active_holds.clear()
+        for repeater in list(repeaters.values()):
+            await repeater.release()
+        for controller in list(hold_controllers.values()):
+            await controller.release()
+        repeaters.clear()
+        hold_controllers.clear()
         try:
             dev.close()
         except Exception:  # noqa: BLE001

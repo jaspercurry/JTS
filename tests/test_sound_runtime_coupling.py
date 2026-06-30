@@ -151,29 +151,31 @@ def test_reconcile_unknown_coupling_fails_safe_to_empty(monkeypatch, tmp_path):
 
 def test_both_chokepoints_resolve_coupling_through_one_helper(monkeypatch):
     # Both chokepoints (the durable apply + the dry-run reconcile) resolve the
-    # coupling through the SAME shared helper (_resolve_coupling_capture_kwargs),
+    # coupling through the SAME plan helper (fanin_coupling_capture_kwargs),
     # so the dry-run YAML and the durable apply can never disagree (which would
     # break unchanged-detection) — and an explicit override threads to both.
     import inspect
 
     src = inspect.getsource(runtime.load_profile_config)
-    assert "_resolve_coupling_capture_kwargs(coupling)" in src
+    assert "fanin_coupling_capture_kwargs(coupling)" in src
     assert "fanin_coupling_capture_kwargs=coupling_capture_kwargs" in src
     reconcile_src = inspect.getsource(runtime.reconcile_current_dsp)
-    assert "_resolve_coupling_capture_kwargs(coupling)" in reconcile_src
+    assert "fanin_coupling_capture_kwargs(coupling)" in reconcile_src
     del monkeypatch
 
 
 def test_resolver_helper_override_beats_env(monkeypatch):
     # The explicit coupling override is what the coupling reconciler passes
     # (its os.environ may be stale after it just rewrote fanin.env).
+    from jasper.audio_runtime_plan import fanin_coupling_capture_kwargs
+
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
-    fifo_kwargs = runtime._resolve_coupling_capture_kwargs("fifo")
+    fifo_kwargs = fanin_coupling_capture_kwargs("fifo")
     assert "capture_pipe_path" in fifo_kwargs and fifo_kwargs["enable_rate_adjust"]
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "fifo")
-    assert runtime._resolve_coupling_capture_kwargs("loopback") == {}
+    assert fanin_coupling_capture_kwargs("loopback") == {}
     # None falls through to the env (every existing caller's behavior).
-    assert "capture_pipe_path" in runtime._resolve_coupling_capture_kwargs(None)
+    assert "capture_pipe_path" in fanin_coupling_capture_kwargs(None)
 
 
 def test_reconcile_explicit_fifo_override_arms_regardless_of_env(monkeypatch, tmp_path):

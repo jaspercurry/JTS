@@ -6,6 +6,7 @@ Before=jasper-voice.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=60
 ExecStart=/opt/jasper/.venv/bin/jasper-accessory-reconcile --reason boot
 Group=jasper
 

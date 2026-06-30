@@ -1110,7 +1110,7 @@ def _reset_failed_unit(unit: str) -> None:
         )
 
 
-def _restart_unit(unit: str) -> bool:
+def _restart_unit(unit: str, *, no_block: bool = False) -> bool:
     """Restart a unit so it re-reads its grouping env. Fail-soft (a
     failure is logged + reflected in the exit code by the caller; the
     doctor's drift checks surface a lane left unwired).
@@ -1118,11 +1118,21 @@ def _restart_unit(unit: str) -> bool:
     reset-failed FIRST (see :func:`_reset_failed_unit`) so a config-apply
     restart never spends the target's crash-reboot budget — this is the single
     guard that turns a rapid grouping-config burst into harmless restarts
-    instead of a Pi reboot."""
+    instead of a Pi reboot.
+
+    `no_block` is for cross-owner kicks whose target owns its own downstream
+    startup graph (today: grouping -> AEC -> voice). Ordered, same-owner
+    restarts stay blocking so the reconciler can still fail loudly when an
+    apply step it owns does not land.
+    """
     _reset_failed_unit(unit)
+    cmd = ["systemctl"]
+    if no_block:
+        cmd.append("--no-block")
+    cmd.extend(("restart", unit))
     try:
         subprocess.run(
-            ["systemctl", "restart", unit],
+            cmd,
             check=True, capture_output=True, text=True,
         )
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
@@ -1141,6 +1151,7 @@ def _restart_unit(unit: str) -> bool:
         "multiroom.reconcile.unit_restarted",
         unit=unit,
         reason="grouping_env_changed",
+        no_block=no_block,
     )
     return True
 
@@ -1692,7 +1703,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     if not voice_ok:
         rc = 1
-    if voice_changed and voice_ok and not _restart_unit(AEC_RECONCILE_UNIT):
+    if (
+        voice_changed
+        and voice_ok
+        and not _restart_unit(AEC_RECONCILE_UNIT, no_block=True)
+    ):
         rc = 1
 
     # 3c. shairport's bonded-leader AirPlay offset delta

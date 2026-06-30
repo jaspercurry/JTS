@@ -350,7 +350,7 @@ operator-managed (edit the env file by hand); web saves preserve them.
 ### Turning peering on
 
 Visit `http://jts.local/rooms/`. The Wake response card has the peering
-toggle and primary checkbox. Save triggers `systemctl restart --no-block
+toggle and primary checkbox. Save triggers `systemctl --no-block restart
 jasper-voice jasper-control` so both daemons pick up the new mode. Allow
 ~3-5 s before peers see this Pi appear in their `/rooms/` directory.
 `/peers/` is intentionally not routed; stale bookmarks should fail rather

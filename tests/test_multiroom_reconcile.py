@@ -813,10 +813,12 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
         reconcile_mod, "_restart_outputd",
         lambda: order.append("outputd_restart") or True,
     )
-    monkeypatch.setattr(
-        reconcile_mod, "_restart_unit",
-        lambda unit: order.append(f"restart:{unit}") or True,
-    )
+    def _fake_restart(unit, *, no_block=False):
+        suffix = ":no_block" if no_block else ""
+        order.append(f"restart:{unit}{suffix}")
+        return True
+
+    monkeypatch.setattr(reconcile_mod, "_restart_unit", _fake_restart)
     monkeypatch.setattr(
         leader_config_mod, "apply_bonded_leader_config_sync",
         lambda cfg_: order.append("camilla_bonded") or "bonded.yml",
@@ -900,7 +902,8 @@ def test_main_leader_order_env_restart_units_then_camilla(tmp_path, monkeypatch)
     # that script is the single owner of the voice/bridge units and
     # decides restart-vs-park from the derived flag + provider + mic.
     assert order == [
-        "write", "outputd_restart", "restart:jasper-aec-reconcile.service",
+        "write", "outputd_restart",
+        "restart:jasper-aec-reconcile.service:no_block",
         "apply", "restart:shairport-sync.service", "camilla_bonded",
         "stream_binding",
     ]
@@ -1218,7 +1221,7 @@ def test_main_follower_voice_env_kicks_aec_reconcile_with_park_flag(
     assert main([]) == 0
     text = (tmp_path / "grouping-voice.env").read_text()
     assert f"{VOICE_PARK_ENV}=1" in text
-    assert "restart:jasper-aec-reconcile.service" in order
+    assert "restart:jasper-aec-reconcile.service:no_block" in order
     assert "restart:jasper-voice.service" not in order
 
 
@@ -1907,6 +1910,30 @@ def test_restart_unit_resets_failed_before_restart(monkeypatch):
     assert calls[0] == ["systemctl", "reset-failed", "jasper-outputd.service"]
     assert calls[1][:2] == ["systemctl", "restart"]
     assert calls[1][-1] == "jasper-outputd.service"
+
+
+def test_restart_unit_can_queue_cross_owner_restart_no_block(monkeypatch):
+    """A grouping voice-route change kicks the AEC reconciler, which owns
+    jasper-voice/jasper-aec-bridge. That cross-owner handoff must be queued so
+    grouping cannot wait behind voice startup and wedge the unit graph."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._restart_unit(
+        reconcile_mod.AEC_RECONCILE_UNIT, no_block=True,
+    ) is True
+    assert calls[0] == [
+        "systemctl", "reset-failed", reconcile_mod.AEC_RECONCILE_UNIT,
+    ]
+    assert calls[1] == [
+        "systemctl", "--no-block", "restart", reconcile_mod.AEC_RECONCILE_UNIT,
+    ]
 
 
 def test_restart_unit_reset_failed_is_fail_soft(monkeypatch):

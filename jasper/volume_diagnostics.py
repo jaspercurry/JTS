@@ -40,6 +40,7 @@ GUARD_PUSH_WRITE_FAILED = "push_write_failed"
 GUARD_SOURCE_HANDOFF_PUSH_FAILED = "source_handoff_push_failed"
 GUARD_ACTIVE_SOURCE_PUSH_FAILED = "active_source_push_failed"
 GUARD_PUSH_CONFIRMED = "push_confirmed"
+GUARD_CLEAR_DEFERRED_DUCK_ACTIVE = "clear_deferred_duck_active"
 
 
 def diagnostics_path(path: str | None = None) -> str:
@@ -204,13 +205,26 @@ def build_volume_policy_snapshot(
     diagnostics = diagnostics or {}
     source = _source_from_state(active_source, mux_status)
     mode = volume_mode(source)
-    guard_db = persisted_main_volume_db
-    if guard_db is None:
-        guard_db = main_volume_db
+    persisted_guard_db = (
+        persisted_main_volume_db
+        if (
+            persisted_main_volume_db is not None
+            and float(persisted_main_volume_db) < -PUSH_GUARD_EPSILON_DB
+        )
+        else None
+    )
+    live_guard_db = (
+        main_volume_db
+        if (
+            main_volume_db is not None
+            and float(main_volume_db) < -PUSH_GUARD_EPSILON_DB
+        )
+        else None
+    )
+    guard_db = persisted_guard_db if persisted_guard_db is not None else live_guard_db
     push_guard_active = (
         mode == VolumeMode.PUSH
         and guard_db is not None
-        and float(guard_db) < -PUSH_GUARD_EPSILON_DB
     )
 
     guard_detail = diagnostics.get("push_guard")
@@ -225,7 +239,11 @@ def build_volume_policy_snapshot(
         guard_reason = (
             guard_detail.get("reason")
             if guard_matches_source and isinstance(guard_detail.get("reason"), str)
-            else "derived_from_camilla_guard"
+            else (
+                "derived_from_persisted_camilla_guard"
+                if persisted_guard_db is not None
+                else "derived_from_live_camilla_guard"
+            )
         )
         guard_context = (
             guard_detail.get("context")

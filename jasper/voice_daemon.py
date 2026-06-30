@@ -1347,6 +1347,26 @@ class WakeLoop:
             label=name,
         )
 
+    def _arm_session_task_watcher(self) -> None:
+        if not self._bg_tasks:
+            return
+        self._create_fire_and_forget_task(
+            self._watch_session_tasks(tuple(self._bg_tasks)),
+            name="session-task-watcher",
+        )
+
+    async def _watch_session_tasks(self, tasks: tuple[asyncio.Task, ...]) -> None:
+        done, _pending = await asyncio.wait(
+            set(tasks),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        # A normal mic frame also notices completed bg tasks. The watcher
+        # exists for manual mic sources that can go quiet after button release,
+        # so guard against stale completions from an already-ended turn.
+        if not any(task in self._bg_tasks for task in done):
+            return
+        await self._end_turn()
+
     async def _cancel_fire_and_forget_tasks(self) -> None:
         await _cancel_tracked_tasks(self._fire_and_forget)
 
@@ -3458,7 +3478,7 @@ class WakeLoop:
         if self._state is not State.SESSION or self._turn is None:
             return "NO_SESSION"
         if self._input_ended:
-            return "ALREADY_ENDED"
+            return "OK"
         self._input_ended = True
         try:
             await self._turn.end_input()
@@ -3704,6 +3724,7 @@ class WakeLoop:
                 _server_vad_response_trigger(self._turn, self._connection)
             )
             self._bg_tasks.add(vad_trigger)
+        self._arm_session_task_watcher()
         self._state = State.SESSION
         self._arm_turn_background_end()
 

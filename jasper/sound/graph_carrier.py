@@ -26,9 +26,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from jasper.atomic_io import atomic_write_text
-from jasper.fanin_coupling import member_kwargs_are_pipe_sink
+from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_precedence
 from jasper.sound.camilla_yaml import (
     emit_sound_config,
     extract_room_peqs_from_config,
@@ -37,45 +38,6 @@ from jasper.sound.camilla_yaml import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _apply_coupling_capture_kwargs(
-    emit_kwargs: dict,
-    fanin_coupling_capture_kwargs: dict | None,
-    *,
-    lean_capture_kwargs: dict | None,
-    member_kwargs: dict | None,
-) -> dict:
-    """Fold the SHARED fan-in→Camilla coupling kwargs into ``emit_kwargs``.
-
-    The single precedence point for ``JASPER_FANIN_CAMILLA_COUPLING=fifo``. The
-    coupling's File-capture kwargs apply ON TOP of the carrier's already-merged
-    ``emit_kwargs`` EXCEPT when a more-exclusive capture topology is already in
-    force:
-
-    - **Lean lane wins.** A live lean ``capture_kwargs`` is already a solo File
-      capture (usbsink's pipe) — the most-exclusive path. Coupling is a no-op for
-      that emit; the lean pipe stays the capture source.
-    - **Grouped pipe sink wins.** A bonded/grouped member writes a SnapFIFO
-      playback pipe with ``enable_rate_adjust=False`` (snapclient owns the rate);
-      the File *capture*'s required ``enable_rate_adjust=True`` is mutually
-      exclusive with it, so coupling is a no-op there (the grouped capture
-      topology is the Distributed-Active track's concern).
-
-    Otherwise (the solo stereo-host / solo active path) the coupling kwargs
-    overwrite the capture-side keys. An empty/``None`` coupling dict (the default
-    ``loopback`` coupling) returns ``emit_kwargs`` UNCHANGED so the emit is
-    byte-identical to today.
-    """
-    if not fanin_coupling_capture_kwargs:
-        return emit_kwargs
-    if lean_capture_kwargs:
-        return emit_kwargs
-    if member_kwargs_are_pipe_sink(member_kwargs):
-        return emit_kwargs
-    merged = dict(emit_kwargs)
-    merged.update(fanin_coupling_capture_kwargs)
-    return merged
 
 _SOUND_SOURCE_LINE = "# Source: jasper.sound.camilla_yaml.emit_sound_config"
 _CURRENT_SOUND_CONFIG = "sound_current.yml"
@@ -222,8 +184,8 @@ class _StereoHostCarrier:
         # "multiple values" on the overlap. The lean lane is solo by
         # construction (exclusive USB), so the only overlap — enable_rate_adjust
         # — matches the solo default (True); the merge is value-preserving.
-        emit_kwargs = dict(member_kwargs)
-        emit_kwargs.update(capture_kwargs or {})
+        emit_kwargs = cast(EmitSoundConfigKwargs, dict(member_kwargs))
+        emit_kwargs.update(cast(EmitSoundConfigKwargs, capture_kwargs or {}))
         # fanin_coupling_capture_kwargs (JASPER_FANIN_CAMILLA_COUPLING=fifo) is
         # the SHARED fan-in→Camilla hop: source/topology-agnostic, always-on for
         # every stereo-host emit, so EVERY carrier applies it (contrast the lean
@@ -237,7 +199,7 @@ class _StereoHostCarrier:
         # coupling is a no-op there too — the grouped capture topology belongs to
         # the Distributed-Active track. Default loopback returns {} (byte-
         # identical). emit_sound_config owns the File-capture fail-loud guards.
-        emit_kwargs = _apply_coupling_capture_kwargs(
+        emit_kwargs = apply_capture_precedence(
             emit_kwargs,
             fanin_coupling_capture_kwargs,
             lean_capture_kwargs=capture_kwargs,
@@ -327,7 +289,8 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
         # FIFO coupling's File-capture rate_adjust=True. The grouped capture
         # topology is the Distributed-Active track's concern, not this solo hop;
         # accept the keyword so every call site can pass it uniformly, but never
-        # apply it. (member_kwargs_are_pipe_sink would also veto it downstream.)
+        # apply it. (The plan's apply_capture_precedence helper makes the same
+        # grouped-sink choice for stereo-host carriers.)
         del fanin_coupling_capture_kwargs
         # The lean lane (capture_kwargs) is a SOLO File-capture stereo config;
         # an active-leader program bake is a bonded pipe SINK on the synced

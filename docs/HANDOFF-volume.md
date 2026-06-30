@@ -150,6 +150,65 @@ and `main_volume_db` near `0.0`. A safe degraded failure shows
 `carrier="camilla_guard"` and `push_guard_active=true`; that is quieter
 than intended but protects against a loud transient.
 
+### `/state` gain-chain ledger
+
+`/state.audio.volume_policy` answers "which volume carrier owns the user
+knob?" The adjacent `/state.audio.gain_chain` answers "what gain stages are
+currently affecting the audible path, and what single number can we trust?"
+
+The headline field is `common_static_gain_db`: the sum of scalar gain stages
+that apply to common program audio right now. It intentionally excludes
+per-driver calibration, dynamic duckers, limiters, and source-owned volume
+whose dB value is not observable. Those stages still appear in `stages`, but
+with `included_in_common_total=false`, `dynamic=true`, `nonlinear=true`, or a
+warning when appropriate. This keeps the single number useful without turning
+the ledger into another hidden volume knob.
+
+The ledger is built in `jasper.control.gain_chain` from state that other
+owners already expose:
+
+- `volume_policy` / Camilla `main_volume` for the user-visible knob or push
+  guard fallback.
+- The active CamillaDSP config path for actual `Gain`, `Limiter`,
+  `devices.volume_limit`, and active-speaker fold-down stages.
+- Sound-profile state only as a fallback when the active config does not
+  expose `sound_preamp`; the loaded DSP graph wins to avoid double-counting.
+- `jasper-fanin` STATUS for active TTS program ducking and assistant-loudness
+  normalization.
+- `jasper-outputd` STATUS for bonded/multiroom DAC-content trims.
+
+Important stage semantics:
+
+- `active_baseline_headroom` is emitted by the active-speaker baseline config
+  and is currently `0.0 dB` by default. Active preference boosts should not
+  move this stage; only explicit output trim or match-loudness attenuation
+  should. If it ever appears as attenuation, it is visible in this ledger and
+  included in `common_static_gain_db`.
+- `active_mono_fold_down` reports `gain_db=0.0` in the common total even though
+  each L/R source feed is `-6 dB`; correlated mono sums back to unity, while
+  hard-panned content is quieter. The per-source gains are listed in
+  `details.source_gains_db`.
+- Driver calibration such as `as_tweeter_baseline_gain` is visible but not
+  part of the common program total because each output channel can differ.
+- Limiters and TTS ducks are visible as dynamic/nonlinear stages. If a daemon
+  does not expose the exact dB value, the ledger marks that stage as unknown
+  instead of inventing a number.
+
+The snapshot is read-only and is logged with
+`event=audio.gain_chain.snapshot` only when its fingerprint changes, so
+polling `/state` does not spam the journal. On a deployed speaker, inspect it
+with:
+
+```sh
+curl -s http://jts.local:8780/state | jq .audio.gain_chain
+journalctl -u jasper-control.service | grep 'event=audio.gain_chain.snapshot'
+```
+
+If you add, remove, or reinterpret an audio gain stage, update this section and
+`tests/test_gain_chain.py` in the same change. If the gain stage lives outside
+the volume coordinator, make sure `docs/doc-map.toml` routes that code path to
+this handoff so future agents find the ledger contract.
+
 ### Inbound observation
 
 A 1 Hz poller (`jasper.volume_observers.VolumeObserver`) reads each
@@ -177,6 +236,13 @@ active source already sits at the canonical `listening_level`. At that
 point the source slider has proven it is carrying the user's intent, so
 leaving the downstream fallback attenuation in place would make
 "Spotify 100%" still sound like the older guarded level.
+
+The Ducker is the exception: if a voice/TTS duck is actively holding
+Camilla, a push confirmation does **not** count as a real guard clear.
+The coordinator records a failed/deferred clear and leaves the guard
+persisted so the next observer tick can retry after the duck releases.
+That keeps the repair behind the scenes without letting persistence
+claim Camilla is pinned at 0 dB while the live graph is still attenuated.
 
 USB is different from Spotify/Bluetooth: the Mac/PC host slider is an
 observed input, but not the final speaker-volume carrier. When USB is
@@ -405,6 +471,10 @@ self-healing property no matter how the drift was introduced.
 3. `|drift| > RECONCILE_DRIFT_DB` (1 dB) — dead band above camilla's
    normal jitter (~0.1 dB). Mute-state drift is also repaired: if dB is
    already at −50 but `main_mute=false`, 0% is not converged.
+   A persisted `pre_mute_level` is treated as active mute intent: the
+   reconciler expects the 0% floor and `main_mute=true` while preserving
+   the restore level for the next unmute, instead of "repairing" back to
+   the prior audible `listening_level`.
 4. Deep quiet drift is skipped (`expected - current >=
    RECONCILE_DUCK_SKIP_DB`) — CueDuck plays proactive cues without
    setting `_voice_session_active`, so a 25 dB drop below expected can
@@ -601,4 +671,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-06-22 (volume floor calibration checked against `jasper.volume_curve`, `/sound/` settings, and the focused volume/sound pytest suite; prior 2026-06-17 pass covered librespot state-file reader mode against `jasper-librespot-event`, prior 2026-06-14 pass covered active-speaker baseline `volume_limit` guard against `camilla_yaml.py`, and prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)
+Last verified: 2026-06-30 (duck-deferred push-guard clear and live/persisted guard recovery checked against `jasper.volume_coordinator`, `jasper.volume_diagnostics`, and focused pytest; prior 2026-06-26 pass covered reconciler mute-intent semantics against `VolumeCoordinator.maybe_reconcile_camilla` and `tests/test_volume_coordinator.py::test_reconcile_preserves_toggle_mute_restore_level`; prior 2026-06-22 pass covered volume floor calibration against `jasper.volume_curve`, `/sound/` settings, and the focused volume/sound pytest suite; prior 2026-06-21 pass covered gain-chain ledger against `jasper.control.gain_chain`, `jasper.control.state_aggregate`, and JTS3 `/state.audio.gain_chain`; prior 2026-06-17 pass covered librespot state-file reader mode against `jasper-librespot-event`, prior 2026-06-14 pass covered active-speaker baseline `volume_limit` guard against `camilla_yaml.py`, and prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)

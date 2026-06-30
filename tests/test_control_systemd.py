@@ -112,7 +112,7 @@ def test_grouping_reconcile_trailing_helper_uses_decimal_delay(tmp_path):
     assert sleep_log.read_text() == "8\n"
     assert (
         systemctl_log.read_text()
-        == "restart --no-block jasper-grouping-reconcile.service\n"
+        == "--no-block restart jasper-grouping-reconcile.service\n"
     )
 
 

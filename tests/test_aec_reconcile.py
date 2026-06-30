@@ -23,6 +23,7 @@ from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-aec-reconcile"
+VOICE_RESTART_CMD = "--no-block restart jasper-voice.service"
 
 
 def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
@@ -220,7 +221,7 @@ def test_reconcile_clears_stale_udp_when_array_is_absent(tmp_path: Path) -> None
     assert "stop jasper-aec-bridge.service jasper-aec-init.service" in commands
     assert "disable jasper-aec-bridge.service jasper-aec-init.service" in commands
     assert "stop jasper-voice.service" in commands
-    assert "restart jasper-voice.service" not in commands
+    assert VOICE_RESTART_CMD not in commands
     lines = commands.splitlines()
     assert lines.index("stop jasper-voice.service") < lines.index(
         "stop jasper-aec-bridge.service jasper-aec-init.service",
@@ -244,7 +245,7 @@ def test_reconcile_enables_udp_aec_when_array_is_6_channel(tmp_path: Path) -> No
     assert "start jasper-aec-init.service" in commands
     assert "restart jasper-aec-bridge.service" in commands
     assert "enable jasper-voice.service" in commands
-    assert "restart jasper-voice.service" in commands
+    assert VOICE_RESTART_CMD in commands
 
 
 @pytest.mark.parametrize("provider_id", sorted(VALID_PROVIDER_IDS))
@@ -261,7 +262,7 @@ def test_reconcile_accepts_catalog_provider_ids(
     assert result.returncode == 0, result.stderr
     commands = _systemctl_log(tmp_path)
     assert "enable jasper-voice.service" in commands
-    assert "restart jasper-voice.service" in commands
+    assert VOICE_RESTART_CMD in commands
 
 
 def test_reconcile_parks_voice_when_provider_unset(tmp_path: Path) -> None:
@@ -276,7 +277,7 @@ def test_reconcile_parks_voice_when_provider_unset(tmp_path: Path) -> None:
     assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
-    assert "restart jasper-voice.service" not in commands
+    assert VOICE_RESTART_CMD not in commands
 
 
 def test_reconcile_parks_voice_when_provider_invalid(tmp_path: Path) -> None:
@@ -291,7 +292,7 @@ def test_reconcile_parks_voice_when_provider_invalid(tmp_path: Path) -> None:
     assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
-    assert "restart jasper-voice.service" not in commands
+    assert VOICE_RESTART_CMD not in commands
 
 
 def test_reconcile_parks_voice_when_provider_manifest_missing(tmp_path: Path) -> None:
@@ -307,7 +308,7 @@ def test_reconcile_parks_voice_when_provider_manifest_missing(tmp_path: Path) ->
     assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
-    assert "restart jasper-voice.service" not in commands
+    assert VOICE_RESTART_CMD not in commands
 
 
 def test_reconcile_parks_voice_when_provider_not_in_manifest(tmp_path: Path) -> None:
@@ -323,7 +324,7 @@ def test_reconcile_parks_voice_when_provider_not_in_manifest(tmp_path: Path) -> 
     assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
-    assert "restart jasper-voice.service" not in commands
+    assert VOICE_RESTART_CMD not in commands
 
 
 def test_reconcile_uses_direct_mic_when_array_is_not_6_channel(tmp_path: Path) -> None:
@@ -337,7 +338,7 @@ def test_reconcile_uses_direct_mic_when_array_is_not_6_channel(tmp_path: Path) -
     assert "JASPER_MIC_DEVICE=Array" in env_file.read_text()
     commands = _systemctl_log(tmp_path)
     assert "disable jasper-aec-bridge.service jasper-aec-init.service" in commands
-    assert "restart jasper-voice.service" in commands
+    assert VOICE_RESTART_CMD in commands
 
 
 def test_reconcile_respects_custom_mic_device(tmp_path: Path) -> None:
@@ -351,7 +352,7 @@ def test_reconcile_respects_custom_mic_device(tmp_path: Path) -> None:
     commands = _systemctl_log(tmp_path)
     assert "disable jasper-aec-bridge.service jasper-aec-init.service" in commands
     assert "stop jasper-voice.service" not in commands
-    assert "restart jasper-voice.service" not in commands
+    assert VOICE_RESTART_CMD not in commands
 
 
 def test_check_aec_ready_reflects_mode_and_firmware(tmp_path: Path) -> None:
@@ -1410,7 +1411,7 @@ def test_reconcile_parks_voice_and_aec_for_bonded_follower(tmp_path: Path) -> No
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
     assert "stop jasper-aec-bridge.service jasper-aec-init.service" in commands
-    assert "restart jasper-voice.service" not in commands
+    assert VOICE_RESTART_CMD not in commands
     assert "restart jasper-aec-bridge.service" not in commands
 
 
@@ -1430,7 +1431,7 @@ def test_reconcile_unparks_voice_when_flag_absent(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
     commands = _systemctl_log(tmp_path)
-    assert "restart jasper-voice.service" in commands
+    assert VOICE_RESTART_CMD in commands
     assert "enable jasper-voice.service" in commands
 
 
@@ -1485,7 +1486,7 @@ def test_reconcile_clears_marker_when_6ch_present(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert not _marker(tmp_path).exists(), result.stderr
-    assert "restart jasper-voice.service" in _systemctl_log(tmp_path)
+    assert VOICE_RESTART_CMD in _systemctl_log(tmp_path)
 
 
 def test_reconcile_clears_marker_when_direct_mic_present(tmp_path: Path) -> None:
@@ -1500,7 +1501,7 @@ def test_reconcile_clears_marker_when_direct_mic_present(tmp_path: Path) -> None
 
     assert result.returncode == 0, result.stderr
     assert not _marker(tmp_path).exists(), result.stderr
-    assert "restart jasper-voice.service" in _systemctl_log(tmp_path)
+    assert VOICE_RESTART_CMD in _systemctl_log(tmp_path)
 
 
 def test_reconcile_clears_marker_for_custom_mic(tmp_path: Path) -> None:

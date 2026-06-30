@@ -950,7 +950,11 @@ restart_voice() {
     fi
     reset_failed_units jasper-voice.service
     run_systemctl enable jasper-voice.service
-    run_systemctl restart jasper-voice.service
+    # Queue the voice restart and let this oneshot exit. jasper-voice is
+    # Type=notify and may wait on other reconcilers during boot; a blocking
+    # restart from inside this reconciler can leave both jobs waiting on each
+    # other after an unbond/provider/mic change.
+    run_systemctl --no-block restart jasper-voice.service
 }
 
 # Dumb-follower profile (HANDOFF-multiroom Increment 5): an ACTIVE

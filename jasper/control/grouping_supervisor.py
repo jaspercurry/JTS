@@ -550,7 +550,7 @@ class GroupingSupervisor:
     async def kick_reconciler(self) -> None:
         """`reset-failed` clears StartLimitBurst parking from prior failed
         reconciles (rc=1 on unreachable snapserver is by-design); then
-        `restart --no-block` (restart, not start — a oneshot mid-run must
+        `--no-block restart` (restart, not start — a oneshot mid-run must
         not make the kick a no-op; mirrors _kick_grouping_reconciler)."""
         reset = await asyncio.create_subprocess_exec(
             "systemctl", "reset-failed", RECONCILE_UNIT,

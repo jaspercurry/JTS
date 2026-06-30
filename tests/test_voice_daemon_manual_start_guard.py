@@ -187,3 +187,65 @@ async def test_manual_mic_loop_forwards_only_active_source():
     wl._active_manual_source = "wiim_remote_2"
     await wl._manual_mic_loop("wiim_remote_2")
     assert seen == ["frame-a"]
+
+
+async def test_manual_end_is_idempotent_after_input_already_closed():
+    from jasper.voice_daemon import State
+
+    wl = _make_wake_loop()
+    wl._state = State.SESSION
+    wl._turn = object()
+    wl._input_ended = True
+
+    result = await wl.manual_session_end()
+
+    assert result == "OK"
+
+
+async def test_session_task_watcher_ends_manual_turn_without_extra_frame():
+    from jasper.voice_daemon import WakeLoop
+
+    wl = WakeLoop.for_tests()
+    ended = asyncio.Event()
+
+    async def _end_turn():
+        ended.set()
+
+    async def _complete():
+        return None
+
+    wl._end_turn = _end_turn
+    task = asyncio.create_task(_complete())
+    wl._bg_tasks = {task}
+
+    wl._arm_session_task_watcher()
+    await asyncio.wait_for(ended.wait(), timeout=1.0)
+    await asyncio.gather(*wl._fire_and_forget)
+
+
+async def test_session_task_watcher_ignores_stale_completed_tasks():
+    from jasper.voice_daemon import WakeLoop
+
+    wl = WakeLoop.for_tests()
+    ended = False
+
+    async def _end_turn():
+        nonlocal ended
+        ended = True
+
+    async def _complete():
+        return None
+
+    async def _pending():
+        await asyncio.Event().wait()
+
+    wl._end_turn = _end_turn
+    old_task = asyncio.create_task(_complete())
+    new_task = asyncio.create_task(_pending())
+    wl._bg_tasks = {new_task}
+
+    await wl._watch_session_tasks((old_task,))
+
+    assert ended is False
+    new_task.cancel()
+    await asyncio.gather(new_task, return_exceptions=True)

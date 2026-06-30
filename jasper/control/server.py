@@ -863,6 +863,12 @@ _GROUPING_RECONCILE_TRAILING_DELAY_FILE = (
     "/run/jasper-control/grouping-reconcile-trailing-delay"
 )
 _GROUPING_RECONCILE_KICK_MIN_INTERVAL_SECONDS = 60.0
+_VOICE_UNIT = "jasper-voice.service"
+_VOICE_TRANSIENT_ACTIVE_STATES = frozenset({
+    "activating",
+    "deactivating",
+    "reloading",
+})
 
 # Seam for tests: the forward's ONE network call. Patching the stdlib
 # urllib.request.urlopen would also intercept the test driver's own HTTP
@@ -890,6 +896,82 @@ def _bonded_follower_mic_payload(leader: str) -> dict[str, Any]:
         "muted": True,
         "pair_leader": leader,
         "message": "Paired — the assistant listens on the pair leader",
+    }
+
+
+def _systemd_show_unit(
+    unit: str,
+    *,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    timeout: float = 1.0,
+) -> dict[str, str]:
+    """Tiny, fail-soft systemd state reader for user-facing liveness labels."""
+    try:
+        proc = run(
+            [
+                "systemctl",
+                "show",
+                unit,
+                "--property=LoadState",
+                "--property=ActiveState",
+                "--property=SubState",
+                "--property=Result",
+                "--no-page",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return {}
+    if proc.returncode != 0:
+        return {}
+    out: dict[str, str] = {}
+    for line in (proc.stdout or "").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            out[key.strip()] = value.strip()
+    return out
+
+
+def _voice_starting_mic_payload(
+    *,
+    read_unit: Callable[[str], dict[str, str]] = _systemd_show_unit,
+) -> dict[str, Any] | None:
+    """Return a first-class /mic payload while jasper-voice is in flight.
+
+    The voice daemon creates its UDS socket late in startup. During an intended
+    restart/provider switch/unbond, a missing socket means "not ready yet", not
+    necessarily "permanently offline". Keep that distinction in the backend so
+    the landing page can stay a dumb renderer of /mic state.
+    """
+    unit = read_unit(_VOICE_UNIT)
+    active_state = unit.get("ActiveState", "")
+    if active_state not in _VOICE_TRANSIENT_ACTIVE_STATES:
+        return None
+    return {
+        "status": "starting",
+        "reason": "voice_daemon_starting",
+        "available": False,
+        "muted": True,
+        "message": "Voice control is restarting",
+        "unit": {
+            "name": _VOICE_UNIT,
+            "active_state": active_state or None,
+            "sub_state": unit.get("SubState") or None,
+            "result": unit.get("Result") or None,
+        },
+    }
+
+
+def _voice_offline_mic_payload(error: str) -> dict[str, Any]:
+    return {
+        "status": "offline",
+        "reason": "voice_daemon_unreachable",
+        "available": False,
+        "muted": True,
+        "message": "Voice control offline",
+        "error": error,
     }
 
 
@@ -1688,21 +1770,37 @@ def _make_handler(
         def _get_mic(self) -> None:
             # Read mic mute state from the voice daemon's STATUS
             # response. A bonded follower intentionally parks local
-            # voice, so report that as a first-class state instead of
-            # making every client reinterpret a missing UDS as failure.
+            # voice, and a daemon restart temporarily lacks its UDS socket;
+            # report both as first-class states instead of making every
+            # client reinterpret a missing UDS as failure.
             leader = _pair_follower_leader_addr()
             if leader:
                 self._send_json(_bonded_follower_mic_payload(leader))
                 return
-            st = self._voice_cmd_or_error(
-                "STATUS",
-                timeout=2.0,
-                missing_error=None,
-                log_label="mic STATUS",
-            )
-            if st is None:
+            try:
+                st = asyncio.run(
+                    _voice_socket_command(voice_socket_path, "STATUS", timeout=2.0),
+                )
+            except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
+                starting = _voice_starting_mic_payload()
+                if starting is not None:
+                    self._send_json(starting)
+                    return
+                self._send_json(
+                    _voice_offline_mic_payload(f"voice_daemon unreachable: {e}"),
+                    status=503,
+                )
                 return
-            self._send_json({"muted": bool(st.get("mic_muted", False))})
+            except (RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
+                logger.exception("mic STATUS failed")
+                self._send_json({"error": str(e)}, status=502)
+                return
+            muted = bool(st.get("mic_muted", False))
+            self._send_json({
+                "status": "muted" if muted else "listening",
+                "available": True,
+                "muted": muted,
+            })
 
         def _get_source_state(self) -> None:
             # Source selection state from jasper-mux. This is
@@ -2542,10 +2640,10 @@ def _make_handler(
             # Map non-OK outcomes to non-2xx so the dial's HTTP
             # error path can show the right LED color.
             http_status = 200
-            if result.get("result") not in ("OK", None):
+            if result.get("result") not in ("OK", "ALREADY_ENDED", None):
                 if result.get("result") in ("CAP", "PAUSED", "MUTED", "MEASURING"):
                     http_status = 503
-                elif result.get("result") in ("BUSY", "NO_SESSION", "ALREADY_ENDED"):
+                elif result.get("result") in ("BUSY", "NO_SESSION"):
                     http_status = 409
                 elif result.get("result") == "UNKNOWN_SOURCE":
                     http_status = 400

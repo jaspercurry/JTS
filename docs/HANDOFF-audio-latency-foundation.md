@@ -64,9 +64,14 @@ plan for fan-in output-buffer set/unset/floor decisions, adaptive lab target,
 and coupling route-support policy. Mux's lean-lane and adaptive-buffer consumers
 share the plan's `decide_source_low_latency_route` source-exclusivity decision,
 and `jasper.usbsink.output_mode_reconcile` asks the plan for the
-`JASPER_USBSINK_OUTPUT_MODE` env action. Other reconcilers still write their
-existing env files; move those decisions behind the plan as the next migration
-steps.
+`JASPER_USBSINK_OUTPUT_MODE` env action. Sound runtime asks the plan for both
+lean RawFile capture kwargs (`lean_capture_kwargs`) and shared fan-in coupling
+capture kwargs (`fanin_coupling_capture_kwargs`), so the RawFile/AsyncSinc shape
+does not live in separate staged/live/reconcile code paths. The carrier also
+asks the plan's `apply_capture_precedence` helper whether lean capture, grouped
+pipe-sink playback, or shared fan-in coupling owns capture for this emit. Other
+reconcilers still write their existing env files; move those decisions behind
+the plan as the next migration steps.
 
 ## The lean lane (Stage 4)
 
@@ -160,7 +165,7 @@ the path: `DEFAULT_LEAN_CAPTURE_FIFO` (`/run/jasper-usbsink/lean.pipe`).
 | 0 | snapcast bond buffer routed via `--stream.buffer` (was an inert URL param; bonds silently ran the 1000 ms default) | shipped |
 | 2 | USB-bridge latency knobs (`JASPER_USBSINK_{QUEUE_MAXBLOCKS,LATENCY,BLOCK_FRAMES}`) | shipped, on-device tuning owed |
 | 4a | File-capture CamillaDSP emitter + fail-loud guards (stereo + active) | shipped, default-OFF |
-| 4b-i | `decide_source_low_latency_route` shared source policy ([`jasper.audio_runtime_plan`](../jasper/audio_runtime_plan.py)); `decide_lean_route` remains a Stage-4 wrapper ([`jasper/lean_lane.py`](../jasper/lean_lane.py)) | shipped, wired to mux consumers |
+| 4b-i | `decide_source_low_latency_route` shared source policy + `low_latency_feature_flags` opt-in parsing ([`jasper.audio_runtime_plan`](../jasper/audio_runtime_plan.py)); mux consumes the plan layer directly | shipped, wired to mux consumers |
 | 4b-ii | usbsink FIFO-output mode (`JASPER_USBSINK_OUTPUT_MODE=fifo`; env action owned by `jasper.audio_runtime_plan.usbsink_output_mode_action`) | shipped, default-OFF |
 | 4b-iii | stage + validate + classify the lean config (`jasper.sound.runtime.stage_lean_capture_config`) — emit + `--check` + `classify_camilla_graph`, **no live-load** | shipped, default-OFF |
 | 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim, [`jasper.sound.runtime.apply_lean_capture_config`](../jasper/sound/runtime.py)), arm the usbsink FIFO output at runtime ([`jasper.usbsink.output_mode_reconcile`](../jasper/usbsink/output_mode_reconcile.py) → writes `JASPER_USBSINK_OUTPUT_MODE` to `/var/lib/jasper/usbsink.env` + restarts via the broker), and swap/restore via mux `_tick` (shared source-route decision → `Mux._enter_lean`/`_leave_lean` ladders, fail-loud → buffered) | shipped, default-OFF, **24 h soak owed** |
@@ -290,7 +295,8 @@ fail-safe normalization matching Python ([`config.rs`](../rust/jasper-fanin/src/
 the generator helper that returns the File-capture kwargs under `fifo` and `{}`
 (byte-identical) under `loopback` ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)).
 **Live-armed (flag-gated; soak owed before defaulting to `fifo`):** the reconcile /
-sound / correction emit paths now thread `coupling_capture_kwargs_from_env()`
+sound / correction emit paths now ask
+`jasper.audio_runtime_plan.fanin_coupling_capture_kwargs()` and thread the result
 through the carrier, so a `=fifo` box puts the File capture into the config
 CamillaDSP actually loads — and the flat-profile reconcile noop is coupling-aware
 so it arms even a flat speaker (the MB1 fix; otherwise fan-in writes the pipe
@@ -341,8 +347,8 @@ Last verified: 2026-06-30 (`jasper.audio_runtime_plan` / `jasper-audio-config
 explain` / `jasper-audio-config outputd-floor-actions` / `jasper-doctor`
 runtime-plan check added as the SSOT layer; numeric lab override artifact added
 while fan-in coupling remains ordered-reconciler-owned; audio-hardware, usbsink
-output-mode, and fan-in buffer / coupling writers plus mux low-latency source
-routing consume the plan; JTS2 low-latency
+output-mode, sound capture intent/precedence, and fan-in buffer / coupling
+writers plus mux low-latency source routing consume the plan; JTS2 low-latency
 Apple-dongle AirPlay budget
 documented: configured downstream delay 58.7 ms at Camilla 256/1536,
 fan-in output 1024, outputd DAC 512; 512-frame fan-in output failed fast.

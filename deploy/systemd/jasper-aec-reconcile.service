@@ -6,6 +6,7 @@ Wants=sound.target jasper-camilla.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=60
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/aec_mode.env
 ExecStart=/usr/local/sbin/jasper-aec-reconcile --reason systemd

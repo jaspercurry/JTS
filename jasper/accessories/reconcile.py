@@ -187,12 +187,14 @@ def apply_adapter_services(
     active_services: Sequence[str],
     *,
     systemctl: Systemctl = _systemctl,
+    restart_active: bool = True,
 ) -> None:
     active = set(active_services)
     for service in adapter_mic_services():
         if service in active:
             _invoke_systemctl(("enable", service), systemctl=systemctl)
-            _invoke_systemctl(("--no-block", "restart", service), systemctl=systemctl)
+            verb = "restart" if restart_active else "start"
+            _invoke_systemctl(("--no-block", verb, service), systemctl=systemctl)
         else:
             _invoke_systemctl(
                 ("--no-block", "disable", "--now", service),
@@ -236,7 +238,12 @@ async def reconcile_once(
     managed = await bluez_managed_objects()
     plan = plan_from_bluez_objects(managed)
     env_changed = write_manual_mic_env(plan.sources, path=env_file)
-    apply_adapter_services(plan.adapter_services, systemctl=systemctl)
+    restart_adapters = env_changed or reason == "install"
+    apply_adapter_services(
+        plan.adapter_services,
+        systemctl=systemctl,
+        restart_active=restart_adapters,
+    )
     voice_restarted = restart_voice_if_active(systemctl=systemctl) if env_changed else False
     log_event(
         logger,

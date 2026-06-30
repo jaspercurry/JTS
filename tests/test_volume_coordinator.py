@@ -566,6 +566,64 @@ async def test_observe_spotify_same_level_clears_degraded_guard(tmp_path):
     assert record.main_volume_db == pytest.approx(0.0)
 
 
+async def test_observe_spotify_clear_deferred_during_duck_keeps_guard(
+    tmp_path, monkeypatch,
+):
+    """A push confirmation during an active duck is not a real carrier
+    clear. Keep the guard persisted so the observer can retry later."""
+    diag_path = tmp_path / "volume_policy.json"
+    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
+    coord, cam, persistence = _coord(
+        tmp_path, active={"spotactive": True}, db=-13.0,
+    )
+    coord._level = 90
+    persistence.save_listening_level(90)
+    persistence.save_now(-13.0)
+
+    async def probe():
+        return True
+
+    coord._duck_active_probe = probe
+
+    await coord.observe_source_volume(Source.SPOTIFY, 90)
+
+    assert cam.set_calls == []
+    record = persistence.load()
+    assert record is not None
+    assert record.listening_level == 90
+    assert record.main_volume_db == pytest.approx(-13.0)
+    diag = read_diagnostics(str(diag_path))
+    assert diag["last_clear_event"]["ok"] is False
+    assert diag["last_clear_event"]["reason"] == "clear_deferred_duck_active"
+    assert diag.get("push_guard", {}).get("active") is not False
+
+
+async def test_observe_spotify_repairs_live_guard_after_false_clear(
+    tmp_path,
+):
+    """Recover from the legacy split-brain: persistence claimed the push
+    guard was clear, but live Camilla was still attenuating the path."""
+    coord, cam, persistence = _coord(
+        tmp_path, active={"spotactive": True}, db=-13.0,
+    )
+    coord._level = 90
+    persistence.save_listening_level(90)
+    persistence.save_now(0.0)
+
+    async def probe():
+        return False
+
+    coord._duck_active_probe = probe
+
+    await coord.observe_source_volume(Source.SPOTIFY, 90)
+
+    assert cam.set_calls[-1] == pytest.approx(0.0)
+    record = persistence.load()
+    assert record is not None
+    assert record.listening_level == 90
+    assert record.main_volume_db == pytest.approx(0.0)
+
+
 async def test_successful_push_dispatch_clears_degraded_guard(
     tmp_path, monkeypatch,
 ):
@@ -1311,6 +1369,31 @@ async def test_reconcile_repairs_zero_percent_mute_drift(tmp_path):
 
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(0))
     assert cam.mute_calls[-1] is True
+
+
+async def test_reconcile_preserves_toggle_mute_restore_level(tmp_path):
+    """Toggle mute persists the restore level separately from audible 0%.
+
+    The voice daemon's 1 Hz reconciler must treat `pre_mute_level` as the
+    active mute intent. Otherwise it sees listening_level=59%, expects
+    main_mute=false, and immediately undoes a remote mute button press.
+    """
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=percent_to_db(0))
+    cam.muted = True
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    persistence.save_listening_level(59, mark_user_change=True)
+    persistence.save_now(percent_to_db(0))
+    persistence.save_pre_mute_level(59)
+
+    await coord.maybe_reconcile_camilla()
+
+    assert cam.set_calls == []
+    assert cam.mute_calls == []
 
 
 async def test_reconcile_noop_when_drift_looks_like_duck(tmp_path):
