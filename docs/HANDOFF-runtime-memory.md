@@ -21,7 +21,7 @@ The extra XVF beams are advanced custom opt-ins:
   on `udp:9888`.
 
 Selectable profiles (`auto`, `xvf_chip_aec`, `xvf_chip_aec_testing`,
-`software_aec3`, `direct_mic`) reset those optional beam toggles to `0`.
+`xvf_software_aec3`, `direct_mic`) reset those optional beam toggles to `0`.
 Only the `custom` profile preserves them. This keeps a chip-AEC install from
 silently running three Silero/openWakeWord instances after the profile says it
 is using hardware echo cancellation.
@@ -95,7 +95,7 @@ separate anonymous daemon RSS from page cache and kernel accounting when a
   `tests/test_aec_bridge_stall.py`, `tests/test_control_aec_state.py`,
   `tests/test_audio_validation.py`, `tests/test_doctor.py`.
 - HA cache contract: `tests/test_ha_status_cache.py`,
-  `tests/test_system_metrics.py`, `tests/test_airplay_health.py`.
+  `tests/test_control_server.py`.
 - Dashboard memory breakdown: `tests/test_system_metrics.py`.
 
 Last verified: 2026-06-30 (`xvf_chip_aec` one-detector default rechecked

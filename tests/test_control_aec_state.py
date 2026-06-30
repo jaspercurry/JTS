@@ -719,6 +719,51 @@ def test_aec_full_status_auto_profile_resolves_chip_when_available(
     assert status["chip_aec_gate"]["production_available"] is True
 
 
+def test_custom_chip_beam_toggle_uses_saved_intent_until_reconcile(
+    aec_mode_file, wake_model_file, monkeypatch,
+):
+    """After an advanced toggle POST, aec_mode.env is already saved while
+    jasper-aec-reconcile restarts asynchronously. The /wake/ checkbox must
+    reflect saved intent, not briefly flip back to the old runtime state."""
+
+    aec_mode_file.write_text(
+        "JASPER_AUDIO_INPUT_PROFILE=custom\n"
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=0\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n"
+        "JASPER_WAKE_LEG_CHIP_AEC_150=1\n"
+        "JASPER_WAKE_LEG_CHIP_AEC_210=0\n"
+    )
+    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    _stub_xvf_runtime(monkeypatch)
+    monkeypatch.setattr(
+        server,
+        "_fresh_jasper_env",
+        lambda: {
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "1",
+            # Reconciler has not yet published the optional 150 beam device.
+            "JASPER_MIC_DEVICE_CHIP_AEC_150": "",
+            "JASPER_MIC_DEVICE_CHIP_AEC_210": "",
+        },
+    )
+
+    status = server._aec_full_status()
+    toggles = {
+        toggle["id"]: toggle
+        for toggle in status["mic_settings"]["fusion"]["toggles"]
+    }
+
+    assert status["raw_intent"]["leg_chip_aec_150"] is True
+    assert status["legs"]["chip_aec_150"]["configured"] is False
+    assert toggles["chip_aec_150"]["checked"] is True
+    assert toggles["chip_aec_150"]["applied"] is False
+    assert toggles["chip_aec_150"]["status"] == "starting"
+
+
 def test_aec_full_status_testing_profile_allows_unapproved_dac_testing(
     aec_mode_file, wake_model_file, monkeypatch,
 ):

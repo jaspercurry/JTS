@@ -560,7 +560,11 @@ JSON status dict and a redacted env-file signature. A wizard save changes that
 signature, so `/state` or `/system/` starts a refresh even inside the normal
 TTL. Reads return immediately with `checking=true` or stale cached status while
 a refresh is in flight. Child failure logs `event=ha.status_probe_failed` and
-the dashboard/state response still renders.
+the dashboard/state response still renders. The parent cache owns
+`event=ha.reachable` / `event=ha.unreachable` / `event=ha.unconfigured`
+transition logging for these status surfaces; the child process's own stderr is
+captured and not replayed, because each short-lived child has no durable
+transition history.
 
 Shows:
 
@@ -858,7 +862,8 @@ Primary sources informing this work (cite in PRs / future ADRs):
 - "WTH are all new entities exposed" thread: [community.home-assistant.io/t/803889](https://community.home-assistant.io/t/wth-are-all-new-entities-exposed-to-assist-by-default/803889)
 
 Last verified: 2026-06-30 (`/state.home_assistant` and `/system/snapshot` HA
-status now rechecked against `jasper/control/ha_status_cache.py`,
+status plus parent-owned HA transition logs now rechecked against
+`jasper/control/ha_status_cache.py`,
 `jasper/control/ha_probe_child.py`, `jasper/control/state_aggregate.py`,
 `jasper/control/server.py`, `tests/test_control_server.py`, and
 `tests/test_ha_status_cache.py`. Prior pass 2026-06-17: HA env path

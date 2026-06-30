@@ -111,6 +111,7 @@ class HomeAssistantStatusCache:
         self._expires_at = 0.0
         self._next_refresh_at = 0.0
         self._refreshing = False
+        self._last_state: tuple[bool, bool] | None = None
 
     @staticmethod
     def _start_thread(target: Callable[[], None]) -> threading.Thread:
@@ -182,6 +183,7 @@ class HomeAssistantStatusCache:
             self._cached_signature = signature
             self._expires_at = now + self._ttl_sec
             self._refreshing = False
+        self._log_transition(status)
 
     def _record_failure(self, exc: Exception, signature: str) -> None:
         log_event(
@@ -223,3 +225,39 @@ class HomeAssistantStatusCache:
         if not isinstance(payload, dict):
             raise RuntimeError("child returned non-object JSON")
         return payload
+
+    def _log_transition(self, status: dict[str, Any]) -> None:
+        """Emit parent-owned HA reachability transitions from child results."""
+
+        new_state = (
+            bool(status.get("configured")),
+            bool(status.get("connected")),
+        )
+        with self._lock:
+            old_state = self._last_state
+            self._last_state = new_state
+
+        if old_state is None:
+            if not new_state[0]:
+                return
+        elif old_state == new_state:
+            return
+
+        if new_state[0] and new_state[1]:
+            log_event(
+                logger,
+                "ha.reachable",
+                url=status.get("url") or "",
+                instance=status.get("instance_name") or "?",
+                version=status.get("version") or "?",
+            )
+        elif new_state[0] and not new_state[1]:
+            log_event(
+                logger,
+                "ha.unreachable",
+                url=status.get("url") or "",
+                error=status.get("error") or "unknown",
+                level=logging.WARNING,
+            )
+        else:
+            log_event(logger, "ha.unconfigured")

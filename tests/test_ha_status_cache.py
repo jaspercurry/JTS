@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 
 from jasper.control.ha_status_cache import HomeAssistantStatusCache
@@ -137,6 +138,59 @@ def test_refresh_failure_keeps_stale_cached_status(monkeypatch):
     assert refreshed["connected"] is True
     assert refreshed["stale"] is True
     assert refreshed["error"] == "probe failed"
+
+
+def test_parent_logs_reachability_transitions_from_child_status(monkeypatch, caplog):
+    now = [0.0]
+    outcomes = [
+        {
+            "configured": True,
+            "connected": True,
+            "url": "http://ha.local:8123",
+            "instance_name": "Home",
+            "version": "2026.6.1",
+            "error": None,
+        },
+        {
+            "configured": True,
+            "connected": False,
+            "url": "http://ha.local:8123",
+            "instance_name": None,
+            "version": None,
+            "error": "Couldn't reach Home Assistant.",
+        },
+        {
+            "configured": False,
+            "connected": False,
+            "url": "",
+            "instance_name": None,
+            "version": None,
+            "error": None,
+        },
+    ]
+    cache = HomeAssistantStatusCache(
+        ttl_sec=1,
+        thread_factory=_inline_thread,
+        clock=lambda: now[0],
+    )
+    caplog.set_level(logging.INFO, logger="jasper.control.ha_status_cache")
+    monkeypatch.setattr(cache, "_run_child", lambda: outcomes.pop(0))
+
+    cache.snapshot()
+    assert any("event=ha.reachable" in r.message for r in caplog.records)
+
+    caplog.clear()
+    cache.snapshot()
+    assert not caplog.records
+
+    now[0] = 2.0
+    cache.snapshot()
+    assert any("event=ha.unreachable" in r.message for r in caplog.records)
+
+    caplog.clear()
+    now[0] = 4.0
+    cache.snapshot()
+    assert any("event=ha.unconfigured" in r.message for r in caplog.records)
 
 
 def test_thread_start_failure_does_not_wedge_refreshing(monkeypatch):

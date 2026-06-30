@@ -147,6 +147,7 @@ def build_microphone_settings_view(status: Mapping[str, Any]) -> dict[str, Any]:
     profile = _mapping(status.get("audio_profile"))
     gate = _mapping(status.get("chip_aec_gate"))
     legs = _mapping(status.get("legs"))
+    raw_intent = _mapping(status.get("raw_intent"))
     software = _mapping(status.get("software_aec3"))
     firmware_update = _mapping(status.get("firmware_update"))
 
@@ -168,6 +169,7 @@ def build_microphone_settings_view(status: Mapping[str, Any]) -> dict[str, Any]:
             profile=profile,
             mic=mic,
             legs=legs,
+            raw_intent=raw_intent,
             software=software,
             echo_mode=str(echo_view.get("mode") or ""),
         ),
@@ -379,6 +381,7 @@ def _fusion_view(
     profile: Mapping[str, Any],
     mic: Mapping[str, Any],
     legs: Mapping[str, Any],
+    raw_intent: Mapping[str, Any],
     software: Mapping[str, Any],
     echo_mode: str,
 ) -> dict[str, Any]:
@@ -428,6 +431,12 @@ def _fusion_view(
             "Adds the chip-direct mic as a parallel wake detector when software AEC3 is active.",
             "~5 MB · negligible",
             _mapping(legs.get("raw")),
+            checked=_custom_checked(
+                custom,
+                raw_intent,
+                "leg_raw",
+                _mapping(legs.get("raw")),
+            ),
             enabled=not chip_on and not bridge_unavailable,
             disabled_reason=(
                 "Advanced wake streams require the AEC bridge."
@@ -441,6 +450,12 @@ def _fusion_view(
             "Neural cleanup as an optional wake stream. Recommended only on 2 GB Pi.",
             "~75 MB · ~25% core",
             _mapping(legs.get("dtln")),
+            checked=_custom_checked(
+                custom,
+                raw_intent,
+                "leg_dtln",
+                _mapping(legs.get("dtln")),
+            ),
             enabled=not chip_on and not bridge_unavailable,
             disabled_reason=(
                 "Advanced wake streams require the AEC bridge."
@@ -455,6 +470,12 @@ def _fusion_view(
             "Adds a wake detector on the XVF3800 150° hardware-AEC beam.",
             "~30 MB · light",
             _mapping(legs.get("chip_aec_150")),
+            checked=_custom_checked(
+                custom,
+                raw_intent,
+                "leg_chip_aec_150",
+                _mapping(legs.get("chip_aec_150")),
+            ),
             enabled=not bridge_unavailable and bool(_mapping(legs.get("chip_aec_150")).get("available")),
             disabled_reason=(
                 "Advanced wake streams require the AEC bridge."
@@ -469,6 +490,12 @@ def _fusion_view(
             "Adds a wake detector on the XVF3800 210° hardware-AEC beam.",
             "~30 MB · light",
             _mapping(legs.get("chip_aec_210")),
+            checked=_custom_checked(
+                custom,
+                raw_intent,
+                "leg_chip_aec_210",
+                _mapping(legs.get("chip_aec_210")),
+            ),
             enabled=not bridge_unavailable and bool(_mapping(legs.get("chip_aec_210")).get("available")),
             disabled_reason=(
                 "Advanced wake streams require the AEC bridge."
@@ -488,6 +515,19 @@ def _fusion_view(
         "toggles": toggles,
     }
 
+def _custom_checked(
+    custom: bool,
+    raw_intent: Mapping[str, Any],
+    key: str,
+    leg: Mapping[str, Any],
+) -> bool:
+    """Checkbox state: named profiles show applied defaults; custom shows intent."""
+
+    if custom and key in raw_intent:
+        return bool(raw_intent.get(key))
+    return bool(leg.get("configured"))
+
+
 def _fusion_toggle(
     toggle_id: str,
     label: str,
@@ -495,12 +535,17 @@ def _fusion_toggle(
     cost: str,
     leg: Mapping[str, Any],
     *,
+    checked: bool | None = None,
     enabled: bool,
     disabled_reason: str,
     confirm: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    checked = bool(leg.get("configured"))
+    applied = bool(leg.get("configured"))
+    if checked is None:
+        checked = applied
     status = str(leg.get("status") or "")
+    if checked and not applied and status == "off":
+        status = "starting"
     if not status:
         status = "active" if leg.get("active") else "on" if checked else "off"
     out = {
@@ -509,6 +554,7 @@ def _fusion_toggle(
         "description": description,
         "cost": cost,
         "checked": checked,
+        "applied": applied,
         "enabled": enabled,
         "active": bool(leg.get("active")),
         "status": status,
