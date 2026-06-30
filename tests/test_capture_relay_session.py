@@ -23,6 +23,7 @@ import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from jasper.capture_relay import crypto
+from jasper.capture_relay import client as client_mod
 from jasper.capture_relay.client import RelayClient, RelayError, RelayResponse
 from jasper.capture_relay.cues import (
     MEASUREMENT_FAILED_CUE_SLUG,
@@ -367,6 +368,31 @@ def test_client_requires_https_base_without_custom_transport():
         RelayClient("http://relay.test")
     RelayClient("https://relay.test")  # ok
     RelayClient("http://relay.test", transport=lambda *_a: RelayResponse(200, {}, b"{}"))
+
+
+def test_urllib_transport_sets_default_user_agent(monkeypatch):
+    seen = {}
+
+    class _Resp:
+        status = 200
+        headers = {}
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _open(req, *a, **k):
+        seen["user_agent"] = req.get_header("User-agent")
+        return _Resp()
+
+    monkeypatch.setattr(client_mod.urllib.request, "urlopen", _open)
+    client_mod._urllib_transport("GET", "https://relay.test/healthz", {}, None)
+    assert seen["user_agent"] == client_mod.DEFAULT_USER_AGENT
 
 
 # --- observability (event= logs) ---------------------------------------------

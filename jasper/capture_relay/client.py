@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 DEFAULT_TIMEOUT_S = 15.0
+DEFAULT_USER_AGENT = "JTS capture-relay/1"
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,10 @@ def _urllib_transport(
     *,
     timeout: float = DEFAULT_TIMEOUT_S,
 ) -> RelayResponse:
-    req = urllib.request.Request(url, data=body, method=method, headers=dict(headers))
+    request_headers = {"User-Agent": DEFAULT_USER_AGENT, **dict(headers)}
+    req = urllib.request.Request(
+        url, data=body, method=method, headers=request_headers
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return RelayResponse(

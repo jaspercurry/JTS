@@ -27,6 +27,7 @@ import urllib.request
 from typing import Any
 
 ENV_RELAY_BASE = "JASPER_CAPTURE_RELAY_BASE"
+DEFAULT_USER_AGENT = "JTS capture-relay/1"
 
 
 def relay_base_from_env(env: dict[str, str] | None = None) -> str | None:
@@ -52,7 +53,9 @@ def probe_relay_health(base_url: str, *, timeout: float = 2.0) -> tuple[bool, st
         return False, f"relay base must be https://, got {base_url!r}"
     url = base_url.rstrip("/") + "/healthz"
     try:
-        req = urllib.request.Request(url, method="GET")
+        req = urllib.request.Request(
+            url, method="GET", headers={"User-Agent": DEFAULT_USER_AGENT}
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             body = resp.read(64).decode("utf-8", "replace").strip()
             if resp.status == 200:
