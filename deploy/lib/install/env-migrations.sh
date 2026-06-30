@@ -446,7 +446,12 @@ migrate_wake_legs_config() {
     fi
 
     local want_profile="custom"
-    if [[ "${want_chip_aec}" == "1" ]]; then
+    if [[ "${want_chip_aec_150}" == "1" || "${want_chip_aec_210}" == "1" ]]; then
+        # Extra chip beams are advanced opt-ins. Named chip-AEC profiles reset
+        # them to the one-detector default, so legacy installs carrying
+        # hand-set beam device vars must migrate to custom to preserve intent.
+        want_profile="custom"
+    elif [[ "${want_chip_aec}" == "1" ]]; then
         want_profile="xvf_chip_aec"
     elif [[ "${want_raw}" == "1" && "${want_dtln}" == "0" ]]; then
         want_profile="xvf_software_aec3"
