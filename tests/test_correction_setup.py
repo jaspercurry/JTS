@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import io
 import json
+from types import SimpleNamespace
 import threading
 import urllib.error
 import urllib.request
@@ -77,6 +78,7 @@ def test_render_page_no_unfilled_placeholders():
     assert "__STYLE__" not in body
     assert "__HOSTNAME__" not in body
     assert "__REQUIRED_SR__" not in body
+    assert "__CAPTURE_RELAY_ENABLED__" not in body
     assert "__CSRF_META__" not in body
     assert "__CSRF_FETCH_HELPERS__" not in body
     assert "__TARGET_PROFILE_OPTIONS__" not in body
@@ -95,6 +97,91 @@ def test_render_page_embeds_csrf_meta_and_fetch_helpers():
     assert "jsonHeaders" in js and "csrfHeaders" in js
     assert "headers: jsonHeaders()" in js
     assert "headers: csrfHeaders({'Content-Type': 'audio/wav'})" in js
+
+
+def test_render_page_flags_capture_relay_mode_from_env(monkeypatch):
+    monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
+    body = correction_setup._render_page("jts.local").decode()
+    assert 'data-capture-relay-enabled="0"' in body
+
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech")
+    body = correction_setup._render_page("jts.local").decode()
+    assert 'data-capture-relay-enabled="1"' in body
+
+
+def test_capture_relay_ui_contract_is_wired():
+    body = correction_setup._render_page("jts.local").decode()
+    js = _module_js()
+
+    assert 'id="relay-panel"' in body
+    assert 'id="relay-start-capture"' in body
+    assert 'id="relay-tap-link"' in body
+    assert "postJson('relay/capture'" in js
+    assert "relayStartBtn.addEventListener('click'" in js
+    assert "function endpoint(path)" in js
+    assert "return '/correction/' + path;" in js
+    assert "if (relayConfigured)" in js
+    assert "detectMicrophones();" in js
+    assert "repeat_main_position: relayMode" in js
+    assert "window.location.href = '/correction/proceed/room';" in js
+
+
+def test_relay_polling_continues_while_backend_uploads_capture():
+    js = _module_js()
+    relay_awaiting = "relayMode && s.state === 'awaiting_capture'"
+    relay_branch = js[js.index(relay_awaiting) : js.index("upload-capture handler")]
+
+    assert relay_awaiting in relay_branch
+    assert "pollTimer = setTimeout(pollState, 500)" in relay_branch
+    assert relay_branch.index("pollTimer = setTimeout(pollState, 500)") < relay_branch.index(
+        "workletNode"
+    )
+
+
+def test_relay_capture_client_uses_registration_token(monkeypatch):
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN", "  pi-secret  ")
+    monkeypatch.setattr(correction_setup, "_ensure_loop", lambda: object())
+
+    def fake_run_coroutine_threadsafe(coro, loop):
+        coro.close()
+        return object()
+
+    monkeypatch.setattr(
+        correction_setup.asyncio,
+        "run_coroutine_threadsafe",
+        fake_run_coroutine_threadsafe,
+    )
+    correction_setup._set_relay_capture(None)
+    seen = {}
+
+    def open_capture(client, relay_base, capture_origin):
+        seen["registration_token"] = client._registration_token
+        seen["relay_base"] = relay_base
+        seen["capture_origin"] = capture_origin
+        return SimpleNamespace(tap_link="https://capture.test/#s=cap_1", pi_session=object())
+
+    async def run_and_consume(client, pi_session):
+        raise AssertionError("background runner is stubbed")
+
+    kind = correction_setup.RelayCaptureKind(
+        label="room_sweep",
+        open=open_capture,
+        run_and_consume=run_and_consume,
+    )
+    try:
+        result = correction_setup._run_relay_capture(kind, "https://relay.test")
+    finally:
+        correction_setup._set_relay_capture(None)
+
+    assert result == {
+        "tap_link": "https://capture.test/#s=cap_1",
+        "status": "awaiting_phone",
+    }
+    assert seen == {
+        "registration_token": "pi-secret",
+        "relay_base": "https://relay.test",
+        "capture_origin": "capture.jasper.tech",
+    }
 
 
 def test_render_page_delegates_correction_when_bonded_follower(monkeypatch):
@@ -397,7 +484,7 @@ def test_render_page_includes_read_only_measurement_reports():
     assert 'id="session-report"' in body
     js = _module_js()
     assert "loadSessionReports" in js
-    assert "session-report?id=" in js
+    assert "endpoint('session-report') + '?id='" in js
     assert "session/delete" in js
     assert "Private raw recordings" in js
     assert "What looks trustworthy" in js

@@ -6,10 +6,12 @@ SPDX-License-Identifier: Apache-2.0
 # JTS phone-mic capture relay (Cloudflare Worker + R2)
 
 A **stateless, dumb, opaque** dead-drop relay. One Worker + one R2 bucket serves
-the entire JTS fleet identically: no per-device record, no cert, nothing to
-renew, no powerful secret to guard. This is the O(1) half of the phone-mic
-capture transport — see [`docs/phone-mic-relay-plan.md`](../docs/phone-mic-relay-plan.md)
-§§2, 4, 7, 8 for why it wins over per-Pi certs.
+the entire JTS fleet identically: no per-device record, no cert, and nothing to
+renew. Production can add one shared Pi registration secret without changing the
+session model; the secret only gates `POST /sessions` and never decrypts room
+audio. This is the O(1) half of the phone-mic capture transport — see
+[`docs/phone-mic-relay-plan.md`](../docs/phone-mic-relay-plan.md) §§2, 4, 7, 8
+for why it wins over per-Pi certs.
 
 It carries two things between a phone (on a trusted cloud capture page) and a Pi
 (behind home NAT, outbound-only): a per-session **opaque capture spec** and one
@@ -30,7 +32,7 @@ the encryption key.
 
 | Method + path | Auth | Purpose |
 |---|---|---|
-| `POST /sessions` | — | Pi registers `{session_id, capture_spec (opaque string), upload_token, pull_token, ttl_s, max_upload_bytes}`. Tokens stored as SHA-256 hashes. |
+| `POST /sessions` | optional registration secret | Pi registers `{session_id, capture_spec (opaque string), upload_token, pull_token, ttl_s, max_upload_bytes}`. Tokens stored as SHA-256 hashes. If Worker secret `RELAY_REGISTRATION_TOKEN` is set, the Pi must send matching header `X-JTS-Relay-Registration-Token`. |
 | `GET /sessions/:id/spec` | upload | Phone fetches the opaque spec (served verbatim). |
 | `POST /sessions/:id/event` | upload | Phone posts the relay-control envelope, e.g. `{armed:true}`. |
 | `PUT /sessions/:id/blob` | upload | Phone uploads `IV‖ciphertext` (octet-stream) + `X-Plaintext-Length` / `X-Plaintext-Sha256` integrity headers. |
@@ -47,15 +49,21 @@ the encryption key.
 - **Hashed tokens** — only SHA-256 hashes are stored; bearer tokens are compared
   in constant time. The two tokens must differ (the privilege split is the
   point).
+- **Optional Pi-only registration secret** — when `RELAY_REGISTRATION_TOKEN` is
+  set as a Cloudflare Worker secret, `POST /sessions` requires matching
+  `X-JTS-Relay-Registration-Token` from the Pi. This prevents arbitrary
+  internet clients from minting sessions in your bucket while keeping the actual
+  secret out of the open-source repo.
 - **Dual size cap** — the upload is rejected by declared `Content-Length` before
   buffering *and* by actual bytes, at both the Worker (`min(per-session cap,
   64 MiB hard ceiling)`) and the Pi.
 - **Per-session rate limit** on the phone-facing endpoints so a leaked
   `upload_token` cannot hammer the bucket within the TTL. Production uses the
-  atomic `RELAY_RATELIMIT` binding; absent it, a best-effort in-meta fixed window
-  applies.
-- **Short TTL + delete-after-pull** — the relay holds no powerful secret; its
-  compromise is bounded to short-lived ciphertext + a non-secret spec.
+  atomic `RELAY_RATELIMIT` binding; absent it, a best-effort per-isolate fixed
+  window applies.
+- **Short TTL + delete-after-pull** — the registration secret cannot decrypt or
+  pull captures; relay compromise is still bounded to short-lived ciphertext +
+  a non-secret spec.
 
 ## Deploy (one-time)
 
@@ -68,6 +76,8 @@ npx wrangler r2 bucket create jts-capture-relay          # object store
 # (loadLive); the lifecycle rule only catches sessions never touched again.
 npx wrangler r2 bucket lifecycle add jts-capture-relay \
     --expire-days 1 --prefix ""                          # or set in the dashboard
+openssl rand -hex 32                                      # generate a private value
+npx wrangler secret put RELAY_REGISTRATION_TOKEN          # paste that value
 npx wrangler deploy                                      # publishes the Worker
 ```
 
@@ -80,6 +90,22 @@ per-IP **registration** limit (`reg:<cf-connecting-ip>`) that bounds open
 `POST /sessions` flooding. Absent the binding, the Worker falls back to a
 per-isolate in-memory counter that never writes R2 (so it can neither amplify
 writes nor clobber session state).
+
+On each Pi, set the relay origin, capture-page origin, and the same private
+registration value in `/etc/jasper/jasper.env`. Public/open-source installs
+leave these blank, so the relay path stays inert. For laptop-driven Jasper-fleet
+deploys, putting these lines in the gitignored `.env.local` (or exporting them
+in the shell) lets `scripts/deploy-to-pi.sh` forward them through `install.sh`
+without committing or printing the token:
+
+```sh
+JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech
+JASPER_CAPTURE_ORIGIN=capture.jasper.tech
+JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=<same hex value>
+```
+
+Leave the token blank only for a self-hosted/dev relay whose Worker does not set
+`RELAY_REGISTRATION_TOKEN`.
 
 ## Test
 

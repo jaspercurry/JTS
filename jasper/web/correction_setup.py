@@ -240,6 +240,7 @@ def _run_relay_capture(kind: RelayCaptureKind, relay_base: str) -> dict[str, Any
     behavior is unchanged — kinds just differ by their injected open/run."""
     from jasper.capture_relay import correction_adapter
     from jasper.capture_relay.client import RelayClient
+    from jasper.capture_relay.health import relay_registration_token_from_env
 
     if not _begin_relay_capture():
         raise ValueError("a phone-mic relay capture is already in progress")
@@ -248,7 +249,11 @@ def _run_relay_capture(kind: RelayCaptureKind, relay_base: str) -> dict[str, Any
     try:
         # Register in the foreground (the session must exist before the phone opens
         # the tap-link), bounded so a slow/unreachable relay fails fast.
-        client = RelayClient(relay_base, timeout=_RELAY_REGISTER_TIMEOUT_S)
+        client = RelayClient(
+            relay_base,
+            timeout=_RELAY_REGISTER_TIMEOUT_S,
+            registration_token=relay_registration_token_from_env(),
+        )
         rc = kind.open(client, relay_base, capture_origin)
 
         async def _run() -> None:
@@ -481,14 +486,25 @@ def _replace_session(
 
 _PAGE_BODY = """
 __HEADER__
-<main class="page correction-stack" data-required-sr="__REQUIRED_SR__">
+<main class="page correction-stack" data-required-sr="__REQUIRED_SR__" data-capture-relay-enabled="__CAPTURE_RELAY_ENABLED__">
 __TABS__
-<p class="page-sub">Measure your room from this iPhone, design correction filters, and apply them to the speaker.</p>
+<p class="page-sub">Measure your room with a phone, design correction filters, and apply them to the speaker.</p>
 
 <div id="current-correction" class="flat" aria-live="polite">
   <span class="label" id="current-correction-label">Checking current correction…</span>
   <button id="current-correction-reset" type="button" class="btn btn--danger hidden">Reset correction</button>
 </div>
+
+<section id="relay-panel" class="relay-panel hidden" aria-live="polite">
+  <h2 style="margin-top:0">Phone capture relay</h2>
+  <p class="hint">This speaker will create a one-time capture link on <code>capture.jasper.tech</code>. Open it on the phone at the listening position; the sweep starts only after that page is recording.</p>
+  <button id="relay-start-capture" type="button" class="btn btn--primary">Create phone capture link</button>
+  <div id="relay-link-row" class="relay-link-row hidden">
+    <a id="relay-tap-link" class="btn btn--primary" href="#" target="_blank" rel="noopener">Open capture page</a>
+  </div>
+  <p id="relay-status" class="relay-status">Ready to create a phone capture link.</p>
+  <button id="local-capture-fallback" type="button" class="btn btn--ghost">Use old local browser capture</button>
+</section>
 
 <details class="advice" open>
   <summary>Where to put the phone</summary>
@@ -504,7 +520,7 @@ __TABS__
 <div class="mic-panel">
   <h2 style="margin-top:0">Microphone</h2>
   <div class="mic-grid">
-    <div class="mic-row">
+    <div id="local-input-row" class="mic-row local-capture-only">
       <label for="input-device-select">Input device
         <select id="input-device-select">
           <option value="" disabled selected>Detecting microphones…</option>
@@ -512,7 +528,7 @@ __TABS__
       </label>
       <button id="refresh-inputs" type="button" class="btn btn--ghost">Refresh microphones</button>
     </div>
-    <p class="hint" style="margin:0">Your USB measurement mic should appear automatically (grant mic permission if asked). Tap <strong>Refresh microphones</strong> if it doesn’t, then select it before <strong>Start mic capture</strong>.</p>
+    <p id="local-input-hint" class="hint local-capture-only" style="margin:0">Your USB measurement mic should appear automatically (grant mic permission if asked). Tap <strong>Refresh microphones</strong> if it doesn’t, then select it before <strong>Start mic capture</strong>.</p>
 
     <label for="mic-model-select">Calibration
       <select id="mic-model-select">
@@ -554,7 +570,7 @@ __TABS__
   </div>
 </div>
 
-<button id="start" type="button" class="btn btn--primary">Start mic capture</button>
+<button id="start" type="button" class="btn btn--primary local-capture-only">Start mic capture</button>
 
 <div id="constraints" class="hidden" aria-live="polite">
   <h2>Capture settings</h2>
@@ -597,11 +613,11 @@ __TABS__
       __CORRECTION_STRATEGY_OPTIONS__
     </select>
     <p class="hint" style="margin-top:0.3em">Strategy controls the correction band, filter count, cut/boost policy, and safety bounds. Balanced is the default; Assertive is for calibrated, repeatable measurements.</p>
-    <label style="margin-top:0.6em">
+    <label id="repeat-main-position-row" style="margin-top:0.6em">
       <input id="repeat-main-position" type="checkbox" checked>
       Repeat the main seat once for a trust check
     </label>
-    <p class="hint" style="margin-top:0.3em">This adds one extra sweep at the first position and helps JTS tell measurement noise from real room behavior.</p>
+    <p id="repeat-main-position-hint" class="hint" style="margin-top:0.3em">This adds one extra sweep at the first position and helps JTS tell measurement noise from real room behavior.</p>
   </div>
 
   <p>Status: <span id="state-badge" class="state-badge idle">idle</span>
@@ -625,7 +641,7 @@ __TABS__
     <button id="reset-correction" type="button" class="btn btn--danger hidden">Reset correction</button>
     <button id="cancel-measurement" type="button" class="btn btn--danger hidden">Cancel measurement</button>
   </p>
-  <p class="hint" style="margin-top:0.4em">Before measuring, tap <strong>Auto-level</strong>. The speaker plays a 1 kHz tone while we gradually raise the volume from quiet to a measurement-friendly level (capped at −6 dB software volume — your amp's analog gain is still the final say). When the iPhone mic hears it in the target range, we lock automatically. If the volume sounds right to <em>you</em> first, tap <strong>Lock now</strong>. Takes ~6 seconds at most.</p>
+  <p id="autolevel-hint" class="hint" style="margin-top:0.4em">Before measuring, tap <strong>Auto-level</strong>. The speaker plays a 1 kHz tone while we gradually raise the volume from quiet to a measurement-friendly level (capped at −6 dB software volume — your amp's analog gain is still the final say). When the phone mic hears it in the target range, we lock automatically. If the volume sounds right to <em>you</em> first, tap <strong>Lock now</strong>. Takes ~6 seconds at most.</p>
   <p class="hint" style="margin-top:0.4em">Each measurement bypasses your current correction and preference EQ first so the sweep captures the raw room. After you tap <strong>Apply</strong>, the new correction takes over.</p>
   <div id="autolevel-status" class="note-box hidden">
     <p style="margin:0; font-weight:600" id="autolevel-line">Auto-leveling…</p>
@@ -773,6 +789,8 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         )
         for spec in correction_strategy_options()
     )
+    from jasper.capture_relay import correction_adapter
+    capture_relay_enabled = correction_adapter.relay_enabled()
     # Absolute http:// back link: /correction/ is HTTPS but the dashboard at /
     # is plain HTTP, so a relative "/" would try HTTPS on the root and fail.
     header = canonical_header(
@@ -787,6 +805,10 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         .replace("__TABS__", section_tabs("room"))
         .replace("__HOSTNAME__", html.escape(hostname, quote=True))
         .replace("__REQUIRED_SR__", str(REQUIRED_SAMPLE_RATE))
+        .replace(
+            "__CAPTURE_RELAY_ENABLED__",
+            "1" if capture_relay_enabled else "0",
+        )
         .replace("__MIC_MODEL_OPTIONS__", mic_model_options)
         .replace("__TARGET_PROFILE_OPTIONS__", target_profile_options_html)
         .replace("__CORRECTION_STRATEGY_OPTIONS__", correction_strategy_options_html)

@@ -27,7 +27,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from jasper.capture_relay.client import RelayClient
+from jasper.capture_relay.client import RelayClient, RelayError
 from jasper.capture_relay.cues import classify_failure_cue
 from jasper.capture_relay.crypto import (
     content_key_to_b64url,
@@ -299,5 +299,5 @@ def purge(client: RelayClient, session: PiCaptureSession) -> None:
     the short TTL is the backstop)."""
     try:
         client.delete(session.session_id, session.pull_token)
-    except Exception:  # noqa: BLE001 — purge is best-effort; TTL self-cleans
+    except (OSError, RelayError):
         pass

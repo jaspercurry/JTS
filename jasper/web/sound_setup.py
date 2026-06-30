@@ -1345,8 +1345,10 @@ async def _live_draft_profile(
     validated YAML file and records rollback state.
     """
     from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
+    from jasper.audio_runtime_plan import lean_capture_kwargs
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
     from jasper.sound.graph_carrier import carrier_for_loaded_config
+    from jasper.sound.runtime import is_lean_live_config_path
 
     cam = camilla_factory()
     config_path = Path(config_dir)
@@ -1435,10 +1437,16 @@ async def _live_draft_profile(
             raise RuntimeError("CamillaDSP did not report a loaded config path")
 
         carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
+        active_lean_capture_kwargs = (
+            lean_capture_kwargs()
+            if is_lean_live_config_path(current_path, config_path)
+            else None
+        )
         result = carrier.reemit(
             profile,
             profile_id=f"live-{time.time_ns()}",
             output_trim_db=output_trim_db,
+            capture_kwargs=active_lean_capture_kwargs,
             fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
         )
         yaml = result.yaml

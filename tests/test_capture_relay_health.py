@@ -20,16 +20,25 @@ from jasper.capture_relay import health
 
 def test_relay_config_unconfigured(monkeypatch):
     monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
-    assert health.relay_config_from_env() == {"configured": False, "relay_base": None}
+    monkeypatch.delenv("JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN", raising=False)
+    assert health.relay_config_from_env() == {
+        "configured": False,
+        "relay_base": None,
+        "registration_secret_configured": False,
+    }
     assert health.relay_base_from_env() is None
+    assert health.relay_registration_token_from_env() is None
 
 
 def test_relay_config_configured_strips_trailing_slash(monkeypatch):
     monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech/")
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN", "  pi-secret  ")
     assert health.relay_config_from_env() == {
         "configured": True,
         "relay_base": "https://relay.jasper.tech",
+        "registration_secret_configured": True,
     }
+    assert health.relay_registration_token_from_env() == "pi-secret"
 
 
 def test_probe_rejects_non_https():
@@ -39,6 +48,8 @@ def test_probe_rejects_non_https():
 
 
 def test_probe_reachable(monkeypatch):
+    seen = {}
+
     class _Resp:
         status = 200
 
@@ -51,10 +62,18 @@ def test_probe_reachable(monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(health.urllib.request, "urlopen", lambda *a, **k: _Resp())
+    def _urlopen(req, *, timeout):
+        seen["headers"] = {k.lower(): v for k, v in req.header_items()}
+        seen["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr(health.urllib.request, "urlopen", _urlopen)
     ok, detail = health.probe_relay_health("https://relay.jasper.tech")
     assert ok is True
     assert "reachable" in detail
+    assert seen["headers"]["user-agent"] == health.RELAY_USER_AGENT
+    assert seen["headers"]["accept"] == "application/json"
+    assert seen["timeout"] == 2.0
 
 
 def test_probe_unreachable(monkeypatch):
@@ -81,6 +100,7 @@ def test_state_snapshot_matches_health(monkeypatch, value):
         monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
     else:
         monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", value)
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN", "secret")
     assert _capture_relay_config() == health.relay_config_from_env()
 
 

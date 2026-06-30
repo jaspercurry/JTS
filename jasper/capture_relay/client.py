@@ -8,8 +8,8 @@ Outbound HTTPS only — the Pi never accepts inbound connections, so this works
 behind home NAT (the Pi already has internet for voice providers). The client
 speaks the relay contract from `relay/src/worker.js` §7 with the **pull_token**
 (the Pi's half of the privilege split; the upload_token stays on the phone) plus
-the open registration call. The HTTP transport is injectable so the whole client
-is testable without a network or a live Worker.
+the optional registration secret. The HTTP transport is injectable so the whole
+client is testable without a network or a live Worker.
 """
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from typing import Any
 
 DEFAULT_TIMEOUT_S = 15.0
+RELAY_USER_AGENT = "JTS-CaptureRelay/1 (+https://jasper.tech)"
+REGISTRATION_TOKEN_HEADER = "X-JTS-Relay-Registration-Token"
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,16 @@ class RelayError(RuntimeError):
         self.body = body
 
 
+def _headers_with_defaults(headers: Mapping[str, str]) -> dict[str, str]:
+    request_headers = dict(headers)
+    lowered = {key.lower() for key in request_headers}
+    if "user-agent" not in lowered:
+        request_headers["User-Agent"] = RELAY_USER_AGENT
+    if "accept" not in lowered:
+        request_headers["Accept"] = "application/json"
+    return request_headers
+
+
 def _urllib_transport(
     method: str,
     url: str,
@@ -51,7 +63,12 @@ def _urllib_transport(
     *,
     timeout: float = DEFAULT_TIMEOUT_S,
 ) -> RelayResponse:
-    req = urllib.request.Request(url, data=body, method=method, headers=dict(headers))
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers=_headers_with_defaults(headers),
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return RelayResponse(
@@ -78,6 +95,7 @@ class RelayClient:
         *,
         transport: Transport | None = None,
         timeout: float = DEFAULT_TIMEOUT_S,
+        registration_token: str | None = None,
     ) -> None:
         # Outbound-HTTPS-only: enforce the https scheme that _urllib_transport's
         # S310 audit-suppression assumes, so an operator misconfiguration can't
@@ -87,6 +105,8 @@ class RelayClient:
             raise ValueError(f"relay base_url must be https://, got {base_url!r}")
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout
+        token = (registration_token or "").strip()
+        self._registration_token = token or None
         self._transport: Transport = transport or (
             lambda m, u, h, b: _urllib_transport(m, u, h, b, timeout=timeout)
         )
@@ -110,7 +130,7 @@ class RelayClient:
                 detail = resp.body[:200].decode("utf-8", "replace")
             raise RelayError(f"{what} failed: {resp.status} {detail}", resp.status, resp.body)
 
-    # -- registration (open; the Pi mints its own tokens) --
+    # -- registration (optionally guarded; the Pi mints its own tokens) --
 
     def register(
         self,
@@ -135,7 +155,14 @@ class RelayClient:
         resp = self._transport(
             "POST",
             f"{self.base_url}/sessions",
-            {"Content-Type": "application/json"},
+            {
+                "Content-Type": "application/json",
+                **(
+                    {REGISTRATION_TOKEN_HEADER: self._registration_token}
+                    if self._registration_token
+                    else {}
+                ),
+            },
             body,
         )
         self._require_ok(resp, "register")

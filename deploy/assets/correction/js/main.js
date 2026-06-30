@@ -33,6 +33,19 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   var REQUIRED_SR = 48000;  // REQUIRED_SAMPLE_RATE — see jasper/web/correction_setup.py
 
+  var pageRoot = document.querySelector('main.correction-stack');
+  var relayConfigured = !!(
+    pageRoot && pageRoot.dataset.captureRelayEnabled === '1'
+  );
+  var relayMode = relayConfigured;
+  var relayPanel = document.getElementById('relay-panel');
+  var relayStatus = document.getElementById('relay-status');
+  var relayLinkRow = document.getElementById('relay-link-row');
+  var relayTapLink = document.getElementById('relay-tap-link');
+  var relayStartBtn = document.getElementById('relay-start-capture');
+  var localCaptureFallbackBtn = document.getElementById('local-capture-fallback');
+  var localInputRow = document.getElementById('local-input-row');
+  var localInputHint = document.getElementById('local-input-hint');
   var startBtn = document.getElementById('start');
   var inputDeviceSelect = document.getElementById('input-device-select');
   var refreshInputsBtn = document.getElementById('refresh-inputs');
@@ -66,6 +79,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var autolevelStatus = document.getElementById('autolevel-status');
   var autolevelLine = document.getElementById('autolevel-line');
   var autolevelDetail = document.getElementById('autolevel-detail');
+  var autolevelHint = document.getElementById('autolevel-hint');
   var runBtn = document.getElementById('run-measurement');
   var repeatBtn = document.getElementById('repeat-position');
   var continueBtn = document.getElementById('continue-position');
@@ -75,6 +89,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var cancelMeasureBtn = document.getElementById('cancel-measurement');
   var positionsSelect = document.getElementById('positions-select');
   var repeatMainPosition = document.getElementById('repeat-main-position');
+  var repeatMainPositionRow = document.getElementById('repeat-main-position-row');
+  var repeatMainPositionHint = document.getElementById('repeat-main-position-hint');
   var targetSelect = document.getElementById('target-select');
   var strategySelect = document.getElementById('strategy-select');
   var positionPrompt = document.getElementById('position-prompt');
@@ -139,6 +155,103 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
     ctx = null;
     workletNode = null;
+  }
+
+  function currentPathname() {
+    var loc = window.location || {};
+    if (typeof loc.pathname === 'string') return loc.pathname;
+    var href = String(loc.href || '');
+    var pathish = href.split('#')[0].split('?')[0];
+    var schemeIdx = pathish.indexOf('://');
+    if (schemeIdx !== -1) {
+      var slashIdx = pathish.indexOf('/', schemeIdx + 3);
+      return slashIdx === -1 ? '/' : pathish.slice(slashIdx);
+    }
+    return pathish || '';
+  }
+
+  function endpoint(path) {
+    path = String(path || '').replace(/^\/+/, '');
+    if (currentPathname().indexOf('/correction/') === 0) {
+      return '/correction/' + path;
+    }
+    return path;
+  }
+
+  function hideEl(el, hidden) {
+    if (!el) return;
+    if (hidden) el.classList.add('hidden');
+    else el.classList.remove('hidden');
+  }
+
+  function setRelayStatus(text, level) {
+    if (!relayStatus) return;
+    relayStatus.className = 'relay-status ' + (level || 'idle');
+    relayStatus.textContent = text || '';
+  }
+
+  function renderRelayCapture(relay) {
+    if (!relay) {
+      hideEl(relayLinkRow, true);
+      if (relayTapLink) relayTapLink.href = '#';
+      return;
+    }
+    var tapLink = relay.tap_link || '';
+    if (tapLink && relayTapLink) {
+      relayTapLink.href = tapLink;
+      hideEl(relayLinkRow, false);
+    }
+    if (relay.status === 'complete') {
+      setRelayStatus('Phone capture received. Processing finished on the speaker.', 'ok');
+    } else if (relay.status === 'failed') {
+      setRelayStatus(relay.error || 'Phone capture failed. Cancel and try again.', 'bad');
+    } else if (relay.status === 'starting') {
+      setRelayStatus('Creating phone capture link…', 'idle');
+    } else {
+      setRelayStatus('Open the capture page on the phone and keep it awake until the sweep finishes.', 'idle');
+    }
+  }
+
+  function setRelayMode(enabled) {
+    relayMode = !!enabled;
+    hideEl(relayPanel, !relayMode);
+    hideEl(relayStartBtn, !relayMode);
+    hideEl(localInputRow, relayMode);
+    hideEl(localInputHint, relayMode);
+    hideEl(startBtn, relayMode);
+    hideEl(constraintsBlock, relayMode);
+    hideEl(autolevelBtn, relayMode);
+    hideEl(autolevelLockBtn, true);
+    hideEl(autolevelCancelBtn, true);
+    hideEl(autolevelStatus, true);
+    hideEl(autolevelHint, relayMode);
+    if (repeatMainPosition) {
+      repeatMainPosition.checked = !relayMode;
+      repeatMainPosition.disabled = relayMode;
+    }
+    hideEl(repeatMainPositionRow, relayMode);
+    hideEl(repeatMainPositionHint, relayMode);
+    if (relayMode) {
+      stopMicStream();
+      measureSection.classList.remove('hidden');
+      runBtn.textContent = 'Start phone measurement';
+      continueBtn.textContent = 'Create next phone capture';
+      autolevelBtn.disabled = true;
+      runBtn.disabled = false;
+      if (relayStartBtn) {
+        relayStartBtn.textContent = 'Create phone capture link';
+        relayStartBtn.disabled = false;
+      }
+      setRelayStatus('Ready to create a phone capture link.', 'idle');
+    } else {
+      runBtn.textContent = 'Run measurement';
+      continueBtn.textContent = 'Continue to next position';
+      renderRelayCapture(null);
+      setRelayStatus('', 'idle');
+      runBtn.disabled = true;
+      if (relayStartBtn) relayStartBtn.disabled = true;
+      autolevelBtn.disabled = true;
+    }
   }
 
   async function populateInputDevices(selectedId) {
@@ -981,7 +1094,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     loadSessionsBtn.disabled = true;
     sessionHistory.textContent = 'Loading recent sessions…';
     try {
-      var resp = await fetch('sessions', {cache: 'no-store'});
+      var resp = await fetch(endpoint('sessions'), {cache: 'no-store'});
       if (!resp.ok) throw new Error('sessions ' + resp.status);
       var payload = await resp.json();
       renderSessionHistory(payload.sessions || []);
@@ -1080,7 +1193,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     sessionReport.textContent = 'Loading report…';
     try {
       var resp = await fetch(
-        'session-report?id=' + encodeURIComponent(sessionId),
+        endpoint('session-report') + '?id=' + encodeURIComponent(sessionId),
         {cache: 'no-store'}
       );
       var text = await resp.text();
@@ -1504,7 +1617,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
 
   async function postJson(path, body) {
-    var resp = await fetch(path, {
+    var url = endpoint(path);
+    var resp = await fetch(url, {
       method: 'POST',
       headers: jsonHeaders(),
       body: JSON.stringify(body || {})
@@ -1515,13 +1629,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         var payload = JSON.parse(msg);
         if (payload && payload.error) msg = payload.error;
       } catch (_e) {}
-      throw new Error('POST ' + path + ' → ' + resp.status + ': ' + msg);
+      throw new Error('POST ' + url + ' → ' + resp.status + ': ' + msg);
     }
     return await resp.json();
   }
 
   async function fetchStatus() {
-    var resp = await fetch('status', {cache: 'no-store'});
+    var resp = await fetch(endpoint('status'), {cache: 'no-store'});
     if (!resp.ok) throw new Error('status ' + resp.status);
     return await resp.json();
   }
@@ -1571,14 +1685,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }, 700);
   }
 
-  async function startMeasurement() {
-    var capturedLabel = selectedInputDevice && selectedInputDevice.browser_label;
-    var mismatch = calibrationDeviceMismatch(capturedLabel);
-    if (mismatch) {
-      jtsAlert(mismatch);
-      return;
-    }
-    runBtn.disabled = true;
+  function resetMeasurementUiForStart() {
     continueBtn.classList.add('hidden');
     applyBtn.classList.add('hidden');
     verifyBtn.classList.add('hidden');
@@ -1599,19 +1706,74 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     lastVerify = null;
     inVerifyMode = false;
     setStateBadge('preparing', 'pausing music…');
+  }
+
+  function measurementStartPayload() {
+    var totalPositions = parseInt(positionsSelect.value, 10) || 1;
+    var targetChoice = targetSelect.value || 'flat';
+    var strategyChoice = strategySelect.value || 'balanced';
+    return {
+      total_positions: totalPositions,
+      target_choice: targetChoice,
+      strategy_choice: strategyChoice,
+      noise_floor_db: relayMode ? null : lastNoiseFloorDb,
+      calibration_id: selectedCalibrationId,
+      input_device: relayMode ? null : selectedInputDevice,
+      repeat_main_position: relayMode
+        ? false
+        : !!(repeatMainPosition && repeatMainPosition.checked)
+    };
+  }
+
+  async function startRelayCaptureForCurrentPosition() {
+    setRelayStatus('Creating phone capture link…', 'idle');
+    if (relayStartBtn) relayStartBtn.disabled = true;
+    renderRelayCapture({status: 'starting'});
     try {
-      var totalPositions = parseInt(positionsSelect.value, 10) || 1;
-      var targetChoice = targetSelect.value || 'flat';
-      var strategyChoice = strategySelect.value || 'balanced';
-      var resp = await postJson('start', {
-        total_positions: totalPositions,
-        target_choice: targetChoice,
-        strategy_choice: strategyChoice,
-        noise_floor_db: lastNoiseFloorDb,
-        calibration_id: selectedCalibrationId,
-        input_device: selectedInputDevice,
-        repeat_main_position: !!(repeatMainPosition && repeatMainPosition.checked)
-      });
+      var resp = await postJson('relay/capture', {});
+      renderRelayCapture(resp.relay);
+      pollState();
+    } catch (e) {
+      setStateBadge('failed', e.message);
+      setRelayStatus(e.message, 'bad');
+      runBtn.disabled = false;
+      if (relayStartBtn) relayStartBtn.disabled = false;
+      continueBtn.disabled = false;
+    }
+  }
+
+  async function startRelayMeasurement() {
+    runBtn.disabled = true;
+    if (relayStartBtn) relayStartBtn.disabled = true;
+    resetMeasurementUiForStart();
+    try {
+      var resp = await postJson('start', measurementStartPayload());
+      sessionId = resp.session_id;
+    } catch (e) {
+      setStateBadge('failed', e.message);
+      setRelayStatus(e.message, 'bad');
+      runBtn.disabled = false;
+      if (relayStartBtn) relayStartBtn.disabled = false;
+      return;
+    }
+    await startRelayCaptureForCurrentPosition();
+  }
+
+  async function startMeasurement() {
+    if (relayMode) {
+      await startRelayMeasurement();
+      return;
+    }
+    var capturedLabel = selectedInputDevice && selectedInputDevice.browser_label;
+    var mismatch = calibrationDeviceMismatch(capturedLabel);
+    if (mismatch) {
+      jtsAlert(mismatch);
+      return;
+    }
+    runBtn.disabled = true;
+    resetMeasurementUiForStart();
+    try {
+      var resp = await postJson('start', measurementStartPayload());
       sessionId = resp.session_id;
     } catch (e) {
       setStateBadge('failed', e.message);
@@ -1638,6 +1800,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       setStateBadge('failed', e.message);
       // pollState will reapply the button policy on next tick —
       // user can retry from the new state.
+      return;
+    }
+    if (relayMode) {
+      await startRelayCaptureForCurrentPosition();
       return;
     }
     capturePreSweepNoise();
@@ -1743,7 +1909,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       if (lockSent) return;
       lockSent = true;
       console.log('autolevel lock signal:', reason);
-      fetch('autolevel/lock', {
+      fetch(endpoint('autolevel/lock'), {
         method: 'POST',
         headers: jsonHeaders(),
         body: '{}'
@@ -1894,6 +2060,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     resetBtn.disabled = false;
     cancelMeasureBtn.classList.add('hidden');
     cancelMeasureBtn.disabled = false;
+    if (relayStartBtn) relayStartBtn.disabled = true;
     autolevelLockBtn.classList.add('hidden');
     autolevelLockBtn.disabled = false;
     autolevelCancelBtn.classList.add('hidden');
@@ -1924,8 +2091,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
     runBtn.disabled = !sessionIdle || autolevelRamping;
     autolevelBtn.disabled = !sessionIdle || autolevelRamping;
+    if (relayMode) {
+      autolevelBtn.disabled = true;
+      hideEl(autolevelBtn, true);
+      if (relayStartBtn) relayStartBtn.disabled = !sessionIdle;
+    }
     // Per-state additions:
-    if (autolevelRamping) {
+    if (autolevelRamping && !relayMode) {
       // Manual Lock + Cancel always available during the ramp so
       // the user can override the auto-detection (iOS Safari AGC
       // makes the mic-based decision unreliable in some setups).
@@ -1941,15 +2113,28 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       positionPrompt.classList.remove('hidden');
       positionCurrent.textContent = '1';
       positionTotal.textContent = '1';
-      repeatBtn.classList.remove('hidden');
+      if (!relayMode) repeatBtn.classList.remove('hidden');
       runBtn.disabled = true;
       autolevelBtn.disabled = true;
     } else if (state === 'ready') {
       applyBtn.classList.remove('hidden');
       resetBtn.classList.remove('hidden');
     } else if (state === 'applied' || state === 'verified') {
-      verifyBtn.classList.remove('hidden');
+      if (!relayMode) verifyBtn.classList.remove('hidden');
       resetBtn.classList.remove('hidden');
+    }
+  }
+
+  function renderRelayStatusFromSnapshot(snapshot) {
+    if (!relayMode) return;
+    if (snapshot && snapshot.relay) {
+      renderRelayCapture(snapshot.relay);
+      return;
+    }
+    if (snapshot && snapshot.state === 'ready') {
+      setRelayStatus('Measurement is ready. Review confidence, then apply or reset.', 'ok');
+    } else if (snapshot && snapshot.state === 'failed') {
+      setRelayStatus(snapshot.error || 'Measurement failed. Cancel or start again.', 'bad');
     }
   }
 
@@ -1958,6 +2143,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     try {
       var s = await fetchStatus();
       currentState = s.state;
+      renderRelayStatusFromSnapshot(s);
       var detail = s.error || '';
       if (s.total_positions > 1 && s.current_position !== undefined &&
           (s.state === 'preparing' || s.state === 'sweeping' ||
@@ -1984,6 +2170,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         s.state === 'awaiting_verify_capture' ||
         s.state === 'awaiting_repeat_capture'
       ) {
+        if (relayMode && s.state === 'awaiting_capture') {
+          pollTimer = setTimeout(pollState, 500);
+          return;
+        }
         if (workletNode) workletNode.port.postMessage('stopCapture');
         return;  // upload-capture handler resumes polling
       }
@@ -2027,7 +2217,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       captureMode = 'measurement';
       if (workletNode) workletNode.port.postMessage('startCapture');
       try {
-        var noiseResp = await fetch('upload-noise', {
+        var noiseResp = await fetch(endpoint('upload-noise'), {
           method: 'POST',
           headers: csrfHeaders({'Content-Type': 'audio/wav'}),
           body: wav
@@ -2050,7 +2240,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     setStateBadge('analyzing', 'uploading capture (' +
       Math.round(float32.length / REQUIRED_SR * 10) / 10 + ' s of audio)…');
     try {
-      var resp = await fetch('upload-capture', {
+      var resp = await fetch(endpoint('upload-capture'), {
         method: 'POST',
         headers: csrfHeaders({'Content-Type': 'audio/wav'}),
         body: wav
@@ -2198,6 +2388,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   calibrationFileInput.addEventListener('change', function () { invalidateLoadedCalibration(); });
   fetchCalibrationBtn.addEventListener('click', function () { fetchCalibration(); });
   uploadCalibrationBtn.addEventListener('click', function () { uploadCalibration(); });
+  if (localCaptureFallbackBtn) {
+    localCaptureFallbackBtn.addEventListener('click', function () {
+      setRelayMode(false);
+      detectMicrophones();
+    });
+  }
+  if (relayStartBtn) {
+    relayStartBtn.addEventListener('click', function () { startMeasurement(); });
+  }
   runBtn.addEventListener('click', function () { startMeasurement(); });
   repeatBtn.addEventListener('click', function () { repeatMainSeat(); });
   continueBtn.addEventListener('click', function () { continueToNextPosition(); });
@@ -2228,11 +2427,21 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
   });
 
-  // Auto-detect microphones on landing so the USB measurement mic shows up
-  // without an extra tap. detectMicrophones() primes a getUserMedia grant then
-  // enumerates; if the browser requires a user gesture (some iOS versions),
-  // it fails soft and the "Refresh microphones" button is the fallback.
-  detectMicrophones();
+  // Auto-detect microphones on landing only for the local same-origin capture
+  // flow. Relay-configured boxes start with the cloud phone-capture flow, so
+  // this controller tab must not ask for mic permission unless the user chooses
+  // the local fallback.
+  if (relayConfigured) {
+    setRelayMode(true);
+    pollState();
+  } else {
+    if (!window.isSecureContext && currentPathname().indexOf('/correction/') === 0) {
+      window.location.href = '/correction/proceed/room';
+      return;
+    }
+    setRelayMode(false);
+    detectMicrophones();
+  }
   updateMicCalibrationRows();
   refreshCurrentCorrection();
 

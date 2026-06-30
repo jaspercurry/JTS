@@ -84,6 +84,7 @@ from .source_state import (
     bluetooth_playing,
     spotify_playing,
     usbsink_playing,
+    usbsink_state_fresh_host_connected,
 )
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,12 @@ MUX_MODE_STATE_PATH = os.environ.get(
     "JASPER_MUX_MODE_STATE_PATH", mux_mode_persistence.DEFAULT_PATH,
 )
 FANIN_TEST_LABELS = frozenset({"correction"})
+# Entering the USB FIFO lane restarts jasper-usbsink. Its RMS playing state is
+# hysteresis-debounced, so the first post-restart tick can look idle even while
+# the host is still streaming. Hold only idle-triggered lean leaves long enough
+# for the state publisher to republish; real competing routes still leave
+# immediately.
+LEAN_ENTER_SOURCE_WARMUP_SEC = 3.0
 SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"
 SHAIRPORT_MPRIS_PATH = "/org/mpris/MediaPlayer2"
 MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
@@ -231,6 +238,7 @@ class Mux:
         # tick — that would restart-storm the usbsink daemon. Stay on buffered
         # until the source set changes (a fresh exclusive-USB edge clears it).
         self._lean_enter_blocked = False
+        self._lean_hold_until_mono = 0.0
         # Adaptive fan-in OUTPUT-buffer (default-OFF). The convergence
         # replacement for the lean lane: instead of swapping CamillaDSP onto a
         # File-capture config, it just shrinks fan-in's near-FULL output buffer
@@ -583,7 +591,21 @@ class Mux:
             # edge later gets a clean retry) and restores buffered if needed.
             self._lean_enter_blocked = False
             if self._in_lean:
+                if self._lean_leave_deferred(decision):
+                    return
                 await self._leave_lean(reason=decision.reason)
+
+    def _lean_leave_deferred(self, decision: SourceRouteDecision) -> bool:
+        """True when an immediate idle verdict is probably our own restart gap."""
+        return (
+            decision.reason == "idle"
+            and self._manual_source is None
+            and self._test_fanin_label is None
+            and (
+                time.monotonic() < self._lean_hold_until_mono
+                or usbsink_state_fresh_host_connected()
+            )
+        )
 
     async def _enter_lean(self) -> None:
         """Enter-lean ladder: arm the usbsink FIFO output, then swap CamillaDSP
@@ -611,6 +633,7 @@ class Mux:
                 detail=arm.detail,
                 level=logging.WARNING,
             )
+            self._lean_hold_until_mono = 0.0
             return
 
         try:
@@ -632,9 +655,13 @@ class Mux:
                 detail=str(e),
                 level=logging.WARNING,
             )
+            self._lean_hold_until_mono = 0.0
             return
 
         self._in_lean = True
+        self._lean_hold_until_mono = (
+            time.monotonic() + LEAN_ENTER_SOURCE_WARMUP_SEC
+        )
         log_event(logger, "mux.lean_entered")
 
     async def _leave_lean(self, *, reason: str) -> None:
@@ -671,6 +698,7 @@ class Mux:
                 omr.set_output_mode, "aloop", reason=f"lean_leave_{reason}",
             )
         self._in_lean = False
+        self._lean_hold_until_mono = 0.0
         log_event(logger, "mux.lean_left", reason=reason)
 
     async def _lean_apply_config(self) -> None:

@@ -84,8 +84,8 @@ listening-level-derived silence target when the room is quiet.
        │  - on turn-begin failure   → cues.play(...)       │
        │                                                   │
        │  Proactive supervisor cues (via                   │
-       │  WakeLoop.play_supervisor_cue — skips if a turn   │
-       │  is in flight to avoid garbling TtsPlayout):      │
+       │  WakeLoop.play_supervisor_cue — skips if assistant│
+       │  output is active to avoid garbling TtsPlayout):  │
        │  - on N identical reconnect failures              │
        │    → connection.set_failure_escalation_cb(...)    │
        │                                                   │
@@ -256,9 +256,9 @@ Exit codes (stable so install.sh can read them):
      subsystem and have it call back into
      `WakeLoop.play_supervisor_cue("<slug>")`. That public method
      does the same duck-play-restore as `_play_cue` but **skips
-     when a user-driven turn is in flight** so the supervisor
-     can't garble an in-progress TTS reply by trying to layer a
-     second WAV onto the single PortAudio stream. The
+     when any assistant output episode is active** so the supervisor
+     can't garble an in-progress reply, dynamic announcement, or cue
+     by trying to layer a second WAV onto the single TTS stream. The
      `GeminiLiveConnection.set_failure_escalation_cb` →
      `WakeLoop.play_supervisor_cue` wiring in `voice_daemon.run()`
      is the canonical example. Don't forget to rate-limit at the
@@ -312,4 +312,4 @@ failures on the affected paths, but every other path works.
 
 ---
 
-Last verified: 2026-06-24
+Last verified: 2026-06-30

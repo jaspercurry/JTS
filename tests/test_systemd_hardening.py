@@ -691,3 +691,8 @@ def test_single_statedirectory_owner():
         "with no StateDirectory, mux must reach /var/lib/jasper via ReadWritePaths "
         "(its source pin + speaker_volume.json writes under ProtectSystem=strict)."
     )
+    assert "/var/lib/camilladsp/configs" in mux_rwp, (
+        "mux owns the live USB lean-lane CamillaDSP swap; under "
+        "ProtectSystem=strict it must be able to write the carrier-preserved "
+        "lean config and DSP apply lock in /var/lib/camilladsp/configs."
+    )

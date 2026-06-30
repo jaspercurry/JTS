@@ -168,6 +168,7 @@ const fakeWindow = {
   addEventListener() {},
   removeEventListener() {},
   location: { href: "http://jts.local/correction/" },
+  isSecureContext: true,
   navigator: { mediaDevices: { getUserMedia() { return Promise.reject(new Error("no media")); }, enumerateDevices() { return Promise.resolve([]); } } },
   AudioContext: FakeAudioContext,
   MediaRecorder: undefined,

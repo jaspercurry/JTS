@@ -85,9 +85,11 @@ ProtectSystem=strict
 # WS1 Phase 4b — Spotify token refreshes are legitimate runtime writes.
 # /var/lib/jasper (S2) — mux's write target for the source-selection pin
 # (mux_mode.json) + shared speaker_volume.json, now that mux no longer declares
-# StateDirectory=jasper. Under ProtectSystem=strict this is what keeps the path
-# writable.
-ReadWritePaths=/var/lib/jasper /var/lib/jasper-intsecrets
+# StateDirectory=jasper. The lean USB FIFO lane also live-loads a carrier-
+# preserved CamillaDSP config, so mux needs the same group-writable config dir
+# the /sound/ surface uses. Under ProtectSystem=strict these explicit paths are
+# what keep those writes possible.
+ReadWritePaths=/var/lib/jasper /var/lib/jasper-intsecrets /var/lib/camilladsp/configs
 ProtectHome=tmpfs
 PrivateTmp=true
 ProtectKernelTunables=true

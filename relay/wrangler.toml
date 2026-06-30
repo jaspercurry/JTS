@@ -19,6 +19,10 @@ workers_dev = false
 # The Pi's own pull-side calls are server-to-server and need no CORS.
 CAPTURE_ORIGIN = "https://capture.jasper.tech"
 
+# Set RELAY_REGISTRATION_TOKEN with `npx wrangler secret put`, not in this file.
+# When present, POST /sessions accepts only Pis that send the matching
+# X-JTS-Relay-Registration-Token value from their private jasper.env.
+
 # R2 object store: holds the opaque session metadata (meta/<id>) and the
 # encrypted blob (blob/<id>). Strong read-after-write consistency covers the
 # Pi's poll loop. Create once: `wrangler r2 bucket create jts-capture-relay`.
@@ -33,7 +37,7 @@ bucket_name = "jts-capture-relay"
 # 10 or 60; `namespace_id` must be unique within your account. If this binding is
 # absent the Worker falls back to a per-isolate in-memory counter (see
 # rateLimited() in worker.js) that never writes R2.
-[[ratelimit]]
+[[ratelimits]]
 name = "RELAY_RATELIMIT"
 namespace_id = "1001"
 simple = { limit = 80, period = 10 }

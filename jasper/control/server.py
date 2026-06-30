@@ -2685,6 +2685,8 @@ def _make_handler(
                 http_status = 404
             elif result.get("result") == "cues_not_configured":
                 http_status = 503
+            elif result.get("result") == "busy":
+                http_status = 409
             elif result.get("result") != "ok":
                 http_status = 502
             self._send_json(result, status=http_status)
