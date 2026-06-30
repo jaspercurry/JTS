@@ -463,6 +463,28 @@ reset_failed_core_graph_restart_targets() {
     done
 }
 
+park_low_memory_build_units() {
+    build_swap_required || return 0
+    _build_sandbox_log "low_memory_build_park" \
+        "stopping runtime units before constrained install/build steps"
+    park_audio_clients_for_core_graph_restart
+    local unit
+    for unit in \
+        jasper-fanin.service \
+        jasper-camilla.service \
+        jasper-camilla-crossover.service \
+        jasper-control.service \
+        jasper-system-web.service \
+        jasper-input.service \
+        jasper-accessory-reconcile.service \
+        jasper-aec-init.service \
+        jasper-aec-reconcile.service \
+        bt-agent.service; do
+        systemctl stop "${unit}" 2>/dev/null || true
+        systemctl reset-failed "${unit}" 2>/dev/null || true
+    done
+}
+
 park_streambox_brain_units() {
     # Converting from a full speaker to streambox must park local brain
     # surfaces while keeping renderer/DSP/source surfaces alive.

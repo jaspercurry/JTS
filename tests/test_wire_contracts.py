@@ -304,6 +304,10 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # jasper/fanin/buffer_reconcile.py.
     "JASPER_FANIN_ADAPTIVE_BUFFER": "mux/doctor gate; resolves to OUTPUT_BUFFER_FRAMES",
     "JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES": "reconciler sweep target; resolves to OUTPUT_BUFFER_FRAMES",
+    # AirPlay receiver-side timing/offset helper knobs. These change where the
+    # shell helper PROBES STATUS; they do not move either daemon's bind socket.
+    "JASPER_FANIN_STATUS_SOCKET": "AirPlay helper probe path, not a fanin knob",
+    "JASPER_OUTPUTD_STATUS_SOCKET": "AirPlay helper probe path, not an outputd knob",
 }
 
 # Script-local variables that *name the env file path itself* (e.g.

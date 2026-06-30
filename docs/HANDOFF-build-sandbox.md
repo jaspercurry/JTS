@@ -91,6 +91,16 @@ A latency-critical daemon must never swap and must never be killed. A
 build is the opposite: it should lean on swap to finish slowly, and it
 should be the *first* thing sacrificed if the box is genuinely going down.
 
+On low-memory hosts (`RUST_LOW_MEMORY_BUILD_THRESHOLD_KB`, currently
+~1.2 GB), install also creates a temporary high-priority build swap file
+(`/var/tmp/jasper-build.swap` by default) and removes it on exit. The
+swap is for installer children only; audio-path services remain protected
+by their `MemorySwapMax=0` slices after runtime restarts. The same
+low-memory path parks runtime units before Rust daemon builds so a 1 GB
+full speaker does not compile `jasper-fanin` while voice/AEC/web Python
+heaps are resident. JTS2 validated this path on 2026-06-29 after the old
+live-build path repeatedly OOM-killed `rustc`.
+
 ### Graceful degradation
 
 `run_contained_build` contains only when it safely can. In `auto` mode
@@ -112,6 +122,8 @@ journald (mirroring `memory-resilience.sh`'s `_mem_log`):
 journalctl -t jasper-install | grep event=build_sandbox
 # event=build_sandbox.contained   label=webrtc-aec3 unit=jts-build-webrtc-aec3-1234.scope
 # event=build_sandbox.uncontained label=nqptp reason=systemd-unavailable-or-disabled
+# event=build_sandbox.swap_enabled path=/var/tmp/jasper-build.swap size_mb=2048 priority=200
+# event=build_sandbox.low_memory_build_park stopping runtime units before constrained Rust builds
 ```
 
 journald is persistent (PR #160), so the decision survives the watchdog
@@ -123,22 +135,22 @@ know whether the build was contained.
 | # | Build | Where | Tool | Profile | Now bounded? | Now contained? |
 |---|-------|-------|------|---------|--------------|----------------|
 | 1 | webrtc-audio-processing v2.1 | `install.sh build_webrtc_v2_for_aec3` | `meson compile` C++ −O3 | full | yes (`kb_per_job=1.5 GB`) | yes |
-| 2 | jasper_aec3 pybind11 binding | `python-runtime.sh install_jasper` | `pip`→`cc1plus` −O3 | full | n/a (single ext) | yes |
-| 3 | jasper-fanin | `rust-daemons.sh` | `cargo build --release` | full + streambox | cargo `-j` (low-mem profile) | yes |
-| 4 | jasper-outputd | `rust-daemons.sh` | `cargo build --release` | full + streambox | cargo `-j` (low-mem profile) | yes |
+| 2 | jasper_aec3 pybind11 binding | `python-runtime.sh install_jasper` | `pip`→`cc1plus` −O0 wrapper | full | n/a (single ext; content-cached) | yes |
+| 3 | jasper-fanin | `rust-daemons.sh` | `cargo build --release` | full + streambox | cargo `-j` + temporary build swap/runtime park on low-memory hosts | yes |
+| 4 | jasper-outputd | `rust-daemons.sh` | `cargo build --release` | full + streambox | cargo `-j` + temporary build swap/runtime park on low-memory hosts | yes |
 | 5 | shairport-sync | `renderers.sh install_renderers` | `make` C autotools | full + streambox | yes (`kb_per_job=0.4 GB`) | yes |
 | 6 | nqptp | `renderers.sh install_renderers` | `make` C autotools | full + streambox | yes (`kb_per_job=0.4 GB`) | yes |
 | 7 | optional ESP32 firmware | `install.sh _build_firmware_if_stale` | PlatformIO | opt-in only | unchanged (opt-in) | **not yet** (see below) |
 
 Before this slice, #1 was the only RAM-aware build, #3/#4 had a binary
-on/off low-memory cargo profile (flipping at 768 MB), #5/#6 were a
+on/off low-memory cargo profile (now flipped at ~1.2 GB), #5/#6 were a
 hardcoded `make -j4`, and #2/#7 had nothing. None were contained.
 
 The per-toolchain `kb_per_job` budgets reflect real peak RAM per
 translation unit: C++ `-O3` ≈ 1.5 GB (webrtc's worst TU), C `-O2`
-≈ 0.3–0.4 GB. Rust manages its own `-j` via `CARGO_BUILD_JOBS`, so the
-cargo builds are contained but keep the existing
-`rust_cargo_build_env` profile.
+≈ 0.3–0.4 GB. Rust manages its own `-j` via `CARGO_BUILD_JOBS`; on
+low-memory hosts `rust_cargo_build_env` also disables LTO and sets
+`opt-level=0` so the source build fits.
 
 ## Decisions and open trade-offs
 
@@ -187,17 +199,14 @@ that abort clean + observable). If an operator sets
 the build fails *observably* rather than silently wedging the box — a
 deliberate trade we leave opt-in.
 
-### Rust low-memory threshold (noted, not changed here)
+### Rust low-memory threshold
 
 `rust-daemons.sh` enables its low-memory cargo profile (jobs=1, no LTO)
-only below **768 MB**, so a **1 GB Pi 5 builds Rust at full `nproc` + fat
-LTO** — and the LTO link is itself a memory spike. This slice contains
-that build (so it can't kill daemons) but deliberately does **not** lower
-the threshold: that would change tested full-speaker behavior
-(`test_full_speaker_rust_build_keeps_release_profile`) and the produced
-binary. Raising the threshold to ~1.5 GB so 1 GB boxes also drop LTO is a
-reasonable follow-up with a measured before/after; it's out of this
-surgical slice.
+below **1.2 GB**, so Zero-class and 1 GB Pi 5 boxes build Rust with the
+same constrained profile. This is based on the 2026-06-29 JTS2 deploy
+failure where the old 768 MB cutoff left a 991 MB Pi compiling
+`jasper-fanin` with fat LTO and `rustc` was OOM-killed after AEC3 had
+already been skipped. 2 GB+ boxes keep the normal release profile.
 
 ## Knobs
 

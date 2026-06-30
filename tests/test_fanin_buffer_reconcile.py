@@ -39,17 +39,17 @@ def stub_broker(monkeypatch):
 
 def test_shrink_writes_env_and_restarts(env_path, stub_broker):
     r = br.set_fanin_output_buffer(
-        1536, reason="adaptive_usb_exclusive", env_path=env_path,
+        1024, reason="adaptive_usb_exclusive", env_path=env_path,
     )
     assert r.ok and r.changed and r.restarted
-    assert r.frames == 1536
-    assert env_path.read_text().strip() == "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536"
+    assert r.frames == 1024
+    assert env_path.read_text().strip() == "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024"
     assert stub_broker == [((br.FANIN_UNIT,), "restart", "adaptive_usb_exclusive")]
 
 
 def test_shrink_unchanged_skips_restart(env_path, stub_broker):
-    env_path.write_text("JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536\n")
-    r = br.set_fanin_output_buffer(1536, reason="x", env_path=env_path)
+    env_path.write_text("JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024\n")
+    r = br.set_fanin_output_buffer(1024, reason="x", env_path=env_path)
     assert r.ok is True
     assert r.changed is False
     assert r.restarted is False
@@ -63,31 +63,30 @@ def test_shrink_preserves_other_keys(env_path, stub_broker):
         "JASPER_FANIN_INPUT_BUFFER_FRAMES=4096\n"
         "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072\n"
     )
-    br.set_fanin_output_buffer(1536, reason="x", env_path=env_path)
+    br.set_fanin_output_buffer(1024, reason="x", env_path=env_path)
     text = env_path.read_text()
     assert "JASPER_FANIN_INPUT_BUFFER_FRAMES=4096" in text
-    assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536" in text
+    assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024" in text
     assert "# operator overrides" in text
     assert text.count("JASPER_FANIN_OUTPUT_BUFFER_FRAMES=") == 1
 
 
 def test_shrink_no_restart_flag_writes_only(env_path, stub_broker):
     r = br.set_fanin_output_buffer(
-        1536, reason="x", env_path=env_path, restart=False,
+        1024, reason="x", env_path=env_path, restart=False,
     )
     assert r.ok is True
     assert r.restarted is False
     assert stub_broker == []
-    assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536" in env_path.read_text()
+    assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024" in env_path.read_text()
 
 
 # ------------------------------------------------------------------- floor
 
 def test_below_floor_rejected_without_write(env_path, stub_broker):
-    r = br.set_fanin_output_buffer(1024, reason="x", env_path=env_path)
-    # 1024 < MIN_OUTPUT_BUFFER_FRAMES (1536): rejected, file untouched, no
-    # restart. Never persist an unstartable buffer (CamillaDSP could not read a
-    # full 1024-frame chunk; a natural restart would then brick the daemon).
+    r = br.set_fanin_output_buffer(512, reason="x", env_path=env_path)
+    # 512 < MIN_OUTPUT_BUFFER_FRAMES (1024): rejected, file untouched, no
+    # restart. Never persist a sub-floor buffer without hardware validation.
     assert r.ok is False
     assert "below floor" in r.detail
     assert not env_path.exists()
@@ -104,12 +103,12 @@ def test_floor_value_itself_is_accepted(env_path, stub_broker):
 # ----------------------------------------------------------------- restore
 
 def test_restore_strips_override_and_restarts(env_path, stub_broker):
-    env_path.write_text("JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536\n")
+    env_path.write_text("JASPER_FANIN_OUTPUT_BUFFER_FRAMES=2048\n")
     r = br.restore_fanin_output_buffer(reason="networked_join", env_path=env_path)
     assert r.ok and r.changed and r.restarted
     assert r.frames == br.DEFAULT_OUTPUT_BUFFER_FRAMES
     # The override line is removed; the file is unlinked (empties to nothing) so
-    # the unit's Environment="...=3072" default reasserts as the only source.
+    # the unit's Environment="...=1024" default reasserts as the only source.
     assert not env_path.exists()
     assert stub_broker == [((br.FANIN_UNIT,), "restart", "networked_join")]
 
@@ -117,7 +116,7 @@ def test_restore_strips_override_and_restarts(env_path, stub_broker):
 def test_restore_keeps_other_keys_when_override_present(env_path, stub_broker):
     env_path.write_text(
         "JASPER_FANIN_INPUT_BUFFER_FRAMES=4096\n"
-        "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536\n"
+        "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=2048\n"
     )
     r = br.restore_fanin_output_buffer(reason="x", env_path=env_path)
     assert r.ok and r.changed
@@ -143,7 +142,7 @@ def test_shrink_restart_failure_rolls_back_to_absent(env_path, monkeypatch):
         "jasper.control.restart_broker.manage_units",
         lambda *a, **k: {"ok": False, "error": "broker down"},
     )
-    r = br.set_fanin_output_buffer(1536, reason="x", env_path=env_path)
+    r = br.set_fanin_output_buffer(1024, reason="x", env_path=env_path)
     # SF-1: restart failed -> env rolled back so the persisted file never leads
     # the running daemon. File was absent before -> rollback restores absence.
     assert r.ok is False
@@ -162,17 +161,17 @@ def test_shrink_restart_failure_restores_prior_content(env_path, monkeypatch):
         "jasper.control.restart_broker.manage_units",
         lambda *a, **k: {"ok": False, "error": "broker down"},
     )
-    r = br.set_fanin_output_buffer(1536, reason="x", env_path=env_path)
+    r = br.set_fanin_output_buffer(1024, reason="x", env_path=env_path)
     assert r.ok is False
     text = env_path.read_text()
-    # Rolled back to the prior 3072 value + the sibling key preserved; NOT 1536.
+    # Rolled back to the prior 3072 value + the sibling key preserved; NOT 1024.
     assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072" in text
-    assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536" not in text
+    assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024" not in text
     assert "JASPER_FANIN_INPUT_BUFFER_FRAMES=4096" in text
 
 
 def test_restore_restart_failure_rolls_back_override(env_path, monkeypatch):
-    env_path.write_text("JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536\n")
+    env_path.write_text("JASPER_FANIN_OUTPUT_BUFFER_FRAMES=2048\n")
     monkeypatch.setattr(
         "jasper.control.restart_broker.manage_units",
         lambda *a, **k: {"ok": False, "error": "broker down"},
@@ -182,7 +181,7 @@ def test_restore_restart_failure_rolls_back_override(env_path, monkeypatch):
     # shrunk override (still ahead of nothing, but matches the daemon which is
     # still running the shrunk value). Caller keeps _buffer_shrunk + retries.
     assert r.ok is False
-    assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536" in env_path.read_text()
+    assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=2048" in env_path.read_text()
 
 
 # ----------------------------------------------------- SF-2: import fail-soft
@@ -198,7 +197,7 @@ def test_shrink_restart_broker_import_failure_is_fail_soft(env_path, monkeypatch
         return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    r = br.set_fanin_output_buffer(1536, reason="x", env_path=env_path)
+    r = br.set_fanin_output_buffer(1024, reason="x", env_path=env_path)
     assert r.ok is False
     assert r.restarted is False
     assert "restart_broker unavailable" in r.detail
@@ -210,8 +209,8 @@ def test_shrink_restart_broker_import_failure_is_fail_soft(env_path, monkeypatch
 
 def test_read_output_buffer_roundtrip(env_path, stub_broker):
     assert br.read_output_buffer(env_path) is None
-    br.set_fanin_output_buffer(1536, reason="x", env_path=env_path)
-    assert br.read_output_buffer(env_path) == 1536
+    br.set_fanin_output_buffer(1024, reason="x", env_path=env_path)
+    assert br.read_output_buffer(env_path) == 1024
 
 
 def test_read_output_buffer_malformed_is_none(env_path):
@@ -232,7 +231,7 @@ def test_shrunk_target_honors_valid_override(monkeypatch):
 
 
 def test_shrunk_target_below_floor_falls_back_to_floor(monkeypatch):
-    monkeypatch.setenv("JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES", "1024")
+    monkeypatch.setenv("JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES", "512")
     assert br.shrunk_target_frames() == br.MIN_OUTPUT_BUFFER_FRAMES
 
 

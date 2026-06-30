@@ -21,6 +21,10 @@ renderer → snd-aloop fan-in ring → jasper-fanin → (capture) → CamillaDSP
 
 - The **fan-in input ring** (~85 ms) is the WiFi-burst absorber — load-bearing
   for networked sources (AirPlay/Spotify), *not* needed by a wired USB source.
+- The **fan-in output queue** is fixed downstream latency. As of the
+  2026-06-29 JTS2 retune, the loopback-path production floor is 1024 frames
+  (~21.3 ms at 48 kHz). A 512-frame trial failed fast with fan-in output
+  xruns, so sub-1024 remains lab-only.
 - **CamillaDSP** owns `chunksize` / `target_level` (config-baked in
   [`jasper/camilla_config_contract.py`](../jasper/camilla_config_contract.py)).
 - **jasper-outputd** is the final-output owner: a blocking DAC write is the
@@ -156,6 +160,33 @@ the leave-lean ladder (`restore_buffered_config` re-emits the buffered config
 from saved intent — restore ALWAYS succeeds by construction — then disarms the
 FIFO; NO-OP fast path when not on the lean config).
 
+## Current JTS2 low-latency AirPlay budget (2026-06-29)
+
+JTS2's live low-latency Apple-dongle path after the DAC-floor retune:
+
+| Segment | Frames | Time @ 48 kHz |
+|---|---:|---:|
+| CamillaDSP target above chunk (`1536 - 256`) | 1280 | 26.7 ms |
+| fan-in output queue | 1024 | 21.3 ms |
+| outputd DAC buffer | 512 | 10.7 ms |
+| **Configured downstream delay** | **2816** | **58.7 ms** |
+
+That is the value shairport compensates:
+`audio_backend_latency_offset_in_seconds = -0.058667`.
+
+The live outputd STATUS on the same run reported DAC presentation delay around
+20.7-21.3 ms. If you use that measured presentation counter instead of the
+configured 512-frame DAC queue, the end-to-DAC estimate is about 68.7-69.3 ms.
+Keep the two numbers separate: the shairport offset is configured from the
+known downstream buffers, while the STATUS counter includes the live ALSA/DAC
+presentation sample.
+
+Audio stability evidence is not A/V sync evidence. The 1024-frame fan-in output
+queue had clean audio counters, but computer-video AirPlay still showed
+lip-sync problems by user observation. Do not call the AirPlay video path done
+until it has a dedicated A/V measurement or Apple-side Wireless Audio Sync
+calibration pass.
+
 ## Stage 7 — fan-in → CamillaDSP FIFO coupling (the SHARED-capture endgame)
 
 The lean lane (Stage 4) bypasses the fan-in **mixer** entirely for a single
@@ -259,7 +290,10 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-06-27 (4b-iv live lane-switch shipped default-OFF:
+Last verified: 2026-06-29 (JTS2 low-latency Apple-dongle AirPlay budget
+documented: configured downstream delay 58.7 ms at Camilla 256/1536,
+fan-in output 1024, outputd DAC 512; 512-frame fan-in output failed fast.
+2026-06-27 4b-iv live lane-switch shipped default-OFF:
 carrier-preserved `apply_lean_capture_config` / `restore_buffered_config`,
 the `output_mode_reconcile` runtime FIFO arm, and the `Mux._tick`
 enter/leave-lean ladders — all hardware-free-tested; 24 h on-device soak owed

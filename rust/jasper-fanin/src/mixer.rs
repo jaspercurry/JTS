@@ -68,6 +68,9 @@ pub const CHANNELS: u32 = 2;
 /// daemon.
 pub const FORMAT: Format = Format::S16LE;
 
+/// Sentinel for "no ALSA playback delay sample has landed yet".
+pub const OUTPUT_DELAY_UNAVAILABLE: u64 = u64::MAX;
+
 /// Per-input catch-up target, in WHOLE periods. The fill we want a lane's
 /// capture ring to sit at right before the per-period read. One period is
 /// the steady state for a lane clocked off the local DAC (its producer and
@@ -146,6 +149,9 @@ pub struct Mixer {
     pub frames_written: Arc<AtomicU64>,
     /// Cumulative output xrun events.
     pub output_xrun_count: Arc<AtomicU64>,
+    /// Last observed ALSA playback delay for the primary output PCM.
+    /// `OUTPUT_DELAY_UNAVAILABLE` until the first successful sample.
+    pub output_delay_frames: Arc<AtomicU64>,
     /// Selected input index. -1 means auto/mix all active inputs;
     /// -2 means pass no renderer lanes; non-negative means pass only
     /// that source's lane. The correction/test lane is always mixed so
@@ -356,6 +362,7 @@ impl Mixer {
             content_meter_buf: vec![0i16; period_samples],
             frames_written: Arc::new(AtomicU64::new(0)),
             output_xrun_count: Arc::new(AtomicU64::new(0)),
+            output_delay_frames: Arc::new(AtomicU64::new(OUTPUT_DELAY_UNAVAILABLE)),
             selected_input_index: Arc::new(AtomicI32::new(-2)),
             xrun_tx,
             period_frames: config.period_frames,
@@ -526,6 +533,7 @@ impl Mixer {
                     &self.output_xrun_count,
                     &self.xrun_tx,
                 )?;
+                store_output_delay(pcm, &self.output_delay_frames);
                 self.frames_written
                     .fetch_add(self.period_frames as u64, Ordering::Relaxed);
             }
@@ -545,6 +553,12 @@ impl Mixer {
             }
         }
         Ok(())
+    }
+}
+
+fn store_output_delay(pcm: &PCM, delay_frames: &AtomicU64) {
+    if let Ok(delay) = pcm.delay() {
+        delay_frames.store(delay.max(0) as u64, Ordering::Relaxed);
     }
 }
 

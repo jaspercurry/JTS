@@ -39,6 +39,14 @@ def _pcm_block(text: str, name: str) -> str:
     return tail
 
 
+def _line_value(text: str, key: str) -> str:
+    prefix = f"{key}="
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):]
+    return ""
+
+
 def test_asoundrc_has_no_legacy_renderer_dmix():
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     assert not re.search(r"^pcm\.jasper_renderer_mix\s*\{", rc, re.MULTILINE)
@@ -108,6 +116,18 @@ def test_renderer_units_soft_depend_on_fanin():
         text = path.read_text()
         assert "After=" in text
         assert "jasper-fanin.service" in text
+
+
+def test_shairport_orders_after_outputd_for_live_latency_offset():
+    """AirPlay's rendered offset should usually see outputd STATUS at boot.
+
+    The renderer still falls back if outputd parks, but ordering shairport
+    after outputd lets jasper-apply-airplay-mode use outputd's live
+    snd_pcm_delay in the normal boot path.
+    """
+    text = (REPO / "deploy" / "systemd" / "shairport-sync.service").read_text()
+    assert "jasper-outputd.service" in _line_value(text, "After")
+    assert "jasper-outputd.service" in _line_value(text, "Wants")
 
 
 def test_shairport_template_keeps_renderer_placeholder():

@@ -424,21 +424,34 @@ def test_deploy_manifest_gate_checks_verified_status_and_sha():
     assert "exit 1" in body  # a non-advanced manifest fails the deploy
 
 
-def test_deploy_production_oom_is_surfaced_not_gated_on_success():
-    """A production-daemon OOM during the build is SURFACED loudly, but a
-    daemon systemd already restarted must NOT fail an otherwise-healthy
-    deploy (the inverse false-failure trap). Pass/fail is owned by the
-    end-state gates (management probe + verify_manifest_advanced); the OOM
-    is history. So OOM_PRODUCTION_HIT may be referenced in the scan and the
-    install-FAILURE block, but never in a success-path exit gate. The
-    success path begins at the "Build manifest now on Pi" marker."""
+def test_deploy_production_oom_is_gated_after_end_state_evidence():
+    """A production-daemon OOM during deploy is SURFACED loudly and then
+    fails verification after the end-state gates have run. That keeps the
+    transcript useful while preventing a deploy that killed a live service
+    from looking merge-clean just because systemd restarted it."""
     text = _DEPLOY_TO_PI.read_text()
     assert "report_oom_collateral" in text  # surfacing happens
     success_path = text[text.index("Build manifest now on Pi"):]
-    assert "OOM_PRODUCTION_HIT" not in success_path, (
-        "a production-OOM that recovered must not gate an otherwise-healthy "
-        "deploy — surface it, let the management-probe + manifest gates decide"
+    assert "verify_manifest_advanced" in success_path
+    assert "surface_system_health" in success_path
+    assert 'if [[ "$OOM_PRODUCTION_HIT" == "1" ]]' in success_path
+    assert "DEPLOY VERIFICATION FAILED: a live production daemon was" in success_path
+    assert success_path.index("surface_system_health") < success_path.index(
+        'if [[ "$OOM_PRODUCTION_HIT" == "1" ]]'
     )
+
+
+def test_deploy_post_health_uses_lightweight_probe_on_low_memory_hosts():
+    """The post-deploy doctor runs after install.sh has removed temporary
+    build swap. On a 1 GB Pi we use a cheap deploy-health probe instead of
+    importing the full doctor graph beside freshly restarted services."""
+    text = _DEPLOY_TO_PI.read_text()
+    start = text.index("surface_system_health() {")
+    body = text[start: text.index("\n}", start)]
+    assert "MemTotal" in body
+    assert "1200000" in body
+    assert "jasper-deploy-health" in body
+    assert "/opt/jasper/.venv/bin/jasper-doctor" in body
 
 
 def test_deploy_verification_skipped_cleanly_under_interactive_sudo():

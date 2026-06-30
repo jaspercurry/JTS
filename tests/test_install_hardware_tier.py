@@ -67,9 +67,9 @@ def _detect(
     "mem_kb,expected_tier",
     [
         (524288, "low"),        # 512 MB Zero 2 W
-        (786431, "low"),        # just under the 768 MB Rust threshold
-        (786432, "constrained"),  # exactly 768 MB
-        (1014784, "constrained"),  # ~991 MB — the jts2 box that OOM'd
+        (1014784, "low"),  # ~991 MB — the jts2 box that OOM'd
+        (1199999, "low"),  # just under the Rust low-memory threshold
+        (1200000, "constrained"),  # exactly the threshold
         (2097151, "constrained"),  # just under 2 GB
         (2097152, "standard"),  # exactly 2 GB ("2GB recommended" Pi 5)
         (8388608, "standard"),  # 8 GB Pi 5
@@ -144,7 +144,7 @@ def test_preflight_passes_on_arm64_and_logs_tier(tmp_path):
     r = _run_preflight("aarch64", allow=False, tmp_path=tmp_path)
     assert r.returncode == 0, r.stderr
     assert "hardware tier:" in r.stdout
-    assert "tier=constrained" in r.stdout
+    assert "tier=low" in r.stdout
 
 
 def test_preflight_aborts_on_unsupported_arch(tmp_path):

@@ -236,6 +236,27 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("/home/alice/jts/deploy/install.sh", calls)
         self.assertNotIn("SSH -tt", calls)
 
+    def test_deploy_forwards_documented_build_sandbox_knobs(self):
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            JASPER_BUILD_SANDBOX_OOM_SCORE_ADJ="0",
+            JASPER_BUILD_SANDBOX_MEMORY_HIGH="900M",
+            JASPER_BUILD_SWAP_SIZE_MB="3072",
+            JASPER_RUST_LOW_MEMORY_BUILD="1",
+        )
+
+        calls = fake.calls()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("JASPER_BUILD_SANDBOX_OOM_SCORE_ADJ=0", calls)
+        self.assertIn("JASPER_BUILD_SANDBOX_MEMORY_HIGH=900M", calls)
+        self.assertIn("JASPER_BUILD_SWAP_SIZE_MB=3072", calls)
+        self.assertIn("JASPER_RUST_LOW_MEMORY_BUILD=1", calls)
+
     def test_interactive_sudo_fallback_uses_tty_without_password_plumbing(self):
         fake = FakeRemote(self)
         result = self.run_deploy(
