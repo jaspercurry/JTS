@@ -35,6 +35,39 @@ renderer → snd-aloop fan-in ring → jasper-fanin → (capture) → CamillaDSP
   ~16 ms reliable on both the HiFiBerry DAC8x and the Apple dongle — *not* the
   bottleneck.
 
+## Runtime-plan SSOT layer (2026-06-30)
+
+The latency knobs now have a read-only explanation layer:
+[`jasper.audio_runtime_plan`](../jasper/audio_runtime_plan.py). It resolves the
+planned values from **operator env → DAC profile floor → packaged default** for
+Camilla/outputd, and from **fanin.env → packaged fan-in default** for fan-in
+buffer/coupling knobs, while reporting duplicate homes, malformed lab values,
+stale generated env, and unsupported route/coupling combinations.
+
+Temporary lab frame/buffer values belong in
+`/var/lib/jasper/audio_runtime_overrides.json`, not `/etc/jasper/jasper.env`.
+Manage them with `jasper-audio-config overrides-set|overrides-list|overrides-clear`.
+Each override has a reason and may have an expiry; expired/invalid entries are
+ignored and surfaced as plan/doctor warnings. Valid numeric overrides
+intentionally win over operator env/profile/defaults so experiments are explicit
+and auditable. Fan-in coupling is intentionally not overrideable here: switching
+`JASPER_FANIN_CAMILLA_COUPLING` needs the ordered
+`jasper-fanin-coupling-reconcile` transition.
+
+Operator surface: `jasper-audio-config explain [--json]`.
+Health surface: `jasper-doctor` includes `audio runtime plan` before the
+lower-level fan-in coupling check. Writer / routing surfaces already consuming the plan:
+the audio-hardware reconciler asks `jasper-audio-config outputd-floor-actions`
+for `/var/lib/jasper/outputd.env` latency-floor set/unset decisions, and
+`jasper.fanin.buffer_reconcile` / `jasper.fanin.coupling_reconcile` ask the
+plan for fan-in output-buffer set/unset/floor decisions, adaptive lab target,
+and coupling route-support policy. Mux's lean-lane and adaptive-buffer consumers
+share the plan's `decide_source_low_latency_route` source-exclusivity decision,
+and `jasper.usbsink.output_mode_reconcile` asks the plan for the
+`JASPER_USBSINK_OUTPUT_MODE` env action. Other reconcilers still write their
+existing env files; move those decisions behind the plan as the next migration
+steps.
+
 ## The lean lane (Stage 4)
 
 The lean lane is the low-latency music path for a **single, exclusive, wired**
@@ -127,10 +160,10 @@ the path: `DEFAULT_LEAN_CAPTURE_FIFO` (`/run/jasper-usbsink/lean.pipe`).
 | 0 | snapcast bond buffer routed via `--stream.buffer` (was an inert URL param; bonds silently ran the 1000 ms default) | shipped |
 | 2 | USB-bridge latency knobs (`JASPER_USBSINK_{QUEUE_MAXBLOCKS,LATENCY,BLOCK_FRAMES}`) | shipped, on-device tuning owed |
 | 4a | File-capture CamillaDSP emitter + fail-loud guards (stereo + active) | shipped, default-OFF |
-| 4b-i | `decide_lean_route` pure routing policy ([`jasper/lean_lane.py`](../jasper/lean_lane.py)) | shipped, unwired |
-| 4b-ii | usbsink FIFO-output mode (`JASPER_USBSINK_OUTPUT_MODE=fifo`) | shipped, default-OFF |
+| 4b-i | `decide_source_low_latency_route` shared source policy ([`jasper.audio_runtime_plan`](../jasper/audio_runtime_plan.py)); `decide_lean_route` remains a Stage-4 wrapper ([`jasper/lean_lane.py`](../jasper/lean_lane.py)) | shipped, wired to mux consumers |
+| 4b-ii | usbsink FIFO-output mode (`JASPER_USBSINK_OUTPUT_MODE=fifo`; env action owned by `jasper.audio_runtime_plan.usbsink_output_mode_action`) | shipped, default-OFF |
 | 4b-iii | stage + validate + classify the lean config (`jasper.sound.runtime.stage_lean_capture_config`) — emit + `--check` + `classify_camilla_graph`, **no live-load** | shipped, default-OFF |
-| 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim, [`jasper.sound.runtime.apply_lean_capture_config`](../jasper/sound/runtime.py)), arm the usbsink FIFO output at runtime ([`jasper.usbsink.output_mode_reconcile`](../jasper/usbsink/output_mode_reconcile.py) → writes `JASPER_USBSINK_OUTPUT_MODE` to `/var/lib/jasper/usbsink.env` + restarts via the broker), and swap/restore via mux `_tick` (`decide_lean_route` → `Mux._enter_lean`/`_leave_lean` ladders, fail-loud → buffered) | shipped, default-OFF, **24 h soak owed** |
+| 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim, [`jasper.sound.runtime.apply_lean_capture_config`](../jasper/sound/runtime.py)), arm the usbsink FIFO output at runtime ([`jasper.usbsink.output_mode_reconcile`](../jasper/usbsink/output_mode_reconcile.py) → writes `JASPER_USBSINK_OUTPUT_MODE` to `/var/lib/jasper/usbsink.env` + restarts via the broker), and swap/restore via mux `_tick` (shared source-route decision → `Mux._enter_lean`/`_leave_lean` ladders, fail-loud → buffered) | shipped, default-OFF, **24 h soak owed** |
 | 5 | shairport-sync built `--with-pipe` (capable binary; runtime AirPlay pipe lane is future, #1318-gated) | shipped, dormant |
 | 6 | `jasper-doctor` DAC USB sync-mode advisory (clock-coherence signal, *not* the chip-AEC gate) | shipped |
 | 7 | **fan-in → CamillaDSP FIFO coupling** (`JASPER_FANIN_CAMILLA_COUPLING=fifo`) — the SHARED-capture endgame: fan-in writes a bounded pipe, CamillaDSP File-captures it; transport ([`jasper/fanin/src/fifo.rs`](../rust/jasper-fanin/src/fifo.rs)) + flag ([`jasper/fanin/src/config.rs`](../rust/jasper-fanin/src/config.rs) `Coupling`) + generator helper ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)) | shipped, default-OFF; capture-type `RawFile` fixed + `--check`-validated on jts5; ordered arm/disarm reconciler (`jasper-fanin-coupling-reconcile`) + doctor drift check; **24 h soak + real `<60 ms` USB measurement owed before default-on** |
@@ -152,13 +185,16 @@ ride along exactly like the durable `/sound` apply, then performs CamillaDSP's
 glitch-free `set_config_file_path` swap via `apply_dsp_config`. The lean lane is
 refused (typed `CarrierCannotHostEq`) on any non-solo-stereo-host graph
 (active / program-bake / unknown), so it can never collapse a roleful graph.
-`Mux._tick` calls `decide_lean_route` after the fan-in handoff settles (AUTO
-mode only; manual/test lanes route buffered) and runs the enter-lean ladder
-(arm FIFO → carrier-preserved config swap; fail-loud → disarm + buffered, with a
-per-episode re-arm block so a failure can't restart-storm the usbsink daemon) or
-the leave-lean ladder (`restore_buffered_config` re-emits the buffered config
-from saved intent — restore ALWAYS succeeds by construction — then disarms the
-FIFO; NO-OP fast path when not on the lean config).
+`Mux._tick` computes one shared source-route decision after the fan-in handoff
+settles (AUTO mode only; manual/test lanes route buffered). The lean consumer
+runs the enter-lean ladder (arm FIFO → carrier-preserved config swap; fail-loud
+→ disarm + buffered, with a per-episode re-arm block so a failure can't
+restart-storm the usbsink daemon) or the leave-lean ladder
+(`restore_buffered_config` re-emits the buffered config from saved intent —
+restore ALWAYS succeeds by construction — then disarms the FIFO; NO-OP fast path
+when not on the lean config). The adaptive-buffer consumer uses the same source
+decision to shrink/restore fan-in's output buffer, so the exclusive-USB policy no
+longer has two homes.
 
 ## Current JTS2 low-latency AirPlay budget (2026-06-29)
 
@@ -203,6 +239,17 @@ already uses). That trades the loopback ring for a ~3-period pipe (~21 ms @
 48 kHz S32). **Once it soaks, it supersedes BOTH the lean lane and the adaptive
 output-buffer shrink** — do NOT delete either yet (superseded *after* the soak,
 not before).
+
+**Active-leader grouping exception.** Do not arm FIFO coupling while a speaker is
+an active multiroom leader. The current active-leader program bake is a
+`File`→`SNAPFIFO` sink with `enable_rate_adjust: false` and intentionally keeps
+capturing the ALSA fan-in loopback; if fan-in writes the FIFO instead, camilla#1
+keeps reading the dead loopback and the pair goes silent. The guard is codified
+twice: `jasper.multiroom.active_leader_config.precheck_active_leader` refuses to
+form an active-leader bond while the persisted coupling is `fifo`, and
+`jasper.fanin.coupling_reconcile.reconcile_coupling` refuses/reverts a FIFO arm
+while the box is already an active leader. Keep such pairs on `loopback` until
+the grouped active-leader FIFO capture topology is explicitly designed.
 
 **Pacing.** The mixer loop is paced ENTIRELY by its final blocking write — there
 is no sleep in `run()`. The coupling swaps the blocking ALSA `writei` for a
@@ -290,7 +337,13 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-06-29 (JTS2 low-latency Apple-dongle AirPlay budget
+Last verified: 2026-06-30 (`jasper.audio_runtime_plan` / `jasper-audio-config
+explain` / `jasper-audio-config outputd-floor-actions` / `jasper-doctor`
+runtime-plan check added as the SSOT layer; numeric lab override artifact added
+while fan-in coupling remains ordered-reconciler-owned; audio-hardware, usbsink
+output-mode, and fan-in buffer / coupling writers plus mux low-latency source
+routing consume the plan; JTS2 low-latency
+Apple-dongle AirPlay budget
 documented: configured downstream delay 58.7 ms at Camilla 256/1536,
 fan-in output 1024, outputd DAC 512; 512-frame fan-in output failed fast.
 2026-06-27 4b-iv live lane-switch shipped default-OFF:

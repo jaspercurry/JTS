@@ -10,6 +10,8 @@ real (tmp file).
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from jasper.usbsink import output_mode_reconcile as omr
@@ -40,6 +42,13 @@ def test_arm_fifo_writes_env_and_restarts(env_path, stub_broker):
     assert env_path.read_text().strip() == "JASPER_USBSINK_OUTPUT_MODE=fifo"
     # Restarted the usbsink unit.
     assert stub_broker == [((omr.USBSINK_UNIT,), "restart", "lean_enter")]
+
+
+def test_reconciler_gets_output_mode_action_from_runtime_plan() -> None:
+    source = Path(omr.__file__).read_text(encoding="utf-8")
+
+    assert "usbsink_output_mode_action" in source
+    assert "_VALID_MODES" not in source
 
 
 def test_arm_invalid_mode_is_rejected_without_write(env_path, stub_broker):

@@ -11,6 +11,8 @@ and SF-2 fail-soft import are pinned here.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from jasper.fanin import buffer_reconcile as br
@@ -45,6 +47,13 @@ def test_shrink_writes_env_and_restarts(env_path, stub_broker):
     assert r.frames == 1024
     assert env_path.read_text().strip() == "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024"
     assert stub_broker == [((br.FANIN_UNIT,), "restart", "adaptive_usb_exclusive")]
+
+
+def test_reconciler_gets_buffer_actions_from_runtime_plan():
+    source = Path(br.__file__).read_text(encoding="utf-8")
+
+    assert "fanin_output_buffer_action" in source
+    assert "resolve_fanin_output_buffer_target" in source
 
 
 def test_shrink_unchanged_skips_restart(env_path, stub_broker):

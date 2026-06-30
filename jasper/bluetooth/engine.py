@@ -313,11 +313,23 @@ class BluetoothEngine:
             return False, _format_dbus_error(e)
 
     async def forget(self, mac: str) -> tuple[bool, str]:
-        """Remove the device from bluez (clears pair, link key, etc.)
-        and our role map."""
+        """Remove a known device from bluez.
+
+        This clears pair/link-key state for paired devices and also removes
+        stale BLE cache records for devices that are connected/trusted but no
+        longer paired.
+        """
         from .adapter import remove_device
 
         ok, msg = await remove_device(mac, self._adapter)
+        log_event(
+            logger,
+            "bluetooth.device_forget",
+            address=mac,
+            ok=ok,
+            message=msg,
+            level=logging.INFO if ok else logging.WARNING,
+        )
         if ok:
             self._roles.remove(mac)
             if not await self._reconcile_accessories("bluetooth-forget"):

@@ -1255,6 +1255,15 @@ def test_reconcile_apple_emits_codified_latency_floor(tmp_path: Path):
     ) in result.stderr
 
 
+def test_reconciler_gets_latency_floor_actions_from_runtime_plan() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert "jasper.cli.audio_config" in text
+    assert "outputd-floor-actions" in text
+    assert "latency_floor_for_dac()" not in text
+    assert "from jasper.audio_hardware.dac import latency_floor_for" not in text
+
+
 def _outputd_env_key_present(outputd_env: str, key: str) -> bool:
     return any(
         re.match(rf"^\s*{re.escape(key)}\s*=", line)

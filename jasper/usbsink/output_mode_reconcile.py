@@ -38,16 +38,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.atomic_io import atomic_write_text
+from jasper.audio_runtime_plan import (
+    USBSINK_OUTPUT_MODE_KEY,
+    usbsink_output_mode_action,
+)
 from jasper.env_file import read_value, upsert
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
 USBSINK_ENV_PATH = "/var/lib/jasper/usbsink.env"
-OUTPUT_MODE_KEY = "JASPER_USBSINK_OUTPUT_MODE"
+OUTPUT_MODE_KEY = USBSINK_OUTPUT_MODE_KEY
 USBSINK_UNIT = "jasper-usbsink.service"
-
-_VALID_MODES = ("aloop", "fifo")
 
 
 @dataclass(frozen=True)
@@ -123,7 +125,9 @@ def set_output_mode(
     the caller's enter-lean ladder treats ``ok=False`` as "fall back to
     buffered".
     """
-    if mode not in _VALID_MODES:
+    try:
+        action = usbsink_output_mode_action(mode)
+    except ValueError as e:
         log_event(
             logger,
             "usbsink.output_mode_arm",
@@ -132,7 +136,7 @@ def set_output_mode(
             level=logging.ERROR,
         )
         return ArmResult(ok=False, changed=False, restarted=False, mode=mode,
-                         detail=f"invalid mode {mode!r}")
+                         detail=str(e))
 
     path = Path(env_path)
     file_existed = path.exists()
@@ -140,7 +144,8 @@ def set_output_mode(
         existing = path.read_text(encoding="utf-8")
     except OSError:
         existing = ""
-    new_text, changed = upsert(existing, OUTPUT_MODE_KEY, mode)
+    mode = action.value
+    new_text, changed = upsert(existing, action.key, action.value)
 
     if not changed:
         # Already at the requested mode. Nothing to write, nothing to

@@ -44,11 +44,13 @@ Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared
 
 ## What needs to be done (ordered)
 
-1. **Arm the lean lane through the mux ladder, not raw env.** Wire `decide_lean_route`
-   (`jasper/lean_lane.py`) + `JASPER_LEAN_LANE=enabled` so the mux flips USB→lean-fifo
-   when USB is solo and back to the shared mixer when another source or TTS starts
-   (solo-gated, fail-loud→buffered). The pieces exist (tasks 4b-ii/iii/iv); validate the
-   live switch end-to-end and the TTS-while-solo handoff.
+1. **Arm the lean lane through the mux ladder, not raw env.** DONE: mux now
+   computes one shared source-route decision from
+   `jasper.audio_runtime_plan.decide_source_low_latency_route`; the lean lane
+   (`JASPER_LEAN_LANE=enabled`) and adaptive fan-in buffer consume that same
+   USB-solo verdict. The compatibility wrapper `jasper.lean_lane.decide_lean_route`
+   still returns the old `lean`/`buffered` vocabulary for Stage-4 tests. Validate
+   the live switch end-to-end and the TTS-while-solo handoff before default-on.
 2. **Drive the camilla side via the existing lean-config path** (`jasper/usbsink/
    output_mode_reconcile.py` + the lean RawFile capture in `jasper/camilla_config_contract.py`
    — RawFile, not File; the jts5 fix). Confirm `--check` valid and no crash-loop.
@@ -59,7 +61,7 @@ Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared
    The shipped *global* default stays conservative — CamillaDSP chunk 1024 / target 2048,
    outputd period 1024 / dac_buffer 3072 (~64 ms) — and any DAC with no declared floor
    keeps it (non-breaking). The **Apple-dongle profile** declares the measured floor
-   CamillaDSP chunk 256 / target 1024, outputd period 256 / dac_buffer 512 (≈ 20.7 ms),
+   CamillaDSP chunk 256 / target 1536, outputd period 256 / dac_buffer 512 (≈ 20.7 ms),
    the value the jts.local `jasper.env` override previously produced by hand. The floor is
    a CamillaDSP (chunksize, target_level) PAIR — target must be ≥ 4x chunk so the resampler
    has fill headroom (chunk 256 → target 1024), enforced in `LatencyFloor.__post_init__`.
@@ -105,5 +107,7 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-06-29 (#27 latency-floor codification: emitters wired to the
-active profile floor end-to-end; operator-override precedence corrected)
+Last verified: 2026-06-30 (mux lean/adaptive consumers now share
+`jasper.audio_runtime_plan.decide_source_low_latency_route`; #27 latency-floor
+codification still wired to the active profile floor end-to-end with
+operator-override precedence corrected)

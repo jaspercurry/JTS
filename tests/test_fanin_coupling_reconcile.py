@@ -60,6 +60,52 @@ def test_arm_orders_fanin_before_camilla(tmp_path):
     assert read_persisted_coupling(env) == "fifo"
 
 
+def test_coupling_reconciler_gets_env_action_from_runtime_plan():
+    import jasper.fanin.coupling_reconcile as cr
+
+    source = Path(cr.__file__).read_text(encoding="utf-8")
+
+    assert "fanin_coupling_action" in source
+
+
+def test_arm_fifo_refused_for_active_leader_keeps_loopback(tmp_path):
+    env = tmp_path / "fanin.env"  # absent file => loopback today
+    calls, rf, rc = _recorder()
+    res = reconcile_coupling(
+        "fifo",
+        reason="t",
+        env_path=env,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: True,
+    )
+    assert res.ok is False
+    assert res.direction == "blocked"
+    assert res.changed is False
+    assert calls == []
+    assert read_persisted_coupling(env) == "loopback"
+
+
+def test_existing_fifo_recovers_to_loopback_for_active_leader(tmp_path):
+    env = _write(tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}=fifo\n")
+    calls, rf, rc = _recorder()
+    res = reconcile_coupling(
+        "fifo",
+        reason="t",
+        env_path=env,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: True,
+    )
+    assert res.ok is False
+    assert res.direction == "blocked"
+    assert res.changed is True
+    assert res.recovered is True
+    # Recovery uses the safe disarm order: Camilla leaves RawFile before fan-in.
+    assert calls == ["camilla:loopback", "fanin"]
+    assert read_persisted_coupling(env) == "loopback"
+
+
 def test_disarm_orders_camilla_before_fanin(tmp_path):
     env = _write(tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}=fifo\n")
     calls, rf, rc = _recorder()
