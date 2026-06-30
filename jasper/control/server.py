@@ -700,6 +700,7 @@ async def _get_state(
     camilla_host: str,
     camilla_port: int,
     voice_socket_path: str,
+    ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return await _state_aggregate._get_state(
         camilla_host=camilla_host,
@@ -712,6 +713,7 @@ async def _get_state(
         dial_heartbeat=_dial_heartbeat,
         dial_probe=_probe_dial_reachable,
         read_transit_state_func=read_transit_state,
+        ha_status_snapshot=ha_status_snapshot,
     )
 
 
@@ -1275,6 +1277,7 @@ def _make_handler(
     voice_socket_path: str,
     sampler: Any = None,
     airplay_health_sampler: Any = None,
+    ha_status_cache: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
 
     # One probe instance per handler — it's stateless (just closes
@@ -1283,6 +1286,10 @@ def _make_handler(
     # camilla), but passing None there keeps the construction uniform.
     duck_active_probe = _make_duck_active_probe(voice_socket_path)
     state_response_cache = _SingleFlightTTLCache(STATE_RESPONSE_CACHE_TTL_SEC)
+    if ha_status_cache is None:
+        from .ha_status_cache import HomeAssistantStatusCache
+
+        ha_status_cache = HomeAssistantStatusCache()
 
     async def _set_op(percent: int):
         async def _op(coord):
@@ -1757,6 +1764,7 @@ def _make_handler(
                         camilla_host=camilla_host,
                         camilla_port=camilla_port,
                         voice_socket_path=voice_socket_path,
+                        ha_status_snapshot=ha_status_cache.snapshot,
                     )),
                 )
             except Exception as e:  # noqa: BLE001
@@ -1806,22 +1814,15 @@ def _make_handler(
             # Sampler may be None in tests / direct CLI invocation;
             # surface an empty history rather than 500.
             from .system_metrics import read_build_info
-            from .. import home_assistant as _ha_mod
             from ..speaker_name import read_state as _read_speaker_name_state
             from ..voice.provider_state import read_active_provider
 
-            # HA probe is async + slow-ish (~50-200 ms typical against
-            # a healthy local HA, fails fast on unreachable). Run it
-            # via asyncio.run so the rest of /system/snapshot stays
-            # synchronous like the existing handler.
             try:
-                # Same env-file-direct read as /state.home_assistant
-                # above — wizard saves must reflect immediately in the
-                # dashboard without restarting jasper-control.
-                ha_status = asyncio.run(_ha_mod.probe_status_from_env())
+                ha_status = ha_status_cache.snapshot()
             except Exception:  # noqa: BLE001
                 # Fail-soft per the existing aggregator convention —
                 # never break /system/snapshot because HA is wedged.
+                logger.exception("home assistant status snapshot failed")
                 ha_status = {
                     "configured": False, "connected": False, "url": "",
                     "instance_name": None, "version": None,

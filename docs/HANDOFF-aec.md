@@ -46,8 +46,9 @@ On the recommended 6-channel XVF3800 shape plus an approved output-DAC
 gate, `auto` resolves to `xvf_chip_aec`: `jasper-outputd`
 fans out the final speaker buffer to the XVF USB-IN reference,
 `jasper-aec-init` applies the volatile 150°/210° ASR beam profile, and
-`jasper-aec-bridge` forwards the chip beam to `:9876` while exposing
-`:9887`/`:9888` scoring legs. Software AEC3 remains the fallback profile
+`jasper-aec-bridge` forwards the primary/session chip beam to `:9876`.
+Optional extra wake/scoring beams on `:9887`/`:9888` are custom opt-ins, not
+part of the default chip-AEC profile. Software AEC3 remains the fallback profile
 (`xvf_software_aec3`) when chip-AEC is unavailable, the output DAC still
 needs calibration, or software AEC3 is explicitly selected. To validate a
 new output DAC without promoting it to production, select
@@ -98,6 +99,18 @@ instantiated. Operator surfaces expose this as `software_aec3.bypassed=true`;
 turning off the software-AEC3 layer must not stop the chip-AEC carrier. To
 stop the carrier entirely, choose the `direct_mic` profile.
 
+The chip-AEC profile's default wake surface is deliberately one detector:
+the primary/session beam (`JASPER_MIC_DEVICE=udp:9876`, wake leg `on`).
+The 150-degree and 210-degree chip beams are advanced custom opt-ins via
+`JASPER_WAKE_LEG_CHIP_AEC_150=1` and
+`JASPER_WAKE_LEG_CHIP_AEC_210=1`; only then does the reconciler publish
+`JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887` or
+`JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888`. Selecting any named profile
+resets those optional beams to `0`; `custom` preserves them. This ties active
+wake-word instances to the audio-processing channels the reconciler actually
+applied, which avoids hidden extra Silero/openWakeWord model instances on
+chip-AEC hardware.
+
 `/aec` separates saved intent from applied runtime truth. `raw_intent` mirrors
 `/var/lib/jasper/aec_mode.env`; active fields such as `mode`, `bridge_role`,
 `software_aec3`, `legs`, `audio_profile.active`, and `/wake/`'s
@@ -123,7 +136,7 @@ sudo systemctl start jasper-aec-reconcile
 To return to auto mode:
 
 ```sh
-printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\n' | sudo tee /var/lib/jasper/aec_mode.env
+printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_WAKE_LEG_CHIP_AEC_150=0\nJASPER_WAKE_LEG_CHIP_AEC_210=0\n' | sudo tee /var/lib/jasper/aec_mode.env
 sudo systemctl start jasper-aec-reconcile
 ```
 
@@ -2667,10 +2680,14 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-06-26 (`/aec` intent-vs-applied-runtime status contract
-rechecked against `jasper/audio_profile_state.py`,
-`jasper/control/aec_endpoints.py`, and `tests/test_control_aec_state.py`.
-Prior pass 2026-06-25: central chip-AEC DAC gate, `xvf_chip_aec_testing`,
-profile-managed XVF mic-card derivation, and the chip-AEC bridge-carrier /
-software-AEC3-bypass distinction rechecked against the reconciler, `/aec`,
-doctor, and validation paths).
+Last verified: 2026-06-30 (chip-AEC one-detector default and optional
+150/210 beam opt-ins rechecked against `jasper/audio_profile_state.py`,
+`deploy/bin/jasper-aec-reconcile`, `jasper/cli/aec_bridge.py`,
+`jasper/control/aec_endpoints.py`, `/wake/`, doctor, validation, and
+reconcile tests. Prior pass 2026-06-26: `/aec`
+intent-vs-applied-runtime status contract rechecked against
+`jasper/audio_profile_state.py`, `jasper/control/aec_endpoints.py`, and
+`tests/test_control_aec_state.py`. Prior pass 2026-06-25: central chip-AEC
+DAC gate, `xvf_chip_aec_testing`, profile-managed XVF mic-card derivation,
+and the chip-AEC bridge-carrier / software-AEC3-bypass distinction rechecked
+against the reconciler, `/aec`, doctor, and validation paths).

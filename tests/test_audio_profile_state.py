@@ -32,8 +32,6 @@ def test_chip_aec_active_requires_bridge_firmware_and_runtime_env():
         RuntimeAecEnv(
             primary_device="udp:9876",
             chip_enabled=True,
-            chip_aec_150_device="udp:9887",
-            chip_aec_210_device="udp:9888",
         ),
         MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
         bridge_active=True,
@@ -50,12 +48,54 @@ def test_chip_aec_active_requires_bridge_firmware_and_runtime_env():
         "validation_profile": "xvf_chip_aec",
     }
     assert status["microphone"]["processing_mode"] == "Chip-AEC"
+    assert status["microphone"]["wake_legs"] == ["Primary chip beam"]
+    assert status["microphone"]["warnings"] == []
+
+
+def test_chip_aec_active_reports_explicit_extra_wake_beams():
+    status = build_audio_profile_status(
+        AecIntent(
+            mode="auto",
+            chip_aec_enabled=True,
+            chip_aec_150_enabled=True,
+            chip_aec_210_enabled=True,
+        ),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            chip_enabled=True,
+            chip_aec_150_device="udp:9887",
+            chip_aec_210_device="udp:9888",
+        ),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=True,
+        chip_available=True,
+    )
+
     assert status["microphone"]["wake_legs"] == [
         "Primary chip beam",
         "Chip AEC 150",
         "Chip AEC 210",
     ]
-    assert status["microphone"]["warnings"] == []
+
+
+def test_chip_aec_extra_wake_beams_are_runtime_owned():
+    status = build_audio_profile_status(
+        AecIntent(
+            mode="auto",
+            chip_aec_enabled=True,
+            chip_aec_150_enabled=True,
+            chip_aec_210_enabled=True,
+        ),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            chip_enabled=True,
+        ),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=True,
+        chip_available=True,
+    )
+
+    assert status["microphone"]["wake_legs"] == ["Primary chip beam"]
 
 
 def test_chip_aec_request_reports_runtime_software_until_chip_applied():
@@ -182,6 +222,8 @@ def test_auto_profile_resolves_to_chip_aec_when_available():
     assert intent.raw_enabled is False
     assert intent.dtln_enabled is False
     assert intent.chip_aec_enabled is True
+    assert intent.chip_aec_150_enabled is False
+    assert intent.chip_aec_210_enabled is False
 
 
 def test_auto_profile_falls_back_to_software_aec3_when_chip_unavailable():
@@ -194,6 +236,8 @@ def test_auto_profile_falls_back_to_software_aec3_when_chip_unavailable():
     assert intent.raw_enabled is True
     assert intent.dtln_enabled is False
     assert intent.chip_aec_enabled is False
+    assert intent.chip_aec_150_enabled is False
+    assert intent.chip_aec_210_enabled is False
 
 
 def test_profile_env_updates_stamp_rollback_safe_legacy_keys():
@@ -203,6 +247,8 @@ def test_profile_env_updates_stamp_rollback_safe_legacy_keys():
         "JASPER_WAKE_LEG_RAW": "0",
         "JASPER_WAKE_LEG_DTLN": "0",
         "JASPER_WAKE_LEG_CHIP_AEC": "1",
+        "JASPER_WAKE_LEG_CHIP_AEC_150": "0",
+        "JASPER_WAKE_LEG_CHIP_AEC_210": "0",
     }
     assert profile_env_updates("auto")["JASPER_WAKE_LEG_CHIP_AEC"] == "0"
 

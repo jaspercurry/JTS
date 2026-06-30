@@ -95,16 +95,12 @@ REGISTRY: tuple[LegSpec, ...] = (
     LegSpec("aec3", "on", 9876, LegKind.SOFTWARE_AEC, wake_input=True),
     LegSpec("chip_direct", "off", 9877, LegKind.CHIP_DSP, wake_input=True),
     LegSpec("dtln", "dtln", 9878, LegKind.NEURAL_AEC, wake_input=True),
-    # Hardware-conditional chip-AEC beam legs — the XVF3800's fixed 150°/
-    # 210° ASR beams. Promoted from corpus-only to opt-in, hardware-gated
-    # wake inputs: WakeLoop only builds a chip leg when its device var
+    # Hardware-conditional extra chip-AEC beam legs — the XVF3800's fixed
+    # 150°/210° ASR beams. WakeLoop only builds a chip leg when its device var
     # (cfg.mic_device_chip_aec_150/_210) is non-empty, which the AEC
-    # reconciler sets from JASPER_WAKE_LEG_CHIP_AEC only on 6-channel
-    # firmware. Default unset => not built => byte-identical to today on
-    # any install that hasn't opted in. The two beams come as a firmware-
-    # fixed pair; ports 9887/9888 + tokens are frozen (the wake-corpus
-    # recorder + analysis tooling key off them). See
-    # docs/HANDOFF-mic-fusion-architecture.md §2.4 + docs/CHIP-AEC-EXPERIMENT.md.
+    # reconciler sets from the matching per-beam custom toggle. The chip-AEC
+    # profile itself uses only the primary/session "on" leg by default.
+    # Ports 9887/9888 + tokens are frozen because corpus tooling keys off them.
     LegSpec("chip_aec_150", "chip_aec_150", 9887, LegKind.HARDWARE_AEC, wake_input=True),
     LegSpec("chip_aec_210", "chip_aec_210", 9888, LegKind.HARDWARE_AEC, wake_input=True),
     # --- corpus-only legs (recorder + offline tooling; not wake inputs) ---

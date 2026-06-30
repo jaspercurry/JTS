@@ -55,12 +55,22 @@ export function vitalsCards(cur, hist, cores) {
   const swapHist = hist.swap_used_mb || [];
   const swap = swapHist[swapHist.length - 1] || 0;
   const memTone = toneForMemoryHeadroom(memAvail, memTotal);
+  const memSub = [Math.round(memAvail) + " MB available"];
+  const memCg = cur.memory_cgroup || null;
+  if (memCg && memCg.total_mb != null) {
+    memSub.push(
+      "cgroup " + Math.round(memCg.total_mb) + " MB" +
+      " (anon " + Math.round(memCg.anon_mb || 0) +
+      " · file " + Math.round(memCg.file_mb || 0) +
+      " · kernel " + Math.round(memCg.kernel_mb || 0) +
+      " · other " + Math.round(memCg.other_mb || 0) + ")"
+    );
+  }
+  if (swap > 0) memSub.push(Math.round(swap) + " MB swap");
   cards.push(statCard({
     label: "Memory",
     value: Math.round(memUsed) + " / " + Math.round(memTotal) + " MB",
-    sub: swap > 0
-      ? Math.round(memAvail) + " MB available · " + Math.round(swap) + " MB swap"
-      : Math.round(memAvail) + " MB available",
+    sub: memSub.join(" · "),
     tone: memTone,
     chart: sparkline(hist.mem_used_mb, { min: 0, max: memTotal, tone: memTone, fill: true }),
   }));
@@ -149,7 +159,21 @@ export function softwareList(snap, cur) {
 export function haBody(ha) {
   ha = ha || { configured: false };
   let statusNode, url = "—", version = "—", detail = "";
-  if (!ha.configured) {
+  if (ha.checking) {
+    statusNode = badge("Checking", "idle");
+    url = ha.url || "—";
+    version = ha.instance_name
+      ? (ha.instance_name + (ha.version ? " (" + ha.version + ")" : ""))
+      : "—";
+    if (ha.stale) detail = "Refreshing Home Assistant status.";
+  } else if (ha.stale && ha.error) {
+    statusNode = badge("Refresh failed", "warn");
+    url = ha.url || "—";
+    version = ha.instance_name
+      ? (ha.instance_name + (ha.version ? " (" + ha.version + ")" : ""))
+      : "—";
+    detail = ha.error;
+  } else if (!ha.configured) {
     statusNode = "Not configured";
   } else if (ha.connected) {
     statusNode = badge("Connected", "ok");

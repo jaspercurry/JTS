@@ -94,10 +94,7 @@ def contract_from_config(cfg: Any) -> SpeechInputContract:
 
     mic_device = str(getattr(cfg, "mic_device", "") or "")
     chip_enabled = bool(getattr(cfg, "aec_chip_aec_enabled", False))
-    chip_150 = str(getattr(cfg, "mic_device_chip_aec_150", "") or "")
-    chip_210 = str(getattr(cfg, "mic_device_chip_aec_210", "") or "")
-
-    if chip_enabled and chip_150 and chip_210 and mic_device.startswith("udp:"):
+    if chip_enabled and mic_device.startswith("udp:"):
         return SpeechInputContract(
             profile="xvf_chip_aec",
             source=mic_device,
