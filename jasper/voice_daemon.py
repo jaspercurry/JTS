@@ -590,13 +590,13 @@ async def _server_vad_response_trigger(turn, connection) -> None:
                 error=f"{type(e).__name__}: {e}",
                 level=logging.WARNING,
             )
-    # Do NOT return. This task lives in WakeLoop._bg_tasks; the
-    # session-frame handler treats any completed _bg_tasks task as
-    # "turn over" and tears down the turn. If we returned here, the
-    # model's response would arrive after turn release and be dropped
-    # — exactly the regression observed on 2026-05-24 (response.done
-    # arrived AFTER turn release: 7 audio deltas dropped). Idle here
-    # until _end_turn's cleanup loop cancels us.
+    # Do NOT return. This task lives in WakeLoop._bg_tasks; the turn
+    # completion watcher treats any completed _bg_tasks task as "turn
+    # over" and tears down the turn. If we returned here, the model's
+    # response would arrive after turn release and be dropped — exactly
+    # the regression observed on 2026-05-24 (response.done arrived AFTER
+    # turn release: 7 audio deltas dropped). Idle here until _end_turn's
+    # cleanup loop cancels us.
     await asyncio.Event().wait()
 
 
@@ -896,6 +896,7 @@ class WakeLoop:
         # SESSION through the teardown so output-stream gates hold.
         self._ending: bool = False
         self._bg_tasks: set[asyncio.Task] = set()
+        self._bg_end_scheduled: bool = False
         self._fire_and_forget: set[asyncio.Task] = set()
         self._refractory_until: float = 0.0
 
@@ -1262,6 +1263,7 @@ class WakeLoop:
         self._session_id = None
         self._ending = False
         self._bg_tasks = set()
+        self._bg_end_scheduled = False
         self._fire_and_forget = set()
         self._refractory_until = 0.0
         self._measurement_active = asyncio.Event()
@@ -1347,6 +1349,30 @@ class WakeLoop:
 
     async def _cancel_fire_and_forget_tasks(self) -> None:
         await _cancel_tracked_tasks(self._fire_and_forget)
+
+    def _arm_turn_background_end(self) -> None:
+        """End the turn when a response/playback background task completes.
+
+        The primary mic loop also checks ``_bg_tasks`` on each session frame,
+        but manual sources such as WiiM Remote 2 stop producing frames after
+        button release. The task callback keeps teardown anchored to response
+        completion instead of waiting for a later button press to tickle the
+        frame loop.
+        """
+        self._bg_end_scheduled = False
+        for task in self._bg_tasks:
+            task.add_done_callback(self._on_turn_background_done)
+
+    def _on_turn_background_done(self, task: asyncio.Task) -> None:
+        if task not in self._bg_tasks:
+            return
+        if self._ending or self._turn is None or self._bg_end_scheduled:
+            return
+        self._bg_end_scheduled = True
+        self._create_fire_and_forget_task(
+            self._end_turn(),
+            name="voice-turn-background-end",
+        )
 
     async def play_cue(self, slug: str) -> str:
         """Public wrapper for `_play_cue`, callable via the control
@@ -3098,9 +3124,8 @@ class WakeLoop:
         does NOT truncate / cancel the provider response (a later increment
         owns that), so a real-time provider may resume after the flush.
 
-        Runs INLINE (never a ``_bg_task``): ``_handle_session_frame`` ends
-        the turn the moment any ``_bg_tasks`` entry completes, so a
-        fire-once detector task would race turn-end."""
+        Runs INLINE (never a ``_bg_task``): completed ``_bg_tasks`` end the
+        turn, so a fire-once detector task would race turn-end."""
         if self._turn is None:
             return
         # Same primary-leg Silero the in-session EOU detector scores; a
@@ -3680,6 +3705,7 @@ class WakeLoop:
             )
             self._bg_tasks.add(vad_trigger)
         self._state = State.SESSION
+        self._arm_turn_background_end()
 
     async def _cleanup_after_failed_begin(self) -> None:
         if self._turn is not None:
@@ -3696,6 +3722,7 @@ class WakeLoop:
         self._turn = None
         self._session_id = None
         self._bg_tasks = set()
+        self._bg_end_scheduled = False
         self._active_manual_source = None
         self._acquiring = False
         self._state = State.WAKE
@@ -3804,6 +3831,7 @@ class WakeLoop:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         self._bg_tasks = set()
+        self._bg_end_scheduled = False
 
         # Finalize the assistant TTS segment after cancelling playback.
         # _play_responses only reaches its own end_segment() when the
