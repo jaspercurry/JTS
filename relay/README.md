@@ -61,8 +61,8 @@ the encryption key.
   64 MiB hard ceiling)`) and the Pi.
 - **Per-session rate limit** on the phone-facing endpoints so a leaked
   `upload_token` cannot hammer the bucket within the TTL. Production uses the
-  atomic `RELAY_RATELIMIT` binding; absent it, a best-effort per-isolate fixed
-  window applies.
+  Cloudflare-managed `RELAY_RATELIMIT` binding; absent it, a best-effort
+  per-isolate fixed window applies.
 - **Short TTL + delete-after-pull** — the registration secret cannot decrypt or
   pull captures; relay compromise is still bounded to short-lived ciphertext +
   a non-secret spec.
@@ -86,12 +86,12 @@ npx wrangler deploy                                      # publishes the Worker
 Then attach a custom domain (e.g. `relay.jasper.tech`) in the Cloudflare
 dashboard (Workers & Pages → this worker → Settings → Domains & Routes), and set
 `CAPTURE_ORIGIN` in `wrangler.toml` to the capture page's origin so CORS allows
-it. The `RELAY_RATELIMIT` binding (declared in `wrangler.toml`, `namespace_id`
-must be unique within your account) backs BOTH the per-session limit and the
-per-IP **registration** limit (`reg:<cf-connecting-ip>`) that bounds open
-`POST /sessions` flooding. Absent the binding, the Worker falls back to a
-per-isolate in-memory counter that never writes R2 (so it can neither amplify
-writes nor clobber session state).
+it. The `RELAY_RATELIMIT` binding (declared in `wrangler.toml` under
+`[[ratelimits]]`; `namespace_id` must be unique within your account) backs BOTH
+the per-session limit and the per-IP **registration** limit
+(`reg:<cf-connecting-ip>`) that bounds open `POST /sessions` flooding. Absent
+the binding, the Worker falls back to a per-isolate in-memory counter that never
+writes R2 (so it can neither amplify writes nor clobber session state).
 
 Fresh JTS installs default to the Jasper Tech deployment:
 
