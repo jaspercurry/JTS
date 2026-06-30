@@ -59,10 +59,11 @@ Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared
    The shipped *global* default stays conservative — CamillaDSP chunk 1024 / target 2048,
    outputd period 1024 / dac_buffer 3072 (~64 ms) — and any DAC with no declared floor
    keeps it (non-breaking). The **Apple-dongle profile** declares the measured floor
-   CamillaDSP chunk 256 / target 1024, outputd period 256 / dac_buffer 512 (≈ 20.7 ms),
+   CamillaDSP chunk 256 / target 1536, outputd period 256 / dac_buffer 512 (≈ 20.7 ms),
    the value the jts.local `jasper.env` override previously produced by hand. The floor is
    a CamillaDSP (chunksize, target_level) PAIR — target must be ≥ 4x chunk so the resampler
-   has fill headroom (chunk 256 → target 1024), enforced in `LatencyFloor.__post_init__`.
+   has fill headroom (chunk 256 → target 1536 on the Apple profile), enforced in
+   `LatencyFloor.__post_init__`.
    Two consumers read the floor, each on its own path:
    - **The Python CamillaDSP config emitters** (`jasper/sound/camilla_yaml.py` +
      `jasper/active_speaker/camilla_yaml.py`) resolve the floor *directly from the
@@ -74,10 +75,11 @@ Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared
      live generation path — `install.sh`'s `runtime-safe-graph`, the
      `jasper-camilla` ExecStartPre statefile guards, and `jasper-control`'s sound /
      active-speaker generation — none of which load `outputd.env`. Precedence is
-     `JASPER_CAMILLA_CHUNKSIZE`/`_TARGET_LEVEL` (explicit operator env) > active
-     profile floor > global default; a state file that is absent or unreadable simply
-     keeps the global default (a fresh box before the reconciler's first write is
-     non-breaking, never an unloadable config).
+     `max(JASPER_CAMILLA_CHUNKSIZE`/`_TARGET_LEVEL`, active profile floor) >
+     global default: operator env may raise latency above the floor, but stale /
+     over-aggressive below-floor env is clamped back to the profile floor. A state
+     file that is absent or unreadable simply keeps the global default (a fresh box
+     before the reconciler's first write is non-breaking, never an unloadable config).
    - **jasper-outputd (Rust)** reads `JASPER_OUTPUTD_PERIOD_FRAMES` /
      `_DAC_BUFFER_FRAMES`, which `jasper-audio-hardware-reconcile` emits from the
      active profile via `latency_floor_for(...)` into the wizard-owned `outputd.env`
@@ -125,8 +127,10 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-06-29 (#27 latency-floor codification: emitters wired to the
-active profile floor end-to-end; operator-override precedence corrected.
+Last verified: 2026-06-30 (#27 latency-floor codification: emitters wired to the
+active profile floor end-to-end; operator env may raise above the floor, but
+below-floor saved/stale env clamps to the profile floor so existing configs
+re-render at the measured floor.
 Shared-path per-input resampler alternative lives in
 `rust/jasper-fanin/src/lane_resampler.rs`, DEFAULT-OFF behind
 `JASPER_FANIN_INPUT_RESAMPLER=enabled`, and still requires the hardware
