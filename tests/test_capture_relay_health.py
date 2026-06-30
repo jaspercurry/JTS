@@ -39,6 +39,8 @@ def test_probe_rejects_non_https():
 
 
 def test_probe_reachable(monkeypatch):
+    seen = {}
+
     class _Resp:
         status = 200
 
@@ -51,10 +53,15 @@ def test_probe_reachable(monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(health.urllib.request, "urlopen", lambda *a, **k: _Resp())
+    def _open(req, *a, **k):
+        seen["user_agent"] = req.get_header("User-agent")
+        return _Resp()
+
+    monkeypatch.setattr(health.urllib.request, "urlopen", _open)
     ok, detail = health.probe_relay_health("https://relay.jasper.tech")
     assert ok is True
     assert "reachable" in detail
+    assert seen["user_agent"] == health.DEFAULT_USER_AGENT
 
 
 def test_probe_unreachable(monkeypatch):
