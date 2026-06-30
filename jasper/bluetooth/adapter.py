@@ -234,7 +234,7 @@ async def has_paired_hid(adapter: str = DEFAULT_ADAPTER) -> bool:
 async def remove_device(
     mac: str, adapter: str = DEFAULT_ADAPTER,
 ) -> tuple[bool, str]:
-    """Forget a paired device. Returns (ok, message)."""
+    """Remove a known BlueZ device. Returns (ok, message)."""
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     try:
         a, _ = await _adapter(bus, adapter)

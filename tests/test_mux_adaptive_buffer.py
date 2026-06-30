@@ -4,8 +4,8 @@
 
 """Tests for the adaptive fan-in output-buffer wiring in jasper.mux.
 
-Covers: default-OFF byte-identical _tick (spy proves decide_lean_route is never
-consulted), shrink on the exclusive-USB edge, restore on a networked join,
+Covers: default-OFF byte-identical _tick (spy proves the shared route policy is
+never consulted), shrink on the exclusive-USB edge, restore on a networked join,
 restart-fail -> shrink-block fail-safe, below-floor rejection surfaced as
 fail-safe-to-full, idempotency across ticks, and that manual/test lanes never
 shrink. The fan-in restart + env write are stubbed — this is the decision +
@@ -88,7 +88,8 @@ def _make_mux(tmp_path, *, adaptive_enabled: bool) -> Mux:
     m._fanin_none = AsyncMock(return_value={})
     m._pause = AsyncMock()
     m._usbsink_set_preempt = AsyncMock()
-    # The lean lane stays OFF in these tests — this is the SEPARATE adaptive path.
+    # The lean lane stays OFF in these tests — this is the adaptive consumer of
+    # the shared route policy.
     m._lean_enabled = False
     m._lean_apply_config = AsyncMock()
     m._lean_restore_config = AsyncMock()
@@ -117,25 +118,64 @@ async def test_default_off_never_shrinks(tmp_path, patched_probes, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_default_off_does_not_call_decide_lean_route(
+async def test_default_off_does_not_call_source_route_policy(
     tmp_path, patched_probes, monkeypatch,
 ):
     # Byte-identical proof: with the flag off, _settle_adaptive_buffer returns
-    # before decide_lean_route is ever consulted FROM THE ADAPTIVE PATH. The
-    # lean lane is also off here, so the policy function sees ZERO calls — the
-    # adaptive wiring adds nothing to the hot path when disabled.
+    # before the shared route policy is ever consulted. The lean lane is also
+    # off here, so the policy function sees ZERO calls — the adaptive wiring
+    # adds nothing to the hot path when disabled.
     called = {"n": 0}
-    real = __import__("jasper.mux", fromlist=["decide_lean_route"]).decide_lean_route
+    real = __import__(
+        "jasper.mux", fromlist=["decide_source_low_latency_route"]
+    ).decide_source_low_latency_route
 
     def spy(**kw):
         called["n"] += 1
         return real(**kw)
 
-    monkeypatch.setattr("jasper.mux.decide_lean_route", spy)
+    monkeypatch.setattr("jasper.mux.decide_source_low_latency_route", spy)
     m = _make_mux(tmp_path, adaptive_enabled=False)
     _stub_probes(patched_probes, usbsink=True)
     await m._tick()
     assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_lean_and_adaptive_share_one_source_route_decision(
+    tmp_path,
+    patched_probes,
+    monkeypatch,
+):
+    from jasper.usbsink import output_mode_reconcile as omr
+
+    called = {"n": 0}
+    real = __import__(
+        "jasper.mux", fromlist=["decide_source_low_latency_route"]
+    ).decide_source_low_latency_route
+
+    def spy(**kw):
+        called["n"] += 1
+        return real(**kw)
+
+    monkeypatch.setattr("jasper.mux.decide_source_low_latency_route", spy)
+    monkeypatch.setattr(
+        omr,
+        "set_output_mode",
+        lambda mode, *, reason: omr.ArmResult(
+            ok=True, changed=True, restarted=True, mode=mode
+        ),
+    )
+    _patch_reconcile(monkeypatch, set_ok=True, restore_ok=True)
+    m = _make_mux(tmp_path, adaptive_enabled=True)
+    m._lean_enabled = True
+    _stub_probes(patched_probes, usbsink=True)
+
+    await m._tick()
+
+    assert called["n"] == 1
+    assert m._in_lean is True
+    assert m._buffer_shrunk is True
 
 
 # --------------------------------------------------------------------------

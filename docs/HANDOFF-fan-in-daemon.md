@@ -604,6 +604,17 @@ AirPlay while 512 produced immediate output xruns. WiFi burst absorption
 therefore stays on the input side instead of becoming downstream
 fanin→CamillaDSP/AEC queueing.
 
+As of 2026-06-30, the fan-in output-buffer writer gets its set/unset/floor
+decision from [`jasper.audio_runtime_plan`](../jasper/audio_runtime_plan.py)
+(`fanin_output_buffer_action`, `resolve_fanin_output_buffer_target`). Temporary
+lab frame values belong in `/var/lib/jasper/audio_runtime_overrides.json` via
+`jasper-audio-config overrides-set`, with a reason and optional expiry. The
+coupling selector is deliberately not a lab override; it still goes through the
+ordered `jasper-fanin-coupling-reconcile` transition. The fan-in reconciler
+still owns the actual env-file write, daemon restart, and
+rollback-on-restart-failure ladder; the plan owns the policy so the doctor,
+operator explain CLI, and writer cannot drift.
+
 **The mechanism (kept here for future reference)**:
 
 - 802.11 A-MPDU aggregation batches outgoing AirPlay RTP packets
@@ -1143,7 +1154,10 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-06-29 (JTS2 AirPlay retune: fan-in output 1024 clean,
+Last verified: 2026-06-30 (fan-in output-buffer policy now comes from
+`jasper.audio_runtime_plan`; numeric lab overrides live in
+`audio_runtime_overrides.json`, while coupling remains ordered-reconciler-owned;
+JTS2 AirPlay retune: fan-in output 1024 clean,
 512 failed fast with fan-in output xruns; low-latency Apple path offset is
 `-0.058667`; fan-in output 1024 is clean, 512 failed fast with fan-in output
 xruns. Per-input resampler state: DEFAULT-OFF behind

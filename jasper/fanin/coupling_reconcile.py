@@ -56,6 +56,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.atomic_io import atomic_write_text
+from jasper.audio_runtime_plan import RouteMode, fanin_coupling_action
 from jasper.env_file import read_value, remove, upsert
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
@@ -69,6 +70,7 @@ logger = logging.getLogger(__name__)
 
 FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 FANIN_UNIT = "jasper-fanin.service"
+ACTIVE_LEADER_FIFO_BLOCK_REASON = "active_leader_fifo_coupling_unsupported"
 
 # A daemon op (fan-in restart or camilla reconcile) returns (ok, detail).
 DaemonOp = Callable[[], tuple[bool, str]]
@@ -149,6 +151,7 @@ def reconcile_coupling(
     apply: bool = True,
     restart_fanin: "DaemonOp | None" = None,
     reconcile_camilla=None,
+    active_leader_check: "Callable[[], bool] | None" = None,
 ) -> CouplingResult:
     """Make the live fan-in->Camilla coupling match ``desired_raw``, in order.
 
@@ -166,9 +169,9 @@ def reconcile_coupling(
       self-heal a drifted loaded config, WITHOUT bouncing fan-in.
 
     ``apply=False`` writes the env only (no daemon ops) — for staging/migration.
-    ``restart_fanin`` / ``reconcile_camilla`` are injectable for tests (default
-    to the real broker + reconcile_current_dsp); the camilla hook takes the
-    resolved coupling string.
+    ``restart_fanin`` / ``reconcile_camilla`` / ``active_leader_check`` are
+    injectable for tests (default to the real broker + reconcile_current_dsp +
+    grouping-state reader); the camilla hook takes the resolved coupling string.
     """
     do_restart = restart_fanin or (lambda: _restart_fanin(reason=reason))
 
@@ -177,14 +180,37 @@ def reconcile_coupling(
             return reconcile_camilla(coupling)
         return _reconcile_camilla(coupling, reason=reason)
 
-    desired = resolve_coupling(desired_raw)
     path = Path(env_path)
     try:
         existing = path.read_text(encoding="utf-8")
     except OSError:
         existing = ""
+    current = resolve_coupling(read_value(existing, COUPLING_ENV_VAR))
 
-    new_text, changed = upsert(existing, COUPLING_ENV_VAR, desired)
+    route_mode = _route_mode_for_reconcile(active_leader_check)
+    action, support = fanin_coupling_action(desired_raw, route_mode)
+    desired = support.coupling
+    if not support.supported:
+        return _block_fifo_for_active_leader(
+            do_restart,
+            do_reconcile,
+            path,
+            existing,
+            current,
+            reason,
+            block_detail=support.detail,
+            apply=apply,
+        )
+
+    if action is None:
+        return CouplingResult(
+            ok=False,
+            desired=desired,
+            changed=False,
+            direction="error",
+            detail=support.detail or "unsupported coupling action",
+        )
+    new_text, changed = upsert(existing, action.key, action.value)
 
     # Persist the desired value first (single source of truth for the daemons'
     # next start). A write failure aborts BEFORE any daemon op so we never bounce
@@ -230,6 +256,128 @@ def reconcile_coupling(
     if desired == COUPLING_FIFO:
         return _arm(do_restart, do_reconcile, desired, reason, path, existing)
     return _disarm(do_restart, do_reconcile, desired, reason)
+
+
+def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
+    """Return the route shape for the coupling support matrix."""
+    if check is not None:
+        try:
+            return "active_leader" if bool(check()) else "solo"
+        except Exception as e:  # noqa: BLE001 - safety check must not crash CLI
+            log_event(
+                logger,
+                "fanin.coupling_reconcile",
+                result="active_leader_check_failed",
+                detail=e,
+                level=logging.WARNING,
+            )
+            return "unknown"
+    try:
+        from jasper.audio_runtime_plan import route_mode_from_grouping_config
+        from jasper.multiroom.config import load_config
+
+        return route_mode_from_grouping_config(load_config())
+    except Exception as e:  # noqa: BLE001 - unreadable grouping => not active leader
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="active_leader_check_failed",
+            detail=e,
+            level=logging.DEBUG,
+        )
+        return "unknown"
+
+
+def _block_fifo_for_active_leader(
+    do_restart,
+    do_reconcile,
+    path: Path,
+    existing: str,
+    current: str,
+    reason: str,
+    *,
+    block_detail: str | None = None,
+    apply: bool,
+) -> CouplingResult:
+    detail = block_detail or (
+        "JASPER_FANIN_CAMILLA_COUPLING=fifo is not supported while this box is "
+        "an active multiroom leader; keep the fan-in coupling on loopback until "
+        "the grouped active-leader FIFO capture path exists"
+    )
+    if current == COUPLING_FIFO:
+        new_text, _ = upsert(existing, COUPLING_ENV_VAR, COUPLING_LOOPBACK)
+        try:
+            atomic_write_text(path, new_text)
+        except OSError as e:
+            log_event(
+                logger,
+                "fanin.coupling_reconcile",
+                result=ACTIVE_LEADER_FIFO_BLOCK_REASON,
+                action="loopback_write_failed",
+                reason=reason,
+                detail=e,
+                level=logging.ERROR,
+            )
+            return CouplingResult(
+                ok=False,
+                desired=COUPLING_FIFO,
+                changed=False,
+                direction="blocked",
+                detail=f"{detail}; failed to write loopback fallback: {e}",
+            )
+        if apply:
+            disarm = _disarm(do_restart, do_reconcile, COUPLING_LOOPBACK, reason)
+            log_event(
+                logger,
+                "fanin.coupling_reconcile",
+                result=ACTIVE_LEADER_FIFO_BLOCK_REASON,
+                action="recovered_to_loopback",
+                reason=reason,
+                recovered=disarm.ok,
+                detail=disarm.detail or None,
+                level=logging.WARNING,
+            )
+            return CouplingResult(
+                ok=False,
+                desired=COUPLING_FIFO,
+                changed=True,
+                direction="blocked",
+                restarted_fanin=disarm.restarted_fanin,
+                reconciled_camilla=disarm.reconciled_camilla,
+                recovered=disarm.ok,
+                detail=detail if disarm.ok else f"{detail}; {disarm.detail}",
+            )
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result=ACTIVE_LEADER_FIFO_BLOCK_REASON,
+            action="wrote_loopback_no_apply",
+            reason=reason,
+            level=logging.WARNING,
+        )
+        return CouplingResult(
+            ok=False,
+            desired=COUPLING_FIFO,
+            changed=True,
+            direction="blocked",
+            detail=detail,
+        )
+
+    log_event(
+        logger,
+        "fanin.coupling_reconcile",
+        result=ACTIVE_LEADER_FIFO_BLOCK_REASON,
+        action="kept_loopback",
+        reason=reason,
+        level=logging.WARNING,
+    )
+    return CouplingResult(
+        ok=False,
+        desired=COUPLING_FIFO,
+        changed=False,
+        direction="blocked",
+        detail=detail,
+    )
 
 
 def _arm(do_restart, do_reconcile, desired, reason, path, prior_env) -> CouplingResult:

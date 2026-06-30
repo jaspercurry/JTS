@@ -106,6 +106,9 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
     # Snapcast precondition: pretend the binaries are installed (a dev machine has
     # no snapserver/snapclient, which would otherwise fail-close the precheck).
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    # The active-leader program bake currently requires the legacy fan-in
+    # loopback capture; isolate tests from the host's persisted coupling file.
+    monkeypatch.setattr(alc, "read_persisted_coupling", lambda *a, **k: "loopback")
 
 
 def _fake_apply_dsp_config():
@@ -155,6 +158,25 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     assert not any(
         n.startswith("split_active_") for n in bake_doc.get("mixers", {})
     )
+
+
+def test_precheck_refuses_fifo_coupling_before_emit(monkeypatch, tmp_path) -> None:
+    """FIFO fan-in coupling and the active-leader program bake are not yet a
+    supported pair: the bake captures the ALSA fan-in loopback while fan-in
+    would write the pipe. Refuse before writing either generated config."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    monkeypatch.setattr(alc, "read_persisted_coupling", lambda *a, **k: "fifo")
+
+    with pytest.raises(alc.ActiveLeaderError) as exc:
+        asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
+
+    assert exc.value.reason == "fanin_fifo_coupling_unsupported"
+    assert not Path(alc.LEADER_BAKE_CONFIG_PATH).exists()
+    assert not Path(alc.CROSSOVER_CONFIG_PATH).exists()
 
 
 def test_precheck_threads_pair_trim_into_leader_crossover(

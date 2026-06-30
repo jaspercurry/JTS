@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -146,7 +147,7 @@ async def test_connect_refreshes_accessory_profiles_after_bluez_connect():
 
 @pytest.mark.asyncio
 async def test_forget_refreshes_accessory_profiles_after_pair_record_removed(
-    monkeypatch,
+    monkeypatch, caplog,
 ):
     reasons: list[str] = []
     engine = _engine(reasons)
@@ -156,7 +157,11 @@ async def test_forget_refreshes_accessory_profiles_after_pair_record_removed(
 
     monkeypatch.setattr("jasper.bluetooth.adapter.remove_device", remove_device)
 
+    caplog.set_level(logging.INFO, logger="jasper.bluetooth.engine")
     ok, msg = await engine.forget("CA:AC:04:04:09:D7")
 
     assert (ok, msg) == (True, "forgotten")
     assert reasons == ["bluetooth-forget"]
+    assert "event=bluetooth.device_forget" in caplog.text
+    assert "address=CA:AC:04:04:09:D7" in caplog.text
+    assert "ok=true" in caplog.text

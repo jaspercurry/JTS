@@ -105,7 +105,7 @@ async def test_default_off_never_calls_lean(tmp_path, patched_probes, monkeypatc
     _stub_probes(patched_probes, usbsink=True)
     await m._tick()  # USB sole source + winner
     assert m._winner is Source.USBSINK
-    # The disabled flag short-circuits _settle_lean before decide_lean_route.
+    # The disabled flag short-circuits before the shared route policy.
     m._lean_apply_config.assert_not_awaited()
     m._lean_restore_config.assert_not_awaited()
     assert m._in_lean is False
@@ -120,19 +120,21 @@ async def test_default_off_leave_is_noop_when_not_in_lean(tmp_path, patched_prob
 
 
 @pytest.mark.asyncio
-async def test_default_off_does_not_even_call_decide_lean_route(
+async def test_default_off_does_not_even_call_source_route_policy(
     tmp_path, patched_probes, monkeypatch,
 ):
     # Byte-identical proof: with the flag off, _settle_lean returns before the
     # policy function is ever consulted — zero new behavior on the hot path.
     called = {"n": 0}
-    real = __import__("jasper.mux", fromlist=["decide_lean_route"]).decide_lean_route
+    real = __import__(
+        "jasper.mux", fromlist=["decide_source_low_latency_route"]
+    ).decide_source_low_latency_route
 
     def spy(**kw):
         called["n"] += 1
         return real(**kw)
 
-    monkeypatch.setattr("jasper.mux.decide_lean_route", spy)
+    monkeypatch.setattr("jasper.mux.decide_source_low_latency_route", spy)
     m = _make_mux(tmp_path, lean_enabled=False)
     _stub_probes(patched_probes, usbsink=True)
     await m._tick()

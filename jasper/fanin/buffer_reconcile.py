@@ -77,28 +77,39 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.atomic_io import atomic_write_text
+from jasper.audio_runtime_plan import (
+    AUDIO_RUNTIME_OVERRIDE_KEYS,
+    DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES,
+    FANIN_ADAPTIVE_SHRUNK_FRAMES_ENV,
+    FANIN_OUTPUT_BUFFER_KEY,
+    MIN_FANIN_OUTPUT_BUFFER_FRAMES,
+    RuntimeEnvAction,
+    fanin_output_buffer_action,
+    resolve_fanin_output_buffer_target,
+)
+from jasper.audio_runtime_overrides import load_runtime_overrides, runtime_overrides_path
 from jasper.env_file import read_value, remove, upsert
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
 FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
-OUTPUT_BUFFER_KEY = "JASPER_FANIN_OUTPUT_BUFFER_FRAMES"
+OUTPUT_BUFFER_KEY = FANIN_OUTPUT_BUFFER_KEY
 FANIN_UNIT = "jasper-fanin.service"
 
 # The default output buffer (~21 ms @ 48 kHz). Mirrors the value
 # hardcoded in deploy/systemd/jasper-fanin.service's Environment= line and
 # jasper_fanin::config's documented default. A "restore" writes nothing and
 # unlinks the override line so the unit's own default reasserts.
-DEFAULT_OUTPUT_BUFFER_FRAMES = 1024
+DEFAULT_OUTPUT_BUFFER_FRAMES = DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES
 
 # Production floor. Sub-1024 is deliberately kept out of defaults until a
 # hardware soak proves it is clean across the active DAC/Camilla paths.
-MIN_OUTPUT_BUFFER_FRAMES = 1024
+MIN_OUTPUT_BUFFER_FRAMES = MIN_FANIN_OUTPUT_BUFFER_FRAMES
 
 # Default shrunk target for the exclusive-wired-USB path. Env-overridable so the
 # on-device soak can sweep candidate values without a redeploy.
-_SHRUNK_FRAMES_ENV = "JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES"
+_SHRUNK_FRAMES_ENV = FANIN_ADAPTIVE_SHRUNK_FRAMES_ENV
 
 
 def shrunk_target_frames() -> int:
@@ -110,31 +121,30 @@ def shrunk_target_frames() -> int:
     risking an unstartable value (``set_fanin_output_buffer`` would reject it
     anyway, but resolving to a safe value here keeps the caller's edge action
     from no-opping every tick on a typo'd env)."""
-    raw = os.environ.get(_SHRUNK_FRAMES_ENV, "").strip()
-    if not raw:
-        return MIN_OUTPUT_BUFFER_FRAMES
-    try:
-        value = int(raw)
-    except ValueError:
+    override_path = runtime_overrides_path(os.environ)
+    overrides = load_runtime_overrides(
+        override_path,
+        allowed_keys=AUDIO_RUNTIME_OVERRIDE_KEYS,
+    )
+    target = resolve_fanin_output_buffer_target(os.environ, overrides=overrides.values())
+    if target.warning_event == "fanin.adaptive_shrunk_frames_invalid":
         log_event(
             logger,
-            "fanin.adaptive_shrunk_frames_invalid",
-            value=raw,
+            target.warning_event,
+            value=target.raw_value,
             fallback=MIN_OUTPUT_BUFFER_FRAMES,
             level=logging.WARNING,
         )
-        return MIN_OUTPUT_BUFFER_FRAMES
-    if value < MIN_OUTPUT_BUFFER_FRAMES:
+    elif target.warning_event == "fanin.adaptive_shrunk_frames_below_floor":
         log_event(
             logger,
-            "fanin.adaptive_shrunk_frames_below_floor",
-            value=value,
+            target.warning_event,
+            value=target.raw_value,
             floor=MIN_OUTPUT_BUFFER_FRAMES,
             fallback=MIN_OUTPUT_BUFFER_FRAMES,
             level=logging.WARNING,
         )
-        return MIN_OUTPUT_BUFFER_FRAMES
-    return value
+    return target.frames
 
 
 @dataclass(frozen=True)
@@ -198,17 +208,16 @@ def _restart_fanin(reason: str) -> tuple[bool, str]:
 
 def _apply(
     *,
-    frames: int | None,
+    action: RuntimeEnvAction,
+    reported: int,
     reason: str,
     env_path: str | os.PathLike,
     restart: bool,
 ) -> BufferResult:
     """Shared write+restart+rollback core for set and restore.
 
-    ``frames is None`` means RESTORE (strip the override; the daemon falls back
-    to its unit default); an int means SET that value. ``frames`` is the value
-    reported in the result (the default when restoring)."""
-    reported = DEFAULT_OUTPUT_BUFFER_FRAMES if frames is None else frames
+    ``action`` carries the plan-owned set/unset decision; ``reported`` is the
+    frame count reported to logs/callers (the default when restoring)."""
 
     path = Path(env_path)
     file_existed = path.exists()
@@ -217,10 +226,10 @@ def _apply(
     except OSError:
         existing = ""
 
-    if frames is None:
-        new_text, changed = remove(existing, OUTPUT_BUFFER_KEY)
+    if action.action == "unset":
+        new_text, changed = remove(existing, action.key)
     else:
-        new_text, changed = upsert(existing, OUTPUT_BUFFER_KEY, str(frames))
+        new_text, changed = upsert(existing, action.key, action.value)
 
     if not changed:
         # Already at the requested state. Nothing to write, nothing to restart.
@@ -234,7 +243,7 @@ def _apply(
 
     # RESTORE that empties the file: unlink rather than leave a 0-byte file, so
     # the override truly disappears and the unit default is the only source.
-    write_is_unlink = frames is None and new_text == ""
+    write_is_unlink = action.action == "unset" and new_text == ""
     try:
         if write_is_unlink:
             if file_existed:
@@ -317,17 +326,20 @@ def set_fanin_output_buffer(
     Fail-soft on the write (OSError -> ``ok=False``). SF-1 rolls the env back if
     the restart fails so the persisted value never leads the running daemon.
     """
-    if frames < MIN_OUTPUT_BUFFER_FRAMES:
+    try:
+        action = fanin_output_buffer_action(frames)
+    except ValueError as e:
         log_event(
             logger, "fanin.output_buffer_arm", result="below_floor",
             frames=frames, floor=MIN_OUTPUT_BUFFER_FRAMES, level=logging.ERROR,
         )
         return BufferResult(
             ok=False, changed=False, restarted=False, frames=frames,
-            detail=f"{frames} below floor {MIN_OUTPUT_BUFFER_FRAMES}",
+            detail=str(e),
         )
     return _apply(
-        frames=frames, reason=reason, env_path=env_path, restart=restart,
+        action=action, reported=frames, reason=reason,
+        env_path=env_path, restart=restart,
     )
 
 
@@ -347,6 +359,8 @@ def restore_fanin_output_buffer(
 
     Same SF-1 rollback + fail-soft contract as ``set_fanin_output_buffer``.
     """
+    action = fanin_output_buffer_action(None)
     return _apply(
-        frames=None, reason=reason, env_path=env_path, restart=restart,
+        action=action, reported=DEFAULT_OUTPUT_BUFFER_FRAMES,
+        reason=reason, env_path=env_path, restart=restart,
     )

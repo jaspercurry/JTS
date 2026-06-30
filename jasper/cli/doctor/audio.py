@@ -1412,6 +1412,38 @@ def _loaded_capture_type(config_path: Path) -> str | None:
     return None
 
 
+@doctor_check(order=51.6, group="audio")
+def check_audio_runtime_plan() -> CheckResult:
+    """Explainable SSOT check for audio latency/coupling knobs."""
+
+    from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
+
+    plan = build_audio_runtime_plan_from_system()
+    summary = (
+        f"profile={plan.profile_id}, route={plan.route_mode}, "
+        f"coupling={plan.setting('JASPER_FANIN_CAMILLA_COUPLING').value}, "
+        f"camilla={plan.setting('JASPER_CAMILLA_CHUNKSIZE').value}/"
+        f"{plan.setting('JASPER_CAMILLA_TARGET_LEVEL').value}, "
+        f"outputd={plan.setting('JASPER_OUTPUTD_PERIOD_FRAMES').value}/"
+        f"{plan.setting('JASPER_OUTPUTD_DAC_BUFFER_FRAMES').value}, "
+        f"fanin={plan.setting('JASPER_FANIN_INPUT_BUFFER_FRAMES').value}/"
+        f"{plan.setting('JASPER_FANIN_OUTPUT_BUFFER_FRAMES').value}"
+    )
+    if plan.errors:
+        return CheckResult(
+            "audio runtime plan",
+            "fail",
+            summary + "; " + "; ".join(plan.errors),
+        )
+    if plan.warnings:
+        return CheckResult(
+            "audio runtime plan",
+            "warn",
+            summary + "; " + "; ".join(plan.warnings[:3]),
+        )
+    return CheckResult("audio runtime plan", "ok", summary)
+
+
 @doctor_check(order=51.7, group="audio")
 def check_fanin_coupling() -> CheckResult:
     """The fan-in → CamillaDSP coupling intent (``fanin.env``) must match the

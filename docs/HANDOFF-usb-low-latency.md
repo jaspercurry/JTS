@@ -44,11 +44,13 @@ Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared
 
 ## What needs to be done (ordered)
 
-1. **Arm the lean lane through the mux ladder, not raw env.** Wire `decide_lean_route`
-   (`jasper/lean_lane.py`) + `JASPER_LEAN_LANE=enabled` so the mux flips USB→lean-fifo
-   when USB is solo and back to the shared mixer when another source or TTS starts
-   (solo-gated, fail-loud→buffered). The pieces exist (tasks 4b-ii/iii/iv); validate the
-   live switch end-to-end and the TTS-while-solo handoff.
+1. **Arm the lean lane through the mux ladder, not raw env.** DONE: mux now
+   computes one shared source-route decision from
+   `jasper.audio_runtime_plan.decide_source_low_latency_route`; the lean lane
+   (`JASPER_LEAN_LANE=enabled`) and adaptive fan-in buffer consume that same
+   USB-solo verdict. The compatibility wrapper `jasper.lean_lane.decide_lean_route`
+   still returns the old `lean`/`buffered` vocabulary for Stage-4 tests. Validate
+   the live switch end-to-end and the TTS-while-solo handoff before default-on.
 2. **Drive the camilla side via the existing lean-config path** (`jasper/usbsink/
    output_mode_reconcile.py` + the lean RawFile capture in `jasper/camilla_config_contract.py`
    — RawFile, not File; the jts5 fix). Confirm `--check` valid and no crash-loop.
@@ -127,11 +129,11 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-06-30 (#27 latency-floor codification: emitters wired to the
-active profile floor end-to-end; operator env may raise above the floor, but
-below-floor saved/stale env clamps to the profile floor so existing configs
-re-render at the measured floor.
-Shared-path per-input resampler alternative lives in
+Last verified: 2026-06-30 (mux lean/adaptive consumers now share
+`jasper.audio_runtime_plan.decide_source_low_latency_route`; #27
+latency-floor codification still wires emitters to the active profile floor
+end-to-end with corrected operator-override precedence. Shared-path
+per-input resampler alternative lives in
 `rust/jasper-fanin/src/lane_resampler.rs`, DEFAULT-OFF behind
 `JASPER_FANIN_INPUT_RESAMPLER=enabled`, and still requires the hardware
 drop-free/glitch-free validation described above.)
