@@ -186,6 +186,12 @@ ensure_mode_file() {
         if ! grep -q '^JASPER_WAKE_LEG_CHIP_AEC=' "$MODE_FILE"; then
             printf 'JASPER_WAKE_LEG_CHIP_AEC=0\n' >> "$MODE_FILE"
         fi
+        if ! grep -q '^JASPER_WAKE_LEG_CHIP_AEC_150=' "$MODE_FILE"; then
+            printf 'JASPER_WAKE_LEG_CHIP_AEC_150=0\n' >> "$MODE_FILE"
+        fi
+        if ! grep -q '^JASPER_WAKE_LEG_CHIP_AEC_210=' "$MODE_FILE"; then
+            printf 'JASPER_WAKE_LEG_CHIP_AEC_210=0\n' >> "$MODE_FILE"
+        fi
         if ! grep -q '^JASPER_AEC_CHIP_REF_OBSERVE=' "$MODE_FILE"; then
             printf 'JASPER_AEC_CHIP_REF_OBSERVE=0\n' >> "$MODE_FILE"
         fi
@@ -201,7 +207,7 @@ ensure_mode_file() {
     local mode_file_dir
     mode_file_dir="$(dirname "$MODE_FILE")"
     [[ -d "$mode_file_dir" ]] || install -d -m 0755 "$mode_file_dir"
-    printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' > "$MODE_FILE"
+    printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_WAKE_LEG_CHIP_AEC_150=0\nJASPER_WAKE_LEG_CHIP_AEC_210=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' > "$MODE_FILE"
     chmod 0644 "$MODE_FILE"
 }
 
@@ -424,8 +430,12 @@ infer_audio_input_profile_from_values() {
     local raw="$2"
     local dtln="$3"
     local chip_aec="$4"
+    local chip_aec_150="${5:-0}"
+    local chip_aec_210="${6:-0}"
     if [[ "$mode" != "auto" ]]; then
         echo "direct_mic"
+    elif [[ "$chip_aec_150" == "1" || "$chip_aec_210" == "1" ]]; then
+        echo "custom"
     elif [[ "$chip_aec" == "1" ]]; then
         echo "xvf_chip_aec"
     elif [[ "$raw" == "1" && "$dtln" == "0" ]]; then
@@ -436,12 +446,15 @@ infer_audio_input_profile_from_values() {
 }
 
 infer_audio_input_profile_from_mode_file() {
-    local mode raw dtln chip_aec
+    local mode raw dtln chip_aec chip_aec_150 chip_aec_210
     mode="$(normalize_mode "$(mode_file_value JASPER_AEC_MODE auto)")"
     raw="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_RAW 1)")"
     dtln="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_DTLN 0)")"
     chip_aec="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC 0)")"
-    infer_audio_input_profile_from_values "$mode" "$raw" "$dtln" "$chip_aec"
+    chip_aec_150="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC_150 0)")"
+    chip_aec_210="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC_210 0)")"
+    infer_audio_input_profile_from_values \
+        "$mode" "$raw" "$dtln" "$chip_aec" "$chip_aec_150" "$chip_aec_210"
 }
 
 apply_audio_input_profile() {
@@ -456,6 +469,8 @@ apply_audio_input_profile() {
                 LEG_RAW="0"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="1"
+                LEG_CHIP_AEC_150="0"
+                LEG_CHIP_AEC_210="0"
             elif aec_ready "$AEC_MIC_DEVICE"; then
                 if ! chip_aec_mic_supported; then
                     detail="$(chip_aec_mic_detail)"
@@ -466,10 +481,14 @@ apply_audio_input_profile() {
                 LEG_RAW="1"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="0"
+                LEG_CHIP_AEC_150="0"
+                LEG_CHIP_AEC_210="0"
             else
                 LEG_RAW="1"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="0"
+                LEG_CHIP_AEC_150="0"
+                LEG_CHIP_AEC_210="0"
             fi
             ;;
         xvf_chip_aec)
@@ -479,6 +498,8 @@ apply_audio_input_profile() {
                 LEG_RAW="0"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="1"
+                LEG_CHIP_AEC_150="0"
+                LEG_CHIP_AEC_210="0"
             else
                 if ! chip_aec_mic_supported; then
                     detail="$(chip_aec_mic_detail)"
@@ -489,6 +510,8 @@ apply_audio_input_profile() {
                 LEG_RAW="1"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="0"
+                LEG_CHIP_AEC_150="0"
+                LEG_CHIP_AEC_210="0"
             fi
             ;;
         xvf_chip_aec_testing)
@@ -498,6 +521,8 @@ apply_audio_input_profile() {
                 LEG_RAW="0"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="1"
+                LEG_CHIP_AEC_150="0"
+                LEG_CHIP_AEC_210="0"
             else
                 if ! chip_aec_mic_supported; then
                     detail="$(chip_aec_mic_detail)"
@@ -508,6 +533,8 @@ apply_audio_input_profile() {
                 LEG_RAW="1"
                 LEG_DTLN="0"
                 LEG_CHIP_AEC="0"
+                LEG_CHIP_AEC_150="0"
+                LEG_CHIP_AEC_210="0"
             fi
             ;;
         xvf_software_aec3)
@@ -515,12 +542,16 @@ apply_audio_input_profile() {
             LEG_RAW="1"
             LEG_DTLN="0"
             LEG_CHIP_AEC="0"
+            LEG_CHIP_AEC_150="0"
+            LEG_CHIP_AEC_210="0"
             ;;
         direct_mic)
             AEC_MODE="disabled"
             LEG_RAW="0"
             LEG_DTLN="0"
             LEG_CHIP_AEC="0"
+            LEG_CHIP_AEC_150="0"
+            LEG_CHIP_AEC_210="0"
             ;;
         custom)
             ;;
@@ -538,8 +569,9 @@ apply_audio_input_profile() {
 # the software legs (raw :9877 / DTLN :9878 alongside AEC3 :9876) OR the
 # chip-AEC beams, not both — Option-A means in chip-AEC mode the bridge
 # forwards the chip-AEC beam into :9876 (session + Tier-1 heartbeat
-# carrier) and emits the fixed 150°/210° ASR beams on :9887/:9888 for
-# scoring. So when chip-AEC is on we clear raw/DTLN, and vice versa.
+# carrier). Extra fixed 150°/210° wake detectors on :9887/:9888 are
+# per-beam custom opt-ins, so the default chip-AEC profile opens only
+# one wake detector. When chip-AEC is on we clear raw/DTLN, and vice versa.
 #
 # The booleans themselves stay preserved in $MODE_FILE — that's the
 # user's wizard-managed intent. We just don't *apply* them when the
@@ -550,6 +582,8 @@ write_leg_env() {
     local leg_raw="$2"
     local leg_dtln="$3"
     local leg_chip_aec="$4"
+    local leg_chip_aec_150="${5:-0}"
+    local leg_chip_aec_210="${6:-0}"
     local raw_udp dtln_udp dtln_flag chip_150_udp chip_210_udp chip_flag
     local ref_source outputd_chip_ref_pcm outputd_ref_target observe_flag
     local outputd_chip_ref_rate outputd_chip_ref_period outputd_chip_ref_buffer
@@ -559,13 +593,20 @@ write_leg_env() {
         producer_was_active=1
     fi
     if [[ "$bridge_running" == "1" && "$leg_chip_aec" == "1" ]]; then
-        # Chip-AEC production mode (Option-A): score the fixed 150°/210°
-        # beams on :9887/:9888; the chip-AEC beam is forwarded into :9876
-        # as the session/heartbeat carrier. raw/DTLN are NOT emitted by
-        # the bridge in this mode, so clear them (single-chip exclusion).
-        #
-        chip_150_udp="udp:${AEC_UDP_PORT_CHIP_AEC_150}"
-        chip_210_udp="udp:${AEC_UDP_PORT_CHIP_AEC_210}"
+        # Chip-AEC production mode (Option-A): the chip-AEC beam is
+        # forwarded into :9876 as the session/heartbeat carrier. Optional
+        # fixed-beam wake detectors are only advertised to jasper-voice
+        # when the matching advanced toggle is on.
+        if [[ "$leg_chip_aec_150" == "1" ]]; then
+            chip_150_udp="udp:${AEC_UDP_PORT_CHIP_AEC_150}"
+        else
+            chip_150_udp=""
+        fi
+        if [[ "$leg_chip_aec_210" == "1" ]]; then
+            chip_210_udp="udp:${AEC_UDP_PORT_CHIP_AEC_210}"
+        else
+            chip_210_udp=""
+        fi
         chip_flag="1"
         # Production chip-AEC, not observe mode: the chip-ref writer is
         # armed because the chip IS the mic path here.
@@ -1012,10 +1053,12 @@ CURRENT_MIC="${JASPER_MIC_DEVICE:-}"
 # opt-in via /system/ wake-detection card).
 LEG_RAW="$(normalize_bool "${JASPER_WAKE_LEG_RAW:-1}")"
 LEG_DTLN="$(normalize_bool "${JASPER_WAKE_LEG_DTLN:-0}")"
-# Chip-AEC beam legs — opt-in + mic-profile/DAC-conditional + mutually
-# exclusive with raw/DTLN (see write_leg_env). Default off; only applied
-# when the detected XVF profile has a validated production beam plan.
+# Chip-AEC profile selection — mic-profile/DAC-conditional and mutually
+# exclusive with raw/DTLN (see write_leg_env). Extra chip-beam wake
+# detectors are separate opt-ins below.
 LEG_CHIP_AEC="$(normalize_bool "${JASPER_WAKE_LEG_CHIP_AEC:-0}")"
+LEG_CHIP_AEC_150="$(normalize_bool "${JASPER_WAKE_LEG_CHIP_AEC_150:-0}")"
+LEG_CHIP_AEC_210="$(normalize_bool "${JASPER_WAKE_LEG_CHIP_AEC_210:-0}")"
 # Opt-in chip-ref observe mode (default off). Read like the LEG_* booleans
 # (mode_file_value + normalize_bool) so a hand-edited yes/true also works.
 # Only the software-AEC3 leg path in write_leg_env acts on it.
@@ -1030,9 +1073,13 @@ if [[ "$AUDIO_INPUT_PROFILE" == "custom" && "$LEG_CHIP_AEC" == "1" ]]; then
     if ! chip_aec_mic_supported; then
         log "custom chip-AEC leg requested but mic cannot produce chip-AEC beams: $(chip_aec_mic_detail); clearing chip-AEC leg"
         LEG_CHIP_AEC="0"
+        LEG_CHIP_AEC_150="0"
+        LEG_CHIP_AEC_210="0"
     elif ! chip_aec_dac_supported "$AUDIO_DAC_ID" "0"; then
         log "custom chip-AEC leg requested but output_dac=${AUDIO_DAC_ID} is not approved for production chip-AEC: $(chip_aec_dac_detail "$AUDIO_DAC_ID" "0"); clearing chip-AEC leg"
         LEG_CHIP_AEC="0"
+        LEG_CHIP_AEC_150="0"
+        LEG_CHIP_AEC_210="0"
     fi
 fi
 refresh_chip_aec_dac_gate "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"
@@ -1052,7 +1099,7 @@ else
     PRESENT_MIC=""
 fi
 
-log "profile=${AUDIO_INPUT_PROFILE} mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>} legs=raw:${LEG_RAW},dtln:${LEG_DTLN},chip_aec:${LEG_CHIP_AEC}"
+log "profile=${AUDIO_INPUT_PROFILE} mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>} legs=raw:${LEG_RAW},dtln:${LEG_DTLN},chip_aec:${LEG_CHIP_AEC},chip_aec_150:${LEG_CHIP_AEC_150},chip_aec_210:${LEG_CHIP_AEC_210}"
 write_mic_profile_env
 if profile_managed_mic_resolution; then
     set_env_var "$ENV_FILE" JASPER_AEC_MIC_DEVICE "$AEC_MIC_DEVICE"
@@ -1072,7 +1119,7 @@ if grouping_voice_parked; then
     run_systemctl disable --now jasper-voice.service
     reset_failed_units jasper-voice.service
     stop_disable_aec
-    write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
+    write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC" "$LEG_CHIP_AEC_150" "$LEG_CHIP_AEC_210"
     restart_outputd_if_needed
     exit 0
 fi
@@ -1085,7 +1132,7 @@ if ! is_owned_mic_value "$CURRENT_MIC" "$UDP_DEVICE"; then
     # is the safety net. Mirrors the "leave voice config untouched" contract.
     clear_voice_input_absent
     stop_disable_aec
-    write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
+    write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC" "$LEG_CHIP_AEC_150" "$LEG_CHIP_AEC_210"
     restart_outputd_if_needed
     exit 0
 fi
@@ -1095,7 +1142,7 @@ if [[ "$AEC_MODE" == "disabled" ]]; then
         stop_voice
     fi
     stop_disable_aec
-    write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
+    write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC" "$LEG_CHIP_AEC_150" "$LEG_CHIP_AEC_210"
     restart_outputd_if_needed
     if [[ -n "$PRESENT_MIC" ]]; then
         if [[ "$CURRENT_MIC" != "$PRESENT_MIC" ]]; then
@@ -1124,7 +1171,7 @@ if aec_ready "$AEC_MIC_DEVICE"; then
     else
         log "6-channel ${AEC_MIC_DEVICE} present; AEC UDP mic already selected"
     fi
-    write_leg_env "1" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
+    write_leg_env "1" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC" "$LEG_CHIP_AEC_150" "$LEG_CHIP_AEC_210"
     restart_outputd_if_needed
     enable_start_aec
     restart_voice
@@ -1135,7 +1182,7 @@ if [[ -z "$PRESENT_MIC" ]]; then
     stop_voice
 fi
 stop_disable_aec
-write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
+write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC" "$LEG_CHIP_AEC_150" "$LEG_CHIP_AEC_210"
 restart_outputd_if_needed
 if [[ -n "$PRESENT_MIC" ]]; then
     if [[ "$CURRENT_MIC" != "$PRESENT_MIC" ]]; then

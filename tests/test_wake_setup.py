@@ -477,13 +477,16 @@ def test_index_html_renders_echo_and_advanced_fusion_controls():
     assert 'id="layer-aec"' not in html
     assert 'id="layer-raw"' in html
     assert 'id="layer-dtln"' in html
-    assert 'id="layer-chip_aec"' in html
+    assert 'id="layer-chip_aec"' not in html
+    assert 'id="layer-chip_aec_150"' in html
+    assert 'id="layer-chip_aec_210"' in html
     # Toggle classes are styled by the shared app.css switch rules.
     assert 'class="toggle"' in html
     # Each row exposes a status element for the poll loop to fill.
     assert 'id="layer-status-raw"' in html
     assert 'id="layer-status-dtln"' in html
-    assert 'id="layer-status-chip_aec"' in html
+    assert 'id="layer-status-chip_aec_150"' in html
+    assert 'id="layer-status-chip_aec_210"' in html
 
 
 def test_index_html_renders_microphone_status_card():
@@ -507,7 +510,8 @@ def test_index_html_chip_aec_controls_are_advanced_not_primary():
     """Chip beam scoring and validation stay available, but not as the
     primary household-facing echo UX."""
     html = wake_setup._index_html({}).decode()
-    assert "Hardware beam scoring" in html
+    assert "Extra chip beam 150" in html
+    assert "Extra chip beam 210" in html
     assert "Hardware AEC validation mode" in html
     assert "Advanced wake fusion" in html
 
@@ -815,17 +819,26 @@ def test_layer_dtln_posts_aec_leg_with_body(wired_server):
     )
 
 
-def test_layer_chip_aec_posts_aec_leg_with_body(wired_server):
-    """The chip-AEC layer rewrites to /aec/leg with leg='chip_aec' — the
-    single boolean the reconciler fans out to both fixed beams. Routing
-    is identical to raw/dtln; jasper-control's handler stays unchanged."""
+def test_layer_chip_aec_150_posts_aec_leg_with_body(wired_server):
+    base, received, _, _ = wired_server
+    _json_post_with_csrf(base, "/layer/chip_aec_150", {"enabled": True})
+    posts = [r for r in received if r[0] == "POST"]
+    assert any(
+        path == "/aec/leg" and parsed == {"leg": "chip_aec_150", "enabled": True}
+        for _, path, parsed in posts
+    )
+
+
+def test_legacy_layer_chip_aec_posts_both_beam_legs(wired_server):
     base, received, _, _ = wired_server
     _json_post_with_csrf(base, "/layer/chip_aec", {"enabled": True})
     posts = [r for r in received if r[0] == "POST"]
-    assert any(
-        path == "/aec/leg" and parsed == {"leg": "chip_aec", "enabled": True}
-        for _, path, parsed in posts
-    )
+    assert (
+        "POST", "/aec/leg", {"leg": "chip_aec_150", "enabled": True}
+    ) in posts
+    assert (
+        "POST", "/aec/leg", {"leg": "chip_aec_210", "enabled": True}
+    ) in posts
 
 
 def test_firmware_update_posts_control_update_route(wired_server):

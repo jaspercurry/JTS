@@ -292,7 +292,9 @@ Mode in the consumer apps and dictation in Claude Code.
   the effective input contract: already-processed profiles such as
   `xvf_chip_aec` and `xvf_software_aec3` omit provider denoising,
   raw direct mics use `far_field`, and explicit `off` / `near_field` /
-  `far_field` values remain operator overrides. `jasper-voice` logs the
+  `far_field` values remain operator overrides. Chip-AEC classification follows
+  the reconciler-applied base chip flag plus the primary/session UDP stream;
+  the optional 150/210 beam device vars do not need to be present. `jasper-voice` logs the
   resolved policy as `event=voice.input_policy` and warns on suspicious
   combinations such as explicit `far_field` on an already-processed
   input stream.
@@ -595,7 +597,10 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
 
-Last verified: 2026-06-24 (time-billed Grok accounting re-verified against xAI's pricing/cost-tracking/Voice WebSocket docs plus `jasper/usage.py`, `jasper/voice/openai_session.py`, `jasper/voice/grok_session.py`, and `tests/test_grok_session.py`; barge-in interruption contract re-verified against `jasper/voice/session.py`, `jasper/voice/turn_playback.py`, and the adapters — added the `drop_pending_audio()` seam member and the `reconcile`/`barge_in_reconcile` observability after the integrated-review remediation; unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice/daemon_main.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice; server-VAD public hook contract and response-stall cap rechecked against `jasper/voice/session.py`, `jasper/voice/openai_session.py`, `jasper/voice/turn_playback.py`, `jasper/voice_daemon.py`, and `tests/test_voice_daemon_defects.py`;
+Last verified: 2026-06-30 (chip-AEC input-policy classification rechecked
+against `jasper/voice/input_policy.py` and `tests/test_voice_input_policy.py`;
+base chip-AEC no longer depends on optional 150/210 wake-beam device vars.
+Prior pass 2026-06-24: time-billed Grok accounting re-verified against xAI's pricing/cost-tracking/Voice WebSocket docs plus `jasper/usage.py`, `jasper/voice/openai_session.py`, `jasper/voice/grok_session.py`, and `tests/test_grok_session.py`; barge-in interruption contract re-verified against `jasper/voice/session.py`, `jasper/voice/turn_playback.py`, and the adapters — added the `drop_pending_audio()` seam member and the `reconcile`/`barge_in_reconcile` observability after the integrated-review remediation; unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice/daemon_main.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice; server-VAD public hook contract and response-stall cap rechecked against `jasper/voice/session.py`, `jasper/voice/openai_session.py`, `jasper/voice/turn_playback.py`, `jasper/voice_daemon.py`, and `tests/test_voice_daemon_defects.py`;
 barge-in capability seam: PR-3 landed it behaviour-neutral
 (`LiveTurn.cancel_response`/`truncate_assistant_audio` +
 `LiveConnection.supports_provider_vad` + catalog `interrupt_reconcile`);

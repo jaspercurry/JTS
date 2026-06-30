@@ -67,6 +67,29 @@ _CAMILLA_PROBE_TIMEOUT_SEC = 2.0
 # one), converting an unbounded hang into a logged, bounded failure so the
 # bounded-worker control plane can never be parked indefinitely on /state.
 _STATE_AGGREGATE_BUDGET_SEC = 20.0
+_default_ha_status_cache: Any | None = None
+
+
+def _ha_failed_status(error: str = "probe failed") -> dict[str, Any]:
+    return {
+        "configured": False,
+        "connected": False,
+        "url": "",
+        "instance_name": None,
+        "version": None,
+        "error": error,
+    }
+
+
+def _default_ha_status_snapshot() -> dict[str, Any]:
+    """Child-process HA status snapshot for direct state-aggregate callers."""
+
+    global _default_ha_status_cache
+    if _default_ha_status_cache is None:
+        from .ha_status_cache import HomeAssistantStatusCache
+
+        _default_ha_status_cache = HomeAssistantStatusCache()
+    return _default_ha_status_cache.snapshot()
 
 
 def _safe_audio_quality_state() -> dict[str, Any]:
@@ -339,6 +362,7 @@ async def _get_state(
     dial_heartbeat: dict[str, Any] = _dial_heartbeat,
     dial_probe: Callable[..., Any] = _probe_dial_reachable,
     read_transit_state_func: Callable[[], dict] = read_transit_state,
+    ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Aggregate state across daemons for GET /state. Each section
     fails soft — voice unreachable / camilla restarting / dial never
@@ -491,15 +515,18 @@ async def _get_state(
             return None
 
     async def _ha_status() -> dict:
-        """Probe the configured HA instance for /state. Fails soft —
-        unconfigured returns {configured: false}; unreachable returns
-        {connected: false, error: ...}. Reads the jasper-intsecrets
-        home_assistant.env directly (not os.environ) so wizard saves are reflected
-        immediately rather than waiting for jasper-control to restart —
-        the wizard only restarts jasper-voice. See
-        `jasper.home_assistant.probe_status_from_env`."""
-        from .. import home_assistant
-        return await home_assistant.probe_status_from_env()
+        """HA status for /state via the child-process cache boundary.
+
+        The cache reads the wizard env-file signature fresh, so saves are
+        reflected without restarting jasper-control, while HA/httpx imports
+        stay in the short-lived probe child instead of the control daemon.
+        """
+        snapshot = ha_status_snapshot or _default_ha_status_snapshot
+        try:
+            return snapshot()
+        except Exception:  # noqa: BLE001
+            logger.exception("home assistant state snapshot failed")
+            return _ha_failed_status()
 
     # Snapshot dial heartbeat early so the parallel reachability probe
     # has a stable IP target even if the UDP listener mutates the dict

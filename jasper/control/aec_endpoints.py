@@ -23,6 +23,7 @@ from ..audio_profile_state import (
     normalize_audio_input_profile,
     parse_env_bool as _parse_audio_profile_bool,
     profile_env_updates,
+    resolve_audio_input_intent,
     runtime_env_from_mapping,
     validation_profile,
 )
@@ -46,31 +47,34 @@ _XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
 _XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
 
 # Default leg policy — must match deploy/install.sh's reconcile_aec_state
-# and deploy/bin/jasper-aec-reconcile's ensure_mode_file. Raw is on
-# by default (~5 MB / negligible CPU, gives OR-fusion wake-rate
-# recovery), DTLN is off by default (~75 MB / ~25% one core, opt-in),
-# chip-AEC is off by default (hardware-conditional, mutually exclusive
-# with raw/DTLN — the chip-AEC promotion).
+# and deploy/bin/jasper-aec-reconcile's ensure_mode_file. Raw is on for
+# software-AEC defaults, DTLN is off, and chip-AEC's extra beam detectors
+# are off. The chip-AEC profile itself may still be selected by `auto`;
+# these defaults only decide whether voice opens extra detector instances
+# beyond the primary/session leg.
 _LEG_DEFAULT_RAW = True
 _LEG_DEFAULT_DTLN = False
 _LEG_DEFAULT_CHIP_AEC = False
+_LEG_DEFAULT_CHIP_AEC_150 = False
+_LEG_DEFAULT_CHIP_AEC_210 = False
 _PROFILE_DEFAULT = "custom"
 
-# Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). Values
-# are tuples because one operator toggle can arm more than one leg: the
-# "chip_aec" toggle (JASPER_WAKE_LEG_CHIP_AEC) arms BOTH fixed-beam legs
-# (chip_aec_150 + chip_aec_210), with the reconciler fanning the single
-# boolean out to JASPER_MIC_DEVICE_CHIP_AEC_150/_210. The chip-direct /
-# AEC-OFF leg is exposed to operators (the /wake/ card, /aec/leg, the
-# JASPER_WAKE_LEG_RAW env var, the bash reconciler) as "raw", but its frozen
-# wire token is "off". Do NOT confuse "raw" with the "raw0" corpus-only leg
-# (chip channel 2, no toggle). This map is the single place those mappings
-# are spelled out; leg-toggle validation goes through its keys. See
-# docs/HANDOFF-mic-fusion-architecture.md.
+# Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). The
+# chip-direct / AEC-OFF leg is exposed as "raw", but its frozen wire token is
+# "off". Do NOT confuse "raw" with the "raw0" corpus-only leg. Chip-AEC
+# production mode is selected by the profile (`JASPER_WAKE_LEG_CHIP_AEC`);
+# the two per-beam toggles below only add extra wake detectors.
 _TOGGLE_TO_TOKEN = {
     "raw": ("off",),
     "dtln": ("dtln",),
-    "chip_aec": ("chip_aec_150", "chip_aec_210"),
+    "chip_aec_150": ("chip_aec_150",),
+    "chip_aec_210": ("chip_aec_210",),
+}
+_TOGGLE_TO_ENV_KEY = {
+    "raw": "JASPER_WAKE_LEG_RAW",
+    "dtln": "JASPER_WAKE_LEG_DTLN",
+    "chip_aec_150": "JASPER_WAKE_LEG_CHIP_AEC_150",
+    "chip_aec_210": "JASPER_WAKE_LEG_CHIP_AEC_210",
 }
 
 
@@ -92,6 +96,8 @@ def _read_aec_state() -> dict:
         "leg_raw": _LEG_DEFAULT_RAW,
         "leg_dtln": _LEG_DEFAULT_DTLN,
         "leg_chip_aec": _LEG_DEFAULT_CHIP_AEC,
+        "leg_chip_aec_150": _LEG_DEFAULT_CHIP_AEC_150,
+        "leg_chip_aec_210": _LEG_DEFAULT_CHIP_AEC_210,
         "profile": "",
     }
     file_found = False
@@ -115,6 +121,14 @@ def _read_aec_state() -> dict:
                     state["leg_chip_aec"] = _parse_env_bool(
                         line.split("=", 1)[1], _LEG_DEFAULT_CHIP_AEC,
                     )
+                elif line.startswith("JASPER_WAKE_LEG_CHIP_AEC_150="):
+                    state["leg_chip_aec_150"] = _parse_env_bool(
+                        line.split("=", 1)[1], _LEG_DEFAULT_CHIP_AEC_150,
+                    )
+                elif line.startswith("JASPER_WAKE_LEG_CHIP_AEC_210="):
+                    state["leg_chip_aec_210"] = _parse_env_bool(
+                        line.split("=", 1)[1], _LEG_DEFAULT_CHIP_AEC_210,
+                    )
                 elif line.startswith("JASPER_AUDIO_INPUT_PROFILE="):
                     state["profile"] = normalize_audio_input_profile(
                         line.split("=", 1)[1],
@@ -130,6 +144,8 @@ def _read_aec_state() -> dict:
                     raw_enabled=bool(state["leg_raw"]),
                     dtln_enabled=bool(state["leg_dtln"]),
                     chip_aec_enabled=bool(state["leg_chip_aec"]),
+                    chip_aec_150_enabled=bool(state["leg_chip_aec_150"]),
+                    chip_aec_210_enabled=bool(state["leg_chip_aec_210"]),
                 ),
             )
         else:
@@ -164,14 +180,37 @@ def _write_aec_leg(leg: str, enabled: bool) -> None:
     reconciler since it has the actual mode + presence context."""
     if leg not in _TOGGLE_TO_TOKEN:
         raise ValueError(f"invalid leg: {leg!r}")
-    key = f"JASPER_WAKE_LEG_{leg.upper()}"
     _atomic_rewrite_env(
         _AEC_MODE_FILE,
         {
-            key: "1" if enabled else "0",
+            _TOGGLE_TO_ENV_KEY[leg]: "1" if enabled else "0",
             "JASPER_AUDIO_INPUT_PROFILE": "custom",
         },
     )
+
+
+def _leg_status(
+    *,
+    configured: bool,
+    available: bool,
+    active: bool,
+    disabled_reason: str = "",
+) -> dict[str, Any]:
+    if not available:
+        status = disabled_reason or "unavailable"
+    elif active:
+        status = "active"
+    elif configured:
+        status = "starting"
+    else:
+        status = "off"
+    return {
+        "configured": configured,
+        "available": available,
+        "active": active,
+        "disabled_reason": disabled_reason if not available else "",
+        "status": status,
+    }
 
 
 def _write_audio_input_profile(profile: str) -> None:
@@ -373,6 +412,8 @@ def _audio_profile_status(
             raw_enabled=bool(state["leg_raw"]),
             dtln_enabled=bool(state["leg_dtln"]),
             chip_aec_enabled=bool(state["leg_chip_aec"]),
+            chip_aec_150_enabled=bool(state["leg_chip_aec_150"]),
+            chip_aec_210_enabled=bool(state["leg_chip_aec_210"]),
             profile_selection=str(state.get("profile") or ""),
         ),
         runtime,
@@ -439,6 +480,8 @@ def _chip_aec_gate(
                 raw_enabled=bool(state.get("leg_raw")),
                 dtln_enabled=bool(state.get("leg_dtln")),
                 chip_aec_enabled=bool(state.get("leg_chip_aec")),
+                chip_aec_150_enabled=bool(state.get("leg_chip_aec_150")),
+                chip_aec_210_enabled=bool(state.get("leg_chip_aec_210")),
             ),
         ),
     )
@@ -523,6 +566,8 @@ def _aec_full_status() -> dict:
         raw_enabled=bool(state["leg_raw"]),
         dtln_enabled=bool(state["leg_dtln"]),
         chip_aec_enabled=bool(state["leg_chip_aec"]),
+        chip_aec_150_enabled=bool(state["leg_chip_aec_150"]),
+        chip_aec_210_enabled=bool(state["leg_chip_aec_210"]),
         profile_selection=str(state.get("profile") or ""),
     )
     profile_status = _audio_profile_status(
@@ -538,6 +583,10 @@ def _aec_full_status() -> dict:
         requested_intent,
         runtime=runtime,
         profile_status=profile_status["audio_profile"],
+    )
+    configured = resolve_audio_input_intent(
+        requested_intent,
+        chip_available=bool(chip_gate["available"]),
     )
     software_aec3 = _software_aec3_status(
         effective,
@@ -560,6 +609,8 @@ def _aec_full_status() -> dict:
             "leg_raw": state["leg_raw"],
             "leg_dtln": state["leg_dtln"],
             "leg_chip_aec": state["leg_chip_aec"],
+            "leg_chip_aec_150": state["leg_chip_aec_150"],
+            "leg_chip_aec_210": state["leg_chip_aec_210"],
         },
         "bridge_active": bridge_active,
         "bridge_role": _bridge_role(
@@ -568,14 +619,84 @@ def _aec_full_status() -> dict:
         ),
         "software_aec3": software_aec3,
         "legs": {
-            "raw": {"configured": effective.raw_enabled},
-            "dtln": {"configured": effective.dtln_enabled},
+            "raw": _leg_status(
+                configured=effective.raw_enabled,
+                available=(
+                    effective.mode == "auto"
+                    and not effective.chip_aec_enabled
+                ),
+                active=bool(
+                    effective.mode == "auto"
+                    and not effective.chip_aec_enabled
+                    and bridge_active
+                    and runtime.raw_device
+                ),
+                disabled_reason=(
+                    "Software streams are bypassed by hardware AEC."
+                    if effective.mode == "auto" and effective.chip_aec_enabled
+                    else "Advanced wake streams require the AEC bridge."
+                ),
+            ),
+            "dtln": _leg_status(
+                configured=effective.dtln_enabled,
+                available=(
+                    effective.mode == "auto"
+                    and not effective.chip_aec_enabled
+                ),
+                active=bool(
+                    effective.mode == "auto"
+                    and not effective.chip_aec_enabled
+                    and bridge_active
+                    and runtime.dtln_device
+                ),
+                disabled_reason=(
+                    "Software streams are bypassed by hardware AEC."
+                    if effective.mode == "auto" and effective.chip_aec_enabled
+                    else "Advanced wake streams require the AEC bridge."
+                ),
+            ),
             "chip_aec": {
                 "configured": effective.chip_aec_enabled,
                 "available": chip_gate["available"],
                 "production_available": chip_gate["production_available"],
                 "testing_available": chip_gate["testing_available"],
             },
+            "chip_aec_150": _leg_status(
+                configured=effective.chip_aec_150_enabled,
+                available=bool(
+                    configured.mode == "auto"
+                    and configured.chip_aec_enabled
+                    and chip_gate["available"]
+                ),
+                active=bool(
+                    bridge_active
+                    and effective.chip_aec_enabled
+                    and runtime.chip_aec_150_device
+                ),
+                disabled_reason=(
+                    "Use hardware echo cancellation first."
+                    if not configured.chip_aec_enabled
+                    else "Hardware AEC is unavailable for this mic/DAC path."
+                ),
+            ),
+            "chip_aec_210": _leg_status(
+                configured=effective.chip_aec_210_enabled,
+                available=bool(
+                    configured.mode == "auto"
+                    and configured.chip_aec_enabled
+                    and chip_gate["available"]
+                ),
+                active=bool(
+                    bridge_active
+                    and effective.chip_aec_enabled
+                    and runtime.chip_aec_210_device
+                ),
+                disabled_reason=(
+                    "Use hardware echo cancellation first."
+                    if not configured.chip_aec_enabled
+                    else "Hardware AEC is unavailable for this mic/DAC path."
+                ),
+            ),
         },
         "threshold": _read_wake_threshold(),
         "wake_word": _read_wake_word_status(),
@@ -611,6 +732,8 @@ def _applied_aec_intent(
             raw_enabled=False,
             dtln_enabled=False,
             chip_aec_enabled=False,
+            chip_aec_150_enabled=False,
+            chip_aec_210_enabled=False,
             profile_selection=selection,
         )
     if active in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}:
@@ -619,6 +742,8 @@ def _applied_aec_intent(
             raw_enabled=False,
             dtln_enabled=False,
             chip_aec_enabled=True,
+            chip_aec_150_enabled=bool(runtime.chip_aec_150_device),
+            chip_aec_210_enabled=bool(runtime.chip_aec_210_device),
             profile_selection=selection,
         )
     if active != PROFILE_XVF_SOFTWARE_AEC3:
@@ -627,6 +752,8 @@ def _applied_aec_intent(
             raw_enabled=False,
             dtln_enabled=False,
             chip_aec_enabled=False,
+            chip_aec_150_enabled=False,
+            chip_aec_210_enabled=False,
             profile_selection=selection,
         )
     return AecIntent(
@@ -634,6 +761,8 @@ def _applied_aec_intent(
         raw_enabled=bool(runtime.raw_device),
         dtln_enabled=bool(runtime.dtln_enabled or runtime.dtln_device),
         chip_aec_enabled=False,
+        chip_aec_150_enabled=False,
+        chip_aec_210_enabled=False,
         profile_selection=selection or PROFILE_XVF_SOFTWARE_AEC3,
     )
 

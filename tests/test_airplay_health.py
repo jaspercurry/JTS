@@ -8,7 +8,6 @@ import json
 import logging
 import shutil
 import socket
-import sys
 import tempfile
 import threading
 import time
@@ -75,8 +74,8 @@ def _sampler(**kwargs) -> AirPlayHealthSampler:
     return AirPlayHealthSampler(**kwargs)
 
 
-def _patch_home_assistant(monkeypatch) -> None:
-    async def fake_ha_probe() -> dict:
+class _FakeHaStatus:
+    def snapshot(self) -> dict:
         return {
             "configured": False,
             "connected": False,
@@ -85,12 +84,6 @@ def _patch_home_assistant(monkeypatch) -> None:
             "version": None,
             "error": None,
         }
-
-    monkeypatch.setitem(
-        sys.modules,
-        "jasper.home_assistant",
-        types.SimpleNamespace(probe_status_from_env=fake_ha_probe),
-    )
 
 
 def test_classify_journal_lines_for_documented_airplay_patterns() -> None:
@@ -550,8 +543,6 @@ def test_default_fanin_status_timeout_allows_state_server_poll_delay() -> None:
 
 
 def test_system_snapshot_endpoint_includes_airplay_health(monkeypatch) -> None:
-    _patch_home_assistant(monkeypatch)
-
     class FakeAirPlay:
         def snapshot(self) -> dict:
             return {"status": "ok", "reason": "clean"}
@@ -562,6 +553,7 @@ def test_system_snapshot_endpoint_includes_airplay_health(monkeypatch) -> None:
         "/nonexistent.sock",
         sampler=None,
         airplay_health_sampler=FakeAirPlay(),
+        ha_status_cache=_FakeHaStatus(),
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -582,8 +574,6 @@ def test_system_snapshot_endpoint_includes_airplay_health(monkeypatch) -> None:
 def test_system_snapshot_endpoint_fails_soft_when_airplay_snapshot_raises(
     monkeypatch,
 ) -> None:
-    _patch_home_assistant(monkeypatch)
-
     class BrokenAirPlay:
         def snapshot(self) -> dict:
             raise RuntimeError("boom")
@@ -594,6 +584,7 @@ def test_system_snapshot_endpoint_fails_soft_when_airplay_snapshot_raises(
         "/nonexistent.sock",
         sampler=None,
         airplay_health_sampler=BrokenAirPlay(),
+        ha_status_cache=_FakeHaStatus(),
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

@@ -115,6 +115,8 @@ def test_read_aec_state_defaults_when_file_missing(aec_mode_file):
         "leg_raw": True,
         "leg_dtln": False,
         "leg_chip_aec": False,
+        "leg_chip_aec_150": False,
+        "leg_chip_aec_210": False,
         "profile": "auto",
     }
 
@@ -125,6 +127,8 @@ def test_read_aec_state_parses_all_leg_keys(aec_mode_file):
         "JASPER_WAKE_LEG_RAW=0\n"
         "JASPER_WAKE_LEG_DTLN=1\n"
         "JASPER_WAKE_LEG_CHIP_AEC=1\n"
+        "JASPER_WAKE_LEG_CHIP_AEC_150=1\n"
+        "JASPER_WAKE_LEG_CHIP_AEC_210=0\n"
         "JASPER_AUDIO_INPUT_PROFILE=custom\n"
     )
     state = server._read_aec_state()
@@ -133,6 +137,8 @@ def test_read_aec_state_parses_all_leg_keys(aec_mode_file):
         "leg_raw": False,
         "leg_dtln": True,
         "leg_chip_aec": True,
+        "leg_chip_aec_150": True,
+        "leg_chip_aec_210": False,
         "profile": "custom",
     }
 
@@ -237,6 +243,8 @@ def test_write_audio_input_profile_writes_profile_and_legacy_keys(aec_mode_file)
     assert "JASPER_WAKE_LEG_RAW=0" in body
     assert "JASPER_WAKE_LEG_DTLN=0" in body
     assert "JASPER_WAKE_LEG_CHIP_AEC=1" in body
+    assert "JASPER_WAKE_LEG_CHIP_AEC_150=0" in body
+    assert "JASPER_WAKE_LEG_CHIP_AEC_210=0" in body
 
 
 def test_write_audio_input_profile_rejects_custom(aec_mode_file):
@@ -372,7 +380,7 @@ def test_toggle_to_token_maps_to_real_wake_input_legs():
     chip-direct "off" leg on UDP 9877, NOT the "raw0" corpus leg (the
     easy-to-confuse footgun). Guards _TOGGLE_TO_TOKEN against drifting onto
     the wrong leg if the registry is ever reorganized. Values are tuples
-    because one toggle can arm several legs (chip_aec -> 150 + 210)."""
+    because one UI affordance can eventually map to several concrete legs."""
     from jasper.wake_legs import by_token, wake_input_legs
     wake_tokens = {leg.token for leg in wake_input_legs()}
     for toggle, tokens in server._TOGGLE_TO_TOKEN.items():
@@ -383,8 +391,8 @@ def test_toggle_to_token_maps_to_real_wake_input_legs():
     # The collision the map exists to document: operator "raw" == "off".
     assert server._TOGGLE_TO_TOKEN["raw"] == ("off",)
     assert by_token("off").udp_port == 9877
-    # The chip-AEC toggle arms both fixed-beam legs (one boolean, two legs).
-    assert server._TOGGLE_TO_TOKEN["chip_aec"] == ("chip_aec_150", "chip_aec_210")
+    assert server._TOGGLE_TO_TOKEN["chip_aec_150"] == ("chip_aec_150",)
+    assert server._TOGGLE_TO_TOKEN["chip_aec_210"] == ("chip_aec_210",)
 
 
 # ---------- _write_wake_threshold ------------------------------------------
@@ -565,8 +573,10 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
         "bypassed": False,
         "reason": "AEC bridge is disabled by the direct-mic profile.",
     }
-    assert status["legs"]["raw"] == {"configured": False}
-    assert status["legs"]["dtln"] == {"configured": False}
+    assert status["legs"]["raw"]["configured"] is False
+    assert status["legs"]["raw"]["available"] is False
+    assert status["legs"]["dtln"]["configured"] is False
+    assert status["legs"]["dtln"]["available"] is False
     assert status["legs"]["chip_aec"]["configured"] is False
     assert status["legs"]["chip_aec"]["available"] is False
     assert status["raw_intent"]["leg_raw"] is True
@@ -678,8 +688,6 @@ def test_aec_full_status_auto_profile_resolves_chip_when_available(
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
-            "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
-            "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",
         },
     )
 
@@ -698,6 +706,10 @@ def test_aec_full_status_auto_profile_resolves_chip_when_available(
     }
     assert status["legs"]["raw"]["configured"] is False
     assert status["legs"]["chip_aec"]["configured"] is True
+    assert status["legs"]["chip_aec_150"]["configured"] is False
+    assert status["legs"]["chip_aec_150"]["active"] is False
+    assert status["legs"]["chip_aec_210"]["configured"] is False
+    assert status["legs"]["chip_aec_210"]["active"] is False
     assert status["raw_intent"]["leg_raw"] is True
     assert status["audio_profile"]["selection"] == "auto"
     assert status["audio_profile"]["requested"] == "xvf_chip_aec"
@@ -728,8 +740,6 @@ def test_aec_full_status_testing_profile_allows_unapproved_dac_testing(
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AUDIO_DAC_ID": "mystery_usb_audio",
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
-            "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
-            "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",
             "JASPER_AEC_CHIP_AEC_DAC_STATUS": "testing",
             "JASPER_AEC_CHIP_AEC_DAC_SOURCE": "explicit_testing",
             "JASPER_AEC_CHIP_AEC_DAC_DETAIL": "operator validation",
@@ -1022,20 +1032,20 @@ def test_aec_full_status_survives_firmware_probe_error(
     assert "microphone" in status
 
 
-def test_write_aec_leg_chip_aec_writes_boolean(aec_mode_file):
-    """The /aec/leg POST for chip_aec writes JASPER_WAKE_LEG_CHIP_AEC,
+def test_write_aec_leg_chip_aec_150_writes_boolean(aec_mode_file):
+    """The /aec/leg POST for chip_aec_150 writes its per-beam boolean,
     preserving the other leg keys (RMW)."""
     aec_mode_file.write_text(
         "JASPER_AEC_MODE=auto\n"
         "JASPER_WAKE_LEG_RAW=1\n"
         "JASPER_WAKE_LEG_DTLN=0\n"
     )
-    server._write_aec_leg("chip_aec", True)
+    server._write_aec_leg("chip_aec_150", True)
     body = aec_mode_file.read_text()
-    assert "JASPER_WAKE_LEG_CHIP_AEC=1" in body
+    assert "JASPER_WAKE_LEG_CHIP_AEC_150=1" in body
     assert "JASPER_WAKE_LEG_RAW=1" in body   # preserved
     assert "JASPER_AUDIO_INPUT_PROFILE=custom" in body
-    assert server._read_aec_state()["leg_chip_aec"] is True
+    assert server._read_aec_state()["leg_chip_aec_150"] is True
 
 
 # ---------- chip_aec_gate blockers: one canonical vocabulary ----------------

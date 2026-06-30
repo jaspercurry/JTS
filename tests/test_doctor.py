@@ -4985,30 +4985,42 @@ def test_assess_wake_legs_dtln_skip_warns():
 def test_assess_wake_legs_chip_aec_does_not_false_warn_on_cleared_raw():
     """Chip-AEC mutual exclusion: the reconciler clears raw/DTLN *device*
     vars when chip is on but preserves their booleans as wizard intent. So
-    raw=True can coexist with chip_aec=True, and the armed set is the two
-    chip beams + on — with NO 'off' leg. The doctor must expect the chip
-    set (not 'off'), or it would false-warn 'off not running' on every
-    chip-AEC install. This is the regression this fix prevents."""
+    raw=True can coexist with chip_aec=True, and the default armed set is
+    the primary chip beam on the "on" leg — with NO "off" leg and no extra
+    beam detectors. This is the resource regression this fix prevents."""
     r = doctor._assess_wake_legs(
         "auto", raw=True, dtln=False,
-        armed_runtime={"on", "chip_aec_150", "chip_aec_210"},
+        armed_runtime={"on"},
         chip_aec=True,
     )
     assert r.status == "ok", r.detail
-    assert "3 leg(s) armed" in r.detail
-    assert "chip_aec_150" in r.detail
+    assert "1 leg(s) armed" in r.detail
+    assert "off" not in r.detail
 
 
-def test_assess_wake_legs_chip_aec_warns_when_beams_not_armed():
-    """Chip-AEC configured on but the beams aren't armed (chip not on the
-    6-ch firmware, or bridge down) → warn naming the missing beams, with a
-    6-ch-firmware hint."""
+def test_assess_wake_legs_chip_aec_warns_when_enabled_extra_beams_not_armed():
+    """Extra chip-AEC beam toggles are explicit. When configured but not
+    armed, warn naming the missing beams."""
     r = doctor._assess_wake_legs(
         "auto", raw=True, dtln=False, armed_runtime={"on"}, chip_aec=True,
+        chip_aec_150=True, chip_aec_210=True,
     )
     assert r.status == "warn"
     assert "chip_aec_150" in r.detail and "chip_aec_210" in r.detail
     assert "6-ch firmware" in r.detail
+
+
+def test_assess_wake_legs_chip_aec_warns_on_unexpected_extra_beams():
+    """Default chip-AEC should arm only the primary beam; extra armed
+    beams are resource burn, so doctor should not report ok."""
+    r = doctor._assess_wake_legs(
+        "auto", raw=True, dtln=False,
+        armed_runtime={"on", "chip_aec_150"},
+        chip_aec=True,
+    )
+    assert r.status == "warn"
+    assert "unexpected wake legs" in r.detail
+    assert "chip_aec_150" in r.detail
 
 
 def test_assess_wake_legs_chip_aec_intent_when_daemon_unreachable():
@@ -5018,7 +5030,7 @@ def test_assess_wake_legs_chip_aec_intent_when_daemon_unreachable():
         "auto", raw=True, dtln=False, armed_runtime=None, chip_aec=True,
     )
     assert r.status == "ok"
-    assert "chip_aec_150" in r.detail
+    assert "primary_chip_beam" in r.detail
     # raw is on but mutual exclusion means it isn't part of the chip config.
     assert "raw" not in r.detail
 

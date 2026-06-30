@@ -28,13 +28,14 @@
 import { jsonHeaders, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 
-const LAYERS = ["raw", "dtln", "chip_aec"];
+const LAYERS = ["raw", "dtln", "chip_aec_150", "chip_aec_210"];
 const POLL_MS = 3000;
 
 const dirty = {};
 let ignorePollUntil = 0;
 let lastServerThreshold = null;
 let profileChoices = {};
+let fusionToggles = {};
 let firmwareUpdateBusy = false;
 
 const el = (id) => document.getElementById(id);
@@ -175,6 +176,7 @@ function applyState(s) {
   ((fusion && fusion.toggles) || []).forEach((toggle) => {
     if (toggle && toggle.id) toggles[toggle.id] = toggle;
   });
+  fusionToggles = toggles;
 
   applyProfileStatus(s);
   applyMicStatus(s);
@@ -191,7 +193,10 @@ function applyState(s) {
       input.disabled = !toggle.enabled;
     }
     const reason = toggle.disabled_reason || "";
-    el("layer-status-" + name).textContent = reason || (toggle.status || "—");
+    setText("layer-name-" + name, toggle.label);
+    setText("layer-desc-" + name, toggle.description);
+    setText("layer-meta-" + name, toggle.cost);
+    setText("layer-status-" + name, reason || (toggle.status || "—"));
     row.classList.toggle("is-disabled", input.disabled);
   });
 
@@ -224,7 +229,7 @@ async function pollDetection() {
     applyState(await r.json());
   } catch (e) {
     LAYERS.forEach((name) => {
-      el("layer-status-" + name).textContent = "Disconnected";
+      setText("layer-status-" + name, "Disconnected");
     });
     profileInputs().forEach((input) => {
       input.disabled = true;
@@ -313,36 +318,20 @@ profileInputs().forEach((input) => {
   });
 });
 
-// Wire each advanced stream toggle. DTLN and hardware beam scoring get an
-// extra confirm because both carry a real restart/resource cost.
+// Wire each advanced stream toggle. Confirm text comes from the backend view
+// model so the browser does not own per-channel resource policy.
 LAYERS.forEach((name) => {
   el("layer-" + name).addEventListener("change", async () => {
     const cb = el("layer-" + name);
-    if (
-      name === "dtln" &&
-      cb.checked &&
-      !(await jtsConfirm(
-        "Enable DTLN neural AEC?\n\n" +
-          "+~75 MB RAM, +~25% one core. Recommended for 2 GB Pis.\n" +
-          "jasper-voice + bridge will restart (~15 s).",
-      ))
-    ) {
-      cb.checked = false;
-      return;
-    }
-    if (
-      name === "chip_aec" &&
-      cb.checked &&
-      !(await jtsConfirm(
-        "Use the chip-AEC beams as the wake layers?\n\n" +
-          "This switches to the mic array's hardware echo-cancelled " +
-          "beam plan and PAUSES the raw + DTLN layers — the chip " +
-          "can't do both at once.\n" +
-          "jasper-voice + bridge will restart (~15 s).",
-      ))
-    ) {
-      cb.checked = false;
-      return;
+    const confirm = (fusionToggles[name] || {}).confirm;
+    if (cb.checked && confirm) {
+      const message = [confirm.title || "", confirm.body || ""]
+        .filter(Boolean)
+        .join("\n\n");
+      if (!(await jtsConfirm(message, { danger: !!confirm.danger }))) {
+        cb.checked = false;
+        return;
+      }
     }
     postLayer(name, cb.checked);
   });

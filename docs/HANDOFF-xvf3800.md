@@ -511,8 +511,8 @@ In the recommended `xvf_chip_aec` profile, `jasper-aec-init` applies a
 volatile chip-AEC profile instead: `SHF_BYPASS=0`, fixed gated
 150°/210° ASR beams, and `AUDIO_MGR_OP_L/R=[7,0]/[7,1]`. The bridge
 captures those two beam outputs, forwards the selected primary beam to
-voice on `:9876`, and emits both fixed beams on `:9887`/`:9888` for
-wake scoring.
+voice on `:9876`, and emits fixed beams on `:9887`/`:9888` only when
+the optional extra wake/scoring detectors are enabled.
 
 Ch 0 vs ch 1 is canonical XVF3800 territory:
 - **Seeed's own example code**: 2-channel `arecord`, takes the
@@ -1614,4 +1614,17 @@ In rough order of how often we reach for each:
 
 ---
 
-Last verified: 2026-06-29 (productized `/wake/` AEC firmware updater code/static path reviewed; legacy 6-channel SHA256/size and jts2 normal-runtime 2-ch → 6-ch manual DFU flow verified; Flex v1.0.1 upstream filenames/sizes/SHA256s verified against GitHub. Prior 2026-06-19 pass: Flex / XIAO I2S-default variants, BOOT-button Safe Mode entry, the "won't register as USB" troubleshooting signature, and the Linear-4 mic-geometry caveat validated on Flex Linear-4 + XIAO; Flex LINEAR-4 USB identity PID 2886:0022, ALSA L16K6Ch, and `ua-io16-6ch-lin` verified on jts5. Prior 2026-06-18 pass: DFU link, software fallback OP_R non-silent routing, and production/corpus chip-AEC routing restore/readback.)
+Last verified: 2026-06-30 (chip-AEC bridge routing language rechecked
+against `jasper/cli/aec_bridge.py` and `deploy/bin/jasper-aec-reconcile`:
+the default production profile forwards the primary/session beam on `:9876`;
+optional `:9887`/`:9888` wake/scoring emitters require explicit runtime env.
+Prior 2026-06-29 pass: productized `/wake/` AEC firmware updater code/static
+path reviewed; legacy 6-channel SHA256/size and jts2 normal-runtime 2-ch →
+6-ch manual DFU flow verified; Flex v1.0.1 upstream filenames/sizes/SHA256s
+verified against GitHub. Prior 2026-06-19 pass: Flex / XIAO I2S-default
+variants, BOOT-button Safe Mode entry, the "won't register as USB"
+troubleshooting signature, and the Linear-4 mic-geometry caveat validated on
+Flex Linear-4 + XIAO; Flex LINEAR-4 USB identity PID 2886:0022, ALSA L16K6Ch,
+and `ua-io16-6ch-lin` verified on jts5. Prior 2026-06-18 pass: DFU link,
+software fallback OP_R non-silent routing, and production/corpus chip-AEC
+routing restore/readback.)

@@ -9,10 +9,10 @@ process runs WebRTC AEC3. In chip-AEC production mode
 (`JASPER_AEC_CHIP_AEC_ENABLED=1`) it does not instantiate the WebRTC AEC3
 engine; it routes outputd's final speaker buffer into the XVF3800 USB-IN
 reference, captures the chip's 150°/210° ASR beams, forwards the selected
-primary beam on :9876, and emits both beams on :9887/:9888 for wake
-scoring. The wake-corpus recorder uses the same chip profile under its
-corpus-only flag so the labeled comparison data and production mode stay
-aligned.
+primary beam on :9876, and emits optional extra beams on :9887/:9888 only
+when the reconciler publishes those runtime device env vars. The wake-corpus
+recorder uses the same chip profile under its corpus-only flag so the labeled
+comparison data and production mode stay aligned.
 
 In default mode this bridge does the AEC in software, with the
 recommended XVF capture channel as near-end and the host-side music
@@ -283,6 +283,8 @@ class BridgeConfig:
     out_port_usb_dtln: int
     out_port_chip_aec_150: int
     out_port_chip_aec_210: int
+    emit_chip_aec_150: bool
+    emit_chip_aec_210: bool
     out_port_xvf_raw0_webrtc_aec3: int
     out_port_xvf_raw0_dtln: int
     outputd_ref_udp_host: str
@@ -359,6 +361,12 @@ class BridgeConfig:
             out_port_chip_aec_210=_env_leg_port(
                 "JASPER_AEC_UDP_PORT_CHIP_AEC_210",
                 "chip_aec_210",
+            ),
+            emit_chip_aec_150=bool(
+                os.environ.get("JASPER_MIC_DEVICE_CHIP_AEC_150", "").strip()
+            ),
+            emit_chip_aec_210=bool(
+                os.environ.get("JASPER_MIC_DEVICE_CHIP_AEC_210", "").strip()
             ),
             out_port_xvf_raw0_webrtc_aec3=_env_leg_port(
                 "JASPER_AEC_UDP_PORT_XVF_RAW0_WEBRTC_AEC3",
@@ -1614,8 +1622,18 @@ def _aec_loop(  # noqa: PLR0915
     raw0_emitter = add_emitter("raw0", config.out_port_raw0)
     chip_aec_emitters: dict[str, LegEmitter] = {}
     if chip_aec_qs and chip_beam_plan:
+        chip_aec_ports = {
+            "chip_aec_150": config.out_port_chip_aec_150,
+            "chip_aec_210": config.out_port_chip_aec_210,
+        }
+        chip_aec_enabled = {
+            "chip_aec_150": config.emit_chip_aec_150,
+            "chip_aec_210": config.emit_chip_aec_210,
+        }
         for beam in chip_beam_plan.legs:
-            port = _leg_default_port(beam.token)
+            if not chip_aec_enabled.get(beam.token, False):
+                continue
+            port = chip_aec_ports.get(beam.token, _leg_default_port(beam.token))
             chip_aec_emitters[beam.token] = add_emitter(beam.token, port)
 
     xvf_raw0_engine = None
@@ -2093,7 +2111,8 @@ def _aec_loop(  # noqa: PLR0915
                     except Empty:
                         continue
                     chip_frames[leg] = chip_bytes
-                    chip_aec_emitters[leg].emit(chip_bytes)
+                    if emitter := chip_aec_emitters.get(leg):
+                        emitter.emit(chip_bytes)
 
             if production_chip_aec_enabled:
                 clean = chip_frames.get(chip_aec_primary_leg, b"")

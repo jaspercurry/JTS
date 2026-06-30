@@ -291,7 +291,26 @@ def server_with_coordinator(monkeypatch):
     )
     monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
 
-    handler = _make_handler("127.0.0.1", 9, "/nonexistent.sock")
+    class FakeHaStatus:
+        def snapshot(self):
+            raw = os.environ.get("JASPER_TEST_HA_STATUS_JSON", "")
+            if raw:
+                return json.loads(raw)
+            return {
+                "configured": False,
+                "connected": False,
+                "url": "",
+                "instance_name": None,
+                "version": None,
+                "error": None,
+            }
+
+    handler = _make_handler(
+        "127.0.0.1",
+        9,
+        "/nonexistent.sock",
+        ha_status_cache=FakeHaStatus(),
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1000,12 +1019,12 @@ def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordina
 
     status, body = _post(
         f"{base}/aec/leg",
-        {"leg": "chip_aec", "enabled": True},
+        {"leg": "chip_aec_150", "enabled": True},
     )
 
     assert status == 200
     assert body == {"ok": True}
-    assert "JASPER_WAKE_LEG_CHIP_AEC=1" in mode_file.read_text()
+    assert "JASPER_WAKE_LEG_CHIP_AEC_150=1" in mode_file.read_text()
     assert popens == [
         ["systemctl", "restart", "--no-block", "jasper-aec-reconcile.service"],
     ]
@@ -1017,7 +1036,9 @@ def test_json_array_body_is_treated_as_empty_body(server_with_coordinator):
     status, body = _post_raw(f"{base}/aec/leg", b"[]")
 
     assert status == 400
-    assert body["error"] == "leg must be one of: chip_aec, dtln, raw"
+    assert body["error"] == (
+        "leg must be one of: chip_aec_150, chip_aec_210, dtln, raw"
+    )
 
 
 @pytest.mark.parametrize("profile", ["xvf_chip_aec", "xvf_chip_aec_testing"])
@@ -2779,6 +2800,7 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
         camilla_host="127.0.0.1",
         camilla_port=1234,
         voice_socket_path="/nonexistent.sock",
+        ha_status_snapshot=lambda: {"configured": False, "connected": False},
     )
 
     policy = body["audio"]["volume_policy"]
@@ -3065,7 +3087,6 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
     overload can't manufacture a T5.2 reboot via a wedged /state."""
     import jasper.camilla as camilla_mod
     import jasper.control.state_aggregate as sa
-    from jasper import home_assistant
 
     class HangingCamilla:
         def __init__(self, *a, **k):
@@ -3080,14 +3101,13 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
         get_clipped_samples = _hang
         get_config_file_path = _hang
 
-    async def _fast_ha(*a, **k):
+    def _fast_ha():
         return {"configured": False, "connected": False}
 
     async def _no_airplay(**kwargs):
         return None
 
     monkeypatch.setattr(camilla_mod, "CamillaController", HangingCamilla)
-    monkeypatch.setattr(home_assistant, "probe_status_from_env", _fast_ha)
     monkeypatch.setattr(sa.mpris, "shairport_playing", _no_airplay)
     # Camilla's own ceiling is high, so the OUTER aggregate budget is what
     # fires — that's the path under test.
@@ -3101,6 +3121,7 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
                 camilla_port=1234,
                 voice_socket_path="/nonexistent.sock",
                 dial_heartbeat={},
+                ha_status_snapshot=_fast_ha,
             )
 
     assert any(
@@ -3126,21 +3147,25 @@ def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch)
 
 def test_state_home_assistant_connected(server_with_coordinator, monkeypatch):
     """Configured + reachable: /state.home_assistant carries instance_name
-    + version from /api/config. We monkeypatch probe_status so the test
-    never touches the network."""
+    + version from the injected child-cache status provider."""
     import jasper.home_assistant as ha_mod
     base, _ = server_with_coordinator
 
-    monkeypatch.setenv("JASPER_HA_URL", "http://homeassistant.local:8123")
-    monkeypatch.setenv("JASPER_HA_TOKEN", "test-token")
+    async def should_not_run():
+        raise AssertionError("state must not import/probe HA in-process")
 
-    async def fake_probe(url, token, *, force=False, verify_ssl=True):
-        return {
-            "configured": True, "connected": True, "url": url,
-            "instance_name": "Brooklyn House", "version": "2026.5.1",
+    monkeypatch.setattr(ha_mod, "probe_status_from_env", should_not_run)
+    monkeypatch.setenv(
+        "JASPER_TEST_HA_STATUS_JSON",
+        json.dumps({
+            "configured": True,
+            "connected": True,
+            "url": "http://homeassistant.local:8123",
+            "instance_name": "Brooklyn House",
+            "version": "2026.5.1",
             "error": None,
-        }
-    monkeypatch.setattr(ha_mod, "probe_status", fake_probe)
+        }),
+    )
 
     status, body = _get(f"{base}/state")
     assert status == 200
@@ -3154,19 +3179,19 @@ def test_state_home_assistant_connected(server_with_coordinator, monkeypatch):
 def test_state_home_assistant_unreachable_fails_soft(server_with_coordinator, monkeypatch):
     """Configured but probe fails: response still 200 with the rest of
     /state intact; home_assistant carries the error string."""
-    import jasper.home_assistant as ha_mod
     base, _ = server_with_coordinator
 
-    monkeypatch.setenv("JASPER_HA_URL", "http://homeassistant.local:8123")
-    monkeypatch.setenv("JASPER_HA_TOKEN", "test-token")
-
-    async def fake_probe(url, token, *, force=False, verify_ssl=True):
-        return {
-            "configured": True, "connected": False, "url": url,
-            "instance_name": None, "version": None,
-            "error": "Couldn't reach Home Assistant — check the URL and token.",
-        }
-    monkeypatch.setattr(ha_mod, "probe_status", fake_probe)
+    monkeypatch.setenv(
+        "JASPER_TEST_HA_STATUS_JSON",
+        json.dumps({
+            "configured": True,
+            "connected": False,
+            "url": "http://homeassistant.local:8123",
+            "instance_name": None,
+            "version": None,
+            "error": "Couldn't reach Home Assistant - check the URL and token.",
+        }),
+    )
 
     status, body = _get(f"{base}/state")
     assert status == 200

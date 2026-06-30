@@ -1570,7 +1570,7 @@ install_journald_persistent_storage() {
 
 reconcile_aec_state() {
     ensure_state_dir
-    # Five keys live in aec_mode.env, all owned by the /wake/
+    # These keys live in aec_mode.env, all owned by the /wake/
     # input-profile / wake-detection cards:
     #   - JASPER_AUDIO_INPUT_PROFILE  canonical profile selection
     #                                 (auto, xvf_chip_aec,
@@ -1580,20 +1580,26 @@ reconcile_aec_state() {
     #   - JASPER_AEC_MODE             master AEC bridge toggle
     #   - JASPER_WAKE_LEG_RAW         additive raw chip-direct leg (~5 MB)
     #   - JASPER_WAKE_LEG_DTLN        additive DTLN neural leg (~75 MB)
-    #   - JASPER_WAKE_LEG_CHIP_AEC    XVF3800 chip-AEC beam legs (opt-in,
-    #                                 hardware-conditional, mutually
+    #   - JASPER_WAKE_LEG_CHIP_AEC    XVF3800 chip-AEC profile gate
+    #                                 (hardware-conditional, mutually
     #                                 exclusive with raw/DTLN)
+    #   - JASPER_WAKE_LEG_CHIP_AEC_150 optional extra 150° chip-AEC wake
+    #                                  detector (~30 MB)
+    #   - JASPER_WAKE_LEG_CHIP_AEC_210 optional extra 210° chip-AEC wake
+    #                                  detector (~30 MB)
     #   - JASPER_AEC_CHIP_REF_OBSERVE opt-in: on the software-AEC3 path,
     #                                 arm outputd's chip-ref writer FOR
     #                                 MEASUREMENT ONLY so the Layer-0 SRO
     #                                 drift estimator gets fed (mic path
     #                                 stays software AEC3). Default off.
     # Defaults: profile auto. On approved XVF3800 + output-DAC hardware that
-    # resolves to chip-AEC (no stacked software AEC/raw/DTLN). When chip-AEC
-    # is unavailable it falls back to the software-AEC3 profile (AEC on, raw
-    # fallback on, DTLN off). Unapproved DACs use the explicit
-    # xvf_chip_aec_testing profile; auto never selects testing. DTLN remains
-    # an explicit custom/lab leg because it is heavy on a 1 GB Pi.
+    # resolves to chip-AEC with only the primary/session wake detector active
+    # (no stacked software AEC/raw/DTLN and no extra chip beams). When
+    # chip-AEC is unavailable it falls back to the software-AEC3 profile
+    # (AEC on, raw fallback on, DTLN off). Unapproved DACs use the explicit
+    # xvf_chip_aec_testing profile; auto never selects testing. DTLN and
+    # extra chip beams remain explicit custom/lab legs because they add
+    # detector memory on a 1 GB Pi.
     #
     # On upgrade, the reconciler's ensure_mode_file appends any
     # missing keys with these same defaults — preserving an
@@ -1602,7 +1608,7 @@ reconcile_aec_state() {
     # env vars in /etc/jasper/jasper.env runs separately in
     # migrate_wake_legs_config.
     if [[ ! -f "${STATE_DIR}/aec_mode.env" ]]; then
-        printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' \
+        printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_WAKE_LEG_CHIP_AEC_150=0\nJASPER_WAKE_LEG_CHIP_AEC_210=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' \
             > "${STATE_DIR}/aec_mode.env"
         chmod 0644 "${STATE_DIR}/aec_mode.env"
     fi

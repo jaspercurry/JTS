@@ -138,6 +138,7 @@ docs = [
   "AGENTS.md",
   "QUICKSTART.md",
   "BRINGUP.md",
+  "docs/HANDOFF-runtime-memory.md",
   "docs/HANDOFF-supply-chain.md",
   "docs/HANDOFF-build-sandbox.md",
   "docs/HANDOFF-resilience.md",
@@ -384,6 +385,8 @@ code = [
   "jasper/aec_engines/**",
   "jasper/audio_profile_state.py",
   "jasper/audio_validation.py",
+  "jasper/audio_input_view.py",
+  "jasper/control/aec_endpoints.py",
   "jasper/mics/**",
   "jasper/xvf/**",
   "jasper/chip_aec_experiment.py",
@@ -402,6 +405,7 @@ docs = [
   "docs/AEC-DIAG-04-timing-results.md",
   "docs/AEC-DIAG-06-xvf-format-level-profile.md",
   "docs/HANDOFF-aec.md",
+  "docs/HANDOFF-runtime-memory.md",
   "docs/HANDOFF-barge-in.md",
   # The reconciler is the single writer of the mic presence-gate marker;
   # a change to its park/start paths must route here.
@@ -684,11 +688,14 @@ title = "Home Assistant integration"
 safety = "safe-ci"
 code = [
   "jasper/home_assistant.py",
+  "jasper/control/ha_probe_child.py",
+  "jasper/control/ha_status_cache.py",
   "jasper/tools/home_assistant.py",
   "jasper/web/home_assistant_setup.py",
 ]
 docs = [
   "docs/HANDOFF-homeassistant.md",
+  "docs/HANDOFF-runtime-memory.md",
 ]
 requires_docs_when = [
   "Conversation API usage, wizard setup flow, token handling, tool prompt/answer behavior, or observability surfaces change.",
@@ -870,6 +877,8 @@ code = [
   "jasper/control/debug_control.py",
   "jasper/control/state_aggregate.py",
   "jasper/control/system_*.py",
+  "jasper/control/ha_probe_child.py",
+  "jasper/control/ha_status_cache.py",
   "jasper/control/shairport_supervisor.py",
   "jasper/control/airplay_health.py",
   "jasper/control/bootloop_guard_state.py",
@@ -905,6 +914,7 @@ docs = [
   "docs/HANDOFF-tier5-watchdog-liveness.md",
   "docs/HANDOFF-airplay.md",
   "docs/HANDOFF-management-ui.md",
+  "docs/HANDOFF-runtime-memory.md",
 ]
 requires_docs_when = [
   "Watchdog, OOM, restart, dashboard health, AirPlay mode/health, or systemd unit resilience behavior changes.",

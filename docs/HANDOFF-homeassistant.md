@@ -546,13 +546,28 @@ voice probes; an unconfigured or unreachable HA returns a clean
 shape with `configured` / `connected` flags rather than breaking
 the whole `/state` response.
 
-### `/system/` dashboard card
+### `jasper-control` status surfaces
 
-The Home Assistant card on `http://jts.local/system/` polls
-`/system/snapshot` every 5 seconds. Shows:
+`jasper-control` exposes HA reachability in `/state.home_assistant` and in the
+Home Assistant card on `http://jts.local/system/`, which polls
+`/system/snapshot` every 5 seconds. It does not run the HA probe inline on
+either request path. It owns a small `HomeAssistantStatusCache`, which
+refreshes stale status by starting `python -m jasper.control.ha_probe_child`;
+the child imports `jasper.home_assistant`, reads
+`/var/lib/jasper-intsecrets/home_assistant.env`, runs
+`probe_status_from_env()`, writes JSON, and exits. The parent keeps only the
+JSON status dict and a redacted env-file signature. A wizard save changes that
+signature, so `/state` or `/system/` starts a refresh even inside the normal
+TTL. Reads return immediately with `checking=true` or stale cached status while
+a refresh is in flight. Child failure logs `event=ha.status_probe_failed` and
+the dashboard/state response still renders.
+
+Shows:
 
 | Status                    | UI                             |
 |---------------------------|--------------------------------|
+| Refresh in flight         | "Checking"                     |
+| Refresh failed with stale cache | "Refresh failed" + last known URL/name |
 | Not configured            | "Not configured"               |
 | Configured + connected    | "✓ Connected" (green) + name/version |
 | Configured + unreachable  | "✗ Unreachable" (red) + error  |
@@ -634,21 +649,22 @@ text either way.
 
 ## Performance characteristics
 
-**Quantified on a Pi 5 1GB:**
+**Quantified on a Pi 5 1GB before the jasper-control child-cache change:**
 
 | State                                          | RAM cost                  | CPU per minute        |
 |-----------------------------------------------|---------------------------|-----------------------|
 | HA unconfigured                                | 0 (HAClient never built)  | 0                     |
 | HA configured, daemon idle                     | ~30 KB (httpx pool)       | ~0                    |
 | HA configured, voice session active            | +~5 KB per turn           | ~5ms per tool call    |
-| HA configured + healthy, dashboard open        | +~80 KB transient         | ~10ms per 5s poll     |
-| HA configured + unreachable, dashboard open    | +~80 KB transient         | ~5000ms per 15s poll   |
+| HA configured + healthy, dashboard open        | superseded; remeasure     | child refresh on TTL/env change |
+| HA configured + unreachable, dashboard open    | superseded; remeasure     | child timeout bounded by cache |
 
-The unreachable-HA-with-dashboard-open scenario is the worst case.
-With the 15s probe cache (see `probe_status` above), one probe per
-15 seconds is the floor we can hit without changing the
-architecture. The dashboard still updates other cards every 5
-seconds — only the HA card pays the cache TTL.
+The unreachable-HA-with-dashboard-open scenario used to be the worst case.
+`/state` and `/system/snapshot` now start a child process for stale HA status
+and return the rest of their payloads immediately. The parent no longer
+retains the HA/httpx probe graph for these status surfaces, but the child
+process's transient peak RSS still needs Pi-side measurement before replacing
+the table with fresh numbers.
 
 ## Resilience model
 
@@ -841,6 +857,11 @@ Primary sources informing this work (cite in PRs / future ADRs):
 - LLAT-too-long thread: [community.home-assistant.io/t/543626](https://community.home-assistant.io/t/long-lived-access-token-too-long/543626)
 - "WTH are all new entities exposed" thread: [community.home-assistant.io/t/803889](https://community.home-assistant.io/t/wth-are-all-new-entities-exposed-to-assist-by-default/803889)
 
-Last verified: 2026-06-17 (HA env path rechecked against
-`jasper/home_assistant.py`, `jasper/web/home_assistant_setup.py`, and
+Last verified: 2026-06-30 (`/state.home_assistant` and `/system/snapshot` HA
+status now rechecked against `jasper/control/ha_status_cache.py`,
+`jasper/control/ha_probe_child.py`, `jasper/control/state_aggregate.py`,
+`jasper/control/server.py`, `tests/test_control_server.py`, and
+`tests/test_ha_status_cache.py`. Prior pass 2026-06-17: HA env path
+rechecked against `jasper/home_assistant.py`,
+`jasper/web/home_assistant_setup.py`, and
 `deploy/systemd/jasper-voice.service`)

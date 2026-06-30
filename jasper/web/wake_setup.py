@@ -58,8 +58,12 @@ URL surface (after nginx strips the /wake/ prefix):
                         for the old software-AEC3 toggle; not rendered
   POST /layer/raw       body {enabled: bool} — set chip-direct leg
   POST /layer/dtln      body {enabled: bool} — set DTLN leg
-  POST /layer/chip_aec  body {enabled: bool} — set chip-AEC beam legs
-                        (one toggle arms both fixed 150°/210° beams)
+  POST /layer/chip_aec_150 body {enabled: bool} — set optional 150° chip
+                        beam wake detector
+  POST /layer/chip_aec_210 body {enabled: bool} — set optional 210° chip
+                        beam wake detector
+  POST /layer/chip_aec  body {enabled: bool} — legacy compatibility shim
+                        that sets both optional chip beam detectors
   POST /sensitivity     body {value: float}  — set wake threshold
   POST /save            write wake_model.env + restart voice daemon
 
@@ -225,10 +229,16 @@ _FUSION_LAYERS = (
         "~75 MB · ~25% core",
     ),
     (
-        "chip_aec",
-        "Hardware beam scoring",
-        "XVF3800 chip-AEC beam streams used for wake scoring.",
-        "~10 MB · light",
+        "chip_aec_150",
+        "Extra chip beam 150°",
+        "Optional wake scoring on the XVF3800 150° hardware-AEC beam.",
+        "~30 MB · light",
+    ),
+    (
+        "chip_aec_210",
+        "Extra chip beam 210°",
+        "Optional wake scoring on the XVF3800 210° hardware-AEC beam.",
+        "~30 MB · light",
     ),
 )
 
@@ -288,9 +298,9 @@ def _advanced_fusion_html() -> str:
         rows.append(f"""
   <div class="layer-row" id="layer-row-{key}">
     <div class="layer-body">
-      <div class="layer-name">{html.escape(name)}</div>
-      <div class="layer-desc">{html.escape(desc)}</div>
-      <div class="layer-meta">{html.escape(meta)}</div>
+      <div class="layer-name" id="layer-name-{key}">{html.escape(name)}</div>
+      <div class="layer-desc" id="layer-desc-{key}">{html.escape(desc)}</div>
+      <div class="layer-meta" id="layer-meta-{key}">{html.escape(meta)}</div>
       <div class="layer-status" id="layer-status-{key}">—</div>
     </div>
     {toggle_html(f"layer-{key}", disabled=True)}
@@ -625,7 +635,7 @@ def _apply_layer(
     layer: str, enabled: bool, *, control_base: str,
 ) -> tuple[int, bytes]:
     """Translate a /layer/<name> POST into jasper-control's
-    /aec/toggle (software AEC3) or /aec/leg (raw/dtln/chip) call.
+    /aec/toggle (software AEC3) or /aec/leg (raw/dtln/chip beam) call.
 
     The software-AEC3 toggle is flip-only on the control side. We read the current
     mode and only POST when it differs from the requested state, so
@@ -663,15 +673,25 @@ def _apply_layer(
         return proxy_post(
             "/aec/toggle", control_base=control_base, timeout=5.0,
         )
-    if layer in ("raw", "dtln", "chip_aec"):
-        # chip_aec is one wizard toggle that arms BOTH fixed beams; the
-        # /aec/leg handler + reconciler fan the single boolean out to
-        # JASPER_MIC_DEVICE_CHIP_AEC_150/_210.
+    if layer in ("raw", "dtln", "chip_aec_150", "chip_aec_210"):
         return proxy_post(
             "/aec/leg",
             control_base=control_base, timeout=5.0,
             body=json.dumps({"leg": layer, "enabled": enabled}).encode(),
         )
+    if layer == "chip_aec":
+        # Legacy compatibility for older browser bundles/bookmarks: the
+        # old single chip toggle now maps to both explicit extra-beam toggles.
+        status, body = 200, b"{}"
+        for beam in ("chip_aec_150", "chip_aec_210"):
+            status, body = proxy_post(
+                "/aec/leg",
+                control_base=control_base, timeout=5.0,
+                body=json.dumps({"leg": beam, "enabled": enabled}).encode(),
+            )
+            if status != 200:
+                return status, body
+        return status, body
     return 400, b'{"error":"unknown layer"}'
 
 
@@ -718,7 +738,7 @@ def _start_firmware_update(
 # ----------------------------------------------------------------------
 
 
-_VALID_LAYERS = ("aec", "raw", "dtln", "chip_aec")
+_VALID_LAYERS = ("aec", "raw", "dtln", "chip_aec_150", "chip_aec_210", "chip_aec")
 _VALID_PROFILES = valid_profile_ids()
 
 
