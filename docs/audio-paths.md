@@ -421,8 +421,9 @@ Both end-of-turn paths consult the same primitive:
   `POST_RESPONSE_IDLE_TIMEOUT_SEC` margin.
 
 Both anchor on the same math, so they converge on identical timing.
-Whichever observes "drained" first triggers `_end_turn` via the
-bg-task done check; the loser's task is cancelled cleanly.
+Whichever observes "drained" first completes its background task and lets
+WakeLoop schedule `_end_turn`; the session-frame done-task check remains
+as a backup, and the loser's task is cancelled cleanly.
 
 The dmix + DAC flush tail itself is configurable:
 `JASPER_TTS_DRAIN_TAIL_SEC` (default 0.085 s, wired through

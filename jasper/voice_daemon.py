@@ -2170,11 +2170,11 @@ class WakeLoop:
                 await self._tts.resume_content_meter()
 
         # Note: this is a fire-once-and-exit task that we deliberately
-        # do NOT add to self._bg_tasks — the WakeLoop run loop's
-        # bg-task done-checker treats any done task as "turn ended
-        # early," so adding short-lived tasks there would corrupt the
-        # turn lifecycle. Single-slot reference is enough; we cancel
-        # via that slot on RESUME or repeated PAUSE.
+        # do NOT add to self._bg_tasks — WakeLoop treats done bg tasks
+        # as turn completion through its background watcher and
+        # session-frame backup, so adding short-lived tasks there would
+        # corrupt the turn lifecycle. Single-slot reference is enough;
+        # we cancel via that slot on RESUME or repeated PAUSE.
         self._measurement_safety_task = loop.create_task(_safety())
         return "ok"
 
@@ -2890,7 +2890,7 @@ class WakeLoop:
             # "Now listening" chirp. Fire-and-forget so it plays in
             # parallel with `_begin_turn` opening rather than adding
             # ~70 ms to time-to-listen. NOT added to self._bg_tasks —
-            # any done task in that set would end the turn early.
+            # any done task in that set is a turn-completion signal.
             self._create_fire_and_forget_task(
                 self._play_listening_chirp(going_on=True),
                 name="listening-chirp-on",
