@@ -2,10 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Bounded named-pipe output — the `Coupling::Fifo` transport.
+//! Bounded named-pipe output — the `Coupling::TransportPipe` transport.
 //!
-//! Under `JASPER_FANIN_CAMILLA_COUPLING=fifo` the mixer's final per-period
-//! write goes to a small named pipe that CamillaDSP File-captures, instead of
+//! Under `JASPER_FANIN_CAMILLA_COUPLING=transport_pipe` the mixer's final per-period
+//! write goes to a small named pipe that CamillaDSP RawFile-captures, instead of
 //! the ALSA snd-aloop substream. This removes the loopback ring + dsnoop hop
 //! from the SHARED capture path; the pacing point moves from the blocking ALSA
 //! `writei` to a blocking pipe `write` that backpressures when CamillaDSP (DAC-
@@ -25,8 +25,8 @@
 //!
 //! fan-in mixes/outputs S16_LE internally. The shared CamillaDSP capture is
 //! S32_LE. So this writer WIDENS each i16 sample to i32-LE on the wire — the
-//! same width the proven usbsink lean writer emits and the File-capture config
-//! declares (`jasper.fanin_coupling.FIFO_WIRE_FORMAT == "S32_LE"`).
+//! same width the proven usbsink lean writer emits and the RawFile capture config
+//! declares (`jasper.fanin_coupling.PIPE_WIRE_FORMAT == "S32_LE"`).
 //!
 //! ## SIGPIPE (spec §0)
 //!
@@ -354,7 +354,7 @@ enum OpenOutcome {
 }
 
 /// Widen i16 interleaved samples to i32-LE wire bytes. The shared CamillaDSP
-/// File capture reads S32_LE; CamillaDSP's `File` backend interprets the raw
+/// RawFile capture reads S32_LE; CamillaDSP's RawFile backend interprets the raw
 /// bytes per its declared format, so we promote each S16 sample to the high 16
 /// bits of an S32 (left-shift by 16) — the standard lossless S16→S32 promotion,
 /// matching what the `plug:` did for the loopback path. Pulled out for unit

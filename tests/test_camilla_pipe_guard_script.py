@@ -78,6 +78,7 @@ def _run(
     runtime_helper=True,
     runtime_block=False,
     capture_root=None,
+    playback_root=None,
 ):
     env = dict(os.environ)
     env["JASPER_CAMILLA_STATEFILE"] = str(statefile or tmp_path / "statefile.yml")
@@ -88,6 +89,8 @@ def _run(
     # is classified the way /run/jasper-usbsink/lean.pipe is on the Pi.
     if capture_root is not None:
         env["JASPER_PIPE_GUARD_CAPTURE_ROOT"] = str(capture_root)
+    if playback_root is not None:
+        env["JASPER_PIPE_GUARD_PLAYBACK_ROOT"] = str(playback_root)
     if runtime_helper:
         env["JASPER_RUNTIME_SAFE_GRAPH"] = str(_runtime_safe_graph_script(tmp_path))
     else:
@@ -141,6 +144,29 @@ def _lean_capture_config(tmp_path: Path, capture_pipe: Path) -> Path:
         "    type: Alsa\n"
         "    channels: 2\n"
         '    device: "outputd_content_playback"\n'
+        "    format: S16_LE\n"
+    )
+    return cfg
+
+
+def _local_transport_config(
+    tmp_path: Path,
+    *,
+    capture_pipe: Path,
+    playback_pipe: Path,
+) -> Path:
+    cfg = tmp_path / "sound_current_transport_pipe.yml"
+    cfg.write_text(
+        "devices:\n"
+        "  capture:\n"
+        "    type: RawFile\n"
+        "    channels: 2\n"
+        f'    filename: "{capture_pipe}"\n'
+        "    format: S32_LE\n"
+        "  playback:\n"
+        "    type: File\n"
+        "    channels: 2\n"
+        f'    filename: "{playback_pipe}"\n'
         "    format: S16_LE\n"
     )
     return cfg
@@ -263,6 +289,109 @@ def test_pipe_config_with_readerless_fifo_repairs(tmp_path):
     assert r.returncode == 0
     assert "event=camilla_pipe_guard.repaired reason=no_reader" in r.stderr
     assert f"config_path: {base}" in statefile.read_text()
+
+
+def test_local_transport_playback_pipe_absent_repairs_to_base(tmp_path):
+    """transport_pipe has a second runtime File sink: Camilla -> outputd.
+    If outputd has not created the reader pipe, Camilla would fail/block just
+    like the SnapFIFO class, so the guard re-points before launch."""
+    runtime = tmp_path / "run"
+    fanin_dir = runtime / "jasper-fanin"
+    outputd_dir = runtime / "jasper-outputd"
+    fanin_dir.mkdir(parents=True)
+    outputd_dir.mkdir(parents=True)
+    capture_pipe = fanin_dir / "camilla.pipe"
+    os.mkfifo(capture_pipe)
+    playback_pipe = outputd_dir / "content.pipe"  # absent
+    cfg = _local_transport_config(
+        tmp_path, capture_pipe=capture_pipe, playback_pipe=playback_pipe,
+    )
+    base = tmp_path / "base.yml"
+    base.write_text("devices: {}\n")
+    statefile = _write_statefile(tmp_path, cfg)
+
+    r = _run(
+        tmp_path,
+        statefile=statefile,
+        base=base,
+        capture_root=str(runtime) + "/",
+        playback_root=str(runtime) + "/",
+    )
+
+    assert r.returncode == 0
+    assert "event=camilla_pipe_guard.repaired reason=playback_pipe_absent" in r.stderr
+    assert f"config_path: {base}" in statefile.read_text()
+
+
+def test_local_transport_playback_pipe_readerless_repairs(tmp_path):
+    import shutil
+
+    if shutil.which("timeout") is None:
+        import pytest
+
+        pytest.skip("GNU timeout unavailable (the guard fails open here)")
+    runtime = tmp_path / "run"
+    fanin_dir = runtime / "jasper-fanin"
+    outputd_dir = runtime / "jasper-outputd"
+    fanin_dir.mkdir(parents=True)
+    outputd_dir.mkdir(parents=True)
+    capture_pipe = fanin_dir / "camilla.pipe"
+    playback_pipe = outputd_dir / "content.pipe"
+    os.mkfifo(capture_pipe)
+    os.mkfifo(playback_pipe)
+    cfg = _local_transport_config(
+        tmp_path, capture_pipe=capture_pipe, playback_pipe=playback_pipe,
+    )
+    base = tmp_path / "base.yml"
+    base.write_text("devices: {}\n")
+    statefile = _write_statefile(tmp_path, cfg)
+
+    r = _run(
+        tmp_path,
+        statefile=statefile,
+        base=base,
+        capture_root=str(runtime) + "/",
+        playback_root=str(runtime) + "/",
+    )
+
+    assert r.returncode == 0
+    assert (
+        "event=camilla_pipe_guard.repaired reason=playback_pipe_no_reader"
+        in r.stderr
+    )
+    assert f"config_path: {base}" in statefile.read_text()
+
+
+def test_local_transport_playback_pipe_with_reader_is_healthy_noop(tmp_path):
+    runtime = tmp_path / "run"
+    fanin_dir = runtime / "jasper-fanin"
+    outputd_dir = runtime / "jasper-outputd"
+    fanin_dir.mkdir(parents=True)
+    outputd_dir.mkdir(parents=True)
+    capture_pipe = fanin_dir / "camilla.pipe"
+    playback_pipe = outputd_dir / "content.pipe"
+    os.mkfifo(capture_pipe)
+    os.mkfifo(playback_pipe)
+    cfg = _local_transport_config(
+        tmp_path, capture_pipe=capture_pipe, playback_pipe=playback_pipe,
+    )
+    statefile = _write_statefile(tmp_path, cfg)
+    before = statefile.read_text()
+
+    reader_fd = os.open(playback_pipe, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        r = _run(
+            tmp_path,
+            statefile=statefile,
+            capture_root=str(runtime) + "/",
+            playback_root=str(runtime) + "/",
+        )
+    finally:
+        os.close(reader_fd)
+
+    assert r.returncode == 0
+    assert "event=camilla_pipe_guard.ok reason=playback_pipe_" in r.stderr
+    assert statefile.read_text() == before
 
 
 def test_missing_statefile_fails_open(tmp_path):

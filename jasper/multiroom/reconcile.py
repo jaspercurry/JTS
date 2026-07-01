@@ -47,6 +47,7 @@ from .. import atomic_io
 from .. import tts_routing as _tts_routing
 from ..log_event import log_event
 from ..local_sources import local_source_park_units, local_source_restore_units
+from ..fanin_coupling import OUTPUTD_PIPE_PATH_ENV_VAR
 from .config import (
     GroupingConfig,
     is_active_leader,
@@ -181,6 +182,7 @@ FOLLOWER_STATUS_FILE = "/var/lib/jasper/grouping-follower-status.json"
 OUTPUTD_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-outputd.env"
 OUTPUTD_DAC_CONTENT_FIFO_ENV = "JASPER_OUTPUTD_DAC_CONTENT_FIFO"
 OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
+OUTPUTD_LOCAL_CONTENT_PIPE_ENV = OUTPUTD_PIPE_PATH_ENV_VAR
 # Pinned to "direct" while bonded (writer/validator coherence — see
 # outputd_grouping_env): the lane fail-closes on any other bridge mode,
 # and this file is the last env layer, so the pin wins over lab retunes.
@@ -594,6 +596,7 @@ def outputd_grouping_env(
             return {
                 OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
                 OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
+                OUTPUTD_LOCAL_CONTENT_PIPE_ENV: "",
                 OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
                 OUTPUTD_DAC_CONTENT_HP_HZ_ENV: "",
                 # Empty = unset to outputd's env_f32 (default 0.0).
@@ -617,6 +620,7 @@ def outputd_grouping_env(
             OUTPUTD_DAC_CONTENT_FIFO_ENV: MEMBER_CONTENT_FIFO,
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
             OUTPUTD_CONTENT_BRIDGE_ENV: "direct",
+            OUTPUTD_LOCAL_CONTENT_PIPE_ENV: "",
             OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
             OUTPUTD_DAC_CONTENT_HP_HZ_ENV: main_highpass_hz,
             # Pair-balance trim (validated <= 0 by load_config; outputd

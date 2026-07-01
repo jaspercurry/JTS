@@ -5,10 +5,79 @@ the music path while keeping the speaker resilient and supporting flexible
 output/mic hardware. Read this before touching the lean lane, the USB-input
 bridge latency, or the snapcast bond buffer.
 
-**Targets:** USB-audio-input lip-sync under ~60 ms (including CamillaDSP);
+**Targets:** USB-audio-input end-to-end latency under ~60 ms all-in
+(source → DAC, including CamillaDSP and room correction);
 AirPlay (Apple TV → bonded pair) staying within the ~2 s presentation budget;
 and, in general, *only* adding latency where a specific piece of hardware
 genuinely requires it.
+
+## 2026-07-01 checkpoint: FIFO is not the endgame
+
+The `transport_pipe` lab path proved the right *clock question* and the wrong
+transport primitive. On `jts.local`, `getconf PAGESIZE` reports **16384** on the
+Pi 5 `rpi-2712` kernel. Linux pipe/FIFO capacity cannot shrink below one page,
+so `F_SETPIPE_SZ` requests for 4/8/12 KiB all floor to **16 KiB**. At 48 kHz
+stereo, that is:
+
+| Pipe wire format | Bytes/frame | 16 KiB floor |
+|---|---:|---:|
+| S16_LE stereo | 4 | 4096 frames = 85.3 ms |
+| S32_LE / float32 stereo | 8 | 2048 frames = 42.7 ms |
+| float64 stereo | 16 | 1024 frames = 21.3 ms |
+
+The transport-pipe test also showed CamillaDSP `File` playback keeps outputd's
+local FIFO filled continuously. A reader-side "drop old backlog to one period"
+experiment in `jasper-outputd` re-anchored every period and caused continuous
+audio drops, then was reverted. So the failure is structural: a page-granular
+byte-stream pipe is not a frame-bounded realtime transport, and dropping stale
+FIFO backlog is not a viable latency fix.
+
+Current implication:
+
+- Do **not** default `transport_pipe` on for the low-latency claim.
+- Do **not** keep tuning FIFO size as the strategy; the Pi page size is the
+  floor.
+- Treat the shipped transport-pipe code as a failed/default-off lab path until
+  it is either removed or repurposed for non-low-latency diagnostics.
+- Preserve the original latency goal: **sub-60 ms all-in USB → DAC**, proven by
+  a click-in/capture-back sample count, not by summed buffer math alone.
+
+Design direction from the checkpoint:
+
+1. Keep `jasper-outputd` as the physical DAC owner / hardware clock adapter.
+   DAC variance (async USB, synchronous USB, I2S/HAT clocks, future custom HATs)
+   belongs behind the DAC profile + outputd timing layer.
+2. Give every foreign clock exactly one rate matcher: USB-host input, network
+   renderers, and mic capture for software AEC each cross into the DAC domain
+   explicitly. TTS is clockless generated audio and simply gets consumed by the
+   DAC-paced graph.
+3. After ingress, keep fan-in/TTS/CamillaDSP/outputd in one DAC-paced domain.
+   Remaining boundaries should be sized in **frames**, expose occupancy and
+   latency, and avoid opaque byte-stream buffering.
+4. Borrow PipeWire/JACK principles, not necessarily their full runtime:
+   graph-shaped nodes/ports, one driver/pacer per graph cycle, fixed quantum,
+   shared-memory/frame rings, explicit latency accounting, policy separate from
+   transport.
+5. Near-term spike: tune the clocked ALSA/snd-aloop path with RT hardening and
+   measure real round trip. If that cannot approach the target, prototype a
+   frame-bounded shared-memory/ALSA-facing transport or a JACK/PipeWire graph
+   with outputd's DAC-owner role redesigned deliberately.
+
+Open questions to answer before the next architecture turn:
+
+- Can the existing loopback chain, with smaller ALSA periods/buffers plus
+  SCHED_FIFO/performance-governor/mlock/IRQ-affinity hardening, hit a stable
+  measured sub-60 ms USB path while preserving TTS and CamillaDSP?
+- Should USB input bypass its snd-aloop ingress and be captured directly, with
+  the ingress DLL/resampler crossing host clock → DAC clock?
+- If a shared-memory ring is built, how does CamillaDSP consume it without
+  falling back to FIFO: ALSA ioplug/extplug, JACK, PipeWire, or embedding/moving
+  the DSP boundary?
+- For AEC3, what is the authoritative post-Camilla reference tap and where does
+  mic-clock → DAC-clock resampling happen? For chip AEC, which hardware profiles
+  actually guarantee reference/acoustic clock coherence?
+- What is the correction-filter latency gate: PEQ/IIR/minimum-phase only, or a
+  measured FIR group-delay budget enforced by the wizard?
 
 ---
 
@@ -109,17 +178,21 @@ because no test ran `camilladsp --check` (the string tests asserted the wrong
 validated on jts5 / CamillaDSP 4.1.3: with fan-in writing the pipe, `--check` on
 the RawFile config returns **"Config is valid."** The ordered transition is now
 owned by a reconciler ([`jasper.fanin.coupling_reconcile`](../jasper/fanin/coupling_reconcile.py),
-CLI `jasper-fanin-coupling-reconcile <loopback|fifo>`):
+CLI `jasper-fanin-coupling-reconcile <loopback|transport_pipe>`):
 
-1. **Fan-in-first arm ordering — BUILT.** The apply's `camilladsp --check` (and
-   the load) OPENS the pipe, so on ARM the reconciler writes `=fifo` → restarts
-   fan-in (creates+writes the pipe) → reconciles CamillaDSP (RawFile). On DISARM
-   it reverses: reconcile CamillaDSP to Alsa FIRST → then restart fan-in to
-   loopback, so disarming never strands camilla on a RawFile config whose pipe
-   has lost its writer (the crash-loop). Any ARM failure rolls the whole box back
-   to loopback. On a clean reboot the systemd order (fan-in `Before` camilla)
-   gives the same rendezvous, so an armed box survives a cold boot with no
-   reconciler run (validated on jts5: `camilla NRestarts=0`).
+1. **Ordered dual-pipe arm — BUILT.** On ARM the reconciler writes fanin.env +
+   outputd.env, restarts outputd first so the local content-pipe reader exists,
+   restarts fan-in second so the capture-pipe producer exists, then reconciles
+   CamillaDSP to the RawFile/File config. fan-in's pipe writer opens lazily, so
+   the actual writer attaches only after Camilla opens the RawFile reader. On
+   DISARM it reverses the risky edge: reconcile CamillaDSP to Alsa FIRST, then
+   restart fan-in and outputd to loopback. Any ARM failure rolls the whole box
+   back to loopback. After a successful ARM or transport-pipe CONFIRM, the
+   reconciler also runs a short live STATUS activation gate; if pipe occupancy,
+   fan-in pipe drops, fan-in input xrun/catchup counters, or outputd DAC/content
+   counters drift during that window, it immediately recovers to loopback. On a
+   clean reboot the systemd order gives outputd/fan-in reader/writer rendezvous
+   before Camilla loads the pipe graph.
 2. **Reconnect (RawFile EOF) — characterized + self-healing.** fan-in
    auto-reopens the pipe on `reader_gone` (a CamillaDSP reload); a fan-in restart
    EOFs camilla's RawFile capture, which self-heals via camilla's own restart
@@ -127,10 +200,12 @@ CLI `jasper-fanin-coupling-reconcile <loopback|fifo>`):
    reload (so a fan-in bounce is gap-free) is a possible smoothing follow-up, not
    a blocker.
 
-**Observability:** `/state .fanin.output.fifo.{path,requested/actual_pipe_bytes,
-dropped_periods,reopen_count}` + transport; `jasper-doctor`'s
-`check_fanin_coupling` warns when the persisted intent (`fanin.env`) and the
-loaded CamillaDSP capture disagree (the half-applied / crash-loop precursor).
+**Observability:** `/state .fanin.output.pipe.{path,requested/actual_pipe_bytes,
+dropped_periods,reopen_count}` + transport; `/state .content.local_pipe`
+reports outputd's empty/partial/reopen/read-failure counters and pipe occupancy;
+`jasper-doctor`'s `check_fanin_coupling` warns when the persisted intent
+(`fanin.env` + `outputd.env`) and the loaded CamillaDSP capture/playback graph
+disagree (the half-applied / crash-loop precursor).
 
 **Dangling-lean strand — two-layer floor (2026-06).** A crash BETWEEN
 enter-lean and leave-lean can leave CamillaDSP's persisted `--statefile`
@@ -150,8 +225,11 @@ leave-lean), the next restart cannot crash-loop.
 **Test gap:** the string tests assert `type: RawFile` (+ `File` absent); the real
 `camilladsp --check` gate runs on-device (the deploy's sound reconcile, now
 env-hydrated so it sees the persisted coupling — [`jasper.cli.sound`](../jasper/cli/sound.py)).
-**Owed before flipping the default to `fifo`:** the 24 h zero-xrun on-device soak
-and the real `<60 ms` USB measurement (needs a wired USB source).
+**2026-07-01 result:** do **not** flip the default to `transport_pipe`. The
+ordered dual-pipe arm and activation gate are useful safety work, but hardware
+testing on the Pi 5 showed the page-sized FIFO floor and CamillaDSP's continuous
+File-playback fill make this path miss the low-latency target structurally. Keep
+it default-off while the next clocked/frame-bounded transport is designed.
 
 **FIFO format:** the lean pipe carries full **S32_LE @ 48 kHz stereo** (the
 usbsink bridge's normal snd-aloop lane uses the high-16 S16 view; the FIFO must
@@ -171,7 +249,7 @@ the path: `DEFAULT_LEAN_CAPTURE_FIFO` (`/run/jasper-usbsink/lean.pipe`).
 | 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim, [`jasper.sound.runtime.apply_lean_capture_config`](../jasper/sound/runtime.py)), arm the usbsink FIFO output at runtime ([`jasper.usbsink.output_mode_reconcile`](../jasper/usbsink/output_mode_reconcile.py) → writes `JASPER_USBSINK_OUTPUT_MODE` to `/var/lib/jasper/usbsink.env` + restarts via the broker), and swap/restore via mux `_tick` (shared source-route decision → `Mux._enter_lean`/`_leave_lean` ladders, fail-loud → buffered) | shipped, default-OFF, **24 h soak owed** |
 | 5 | shairport-sync built `--with-pipe` (capable binary; runtime AirPlay pipe lane is future, #1318-gated) | shipped, dormant |
 | 6 | `jasper-doctor` DAC USB sync-mode advisory (clock-coherence signal, *not* the chip-AEC gate) | shipped |
-| 7 | **fan-in → CamillaDSP FIFO coupling** (`JASPER_FANIN_CAMILLA_COUPLING=fifo`) — the SHARED-capture endgame: fan-in writes a bounded pipe, CamillaDSP File-captures it; transport ([`jasper/fanin/src/fifo.rs`](../rust/jasper-fanin/src/fifo.rs)) + flag ([`jasper/fanin/src/config.rs`](../rust/jasper-fanin/src/config.rs) `Coupling`) + generator helper ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)) | shipped, default-OFF; capture-type `RawFile` fixed + `--check`-validated on jts5; ordered arm/disarm reconciler (`jasper-fanin-coupling-reconcile`) + doctor drift check; **24 h soak + real `<60 ms` USB measurement owed before default-on** |
+| 7 | **fan-in → CamillaDSP transport-pipe coupling** (`JASPER_FANIN_CAMILLA_COUPLING=transport_pipe`) — the shared-path dual-pipe lab: fan-in writes S32_LE to Camilla RawFile capture, Camilla writes S32_LE File playback to outputd's local pipe; transport ([`jasper-fanin/src/fifo.rs`](../rust/jasper-fanin/src/fifo.rs), [`jasper-outputd/src/local_content_pipe.rs`](../rust/jasper-outputd/src/local_content_pipe.rs)) + flag ([`jasper-fanin/src/config.rs`](../rust/jasper-fanin/src/config.rs) `Coupling`) + generator helper ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)) | shipped, default-OFF; dual-pipe `RawFile`/`File` contract fixed + tests; ordered arm/disarm reconciler (`jasper-fanin-coupling-reconcile`) + doctor drift check; **hardware-demoted as the low-latency endgame on 2026-07-01 because the 16 KiB pipe floor and continuous File-playback fill add too much latency** |
 
 **Going live is soak-gated.** `JASPER_LEAN_LANE` is opt-IN
 (`=enabled`), default-OFF, and is an *experiment knob* until a **24 h on-device
@@ -252,49 +330,63 @@ lip-sync problems by user observation. Do not call the AirPlay video path done
 until it has a dedicated A/V measurement or Apple-side Wireless Audio Sync
 calibration pass.
 
-## Stage 7 — fan-in → CamillaDSP FIFO coupling (the SHARED-capture endgame)
+## Stage 7 — fan-in → CamillaDSP transport-pipe coupling (demoted lab path)
 
 The lean lane (Stage 4) bypasses the fan-in **mixer** entirely for a single
-exclusive wired source. The FIFO coupling is the convergence endgame for the
-**shared** path: the FULL fan-in mixer keeps running (every renderer lane, TTS,
-ducking, the music-only tap) and only how its *output* reaches CamillaDSP
-changes. Today fan-in writes the ALSA snd-aloop substream (`hw:Loopback,0,7`)
-and CamillaDSP dsnoop-captures it (`plug:jasper_capture`) — ~64 ms of loopback
-ring + a dsnoop hop. Under `JASPER_FANIN_CAMILLA_COUPLING=fifo`, fan-in writes a
-small bounded named pipe (default `/run/jasper-fanin/camilla.pipe`) that
-CamillaDSP File-captures with an async resampler + `enable_rate_adjust` (the real
-DAC clock disciplines the clockless File capture — the same shape the lean lane
-already uses). That trades the loopback ring for a ~3-period pipe (~21 ms @
-48 kHz S32). **Once it soaks, it supersedes BOTH the lean lane and the adaptive
-output-buffer shrink** — do NOT delete either yet (superseded *after* the soak,
-not before).
+exclusive wired source. The transport-pipe coupling was built as the attempted
+convergence path for the **shared** mixer: the FULL fan-in mixer keeps running
+(every renderer lane, TTS, ducking, the music-only tap) and only the local
+program transport through CamillaDSP changes. Today fan-in writes the ALSA
+snd-aloop substream
+(`hw:Loopback,0,7`) and CamillaDSP dsnoop-captures it (`plug:jasper_capture`) —
+~64 ms of loopback ring + a dsnoop hop. Under
+`JASPER_FANIN_CAMILLA_COUPLING=transport_pipe`, fan-in writes a bounded S32_LE
+stereo pipe (default `/run/jasper-fanin/camilla.pipe`) to CamillaDSP RawFile
+capture, CamillaDSP writes S32_LE stereo File playback to outputd's local pipe
+(default `/run/jasper-outputd/content.pipe`), and outputd drains that pipe once
+per DAC period before its blocking DAC write. CamillaDSP `enable_rate_adjust` is
+false and no async capture resampler is emitted; the pipes are transport only,
+and the DAC write is the pace root. The outputd pipe is S32_LE because JTS's
+Pi kernel uses 16 KiB pages, which made the previous S16_LE FIFO floor 4096
+frames (~85 ms); S32_LE halves the same 16 KiB FIFO to 2048 frames (~43 ms),
+with outputd down-converting to i16 only at the DAC boundary.
 
-**Active-leader grouping exception.** Do not arm FIFO coupling while a speaker is
-an active multiroom leader. The current active-leader program bake is a
+**2026-07-01 hardware result:** this is **not** the low-latency endgame. The Pi
+5 pipe floor is exactly 16 KiB (`getconf PAGESIZE=16384`), so the intended
+"small bounded pipe" cannot become a loopback-scale 128/256-frame transport.
+CamillaDSP File playback also fills outputd's local FIFO continuously, which
+turns the FIFO into a persistent latency reservoir rather than a tight handoff.
+A reader-side backlog-drop experiment in outputd re-anchored constantly and
+made audio audibly bad, proving that "drop stale FIFO" is not a safe fix. Keep
+this path default-off and do not delete the lean lane / adaptive-shrink on its
+behalf.
+
+**Active-leader grouping exception.** Do not arm transport_pipe while a speaker
+is an active multiroom leader. The current active-leader program bake is a
 `File`→`SNAPFIFO` sink with `enable_rate_adjust: false` and intentionally keeps
-capturing the ALSA fan-in loopback; if fan-in writes the FIFO instead, camilla#1
-keeps reading the dead loopback and the pair goes silent. The guard is codified
-twice: `jasper.multiroom.active_leader_config.precheck_active_leader` refuses to
-form an active-leader bond while the persisted coupling is `fifo`, and
-`jasper.fanin.coupling_reconcile.reconcile_coupling` refuses/reverts a FIFO arm
-while the box is already an active leader. Keep such pairs on `loopback` until
-the grouped active-leader FIFO capture topology is explicitly designed.
+capturing the ALSA fan-in loopback; if the local transport_pipe were partially
+armed there, one side of camilla#1's graph would still belong to the grouped
+Snapcast topology while the other belonged to the local outputd pipe. The guard
+is codified twice: `jasper.multiroom.active_leader_config.precheck_active_leader`
+refuses to form an active-leader bond while the persisted coupling is
+`transport_pipe`, and `jasper.fanin.coupling_reconcile.reconcile_coupling`
+refuses/reverts a transport_pipe arm while the box is already an active leader.
+Keep such pairs on `loopback` until the grouped active-leader transport-pipe
+topology is explicitly designed.
 
-**Pacing.** The mixer loop is paced ENTIRELY by its final blocking write — there
-is no sleep in `run()`. The coupling swaps the blocking ALSA `writei` for a
-blocking pipe `write`: when CamillaDSP (DAC-paced) hasn't drained, the small pipe
-fills and `write` blocks, giving the same DAC-paced backpressure at ~21 ms of
-pipe depth. The write is IN-BAND on the RT mixer thread (NOT the usbsink
-separate-thread + silence-synthesis shape — fan-in's mixer IS the producer and
-pacer, so there is no queue to starve). The watchdog is fed by
-`bump_progress()` after every `step()` exactly as today, including the bounded
-reopen-wait turns.
+**Pacing lesson.** The mixer loop is paced ENTIRELY by its final blocking write;
+there is no sleep in `run()`. The coupling swaps the blocking ALSA `writei` for a
+blocking pipe `write`. That did propagate backpressure, but the buffer being
+backpressured is a page-granular byte stream, not a frame-bounded realtime ring.
+On this Pi that means 2048 frames for S32_LE stereo per FIFO when full, plus
+Camilla chunking and outputd DAC delay. The correct next transport must preserve
+DAC-paced backpressure while sizing the handoff in frames.
 
 **Format split (load-bearing).** fan-in mixes/outputs S16_LE internally;
 the shared capture is S32_LE. So the FIFO writer WIDENS each i16 sample to
 i32-LE (high-16 promotion, lossless, the same scaling the loopback `plug:` did),
 and the emitted File capture declares S32_LE. The wire format is pinned in
-[`jasper.fanin_coupling.FIFO_WIRE_FORMAT`](../jasper/fanin_coupling.py) so the
+[`jasper.fanin_coupling.PIPE_WIRE_FORMAT`](../jasper/fanin_coupling.py) so the
 Rust producer and the Python config consumer can never drift.
 
 **Reader-gone resilience (CamillaDSP reload).** Rust's std runtime sets SIGPIPE
@@ -309,51 +401,78 @@ wedge past the watchdog stale threshold. The pipe size is set with
 and the requested-vs-actual is logged (`event=fanin.fifo.pipe_sized`).
 
 **AEC note.** Production AEC reads outputd's UDP monitor (`:9891`), so removing
-the fan-in loopback write under `fifo` does not break production AEC. It DOES
+the fan-in loopback write under `transport_pipe` does not break production AEC. It DOES
 disable the `jasper_ref`/`jasper_capture` dsnoop diagnostic fallback — acceptable
 (fallback/diagnostic only), but worth knowing during the soak.
 
-**What's built vs owed.** Built and proven default-inert: the Rust transport
-([`fifo.rs`](../rust/jasper-fanin/src/fifo.rs)), the `Coupling` flag with
+**What's built vs learned.** Built and proven default-inert: the Rust transport
+([`fifo.rs`](../rust/jasper-fanin/src/fifo.rs),
+[`local_content_pipe.rs`](../rust/jasper-outputd/src/local_content_pipe.rs)), the `Coupling` flag with
 fail-safe normalization matching Python ([`config.rs`](../rust/jasper-fanin/src/config.rs)),
-the generator helper that returns the File-capture kwargs under `fifo` and `{}`
-(byte-identical) under `loopback` ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)).
-**Live-armed (flag-gated; soak owed before defaulting to `fifo`):** the reconcile /
-sound / correction emit paths now ask
+the generator helper that returns the dual-pipe kwargs under `transport_pipe`
+and `{}` (byte-identical) under `loopback`
+([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)).
+**Live-armed (flag-gated; hardware-demoted, not default-bound):**
+the reconcile / sound / correction emit paths now ask
 `jasper.audio_runtime_plan.fanin_coupling_capture_kwargs()` and thread the result
-through the carrier, so a `=fifo` box puts the File capture into the config
-CamillaDSP actually loads — and the flat-profile reconcile noop is coupling-aware
-so it arms even a flat speaker (the MB1 fix; otherwise fan-in writes the pipe
-while Camilla keeps the dead loopback → silent outage). Default `loopback` → `{}`
-→ byte-identical emit, and the Rust side defaults to `Coupling::Loopback` (the
-`FifoWriter` is never constructed) — so unset is provably inert. The ORDERED
-arm/disarm is owned by [`jasper.fanin.coupling_reconcile`](../jasper/fanin/coupling_reconcile.py)
-(CLI `jasper-fanin-coupling-reconcile`): arm restarts fan-in then reconciles
-camilla; disarm reconciles camilla then restarts fan-in; an arm failure rolls the
-box back to loopback. `jasper-doctor`'s `check_fanin_coupling` flags persisted-vs-
-loaded drift. What remains before flipping the default to `fifo`: the 24 h
-on-device zero-xrun **soak** (the ~1-period drop per Camilla reload, the usbsink
-term, the real `<60 ms` measurement on jts5) — then delete the now-redundant lean
-lane + adaptive-shrink.
+through the carrier, so a `transport_pipe` box puts both the RawFile capture and
+File playback pipe into the config CamillaDSP actually loads — and the
+flat-profile reconcile noop is coupling-aware so it arms even a flat speaker.
+Default `loopback` → `{}` → byte-identical emit, and the Rust side defaults to
+`Coupling::Loopback` (the `FifoWriter` is never constructed) — so unset is
+provably inert. The ORDERED arm/disarm is owned by
+[`jasper.fanin.coupling_reconcile`](../jasper/fanin/coupling_reconcile.py)
+(CLI `jasper-fanin-coupling-reconcile`): arm restarts outputd, restarts fan-in,
+then reconciles camilla; disarm reconciles camilla then restarts fan-in and
+outputd; an arm failure rolls the box back to loopback. `jasper-doctor`'s
+`check_fanin_coupling` flags persisted-vs-loaded capture/playback drift.
+Hardware learning: do not default this path on, and do not use a 24 h soak to
+graduate it unless the transport primitive changes. The next gate belongs to a
+clocked/frame-bounded transport: stable audio, no runaway latency during
+`/sound/` changes, CPU-stress stability, and a measured click-in/capture-back
+sample count below 60 ms all-in.
 
-## Optionality: chip-AEC AND software-AEC, each at the lean floor
+## AEC and DAC clock ownership
 
-Both AEC references come from `outputd`, so one "lean `outputd`" stage serves
-both at the same latency floor. The per-AEC difference is *constraints, not
-latency*: chip-AEC needs a USB-SOF-locked DAC plus a static
-`AUDIO_MGR_SYS_DELAY` reference-delay re-pin; software AEC3 takes any DAC plus
-Pi CPU. The chip's no-drift comes from the XVF USB-SOF PLL, not from snd-aloop
-or `enable_rate_adjust` — so removing inter-stage rings is safe for it.
+`jasper-outputd` should remain the physical-DAC owner for the shippable
+multi-DAC architecture. That is where async USB, synchronous USB, I2S/HAT clock
+behavior, buffer sizing, htimestamp/delay sampling, xrun recovery, and DAC-profile
+policy belong. A CamillaDSP-owns-DAC path may be a useful latency feasibility
+spike, but do not accidentally make it the product architecture without
+re-deciding outputd's AEC-reference and hardware-profile responsibilities.
 
-## Hard rules — do NOT re-architect
+AEC follows the same clock-domain rule. Both stacks need a reference that matches
+what is acoustically emitted **after** CamillaDSP, and a stable relationship
+between that reference and the mic stream.
 
-- Swap the engine/profile, **not** the topology. No PipeWire `module-echo-cancel`,
-  no replacing snd-aloop with PipeWire fanout, no WirePlumber (multi-GB RAM
-  runaways → OOM on the 1 GB Pi). Targeted single-knob OS fixes are fine *when
-  measurement localizes the cause to that layer*.
+- Software AEC3 is the DAC-agnostic fallback: tap the post-Camilla reference
+  from outputd and explicitly resample/align mic capture into the reference/DAC
+  domain when the mic and DAC do not share a clock.
+- Chip AEC is best only for hardware profiles whose reference input and actual
+  speaker output are clock-coherent. With an external DAC on a different clock,
+  the chip reference can drift away from the acoustic output; gate chip-AEC
+  claims by profile evidence, not by wishful routing.
+- A future custom HAT with ADC + DAC on one master clock is the cleanest voice
+  hardware shape because it deletes mic/speaker clock drift by construction.
+
+## Architecture rules and design forks
+
+- Borrow PipeWire/JACK concepts where they fit: graph-shaped nodes/ports, a
+  single driver/pacer per graph cycle, fixed quantum in frames, shared-memory
+  rings, explicit latency accounting, and policy separated from transport.
+- Do not adopt a full PipeWire/WirePlumber stack casually on the 1 GB Pi; it is
+  still a resource/operational risk. Prototype it only if the tuned ALSA path or
+  a purpose-built frame ring cannot hit the target, or if cross-domain AEC forces
+  a unified graph.
+- If JACK/PipeWire is prototyped, decide explicitly whether outputd becomes a
+  graph sink/node or whether CamillaDSP/PipeWire owns the physical DAC. This is
+  a clock-ownership decision, not a transport detail.
 - snd-aloop is FULL (8/8 substream pairs) — a new lane must be a pipe/socket,
-  never a 9th pair.
+  never a 9th pair. Reusing existing loopback lanes with tighter period/buffer
+  settings is still allowed as a near-term latency spike.
 - Keep the fan-in input ring for networked sources (the WiFi-burst absorber).
+  For USB input, evaluate direct gadget capture separately; it may remove one
+  ingress boundary but still needs one host-clock → DAC-clock rate matcher.
 - Never saturate all Pi cores while measuring — the hardware watchdog reboots a
   fully-wedged userspace. Measure under realistic 2-of-4-core load.
 
@@ -367,7 +486,7 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-06-30 (`jasper.audio_runtime_plan` / `jasper-audio-config
+Last verified: 2026-07-01 (`jasper.audio_runtime_plan` / `jasper-audio-config
 explain` / `jasper-audio-config outputd-floor-actions` / `jasper-doctor`
 runtime-plan check added as the SSOT layer; numeric lab override artifact added
 while fan-in coupling remains ordered-reconciler-owned; audio-hardware, usbsink
@@ -376,6 +495,14 @@ writers plus mux low-latency source routing consume the plan; JTS2 low-latency
 Apple-dongle AirPlay budget
 documented: configured downstream delay 58.7 ms at Camilla 256/1536,
 fan-in output 1024, outputd DAC 512; 512-frame fan-in output failed fast.
+2026-07-01: transport-pipe reconcile now runs a short live activation gate, but
+JTS hardware testing demoted the dual-FIFO path as the low-latency endgame:
+Pi 5 page size floors FIFOs at 16 KiB, Camilla File playback continuously fills
+the outputd local pipe, and reader-side backlog re-anchor caused continuous
+audio drops. Documented the replacement direction: outputd owns DAC clock,
+foreign sources get one explicit rate matcher, remaining post-ingress
+boundaries must be clocked/frame-bounded, and sub-60 ms USB → DAC must be
+proved by click-in/capture-back measurement.
 2026-06-27 4b-iv live lane-switch shipped default-OFF:
 carrier-preserved `apply_lean_capture_config` / `restore_buffered_config`,
 the `output_mode_reconcile` runtime FIFO arm, and the `Mux._tick`

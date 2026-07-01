@@ -21,6 +21,7 @@ import json
 import socket
 import subprocess
 import sys
+import time
 from typing import Any
 
 
@@ -102,6 +103,16 @@ def _progress_age_ms(payload: dict[str, Any]) -> int:
     return age
 
 
+def _fanin_xrun_counts(payload: dict[str, Any]) -> tuple[int, int]:
+    output_xruns = _nested_int(payload, ("output", "xrun_count"))
+    input_xruns = sum(
+        int(inp.get("xrun_count", 0))
+        for inp in payload.get("inputs", [])
+        if isinstance(inp, dict)
+    )
+    return output_xruns, input_xruns
+
+
 def _line(status: str, name: str, detail: str) -> None:
     print(f"{status:<4} {name:<28} {detail}")
 
@@ -137,18 +148,22 @@ def main() -> int:
 
     try:
         fanin = _status_json(FANIN_SOCKET)
-        output_xruns = _nested_int(fanin, ("output", "xrun_count"))
-        input_xruns = sum(
-            int(inp.get("xrun_count", 0))
-            for inp in fanin.get("inputs", [])
-            if isinstance(inp, dict)
-        )
-        age = _progress_age_ms(fanin)
-        if output_xruns == 0 and input_xruns == 0 and age <= MAX_PROGRESS_AGE_MS:
+        output_xruns, input_xruns = _fanin_xrun_counts(fanin)
+        time.sleep(1.0)
+        fanin_later = _status_json(FANIN_SOCKET)
+        later_output_xruns, later_input_xruns = _fanin_xrun_counts(fanin_later)
+        output_xrun_delta = later_output_xruns - output_xruns
+        input_xrun_delta = later_input_xruns - input_xruns
+        age = _progress_age_ms(fanin_later)
+        if output_xrun_delta == 0 and input_xrun_delta == 0 and age <= MAX_PROGRESS_AGE_MS:
             _line(
                 "OK",
                 "jasper-fanin STATUS",
-                f"output_xruns=0 input_xruns=0 progress_age_ms={age}",
+                (
+                    f"output_xruns={later_output_xruns} input_xruns={later_input_xruns} "
+                    "xrun_delta=0 progress_age_ms="
+                    f"{age}"
+                ),
             )
         else:
             failures += 1
@@ -156,7 +171,9 @@ def main() -> int:
                 "FAIL",
                 "jasper-fanin STATUS",
                 (
-                    f"output_xruns={output_xruns} input_xruns={input_xruns} "
+                    f"output_xruns={later_output_xruns} input_xruns={later_input_xruns} "
+                    f"output_xrun_delta={output_xrun_delta} "
+                    f"input_xrun_delta={input_xrun_delta} "
                     f"progress_age_ms={age}"
                 ),
             )

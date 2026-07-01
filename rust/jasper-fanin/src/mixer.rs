@@ -123,10 +123,10 @@ const CATCHUP_LOG_EVERY: u64 = 64;
 
 /// The final-output transport. `Alsa` (the default) writes the snd-aloop
 /// substream and is paced by the blocking ALSA `writei` — byte-identical to the
-/// pre-coupling daemon. `Fifo` writes a bounded named pipe and is paced by the
-/// blocking pipe `write` (DAC-paced backpressure via CamillaDSP's File capture).
-/// Both are the SOLE timing owner of the work loop in their respective modes
-/// (the single-pace-point invariant); only one is ever active.
+/// pre-coupling daemon. `Fifo` is the writer primitive used by the public
+/// `transport_pipe` mode: it writes a bounded named pipe that CamillaDSP
+/// RawFile-captures. Both are the sole timing owner of the fan-in work loop in
+/// their respective modes; only one is ever active.
 enum Output {
     Alsa(PCM),
     Fifo(FifoWriter),
@@ -182,26 +182,27 @@ pub struct Mixer {
     /// (consumer behind) or xrun. A growing value means the snapserver
     /// consumer is behind; surfaced via STATUS, NEVER escalated (inv-1).
     pub music_output_drops: Arc<AtomicU64>,
-    /// Coupling transport + (under `Fifo`) the shared FIFO observability
-    /// counters, cloned for the STATUS endpoint. `None` of the FIFO fields under
+    /// Coupling transport + (under `transport_pipe`) the shared pipe observability
+    /// counters, cloned for the STATUS endpoint. `None` of the pipe fields under
     /// `Loopback` (the default), so STATUS reports `transport=loopback` with no
-    /// fifo block — byte-identical to the pre-coupling snapshot.
+    /// pipe block — byte-identical to the pre-coupling snapshot.
     pub coupling: CouplingObservability,
 }
 
-/// Coupling transport echo + the shared FIFO counters for the STATUS endpoint.
-/// Under `Loopback` (default), `fifo` is `None` and STATUS reports only
-/// `transport:"loopback"`. Under `Fifo`, `fifo` carries the pipe path + the
-/// reopen / dropped-period / live-pipe-size atomics the `FifoWriter` updates.
+/// Coupling transport echo + the shared pipe counters for the STATUS endpoint.
+/// Under `Loopback` (default), `pipe` is `None` and STATUS reports only
+/// `transport:"loopback"`. Under `transport_pipe`, `pipe` carries the pipe path
+/// + the reopen / dropped-period / live-pipe-size atomics the `FifoWriter`
+///   updates.
 #[derive(Clone)]
 pub struct CouplingObservability {
     pub transport: &'static str,
-    pub fifo: Option<FifoObservability>,
+    pub pipe: Option<PipeObservability>,
 }
 
-/// The shared FIFO counters (cloned Arcs from the live `FifoWriter`).
+/// The shared pipe counters (cloned Arcs from the live `FifoWriter`).
 #[derive(Clone)]
-pub struct FifoObservability {
+pub struct PipeObservability {
     pub path: String,
     pub requested_pipe_bytes: u32,
     pub reopen_count: Arc<AtomicU64>,
@@ -307,7 +308,7 @@ impl Mixer {
 
         // Final-output transport. Loopback (default) opens the ALSA snd-aloop
         // substream — byte-identical to today. Fifo ensures + lazily opens the
-        // bounded named pipe CamillaDSP File-captures (the lower-latency
+        // bounded named pipe CamillaDSP RawFile-captures (the lower-latency
         // coupling). Exactly one is active.
         let (output, coupling) = match config.camilla_coupling {
             Coupling::Loopback => {
@@ -321,35 +322,35 @@ impl Mixer {
                     Output::Alsa(pcm),
                     CouplingObservability {
                         transport: "loopback",
-                        fifo: None,
+                        pipe: None,
                     },
                 )
             }
-            Coupling::Fifo => {
+            Coupling::TransportPipe => {
                 // The pipe is created here (producer owns it); the write end is
                 // opened reader-first lazily on the first period so startup is
                 // never gated on CamillaDSP being up.
                 let writer = FifoWriter::new(
-                    &config.camilla_fifo_path,
+                    &config.camilla_pipe_path,
                     config.period_frames,
-                    config.fifo_pipe_bytes,
+                    config.camilla_pipe_bytes,
                 )
                 .with_context(|| {
-                    format!("ensuring fan-in→camilla FIFO {}", config.camilla_fifo_path)
+                    format!("ensuring fan-in→camilla pipe {}", config.camilla_pipe_path)
                 })?;
                 info!(
-                    "event=fanin.output.opened transport=fifo path={} period_frames={} requested_pipe_bytes={}",
-                    config.camilla_fifo_path, config.period_frames, config.fifo_pipe_bytes,
+                    "event=fanin.output.opened transport=transport_pipe path={} period_frames={} requested_pipe_bytes={}",
+                    config.camilla_pipe_path, config.period_frames, config.camilla_pipe_bytes,
                 );
                 // Capture the shared counters before the writer moves into Output.
                 let (reopen_count, dropped_periods, actual_pipe_bytes) = writer.observability();
                 (
                     Output::Fifo(writer),
                     CouplingObservability {
-                        transport: "fifo",
-                        fifo: Some(FifoObservability {
-                            path: config.camilla_fifo_path.clone(),
-                            requested_pipe_bytes: config.fifo_pipe_bytes,
+                        transport: "transport_pipe",
+                        pipe: Some(PipeObservability {
+                            path: config.camilla_pipe_path.clone(),
+                            requested_pipe_bytes: config.camilla_pipe_bytes,
                             reopen_count,
                             dropped_periods,
                             actual_pipe_bytes,
@@ -568,7 +569,7 @@ impl Mixer {
         //    - Alsa: blocking writei, returns when the loopback ring has room
         //      (DAC-paced via the dsnoop consumer). Counts every period.
         //    - Fifo: blocking pipe write, returns when the pipe has room
-        //      (DAC-paced via CamillaDSP's File capture). A reader-gone /
+        //      (DAC-paced via CamillaDSP's RawFile capture). A reader-gone /
         //      no-reader turn returns Waited (the bounded reopen-wait already
         //      slept), dropping this period; we still return Ok so run() bumps
         //      the heartbeat — the loop is alive and bounded, never wedged.
@@ -705,13 +706,14 @@ fn resampler_lane_not_found(
 /// knobs.
 ///
 /// `requested` is the explicit `input_resampler_ring_frames` env override
-/// (non-zero pins it) OR, when `0`, the lane's ALSA `input_buffer_frames` (the
-/// prior implicit behaviour — already sized for the worst-case burst+stall
-/// occupancy). The result is floored to the resampler's STRUCTURAL minimum
-/// (`target + warm-up cushion + period + radius + 1`) so a tiny configured value
-/// can never make `LaneResampler::new` reject the ring. Raising the ring (vs the
-/// `target` latency setpoint) buys burst headroom WITHOUT adding latency — the
-/// Fix-2 lever for the residual overrun.
+/// (non-zero pins it) OR, when `0`, twice the lane's ALSA
+/// `input_buffer_frames`. The 2x derived default is deliberate: hardware USB
+/// testing showed a 4096-frame ring could stay locked but still overrun on
+/// snd-aloop burst arrivals, while an 8192-frame ring absorbed the same bursts
+/// without adding steady latency (the hold target controls latency; ring
+/// capacity is just headroom). The result is floored to the resampler's
+/// STRUCTURAL minimum (`target + warm-up cushion + period + radius + 1`) so a
+/// tiny configured value can never make `LaneResampler::new` reject the ring.
 ///
 /// Pure over primitives (no ALSA, no `Config`) so it is unit-testable on a
 /// non-Linux host via the macOS-ALSA-scratch convention.
@@ -731,7 +733,7 @@ fn resampler_ring_frames(
     let requested = if requested_ring_frames > 0 {
         requested_ring_frames as usize
     } else {
-        input_buffer_frames as usize
+        (input_buffer_frames as usize).saturating_mul(2)
     };
     requested.max(min_ring)
 }
@@ -1085,6 +1087,16 @@ fn recover_resampler_input_xrun(
         .pcm
         .try_recover(error, true)
         .context("recovering resampler input xrun")?;
+    // `try_recover` can leave a capture PCM in PREPARED. The ordinary
+    // read_input path will kick that forward with the next readi(), but the
+    // resampler path polls avail_update() before reading; without an explicit
+    // restart it can sit at avail=0 forever after a startup xrun.
+    if input.pcm.state() != State::Running {
+        input
+            .pcm
+            .start()
+            .with_context(|| format!("restarting resampler input {} after xrun", input.label))?;
+    }
     if let Some(r) = input.resampler.as_mut() {
         r.reset();
     }
@@ -1490,12 +1502,13 @@ mod tests {
             target as usize + cushion as usize + period as usize + radius + 1
         };
 
-        // requested=0 → derive from the ALSA input buffer (the prior implicit
-        // behaviour) when that exceeds the structural minimum.
+        // requested=0 → derive a 2x burst ring from the ALSA input buffer
+        // when that exceeds the structural minimum. The extra capacity is
+        // headroom only; it does not change the resampler's held latency target.
         assert_eq!(
             resampler_ring_frames(0, 4096, 512, 256, 256),
-            4096,
-            "0 derives the ring from input_buffer_frames"
+            8192,
+            "0 derives a 2x burst ring from input_buffer_frames"
         );
 
         // A non-zero override pins the capacity (the Fix-2 burst-headroom knob),

@@ -9,8 +9,9 @@ kwargs resolved from the environment into ``carrier.reemit``.
 These pin the literal call-site wiring — the carrier-level behaviour and the
 env resolver are unit-tested elsewhere (``test_sound_graph_carrier.py`` /
 ``test_fanin_coupling.py``); here we prove the runtime emit path actually passes
-the resolved kwargs, so a coupling=fifo box re-emits a File capture on every
-reconcile (the always-on contract) and a default box passes ``{}`` (byte-
+the resolved kwargs, so a coupling=transport_pipe box re-emits the dual-pipe
+RawFile/File topology on every reconcile (the always-on contract) and a default
+box passes ``{}`` (byte-
 identical).
 """
 from __future__ import annotations
@@ -77,10 +78,10 @@ def _capture_reemit_coupling(
     monkeypatch.setattr(runtime, "output_trim_db", lambda profile, settings: 0.0)
     monkeypatch.setattr(runtime, "load_sound_settings", lambda *a, **k: object())
 
-    # MB1: under =fifo the flat-profile noop must be SKIPPED so the apply
-    # actually flips the shared capture loopback->File. Spy load_profile_config
-    # (the apply reconcile delegates to) to prove it's reached under =fifo and
-    # NOT reached under loopback — without a full apply-engine fake.
+    # Under transport_pipe the flat-profile noop must be SKIPPED so the apply
+    # actually flips the shared topology loopback->dual-pipe. Spy
+    # load_profile_config (the apply reconcile delegates to) to prove it's
+    # reached under transport_pipe and NOT reached under loopback.
     class _ApplyState:
         active_config_path = "applied.yml"
         room_peq_count = 0
@@ -118,25 +119,27 @@ def test_reconcile_default_passes_empty_coupling(monkeypatch, tmp_path):
     )
     assert seen["fanin_coupling_capture_kwargs"] == {}
     # Sanity: loopback default still short-circuits on the flat-profile noop —
-    # no apply engine (byte-identical, the MB1 fix only changes the =fifo path).
+    # no apply engine (byte-identical, the topology fix only changes the
+    # transport_pipe path).
     assert result["status"] == "skipped"
     assert result["reason"] == "flat_profile_noop"
     assert seen.get("apply_called") is not True
 
 
-def test_reconcile_fifo_passes_file_capture_coupling(monkeypatch, tmp_path):
-    # =fifo: the reemit gets the File-capture kwargs (the always-on arm point).
+def test_reconcile_transport_pipe_passes_dual_pipe_coupling(monkeypatch, tmp_path):
+    # transport_pipe: the reemit gets the dual-pipe kwargs.
     result, seen = _capture_reemit_coupling(
-        monkeypatch, tmp_path, coupling_env="fifo"
+        monkeypatch, tmp_path, coupling_env="transport_pipe"
     )
     kwargs = seen["fanin_coupling_capture_kwargs"]
     assert kwargs["capture_pipe_path"].endswith("camilla.pipe")
-    assert kwargs["resampler_type"] == "AsyncSinc"
-    assert kwargs["enable_rate_adjust"] is True
-    # MB1 regression guard: under =fifo a flat profile must NOT short-circuit on
-    # flat_profile_noop — the shared capture must flip loopback->File, so the
-    # apply actually runs. Before the fix the noop fired and left Camilla on the
-    # dead loopback while fan-in wrote the pipe -> silent outage.
+    assert kwargs["playback_pipe_path"].endswith("content.pipe")
+    assert kwargs["resampler_type"] is None
+    assert kwargs["enable_rate_adjust"] is False
+    assert kwargs["transport_paced_pipe"] is True
+    # Regression guard: under transport_pipe a flat profile must NOT
+    # short-circuit on flat_profile_noop — the graph transport must flip
+    # loopback->dual-pipe, so the apply actually runs.
     assert seen.get("apply_called") is True
     assert result["status"] == "reconciled"
 
@@ -170,33 +173,37 @@ def test_resolver_helper_override_beats_env(monkeypatch):
     from jasper.audio_runtime_plan import fanin_coupling_capture_kwargs
 
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
-    fifo_kwargs = fanin_coupling_capture_kwargs("fifo")
-    assert "capture_pipe_path" in fifo_kwargs and fifo_kwargs["enable_rate_adjust"]
-    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "fifo")
+    pipe_kwargs = fanin_coupling_capture_kwargs("transport_pipe")
+    assert "capture_pipe_path" in pipe_kwargs
+    assert "playback_pipe_path" in pipe_kwargs
+    assert pipe_kwargs["enable_rate_adjust"] is False
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "transport_pipe")
     assert fanin_coupling_capture_kwargs("loopback") == {}
     # None falls through to the env (every existing caller's behavior).
     assert "capture_pipe_path" in fanin_coupling_capture_kwargs(None)
 
 
-def test_reconcile_explicit_fifo_override_arms_regardless_of_env(monkeypatch, tmp_path):
-    # coupling="fifo" passed to reconcile_current_dsp emits the File capture even
-    # when the env says loopback (the reconciler's stale-env-proof path), and the
-    # override threads to the durable apply (apply_coupling).
+def test_reconcile_explicit_transport_pipe_override_arms_regardless_of_env(monkeypatch, tmp_path):
+    # coupling="transport_pipe" passed to reconcile_current_dsp emits the dual
+    # pipe topology even when the env says loopback (the reconciler's
+    # stale-env-proof path), and the override threads to the durable apply.
     result, seen = _capture_reemit_coupling(
-        monkeypatch, tmp_path, coupling_env="loopback", coupling_override="fifo",
+        monkeypatch, tmp_path, coupling_env="loopback", coupling_override="transport_pipe",
     )
     kwargs = seen["fanin_coupling_capture_kwargs"]
     assert kwargs["capture_pipe_path"].endswith("camilla.pipe")
+    assert kwargs["playback_pipe_path"].endswith("content.pipe")
     assert seen["apply_called"] is True
-    assert seen["apply_coupling"] == "fifo"
+    assert seen["apply_coupling"] == "transport_pipe"
     assert result["status"] == "reconciled"
 
 
-def test_reconcile_explicit_loopback_override_beats_fifo_env(monkeypatch, tmp_path):
-    # coupling="loopback" override emits the ALSA capture even when env=fifo;
+def test_reconcile_explicit_loopback_override_beats_transport_pipe_env(monkeypatch, tmp_path):
+    # coupling="loopback" override emits the ALSA capture even when
+    # env=transport_pipe;
     # the flat profile then correctly short-circuits (loopback is byte-identical).
     result, seen = _capture_reemit_coupling(
-        monkeypatch, tmp_path, coupling_env="fifo", coupling_override="loopback",
+        monkeypatch, tmp_path, coupling_env="transport_pipe", coupling_override="loopback",
     )
     assert seen["fanin_coupling_capture_kwargs"] == {}
     assert result["reason"] == "flat_profile_noop"

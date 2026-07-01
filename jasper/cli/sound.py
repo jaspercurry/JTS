@@ -121,9 +121,10 @@ def main(argv: list[str] | None = None) -> int:
     # Hydrate os.environ from the wizard-owned env files (same set the daemons
     # load, fanin.env wins last) so a reconcile run from the CLI / install.sh —
     # neither of which pre-sources those files — sees the persisted
-    # JASPER_FANIN_CAMILLA_COUPLING. Without this, a deploy on a coupling=fifo
-    # box would re-emit a loopback capture while fan-in writes the pipe (a silent
-    # split-brain). setdefault semantics keep an explicit shell override winning.
+    # JASPER_FANIN_CAMILLA_COUPLING. Without this, a deploy on a
+    # coupling=transport_pipe box would re-emit a loopback capture while
+    # fan-in/outputd use the pipe topology (a silent split-brain). setdefault
+    # semantics keep an explicit shell override winning.
     from jasper.env_load import load_env_files
 
     load_env_files()

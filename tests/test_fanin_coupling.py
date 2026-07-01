@@ -2,35 +2,30 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the fan-in → CamillaDSP coupling selector and its byte-identical
-loopback default.
+"""fan-in -> CamillaDSP coupling selector contracts."""
 
-The load-bearing claim: with ``JASPER_FANIN_CAMILLA_COUPLING`` unset or
-``loopback``, the emitted CamillaDSP capture block is **byte-for-byte** the same
-as a call that never touched the coupling helper. With ``fifo`` it flips to a
-File capture + async resampler + rate-adjust (the lean-lane File-capture shape).
-"""
 from __future__ import annotations
 
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_FORMAT,
-    DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
+    DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT,
+    DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE,
+    DEFAULT_PLAYBACK_FORMAT,
 )
 from jasper.fanin_coupling import (
-    COUPLING_FIFO,
     COUPLING_LOOPBACK,
-    DEFAULT_FANIN_CAMILLA_FIFO,
-    FIFO_WIRE_FORMAT,
+    COUPLING_TRANSPORT_PIPE,
+    DEFAULT_FANIN_CAMILLA_PIPE,
+    PIPE_WIRE_FORMAT,
+    OUTPUTD_PIPE_PATH_ENV_VAR,
     capture_kwargs_for_coupling,
-    is_fifo_coupling,
+    is_transport_pipe_coupling,
     resolve_coupling,
-    resolve_fifo_path,
+    resolve_pipe_path,
+    resolve_outputd_pipe_path,
 )
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
-
-
-# ---- resolve_coupling: fail-safe normalization ----------------------------
 
 
 def test_resolve_coupling_defaults_to_loopback():
@@ -39,183 +34,167 @@ def test_resolve_coupling_defaults_to_loopback():
     assert resolve_coupling("   ") == COUPLING_LOOPBACK
 
 
-def test_resolve_coupling_accepts_both_transports_case_insensitive():
+def test_resolve_coupling_accepts_explicit_transports_case_insensitive():
     assert resolve_coupling("loopback") == COUPLING_LOOPBACK
-    assert resolve_coupling(" FIFO ") == COUPLING_FIFO
-    assert resolve_coupling("FiFo") == COUPLING_FIFO
+    assert resolve_coupling(" TRANSPORT_PIPE ") == COUPLING_TRANSPORT_PIPE
+    assert resolve_coupling("Transport_Pipe") == COUPLING_TRANSPORT_PIPE
 
 
-def test_resolve_coupling_unknown_value_fails_safe_to_loopback():
-    # A typo must never silently flip the shared realtime capture; fail safe.
-    assert resolve_coupling("fifoo") == COUPLING_LOOPBACK
+def test_resolve_coupling_unknown_and_old_fifo_fail_safe_to_loopback():
+    assert resolve_coupling("fifo") == COUPLING_LOOPBACK
     assert resolve_coupling("pipe") == COUPLING_LOOPBACK
     assert resolve_coupling("disabled") == COUPLING_LOOPBACK
 
 
-def test_is_fifo_coupling_predicate():
-    assert is_fifo_coupling("fifo") is True
-    assert is_fifo_coupling("loopback") is False
-    assert is_fifo_coupling(None) is False
-    assert is_fifo_coupling("garbage") is False
+def test_is_transport_pipe_coupling_predicate():
+    assert is_transport_pipe_coupling("transport_pipe") is True
+    assert is_transport_pipe_coupling("loopback") is False
+    assert is_transport_pipe_coupling(None) is False
+    assert is_transport_pipe_coupling("fifo") is False
 
 
-# ---- resolve_fifo_path -----------------------------------------------------
-
-
-def test_resolve_fifo_path_default_and_override():
-    assert resolve_fifo_path(None) == DEFAULT_FANIN_CAMILLA_FIFO
-    assert resolve_fifo_path("") == DEFAULT_FANIN_CAMILLA_FIFO
-    assert resolve_fifo_path("   ") == DEFAULT_FANIN_CAMILLA_FIFO
-    assert resolve_fifo_path("  /run/custom.pipe ") == "/run/custom.pipe"
-
-
-# ---- capture_kwargs_for_coupling ------------------------------------------
+def test_resolve_pipe_paths_default_and_override():
+    assert resolve_pipe_path(None) == DEFAULT_FANIN_CAMILLA_PIPE
+    assert resolve_pipe_path("") == DEFAULT_FANIN_CAMILLA_PIPE
+    assert resolve_pipe_path("   ") == DEFAULT_FANIN_CAMILLA_PIPE
+    assert resolve_pipe_path("  /run/custom.pipe ") == "/run/custom.pipe"
+    assert resolve_outputd_pipe_path(None) == DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
+    assert resolve_outputd_pipe_path("") == DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
+    assert (
+        resolve_outputd_pipe_path(" /run/jasper-outputd/custom.pipe ")
+        == "/run/jasper-outputd/custom.pipe"
+    )
 
 
 def test_loopback_capture_kwargs_are_empty():
-    # The empty-dict contract: loopback adds NOTHING, so every existing caller
-    # is unchanged when the flag is unset.
     assert capture_kwargs_for_coupling(None) == {}
     assert capture_kwargs_for_coupling("loopback") == {}
     assert capture_kwargs_for_coupling("garbage") == {}
+    assert capture_kwargs_for_coupling("fifo") == {}
 
 
-def test_fifo_capture_kwargs_are_file_capture_shape():
-    kwargs = capture_kwargs_for_coupling("fifo")
-    assert kwargs["capture_pipe_path"] == DEFAULT_FANIN_CAMILLA_FIFO
-    assert kwargs["resampler_type"] == DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE
-    assert kwargs["enable_rate_adjust"] is True
+def test_transport_pipe_kwargs_are_dual_pipe_shape():
+    kwargs = capture_kwargs_for_coupling("transport_pipe")
+
+    assert kwargs == {
+        "capture_pipe_path": DEFAULT_FANIN_CAMILLA_PIPE,
+        "playback_pipe_path": DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE,
+        "resampler_type": None,
+        "resampler_profile": None,
+        "enable_rate_adjust": False,
+        "transport_paced_pipe": True,
+        "playback_format": DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT,
+    }
 
 
-def test_fifo_capture_kwargs_honor_path_override():
-    kwargs = capture_kwargs_for_coupling("fifo", fifo_path="/run/custom.pipe")
-    assert kwargs["capture_pipe_path"] == "/run/custom.pipe"
+def test_transport_pipe_kwargs_honor_path_overrides():
+    kwargs = capture_kwargs_for_coupling(
+        "transport_pipe",
+        pipe_path="/run/custom-capture.pipe",
+        outputd_pipe_path="/run/custom-outputd.pipe",
+    )
+
+    assert kwargs["capture_pipe_path"] == "/run/custom-capture.pipe"
+    assert kwargs["playback_pipe_path"] == "/run/custom-outputd.pipe"
 
 
-def test_fifo_wire_format_matches_shared_capture_format():
-    # The format-split invariant: fan-in widens S16->S32 so the pipe carries the
-    # same width as the shared ALSA capture (S32_LE). If these ever diverge the
-    # File capture would misread the pipe.
-    assert FIFO_WIRE_FORMAT == DEFAULT_CAPTURE_FORMAT
-
-
-# ---- byte-identical default proof (the safety contract) --------------------
+def test_transport_pipe_wire_formats_match_camilla_contract():
+    assert PIPE_WIRE_FORMAT == DEFAULT_CAPTURE_FORMAT
+    assert DEFAULT_PLAYBACK_FORMAT == "S16_LE"
+    assert DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT == "S32_LE"
 
 
 def test_loopback_coupling_is_byte_identical_to_no_coupling():
     profile = SoundProfile()
-    # Baseline: a plain emit that knows nothing about the coupling helper.
     baseline = emit_sound_config(profile, profile_id="x")
-    # Coupling=loopback: apply the resolved kwargs (which are {}), so the result
-    # MUST be byte-for-byte identical.
-    loopback_kwargs = capture_kwargs_for_coupling("loopback")
-    coupled = emit_sound_config(profile, profile_id="x", **loopback_kwargs)
+    coupled = emit_sound_config(
+        profile,
+        profile_id="x",
+        **capture_kwargs_for_coupling("loopback"),
+    )
     assert coupled == baseline
 
 
-def test_loopback_default_unset_flag_is_byte_identical():
-    profile = SoundProfile()
-    baseline = emit_sound_config(profile, profile_id="x")
-    unset_kwargs = capture_kwargs_for_coupling(None)
-    coupled = emit_sound_config(profile, profile_id="x", **unset_kwargs)
-    assert coupled == baseline
+def test_transport_pipe_emits_rawfile_capture_file_playback_no_resampler():
+    cfg = emit_sound_config(
+        SoundProfile(),
+        profile_id="x",
+        **capture_kwargs_for_coupling("transport_pipe"),
+    )
 
-
-def test_fifo_coupling_emits_file_capture_and_resampler():
-    profile = SoundProfile()
-    fifo_kwargs = capture_kwargs_for_coupling("fifo")
-    cfg = emit_sound_config(profile, profile_id="x", **fifo_kwargs)
-    # RawFile capture pointed at the fan-in pipe, NOT the dsnoop ALSA device.
-    # MUST be RawFile, NOT File — CamillaDSP v4 has no `File` capture variant
-    # (caught on jts5 / CamillaDSP 4.1.3, 2026-06-27); the old `type: File`
-    # here emitted a config the DSP rejects with "unknown variant `File`".
-    assert "type: RawFile" in cfg
-    assert "type: File" not in cfg
-    assert DEFAULT_FANIN_CAMILLA_FIFO in cfg
+    assert "enable_rate_adjust: false" in cfg
+    assert DEFAULT_FANIN_CAMILLA_PIPE in cfg
+    assert DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE in cfg
     assert 'device: "plug:jasper_capture"' not in cfg
-    # Async resampler + rate-adjust on, the clockless-File-capture safe shape.
-    assert f"type: {DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE}" in cfg
-    assert "enable_rate_adjust: true" in cfg
-    # Capture format is the shared S32_LE wire format.
-    assert f"format: {FIFO_WIRE_FORMAT}" in cfg
+    assert 'device: "outputd_content_playback"' not in cfg
+    assert "type: AsyncSinc" not in cfg
+    assert "type: AsyncPoly" not in cfg
+
+    capture_block = cfg.split("  capture:\n", 1)[1].split("\n  playback:\n", 1)[0]
+    playback_block = cfg.split("  playback:\n", 1)[1].split("\n\nfilters:\n", 1)[0]
+    assert "type: RawFile" in capture_block
+    assert f"format: {DEFAULT_CAPTURE_FORMAT}" in capture_block
+    assert "type: File" in playback_block
+    assert f"format: {DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT}" in playback_block
 
 
-def test_fifo_coupling_capture_is_a_valid_file_capture_per_emitter_guards():
-    # emit_sound_config raises if the File-capture invariants are violated;
-    # capture_kwargs_for_coupling MUST always satisfy them. A passing emit is
-    # the proof the kwargs are self-consistent.
-    profile = SoundProfile()
-    fifo_kwargs = capture_kwargs_for_coupling("fifo")
-    # Should not raise.
-    emit_sound_config(profile, **fifo_kwargs)
-
-
-def test_fifo_coupling_does_not_trip_oscillation_guard():
-    # Spec §3: the snd-aloop rate_adjust + async-resampler oscillation guard
-    # EXEMPTS File captures (a clockless File capture REQUIRES the async
-    # resampler + rate-adjust). The fifo coupling is a File capture, so the
-    # guard must return None for it.
+def test_transport_pipe_does_not_trip_aloop_oscillation_guard():
     from jasper.camilla_config_contract import (
         snd_aloop_rate_adjust_oscillation_reason,
     )
 
-    fifo_kwargs = capture_kwargs_for_coupling("fifo")
-    cfg = emit_sound_config(SoundProfile(), **fifo_kwargs)
+    cfg = emit_sound_config(
+        SoundProfile(),
+        **capture_kwargs_for_coupling("transport_pipe"),
+    )
     assert snd_aloop_rate_adjust_oscillation_reason(cfg) is None
-
-
-# ---- coupling_capture_kwargs_from_env (the live emit-time resolver) ---------
 
 
 def test_coupling_capture_kwargs_from_env_default_is_empty():
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 
-    # No coupling env -> {} -> byte-identical emits (the default-OFF contract).
     assert coupling_capture_kwargs_from_env({}) == {}
     assert coupling_capture_kwargs_from_env({"JASPER_FANIN_CAMILLA_COUPLING": ""}) == {}
     assert (
         coupling_capture_kwargs_from_env({"JASPER_FANIN_CAMILLA_COUPLING": "loopback"})
         == {}
     )
-    # A typo fails safe to loopback ({}), never silently arming the pipe.
     assert (
-        coupling_capture_kwargs_from_env({"JASPER_FANIN_CAMILLA_COUPLING": "fif0"})
+        coupling_capture_kwargs_from_env({"JASPER_FANIN_CAMILLA_COUPLING": "fifo"})
         == {}
     )
 
 
-def test_coupling_capture_kwargs_from_env_fifo_uses_default_path():
+def test_coupling_capture_kwargs_from_env_transport_pipe_uses_default_paths():
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 
     kwargs = coupling_capture_kwargs_from_env(
-        {"JASPER_FANIN_CAMILLA_COUPLING": "fifo"}
+        {"JASPER_FANIN_CAMILLA_COUPLING": "transport_pipe"}
     )
-    assert kwargs["capture_pipe_path"] == DEFAULT_FANIN_CAMILLA_FIFO
-    assert kwargs["resampler_type"] == DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE
-    assert kwargs["enable_rate_adjust"] is True
+    assert kwargs["capture_pipe_path"] == DEFAULT_FANIN_CAMILLA_PIPE
+    assert kwargs["playback_pipe_path"] == DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
+    assert kwargs["resampler_type"] is None
+    assert kwargs["enable_rate_adjust"] is False
 
 
-def test_coupling_capture_kwargs_from_env_fifo_honors_path_override():
+def test_coupling_capture_kwargs_from_env_transport_pipe_honors_path_overrides():
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 
     kwargs = coupling_capture_kwargs_from_env(
         {
-            "JASPER_FANIN_CAMILLA_COUPLING": "fifo",
-            "JASPER_FANIN_CAMILLA_FIFO": "  /run/soak.pipe ",
+            "JASPER_FANIN_CAMILLA_COUPLING": "transport_pipe",
+            "JASPER_FANIN_CAMILLA_PIPE": "  /run/soak-capture.pipe ",
+            OUTPUTD_PIPE_PATH_ENV_VAR: " /run/soak-output.pipe ",
         }
     )
-    # The path env is resolved the SAME way Rust resolves JASPER_FANIN_CAMILLA_FIFO
-    # so producer + consumer name the same pipe.
-    assert kwargs["capture_pipe_path"] == "/run/soak.pipe"
 
-
-# ---- member_kwargs_are_pipe_sink (the coupling precedence veto) -------------
+    assert kwargs["capture_pipe_path"] == "/run/soak-capture.pipe"
+    assert kwargs["playback_pipe_path"] == "/run/soak-output.pipe"
 
 
 def test_member_kwargs_are_pipe_sink_detects_grouped_sink():
     from jasper.fanin_coupling import member_kwargs_are_pipe_sink
 
-    # Solo defaults (rate_adjust on, no pipe) -> NOT a sink -> coupling applies.
     assert member_kwargs_are_pipe_sink(None) is False
     assert member_kwargs_are_pipe_sink({}) is False
     assert (
@@ -224,12 +203,10 @@ def test_member_kwargs_are_pipe_sink_detects_grouped_sink():
         )
         is False
     )
-    # A grouped/bonded sink (pipe + rate_adjust off) -> IS a sink -> veto.
     assert (
         member_kwargs_are_pipe_sink(
             {"enable_rate_adjust": False, "playback_pipe_path": "/run/snapfifo"}
         )
         is True
     )
-    # rate_adjust=False alone is enough to read as a sink (fail-safe veto).
     assert member_kwargs_are_pipe_sink({"enable_rate_adjust": False}) is True

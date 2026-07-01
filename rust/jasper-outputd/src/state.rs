@@ -25,6 +25,7 @@ use crate::config::Config;
 use crate::content_bridge::ContentBridgeMetrics;
 use crate::dac_clock::DacClockObserver;
 use crate::dac_content::DacContentMetrics;
+use crate::local_content_pipe::{LocalContentPipeMetrics, LOCAL_CONTENT_PIPE_FORMAT};
 use crate::tts::TtsMetrics;
 use jasper_clock::DllSnapshot;
 use std::sync::OnceLock;
@@ -93,6 +94,18 @@ pub struct OutputdState {
     // per period by `mark_content_bridge` and read only by the state server —
     // mirrors the `sro_estimator` / `dac_clock` pattern.
     content_bridge_rate_diff: Mutex<DllSnapshot>,
+    local_content_pipe: Option<String>,
+    local_content_pipe_requested_pipe_bytes: AtomicU64,
+    local_content_pipe_open: AtomicBool,
+    local_content_pipe_open_failures: AtomicU64,
+    local_content_pipe_read_failures: AtomicU64,
+    local_content_pipe_reopen_count: AtomicU64,
+    local_content_pipe_startup_empty_periods: AtomicU64,
+    local_content_pipe_empty_periods: AtomicU64,
+    local_content_pipe_partial_periods: AtomicU64,
+    local_content_pipe_misaligned_bytes: AtomicU64,
+    local_content_pipe_available_bytes: AtomicU64,
+    local_content_pipe_actual_pipe_bytes: AtomicU64,
     dac_content_fifo: Option<String>,
     dac_content_channel: String,
     dac_content_highpass_hz: Option<f64>,
@@ -246,6 +259,20 @@ impl OutputdState {
             content_bridge_lock_count: AtomicU64::new(0),
             content_bridge_unlock_count: AtomicU64::new(0),
             content_bridge_rate_diff: Mutex::new(DllSnapshot::idle()),
+            local_content_pipe: config.local_content_pipe.clone(),
+            local_content_pipe_requested_pipe_bytes: AtomicU64::new(
+                config.local_content_pipe_bytes as u64,
+            ),
+            local_content_pipe_open: AtomicBool::new(false),
+            local_content_pipe_open_failures: AtomicU64::new(0),
+            local_content_pipe_read_failures: AtomicU64::new(0),
+            local_content_pipe_reopen_count: AtomicU64::new(0),
+            local_content_pipe_startup_empty_periods: AtomicU64::new(0),
+            local_content_pipe_empty_periods: AtomicU64::new(0),
+            local_content_pipe_partial_periods: AtomicU64::new(0),
+            local_content_pipe_misaligned_bytes: AtomicU64::new(0),
+            local_content_pipe_available_bytes: AtomicU64::new(0),
+            local_content_pipe_actual_pipe_bytes: AtomicU64::new(0),
             dac_content_fifo: config.dac_content_fifo.clone(),
             dac_content_channel: config.dac_content_channel.as_str().to_string(),
             dac_content_highpass_hz: config.dac_content_highpass_hz,
@@ -572,6 +599,31 @@ impl OutputdState {
             .store(metrics.read_failures, Ordering::Relaxed);
     }
 
+    pub fn mark_local_content_pipe(&self, metrics: LocalContentPipeMetrics) {
+        self.local_content_pipe_open
+            .store(metrics.open, Ordering::Relaxed);
+        self.local_content_pipe_requested_pipe_bytes
+            .store(metrics.requested_pipe_bytes, Ordering::Relaxed);
+        self.local_content_pipe_open_failures
+            .store(metrics.open_failures, Ordering::Relaxed);
+        self.local_content_pipe_read_failures
+            .store(metrics.read_failures, Ordering::Relaxed);
+        self.local_content_pipe_reopen_count
+            .store(metrics.reopen_count, Ordering::Relaxed);
+        self.local_content_pipe_startup_empty_periods
+            .store(metrics.startup_empty_periods, Ordering::Relaxed);
+        self.local_content_pipe_empty_periods
+            .store(metrics.empty_periods, Ordering::Relaxed);
+        self.local_content_pipe_partial_periods
+            .store(metrics.partial_periods, Ordering::Relaxed);
+        self.local_content_pipe_misaligned_bytes
+            .store(metrics.misaligned_bytes, Ordering::Relaxed);
+        self.local_content_pipe_available_bytes
+            .store(metrics.available_bytes, Ordering::Relaxed);
+        self.local_content_pipe_actual_pipe_bytes
+            .store(metrics.actual_pipe_bytes, Ordering::Relaxed);
+    }
+
     pub fn mark_content_bridge(&self, metrics: ContentBridgeMetrics) {
         self.content_bridge_locked
             .store(metrics.locked, Ordering::Relaxed);
@@ -632,6 +684,16 @@ impl OutputdState {
         buf.push(',');
 
         buf.push_str(r#""content":{"#);
+        push_kv_str(
+            &mut buf,
+            "source",
+            if self.local_content_pipe.is_some() {
+                "local_pipe"
+            } else {
+                "alsa"
+            },
+        );
+        buf.push(',');
         push_kv_str(&mut buf, "pcm", &self.content_pcm);
         buf.push(',');
         push_kv_u64(
@@ -684,6 +746,91 @@ impl OutputdState {
             rate_per_hour(content_xrun_count, uptime_ms),
             3,
         );
+        if let Some(pipe) = self.local_content_pipe.as_deref() {
+            buf.push(',');
+            buf.push_str(r#""local_pipe":{"#);
+            push_kv_bool(&mut buf, "enabled", self.local_content_pipe.is_some());
+            buf.push(',');
+            push_kv_str(&mut buf, "path", pipe);
+            buf.push(',');
+            push_kv_str(&mut buf, "format", LOCAL_CONTENT_PIPE_FORMAT);
+            buf.push(',');
+            push_kv_bool(
+                &mut buf,
+                "open",
+                self.local_content_pipe_open.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "requested_pipe_bytes",
+                self.local_content_pipe_requested_pipe_bytes
+                    .load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "available_bytes",
+                self.local_content_pipe_available_bytes
+                    .load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "actual_pipe_bytes",
+                self.local_content_pipe_actual_pipe_bytes
+                    .load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "reopen_count",
+                self.local_content_pipe_reopen_count.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "startup_empty_periods",
+                self.local_content_pipe_startup_empty_periods
+                    .load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "empty_periods",
+                self.local_content_pipe_empty_periods
+                    .load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "partial_periods",
+                self.local_content_pipe_partial_periods
+                    .load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "misaligned_bytes",
+                self.local_content_pipe_misaligned_bytes
+                    .load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "open_failures",
+                self.local_content_pipe_open_failures
+                    .load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "read_failures",
+                self.local_content_pipe_read_failures
+                    .load(Ordering::Relaxed),
+            );
+            buf.push('}');
+        }
         buf.push('}');
         buf.push(',');
 
@@ -1674,6 +1821,8 @@ mod tests {
                 target_fill_frames: DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
                 max_adjust_ppm: DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
             },
+            local_content_pipe: None,
+            local_content_pipe_bytes: 8192,
             chip_ref_pcm: None,
             chip_ref_sample_rate: 16_000,
             chip_ref_period_frames: 320,
@@ -1726,7 +1875,7 @@ mod tests {
         let j = state.snapshot_json();
         for needle in [
             r#""backend":"alsa""#,
-            r#""content":{"pcm":"outputd_content_capture""#,
+            r#""content":{"source":"alsa","pcm":"outputd_content_capture""#,
             r#""content_bridge":{"mode":"direct""#,
             r#""dac":{"pcm":"outputd_dac""#,
             r#""sample_rate":48000"#,
@@ -1776,6 +1925,64 @@ mod tests {
             !j.contains(r#""assistant_loudness":"#),
             "duplicate outputd loudness state present in {j}"
         );
+    }
+
+    #[test]
+    fn snapshot_json_reports_local_content_pipe_metrics() {
+        let cfg = Config {
+            local_content_pipe: Some("/run/jasper-outputd/content.pipe".to_string()),
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        state.mark_period(
+            IoCounters {
+                content_frames_read: 512,
+                content_empty_period_count: 2,
+                content_partial_period_count: 1,
+                content_eagain_count: 0,
+                dac_frames_written: 512,
+                content_xrun_count: 0,
+                dac_xrun_count: 0,
+            },
+            7,
+            0,
+        );
+        state.mark_local_content_pipe(LocalContentPipeMetrics {
+            enabled: true,
+            open: true,
+            frames_read: 512,
+            requested_pipe_bytes: 4096,
+            open_failures: 3,
+            read_failures: 4,
+            reopen_count: 5,
+            startup_empty_periods: 8,
+            empty_periods: 2,
+            partial_periods: 1,
+            misaligned_bytes: 6,
+            available_bytes: 128,
+            actual_pipe_bytes: 4096,
+        });
+
+        let j = state.snapshot_json();
+        for needle in [
+            r#""content":{"source":"local_pipe""#,
+            r#""local_pipe":{"enabled":true"#,
+            r#""path":"/run/jasper-outputd/content.pipe""#,
+            r#""format":"S32_LE""#,
+            r#""open":true"#,
+            r#""requested_pipe_bytes":4096"#,
+            r#""available_bytes":128"#,
+            r#""actual_pipe_bytes":4096"#,
+            r#""reopen_count":5"#,
+            r#""startup_empty_periods":8"#,
+            r#""empty_periods":2"#,
+            r#""partial_periods":1"#,
+            r#""misaligned_bytes":6"#,
+            r#""open_failures":3"#,
+            r#""read_failures":4"#,
+        ] {
+            assert!(j.contains(needle), "missing {needle} in {j}");
+        }
     }
 
     #[test]

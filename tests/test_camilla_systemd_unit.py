@@ -52,6 +52,17 @@ def _value_for(unit_text: str, key: str) -> str | None:
     return None
 
 
+def test_unit_starts_after_outputd_and_fanin_for_pipe_rendezvous():
+    body = UNIT_PATH.read_text()
+
+    after = _value_for(body, "After") or ""
+    wants = _value_for(body, "Wants") or ""
+    assert "jasper-outputd.service" in after
+    assert "jasper-fanin.service" in after
+    assert "jasper-outputd.service" in wants
+    assert "jasper-fanin.service" in wants
+
+
 def test_unit_elects_rt_below_the_sinks_and_bounds_rttime():
     """Audio-latency foundation G1+G4. CamillaDSP must run SCHED_FIFO so it
     isn't preempted under load (the source of the fan-in short-read/xrun

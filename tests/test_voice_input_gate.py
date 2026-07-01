@@ -63,6 +63,23 @@ def test_voice_service_has_mic_presence_condition() -> None:
                for c in cond), cond
 
 
+def test_voice_service_starts_udp_mic_producer_softly() -> None:
+    """The default/reconciler-managed mic is udp:9876, produced by
+    jasper-aec-bridge. If voice starts while the bridge is inactive, the UDP
+    capture socket binds but receives no frames, and voice watchdog-restarts.
+
+    This must stay a soft dependency: bridge restarts should not cascade-stop an
+    otherwise healthy voice daemon, and no-mic/custom-mic boxes should still use
+    the reconciler's existing gates.
+    """
+    text = _unit_text()
+    after = _directive_values(text, "After")
+    wants = _directive_values(text, "Wants")
+    assert "jasper-aec-bridge.service" in after, after
+    assert "jasper-aec-bridge.service" in wants, wants
+    assert "Requires=jasper-aec-bridge.service" not in text
+
+
 def test_voice_service_parks_on_mic_unavailable_exit() -> None:
     text = _unit_text()
     success = _directive_values(text, "SuccessExitStatus")

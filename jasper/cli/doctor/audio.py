@@ -22,7 +22,10 @@ from ...audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID,
     mixer_control_groups_for as _dac_mixer_control_groups_for,
 )
-from ...camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
+from ...camilla_config_contract import (
+    DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT,
+    DEFAULT_VOLUME_LIMIT_DB,
+)
 from ...config import Config
 from ...env_load import parse_env_file
 from ...mics import xvf3800
@@ -1157,8 +1160,61 @@ def check_fanin_service() -> CheckResult:
             f"active but UDS STATUS returned invalid JSON: {e}",
         )
 
-    output_pcm = data.get("output", {}).get("pcm")
-    if output_pcm != _FANIN_EXPECTED_OUTPUT_PCM:
+    output = data.get("output", {})
+    if not isinstance(output, dict):
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            "active but STATUS response missing output{}",
+        )
+    from jasper.fanin.coupling_reconcile import FANIN_ENV_PATH, read_persisted_coupling
+    from jasper.fanin_coupling import (
+        COUPLING_TRANSPORT_PIPE,
+        PIPE_PATH_ENV_VAR,
+        resolve_pipe_path,
+    )
+
+    coupling = read_persisted_coupling()
+    expected_transport = (
+        "transport_pipe" if coupling == COUPLING_TRANSPORT_PIPE else "loopback"
+    )
+    actual_transport = output.get("transport")
+    if actual_transport != expected_transport:
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            f"active but STATUS output.transport={actual_transport!r}; "
+            f"expected {expected_transport!r} for persisted coupling={coupling!r}. "
+            "Run jasper-fanin-coupling-reconcile to restart fan-in onto the "
+            "persisted topology.",
+        )
+    if coupling == COUPLING_TRANSPORT_PIPE:
+        pipe = output.get("pipe")
+        if not isinstance(pipe, dict):
+            return CheckResult(
+                "jasper-fanin service",
+                "fail",
+                "active but transport_pipe STATUS is missing output.pipe metrics",
+            )
+        expected_pipe = resolve_pipe_path(
+            parse_env_file(FANIN_ENV_PATH).get(PIPE_PATH_ENV_VAR)
+        )
+        if pipe.get("path") != expected_pipe:
+            return CheckResult(
+                "jasper-fanin service",
+                "fail",
+                f"active but output.pipe.path={pipe.get('path')!r}; "
+                f"expected {expected_pipe!r} from {FANIN_ENV_PATH}",
+            )
+    elif "pipe" in output:
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            "active loopback transport unexpectedly reports output.pipe metrics",
+        )
+
+    output_pcm = output.get("pcm")
+    if coupling != COUPLING_TRANSPORT_PIPE and output_pcm != _FANIN_EXPECTED_OUTPUT_PCM:
         return CheckResult(
             "jasper-fanin service",
             "fail",
@@ -1202,10 +1258,10 @@ def check_fanin_service() -> CheckResult:
             f"active but last_progress_age_ms={progress_age} "
             f"(work loop may be wedged; watchdog should fire soon)",
         )
-    frames = data.get("output", {}).get("frames_written", 0)
-    xruns = data.get("output", {}).get("xrun_count", 0)
+    frames = output.get("frames_written", 0)
+    xruns = output.get("xrun_count", 0)
     input_buffer_frames = data.get("input_buffer_frames")
-    output_buffer_frames = data.get("output", {}).get("buffer_frames")
+    output_buffer_frames = output.get("buffer_frames")
     if not isinstance(input_buffer_frames, int):
         return CheckResult(
             "jasper-fanin service",
@@ -1306,6 +1362,7 @@ def check_fanin_service() -> CheckResult:
         "jasper-fanin service",
         "ok",
         f"active, frames_written={frames}, "
+        f"transport={actual_transport}, "
         f"input_buffer_frames={input_buffer_frames}, "
         f"output_buffer_frames={output_buffer_frames}, "
         f"output xruns={xruns}, input xruns={','.join(input_xruns) or '0'}, "
@@ -1386,30 +1443,47 @@ def check_fanin_tts_drops() -> CheckResult:
     )
 
 
-def _loaded_capture_type(config_path: Path) -> str | None:
-    """The ``devices.capture.type`` of a CamillaDSP config, or None if the file
-    is absent/unreadable or has no capture block. A tiny indent-aware scan (no
-    YAML dep): find the 2-space ``capture:`` device block, return its first
-    4-space ``type:`` value."""
+def _loaded_device_field(config_path: Path, block: str, field: str) -> str | None:
+    """A field from ``devices.<block>`` in a CamillaDSP config, or None.
+
+    Tiny indent-aware scan (no YAML dep): find the 2-space device block, return
+    its first 4-space ``field:`` value. Quotes are stripped for path fields.
+    """
     try:
         text = config_path.read_text(encoding="utf-8")
     except OSError:
         return None
-    in_capture = False
+    target_block = f"{block}:"
+    target_field = f"{field}:"
+    in_block = False
     for raw in text.splitlines():
         is_2space = raw.startswith("  ") and not raw.startswith("   ")
-        if is_2space and raw.strip() == "capture:":
-            in_capture = True
+        if is_2space and raw.strip() == target_block:
+            in_block = True
             continue
-        if in_capture:
-            if raw.startswith("    ") and raw.strip().startswith("type:"):
-                return raw.split(":", 1)[1].strip()
+        if in_block:
+            if raw.startswith("    ") and raw.strip().startswith(target_field):
+                return raw.split(":", 1)[1].strip().strip("\"'")
             # A sibling 2-space key (playback:/resampler:/...) or any dedent ends
-            # the capture block — never read a sibling block's `type:` (e.g. a
-            # `playback: {type: File}` sink) as the capture type.
+            # the block — never read a sibling block's field.
             if is_2space or (raw[:1] not in (" ", "") and raw.strip()):
-                in_capture = False
+                in_block = False
     return None
+
+
+def _loaded_capture_type(config_path: Path) -> str | None:
+    """The ``devices.capture.type`` of a CamillaDSP config, or None."""
+    return _loaded_device_field(config_path, "capture", "type")
+
+
+def _loaded_playback_type(config_path: Path) -> str | None:
+    """The ``devices.playback.type`` of a CamillaDSP config, or None."""
+    return _loaded_device_field(config_path, "playback", "type")
+
+
+def _loaded_playback_filename(config_path: Path) -> str | None:
+    """The ``devices.playback.filename`` of a CamillaDSP config, or None."""
+    return _loaded_device_field(config_path, "playback", "filename")
 
 
 @doctor_check(order=51.6, group="audio")
@@ -1446,18 +1520,24 @@ def check_audio_runtime_plan() -> CheckResult:
 
 @doctor_check(order=51.7, group="audio")
 def check_fanin_coupling() -> CheckResult:
-    """The fan-in → CamillaDSP coupling intent (``fanin.env``) must match the
-    loaded CamillaDSP capture.
+    """The transport intent must match the loaded CamillaDSP graph.
 
     A mismatch is a half-applied arm/disarm: the dangerous one is
     intent=loopback but a ``RawFile`` config is loaded — CamillaDSP then reads a
     pipe no writer feeds and crash-loops on its statefile config (the jts5
-    2026-06-27 failure mode). The fix is to re-run the ordered reconciler:
-    ``jasper-fanin-coupling-reconcile <intent>``. Default loopback boxes report
-    a one-line OK so the comb proves the check ran.
+    2026-06-27 failure mode). Under ``transport_pipe`` both boundaries are
+    load-bearing: RawFile capture from fan-in and File playback into outputd's
+    local content pipe. The fix is to re-run the ordered reconciler:
+    ``jasper-fanin-coupling-reconcile <intent>``.
     """
     from jasper.fanin.coupling_reconcile import read_persisted_coupling
-    from jasper.fanin_coupling import COUPLING_FIFO
+    from jasper.fanin_coupling import (
+        COUPLING_TRANSPORT_PIPE,
+        OUTPUTD_PIPE_PATH_ENV_VAR,
+        resolve_outputd_pipe_path,
+    )
+    from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
+    from jasper.env_file import read_value
 
     label = "fan-in coupling"
     coupling = read_persisted_coupling()
@@ -1468,13 +1548,78 @@ def check_fanin_coupling() -> CheckResult:
     config_path = Path(active_path) if active_path else Path(
         "/var/lib/camilladsp/configs/sound_current.yml"
     )
+    try:
+        outputd_env = Path(DEFAULT_OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
+    except OSError:
+        outputd_env = ""
+    outputd_pipe_raw = (
+        read_value(outputd_env, OUTPUTD_PIPE_PATH_ENV_VAR) or ""
+    ).strip()
+    if coupling == COUPLING_TRANSPORT_PIPE and not outputd_pipe_raw:
+        return CheckResult(
+            label,
+            "warn",
+            f"intent={coupling} but {OUTPUTD_PIPE_PATH_ENV_VAR} is missing from "
+            f"{DEFAULT_OUTPUTD_ENV_PATH}; outputd will not read Camilla's local "
+            "playback pipe — run: sudo /opt/jasper/.venv/bin/"
+            f"jasper-fanin-coupling-reconcile {coupling}",
+        )
+    if coupling != COUPLING_TRANSPORT_PIPE and outputd_pipe_raw:
+        return CheckResult(
+            label,
+            "warn",
+            f"intent={coupling} but stale {OUTPUTD_PIPE_PATH_ENV_VAR}="
+            f"{outputd_pipe_raw} remains in {DEFAULT_OUTPUTD_ENV_PATH}; "
+            "outputd may listen to a pipe Camilla is no longer feeding — run: "
+            "sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile loopback",
+        )
     capture = _loaded_capture_type(config_path)
     if capture is None:
         # No JTS config loaded yet (fresh box / non-JTS graph) — nothing to
         # contradict the intent. Report the intent so the comb has a verdict.
         return CheckResult(label, "ok", f"intent={coupling}; no loaded capture to compare")
-    expected = "RawFile" if coupling == COUPLING_FIFO else "Alsa"
+    if coupling == COUPLING_TRANSPORT_PIPE:
+        playback = _loaded_playback_type(config_path)
+        playback_path = _loaded_playback_filename(config_path)
+        expected_path = resolve_outputd_pipe_path(outputd_pipe_raw)
+        mismatches: list[str] = []
+        if capture != "RawFile":
+            mismatches.append(f"capture={capture} (expected RawFile)")
+        if playback != "File":
+            mismatches.append(f"playback={playback or '(missing)'} (expected File)")
+        if playback_path != expected_path:
+            mismatches.append(
+                f"playback_path={playback_path or '(missing)'} "
+                f"(expected {expected_path})"
+            )
+        if not mismatches:
+            return CheckResult(
+                label,
+                "ok",
+                f"{coupling} (capture=RawFile, playback=File, path={expected_path})",
+            )
+        return CheckResult(
+            label,
+            "warn",
+            f"intent={coupling} but loaded graph mismatch: "
+            f"{'; '.join(mismatches)}; half-applied transition — run: "
+            f"sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile {coupling}",
+        )
+
+    expected = "Alsa"
     if capture == expected:
+        playback = _loaded_playback_type(config_path)
+        playback_path = _loaded_playback_filename(config_path)
+        if playback == "File" and playback_path != "/run/jasper-snapserver/snapfifo":
+            return CheckResult(
+                label,
+                "warn",
+                f"intent={coupling} but loaded playback is a non-Snapcast File "
+                f"sink ({playback_path or '(missing)'}); half-disarmed "
+                "transport-pipe transition — run: "
+                "sudo /opt/jasper/.venv/bin/"
+                "jasper-fanin-coupling-reconcile loopback",
+            )
         return CheckResult(label, "ok", f"{coupling} (capture={capture})")
     return CheckResult(
         label,
@@ -1580,6 +1725,86 @@ def check_outputd_service() -> CheckResult:
     )
     content = data.get("content", {})
     dac = data.get("dac", {})
+    if not isinstance(content, dict):
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            "STATUS missing content{}",
+        )
+    if not isinstance(dac, dict):
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            "STATUS missing dac{}",
+        )
+    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin_coupling import (
+        COUPLING_TRANSPORT_PIPE,
+        OUTPUTD_PIPE_PATH_ENV_VAR,
+        resolve_outputd_pipe_path,
+    )
+
+    coupling = read_persisted_coupling()
+    expected_content_source = (
+        "local_pipe" if coupling == COUPLING_TRANSPORT_PIPE else "alsa"
+    )
+    actual_content_source = content.get("source")
+    if actual_content_source != expected_content_source:
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            f"content.source={actual_content_source!r}; expected "
+            f"{expected_content_source!r} for persisted coupling={coupling!r}. "
+            "Run jasper-fanin-coupling-reconcile to restart outputd onto the "
+            "persisted topology.",
+        )
+    local_pipe_detail = f"content_source={actual_content_source}"
+    local_pipe: dict[str, object] | None = None
+    if coupling == COUPLING_TRANSPORT_PIPE:
+        outputd_pipe_raw = str(
+            outputd_env.get(OUTPUTD_PIPE_PATH_ENV_VAR) or ""
+        ).strip()
+        if not outputd_pipe_raw:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                f"{OUTPUTD_PIPE_PATH_ENV_VAR} is missing from {_OUTPUTD_ENV_PATH}; "
+                "outputd cannot prove the local pipe path for transport_pipe",
+            )
+        expected_pipe = resolve_outputd_pipe_path(outputd_pipe_raw)
+        raw_local_pipe = content.get("local_pipe")
+        if not isinstance(raw_local_pipe, dict):
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                "content.source='local_pipe' but STATUS missing content.local_pipe",
+            )
+        local_pipe = raw_local_pipe
+        if local_pipe.get("path") != expected_pipe:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                f"content.local_pipe.path={local_pipe.get('path')!r}; "
+                f"expected {expected_pipe!r} from {_OUTPUTD_ENV_PATH}",
+            )
+        local_pipe_detail = (
+            f"content_source=local_pipe, local_pipe_path={expected_pipe}, "
+            f"local_pipe_format={local_pipe.get('format')}, "
+            f"local_pipe_open={bool(local_pipe.get('open', False))}, "
+            f"local_pipe_requested_bytes={local_pipe.get('requested_pipe_bytes', 0)}, "
+            f"local_pipe_actual_bytes={local_pipe.get('actual_pipe_bytes', 0)}, "
+            f"local_pipe_available_bytes={local_pipe.get('available_bytes', 0)}, "
+            f"local_pipe_startup_empty_periods={local_pipe.get('startup_empty_periods', 0)}, "
+            f"local_pipe_empty_periods={local_pipe.get('empty_periods', 0)}, "
+            f"local_pipe_partial_periods={local_pipe.get('partial_periods', 0)}, "
+            f"local_pipe_reopen_count={local_pipe.get('reopen_count', 0)}"
+        )
+    elif "local_pipe" in content:
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            "content.source='alsa' but STATUS unexpectedly reports content.local_pipe",
+        )
     if content.get("pcm") != expected_content_pcm:
         return CheckResult(
             "jasper-outputd",
@@ -1693,7 +1918,78 @@ def check_outputd_service() -> CheckResult:
             "fail",
             "STATUS missing positive dac.period_frames",
         )
-    if not isinstance(content_buffer, int) or content_buffer < period_frames * 2:
+    if coupling == COUPLING_TRANSPORT_PIPE:
+        # local_pipe content is a period-sized userspace read buffer, not an
+        # ALSA capture ring. The DAC buffer still needs the underrun cushion;
+        # the local pipe's latency contract is checked here with the live FIFO
+        # capacity and occupancy counters.
+        if not isinstance(content_buffer, int) or content_buffer < period_frames:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                f"local_pipe content.buffer_frames={content_buffer!r}; "
+                f"expected >= one period ({period_frames})",
+            )
+        if local_pipe is None:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                "transport_pipe active but local pipe metrics are missing",
+            )
+        local_pipe_actual_bytes = int(local_pipe.get("actual_pipe_bytes", 0) or 0)
+        local_pipe_available_bytes = int(local_pipe.get("available_bytes", 0) or 0)
+        local_pipe_requested_bytes = int(
+            local_pipe.get("requested_pipe_bytes", 0) or 0
+        )
+        local_pipe_format = str(local_pipe.get("format") or "")
+        if local_pipe_format != DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                "transport_pipe local pipe format mismatch: "
+                f"format={local_pipe_format!r}, "
+                f"expected {DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT}",
+            )
+        # S32_LE stereo, fixed by the transport-pipe contract. This keeps the
+        # 16 KiB FIFO page floor to 2048 frames on Pi kernels with 16 KiB pages.
+        local_pipe_frame_bytes = 8
+        local_pipe_budget_bytes = period_frames * local_pipe_frame_bytes * 16
+        if (
+            local_pipe_actual_bytes <= 0
+            or local_pipe_actual_bytes > local_pipe_budget_bytes
+        ):
+            actual_frames = (
+                local_pipe_actual_bytes // local_pipe_frame_bytes
+                if local_pipe_actual_bytes > 0
+                else 0
+            )
+            actual_ms = actual_frames * 1000.0 / 48000.0
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                "transport_pipe local pipe is not bounded for low latency: "
+                f"requested_bytes={local_pipe_requested_bytes}, "
+                f"actual_bytes={local_pipe_actual_bytes}, "
+                f"budget_bytes={local_pipe_budget_bytes}, "
+                f"actual_pipe_ms={actual_ms:.1f}. "
+                "Check JASPER_OUTPUTD_LOCAL_CONTENT_PIPE_BYTES and F_SETPIPE_SZ.",
+            )
+        local_pipe_available_frames = (
+            local_pipe_available_bytes // local_pipe_frame_bytes
+        )
+        max_available_frames = period_frames * 8
+        if local_pipe_available_frames > max_available_frames:
+            available_ms = local_pipe_available_frames * 1000.0 / 48000.0
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                "transport_pipe local pipe is carrying hidden queued latency: "
+                f"available_bytes={local_pipe_available_bytes}, "
+                f"available_frames={local_pipe_available_frames}, "
+                f"available_ms={available_ms:.1f}, "
+                f"budget_frames={max_available_frames}",
+            )
+    elif not isinstance(content_buffer, int) or content_buffer < period_frames * 2:
         return CheckResult(
             "jasper-outputd",
             "fail",
@@ -1856,6 +2152,7 @@ def check_outputd_service() -> CheckResult:
         f"content_empty_periods={content_empty}, "
         f"content_partial_periods={content_partial}, "
         f"content_eagain_count={content_eagain}, "
+        f"{local_pipe_detail}, "
         f"tts_pending_frames={tts_pending}, "
         f"tts_max_pending_frames={tts_max_pending}, "
         f"tts_over_budget_ms={tts_over_budget_ms}, "

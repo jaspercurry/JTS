@@ -61,6 +61,14 @@ def test_outputd_unit_is_mainline_default_not_flag_gated():
     assert _value_for(unit, "StartLimitAction") == "reboot"
 
 
+def test_outputd_starts_before_camilla_for_local_pipe_reader():
+    unit = _read_unit()
+
+    assert "jasper-camilla.service" not in (_value_for(unit, "After") or "")
+    assert "jasper-fanin.service" not in (_value_for(unit, "After") or "")
+    assert "jasper-camilla.service" in (_value_for(unit, "Before") or "")
+
+
 def test_outputd_unit_has_audio_realtime_shape():
     unit = _read_unit()
     assert _value_for(unit, "Slice") == "jts-audio.slice"

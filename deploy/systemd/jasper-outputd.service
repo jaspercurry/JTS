@@ -1,7 +1,11 @@
 [Unit]
 Description=Jasper final output owner
 Documentation=file:///opt/jasper/docs/HANDOFF-speaker-output-reference.md
-After=sound.target jasper-fanin.service jasper-camilla.service
+After=sound.target
+# In local transport-pipe mode, outputd owns the read side of CamillaDSP's File
+# playback pipe. Start it before Camilla so Camilla never blocks on an absent
+# reader during boot/reload.
+Before=jasper-camilla.service
 
 StartLimitIntervalSec=300
 StartLimitBurst=5
