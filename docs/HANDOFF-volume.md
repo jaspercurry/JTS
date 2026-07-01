@@ -508,9 +508,11 @@ Multiple guardrails sit on top:
 
 - `regress_listening_level_if_stale` clamps stale + extreme values
   into `[20%, 70%]` by default.
-- `OutputdTtsPlayout.set_gain_db` and jasper-fanin enforce the
-  `MAX_TTS_GAIN_DB = -6 dB` hardware ceiling on the TTS path
-  independent of any volume math.
+- Assistant/TTS loudness has no fixed source-gain ceiling. Fan-in and
+  outputd match assistant loudness to measured content and cap the
+  result with the dynamic peak-aware limit (`max_peak_dbfs -
+  source_peak_dbfs`) so quiet voices are not pinned below music by a
+  stale global clamp.
 - `volume_limit: 0.0` in every JTS CamillaDSP YAML — base,
   room-correction, sound-preference, and active-speaker baseline configs
   all cap the main fader at full scale.
@@ -671,4 +673,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-06-30 (duck-deferred push-guard clear and live/persisted guard recovery checked against `jasper.volume_coordinator`, `jasper.volume_diagnostics`, and focused pytest; prior 2026-06-26 pass covered reconciler mute-intent semantics against `VolumeCoordinator.maybe_reconcile_camilla` and `tests/test_volume_coordinator.py::test_reconcile_preserves_toggle_mute_restore_level`; prior 2026-06-22 pass covered volume floor calibration against `jasper.volume_curve`, `/sound/` settings, and the focused volume/sound pytest suite; prior 2026-06-21 pass covered gain-chain ledger against `jasper.control.gain_chain`, `jasper.control.state_aggregate`, and JTS3 `/state.audio.gain_chain`; prior 2026-06-17 pass covered librespot state-file reader mode against `jasper-librespot-event`, prior 2026-06-14 pass covered active-speaker baseline `volume_limit` guard against `camilla_yaml.py`, and prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)
+Last verified: 2026-07-01 (TTS loudness safety note checked against `jasper.audio_io`, `jasper-tts-protocol`, and `tests/test_audio_safety_pins.py`; prior 2026-06-30 pass covered duck-deferred push-guard clear and live/persisted guard recovery against `jasper.volume_coordinator`, `jasper.volume_diagnostics`, and focused pytest; prior 2026-06-26 pass covered reconciler mute-intent semantics against `VolumeCoordinator.maybe_reconcile_camilla` and `tests/test_volume_coordinator.py::test_reconcile_preserves_toggle_mute_restore_level`; prior 2026-06-22 pass covered volume floor calibration against `jasper.volume_curve`, `/sound/` settings, and the focused volume/sound pytest suite; prior 2026-06-21 pass covered gain-chain ledger against `jasper.control.gain_chain`, `jasper.control.state_aggregate`, and JTS3 `/state.audio.gain_chain`; prior 2026-06-17 pass covered librespot state-file reader mode against `jasper-librespot-event`, prior 2026-06-14 pass covered active-speaker baseline `volume_limit` guard against `camilla_yaml.py`, and prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)

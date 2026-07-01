@@ -4,19 +4,13 @@
 
 """Pin the loud-output safety literals documented in HANDOFF-volume.md.
 
-Two documented hardware-safety claims (docs/HANDOFF-volume.md,
+Two hardware-safety claims (docs/HANDOFF-volume.md,
 "Hearing-safety belt") had no test asserting the actual literals:
 
-1. ``MAX_TTS_GAIN_DB = -6 dB`` — the hardware ceiling on the TTS path,
-   enforced by the Python legacy playout (``jasper/audio_io.py``) and
-   the shared Rust loudness policy
-   (``rust/jasper-tts-protocol/src/loudness.rs``), which fan-in and
-   outputd re-export. Outputd also keeps its older ``mixer`` helper
-   names as compatibility re-exports for existing callers. The Rust
-   crates' own unit tests assert clamp behaviour *relative to* the
-   constant, so flipping ``-6.0`` to ``+6.0`` would pass cargo test; the
-   Python test only asserted ``<= 0.0``. This pins the literal, daemon
-   shims, and outputd compatibility surface.
+1. There is intentionally no fixed max-gain ceiling in the TTS path.
+   Assistant loudness should follow the measured content target and the
+   dynamic peak-aware cap; the old -6 dB source-gain clamp made quiet,
+   peaky voices inaudible against music.
 
 2. ``volume_limit: 0.0`` "in every JTS CamillaDSP YAML". The Python
    config *emitters* raise on a positive limit (tests exist), but the
@@ -36,11 +30,13 @@ from pathlib import Path
 from jasper.audio_io import TtsPlayout
 
 REPO = Path(__file__).resolve().parents[1]
-
-DOCUMENTED_TTS_CEILING_DB = -6.0
+REMOVED_TTS_MAX_SYMBOL = "MAX_" + "TTS_GAIN_DB"
 
 RUST_TTS_GAIN_FILES = (
     "rust/jasper-tts-protocol/src/loudness.rs",
+    "rust/jasper-fanin/src/loudness.rs",
+    "rust/jasper-outputd/src/loudness.rs",
+    "rust/jasper-outputd/src/mixer.rs",
 )
 
 RUST_SHARED_LOUDNESS_SHIMS = (
@@ -52,14 +48,10 @@ RUST_OUTPUTD_MIXER = "rust/jasper-outputd/src/mixer.rs"
 
 RUST_OUTPUTD_MIXER_GAIN_SYMBOLS = (
     "apply_gain_i16",
-    "clamp_tts_gain_db",
+    "sanitize_tts_gain_db",
     "gain_db_to_linear",
-    "MAX_TTS_GAIN_DB",
+    "DEFAULT_TTS_GAIN_DB",
     "MIN_TTS_GAIN_DB",
-)
-
-_RUST_CONST_PAT = re.compile(
-    r"^pub const MAX_TTS_GAIN_DB: f32 = (-?\d+(?:\.\d+)?);", re.MULTILINE
 )
 
 _RUST_SHARED_LOUDNESS_USE_PAT = re.compile(
@@ -68,17 +60,15 @@ _RUST_SHARED_LOUDNESS_USE_PAT = re.compile(
 )
 
 
-def test_rust_tts_gain_ceiling_is_minus_six_db() -> None:
+def test_fixed_tts_gain_ceiling_is_removed() -> None:
     for rel in RUST_TTS_GAIN_FILES:
         text = (REPO / rel).read_text()
-        match = _RUST_CONST_PAT.search(text)
-        assert match, f"{rel}: MAX_TTS_GAIN_DB const not found (moved?)"
-        assert float(match.group(1)) == DOCUMENTED_TTS_CEILING_DB, (
-            f"{rel}: MAX_TTS_GAIN_DB is {match.group(1)}, but "
-            "docs/HANDOFF-volume.md promises a -6 dB hardware ceiling "
-            "on the TTS path. Retuning it is a hearing-safety decision: "
-            "update the doc and this pin together."
+        assert REMOVED_TTS_MAX_SYMBOL not in text, (
+            f"{rel}: reintroduced a fixed max TTS gain ceiling. Assistant "
+            "loudness should be governed by the measured target plus the "
+            "dynamic peak-aware cap, not a universal source-gain clamp."
         )
+    assert not hasattr(TtsPlayout, REMOVED_TTS_MAX_SYMBOL)
 
 
 def test_rust_daemon_loudness_modules_reexport_shared_tts_gain_policy() -> None:
@@ -86,9 +76,9 @@ def test_rust_daemon_loudness_modules_reexport_shared_tts_gain_policy() -> None:
         text = (REPO / rel).read_text()
         assert "pub use jasper_tts_protocol::loudness::*;" in text, (
             f"{rel}: daemon loudness module no longer re-exports the "
-            "shared Rust policy. If this is intentional, update the "
-            "safety pin and explain how the -6 dB TTS ceiling still "
-            "cannot drift between daemons."
+            "shared Rust policy. If this is intentional, update the safety "
+            "pin and explain how fan-in/outputd loudness policy still cannot "
+            "drift between daemons."
         )
 
 
@@ -99,7 +89,7 @@ def test_outputd_mixer_reexports_shared_tts_gain_helpers() -> None:
         f"{RUST_OUTPUTD_MIXER}: outputd mixer no longer re-exports TTS gain "
         "helpers from jasper_tts_protocol::loudness. If this is intentional, "
         "update the safety pin and explain how outputd helper callers still "
-        "cannot drift from the shared -6 dB policy."
+        "cannot drift from the shared assistant loudness policy."
     )
     exported = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", match.group("body")))
     missing = sorted(set(RUST_OUTPUTD_MIXER_GAIN_SYMBOLS) - exported)
@@ -118,14 +108,6 @@ def test_outputd_mixer_reexports_shared_tts_gain_helpers() -> None:
             f"{RUST_OUTPUTD_MIXER}: {symbol} is locally defined instead of "
             "re-exported from jasper_tts_protocol::loudness."
         )
-
-
-def test_python_tts_gain_ceiling_matches_rust() -> None:
-    assert TtsPlayout.MAX_TTS_GAIN_DB == DOCUMENTED_TTS_CEILING_DB, (
-        "jasper/audio_io.py TtsPlayout.MAX_TTS_GAIN_DB drifted from the "
-        "documented -6 dB ceiling (docs/HANDOFF-volume.md) that the Rust "
-        "daemons also enforce."
-    )
 
 
 _VOLUME_LIMIT_PAT = re.compile(

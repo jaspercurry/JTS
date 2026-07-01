@@ -9,7 +9,7 @@
 //! to i16. That makes clipping explicit and testable.
 
 pub use jasper_tts_protocol::loudness::{
-    apply_gain_i16, clamp_tts_gain_db, gain_db_to_linear, MAX_TTS_GAIN_DB, MIN_TTS_GAIN_DB,
+    apply_gain_i16, gain_db_to_linear, sanitize_tts_gain_db, DEFAULT_TTS_GAIN_DB, MIN_TTS_GAIN_DB,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -63,17 +63,17 @@ mod tests {
     }
 
     #[test]
-    fn tts_gain_clamp_rejects_positive_and_nonfinite_values() {
-        assert_eq!(clamp_tts_gain_db(0.0), MAX_TTS_GAIN_DB);
-        assert_eq!(clamp_tts_gain_db(12.0), MAX_TTS_GAIN_DB);
-        assert_eq!(clamp_tts_gain_db(f32::NAN), MIN_TTS_GAIN_DB);
-        assert_eq!(clamp_tts_gain_db(f32::INFINITY), MIN_TTS_GAIN_DB);
+    fn tts_gain_sanitize_allows_positive_and_rejects_nonfinite_values() {
+        assert_eq!(sanitize_tts_gain_db(0.0), DEFAULT_TTS_GAIN_DB);
+        assert_eq!(sanitize_tts_gain_db(12.0), 12.0);
+        assert_eq!(sanitize_tts_gain_db(f32::NAN), MIN_TTS_GAIN_DB);
+        assert_eq!(sanitize_tts_gain_db(f32::INFINITY), MIN_TTS_GAIN_DB);
     }
 
     #[test]
-    fn tts_gain_clamp_preserves_safe_range_and_floor() {
-        assert_eq!(clamp_tts_gain_db(-12.5), -12.5);
-        assert_eq!(clamp_tts_gain_db(-100.0), MIN_TTS_GAIN_DB);
+    fn tts_gain_sanitize_preserves_safe_range_and_floor() {
+        assert_eq!(sanitize_tts_gain_db(-12.5), -12.5);
+        assert_eq!(sanitize_tts_gain_db(-100.0), MIN_TTS_GAIN_DB);
     }
 
     #[test]

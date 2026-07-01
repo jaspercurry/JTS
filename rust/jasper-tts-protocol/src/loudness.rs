@@ -11,11 +11,11 @@
 
 use std::collections::VecDeque;
 
-use crate::CHANNELS;
+use crate::{assistant_profile_confidence_in_range, assistant_profile_db_in_range, CHANNELS};
 pub use crate::{AssistantProfile, SegmentKind};
 
 pub const SAMPLE_RATE: u32 = 48_000;
-pub const MAX_TTS_GAIN_DB: f32 = -6.0;
+pub const DEFAULT_TTS_GAIN_DB: f32 = 0.0;
 pub const MIN_TTS_GAIN_DB: f32 = -60.0;
 
 const FULL_SCALE: f64 = 32768.0;
@@ -135,26 +135,33 @@ impl AssistantLoudness {
                 })
         });
         let target_lufs = baseline_lufs + self.config.assistant_offset_lu;
-        let confidence = profile.as_ref().map_or(0.0, |p| p.confidence);
-        let source_lufs = profile
+        let confidence = profile.as_ref().map_or(0.0, |p| {
+            if assistant_profile_confidence_in_range(p.confidence) {
+                p.confidence
+            } else {
+                0.0
+            }
+        });
+        let profile_source_lufs = profile
             .as_ref()
             .and_then(|p| p.source_lufs)
-            .filter(|v| v.is_finite())
-            .unwrap_or(self.config.fallback_source_lufs);
-        let source_peak_dbfs = profile
+            .filter(|v| assistant_profile_db_in_range(*v));
+        let source_lufs = profile_source_lufs.unwrap_or(self.config.fallback_source_lufs);
+        let profile_source_peak_dbfs = profile
             .as_ref()
             .and_then(|p| p.source_peak_dbfs)
-            .filter(|v| v.is_finite())
-            .unwrap_or(self.config.fallback_source_peak_dbfs);
+            .filter(|v| assistant_profile_db_in_range(*v));
+        let source_peak_dbfs =
+            profile_source_peak_dbfs.unwrap_or(self.config.fallback_source_peak_dbfs);
         let requested_gain = target_lufs - source_lufs;
         let peak_cap_gain = self.config.max_peak_dbfs - source_peak_dbfs;
         let limited_gain = requested_gain.min(peak_cap_gain);
-        let final_gain = clamp_tts_gain_db(limited_gain);
+        let final_gain = sanitize_tts_gain_db(limited_gain);
         let clamp_reason = if final_gain != limited_gain {
-            "gain_clamp"
+            "gain_floor"
         } else if limited_gain != requested_gain {
             "peak_cap"
-        } else if profile.as_ref().and_then(|p| p.source_lufs).is_none() {
+        } else if profile_source_lufs.is_none() {
             "fallback_profile"
         } else {
             "target"
@@ -172,7 +179,7 @@ impl AssistantLoudness {
                 .as_ref()
                 .map(|p| p.voice.clone())
                 .or_else(|| context.as_ref().map(|ctx| ctx.voice.clone())),
-            calibrated: profile.as_ref().and_then(|p| p.source_lufs).is_some(),
+            calibrated: profile_source_lufs.is_some(),
             profile_confidence: confidence,
             baseline_lufs,
             target_lufs,
@@ -207,15 +214,15 @@ impl AssistantLoudness {
     }
 }
 
-pub fn clamp_tts_gain_db(gain_db: f32) -> f32 {
+pub fn sanitize_tts_gain_db(gain_db: f32) -> f32 {
     if !gain_db.is_finite() {
         return MIN_TTS_GAIN_DB;
     }
-    gain_db.clamp(MIN_TTS_GAIN_DB, MAX_TTS_GAIN_DB)
+    gain_db.max(MIN_TTS_GAIN_DB)
 }
 
 pub fn gain_db_to_linear(gain_db: f32) -> f32 {
-    10.0_f32.powf(clamp_tts_gain_db(gain_db) / 20.0)
+    10.0_f32.powf(sanitize_tts_gain_db(gain_db) / 20.0)
 }
 
 pub fn linear_to_db(gain_linear: f32) -> f32 {
@@ -478,8 +485,8 @@ mod tests {
             }),
         );
         assert_eq!(decision.peak_cap_gain_db, -4.0);
-        assert_eq!(decision.final_gain_db, -6.0);
-        assert_eq!(decision.clamp_reason, "gain_clamp");
+        assert_eq!(decision.final_gain_db, -4.0);
+        assert_eq!(decision.clamp_reason, "peak_cap");
     }
 
     #[test]
@@ -526,6 +533,40 @@ mod tests {
         assert_eq!(decision.baseline_lufs, -41.0);
         assert_eq!(decision.target_lufs, -39.5);
         assert_eq!(decision.requested_gain_db, -15.5);
+        assert_eq!(decision.final_gain_db, -15.5);
+        assert_eq!(decision.clamp_reason, "fallback_profile");
+    }
+
+    #[test]
+    fn invalid_direct_profile_values_fall_back_before_gain_math() {
+        let mut loudness = AssistantLoudness::new(AssistantLoudnessConfig {
+            assistant_offset_lu: 1.5,
+            default_silence_target_lufs: -41.0,
+            fallback_source_lufs: -24.0,
+            fallback_source_peak_dbfs: -6.0,
+            max_peak_dbfs: -3.0,
+            ..AssistantLoudnessConfig::default()
+        });
+
+        let decision = loudness.decide_gain(
+            SegmentKind::Assistant,
+            0.0,
+            Some(AssistantProfile {
+                provider: "openai".to_string(),
+                model: "gpt-realtime-2".to_string(),
+                voice: "marin".to_string(),
+                source_lufs: Some(-1000.0),
+                source_peak_dbfs: Some(-1000.0),
+                confidence: 99.0,
+            }),
+        );
+
+        assert!(!decision.calibrated);
+        assert_eq!(decision.profile_confidence, 0.0);
+        assert_eq!(decision.source_lufs, -24.0);
+        assert_eq!(decision.source_peak_dbfs, -6.0);
+        assert_eq!(decision.requested_gain_db, -15.5);
+        assert_eq!(decision.peak_cap_gain_db, 3.0);
         assert_eq!(decision.final_gain_db, -15.5);
         assert_eq!(decision.clamp_reason, "fallback_profile");
     }
@@ -585,17 +626,17 @@ mod tests {
     }
 
     #[test]
-    fn tts_gain_clamp_rejects_positive_and_nonfinite_values() {
-        assert_eq!(clamp_tts_gain_db(0.0), MAX_TTS_GAIN_DB);
-        assert_eq!(clamp_tts_gain_db(12.0), MAX_TTS_GAIN_DB);
-        assert_eq!(clamp_tts_gain_db(f32::NAN), MIN_TTS_GAIN_DB);
-        assert_eq!(clamp_tts_gain_db(f32::INFINITY), MIN_TTS_GAIN_DB);
+    fn tts_gain_sanitize_allows_positive_and_rejects_nonfinite_values() {
+        assert_eq!(sanitize_tts_gain_db(0.0), 0.0);
+        assert_eq!(sanitize_tts_gain_db(12.0), 12.0);
+        assert_eq!(sanitize_tts_gain_db(f32::NAN), MIN_TTS_GAIN_DB);
+        assert_eq!(sanitize_tts_gain_db(f32::INFINITY), MIN_TTS_GAIN_DB);
     }
 
     #[test]
-    fn tts_gain_clamp_preserves_safe_range_and_floor() {
-        assert_eq!(clamp_tts_gain_db(-12.5), -12.5);
-        assert_eq!(clamp_tts_gain_db(-100.0), MIN_TTS_GAIN_DB);
+    fn tts_gain_sanitize_preserves_safe_range_and_floor() {
+        assert_eq!(sanitize_tts_gain_db(-12.5), -12.5);
+        assert_eq!(sanitize_tts_gain_db(-100.0), MIN_TTS_GAIN_DB);
     }
 
     #[test]

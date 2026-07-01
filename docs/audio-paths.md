@@ -301,7 +301,9 @@ boundary: `jasper-fanin`.
 6. Hearing safety is peak-aware and enforced at that boundary: the
    requested loudness gain is capped so the profiled source peak stays
    below the configured assistant peak ceiling (default `-3 dBFS`),
-   then clamped through the global TTS gain floor/ceiling.
+   then passed through the malformed-value floor. There is intentionally
+   no fixed source-gain ceiling; the positive side is governed by the
+   dynamic peak cap plus validated/fallback source-profile metadata.
 
 Python owns only provider source profiles:
 
@@ -340,7 +342,7 @@ Python owns only provider source profiles:
   newer turn has claimed output.
 - Profiles are advisory. If a profile is missing or malformed, the mix owner
   uses conservative built-in fallback source loudness/peak values and
-  still clamps the final gain.
+  still applies the dynamic peak cap and gain floor.
 
 In the dual Apple active-output profile, TTS/cues enter fan-in instead
 so they can pass through CamillaDSP crossover/protection. Fan-in accepts
@@ -384,7 +386,8 @@ event=fanin.assistant_loudness kind=assistant provider=openai
 `jasper-doctor` warns if that telemetry is missing or malformed. Use
 that surface first when debugging a provider loudness report; it shows
 whether the system used a calibrated profile, what content baseline it
-matched, and which clamp won.
+matched, and which decision path applied (`target`, `peak_cap`,
+`fallback_profile`, or `gain_floor`).
 
 ## End-of-turn drain — when is the speaker actually silent?
 
@@ -604,7 +607,9 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-30 (assistant output episode ownership rechecked
+Last verified: 2026-07-01 (assistant loudness safety text rechecked against
+`jasper.audio_io`, `jasper-tts-protocol`, and fan-in/outputd TTS gain tests;
+prior 2026-06-30 pass rechecked assistant output episode ownership
 against `jasper.voice.output_gate`, `jasper/voice_daemon.py`, and
 `tests/test_voice_output_gate.py`; active-crossover summed-test live level,
 audible-only validation evidence, backend watchdog, and backend-owned
