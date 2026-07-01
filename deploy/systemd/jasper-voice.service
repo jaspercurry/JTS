@@ -1,12 +1,18 @@
 [Unit]
 Description=Jasper voice daemon (wake word + real-time LLM + tools)
-After=jasper-fanin.service jasper-camilla.service jasper-outputd.service network-online.target jasper-accessory-reconcile.service
+After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-bridge.service network-online.target jasper-accessory-reconcile.service
 # Wants= (not Requires=) so a camilla restart blip doesn't cascade-stop
 # the voice daemon. The daemon is hardened to keep wake-word + cue
 # playback working through a 2 s camilla outage (camilla calls go
 # through best_effort=True paths in jasper/camilla.py). After= still
 # orders us behind camilla on cold boot.
-Wants=network-online.target jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-accessory-reconcile.service
+# jasper-aec-bridge is also a soft dependency: on the reconciler-managed
+# `udp:9876` mic path it is the UDP producer. If it was clean-stopped by a
+# Camilla/outputd restart, starting voice without also starting the bridge makes
+# UdpMicCapture bind an unfed socket; the wake loop then stops advancing and
+# systemd watchdog-kills voice in a visible restart loop. Keep this as `Wants=`
+# (not `Requires=`) so a bridge restart blip does not cascade-stop voice.
+Wants=network-online.target jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-bridge.service jasper-accessory-reconcile.service
 
 # Cap the crash-restart spiral. On 2026-05-10 we found NRestarts=9032
 # accumulated silently because the daemon kept hitting transient
