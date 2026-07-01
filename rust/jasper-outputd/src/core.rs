@@ -7,7 +7,7 @@
 use crate::fake::{FakeAssistantSource, FakeContentSource, FakeDacSink, SegmentWrite};
 use crate::ledger::{PlayoutEvent, PlayoutLedger, SegmentId, DEFAULT_TERMINAL_SEGMENT_RETENTION};
 use crate::loudness::{AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig};
-use crate::mixer::{clamp_tts_gain_db, gain_db_to_linear, mix_i16_saturating};
+use crate::mixer::{gain_db_to_linear, mix_i16_saturating, sanitize_tts_gain_db};
 use crate::reference::{ConsumerId, ReferenceFanout};
 use crate::types::{AssistantProfile, AudioFormat, SegmentKind, CHANNELS, SAMPLE_RATE};
 
@@ -93,7 +93,7 @@ impl OutputCore {
         samples: Vec<i16>,
     ) -> SegmentId {
         let id = self.start_assistant_segment(provider_item_id, kind, gain);
-        self.append_assistant_audio(id, gain, samples);
+        self.append_assistant_audio_with_segment_gain(id, samples);
         self.end_assistant_segment(id);
         id
     }
@@ -126,11 +126,11 @@ impl OutputCore {
         if samples.is_empty() {
             return;
         }
-        let clamped_gain = clamp_tts_gain_db(gain);
+        let sanitized_gain = sanitize_tts_gain_db(gain);
         let frames = (samples.len() / (self.format.channels as usize)) as u64;
         self.ledger.queue_frames(id, frames);
         self.assistant
-            .enqueue_segment(id, samples, gain_db_to_linear(clamped_gain));
+            .enqueue_segment(id, samples, gain_db_to_linear(sanitized_gain));
     }
 
     pub fn append_assistant_audio_with_segment_gain(&mut self, id: SegmentId, samples: Vec<i16>) {
@@ -359,10 +359,10 @@ mod tests {
 
         assert_eq!(report.reference_sequence, 0);
         assert_eq!(report.clipped_samples, 0);
-        assert_eq!(core.dac().periods[0], stereo(12_506, 4));
+        assert_eq!(core.dac().periods[0], stereo(10_839, 4));
         let reference = core.drain_reference_consumer(consumer);
         assert_eq!(reference.len(), 1);
-        assert_eq!(reference[0].samples, stereo(12_506, 4));
+        assert_eq!(reference[0].samples, stereo(10_839, 4));
     }
 
     #[test]
@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn outputd_clamps_assistant_gain_before_mixing() {
+    fn outputd_uses_loudness_decided_assistant_gain_before_mixing() {
         let mut core = OutputCore::new(2, 99);
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
@@ -391,18 +391,13 @@ mod tests {
 
         core.step();
 
-        // The ledger now records the calibrated gain from `decide_gain`, not a
-        // raw `clamp_tts_gain_db(20.0)`. With no observed content and no profile,
-        // the decision falls back to the silence target: baseline_lufs=-41.0,
-        // target_lufs=-41.0+1.5=-39.5, fallback source_lufs=-24.0, so
-        // requested_gain=-39.5-(-24.0)=-15.5; the peak cap (-3.0-(-6.0)=+3.0) and
-        // the -6.0 dB clamp leave -15.5 unchanged. Quieter than the old -6.0.
+        // With no observed content and no profile, the decision falls back
+        // to the silence target: baseline_lufs=-41.0, target_lufs=-39.5,
+        // fallback source_lufs=-24.0, so requested_gain=-15.5. The fixed
+        // max-gain ceiling is gone; this helper now scales with the same
+        // decided segment gain that the runtime TTS bridge uses.
         assert_eq!(core.ledger().segment(segment).gain, -15.5);
-        // The DAC sample is unchanged: `enqueue_assistant_segment` scales the
-        // audio via `append_assistant_audio(id, gain=20.0, ..)`, i.e.
-        // `clamp_tts_gain_db(20.0)=-6.0` -> 10000*10^(-6/20)=5012. The calibrated
-        // ledger gain governs only telemetry/playout accounting, not this scale.
-        assert_eq!(core.dac().periods[0], stereo(5012, 2));
+        assert_eq!(core.dac().periods[0], stereo(1679, 2));
     }
 
     #[test]
@@ -442,7 +437,7 @@ mod tests {
         let clipped = core.prepare_period_with_content(&stereo(100, 2));
 
         assert_eq!(clipped, 0);
-        assert_eq!(core.output_period(), stereo(2606, 2).as_slice());
+        assert_eq!(core.output_period(), stereo(939, 2).as_slice());
         assert_eq!(core.frames_written(), 0);
         assert!(core.dac().periods.is_empty());
         assert!(core.drain_reference_consumer(consumer).is_empty());
@@ -456,7 +451,7 @@ mod tests {
 
         assert_eq!(report.frames_written, 2);
         assert_eq!(report.reference_sequence, 0);
-        assert_eq!(core.dac().periods[0], stereo(2606, 2));
+        assert_eq!(core.dac().periods[0], stereo(939, 2));
         assert_eq!(core.drain_reference_consumer(consumer).len(), 1);
         assert_eq!(core.ledger().segment(segment).written_frames, 2);
         assert_eq!(
@@ -543,13 +538,12 @@ mod tests {
         // silence target (-20.0) is discarded and the decision falls back to the
         // default silence target. With no observed content: baseline_lufs=-41.0,
         // target_lufs=-41.0+1.5=-39.5; the profile supplies source_lufs=-30.0, so
-        // requested_gain=-39.5-(-30.0)=-9.5; the peak cap (-3.0-(-18.0)=+15.0) and
-        // the -6.0 dB clamp leave -9.5 unchanged. The -12.0 fallback gain is
+        // requested_gain=-39.5-(-30.0)=-9.5; the peak cap (-3.0-(-18.0)=+15.0)
+        // leaves -9.5 unchanged. The -12.0 fallback gain is
         // ignored once a profile yields a calibrated target (see the passing
         // `calibrated_profile_targets_baseline_plus_offset`). Had the context not
-        // been cleared, baseline=-20.0 would drive the gain to the -6.0 clamp;
-        // clearing it makes the result quieter (-9.5), which is the safe outcome
-        // this test guards.
+        // been cleared, baseline=-20.0 would drive the gain to the dynamic
+        // peak cap instead of the quiet-room target.
         assert_eq!(core.ledger().segment(segment).gain, -9.5);
     }
 

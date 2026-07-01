@@ -5,11 +5,11 @@
 """Tests for TtsPlayout's gain handling AND its end-of-stream drain
 primitive.
 
-The hard MIN/MAX clamp on TtsPlayout.set_gain_db is the load-bearing
-defense against accidentally playing TTS at ear-damaging levels. These
-tests pin that contract: even if env config, outputd metadata, or
-Camilla websocket calls misbehave, no caller can push gain above
-MAX_TTS_GAIN_DB.
+TtsPlayout.set_gain_db validates the legacy direct-device gain path:
+non-finite inputs are rejected, and extreme attenuation floors to a
+mute-equivalent minimum. The active runtime path no longer has a fixed
+max TTS gain clamp; assistant loudness is matched by fan-in/outputd and
+bounded by the peak-aware decision there.
 
 The drain primitive (``expected_drain_at`` / ``wait_drained``) is the
 load-bearing defense against the *opposite* failure: ending the turn
@@ -175,16 +175,14 @@ def test_constructor_clamps_through_set_gain_db():
     assert p.gain_db == -8.0
 
 
-def test_max_gain_clamp():
-    """Even if a future caller passes 0 dB or higher (which the config
-    validator should already block), TtsPlayout must clamp to MAX."""
+def test_positive_gain_passes_through():
     p = _make()
     p.set_gain_db(0.0)
-    assert p.gain_db == TtsPlayout.MAX_TTS_GAIN_DB
+    assert p.gain_db == 0.0
     p.set_gain_db(20.0)
-    assert p.gain_db == TtsPlayout.MAX_TTS_GAIN_DB
+    assert p.gain_db == 20.0
     p.set_gain_db(1000.0)
-    assert p.gain_db == TtsPlayout.MAX_TTS_GAIN_DB
+    assert p.gain_db == 1000.0
 
 
 def test_min_gain_clamp():
@@ -231,18 +229,18 @@ def test_garbage_inputs_held():
 def test_linear_gain_matches_db():
     """Sanity-check the dB → linear conversion at the boundaries."""
     p = _make()
-    p.set_gain_db(0.0)  # clamps to -6
-    expected = 10 ** (TtsPlayout.MAX_TTS_GAIN_DB / 20.0)
-    assert math.isclose(p._gain_linear, expected, rel_tol=1e-9)
+    p.set_gain_db(0.0)
+    assert math.isclose(p._gain_linear, 1.0, rel_tol=1e-9)
+    p.set_gain_db(6.0)
+    assert math.isclose(p._gain_linear, 10 ** (6.0 / 20.0), rel_tol=1e-9)
     p.set_gain_db(-20.0)
     assert math.isclose(p._gain_linear, 0.1, rel_tol=1e-9)
 
 
-def test_max_below_zero_dbfs():
-    """Sanity: MAX must be <= 0 dB. If someone bumps the constant
-    positive, gain math overflows int16 against Gemini's source peaks."""
-    assert TtsPlayout.MAX_TTS_GAIN_DB <= 0.0
-    assert TtsPlayout.MIN_TTS_GAIN_DB < TtsPlayout.MAX_TTS_GAIN_DB
+def test_no_fixed_max_tts_gain_ceiling():
+    """Regression: the old -6 dB ceiling must not come back and fight
+    assistant loudness matching."""
+    assert not hasattr(TtsPlayout, "MAX_" + "TTS_GAIN_DB")
 
 
 # ---------------------------------------------------------------------------

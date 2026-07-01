@@ -25,8 +25,8 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 
 use crate::loudness::{
-    apply_gain_i16, clamp_tts_gain_db, gain_db_to_linear, linear_to_db, AssistantGainDecision,
-    AssistantLoudness, AssistantLoudnessConfig, AssistantProfile, SegmentKind, MAX_TTS_GAIN_DB,
+    apply_gain_i16, gain_db_to_linear, linear_to_db, sanitize_tts_gain_db, AssistantGainDecision,
+    AssistantLoudness, AssistantLoudnessConfig, AssistantProfile, SegmentKind, DEFAULT_TTS_GAIN_DB,
 };
 use crate::mixer::CHANNELS;
 use crate::playout::{PlayoutEvent, PlayoutLedger};
@@ -354,7 +354,7 @@ impl TtsMixer {
             flush_rx: input.flush_rx,
             metrics: input.metrics,
             queue: VecDeque::new(),
-            current_gain_db: MAX_TTS_GAIN_DB,
+            current_gain_db: DEFAULT_TTS_GAIN_DB,
             active_epoch: 0,
             max_pending_frames: input.max_pending_frames,
             program_duck_gain: gain_db_to_linear(input.program_duck_db),
@@ -432,7 +432,7 @@ impl TtsMixer {
             }
             match queued.command {
                 TtsCommand::GainDb(db) => {
-                    self.current_gain_db = clamp_tts_gain_db(db);
+                    self.current_gain_db = sanitize_tts_gain_db(db);
                 }
                 TtsCommand::Audio(samples) => {
                     if samples.is_empty() {
