@@ -83,6 +83,7 @@ from jasper import transit
 from jasper.camilla import CamillaController
 from jasper.config import Config
 from jasper.google_creds import build_google_clients
+from jasper.google_routes import build_google_routes_client
 from jasper.renderer import RendererClient
 from jasper.research import ResearchResult, ResearchScheduler
 from jasper.timers import TimerScheduler
@@ -306,6 +307,9 @@ def _build_test_registry(
         # httpx pool today). Stash it so aclose() reclaims them — discarding
         # it here leaked the pool across every harness teardown.
         test_state["active_transit"] = active
+    google_routes = build_google_routes_client(os.environ)
+    if test_state is not None:
+        test_state["google_routes"] = google_routes
 
     # Spotify — has playback side-effects. The production pack registry
     # declares Spotify/transport tools even when the router is unavailable;
@@ -363,6 +367,7 @@ def _build_test_registry(
         spotify_device_name=cfg.spotify_device_name,
         spotify_setup_url=cfg.spotify_setup_url,
         transit_tools=active.tools,
+        google_routes=google_routes,
         ha=ha,
         timer_scheduler=timer_scheduler,
         research_scheduler=research_scheduler,

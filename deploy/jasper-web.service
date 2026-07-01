@@ -49,6 +49,9 @@ EnvironmentFile=-/var/lib/jasper-secrets/voice_keys.env
 # GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET. Same override pattern.
 # WS1 Phase 4a — moved into the group-`jasper-secrets` dir.
 EnvironmentFile=-/var/lib/jasper-secrets/google_credentials.env
+# Google Routes API key written by /transit/. This is a billable Maps API
+# key, so it lives in the jasper-secrets compartment rather than transit.env.
+EnvironmentFile=-/var/lib/jasper-secrets/google_routes.env
 # Optional file written by the wake-word picker at /wake/ — holds
 # JASPER_WAKE_MODEL pointing at either a bundled openWakeWord name
 # or an absolute path under /var/lib/jasper/wake/. The wizard reads

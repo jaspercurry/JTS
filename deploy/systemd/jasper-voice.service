@@ -91,6 +91,10 @@ EnvironmentFile=-/var/lib/jasper-secrets/voice_keys.env
 # WS1 Phase 4a — moved into the group-`jasper-secrets` dir alongside
 # the OAuth token tree (/var/lib/jasper-secrets/google/).
 EnvironmentFile=-/var/lib/jasper-secrets/google_credentials.env
+# Google Routes API key written by /transit/ for destination ETA /
+# directions. Kept separate from OAuth credentials: this is a billable
+# Maps API key, not a Google account token.
+EnvironmentFile=-/var/lib/jasper-secrets/google_routes.env
 # Wake-word selection (JASPER_WAKE_MODEL) written by the picker at
 # http://jts.local/wake/, or seeded by install.sh on a fresh install
 # to point at /var/lib/jasper/wake/jarvis_v2.onnx. Sourced AFTER

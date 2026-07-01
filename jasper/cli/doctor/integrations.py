@@ -72,7 +72,48 @@ def check_google_tokens(cfg: Config) -> CheckResult:
         f"{len(healthy)} account(s) refreshed: {', '.join(healthy)}",
     )
 
-@doctor_check(order=18, group="integrations", label="Home Assistant", needs_cfg=True)
+@doctor_check(order=18, group="integrations", label="Google Routes", needs_cfg=True)
+def check_google_routes(cfg: Config) -> CheckResult:
+    """Verify Google Routes configuration without making a billable API call."""
+    from ... import google_routes
+
+    label = "Google Routes"
+    status = google_routes.config_status(os.environ)
+    setup_url = f"http://{cfg.hostname}/transit"
+    if not status.api_key_present and not status.origin_present:
+        return CheckResult(
+            label,
+            "ok",
+            f"not configured (skipped — visit {setup_url} to enable travel time)",
+        )
+    problems: list[str] = []
+    if not status.origin_present:
+        problems.append("saved speaker location is missing")
+    if not status.api_key_present:
+        problems.append("GOOGLE_ROUTES_API_KEY is missing")
+    if problems:
+        return CheckResult(
+            label,
+            "warn",
+            f"{'; '.join(problems)}. Visit {setup_url} to finish setup.",
+        )
+    if not status.default_mode_valid:
+        return CheckResult(
+            label,
+            "warn",
+            "configured, but JASPER_TRAVEL_DEFAULT_MODE is invalid; runtime "
+            f"falls back to {google_routes.DEFAULT_TRAVEL_MODE}. Fix it at "
+            f"{setup_url}.",
+        )
+    return CheckResult(
+        label,
+        "ok",
+        f"configured for {status.default_mode}; live API probe skipped to avoid "
+        "spending Routes quota. Restrict the key to the Google Routes API.",
+    )
+
+
+@doctor_check(order=19, group="integrations", label="Home Assistant", needs_cfg=True)
 def check_home_assistant(cfg: Config) -> CheckResult:
     """Verify Home Assistant connectivity for the home_assistant voice tool.
 
@@ -126,7 +167,7 @@ def check_home_assistant(cfg: Config) -> CheckResult:
         f"connected to {name} ({version}) at {result.get('url')}",
     )
 
-@doctor_check(order=19, group="integrations", label="Citi Bike", needs_cfg=True)
+@doctor_check(order=19.5, group="integrations", label="Citi Bike", needs_cfg=True)
 def check_citibike(cfg: Config) -> CheckResult:
     """Verify Citi Bike GBFS reachability + saved-station resolution.
 

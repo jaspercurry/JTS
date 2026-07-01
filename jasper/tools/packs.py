@@ -41,10 +41,12 @@ from .research import make_research_tools
 from .time import make_time_tools
 from .timer import make_timer_tools
 from .transport import make_transport_tools
+from .travel_routes import make_travel_routes_tools
 from .weather import make_weather_tools
 
 if TYPE_CHECKING:
     from ..google_creds import GoogleClients
+    from ..google_routes import GoogleRoutesClient
     from ..home_assistant import HAClient
     from ..renderer import RendererClient
     from ..research import ResearchScheduler
@@ -82,6 +84,7 @@ class ToolDeps:
     # Pre-built by transit.active_transit in run() (it owns the aclose
     # lifecycle); here just the flat list of decorated tool callables.
     transit_tools: Iterable[Callable[..., Any]]
+    google_routes: GoogleRoutesClient | None
     ha: HAClient | None
     timer_scheduler: TimerScheduler | None
     research_scheduler: ResearchScheduler | None
@@ -224,6 +227,13 @@ NYC_TRANSIT_PACK = CatalogPack(
     setup_url="/transit/",
     setup_required=True,
 )
+TRAVEL_ROUTES_PACK = CatalogPack(
+    "travel-routes",
+    "Travel Time",
+    "Destination ETAs and route overviews from the speaker's saved location.",
+    setup_url="/transit/",
+    setup_required=True,
+)
 HOME_ASSISTANT_PACK = CatalogPack(
     "home-assistant",
     "Home Assistant",
@@ -300,6 +310,12 @@ TOOL_PACKS: tuple[CapabilityPack, ...] = (
     CapabilityPack(
         "transit", lambda d: d.transit_tools,
         category="Transit", catalog_pack=NYC_TRANSIT_PACK,
+    ),
+    CapabilityPack(
+        "travel_routes",
+        lambda d: make_travel_routes_tools(d.google_routes),
+        category="Transit",
+        catalog_pack=TRAVEL_ROUTES_PACK,
     ),
     # home_assistant + diagnostic self-gate inside the factory (return []
     # on a None dep), so no pack gate is needed — default always-on

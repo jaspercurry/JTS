@@ -51,6 +51,7 @@ from jasper.tools.spotify import make_spotify_tools
 from jasper.tools.time import make_time_tools
 from jasper.tools.timer import make_timer_tools
 from jasper.tools.transport import make_transport_tools
+from jasper.tools.travel_routes import make_travel_routes_tools
 from jasper.tools.weather import make_weather_tools
 from tests._tool_pack_contract import (
     EXPECTED_TOOL_NAMES,
@@ -80,6 +81,8 @@ def _reference_registry(deps: ToolDeps) -> ToolRegistry:
     for fn in make_weather_tools(deps.weather):
         _register_tool_or_callable(reg, fn)
     for fn in deps.transit_tools:
+        _register_tool_or_callable(reg, fn)
+    for fn in make_travel_routes_tools(deps.google_routes):
         _register_tool_or_callable(reg, fn)
     for fn in make_home_assistant_tools(deps.ha):
         _register_tool_or_callable(reg, fn)
@@ -411,6 +414,7 @@ def test_real_build_registry_wrapper_produces_full_set():
         timer_scheduler=object(),
         research_scheduler=object(),
         google_clients=types.SimpleNamespace(list_account_names=lambda: ["jasper"]),
+        google_routes=object(),
         ha=object(),
         wake_event_store=object(),
     )
@@ -447,7 +451,7 @@ def test_load_bearing_gates_drop_their_tools_when_unsatisfied():
         "research",
         "calendar_today_summary", "calendar_upcoming",
         "gmail_unread_summary", "gmail_read_thread",
-        "home_assistant", "flag_recent_issue",
+        "home_assistant", "flag_recent_issue", "get_travel_routes",
     }
     assert gated.isdisjoint(walk_reg.tools.keys())
     # Only the un-gated, always-present tools survive (audio + transport +
@@ -699,6 +703,8 @@ def test_register_packs_marks_gated_off_packs_skipped():
     # without raising) — only the explicit gate produces "skipped".
     assert outcomes["home_assistant"].status == "registered"
     assert outcomes["home_assistant"].tool_count == 0
+    assert outcomes["travel_routes"].status == "registered"
+    assert outcomes["travel_routes"].tool_count == 0
 
 
 def test_register_packs_marks_failed_pack_with_error():
@@ -784,8 +790,9 @@ def test_content_bearing_tools_pin_log_redaction():
     started logging an email body or a close-to-verbatim "unlock the front
     door" utterance at INFO would slip through the equality comparison. Pin the
     redaction set explicitly instead. `log_payload=False` redacts the tool
-    RESULT preview; `log_args=False` redacts the call ARGS — the home-control
-    tools redact both because their args carry the user's request near-verbatim.
+        RESULT preview; `log_args=False` redacts the call ARGS — the home-control
+        and travel tools redact both because their args/results carry private
+        user requests near-verbatim.
     Asserting the exact set catches drift in BOTH directions: a content tool
     silently losing redaction, or an unrelated tool unexpectedly gaining it."""
     reg = ToolRegistry()
@@ -798,10 +805,12 @@ def test_content_bearing_tools_pin_log_redaction():
         "calendar_today_summary", "calendar_upcoming",
         "gmail_unread_summary", "gmail_read_thread",
         "home_assistant", "home_assistant_confirm",
+        "get_travel_routes",
     }
     assert redact_args == {
         "home_assistant",
         "home_assistant_confirm",
+        "get_travel_routes",
         "research",
         "read_research_result",
     }

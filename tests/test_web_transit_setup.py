@@ -16,6 +16,8 @@ hardware-free.
 from __future__ import annotations
 
 import http
+import stat
+import urllib.parse
 from email.message import Message
 from io import BytesIO
 
@@ -57,10 +59,15 @@ def _render(
     state: dict[str, str],
     flash: str = "",
     *,
+    routes_state: dict[str, str] | None = None,
     back_href: str = "/",
 ) -> str:
     return transit_setup._index_html(
-        state, TOKEN, status_msg=flash, back_href=back_href,
+        state,
+        TOKEN,
+        routes_state=routes_state,
+        status_msg=flash,
+        back_href=back_href,
     ).decode()
 
 
@@ -142,6 +149,7 @@ def test_cold_state_shows_only_address_input():
 
 def test_with_coords_renders_subway_card_and_locked_bus_card(stub_gbfs):
     out = _render(NYC_STATE)
+    assert "Travel time" in out
     assert "NYC Subway" in out
     assert "provider-card" in out
     # Subway picker present (B12 = 9 Av is the nearest hit).
@@ -150,6 +158,26 @@ def test_with_coords_renders_subway_card_and_locked_bus_card(stub_gbfs):
     assert "needs an API key" in out
     # Locked-card warn badge uses the canonical status token, not a hex.
     assert "--status-warn" in out
+
+
+def test_travel_routes_card_masks_saved_key_and_selects_default_mode(stub_gbfs):
+    state = {**NYC_STATE, "JASPER_TRAVEL_DEFAULT_MODE": "drive"}
+    routes = {"GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic-Test_Key"}
+    out = _render(state, routes_state=routes)
+    assert "Travel time" in out
+    assert "configured" in out
+    assert "AIza…_Key" in out
+    assert "AIzaSySynthetic-Test_Key" not in out
+    assert 'value="drive" selected' in out
+
+
+def test_travel_routes_card_ignores_stale_process_env_key(stub_gbfs, monkeypatch):
+    monkeypatch.setenv("GOOGLE_ROUTES_API_KEY", "AIzaSySynthetic-Stale_Key")
+    out = _render(NYC_STATE, routes_state={})
+    assert "Travel time" in out
+    assert "not configured" in out
+    assert "AIzaSySynthetic-Stale_Key" not in out
+    assert "process environment" not in out
 
 
 def test_with_coords_renders_citibike_ebike_toggle(stub_gbfs):
@@ -185,6 +213,8 @@ def test_subway_direction_defaults_to_both_when_unset(stub_gbfs):
 
 def test_outside_coverage_shows_no_coverage_card():
     out = _render(LONDON_STATE)
+    assert "Travel time" in out
+    assert 'id="save-form"' in out
     assert "No transit support" in out
     assert "no-coverage" in out
     # No subway/bus card for an unsupported area.
@@ -256,6 +286,7 @@ class _FakeHandler:
 def _handler_cls(tmp_path):
     return transit_setup._make_handler({
         "state_path": str(tmp_path / "transit.env"),
+        "routes_secret_path": str(tmp_path / "google_routes.env"),
         "weather_path": str(tmp_path / "weather.env"),
     })
 
@@ -341,6 +372,72 @@ def test_post_clear_with_csrf_redirects_and_restarts(tmp_path, monkeypatch):
     assert restarts == [None]
 
 
+def test_post_save_writes_routes_key_to_secret_file_and_default_to_transit_env(
+    tmp_path,
+    monkeypatch,
+):
+    restarts: list[None] = []
+    monkeypatch.setattr(
+        transit_setup, "restart_voice_daemon", lambda: restarts.append(None),
+    )
+    token = "z" * 64
+    key = "AIzaSySynthetic-Test_Key"
+    body = urllib.parse.urlencode({
+        "csrf_token": token,
+        "travel_default_mode": "drive",
+        "google_routes_key": key,
+    }).encode()
+    h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
+    _bound_handler(tmp_path, h).do_POST()
+
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    assert restarts == [None]
+    transit_state = transit_setup._load_state(str(tmp_path / "transit.env"))
+    routes_state = transit_setup.read_env_file(str(tmp_path / "google_routes.env"))
+    assert transit_state["JASPER_TRAVEL_DEFAULT_MODE"] == "drive"
+    assert "GOOGLE_ROUTES_API_KEY" not in transit_state
+    assert routes_state == {"GOOGLE_ROUTES_API_KEY": key}
+    mode = stat.S_IMODE((tmp_path / "google_routes.env").stat().st_mode)
+    assert mode == transit_setup.SECRET_ENV_MODE
+
+
+def test_post_save_blank_routes_key_preserves_existing_secret(tmp_path, monkeypatch):
+    monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: None)
+    transit_setup.write_env_file(
+        str(tmp_path / "google_routes.env"),
+        {"GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic-Keep_Key"},
+        mode=transit_setup.SECRET_ENV_MODE,
+    )
+    token = "z" * 64
+    body = urllib.parse.urlencode({
+        "csrf_token": token,
+        "travel_default_mode": "transit",
+        "google_routes_key": "",
+    }).encode()
+    h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
+    _bound_handler(tmp_path, h).do_POST()
+
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    routes_state = transit_setup.read_env_file(str(tmp_path / "google_routes.env"))
+    assert routes_state["GOOGLE_ROUTES_API_KEY"] == "AIzaSySynthetic-Keep_Key"
+
+
+def test_post_clear_removes_routes_secret_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: None)
+    transit_setup.write_env_file(
+        str(tmp_path / "google_routes.env"),
+        {"GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic-Clear_Key"},
+        mode=transit_setup.SECRET_ENV_MODE,
+    )
+    token = "z" * 64
+    body = ("csrf_token=" + token).encode()
+    h = _FakeHandler("/clear", body=body, cookies="jts_csrf=" + token)
+    _bound_handler(tmp_path, h).do_POST()
+
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    assert not (tmp_path / "google_routes.env").exists()
+
+
 def test_post_clear_rejects_bad_csrf(tmp_path):
     # Form-field token differs from the cookie token → 403, no restart.
     body = b"csrf_token=" + b"a" * 64
@@ -373,9 +470,11 @@ def test_cities_toggle_off_gates_provider_cards_and_shows_nudge():
     # invites turning it on.
     assert "checked" not in out.split('name="city_nyc"')[1][:40]
     assert "available at your location" in out
-    # With the only covering city off, no provider cards / save-form render —
-    # the page stays honest (a visible card means its tools register).
-    assert 'id="save-form"' not in out
+    # With the only covering city off, local provider cards are gated out, but
+    # the global Google Routes card remains configurable.
+    assert "Travel time" in out
+    assert "NYC Subway" not in out
+    assert 'id="save-form"' in out
 
 
 def test_cities_section_carries_csrf(stub_gbfs):

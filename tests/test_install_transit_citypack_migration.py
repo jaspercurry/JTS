@@ -152,6 +152,20 @@ def test_seeds_after_migrating_bus_key_from_jasper_env(tmp_path):
     assert transit["JASPER_TRANSIT_CITIES"] == "nyc"
 
 
+def test_migrates_travel_default_mode_from_jasper_env(tmp_path):
+    env_dir = tmp_path / "etc"
+    state_dir = tmp_path / "state"
+    env_dir.mkdir()
+    state_dir.mkdir()
+    (env_dir / "jasper.env").write_text("JASPER_TRAVEL_DEFAULT_MODE=drive\n")
+
+    proc = _run_migrate(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    transit = _read_env(state_dir / "transit.env")
+    assert transit["JASPER_TRAVEL_DEFAULT_MODE"] == "drive"
+    assert "JASPER_TRAVEL_DEFAULT_MODE" not in (env_dir / "jasper.env").read_text()
+
+
 def test_operator_set_cities_migrated_out_of_jasper_env(tmp_path):
     # An operator who set JASPER_TRANSIT_CITIES directly in jasper.env (the
     # documented headless/CI override path) would otherwise shadow the wizard:

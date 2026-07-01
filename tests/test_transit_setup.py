@@ -46,6 +46,7 @@ def test_owned_env_keys_includes_coords_and_provider_keys():
     assert "JASPER_BUS_STOPS" in keys
     assert "JASPER_CITIBIKE_STATIONS" in keys
     assert "JASPER_CITIBIKE_EBIKE_ONLY" in keys
+    assert "JASPER_TRAVEL_DEFAULT_MODE" in keys
 
 
 def test_coords_returns_none_when_missing():
@@ -188,6 +189,58 @@ def test_apply_save_subway_pick_persists():
     assert err is None
     assert new["JASPER_SUBWAY_STATION_ID"] == "B12"
     assert new["JASPER_SUBWAY_DEFAULT_DIRECTION"] == "uptown"
+
+
+def test_apply_save_travel_default_mode_persists():
+    form = {"travel_default_mode": "drive"}
+    new, err = transit_setup._apply_save(form, {}, bus_provider=_StubBus(True))
+    assert err is None
+    assert new["JASPER_TRAVEL_DEFAULT_MODE"] == "drive"
+
+
+def test_apply_save_invalid_travel_default_mode_errors():
+    new, err = transit_setup._apply_save(
+        {"travel_default_mode": "hovercraft"},
+        {"JASPER_TRAVEL_DEFAULT_MODE": "transit"},
+        bus_provider=_StubBus(True),
+    )
+    assert err is not None
+    assert "Default travel mode" in err
+    assert new == {"JASPER_TRAVEL_DEFAULT_MODE": "transit"}
+
+
+def test_apply_routes_save_accepts_google_key_chars():
+    key = "AIzaSySynthetic-Test_Key"
+    new, err = transit_setup._apply_routes_save({"google_routes_key": key}, {})
+    assert err is None
+    assert new == {"GOOGLE_ROUTES_API_KEY": key}
+
+
+def test_apply_routes_save_rejects_whitespace_in_key():
+    new, err = transit_setup._apply_routes_save(
+        {"google_routes_key": "AIzaSySynthetic Test"},
+        {},
+    )
+    assert err is not None
+    assert "whitespace" in err
+    assert new == {}
+
+
+def test_apply_routes_save_blank_preserves_existing_key():
+    current = {"GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic-Keep_Key"}
+    new, err = transit_setup._apply_routes_save({"google_routes_key": ""}, current)
+    assert err is None
+    assert new == current
+
+
+def test_apply_routes_save_clear_removes_existing_key():
+    current = {"GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic-Clear_Key"}
+    new, err = transit_setup._apply_routes_save(
+        {"google_routes_clear_key": "1"},
+        current,
+    )
+    assert err is None
+    assert new == {}
 
 
 def test_apply_save_subway_direction_both_clears_default():
@@ -379,6 +432,7 @@ def test_apply_clear_drops_only_owned_keys():
         "JASPER_CITIBIKE_STATIONS": "abc|9 Av",
         "JASPER_CITIBIKE_EBIKE_ONLY": "1",
         "JASPER_TRANSIT_LAT": "40.6",
+        "JASPER_TRAVEL_DEFAULT_MODE": "drive",
         "FOREIGN_KEY": "kept",
     }
     new = transit_setup._apply_clear(current)
@@ -387,6 +441,7 @@ def test_apply_clear_drops_only_owned_keys():
     assert "JASPER_CITIBIKE_STATIONS" not in new
     assert "JASPER_CITIBIKE_EBIKE_ONLY" not in new
     assert "JASPER_TRANSIT_LAT" not in new
+    assert "JASPER_TRAVEL_DEFAULT_MODE" not in new
     assert new["FOREIGN_KEY"] == "kept"
     # Clear records an explicit "no cities" rather than dropping the toggle —
     # otherwise an absent key would read as "all packs eligible" and /state
@@ -726,6 +781,24 @@ def test_system_instruction_omits_transit_nudge_when_configured():
     from jasper.voice_daemon import _build_system_instruction
     prompt = _build_system_instruction(location="", transit_configured=True)
     assert "jts.local/transit" not in prompt
+
+
+def test_system_instruction_includes_travel_routes_nudge_when_unconfigured():
+    from jasper.voice_daemon import _build_system_instruction
+    prompt = _build_system_instruction(
+        location="",
+        travel_routes_configured=False,
+        hostname="jts2.local",
+    )
+    assert "Travel time isn't set up yet" in prompt
+    assert "jts2.local/transit" in prompt
+    assert "Google Routes API key" in prompt
+
+
+def test_system_instruction_omits_travel_routes_nudge_when_configured():
+    from jasper.voice_daemon import _build_system_instruction
+    prompt = _build_system_instruction(location="", travel_routes_configured=True)
+    assert "Travel time isn't set up yet" not in prompt
 
 
 def test_system_instruction_transit_configured_defaults_to_true():

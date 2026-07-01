@@ -213,7 +213,8 @@ runs automatically only when the configured AEC mic is present with
   search & queue, weather (now including daily sunrise/sunset),
   NYC subway times, NYC MTA bus arrivals, NYC Citi Bike availability
   (split between classic bikes and e-bikes, with open-dock counts;
-  all configured via the `/transit/` wizard), current wall-clock time
+  all configured via the `/transit/` wizard), Google Routes travel-time
+  and directions from the speaker's saved location, current wall-clock time
 - ✅ Tool catalog wizard at `http://jts.local/tools/` — browse
   first-party voice capabilities as top-level packs grouped by category
   (with singleton packs for standalone tools), open a generated pack
@@ -234,7 +235,11 @@ runs automatically only when the configured AEC mic is present with
   routed by AirPlay title-match)
 - ✅ Transit setup wizard at `http://jts.local/transit/` — type your
   address, the page geocodes via OSM Nominatim, shows nearest subway,
-  bus stops, and Citi Bike stations, lets you pick. Multi-stop bus
+  bus stops, Citi Bike stations, and Google Routes travel-time settings,
+  lets you pick. The Travel Time card stores the billable Routes API key
+  in `/var/lib/jasper-secrets/google_routes.env` and lets the household
+  choose a default travel mode (`transit`, `drive`, `walk`, or `bicycle`);
+  voice requests like "drive to..." still override that per question. Multi-stop bus
   support — save both the eastbound and westbound stops at your
   corner and "next bus" unions arrivals across them. Subway "next
   train" returns every line at the station including service-change

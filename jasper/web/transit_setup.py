@@ -58,6 +58,7 @@ import argparse
 import html
 import logging
 import os
+import re
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -65,7 +66,7 @@ from typing import Any
 
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import location_state, transit
+from .. import google_routes, location_state, transit
 from ..bus import parse_bus_stops
 from ..transit import geocode as geocode_mod
 from ..log_event import log_event
@@ -85,6 +86,8 @@ from ._common import (
     read_form,
     restart_voice_daemon,
     safe_back_href,
+    SECRET_ENV_MODE,
+    mask_secret,
     write_env_file,
 )
 
@@ -95,6 +98,7 @@ logger = logging.getLogger(__name__)
 # key is mildly sensitive but not as critical as an OAuth token.
 TRANSIT_FILE = location_state.TRANSIT_FILE
 TRANSIT_FILE_MODE = location_state.TRANSIT_FILE_MODE
+GOOGLE_ROUTES_SECRET_FILE = google_routes.GOOGLE_ROUTES_SECRET_FILE
 
 # Wizard-owned coordinate state. Provider-owned env keys come from
 # `transit.all_env_keys()`. Splitting these is deliberate: coords
@@ -102,6 +106,10 @@ TRANSIT_FILE_MODE = location_state.TRANSIT_FILE_MODE
 LAT_ENV = location_state.TRANSIT_LAT_ENV
 LON_ENV = location_state.TRANSIT_LON_ENV
 DISPLAY_NAME_ENV = location_state.TRANSIT_DISPLAY_NAME_ENV
+TRAVEL_DEFAULT_MODE_ENV = google_routes.TRAVEL_DEFAULT_MODE_ENV
+GOOGLE_ROUTES_API_KEY_ENV = google_routes.GOOGLE_ROUTES_API_KEY_ENV
+
+_KEY_VALID_RE = re.compile(r"^[A-Za-z0-9_\-.~]+$")
 
 # Max distance (mi) to a nearest stop before we consider the provider
 # uncovered. NYC bbox includes some areas (e.g., Sandy Hook NJ tip)
@@ -122,6 +130,7 @@ def _owned_env_keys() -> set[str]:
     survive unchanged."""
     return {
         LAT_ENV, LON_ENV, DISPLAY_NAME_ENV,
+        TRAVEL_DEFAULT_MODE_ENV,
         transit.TRANSIT_CITIES_ENV,  # city-pack on/off toggle
         *transit.all_env_keys(),
     }
@@ -216,6 +225,30 @@ def _bus_key_source(state: dict[str, str]) -> str:
     return "none"
 
 
+def _routes_key_source(routes_state: dict[str, str]) -> str:
+    """Return where the wizard-owned Google Routes key lives."""
+    if routes_state.get(GOOGLE_ROUTES_API_KEY_ENV, "").strip():
+        return "state"
+    return "none"
+
+
+def _routes_key_value(routes_state: dict[str, str]) -> str:
+    return routes_state.get(GOOGLE_ROUTES_API_KEY_ENV, "").strip()
+
+
+def _validate_google_routes_key(key: str) -> str | None:
+    if not key:
+        return None
+    if any(ch.isspace() for ch in key):
+        return "Google Routes API key contains whitespace; copy it again."
+    if not _KEY_VALID_RE.fullmatch(key):
+        return (
+            "Google Routes API key contains characters that don't look like "
+            "an API key; copy it again."
+        )
+    return None
+
+
 def _mask_key(value: str) -> str:
     """Render a BusTime key as `prefix…suffix` for display. Empty input
     returns empty string. Mirrors `_common.mask_secret` but inlined
@@ -301,6 +334,18 @@ def _apply_save(
 
     new = dict(current)
 
+    # Google Routes default mode. This is intentionally an overall travel
+    # mode, not a transit-subtype preference; the voice tool maps explicit
+    # user wording per call.
+    if "travel_default_mode" in form:
+        raw_mode = (form.get("travel_default_mode") or "").strip()
+        mode = google_routes.normalize_travel_mode(raw_mode)
+        if mode not in google_routes.TRAVEL_MODE_TO_API:
+            return current, (
+                "Default travel mode must be transit, drive, walk, or bicycle."
+            )
+        new[TRAVEL_DEFAULT_MODE_ENV] = mode
+
     # Subway picks. Empty values mean "leave alone" — don't drop saved
     # config just because the user re-saved after editing only bus.
     sub_stop = (form.get("nyc_subway_stop") or "").strip()
@@ -376,6 +421,28 @@ def _apply_save(
         else:
             new.pop("JASPER_CITIBIKE_EBIKE_ONLY", None)
 
+    return new, None
+
+
+def _apply_routes_save(
+    form: dict[str, str], current: dict[str, str],
+) -> tuple[dict[str, str], str | None]:
+    """Apply the Google Routes secret fields.
+
+    Blank key input preserves the existing saved key. The clear checkbox drops
+    it. Structural validation only — no billable API probe on save.
+    """
+    new = dict(current)
+    if form.get("google_routes_clear_key", "").strip():
+        new.pop(GOOGLE_ROUTES_API_KEY_ENV, None)
+        return new, None
+    key = (form.get("google_routes_key") or "").strip()
+    if not key:
+        return new, None
+    err = _validate_google_routes_key(key)
+    if err is not None:
+        return current, err
+    new[GOOGLE_ROUTES_API_KEY_ENV] = key
     return new, None
 
 
@@ -1013,6 +1080,94 @@ def _citibike_card_html(
 </section>"""
 
 
+def _travel_routes_card_html(
+    state: dict[str, str],
+    routes_state: dict[str, str],
+) -> str:
+    coords = _coords(state)
+    configured = coords is not None and bool(_routes_key_value(routes_state))
+    badge = _badge_html(configured)
+    current_mode = _value_for(
+        state,
+        TRAVEL_DEFAULT_MODE_ENV,
+        google_routes.DEFAULT_TRAVEL_MODE,
+    )
+    mode = google_routes.normalize_travel_mode(current_mode)
+    if mode not in google_routes.TRAVEL_MODE_TO_API:
+        mode = google_routes.DEFAULT_TRAVEL_MODE
+    options = [
+        ("transit", "Transit"),
+        ("drive", "Drive"),
+        ("walk", "Walk"),
+        ("bicycle", "Bicycle"),
+    ]
+    options_html = "".join(
+        f'<option value="{html.escape(value)}"'
+        + (" selected" if value == mode else "")
+        + f'>{html.escape(label)}</option>'
+        for value, label in options
+    )
+    key_source = _routes_key_source(routes_state)
+    saved_key = _routes_key_value(routes_state)
+    masked = mask_secret(saved_key)
+    source_label = {
+        "state": "/var/lib/jasper-secrets/google_routes.env",
+    }.get(key_source, "")
+    saved_key_html = (
+        f'<p class="saved-key">Saved key: '
+        f'<code>{html.escape(masked)}</code> '
+        f'({html.escape(source_label)})</p>'
+        if masked else ""
+    )
+    key_input_html = f"""
+<div class="field">
+  <label for="google_routes_key">Google Routes API key</label>
+  <input id="google_routes_key" name="google_routes_key" type="password"
+         form="save-form"
+         autocomplete="off" autocapitalize="off"
+         autocorrect="off" spellcheck="false"
+         placeholder="AIzaSy…">
+  <p class="form-hint">Restrict this key to the Google Routes API. Saving does not call Google; the voice tool validates it on use.</p>
+</div>"""
+    if saved_key:
+        key_input_html = f"""
+<details class="replace-key">
+  <summary>Replace API key</summary>
+  {saved_key_html}
+  <div class="field">
+    <label for="google_routes_key">Google Routes API key</label>
+    <input id="google_routes_key" name="google_routes_key" type="password"
+           form="save-form"
+           autocomplete="off" autocapitalize="off"
+           autocorrect="off" spellcheck="false"
+           placeholder="paste a new key to replace, or leave blank to keep">
+    <p class="form-hint">The full key is never shown again after save.</p>
+  </div>
+  <label class="stop-row">
+    <input type="checkbox" name="google_routes_clear_key" form="save-form" value="1">
+    <span class="name">Clear saved Google Routes key</span>
+  </label>
+</details>"""
+    return f"""
+<section class="info-card provider-card">
+  <div class="provider-card__head">
+    <h2 class="provider-card__title">Travel time</h2>
+    {badge}
+  </div>
+  <p class="provider-card__blurb">Use the saved location above as the starting point for &ldquo;how long to get to…&rdquo; and &ldquo;how can I get to…&rdquo; voice questions.</p>
+
+  <div class="field">
+    <label for="travel_default_mode">Default travel mode</label>
+    <select id="travel_default_mode" name="travel_default_mode" form="save-form">
+      {options_html}
+    </select>
+    <p class="form-hint">Voice instructions still override this, for example &ldquo;drive to&rdquo;, &ldquo;walk to&rdquo;, or &ldquo;take transit to&rdquo;.</p>
+  </div>
+
+  {key_input_html}
+</section>"""
+
+
 def _no_coverage_html() -> str:
     return """
 <section class="no-coverage">
@@ -1146,15 +1301,17 @@ def _index_html(
     state: dict[str, str],
     csrf_token: str = "",
     *,
+    routes_state: dict[str, str] | None = None,
     status_msg: str = "",
     back_href: str = "/",
 ) -> bytes:
     coords = _coords(state)
+    routes_state = routes_state or {}
 
     if coords is None:
         # No coords yet — only the address section is interactive.
         body = f"""
-<p class="form-hint">Configure NYC subway and bus settings so you can ask "next train" / "next bus" from the speaker.</p>
+<p class="form-hint">Configure travel and transit settings for the speaker.</p>
 {_address_section_html(state, csrf_token)}
 {_advanced_section_html(state, csrf_token)}"""
         return _wrap_transit_page(
@@ -1166,10 +1323,22 @@ def _index_html(
         # No provider covers these coords. Still render the cities section so
         # a pack enabled elsewhere (e.g. NYC left on after a move) can be
         # turned off; it returns "" when there's nothing to toggle.
+        save_form = f"""
+<form method="post" action="save" id="save-form">
+  {csrf_field_html(csrf_token) if csrf_token else ''}
+  <p class="eyebrow">Travel options</p>
+  {_travel_routes_card_html(state, routes_state)}
+
+  <div class="save-row">
+    <button type="submit" class="btn btn--primary">Save and restart voice</button>
+    <span class="form-hint">Voice picks up the new settings in about 5 seconds.</span>
+  </div>
+</form>"""
         body = f"""
-<p class="form-hint">Configure transit settings.</p>
+<p class="form-hint">Configure travel and transit settings.</p>
 {_address_section_html(state, csrf_token)}
 {_cities_section_html(state, csrf_token, coords)}
+{save_form}
 {_no_coverage_html()}
 {_advanced_section_html(state, csrf_token)}"""
         return _wrap_transit_page(
@@ -1186,7 +1355,7 @@ def _index_html(
     # wires up theirs. See jasper/transit/__init__.py for the full
     # contribution checklist.
     enabled_ids = set(transit.enabled_pack_ids(state))
-    cards: list[str] = []
+    cards: list[str] = [_travel_routes_card_html(state, routes_state)]
     for p in providers_covering:
         pack = transit.pack_for_provider(p.id)
         if pack is not None and pack.id not in enabled_ids:
@@ -1219,7 +1388,7 @@ def _index_html(
         save_form = f"""
 <form method="post" action="save" id="save-form">
   {csrf_field_html(csrf_token) if csrf_token else ''}
-  <p class="eyebrow">Transit options near you</p>
+  <p class="eyebrow">Travel and transit options</p>
   {''.join(cards)}
 
   <div class="save-row">
@@ -1232,7 +1401,7 @@ def _index_html(
     # (clear-form submit listener → jtsConfirm), not an inline onsubmit —
     # canonical pages carry no inline dialog helper.
     body = f"""
-<p class="form-hint">Configure NYC subway and bus settings so you can ask "next train" / "next bus" from the speaker.</p>
+<p class="form-hint">Configure travel-time directions plus NYC subway and bus settings.</p>
 
 {_address_section_html(state, csrf_token)}
 
@@ -1259,6 +1428,11 @@ def _index_html(
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     """Build the request handler closed over `cfg` (state-file path).
     Tests pass a tmpdir-based path; production uses TRANSIT_FILE."""
+    cfg = {
+        "state_path": cfg.get("state_path", TRANSIT_FILE),
+        "routes_secret_path": cfg.get("routes_secret_path", GOOGLE_ROUTES_SECRET_FILE),
+        "weather_path": cfg.get("weather_path", location_state.WEATHER_FILE),
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -1279,9 +1453,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # rather than 500ing the whole route. The wizard's job
                 # is to tell the user what to do next.
                 try:
+                    routes_state = read_env_file(cfg["routes_secret_path"])
                     body = _index_html(
                         state,
                         ctx["csrf_token"],
+                        routes_state=routes_state,
                         status_msg=ctx["flash"],
                         back_href=safe_back_href(
                             (qs.get("return_to") or [""])[0],
@@ -1350,6 +1526,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if err is not None:
                 send_see_other(self, "./", flash=err)
                 return
+            routes_current = read_env_file(cfg["routes_secret_path"])
+            routes_new, routes_err = _apply_routes_save(form, routes_current)
+            if routes_err is not None:
+                send_see_other(self, "./", flash=routes_err)
+                return
             try:
                 if new:
                     write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
@@ -1358,6 +1539,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     )
                 else:
                     delete_env_file(cfg["state_path"])
+                if routes_new:
+                    write_env_file(
+                        cfg["routes_secret_path"],
+                        routes_new,
+                        mode=SECRET_ENV_MODE,
+                    )
+                else:
+                    delete_env_file(cfg["routes_secret_path"])
             except OSError as e:
                 logger.exception("could not write transit.env after save")
                 send_see_other(self, "./", flash=f"Could not save: {e}")
@@ -1402,6 +1591,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # "all packs eligible" and would wrongly re-enable every city.
             try:
                 write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
+                delete_env_file(cfg["routes_secret_path"])
             except OSError as e:
                 logger.exception("could not write transit.env after clear")
                 send_see_other(self, "./", flash=f"Could not save: {e}")
@@ -1425,10 +1615,15 @@ def make_server(
     target,
     *,
     state_path: str = TRANSIT_FILE,
+    routes_secret_path: str = GOOGLE_ROUTES_SECRET_FILE,
     weather_path: str = location_state.WEATHER_FILE,
 ) -> ThreadingHTTPServer:
     from . import _systemd
-    cfg = {"state_path": state_path, "weather_path": weather_path}
+    cfg = {
+        "state_path": state_path,
+        "routes_secret_path": routes_secret_path,
+        "weather_path": weather_path,
+    }
     return _systemd.make_http_server(target, _make_handler(cfg))
 
 
@@ -1447,12 +1642,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--state", default=os.environ.get("JASPER_TRANSIT_FILE", TRANSIT_FILE),
     )
+    parser.add_argument(
+        "--routes-secrets",
+        default=os.environ.get("JASPER_GOOGLE_ROUTES_FILE", GOOGLE_ROUTES_SECRET_FILE),
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    server = make_server((args.host, args.port), state_path=args.state)
+    server = make_server(
+        (args.host, args.port),
+        state_path=args.state,
+        routes_secret_path=args.routes_secrets,
+    )
     logger.info(
         "jasper-transit-web listening on http://%s:%d (state=%s)",
         args.host, args.port, args.state,

@@ -117,6 +117,8 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
             "/var/lib/jasper-secrets/voice_keys.env",
             # Google OAuth client secret + the per-account refresh-token tree.
             "/var/lib/jasper-secrets/google_credentials.env",
+            # Billable Google Routes API key written by /transit/.
+            "/var/lib/jasper-secrets/google_routes.env",
             "/var/lib/jasper-secrets/google/accounts.json",
             "/var/lib/jasper-secrets/google/tokens/*.json",
         ),
