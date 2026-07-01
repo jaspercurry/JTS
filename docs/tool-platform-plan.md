@@ -9,13 +9,13 @@ invariant, the five extension contracts, the decision tree) lives in
 > truth about shipped code. Captures the vision for turning JTS's
 > integrations into an extensible foundation, the research behind it,
 > what we decided, and how we'll get there.
-> **Last updated: 2026-06-19.**
+> **Last updated: 2026-06-30.**
 
 ---
 
 ## 1. The vision
 
-Today JTS ships a fixed set of 30 built-in tools (weather, transit,
+Today JTS ships a fixed set of 32 built-in tools (weather, transit,
 smart-home, music, calendar, email, timers, research, ...). The vision is to turn
 that into an **extensible foundation other people can build on** — so
 that adding a new capability to the speaker is a clean, local act, and
@@ -254,7 +254,7 @@ can't outsource this to the provider. We own the scoping layer.
   can't tell which tool to use, neither can the model."
 
 ### 3.9 Verified codebase corrections (don't build on wrong facts)
-It's **30 tools today**. `build_tool` **warns** on sync functions
+It's **32 tools today**. `build_tool` **warns** on sync functions
 rather than rejecting them (so "everything is a coroutine" is a
 convention, not an invariant). The live connection is **persistent**.
 `peer_id` is **0644**.

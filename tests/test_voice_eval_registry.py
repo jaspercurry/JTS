@@ -50,6 +50,9 @@ _ALL_BACKENDS_ENV = {
     "JASPER_BUS_STOPS": "MTA_308209|Test Stop",
     "JASPER_MTA_BUSTIME_KEY": "test-bus-key",
     "JASPER_CITIBIKE_STATIONS": "66dc120f-0aca-11e7-82f6-3863bb44ef7c|Test Dock",
+    "GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic-Test_Key",
+    "JASPER_TRANSIT_LAT": "40.758",
+    "JASPER_TRANSIT_LON": "-73.985",
     "JASPER_HA_URL": "http://homeassistant.local:8123",
     "JASPER_HA_TOKEN": "test-token",
 }
@@ -60,6 +63,9 @@ _BACKEND_ENV_KEYS = (
     "JASPER_BUS_STOPS",
     "JASPER_MTA_BUSTIME_KEY",
     "JASPER_CITIBIKE_STATIONS",
+    "GOOGLE_ROUTES_API_KEY",
+    "JASPER_TRANSIT_LAT",
+    "JASPER_TRANSIT_LON",
     "JASPER_HA_URL",
     "JASPER_HA_TOKEN",
 )
@@ -100,6 +106,7 @@ def test_build_test_registry_constructs_with_all_backends_enabled(monkeypatch):
             "get_subway_arrivals",
             "get_bus_arrivals",
             "get_citibike_status",
+            "get_travel_routes",
             "home_assistant",
         } <= names
         # And the always-on backends construct too.

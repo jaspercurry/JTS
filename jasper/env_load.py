@@ -59,6 +59,7 @@ ENV_FILES = (
     # them fine. See docs/HANDOFF-privilege-separation.md "Phase 4".
     "/var/lib/jasper-secrets/voice_keys.env",
     "/var/lib/jasper-secrets/google_credentials.env",
+    "/var/lib/jasper-secrets/google_routes.env",
     "/var/lib/jasper/wake_model.env",
     "/var/lib/jasper/weather.env",
     "/var/lib/jasper/transit.env",

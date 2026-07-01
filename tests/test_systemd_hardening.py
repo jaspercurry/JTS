@@ -330,8 +330,8 @@ def test_install_creates_every_dropped_user():
 
 
 def test_secrets_compartment_phase4a():
-    """WS1 Phase 4a — the high-value secrets (LLM API keys + Google client
-    secret/token tree) live in the group-`jasper-secrets` compartment, readable
+    """WS1 Phase 4a — the high-value secrets (LLM API keys, Google client
+    secret/token tree, Google Routes API key) live in the group-`jasper-secrets` compartment, readable
     only by jasper-voice + jasper-web. Pin: (1) the group is created; (2) voice +
     web source voice_keys.env + the RELOCATED google_credentials.env; (3) only
     jasper-web (which WRITES the compartment via the /voice + /google wizards)
@@ -341,6 +341,7 @@ def test_secrets_compartment_phase4a():
     source voice_keys.env."""
     secret_keys = "/var/lib/jasper-secrets/voice_keys.env"
     secret_google = "/var/lib/jasper-secrets/google_credentials.env"
+    secret_routes = "/var/lib/jasper-secrets/google_routes.env"
 
     # (1) group created in service-users.sh (before the useradd -G that uses it).
     sh = SERVICE_USERS_SH.read_text()
@@ -355,6 +356,7 @@ def test_secrets_compartment_phase4a():
         envfiles = " ".join(v for k, v in pairs if k == "EnvironmentFile")
         assert secret_keys in envfiles, f"{unit} must source {secret_keys}"
         assert secret_google in envfiles, f"{unit} must source {secret_google}"
+        assert secret_routes in envfiles, f"{unit} must source {secret_routes}"
         # The OLD broad path must be gone (no dual-source re-exposure).
         assert "/var/lib/jasper/google_credentials.env" not in envfiles, (
             f"{unit} still sources the pre-4a broad google_credentials.env path"
@@ -379,12 +381,15 @@ def test_secrets_compartment_phase4a():
         "Google tree via the group); it must NOT get a write grant"
     )
 
-    # (4) the excluded daemons must NOT source the secret-keys file.
+    # (4) the excluded daemons must NOT source the secret env files.
     for unit in ("jasper-mux", "jasper-control", "jasper-input"):
         pairs = list(_directives(TIER_A[unit]))
         envfiles = " ".join(v for k, v in pairs if k == "EnvironmentFile")
         assert secret_keys not in envfiles, (
             f"{unit} must NOT source {secret_keys} (Phase 4a compartmentalization)"
+        )
+        assert secret_routes not in envfiles, (
+            f"{unit} must NOT source {secret_routes} (billable Routes API key)"
         )
 
 

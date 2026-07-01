@@ -182,6 +182,7 @@ migrate_secrets_phase4a() {
         -exec chmod 0640 {} + 2>/dev/null || true
 
     migrate_voice_keys_split
+    migrate_google_routes_key
 
     # Re-tighten voice_keys.env's MODE on every deploy. migrate_voice_keys_split
     # chmods 0640 only when it WRITES the file; on the idempotent re-run (the key
@@ -195,6 +196,9 @@ migrate_secrets_phase4a() {
     # only chmod lived inside the conditional split). Owner left as-is.
     if [[ -f "${SECRETS_DIR}/voice_keys.env" ]]; then
         chmod 0640 "${SECRETS_DIR}/voice_keys.env" 2>/dev/null || true
+    fi
+    if [[ -f "${SECRETS_DIR}/google_routes.env" ]]; then
+        chmod 0640 "${SECRETS_DIR}/google_routes.env" 2>/dev/null || true
     fi
 
     # Reconcile against the tmpfiles spec (also surfaces a syntax error early).
@@ -326,6 +330,50 @@ _strip_key_from_broad() {
     if [[ -f "${jasper_env}" ]]; then
         sed -i.bak "/^${key}=/d" "${jasper_env}"
         rm -f "${jasper_env}.bak"
+    fi
+}
+
+migrate_google_routes_key() {
+    getent group jasper-secrets >/dev/null 2>&1 || return 0
+    ensure_secrets_dir
+    local jasper_env="${ENV_DIR}/jasper.env"
+    local transit_env="${STATE_DIR}/transit.env"
+    local routes_env="${SECRETS_DIR}/google_routes.env"
+    local key="GOOGLE_ROUTES_API_KEY"
+    local line val moved=0
+
+    if [[ -f "${routes_env}" ]] && grep -qE "^${key}=" "${routes_env}"; then
+        _strip_key_from_broad "${key}" "${transit_env}" "${jasper_env}"
+        chmod 0640 "${routes_env}" 2>/dev/null || true
+        return 0
+    fi
+
+    val=""
+    if [[ -f "${transit_env}" ]]; then
+        line=$(grep -E "^${key}=" "${transit_env}" || true)
+        val="${line#"${key}"=}"
+    fi
+    if [[ -z "${val}" && -f "${jasper_env}" ]]; then
+        line=$(grep -E "^${key}=" "${jasper_env}" || true)
+        val="${line#"${key}"=}"
+    fi
+    val="${val%[$'\r\n ']*}"
+
+    if [[ -n "${val}" ]]; then
+        touch "${routes_env}"
+        chgrp jasper-secrets "${routes_env}" 2>/dev/null || true
+        chmod 0640 "${routes_env}"
+        printf '%s=%s\n' "${key}" "${val}" >> "${routes_env}"
+        if grep -qE "^${key}=" "${routes_env}"; then
+            _strip_key_from_broad "${key}" "${transit_env}" "${jasper_env}"
+            moved=1
+        fi
+    else
+        _strip_key_from_broad "${key}" "${transit_env}" "${jasper_env}"
+    fi
+
+    if [[ "${moved}" == "1" ]]; then
+        echo "  migrate_google_routes_key: Google Routes API key -> ${routes_env}"
     fi
 }
 
@@ -573,6 +621,7 @@ migrate_transit_config() {
         JASPER_BUS_STOPS
         JASPER_CITIBIKE_STATIONS
         JASPER_CITIBIKE_EBIKE_ONLY
+        JASPER_TRAVEL_DEFAULT_MODE
     )
 
     [[ -f "${jasper_env}" ]] || return 0

@@ -22,6 +22,7 @@ SELECTED_LLM_DESCRIPTION_TOOLS = {
     "get_subway_arrivals",
     "get_bus_arrivals",
     "get_citibike_status",
+    "get_travel_routes",
     "spotify_play",
     "home_assistant",
     "flag_recent_issue",
@@ -35,7 +36,7 @@ def _full_registry() -> ToolRegistry:
 def test_manifest_covers_every_tool_in_order():
     reg = _full_registry()
     manifest = reg.to_manifest()
-    assert len(manifest) == len(reg.tools) == 31
+    assert len(manifest) == len(reg.tools) == 32
     assert [e["name"] for e in manifest] == list(reg.tools.keys())
 
 
@@ -109,6 +110,13 @@ def test_transit_tools_carry_city_and_mode_labels():
     assert by_name["get_subway_arrivals"]["labels"] == ["transit", "nyc", "subway"]
     assert by_name["get_bus_arrivals"]["labels"] == ["transit", "nyc", "bus"]
     assert by_name["get_citibike_status"]["labels"] == ["transit", "nyc", "bikeshare"]
+
+
+def test_travel_routes_tool_carries_travel_labels():
+    by_name = {e["name"]: e for e in _full_registry().to_manifest()}
+    assert by_name["get_travel_routes"]["labels"] == [
+        "travel", "directions", "transit", "google-routes",
+    ]
 
 
 def test_unlabeled_tool_emits_empty_labels():

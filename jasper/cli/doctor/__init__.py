@@ -187,6 +187,7 @@ from .renderers import (
 from . import integrations as integrations
 from .integrations import (
     check_google_tokens,
+    check_google_routes,
     check_home_assistant,
     check_citibike,
 )
@@ -511,6 +512,7 @@ __all__ = [
     "_fanin_lane_busy_owner_matches",
     "check_renderer_device_resolvable",
     "check_google_tokens",
+    "check_google_routes",
     "check_home_assistant",
     "check_citibike",
     "check_ram",

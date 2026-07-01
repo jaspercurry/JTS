@@ -54,6 +54,7 @@ SECRET_WIZARDS = {
     "jasper/web/voice_setup.py": "voice_provider.env",
     "jasper/web/spotify_setup.py": "spotify_credentials.env",
     "jasper/web/google_setup.py": "google_credentials.env",
+    "jasper/web/transit_setup.py": "google_routes.env",
     "jasper/web/home_assistant_setup.py": "home_assistant.env",
 }
 
@@ -105,6 +106,7 @@ def test_install_widens_secret_env_on_upgrade():
         assert fname in widened_files, f"widening loop must cover {fname}"
     for fname in (
         "google_credentials.env",
+        "google_routes.env",
         "spotify_credentials.env",
         "home_assistant.env",
     ):

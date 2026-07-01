@@ -57,6 +57,7 @@ _FUNCS = (
     "migrate_secrets_phase4a",
     "migrate_secrets_phase4b",
     "migrate_voice_keys_split",
+    "migrate_google_routes_key",
     "_strip_key_from_broad",
 )
 
@@ -190,6 +191,61 @@ def test_split_keeps_existing_keys_file_value_and_strips_broad(tmp_path: Path):
     # keys_env value preserved (canonical wins); broad copy stripped.
     assert _kv(secrets / "voice_keys.env") == {"OPENAI_API_KEY": "sk-canonical"}
     assert "OPENAI_API_KEY" not in _kv(state / "voice_provider.env")
+
+
+# --- migrate_google_routes_key ----------------------------------------------
+
+def test_google_routes_key_moves_from_jasper_env_to_secrets(tmp_path: Path):
+    etc, _state, secrets = _prep(tmp_path)
+    (etc / "jasper.env").write_text(
+        "JASPER_HOSTNAME=jts.local\n"
+        "GOOGLE_ROUTES_API_KEY=AIzaSySynthetic-Test_Key\n"
+    )
+
+    proc = _run(tmp_path, "migrate_google_routes_key")
+    assert proc.returncode == 0, proc.stderr
+
+    assert _kv(secrets / "google_routes.env") == {
+        "GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic-Test_Key",
+    }
+    assert _kv(etc / "jasper.env") == {"JASPER_HOSTNAME": "jts.local"}
+    assert stat.S_IMODE((secrets / "google_routes.env").stat().st_mode) == 0o640
+
+
+def test_google_routes_key_moves_from_transit_env_to_secrets(tmp_path: Path):
+    _etc, state, secrets = _prep(tmp_path)
+    (state / "transit.env").write_text(
+        "JASPER_TRANSIT_LAT=40.758\n"
+        "GOOGLE_ROUTES_API_KEY=AIzaSySynthetic-Transit_Key\n"
+    )
+
+    proc = _run(tmp_path, "migrate_google_routes_key")
+    assert proc.returncode == 0, proc.stderr
+
+    assert _kv(secrets / "google_routes.env") == {
+        "GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic-Transit_Key",
+    }
+    assert _kv(state / "transit.env") == {"JASPER_TRANSIT_LAT": "40.758"}
+
+
+def test_google_routes_key_preserves_existing_secret_and_strips_stale_broad(
+    tmp_path: Path,
+):
+    etc, state, secrets = _prep(tmp_path)
+    (secrets / "google_routes.env").write_text(
+        "GOOGLE_ROUTES_API_KEY=AIzaSyCanonical\n",
+    )
+    (etc / "jasper.env").write_text("GOOGLE_ROUTES_API_KEY=AIzaSyStaleEnv\n")
+    (state / "transit.env").write_text("GOOGLE_ROUTES_API_KEY=AIzaSyStaleTransit\n")
+
+    proc = _run(tmp_path, "migrate_google_routes_key")
+    assert proc.returncode == 0, proc.stderr
+
+    assert _kv(secrets / "google_routes.env") == {
+        "GOOGLE_ROUTES_API_KEY": "AIzaSyCanonical",
+    }
+    assert "GOOGLE_ROUTES_API_KEY" not in _kv(etc / "jasper.env")
+    assert "GOOGLE_ROUTES_API_KEY" not in _kv(state / "transit.env")
 
 
 # --- migrate_secrets_phase4a (Google tree move + accounts.json rewrite) -------

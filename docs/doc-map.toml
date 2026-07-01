@@ -662,11 +662,13 @@ verification = [
 
 [[subsystem]]
 id = "transit-and-citibike"
-title = "Transit and Citi Bike tools"
+title = "Transit, Citi Bike, and travel-time tools"
 safety = "safe-ci"
 code = [
+  "jasper/google_routes.py",
   "jasper/transit/**",
   "jasper/citibike.py",
+  "jasper/tools/travel_routes.py",
   "jasper/tools/bus.py",
   "jasper/tools/subway.py",
   "jasper/tools/citibike.py",
@@ -677,10 +679,10 @@ docs = [
   "docs/HANDOFF-transit-citibike.md",
 ]
 requires_docs_when = [
-  "Provider registry shape, setup wizard behavior, cache semantics, answer shape, station drift handling, or API key requirements change.",
+  "Provider registry shape, setup wizard behavior, cache semantics, route/arrival answer shape, station drift handling, or API key requirements change.",
 ]
 verification = [
-  "pytest tests/test_transit_*.py tests/test_citibike.py tests/test_tools_citibike.py",
+  "pytest tests/test_google_routes.py tests/test_transit_*.py tests/test_citibike.py tests/test_tools_citibike.py",
 ]
 
 [[subsystem]]

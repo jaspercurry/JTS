@@ -31,6 +31,7 @@ from ..conversation_history import (
 )
 from ..cues import AudioCueManager, build_cue_tts_backend
 from ..google_creds import GoogleClients, build_google_clients
+from ..google_routes import build_google_routes_client
 from ..home_assistant import HAClient, build_ha_client
 from ..renderer import RendererClient
 from ..research import ResearchScheduler, active_research_provider
@@ -392,6 +393,7 @@ def _build_registry(
     research_delivery_recorder=None,
     cues_manager: AudioCueManager | None = None,
     google_clients: GoogleClients | None = None,
+    google_routes=None,
     ha: HAClient | None = None,
     wake_event_store: "WakeEventStore | None" = None,
 ) -> ToolRegistry:
@@ -425,6 +427,7 @@ def _build_registry(
         spotify_device_name=cfg.spotify_device_name,
         spotify_setup_url=cfg.spotify_setup_url,
         transit_tools=transit_tools,
+        google_routes=google_routes,
         ha=ha,
         timer_scheduler=timer_scheduler,
         research_scheduler=research_scheduler,
@@ -638,6 +641,12 @@ async def run() -> None:
         ",".join(transit.enabled_pack_ids(os.environ)) or "(none)",
         len(transit_tools),
     )
+    google_routes = build_google_routes_client(os.environ)
+    travel_routes_configured = google_routes is not None
+    logger.info(
+        "google_routes: %s",
+        "enabled" if travel_routes_configured else "disabled",
+    )
     # Home Assistant client. None when JASPER_HA_URL or JASPER_HA_TOKEN
     # is unset; the tool factory short-circuits to [] in that case so
     # the model never sees a tool whose every call would fail. The
@@ -817,6 +826,7 @@ async def run() -> None:
         research_delivery_recorder=_record_research_delivery,
         cues_manager=cues_manager,
         google_clients=google_clients,
+        google_routes=google_routes,
         ha=ha,
         wake_event_store=wake_event_store,
     )
@@ -915,6 +925,7 @@ async def run() -> None:
                 google_accounts=google_account_names,
                 default_google_account=google_default_account,
                 transit_configured=transit_configured,
+                travel_routes_configured=travel_routes_configured,
                 research_configured=research_configured,
                 ha_configured=ha_configured,
                 hostname=cfg.hostname,

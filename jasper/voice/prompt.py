@@ -105,6 +105,11 @@ SYSTEM_INSTRUCTION = (
     "  - Email follow-up after a summary ('read me the first one' / "
     "'open that email') → call gmail_read_thread with the "
     "thread_id from the prior gmail_unread_summary response.\n"
+    "  - Destination ETA or directions ('how long to get to...', 'how "
+    "do I get to...', 'how can I get to...') → call get_travel_routes. "
+    "Local arrival-board questions ('next train', 'next bus', bike "
+    "share availability at configured stops) → call the subway, bus, "
+    "or Citi Bike arrival tool.\n"
     "  - Changing an existing timer's duration ('make it 2 minutes "
     "instead', 'change the pasta timer to 10 minutes', 'actually, "
     "make that an hour') → call update_timer in ONE call. Do NOT "
@@ -245,6 +250,7 @@ def _build_system_instruction(
     google_accounts: list[str] | None = None,
     default_google_account: str = "",
     transit_configured: bool = True,
+    travel_routes_configured: bool = True,
     research_configured: bool = True,
     ha_configured: bool = True,
     hostname: str = "jts.local",
@@ -331,6 +337,16 @@ def _build_system_instruction(
             f"isn't set up yet — visit {hostname}/transit to configure it.' "
             "Don't promise to check or look it up; the data source is "
             "genuinely absent."
+        )
+    if not travel_routes_configured:
+        addendum += (
+            " Travel-time directions aren't set up on this speaker yet — "
+            "no destination-routing tool is available. If the user asks how "
+            "long it will take to get somewhere, how to get somewhere, or "
+            "for route options to a destination, briefly say: 'Travel time "
+            f"isn't set up yet — visit {hostname}/transit to add a Google "
+            "Routes API key and saved location.' Don't promise to check or "
+            "look it up; the data source is genuinely absent."
         )
     if not research_configured:
         # Conditional setup redirect for the gated research pack. When

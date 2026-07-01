@@ -370,6 +370,15 @@ def _transit_state_path() -> str:
     return os.environ.get("JASPER_TRANSIT_FILE", transit_setup.TRANSIT_FILE)
 
 
+def _routes_secret_path() -> str:
+    from . import transit_setup
+
+    return os.environ.get(
+        "JASPER_GOOGLE_ROUTES_FILE",
+        transit_setup.GOOGLE_ROUTES_SECRET_FILE,
+    )
+
+
 def _weather_state_path() -> str:
     from . import weather_setup
 
@@ -382,6 +391,7 @@ def _make_transit_server(target: object) -> object:
     return transit_setup.make_server(
         target,
         state_path=_transit_state_path(),
+        routes_secret_path=_routes_secret_path(),
         weather_path=_weather_state_path(),
     )
 

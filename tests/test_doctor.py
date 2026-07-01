@@ -2616,6 +2616,63 @@ def test_check_peering_discovery_no_avahi_browse_warns(monkeypatch):
     assert r.status == "warn"
 
 
+# -------------------------------------------------- check_google_routes
+
+
+def _routes_cfg(monkeypatch, **vars_) -> Config:
+    for var in (
+        "GOOGLE_ROUTES_API_KEY",
+        "JASPER_TRANSIT_LAT",
+        "JASPER_TRANSIT_LON",
+        "JASPER_TRANSIT_DISPLAY_NAME",
+        "JASPER_TRAVEL_DEFAULT_MODE",
+        "JASPER_HOSTNAME",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    return _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest", **vars_)
+
+
+def test_check_google_routes_skips_when_not_configured(monkeypatch):
+    cfg = _routes_cfg(monkeypatch)
+    r = doctor.check_google_routes(cfg)
+    assert r.status == "ok"
+    assert "not configured" in r.detail
+
+
+def test_check_google_routes_warns_when_key_without_origin(monkeypatch):
+    cfg = _routes_cfg(monkeypatch, GOOGLE_ROUTES_API_KEY="AIzaSySynthetic")
+    r = doctor.check_google_routes(cfg)
+    assert r.status == "warn"
+    assert "saved speaker location is missing" in r.detail
+
+
+def test_check_google_routes_warns_for_invalid_default_mode(monkeypatch):
+    cfg = _routes_cfg(
+        monkeypatch,
+        GOOGLE_ROUTES_API_KEY="AIzaSySynthetic",
+        JASPER_TRANSIT_LAT="40.758",
+        JASPER_TRANSIT_LON="-73.985",
+        JASPER_TRAVEL_DEFAULT_MODE="hovercraft",
+    )
+    r = doctor.check_google_routes(cfg)
+    assert r.status == "warn"
+    assert "JASPER_TRAVEL_DEFAULT_MODE is invalid" in r.detail
+
+
+def test_check_google_routes_ok_when_configured(monkeypatch):
+    cfg = _routes_cfg(
+        monkeypatch,
+        GOOGLE_ROUTES_API_KEY="AIzaSySynthetic",
+        JASPER_TRANSIT_LAT="40.758",
+        JASPER_TRANSIT_LON="-73.985",
+        JASPER_TRAVEL_DEFAULT_MODE="drive",
+    )
+    r = doctor.check_google_routes(cfg)
+    assert r.status == "ok"
+    assert "configured for drive" in r.detail
+    assert "live API probe skipped" in r.detail
+
+
 # -------------------------------------------------- check_citibike
 
 

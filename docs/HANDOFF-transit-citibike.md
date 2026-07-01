@@ -3,7 +3,9 @@
 Canonical reference for the Citi Bike (NYC + Jersey City + Hoboken)
 voice tool. If you're modifying `jasper/citibike.py`, the citibike
 provider, the `get_citibike_status` tool, or the Citi Bike card in
-the `/transit/` wizard, read this first.
+the `/transit/` wizard, read this first. The same wizard also owns
+the Google Routes travel-time card described below because it reuses
+the saved speaker location as its origin.
 
 ## What it does
 
@@ -31,6 +33,30 @@ Configuration lives in two env vars, both wizard-written into
   reports both. Per-station overrides were considered (a household
   might only need e-bikes at the far station but accept classic at
   the near one) and explicitly rejected for simplicity.
+
+## Google Routes travel-time companion
+
+`get_travel_routes` answers destination ETA and directions questions
+like "how long will it take me to get to 30 Rock?" and "how can I get
+to JFK?". It is deliberately separate from the local arrival-board
+tools: subway/bus/Citi Bike answer "what is next at my configured
+stop"; Google Routes answers "how do I get from the saved speaker
+location to this destination?".
+
+The `/transit/` wizard owns the setup surface:
+
+- origin: `JASPER_TRANSIT_LAT`, `JASPER_TRANSIT_LON`, and
+  `JASPER_TRANSIT_DISPLAY_NAME` in `/var/lib/jasper/transit.env`;
+- default mode: `JASPER_TRAVEL_DEFAULT_MODE` in
+  `/var/lib/jasper/transit.env` (`transit`, `drive`, `walk`, or
+  `bicycle`; voice wording overrides per call);
+- API key: `GOOGLE_ROUTES_API_KEY` in
+  `/var/lib/jasper-secrets/google_routes.env` at mode `0640`.
+
+The Routes key is billable and never belongs in `transit.env`. The
+install migration moves stale `GOOGLE_ROUTES_API_KEY` copies from
+`/etc/jasper/jasper.env` or old transit files into the secrets
+compartment before stripping the broad copies.
 
 ## Why GBFS (and not something else)
 
@@ -78,6 +104,8 @@ multi-station picker + e-bike-only toggle and persists picks into
 | [jasper/citibike.py](../jasper/citibike.py) | GBFS fetcher (`fetch_feed`), TTL cache, `CitiBikeClient`, `StationStatus`, parsers |
 | [jasper/transit/providers/citibike.py](../jasper/transit/providers/citibike.py) | `_CitiBike` provider satisfying `TransitProvider`; owns the `JASPER_CITIBIKE_*` env keys (`env_keys` + `build_client`) and `find_stops_near` |
 | [jasper/tools/citibike.py](../jasper/tools/citibike.py) | `make_citibike_tools` factory; `get_citibike_status` async tool |
+| [jasper/google_routes.py](../jasper/google_routes.py) | Google Routes config parser, API client, response normalizer |
+| [jasper/tools/travel_routes.py](../jasper/tools/travel_routes.py) | `make_travel_routes_tools` factory; `get_travel_routes` async tool |
 | [jasper/web/transit_setup.py](../jasper/web/transit_setup.py) | `_citibike_card_html` wizard card + save-handler branch |
 | [jasper/transit/__init__.py](../jasper/transit/__init__.py) | `active_transit(env)` builds + owns the `CitiBikeClient` (via the provider), returned in `ActiveTransit` |
 | [jasper/voice_daemon.py](../jasper/voice_daemon.py) | calls `active_transit(os.environ)` + registers its tools; owns the system-prompt transit nudge |
@@ -318,7 +346,6 @@ flag it on the second provider, do it on the third.
   the provider to inject context (system name in the response) so
   the LLM can disambiguate. Defer until two networks exist.
 
-Last verified: 2026-06-10 (file map re-verified against code: `jasper/config.py`
-no longer owns the citibike fields — the provider owns its `JASPER_CITIBIKE_*`
-env keys and `active_transit`/`ActiveTransit` builds the client; the daemon only
-registers the tools)
+Last verified: 2026-06-30 (file map re-checked while adding the Google Routes
+travel-time companion; Citi Bike ownership remains provider-local, and Routes
+keeps its billable key in `/var/lib/jasper-secrets/google_routes.env`)
