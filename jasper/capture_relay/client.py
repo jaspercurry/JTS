@@ -180,6 +180,32 @@ class RelayClient:
         self._require_ok(resp, "status")
         return self._json(resp)
 
+    def post_host_event(
+        self,
+        session_id: str,
+        pull_token: str,
+        event: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Publish bounded Pi-side progress for the phone capture page.
+
+        This is a relay-control envelope, not a measurement payload: the Worker
+        relays it verbatim and the static phone page interprets fields such as
+        ``phase='sweep_complete'`` to stop recording after the real speaker
+        stimulus finishes.
+        """
+        body = json.dumps(dict(event)).encode("utf-8")
+        resp = self._transport(
+            "POST",
+            self._session_url(session_id, "/host-event"),
+            {
+                "Authorization": f"Bearer {pull_token}",
+                "Content-Type": "application/json",
+            },
+            body,
+        )
+        self._require_ok(resp, "host event")
+        return self._json(resp)
+
     def pull_blob(
         self, session_id: str, pull_token: str
     ) -> tuple[bytes, dict[str, Any]]:

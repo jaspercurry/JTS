@@ -56,10 +56,10 @@ def test_room_sweep_window_contains_stimulus():
     s = build_room_sweep_spec(
         stimulus_duration_ms=10000, pre_roll_ms=800, post_roll_ms=700
     )
-    # The record window must fully contain pre-roll + sweep + post-roll so the
-    # Pi-played sweep lands inside the phone's recording.
-    assert s.duration_ms == 800 + 10000 + 700
-    assert s.duration_ms >= s.pre_roll_ms + s.post_roll_ms
+    # The phone normally stops from Pi-reported sweep_complete; duration_ms is a
+    # hard timeout that still fully contains the documented pre/sweep/post span.
+    assert s.duration_ms == 30000
+    assert s.duration_ms >= 800 + 10000 + 700
 
 
 def test_room_sweep_stimulus_played_by_pi():

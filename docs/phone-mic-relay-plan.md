@@ -11,15 +11,16 @@
 > (`POST /sync/relay-capture`) — both ride one kind-agnostic seam
 > (`RelayCaptureKind` + `_run_relay_capture` in `correction_setup.py`); a new kind
 > is a descriptor, not a new handler. **A USB-C measurement mic plugged into the
-> phone is supported:** the calibration is applied **Pi-side during analysis,
-> never at record time** (it's a post-hoc FR correction in
-> `MeasurementSession._smooth_capture`); the phone records raw and reports *which*
-> mic it used in the opaque `armed` event, and a device-aware gate
-> (`_relay_device_calibration_block`, POST-capture) refuses a vendor curve on the
-> phone's built-in mic but allows it for the matching USB mic. The per-mic serial
-> stays operator-entered on the speaker's calibration page (`getUserMedia` can't
-> read it); the capture page only reports the device label + offers a best-effort
-> mic picker.
+> phone is supported:** the room capture page now runs a guided setup on
+> `capture.jasper.tech` (permission → mic choice → calibration choice → position
+> count). Calibration is still applied **Pi-side during analysis, never at record
+> time** (it's a post-hoc FR correction in `MeasurementSession._smooth_capture`);
+> the phone records raw and reports *which* mic it used in the opaque `armed`
+> event. A device-aware gate (`_relay_device_calibration_block`, POST-capture)
+> refuses a vendor curve on the phone's built-in mic but allows it for the
+> matching USB mic. The phone also records a passive noise-floor window before
+> the Pi plays anything, and the Pi publishes `sweep_complete` so the phone stops
+> from real sweep progress rather than a fixed timer.
 >
 > **Deferred (seam-ready, documented):** the **crossover** relay kind — when it
 > lands it MUST add its OWN calibration guard at
@@ -38,8 +39,7 @@
 > (Safari) + Android (Chrome) — the capture-page device picker's
 > enumerate/permission/label behavior, the live `getUserMedia`/CSP/Wake-Lock path,
 > and the background sweep/marker playback are unit-tested only; (b) tuning
-> `JASPER_CAPTURE_ALIGNMENT_THRESHOLD` against on-device sweeps; (c) the cloud
-> deploy (`wrangler deploy` the Worker + R2 + Pages); (d) an audible failure cue
+> `JASPER_CAPTURE_ALIGNMENT_THRESHOLD` against on-device sweeps; (c) an audible failure cue
 > (jasper-web → jasper-voice bridge; failures currently surface on the capture page
 > + `/status.relay` + `event=capture_relay.*` logs). **Validate on jts3/jts5, never
 > the production jts.local.** The current operational truth for the on-Pi
@@ -153,7 +153,7 @@ The page and the Pi **never talk to each other directly** — they communicate
 
 ---
 
-## 5. The single-screen UX, and how coordination works
+## 5. The guided UX, and how coordination works
 
 This is the part that is easy to get confused about, so it is spelled out.
 
@@ -162,11 +162,15 @@ speaker + the brain** — it *plays* the stimulus and *analyzes*. The Pi does **
 record** anything; it already knows the stimulus because it generated it, and it
 aligns the phone's recording against that known stimulus.
 
-**One screen, one tap.** The jasper.tech page is a single control surface — just
-like today's on-Pi screen. The user taps one **Start** button, and that tap does
-both:
+**Guided setup, then one Start tap.** The speaker page is intentionally simple:
+Start creates the one-time relay link and mirrors progress. The jasper.tech page
+owns the phone-only setup the Pi page cannot do reliably: microphone permission,
+input choice, calibration choice (none / vendor serial / uploaded file), and
+measurement count. Once setup is complete, the user taps **Start measurement** on
+the phone, and that tap does both:
 
-1. starts the mic recording **locally** on the phone (instant — `getUserMedia`),
+1. records a short passive room-noise floor, then starts the sweep recording
+   **locally** on the phone (instant — `getUserMedia`),
    and
 2. drops an **`armed`** flag in the relay, which the Pi (already polling) sees and
    uses to **play the stimulus**.
@@ -182,14 +186,20 @@ audio. Full sequence:
 
 1. **Pi** mints the session + capture-spec, registers it with the relay, shows
    the tap-link on `jts.local`.
-2. **Phone** opens the jasper.tech page, fetches the spec, and **starts recording**
-   a window a few seconds longer than the stimulus.
-3. **Phone** drops a flag in the relay → `POST /sessions/:id/event {armed:true}`.
-4. **Pi** — already polling `GET /sessions/:id/status` — sees `armed` on its next
-   poll and **plays the stimulus** through the speaker.
+2. **Phone** opens the jasper.tech page, fetches the spec, asks for microphone
+   permission, lets the user pick mic/calibration/count, and records passive room
+   noise.
+3. **Phone** starts the sweep recording and drops setup + `armed` in the relay →
+   `POST /sessions/:id/event {armed:true, noise_floor:{...}, setup:{...}}`.
+4. **Pi** — already polling `GET /sessions/:id/status` — sees `armed`, applies
+   setup (position count/calibration), publishes `host_event.phase="sweep_started"`,
+   and **plays the stimulus** through the speaker.
 5. In the room, the phone's mic (still recording) captures it.
-6. **Phone** finishes the window, encrypts, uploads → `PUT /sessions/:id/blob`.
-7. **Pi** polls, sees `ready`, pulls the blob, decrypts, verifies, and
+6. **Pi** publishes `host_event.phase="sweep_complete"` after the actual playback
+   path returns.
+7. **Phone** sees `sweep_complete`, keeps the spec's post-roll, encrypts, uploads
+   → `PUT /sessions/:id/blob`.
+8. **Pi** polls, sees `ready`, pulls the blob, decrypts, verifies, and
    **cross-correlates** against the stimulus it knows it played → aligned
    measurement.
 
@@ -204,13 +214,14 @@ between "phone armed" and "the Pi's next poll" is simply absorbed by the recordi
 window (the stimulus lands a second or two in). This is exactly how REW and every
 sweep-based acoustic tool work. The two things to get right:
 
-- **Guarantee the stimulus lands fully inside the window.** The Pi plays *only
-  after* it sees `armed`; the window's pre-roll must be ≥ the relay-poll latency
-  plus margin. This is a **race** to avoid ("don't play before the phone is
-  recording"), more than an alignment subtlety.
+- **Guarantee the stimulus lands fully inside the recording.** The Pi plays *only
+  after* it sees `armed`; the phone stops only after the Pi reports
+  `sweep_complete` plus post-roll, with `duration_ms` as a hard timeout. This is
+  a **race** to avoid ("don't play before the phone is recording"), more than an
+  alignment subtlety.
 - If you ever need to tighten the ~1 s, swap the Pi's polling for a long-poll or
   WebSocket to the relay (Cloudflare Durable Objects). Not needed for a
-  record-a-window-and-align measurement.
+  record-and-align measurement.
 
 ---
 
@@ -223,13 +234,17 @@ page understanding. (Same pure-data-registry boundary used elsewhere in JTS; see
 [extensibility.md](extensibility.md).) An acceptance criterion (§15) enforces the
 boundary so it cannot erode.
 
+For room correction, `duration_ms` is now the hard recording timeout; the normal
+stop condition is the Pi's `host_event.phase="sweep_complete"` plus
+`post_roll_ms`.
+
 ```
 capture_spec:
   kind: "room_sweep" | "balance_burst" | "sync_marker" | "crossover_sweep" | "noise_floor" | <string>
   sample_rate_hz: 48000
   channels: 1
-  duration_ms: 10000          # total record window the page captures
-  pre_roll_ms: 500            # >= relay-poll latency + margin (stimulus must land inside window)
+  duration_ms: 30000          # hard timeout; normal stop waits for Pi sweep_complete
+  pre_roll_ms: 500            # legacy/fallback margin; Pi still plays only after armed
   post_roll_ms: 650
   constraints:                # measurement-critical: do NOT let the browser process the signal
     echoCancellation: false
@@ -257,7 +272,7 @@ capture_spec:
   response, sync, crossover are identical to it.
 - **Page:** a generic "render the spec + record per the spec" tool. New kind =
   new spec, no page rewrite (a genuinely new *interaction* may need page code; the
-  common "record-a-window-with-these-constraints" case does not).
+  common "record with these constraints" case does not).
 - **Pi:** owns all per-measurement logic (it already does, in
   `correction_setup.py` etc.). It builds the right spec and runs the right
   analysis.
@@ -293,12 +308,20 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
   pull_token, ttl_s}`. *Hardening:* store the two tokens as SHA-256 hashes.
 - `GET    /sessions/:id/spec` — phone fetches `capture_spec` (auth: upload_token).
 - `POST   /sessions/:id/event` — phone posts `{armed:true}` so the Pi can trigger
-  the stimulus (auth: upload_token).
+  the stimulus (auth: upload_token). Room correction also includes passive
+  `noise_floor`, phone-reported `device`, and setup metadata (`total_positions`,
+  calibration choice).
+- `GET    /sessions/:id/phone-status` — phone polls `{state, host_event}` (auth:
+  upload_token) so it can wait for Pi progress, especially `sweep_complete`,
+  without seeing pull-only blob/integrity fields.
+- `POST   /sessions/:id/host-event` — Pi posts bounded progress metadata such as
+  `{phase:"sweep_started"}` / `{phase:"sweep_complete"}` / `{phase:"sweep_failed"}`
+  (auth: pull_token).
 - `PUT    /sessions/:id/blob` — phone uploads `IV ‖ ciphertext` + integrity
   `{plaintext_len, sha256}` (auth: upload_token); enforce `max_upload_bytes` +
   Content-Type at the Worker; set state `ready`.
-- `GET    /sessions/:id/status` — Pi polls `{state, size, integrity}` (auth:
-  pull_token).
+- `GET    /sessions/:id/status` — Pi polls `{state, size, integrity, event,
+  host_event}` (auth: pull_token).
 - `GET    /sessions/:id/blob` — Pi pulls ciphertext (auth: pull_token).
 - `DELETE /sessions/:id` — Pi purges (auth: pull_token).
 
@@ -316,6 +339,14 @@ server** — so the key reaches the page's JavaScript (which uses it to encrypt 
 WAV) while the relay, which only ever sees what is *sent* in requests, **never
 receives it**. The relay stores **ciphertext only**. Even the maintainer cannot
 read room audio. `pull_token` stays on the Pi (never in the link).
+
+Relay control metadata is **not** the encrypted WAV. The Worker stores
+short-lived JSON events so the phone and Pi can coordinate setup/progress. For
+room correction that includes the phone-reported mic label/device id, passive
+noise-floor scalar, position count, and any calibration serial or uploaded
+calibration file text. This metadata is bounded, token-gated, TTL-limited, and
+deleted after pull, but it is not end-to-end encrypted by the WAV `content_key`.
+Do not put room audio or long-lived secrets in control events.
 
 ### Tokens gate the channel, not the integrity of the content
 
@@ -408,7 +439,8 @@ mode for a tool whose entire job is a trustworthy result.
   to tap Allow.
 - Reuse [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js)
   (getUserMedia + AudioWorklet + mono WAV encode + RMS-to-dBFS). AudioWorklet is
-  solid on iOS 15+; `MediaRecorder` is a fine fallback for a fixed-length one-shot.
+  solid on iOS 15+; `MediaRecorder` remains a fallback for future fixed-length
+  one-shot kinds.
 - **iOS lifecycle:** `AudioContext` starts suspended → `resume()` inside the tap
   handler. Keep the page **foreground** during capture — backgrounding / screen
   lock kills the mic track. Hold a **Screen Wake Lock** during capture and listen
@@ -477,13 +509,14 @@ corrections are unaffected) — say so in the UI when the relay is unreachable.
 ## 14. Build order
 
 1. **Capture-spec schema** + a Pi-side builder for `kind="room_sweep"`.
-2. **Relay** Worker + object store: the 7 endpoints, TTL, token gating, **dual
+2. **Relay** Worker + object store: the endpoint set, TTL, token gating, **dual
    size cap**, per-session **rate limit**; opaque spec + blob.
-3. **Static page**: read fragment → fetch spec → **server-driven render** (fixed
-   renderer, data only) → `getUserMedia` per spec → record window → encrypt →
-   upload. Reuse `measurement-audio.js`.
-4. **Pi**: register, render tap-link, poll, pull, decrypt, verify, feed existing
-   analysis; wire `{armed}` → stimulus playback.
+3. **Static page**: read fragment → fetch spec → guided room setup
+   (permission/mic/calibration/count) → passive noise floor → `armed` → wait for
+   Pi `sweep_complete` → encrypt → upload. Reuse `measurement-audio.js`.
+4. **Pi**: register, render tap-link, poll, apply phone setup, publish host
+   progress, pull, decrypt, verify, feed existing analysis; wire `{armed}` →
+   stimulus playback.
 5. **E2E encryption** (WebCrypto on the phone / AES-GCM on the Pi) + **integrity**
    (length + SHA-256).
 6. **Measurement-validity gates**: realized-constraints verify + device-capability
@@ -501,12 +534,13 @@ corrections are unaffected) — say so in the UI when the relay is unreachable.
 ## 15. Acceptance criteria
 
 - A **fresh iPhone (Safari)** and a **fresh Android phone (Chrome)**, neither with
-  any cert installed, complete a room measurement end-to-end with **only the
-  mic-permission tap** — no cert warnings, no app.
+  any cert installed, complete a guided room measurement end-to-end — no cert
+  warnings, no app.
 - The decrypted WAV on the Pi is **bit-identical** to what the phone recorded
   (verify via the integrity hash) and is **48 kHz mono**.
-- The **relay never receives `content_key`** and stores **only ciphertext** (verify
-  by inspecting stored objects).
+- The **relay never receives `content_key`** and stores **only ciphertext** for
+  room audio (verify by inspecting stored objects). Control metadata is bounded
+  and short-lived, as described in §8.
 - Adding `kind="balance_burst"` requires edits to **only the Pi and the page —
   zero relay changes.**
 - A **weak/ambiguous cross-correlation alignment fails loud** (not a silently-wrong
@@ -523,10 +557,10 @@ corrections are unaffected) — say so in the UI when the relay is unreachable.
 
 ---
 
-Last updated: 2026-06-30 — `/correction/` + `/sync/` relay kinds
-(kind-agnostic seam), USB-C-mic-on-phone support (Pi-side device-aware
-calibration gate + capture-page picker), and optional Pi registration secret
-implemented (hardware-free). Deferred: crossover relay (needs its own
-`calibration_id` guard), balance burst, room-helper dedupe. On-device validation
-(iPhone/Android, on jts3/jts5), alignment-threshold tuning, and an audible
-failure cue still owed (see Status banner).
+Last updated: 2026-07-01 — `/correction/` room relay now uses a guided phone
+setup, passive noise-floor capture, Pi host-progress events, and
+stop-on-`sweep_complete` recording; `/sync` still rides the generic relay seam.
+Optional Pi registration secret implemented (hardware-free). Deferred:
+crossover relay (needs its own `calibration_id` guard), balance burst,
+room-helper dedupe, full on-device validation (iPhone/Android, on jts3/jts5),
+alignment-threshold tuning, and an audible failure cue.

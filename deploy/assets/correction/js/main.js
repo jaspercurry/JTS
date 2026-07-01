@@ -46,6 +46,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var localCaptureFallbackBtn = document.getElementById('local-capture-fallback');
   var localInputRow = document.getElementById('local-input-row');
   var localInputHint = document.getElementById('local-input-hint');
+  var micPanel = document.getElementById('mic-panel');
   var startBtn = document.getElementById('start');
   var inputDeviceSelect = document.getElementById('input-device-select');
   var refreshInputsBtn = document.getElementById('refresh-inputs');
@@ -87,6 +88,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var verifyBtn = document.getElementById('verify-correction');
   var resetBtn = document.getElementById('reset-correction');
   var cancelMeasureBtn = document.getElementById('cancel-measurement');
+  var measurementOptions = document.getElementById('measurement-options');
   var positionsSelect = document.getElementById('positions-select');
   var repeatMainPosition = document.getElementById('repeat-main-position');
   var repeatMainPositionRow = document.getElementById('repeat-main-position-row');
@@ -219,6 +221,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     relayMode = !!enabled;
     hideEl(relayPanel, !relayMode);
     hideEl(relayStartBtn, !relayMode);
+    hideEl(runBtn, relayMode);
+    hideEl(micPanel, relayMode);
+    hideEl(measurementOptions, relayMode);
     hideEl(localInputRow, relayMode);
     hideEl(localInputHint, relayMode);
     hideEl(startBtn, relayMode);
@@ -242,11 +247,14 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       autolevelBtn.disabled = true;
       runBtn.disabled = false;
       if (relayStartBtn) {
-        relayStartBtn.textContent = 'Create phone capture link';
+        relayStartBtn.textContent = 'Start';
         relayStartBtn.disabled = false;
       }
       setRelayStatus('Ready to create a phone capture link.', 'idle');
     } else {
+      hideEl(runBtn, false);
+      hideEl(micPanel, false);
+      hideEl(measurementOptions, false);
       runBtn.textContent = 'Run measurement';
       continueBtn.textContent = 'Continue to next position';
       renderRelayCapture(null);
@@ -2105,7 +2113,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (relayMode) {
       autolevelBtn.disabled = true;
       hideEl(autolevelBtn, true);
-      if (relayStartBtn) relayStartBtn.disabled = !sessionIdle;
+      if (relayStartBtn) {
+        if (sessionIdle) relayStartBtn.textContent = 'Start';
+        relayStartBtn.disabled = !sessionIdle;
+      }
     }
     // Per-state additions:
     if (autolevelRamping && !relayMode) {

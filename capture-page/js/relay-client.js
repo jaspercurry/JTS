@@ -73,6 +73,18 @@ export class RelayClient {
     return res.json();
   }
 
+  // Poll Pi-side progress for this capture. This uses the upload token, so the
+  // Worker returns only phone-safe progress state, never the Pi pull-token
+  // integrity/blob details.
+  async fetchPhoneStatus() {
+    const res = await this._fetch(this._url("/phone-status"), {
+      method: "GET",
+      headers: this._authHeaders(),
+    });
+    if (!res.ok) throw await this._failure(res);
+    return res.json();
+  }
+
   // Upload IV‖ciphertext with the plaintext integrity the Pi verifies.
   async putBlob(blob, plaintextLen, sha256Hex) {
     const bytes = blob instanceof Uint8Array ? blob : new Uint8Array(blob);

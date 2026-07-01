@@ -39,13 +39,6 @@ export function parseFragment(hash) {
   return { sessionId, uploadToken, contentKeyB64 };
 }
 
-// The total record window in ms, defaulting safely if the spec omits it.
-export function recordWindowMs(spec) {
-  const d = spec && Number(spec.duration_ms);
-  if (Number.isFinite(d) && d > 0) return d;
-  return 12000;
-}
-
 // Page half of the plan's "dual size cap" (§8): the page refuses to upload a
 // blob larger than spec.max_upload_bytes so a wrong/oversized spec fails loud
 // locally rather than after a wasted capture + a Worker 413. An absent/invalid

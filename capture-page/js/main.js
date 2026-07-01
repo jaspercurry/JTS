@@ -6,27 +6,33 @@
 // pieces live in fragment.js / render.js / crypto.js / relay-client.js; this
 // module wires them to the DOM, the microphone, and the relay.
 //
-// One screen, one tap (plan §5): the Start tap BOTH starts the local recording
-// AND drops the `armed` flag the Pi (polling the relay) uses to play the
-// stimulus. The page and the Pi never talk directly — only through the relay.
-//
-// Deferred to later build steps (clearly seamed here, not yet implemented):
-//   - step 6: realized-constraints verify (refuse/degrade per kind) + alignment;
-//   - step 7: Screen Wake Lock during capture + visibilitychange abort-and-cue.
-// Those refine onStart(); the transport happy path is what ships in step 3.
+// One screen, one tap (plan §5): the Start tap records passive room noise, starts
+// the local sweep recording, and drops the `armed` flag the Pi polls before it
+// plays the stimulus. The page and the Pi never talk directly — only through the
+// relay.
 
 import { RELAY_BASE } from "./config.js";
-import { parseFragment, recordWindowMs, withinUploadCap } from "./fragment.js";
+import { parseFragment, withinUploadCap } from "./fragment.js";
 import { renderScreen } from "./render.js";
 import { RelayClient } from "./relay-client.js";
 import { importContentKey, encryptWav } from "./crypto.js";
 import { constraintDecision, verifyRealizedConstraints } from "./constraints.js";
 import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
-import { createMonoRecorder, float32ToWavBlob } from "./measurement-audio.js?v=20260630-1";
+import {
+  createMonoRecorder,
+  delayMs,
+  float32ToWavBlob,
+  rmsToDbfs,
+} from "./measurement-audio.js?v=20260630-1";
 
 // The input the household picked (empty = OS default, which is usually the USB-C
 // measurement mic when one is plugged into the phone). Set by the mic picker.
 let selectedDeviceId = "";
+let setupInputs = [];
+let setupState = {
+  total_positions: 5,
+  calibration: { mode: "none" },
+};
 
 function setStatus(message, kind = "info") {
   const el = document.getElementById("status");
@@ -49,6 +55,290 @@ function captureFailureMessage(err) {
 
 async function blobToBytes(blob) {
   return new Uint8Array(await blob.arrayBuffer());
+}
+
+function el(tag, attrs = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs || {})) {
+    if (key === "class") node.className = value;
+    else if (key === "text") node.textContent = value;
+    else if (key === "for") node.htmlFor = value;
+    else if (key.startsWith("on") && typeof value === "function") {
+      node.addEventListener(key.slice(2).toLowerCase(), value);
+    } else if (value !== false && value !== null && value !== undefined) {
+      node.setAttribute(key, String(value));
+    }
+  }
+  for (const child of Array.isArray(children) ? children : [children]) {
+    if (child === null || child === undefined) continue;
+    node.append(child.nodeType ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+
+function button(label, onClick, secondary = false) {
+  return el(
+    "button",
+    {
+      type: "button",
+      class: secondary ? "cap-button cap-button--secondary" : "cap-button",
+      onclick: onClick,
+      text: label,
+    },
+  );
+}
+
+function setScreen(screenEl, children) {
+  screenEl.replaceChildren(...children);
+}
+
+async function enumerateAudioInputs() {
+  const nav = typeof navigator !== "undefined" ? navigator : null;
+  if (!nav || !nav.mediaDevices || !nav.mediaDevices.enumerateDevices) return [];
+  try {
+    return (await nav.mediaDevices.enumerateDevices())
+      .filter((d) => d.kind === "audioinput");
+  } catch {
+    return [];
+  }
+}
+
+async function requestMicPermissionForSetup(spec) {
+  const recorder = await createMonoRecorder({
+    sampleRate: spec.sample_rate_hz || 48000,
+    deviceId: selectedDeviceId,
+  });
+  await recorder.close();
+  return enumerateAudioInputs();
+}
+
+function renderIntro(screenEl, ctx) {
+  setScreen(screenEl, [
+    el("h1", { class: "cap-heading", text: "Room measurement" }),
+    el("ol", { class: "cap-steps" }, [
+      el("li", { text: "Allow microphone access on this phone." }),
+      el("li", { text: "Choose the microphone and calibration." }),
+      el("li", { text: "Pick how many listening positions to measure." }),
+      el("li", { text: "Stay quiet while JTS records noise and plays each sweep." }),
+    ]),
+    button("Continue", () => renderPermission(screenEl, ctx)),
+  ]);
+  setStatus("Ready to set up the phone microphone.", "info");
+}
+
+function renderPermission(screenEl, ctx) {
+  setScreen(screenEl, [
+    el("h1", { class: "cap-heading", text: "Microphone permission" }),
+    el("p", {
+      class: "cap-note",
+      text: "Your browser will ask to use the microphone. Tap Allow so JTS can list available inputs and record the sweep.",
+    }),
+    button("Allow microphone", async () => {
+      try {
+        setStatus("Opening microphone…", "info");
+        const inputs = await requestMicPermissionForSetup(ctx.spec);
+        renderMicChoice(screenEl, ctx, inputs);
+      } catch (err) {
+        setStatus(captureFailureMessage(err), "error");
+      }
+    }),
+  ]);
+}
+
+function renderMicChoice(screenEl, ctx, inputs) {
+  setupInputs = Array.isArray(inputs) ? inputs : setupInputs;
+  const select = el("select", { id: "phone-mic-select" });
+  select.appendChild(el("option", { value: "", text: "Automatic / phone default" }));
+  for (const input of setupInputs) {
+    if (!input.label) continue;
+    select.appendChild(el("option", {
+      value: input.deviceId,
+      text: input.label,
+    }));
+  }
+  select.value = selectedDeviceId;
+  select.addEventListener("change", () => {
+    selectedDeviceId = select.value;
+  });
+  setScreen(screenEl, [
+    el("h1", { class: "cap-heading", text: "Choose microphone" }),
+    el("p", {
+      class: "cap-note",
+      text: "If a USB-C measurement mic is plugged into the phone, choose it here. Otherwise leave Automatic.",
+    }),
+    el("label", { class: "cap-field" }, [
+      el("span", { text: "Microphone" }),
+      select,
+    ]),
+    el("div", { class: "cap-actions" }, [
+      button("Continue", () => renderCalibration(screenEl, ctx)),
+      button("Back", () => renderPermission(screenEl, ctx), true),
+    ]),
+  ]);
+  setStatus("Microphone permission granted.", "done");
+}
+
+function renderCalibration(screenEl, ctx) {
+  const mode = el("select", { id: "calibration-mode" }, [
+    el("option", { value: "none", text: "No calibration / phone built-in mic" }),
+    el("option", { value: "serial", text: "Known measurement mic serial" }),
+    el("option", { value: "upload", text: "Upload calibration file" }),
+  ]);
+  const details = el("div");
+  const renderDetails = () => {
+    details.replaceChildren();
+    if (mode.value === "serial") {
+      const serial = el("input", {
+        id: "calibration-serial",
+        type: "text",
+        autocomplete: "off",
+        placeholder: "Serial number",
+      });
+      const model = el("select", { id: "calibration-model" }, [
+        el("option", { value: "minidsp_umik1", text: "miniDSP UMIK-1" }),
+        el("option", { value: "minidsp_umik2", text: "miniDSP UMIK-2" }),
+        el("option", { value: "dayton_imm6", text: "Dayton iMM-6 / iMM-6C" }),
+        el("option", { value: "dayton_umm6", text: "Dayton UMM-6" }),
+      ]);
+      details.append(
+        el("label", { class: "cap-field" }, [el("span", { text: "Mic model" }), model]),
+        el("label", { class: "cap-field" }, [el("span", { text: "Serial number" }), serial]),
+      );
+    } else if (mode.value === "upload") {
+      const file = el("input", {
+        id: "calibration-file",
+        type: "file",
+        accept: ".txt,.cal,.frd,.csv,.omm,text/plain",
+      });
+      details.append(el("label", { class: "cap-field" }, [
+        el("span", { text: "Calibration file" }),
+        file,
+      ]));
+    }
+  };
+  mode.addEventListener("change", renderDetails);
+  renderDetails();
+
+  const saveAndContinue = async () => {
+    if (mode.value === "serial") {
+      setupState.calibration = {
+        mode: "serial",
+        model: document.getElementById("calibration-model").value,
+        serial: document.getElementById("calibration-serial").value.trim(),
+      };
+      if (!setupState.calibration.serial) {
+        setStatus("Enter the microphone serial number.", "error");
+        return;
+      }
+    } else if (mode.value === "upload") {
+      const file = document.getElementById("calibration-file").files[0];
+      if (!file) {
+        setStatus("Choose a calibration file.", "error");
+        return;
+      }
+      setupState.calibration = {
+        mode: "upload",
+        filename: file.name,
+        content: await file.text(),
+      };
+    } else {
+      setupState.calibration = { mode: "none" };
+    }
+    renderPositionCount(screenEl, ctx);
+  };
+
+  setScreen(screenEl, [
+    el("h1", { class: "cap-heading", text: "Calibration" }),
+    el("p", {
+      class: "cap-note",
+      text: "Calibration is applied after recording on the speaker. It is fine to continue without it when using the phone mic.",
+    }),
+    el("label", { class: "cap-field" }, [
+      el("span", { text: "Calibration source" }),
+      mode,
+    ]),
+    details,
+    el("div", { class: "cap-actions" }, [
+      button("Continue", saveAndContinue),
+      button("Back", () => renderMicChoice(screenEl, ctx, setupInputs), true),
+    ]),
+  ]);
+  setStatus("Choose the calibration that matches the microphone.", "info");
+}
+
+function renderPositionCount(screenEl, ctx) {
+  const positions = el("select", { id: "position-count" }, [
+    el("option", { value: "1", text: "1 position / quick check" }),
+    el("option", { value: "3", text: "3 positions" }),
+    el("option", { value: "5", text: "5 positions / recommended" }),
+    el("option", { value: "7", text: "7 positions / large couch" }),
+  ]);
+  positions.value = String(setupState.total_positions || 5);
+  positions.addEventListener("change", () => {
+    setupState.total_positions = Number(positions.value) || 5;
+  });
+  setScreen(screenEl, [
+    el("h1", { class: "cap-heading", text: "Listening positions" }),
+    el("p", {
+      class: "cap-note",
+      text: "Five measurements across the listening area is the default. Move the phone roughly a head-width between positions.",
+    }),
+    el("label", { class: "cap-field" }, [
+      el("span", { text: "Measurements" }),
+      positions,
+    ]),
+    el("div", { class: "cap-actions" }, [
+      button("Start measurement", () => onStart(ctx)),
+      button("Back", () => renderCalibration(screenEl, ctx), true),
+    ]),
+  ]);
+  setStatus("Ready to measure position 1.", "info");
+}
+
+function samplesRmsDbfs(samples) {
+  if (!samples || !samples.length) return null;
+  let sumSquares = 0;
+  for (const sample of samples) sumSquares += sample * sample;
+  return rmsToDbfs(Math.sqrt(sumSquares / samples.length));
+}
+
+async function captureAmbientNoise(recorder, spec) {
+  const durationMs = Math.max(300, Math.min(2000, Number(spec.noise_floor_ms) || 800));
+  setStatus("Measuring room noise — stay quiet.", "recording");
+  recorder.start();
+  await delayMs(durationMs);
+  const samples = await recorder.stop({ timeoutMs: 5000 });
+  return {
+    duration_ms: durationMs,
+    rms_dbfs: samplesRmsDbfs(samples),
+  };
+}
+
+async function waitForSweepComplete(client, spec, isAborted) {
+  const timeoutMs = Math.max(5000, Number(spec.duration_ms) || 20000);
+  const pollMs = Math.max(100, Math.min(1000, Number(spec.progress_poll_ms) || 250));
+  const deadline = Date.now() + timeoutMs;
+  let lastPhase = "";
+  while (Date.now() < deadline) {
+    if (isAborted()) return;
+    const status = await client.fetchPhoneStatus();
+    const event = status && status.host_event || {};
+    const phase = String(event.phase || "");
+    if (phase && phase !== lastPhase) {
+      lastPhase = phase;
+      if (phase === "sweep_started") {
+        setStatus("Tone is playing — stay quiet and keep the phone still.", "recording");
+      } else if (phase === "sweep_complete") {
+        setStatus("Tone finished — capturing the room tail.", "recording");
+      }
+    }
+    if (phase === "sweep_complete") return;
+    if (phase === "sweep_failed") {
+      throw new Error(event.error || "speaker sweep failed");
+    }
+    await delayMs(pollMs);
+  }
+  throw new Error("speaker did not finish the sweep before the recording timeout");
 }
 
 // The whole capture leg, behind the single Start tap.
@@ -119,7 +409,6 @@ async function onStart(ctx) {
       return;
     }
 
-    recorder.start();
     // Hold the screen on for the capture; if it backgrounds anyway, abort+cue.
     wakeLock = await acquireWakeLock();
     disposeWatch = watchVisibilityAbort(
@@ -128,19 +417,32 @@ async function onStart(ctx) {
         void abort(reason);
       },
     );
+    const noise = await captureAmbientNoise(recorder, spec);
+    if (aborted) return;
+
+    recorder.start();
     setStatus(
       decision.degraded
-        ? `Measuring at lower confidence — ${decision.reason}. Keep the screen on.`
-        : "Recording — keep the screen on and stay quiet.",
+        ? `Recording at lower confidence — ${decision.reason}. Waiting for the speaker.`
+        : "Recording — waiting for the speaker to start.",
       "recording",
     );
 
     // Drop `armed` so the Pi plays the stimulus inside our window. `degraded`
     // rides along so the Pi can mark a capability-fallback capture lower-confidence.
-    await client.postEvent({ armed: true, degraded: decision.degraded, device: captureDevice });
+    await client.postEvent({
+      armed: true,
+      degraded: decision.degraded,
+      device: captureDevice,
+      noise_floor: noise,
+      setup: setupState,
+    });
 
-    // Record the full window (pre-roll + stimulus + post-roll).
-    await new Promise((r) => setTimeout(r, recordWindowMs(spec)));
+    // Record until the Pi reports that the real sweep finished, then keep a
+    // short tail. `duration_ms` is now the hard timeout, not the normal stop
+    // condition.
+    await waitForSweepComplete(client, spec, () => aborted);
+    await delayMs(Math.max(0, Number(spec.post_roll_ms) || 700));
     if (aborted) return;
     const samples = await recorder.stop({ timeoutMs: 5000 });
     if (aborted) return;
@@ -212,14 +514,18 @@ async function boot() {
   }
 
   const ctx = { spec, client, contentKeyB64: handle.contentKeyB64 };
-  renderScreen(screenEl, spec, {
-    handlers: {
-      begin_capture: () => onStart(ctx),
-      retry: () => onStart(ctx),
-    },
-  });
-  void buildMicPicker(screenEl);
-  setStatus("Ready. Stand at your listening position and tap Start.", "info");
+  if (spec.kind === "room_sweep") {
+    renderIntro(screenEl, ctx);
+  } else {
+    renderScreen(screenEl, spec, {
+      handlers: {
+        begin_capture: () => onStart(ctx),
+        retry: () => onStart(ctx),
+      },
+    });
+    void buildMicPicker(screenEl);
+    setStatus("Ready. Stand at your listening position and tap Start.", "info");
+  }
 }
 
 // Best-effort input picker for a USB-C measurement mic plugged into the phone.

@@ -136,7 +136,7 @@ def run_and_store(
     pi_session: PiCaptureSession,
     capture_path: str | Path,
     *,
-    on_armed: Callable[[], None],
+    on_armed: Callable[..., None],
     play_cue: Callable[[str], None] | None = None,
     **run_kwargs: Any,  # poll_interval_s / timeout_s / sleep / monotonic — run_capture validates
 ) -> CaptureResult:
