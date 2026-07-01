@@ -1,11 +1,12 @@
 # Phone-mic capture relay — design & build plan
 
-> **Status: BUILT (hardware-free), gated default-off, not yet validated on
-> device or deployed.** The transport (capture-spec schema, Cloudflare Worker + R2
-> relay, static capture page, Pi-side session/poll/pull/decrypt/verify) and the
-> daemon adapters are implemented and covered by hardware-free tests. The relay
-> capture path is **gated + default-off** (inert unless `JASPER_CAPTURE_RELAY_BASE`
-> is set), so the standard on-Pi flow is byte-identical until an operator opts in.
+> **Status: DEPLOYED for the Jasper fleet, hardware-validation pending, gated
+> default-off for OSS.** The transport (capture-spec schema, Cloudflare Worker +
+> R2 relay, static capture page, Pi-side session/poll/pull/decrypt/verify) and
+> the daemon adapters are implemented, deployed at `capture.jasper.tech` /
+> `relay.jasper.tech`, and covered by hardware-free tests. The relay capture path
+> is **gated + default-off** (inert unless `JASPER_CAPTURE_RELAY_BASE` is set), so
+> the standard on-Pi flow is byte-identical until an operator opts in.
 >
 > **Kinds wired today:** room correction (`POST /relay/capture`) and **sync**
 > (`POST /sync/relay-capture`) — both ride one kind-agnostic seam
@@ -18,9 +19,12 @@
 > the phone records raw and reports *which* mic it used in the opaque `armed`
 > event. A device-aware gate (`_relay_device_calibration_block`, POST-capture)
 > refuses a vendor curve on the phone's built-in mic but allows it for the
-> matching USB mic. The phone also records a passive noise-floor window before
-> the Pi plays anything, and the Pi publishes `sweep_complete` so the phone stops
-> from real sweep progress rather than a fixed timer.
+> matching USB mic. Supported measurement-mic model options are Pi-owned data in
+> the `CaptureSpec`, derived from `SUPPORTED_MODELS`, so adding a mic is a Pi
+> registry change rather than a separate Cloudflare page edit. The phone also
+> records a passive noise-floor window before the Pi plays anything, and the Pi
+> publishes `sweep_complete` so the phone stops from real sweep progress rather
+> than a fixed timer.
 >
 > **Deferred (seam-ready, documented):** the **crossover** relay kind — when it
 > lands it MUST add its OWN calibration guard at
@@ -45,7 +49,7 @@
 > the production jts.local.** The current operational truth for the on-Pi
 > `/correction/`, `/balance/`, `/sync/` flows remains
 > [HANDOFF-correction.md](HANDOFF-correction.md) (same-origin self-signed-cert
-> capture). **Once validated + deployed, make the relay the default and convert
+> capture). **Once validated, make the relay the default and convert
 > this doc to the HANDOFF shape with a `Last verified:` footer.**
 
 ---
@@ -272,7 +276,9 @@ capture_spec:
   response, sync, crossover are identical to it.
 - **Page:** a generic "render the spec + record per the spec" tool. New kind =
   new spec, no page rewrite (a genuinely new *interaction* may need page code; the
-  common "record with these constraints" case does not).
+  common "record with these constraints" case does not). Room-correction
+  calibration options are likewise data (`calibration_models`) emitted by the Pi,
+  not a model list compiled into the page.
 - **Pi:** owns all per-measurement logic (it already does, in
   `correction_setup.py` etc.). It builds the right spec and runs the right
   analysis.
@@ -287,7 +293,8 @@ renderer** that maps known component types (`heading`, `steps`, `level_meter`,
 CSS-variable allowlist).
 
 - **Ships from the Pi (no web deploy):** all copy, layout, ordering, instructions,
-  theme, button labels, which controls show, and entirely new measurement kinds.
+  theme, button labels, which controls show, supported calibration mic models,
+  and entirely new measurement kinds.
 - **Needs a renderer update (web publish):** a genuinely *new component type* the
   renderer cannot draw (e.g. a spectrogram widget). Rare — and the static
   page/renderer bundle can live in the JTS repo and publish to Pages as one step
@@ -444,9 +451,10 @@ mode for a tool whose entire job is a trustworthy result.
 - **iOS lifecycle:** `AudioContext` starts suspended → `resume()` inside the tap
   handler. Keep the page **foreground** during capture — backgrounding / screen
   lock kills the mic track. Hold a **Screen Wake Lock** during capture and listen
-  for `visibilitychange` to **abort-and-cue** rather than capture garbage; tell
-  the user the screen must stay on. Keep it a normal Safari tab, **not** an
-  installed PWA.
+  for `visibilitychange` to **abort visibly and notify the Pi on its next relay
+  poll** rather than capture garbage; tell the user the screen must stay on. Keep
+  it a normal Safari tab, **not** an installed PWA. An audible cue for this path
+  is still deferred until jasper-web has a cue bridge.
 - **Clean samples:** enforce EC/AGC/NS = false in constraints **and** verify the
   realized settings (§9).
 
@@ -468,14 +476,16 @@ mode for a tool whose entire job is a trustworthy result.
 
 ## 12. Failure handling + cues
 
-Every leg surfaces a clear UI state **and**, where the household must act, an
-audible cue (`CueDef.play(...)` from the cue registry; see
-[HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md)) — never strand the
-user. Link/session expired, relay unreachable, upload failed, the Pi never sees
-`ready` within a timeout, decrypt/integrity/alignment fail → explicit message +
-retry + the relevant cue. The relay is a shared dependency **only at
-commissioning**; an outage breaks **new** measurements only (existing applied
-corrections are unaffected) — say so in the UI when the relay is unreachable.
+Every leg surfaces a clear UI state today: link/session expired, relay
+unreachable, upload failed, the Pi never sees `armed` within a timeout,
+decrypt/integrity/alignment fail → explicit message + retry on the phone or
+speaker page, plus `event=capture_relay.*` logs. Audible cues remain a required
+follow-up for failures where the household must act (`CueDef.play(...)` from the
+cue registry; see [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md)),
+but the current jasper-web relay adapter has no cue bridge. The relay is a shared
+dependency **only at commissioning**; an outage breaks **new** measurements only
+(existing applied corrections are unaffected) — say so in the UI when the relay
+is unreachable.
 
 ---
 
@@ -521,8 +531,9 @@ corrections are unaffected) — say so in the UI when the relay is unreachable.
    (length + SHA-256).
 6. **Measurement-validity gates**: realized-constraints verify + device-capability
    fallback; **alignment-confidence** check; per-kind clock-drift handling.
-7. **Failure states + cues**; relay-unreachable messaging; **Screen Wake Lock** +
-   `visibilitychange` abort-and-cue.
+7. **Failure states**; relay-unreachable messaging; **Screen Wake Lock** +
+   `visibilitychange` visible abort. Audible cues are deferred until the
+   jasper-web → jasper-voice cue bridge exists.
 8. **Generalize**: add `balance_burst` / `sync_marker` / `crossover_sweep` kinds —
    **page + Pi only, zero relay changes** (prove the boundary).
 9. **Cross-device QR** variant (drive from a laptop, measure with a phone — same
@@ -547,10 +558,13 @@ corrections are unaffected) — say so in the UI when the relay is unreachable.
   measurement).
 - EC/AGC/NS left on (or capture not clean) → **refuse / labeled-degrade per kind**,
   never a silently-flattened measurement.
-- **Killing the relay mid-flow** → clear UI error + cue, **not** a silent hang;
-  existing applied corrections still work.
+- **Killing the relay mid-flow** → clear UI error, **not** a silent hang; existing
+  applied corrections still work. Add the audible cue once the web cue bridge
+  exists.
 - **Auto-lock / backgrounding mid-capture** → the wake lock holds; if it still
-  happens, the capture **aborts + cues**, never uploads garbage.
+  happens, the capture **aborts visibly and notifies the Pi on its next relay
+  poll**, never uploads garbage. Add the audible cue once the web cue bridge
+  exists.
 - The **UI renders only from data** (no executable markup path): a payload
   containing `<script>` / `onerror=` / `javascript:` is rendered inert (escaped
   text), never executed. A regression test asserts this.
@@ -559,8 +573,9 @@ corrections are unaffected) — say so in the UI when the relay is unreachable.
 
 Last updated: 2026-07-01 — `/correction/` room relay now uses a guided phone
 setup, passive noise-floor capture, Pi host-progress events, and
-stop-on-`sweep_complete` recording; `/sync` still rides the generic relay seam.
-Optional Pi registration secret implemented (hardware-free). Deferred:
+stop-on-`sweep_complete` recording; supported calibration mic models are emitted
+from the Pi registry in `CaptureSpec`; `/sync` still rides the generic relay
+seam. Optional Pi registration secret implemented (hardware-free). Deferred:
 crossover relay (needs its own `calibration_id` guard), balance burst,
 room-helper dedupe, full on-device validation (iPhone/Android, on jts3/jts5),
 alignment-threshold tuning, and an audible failure cue.

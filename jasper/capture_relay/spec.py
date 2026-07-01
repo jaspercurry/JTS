@@ -62,6 +62,7 @@ DEFAULT_THEME = {"accent": "sage", "font": "figtree"}
 UI_COMPONENT_TYPES = ("heading", "steps", "level_meter", "button", "note")
 UI_BUTTON_ACTIONS = ("begin_capture", "retry")
 UI_METER_SOURCES = ("mic",)
+CALIBRATION_MODEL_KEYS = ("key", "label", "aliases")
 
 # Per-kind measurement-validity policy vocabulary (consumed in build steps 6+).
 CLEAN_CAPTURE_POLICIES = ("refuse", "warn")
@@ -240,6 +241,7 @@ class CaptureSpec:
     validity: CaptureValidity = field(default_factory=CaptureValidity)
     theme: Mapping[str, str] = field(default_factory=lambda: dict(DEFAULT_THEME))
     screen: tuple[Mapping[str, Any], ...] = ()
+    calibration_models: tuple[Mapping[str, Any], ...] = ()
     sample_rate_hz: int = REQUIRED_SAMPLE_RATE_HZ
     channels: int = REQUIRED_CHANNELS
     output_format: str = "wav"
@@ -265,6 +267,14 @@ class CaptureSpec:
             "constraints": self.constraints.to_dict(),
             "stimulus": self.stimulus.to_dict() if self.stimulus else None,
             "validity": self.validity.to_dict(),
+            "calibration_models": [
+                {
+                    "key": str(model["key"]),
+                    "label": str(model["label"]),
+                    "aliases": [str(alias) for alias in model.get("aliases", ())],
+                }
+                for model in self.calibration_models
+            ],
             "ui": {
                 "theme": dict(self.theme),
                 "screen": [dict(component) for component in self.screen],
@@ -290,6 +300,11 @@ class CaptureSpec:
         output = data.get("output") or {}
         if not isinstance(output, Mapping):
             raise CaptureSpecError("output must be an object")
+        calibration_models = data.get("calibration_models") or []
+        if not isinstance(calibration_models, Sequence) or isinstance(
+            calibration_models, (str, bytes)
+        ):
+            raise CaptureSpecError("calibration_models must be a list")
         stimulus_raw = data.get("stimulus")
         spec = cls(
             kind=str(data.get("kind", "")),
@@ -309,6 +324,11 @@ class CaptureSpec:
                 for component in screen
                 if isinstance(component, Mapping)
             ),
+            calibration_models=tuple(
+                dict(model)
+                for model in calibration_models
+                if isinstance(model, Mapping)
+            ),
             sample_rate_hz=_as_int(data, "sample_rate_hz", default=REQUIRED_SAMPLE_RATE_HZ),
             channels=_as_int(data, "channels", default=REQUIRED_CHANNELS),
             output_format=str(output.get("format", "wav")),
@@ -320,6 +340,8 @@ class CaptureSpec:
         # Guard against a screen entry that was not a Mapping (dropped above).
         if len(spec.screen) != len(screen):
             raise CaptureSpecError("every ui.screen entry must be an object")
+        if len(spec.calibration_models) != len(calibration_models):
+            raise CaptureSpecError("every calibration_models entry must be an object")
         spec.validate()
         return spec
 
@@ -377,6 +399,7 @@ class CaptureSpec:
                 f"got {self.stimulus.played_by!r}"
             )
         _validate_validity(self.validity)
+        _validate_calibration_models(self.calibration_models)
         _validate_theme(self.theme)
         _validate_screen(self.screen)
         return self
@@ -404,6 +427,40 @@ def _validate_validity(validity: CaptureValidity) -> None:
         raise CaptureSpecError("validity.allow_capability_fallback must be a bool")
     if not isinstance(validity.require_alignment, bool):
         raise CaptureSpecError("validity.require_alignment must be a bool")
+
+
+def _validate_calibration_models(models: Sequence[Mapping[str, Any]]) -> None:
+    if not isinstance(models, Sequence) or isinstance(models, (str, bytes)):
+        raise CaptureSpecError("calibration_models must be a list")
+    seen: set[str] = set()
+    for index, model in enumerate(models):
+        if not isinstance(model, Mapping):
+            raise CaptureSpecError(f"calibration_models[{index}] must be an object")
+        extra = set(model) - set(CALIBRATION_MODEL_KEYS)
+        if extra:
+            raise CaptureSpecError(
+                f"calibration_models[{index}] has unknown keys: {sorted(extra)}"
+            )
+        key = model.get("key")
+        label = model.get("label")
+        aliases = model.get("aliases", ())
+        if not isinstance(key, str) or not key:
+            raise CaptureSpecError(f"calibration_models[{index}].key must be a string")
+        if key in seen:
+            raise CaptureSpecError(f"duplicate calibration model key: {key}")
+        seen.add(key)
+        if not isinstance(label, str) or not label:
+            raise CaptureSpecError(
+                f"calibration_models[{index}].label must be a string"
+            )
+        if not isinstance(aliases, Sequence) or isinstance(aliases, (str, bytes)):
+            raise CaptureSpecError(
+                f"calibration_models[{index}].aliases must be a list"
+            )
+        if not all(isinstance(alias, str) for alias in aliases):
+            raise CaptureSpecError(
+                f"calibration_models[{index}].aliases must be a list of strings"
+            )
 
 
 def _validate_theme(theme: Mapping[str, str]) -> None:
@@ -494,6 +551,7 @@ def build_room_sweep_spec(
     accent: str = "sage",
     font: str = "figtree",
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+    calibration_models: Sequence[Mapping[str, Any]] | None = None,
 ) -> CaptureSpec:
     """Build the `kind="room_sweep"` capture spec (plan §6, build step 1).
 
@@ -526,6 +584,10 @@ def build_room_sweep_spec(
     else:
         heading_text = "Room measurement"
     seconds = round(stimulus_duration_ms / 1000)
+    if calibration_models is None:
+        from jasper.correction.calibration import supported_model_options
+
+        calibration_models = supported_model_options()
 
     spec = CaptureSpec(
         kind="room_sweep",
@@ -554,6 +616,7 @@ def build_room_sweep_spec(
             ui_button("Start", action="begin_capture"),
             ui_note("Keep the screen on — leaving this page stops the recording."),
         ),
+        calibration_models=tuple(calibration_models),
         max_upload_bytes=max_upload_bytes,
     )
     return spec.validate()

@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from jasper.correction.calibration import SUPPORTED_MODELS
+
 _JS_DIR = Path(__file__).resolve().parent / "js"
 _NODE = shutil.which("node")
 _REPO = Path(__file__).resolve().parents[1]
@@ -75,8 +77,10 @@ def test_capture_page_waits_for_pi_sweep_completion():
 def test_capture_page_serial_models_match_pi_registry_keys():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
-    for key in ("minidsp_umik1", "minidsp_umik2", "dayton_imm6", "dayton_umm6"):
-        assert f'value: "{key}"' in main_js
+    assert "spec.calibration_models" in main_js
+    for key in SUPPORTED_MODELS:
+        assert f'value: "{key}"' not in main_js
+        assert f'value: \'{key}\'' not in main_js
     for stale in (
         "minidsp_umik_1",
         "minidsp_umik_2",

@@ -1021,8 +1021,7 @@ code = [
   "jasper/capture_relay/cues.py",
   "jasper/capture_relay/correction_adapter.py",
   "relay/src/worker.js",
-  "capture-page/js/render.js",
-  "capture-page/js/crypto.js",
+  "capture-page/js/**",
   "capture-page/index.html",
 ]
 docs = [
