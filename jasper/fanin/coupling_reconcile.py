@@ -59,6 +59,7 @@ import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_runtime_plan import RouteMode, RuntimeEnvAction, fanin_coupling_action
@@ -984,13 +985,11 @@ def _fanin_input_counter_deltas(
 ) -> dict[str, dict[str, int]]:
     start_inputs = {
         str(inp.get("label") or idx): inp
-        for idx, inp in enumerate(start.get("inputs") or [])
-        if isinstance(inp, dict)
+        for idx, inp in enumerate(_dict_list_value(start.get("inputs")))
     }
     end_inputs = {
         str(inp.get("label") or idx): inp
-        for idx, inp in enumerate(end.get("inputs") or [])
-        if isinstance(inp, dict)
+        for idx, inp in enumerate(_dict_list_value(end.get("inputs")))
     }
     deltas: dict[str, dict[str, int]] = {}
     for label, end_input in end_inputs.items():
@@ -1032,6 +1031,12 @@ def _dict_value(value: object) -> dict[str, object]:
     return value if isinstance(value, dict) else {}
 
 
+def _dict_list_value(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [cast(dict[str, object], item) for item in value if isinstance(item, dict)]
+
+
 def _counter_delta(
     start: object,
     end: object,
@@ -1045,10 +1050,12 @@ def _counter_delta(
 
 
 def _int_value(value: object) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+    if isinstance(value, int | float | str | bytes | bytearray):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+    return 0
 
 
 def _disarm(do_restart, do_restart_outputd, do_reconcile, desired, reason) -> CouplingResult:

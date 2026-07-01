@@ -193,7 +193,7 @@ pub struct Mixer {
 /// Under `Loopback` (default), `pipe` is `None` and STATUS reports only
 /// `transport:"loopback"`. Under `transport_pipe`, `pipe` carries the pipe path
 /// + the reopen / dropped-period / live-pipe-size atomics the `FifoWriter`
-/// updates.
+///   updates.
 #[derive(Clone)]
 pub struct CouplingObservability {
     pub transport: &'static str,
