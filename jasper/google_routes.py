@@ -12,8 +12,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-import httpx
-
 from . import location_state
 from .log_event import log_event
 from .tools import fence_untrusted
@@ -462,12 +460,12 @@ class GoogleRoutesClient:
         payload = self._request_payload(destination, mode, route_limit)
         try:
             data = await self._post(payload)
-        except httpx.TimeoutException:
+        except GoogleRoutesTimeoutError:
             return {
                 "ok": False,
                 "error": "Google Routes timed out. Try again in a moment.",
             }
-        except httpx.HTTPError:
+        except GoogleRoutesTransportError:
             logger.warning("google routes transport error", exc_info=True)
             return {
                 "ok": False,
@@ -529,14 +527,31 @@ class GoogleRoutesClient:
                 timeout=self._timeout_sec,
             )
         else:
-            async with httpx.AsyncClient(timeout=self._timeout_sec) as client:
-                response = await client.post(
-                    GOOGLE_ROUTES_ENDPOINT,
-                    headers=headers,
-                    json=payload,
-                    timeout=self._timeout_sec,
-                )
+            try:
+                import httpx
+            except ImportError as e:
+                raise GoogleRoutesTransportError from e
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout_sec) as client:
+                    response = await client.post(
+                        GOOGLE_ROUTES_ENDPOINT,
+                        headers=headers,
+                        json=payload,
+                        timeout=self._timeout_sec,
+                    )
+            except httpx.TimeoutException as e:
+                raise GoogleRoutesTimeoutError from e
+            except httpx.HTTPError as e:
+                raise GoogleRoutesTransportError from e
         return _response_json(response, setup_url=self.config.setup_url)
+
+
+class GoogleRoutesTimeoutError(RuntimeError):
+    pass
+
+
+class GoogleRoutesTransportError(RuntimeError):
+    pass
 
 
 class GoogleRoutesAPIError(RuntimeError):
