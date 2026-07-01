@@ -117,6 +117,35 @@
       .cap-button:active {
         filter: brightness(0.94);
       }
+      .cap-field {
+        display: block;
+        margin: 1rem 0;
+        font-weight: 650;
+      }
+      .cap-field span {
+        display: block;
+        margin-bottom: 0.4rem;
+      }
+      .cap-field select,
+      .cap-field input {
+        width: 100%;
+        min-height: 2.8rem;
+        border: 1px solid color-mix(in oklch, var(--cap-fg) 22%, transparent);
+        border-radius: 0.65rem;
+        padding: 0.65rem 0.75rem;
+        color: var(--cap-fg);
+        background: color-mix(in oklch, var(--cap-bg) 92%, white);
+        font: inherit;
+      }
+      .cap-actions {
+        display: grid;
+        gap: 0.65rem;
+        margin-top: 1.25rem;
+      }
+      .cap-button--secondary {
+        color: var(--cap-fg);
+        background: color-mix(in oklch, var(--cap-accent) 16%, transparent);
+      }
       #status {
         margin-top: 1.25rem;
         padding: 0.85rem 1rem;

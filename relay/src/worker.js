@@ -42,8 +42,12 @@ const DEFAULT_MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
 
 // A capture spec is ~1 KB; cap the opaque string well above that but bounded.
 const MAX_SPEC_BYTES = 64 * 1024;
-// The relay-control event envelope (e.g. {armed:true}) is tiny.
-const MAX_EVENT_BYTES = 4 * 1024;
+// Relay-control event envelopes carry setup/progress metadata: phone {armed:true,
+// noise_floor:{...}, calibration:{...}} and host {phase:"sweep_complete"}. They
+// are not audio payloads; the relay stores and relays them as bounded opaque JSON
+// control state. The cap mirrors the Pi's calibration-upload JSON cap so a phone
+// wizard can carry a user-provided mic calibration file without another endpoint.
+const MAX_EVENT_BYTES = 1024 * 1024;
 const MAX_SESSION_ID_LEN = 128;
 const MAX_TOKEN_LEN = 512;
 
@@ -334,6 +338,7 @@ async function registerSession(request, store, env, cors) {
     max_upload_bytes: cap,
     state: "pending",
     event: null,
+    host_event: null,
     integrity: null,
     size: 0,
   };
@@ -372,6 +377,28 @@ async function postEvent(request, store, meta, id, env, cors) {
   // The event is the relay's own control envelope (NOT a capture payload). We
   // relay it verbatim; the Pi interprets fields like `armed`.
   meta.event = event;
+  await store.putMeta(id, meta);
+  return json({ ok: true }, 200, cors);
+}
+
+async function postHostEvent(request, store, meta, id, env, cors) {
+  const len = Number(request.headers.get("content-length") || "-1");
+  if (!Number.isFinite(len) || len <= 0) {
+    return json({ error: "content_length_required" }, 411, cors);
+  }
+  if (len > MAX_EVENT_BYTES) {
+    return json({ error: "event_too_large" }, 413, cors);
+  }
+  let event;
+  try {
+    event = await request.json();
+  } catch {
+    return json({ error: "invalid_json" }, 400, cors);
+  }
+  if (typeof event !== "object" || event === null) {
+    return json({ error: "event_must_be_object" }, 400, cors);
+  }
+  meta.host_event = event;
   await store.putMeta(id, meta);
   return json({ ok: true }, 200, cors);
 }
@@ -424,6 +451,19 @@ function getStatus(meta, cors) {
       size: meta.size,
       integrity: meta.integrity,
       event: meta.event,
+      host_event: meta.host_event,
+      expires_at: meta.expires_at,
+    },
+    200,
+    cors,
+  );
+}
+
+function getPhoneStatus(meta, cors) {
+  return json(
+    {
+      state: meta.state,
+      host_event: meta.host_event,
       expires_at: meta.expires_at,
     },
     200,
@@ -509,6 +549,14 @@ export async function handle(request, store, env) {
       return getStatus(meta, cors);
     }
 
+    // POST /sessions/:id/host-event  (pull_token)
+    if (sub === "host-event" && request.method === "POST") {
+      if (!(await authorize(meta, request, "pull"))) {
+        return json({ error: "unauthorized" }, 401, cors);
+      }
+      return postHostEvent(request, store, meta, id, env, cors);
+    }
+
     // GET /sessions/:id/blob  (pull_token)
     if (sub === "blob" && request.method === "GET") {
       if (!(await authorize(meta, request, "pull"))) {
@@ -520,6 +568,7 @@ export async function handle(request, store, env) {
     // --- phone-facing (upload_token), rate-limited ---
     const phoneRoute =
       (sub === "spec" && request.method === "GET") ||
+      (sub === "phone-status" && request.method === "GET") ||
       (sub === "event" && request.method === "POST") ||
       (sub === "blob" && request.method === "PUT");
     if (phoneRoute) {
@@ -530,6 +579,7 @@ export async function handle(request, store, env) {
         return json({ error: "rate_limited" }, 429, cors);
       }
       if (sub === "spec") return getSpec(meta, store, id, env, cors);
+      if (sub === "phone-status") return getPhoneStatus(meta, cors);
       if (sub === "event") return postEvent(request, store, meta, id, env, cors);
       if (sub === "blob") return putBlob(request, store, meta, id, env, cors);
     }

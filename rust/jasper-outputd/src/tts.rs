@@ -60,7 +60,7 @@ use anyhow::{Context, Result};
 
 use crate::core::OutputCore;
 use crate::ledger::{PlayoutEvent, SegmentId};
-use crate::mixer::MAX_TTS_GAIN_DB;
+use crate::mixer::DEFAULT_TTS_GAIN_DB;
 use crate::types::{SegmentKind, CHANNELS, SAMPLE_RATE};
 use jasper_tts_protocol::{command_name, read_command, TtsCommand};
 
@@ -416,7 +416,7 @@ impl TtsBridge {
             flush_rx,
             metrics,
             program_duck_gain_db,
-            fallback_gain_db: MAX_TTS_GAIN_DB,
+            fallback_gain_db: DEFAULT_TTS_GAIN_DB,
             duck_active: false,
             open_segment: None,
             active_epoch: 0,

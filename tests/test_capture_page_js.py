@@ -61,3 +61,26 @@ def test_capture_page_expired_link_message_points_back_to_speaker():
     assert 'message === "not_found"' in main_js
     assert "This one-time capture link has expired." in main_js
     assert "Return to the speaker page" in main_js
+
+
+def test_capture_page_waits_for_pi_sweep_completion():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "Measuring room noise" in main_js
+    assert "fetchPhoneStatus" in main_js
+    assert 'phase === "sweep_complete"' in main_js
+    assert "recordWindowMs" not in main_js
+
+
+def test_capture_page_serial_models_match_pi_registry_keys():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    for key in ("minidsp_umik1", "minidsp_umik2", "dayton_imm6", "dayton_umm6"):
+        assert f'value: "{key}"' in main_js
+    for stale in (
+        "minidsp_umik_1",
+        "minidsp_umik_2",
+        "dayton_imm_6c",
+        "dayton_umm_6",
+    ):
+        assert stale not in main_js

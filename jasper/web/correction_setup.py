@@ -496,14 +496,13 @@ __TABS__
 </div>
 
 <section id="relay-panel" class="relay-panel hidden" aria-live="polite">
-  <h2 style="margin-top:0">Phone capture relay</h2>
-  <p class="hint">This speaker will create a one-time capture link on <code>capture.jasper.tech</code>. Open it on the phone at the listening position; the sweep starts only after that page is recording.</p>
-  <button id="relay-start-capture" type="button" class="btn btn--primary">Create phone capture link</button>
+  <h2 style="margin-top:0">Room measurement</h2>
+  <p class="hint">JTS will open a guided capture page on <code>capture.jasper.tech</code>. The phone records first; the speaker plays only after that page is ready.</p>
+  <button id="relay-start-capture" type="button" class="btn btn--primary">Start</button>
   <div id="relay-link-row" class="relay-link-row hidden">
     <a id="relay-tap-link" class="btn btn--primary" href="#" target="_blank" rel="noopener">Open capture page</a>
   </div>
   <p id="relay-status" class="relay-status">Ready to create a phone capture link.</p>
-  <button id="local-capture-fallback" type="button" class="btn btn--ghost">Use old local browser capture</button>
 </section>
 
 <details class="advice" open>
@@ -517,7 +516,13 @@ __TABS__
   <p class="hint">If you are using an external USB measurement mic, pick it below after granting mic permission. Holding the mic at ear height means we're measuring what you actually hear.</p>
 </details>
 
-<div class="mic-panel">
+<details id="advanced-correction-options" class="advice">
+  <summary>Advanced</summary>
+  <p class="hint">Advanced options are mostly for development, relay outages, or calibrated local-browser capture on a trusted HTTPS speaker page.</p>
+  <button id="local-capture-fallback" type="button" class="btn btn--ghost">Use local browser capture</button>
+</details>
+
+<div id="mic-panel" class="mic-panel">
   <h2 style="margin-top:0">Microphone</h2>
   <div class="mic-grid">
     <div id="local-input-row" class="mic-row local-capture-only">
@@ -594,7 +599,7 @@ __TABS__
   <h2>Measurement</h2>
   <p>Music will pause automatically. The sweep is loud — make sure no one is asleep.</p>
 
-  <div class="info-card">
+  <div id="measurement-options" class="info-card">
     <label for="positions-select">Positions to measure</label>
     <select id="positions-select" form="dummy">
       <option value="1">1 — quick (single position)</option>
@@ -931,6 +936,54 @@ def _schedule_measurement_sweep(sess: Any, cam: Any, *, from_state: Any) -> None
 
     asyncio.run_coroutine_threadsafe(_run_sweep(), _ensure_loop())
     _run_async(sess.state_changed_from(from_state), timeout=6.0)
+
+
+def _run_relay_measurement_sweep(
+    sess: Any,
+    cam: Any,
+    *,
+    client: RelayClient,
+    pi_session: PiCaptureSession,
+) -> None:
+    """Play one relay-triggered sweep and publish real progress to the phone.
+
+    The old relay flow relied on a fixed phone-side recording window. The phone
+    now records until it sees ``phase=sweep_complete`` from the Pi, then keeps
+    the spec's post-roll. This function therefore blocks until the actual sweep
+    path returns, while still using the same measurement_window and
+    MeasurementSession transition code as the local browser flow.
+    """
+    from jasper.correction import coordinator, playback
+
+    def _host_event(phase: str, **extra: Any) -> None:
+        payload = {
+            "phase": phase,
+            "position": int(getattr(sess, "current_position", 0)) + 1,
+            "total_positions": int(getattr(sess, "total_positions", 1)),
+            **extra,
+        }
+        client.post_host_event(pi_session.session_id, pi_session.pull_token, payload)
+
+    async def _run_sweep() -> None:
+        async def _runtime_probe() -> dict[str, Any] | None:
+            return await cam.get_runtime_status(best_effort=True)
+
+        async with coordinator.measurement_window():
+            await asyncio.to_thread(_host_event, "sweep_started")
+            await sess.prepare_and_play_sweep(
+                playback.play_sweep,
+                runtime_probe_async=_runtime_probe,
+            )
+            await asyncio.to_thread(_host_event, "sweep_complete")
+
+    try:
+        _run_async(_run_sweep(), timeout=90.0)
+    except (concurrent.futures.TimeoutError, RuntimeError, OSError, ValueError) as exc:
+        try:
+            _host_event("sweep_failed", error=str(exc))
+        except (RuntimeError, OSError, ValueError):
+            logger.debug("could not publish relay sweep failure", exc_info=True)
+        raise
 
 
 def _schedule_repeat_sweep(sess: Any, cam: Any, *, from_state: Any) -> None:
@@ -1580,6 +1633,71 @@ def _handle_calibration_upload(
     return _calibration_payload(record)
 
 
+def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
+    """Materialize the phone wizard's calibration choice on the Pi.
+
+    The phone cannot call the Pi directly, so serial/upload choices ride the
+    relay event that arms the sweep. This mirrors the local `/calibration/*`
+    handlers and returns the stored calibration record, or None for phone/no
+    calibration.
+    """
+    calibration = setup.get("calibration") if isinstance(setup, dict) else None
+    if not isinstance(calibration, dict):
+        return None
+    mode = str(calibration.get("mode") or "none").strip()
+    if mode in ("", "none"):
+        return None
+    if mode == "serial":
+        from jasper.correction.calibration import fetch_vendor_calibration
+
+        return fetch_vendor_calibration(
+            model_key=str(calibration.get("model") or "").strip(),
+            serial=str(calibration.get("serial") or "").strip(),
+            orientation=str(calibration.get("orientation") or "unknown").strip()
+            or "unknown",
+            root=_calibration_root(),
+        )
+    if mode == "upload":
+        from jasper.correction.calibration import store_calibration
+
+        filename = str(calibration.get("filename") or "uploaded-calibration.txt")
+        return store_calibration(
+            text=str(calibration.get("content") or ""),
+            provider="manual_upload",
+            model=str(calibration.get("model") or "other").strip() or "other",
+            label=str(calibration.get("label") or filename).strip()
+            or "Uploaded calibration",
+            source=f"uploaded:{filename}",
+            orientation=str(calibration.get("orientation") or "unknown").strip()
+            or "unknown",
+            sign_convention=(
+                str(calibration.get("sign_convention") or "correction").strip()
+                or "correction"
+            ),
+            root=_calibration_root(),
+        )
+    raise ValueError(f"unknown calibration mode: {mode}")
+
+
+def _apply_relay_setup_to_session(sess: Any, setup: dict[str, Any] | None) -> None:
+    """Apply phone-side setup before the relay-triggered sweep starts."""
+    if not isinstance(setup, dict):
+        return
+    if "total_positions" in setup:
+        try:
+            total_raw = setup.get("total_positions")
+            if total_raw is None:
+                raise ValueError
+            requested_total = int(total_raw)
+        except (TypeError, ValueError):
+            requested_total = int(getattr(sess, "total_positions", 1))
+        min_total = int(getattr(sess, "current_position", 0)) + 1
+        sess.total_positions = max(min_total, min(10, requested_total))
+
+    if isinstance(setup.get("calibration"), dict):
+        sess.mic_calibration = _relay_calibration_from_setup(setup)
+
+
 def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """GET /status: snapshot the current session + currently-loaded
     CamillaDSP config descriptor. `current_correction` is best-effort
@@ -1899,14 +2017,43 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # default 120 s timeout is intentionally ~ the AWAITING_CAPTURE watchdog;
         # keep them aligned if either constant changes.
         capture_path = sess.capture_path_for_position(sess.current_position)
+
+        def _on_armed(state: Any) -> None:
+            try:
+                _apply_relay_setup_to_session(sess, state.setup)
+                if state.noise_floor:
+                    try:
+                        sess.noise_floor_db = float(
+                            state.noise_floor.get("rms_dbfs")
+                        )
+                    except (TypeError, ValueError):
+                        logger.debug(
+                            "relay noise_floor ignored: %r",
+                            state.noise_floor,
+                        )
+            except (RuntimeError, ValueError) as exc:
+                try:
+                    client.post_host_event(
+                        pi_session.session_id,
+                        pi_session.pull_token,
+                        {"phase": "sweep_failed", "error": str(exc)},
+                    )
+                except (RuntimeError, OSError, ValueError):
+                    logger.debug("relay setup failure event failed", exc_info=True)
+                raise
+            _run_relay_measurement_sweep(
+                sess,
+                _camilla(),
+                client=client,
+                pi_session=pi_session,
+            )
+
         result = await asyncio.to_thread(
             correction_adapter.run_and_store,
             client,
             pi_session,
             capture_path,
-            on_armed=lambda: _schedule_measurement_sweep(
-                sess, _camilla(), from_state=SessionState.NEEDS_NOISE_CAPTURE
-            ),
+            on_armed=_on_armed,
         )
         # Device-aware calibration gate (the phone's mic is known only now): refuse
         # a loaded vendor curve on the phone's built-in mic, allow it for the
@@ -1915,6 +2062,17 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         block = _relay_device_calibration_block(sess.mic_calibration, result.device)
         if block is not None:
             raise ValueError(block)
+        if result.noise_floor:
+            try:
+                rms_raw = result.noise_floor.get("rms_dbfs")
+                if rms_raw is None:
+                    raise ValueError
+                sess.noise_floor_db = float(rms_raw)
+            except (TypeError, ValueError):
+                logger.debug(
+                    "relay noise_floor ignored: %r",
+                    result.noise_floor,
+                )
         await sess.on_capture_uploaded(capture_path)
 
     kind = RelayCaptureKind(

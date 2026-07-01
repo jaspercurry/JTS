@@ -12,7 +12,6 @@ import assert from "node:assert/strict";
 
 import {
   parseFragment,
-  recordWindowMs,
   withinUploadCap,
   FragmentError,
 } from "../../capture-page/js/fragment.js";
@@ -54,14 +53,6 @@ function testRejectsMalformedKey() {
   ok();
 }
 
-function testRecordWindowDefaults() {
-  assert.equal(recordWindowMs({ duration_ms: 11500 }), 11500);
-  assert.equal(recordWindowMs({}), 12000);
-  assert.equal(recordWindowMs(null), 12000);
-  assert.equal(recordWindowMs({ duration_ms: -5 }), 12000);
-  ok();
-}
-
 function testWithinUploadCap() {
   // Page half of the dual size cap.
   assert.equal(withinUploadCap(1000, { max_upload_bytes: 2000 }), true);
@@ -78,7 +69,6 @@ const tests = [
   testAcceptsNoLeadingHash,
   testRejectsMissingParts,
   testRejectsMalformedKey,
-  testRecordWindowDefaults,
   testWithinUploadCap,
 ];
 

@@ -73,6 +73,19 @@ async function testPostEvent() {
   ok();
 }
 
+async function testFetchPhoneStatus() {
+  const payload = { state: "pending", host_event: { phase: "sweep_complete" } };
+  const f = mockFetch(() => res(200, payload));
+  const client = makeClient(f);
+  const got = await client.fetchPhoneStatus();
+  assert.deepEqual(got, payload);
+  const call = f.calls[0];
+  assert.equal(call.url, "https://relay.test/sessions/sess-1/phone-status");
+  assert.equal(call.init.method, "GET");
+  assert.equal(call.init.headers.Authorization, "Bearer up-token");
+  ok();
+}
+
 async function testPutBlob() {
   const f = mockFetch(() => res(200, { ok: true, state: "ready" }));
   const client = makeClient(f);
@@ -116,6 +129,7 @@ async function testConstructorValidates() {
 const tests = [
   testFetchSpec,
   testPostEvent,
+  testFetchPhoneStatus,
   testPutBlob,
   testErrorThrowsRelayError,
   testConstructorValidates,

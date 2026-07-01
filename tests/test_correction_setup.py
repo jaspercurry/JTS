@@ -851,6 +851,52 @@ def test_e2e_calibration_fetch_upstream_failure_returns_502(monkeypatch):
         server.server_close()
 
 
+def test_relay_setup_applies_position_count_and_uploaded_calibration(tmp_path, monkeypatch):
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
+    sess = SimpleNamespace(
+        current_position=0,
+        total_positions=5,
+        mic_calibration=None,
+    )
+
+    correction_setup._apply_relay_setup_to_session(
+        sess,
+        {
+            "total_positions": 3,
+            "calibration": {
+                "mode": "upload",
+                "filename": "lab.txt",
+                "content": "20 -1\n100 0\n1000 1\n",
+                "label": "Lab mic",
+            },
+        },
+    )
+
+    assert sess.total_positions == 3
+    assert sess.mic_calibration is not None
+    assert sess.mic_calibration.provider == "manual_upload"
+    assert sess.mic_calibration.point_count == 3
+
+
+def test_relay_setup_does_not_reduce_total_below_current_position():
+    sess = SimpleNamespace(
+        current_position=2,
+        total_positions=5,
+        mic_calibration=object(),
+    )
+
+    correction_setup._apply_relay_setup_to_session(
+        sess,
+        {
+            "total_positions": 1,
+            "calibration": {"mode": "none"},
+        },
+    )
+
+    assert sess.total_positions == 3
+    assert sess.mic_calibration is None
+
+
 def test_e2e_upload_quality_failure_returns_422(tmp_path, monkeypatch):
     from jasper.correction import quality
     from jasper.correction.session import SessionState

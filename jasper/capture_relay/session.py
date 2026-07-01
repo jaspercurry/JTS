@@ -20,6 +20,7 @@ and trivially testable with a fake relay.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import secrets
@@ -134,6 +135,8 @@ class PollState:
     aborted: bool = False
     abort_reason: str = ""
     device: dict | None = None
+    noise_floor: dict | None = None
+    setup: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +152,8 @@ class CaptureResult:
 
     wav: bytes
     device: dict | None = None
+    noise_floor: dict | None = None
+    setup: dict | None = None
 
 
 def classify_status(status_payload: dict) -> PollState:
@@ -159,6 +164,12 @@ def classify_status(status_payload: dict) -> PollState:
     aborted = bool(event.get("aborted"))
     abort_reason = str(event.get("abort_reason") or event.get("reason") or "")
     device = event.get("device") if isinstance(event.get("device"), dict) else None
+    noise_floor = (
+        event.get("noise_floor")
+        if isinstance(event.get("noise_floor"), dict)
+        else None
+    )
+    setup = event.get("setup") if isinstance(event.get("setup"), dict) else None
     ready = status_payload.get("state") == "ready"
     integrity = status_payload.get("integrity")
     return PollState(
@@ -168,14 +179,39 @@ def classify_status(status_payload: dict) -> PollState:
         aborted=aborted,
         abort_reason=abort_reason,
         device=device,
+        noise_floor=noise_floor,
+        setup=setup,
     )
+
+
+def _call_on_armed(callback: Callable[..., None], state: PollState) -> None:
+    """Call old zero-arg or new state-aware armed callbacks.
+
+    Existing tests and sibling relay kinds used ``on_armed()``. Room correction's
+    guided relay flow now needs the phone setup payload before playback, so it
+    accepts ``on_armed(state)``. Supporting both keeps the seam additive.
+    """
+    try:
+        sig = inspect.signature(callback)
+    except (TypeError, ValueError):
+        callback(state)
+        return
+    required = [
+        p for p in sig.parameters.values()
+        if p.default is inspect.Signature.empty
+        and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    if required:
+        callback(state)
+    else:
+        callback()
 
 
 def run_capture(
     client: RelayClient,
     session: PiCaptureSession,
     *,
-    on_armed: Callable[[], None],
+    on_armed: Callable[..., None],
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     sleep: Callable[[float], None] = time.sleep,
@@ -236,7 +272,7 @@ def _poll_until_capture(
     client: RelayClient,
     session: PiCaptureSession,
     *,
-    on_armed: Callable[[], None],
+    on_armed: Callable[..., None],
     poll_interval_s: float,
     timeout_s: float,
     sleep: Callable[[float], None],
@@ -245,11 +281,17 @@ def _poll_until_capture(
     deadline = monotonic() + timeout_s
     armed_fired = False
     capture_device: dict | None = None
+    capture_noise_floor: dict | None = None
+    capture_setup: dict | None = None
     while True:
         status = client.status(session.session_id, session.pull_token)
         state = classify_status(status)
         if state.device is not None:
             capture_device = state.device  # phone-reported mic; persists to ready
+        if state.noise_floor is not None:
+            capture_noise_floor = state.noise_floor
+        if state.setup is not None:
+            capture_setup = state.setup
 
         if state.aborted:
             raise CaptureAborted(
@@ -259,7 +301,7 @@ def _poll_until_capture(
         if state.armed and not armed_fired:
             armed_fired = True
             log_event(logger, "capture_relay.armed", session_id=session.session_id)
-            on_armed()
+            _call_on_armed(on_armed, state)
 
         if state.ready:
             log_event(logger, "capture_relay.ready", session_id=session.session_id)
@@ -284,7 +326,12 @@ def _poll_until_capture(
                 wav_bytes=len(wav),
                 device=(capture_device or {}).get("label") or "",
             )
-            return CaptureResult(wav=wav, device=capture_device)
+            return CaptureResult(
+                wav=wav,
+                device=capture_device,
+                noise_floor=capture_noise_floor,
+                setup=capture_setup,
+            )
 
         if monotonic() >= deadline:
             raise CaptureTimeout(

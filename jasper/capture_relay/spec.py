@@ -488,6 +488,7 @@ def build_room_sweep_spec(
     stimulus_duration_ms: int = 10000,
     pre_roll_ms: int = 800,
     post_roll_ms: int = 700,
+    hard_timeout_ms: int = 30000,
     position: int | None = None,
     total_positions: int | None = None,
     accent: str = "sage",
@@ -496,12 +497,12 @@ def build_room_sweep_spec(
 ) -> CaptureSpec:
     """Build the `kind="room_sweep"` capture spec (plan §6, build step 1).
 
-    The record window is ``pre_roll + stimulus + post_roll`` so the Pi-played log
-    sweep is guaranteed to land fully inside the phone's recording. ``pre_roll``
-    must be at least the relay-poll latency plus margin — the Pi only plays the
-    sweep *after* it sees the phone's ``armed`` flag, and the pre-roll absorbs
-    the up-to-one-poll gap (this is a race to avoid, not a sync subtlety; see
-    plan §5). Magnitude frequency response is drift-insensitive, so
+    ``duration_ms`` is the hard recording timeout, not the usual stop condition:
+    the phone records until the Pi reports ``sweep_complete`` through the relay,
+    then keeps ``post_roll_ms`` of room tail. ``pre_roll_ms`` remains part of the
+    spec for compatibility/documentation, but the race is now prevented more
+    directly: the phone starts recording before it posts ``armed`` and the Pi only
+    plays after seeing that event. Magnitude frequency response is drift-insensitive, so
     ``clock_drift="ignore"``; clean capture is mandatory (EC/AGC/NS flatten the
     response we measure) so ``clean_capture="refuse"`` — paired with a labeled
     device-capability fallback so a strict iPhone is never dead-ended.
@@ -515,7 +516,10 @@ def build_room_sweep_spec(
         raise CaptureSpecError("stimulus_duration_ms must be positive")
     if pre_roll_ms < 0 or post_roll_ms < 0:
         raise CaptureSpecError("pre_roll_ms / post_roll_ms must be >= 0")
-    duration_ms = pre_roll_ms + stimulus_duration_ms + post_roll_ms
+    duration_ms = max(
+        pre_roll_ms + stimulus_duration_ms + post_roll_ms,
+        int(hard_timeout_ms),
+    )
 
     if position is not None and total_positions:
         heading_text = f"Room measurement — position {position} of {total_positions}"

@@ -320,6 +320,16 @@ impl Config {
         // non-zero value pins an explicit capacity.
         let input_resampler_ring_frames = env_u32("JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES", 0)?;
 
+        let tts_program_duck_db =
+            env_f32_fallback("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", "JASPER_DUCK_DB", -25.0)?;
+        if tts_program_duck_db > 0.0 {
+            anyhow::bail!(
+                "JASPER_FANIN_TTS_PROGRAM_DUCK_DB={} must be <= 0 (a duck \
+                 attenuates; positive gain on the program is never allowed)",
+                tts_program_duck_db
+            );
+        }
+
         Ok(Self {
             output_pcm,
             music_output_pcm,
@@ -342,11 +352,7 @@ impl Config {
                 "JASPER_FANIN_TTS_MAX_PENDING_FRAMES",
                 crate::tts::DEFAULT_MAX_PENDING_FRAMES,
             )?,
-            tts_program_duck_db: env_f32_fallback(
-                "JASPER_FANIN_TTS_PROGRAM_DUCK_DB",
-                "JASPER_DUCK_DB",
-                -25.0,
-            )?,
+            tts_program_duck_db,
             assistant_loudness: AssistantLoudnessConfig {
                 assistant_offset_lu: env_f32(
                     "JASPER_OUTPUTD_ASSISTANT_OFFSET_LU",
@@ -713,6 +719,31 @@ mod tests {
                 assert_eq!(cfg.tts_program_duck_db, -30.0);
             },
         );
+    }
+
+    #[test]
+    fn rejects_positive_program_duck() {
+        for (_name, vars) in [
+            (
+                "override",
+                [
+                    ("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", Some("3.0")),
+                    ("JASPER_DUCK_DB", Some("-25.0")),
+                ],
+            ),
+            (
+                "legacy fallback",
+                [
+                    ("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", None),
+                    ("JASPER_DUCK_DB", Some("3.0")),
+                ],
+            ),
+        ] {
+            with_env(&vars, || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err.to_string().contains("must be <= 0"), "{err}");
+            });
+        }
     }
 
     #[test]

@@ -106,10 +106,14 @@ class FakeRelayBackend:
         return jr(404, {"error": "not_found"})
 
     # --- phone simulation ---
-    def phone_arm(self, sid, device=None):
+    def phone_arm(self, sid, device=None, *, noise_floor=None, setup=None):
         event = {"armed": True}
         if device is not None:
             event["device"] = device
+        if noise_floor is not None:
+            event["noise_floor"] = noise_floor
+        if setup is not None:
+            event["setup"] = setup
         self.sessions[sid]["event"] = event
 
     def phone_abort(self, sid, reason="backgrounded"):
@@ -302,6 +306,40 @@ def test_on_armed_not_fired_until_phone_arms():
     assert armed_calls == [3]  # fired on the poll where armed first appeared
 
 
+def test_state_aware_on_armed_receives_phone_setup():
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    wav = b"RIFF payload"
+    setup = {
+        "total_positions": 5,
+        "calibration": {"mode": "none"},
+    }
+    seen = []
+
+    backend.phone_arm(
+        session.session_id,
+        noise_floor={"duration_ms": 800, "rms_dbfs": -54.25},
+        setup=setup,
+    )
+
+    def on_armed(state):
+        seen.append((state.noise_floor, state.setup))
+        backend.phone_upload(session.session_id, session.content_key, wav)
+
+    result = run_capture(
+        client,
+        session,
+        on_armed=on_armed,
+        poll_interval_s=0.0,
+        timeout_s=5.0,
+        sleep=lambda _s: None,
+    )
+    assert result.wav == wav
+    assert result.noise_floor == {"duration_ms": 800, "rms_dbfs": -54.25}
+    assert result.setup == setup
+    assert seen == [(result.noise_floor, setup)]
+
+
 # --- client unit behaviour ----------------------------------------------------
 
 
@@ -360,6 +398,30 @@ def test_client_register_sends_registration_token_only_when_configured():
         == "pi-secret"
     )
     assert relay_client_module.REGISTRATION_TOKEN_HEADER not in status_headers
+
+
+def test_client_post_host_event_uses_pull_token():
+    seen = {}
+
+    def transport(method, url, headers, body):
+        seen["method"] = method
+        seen["url"] = url
+        seen["headers"] = dict(headers)
+        seen["body"] = json.loads(body)
+        return RelayResponse(200, {}, b'{"ok":true}')
+
+    client = RelayClient("https://relay.test/", transport=transport)
+    client.post_host_event(
+        "cap_1",
+        "pull-secret",
+        {"phase": "sweep_complete", "position": 1},
+    )
+
+    assert seen["method"] == "POST"
+    assert seen["url"] == "https://relay.test/sessions/cap_1/host-event"
+    assert seen["headers"]["Authorization"] == "Bearer pull-secret"
+    assert seen["headers"]["Content-Type"] == "application/json"
+    assert seen["body"] == {"phase": "sweep_complete", "position": 1}
 
 
 def test_urllib_transport_sends_cloudflare_safe_defaults(monkeypatch):
@@ -529,6 +591,16 @@ def test_classify_status():
     aborted = classify_status({"state": "pending", "event": {"aborted": True, "reason": "lock"}})
     assert aborted.aborted is True
     assert aborted.abort_reason == "lock"
+    noisy = classify_status(
+        {
+            "state": "pending",
+            "event": {
+                "armed": True,
+                "noise_floor": {"duration_ms": 800, "rms_dbfs": -52.5},
+            },
+        }
+    )
+    assert noisy.noise_floor == {"duration_ms": 800, "rms_dbfs": -52.5}
 
 
 # --- step 7: abort + no-silent-failure cues ----------------------------------

@@ -434,22 +434,15 @@ class TtsPlayout:
     conversion. So we let the caller configure an `output_rate` and
     polyphase-upsample 24 kHz → output_rate inside `write()`.
 
-    Hearing-safety bounds on gain. Current production sends TTS through
-    the local IPC path before CamillaDSP, but this class is still the
-    last Python-side gain boundary. A bug, malformed env value, or bad
-    upstream loudness decision must NEVER be allowed to play TTS at a
-    level that could damage hearing.
-    `set_gain_db` clamps every input to [MIN_TTS_GAIN_DB,
-    MAX_TTS_GAIN_DB]; the active TTS IPC owner also applies its own
-    peak-aware ceiling.
+    Gain validation for the legacy direct-device path. Current production
+    sends TTS through the local IPC path before CamillaDSP, where the
+    mix owner matches assistant loudness to content and applies the
+    peak-aware ceiling. This Python class only rejects malformed values
+    and floors extreme attenuation to the mute-equivalent minimum.
     """
 
     INPUT_RATE = 24000
 
-    # Absolute ceiling on TTS gain. Even if the tracker's computed gain
-    # would push higher (a runaway or bug), we clamp here. The whole
-    # point: never let TTS get loud enough to hurt.
-    MAX_TTS_GAIN_DB = -6.0
     # Floor — below this, TTS is effectively silent. Used when the
     # user mutes, when Camilla is unreachable at startup, or when a
     # volume reading looks malformed.
@@ -501,16 +494,16 @@ class TtsPlayout:
         # is briefly a legitimate now() value on a freshly-booted Pi.
         self._drain_tail_sec = float(drain_tail_sec)
         self._ring_end_monotonic: float | None = None
-        # Apply the constructor's gain_db through the same clamp +
+        # Apply the constructor's gain_db through the same validation +
         # validation path as runtime updates. If a caller passes the
         # legacy "-8.0 fixed gain" value, this becomes the active level.
         self.set_gain_db(gain_db)
 
     def set_gain_db(self, db: float) -> None:
-        """Update TTS gain. Clamped to [MIN, MAX]; non-finite or
-        out-of-range inputs are rejected (prior gain held). Single-
-        float assignment is atomic under the GIL, so no lock is
-        needed for the read path in write()."""
+        """Update TTS gain. Non-finite inputs are rejected and very low
+        finite values floor to the mute-equivalent minimum. Single-float
+        assignment is atomic under the GIL, so no lock is needed for the
+        read path in write()."""
         try:
             db = float(db)
         except (TypeError, ValueError):
@@ -519,19 +512,24 @@ class TtsPlayout:
         if db != db or db in (float("inf"), float("-inf")):
             logger.warning("tts gain rejected (non-finite): %r", db)
             return
-        clamped = max(self.MIN_TTS_GAIN_DB, min(self.MAX_TTS_GAIN_DB, db))
+        clamped = max(self.MIN_TTS_GAIN_DB, db)
         if clamped == self._gain_db:
             return
-        # 0.0 dB → 1.0 linear; floor → ~0.001 linear. Computed once
-        # per change, not per write.
-        self._gain_linear = float(10 ** (clamped / 20.0))
+        # 0.0 dB -> 1.0 linear; floor -> ~0.001 linear. Computed once
+        # per change, not per write. With no max-gain ceiling, extremely
+        # large finite debug/test values can overflow the exponent; keep
+        # them representable as inf so the sample path clips explicitly.
+        try:
+            self._gain_linear = float(10 ** (clamped / 20.0))
+        except OverflowError:
+            self._gain_linear = float("inf")
         self._gain_db = clamped
         # DEBUG (not INFO): the active TTS IPC owner publishes the richer
-        # assistant loudness decision telemetry, and this low-level clamp
+        # assistant loudness decision telemetry, and this low-level floor
         # log is noisy.
         if clamped != db:
             logger.debug(
-                "tts gain set: requested %.1f dB → clamped to %.1f dB",
+                "tts gain set: requested %.1f dB -> floored to %.1f dB",
                 db, clamped,
             )
         else:
