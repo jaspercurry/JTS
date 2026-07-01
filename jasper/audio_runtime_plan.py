@@ -15,8 +15,11 @@ explain the current intent.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, Mapping, TypedDict, cast
 
 from jasper.audio_hardware.dac import by_id as dac_profile_by_id
@@ -27,23 +30,31 @@ from jasper.audio_runtime_overrides import (
     runtime_overrides_path,
 )
 from jasper.camilla_config_contract import (
+    DEFAULT_CAPTURE_DEVICE,
+    DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CHUNKSIZE,
     DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
     DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
     DEFAULT_LEAN_CAPTURE_FIFO,
+    DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT,
+    DEFAULT_PLAYBACK_DEVICE,
+    DEFAULT_PLAYBACK_FORMAT,
+    DEFAULT_SAMPLE_RATE,
     DEFAULT_TARGET_LEVEL,
 )
 from jasper.env_load import read_env_file_state
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
-    COUPLING_FIFO,
     COUPLING_LOOPBACK,
-    FIFO_PATH_ENV_VAR,
+    COUPLING_TRANSPORT_PIPE,
+    PIPE_PATH_ENV_VAR,
+    OUTPUTD_PIPE_PATH_ENV_VAR,
     capture_kwargs_for_coupling,
     coupling_capture_kwargs_from_env,
     member_kwargs_are_pipe_sink,
     resolve_coupling,
-    resolve_fifo_path,
+    resolve_pipe_path,
+    resolve_outputd_pipe_path,
 )
 
 
@@ -54,6 +65,7 @@ DEFAULT_GROUPING_ENV_PATH = "/var/lib/jasper/grouping.env"
 
 DEFAULT_OUTPUTD_PERIOD_FRAMES = 1024
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES = 3072
+MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES = 512
 FANIN_INPUT_BUFFER_KEY = "JASPER_FANIN_INPUT_BUFFER_FRAMES"
 FANIN_OUTPUT_BUFFER_KEY = "JASPER_FANIN_OUTPUT_BUFFER_FRAMES"
 FANIN_ADAPTIVE_SHRUNK_FRAMES_ENV = "JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES"
@@ -105,18 +117,18 @@ _VALID_ROUTE_MODES = {
     "unknown",
 }
 
-_VALID_COUPLINGS = {COUPLING_LOOPBACK, COUPLING_FIFO}
+_VALID_COUPLINGS = {COUPLING_LOOPBACK, COUPLING_TRANSPORT_PIPE}
 _VALID_USBSINK_OUTPUT_MODES = {
     USBSINK_OUTPUT_MODE_ALOOP,
     USBSINK_OUTPUT_MODE_FIFO,
 }
 
-_ACTIVE_LEADER_FIFO_REASON = "fanin_fifo_coupling_unsupported"
-_ACTIVE_LEADER_FIFO_DETAIL = (
-    "JASPER_FANIN_CAMILLA_COUPLING=fifo is not supported while this box is an "
+_ACTIVE_LEADER_TRANSPORT_PIPE_REASON = "fanin_transport_pipe_coupling_unsupported"
+_ACTIVE_LEADER_TRANSPORT_PIPE_DETAIL = (
+    "JASPER_FANIN_CAMILLA_COUPLING=transport_pipe is not supported while this box is an "
     "active multiroom leader; camilla#1's grouped program bake still captures "
     "the ALSA fan-in loopback. Keep the coupling on loopback until the grouped "
-    "FIFO capture topology is designed."
+    "transport-pipe topology is designed."
 )
 
 
@@ -131,6 +143,7 @@ class EmitSoundConfigKwargs(TypedDict, total=False):
     resampler_type: str | None
     resampler_profile: str | None
     enable_rate_adjust: bool
+    transport_paced_pipe: bool
 
 
 @dataclass(frozen=True)
@@ -223,14 +236,59 @@ class SourceRouteDecision:
     that consumes it. Today two experimental consumers use it:
     ``JASPER_LEAN_LANE`` swaps CamillaDSP to the USB lean FIFO, and
     ``JASPER_FANIN_ADAPTIVE_BUFFER`` shrinks fan-in's output buffer. A future
-    single FIFO path should change this support matrix/consumer set here rather
-    than re-implementing the same source-exclusivity check in each caller.
+    single low-latency source route should change this support matrix/consumer
+    set here rather than re-implementing the same source-exclusivity check in
+    each caller.
     """
 
     route: SourceLowLatencyRoute
     reason: str
     active_sources: tuple[str, ...] = ()
     winner: str | None = None
+
+
+@dataclass(frozen=True)
+class TransportTopology:
+    """Resolved audio transport topology for status/doctor surfaces."""
+
+    name: str
+    fanin_to_camilla: Mapping[str, Any]
+    camilla_to_outputd: Mapping[str, Any]
+    camilla: Mapping[str, Any]
+    outputd_content_source: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "fanin_to_camilla": dict(self.fanin_to_camilla),
+            "camilla_to_outputd": dict(self.camilla_to_outputd),
+            "camilla": dict(self.camilla),
+            "outputd_content_source": self.outputd_content_source,
+        }
+
+
+@dataclass(frozen=True)
+class CorrectionLatencyEligibility:
+    """Whether the loaded/generated correction shape may claim low latency."""
+
+    eligible: bool
+    minimum_phase_or_iir: bool
+    measured_group_delay_frames: int | None = 0
+    blocking_reason: str = ""
+    mode: str = "peq_iir"
+    max_group_delay_frames: int = MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "eligible": self.eligible,
+            "minimum_phase_or_iir": self.minimum_phase_or_iir,
+            "measured_group_delay_frames": self.measured_group_delay_frames,
+            "mode": self.mode,
+            "max_group_delay_frames": self.max_group_delay_frames,
+        }
+        if self.blocking_reason:
+            out["blocking_reason"] = self.blocking_reason
+        return out
 
 
 @dataclass(frozen=True)
@@ -250,6 +308,8 @@ class AudioRuntimePlan:
     route_mode: RouteMode
     settings: tuple[RuntimeSetting, ...]
     coupling_support: CouplingSupport
+    transport_topology: TransportTopology
+    correction_latency_eligibility: CorrectionLatencyEligibility
     plan_warnings: tuple[str, ...] = ()
 
     def setting(self, key: str) -> RuntimeSetting:
@@ -268,9 +328,22 @@ class AudioRuntimePlan:
 
     @property
     def errors(self) -> tuple[str, ...]:
-        if self.coupling_support.supported:
-            return ()
-        return (self.coupling_support.detail,)
+        out: list[str] = []
+        if not self.coupling_support.supported:
+            out.append(self.coupling_support.detail)
+        try:
+            coupling = str(self.setting(COUPLING_ENV_VAR).value)
+        except KeyError:
+            coupling = COUPLING_LOOPBACK
+        if (
+            coupling == COUPLING_TRANSPORT_PIPE
+            and not self.correction_latency_eligibility.eligible
+        ):
+            out.append(
+                "transport_pipe low-latency mode is blocked by correction "
+                f"latency: {self.correction_latency_eligibility.blocking_reason}"
+            )
+        return tuple(out)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -279,6 +352,10 @@ class AudioRuntimePlan:
             "route_mode": self.route_mode,
             "settings": [setting.to_dict() for setting in self.settings],
             "coupling_support": self.coupling_support.to_dict(),
+            "transport_topology": self.transport_topology.to_dict(),
+            "correction_latency_eligibility": (
+                self.correction_latency_eligibility.to_dict()
+            ),
             "warnings": list(self.warnings),
             "errors": list(self.errors),
         }
@@ -287,20 +364,20 @@ class AudioRuntimePlan:
 def coupling_supported_for_route(coupling: str, route_mode: RouteMode) -> CouplingSupport:
     """Return whether ``coupling`` is supported for ``route_mode``.
 
-    Today the only blocked combination is active-leader + FIFO. Keeping that in
-    a route-policy function makes a future "everything is FIFO" topology a
-    deliberate support-matrix change instead of another scattered conditional.
+    Today the only blocked combination is active-leader + ``transport_pipe``.
+    Keeping that in a route-policy function makes grouped transport-pipe support
+    a deliberate support-matrix change instead of another scattered conditional.
     """
 
     normalized = resolve_coupling(coupling)
     mode = route_mode if route_mode in _VALID_ROUTE_MODES else "unknown"
-    if normalized == COUPLING_FIFO and mode == "active_leader":
+    if normalized == COUPLING_TRANSPORT_PIPE and mode == "active_leader":
         return CouplingSupport(
             coupling=normalized,
             route_mode=mode,  # type: ignore[arg-type]
             supported=False,
-            reason=_ACTIVE_LEADER_FIFO_REASON,
-            detail=_ACTIVE_LEADER_FIFO_DETAIL,
+            reason=_ACTIVE_LEADER_TRANSPORT_PIPE_REASON,
+            detail=_ACTIVE_LEADER_TRANSPORT_PIPE_DETAIL,
         )
     return CouplingSupport(
         coupling=normalized,
@@ -432,6 +509,7 @@ def build_audio_runtime_plan_from_system(
         route_mode = route_mode_from_grouping_config(load_config(grouping_env_path))
     except ImportError:
         route_mode = "unknown"
+    correction_config_path = _active_camilla_config_path_from_statefile()
     return build_audio_runtime_plan(
         base_env=base.values,
         outputd_env=outputd.values,
@@ -439,6 +517,7 @@ def build_audio_runtime_plan_from_system(
         overrides=overrides.values(),
         profile_id=profile_id,
         route_mode=route_mode,
+        correction_config_path=correction_config_path,
         base_env_label=base.path,
         outputd_env_label=outputd.path,
         fanin_env_label=fanin.path,
@@ -460,6 +539,7 @@ def build_audio_runtime_plan(
     fanin_env_label: str = DEFAULT_FANIN_ENV_PATH,
     override_label: str = DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH,
     plan_warnings: tuple[str, ...] = (),
+    correction_config_path: str | None = None,
 ) -> AudioRuntimePlan:
     """Resolve audio knobs from operator env, generated env, profile, defaults."""
 
@@ -551,14 +631,281 @@ def build_audio_runtime_plan(
     )
     settings.append(coupling_setting)
     support = coupling_supported_for_route(str(coupling_setting.value), route_mode)
+    topology = transport_topology_for_coupling(
+        str(coupling_setting.value),
+        fanin_env=fanin_values,
+        outputd_env=outputd_values,
+    )
+    combined_plan_warnings = tuple(plan_warnings) + _transport_pipe_env_warnings(
+        coupling=str(coupling_setting.value),
+        outputd_env=outputd_values,
+        outputd_env_label=outputd_env_label,
+    )
     return AudioRuntimePlan(
         profile_id=profile_id or "unknown",
         profile_label=profile.label if profile is not None else "unknown",
         route_mode=route_mode if route_mode in _VALID_ROUTE_MODES else "unknown",
         settings=tuple(settings),
         coupling_support=support,
-        plan_warnings=plan_warnings,
+        transport_topology=topology,
+        correction_latency_eligibility=correction_latency_eligibility_for_config(
+            correction_config_path
+        ),
+        plan_warnings=combined_plan_warnings,
     )
+
+
+def transport_topology_for_coupling(
+    coupling: str | None,
+    *,
+    fanin_env: Mapping[str, str] | None = None,
+    outputd_env: Mapping[str, str] | None = None,
+) -> TransportTopology:
+    """Return the concrete transport topology implied by the coupling intent."""
+
+    fanin_values = dict(fanin_env or {})
+    outputd_values = dict(outputd_env or {})
+    normalized = resolve_coupling(coupling)
+    if normalized == COUPLING_TRANSPORT_PIPE:
+        capture_pipe = resolve_pipe_path(fanin_values.get(PIPE_PATH_ENV_VAR))
+        output_pipe = resolve_outputd_pipe_path(
+            outputd_values.get(OUTPUTD_PIPE_PATH_ENV_VAR)
+        )
+        return TransportTopology(
+            name=COUPLING_TRANSPORT_PIPE,
+            fanin_to_camilla={
+                "transport": "pipe",
+                "path": capture_pipe,
+                "writer": "jasper-fanin",
+                "camilla_capture_type": "RawFile",
+                "format": DEFAULT_CAPTURE_FORMAT,
+                "channels": 2,
+                "sample_rate": DEFAULT_SAMPLE_RATE,
+            },
+            camilla_to_outputd={
+                "transport": "local_pipe",
+                "path": output_pipe,
+                "camilla_playback_type": "File",
+                "reader": "jasper-outputd",
+                "format": DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT,
+                "channels": 2,
+                "sample_rate": DEFAULT_SAMPLE_RATE,
+            },
+            camilla={
+                "enable_rate_adjust": False,
+                "capture_resampler": None,
+            },
+            outputd_content_source="local_pipe",
+        )
+    return TransportTopology(
+        name=COUPLING_LOOPBACK,
+        fanin_to_camilla={
+            "transport": "alsa_loopback",
+            "writer": "jasper-fanin",
+            "playback_pcm": "hw:Loopback,0,7",
+            "camilla_capture_device": DEFAULT_CAPTURE_DEVICE,
+            "format": DEFAULT_CAPTURE_FORMAT,
+            "channels": 2,
+            "sample_rate": DEFAULT_SAMPLE_RATE,
+        },
+        camilla_to_outputd={
+            "transport": "alsa_loopback",
+            "camilla_playback_device": DEFAULT_PLAYBACK_DEVICE,
+            "outputd_capture_pcm": "outputd_content_capture",
+            "format": DEFAULT_PLAYBACK_FORMAT,
+            "channels": 2,
+            "sample_rate": DEFAULT_SAMPLE_RATE,
+        },
+        camilla={
+            "enable_rate_adjust": True,
+            "capture_resampler": None,
+        },
+        outputd_content_source="alsa",
+    )
+
+
+def _transport_pipe_env_warnings(
+    *,
+    coupling: str,
+    outputd_env: Mapping[str, str],
+    outputd_env_label: str,
+) -> tuple[str, ...]:
+    """Return warnings when outputd's generated env contradicts coupling intent."""
+
+    raw_outputd_pipe = str(outputd_env.get(OUTPUTD_PIPE_PATH_ENV_VAR, "")).strip()
+    if coupling == COUPLING_TRANSPORT_PIPE:
+        if raw_outputd_pipe:
+            return ()
+        return (
+            f"{COUPLING_ENV_VAR}=transport_pipe requires "
+            f"{OUTPUTD_PIPE_PATH_ENV_VAR} in {outputd_env_label}; "
+            "run jasper-fanin-coupling-reconcile transport_pipe so outputd "
+            "reads the same Camilla playback pipe the graph emits",
+        )
+    if raw_outputd_pipe:
+        return (
+            f"stale {OUTPUTD_PIPE_PATH_ENV_VAR} in {outputd_env_label} while "
+            f"{COUPLING_ENV_VAR}={coupling}; run "
+            "jasper-fanin-coupling-reconcile loopback to return outputd to ALSA "
+            "content capture",
+        )
+    return ()
+
+
+def correction_latency_eligibility(
+    *,
+    fir_mode: str | None = None,
+    measured_group_delay_ms: float | None = None,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    max_group_delay_frames: int = MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES,
+) -> CorrectionLatencyEligibility:
+    """Return the hard gate for claiming low-latency room correction.
+
+    PEQ/IIR or minimum-phase correction is eligible. Linear, mixed, or unknown
+    FIR is eligible only when measured group delay is present and inside the
+    budget; otherwise the system may still play, but it must not claim the
+    low-latency target.
+    """
+
+    mode = (fir_mode or "peq_iir").strip().lower()
+    if mode in {"", "peq", "iir", "peq_iir", "minimum_phase"}:
+        return CorrectionLatencyEligibility(
+            eligible=True,
+            minimum_phase_or_iir=True,
+            measured_group_delay_frames=0,
+            mode="minimum_phase" if mode == "minimum_phase" else "peq_iir",
+            max_group_delay_frames=max_group_delay_frames,
+        )
+    delay_frames: int | None = None
+    if measured_group_delay_ms is not None:
+        delay_frames = round(float(measured_group_delay_ms) * sample_rate / 1000.0)
+    if delay_frames is None:
+        return CorrectionLatencyEligibility(
+            eligible=False,
+            minimum_phase_or_iir=False,
+            measured_group_delay_frames=None,
+            blocking_reason="fir_group_delay_unmeasured",
+            mode=mode,
+            max_group_delay_frames=max_group_delay_frames,
+        )
+    if delay_frames > max_group_delay_frames:
+        return CorrectionLatencyEligibility(
+            eligible=False,
+            minimum_phase_or_iir=False,
+            measured_group_delay_frames=delay_frames,
+            blocking_reason="fir_group_delay_exceeds_low_latency_budget",
+            mode=mode,
+            max_group_delay_frames=max_group_delay_frames,
+        )
+    return CorrectionLatencyEligibility(
+        eligible=True,
+        minimum_phase_or_iir=False,
+        measured_group_delay_frames=delay_frames,
+        mode=mode,
+        max_group_delay_frames=max_group_delay_frames,
+    )
+
+
+_CONV_FILTER_RE = re.compile(
+    r"^\s*type:\s*(?:Conv|Convolution)\s*$",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+_WAV_FILENAME_RE = re.compile(
+    r"^\s*filename:\s*[\"']?([^\"'\n#]+?\.wav)[\"']?\s*$",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+
+
+def correction_latency_eligibility_for_config(
+    config_path: str | None,
+) -> CorrectionLatencyEligibility:
+    """Read the active Camilla config for FIR latency evidence.
+
+    PEQ/IIR configs have no convolution filter and remain eligible. A config
+    with convolution filters must carry bundle-local FIR metadata beside each
+    referenced coefficient WAV; missing/unknown metadata blocks the
+    low-latency claim instead of silently assuming minimum phase.
+    """
+
+    if not config_path:
+        return correction_latency_eligibility()
+    path = Path(config_path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return correction_latency_eligibility()
+    if not _CONV_FILTER_RE.search(text):
+        return correction_latency_eligibility()
+
+    metadata_paths = _fir_metadata_paths_for_config(text, config_path=path)
+    if not metadata_paths:
+        return correction_latency_eligibility(fir_mode="unknown")
+
+    verdicts: list[CorrectionLatencyEligibility] = []
+    for metadata_path in metadata_paths:
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return correction_latency_eligibility(fir_mode="unknown")
+        if not isinstance(payload, dict):
+            return correction_latency_eligibility(fir_mode="unknown")
+        mode = str(payload.get("mode") or "unknown")
+        delay_raw = payload.get("filter_group_delay_ms")
+        delay_ms: float | None
+        try:
+            delay_ms = float(delay_raw) if delay_raw is not None else None
+        except (TypeError, ValueError):
+            delay_ms = None
+        verdict = correction_latency_eligibility(
+            fir_mode=mode,
+            measured_group_delay_ms=delay_ms,
+        )
+        if not verdict.eligible:
+            return verdict
+        verdicts.append(verdict)
+
+    non_min_phase = [v for v in verdicts if not v.minimum_phase_or_iir]
+    if not non_min_phase:
+        return correction_latency_eligibility(fir_mode="minimum_phase")
+    worst = max(
+        non_min_phase,
+        key=lambda v: v.measured_group_delay_frames or 0,
+    )
+    return CorrectionLatencyEligibility(
+        eligible=True,
+        minimum_phase_or_iir=False,
+        measured_group_delay_frames=worst.measured_group_delay_frames,
+        blocking_reason="",
+        mode="fir_measured",
+        max_group_delay_frames=worst.max_group_delay_frames,
+    )
+
+
+def _fir_metadata_paths_for_config(text: str, *, config_path: Path) -> tuple[Path, ...]:
+    out: list[Path] = []
+    for raw in _WAV_FILENAME_RE.findall(text):
+        wav_path = Path(raw.strip())
+        if not wav_path.is_absolute():
+            wav_path = config_path.parent / wav_path
+        out.append(wav_path.with_suffix(".json"))
+    return tuple(out)
+
+
+def _active_camilla_config_path_from_statefile() -> str | None:
+    statefile = Path(
+        os.environ.get(
+            "JASPER_CAMILLA_STATEFILE",
+            "/var/lib/camilladsp/outputd-statefile.yml",
+        )
+    )
+    try:
+        text = statefile.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r"^\s*config_path:\s*(.+?)\s*$", text, flags=re.MULTILINE)
+    if not match:
+        return None
+    return match.group(1).strip().strip("'\"") or None
 
 
 def outputd_latency_floor_actions(
@@ -669,7 +1016,10 @@ def fanin_coupling_capture_kwargs(
         EmitSoundConfigKwargs,
         capture_kwargs_for_coupling(
             coupling,
-            fifo_path=resolve_fifo_path(source.get(FIFO_PATH_ENV_VAR)),
+            pipe_path=resolve_pipe_path(source.get(PIPE_PATH_ENV_VAR)),
+            outputd_pipe_path=resolve_outputd_pipe_path(
+                source.get(OUTPUTD_PIPE_PATH_ENV_VAR)
+            ),
         ),
     )
 
@@ -683,13 +1033,14 @@ def apply_capture_precedence(
 ) -> EmitSoundConfigKwargs:
     """Apply capture-precedence policy to an ``emit_sound_config`` kwargs dict.
 
-    The shared fan-in FIFO coupling applies only when no more-specific capture
+    The shared fan-in transport coupling applies only when no more-specific
     topology already owns this emit:
 
     - a live lean capture wins because it is the more-exclusive USB-only path;
-    - a grouped/member pipe sink wins because its playback pipe owns rate
-      tracking and is mutually exclusive with a rate-adjusted File capture;
-    - otherwise the fan-in coupling capture kwargs overwrite capture-side keys.
+    - a grouped/member pipe sink wins because its Snapcast playback pipe is
+      mutually exclusive with the local Camilla -> outputd playback pipe;
+    - otherwise the fan-in coupling kwargs overwrite the local Camilla capture
+      and playback transport keys together.
 
     Empty coupling kwargs keep the input kwargs unchanged apart from returning a
     detached ``dict`` for callers to mutate safely.

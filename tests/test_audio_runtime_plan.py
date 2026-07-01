@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -19,6 +20,8 @@ from jasper.audio_runtime_plan import (
     DEFAULT_OUTPUTD_PERIOD_FRAMES,
     build_audio_runtime_plan,
     coupling_supported_for_route,
+    correction_latency_eligibility,
+    correction_latency_eligibility_for_config,
     decide_source_low_latency_route,
     fanin_coupling_action,
     fanin_coupling_capture_kwargs,
@@ -27,9 +30,15 @@ from jasper.audio_runtime_plan import (
     low_latency_feature_flags,
     outputd_latency_floor_actions,
     resolve_fanin_output_buffer_target,
+    transport_topology_for_coupling,
     usbsink_output_mode_action,
 )
-from jasper.fanin_coupling import COUPLING_ENV_VAR, COUPLING_FIFO, COUPLING_LOOPBACK
+from jasper.fanin_coupling import (
+    COUPLING_ENV_VAR,
+    COUPLING_LOOPBACK,
+    COUPLING_TRANSPORT_PIPE,
+    OUTPUTD_PIPE_PATH_ENV_VAR,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -246,16 +255,20 @@ def test_lean_capture_kwargs_emit_plan_owned_rawfile_shape():
 
 def test_fanin_coupling_capture_kwargs_explicit_intent_beats_env(monkeypatch):
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
-    monkeypatch.setenv("JASPER_FANIN_CAMILLA_FIFO", "/run/custom.pipe")
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_PIPE", "/run/custom.pipe")
+    monkeypatch.setenv("JASPER_OUTPUTD_LOCAL_CONTENT_PIPE", "/run/outputd.pipe")
 
-    kwargs = fanin_coupling_capture_kwargs("fifo")
+    kwargs = fanin_coupling_capture_kwargs(COUPLING_TRANSPORT_PIPE)
 
     assert kwargs["capture_pipe_path"] == "/run/custom.pipe"
-    assert kwargs["resampler_type"] == "AsyncSinc"
-    assert kwargs["enable_rate_adjust"] is True
-    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "fifo")
+    assert kwargs["playback_pipe_path"] == "/run/outputd.pipe"
+    assert kwargs["resampler_type"] is None
+    assert kwargs["enable_rate_adjust"] is False
+    assert kwargs["transport_paced_pipe"] is True
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", COUPLING_TRANSPORT_PIPE)
     assert fanin_coupling_capture_kwargs("loopback") == {}
     assert "capture_pipe_path" in fanin_coupling_capture_kwargs(None)
+    assert "playback_pipe_path" in fanin_coupling_capture_kwargs(None)
 
 
 def test_capture_precedence_applies_fanin_coupling_when_no_stronger_capture():
@@ -275,22 +288,33 @@ def test_capture_precedence_applies_fanin_coupling_when_no_stronger_capture():
 
 def test_capture_precedence_lean_and_grouped_sink_block_fanin_coupling():
     base = {"enable_rate_adjust": True, "playback_pipe_path": None}
-    coupling = {"capture_pipe_path": "/run/jasper-fanin/camilla.pipe"}
+    coupling = {
+        "capture_pipe_path": "/run/jasper-fanin/camilla.pipe",
+        "playback_pipe_path": "/run/jasper-outputd/content.pipe",
+        "enable_rate_adjust": False,
+        "transport_paced_pipe": True,
+    }
     lean = {"capture_pipe_path": "/run/jasper-usbsink/lean.pipe"}
     grouped = {"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False}
 
-    assert "capture_pipe_path" not in apply_capture_precedence(
+    lean_result = apply_capture_precedence(
         base,
         coupling,
         lean_capture_kwargs=lean,
         member_kwargs=base,
     )
-    assert "capture_pipe_path" not in apply_capture_precedence(
+    grouped_result = apply_capture_precedence(
         grouped,
         coupling,
         lean_capture_kwargs=None,
         member_kwargs=grouped,
     )
+    assert "capture_pipe_path" not in lean_result
+    assert lean_result["playback_pipe_path"] is None
+    assert "transport_paced_pipe" not in lean_result
+    assert grouped_result["playback_pipe_path"] == "/run/snapfifo"
+    assert "capture_pipe_path" not in grouped_result
+    assert "transport_paced_pipe" not in grouped_result
 
 
 def test_fanin_output_buffer_target_resolves_lab_override():
@@ -324,7 +348,7 @@ def test_fanin_output_buffer_target_uses_runtime_override():
 
 def test_fanin_coupling_is_transition_owned_not_lab_overrideable():
     plan = build_audio_runtime_plan(
-        overrides={COUPLING_ENV_VAR: COUPLING_FIFO},
+        overrides={COUPLING_ENV_VAR: COUPLING_TRANSPORT_PIPE},
         route_mode="solo",
         override_label="/var/lib/jasper/audio_runtime_overrides.json",
     )
@@ -342,33 +366,202 @@ def test_fanin_coupling_is_transition_owned_not_lab_overrideable():
     )
 
 
-def test_fifo_route_policy_blocks_active_leader_but_allows_solo():
-    blocked = coupling_supported_for_route(COUPLING_FIFO, "active_leader")
-    solo = coupling_supported_for_route(COUPLING_FIFO, "solo")
+def test_transport_pipe_route_policy_blocks_active_leader_but_allows_solo():
+    blocked = coupling_supported_for_route(COUPLING_TRANSPORT_PIPE, "active_leader")
+    solo = coupling_supported_for_route(COUPLING_TRANSPORT_PIPE, "solo")
 
     assert blocked.supported is False
-    assert blocked.reason == "fanin_fifo_coupling_unsupported"
+    assert blocked.reason == "fanin_transport_pipe_coupling_unsupported"
     assert solo.supported is True
 
 
 def test_fanin_coupling_action_sets_supported_coupling():
-    action, support = fanin_coupling_action("fifo", "solo")
+    action, support = fanin_coupling_action(COUPLING_TRANSPORT_PIPE, "solo")
 
     assert support.supported is True
     assert action is not None
     assert (action.action, action.key, action.value) == (
         "set",
         "JASPER_FANIN_CAMILLA_COUPLING",
-        "fifo",
+        COUPLING_TRANSPORT_PIPE,
     )
 
 
 def test_fanin_coupling_action_blocks_unsupported_route():
-    action, support = fanin_coupling_action("fifo", "active_leader")
+    action, support = fanin_coupling_action(COUPLING_TRANSPORT_PIPE, "active_leader")
 
     assert action is None
     assert support.supported is False
-    assert support.reason == "fanin_fifo_coupling_unsupported"
+    assert support.reason == "fanin_transport_pipe_coupling_unsupported"
+
+
+def test_transport_topology_reports_loopback_and_transport_pipe_geometry():
+    loopback = transport_topology_for_coupling("loopback").to_dict()
+    pipe = transport_topology_for_coupling(
+        COUPLING_TRANSPORT_PIPE,
+        fanin_env={"JASPER_FANIN_CAMILLA_PIPE": "/run/custom-capture.pipe"},
+        outputd_env={"JASPER_OUTPUTD_LOCAL_CONTENT_PIPE": "/run/custom-output.pipe"},
+    ).to_dict()
+
+    assert loopback["name"] == "loopback"
+    assert loopback["outputd_content_source"] == "alsa"
+    assert loopback["fanin_to_camilla"]["transport"] == "alsa_loopback"
+    assert pipe["name"] == COUPLING_TRANSPORT_PIPE
+    assert pipe["outputd_content_source"] == "local_pipe"
+    assert pipe["fanin_to_camilla"]["path"] == "/run/custom-capture.pipe"
+    assert pipe["camilla_to_outputd"]["path"] == "/run/custom-output.pipe"
+    assert pipe["camilla_to_outputd"]["format"] == "S32_LE"
+    assert pipe["camilla"]["enable_rate_adjust"] is False
+    assert pipe["camilla"]["capture_resampler"] is None
+
+
+def test_runtime_plan_to_dict_exposes_topology_and_correction_latency_gate():
+    plan = build_audio_runtime_plan(
+        fanin_env={COUPLING_ENV_VAR: COUPLING_TRANSPORT_PIPE},
+        outputd_env={"JASPER_OUTPUTD_LOCAL_CONTENT_PIPE": "/run/content.pipe"},
+        route_mode="solo",
+    )
+    payload = plan.to_dict()
+
+    assert payload["transport_topology"]["name"] == COUPLING_TRANSPORT_PIPE
+    assert payload["transport_topology"]["camilla_to_outputd"]["path"] == "/run/content.pipe"
+    assert payload["correction_latency_eligibility"]["eligible"] is True
+    assert (
+        payload["correction_latency_eligibility"]["minimum_phase_or_iir"]
+        is True
+    )
+
+
+def test_transport_pipe_plan_warns_when_outputd_pipe_env_missing():
+    plan = build_audio_runtime_plan(
+        fanin_env={COUPLING_ENV_VAR: COUPLING_TRANSPORT_PIPE},
+        outputd_env={},
+        outputd_env_label="/var/lib/jasper/outputd.env",
+        route_mode="solo",
+    )
+
+    assert any(
+        OUTPUTD_PIPE_PATH_ENV_VAR in warning
+        and "jasper-fanin-coupling-reconcile transport_pipe" in warning
+        for warning in plan.warnings
+    )
+
+
+def test_loopback_plan_warns_on_stale_outputd_pipe_env():
+    plan = build_audio_runtime_plan(
+        fanin_env={COUPLING_ENV_VAR: COUPLING_LOOPBACK},
+        outputd_env={OUTPUTD_PIPE_PATH_ENV_VAR: "/run/jasper-outputd/content.pipe"},
+        outputd_env_label="/var/lib/jasper/outputd.env",
+        route_mode="solo",
+    )
+
+    assert any(
+        "stale" in warning
+        and OUTPUTD_PIPE_PATH_ENV_VAR in warning
+        and "jasper-fanin-coupling-reconcile loopback" in warning
+        for warning in plan.warnings
+    )
+
+
+def test_correction_latency_gate_blocks_unmeasured_or_high_delay_fir():
+    iir = correction_latency_eligibility()
+    minimum = correction_latency_eligibility(fir_mode="minimum_phase")
+    unknown = correction_latency_eligibility(fir_mode="unknown")
+    high = correction_latency_eligibility(
+        fir_mode="linear_phase",
+        measured_group_delay_ms=21.333,
+    )
+    measured_small = correction_latency_eligibility(
+        fir_mode="mixed_phase",
+        measured_group_delay_ms=4.0,
+    )
+
+    assert iir.eligible and iir.minimum_phase_or_iir
+    assert minimum.eligible and minimum.minimum_phase_or_iir
+    assert unknown.eligible is False
+    assert unknown.blocking_reason == "fir_group_delay_unmeasured"
+    assert high.eligible is False
+    assert high.measured_group_delay_frames == 1024
+    assert high.blocking_reason == "fir_group_delay_exceeds_low_latency_budget"
+    assert measured_small.eligible is True
+    assert measured_small.minimum_phase_or_iir is False
+
+
+def test_correction_latency_gate_reads_active_fir_metadata(tmp_path):
+    fir_dir = tmp_path / "fir"
+    fir_dir.mkdir()
+    (fir_dir / "linear.json").write_text(json.dumps({
+        "mode": "linear_phase",
+        "filter_group_delay_ms": 21.333,
+    }))
+    config = tmp_path / "correction.yml"
+    config.write_text(
+        "filters:\n"
+        "  room_fir:\n"
+        "    type: Conv\n"
+        "    parameters:\n"
+        "      filename: fir/linear.wav\n",
+        encoding="utf-8",
+    )
+
+    verdict = correction_latency_eligibility_for_config(str(config))
+
+    assert verdict.eligible is False
+    assert verdict.measured_group_delay_frames == 1024
+    assert verdict.blocking_reason == "fir_group_delay_exceeds_low_latency_budget"
+
+
+def test_transport_pipe_plan_errors_on_high_latency_fir(tmp_path):
+    fir_dir = tmp_path / "fir"
+    fir_dir.mkdir()
+    (fir_dir / "linear.json").write_text(json.dumps({
+        "mode": "linear_phase",
+        "filter_group_delay_ms": 21.333,
+    }))
+    config = tmp_path / "correction.yml"
+    config.write_text(
+        "filters:\n"
+        "  room_fir:\n"
+        "    type: Conv\n"
+        "    parameters:\n"
+        "      filename: fir/linear.wav\n",
+        encoding="utf-8",
+    )
+
+    plan = build_audio_runtime_plan(
+        fanin_env={COUPLING_ENV_VAR: COUPLING_TRANSPORT_PIPE},
+        outputd_env={OUTPUTD_PIPE_PATH_ENV_VAR: "/run/jasper-outputd/content.pipe"},
+        route_mode="solo",
+        correction_config_path=str(config),
+    )
+
+    assert any("correction latency" in error for error in plan.errors)
+    assert plan.to_dict()["correction_latency_eligibility"]["eligible"] is False
+
+
+def test_correction_latency_gate_allows_peq_and_minimum_phase(tmp_path):
+    peq = tmp_path / "peq.yml"
+    peq.write_text("filters:\n  room_peq_1:\n    type: Biquad\n", encoding="utf-8")
+    fir_dir = tmp_path / "fir"
+    fir_dir.mkdir()
+    (fir_dir / "minimum.json").write_text(json.dumps({
+        "mode": "minimum_phase",
+        "filter_group_delay_ms": 0.0,
+    }))
+    minimum = tmp_path / "minimum.yml"
+    minimum.write_text(
+        "filters:\n"
+        "  room_fir:\n"
+        "    type: Conv\n"
+        "    parameters:\n"
+        "      filename: fir/minimum.wav\n",
+        encoding="utf-8",
+    )
+
+    assert correction_latency_eligibility_for_config(str(peq)).eligible is True
+    verdict = correction_latency_eligibility_for_config(str(minimum))
+    assert verdict.eligible is True
+    assert verdict.minimum_phase_or_iir is True
 
 
 def test_source_low_latency_route_is_usb_exclusive_only():

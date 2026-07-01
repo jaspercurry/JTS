@@ -1,7 +1,7 @@
 [Unit]
 Description=CamillaDSP (always-on, outputd + master_gain ducking node)
-After=sound.target network.target jasper-fanin.service
-Wants=sound.target jasper-fanin.service
+After=sound.target network.target jasper-outputd.service jasper-fanin.service
+Wants=sound.target jasper-outputd.service jasper-fanin.service
 # Camilla must NEVER stay stopped. The voice daemon hard-requires it
 # (Requires=jasper-camilla.service) and the audio chain breaks the
 # moment it exits. A real-world incident on 2026-05-07 at 18:04 EDT

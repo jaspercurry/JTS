@@ -56,7 +56,7 @@ pub enum ContentRead {
 }
 
 pub struct AlsaBackend {
-    content: PCM,
+    content: Option<PCM>,
     dac: PCM,
     pub content_pcm: String,
     pub dac_pcm: String,
@@ -96,29 +96,41 @@ pub struct PairedCompositeSink {
 
 impl AlsaBackend {
     pub fn new(config: &Config) -> Result<Self> {
-        let content =
-            PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
-                format!("opening outputd content capture PCM {}", config.content_pcm)
-            })?;
-        let content_negotiated = configure_pcm(PcmConfig {
-            role: "content",
-            pcm_name: &config.content_pcm,
-            pcm: &content,
-            sample_rate: config.sample_rate,
-            period_frames: config.period_frames,
-            channels: config.content_channels,
-            buffer_frames: config.content_buffer_frames,
-            manual_start: false,
-        })
-        .with_context(|| {
-            format!(
-                "configuring outputd content capture PCM {}",
-                config.content_pcm
+        let (content, content_negotiated) = if config.local_content_pipe.is_some() {
+            (
+                None,
+                NegotiatedPcm {
+                    sample_rate: config.sample_rate,
+                    period_frames: config.period_frames,
+                    buffer_frames: config.period_frames,
+                },
             )
-        })?;
-        content
-            .start()
-            .with_context(|| format!("starting capture PCM {}", config.content_pcm))?;
+        } else {
+            let content =
+                PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
+                    format!("opening outputd content capture PCM {}", config.content_pcm)
+                })?;
+            let negotiated = configure_pcm(PcmConfig {
+                role: "content",
+                pcm_name: &config.content_pcm,
+                pcm: &content,
+                sample_rate: config.sample_rate,
+                period_frames: config.period_frames,
+                channels: config.content_channels,
+                buffer_frames: config.content_buffer_frames,
+                manual_start: false,
+            })
+            .with_context(|| {
+                format!(
+                    "configuring outputd content capture PCM {}",
+                    config.content_pcm
+                )
+            })?;
+            content
+                .start()
+                .with_context(|| format!("starting capture PCM {}", config.content_pcm))?;
+            (Some(content), negotiated)
+        };
 
         let dac = PCM::new(&config.dac_pcm, Direction::Playback, false)
             .with_context(|| format!("opening outputd DAC PCM {}", config.dac_pcm))?;
@@ -135,8 +147,9 @@ impl AlsaBackend {
         .with_context(|| format!("configuring outputd DAC PCM {}", config.dac_pcm))?;
 
         eprintln!(
-            "event=outputd.alsa.opened content_pcm={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={}",
+            "event=outputd.alsa.opened content_pcm={} content_source={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={}",
             config.content_pcm,
+            if config.local_content_pipe.is_some() { "local_pipe" } else { "alsa" },
             config.dac_pcm,
             config.content_channels,
             dac_negotiated.sample_rate,
@@ -193,8 +206,11 @@ impl AlsaBackend {
 
     pub fn read_content_available(&mut self, out: &mut [i16]) -> Result<ContentRead> {
         let requested_frames = out.len() / (self.channels as usize);
-        let io = self
+        let content = self
             .content
+            .as_ref()
+            .context("outputd ALSA content PCM is disabled in local-pipe mode")?;
+        let io = content
             .io_i16()
             .context("getting i16 IO handle for outputd content input")?;
         match io.readi(out) {
@@ -232,7 +248,7 @@ impl AlsaBackend {
                         self.content_negotiated.period_frames,
                         self.content_negotiated.buffer_frames,
                     );
-                    self.content
+                    content
                         .try_recover(e, true)
                         .context("recovering outputd content xrun")?;
                     Ok(ContentRead::XrunRecovered)

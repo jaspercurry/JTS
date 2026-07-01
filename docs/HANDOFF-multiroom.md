@@ -853,11 +853,11 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   stays bonded so the next reconcile re-applies the bond when snapserver
   is healthy; `event=camilla_pipe_guard.*` + the `leader pipe` doctor
   check surface the degraded state.
-  **Second dead-pipe class — lean CAPTURE pipe (2026-06):** the same
+  **Second dead-pipe class — lean / transport_pipe CAPTURE pipe (2026-06):** the same
   guard also inspects the statefile config's RawFile CAPTURE source. The
-  lean / FIFO-coupling lane captures from a named pipe under `/run`
+  lean lane and the local transport_pipe lane capture from a named pipe under `/run`
   (`/run/jasper-usbsink/lean.pipe`, `/run/jasper-fanin/camilla.pipe`); if
-  usbsink/fan-in reverts off the lean lane the pipe disappears, and a
+  usbsink/fan-in reverts off its pipe mode the pipe disappears, and a
   camilla restart that reloads the persisted lean config crash-loops on
   the absent capture pipe (THE incident). When the config's capture
   filename is a `/run` pipe that does not exist, the guard re-points the

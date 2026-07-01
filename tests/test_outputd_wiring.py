@@ -10,6 +10,7 @@ import shlex
 from pathlib import Path
 
 from jasper.audio_hardware import dac
+from jasper.camilla_config_contract import DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT
 from jasper.tts_routing import (
     DUCK_TRANSPORT_ENV,
     FANIN_TTS_SOCKET,
@@ -86,6 +87,18 @@ def test_asoundrc_declares_outputd_post_dsp_lane_without_dsnoop():
     assert "type plug" in capture
     assert 'pcm "hw:Loopback,1,6"' in capture
     assert "type dsnoop" not in capture
+
+
+def test_outputd_local_content_pipe_format_matches_camilla_contract():
+    local_pipe = (REPO / "rust" / "jasper-outputd" / "src" / "local_content_pipe.rs").read_text()
+    state = (REPO / "rust" / "jasper-outputd" / "src" / "state.rs").read_text()
+    main = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
+
+    assert DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT == "S32_LE"
+    assert 'LOCAL_CONTENT_PIPE_FORMAT: &str = "S32_LE"' in local_pipe
+    assert "s32le_to_i16" in local_pipe
+    assert "LOCAL_CONTENT_PIPE_FORMAT" in state
+    assert "LOCAL_CONTENT_PIPE_FORMAT" in main
 
 
 def test_asoundrc_active_content_lane_is_raw_hw_no_plug():
@@ -572,12 +585,14 @@ def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
     # vacuously green.
     clipped = run_alsa.index("let clipped = count_full_scale_samples(&content_buf);")
     state = run_alsa.index(
-        "state.mark_period(sink.counters(), reference_sequence, clipped);"
+        "state_counters(&sink, local_content_pipe.as_ref()),",
+        clipped,
     )
     assert content_read < dac_write < publish < state
     assert dac_write < clipped < composite_fold < state
     assert "state.mark_period(sink.counters(), reference_sequence, 0)" not in run_alsa
     assert "clipped_samples=0" not in run_alsa
+    assert "fn state_counters(" in main_rs
 
     # Bonded TTS branch — duck → prepare(mix) → DAC write → DAC-true
     # commit → post-mix reference publish → ledger-true state mark.
@@ -589,7 +604,8 @@ def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
         "ref_outputs.publish(core.output_period(), reference_sequence);"
     )
     tts_state = run_alsa.index(
-        "state.mark_period(sink.counters(), reference_sequence, report.clipped_samples);"
+        "state_counters(&sink, local_content_pipe.as_ref()),",
+        tts_publish,
     )
     assert content_read < duck < prepare < tts_write < commit < tts_publish
     assert tts_publish < tts_state

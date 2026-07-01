@@ -87,8 +87,9 @@ pub struct StateServer {
     output_frames_written: Arc<AtomicU64>,
     output_xrun_count: Arc<AtomicU64>,
     output_delay_frames: Arc<AtomicU64>,
-    /// Coupling transport echo + (under fifo) the shared FIFO counters. Cloned
-    /// from the mixer so STATUS reads the same atomics the work loop writes.
+    /// Coupling transport echo + (under transport_pipe) the shared pipe
+    /// counters. Cloned from the mixer so STATUS reads the same atomics the work
+    /// loop writes.
     coupling: CouplingObservability,
     /// Music-only side-output (multi-room sync tap) — shared with the
     /// mixer. `None` pcm = solo speaker (tap disabled).
@@ -406,6 +407,8 @@ impl StateServer {
                 buf.push_str(r#""resampler":{"#);
                 push_kv_bool(&mut buf, "armed", r.armed);
                 buf.push(',');
+                push_kv_bool(&mut buf, "locked", r.locked.load(Ordering::Relaxed));
+                buf.push(',');
                 push_kv_u64(
                     &mut buf,
                     "input_frames",
@@ -497,41 +500,41 @@ impl StateServer {
         buf.push(',');
 
         // coupling transport echo. `transport:"loopback"` (default) carries no
-        // fifo block — byte-identical observability to the pre-coupling daemon.
-        // `transport:"fifo"` adds a `fifo` block with the shared-capture pipe
+        // pipe block — byte-identical observability to the pre-coupling daemon.
+        // `transport:"transport_pipe"` adds a `pipe` block with the shared-capture pipe
         // path, the requested + kernel-resolved pipe size, and the reopen /
         // dropped-period counters (a growing dropped_periods while CamillaDSP is
         // up means the shared capture is starving — jasper-doctor's actionable
         // signal). actual_pipe_bytes is 0 when the write end is not currently
         // open (reader absent / CamillaDSP reloading).
         push_kv_str(&mut buf, "transport", self.coupling.transport);
-        if let Some(fifo) = &self.coupling.fifo {
+        if let Some(pipe) = &self.coupling.pipe {
             buf.push(',');
-            buf.push_str(r#""fifo":{"#);
-            push_kv_str(&mut buf, "path", &fifo.path);
+            buf.push_str(r#""pipe":{"#);
+            push_kv_str(&mut buf, "path", &pipe.path);
             buf.push(',');
             push_kv_u64(
                 &mut buf,
                 "requested_pipe_bytes",
-                fifo.requested_pipe_bytes as u64,
+                pipe.requested_pipe_bytes as u64,
             );
             buf.push(',');
             push_kv_u64(
                 &mut buf,
                 "actual_pipe_bytes",
-                fifo.actual_pipe_bytes.load(Ordering::Relaxed),
+                pipe.actual_pipe_bytes.load(Ordering::Relaxed),
             );
             buf.push(',');
             push_kv_u64(
                 &mut buf,
                 "reopen_count",
-                fifo.reopen_count.load(Ordering::Relaxed),
+                pipe.reopen_count.load(Ordering::Relaxed),
             );
             buf.push(',');
             push_kv_u64(
                 &mut buf,
                 "dropped_periods",
-                fifo.dropped_periods.load(Ordering::Relaxed),
+                pipe.dropped_periods.load(Ordering::Relaxed),
             );
             buf.push('}');
         }
@@ -769,6 +772,7 @@ mod tests {
                     // milli-ppm stored in the u64 atomic.
                     resampler: Some(LaneResamplerObservability {
                         armed: true,
+                        locked: Arc::new(AtomicBool::new(true)),
                         input_frames: Arc::new(AtomicU64::new(48000)),
                         output_frames: Arc::new(AtomicU64::new(47988)),
                         silence_frames: Arc::new(AtomicU64::new(256)),
@@ -789,7 +793,7 @@ mod tests {
             output_delay_frames: Arc::new(AtomicU64::new(1024)),
             coupling: CouplingObservability {
                 transport: "loopback",
-                fifo: None,
+                pipe: None,
             },
             music_output_pcm: Some("hw:Loopback,0,6".to_string()),
             music_frames_written: Arc::new(AtomicU64::new(54321)),
@@ -804,12 +808,12 @@ mod tests {
         }
     }
 
-    fn make_fifo_test_server() -> StateServer {
-        use crate::mixer::FifoObservability;
+    fn make_pipe_test_server() -> StateServer {
+        use crate::mixer::PipeObservability;
         let mut server = make_test_server();
         server.coupling = CouplingObservability {
-            transport: "fifo",
-            fifo: Some(FifoObservability {
+            transport: "transport_pipe",
+            pipe: Some(PipeObservability {
                 path: "/run/jasper-fanin/camilla.pipe".to_string(),
                 requested_pipe_bytes: 8192,
                 reopen_count: Arc::new(AtomicU64::new(2)),
@@ -879,6 +883,7 @@ mod tests {
             "armed lane must render a resampler block: {j}"
         );
         assert!(j.contains(r#""armed":true"#), "missing armed flag: {j}");
+        assert!(j.contains(r#""locked":true"#), "missing locked flag: {j}");
         assert!(
             j.contains(r#""input_frames":48000"#),
             "missing resampler input_frames: {j}"
@@ -922,8 +927,8 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_json_loopback_transport_has_no_fifo_block() {
-        // Default coupling: transport=loopback, NO fifo block — byte-identical
+    fn snapshot_json_loopback_transport_has_no_pipe_block() {
+        // Default coupling: transport=loopback, NO pipe block — byte-identical
         // observability to the pre-coupling daemon.
         let server = make_test_server();
         let j = server.snapshot_json();
@@ -932,24 +937,24 @@ mod tests {
             "missing transport: {j}"
         );
         assert!(
-            !j.contains(r#""fifo":"#),
-            "loopback must emit no fifo block: {j}"
+            !j.contains(r#""pipe":"#),
+            "loopback must emit no pipe block: {j}"
         );
     }
 
     #[test]
-    fn snapshot_json_fifo_transport_reports_observability() {
-        // =fifo: transport + the shared FIFO observability counters.
-        let server = make_fifo_test_server();
+    fn snapshot_json_transport_pipe_reports_pipe_observability() {
+        // transport_pipe: transport + the shared pipe observability counters.
+        let server = make_pipe_test_server();
         let j = server.snapshot_json();
         assert!(
-            j.contains(r#""transport":"fifo""#),
+            j.contains(r#""transport":"transport_pipe""#),
             "missing transport: {j}"
         );
-        assert!(j.contains(r#""fifo":{"#), "missing fifo block: {j}");
+        assert!(j.contains(r#""pipe":{"#), "missing pipe block: {j}");
         assert!(
             j.contains(r#""path":"/run/jasper-fanin/camilla.pipe""#),
-            "missing fifo path: {j}"
+            "missing pipe path: {j}"
         );
         assert!(
             j.contains(r#""requested_pipe_bytes":8192"#),

@@ -13,9 +13,11 @@
 # config BEFORE camilla launches, so the failing starts never happen:
 #
 #   1. PLAYBACK pipe — a BONDED pipe config (docs/HANDOFF-multiroom.md
-#      §2 — playback File -> the snapserver FIFO) whose pipe is DEAD.
+#      §2 — playback File -> the snapserver FIFO), or a local transport-pipe
+#      config (playback File -> jasper-outputd's local content pipe), whose
+#      pipe is DEAD.
 #
-#   2. CAPTURE pipe — a lean / FIFO-coupling config whose RawFile
+#   2. CAPTURE pipe — a lean / transport-pipe config whose RawFile
 #      CAPTURE source is a named pipe under /run (the usbsink lean.pipe
 #      or the fan-in camilla.pipe) that is ABSENT. THE INCIDENT
 #      (2026-06-2x): the statefile was left pointing at the lean config
@@ -69,12 +71,17 @@ SNAPFIFO="${JASPER_GROUPING_SNAPFIFO:-/run/jasper-snapserver/snapfifo}"
 # Seconds the reader-presence probe waits before declaring "no reader".
 PROBE_TIMEOUT="${JASPER_PIPE_GUARD_PROBE_TIMEOUT:-0.5}"
 # Capture-pipe roots: a RawFile capture whose filename lives under one of
-# these and is ABSENT means the lean / FIFO-coupling producer is gone and
+# these and is ABSENT means the lean / transport-pipe producer is gone and
 # camilla would crash-loop on the dangling config. /run is the runtime
-# tmpfs every lean/coupling pipe lives under (usbsink lean.pipe, fan-in
+# tmpfs every lean/transport pipe lives under (usbsink lean.pipe, fan-in
 # camilla.pipe); narrowing to /run keeps the guard from ever touching a
 # persistent ALSA-or-file capture path.
 CAPTURE_RUNTIME_ROOT="${JASPER_PIPE_GUARD_CAPTURE_ROOT:-/run/}"
+# Playback-pipe roots: a File playback sink under this runtime root must have
+# a live FIFO reader before Camilla starts. This covers the local
+# transport-pipe outputd pipe without changing the older SnapFIFO-specific
+# reason strings below.
+PLAYBACK_RUNTIME_ROOT="${JASPER_PIPE_GUARD_PLAYBACK_ROOT:-/run/}"
 
 log() {
     # log <outcome> [detail...]
@@ -121,6 +128,31 @@ repair_statefile() {
     return 0
 }
 
+check_playback_pipe_or_repair() {
+    local pipe_path="$1" absent_reason="$2" no_reader_reason="$3" \
+        healthy_reason="$4" probe_unavailable_reason="$5" why
+    if [ -p "$pipe_path" ]; then
+        # Reader-presence probe: opening a FIFO for write returns instantly
+        # iff a reader exists; with no reader it blocks (-> timeout). The
+        # momentary write-open is harmless to FIFO readers designed for writers
+        # that come and go. FAIL-OPEN if the timeout tool itself is unavailable.
+        if ! command -v timeout >/dev/null 2>&1; then
+            log ok "reason=$probe_unavailable_reason"
+            exit 0
+        fi
+        if timeout "$PROBE_TIMEOUT" bash -c "exec 3> '$pipe_path'" 2>/dev/null; then
+            log ok "reason=$healthy_reason"
+            exit 0
+        fi
+        why="$no_reader_reason"
+    else
+        why="$absent_reason"
+    fi
+
+    repair_statefile "$why" "$config_path"
+    exit 0
+}
+
 [ -r "$STATEFILE" ] || { log skip reason=no_statefile; exit 0; }
 
 config_path=$(
@@ -131,7 +163,7 @@ config_path=$(
 [ -r "$config_path" ] || { log skip reason=config_unreadable "path=$config_path"; exit 0; }
 
 # --- CAPTURE-pipe check (THE INCIDENT class) ----------------------------
-# A lean / FIFO-coupling config captures from a RawFile named pipe under
+# A lean / transport-pipe config captures from a RawFile named pipe under
 # /run. If that pipe is ABSENT (the producer — usbsink lean lane or fan-in
 # coupling — reverted to the aloop lane), camilla cannot open it and
 # crash-loops to `failed`. Read the config's CAPTURE filename; if it is a
@@ -162,34 +194,41 @@ if [ -n "$capture_filename" ]; then
     esac
 fi
 
-# Pipe-shaped = the config's playback filename names the snapserver
-# FIFO (the emitter writes it as a quoted literal; match either form).
-if ! grep -q "filename:.*${SNAPFIFO}" "$config_path"; then
+# Pipe-shaped = the config's playback block has a filename.
+playback_filename=$(
+    awk '
+        /^[[:space:]]*playback:[[:space:]]*$/ { in_play = 1; next }
+        # A new top-level (or sibling) "<key>:" block ends the playback map.
+        in_play && /^[[:space:]]*[a-zA-Z_]+:[[:space:]]*$/ { in_play = 0 }
+        in_play && /^[[:space:]]*filename:[[:space:]]*/ {
+            sub(/^[[:space:]]*filename:[[:space:]]*/, "")
+            gsub(/["'\'']/, "")
+            print
+            exit
+        }
+    ' "$config_path"
+)
+
+if [ -z "$playback_filename" ]; then
     log ok reason=solo_config
     exit 0
 fi
 
 # Bonded pipe config. Healthy only if the FIFO exists AND has a reader.
-if [ -p "$SNAPFIFO" ]; then
-    # Reader-presence probe: opening a FIFO for write returns instantly
-    # iff a reader exists; with no reader it blocks (-> timeout). The
-    # momentary write-open is harmless to snapserver (a pipe source is
-    # designed for writers that come and go). FAIL-OPEN: if the timeout
-    # tool itself is unavailable, treat exists-as-FIFO as healthy — a
-    # repair needs positive evidence of a dead pipe, never a missing
-    # probe (the Pi always ships coreutils; this guards dev machines).
-    if ! command -v timeout >/dev/null 2>&1; then
-        log ok reason=pipe_exists_probe_unavailable
-        exit 0
-    fi
-    if timeout "$PROBE_TIMEOUT" bash -c "exec 3> '$SNAPFIFO'" 2>/dev/null; then
-        log ok reason=pipe_healthy
-        exit 0
-    fi
-    why=no_reader
-else
-    why=fifo_absent
+if [ "$playback_filename" = "$SNAPFIFO" ]; then
+    check_playback_pipe_or_repair \
+        "$SNAPFIFO" fifo_absent no_reader pipe_healthy pipe_exists_probe_unavailable
 fi
 
-repair_statefile "$why" "$config_path"
+# Local transport-pipe config. Healthy only if outputd has already created and
+# opened its local content pipe for reading.
+case "$playback_filename" in
+    "${PLAYBACK_RUNTIME_ROOT}"*)
+        check_playback_pipe_or_repair \
+            "$playback_filename" playback_pipe_absent playback_pipe_no_reader \
+            playback_pipe_healthy playback_pipe_exists_probe_unavailable
+        ;;
+esac
+
+log ok reason=non_runtime_playback_pipe
 exit 0

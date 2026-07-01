@@ -996,14 +996,14 @@ def recompose_baseline_yaml(
     emit on build/apply, where ``capture_device`` lives.
 
     The fan-in program tap is either the default ALSA snd-aloop capture
-    (``capture_pipe_path`` unset — byte-identical to today) OR the SHARED
-    fan-in→Camilla coupling's named pipe (``capture_pipe_path`` +
-    ``resampler_type`` set, threaded from the graph carrier under
-    ``JASPER_FANIN_CAMILLA_COUPLING=fifo``). Either way Layer A is rebuilt from
-    the canonical evidence and unchanged; only the program-domain capture block
-    differs. ``enable_rate_adjust`` is intentionally NOT a parameter — the active
-    graph hardcodes it true, so the File capture only additionally needs the
-    async resampler.
+    (``capture_pipe_path`` unset — byte-identical to today) OR a legacy
+    File-capture lane (``capture_pipe_path`` + ``resampler_type`` set, threaded
+    from the graph carrier). The end-to-end local ``transport_pipe`` topology is
+    refused before this helper because the active output side has not been
+    designed. Either way Layer A is rebuilt from the canonical evidence and
+    unchanged; only the program-domain capture block differs.
+    ``enable_rate_adjust`` is intentionally NOT a parameter — the active graph
+    hardcodes it true, so a File capture additionally needs the async resampler.
 
     **Gate scope (intentionally a subset of the candidate builder).** This only
     re-checks what it needs to EMIT a structurally-valid baseline — playback

@@ -23,6 +23,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
+    DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
@@ -81,6 +82,7 @@ def emit_sound_config(
     channel_split: ChannelSplit | None = None,
     playback_pipe_path: str | None = None,
     capture_pipe_path: str | None = None,
+    transport_paced_pipe: bool = False,
     resampler_type: str | None = None,
     resampler_profile: str | None = DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
 ) -> str:
@@ -177,6 +179,53 @@ def emit_sound_config(
             "channel_split (member channel-selection weave) are mutually "
             "exclusive topology axes — see HANDOFF-multiroom.md §2"
         )
+    # End-to-end local transport-pipe mode: fan-in -> Camilla RawFile capture
+    # and Camilla File playback -> outputd local pipe. The pipes are transport
+    # only; outputd's blocking DAC write is the single pace root, so Camilla
+    # rate_adjust and async resampling MUST be off. This is the only supported
+    # File-in/File-out shape.
+    if transport_paced_pipe:
+        if capture_pipe_path is None or playback_pipe_path is None:
+            raise ValueError(
+                "transport_paced_pipe requires both capture_pipe_path "
+                "(fan-in -> Camilla) and playback_pipe_path (Camilla -> outputd)"
+            )
+        if enable_rate_adjust:
+            raise ValueError(
+                "transport_paced_pipe requires enable_rate_adjust=False — "
+                "outputd's blocking DAC write is the pace root"
+            )
+        if resampler_type is not None:
+            raise ValueError(
+                "transport_paced_pipe must not emit a CamillaDSP resampler — "
+                f"got resampler_type={resampler_type!r}"
+            )
+        if channel_split is not None:
+            raise ValueError(
+                "transport_paced_pipe and channel_split are mutually exclusive — "
+                "the local pipe carries the full stereo program"
+            )
+        if sample_rate != DEFAULT_SAMPLE_RATE:
+            raise ValueError(
+                f"transport_paced_pipe requires {DEFAULT_SAMPLE_RATE} Hz; "
+                f"got sample_rate={sample_rate}"
+            )
+        if capture_format != DEFAULT_CAPTURE_FORMAT:
+            raise ValueError(
+                "transport_paced_pipe fan-in capture format must be "
+                f"{DEFAULT_CAPTURE_FORMAT}; got {capture_format}"
+            )
+        if playback_format != DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT:
+            raise ValueError(
+                "transport_paced_pipe outputd playback format must be "
+                f"{DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT}; "
+                f"got {playback_format}"
+            )
+        # CamillaDSP still schema-validates target_level with rate_adjust off.
+        # In this DAC-paced pipe topology it is not a latency knob, so do not let
+        # a loopback/lab override make the generated File/RawFile config invalid.
+        target_level = max(int(chunksize), int(chunksize) * 2)
+
     # Stage 4 lean-lane File-CAPTURE guards (fail LOUD at the API boundary,
     # the MIRROR of the pipe-SINK guards below). A File capture has no clock,
     # so CamillaDSP cannot rate-tune the capture side (rate-adjust method 1 is
@@ -190,13 +239,12 @@ def emit_sound_config(
     # first (the sink block would otherwise raise on enable_rate_adjust).
     if capture_pipe_path is not None:
         if playback_pipe_path is not None:
-            raise ValueError(
-                "capture_pipe_path (File capture, lean lane) and "
-                "playback_pipe_path (File sink) cannot both be set — the lean "
-                "lane reads a pipe and writes the REAL DAC; a File-in/File-out "
-                "config has no clock anywhere and would free-run"
-            )
-        if not enable_rate_adjust:
+            if not transport_paced_pipe:
+                raise ValueError(
+                    "capture_pipe_path (File capture) and playback_pipe_path "
+                    "(File sink) can only be combined with transport_paced_pipe=True"
+                )
+        elif not enable_rate_adjust:
             raise ValueError(
                 "capture_pipe_path (File capture) requires "
                 "enable_rate_adjust=True — the real DAC playback clock "
@@ -204,7 +252,7 @@ def emit_sound_config(
                 "async-resampler ratio correction; without it the lean lane "
                 "free-runs (Stage-1 AEC3 drift hazard)"
             )
-        if not is_async_resampler(resampler_type):
+        if not transport_paced_pipe and not is_async_resampler(resampler_type):
             raise ValueError(
                 "capture_pipe_path (File capture) requires an async resampler "
                 "(AsyncSinc/AsyncPoly — CamillaDSP v4 vocabulary) — "

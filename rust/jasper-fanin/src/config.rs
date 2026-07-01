@@ -112,24 +112,25 @@ pub struct Config {
     /// fan-in → CamillaDSP coupling transport. `Loopback` (the default) writes
     /// the ALSA snd-aloop substream `output_pcm` exactly as today;
     /// CamillaDSP dsnoop-captures it — byte-identical to the pre-coupling
-    /// daemon. `Fifo` writes a bounded named pipe (`camilla_fifo_path`) instead,
-    /// which CamillaDSP File-captures with an async resampler. The Python config
+    /// daemon. `TransportPipe` writes a bounded named pipe
+    /// (`camilla_pipe_path`) instead, which CamillaDSP RawFile-captures as the
+    /// first half of the end-to-end DAC-paced pipe topology. The Python config
     /// generator (`jasper.fanin_coupling`) is the cross-language source of truth;
     /// this normalization MUST agree with `resolve_coupling` there.
-    /// Env: `JASPER_FANIN_CAMILLA_COUPLING` (`loopback` | `fifo`).
+    /// Env: `JASPER_FANIN_CAMILLA_COUPLING` (`loopback` | `transport_pipe`).
     pub camilla_coupling: Coupling,
 
-    /// The shared-capture named pipe written under `Coupling::Fifo`. Unused for
-    /// `Loopback`. Default `/run/jasper-fanin/camilla.pipe`. Env:
-    /// `JASPER_FANIN_CAMILLA_FIFO`. DISTINCT from the lean lane's FIFO.
-    pub camilla_fifo_path: String,
+    /// The shared-capture named pipe written under `Coupling::TransportPipe`.
+    /// Unused for `Loopback`. Default `/run/jasper-fanin/camilla.pipe`. Env:
+    /// `JASPER_FANIN_CAMILLA_PIPE`. DISTINCT from the lean lane's pipe.
+    pub camilla_pipe_path: String,
 
     /// Requested write-end pipe buffer size, in bytes, for `F_SETPIPE_SZ` under
-    /// `Coupling::Fifo`. The kernel rounds up to a power-of-two ≥ page size. A
+    /// `Coupling::TransportPipe`. The kernel rounds up to a power-of-two ≥ page size. A
     /// small buffer (default 8192 ≈ 3-4 S32 periods) keeps the pipe DAC-paced —
-    /// it is the FIFO equivalent of the snd-aloop output ring depth.
-    /// Env: `JASPER_FANIN_FIFO_PIPE_BYTES`. Swept during the soak.
-    pub fifo_pipe_bytes: u32,
+    /// it is the named-pipe equivalent of the snd-aloop output ring depth.
+    /// Env: `JASPER_FANIN_CAMILLA_PIPE_BYTES`. Swept during the soak.
+    pub camilla_pipe_bytes: u32,
 
     /// DEFAULT-OFF: arm the per-input adaptive resampler on the clock-crossing
     /// (USB) lane (`src/lane_resampler.rs`). When `false` (the default — env
@@ -167,7 +168,7 @@ pub struct Config {
     /// hardware showed that intentional startup over-consumption can lock/unlock
     /// on the real bursty USB feed. The cushion is now held, so the actual
     /// steady setpoint is `input_resampler_target_frames + cushion`. Default
-    /// 1024 frames = ~21.3 ms of conservative extra headroom; this remains
+    /// 2048 frames = ~42.7 ms of conservative extra headroom; this remains
     /// DEFAULT-OFF until the USB soak/cold-start/audibility hardware gate passes.
     /// Env: `JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`.
     pub input_resampler_warmup_cushion_frames: u32,
@@ -176,24 +177,24 @@ pub struct Config {
     /// headroom ABOVE the target setpoint that absorbs input bursts before they
     /// overflow. Distinct from `input_resampler_target_frames` (the latency
     /// setpoint): raising THIS does not add latency, it only adds burst
-    /// absorption. `0` (the default) means "derive from the lane's ALSA input
-    /// buffer" (`input_buffer_frames`), floored to the resampler's structural
-    /// minimum; a non-zero value pins an explicit capacity. Bumped from the old
-    /// implicit 4096 to cut the residual `overrun_frames` / usbsink
-    /// `dropped_full` (~0.137% / ~0.26% on-device) from bursts spiking the ring.
+    /// absorption. `0` (the default) means "derive 2x the lane's ALSA input
+    /// buffer" (`input_buffer_frames * 2`), floored to the resampler's
+    /// structural minimum; a non-zero value pins an explicit capacity. The 2x
+    /// default gives the real USB burst feed headroom without changing the
+    /// steady latency setpoint.
     /// Env: `JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES`.
     pub input_resampler_ring_frames: u32,
 }
 
 /// fan-in → CamillaDSP coupling transport. Mirrors `jasper.fanin_coupling`'s
-/// `loopback` / `fifo` selector. Fail-SAFE: an unset/unrecognized env value
+/// `loopback` / `transport_pipe` selector. Fail-SAFE: an unset/unrecognized env value
 /// resolves to `Loopback` (the byte-identical-to-today path).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Coupling {
     /// ALSA snd-aloop substream output; CamillaDSP dsnoop-captures it. Default.
     Loopback,
-    /// Bounded named-pipe output; CamillaDSP File-captures it.
-    Fifo,
+    /// Bounded named-pipe output; CamillaDSP RawFile-captures it.
+    TransportPipe,
 }
 
 impl Coupling {
@@ -202,7 +203,7 @@ impl Coupling {
     /// so the daemon and the emitted config can never disagree on the transport.
     fn from_env_value(raw: Option<&str>) -> Self {
         match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-            Some("fifo") => Coupling::Fifo,
+            Some("transport_pipe") => Coupling::TransportPipe,
             _ => Coupling::Loopback,
         }
     }
@@ -287,11 +288,11 @@ impl Config {
                 .ok()
                 .as_deref(),
         );
-        let camilla_fifo_path = env_str(
-            "JASPER_FANIN_CAMILLA_FIFO",
+        let camilla_pipe_path = env_str(
+            "JASPER_FANIN_CAMILLA_PIPE",
             "/run/jasper-fanin/camilla.pipe",
         );
-        let fifo_pipe_bytes = env_u32("JASPER_FANIN_FIFO_PIPE_BYTES", 8192)?;
+        let camilla_pipe_bytes = env_u32("JASPER_FANIN_CAMILLA_PIPE_BYTES", 8192)?;
 
         // DEFAULT-OFF per-input adaptive resampler (clock-crossing/USB lane).
         // Fail-safe: only the exact literal `enabled` (case-insensitive) arms
@@ -308,13 +309,15 @@ impl Config {
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", 512)?;
         let input_resampler_max_adjust_ppm =
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", 500)?;
-        // Four render periods of held warm-up cushion by default (1024 frames
-        // ≈ 21.3 ms). Conservative while DEFAULT-OFF; production enablement is
-        // gated on the USB soak/cold-start/audibility hardware pass.
+        // Eight render periods of held warm-up cushion by default (2048 frames
+        // ≈ 42.7 ms). Hardware USB testing showed the earlier four-period
+        // cushion lock/unlock-thrashed on the real snd-aloop burst feed; the
+        // deeper held cushion stayed locked while keeping the latency knob
+        // explicit and DEFAULT-OFF.
         let input_resampler_warmup_cushion_frames =
-            env_u32("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", 1024)?;
-        // 0 = derive the burst ring from the lane's ALSA input buffer (the prior
-        // implicit behaviour); a non-zero value pins an explicit capacity.
+            env_u32("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", 2048)?;
+        // 0 = derive a 2x burst ring from the lane's ALSA input buffer; a
+        // non-zero value pins an explicit capacity.
         let input_resampler_ring_frames = env_u32("JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES", 0)?;
 
         Ok(Self {
@@ -371,8 +374,8 @@ impl Config {
                 )?,
             },
             camilla_coupling,
-            camilla_fifo_path,
-            fifo_pipe_bytes,
+            camilla_pipe_path,
+            camilla_pipe_bytes,
             input_resampler_enabled,
             input_resampler_lane_label,
             input_resampler_target_frames,
@@ -592,9 +595,9 @@ mod tests {
                 assert_eq!(cfg.input_resampler_target_frames, 512);
                 assert_eq!(cfg.input_resampler_max_adjust_ppm, 500);
                 // Warm-up cushion defaults to conservative held headroom; the
-                // burst ring is derived (0 → from the ALSA input buffer) unless
-                // pinned.
-                assert_eq!(cfg.input_resampler_warmup_cushion_frames, 1024);
+                // burst ring is derived downstream (0 → 2x the ALSA input
+                // buffer) unless pinned.
+                assert_eq!(cfg.input_resampler_warmup_cushion_frames, 2048);
                 assert_eq!(cfg.input_resampler_ring_frames, 0);
             },
         );
@@ -843,18 +846,21 @@ mod tests {
         with_env(&[("JASPER_FANIN_CAMILLA_COUPLING", None)], || {
             let cfg = Config::from_env().expect("defaults must parse");
             assert_eq!(cfg.camilla_coupling, Coupling::Loopback);
-            // FIFO knobs still have sane defaults but are unused under Loopback.
-            assert_eq!(cfg.camilla_fifo_path, "/run/jasper-fanin/camilla.pipe");
-            assert_eq!(cfg.fifo_pipe_bytes, 8192);
+            // Pipe knobs still have sane defaults but are unused under Loopback.
+            assert_eq!(cfg.camilla_pipe_path, "/run/jasper-fanin/camilla.pipe");
+            assert_eq!(cfg.camilla_pipe_bytes, 8192);
         });
     }
 
     #[test]
-    fn coupling_parses_fifo_case_insensitively() {
-        with_env(&[("JASPER_FANIN_CAMILLA_COUPLING", Some(" FiFo "))], || {
-            let cfg = Config::from_env().expect("fifo coupling must parse");
-            assert_eq!(cfg.camilla_coupling, Coupling::Fifo);
-        });
+    fn coupling_parses_transport_pipe_case_insensitively() {
+        with_env(
+            &[("JASPER_FANIN_CAMILLA_COUPLING", Some(" Transport_Pipe "))],
+            || {
+                let cfg = Config::from_env().expect("transport_pipe coupling must parse");
+                assert_eq!(cfg.camilla_coupling, Coupling::TransportPipe);
+            },
+        );
     }
 
     #[test]
@@ -879,18 +885,18 @@ mod tests {
     }
 
     #[test]
-    fn fifo_path_and_pipe_bytes_override() {
+    fn pipe_path_and_pipe_bytes_override() {
         with_env(
             &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("fifo")),
-                ("JASPER_FANIN_CAMILLA_FIFO", Some("/run/custom.pipe")),
-                ("JASPER_FANIN_FIFO_PIPE_BYTES", Some("16384")),
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("transport_pipe")),
+                ("JASPER_FANIN_CAMILLA_PIPE", Some("/run/custom.pipe")),
+                ("JASPER_FANIN_CAMILLA_PIPE_BYTES", Some("16384")),
             ],
             || {
-                let cfg = Config::from_env().expect("fifo overrides must parse");
-                assert_eq!(cfg.camilla_coupling, Coupling::Fifo);
-                assert_eq!(cfg.camilla_fifo_path, "/run/custom.pipe");
-                assert_eq!(cfg.fifo_pipe_bytes, 16384);
+                let cfg = Config::from_env().expect("pipe overrides must parse");
+                assert_eq!(cfg.camilla_coupling, Coupling::TransportPipe);
+                assert_eq!(cfg.camilla_pipe_path, "/run/custom.pipe");
+                assert_eq!(cfg.camilla_pipe_bytes, 16384);
             },
         );
     }
@@ -901,8 +907,15 @@ mod tests {
         assert_eq!(Coupling::from_env_value(None), Coupling::Loopback);
         assert_eq!(Coupling::from_env_value(Some("")), Coupling::Loopback);
         assert_eq!(Coupling::from_env_value(Some("  ")), Coupling::Loopback);
-        assert_eq!(Coupling::from_env_value(Some("fifo")), Coupling::Fifo);
-        assert_eq!(Coupling::from_env_value(Some("FIFO")), Coupling::Fifo);
+        assert_eq!(Coupling::from_env_value(Some("pipe")), Coupling::Loopback);
+        assert_eq!(
+            Coupling::from_env_value(Some("transport_pipe")),
+            Coupling::TransportPipe
+        );
+        assert_eq!(
+            Coupling::from_env_value(Some("TRANSPORT_PIPE")),
+            Coupling::TransportPipe
+        );
         assert_eq!(
             Coupling::from_env_value(Some("loopback")),
             Coupling::Loopback

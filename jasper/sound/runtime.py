@@ -364,12 +364,11 @@ async def reconcile_current_dsp(
 
         if (
             not force
-            # MB1: under =fifo the shared capture must flip loopback->File even on
-            # a flat profile. This noop fired BEFORE the capture-diff, so a flat
-            # speaker armed the pipe-writer while Camilla kept capturing the dead
-            # loopback -> silent outage. When coupling kwargs are set, fall
-            # through to the YAML-diff below so the arm actually applies (it still
-            # returns `unchanged` if the File capture is already loaded).
+            # Under transport_pipe the shared graph must flip loopback->dual-pipe
+            # even on a flat profile. This noop used to fire before topology
+            # differences were considered, which can strand endpoints on
+            # different transports. When coupling kwargs are set, fall through to
+            # the YAML diff below so the arm actually applies.
             and not coupling_capture_kwargs
             and not active_lean_capture_kwargs
             and carrier.kind == "base_flat"
@@ -736,11 +735,10 @@ async def restore_buffered_config(
             # carrier_for_loaded_config on the lean config resolves to the same
             # stereo-host carrier that emitted it, so room PEQs are preserved on
             # the buffered config too.
-            # H1: thread the SHARED fan-in→Camilla coupling here too. Under =fifo
-            # the buffered (non-lean) capture must be the fan-in FIFO, not the
-            # default loopback — otherwise leave-lean (with both flags on)
-            # restores a loopback config while fan-in writes the pipe → silent
-            # outage. Default loopback → {} → the unchanged ALSA capture.
+            # H1: thread the SHARED fan-in→Camilla coupling here too. Under
+            # transport_pipe the buffered (non-lean) graph must keep the local
+            # pipe topology, not the default loopback, or leave-lean can restore
+            # a config whose transport disagrees with fan-in/outputd.
             carrier = carrier_for_loaded_config(lean_path, config_dir=config_path)
             result = carrier.reemit(
                 profile,

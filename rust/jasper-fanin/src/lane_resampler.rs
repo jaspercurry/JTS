@@ -71,7 +71,7 @@
 //! optimizer can see is never reached. The catch-up drain is intentionally
 //! KEPT as the fallback; deleting it is a later, validation-gated step.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use jasper_resampler::{clamp_i16, AudioRing, RateController, SincTable, RADIUS_FRAMES};
@@ -84,6 +84,10 @@ pub struct LaneResamplerObservability {
     /// would do, but the atomic keeps the STATUS read lock-free and uniform
     /// with the rest of the per-input counters.
     pub armed: bool,
+    /// Live lock state. True only after the lane has acquired enough input to
+    /// render real DAC-paced audio; false while priming, after reset, or after
+    /// an underfill unlock.
+    pub locked: Arc<AtomicBool>,
     /// Cumulative input frames pushed into the resampler.
     pub input_frames: Arc<AtomicU64>,
     /// Cumulative output frames emitted (period-aligned).
@@ -174,6 +178,7 @@ pub struct LaneResampler {
     /// Live ring fill in frames, republished every `render_period` so STATUS
     /// can show the buffer is being held near target.
     fill_frames: Arc<AtomicU64>,
+    locked_state: Arc<AtomicBool>,
 }
 
 impl LaneResampler {
@@ -264,6 +269,7 @@ impl LaneResampler {
             lock_count: Arc::new(AtomicU64::new(0)),
             unlock_count: Arc::new(AtomicU64::new(0)),
             fill_frames: Arc::new(AtomicU64::new(0)),
+            locked_state: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -271,6 +277,7 @@ impl LaneResampler {
     pub fn observability(&self) -> LaneResamplerObservability {
         LaneResamplerObservability {
             armed: true,
+            locked: Arc::clone(&self.locked_state),
             input_frames: Arc::clone(&self.input_frames),
             output_frames: Arc::clone(&self.output_frames),
             silence_frames: Arc::clone(&self.silence_frames),
@@ -400,6 +407,7 @@ impl LaneResampler {
         self.controller.reset();
         self.next_input_frame = 0.0;
         self.locked = false;
+        self.locked_state.store(false, Ordering::Relaxed);
         self.prime_periods = 0;
         self.startup_ramp_frames_remaining = 0;
         self.publish_ratio();
@@ -445,6 +453,7 @@ impl LaneResampler {
         let keep_from = self.next_input_frame.floor() as i64 - RADIUS_FRAMES - 1;
         self.ring.drop_before(keep_from);
         self.locked = true;
+        self.locked_state.store(true, Ordering::Relaxed);
         self.prime_periods = 0;
         self.startup_ramp_frames_remaining = self.period_frames;
         self.controller.reset();
@@ -453,6 +462,7 @@ impl LaneResampler {
 
     fn unlock_for_underfill(&mut self) {
         self.locked = false;
+        self.locked_state.store(false, Ordering::Relaxed);
         self.unlock_count.fetch_add(1, Ordering::Relaxed);
         self.ring.clear();
         self.controller.reset();

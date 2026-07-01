@@ -630,13 +630,121 @@ def test_file_capture_rejects_combined_pipe_in_and_pipe_out():
     message first."""
     import pytest
 
-    with pytest.raises(ValueError, match="cannot both be set"):
+    with pytest.raises(ValueError, match="only be combined with transport_paced_pipe"):
         emit_sound_config(
             SoundProfile(enabled=False),
             capture_pipe_path=DEFAULT_LEAN_CAPTURE_FIFO,
             playback_pipe_path="/run/jasper-snapserver/snapfifo",
             enable_rate_adjust=True,
             resampler_type="AsyncSinc",
+        )
+
+
+def test_transport_paced_pipe_allows_only_dual_pipe_transport_shape():
+    """The end-to-end local pipe path is a distinct topology from the lean
+    File-capture path: both pipe ends are present, rate_adjust/resampler are
+    off, and outputd's blocking DAC write owns pacing."""
+    yaml = emit_sound_config(
+        SoundProfile(enabled=False),
+        capture_pipe_path="/run/jasper-fanin/camilla.pipe",
+        playback_pipe_path="/run/jasper-outputd/content.pipe",
+        enable_rate_adjust=False,
+        playback_format="S32_LE",
+        resampler_type=None,
+        transport_paced_pipe=True,
+        chunksize=256,
+        target_level=512,
+    )
+
+    assert "enable_rate_adjust: false" in yaml
+    assert "resampler:" not in yaml
+    assert "type: RawFile" in yaml
+    assert 'filename: "/run/jasper-fanin/camilla.pipe"' in yaml
+    assert "format: S32_LE" in yaml
+    assert "type: File" in yaml
+    assert 'filename: "/run/jasper-outputd/content.pipe"' in yaml
+    assert "format: S32_LE" in yaml
+    assert "chunksize: 256" in yaml
+    assert "target_level: 512" in yaml
+
+
+def test_transport_paced_pipe_does_not_inherit_loopback_target_override():
+    """The dual-pipe topology is DAC-paced by outputd, not Camilla rate-adjust.
+
+    CamillaDSP still validates target_level even when rate-adjust is off; a
+    valid loopback override such as 2048 must not make the transport config
+    unloadable.
+    """
+    yaml = emit_sound_config(
+        SoundProfile(enabled=False),
+        capture_pipe_path="/run/jasper-fanin/camilla.pipe",
+        playback_pipe_path="/run/jasper-outputd/content.pipe",
+        enable_rate_adjust=False,
+        playback_format="S32_LE",
+        resampler_type=None,
+        transport_paced_pipe=True,
+        chunksize=256,
+        target_level=2048,
+    )
+
+    assert "chunksize: 256" in yaml
+    assert "target_level: 512" in yaml
+    assert "target_level: 2048" not in yaml
+
+
+def test_transport_paced_pipe_rejects_missing_or_miswired_geometry():
+    import pytest
+
+    with pytest.raises(ValueError, match="requires both capture_pipe_path"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            capture_pipe_path="/run/jasper-fanin/camilla.pipe",
+            enable_rate_adjust=False,
+            transport_paced_pipe=True,
+        )
+    with pytest.raises(ValueError, match="requires enable_rate_adjust=False"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            capture_pipe_path="/run/jasper-fanin/camilla.pipe",
+            playback_pipe_path="/run/jasper-outputd/content.pipe",
+            enable_rate_adjust=True,
+            transport_paced_pipe=True,
+        )
+    with pytest.raises(ValueError, match="must not emit a CamillaDSP resampler"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            capture_pipe_path="/run/jasper-fanin/camilla.pipe",
+            playback_pipe_path="/run/jasper-outputd/content.pipe",
+            enable_rate_adjust=False,
+            resampler_type="AsyncSinc",
+            transport_paced_pipe=True,
+        )
+    with pytest.raises(ValueError, match="requires 48000 Hz"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            capture_pipe_path="/run/jasper-fanin/camilla.pipe",
+            playback_pipe_path="/run/jasper-outputd/content.pipe",
+            enable_rate_adjust=False,
+            sample_rate=44100,
+            transport_paced_pipe=True,
+        )
+    with pytest.raises(ValueError, match="capture format must be S32_LE"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            capture_pipe_path="/run/jasper-fanin/camilla.pipe",
+            playback_pipe_path="/run/jasper-outputd/content.pipe",
+            capture_format="S16LE",
+            enable_rate_adjust=False,
+            transport_paced_pipe=True,
+        )
+    with pytest.raises(ValueError, match="playback format must be S32_LE"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            capture_pipe_path="/run/jasper-fanin/camilla.pipe",
+            playback_pipe_path="/run/jasper-outputd/content.pipe",
+            playback_format="S16_LE",
+            enable_rate_adjust=False,
+            transport_paced_pipe=True,
         )
 
 

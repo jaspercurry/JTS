@@ -186,19 +186,16 @@ class _StereoHostCarrier:
         # — matches the solo default (True); the merge is value-preserving.
         emit_kwargs = cast(EmitSoundConfigKwargs, dict(member_kwargs))
         emit_kwargs.update(cast(EmitSoundConfigKwargs, capture_kwargs or {}))
-        # fanin_coupling_capture_kwargs (JASPER_FANIN_CAMILLA_COUPLING=fifo) is
-        # the SHARED fan-in→Camilla hop: source/topology-agnostic, always-on for
-        # every stereo-host emit, so EVERY carrier applies it (contrast the lean
-        # lane's capture_kwargs, which the active/program-bake carriers refuse).
-        # It only swaps capture.{type:File, filename} + the async resampler; the
-        # carrier-preserved room PEQs, preference filters, trim, and member policy
-        # all fold in unchanged. PRECEDENCE: the lean lane wins (it is the
-        # more-exclusive solo File-capture; coupling becomes a no-op for that
-        # emit), and a grouped pipe-SINK member (enable_rate_adjust=False) is
-        # mutually exclusive with the File capture's required rate_adjust=True, so
-        # coupling is a no-op there too — the grouped capture topology belongs to
-        # the Distributed-Active track. Default loopback returns {} (byte-
-        # identical). emit_sound_config owns the File-capture fail-loud guards.
+        # fanin_coupling_capture_kwargs
+        # (JASPER_FANIN_CAMILLA_COUPLING=transport_pipe) is the local
+        # fan-in -> Camilla -> outputd pipe topology: source-agnostic,
+        # always-on for stereo-host emits, and byte-identical when absent. The
+        # carrier-preserved room PEQs, preference filters, trim, and member
+        # policy all fold in unchanged. PRECEDENCE: the lean lane wins (it is
+        # the more-exclusive solo File capture), and a grouped pipe-SINK member
+        # (enable_rate_adjust=False + SnapFIFO playback) is mutually exclusive
+        # with the local outputd playback pipe, so the coupling is a no-op there
+        # too. emit_sound_config owns the dual-pipe fail-loud guards.
         emit_kwargs = apply_capture_precedence(
             emit_kwargs,
             fanin_coupling_capture_kwargs,
@@ -286,11 +283,11 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
         # fanin_coupling_capture_kwargs is intentionally a NO-OP here: a program
         # bake is a bonded pipe SINK on the synced chain (snapclient owns the
         # rate, enable_rate_adjust=False), which is mutually exclusive with the
-        # FIFO coupling's File-capture rate_adjust=True. The grouped capture
-        # topology is the Distributed-Active track's concern, not this solo hop;
-        # accept the keyword so every call site can pass it uniformly, but never
-        # apply it. (The plan's apply_capture_precedence helper makes the same
-        # grouped-sink choice for stereo-host carriers.)
+        # local transport_pipe's Camilla -> outputd File playback pipe. The
+        # grouped transport topology is the Distributed-Active track's concern,
+        # not this solo hop; accept the keyword so every call site can pass it
+        # uniformly, but never apply it. (The plan's apply_capture_precedence
+        # helper makes the same grouped-sink choice for stereo-host carriers.)
         del fanin_coupling_capture_kwargs
         # The lean lane (capture_kwargs) is a SOLO File-capture stereo config;
         # an active-leader program bake is a bonded pipe SINK on the synced
@@ -410,11 +407,18 @@ class _ActiveGraphCarrier:
             if room_peqs is None
             else list(room_peqs)
         )
+        if (fanin_coupling_capture_kwargs or {}).get("transport_paced_pipe"):
+            raise CarrierCannotHostEq(
+                "transport_pipe_on_active",
+                "This active-crossover graph cannot host the local dual-pipe "
+                "transport yet. Its output side is not the stereo outputd local "
+                "pipe, so arming it would only move half of the clock chain. "
+                "Your crossover and driver protection are unchanged.",
+            )
         # By here the carrier has proven this is a SOLO active baseline (bonded
-        # members refused above), so the SHARED fan-in→Camilla coupling can apply
-        # its File capture. The roleful split/crossover/limiter/protective-HP are
-        # rebuilt by the canonical active emitter and untouched — coupling only
-        # swaps the program-domain capture from the ALSA fan-in tap to the pipe.
+        # members refused above). Legacy lean capture kwargs can still apply to
+        # the active emitter's capture side, but the end-to-end transport-pipe
+        # topology above is fail-closed until the active output side is designed.
         yaml = _recompose_active_baseline_with_eq(
             profile,
             room_peqs=room_peqs,
@@ -488,11 +492,11 @@ def _recompose_active_baseline_with_eq(
     baseline, so the active-speaker + sound-profile deps stay out of the base
     wizard path.
 
-    ``coupling_capture_kwargs`` is the SHARED fan-in→Camilla coupling's
-    File-capture kwargs (``{}`` / ``None`` for the default loopback coupling,
-    byte-identical to today). When ``fifo``, it swaps the program-domain capture
-    to the named pipe; Layer A (split mixer + per-driver crossover/HP/limiter) is
-    unchanged because the active emitter rebuilds it from the canonical evidence.
+    ``coupling_capture_kwargs`` is the SHARED fan-in→Camilla coupling's capture
+    kwargs for the active baseline path (``{}`` / ``None`` for the default
+    loopback coupling, byte-identical to today). End-to-end transport-pipe mode
+    is refused before this helper because the active output side has not been
+    designed.
     """
     from jasper.active_speaker.baseline_profile import recompose_baseline_yaml
     from jasper.active_speaker.crossover_preview import load_crossover_preview
@@ -511,14 +515,13 @@ def _recompose_active_baseline_with_eq(
     measurements = load_measurement_state(topology)
     preference_filters = build_sound_filters(profile)
     # The active emitter hardcodes enable_rate_adjust: true on its roleful graph
-    # (it is always DAC-paced), so it takes only the File-capture identity keys —
-    # capture_pipe_path + the async resampler — NOT enable_rate_adjust. Strip the
-    # stereo-path-only key the shared coupling dict carries so the active emit
-    # stays byte-identical except for its capture block.
+    # (it is always DAC-paced), so it takes only the legacy File-capture identity
+    # keys — capture_pipe_path + async resampler — NOT stereo-path-only
+    # playback/transport keys.
     active_coupling_kwargs = {
         k: v
         for k, v in (coupling_capture_kwargs or {}).items()
-        if k != "enable_rate_adjust"
+        if k in {"capture_pipe_path", "resampler_type", "resampler_profile"}
     }
     yaml, issues = recompose_baseline_yaml(
         topology,

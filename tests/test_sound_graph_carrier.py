@@ -799,15 +799,17 @@ def test_lean_refused_on_program_bake_graph(tmp_path):
     assert exc.value.reason_code == "lean_on_program_bake"
 
 
-# --- FIFO coupling threaded through reemit() (the SHARED fan-in→Camilla hop) ---
+# --- transport-pipe coupling threaded through reemit() ---
 #
 # Distinct from the lean lane: the coupling is source/topology-agnostic and
-# always-on while JASPER_FANIN_CAMILLA_COUPLING=fifo, so EVERY stereo-host /
-# active-baseline carrier applies it. Default (None / {}) is byte-identical.
+# always-on while JASPER_FANIN_CAMILLA_COUPLING=transport_pipe, so every
+# stereo-host / active-baseline carrier applies it. Default (None / {}) is
+# byte-identical.
 # (imports for these tests live in the top-of-file import block.)
 
-_FIFO_COUPLING_KWARGS = capture_kwargs_for_coupling("fifo")
-_FANIN_PIPE = _FIFO_COUPLING_KWARGS["capture_pipe_path"]
+_TRANSPORT_PIPE_KWARGS = capture_kwargs_for_coupling("transport_pipe")
+_FANIN_PIPE = _TRANSPORT_PIPE_KWARGS["capture_pipe_path"]
+_OUTPUTD_PIPE = _TRANSPORT_PIPE_KWARGS["playback_pipe_path"]
 
 
 def test_base_flat_loopback_coupling_is_byte_identical(tmp_path):
@@ -816,12 +818,20 @@ def test_base_flat_loopback_coupling_is_byte_identical(tmp_path):
     # mentioned the coupling. Uses the real emit_sound_config (not mocked) so the
     # comparison is on the actual emitted config string.
     carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
-    baseline = carrier.reemit(SoundProfile(enabled=False), profile_id="x").yaml
+    baseline = carrier.reemit(
+        SoundProfile(enabled=False), profile_id="x", member_kwargs={}
+    ).yaml
     none_coupled = carrier.reemit(
-        SoundProfile(enabled=False), profile_id="x", fanin_coupling_capture_kwargs=None
+        SoundProfile(enabled=False),
+        profile_id="x",
+        member_kwargs={},
+        fanin_coupling_capture_kwargs=None,
     ).yaml
     empty_coupled = carrier.reemit(
-        SoundProfile(enabled=False), profile_id="x", fanin_coupling_capture_kwargs={}
+        SoundProfile(enabled=False),
+        profile_id="x",
+        member_kwargs={},
+        fanin_coupling_capture_kwargs={},
     ).yaml
     assert none_coupled == baseline
     assert empty_coupled == baseline
@@ -830,59 +840,65 @@ def test_base_flat_loopback_coupling_is_byte_identical(tmp_path):
     assert "type: File" not in baseline
 
 
-def test_base_flat_fifo_coupling_emits_file_capture(tmp_path):
-    # =fifo at the chokepoint: the base-flat (stereo host) reemit flips its
-    # capture block to a File pipe + async resampler.
+def test_base_flat_transport_pipe_coupling_emits_dual_pipe(tmp_path):
+    # transport_pipe at the chokepoint: the base-flat (stereo host) reemit flips
+    # capture to RawFile and playback to the outputd local File pipe.
     carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
     cfg = carrier.reemit(
         SoundProfile(enabled=False),
         profile_id="x",
-        fanin_coupling_capture_kwargs=_FIFO_COUPLING_KWARGS,
+        member_kwargs={},
+        fanin_coupling_capture_kwargs=_TRANSPORT_PIPE_KWARGS,
     ).yaml
-    # RawFile, not File — CamillaDSP v4 has no `File` capture variant.
-    assert "type: RawFile" in cfg
-    assert "type: File" not in cfg
+    capture_block = cfg.split("  capture:\n", 1)[1].split("\n  playback:\n", 1)[0]
+    playback_block = cfg.split("  playback:\n", 1)[1].split("\n\nfilters:\n", 1)[0]
+    assert "type: RawFile" in capture_block
+    assert "type: File" in playback_block
     assert _FANIN_PIPE in cfg
+    assert _OUTPUTD_PIPE in cfg
     assert 'device: "plug:jasper_capture"' not in cfg
-    assert "type: AsyncSinc" in cfg
-    assert "enable_rate_adjust: true" in cfg
+    assert 'device: "outputd_content_playback"' not in cfg
+    assert "type: AsyncSinc" not in cfg
+    assert "enable_rate_adjust: false" in cfg
 
 
-def test_fifo_coupling_lean_capture_wins(tmp_path):
+def test_transport_pipe_coupling_lean_capture_wins(tmp_path):
     # PRECEDENCE: when a live lean capture_kwargs is set (the more-exclusive solo
-    # File capture), the coupling is a no-op for that emit — the lean usbsink pipe
-    # stays the capture source, NOT the fan-in pipe.
+    # File capture), the coupling is a no-op for that emit — the lean usbsink
+    # pipe stays the capture source and playback stays ALSA.
     carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
     cfg = carrier.reemit(
         SoundProfile(enabled=False),
         profile_id="x",
+        member_kwargs={},
         capture_kwargs=_LEAN_CAPTURE_KWARGS,
-        fanin_coupling_capture_kwargs=_FIFO_COUPLING_KWARGS,
+        fanin_coupling_capture_kwargs=_TRANSPORT_PIPE_KWARGS,
     ).yaml
     # The lean usbsink pipe wins; the fan-in coupling pipe must NOT appear.
     assert _LEAN_CAPTURE_KWARGS["capture_pipe_path"] in cfg
     assert _FANIN_PIPE not in cfg
+    assert _OUTPUTD_PIPE not in cfg
 
 
-def test_fifo_coupling_is_noop_for_grouped_pipe_sink(tmp_path):
+def test_transport_pipe_coupling_is_noop_for_grouped_pipe_sink(tmp_path):
     # PRECEDENCE: a grouped/bonded member writes a SnapFIFO playback pipe with
-    # enable_rate_adjust=False — mutually exclusive with the File capture's
-    # required rate_adjust=True. So the coupling is a no-op there; the capture
-    # stays the ALSA fan-in tap (the grouped capture topology is deferred).
+    # enable_rate_adjust=False. That playback pipe already owns the pipe sink, so
+    # the local transport-pipe coupling is a no-op there.
     carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
     cfg = carrier.reemit(
         SoundProfile(enabled=False),
         profile_id="x",
         member_kwargs={"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False},
-        fanin_coupling_capture_kwargs=_FIFO_COUPLING_KWARGS,
+        fanin_coupling_capture_kwargs=_TRANSPORT_PIPE_KWARGS,
     ).yaml
     # ALSA capture preserved (no File coupling), pipe SINK still on playback.
     assert 'device: "plug:jasper_capture"' in cfg
     assert _FANIN_PIPE not in cfg
+    assert _OUTPUTD_PIPE not in cfg
     assert "/run/snapfifo" in cfg
 
 
-def test_program_bake_carrier_ignores_fifo_coupling(tmp_path):
+def test_program_bake_carrier_ignores_transport_pipe_coupling(tmp_path):
     # The program bake is a bonded pipe sink (rate_adjust=False); the coupling
     # keyword is accepted for call-site uniformity but never applied. The emit
     # keeps its ALSA capture; no fan-in pipe appears.
@@ -896,7 +912,7 @@ def test_program_bake_carrier_ignores_fifo_coupling(tmp_path):
         SoundProfile(enabled=False),
         out_path=config_dir / "out.yml",
         member_kwargs={"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False},
-        fanin_coupling_capture_kwargs=_FIFO_COUPLING_KWARGS,
+        fanin_coupling_capture_kwargs=_TRANSPORT_PIPE_KWARGS,
     ).yaml
     assert 'device: "plug:jasper_capture"' in cfg
     assert _FANIN_PIPE not in cfg
