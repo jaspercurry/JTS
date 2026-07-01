@@ -978,10 +978,10 @@ def _run_relay_measurement_sweep(
 
     try:
         _run_async(_run_sweep(), timeout=90.0)
-    except Exception as exc:  # noqa: BLE001
+    except (concurrent.futures.TimeoutError, RuntimeError, OSError, ValueError) as exc:
         try:
             _host_event("sweep_failed", error=str(exc))
-        except Exception:  # noqa: BLE001
+        except (RuntimeError, OSError, ValueError):
             logger.debug("could not publish relay sweep failure", exc_info=True)
         raise
 
@@ -2031,14 +2031,14 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                             "relay noise_floor ignored: %r",
                             state.noise_floor,
                         )
-            except Exception as exc:  # noqa: BLE001 - surface to phone + Pi status
+            except (RuntimeError, ValueError) as exc:
                 try:
                     client.post_host_event(
                         pi_session.session_id,
                         pi_session.pull_token,
                         {"phase": "sweep_failed", "error": str(exc)},
                     )
-                except Exception:  # noqa: BLE001
+                except (RuntimeError, OSError, ValueError):
                     logger.debug("relay setup failure event failed", exc_info=True)
                 raise
             _run_relay_measurement_sweep(
