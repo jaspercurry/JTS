@@ -535,6 +535,7 @@ rsync -az --delete --stats --quiet \
     --exclude .venv --exclude __pycache__ --exclude '.git' --exclude 'logs/*' \
     --exclude '.pio' --exclude '.claude/worktrees' --exclude '.claude/' \
     --exclude 'captures/*' --exclude 'wake-events/*' --exclude '*.pyc' \
+    --exclude '.wrangler' --exclude 'dist' \
     --exclude 'jasper_speaker.egg-info' --exclude '*.egg-info' \
     ./ "${SSH_TARGET}:${REMOTE_REPO_DIR}/"
 
