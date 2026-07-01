@@ -46,3 +46,9 @@ def test_deploy_forwards_private_capture_relay_configuration() -> None:
     assert "JASPER_CAPTURE_RELAY_BASE" in deploy
     assert "JASPER_CAPTURE_ORIGIN" in deploy
     assert "JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN" in deploy
+
+
+def test_deploy_excludes_cloudflare_generated_state() -> None:
+    deploy = (ROOT / "scripts/deploy-to-pi.sh").read_text(encoding="utf-8")
+    assert "--exclude '.wrangler'" in deploy
+    assert "--exclude 'dist'" in deploy
