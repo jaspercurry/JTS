@@ -1119,7 +1119,7 @@ def _travel_routes_card_html(
         f'({html.escape(source_label)})</p>'
         if masked else ""
     )
-    key_input_html = f"""
+    key_input_html = """
 <div class="field">
   <label for="google_routes_key">Google Routes API key</label>
   <input id="google_routes_key" name="google_routes_key" type="password"
