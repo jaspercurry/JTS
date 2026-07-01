@@ -27,6 +27,7 @@ import pytest
 
 _JS_DIR = Path(__file__).resolve().parent / "js"
 _NODE = shutil.which("node")
+_REPO = Path(__file__).resolve().parents[1]
 
 _HARNESSES = [
     "capture_render_test.mjs",
@@ -52,3 +53,11 @@ def test_capture_page_harness(harness: str):
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert out["ok"] is True, out
     assert out["passed"] >= 1, out
+
+
+def test_capture_page_expired_link_message_points_back_to_speaker():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert 'message === "not_found"' in main_js
+    assert "This one-time capture link has expired." in main_js
+    assert "Return to the speaker page" in main_js
