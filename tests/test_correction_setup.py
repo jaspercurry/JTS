@@ -123,7 +123,19 @@ def test_capture_relay_ui_contract_is_wired():
     assert "if (relayConfigured)" in js
     assert "detectMicrophones();" in js
     assert "repeat_main_position: relayMode" in js
+    assert "function relayPrimaryAction()" in js
+    assert "currentState === 'needs_next_position'" in js
+    assert "relayStartBtn.textContent = 'Create next phone capture'" in js
     assert "window.location.href = '/correction/proceed/room';" in js
+
+
+def test_capture_relay_next_position_ui_hides_expired_link():
+    js = _module_js()
+
+    assert "hideEl(relayLinkRow, true);" in js
+    assert "Phone capture received. Wait for the next instruction on this page." in js
+    assert "snapshot.state === 'needs_next_position'" in js
+    assert "Move the phone to position" in js
 
 
 def test_relay_polling_continues_while_backend_uploads_capture():

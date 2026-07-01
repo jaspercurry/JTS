@@ -36,6 +36,17 @@ function setStatus(message, kind = "info") {
   }
 }
 
+function captureFailureMessage(err) {
+  const message = err && err.message ? String(err.message) : String(err);
+  if (message === "not_found") {
+    return (
+      "This one-time capture link has expired. Return to the speaker page " +
+      "and create a new phone capture link."
+    );
+  }
+  return `Measurement failed: ${message}. Tap Start to try again.`;
+}
+
 async function blobToBytes(blob) {
   return new Uint8Array(await blob.arrayBuffer());
 }
@@ -163,10 +174,7 @@ async function onStart(ctx) {
       }
     }
     if (!aborted) {
-      setStatus(
-        `Measurement failed: ${err && err.message ? err.message : err}. Tap Start to try again.`,
-        "error",
-      );
+      setStatus(captureFailureMessage(err), "error");
     }
   } finally {
     disposeWatch();

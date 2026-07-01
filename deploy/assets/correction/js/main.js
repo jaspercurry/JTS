@@ -200,9 +200,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (tapLink && relayTapLink) {
       relayTapLink.href = tapLink;
       hideEl(relayLinkRow, false);
+    } else {
+      hideEl(relayLinkRow, true);
+      if (relayTapLink) relayTapLink.href = '#';
     }
     if (relay.status === 'complete') {
-      setRelayStatus('Phone capture received. Processing finished on the speaker.', 'ok');
+      setRelayStatus('Phone capture received. Wait for the next instruction on this page.', 'ok');
     } else if (relay.status === 'failed') {
       setRelayStatus(relay.error || 'Phone capture failed. Cancel and try again.', 'bad');
     } else if (relay.status === 'starting') {
@@ -1810,6 +1813,14 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     pollState();
   }
 
+  async function relayPrimaryAction() {
+    if (currentState === 'needs_next_position') {
+      await continueToNextPosition();
+      return;
+    }
+    await startMeasurement();
+  }
+
   async function repeatMainSeat() {
     repeatBtn.classList.add('hidden');
     repeatBtn.disabled = true;
@@ -2107,6 +2118,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (state === 'needs_next_position') {
       positionPrompt.classList.remove('hidden');
       continueBtn.classList.remove('hidden');
+      if (relayMode && relayStartBtn) {
+        relayStartBtn.textContent = 'Create next phone capture';
+        relayStartBtn.disabled = false;
+      }
       runBtn.disabled = true;
       autolevelBtn.disabled = true;
     } else if (state === 'needs_repeat_capture') {
@@ -2127,6 +2142,18 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   function renderRelayStatusFromSnapshot(snapshot) {
     if (!relayMode) return;
+    if (snapshot && snapshot.state === 'needs_next_position') {
+      renderRelayCapture(null);
+      setRelayStatus(
+        'Position ' + Number(snapshot.current_position || 0) +
+          ' received. Move the phone to position ' +
+          (Number(snapshot.current_position || 0) + 1) + ' of ' +
+          Number(snapshot.total_positions || 0) +
+          ', then create the next phone capture.',
+        'ok'
+      );
+      return;
+    }
     if (snapshot && snapshot.relay) {
       renderRelayCapture(snapshot.relay);
       return;
@@ -2395,7 +2422,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     });
   }
   if (relayStartBtn) {
-    relayStartBtn.addEventListener('click', function () { startMeasurement(); });
+    relayStartBtn.addEventListener('click', function () { relayPrimaryAction(); });
   }
   runBtn.addEventListener('click', function () { startMeasurement(); });
   repeatBtn.addEventListener('click', function () { repeatMainSeat(); });
