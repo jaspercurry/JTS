@@ -2722,6 +2722,13 @@ def test_reset_output_topology_payload_clears_active_setup_state(
         "_active_speaker_stop_commission_tone",
         lambda *, reason: {"status": "idle", "reason": reason},
     )
+    summed_stops = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda *, reason: summed_stops.append(reason)
+        or {"status": "stopped", "reason": reason},
+    )
     monkeypatch.setattr(
         sound_setup,
         "_active_speaker_stop_payload",
@@ -2738,6 +2745,11 @@ def test_reset_output_topology_payload_clears_active_setup_state(
     assert payload["output_topology"]["status"] == "draft"
     assert payload["reset"] == {"status": "reset"}
     assert payload["active_speaker_reset"]["status"] == "cleared"
+    assert payload["summed_test_stop"] == {
+        "status": "stopped",
+        "reason": "output_topology_reset",
+    }
+    assert summed_stops == ["output_topology_reset"]
     assert len(payload["active_speaker_reset"]["cleared"]) == len(paths)
     assert all(not path.exists() for path in paths)
 

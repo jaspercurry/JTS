@@ -386,6 +386,7 @@ def _reset_output_topology_payload() -> dict[str, Any]:
     from jasper.active_speaker.reset import clear_active_speaker_setup_state
     from jasper.cli.output_topology_reset import reset_to_detected_passive
 
+    summed_stop = _active_speaker_stop_summed_test_tone(reason="output_topology_reset")
     tone_stop = _active_speaker_stop_commission_tone(reason="output_topology_reset")
     safe_stop = _active_speaker_stop_payload()
     reset = reset_to_detected_passive()
@@ -393,6 +394,7 @@ def _reset_output_topology_payload() -> dict[str, Any]:
     payload = _output_topology_payload()
     payload["reset"] = reset
     payload["active_speaker_reset"] = setup_reset
+    payload["summed_test_stop"] = summed_stop
     payload["tone_stop"] = tone_stop
     payload["safe_playback"] = safe_stop
     payload["saved"] = True
