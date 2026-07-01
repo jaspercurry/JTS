@@ -106,6 +106,17 @@ pub struct AssistantProfile {
     pub confidence: f32,
 }
 
+pub const MIN_ASSISTANT_PROFILE_DB: f32 = -120.0;
+pub const MAX_ASSISTANT_PROFILE_DB: f32 = 0.0;
+
+pub fn assistant_profile_db_in_range(value: f32) -> bool {
+    value.is_finite() && (MIN_ASSISTANT_PROFILE_DB..=MAX_ASSISTANT_PROFILE_DB).contains(&value)
+}
+
+pub fn assistant_profile_confidence_in_range(value: f32) -> bool {
+    value.is_finite() && (0.0..=1.0).contains(&value)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TtsCommand {
     GainDb(f32),
@@ -263,12 +274,15 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
                     provider: provider.to_string(),
                     model: model.to_string(),
                     voice: voice.to_string(),
-                    source_lufs: parse_optional_f32(source_lufs, "SEGMENT_START source_lufs")?,
-                    source_peak_dbfs: parse_optional_f32(
+                    source_lufs: parse_optional_profile_db(
+                        source_lufs,
+                        "SEGMENT_START source_lufs",
+                    )?,
+                    source_peak_dbfs: parse_optional_profile_db(
                         source_peak_dbfs,
                         "SEGMENT_START source_peak_dbfs",
                     )?,
-                    confidence: parse_required_f32(confidence, "SEGMENT_START confidence")?,
+                    confidence: parse_profile_confidence(confidence, "SEGMENT_START confidence")?,
                 })
             }
         };
@@ -346,6 +360,32 @@ fn parse_optional_f32(value: &str, field: &str) -> io::Result<Option<f32>> {
     parse_required_f32(value, field).map(Some)
 }
 
+fn parse_optional_profile_db(value: &str, field: &str) -> io::Result<Option<f32>> {
+    let Some(parsed) = parse_optional_f32(value, field)? else {
+        return Ok(None);
+    };
+    if !assistant_profile_db_in_range(parsed) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{field} must be between {MIN_ASSISTANT_PROFILE_DB:.0} and {MAX_ASSISTANT_PROFILE_DB:.0}"
+            ),
+        ));
+    }
+    Ok(Some(parsed))
+}
+
+fn parse_profile_confidence(value: &str, field: &str) -> io::Result<f32> {
+    let parsed = parse_required_f32(value, field)?;
+    if !assistant_profile_confidence_in_range(parsed) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{field} must be between 0 and 1"),
+        ));
+    }
+    Ok(parsed)
+}
+
 fn parse_required_f32(value: &str, field: &str) -> io::Result<f32> {
     let parsed = value
         .parse::<f32>()
@@ -417,6 +457,21 @@ mod tests {
                 assert_eq!(p.confidence, 0.8);
             }
             other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parser_rejects_out_of_range_profile_metadata() {
+        for line in [
+            "SEGMENT_START assistant - gemini m1 v1 -120.1 -6.0 1.0\n",
+            "SEGMENT_START assistant - gemini m1 v1 0.1 -6.0 1.0\n",
+            "SEGMENT_START assistant - gemini m1 v1 -24.0 -120.1 1.0\n",
+            "SEGMENT_START assistant - gemini m1 v1 -24.0 0.1 1.0\n",
+            "SEGMENT_START assistant - gemini m1 v1 -24.0 -6.0 -0.1\n",
+            "SEGMENT_START assistant - gemini m1 v1 -24.0 -6.0 1.1\n",
+        ] {
+            let mut reader = Cursor::new(line.as_bytes().to_vec());
+            assert!(read_command(&mut reader).is_err(), "{line}");
         }
     }
 
