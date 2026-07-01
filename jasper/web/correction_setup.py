@@ -1685,7 +1685,10 @@ def _apply_relay_setup_to_session(sess: Any, setup: dict[str, Any] | None) -> No
         return
     if "total_positions" in setup:
         try:
-            requested_total = int(setup.get("total_positions"))
+            total_raw = setup.get("total_positions")
+            if total_raw is None:
+                raise ValueError
+            requested_total = int(total_raw)
         except (TypeError, ValueError):
             requested_total = int(getattr(sess, "total_positions", 1))
         min_total = int(getattr(sess, "current_position", 0)) + 1
@@ -2061,7 +2064,10 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             raise ValueError(block)
         if result.noise_floor:
             try:
-                sess.noise_floor_db = float(result.noise_floor.get("rms_dbfs"))
+                rms_raw = result.noise_floor.get("rms_dbfs")
+                if rms_raw is None:
+                    raise ValueError
+                sess.noise_floor_db = float(rms_raw)
             except (TypeError, ValueError):
                 logger.debug(
                     "relay noise_floor ignored: %r",
