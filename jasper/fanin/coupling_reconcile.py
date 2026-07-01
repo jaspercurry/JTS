@@ -647,7 +647,7 @@ def _run_transport_pipe_gate(
     """
     try:
         gate_ok, gate_detail = do_validate_transport_pipe()
-    except Exception as e:  # noqa: BLE001 - gate failures must fail safe
+    except RuntimeError as e:
         gate_ok = False
         gate_detail = f"transport_pipe activation gate raised: {e}"
     if gate_ok:
