@@ -7,8 +7,9 @@
 //! The wire protocol intentionally matches `jasper-outputd`'s TTS
 //! socket so Python can keep one playout implementation. fan-in only
 //! owns the pre-DSP summing concern: it accepts 48 kHz stereo S16_LE
-//! TTS/cue audio, clamps positive gain, and mixes it into the summed
-//! program lane before CamillaDSP performs crossover/protection.
+//! TTS/cue audio, sanitizes malformed gain, applies the shared peak-capped
+//! assistant gain policy, and mixes it into the summed program lane before
+//! CamillaDSP performs crossover/protection.
 
 use std::collections::VecDeque;
 use std::fs;

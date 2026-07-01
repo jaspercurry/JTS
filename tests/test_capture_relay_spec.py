@@ -31,6 +31,7 @@ from jasper.capture_relay.spec import (
     ui_level_meter,
     ui_steps,
 )
+from jasper.correction.calibration import SUPPORTED_MODELS, supported_model_options
 
 
 # --- room_sweep builder -------------------------------------------------------
@@ -87,6 +88,13 @@ def test_room_sweep_ui_is_server_driven_copy():
     assert headings and "position 2 of 5" in headings[0]["text"]
     buttons = [c for c in s.screen if c["type"] == "button"]
     assert buttons and buttons[0]["action"] == "begin_capture"
+
+
+def test_room_sweep_calibration_models_are_registry_driven():
+    s = build_room_sweep_spec()
+
+    assert {m["key"] for m in s.calibration_models} == set(SUPPORTED_MODELS)
+    assert s.to_dict()["calibration_models"] == list(supported_model_options())
 
 
 def test_room_sweep_default_upload_cap_matches_backend():
@@ -265,6 +273,17 @@ def test_rejects_unknown_button_action():
             pre_roll_ms=0,
             post_roll_ms=0,
             screen=(ui_button("Go", action="exfiltrate"),),
+        ).validate()
+
+
+def test_rejects_invalid_calibration_model_shape():
+    with pytest.raises(CaptureSpecError, match="calibration_models"):
+        CaptureSpec(
+            kind="room_sweep",
+            duration_ms=1000,
+            pre_roll_ms=0,
+            post_roll_ms=0,
+            calibration_models=({"key": "mic", "label": "Mic", "aliases": "mic"},),
         ).validate()
 
 

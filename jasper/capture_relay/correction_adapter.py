@@ -148,7 +148,7 @@ def run_and_store(
 
     Raises loudly (CaptureTimeout / CaptureAborted / CaptureFailed / RelayError)
     exactly as `run_capture` does — the caller surfaces the failure on the page
-    and (when wired) cues it.
+    today; audible cues require a jasper-web -> jasper-voice cue bridge.
     """
     result = run_capture(
         client, pi_session, on_armed=on_armed, play_cue=play_cue, **run_kwargs

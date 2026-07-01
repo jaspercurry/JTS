@@ -179,6 +179,15 @@ function renderMicChoice(screenEl, ctx, inputs) {
 }
 
 function renderCalibration(screenEl, ctx) {
+  const calibrationModels = Array.isArray(ctx.spec.calibration_models)
+    ? ctx.spec.calibration_models.filter((model) => (
+        model &&
+        typeof model.key === "string" &&
+        model.key &&
+        typeof model.label === "string" &&
+        model.label
+      ))
+    : [];
   const mode = el("select", { id: "calibration-mode" }, [
     el("option", { value: "none", text: "No calibration / phone built-in mic" }),
     el("option", { value: "serial", text: "Known measurement mic serial" }),
@@ -194,12 +203,10 @@ function renderCalibration(screenEl, ctx) {
         autocomplete: "off",
         placeholder: "Serial number",
       });
-      const model = el("select", { id: "calibration-model" }, [
-        el("option", { value: "minidsp_umik1", text: "miniDSP UMIK-1" }),
-        el("option", { value: "minidsp_umik2", text: "miniDSP UMIK-2" }),
-        el("option", { value: "dayton_imm6", text: "Dayton iMM-6 / iMM-6C" }),
-        el("option", { value: "dayton_umm6", text: "Dayton UMM-6" }),
-      ]);
+      const model = el("select", { id: "calibration-model" });
+      for (const option of calibrationModels) {
+        model.appendChild(el("option", { value: option.key, text: option.label }));
+      }
       details.append(
         el("label", { class: "cap-field" }, [el("span", { text: "Mic model" }), model]),
         el("label", { class: "cap-field" }, [el("span", { text: "Serial number" }), serial]),
@@ -221,9 +228,14 @@ function renderCalibration(screenEl, ctx) {
 
   const saveAndContinue = async () => {
     if (mode.value === "serial") {
+      const modelEl = document.getElementById("calibration-model");
+      if (!modelEl || !modelEl.value) {
+        setStatus("No supported measurement-mic models were provided by the speaker.", "error");
+        return;
+      }
       setupState.calibration = {
         mode: "serial",
-        model: document.getElementById("calibration-model").value,
+        model: modelEl.value,
         serial: document.getElementById("calibration-serial").value.trim(),
       };
       if (!setupState.calibration.serial) {
@@ -349,8 +361,9 @@ async function onStart(ctx) {
   let disposeWatch = () => {};
   let aborted = false;
 
-  // Abort path (step 7): if the page is backgrounded mid-capture, stop and tell
-  // the Pi (which plays the audible cue) — never upload garbage.
+  // Abort path (step 7): if the page is backgrounded mid-capture, stop, surface
+  // the failure visibly, and tell the Pi on its next relay poll — never upload
+  // garbage.
   const abort = async (reason) => {
     if (aborted) return;
     aborted = true;
@@ -409,7 +422,8 @@ async function onStart(ctx) {
       return;
     }
 
-    // Hold the screen on for the capture; if it backgrounds anyway, abort+cue.
+    // Hold the screen on for the capture; if it backgrounds anyway, abort
+    // visibly and let the Pi observe the failure through the relay.
     wakeLock = await acquireWakeLock();
     disposeWatch = watchVisibilityAbort(
       typeof document !== "undefined" ? document : null,
