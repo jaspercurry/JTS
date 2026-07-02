@@ -602,8 +602,11 @@ to detect the same clicks acoustically at the far end. Each impulse's
 latency is the tap→mic time delta (the click's whole physical journey — ring
 dwell, fan-in, CamillaDSP, outputd, DAC, air, mic — elapses between the two
 timestamps, so it is captured entirely by the subtraction), optionally minus
-a fixed speaker→mic acoustic-distance compensation. This measures the real
-Mac→USB→fan-in→CamillaDSP→outputd→DAC→speaker→air→mic path. The tap also
+a fixed speaker→mic acoustic-distance compensation. This measures the
+Pi-internal fan-in→CamillaDSP→outputd→DAC→speaker→air→mic path: `t_tap`
+anchors at the Pi's UAC2 capture read (route ingress), so host-side and
+USB-transfer buffering *before* that ingress is deliberately excluded — the
+number is the route JTS owns, not the host's playback stack. The tap also
 records the ring's pre-read fill depth per impulse as diagnostic context, but
 that is not added to the latency (doing so would double-count the ring
 dwell).
@@ -683,13 +686,17 @@ the file one second at a time so memory stays bounded (~192 KB), but the
 promotion track is still ~415 MB on disk; a laptop is the comfortable place to
 generate it (the 1 GB Pi is busy running the audio stack under test).
 
-**Route-health honesty.** `analyze` snapshots
-`/run/jasper-usbsink/state.json`, and the fan-in/outputd `STATUS` sockets
-before and after the capture window, prints every nonzero counter delta, and
-states whether `--route-health-ok` on the artifact CLI *would* be justified —
-it never asserts that for the operator. Read the printed deltas (any bridge
-xrun/underflow/overflow/drop counter increasing means the window was not
-clean) before deciding.
+**Route-health honesty.** `capture` snapshots
+`/run/jasper-usbsink/state.json` plus the fan-in/outputd `STATUS` sockets
+before and after the capture window (writing `route-health-snapshot.json`);
+`analyze` then diffs that file, prints every nonzero counter delta, and states
+whether `--route-health-ok` on the artifact CLI *would* be justified — it
+never asserts that for the operator. The verdict disqualifies on ANY nonzero
+change to a curated route-health counter (a NEGATIVE delta means the daemon
+restarted mid-window — also unclean): usbsink capture/playback
+xruns/underflow/overflow/drops, the fan-in output xrun, the outputd
+content/DAC xruns, and any fan-in USB-resampler unlock/silence/overrun or
+per-lane xrun. Read the printed deltas before deciding.
 
 **Mic source.** Default is `udp:9879` (the AEC bridge's `raw0` leg — requires
 an XVF3800 present with 6-channel firmware and the bridge running; the
