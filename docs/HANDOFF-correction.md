@@ -9,14 +9,19 @@
 
 ## Status
 
-- 🧪 **Phone-mic capture relay path (gated, default-off, on-device-pending).**
-  As of 2026-07-01 there is an *optional* alternative capture transport that
-  moves the room capture setup/recording page to a trusted cloud origin
+- 🧪 **Phone-mic capture relay path (fresh-install default,
+  on-device-pending).** As of 2026-07-02 fresh installs default to an
+  alternative capture transport that moves the room capture setup/recording page
+  to a trusted cloud origin
   (`capture.jasper.tech`) and pulls the WAV back through a stateless
   E2E-encrypted relay, feeding **this same** MeasurementSession analysis. It is
-  **inert unless an operator sets
-  `JASPER_CAPTURE_RELAY_BASE`** — `POST /relay/capture` returns a clear "not
-  configured" otherwise, and the on-Pi same-origin flow below is byte-identical.
+  seeded by default as `JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech` /
+  `JASPER_CAPTURE_ORIGIN=capture.jasper.tech`; clearing the relay base keeps the
+  on-Pi same-origin flow below byte-identical and makes `POST /relay/capture`
+  return a clear "not configured" error.
+  The relay exists because phone browsers only expose `getUserMedia` on a secure
+  context with a publicly trusted HTTPS certificate: a LAN Pi self-signed cert is
+  fragile on iOS and blocked for microphone access by Android Chrome.
   The transport + the `correction_setup.py` adapter
   (`jasper/capture_relay/correction_adapter.py`) are hardware-free tested; the
   room relay now guides mic choice, calibration choice, and position count on the

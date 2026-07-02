@@ -228,22 +228,27 @@ install_jasper() {
         echo
     fi
     # Existing boxes have a frozen first-install jasper.env. Add the relay keys
-    # if they predate the relay rollout, but keep the public default inert. Jasper
-    # fleet deploys opt in by forwarding these values from gitignored .env.local
-    # or shell env; an explicit blank/custom value on the Pi is operator intent.
+    # if they predate the relay rollout, using the same public Jasper Tech relay
+    # defaults as .env.example. The relay exists because mobile browsers require
+    # a publicly trusted HTTPS secure context for getUserMedia; the phone records
+    # on capture.jasper.tech while the LAN-only Pi pulls encrypted blobs over
+    # outbound HTTPS. Self-hosters can deploy the same Cloudflare code from
+    # relay/ and capture-page/ (see their README files) and override these via
+    # deploy env or by editing /etc/jasper/jasper.env. An existing explicit
+    # blank/custom value on the Pi is operator intent and is preserved.
     if [[ -n "${JASPER_CAPTURE_RELAY_BASE:-}" ]]; then
         set_jasper_env_value JASPER_CAPTURE_RELAY_BASE "${JASPER_CAPTURE_RELAY_BASE}"
         echo "  capture relay: configured from deploy environment"
     elif ! grep -qE '^JASPER_CAPTURE_RELAY_BASE=' "${ENV_DIR}/jasper.env"; then
-        printf 'JASPER_CAPTURE_RELAY_BASE=\n' >> "${ENV_DIR}/jasper.env"
-        echo "  capture relay: disabled"
+        printf 'JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech\n' >> "${ENV_DIR}/jasper.env"
+        echo "  capture relay: using Jasper Tech public relay"
     fi
     if [[ -n "${JASPER_CAPTURE_ORIGIN:-}" ]]; then
         set_jasper_env_value JASPER_CAPTURE_ORIGIN "${JASPER_CAPTURE_ORIGIN}"
         echo "  capture origin: configured from deploy environment"
     elif ! grep -qE '^JASPER_CAPTURE_ORIGIN=' "${ENV_DIR}/jasper.env"; then
-        printf 'JASPER_CAPTURE_ORIGIN=\n' >> "${ENV_DIR}/jasper.env"
-        echo "  capture origin: unset"
+        printf 'JASPER_CAPTURE_ORIGIN=capture.jasper.tech\n' >> "${ENV_DIR}/jasper.env"
+        echo "  capture origin: using capture.jasper.tech"
     fi
     if [[ -n "${JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN:-}" ]]; then
         set_jasper_env_value \

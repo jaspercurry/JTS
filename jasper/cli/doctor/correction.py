@@ -352,11 +352,12 @@ def check_correction_cert_hostname() -> CheckResult:
 def check_capture_relay() -> CheckResult:
     """Phone-mic capture relay (cloud transport for browser mic capture).
 
-    Skip-if-not-configured: until JASPER_CAPTURE_RELAY_BASE is set the speaker
-    uses the on-Pi same-origin capture, so this reports OK/skipped. When
-    configured, confirm the AEAD decrypt dependency is importable and the relay's
-    /healthz is reachable (a relay outage breaks NEW measurements only — existing
-    corrections are unaffected)."""
+    Fresh installs seed JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech so
+    phones can use a publicly trusted HTTPS mic-capture page. If an operator
+    explicitly clears the base, the speaker uses the on-Pi same-origin capture
+    and this reports OK/skipped. When configured, confirm the AEAD decrypt
+    dependency is importable and the relay's /healthz is reachable (a relay
+    outage breaks NEW measurements only — existing corrections are unaffected)."""
     label = "Phone-mic relay"
     try:
         from jasper.capture_relay import health
@@ -367,8 +368,9 @@ def check_capture_relay() -> CheckResult:
     if not base:
         return CheckResult(
             label, "ok",
-            "not configured (skipped — set JASPER_CAPTURE_RELAY_BASE to route "
-            "phone-mic capture through the cloud relay; on-Pi capture used otherwise)",
+            "explicitly not configured (skipped — fresh installs default to "
+            "https://relay.jasper.tech; set JASPER_CAPTURE_RELAY_BASE to route "
+            "phone-mic capture through another cloud relay)",
         )
     reachable, detail = health.probe_relay_health(base)
     if reachable:

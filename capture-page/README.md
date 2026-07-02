@@ -9,8 +9,10 @@ The **static, trusted-origin** capture surface. Hosting it on a real cert
 (jasper.tech via Cloudflare Pages) is what makes `getUserMedia` work on **iOS
 Safari and Android Chrome with no cert warning and no app** — the whole reason
 the relay exists (see [`docs/phone-mic-relay-plan.md`](../docs/phone-mic-relay-plan.md)
-§§1–4). The page and the Pi never talk directly; they communicate only through
-the relay.
+§§1–4). Mobile browsers require microphone pages to be secure contexts backed by
+a publicly trusted HTTPS certificate; a LAN Pi's self-signed cert is not enough
+for Android Chrome microphone access. The page and the Pi never talk directly;
+they communicate only through the relay.
 
 ## The security boundary (read this)
 
@@ -49,10 +51,14 @@ bash build.sh                                   # -> capture-page/dist/
 npx wrangler pages deploy dist --project-name jts-capture-page
 ```
 
-Then in `js/config.js` set `RELAY_BASE` to your deployed relay origin (e.g.
-`https://relay.jasper.tech`) and point the Cloudflare Pages custom domain at
-`capture.jasper.tech` (or wherever the Pi's tap-link sends phones). Keep the two
-origins distinct so the relay's CORS allowlist (`CAPTURE_ORIGIN`) is meaningful.
+Jasper Tech's public default is deployed at `capture.jasper.tech` and points to
+`https://relay.jasper.tech`. To self-host, set `js/config.js` `RELAY_BASE` to
+your deployed Worker origin (for example `https://relay.example.com`) and point
+the Cloudflare Pages custom domain at your capture host (for example
+`capture.example.com`). Keep the two origins distinct so the relay's CORS
+allowlist (`CAPTURE_ORIGIN`) is meaningful, and set the Pi's
+`JASPER_CAPTURE_RELAY_BASE` / `JASPER_CAPTURE_ORIGIN` to those same custom
+origins.
 
 ## Test
 

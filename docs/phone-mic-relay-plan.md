@@ -1,12 +1,14 @@
 # Phone-mic capture relay — design & build plan
 
-> **Status: DEPLOYED for the Jasper fleet, hardware-validation pending, gated
-> default-off for OSS.** The transport (capture-spec schema, Cloudflare Worker +
-> R2 relay, static capture page, Pi-side session/poll/pull/decrypt/verify) and
-> the daemon adapters are implemented, deployed at `capture.jasper.tech` /
-> `relay.jasper.tech`, and covered by hardware-free tests. The relay capture path
-> is **gated + default-off** (inert unless `JASPER_CAPTURE_RELAY_BASE` is set), so
-> the standard on-Pi flow is byte-identical until an operator opts in.
+> **Status: DEPLOYED, fresh-install default, hardware-validation pending.** The
+> transport (capture-spec schema, Cloudflare Worker + R2 relay, static capture
+> page, Pi-side session/poll/pull/decrypt/verify) and the daemon adapters are
+> implemented, deployed at `capture.jasper.tech` / `relay.jasper.tech`, and
+> covered by hardware-free tests. Fresh installs seed
+> `JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech` and
+> `JASPER_CAPTURE_ORIGIN=capture.jasper.tech`; operators can clear those values
+> to keep the older on-Pi same-origin path, or replace them with a self-hosted
+> relay/capture-page deployment.
 >
 > **Kinds wired today:** room correction (`POST /relay/capture`) and **sync**
 > (`POST /sync/relay-capture`) — both ride one kind-agnostic seam
@@ -49,8 +51,8 @@
 > the production jts.local.** The current operational truth for the on-Pi
 > `/correction/`, `/balance/`, `/sync/` flows remains
 > [HANDOFF-correction.md](HANDOFF-correction.md) (same-origin self-signed-cert
-> capture). **Once validated, make the relay the default and convert
-> this doc to the HANDOFF shape with a `Last verified:` footer.**
+> capture). **Once fully validated, convert this doc to the HANDOFF shape with a
+> `Last verified:` footer.**
 
 ---
 

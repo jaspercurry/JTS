@@ -296,9 +296,11 @@ def _run_relay_capture(kind: RelayCaptureKind, relay_base: str) -> dict[str, Any
 def _require_relay_base() -> str:
     """Return the configured relay origin, or raise the gated-off ValueError.
 
-    Called FIRST by every relay endpoint so it is inert (and the default on-Pi
-    flow byte-identical) until an operator sets JASPER_CAPTURE_RELAY_BASE. Also
-    narrows the value from str|None to str for the register call."""
+    Called FIRST by every relay endpoint so an operator can still clear
+    JASPER_CAPTURE_RELAY_BASE and keep the on-Pi flow byte-identical. Fresh
+    installs seed https://relay.jasper.tech because phone microphone access needs
+    a publicly trusted HTTPS capture page. Also narrows the value from str|None
+    to str for the register call."""
     from jasper.capture_relay.health import relay_base_from_env
 
     relay_base = relay_base_from_env()
