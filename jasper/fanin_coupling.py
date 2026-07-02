@@ -5,7 +5,8 @@
 """fan-in → CamillaDSP coupling selector (``JASPER_FANIN_CAMILLA_COUPLING``).
 
 The single source of truth for HOW the fan-in mixer's summed program reaches
-CamillaDSP's capture. Two transports:
+CamillaDSP's capture. Three transports (``loopback`` default; ``transport_pipe``
+and ``shm_ring`` are LAB flags, inert in every product path):
 
 - ``loopback`` (the **default**) — fan-in writes the ALSA snd-aloop substream
   (``hw:Loopback,0,7``); CamillaDSP captures ``plug:jasper_capture`` (a dsnoop
@@ -62,7 +63,16 @@ COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
 # byte-identical-to-today path.
 COUPLING_LOOPBACK = "loopback"
 COUPLING_TRANSPORT_PIPE = "transport_pipe"
-_VALID_COUPLINGS = frozenset({COUPLING_LOOPBACK, COUPLING_TRANSPORT_PIPE})
+# Ring A (prototype): fan-in writes an SPSC ping-pong SHM ring
+# (``jasper_ring::RingWriter``) that CamillaDSP reads via a CAPTURE direction of
+# the ``jts_ring`` ioplug. Same SHM contract v1 as Ring B; roles flipped. Like
+# ``transport_pipe`` this is a LAB flag — inert in every product path (env unset
+# resolves to ``loopback``), armed only by ``scripts/ring-proto/`` for the soak.
+# The Rust ``Coupling::ShmRing`` normalizer MUST agree with this token.
+COUPLING_SHM_RING = "shm_ring"
+_VALID_COUPLINGS = frozenset(
+    {COUPLING_LOOPBACK, COUPLING_TRANSPORT_PIPE, COUPLING_SHM_RING}
+)
 
 # The shared-capture named pipe written by fan-in under ``transport_pipe`` and
 # RawFile-read by CamillaDSP. DISTINCT from the lean lane's FIFO
@@ -79,6 +89,26 @@ OUTPUTD_PIPE_PATH_ENV_VAR = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
 # same width the proven usbsink lean writer emits. Pinned here so producer and
 # consumer can never drift.
 PIPE_WIRE_FORMAT = "S32_LE"
+
+# Ring A (``shm_ring``) SHM ring file + slot-count env vars. fan-in creates the
+# ring at ``JASPER_FANIN_RING_PATH`` with ``JASPER_FANIN_RING_SLOTS`` slots; the
+# Rust daemon resolves both with the SAME defaults (see ``config.rs``). The
+# n_slots <-> JASPER_FANIN_RING_SLOTS pairing is the drift axis with the ioplug
+# conf.d geometry; the ring header's own validation is the runtime fail-loud
+# backstop.
+RING_PATH_ENV_VAR = "JASPER_FANIN_RING_PATH"
+DEFAULT_FANIN_RING_PATH = "/dev/shm/jts-ring/program.ring"
+RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
+DEFAULT_FANIN_RING_SLOTS = 8
+
+# Ring A capture device + wire format. fan-in is S16 native and the SHM ring
+# carries S16LE with NO widening (unlike ``transport_pipe``'s S32 FIFO-page
+# floor, an SHM ring has none). CamillaDSP captures it as an ALSA device named
+# by the ioplug conf.d block. Pinned here so the hand generator
+# (``make-camilla-ring-config.sh`` capture-swap mode) and the Rust writer stay
+# one SSOT — no product emitter path consumes these.
+RING_CAPTURE_DEVICE = "jts_ring_capture"
+RING_WIRE_FORMAT = "S16_LE"
 
 
 def resolve_coupling(raw: str | None) -> str:
@@ -103,6 +133,45 @@ def is_transport_pipe_coupling(raw: str | None) -> bool:
     return resolve_coupling(raw) == COUPLING_TRANSPORT_PIPE
 
 
+def is_shm_ring_coupling(raw: str | None) -> bool:
+    """True iff the resolved coupling is ``shm_ring`` (Ring A)."""
+    return resolve_coupling(raw) == COUPLING_SHM_RING
+
+
+def resolve_ring_path(raw_path: str | None) -> str:
+    """Resolve the Ring A SHM ring file path from a raw env value.
+
+    Empty / unset → :data:`DEFAULT_FANIN_RING_PATH`. Trims whitespace. The Rust
+    daemon resolves ``JASPER_FANIN_RING_PATH`` the same way so the writer and the
+    ioplug conf.d block name the same ring file.
+    """
+    if raw_path is None:
+        return DEFAULT_FANIN_RING_PATH
+    value = raw_path.strip()
+    return value or DEFAULT_FANIN_RING_PATH
+
+
+def resolve_ring_slots(raw_slots: str | None) -> int:
+    """Resolve the Ring A n_slots from a raw env value.
+
+    Empty / unset / unparseable / out-of-range → :data:`DEFAULT_FANIN_RING_SLOTS`
+    (fail-safe to the validated default rather than a shear-prone geometry). The
+    range 2..=16 mirrors the ring header's ``MIN_N_SLOTS``/``MAX_N_SLOTS`` and the
+    Rust daemon's ``JASPER_FANIN_RING_SLOTS`` clamp; the n_slots <->
+    JASPER_FANIN_RING_SLOTS pairing is the drift axis the ring header validates at
+    runtime.
+    """
+    if raw_slots is None:
+        return DEFAULT_FANIN_RING_SLOTS
+    try:
+        value = int(raw_slots.strip())
+    except (ValueError, AttributeError):
+        return DEFAULT_FANIN_RING_SLOTS
+    if 2 <= value <= 16:
+        return value
+    return DEFAULT_FANIN_RING_SLOTS
+
+
 def capture_kwargs_for_coupling(
     raw: str | None,
     *,
@@ -121,11 +190,25 @@ def capture_kwargs_for_coupling(
       outputd File playback, ``enable_rate_adjust=False``, and
       ``transport_paced_pipe=True``. No Camilla async resampler is emitted.
 
+    - ``shm_ring`` (Ring A, prototype): returns the ALSA capture-device kwargs —
+      ``capture_device=jts_ring_capture`` (the ioplug conf.d name) and
+      ``capture_format=S16_LE`` (fan-in is S16 native; the SHM ring carries S16LE
+      with no widening). This is the SSOT the hand generator
+      (``make-camilla-ring-config.sh`` capture-swap mode) reads so Python and the
+      Rust writer agree on the capture side. NO product ``emit_sound_config``
+      path passes these — it is armed only by ``scripts/ring-proto/``.
+
     ``pipe_path`` overrides the capture pipe path (the env override is resolved by
     :func:`resolve_pipe_path`; pass its result here so the emitted config and the
     daemon point at the same pipe).
     """
-    if resolve_coupling(raw) != COUPLING_TRANSPORT_PIPE:
+    resolved = resolve_coupling(raw)
+    if resolved == COUPLING_SHM_RING:
+        return {
+            "capture_device": RING_CAPTURE_DEVICE,
+            "capture_format": RING_WIRE_FORMAT,
+        }
+    if resolved != COUPLING_TRANSPORT_PIPE:
         return {}
     return {
         "capture_pipe_path": pipe_path or DEFAULT_FANIN_CAMILLA_PIPE,
