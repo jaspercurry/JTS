@@ -120,9 +120,28 @@ jasper_env_file_set() {
 
     if [[ -e "$file" ]]; then
         chown --reference="$file" "$tmp" 2>/dev/null || true
+    else
+        chgrp --reference="$dir" "$tmp" 2>/dev/null || true
     fi
     chmod "$file_mode" "$tmp"
     mv "$tmp" "$file"
+}
+
+# jasper_env_file_repair_permissions FILE [FILE_MODE] [DIR_MODE]
+# Repair mode + parent-directory group on an existing generated env file without
+# changing its contents. This closes the no-op reconcile case: if an old file is
+# already content-current but root:root, non-root status daemons cannot read it
+# and /state drifts from root doctor.
+jasper_env_file_repair_permissions() {
+    local file="$1"
+    local file_mode="${2:-0600}" dir_mode="${3:-0755}"
+    local dir
+
+    dir="$(dirname "$file")"
+    [[ -d "$dir" ]] || install -d -m "$dir_mode" "$dir"
+    [[ -f "$file" ]] || return 0
+    chgrp --reference="$dir" "$file" 2>/dev/null || true
+    chmod "$file_mode" "$file"
 }
 
 # jasper_env_file_unset FILE KEY [FILE_MODE] [DIR_MODE]
@@ -151,9 +170,7 @@ jasper_env_file_unset() {
         $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { next }
         { print }
     ' "$file" > "$tmp"
-    if [[ -e "$file" ]]; then
-        chown --reference="$file" "$tmp" 2>/dev/null || true
-    fi
+    chown --reference="$file" "$tmp" 2>/dev/null || true
     chmod "$file_mode" "$tmp"
     mv "$tmp" "$file"
 }

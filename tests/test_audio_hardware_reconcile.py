@@ -60,6 +60,8 @@ def _run_reconcile(
     *args: str,
     initial_env: str | None = None,
     initial_outputd_env: str | None = None,
+    initial_fanin_env: str | None = None,
+    initial_usbsink_env: str | None = None,
     initial_template: str | None = None,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -83,6 +85,10 @@ def _run_reconcile(
         (tmp_path / "jasper.env").write_text(initial_env, encoding="utf-8")
     if initial_outputd_env is not None:
         (tmp_path / "outputd.env").write_text(initial_outputd_env, encoding="utf-8")
+    if initial_fanin_env is not None:
+        (tmp_path / "fanin.env").write_text(initial_fanin_env, encoding="utf-8")
+    if initial_usbsink_env is not None:
+        (tmp_path / "usbsink.env").write_text(initial_usbsink_env, encoding="utf-8")
     if initial_template is not None:
         (tmp_path / "asoundrc.jasper.template").write_text(
             initial_template,
@@ -94,6 +100,8 @@ def _run_reconcile(
         {
             "JASPER_ENV_FILE": str(tmp_path / "jasper.env"),
             "JASPER_OUTPUTD_ENV_FILE": str(tmp_path / "outputd.env"),
+            "JASPER_FANIN_ENV_FILE": str(tmp_path / "fanin.env"),
+            "JASPER_USBSINK_ENV_FILE": str(tmp_path / "usbsink.env"),
             "JASPER_TTS_ENV_FILE": str(tmp_path / "tts.env"),
             "JASPER_ASOUND_SOURCE_TEMPLATE": str(source_template),
             "JASPER_ASOUND_TEMPLATE": str(tmp_path / "asoundrc.jasper.template"),
@@ -477,11 +485,21 @@ def test_env_writer_preserves_existing_jasper_env_ownership() -> None:
     """A DAC reconcile must not turn root:jasper jasper.env into root:root.
 
     jasper-control relies on group-read access for fresh /state reads; the
-    audio-hardware reconciler also atomically rewrites /etc/jasper/jasper.env.
+    audio-hardware reconciler also atomically rewrites /etc/jasper/jasper.env
+    and repairs generated /var/lib/jasper env-file permissions on no-op runs.
     """
     text = SCRIPT.read_text()
     assert 'jasper_env_file_set "$ENV_FILE" "$key" "$value" 0640 0750' in text
     assert 'jasper_env_file_set "$file" "$key" "$value" 0640 0750' in text
+    assert (
+        'jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640 0750'
+        in text
+    )
+    assert 'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750' in text
+    assert (
+        'jasper_env_file_repair_permissions "$USBSINK_ENV_FILE" 0640 0750'
+        in text
+    )
 
 
 def test_reconcile_preserves_asound_template_dir_mode(tmp_path: Path):
@@ -544,8 +562,8 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         # steady state now — seed it so a second reconcile is a true no-op.
         "JASPER_CAMILLA_CHUNKSIZE=256\n"
         "JASPER_CAMILLA_TARGET_LEVEL=1536\n"
-        "JASPER_OUTPUTD_PERIOD_FRAMES=256\n"
-        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512\n"
+        "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256\n"
     )
     result = _run_reconcile(
         tmp_path,
@@ -557,6 +575,7 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
             "JASPER_AUDIO_DAC_CARD=A\n"
         ),
         initial_outputd_env=outputd_env,
+        initial_usbsink_env="JASPER_USBSINK_OUTPUT_MODE=aloop\n",
         initial_template=rendered_template,
     )
 
@@ -569,6 +588,28 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
     assert "--no-block restart jasper-outputd.service" not in commands
     assert "stop jasper-voice.service" not in commands
     assert "--no-block restart jasper-aec-reconcile.service" not in commands
+
+
+def test_reconcile_applies_usb_low_latency_route_env(tmp_path: Path):
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    fanin_env = (tmp_path / "fanin.env").read_text(encoding="utf-8")
+    usbsink_env = (tmp_path / "usbsink.env").read_text(encoding="utf-8")
+    assert "JASPER_FANIN_INPUT_RESAMPLER=enabled" in fanin_env
+    assert "JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink" in fanin_env
+    assert "JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512" in fanin_env
+    assert "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1536" in fanin_env
+    assert "JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES=4096" in fanin_env
+    assert "JASPER_USBSINK_AUDIO_IMPL" not in usbsink_env
+    assert "JASPER_USBSINK_BLOCK_FRAMES=256" in usbsink_env
+    assert "JASPER_USBSINK_RING_PERIODS=3" in usbsink_env
 
 
 def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
@@ -1239,16 +1280,21 @@ def test_render_success_still_writes_template(tmp_path: Path):
 
 
 def test_reconcile_apple_emits_codified_latency_floor(tmp_path: Path):
-    # An Apple dongle declares a measured floor; the reconciler emits all four
-    # floor keys into the wizard-owned outputd.env (mirroring the channel write).
+    # An Apple dongle declares a measured floor; the reconciler emits all
+    # profile-floor keys into the wizard-owned outputd.env (mirroring the
+    # channel write). Route-owned content buffering is absent on the default
+    # corrected route, so it stays on the packaged outputd default.
     result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_CAMILLA_CHUNKSIZE=256" in outputd_env
     assert "JASPER_CAMILLA_TARGET_LEVEL=1536" in outputd_env
-    assert "JASPER_OUTPUTD_PERIOD_FRAMES=256" in outputd_env
-    assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512" in outputd_env
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES=128" in outputd_env
+    assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256" in outputd_env
+    assert not _outputd_env_key_present(
+        outputd_env, "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
+    )
     assert (
         "event=audio_hardware_reconcile.latency_floor "
         "reason=test output_dac_id=apple_usb_c_dongle camilla_chunksize=256"
@@ -1287,6 +1333,7 @@ def test_reconcile_dac8x_clears_floor_keys_no_profile_floor(tmp_path: Path):
         "JASPER_CAMILLA_CHUNKSIZE",
         "JASPER_CAMILLA_TARGET_LEVEL",
         "JASPER_OUTPUTD_PERIOD_FRAMES",
+        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES",
         "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
     ):
         assert not _outputd_env_key_present(outputd_env, key), key
@@ -1305,6 +1352,7 @@ def test_reconcile_no_floor_drops_stale_floor_keys(tmp_path: Path):
             "JASPER_CAMILLA_CHUNKSIZE=256\n"
             "JASPER_CAMILLA_TARGET_LEVEL=1024\n"
             "JASPER_OUTPUTD_PERIOD_FRAMES=256\n"
+            "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1024\n"
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512\n"
         ),
     )
@@ -1315,6 +1363,7 @@ def test_reconcile_no_floor_drops_stale_floor_keys(tmp_path: Path):
         "JASPER_CAMILLA_CHUNKSIZE",
         "JASPER_CAMILLA_TARGET_LEVEL",
         "JASPER_OUTPUTD_PERIOD_FRAMES",
+        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES",
         "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
     ):
         assert not _outputd_env_key_present(outputd_env, key), key
@@ -1348,7 +1397,22 @@ def test_reconcile_operator_env_override_survives_reconciler(tmp_path: Path):
     )
     # Non-overridden keys: profile floor still emitted.
     assert "JASPER_CAMILLA_TARGET_LEVEL=1536" in outputd_env
-    assert "JASPER_OUTPUTD_PERIOD_FRAMES=256" in outputd_env
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES=128" in outputd_env
+
+
+def test_reconcile_usb_low_latency_route_emits_content_buffer(tmp_path: Path):
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536" in outputd_env
+    assert "outputd_content_buffer_frames=1536" in result.stderr
 
 
 def test_reconcile_operator_outputd_override_dropped_even_when_pre_seeded(

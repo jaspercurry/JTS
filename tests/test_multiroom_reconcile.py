@@ -1128,6 +1128,7 @@ def test_plan_follower_parks_usbsink_gadget_not_only_bridge():
     by_unit = {i.unit: i.desired for i in p.intents}
     assert by_unit["jasper-usbsink-init.service"] == "stop"
     assert by_unit["jasper-usbsink.service"] == "stop"
+    assert by_unit["jasper-usbsink-volume.service"] == "stop"
 
 
 def test_plan_follower_parks_source_arbiter_infrastructure():

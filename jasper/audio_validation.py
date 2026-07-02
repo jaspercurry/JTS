@@ -43,6 +43,11 @@ from .chip_aec_policy import (
     STATUS_APPROVED,
     resolve_chip_aec_dac_gate,
 )
+from .audio_runtime_plan import (
+    ROUTE_LATENCY_PROFILE as RUNTIME_ROUTE_LATENCY_PROFILE,
+    USB_LOW_LATENCY_P95_BUDGET_MS,
+    USB_LOW_LATENCY_P99_BUDGET_MS,
+)
 from .control import client as control
 from .env_load import parse_env_file
 from .log_event import log_event
@@ -66,6 +71,14 @@ HARDWARE_VALIDATION_PROFILES = (
 )
 READINESS_SNAPSHOT_KIND = "readiness_snapshot"
 HARDWARE_VALIDATION_KIND = "hardware_validation_passive"
+ROUTE_LATENCY_PROFILE = RUNTIME_ROUTE_LATENCY_PROFILE
+ROUTE_LATENCY_MIC_ID = "route_latency"
+ROUTE_LATENCY_KIND = "route_latency"
+ROUTE_LATENCY_P95_BUDGET_MS = USB_LOW_LATENCY_P95_BUDGET_MS
+ROUTE_LATENCY_P99_BUDGET_MS = USB_LOW_LATENCY_P99_BUDGET_MS
+ROUTE_LATENCY_P95_MIN_DURATION_SECONDS = 5 * 60
+ROUTE_LATENCY_P99_MIN_DURATION_SECONDS = 30 * 60
+ROUTE_LATENCY_STALE_AFTER = timedelta(hours=24)
 DEFAULT_HARDWARE_OBSERVE_SECONDS = 10.0
 MAX_SHORT_HARDWARE_OBSERVE_SECONDS = 120.0
 LONG_HARDWARE_OBSERVE_SECONDS = 1800.0
@@ -197,6 +210,395 @@ def make_artifact(
     )
 
 
+def percentile_min_samples(percentile: float) -> int:
+    """Return the minimum samples to certify a percentile.
+
+    Rule: ``ceil(10 / (1 - percentile))``. Accepts either 0.95/0.99 or
+    95/99. Values must be strictly between 0 and 1 after normalization.
+    """
+
+    p = float(percentile)
+    if p > 1.0:
+        p = p / 100.0
+    if not 0.0 < p < 1.0:
+        raise ValueError(f"percentile must be in (0, 1), got {percentile!r}")
+    return int(math.ceil(10.0 / (1.0 - p)))
+
+
+def certified_route_latency_percentiles(
+    *,
+    sample_count: int,
+    duration_seconds: float,
+    jittered_impulse_spacing: bool = False,
+) -> tuple[int, ...]:
+    """Return which route-latency percentiles this run may certify."""
+
+    certified: list[int] = []
+    if (
+        sample_count >= percentile_min_samples(95)
+        and duration_seconds >= ROUTE_LATENCY_P95_MIN_DURATION_SECONDS
+    ):
+        certified.append(95)
+    if (
+        sample_count >= percentile_min_samples(99)
+        and duration_seconds >= ROUTE_LATENCY_P99_MIN_DURATION_SECONDS
+        and jittered_impulse_spacing
+    ):
+        certified.append(99)
+    return tuple(certified)
+
+
+def _p99_sample_and_duration_sufficient(
+    *,
+    sample_count: int,
+    duration_seconds: float,
+) -> bool:
+    return (
+        sample_count >= percentile_min_samples(99)
+        and duration_seconds >= ROUTE_LATENCY_P99_MIN_DURATION_SECONDS
+    )
+
+
+def route_latency_gate_status(
+    *,
+    p95_ms: float | None,
+    p99_ms: float | None,
+    sample_count: int,
+    duration_seconds: float,
+    jittered_impulse_spacing: bool = False,
+    config_match: bool = True,
+    route_health_ok: bool = True,
+) -> tuple[str, str, tuple[int, ...], tuple[str, ...]]:
+    """Classify a route-latency artifact using the production gate."""
+
+    certified = certified_route_latency_percentiles(
+        sample_count=sample_count,
+        duration_seconds=duration_seconds,
+        jittered_impulse_spacing=jittered_impulse_spacing,
+    )
+    issues: list[str] = []
+    if not config_match:
+        issues.append("config_mismatch")
+    if not route_health_ok:
+        issues.append("route_health_anomaly")
+    if p95_ms is None:
+        issues.append("p95_missing")
+    elif p95_ms > ROUTE_LATENCY_P95_BUDGET_MS:
+        issues.append("p95_exceeds_40ms")
+    if 95 not in certified:
+        issues.append("p95_uncertified")
+
+    if issues:
+        return "fail", "fix_route_latency_before_claim", certified, tuple(issues)
+
+    if p99_ms is None:
+        return "warn", "run_p99_promotion_validation", certified, ("p99_missing",)
+    if 99 not in certified:
+        if (
+            _p99_sample_and_duration_sufficient(
+                sample_count=sample_count,
+                duration_seconds=duration_seconds,
+            )
+            and not jittered_impulse_spacing
+        ):
+            return "warn", "run_p99_promotion_validation", certified, (
+                "p99_spacing_unverified",
+            )
+        return "warn", "run_p99_promotion_validation", certified, ("p99_uncertified",)
+    if p99_ms > ROUTE_LATENCY_P99_BUDGET_MS:
+        return "warn", "reduce_tail_latency_before_promotion", certified, (
+            "p99_exceeds_60ms",
+        )
+    return "pass", "usb_low_latency_route_promotable", certified, ()
+
+
+def make_route_latency_artifact(
+    *,
+    route_id: str,
+    source_id: str,
+    dac_id: str,
+    route_config_hash: str,
+    p95_ms: float | None,
+    p99_ms: float | None,
+    sample_count: int,
+    duration_seconds: float,
+    camilla_config_hash: str = "",
+    fanin_resampler_config: Mapping[str, JsonValue] | None = None,
+    outputd_config: Mapping[str, JsonValue] | None = None,
+    rust_bridge_config: Mapping[str, JsonValue] | None = None,
+    uac2_gadget_attrs: Mapping[str, JsonValue] | None = None,
+    measurement_provenance: Mapping[str, JsonValue] | None = None,
+    impulse_spacing_jittered: bool = False,
+    route_health_ok: bool = True,
+    route_health_issues: tuple[str, ...] | list[str] = (),
+    validated_at: datetime | None = None,
+) -> ValidationArtifact:
+    """Build a route-latency artifact without playing/measuring audio."""
+
+    health_issues = tuple(str(issue) for issue in route_health_issues if str(issue))
+    status, recommendation, certified, issues = route_latency_gate_status(
+        p95_ms=p95_ms,
+        p99_ms=p99_ms,
+        sample_count=sample_count,
+        duration_seconds=duration_seconds,
+        jittered_impulse_spacing=impulse_spacing_jittered,
+        config_match=True,
+        route_health_ok=route_health_ok and not health_issues,
+    )
+    issues = tuple(dict.fromkeys((*issues, *health_issues)))
+    checks: dict[str, JsonValue] = {
+        "kind": ROUTE_LATENCY_KIND,
+        "identity": {
+            "route_id": route_id,
+            "source_id": source_id,
+            "dac_profile_id": dac_id,
+            "route_config_hash": route_config_hash,
+            "camilla_config_hash": camilla_config_hash,
+            "fanin_resampler_config": dict(fanin_resampler_config or {}),
+            "outputd_config": dict(outputd_config or {}),
+            "rust_bridge_config": dict(rust_bridge_config or {}),
+            "uac2_gadget_attrs": dict(uac2_gadget_attrs or {}),
+        },
+        "sample_count": sample_count,
+        "duration_seconds": duration_seconds,
+        "impulse_spacing_jittered": impulse_spacing_jittered,
+        "p95_ms": p95_ms,
+        "p99_ms": p99_ms,
+        "certified_percentiles": list(certified),
+        "evidence": dict(measurement_provenance or {}),
+        "budgets_ms": {
+            "p95": ROUTE_LATENCY_P95_BUDGET_MS,
+            "p99": ROUTE_LATENCY_P99_BUDGET_MS,
+        },
+        "issues": list(issues),
+    }
+    return make_artifact(
+        mic_id=ROUTE_LATENCY_MIC_ID,
+        dac_id=dac_id,
+        profile=ROUTE_LATENCY_PROFILE,
+        status=status,
+        checks=checks,
+        recommendation=recommendation,
+        validated_at=validated_at,
+    )
+
+
+def _normal_json(value: Any) -> JsonValue:
+    return json.loads(json.dumps(value, sort_keys=True, separators=(",", ":")))
+
+
+def _string_issues(raw: Any) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        return ()
+    return tuple(item for item in raw if isinstance(item, str))
+
+
+def _route_identity_mismatches(
+    observed: Mapping[str, Any],
+    expected: Mapping[str, JsonValue],
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    for key, expected_value in expected.items():
+        if key not in observed:
+            issues.append(f"identity_mismatch:{key}")
+            continue
+        if _normal_json(observed.get(key)) != _normal_json(expected_value):
+            issues.append(f"identity_mismatch:{key}")
+    return tuple(issues)
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _fanin_input_status(
+    fanin_status: Mapping[str, Any] | None,
+    lane: str,
+) -> Mapping[str, Any] | None:
+    if not isinstance(fanin_status, Mapping):
+        return None
+    inputs = fanin_status.get("inputs")
+    if not isinstance(inputs, list):
+        return None
+    for item in inputs:
+        if isinstance(item, Mapping) and item.get("label") == lane:
+            return item
+    return None
+
+
+def route_live_state_issues(
+    expected_identity: Mapping[str, JsonValue],
+    *,
+    usbsink_state: Mapping[str, Any] | None = None,
+    fanin_status: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """Return live runtime mismatches that invalidate route-latency promotion.
+
+    Route artifacts bind measurements to the intended route identity. Promotion
+    also needs the current daemons to be running that identity: Rust bridge
+    period/ring settings and the fan-in USB resampler lock/target are live
+    timing facts, not just config promises.
+    """
+
+    issues: list[str] = []
+
+    bridge_expected = _mapping_or_empty(
+        expected_identity.get("rust_bridge_config"),
+    )
+    if bridge_expected:
+        if not isinstance(usbsink_state, Mapping):
+            issues.append("live_usbsink_state_missing")
+        else:
+            expected_impl = str(bridge_expected.get("implementation") or "")
+            observed_impl = str(usbsink_state.get("implementation") or "")
+            if expected_impl and observed_impl != expected_impl:
+                issues.append("live_usbsink_bridge_mismatch:implementation")
+
+            expected_period = _int_or_none(bridge_expected.get("period_frames"))
+            observed_period = _int_or_none(usbsink_state.get("period_frames"))
+            if expected_period is not None and observed_period != expected_period:
+                issues.append("live_usbsink_bridge_mismatch:period_frames")
+
+            expected_ring = _int_or_none(bridge_expected.get("ring_periods"))
+            ring = _mapping_or_empty(usbsink_state.get("ring"))
+            observed_ring = _int_or_none(ring.get("capacity_periods"))
+            if expected_ring is not None and observed_ring != expected_ring:
+                issues.append("live_usbsink_bridge_mismatch:ring_periods")
+
+    resampler_expected = _mapping_or_empty(
+        expected_identity.get("fanin_resampler_config"),
+    )
+    if resampler_expected.get("enabled") is True:
+        lane = str(resampler_expected.get("lane") or "usbsink")
+        lane_status = _fanin_input_status(fanin_status, lane)
+        if lane_status is None:
+            issues.append(f"live_fanin_input_missing:{lane}")
+        else:
+            resampler = lane_status.get("resampler")
+            if not isinstance(resampler, Mapping):
+                issues.append(f"live_fanin_resampler_missing:{lane}")
+            else:
+                if resampler.get("locked") is not True:
+                    issues.append(f"live_fanin_resampler_unlocked:{lane}")
+                expected_target = _int_or_none(
+                    resampler_expected.get("target_frames"),
+                )
+                cushion = _int_or_none(
+                    resampler_expected.get("warmup_cushion_frames"),
+                )
+                if expected_target is not None and cushion is not None:
+                    expected_target += cushion
+                observed_target = _int_or_none(resampler.get("target_fill_frames"))
+                if (
+                    expected_target is not None
+                    and observed_target != expected_target
+                ):
+                    issues.append(
+                        f"live_fanin_resampler_mismatch:{lane}:target_fill_frames"
+                    )
+
+    return tuple(issues)
+
+
+def assess_route_latency_artifact(
+    result: ArtifactLoadResult,
+    *,
+    route_config_hash: str,
+    expected_identity: Mapping[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
+    """Return doctor/state friendly verdict for the latest route artifact."""
+
+    if result.artifact is None:
+        return {
+            "state": result.state,
+            "status": "fail",
+            "reason": "; ".join(result.errors) or "artifact missing",
+            "artifact_path": str(result.path) if result.path else "",
+            "config_match": False,
+        }
+    artifact = result.artifact
+    checks = dict(artifact.checks)
+    identity = checks.get("identity")
+    if not isinstance(identity, dict):
+        identity = {}
+    observed_hash = str(identity.get("route_config_hash") or "")
+    expected = dict(expected_identity or {"route_config_hash": route_config_hash})
+    identity_issues = _route_identity_mismatches(identity, expected)
+    config_match = observed_hash == route_config_hash and not identity_issues
+    artifact_issues = _string_issues(checks.get("issues"))
+    route_artifact_health_issues = tuple(
+        issue
+        for issue in artifact_issues
+        if issue == "route_health_anomaly" or issue.startswith("live_")
+    )
+    route_health_ok = not route_artifact_health_issues
+    try:
+        sample_count = int(checks.get("sample_count") or 0)
+    except (TypeError, ValueError):
+        sample_count = 0
+    try:
+        duration_seconds = float(checks.get("duration_seconds") or 0.0)
+    except (TypeError, ValueError):
+        duration_seconds = 0.0
+    p95_raw = checks.get("p95_ms")
+    p99_raw = checks.get("p99_ms")
+    p95_ms = float(p95_raw) if isinstance(p95_raw, (int, float)) else None
+    p99_ms = float(p99_raw) if isinstance(p99_raw, (int, float)) else None
+    jittered_impulse_spacing = bool(checks.get("impulse_spacing_jittered", False))
+    status, recommendation, certified, issues = route_latency_gate_status(
+        p95_ms=p95_ms,
+        p99_ms=p99_ms,
+        sample_count=sample_count,
+        duration_seconds=duration_seconds,
+        jittered_impulse_spacing=jittered_impulse_spacing,
+        config_match=config_match and result.state == "loaded",
+        route_health_ok=route_health_ok,
+    )
+    issues = tuple(
+        dict.fromkeys(
+            (
+                *issues,
+                *identity_issues,
+                *route_artifact_health_issues,
+            )
+        )
+    )
+    if result.state != "loaded":
+        status = "fail"
+        if result.state == "stale":
+            issues = tuple(dict.fromkeys((*issues, "artifact_stale")))
+        elif result.state == "future":
+            issues = tuple(dict.fromkeys((*issues, "artifact_from_future")))
+        else:
+            issues = tuple(dict.fromkeys((*issues, result.state)))
+    return {
+        "state": result.state,
+        "status": status,
+        "validated_at": _format_timestamp(artifact.validated_at),
+        "recommendation": recommendation,
+        "artifact_path": str(result.path) if result.path else "",
+        "config_match": config_match,
+        "route_config_hash": observed_hash,
+        "expected_route_config_hash": route_config_hash,
+        "sample_count": sample_count,
+        "duration_seconds": duration_seconds,
+        "impulse_spacing_jittered": jittered_impulse_spacing,
+        "p95_ms": p95_ms,
+        "p99_ms": p99_ms,
+        "certified_percentiles": list(certified),
+        "issues": list(issues),
+    }
+
+
 def parse_artifact_payload(payload: Any) -> ValidationArtifact:
     """Parse and validate a schema-v1 artifact from decoded JSON."""
 
@@ -283,7 +685,7 @@ def write_artifact(
             f.write(body)
         os.chmod(tmp_name, file_mode)
         os.replace(tmp_name, path)
-    except Exception:  # noqa: BLE001
+    except (OSError, TypeError, ValueError):
         try:
             os.unlink(tmp_name)
         except OSError:
@@ -317,7 +719,7 @@ def write_latest_pointer(
             f.write(body)
         os.chmod(tmp_name, file_mode)
         os.replace(tmp_name, path)
-    except Exception:  # noqa: BLE001
+    except (OSError, TypeError, ValueError):
         try:
             os.unlink(tmp_name)
         except OSError:

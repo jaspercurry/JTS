@@ -404,7 +404,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - jasper-outputd daemon from rust/jasper-outputd with
      cargo build --release --locked; Zero-class RAM uses the installer
      low-memory Cargo release overrides.
-   - The shairport-sync/nqptp source builds and both Rust daemon builds
+   - jasper-usbsink-audio daemon from rust/jasper-usbsink-audio with
+     cargo build --release --locked; this keeps the production USB
+     low-latency route out of Python's callback tail.
+   - The shairport-sync/nqptp source builds and Rust daemon builds
      run RAM-bounded and cgroup-contained via
      deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
      never a live daemon. See docs/HANDOFF-build-sandbox.md.
@@ -534,6 +537,9 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - jasper-outputd daemon from rust/jasper-outputd with
      cargo build --release --locked; enabled as the mainline final-output
      owner.
+   - jasper-usbsink-audio daemon from rust/jasper-usbsink-audio with
+     cargo build --release --locked; enabled by the USB Audio Input
+     source unit when the source is toggled on.
    - Optional ESP32 dial/satellite firmware only when
      JASPER_BUILD_OPTIONAL_FIRMWARE=1.
    - All heavy source builds above (webrtc AEC3, jasper_aec3, the Rust
@@ -661,8 +667,8 @@ require_root() {
     fi
 }
 
-# The user the Rust daemon builds run as. build_install_jasper_fanin /
-# build_install_jasper_outputd chown their cargo cache dirs to this user
+# The user the Rust daemon builds run as. build_install_jasper_* helpers
+# chown their cargo cache dirs to this user
 # and `sudo -u` the builds — the appliance-standard account, NOT the
 # laptop-side PI_USER deploy transport setting (custom appliance users
 # are out of scope; see "Custom user boundary" in AGENTS.md).
@@ -679,7 +685,8 @@ require_build_user() {
     cat >&2 <<EOF
 ERROR: required build user '${BUILD_USER}' does not exist on this host.
 
-install.sh builds the Rust audio daemons (jasper-fanin, jasper-outputd)
+install.sh builds the Rust audio daemons (jasper-fanin, jasper-outputd,
+jasper-usbsink-audio)
 as the appliance-standard '${BUILD_USER}' user. Custom appliance
 users are not supported (PI_USER only covers the deploy/onboarding
 transport). Create the user, then re-run the install:
@@ -2276,6 +2283,7 @@ main() {
         migrate_secrets_phase4b  # WS1 Phase 4b: streambox Spotify creds/cache path
         build_install_jasper_fanin
         build_install_jasper_outputd
+        build_install_jasper_usbsink_audio
         install_streambox_systemd_units
         retire_audio_topology_switch
         migrate_wifi_guardian
@@ -2320,6 +2328,7 @@ main() {
     ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
+    build_install_jasper_usbsink_audio  # Rust USB data-plane bridge
     install_systemd_units
     retire_audio_topology_switch # Remove stale dmix/fanin state; fanin is canonical
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram

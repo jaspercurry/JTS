@@ -4,13 +4,13 @@
 
 """jasper-usbsink.service contract: it MUST ride the zram-shielded audio tier.
 
-usbsink is a real-time music SOURCE — its capture/playback run on fixed-deadline
-(~10 ms) PortAudio callbacks. Diagnosed on 2026-06-28: usbsink was the only
-music-path daemon left OUTSIDE ``jts-audio.slice``, so its pages could swap to
-zram and zram-decompression jitter made the callback miss deadlines in bursts ->
-snd-aloop xruns -> the bounded queue overflowed (``dropped_full``), the dominant
-cause of the bursty USB-drop tail. Slice membership (the ``MemorySwapMax=0`` swap
-shield) is a MEMORY policy, not a CPU cap, so it respects the no-CPU-caps rule.
+usbsink is a real-time music SOURCE — its production Rust bridge runs
+capture/playback on fixed ALSA periods. Diagnosed on 2026-06-28: usbsink was
+the only music-path daemon left OUTSIDE ``jts-audio.slice``, so its pages could
+swap to zram and zram-decompression jitter made the audio period miss deadlines
+in bursts -> snd-aloop xruns -> drops. Slice membership (the
+``MemorySwapMax=0`` swap shield) is a MEMORY policy, not a CPU cap, so it
+respects the no-CPU-caps rule.
 
 This pins the membership + the OOM band so a future unit edit can't silently drop
 usbsink off the audio tier (the regression that caused the drops).
@@ -18,10 +18,12 @@ usbsink off the audio tier (the regression that caused the drops).
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbsink.service"
+PYPROJECT_PATH = REPO / "pyproject.toml"
 
 
 def _value_for(unit_text: str, key: str) -> str | None:
@@ -36,6 +38,13 @@ def _value_for(unit_text: str, key: str) -> str | None:
         if k.strip() == key:
             val = v.strip()
     return val
+
+
+def _line_index(unit_text: str, needle: str) -> int:
+    for idx, line in enumerate(unit_text.splitlines()):
+        if needle in line:
+            return idx
+    raise AssertionError(f"{needle!r} not found in unit")
 
 
 def test_unit_file_exists():
@@ -75,3 +84,30 @@ def test_no_unit_level_rt_scheduling():
         "Do NOT set CPUSchedulingPolicy at the unit level (AEC-bridge crash-loop "
         "2026-06-27). Elect RT in-thread after start() if ever required."
     )
+
+
+def test_rust_audio_bridge_is_the_service_execstart():
+    body = UNIT_PATH.read_text()
+    assert _value_for(body, "ExecStart") == "/opt/jasper/bin/jasper-usbsink-audio"
+    assert "jasper-usbsink-volume.service" in (_value_for(body, "Wants") or "")
+
+
+def test_python_usb_bridge_has_only_explicit_lab_entrypoint():
+    data = tomllib.loads(PYPROJECT_PATH.read_text())
+    scripts = data["project"]["scripts"]
+
+    assert scripts.get("jasper-usbsink-python-lab") == "jasper.cli.usbsink_main:main"
+    assert "jasper-usbsink" not in scripts
+
+
+def test_packaged_defaults_do_not_override_operator_or_generated_env():
+    body = UNIT_PATH.read_text()
+
+    default_idx = _line_index(body, "JASPER_USBSINK_CAPTURE_DEVICE=hw:UAC2Gadget")
+    base_env_idx = _line_index(body, "EnvironmentFile=-/etc/jasper/jasper.env")
+    generated_env_idx = _line_index(
+        body,
+        "EnvironmentFile=-/var/lib/jasper/usbsink.env",
+    )
+
+    assert default_idx < base_env_idx < generated_env_idx

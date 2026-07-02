@@ -19,6 +19,8 @@ from jasper.audio_runtime_plan import (
     build_audio_runtime_plan,
     build_audio_runtime_plan_from_system,
     outputd_latency_floor_actions,
+    route_owned_env_actions,
+    resolve_audio_route_profile,
 )
 from jasper.audio_runtime_overrides import (
     clear_runtime_override,
@@ -101,6 +103,27 @@ def _cmd_outputd_floor_actions(args: argparse.Namespace) -> int:
     return 0
 
 
+def _route_action_target(key: str) -> str:
+    if key.startswith("JASPER_FANIN_"):
+        return "fanin"
+    if key.startswith("JASPER_USBSINK_"):
+        return "usbsink"
+    return "base"
+
+
+def _cmd_route_actions(args: argparse.Namespace) -> int:
+    base = read_env_file_state(args.base_env)
+    route = resolve_audio_route_profile(base.values)
+    print(f"summary route {route.route_id}")
+    for action in route_owned_env_actions(route):
+        target = _route_action_target(action.key)
+        if action.action == "set":
+            print(f"{target} set {action.key} {action.value}")
+        else:
+            print(f"{target} unset {action.key}")
+    return 0
+
+
 def _cmd_overrides_list(args: argparse.Namespace) -> int:
     overrides = load_runtime_overrides(
         args.overrides,
@@ -168,6 +191,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=runtime_overrides_path(),
     )
     outputd_floor.set_defaults(func=_cmd_outputd_floor_actions)
+
+    route_actions = sub.add_parser(
+        "route-actions",
+        help="emit shell-readable fanin/usbsink env actions for the audio route",
+    )
+    route_actions.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
+    route_actions.set_defaults(func=_cmd_route_actions)
 
     overrides_list = sub.add_parser(
         "overrides-list",

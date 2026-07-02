@@ -332,8 +332,10 @@ impl std::error::Error for RingError {}
 pub struct RateController {
     dll: Dll,
     max_adjust_ppm: f64,
+    anti_windup_threshold_frames: f64,
     ratio_ppm: f64,
     clamp_count: u64,
+    anti_windup_count: u64,
 }
 
 impl RateController {
@@ -364,8 +366,10 @@ impl RateController {
         Self {
             dll: Dll::new(config),
             max_adjust_ppm,
+            anti_windup_threshold_frames: (period_frames.max(1) as f64 / 2.0).max(1.0),
             ratio_ppm: 0.0,
             clamp_count: 0,
+            anti_windup_count: 0,
         }
     }
 
@@ -386,13 +390,35 @@ impl RateController {
     /// `±max_adjust_ppm` (counting when the clamp engages) so the resampler can
     /// never warp pitch past the safety bound regardless of loop state.
     pub fn next_ratio(&mut self, error_frames: f64) -> f64 {
-        let raw_ppm = (self.dll.update(-error_frames) - 1.0) * 1_000_000.0;
+        let mut raw_ppm = (self.dll.update(-error_frames) - 1.0) * 1_000_000.0;
+        if self.is_wound_against_error(raw_ppm, error_frames) {
+            // The output clamp is a safety bound, not an integrator bound. A
+            // long excursion can leave the DLL hidden behind the clamp still
+            // demanding drain after the buffer has crossed below target (or
+            // the inverse). Reset to acquire bandwidth and re-apply the current
+            // error so the first bounded output points back toward the target.
+            self.dll.reset();
+            self.anti_windup_count += 1;
+            raw_ppm = (self.dll.update(-error_frames) - 1.0) * 1_000_000.0;
+        }
         let clamped_ppm = raw_ppm.clamp(-self.max_adjust_ppm, self.max_adjust_ppm);
         if (raw_ppm - clamped_ppm).abs() > f64::EPSILON {
             self.clamp_count += 1;
         }
         self.ratio_ppm = clamped_ppm;
         1.0 + clamped_ppm / 1_000_000.0
+    }
+
+    fn is_wound_against_error(&self, raw_ppm: f64, error_frames: f64) -> bool {
+        raw_ppm.is_finite()
+            && error_frames.is_finite()
+            && self.max_adjust_ppm.is_finite()
+            && self.max_adjust_ppm > 0.0
+            && raw_ppm.abs() > self.max_adjust_ppm
+            && error_frames.abs() >= self.anti_windup_threshold_frames
+            && raw_ppm.signum() != 0.0
+            && error_frames.signum() != 0.0
+            && raw_ppm.signum() != error_frames.signum()
     }
 
     /// The last bounded ratio in ppm (`(ratio - 1) * 1e6`).
@@ -404,6 +430,13 @@ impl RateController {
     /// safety bound).
     pub fn clamp_count(&self) -> u64 {
         self.clamp_count
+    }
+
+    /// Times the controller reset a clamped DLL whose raw output was pushing
+    /// away from the current fill error. Non-zero means the caller hit the
+    /// safety clamp hard enough to require anti-windup.
+    pub fn anti_windup_count(&self) -> u64 {
+        self.anti_windup_count
     }
 
     /// The shared-DLL telemetry snapshot (the consistent `clock.rate_diff`
@@ -929,6 +962,33 @@ mod tests {
         assert!(
             ctl.clamp_count() > 0,
             "the clamp should have engaged under a 400 ppm forcing"
+        );
+    }
+
+    #[test]
+    fn rate_controller_anti_windup_reverses_after_crossing_target() {
+        // Hardware failure mode: a long overfill pins the bounded output at the
+        // positive clamp. Without anti-windup the hidden DLL integrators can
+        // keep demanding "drain faster" after the buffer has crossed below
+        // target, walking the lane into underfill.
+        let mut ctl = RateController::with_max_resync(10.0, PERIOD, RATE, Some(0.0));
+        for _ in 0..5_000 {
+            ctl.next_ratio(PERIOD as f64 * 4.0);
+        }
+        assert_eq!(ctl.ratio_ppm(), 10.0, "precondition: pinned high");
+        let anti_windups = ctl.anti_windup_count();
+
+        ctl.next_ratio(-(PERIOD as f64));
+
+        assert!(
+            ctl.ratio_ppm() < 0.0,
+            "after crossing below target the bounded output must reverse, got {} ppm",
+            ctl.ratio_ppm()
+        );
+        assert_eq!(
+            ctl.anti_windup_count(),
+            anti_windups + 1,
+            "wrong-way saturated output must trigger anti-windup"
         );
     }
 

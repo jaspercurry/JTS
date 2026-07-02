@@ -102,6 +102,33 @@ def test_camilla_latency_knobs_clamp_operator_env_below_profile_floor():
     )
 
 
+def test_camilla_latency_lab_override_can_probe_below_profile_floor(tmp_path):
+    from jasper.audio_runtime_overrides import (
+        AUDIO_RUNTIME_OVERRIDES_PATH_ENV,
+        set_runtime_override,
+    )
+
+    override_path = tmp_path / "audio_runtime_overrides.json"
+    set_runtime_override(
+        key="JASPER_CAMILLA_TARGET_LEVEL",
+        value="1024",
+        reason="test low-latency target",
+        path=override_path,
+        allowed_keys={"JASPER_CAMILLA_TARGET_LEVEL"},
+    )
+
+    assert (
+        resolve_camilla_target_level(
+            {
+                "JASPER_CAMILLA_TARGET_LEVEL": "1024",
+                AUDIO_RUNTIME_OVERRIDES_PATH_ENV: str(override_path),
+            },
+            profile_floor=1536,
+        )
+        == 1024
+    )
+
+
 def test_camilla_latency_knobs_malformed_env_falls_back_to_profile_floor():
     """A bad operator override degrades to the profile floor (not the global
     default) when a floor is present — still never an unloadable config."""

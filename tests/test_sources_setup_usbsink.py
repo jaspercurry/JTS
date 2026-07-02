@@ -175,6 +175,36 @@ def test_gather_state_usbsink_available_when_dtoverlay_set(monkeypatch):
     assert state["usbsink"]["available"] is True
 
 
+def test_gather_state_usbsink_gadget_visible_counts_as_enabled(monkeypatch):
+    """The toggle must reflect host-visible truth, not only a healthy bridge.
+
+    If jasper-usbsink-init is active while the Rust bridge is crash-looping,
+    computers still see the USB audio device. Reporting enabled=False in that
+    state is the split-brain bug this page exists to avoid.
+    """
+    monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
+    monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
+
+    def active(unit: str) -> bool:
+        return unit == sources_setup.USBSINK_INIT_UNIT
+
+    monkeypatch.setattr(sources_setup, "_unit_active", active)
+    monkeypatch.setattr(sources_setup, "_unit_starting", lambda unit: False)
+
+    async def fake_bt():
+        return (False, False, False)
+
+    monkeypatch.setattr(sources_setup, "_bt_state", fake_bt)
+
+    state = sources_setup._gather_state()
+
+    assert state["usbsink"]["available"] is True
+    assert state["usbsink"]["enabled"] is True
+    assert "degradedReason" in state["usbsink"]
+    assert "advertised" in state["usbsink"]["degradedReason"]
+
+
 def test_gather_state_usbsink_unavailable_when_init_unit_missing(monkeypatch):
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
 

@@ -19,7 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from jasper import audio_runtime_plan
+from jasper import audio_runtime_plan, audio_validation
 from jasper.audio_profile_state import MicProbe
 from jasper import wake_models
 from jasper.cli import doctor
@@ -3039,6 +3039,7 @@ def _outputd_status_payload(
             "format": "S32_LE",
             "open": True,
             "requested_pipe_bytes": 8192,
+            "max_queued_bytes": 8192,
             "available_bytes": 2048,
             "actual_pipe_bytes": 8192,
             "reopen_count": 1,
@@ -3046,6 +3047,9 @@ def _outputd_status_payload(
             "empty_periods": 2,
             "partial_periods": 1,
             "misaligned_bytes": 0,
+            "stale_drop_events": 0,
+            "stale_drop_bytes": 0,
+            "stale_drop_frames": 0,
             "open_failures": 0,
             "read_failures": 0,
         }
@@ -3544,6 +3548,241 @@ def test_audio_runtime_plan_doctor_fails_unsupported_route(monkeypatch):
 
     assert r.status == "fail"
     assert "active multiroom leader" in r.detail
+
+
+def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
+    monkeypatch,
+):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            )
+        },
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "transport_pipe"},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"},
+        route_mode="solo",
+    )
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+
+    r = doctor.check_audio_runtime_plan()
+
+    assert r.status == "fail"
+    assert "requires JASPER_FANIN_CAMILLA_COUPLING=loopback" in r.detail
+
+
+def test_route_latency_evidence_skips_non_claiming_route(monkeypatch):
+    plan = audio_runtime_plan.build_audio_runtime_plan(route_mode="solo")
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+
+    r = doctor.check_route_latency_evidence()
+
+    assert r.status == "ok"
+    assert "no low-latency claim" in r.detail
+
+
+def test_route_latency_evidence_fails_runtime_plan_errors(monkeypatch):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            )
+        },
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "transport_pipe"},
+        route_mode="solo",
+    )
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+
+    r = doctor.check_route_latency_evidence()
+
+    assert r.status == "fail"
+    assert "runtime plan errors block latency certification" in r.detail
+
+
+def test_route_latency_evidence_fails_missing_claim_artifact(monkeypatch, tmp_path):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            )
+        },
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_mode="solo",
+    )
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+    monkeypatch.setattr(
+        doctor.audio,
+        "_route_live_state_issues_for_doctor",
+        lambda observed_plan: (),
+    )
+    monkeypatch.setenv("JASPER_AUDIO_VALIDATION_DIR", str(tmp_path))
+
+    r = doctor.check_route_latency_evidence()
+
+    assert r.status == "fail"
+    assert "artifact_status=fail" in r.detail
+
+
+def test_route_latency_evidence_warns_when_p99_not_certified(
+    monkeypatch,
+    tmp_path,
+):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            )
+        },
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_mode="solo",
+    )
+    identity = plan.route_latency_identity()
+    artifact = audio_validation.make_route_latency_artifact(
+        route_id=audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K,
+        source_id="usbsink",
+        dac_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_config_hash=plan.route_config_hash,
+        camilla_config_hash=str(identity["camilla_config_hash"]),
+        fanin_resampler_config=identity["fanin_resampler_config"],
+        outputd_config=identity["outputd_config"],
+        rust_bridge_config=identity["rust_bridge_config"],
+        uac2_gadget_attrs=identity["uac2_gadget_attrs"],
+        p95_ms=38.0,
+        p99_ms=None,
+        sample_count=200,
+        duration_seconds=5 * 60,
+    )
+    audio_validation.write_artifact(artifact, directory=tmp_path)
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+    monkeypatch.setattr(
+        doctor.audio,
+        "_route_live_state_issues_for_doctor",
+        lambda observed_plan: (),
+    )
+    monkeypatch.setenv("JASPER_AUDIO_VALIDATION_DIR", str(tmp_path))
+
+    r = doctor.check_route_latency_evidence()
+
+    assert r.status == "warn"
+    assert "p99_missing" in r.detail
+
+
+def test_route_latency_evidence_passes_certified_promotion_artifact(
+    monkeypatch,
+    tmp_path,
+):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            )
+        },
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_mode="solo",
+    )
+    identity = plan.route_latency_identity()
+    artifact = audio_validation.make_route_latency_artifact(
+        route_id=audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K,
+        source_id="usbsink",
+        dac_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_config_hash=plan.route_config_hash,
+        camilla_config_hash=str(identity["camilla_config_hash"]),
+        fanin_resampler_config=identity["fanin_resampler_config"],
+        outputd_config=identity["outputd_config"],
+        rust_bridge_config=identity["rust_bridge_config"],
+        uac2_gadget_attrs=identity["uac2_gadget_attrs"],
+        p95_ms=38.0,
+        p99_ms=59.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        impulse_spacing_jittered=True,
+    )
+    audio_validation.write_artifact(artifact, directory=tmp_path)
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+    monkeypatch.setattr(
+        doctor.audio,
+        "_route_live_state_issues_for_doctor",
+        lambda observed_plan: (),
+    )
+    monkeypatch.setenv("JASPER_AUDIO_VALIDATION_DIR", str(tmp_path))
+
+    r = doctor.check_route_latency_evidence()
+
+    assert r.status == "ok"
+    assert "artifact_status=pass" in r.detail
+
+
+def test_route_latency_evidence_fails_live_state_mismatch(
+    monkeypatch,
+    tmp_path,
+):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            )
+        },
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_mode="solo",
+    )
+    identity = plan.route_latency_identity()
+    artifact = audio_validation.make_route_latency_artifact(
+        route_id=audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K,
+        source_id="usbsink",
+        dac_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_config_hash=plan.route_config_hash,
+        camilla_config_hash=str(identity["camilla_config_hash"]),
+        fanin_resampler_config=identity["fanin_resampler_config"],
+        outputd_config=identity["outputd_config"],
+        rust_bridge_config=identity["rust_bridge_config"],
+        uac2_gadget_attrs=identity["uac2_gadget_attrs"],
+        p95_ms=38.0,
+        p99_ms=59.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        impulse_spacing_jittered=True,
+    )
+    audio_validation.write_artifact(artifact, directory=tmp_path)
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+    monkeypatch.setattr(
+        doctor.audio,
+        "_route_live_state_issues_for_doctor",
+        lambda observed_plan: ("live_fanin_resampler_unlocked:usbsink",),
+    )
+    monkeypatch.setenv("JASPER_AUDIO_VALIDATION_DIR", str(tmp_path))
+
+    r = doctor.check_route_latency_evidence()
+
+    assert r.status == "fail"
+    assert "live_fanin_resampler_unlocked:usbsink" in r.detail
 
 
 def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):

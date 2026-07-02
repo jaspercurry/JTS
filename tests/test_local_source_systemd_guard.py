@@ -25,6 +25,9 @@ PARKED_UNIT_DEPLOY_FILES = {
         REPO / "deploy/systemd/jasper-usbsink-init.service"
     ),
     "jasper-usbsink.service": REPO / "deploy/systemd/jasper-usbsink.service",
+    "jasper-usbsink-volume.service": (
+        REPO / "deploy/systemd/jasper-usbsink-volume.service"
+    ),
     "jasper-mux.service": REPO / "deploy/systemd/jasper-mux.service",
 }
 
@@ -42,3 +45,16 @@ def test_local_source_guard_console_script_is_installed():
         'jasper-local-source-allowed = "jasper.local_sources.guard:main"'
         in pyproject
     )
+
+
+def test_usbsink_init_unloads_gadget_modules_in_dependency_order():
+    unit = (
+        REPO / "deploy/systemd/jasper-usbsink-init.service"
+    ).read_text().splitlines()
+    stop_posts = [
+        line.removeprefix("ExecStopPost=-/sbin/rmmod ")
+        for line in unit
+        if line.startswith("ExecStopPost=-/sbin/rmmod ")
+    ]
+
+    assert stop_posts == ["usb_f_uac2", "u_audio", "libcomposite"]

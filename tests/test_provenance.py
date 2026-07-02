@@ -202,6 +202,26 @@ def test_rust_outputd_lock_check_detects_dependency_drift(tmp_path: Path) -> Non
     assert any("bar" in error for error in errors)
 
 
+def test_rust_usbsink_audio_lock_check_detects_dependency_drift(
+    tmp_path: Path,
+) -> None:
+    check_provenance = _load_check_module()
+    _write_rust_crate_with_missing_bar(tmp_path, "jasper-usbsink-audio")
+    data = {
+        "surface": [
+            {
+                "id": "rust-usbsink-audio-crates",
+                "status": "pinned",
+            }
+        ]
+    }
+
+    errors: list[str] = []
+    check_provenance._validate_rust_usbsink_audio_lock(data, tmp_path, errors)
+
+    assert any("bar" in error for error in errors)
+
+
 def _write_rust_crate_with_missing_bar(tmp_path: Path, crate_name: str) -> None:
     crate_dir = tmp_path / "rust" / crate_name
     crate_dir.mkdir(parents=True)
