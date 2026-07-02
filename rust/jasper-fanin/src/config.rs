@@ -223,6 +223,13 @@ pub struct Config {
     /// steady latency setpoint.
     /// Env: `JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES`.
     pub input_resampler_ring_frames: u32,
+    /// DEFAULT-OFF one-shot AUTO-TRIM (PoC standing-fill trim). When `true`, the
+    /// mixer schedules ONE `TRIM` per lane a couple seconds after that lane goes
+    /// active, dropping the accumulated startup head-start (the conservation-law
+    /// standing fill). Fail-safe: only the exact literal `enabled`
+    /// (case-insensitive) arms it. Env: `JASPER_FANIN_AUTO_TRIM`. Manual `TRIM`
+    /// over the control socket works regardless of this flag.
+    pub auto_trim_enabled: bool,
 }
 
 /// fan-in → CamillaDSP coupling transport. Mirrors `jasper.fanin_coupling`'s
@@ -398,6 +405,17 @@ impl Config {
         // non-zero value pins an explicit capacity.
         let input_resampler_ring_frames = env_u32("JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES", 0)?;
 
+        // DEFAULT-OFF one-shot AUTO-TRIM (PoC standing-fill trim). Fail-safe:
+        // only the exact literal `enabled` (case-insensitive) arms it; unset /
+        // empty / anything else stays OFF (byte-identical to today).
+        let auto_trim_enabled = matches!(
+            std::env::var("JASPER_FANIN_AUTO_TRIM")
+                .ok()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("enabled")
+        );
+
         let tts_program_duck_db =
             env_f32_fallback("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", "JASPER_DUCK_DB", -25.0)?;
         if tts_program_duck_db > 0.0 {
@@ -468,6 +486,7 @@ impl Config {
             input_resampler_max_adjust_ppm,
             input_resampler_warmup_cushion_frames,
             input_resampler_ring_frames,
+            auto_trim_enabled,
         })
     }
 }
@@ -685,8 +704,32 @@ mod tests {
                 // buffer) unless pinned.
                 assert_eq!(cfg.input_resampler_warmup_cushion_frames, 2048);
                 assert_eq!(cfg.input_resampler_ring_frames, 0);
+                // One-shot AUTO-TRIM is DEFAULT-OFF (manual TRIM is the PoC
+                // path; auto is the opt-in convenience).
+                assert!(!cfg.auto_trim_enabled, "auto-trim must default OFF");
             },
         );
+    }
+
+    #[test]
+    fn auto_trim_only_armed_by_exact_enabled_literal() {
+        // Fail-safe: ONLY the literal `enabled` (case-insensitive) arms it.
+        for raw in ["enabled", "ENABLED", " Enabled "] {
+            with_env(&[("JASPER_FANIN_AUTO_TRIM", Some(raw))], || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(cfg.auto_trim_enabled, "{raw:?} should arm auto-trim");
+            });
+        }
+        // Anything else (including truthy-looking values) stays OFF.
+        for raw in ["", "1", "true", "on", "yes", "disabled", "garbage"] {
+            with_env(&[("JASPER_FANIN_AUTO_TRIM", Some(raw))], || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(
+                    !cfg.auto_trim_enabled,
+                    "{raw:?} must NOT arm auto-trim (only `enabled` does)"
+                );
+            });
+        }
     }
 
     #[test]
