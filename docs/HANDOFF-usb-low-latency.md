@@ -346,10 +346,22 @@ DAC delay (+9.9 ms, mean ~477 f = 256-frame ring + USB URB queue).
 | + USB DIRECT (bridge deleted from path) | 45.1 / 46.8 | 58.7 / 60.5 |
 | **+ both rings 2-slot (floor, 1-min)** | **35.4 / 36.7** | **≈49 / ≈50** |
 | **floor, 5-min confirmation (159 impulses)** | **34.8 / 36.8 / p99 37.1** | **≈48.6 / ≈50.6** |
+| floor + fan-in host-clock DLL live (1-min) | 34.6 / 36.8 | ≈48.4 / ≈50.6 |
+| **floor + DLL, 5-min closing run (160/160, 100 %)** | **35.0 / 36.6 / p99 37.2** | **≈48.8 / ≈50.4** |
 
-5-min confirmation: 99.4 % match, zero xruns, zero problem journal lines,
-resampler locked throughout with the gadget **free-running** (host-clock DLL is
-off in standby mode — see gap below).
+First 5-min confirmation: 99.4 % match, zero xruns, zero problem journal
+lines, resampler locked throughout with the gadget **free-running** (bridge
+standby had the DLL off — the gap that motivated the fan-in relocation below).
+Closing 5-min run (DLL relocated into fan-in, `JASPER_FANIN_HOST_CLOCK=enabled`):
+100 % match; probe passed and the ladder ran `l0_locked` with fill pinned near
+setpoint, then **demoted to `l2_fallback` at a stream-restart transient and the
+floor held anyway** — the fail-safe posture works, and at cushion 256 the lane
+resampler's ±500 ppm authority alone carries 5-minute stability. Cushion 128
+*under* the DLL locks (85 unlocks vs 15,513 free-run) but regresses latency
+(+1.9 ms p50): lock churn re-primes fill above setpoint. **The config floor is
+final at cushion 256**; shrinking the resampler pool needs post-lock
+cushion-decay product work in `lane_resampler`, with the DLL holding the
+decayed target.
 
 Refuted knobs (each a clean 1-min negative): resampler cushion 128/128 (lock
 never holds — the 256 floor is lock-hold hysteresis, not aloop burstiness);
