@@ -33,6 +33,7 @@
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
 | Measure the AirPlay latency budget a sender negotiates (free vs. tight regime for bonded-leader lip-sync) | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) |
+| Certify (or honestly fail) `usb_low_latency_48k`'s p95/p99 route-latency claim with real click/capture impulses | [Route-latency click/capture harness](#route-latency-clickcapture-harness) |
 | Turn up logging for one subsystem on the live Pi (`/system` Debug card) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Diagnose speaker identity (mDNS collision rename, hostname drift, management-UI 403s) | [`HANDOFF-identity.md`](HANDOFF-identity.md) — `/state.resilience.identity`, the doctor identity checks, `event=identity_reconcile.*` |
 | Get the verbose DEBUG context around a failure (in-RAM flight recorder, `event=flightrec.dump`) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
@@ -574,6 +575,155 @@ Transient damage is **two-stage confirmed** (a local-MAD sample-delta candidate
 AND an LPC-residual outlier within a few ms), which suppresses the
 plosive/fricative false-positive mode that plain sample-delta detectors hit.
 Pure stdlib + numpy/scipy; covered by `tests/test_analyze_wake_corpus_quality.py`.
+
+---
+
+## Route-latency click/capture harness
+
+`jasper-route-latency-harness` (source: `jasper/cli/route_latency_harness.py`
++ `jasper/route_latency/`) is the click-in/capture-back measurement producer
+[`jasper-route-latency-artifact`](../jasper/cli/route_latency_artifact.py)
+needs — the artifact CLI binds measured latency to the live route identity
+and writes the schema-v1 validation artifact, but it has never itself played
+or captured audio; this harness is what generates real per-impulse evidence.
+See [`docs/HANDOFF-usb-low-latency.md`](HANDOFF-usb-low-latency.md) for the
+full quick/promotion end-to-end walkthrough and current route status.
+
+**Architecture in one paragraph.** A host (Mac/Windows, no special
+software) plays a generated click-track WAV into the JTS USB audio device.
+A default-off ingress tap inside `jasper-usbsink-audio` (Rust; armed/disarmed
+over its existing `127.0.0.1:8781` HTTP listener) timestamps each click the
+instant it lands in the claiming route's own capture stream, binding the
+measurement to route identity by construction. This harness separately reads
+the AEC bridge's always-on `raw0` leg on localhost UDP `:9879` (an
+unprocessed XVF3800 room-mic capture — a corpus-only leg per
+`jasper.wake_legs`, consumed here but never added as a wake-detection input)
+to detect the same clicks acoustically at the far end. Each impulse's
+latency is the tap→mic time delta (the click's whole physical journey — ring
+dwell, fan-in, CamillaDSP, outputd, DAC, air, mic — elapses between the two
+timestamps, so it is captured entirely by the subtraction), optionally minus
+a fixed speaker→mic acoustic-distance compensation. This measures the
+Pi-internal fan-in→CamillaDSP→outputd→DAC→speaker→air→mic path: `t_tap`
+anchors at the Pi's UAC2 capture read (route ingress), so host-side and
+USB-transfer buffering *before* that ingress is deliberately excluded — the
+number is the route JTS owns, not the host's playback stack. The tap also
+records the ring's pre-read fill depth per impulse as diagnostic context, but
+that is not added to the latency (doing so would double-count the ring
+dwell).
+
+**Quick gate (p95 <= 40 ms, >=200 impulses, >=5 min):**
+
+Invoke every CLI by its absolute venv path (`/opt/jasper/.venv/bin/...`):
+under `sudo` the venv `bin/` is not on `secure_path`, so a bare command name
+won't resolve. (The `generate` WAV render is memory-heavy for the promotion
+preset — see the note below — so prefer running `generate promotion` on the
+laptop and copying the WAV to the Pi/playback host.)
+
+```sh
+# 1. Generate the click-track WAV + schedule (laptop or Pi, no daemon needed):
+/opt/jasper/.venv/bin/jasper-route-latency-harness generate quick --out-dir /tmp/route-latency
+
+# 2. On the Pi: run capture, then immediately play quick-click-track.wav
+#    on the host into the JTS USB device, at a modest, comfortable volume
+#    (start very quiet and confirm by ear — CamillaDSP's volume_limit 0 dB
+#    ceiling is the hard safety floor either way; see AGENTS.md "COAH
+#    quality bar" / the safe-volume doctrine).
+sudo /opt/jasper/.venv/bin/jasper-route-latency-harness capture \
+  /tmp/route-latency/quick-schedule.json \
+  --out-dir /tmp/route-latency
+
+# 3. Analyze the captured evidence and emit an artifact-feedable samples file:
+/opt/jasper/.venv/bin/jasper-route-latency-harness analyze \
+  --mic-detections /tmp/route-latency/mic-detections.jsonl \
+  --route-health-snapshot /tmp/route-latency/route-health-snapshot.json \
+  --out-dir /tmp/route-latency \
+  --duration-seconds 360
+
+# 4. Feed the real artifact CLI (see docs/HANDOFF-usb-low-latency.md):
+sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact \
+  --samples /tmp/route-latency/latency-samples.json \
+  --duration-seconds 360 \
+  --harness-id jts-click-capture-v1 \
+  --route-health-ok   # only if step 3's printed deltas justify it
+```
+
+Or run steps 2-3 in one shot with `run` (`generate` still stays separate,
+since the WAV only needs generating once). `run` loads the schedule file
+directly, so it derives duration and jitter itself — it does not take
+`--duration-seconds`/`--impulse-spacing-jittered` (those exist only on
+`analyze`, which has no schedule file to read them from):
+
+```sh
+sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
+  /tmp/route-latency/quick-schedule.json \
+  --out-dir /tmp/route-latency \
+  --invoke-artifact
+```
+
+**Promotion gate (p99 <= 60 ms, >=1000 jittered impulses, >=30 min):**
+identical flow with `generate promotion` instead of `generate quick`. On
+`analyze`, add `--impulse-spacing-jittered` to declare that fact to the
+artifact CLI (`run` needs no such flag — it reads jitteredness straight off
+the loaded schedule):
+
+```sh
+# generate promotion on the laptop (memory-heavy render — see below), then
+# copy promotion-click-track.wav to the playback host:
+/opt/jasper/.venv/bin/jasper-route-latency-harness generate promotion --out-dir /tmp/route-latency
+sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
+  /tmp/route-latency/promotion-schedule.json \
+  --out-dir /tmp/route-latency \
+  --invoke-artifact \
+  --require-pass
+```
+
+**Getting the WAV to the playback host.** The click-track WAV is played by a
+human on the Mac/Windows host (no JTS software runs there). Generate it where
+it's convenient, then transfer it to that host — e.g. `scp` from the Pi, or
+generate on the laptop and drop it on the host directly — and open it in any
+media player, routing output to the JTS USB audio device. `render_wav` streams
+the file one second at a time so memory stays bounded (~192 KB), but the
+promotion track is still ~415 MB on disk; a laptop is the comfortable place to
+generate it (the 1 GB Pi is busy running the audio stack under test).
+
+**Route-health honesty.** `capture` snapshots
+`/run/jasper-usbsink/state.json` plus the fan-in/outputd `STATUS` sockets
+before and after the capture window (writing `route-health-snapshot.json`);
+`analyze` then diffs that file, prints every nonzero counter delta, and states
+whether `--route-health-ok` on the artifact CLI *would* be justified — it
+never asserts that for the operator. The verdict disqualifies on ANY nonzero
+change to a curated route-health counter (a NEGATIVE delta means the daemon
+restarted mid-window — also unclean): usbsink capture/playback
+xruns/underflow/overflow/drops, the fan-in output xrun, the outputd
+content/DAC xruns, and any fan-in USB-resampler unlock/silence/overrun or
+per-lane xrun. Read the printed deltas before deciding.
+
+**Mic source.** Default is `udp:9879` (the AEC bridge's `raw0` leg — requires
+an XVF3800 present with 6-channel firmware and the bridge running; the
+harness fails loudly on a read timeout rather than hanging if nothing is
+feeding the socket). `--mic alsa:<device>` is the fallback for boxes without
+an XVF3800 or when pointing at a dedicated measurement mic.
+
+**Clock discipline.** Both the Rust tap and this harness's mic reader
+timestamp every event against `CLOCK_MONOTONIC` **freshly per packet/period**
+— never a single stream-start anchor — because the mic's USB clock drifts
+against the Pi's monotonic clock (~180 ms over a 30-minute run at a typical
+100 ppm crystal tolerance). `tests/test_route_latency_harness.py` has a
+drift-injection test proving this bounds the error to about one packet's
+uncertainty regardless of run length.
+
+**Pairing.** Nearest-match within a bounded window; a tap or mic detection
+with more than one plausible partner is rejected as ambiguous rather than
+guessed at, and the tool refuses to emit an artifact-feedable file below a
+match-rate floor (default 90% of tap events).
+
+**Test coverage:**
+`tests/test_route_latency_click_track.py`,
+`tests/test_route_latency_impulse_detect.py`,
+`tests/test_route_latency_pairing.py`,
+`tests/test_route_latency_harness.py`, and
+`tests/test_usbsink_impulse_tap_contract.py` (the JSONL/HTTP contract this
+harness's Python side shares with the Rust tap it does not itself implement).
 
 ---
 

@@ -96,6 +96,15 @@ while IFS= read -r changed; do
       add_test_if_present "tests/test_dialog_helper.py"
       add_test_if_present "tests/test_local_web_host_js.py"
       ;;
+    rust/*)
+      # The Rust crates' static source guards are Python tests (cargo can't
+      # run in every dev env). Run them in the fast lane so a Rust edit that
+      # trips them fails here, not only in the merge lane — the exact way the
+      # panic-freedom guard slipped past `test-fast` before this mapping.
+      add_test_if_present "tests/test_rust_runtime_panic_freedom.py"
+      add_test_if_present "tests/test_outputd_wiring.py"
+      add_test_if_present "tests/test_usbsink_impulse_tap_contract.py"
+      ;;
   esac
 done < "${changed_file_tmp}"
 
