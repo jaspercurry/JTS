@@ -171,14 +171,39 @@ int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
 // payload and store write_seq+1 (Release). If full: check reader liveness
 // (reader_pid != 0 AND heartbeat < 2 s). Reader alive -> clamped nanosleep,
 // re-check up to a bounded number of tries (productization: FUTEX_WAIT). Reader
-// dead/absent -> free-run DROP (return JTS_RING_PUBLISH_DROPPED) so Camilla
+// dead/absent -> FREE-RUN by dropping the OLDEST slot: advance read_seq on the
+// absent reader's behalf (Release), then publish the new slot over the freed
+// lap (return JTS_RING_PUBLISH_DROPPED). This keeps occupancy bounded so Camilla
 // never wedges when outputd's flag is off. Always updates writer_heartbeat_ns.
+//
+// AVAIL-GATE INTERACTION (the B1 contract — read with pcm_jts_ring.c Q1/Q7).
+// This free-run branch is the DATA-PATH half of readerless survival, but it is
+// only REACHABLE when the ioplug keeps calling publish. ALSA's `transfer`
+// (publish's caller during playback) is gated on `avail`, which pcm_jts_ring.c's
+// `pointer` callback computes. With the honest pointer (in_flight =
+// occupancy*period) a readerless full ring pins avail at 0 and transfer stops —
+// this branch never runs. So `pointer` runs a DUAL-MODE contract: while the
+// reader is heartbeat-dead it discounts published-but-unread slots to 0 in-flight
+// (avail free-runs) so transfer keeps calling publish and this branch keeps the
+// ring bounded. Do not "optimize" this into a bare drop-newest: advancing
+// read_seq (not just discarding) is what makes occupancy bounded, which the
+// dual-mode pointer and the honest live-reader delay both depend on.
 jts_ring_publish_result_t jts_ring_writer_publish(jts_ring_writer_t *w,
                                                   const int16_t *samples);
 
 // Frames of buffering currently in-flight (W - R), for the ioplug `delay`
 // callback: (W - R) * period_frames.
 uint64_t jts_ring_writer_occupancy_slots(const jts_ring_writer_t *w);
+
+// True (1) iff a reader is currently live: reader_pid != 0 AND its heartbeat is
+// younger than JTS_RING_WRITER_LIVENESS_TIMEOUT_NS. Exposes the same predicate
+// jts_ring_writer_publish/can_accept use, so the ioplug's `pointer`/`delay` can
+// run the DUAL-MODE avail contract (see pcm_jts_ring.c jts_ring_pointer): report
+// honest occupancy-derived in-flight while a reader is live, but discount
+// published-but-unread slots to 0 in-flight while the reader is absent so ALSA's
+// `avail` never sticks at 0 on a readerless ring (the B1 wedge). Same-process
+// convenience wrapper over the writer's mmap; reads relaxed atomics only.
+int jts_ring_writer_reader_is_live(const jts_ring_writer_t *w);
 
 // True (1) iff a publish would proceed without blocking right now: either the
 // ring has space (occupancy < n_slots) OR there is no live reader (in which case

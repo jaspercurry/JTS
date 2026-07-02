@@ -401,7 +401,15 @@ jts_ring_publish_result_t jts_ring_writer_publish(jts_ring_writer_t *w,
         // Writing read_seq here is safe against a reader reattach: attach resyncs
         // read_seq = write_seq unconditionally, so our advance is discarded (and
         // occupancy collapses to 0), which only jumps hw_ptr FORWARD (benign —
-        // avail grows). No live reader means no concurrent writer of read_seq.
+        // avail grows). No LIVE reader advances read_seq, so on the steady
+        // readerless path this store has no concurrent writer. The one exception
+        // is a reader whose heartbeat went stale (wedged > liveness timeout) and
+        // then resumes: it may store read_seq from its stale local mirror
+        // concurrently with this free-run store. That race is bounded to at most
+        // one torn 128-frame slot and is self-healing (the reader's next Acquire
+        // load of write_seq re-establishes ordering; real drift trips its
+        // > n_slots defensive resync) — documented in the SPSC contract in
+        // rust/jasper-ring/src/lib.rs "Torn-write safety".
         if (!reader_is_live(h, jts_ring_monotonic_ns())) {
             atomic_store_explicit(&h->read_seq, rseq + 1, memory_order_release);
             w->drop_no_reader++;
@@ -445,6 +453,11 @@ uint64_t jts_ring_writer_occupancy_slots(const jts_ring_writer_t *w) {
     const jts_ring_header_t *h = (const jts_ring_header_t *)w->base;
     uint64_t rseq = atomic_load_explicit(&h->read_seq, memory_order_acquire);
     return w->write_seq - rseq;
+}
+
+int jts_ring_writer_reader_is_live(const jts_ring_writer_t *w) {
+    const jts_ring_header_t *h = (const jts_ring_header_t *)w->base;
+    return reader_is_live(h, jts_ring_monotonic_ns());
 }
 
 int jts_ring_writer_can_accept(const jts_ring_writer_t *w) {
