@@ -255,8 +255,26 @@ fn finite_positive(value: &Value) -> Option<f64> {
     }
 }
 
+/// A positive `u64` knob from a JSON number. Accepts a native JSON integer
+/// (`300`) OR an integral float (`300.0`) — the latter defends the boundary
+/// against a client that serializes an integer-valued knob as a float (a
+/// `type=float` CLI arg is the motivating case; the Python side also coerces
+/// these to int, so this is defense on both sides). A non-integral float
+/// (`300.5`), a non-finite float, a negative, or a zero is rejected: these
+/// knobs (refractory_ms/max_events/auto_disarm_min) have no meaningful
+/// fractional or non-positive value.
 fn positive_u64(value: &Value) -> Option<u64> {
-    let n = value.as_u64()?;
+    let n = value.as_u64().or_else(|| {
+        let f = value.as_f64()?;
+        // Integral, finite, in u64 range, and > 0 (checked below via the same
+        // `n > 0` gate). `fract() == 0.0` rejects `300.5`; the range check
+        // rejects a float too large for u64 (which would wrap on `as u64`).
+        if f.is_finite() && f.fract() == 0.0 && f >= 0.0 && f <= u64::MAX as f64 {
+            Some(f as u64)
+        } else {
+            None
+        }
+    })?;
     if n > 0 {
         Some(n)
     } else {
@@ -971,6 +989,35 @@ mod tests {
         assert!(TapConfig::from_arm_body("[]").is_none());
         assert!(TapConfig::from_arm_body("42").is_none());
         assert!(TapConfig::from_arm_body("not json").is_none());
+    }
+
+    #[test]
+    fn arm_body_accepts_integral_float_u64_knobs() {
+        // A client that serializes an integer-valued knob as a JSON float
+        // (`300.0` from a `type=float` CLI arg) must still arm — `as_u64()`
+        // returns None for a float, so without the integral-float fallback in
+        // `positive_u64` every such request 400s for the whole measurement
+        // window. This is the Rust half of the B1 cross-language fix.
+        let body = r#"{"refractory_ms":300.0,"max_events":10.0,"auto_disarm_min":5.0}"#;
+        let cfg = TapConfig::from_arm_body(body).expect("integral floats must arm");
+        assert_eq!(cfg.refractory_ms, 300);
+        assert_eq!(cfg.max_events, 10);
+        assert_eq!(cfg.auto_disarm_min, 5);
+    }
+
+    #[test]
+    fn arm_body_rejects_non_integral_float_u64_knobs() {
+        // A fractional value for an integer-only knob is a caller bug, not a
+        // roundable input at this layer — reject it rather than silently
+        // truncate. (The Python side rounds before it ever reaches the wire.)
+        assert!(TapConfig::from_arm_body(r#"{"refractory_ms":300.5}"#).is_none());
+        assert!(TapConfig::from_arm_body(r#"{"max_events":10.5}"#).is_none());
+        // A ceiling-capped knob still enforces its ceiling on an integral float.
+        assert!(TapConfig::from_arm_body(&format!(
+            r#"{{"max_events":{}.0}}"#,
+            MAX_EVENTS_CEILING + 1
+        ))
+        .is_none());
     }
 
     #[test]
