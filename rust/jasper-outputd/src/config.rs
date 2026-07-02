@@ -65,11 +65,17 @@ pub enum ContentBridgeMode {
 /// `content_bridge_mode == ShmRing`). Slot frames are NOT a separate env: the
 /// ring's `period_frames` is always outputd's `period_frames`, one less drift
 /// axis. `n_slots` defaults to 2 (ping-pong); 3 is the documented degraded
-/// widening, 4 is negotiation headroom.
+/// widening, 4..=16 is negotiation headroom. The ceiling was raised 4 -> 16 on
+/// 2026-07-02 because CamillaDSP's playback BufferManager needs an ALSA buffer
+/// (== `n_slots * period_frames`) that clears both its negotiated size
+/// (next_pow2(3*chunksize)) and its `target_level`; at 4 slots the 512-frame
+/// buffer was below both and the rate controller wound up into stall flapping.
+/// Kept in lockstep with `MAX_N_SLOTS` (rust/jasper-ring/src/layout.rs) and
+/// `JTS_RING_MAX_SLOTS` (c/jts-ring-ioplug/jts_ring_shm.h).
 pub const DEFAULT_SHM_RING_PATH: &str = "/dev/shm/jts-ring/content.ring";
 pub const DEFAULT_SHM_RING_SLOTS: u32 = 2;
 pub const MIN_SHM_RING_SLOTS: u32 = 2;
-pub const MAX_SHM_RING_SLOTS: u32 = 4;
+pub const MAX_SHM_RING_SLOTS: u32 = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShmRingConfig {
@@ -1884,7 +1890,10 @@ mod tests {
 
     #[test]
     fn shm_ring_rejects_out_of_range_slots() {
-        for slots in ["1", "5", "0"] {
+        // 17 is one past the ceiling (raised 4 -> 16 on 2026-07-02 so the ALSA
+        // playback buffer clears CamillaDSP's target_level); 1 is below the
+        // floor; 0 trips the generic env_u32 > 0 guard.
+        for slots in ["1", "17", "0"] {
             with_env(
                 &[
                     ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
@@ -1892,12 +1901,33 @@ mod tests {
                 ],
                 || {
                     let err = Config::from_env().unwrap_err().to_string();
-                    // "0" trips the generic env_u32 > 0 guard; 1 and 5 trip the
+                    // "0" trips the generic env_u32 > 0 guard; 1 and 17 trip the
                     // slot-range guard. Either way it must fail loud.
                     assert!(
                         err.contains("SHM_RING_SLOTS") || err.contains("must be > 0"),
                         "slots={slots}: {err}"
                     );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn shm_ring_accepts_deep_buffer_slot_counts() {
+        // Regression for the 4 -> 16 ceiling bump: the counts that give
+        // camilla's playback buffer real depth (>= target_level) must parse.
+        for slots in ["4", "8", "12", "16"] {
+            with_env(
+                &[
+                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+                    ("JASPER_OUTPUTD_SHM_RING_SLOTS", Some(slots)),
+                ],
+                || {
+                    let ring = Config::from_env()
+                        .unwrap_or_else(|e| panic!("slots={slots} should parse: {e}"))
+                        .shm_ring
+                        .expect("shm_ring config present");
+                    assert_eq!(ring.n_slots, slots.parse::<u32>().unwrap(), "slots={slots}");
                 },
             );
         }

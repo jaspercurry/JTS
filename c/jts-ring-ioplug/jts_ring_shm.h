@@ -41,7 +41,19 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 #define JTS_RING_SAMPLE_FORMAT_S16LE 1u
 #define JTS_RING_SAMPLE_FORMAT_S32LE 2u
 #define JTS_RING_MIN_SLOTS 2u
-#define JTS_RING_MAX_SLOTS 4u
+// Ceiling raised 4 -> 16 (2026-07-02): CamillaDSP's playback BufferManager
+// negotiates buffer = next_pow2(max(3*chunksize, 4*min_period)) and then drives
+// its rate controller toward `target_level` frames of device delay. With
+// slot_frames pinned at 128 (the outputd DAC-period contract), n_slots is the
+// ONLY axis for buffer depth (buffer = n_slots * period_frames). At n_slots=4
+// the buffer was 512 frames — smaller than both camilla's negotiated 1024 and
+// its target_level (1536), so the rate controller chased an unreachable target,
+// wound up, and drove the writer full (full_waits ~= every publish) into
+// stall/underrun flapping. 16 slots => 2048-frame buffer >= target_level with
+// headroom. Mirrors MAX_N_SLOTS in rust/jasper-ring/src/layout.rs and
+// MAX_SHM_RING_SLOTS in rust/jasper-outputd/src/config.rs (golden-layout +
+// config drift-guarded).
+#define JTS_RING_MAX_SLOTS 16u
 
 // Writer liveness window (ns): past this heartbeat age the reader is treated as
 // gone and the writer free-runs (drops frames) instead of blocking. Mirrors the

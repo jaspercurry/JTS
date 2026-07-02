@@ -118,8 +118,8 @@ static void test_geometry_math_and_validation(void) {
     bad.n_slots = 1;
     CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 1 slot");
     bad = g;
-    bad.n_slots = 5;
-    CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 5 slots");
+    bad.n_slots = 17; // ceiling is 16 (raised 4 -> 16 on 2026-07-02)
+    CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 17 slots (> ceiling 16)");
     bad = g;
     bad.sample_format = JTS_RING_SAMPLE_FORMAT_S32LE;
     CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject S32LE (prototype)");
@@ -314,6 +314,107 @@ static void test_can_accept_semantics(void) {
     unlink(path);
 }
 
+static void test_deep_ring_16_slots(void) {
+    // 2026-07-02: the ceiling was raised 4 -> 16 so CamillaDSP's playback
+    // BufferManager gets an ALSA buffer (n_slots * period_frames = 16*128 =
+    // 2048 frames) that clears its negotiated buffer and target_level. Prove the
+    // core is correct at the new ceiling: geometry validates, file size is right,
+    // and publish/consume ping-pongs cleanly all the way to full and back.
+    char path[256];
+    tmp_path(path, sizeof(path), "deep16");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 16;
+    const char *reason = NULL;
+    CHECK(jts_ring_geometry_validate(&g, &reason) == 0, "16 slots is valid");
+    CHECK(jts_ring_file_size(&g) == 128 + 16 * 512, "16-slot file size");
+
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open 16 slots");
+    test_reader_t r;
+    reader_attach(&r, &w);
+
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+
+    // Fill exactly to the brim (16 slots), occupancy tracks each publish.
+    for (uint32_t i = 0; i < 16; i++) {
+        CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish to brim");
+        CHECK(jts_ring_writer_occupancy_slots(&w) == (uint64_t)(i + 1), "occupancy climbs");
+    }
+    // Full with a live reader -> not writable (honest poll withholds POLLOUT).
+    CHECK(jts_ring_writer_can_accept(&w) == 0, "16/16 full+live does NOT accept");
+    // Drain one, publish one — ping-pong holds at depth.
+    CHECK(reader_consume(&r, out) == 1, "drain one from a deep ring");
+    CHECK(jts_ring_writer_occupancy_slots(&w) == 15, "occupancy drops after drain");
+    CHECK(jts_ring_writer_can_accept(&w) == 1, "space freed -> writable");
+    CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish after drain");
+    CHECK(jts_ring_writer_occupancy_slots(&w) == 16, "back to full");
+
+    free(s);
+    free(out);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_occupancy_tracks_reader_drain(void) {
+    // The ioplug `pointer` callback derives the honest hardware pointer as
+    //   hw_ptr = appl_frames - in_flight
+    //   in_flight = occupancy_slots * period_frames + stage_frames
+    // so ALSA's avail/delay reflect the READER's real drain progress, not
+    // "everything accepted is already played". This test pins the core invariant
+    // the pointer depends on: occupancy_slots == write_seq - read_seq falls by
+    // exactly one per reader consume, so appl_frames - in_flight advances by one
+    // period each time the reader drains a slot (a monotonic, non-stalling
+    // hardware pointer). Regression for the accept-tracking pointer bug that made
+    // camilla see delay ~= 0 and flap between stalled/resumed.
+    char path[256];
+    tmp_path(path, sizeof(path), "drainptr");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    test_reader_t r;
+    reader_attach(&r, &w);
+
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+
+    const uint32_t period = g.period_frames;
+    uint64_t appl_frames = 0; // mirrors the ioplug's accept counter
+
+    // Accept (publish) 3 slots. in_flight == 3*period; hw_ptr lags by that much.
+    for (int i = 0; i < 3; i++) {
+        CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish");
+        appl_frames += period;
+    }
+    uint64_t in_flight = jts_ring_writer_occupancy_slots(&w) * (uint64_t)period;
+    CHECK(in_flight == 3ull * period, "in_flight == 3 periods before any drain");
+    uint64_t hw_ptr = appl_frames - in_flight;
+    CHECK(hw_ptr == 0, "hw_ptr still 0 (reader has drained nothing)");
+
+    // Reader drains one slot: hw_ptr must advance by exactly one period.
+    CHECK(reader_consume(&r, out) == 1, "drain one");
+    in_flight = jts_ring_writer_occupancy_slots(&w) * (uint64_t)period;
+    CHECK(in_flight == 2ull * period, "in_flight fell one period");
+    hw_ptr = appl_frames - in_flight;
+    CHECK(hw_ptr == (uint64_t)period, "hw_ptr advanced one period on drain");
+
+    // Drain the rest: hw_ptr catches up to appl_frames (device fully drained).
+    CHECK(reader_consume(&r, out) == 1, "drain two");
+    CHECK(reader_consume(&r, out) == 1, "drain three");
+    in_flight = jts_ring_writer_occupancy_slots(&w) * (uint64_t)period;
+    CHECK(in_flight == 0, "ring empty -> in_flight 0");
+    hw_ptr = appl_frames - in_flight;
+    CHECK(hw_ptr == appl_frames, "hw_ptr caught appl_frames when fully drained");
+
+    free(s);
+    free(out);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
 int main(void) {
     test_geometry_math_and_validation();
     test_publish_consume_roundtrip();
@@ -323,6 +424,8 @@ int main(void) {
     test_geometry_mismatch_is_fatal();
     test_writer_creates_missing_parent_dir();
     test_can_accept_semantics();
+    test_deep_ring_16_slots();
+    test_occupancy_tracks_reader_drain();
 
     if (g_failures == 0) {
         printf("ok: all jts_ring core tests passed\n");
