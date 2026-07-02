@@ -98,7 +98,18 @@ REPO_ROOT="$(cd "${RING_PROTO_DIR}/../.." && pwd)"
 require_explicit_ring_proto_target
 
 RING_DEVICE="${JASPER_RING_PROTO_ALSA_DEVICE:-jts_ring_playback}"
-RING_SLOTS="${JASPER_RING_PROTO_SLOTS:-2}"
+# Default 16 slots. slot_frames is pinned at 128 (the outputd DAC-period
+# contract), so the ALSA playback buffer this ring advertises to CamillaDSP is
+# exactly RING_SLOTS * 128 frames. Camilla's playback BufferManager negotiates
+# buffer = next_pow2(max(3*chunksize, 4*min_period)) — 1024 in the ring_proto
+# config — and then drives its rate controller toward target_level (1536)
+# frames of device delay. The ring buffer MUST be >= both (1024 and 1536), or
+# the rate controller chases an unreachable target and drives the writer full
+# into stall/underrun flapping. RING_SLOTS=16 => 2048-frame buffer, clearing
+# both with headroom. Anything below ceil(1536/128)=12 slots re-creates the
+# diagnosed stall; 16 is the validated geometry. Overridable 2..16 (see the cap
+# below) for degraded/experimental widths.
+RING_SLOTS="${JASPER_RING_PROTO_SLOTS:-16}"
 CONF_D_PATH="/etc/alsa/conf.d/98-jts-ring-proto.conf"
 OUTPUTD_ENV="/var/lib/jasper/outputd.env"
 ROLLBACK_STATE_DIR="/var/lib/jasper/ring-proto"
@@ -241,9 +252,10 @@ fi
 echo "  OK   sink=${sink} active_channels=${active_channels} active_lane=${active_lane:-unset}" \
     "dac_content_fifo=${dac_content_fifo:-unset} content_bridge=${existing_bridge:-direct}"
 
-if [[ ! "${RING_SLOTS}" =~ ^[0-9]+$ ]] || (( RING_SLOTS < 2 || RING_SLOTS > 4 )); then
-    echo "error: JASPER_RING_PROTO_SLOTS=${RING_SLOTS} must be an integer 2..4" \
-        "(2 = prototype ping-pong, 3 = degraded widening, 4 = negotiation headroom)." >&2
+if [[ ! "${RING_SLOTS}" =~ ^[0-9]+$ ]] || (( RING_SLOTS < 2 || RING_SLOTS > 16 )); then
+    echo "error: JASPER_RING_PROTO_SLOTS=${RING_SLOTS} must be an integer 2..16" \
+        "(16 = validated camilla geometry [2048-frame buffer >= target_level 1536];" \
+        "matches JTS_RING_MAX_SLOTS. Below ceil(1536/128)=12 re-creates the stall)." >&2
     exit 1
 fi
 

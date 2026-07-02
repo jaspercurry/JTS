@@ -241,6 +241,45 @@ def test_arm_and_disarm_agree_on_the_conf_d_path() -> None:
     assert arm_path == "/etc/alsa/conf.d/98-jts-ring-proto.conf"
 
 
+def test_arm_slots_default_and_cap_match_the_ring_ceiling() -> None:
+    """arm.sh's RING_SLOTS default and its 2..N validation cap must match the
+    ring's ceiling (JTS_RING_MAX_SLOTS = MAX_N_SLOTS = MAX_SHM_RING_SLOTS = 16).
+
+    Regression pin for the S2 finding: arm.sh shipped with the ceiling raised
+    to 16 in the C/Rust constants but the arm path still capped RING_SLOTS at
+    2..4 and defaulted to 2 — so the official arm path could not reproduce the
+    validated 16-slot camilla geometry (buffer = n_slots * 128 must be >= the
+    negotiated 1024 AND >= target_level 1536; below ceil(1536/128)=12 slots
+    re-creates the diagnosed stall). The default is 16 and the accepted range is
+    2..16; this pins both so a future ceiling bump can't silently leave arm.sh
+    behind again.
+    """
+    arm_text = (RING_PROTO_DIR / "arm.sh").read_text(encoding="utf-8")
+
+    # Default: RING_SLOTS="${JASPER_RING_PROTO_SLOTS:-16}".
+    ring_slots_default = _extract_assignment(arm_text, "RING_SLOTS")
+    assert ring_slots_default == "${JASPER_RING_PROTO_SLOTS:-16}", (
+        f"arm.sh RING_SLOTS default is {ring_slots_default!r}; expected a default "
+        "of 16 to match the validated camilla geometry / JTS_RING_MAX_SLOTS"
+    )
+
+    # Validation cap: the arithmetic guard must reject <2 or >16, and its error
+    # text must name the 2..16 range (not the stale 2..4). Both are checked
+    # against the literal source so a hand-edit of one without the other fails.
+    assert "RING_SLOTS < 2 || RING_SLOTS > 16" in arm_text, (
+        "arm.sh must cap JASPER_RING_PROTO_SLOTS at 2..16 (the raised ring "
+        "ceiling); the arithmetic guard was not found at that range"
+    )
+    assert "2..4" not in arm_text, (
+        "arm.sh still contains the stale '2..4' slot range string — raise it to "
+        "2..16 (both the guard and its error text) to match JTS_RING_MAX_SLOTS"
+    )
+    assert "an integer 2..16" in arm_text, (
+        "arm.sh's slot-range error text must say '2..16' so the operator sees "
+        "the real accepted range"
+    )
+
+
 def test_disarm_sed_marker_strip_actually_works(tmp_path: Path) -> None:
     """Run disarm.sh's exact marker-stripping sed command — lifted verbatim
     from disarm.sh's source via _extract_disarm_sed_expr, NOT re-typed by
