@@ -96,9 +96,15 @@ needs, using `jasper-route-latency-harness`; see
 [`docs/testing-tooling.md` "Route-latency click/capture harness"](testing-tooling.md#route-latency-clickcapture-harness)
 for the full architecture):
 
+Invoke both CLIs by their absolute venv path (`/opt/jasper/.venv/bin/...`) —
+under `sudo` the venv `bin/` is not on `secure_path`, so a bare command name
+won't resolve. (The harness's own `--invoke-artifact` passthrough resolves the
+sibling artifact writer automatically once the harness itself is launched this
+way.)
+
 ```sh
 # 1. Generate the click-track WAV + schedule.
-jasper-route-latency-harness generate quick --out-dir /tmp/route-latency
+/opt/jasper/.venv/bin/jasper-route-latency-harness generate quick --out-dir /tmp/route-latency
 
 # 2. On the Pi: arm the tap, capture the mic for the schedule's duration
 #    while the WAV plays on the host at a modest, comfortable volume
@@ -109,7 +115,7 @@ jasper-route-latency-harness generate quick --out-dir /tmp/route-latency
 #    which has no schedule file to read them from). --confirm-route-health-ok
 #    is the harness's OWN flag — read the printed health-delta report first;
 #    it is never inferred automatically:
-sudo jasper-route-latency-harness run \
+sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
   /tmp/route-latency/quick-schedule.json \
   --out-dir /tmp/route-latency \
   --invoke-artifact \
@@ -134,8 +140,8 @@ reads jitteredness straight off the loaded schedule, so no
 example below for where that flag lives):
 
 ```sh
-jasper-route-latency-harness generate promotion --out-dir /tmp/route-latency
-sudo jasper-route-latency-harness run \
+/opt/jasper/.venv/bin/jasper-route-latency-harness generate promotion --out-dir /tmp/route-latency
+sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
   /tmp/route-latency/promotion-schedule.json \
   --out-dir /tmp/route-latency \
   --measurement-id RUN_ID \

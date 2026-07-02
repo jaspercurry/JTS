@@ -120,6 +120,43 @@ def test_render_wav_amplitude_matches_requested_dbfs(tmp_path):
     assert abs(peak - expected_peak) / expected_peak < 0.05
 
 
+def test_render_wav_click_straddling_a_chunk_boundary_is_intact(tmp_path):
+    # render_wav streams one second (48000 frames) at a time to bound memory.
+    # A click whose 5 ms span crosses that boundary must still be written
+    # whole (no dropped or duplicated samples at the seam). Place a click a
+    # couple ms before the 1-second boundary so it spans two chunks.
+    import array
+
+    boundary_frame = click_track.SAMPLE_RATE_HZ  # start of chunk 2
+    click_len = round(click_track.CLICK_DURATION_MS / 1000.0 * click_track.SAMPLE_RATE_HZ)
+    onset_frame = boundary_frame - click_len // 2
+    schedule = click_track.ClickSchedule(
+        preset_name="quick",
+        impulse_count=1,
+        duration_seconds=2.0,
+        jittered=False,
+        amplitude_dbfs=-12.0,
+        onsets_seconds=(onset_frame / click_track.SAMPLE_RATE_HZ,),
+        seed=0,
+    )
+    path = click_track.render_wav(schedule, tmp_path / "seam.wav")
+
+    with wave.open(str(path), "rb") as w:
+        raw = w.readframes(w.getnframes())
+    samples = array.array("h")
+    samples.frombytes(raw)
+    # Compare the exact per-frame samples against a direct reconstruction of
+    # the click at the same onset — the streamed render must match it sample
+    # for sample across the seam.
+    expected_click = click_track._click_samples(-12.0)
+    for offset, sample in enumerate(expected_click):
+        frame = onset_frame + offset
+        left = samples[frame * click_track.CHANNELS]
+        right = samples[frame * click_track.CHANNELS + 1]
+        assert left == sample, f"seam frame {frame} left mismatch"
+        assert right == sample, f"seam frame {frame} right mismatch"
+
+
 def test_render_wav_default_amplitude_is_modest_minus_12_dbfs():
     # Pin the safety-doctrine default: AGENTS.md requires generated click
     # content to default to a modest amplitude (~ -12 dBFS), never

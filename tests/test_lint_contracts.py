@@ -83,7 +83,16 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # (Marker strings are spelled out here, not written literally, so this comment
 # does not inflate the count it documents — same convention as the 2026-06-27
 # phone-mic entry above.)
-MAX_NOQA_MARKERS = 810
+# 2026-07-02 (+3 suppression markers, none blind-except): the Stage-0
+# route-latency click/capture harness's tap-contract test
+# (tests/test_usbsink_impulse_tap_contract.py) stands up a tiny stdlib
+# BaseHTTPRequestHandler stub for the tap's HTTP surface, which forces three
+# unavoidable stdlib-override suppressions — the N802 non-snake-case method
+# names do_POST/do_GET and the A002 `format` builtin-shadow in log_message are
+# the handler base class's own required signatures, not project style debt.
+# Only MAX_NOQA_MARKERS moves (these are N802/A002, not blind-except), so
+# MAX_BLE001_MARKERS is unchanged.
+MAX_NOQA_MARKERS = 813
 MAX_BLE001_MARKERS = 629
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
