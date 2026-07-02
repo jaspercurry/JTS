@@ -48,6 +48,7 @@ from jasper.control import state_aggregate
 
 _REPO = Path(__file__).resolve().parents[1]
 _HOST_CLOCK_RS = _REPO / "rust" / "jasper-usbsink-audio" / "src" / "host_clock.rs"
+_MAIN_RS = _REPO / "rust" / "jasper-usbsink-audio" / "src" / "main.rs"
 _ENV_EXAMPLE = _REPO / ".env.example"
 
 
@@ -55,6 +56,12 @@ def _host_clock_rs_text() -> str:
     if not _HOST_CLOCK_RS.exists():
         pytest.skip(f"rust source not present: {_HOST_CLOCK_RS}")
     return _HOST_CLOCK_RS.read_text(encoding="utf-8")
+
+
+def _main_rs_text() -> str:
+    if not _MAIN_RS.exists():
+        pytest.skip(f"rust source not present: {_MAIN_RS}")
+    return _MAIN_RS.read_text(encoding="utf-8")
 
 
 # The Rust fixture's `assert_eq!` literal is a JSON string wrapped across
@@ -401,6 +408,73 @@ def test_rust_source_declares_every_pinned_env_key():
         )
 
 
+def test_publisher_exit_path_always_neutralizes_pitch():
+    # SAFETY (neutrality invariant): the periodic in-loop state.json write is
+    # telemetry and MUST NOT be able to `?`-propagate out of the publisher
+    # loop — doing so would skip the exit-path `neutralize_for_exit` and leave
+    # the host slaved to the last commanded bias while systemd still sees a
+    # healthy unit (the watchdog reads the audio thread's progress epoch, not
+    # this write). We pin the structure: inside run_state_publisher's loop the
+    # periodic write must be handled non-fatally (`if let Err(e) =
+    # write_state_json(...)`), and the loop must be followed by an
+    # unconditional `neutralize_for_exit` before `Ok(())`.
+    src = _main_rs_text()
+    start = src.index("fn run_state_publisher")
+    end = src.index("\nfn ", start + 1)
+    body = src[start:end]
+
+    # The periodic write inside the `while` loop is non-fatal.
+    while_idx = body.index("while !shutdown")
+    loop_and_after = body[while_idx:]
+    assert "if let Err(e) = write_state_json(" in loop_and_after, (
+        "run_state_publisher's periodic state write must be non-fatal "
+        "(`if let Err(e) = write_state_json(...)`) so a transient /run write "
+        "failure can't skip the exit-path pitch neutralize."
+    )
+    # No naked `write_state_json(...)?` remains inside the loop body itself
+    # (the loop ends at the exit comment / neutralize call).
+    loop_body = body[while_idx : body.index("neutralize_for_exit")]
+    assert "write_state_json(&config, &state, &tap, &tap_config, &fragment)?;" not in loop_body, (
+        "a fatal `write_state_json(...)?` is still inside the publisher loop "
+        "— on Err it would return before neutralize_for_exit runs."
+    )
+
+    # The exit path unconditionally neutralizes before returning Ok.
+    neutral_idx = body.index("neutralize_for_exit")
+    ok_idx = body.rindex("Ok(())")
+    assert neutral_idx < ok_idx, (
+        "neutralize_for_exit must run before run_state_publisher returns Ok."
+    )
+
+
+def test_pitch_ctl_resolves_by_name_not_numid():
+    # SAFETY: the in-daemon pitch actuator must resolve the "Capture Pitch
+    # 1000000" element by its (iface=PCM, name) tuple, NEVER by numid. A
+    # nonzero `set_numid` makes the kernel match on numid and ignore the
+    # name; numid 1 being the pitch ctl today is a u_audio.c registration
+    # artifact, not ABI. A future kernel that registers another
+    # writable-integer control (e.g. `PCM Capture Volume`, the host-slider
+    # input) first would silently retarget every write — including the
+    # unconditional startup neutralize that runs even with the feature OFF.
+    # The unit's ExecStopPost already uses the safer name-based amixer path;
+    # this pins the in-daemon path to match.
+    rust_src = _host_clock_rs_text()
+    for lineno, line in enumerate(rust_src.splitlines(), start=1):
+        stripped = line.lstrip()
+        if stripped.startswith("//") or stripped.startswith("///"):
+            continue  # allow the doctrine to be explained in a comment
+        assert "set_numid" not in line, (
+            f"host_clock.rs:{lineno} calls set_numid — the pitch ctl must "
+            "resolve by (iface, name), not by numid (a kernel upgrade could "
+            "silently retarget the write). Remove it and match on the name."
+        )
+    # And the name it DOES match on is the stable one shared with ExecStopPost.
+    assert '"Capture Pitch 1000000"' in rust_src, (
+        "the pitch ctl name literal is gone from host_clock.rs — it must "
+        "match the ALSA element name and the unit's ExecStopPost line."
+    )
+
+
 # --------------------------------------------------------------------------
 # Non-env constants pinned by contracts §2 — servo clamp, write-suppression
 # epsilon/cadence, tick interval. These are NOT env-tunable, so there is no
@@ -492,4 +566,65 @@ def test_fanin_period_frames_default_matches_derivation_citation():
         "JASPER_FANIN_PERIOD_FRAMES default drifted from 256 — the cited "
         "bandwidth-separation derivation (docs/HANDOFF-usb-low-latency.md "
         "'Host-slaved USB clock') assumes this exact value."
+    )
+
+
+# --------------------------------------------------------------------------
+# MSRV guard (contracts: crate declares rust-version = 1.75; CI runs
+# `cargo +1.85.0 clippy ... -D warnings`, and clippy's `incompatible_msrv`
+# lint rejects any std API stabilized after 1.75). The Stage 1 daemon-side
+# actuator (`HostClockActuator::apply`) is `#[cfg(feature="alsa-runtime")]`
+# and cannot compile on the macOS dev host (no libasound), so a post-1.75
+# call there is invisible to the local `--no-default-features` build and
+# only reproduces as a red required-check on Linux CI. This grep-pin catches
+# the class cheaply and hardware-free: it fails BEFORE CI does. `is_none_or`
+# (stable 1.82) is the specific slip a review caught; the list is the set of
+# post-1.75 Option/slice helpers most likely to be reached for.
+# --------------------------------------------------------------------------
+
+# Each entry: (method call token, Rust version it stabilized in).
+_POST_MSRV_STD_METHODS = (
+    (".is_none_or(", "1.82"),
+    (".div_ceil(", "1.73 slice / 1.79 NonZero"),  # cheap to include; harmless
+    (".next_multiple_of(", "1.73"),
+    (".isqrt(", "1.84"),
+    (".midpoint(", "1.85"),
+    (".trim_ascii(", "1.80"),
+    (".split_at_checked(", "1.80"),
+    (".last_chunk(", "1.80"),
+)
+
+
+def test_usbsink_crate_uses_no_post_msrv_std_apis():
+    crate_src_dir = _REPO / "rust" / "jasper-usbsink-audio" / "src"
+    if not crate_src_dir.is_dir():
+        pytest.skip(f"rust crate not present: {crate_src_dir}")
+    # Confirm the MSRV this guard defends is still what the crate declares,
+    # so the guard can't quietly protect a stale assumption.
+    cargo_toml = (_REPO / "rust" / "jasper-usbsink-audio" / "Cargo.toml").read_text(
+        encoding="utf-8"
+    )
+    assert 'rust-version = "1.75"' in cargo_toml, (
+        "jasper-usbsink-audio's declared MSRV changed — update this guard's "
+        "method list (and the comment) to match the new floor."
+    )
+    offenders: list[str] = []
+    for rs_file in sorted(crate_src_dir.rglob("*.rs")):
+        text = rs_file.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            # Skip comment lines: the fix for the original slip keeps the word
+            # `is_none_or` in an explanatory comment on purpose.
+            stripped = line.lstrip()
+            if stripped.startswith("//"):
+                continue
+            for token, since in _POST_MSRV_STD_METHODS:
+                if token in line:
+                    offenders.append(
+                        f"{rs_file.relative_to(_REPO)}:{lineno}: {token!r} "
+                        f"(std-stable since {since}) exceeds MSRV 1.75 — "
+                        f"clippy incompatible_msrv will fail CI. Use an "
+                        f"MSRV-safe equivalent (e.g. map_or for is_none_or)."
+                    )
+    assert not offenders, "post-MSRV std API in jasper-usbsink-audio:\n" + "\n".join(
+        offenders
     )

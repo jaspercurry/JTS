@@ -44,6 +44,13 @@ Environment="JASPER_USBSINK_CAPTURE_DEVICE=hw:UAC2Gadget"
 Environment="JASPER_USBSINK_PLAYBACK_DEVICE=usbsink_substream"
 Environment="JASPER_USBSINK_SAMPLE_RATE=48000"
 Environment="JASPER_USBSINK_CHANNELS=2"
+# The ALSA "short" mixer-card name (no underscore — the kernel registers the
+# gadget descriptor's short name here, distinct from the PortAudio-visible
+# "UAC2_Gadget" capture name). Declared as a packaged default so the
+# ExecStopPost pitch-neutralize line below can expand ${JASPER_USBSINK_MIXER_CARD}
+# and an operator overriding the card in an EnvironmentFile also redirects the
+# belt-and-braces neutralize to the right card.
+Environment="JASPER_USBSINK_MIXER_CARD=UAC2Gadget"
 # Pull operator-supplied tunables (capture/playback device overrides,
 # log level) from the same env file the rest of the stack reads.
 # Leading `-` makes systemd skip silently if the file isn't there.
@@ -60,9 +67,11 @@ ExecStart=/opt/jasper/bin/jasper-usbsink-audio
 # feature is disabled) because a stale non-neutral value could only exist if
 # the feature was enabled and the daemon died uncleanly. `-` ignores failure
 # when the card is absent (disabled bridge, gadget torn down, or a different
-# capture device); the card name matches the JASPER_USBSINK_MIXER_CARD default
-# (no underscore) — an operator overriding that card also overrides this line.
-ExecStopPost=-/usr/bin/amixer -c UAC2Gadget cset iface=PCM,name='Capture Pitch 1000000' 1000000
+# capture device). The card is ${JASPER_USBSINK_MIXER_CARD} (default
+# UAC2Gadget, set above) — systemd expands it from the packaged default or an
+# operator EnvironmentFile override, so this stop line always targets the same
+# card the operator configured, with no hardcoded drift.
+ExecStopPost=-/usr/bin/amixer -c ${JASPER_USBSINK_MIXER_CARD} cset iface=PCM,name='Capture Pitch 1000000' 1000000
 Restart=on-failure
 RestartSec=2s
 Nice=-10

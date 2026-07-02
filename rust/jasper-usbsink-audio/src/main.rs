@@ -1369,7 +1369,20 @@ fn run_state_publisher(
         if last_state_write.elapsed() >= STATE_INTERVAL {
             let fragment = host_clock.status_fragment();
             publish_host_clock_fragment(&host_clock_fragment, fragment.clone());
-            write_state_json(&config, &state, &tap, &tap_config, &fragment)?;
+            // A periodic state.json write is TELEMETRY, not control: a
+            // transient /run (tmpfs) write failure must NOT tear down the
+            // publisher, because doing so would abandon the host-clock ladder
+            // AND skip the exit-path pitch neutralize below — leaving the host
+            // slaved to the last commanded bias while systemd still sees a
+            // healthy unit (the watchdog reads the AUDIO thread's progress
+            // epoch, not this write). So log + continue rather than `?`; the
+            // next tick retries the write, and the neutrality invariant is
+            // preserved on every real exit. (The pre-loop and shutdown writes
+            // keep their `?` — those are one-shot and their failure is
+            // genuinely fatal to a clean start/stop.)
+            if let Err(e) = write_state_json(&config, &state, &tap, &tap_config, &fragment) {
+                warn!("event=usbsink_audio.state_write_error detail={e}");
+            }
             last_state_write = std::time::Instant::now();
         }
         thread::sleep(TAP_DRAIN_INTERVAL);
@@ -1436,9 +1449,13 @@ impl HostClockActuator {
             // Rate-limit ctl-error logs to at most one per ~10 s so repeated
             // write failures do not crash or spam the publisher.
             let now = monotonic_millis() as u64;
+            // `Option::is_none_or` is stable only since Rust 1.82; the crate
+            // declares rust-version 1.75, so clippy's `incompatible_msrv`
+            // (on by default, `-D warnings` in CI) would reject it. `map_or`
+            // has been stable since 1.0 and is MSRV-safe.
             let should_log = self
                 .last_error_ms
-                .is_none_or(|last| now.saturating_sub(last) >= 10_000);
+                .map_or(true, |last| now.saturating_sub(last) >= 10_000);
             if should_log {
                 self.last_error_ms = Some(now);
                 warn!("event=usbsink_audio.host_clock_ctl_error detail={e}");

@@ -109,9 +109,9 @@ pub const PITCH_NEUTRAL: i64 = 1_000_000;
 
 /// Servo clamp: the total commanded bias (feed-forward + DLL trim) never leaves
 /// ±this ppm. This is the Windows validity window, INTENTIONALLY tighter than
-/// the hardware ctl range (which would allow ~±250000/-5000 ppm) — a value
-/// outside ±1000 ppm is silently ignored by `usbaudio2.sys`, so commanding it
-/// would be worse than useless.
+/// the hardware ctl range (750000..1005000 around neutral 1_000_000, i.e.
+/// −250000 ppm to +5000 ppm) — a value outside ±1000 ppm is silently ignored
+/// by `usbaudio2.sys`, so commanding it would be worse than useless.
 pub const MAX_BIAS_PPM: f64 = 1000.0;
 
 /// Write-suppression epsilon: a new command within this many ppm of the last
@@ -140,9 +140,34 @@ pub const L1_RELEASE_PPM: f64 = 2000.0;
 pub const L1_SUSTAIN_TICKS: u32 = 30;
 
 /// Mid-stream demotion evidence: consecutive ticks with a SATURATED command
-/// (|commanded| == MAX_BIAS_PPM) AND a fill slope still worse than probe_ppm/2
+/// (|commanded| == MAX_BIAS_PPM) AND a fill slope still worse than the L2 floor
 /// in the uncorrected direction ⇒ the host is not honoring the command → L2.
 pub const L2_SUSTAIN_TICKS: u32 = 10;
+
+/// Absolute mid-stream-demotion slope floor, in ppm, DECOUPLED from
+/// [`HostClockConfig::probe_ppm`]. Demotion asks a physical question — "is the
+/// ring still diverging fast enough, while the command is railed, that the host
+/// clearly is not following?" — whose sensitivity is unrelated to how large a
+/// probe STEP we chose. The effective L2 slope threshold is
+/// `max(probe_ppm/2, L2_SLOPE_FLOOR_PPM)`: keep the historical probe-relative
+/// term (so a large probe still needs proportionally strong evidence) but never
+/// let it drop below this floor, so a small probe cannot make demotion
+/// hair-trigger and a residual < probe_ppm/2 wrong-way drift under a railed
+/// command still eventually demotes. At the default probe_ppm=300 the floor
+/// (100) is below probe_ppm/2 (150), so default behavior is unchanged; it only
+/// bites for probe_ppm < 200.
+pub const L2_SLOPE_FLOOR_PPM: f64 = 100.0;
+
+/// Anti-windup threshold on the outer DLL, in FRAMES. When the total commanded
+/// bias is railed at the ±[`MAX_BIAS_PPM`] clamp and the DLL's integrator is
+/// demanding correction in the WRONG direction relative to the current fill
+/// error (a post-transient windup: `z2 + z3` accumulated past the actuator's
+/// authority and now points away from the target), reset the DLL and re-apply
+/// the current error so the first bounded output points back toward target.
+/// Mirrors `jasper_resampler::RateController::is_wound_against_error`
+/// (threshold = half a period there); half of one 256-frame period ≈ 128
+/// frames is the same "the error is genuinely non-trivial" gate.
+pub const ANTI_WINDUP_THRESHOLD_FRAMES: f64 = 128.0;
 
 // The outer DLL's loop timescale. `period / rate` is the DLL's per-update
 // timescale in seconds; with a 1 s tick and this period/rate the effective
@@ -225,8 +250,9 @@ pub struct HostClockConfig {
     pub target_fill_frames: f64,
     /// Probe step magnitude in ppm. Default 300 (inside ±1000 with margin).
     pub probe_ppm: f64,
-    /// Probe step-phase duration in seconds. Default 6 (plus a fixed 4 s
-    /// neutral baseline phase first, total ≤ 10 s).
+    /// Probe step-phase duration in seconds. Default 6; a fixed 4 s neutral
+    /// baseline phase runs first, so the whole probe is `4 + probe_step_secs`
+    /// seconds — 10 s at the default, up to 14 s at the max (probe_step_secs 10).
     pub probe_step_secs: u64,
     /// The gadget ring period size in frames (for fill_frames scaling). Threaded
     /// from the daemon [`crate::Config`] so this module stays self-contained.
@@ -278,9 +304,18 @@ impl HostClockConfig {
                 "JASPER_USBSINK_HOST_CLOCK_TARGET_FILL_FRAMES={target_fill_frames} out of range 128..=4096"
             ));
         }
-        if !(100..=800).contains(&probe_ppm) {
+        // Floor is 200, not 100: a probe at or below the ~163 ppm Windows
+        // (usbaudio2.sys) reaction deadband is GUARANTEED to measure ~no
+        // response on a compliant deadbanded host → a spurious probe_fail → L2
+        // every session. The module's own cross-platform notes document that
+        // deadband, so config validation must not accept a value they say
+        // cannot work. Ceiling stays 800 to keep the whole probe inside the
+        // ±1000 ppm validity window with margin. (Default 300 remains valid;
+        // it also sits above the deadband — see the .env.example prose and the
+        // HANDOFF's Windows-deadband caveat for the residual margin note.)
+        if !(200..=800).contains(&probe_ppm) {
             return Err(format!(
-                "JASPER_USBSINK_HOST_CLOCK_PROBE_PPM={probe_ppm} out of range 100..=800 (must sit inside the ±1000 ppm Windows validity window with margin)"
+                "JASPER_USBSINK_HOST_CLOCK_PROBE_PPM={probe_ppm} out of range 200..=800 (a probe at/below the ~163 ppm Windows usbaudio2.sys deadband would falsely fail every session; ceiling keeps the probe inside the ±1000 ppm validity window)"
             ));
         }
         if !(5..=10).contains(&probe_step_secs) {
@@ -489,6 +524,9 @@ pub struct HostClock {
     // Lifetime counters + last transition token.
     demotions: u64,
     transitions: u64,
+    /// Lifetime count of DLL anti-windup resets (diagnostic; not in the wire
+    /// contract — surfaced only via the accessor for tests / future telemetry).
+    anti_windup_events: u64,
     last_transition_reason: &'static str,
 
     // Whether the one-time startup neutralize has been emitted.
@@ -538,6 +576,7 @@ impl HostClock {
             last_tick_ms: None,
             demotions: 0,
             transitions: 0,
+            anti_windup_events: 0,
             last_transition_reason: "startup",
             startup_neutralized: false,
         }
@@ -577,6 +616,10 @@ impl HostClock {
     }
     pub fn transitions(&self) -> u64 {
         self.transitions
+    }
+    /// Lifetime count of outer-DLL anti-windup resets (diagnostic).
+    pub fn anti_windup_events(&self) -> u64 {
+        self.anti_windup_events
     }
     pub fn last_transition_reason(&self) -> &'static str {
         self.last_transition_reason
@@ -774,7 +817,38 @@ impl HostClock {
         // it hides the bandwidth knobs this cascade must pin. See module docs.)
         let err = obs.fill_frames - self.cfg.target_fill_frames;
         self.dll.update(err);
-        let dll_trim_ppm = self.dll.ratio_ppm();
+        let mut dll_trim_ppm = self.dll.ratio_ppm();
+
+        // ---- Anti-windup ----------------------------------------------------
+        // The ±MAX_BIAS_PPM clamp is a SAFETY bound on the actuator, not a bound
+        // on the DLL's integrators (`z2 + z3` accumulate without limit — the
+        // jasper-clock docs call out the clamped-actuator windup regime). A long
+        // railed excursion can leave the DLL demanding correction in the WRONG
+        // direction after the fill has crossed back past target, so the command
+        // stays railed the wrong way and drains the fan-in cushion (the inner
+        // lane resampler's authority is only ±500 ppm — see
+        // rust/jasper-fanin/src/config.rs). When the total demand is railed AND
+        // the DLL is wound against the current error, reset the loop and
+        // re-apply the error so the first bounded output points back toward the
+        // target. Mirrors jasper_resampler::RateController::is_wound_against_error
+        // (reset-and-reapply idiom); the SIGN test differs by construction:
+        // there the DLL is fed −error so a wound loop has raw_ppm.sign ==
+        // error.sign; here the DLL is fed +error (producer sign), so normal
+        // operation has trim.sign == −err.sign and a WOUND loop is trim.sign ==
+        // err.sign.
+        let total_raw = self.feed_forward_ppm + dll_trim_ppm;
+        if total_raw.is_finite()
+            && total_raw.abs() > MAX_BIAS_PPM
+            && err.abs() >= ANTI_WINDUP_THRESHOLD_FRAMES
+            && dll_trim_ppm.signum() != 0.0
+            && err.signum() != 0.0
+            && dll_trim_ppm.signum() == err.signum()
+        {
+            self.dll.reset();
+            self.anti_windup_events = self.anti_windup_events.saturating_add(1);
+            self.dll.update(err);
+            dll_trim_ppm = self.dll.ratio_ppm();
+        }
 
         // Total raw demand = feed-forward seed + DLL trim. The clamp bounds the
         // COMMAND; the raw demand still drives L1/L2 evidence so a railed host
@@ -784,16 +858,21 @@ impl HostClock {
 
         // ---- L2 mid-stream demotion evidence --------------------------------
         // Saturated command AND the fill still slopes the WRONG way (the host is
-        // not following) for L2_SUSTAIN_TICKS ⇒ demote.
+        // not following) for L2_SUSTAIN_TICKS ⇒ demote. The slope threshold is
+        // max(probe_ppm/2, L2_SLOPE_FLOOR_PPM) — demotion sensitivity is a
+        // physical question decoupled from the probe STEP magnitude, so a small
+        // probe cannot make demotion hair-trigger nor let a residual wrong-way
+        // drift under a railed command escape it forever (review S3).
         let saturated = raw.abs() >= MAX_BIAS_PPM;
         let slope = self.slope.slope_ppm();
+        let l2_slope_threshold = (self.cfg.probe_ppm / 2.0).max(L2_SLOPE_FLOOR_PPM);
         // "Uncorrected direction": we are commanding to reduce |fill|, but the
-        // slope magnitude is still worse than probe_ppm/2 pushing fill further
-        // out. Sign check: if commanding negative (slow host) yet slope is still
-        // strongly positive (fill climbing), the host ignores us — and mutatis
-        // mutandis for the other sign.
-        let uncorrected = (raw < 0.0 && slope > self.cfg.probe_ppm / 2.0)
-            || (raw > 0.0 && slope < -self.cfg.probe_ppm / 2.0);
+        // slope magnitude is still worse than the L2 threshold pushing fill
+        // further out. Sign check: if commanding negative (slow host) yet slope
+        // is still strongly positive (fill climbing), the host ignores us — and
+        // mutatis mutandis for the other sign.
+        let uncorrected =
+            (raw < 0.0 && slope > l2_slope_threshold) || (raw > 0.0 && slope < -l2_slope_threshold);
         if saturated && uncorrected {
             self.l2_evidence_ticks += 1;
         } else {
@@ -1046,14 +1125,31 @@ mod alsa_ctl {
 
     impl AlsaPitchCtl {
         /// Open `card` (e.g. `hw:UAC2Gadget`) and prepare the
-        /// iface=PCM, name="Capture Pitch 1000000", numid=1 element value.
+        /// iface=PCM, name="Capture Pitch 1000000" element value.
+        ///
+        /// Resolution is by the (iface, name) tuple ONLY — deliberately NOT
+        /// by numid. `snd_ctl_elem_id_set_numid(id, N)` with a nonzero N makes
+        /// the kernel's `snd_ctl_find_id` match purely on numid and IGNORE the
+        /// name; numid 1 happening to be the pitch ctl today is a
+        /// registration-order artifact of `u_audio.c`, not ABI. Were a future
+        /// kernel to register another writable-integer control first (the most
+        /// plausible neighbor on this card is `PCM Capture Volume`, the one-way
+        /// host-slider input that drives `listening_level`), a numid-pinned
+        /// write would silently retarget it — and the unconditional startup
+        /// neutralize would do so even with the feature OFF. The name is stable
+        /// ABI; matching on it keeps this path aligned with the unit's
+        /// name-based `ExecStopPost` belt-and-braces, so both writers target
+        /// the same element the same way. (alsa-0.11.0 exposes no public
+        /// `Ctl`→`ElemInfo` fetch, so an at-open type/count assertion is not
+        /// available at this crate version; the name match plus the hardware
+        /// ctl-range clamp in `ppm_to_ctl_value` are the layered defenses, and
+        /// a bad name simply surfaces as a fail-soft `elem_write` error.)
         pub fn open(card: &str) -> Result<Self, String> {
             let ctl = Ctl::new(card, false).map_err(|e| format!("open ctl {card}: {e}"))?;
             let mut id = ElemId::new(ElemIface::PCM);
             let name = CString::new("Capture Pitch 1000000")
                 .map_err(|e| format!("ctl name cstring: {e}"))?;
             id.set_name(&name);
-            id.set_numid(1);
             let mut value =
                 ElemValue::new(ElemType::Integer).map_err(|e| format!("elem value: {e}"))?;
             value.set_id(&id);
@@ -1149,6 +1245,23 @@ mod tests {
             HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "50"), 256)
                 .is_err()
         );
+        // Below/at the ~163 ppm Windows deadband is rejected (S4): a probe
+        // there would falsely fail every session on a compliant host.
+        assert!(
+            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "100"), 256)
+                .is_err(),
+            "PROBE_PPM=100 (<= ~163 ppm deadband) must be rejected"
+        );
+        assert!(
+            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "199"), 256)
+                .is_err()
+        );
+        // The floor itself (200, just above the deadband) is accepted.
+        assert!(
+            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "200"), 256)
+                .is_ok(),
+            "PROBE_PPM=200 (above the deadband) must be accepted"
+        );
         assert!(HostClockConfig::from_env(
             with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "1200"),
             256
@@ -1187,6 +1300,8 @@ mod tests {
         assert_eq!(L1_RELEASE_PPM, 2000.0);
         assert_eq!(L1_SUSTAIN_TICKS, 30);
         assert_eq!(L2_SUSTAIN_TICKS, 10);
+        assert_eq!(L2_SLOPE_FLOOR_PPM, 100.0);
+        assert_eq!(ANTI_WINDUP_THRESHOLD_FRAMES, 128.0);
     }
 
     #[test]
@@ -1513,6 +1628,184 @@ mod tests {
         assert_eq!(hc.ladder(), Ladder::L2Fallback, "must demote mid-stream");
         assert_eq!(hc.demotions(), demotions_before + 1, "demotion counted");
         assert!(neutral_after_demote, "demotion forces neutral pitch");
+    }
+
+    // ---- Anti-windup (S3) --------------------------------------------------
+
+    /// After a large transient rails the command, once the fill CROSSES BACK
+    /// past the target the anti-windup reset keeps the DLL from holding the
+    /// command railed the WRONG way. Without the guard, the integrator that
+    /// wound up demanding "slow the host" (negative) while the ring was far
+    /// above target would keep the command pinned negative after the ring
+    /// dropped below target, draining the cushion. With it, the command
+    /// promptly points back toward target (positive) and the counter ticks.
+    #[test]
+    fn anti_windup_reset_prevents_wrong_way_rail_after_transient() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        drive_to_l0(&mut hc, 0.0);
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        let target = hc.cfg.target_fill_frames;
+
+        let mut cap = hc_cap_start();
+        let mut play = cap;
+        let mut t = 200u64;
+        // Phase 1: a big POSITIVE fill error (ring far above target). The DLL
+        // integrator winds toward a strongly NEGATIVE command (slow the host).
+        // Keep the divergence slope small so we exercise WINDUP, not the L2
+        // demotion path (which needs a sustained wrong-way slope).
+        for _ in 0..8 {
+            cap += 48000;
+            play += 48000;
+            hc.tick(obs(true, true, target + 5000.0, cap, play), t * 1000);
+            t += 1;
+        }
+        assert!(
+            hc.commanded_ppm() < -MAX_BIAS_PPM + 1.0,
+            "command should rail negative during the high-fill transient, got {}",
+            hc.commanded_ppm()
+        );
+        let windup_before = hc.anti_windup_events();
+        // Phase 2: the ring collapses to FAR BELOW target (error flips sign).
+        // A wound DLL would keep commanding negative for many ticks; the guard
+        // resets it so the command swings positive toward the new error.
+        let mut recovered_positive = false;
+        for _ in 0..8 {
+            cap += 48000;
+            play += 48000;
+            hc.tick(
+                obs(true, true, (target - 5000.0).max(0.0), cap, play),
+                t * 1000,
+            );
+            if hc.commanded_ppm() > 0.0 {
+                recovered_positive = true;
+            }
+            t += 1;
+        }
+        assert!(
+            hc.anti_windup_events() > windup_before,
+            "anti-windup should engage on the sign-flip transient"
+        );
+        assert!(
+            recovered_positive,
+            "after the fill crossed below target the command must point back toward target (positive), not stay railed negative — commanded={}",
+            hc.commanded_ppm()
+        );
+    }
+
+    /// The anti-windup guard must NOT fire in normal locked tracking (small
+    /// on-target errors), or it would needlessly reset the loop every tick.
+    #[test]
+    fn anti_windup_does_not_fire_in_steady_tracking() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        drive_to_l0(&mut hc, 100.0);
+        let before = hc.anti_windup_events();
+        let mut cap = hc_cap_start();
+        let mut play = cap;
+        for i in 0..60 {
+            cap += 48000;
+            play += 48000;
+            // On-target ring, tiny error — the command is well inside the clamp.
+            hc.tick(obs(true, true, 384.0, cap, play), (300 + i as u64) * 1000);
+        }
+        assert_eq!(
+            hc.anti_windup_events(),
+            before,
+            "anti-windup must not engage while tracking on-target"
+        );
+    }
+
+    /// The L2 slope threshold is DECOUPLED from probe_ppm via the absolute
+    /// floor `max(probe_ppm/2, L2_SLOPE_FLOOR_PPM)`. With a SMALL probe
+    /// (probe_ppm=100 ⇒ probe_ppm/2 = 50) a bare probe_ppm/2 threshold would
+    /// make demotion HAIR-TRIGGER: a mere 50-ppm wrong-way drift would demote.
+    /// The floor (100) keeps the operative threshold at 100 regardless of the
+    /// tiny probe, so a 70-ppm drift — above probe_ppm/2 but below the floor —
+    /// must NOT demote. This proves demotion sensitivity is set by the physical
+    /// floor, not by the (unrelated) probe-step magnitude.
+    #[test]
+    fn l2_slope_floor_prevents_hair_trigger_demotion_with_small_probe() {
+        let mut cfg = enabled_cfg();
+        cfg.probe_ppm = 100.0; // probe_ppm/2 = 50, below the 100 ppm floor
+        let mut hc = HostClock::new(cfg);
+        hc.startup_neutralize();
+        drive_to_l0(&mut hc, 100.0); // compliant probe follows +100 step
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        // Ring pinned huge (command rails negative) AND a +70 ppm wrong-way
+        // drift — ABOVE probe_ppm/2 (50) but BELOW the floor (100). A pure
+        // probe_ppm/2 threshold would demote; the floor must prevent it.
+        let mut cap = hc_cap_start();
+        let mut play = cap;
+        for i in 0..(L2_SUSTAIN_TICKS + 10) {
+            cap += (48000.0 * (1.0 + 70.0 / 1.0e6)) as u64;
+            play += 48000;
+            hc.tick(obs(true, true, 20000.0, cap, play), (400 + i as u64) * 1000);
+        }
+        assert_ne!(
+            hc.ladder(),
+            Ladder::L2Fallback,
+            "a 70 ppm drift (below the 100 ppm floor) must NOT demote even with \
+             a tiny probe — the floor decouples demotion sensitivity from the \
+             probe-step magnitude"
+        );
+    }
+
+    /// The complement: with the same small probe, a drift ABOVE the floor
+    /// (140 ppm > 100) under a railed command DOES demote — the floor is a
+    /// real threshold, not an unconditional escape hatch.
+    #[test]
+    fn l2_slope_floor_still_demotes_above_floor_with_small_probe() {
+        let mut cfg = enabled_cfg();
+        cfg.probe_ppm = 100.0;
+        let mut hc = HostClock::new(cfg);
+        hc.startup_neutralize();
+        drive_to_l0(&mut hc, 100.0);
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        let demotions_before = hc.demotions();
+        let mut cap = hc_cap_start();
+        let mut play = cap;
+        for i in 0..(L2_SUSTAIN_TICKS + 5) {
+            cap += (48000.0 * (1.0 + 140.0 / 1.0e6)) as u64; // > 100 floor
+            play += 48000;
+            hc.tick(obs(true, true, 20000.0, cap, play), (400 + i as u64) * 1000);
+        }
+        assert_eq!(
+            hc.ladder(),
+            Ladder::L2Fallback,
+            "drift above floor must demote"
+        );
+        assert_eq!(hc.demotions(), demotions_before + 1);
+    }
+
+    /// At the DEFAULT probe (probe_ppm=300 ⇒ probe_ppm/2 = 150) the floor (100)
+    /// is BELOW probe_ppm/2, so the operative L2 threshold stays 150 — the
+    /// floor only ever RAISES sensitivity for small probes, never lowers the
+    /// default. A +120 ppm wrong-way drift is below 150, so a railed command
+    /// facing it must NOT demote within the sustain window (it stays locked).
+    /// This pins that the S3 floor change did not weaken default behavior.
+    #[test]
+    fn default_probe_demotion_threshold_unchanged_by_floor() {
+        let mut hc = HostClock::new(enabled_cfg()); // probe_ppm = 300
+        hc.startup_neutralize();
+        drive_to_l0(&mut hc, 500.0);
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        // A +120 ppm wrong-way drift: below probe_ppm/2 (150). Must NOT demote
+        // within the L2 window — the default threshold is unchanged at 150.
+        let mut cap = hc_cap_start();
+        let mut play = cap;
+        for i in 0..(L2_SUSTAIN_TICKS + 5) {
+            cap += (48000.0 * (1.0 + 120.0 / 1.0e6)) as u64;
+            play += 48000;
+            hc.tick(obs(true, true, 20000.0, cap, play), (500 + i as u64) * 1000);
+        }
+        assert_ne!(
+            hc.ladder(),
+            Ladder::L2Fallback,
+            "at default probe (threshold 150) a 120 ppm drift is sub-threshold; \
+             the railed command must NOT demote — the floor must not lower the \
+             default sensitivity"
+        );
     }
 
     // ---- Write suppression -------------------------------------------------

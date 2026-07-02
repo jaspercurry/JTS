@@ -210,7 +210,11 @@ Stage 1 closes a delay-locked loop over that control:
   clamped to <sup>±</sup>1000 ppm total (feed-forward + DLL trim combined) —
   independent of the wider hardware range above. The ctl handle lives ONLY on
   the state-publisher thread: single writer by construction, the audio thread
-  and the preempt listener never touch it.
+  and the preempt listener never touch it. The element is resolved by its
+  `(iface=PCM, name)` tuple, **never by numid** — numid 1 is a `u_audio.c`
+  registration-order artifact, not ABI, so pinning it could silently retarget
+  a future kernel's write (e.g. onto `PCM Capture Volume`); matching by name
+  keeps the daemon path aligned with the unit's name-based `ExecStopPost`.
 
 ### Two controllers in cascade — the defense
 
@@ -258,6 +262,14 @@ to widen the bandwidth separation further or leave the feature off.
   ~163 ppm reaction deadband, and IGNORES commanded values outside roughly
   nominal ±1 sample/interval — hence the ±1000 ppm servo clamp above sits
   inside that validity window with margin, not at the wider hardware range.
+  That same deadband floors `JASPER_USBSINK_HOST_CLOCK_PROBE_PPM` at 200
+  (config-rejected below that): a probe at or under ~163 ppm would measure
+  near-zero response on a compliant Windows host and falsely fail every
+  session. Even the default 300 leaves modest margin against a full-deadband
+  subtraction ((300−163)/300 ≈ 0.46 vs the 0.5 pass ratio), so a Windows lab
+  box that demotes spuriously should raise `PROBE_PPM` toward 500–600. Windows
+  validation is deferred (macOS is the shipping-gold target); this is the
+  caveat to keep in mind when it happens.
 - Both react slowly, which is why the outer loop's bandwidth must stay this
   low rather than matching the inner loop's.
 
@@ -290,11 +302,12 @@ predecessor; (2) the state-publisher's exit path resets to neutral on clean
 exit, SIGTERM/SIGINT, and audio-thread error (main sets the shared shutdown
 flag before joining); (3) every ladder transition into `L2_FALLBACK` or an
 idle boundary force-writes neutral; (4) belt-and-braces
-`ExecStopPost=-/usr/bin/amixer -c UAC2Gadget cset iface=PCM,name='Capture
-Pitch 1000000' 1000000` in
+`ExecStopPost=-/usr/bin/amixer -c ${JASPER_USBSINK_MIXER_CARD} cset
+iface=PCM,name='Capture Pitch 1000000' 1000000` in
 [`deploy/systemd/jasper-usbsink.service`](../deploy/systemd/jasper-usbsink.service)
 covers SIGKILL / OOM-kill / watchdog abort, which layer (2) structurally
-cannot reach. All four apply regardless of `JASPER_USBSINK_HOST_CLOCK` —
+cannot reach (the card is expanded from `JASPER_USBSINK_MIXER_CARD`, packaged
+default `UAC2Gadget`, so an operator card override redirects this line too). All four apply regardless of `JASPER_USBSINK_HOST_CLOCK` —
 a stale non-neutral value could only exist if the feature had been enabled
 and the daemon then died uncleanly.
 
