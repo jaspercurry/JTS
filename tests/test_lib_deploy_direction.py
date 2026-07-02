@@ -33,6 +33,8 @@ advisory never blocks a deploy.
 """
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -52,6 +54,50 @@ def _git(repo: Path, *args: str) -> str:
         capture_output=True, text=True, timeout=30, check=True,
     )
     return proc.stdout.strip()
+
+
+def _git_shim_dir(tmp_path: Path, *, fail_on_call: int | None = None) -> Path:
+    """A directory holding a `git` wrapper that makes
+    `git merge-base --is-ancestor …` exit 128 (a git ERROR, not a clean
+    exit-1 "no") while passing every other git subcommand through to real
+    git. Prepended to PATH, it reproduces the transient failure the
+    ancestry probes must not misread as a topological answer — the
+    2026-07-02 spurious-"diverged" incident.
+
+    `git cat-file -e` (the existence guard the helpers run first) still
+    hits real git and succeeds, so the error lands specifically on the
+    `--is-ancestor` step under test.
+
+    fail_on_call=None → exit 128 on EVERY `--is-ancestor` (the simple
+    case: the first probe errors). fail_on_call=N → exit 128 only on the
+    Nth `--is-ancestor` invocation (counted across the git processes of
+    one classify call via a shared counter file), passing the others
+    through to real git — this lets a test reach the SECOND ancestry probe
+    with a clean first "no"."""
+    real_git = shutil.which("git")
+    assert real_git, "git not found on PATH"
+    shim_dir = tmp_path / "gitshim"
+    shim_dir.mkdir()
+    counter = shim_dir / "count"
+    if fail_on_call is None:
+        guard = "  exit 128\n"
+    else:
+        guard = (
+            f'  n=$(( $(cat "{counter}" 2>/dev/null || echo 0) + 1 ))\n'
+            f'  echo "$n" > "{counter}"\n'
+            f'  [[ "$n" == "{fail_on_call}" ]] && exit 128\n'
+        )
+    shim = shim_dir / "git"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "merge-base" && "$2" == "--is-ancestor" ]]; then\n'
+        f"{guard}"
+        f'  exec "{real_git}" "$@"\n'
+        "fi\n"
+        f'exec "{real_git}" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim_dir
 
 
 @pytest.fixture
@@ -81,7 +127,19 @@ def history(tmp_path):
     return repo, sha_a, sha_b, sha_c
 
 
-def _classify(repo: Path, local_sha: str, installed_sha: str) -> str:
+def _shim_env(shim_dir: Path | None) -> dict[str, str] | None:
+    """os.environ with the git-shim dir prepended to PATH, or None to
+    inherit the parent environment unchanged."""
+    if shim_dir is None:
+        return None
+    env = os.environ.copy()
+    env["PATH"] = f"{shim_dir}{os.pathsep}{env['PATH']}"
+    return env
+
+
+def _classify(
+    repo: Path, local_sha: str, installed_sha: str, *, git_shim: Path | None = None
+) -> str:
     script = (
         f'source "{LIB}"; '
         f'classify_deploy_direction "$1" "$2"'
@@ -89,6 +147,7 @@ def _classify(repo: Path, local_sha: str, installed_sha: str) -> str:
     proc = subprocess.run(
         ["bash", "-c", script, "bash", local_sha, installed_sha],
         capture_output=True, text=True, timeout=30, cwd=repo,
+        env=_shim_env(git_shim),
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.strip()
@@ -133,6 +192,35 @@ def test_unresolvable_installed_sha_is_unknown(history):
 def test_empty_installed_sha_is_unknown(history):
     repo, _a, b, _c = history
     assert _classify(repo, b, "") == "unknown_installed"
+
+
+def test_git_error_during_ancestry_is_unknown_not_diverged(history, tmp_path):
+    # The 2026-07-02 incident: `git merge-base --is-ancestor` errored
+    # transiently (exit 128, not a clean exit-1 "no"), and the bare-`if`
+    # form fell through to "diverged" even though installed was the direct
+    # PARENT of local (a plain "forward"). Both SHAs still resolve — only
+    # the ancestry probe fails — so a mislabel here is the exact bug. With
+    # the fix the error is reported as can't-compare, routing the caller to
+    # its fetch-and-retry path instead of a false split-history warning.
+    repo, a, b, _c = history
+    shim = _git_shim_dir(tmp_path)
+    # installed=a is b's parent → real answer is "forward"; the shimmed
+    # error must yield unknown_installed, never "forward" or "diverged".
+    assert _classify(repo, b, a, git_shim=shim) == "unknown_installed"
+
+
+def test_git_error_on_second_ancestry_probe_is_unknown(history, tmp_path):
+    # Covers the SECOND _is_ancestor error arm: the first ancestry probe
+    # returns a clean "no" (real git), the second errors. Without a
+    # per-call shim this branch is unreachable — the all-fail shim above
+    # short-circuits on the first probe. Inputs B and C are diverged
+    # siblings, so the healthy answer is "diverged"; a git error on the
+    # second probe must instead read as unknown_installed, never diverged.
+    repo, _a, b, c = history
+    shim = _git_shim_dir(tmp_path, fail_on_call=2)
+    # classify(local=b, installed=c): probe 1 _is_ancestor(c, b)=no (real),
+    # probe 2 _is_ancestor(b, c) errors → unknown_installed.
+    assert _classify(repo, b, c, git_shim=shim) == "unknown_installed"
 
 
 def _manifest_value(manifest: str, key: str) -> str:
@@ -217,7 +305,13 @@ def main_history(tmp_path):
     return repo, sha_a, sha_b, sha_c, sha_d
 
 
-def _classify_vs_main(repo: Path, installed_sha: str, main_ref: str = "origin/main") -> str:
+def _classify_vs_main(
+    repo: Path,
+    installed_sha: str,
+    main_ref: str = "origin/main",
+    *,
+    git_shim: Path | None = None,
+) -> str:
     script = (
         f'source "{LIB}"; '
         f'classify_installed_vs_main "$1" "$2"'
@@ -225,6 +319,7 @@ def _classify_vs_main(repo: Path, installed_sha: str, main_ref: str = "origin/ma
     proc = subprocess.run(
         ["bash", "-c", script, "bash", installed_sha, main_ref],
         capture_output=True, text=True, timeout=30, cwd=repo,
+        env=_shim_env(git_shim),
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.strip()
@@ -279,6 +374,17 @@ def test_unresolvable_main_ref_is_unknown(main_history):
     # No origin/main (offline / no remote / never fetched) → graceful skip.
     repo, _a, _b, c, _d = main_history
     assert _classify_vs_main(repo, c, "origin/does-not-exist") == "unknown"
+
+
+def test_git_error_during_ancestry_is_unknown_not_behind(main_history, tmp_path):
+    # Same transient-git-error class as the direction guard: a `git
+    # merge-base --is-ancestor` failure must not read as "behind" (a false
+    # "your Pi is stale, update it" advisory). installed=C is a descendant
+    # of origin/main → real answer is "current"; the shimmed error must
+    # yield "unknown" (skip the advisory), never "behind".
+    repo, _a, _b, c, _d = main_history
+    shim = _git_shim_dir(tmp_path)
+    assert _classify_vs_main(repo, c, git_shim=shim) == "unknown"
 
 
 def test_default_main_ref_is_origin_main(main_history):
