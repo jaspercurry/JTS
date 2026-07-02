@@ -232,9 +232,7 @@ export function toolList(catalog, { query = "", unavailable } = {}) {
   if (unavailable || (catalog && catalog.unavailable)) {
     return (
       '<div class="info-card tool-empty">' +
-      "<p>Tool catalog isn&rsquo;t ready yet &mdash; jasper-voice writes it " +
-      "at startup. If this persists, check the voice daemon on the " +
-      '<a href="/system/">System</a> page.</p>' +
+      '<p>Tool catalog isn&rsquo;t ready yet. Check <a href="/system/">System</a> if it persists.</p>' +
       "</div>"
     );
   }
@@ -298,7 +296,7 @@ function toolRow(tool) {
     '<button type="button" class="btn btn--ghost" data-action="cancel-prompt" data-tool="' +
     escapeHtml(tool.name) + '" hidden>Cancel</button>' +
     "</div>" +
-    '<p class="prompt-editor__warning">Advanced: edit at your own risk. Prompt overrides can change model behavior and weaken safety guidance.</p>' +
+    '<p class="prompt-editor__warning">Advanced: prompt overrides change model behavior and can weaken safety guidance.</p>' +
     '<pre class="prompt-view">' +
     escapeHtml(prompt) + "</pre>" +
     '<textarea class="prompt-edit" hidden>' + escapeHtml(prompt) + "</textarea>" +

@@ -466,7 +466,7 @@ def test_index_renders_active_radio_checked_for_active_provider():
     state = {"JASPER_VOICE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-x"}
     page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     # The openai radio is checked.
-    idx = page.index('value="openai"')
+    idx = page.index('name="active" value="openai"')
     nearby = page[idx - 200: idx + 200]
     assert "checked" in nearby
     # Title element is present so the page renders cleanly.
@@ -499,9 +499,9 @@ def test_index_masks_existing_key_in_card():
 
 
 def test_index_active_card_renders_controls_and_active_badge():
-    """On the canonical design every provider card is an always-open flat
-    .info-card (no collapse), so the active provider's controls are visible
-    without a click. The active provider's card carries the 'active' badge."""
+    """On the canonical design every provider key card is an always-open
+    flat .info-card (no collapse), so the paste field is visible without a
+    click. The active provider's key card carries the 'active' badge."""
     state = {"JASPER_VOICE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-x"}
     page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     # Find the openai card by its key input, then walk up to the card root.
@@ -512,29 +512,38 @@ def test_index_active_card_renders_controls_and_active_badge():
     # The active provider's badge sits in the card head.
     head_block = page[head: idx]
     assert "active</span>" in head_block
-    # The key input + model select are present (controls are visible).
+    # The key input is visible without opening a disclosure.
     assert 'name="openai_key"' in card
 
 
-def test_index_save_form_does_not_enclose_cards():
-    """HTML forbids nested forms. Each provider card includes a per-card
-    "Clear key" form, so the outer save form MUST close before the cards
-    begin. Regression test: in the live deploy, an earlier version of
-    this page nested the clear forms inside the save form, which made
-    every browser silently close the outer form when it parsed the
-    inner <form> — and the "Save and restart voice" button at the
-    bottom was no longer associated with anything, so pressing it did
-    literally nothing. Pin the structural invariant here."""
+def test_index_save_form_does_not_enclose_standalone_forms():
+    """HTML forbids nested forms. The page has standalone clear-key,
+    refresh-model, and pricing forms, so the outer save form MUST contain
+    only the active provider radios + CSRF. Regression test: an earlier
+    version nested clear forms inside the save form, browsers silently closed
+    the outer form, and Save no-op'd."""
     state = {"JASPER_VOICE_PROVIDER": "gemini", "GEMINI_API_KEY": "AIza-x"}
     page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     save_form_open = page.index('id="save-form"')
     save_form_close = page.index("</form>", save_form_open)
-    first_card = page.index('class="info-card provider-card"', save_form_close)
-    # The first card must come AFTER the save form has closed.
-    assert save_form_close < first_card, (
-        "outer save form must close before the cards begin "
-        "(otherwise the per-card clear-key forms nest inside it)"
-    )
+    save_form = page[save_form_open:save_form_close]
+    assert "clear-credentials" not in save_form
+    assert "refresh-models" not in save_form
+    assert "pricing" not in save_form
+    assert 'class="info-card provider-card"' not in save_form
+    assert 'class="info-card provider-model-card"' not in save_form
+
+
+def test_index_voice_sections_follow_first_time_setup_order():
+    """A fresh setup has to add a key before an unconfigured provider can be
+    selected, so the page order should match that prerequisite."""
+    page = voice_setup._index_html({}, "csrf-token-for-test-" + "x" * 32).decode()
+    keys = page.index("1. Enter API keys")
+    provider = page.index("2. Select provider")
+    model = page.index("3. Select model and voice")
+    assert keys < provider < model
+    assert "add a key first" in page
+    assert "paste below first" not in page
 
 
 def test_index_card_inputs_associate_with_save_form_via_attribute():
@@ -612,7 +621,7 @@ def test_index_unconfigured_card_shows_paste_field(monkeypatch):
     # Also neutralize the active-provider selection. CI sets
     # JASPER_VOICE_PROVIDER=gemini ambiently (.github/workflows/tests.yml),
     # which makes the gemini card render the "active" badge — that wins over
-    # the key state (_provider_card_html: is_active before configured), so
+    # the key state (_provider_key_card_html: is_active before configured), so
     # "not configured" never appears even though the card still shows its
     # paste field. This test asserts the inactive-AND-unconfigured rendering,
     # so clear it (passes-local-fails-CI otherwise).
@@ -1017,7 +1026,7 @@ def test_e2e_get_index_renders_state(tmp_path: Path, monkeypatch):
     try:
         body = urllib.request.urlopen(f"{base}/").read().decode()
         # Active radio reflects the saved state.
-        idx = body.index('value="openai"')
+        idx = body.index('name="active" value="openai"')
         nearby = body[idx: idx + 200]
         assert "checked" in nearby
         # Mask shows up (prefix + suffix) but raw key does NOT.
@@ -1171,7 +1180,7 @@ def test_research_prompt_includes_discovered_models():
 
 def test_index_renders_research_prompt_and_import_form():
     page = voice_setup._index_html({"JASPER_VOICE_PROVIDER": "openai"}, "tok").decode()
-    assert "Refresh all rates from a chatbot" in page
+    assert "Refresh pricing rates" in page
     assert 'action="pricing-import"' in page
     assert 'id="pricing-prompt"' in page
 

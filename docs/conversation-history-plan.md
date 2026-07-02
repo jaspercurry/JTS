@@ -158,8 +158,8 @@ Feature.
   CSRF headers from the shared static ES-module helpers.
 - `deploy/assets/chat/js/*.js`: a small ES-module graph (copy the
   `system-status/js/` shape), reading the CSRF token from the meta tag,
-  rendering rows with the shared `table()` primitive. **All DOM via text
-  nodes** — user/assistant text is untrusted; never `innerHTML`.
+  rendering paired conversation turn cards. **All DOM via text nodes** —
+  user/assistant text is untrusted; never `innerHTML`.
   Prompt 5 implements this renderer; the PR still needs an on-device browser
   pass for render + date-filter behavior.
 - New `deploy/jasper-chat-web.{socket,service}` (copy `jasper-system-web.*`),

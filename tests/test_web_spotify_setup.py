@@ -80,6 +80,9 @@ def test_setup_wizard_shows_disambiguation_note_as_info_card():
     out = spotify_setup._setup_wizard_html(CSRF).decode()
     assert "advanced-note" in out
     assert 'href="/sources/"' in out
+    assert "Spotify Connect already works from the Spotify app" in out
+    assert "Heads up" not in out
+    assert "wizard is for the <em>advanced</em> case" not in out
 
 
 def test_management_page_links_to_spotify_tool_pack():
@@ -96,6 +99,24 @@ def test_management_page_links_to_spotify_tool_pack():
     ).decode()
     assert 'href="/tools/pack/spotify/"' in out
     assert "Manage Spotify tool prompts" in out
+
+
+def test_management_page_keeps_spotify_copy_short_on_default_path():
+    registry = spotify_setup.Registry(
+        accounts=[spotify_setup.Account(name="jasper")],
+        default_name="jasper",
+    )
+    out = spotify_setup._management_html(
+        registry,
+        "https://example.test/cb?host=jts.local",
+        "0123456789abcdef0123456789abcdef",
+        "bounce",
+        CSRF,
+    ).decode()
+    assert "Linked accounts let JTS route voice playback" in out
+    assert "Open an account to change the default" in out
+    assert "cross-referencing the" not in out
+    assert "right-click &rarr; Share &rarr; Copy link" not in out
 
 
 def test_redirect_uri_page_renders_copy_row_without_inline_js():

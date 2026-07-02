@@ -251,12 +251,9 @@ def _restart_spotify_consumers() -> None:
 # treatment instead of carrying inline styles.
 _DISAMBIGUATION_BANNER = """
 <div class="info-card advanced-note">
-  <p><strong>Heads up:</strong> basic Spotify Connect (picking JTS from
-  your Spotify app's device picker) needs no setup &mdash; it's already on.
-  Turn it on or off on the <a href="/sources/">Sources page</a>. This
-  wizard is for the <em>advanced</em> case: voice cold-start
-  (&ldquo;Hey Jarvis, play Hamilton&rdquo;) and multi-account routing,
-  which need per-account OAuth.</p>
+  <p>Spotify Connect already works from the Spotify app. Link accounts
+  here for voice-start playback and household routing. Source on/off
+  lives on the <a href="/sources/">Sources page</a>.</p>
 </div>
 """
 
@@ -303,18 +300,16 @@ def _mode_picker_html(*, selected: str = "bounce") -> str:
     <input type="radio" name="mode" value="bounce"{bounce_checked}>
     <span class="mode-title">Bounce (recommended)</span>
     <span class="mode-sub">
-      Spotify redirects through a static page on GitHub Pages, which
-      bounces back to your speaker. Smoothest UX. The bounce page is
-      checked in next to this code, hosted free on GitHub.
+      Smoothest setup. Spotify signs in through a static GitHub Pages
+      redirect, then returns to this speaker.
     </span>
   </label>
   <label class="mode-option{manual_class}">
     <input type="radio" name="mode" value="manual"{manual_checked}>
     <span class="mode-title">Manual paste</span>
     <span class="mode-sub">
-      No external infrastructure at all. After you approve on Spotify,
-      your phone shows "cannot connect" &mdash; that's expected; you copy
-      the URL and paste it back into this page.
+      No external redirect page. After Spotify approval, copy the
+      browser URL and paste it back here.
     </span>
   </label>
 </div>
@@ -328,22 +323,15 @@ def _setup_wizard_html(
     a Spotify Developer App and pasting the credentials."""
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
     body = f"""
-<p class="form-hint">Connect this speaker to Spotify. Takes about two minutes.</p>
+<p class="form-hint">Add the Spotify app identity JTS uses for voice playback.</p>
 
 <h2>Step 1: Create a Spotify Developer App</h2>
-<p>If you don't already have one, create a new app on Spotify's developer
-   dashboard. Any name and description is fine &mdash; this is just an identity
-   for your speaker.</p>
 <p><a class="btn btn--default" href="https://developer.spotify.com/dashboard"
        target="_blank" rel="noopener">Open Spotify Developer Dashboard &#8599;</a></p>
-<p class="form-hint">After clicking <strong>Create app</strong>, you'll land
-   on the app's overview page. The Client ID is shown immediately. You
-   do <em>not</em> need the Client Secret &mdash; this speaker uses the PKCE
-   flow, which is designed for clients that can't keep secrets.</p>
+<p class="form-hint">Create an app, then copy its Client ID. The Client
+   Secret is not needed.</p>
 
 <h2>Step 2: Pick how Spotify should send you back here</h2>
-<p>Spotify requires HTTPS for redirect URIs, but this speaker only runs
-   plain HTTP on your home network. Pick one:</p>
 {_mode_picker_html(selected="bounce")}
 
 <form method="post" action="setup-credentials" id="creds-form">
@@ -717,29 +705,17 @@ def _claim_speaker_section_html() -> str:
     """
     return """
 <details class="info-card">
-  <summary><strong>Cold-start voice commands (one-time setup)</strong></summary>
+  <summary><strong>Voice-start playback setup</strong></summary>
   <div>
-    <p>Voice <code>"play X"</code> from silence (no AirPlay session)
-       needs the Pi's Spotify Connect (librespot) to be logged in to
-       a Spotify account. Linking an account above only sets up the
-       <em>Web API</em> client &mdash; librespot is a separate process and
-       needs its own one-time sign-in.</p>
-    <p>Two ways to do that:</p>
+    <p>For <code>"play X"</code> from silence, librespot also needs to
+       be claimed by one Spotify account.</p>
     <ol class="steps">
       <li>Open Spotify on any device on this Wi-Fi, tap the device
-          picker, and select <strong>JTS</strong> once. The credential
-          is then cached locally and survives restarts.</li>
-      <li>Run the OAuth claim script from your laptop &mdash; no phone needed:
-          <code>bash scripts/claim-librespot.sh</code>.
-          It SSH-tunnels librespot's OAuth callback port, opens Spotify
-          auth in your browser, and writes credentials to
-          <code>/var/cache/librespot</code>.</li>
+          picker, and select <strong>JTS</strong> once.</li>
+      <li>Or run <code>bash scripts/claim-librespot.sh</code> from your laptop.</li>
     </ol>
-    <p class="form-hint">librespot can only be logged in as one user at a
-       time. Whichever person last claimed it is the account voice
-       cold-starts will play through. Other household members can
-       still use Spotify Connect from their phone normally &mdash; that's
-       a separate code path that doesn't depend on this state.</p>
+    <p class="form-hint">Only one account can claim librespot at a time.
+       Phone-initiated Spotify Connect still works for everyone.</p>
   </div>
 </details>"""
 
@@ -765,10 +741,8 @@ def _management_html(
 
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
     body = f"""
-<p class="form-hint">Each household member links their own Spotify account once.
-   The speaker identifies the active listener by cross-referencing the
-   AirPlay-pushed track title with each account's currently-playing
-   Spotify track &mdash; no per-device setup needed.</p>
+<p class="form-hint">Linked accounts let JTS route voice playback and
+   account-specific Spotify requests.</p>
 
 <div class="info-card">
   <p class="form-hint"><strong>Voice tools.</strong> Manage Spotify tool prompts
@@ -776,11 +750,8 @@ def _management_html(
 </div>
 
 <h2>Accounts</h2>
-<p class="form-hint">Click an account to manage it. Custom playlists
-   let you reach Spotify-owned algorithmic playlists (Discover Weekly,
-   Daily Mix, Release Radar, Daylist) by voice &mdash; they're hidden from
-   Spotify's search API, so paste the share link from Spotify desktop's
-   right-click &rarr; Share &rarr; Copy link.</p>
+<p class="form-hint">Open an account to change the default, remove it,
+   or add hidden Spotify playlists by URL.</p>
 {''.join(cards)}
 
 {_add_account_form_html(csrf_token)}

@@ -9,7 +9,7 @@
 // nodes through dom.js.
 
 import { h } from "/assets/shared/js/dom.js";
-import { actionButton, badge, header, livePill, table, titledCard } from "./components.js";
+import { actionButton, badge, header, livePill, titledCard } from "./components.js";
 
 const NO_USER_TRANSCRIPT = "No user transcript captured for this turn.";
 const NO_ASSISTANT_TRANSCRIPT = "No transcript for this turn.";
@@ -214,33 +214,20 @@ function historyContent(snap, turns) {
   if (!turns.length) {
     return h("p.info-card__note", null, "No conversation turns match this filter.");
   }
-  return table({
-    columns: [
-      { key: "time", label: "Time" },
-      { key: "provider", label: "Provider" },
-      { key: "turn", label: "User -> Assistant" },
-    ],
-    rows: turns,
-    modifier: "chat",
-    renderCell: renderTurnCell,
-  });
+  return h("div.chat-turns", null, turns.map((turn) => turnCard(turn)));
 }
 
-function renderTurnCell(turn, col) {
+function turnCard(turn) {
   const metadata = parseDataJson(turn && turn.data_json);
-  if (col.key === "time") {
-    return h("time", { dateTime: textOrEmpty(turn.ts_utc) },
-      formatTimestamp(turn.ts_utc));
-  }
-  if (col.key === "provider") {
-    const parts = [h("span.chat-provider__name", null, providerLabel(turn.provider))];
-    if (isResearchMetadata(metadata)) parts.push(badge("Research", "warn"));
-    return h("div.chat-provider", null, parts);
-  }
-  return h("div.chat-pair-stack", null,
+  const provider = h("div.chat-provider", null,
+    h("span.chat-provider__name", null, providerLabel(turn.provider)),
+    isResearchMetadata(metadata) ? badge("Research", "warn") : null);
+  return h("article.chat-turn-card", null,
+    h("div.chat-turn-card__meta", null,
+      h("time", { dateTime: textOrEmpty(turn.ts_utc) }, formatTimestamp(turn.ts_utc)),
+      provider),
     h("div.chat-pair", null,
       transcriptBlock("User", turn.user_text, NO_USER_TRANSCRIPT),
-      h("div.chat-pair__connector", { "attr:aria-hidden": "true" }, "->"),
       transcriptBlock("Assistant", turn.assistant_text, NO_ASSISTANT_TRANSCRIPT),
     ),
     metadataNote(metadata),

@@ -182,6 +182,9 @@ def test_chat_static_modules_follow_frontend_contract() -> None:
     assert 'parsed.kind !== "voice_turn"' in views
     assert "Transcript text is not available for this provider." in views
     assert 'Tool" : "Tools"' in views
+    assert "chat-turns" in views
+    assert "article.chat-turn-card" in views
+    assert "User -> Assistant" not in views
     assert '"attr:aria-label": "Conversation capture"' in views
     assert "No transcript for this turn." in views
 

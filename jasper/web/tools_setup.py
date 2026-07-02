@@ -182,8 +182,7 @@ def _index_html(csrf_token: str = "") -> bytes:
     <div class="info-card tool-empty"><p>Loading the tool catalog&hellip;</p></div>
   </div>
   <div class="tools-apply" id="tools-apply" hidden>
-    <span class="tools-apply__note">Changes are staged. Applying restarts the
-      voice assistant briefly to pick them up.</span>
+    <span class="tools-apply__note">Staged changes restart the assistant once.</span>
     <button type="button" class="btn" id="tools-apply-btn">Apply changes</button>
   </div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>
@@ -225,8 +224,7 @@ def _detail_html(pack_id: str, csrf_token: str = "") -> bytes:
     <div class="info-card tool-empty"><p>Loading the tool pack&hellip;</p></div>
   </div>
   <div class="tools-apply" id="tools-apply" hidden>
-    <span class="tools-apply__note">Changes are staged. Applying restarts the
-      voice assistant briefly to pick them up.</span>
+    <span class="tools-apply__note">Staged changes restart the assistant once.</span>
     <button type="button" class="btn" id="tools-apply-btn">Apply changes</button>
   </div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>

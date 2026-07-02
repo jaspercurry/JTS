@@ -528,10 +528,10 @@ def test_index_html_discloses_wake_event_recordings():
     html = wake_setup._index_html({}).decode()
     assert "Wake recordings and privacy" in html
     assert "/var/lib/jasper/wake-events/" in html
-    assert "WAV audio" in html
-    assert "metadata rows are kept" in html
-    assert "does not leave the speaker automatically" in html
-    assert "Reset archives the" in html
+    assert "wake-event WAV windows" in html
+    assert "Nothing leaves the speaker automatically" in html
+    assert "scripts/reset-wake-events.sh" in html
+    assert "archives before resetting" in html
     assert "delete old archives manually" in html
 
 

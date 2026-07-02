@@ -312,9 +312,8 @@ def _advanced_fusion_html() -> str:
     <div class="disclosure-body">
   <div class="info-card">
     <p class="info-card__note">
-      Expert controls for corpus tests, nonstandard hardware, and DAC
-      validation. Changing a wake stream switches the input profile to
-      custom.
+      Expert controls for corpus tests, nonstandard hardware, and DAC validation.
+      Changes switch the input profile to custom.
     </p>
     <div class="fusion-summary" id="fusion-summary">checking…</div>
     {_profile_rows_html(_ADVANCED_PROFILES)}
@@ -474,19 +473,14 @@ def _privacy_disclosure_html() -> str:
   <summary>Wake recordings and privacy</summary>
   <div class="disclosure-body">
     <p>
-      JTS keeps a local wake-event corpus on this speaker: short WAV
-      windows around wake fires and near-misses plus SQLite metadata
-      under <code>/var/lib/jasper/wake-events/</code>. The WAV audio
-      is size-capped; metadata rows are kept for long-baseline wake
-      reliability stats.
+      JTS stores short wake-event WAV windows and SQLite metadata locally
+      under <code>/var/lib/jasper/wake-events/</code> for reliability review.
     </p>
     <p>
-      The corpus does not leave the speaker automatically. Operators
-      can inspect or export it with <code>jasper-wake-review</code>,
-      <code>scripts/fetch-wake-events.sh</code>, and
-      <code>scripts/reset-wake-events.sh</code>. Reset archives the
-      corpus before starting fresh; delete old archives manually when
-      you want erasure.
+      Nothing leaves the speaker automatically. Review or export with
+      <code>jasper-wake-review</code> and <code>scripts/fetch-wake-events.sh</code>.
+      <code>scripts/reset-wake-events.sh</code> archives before resetting;
+      delete old archives manually when you want erasure.
     </p>
   </div>
 </details>"""
@@ -524,11 +518,9 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
       <h2 class="section__title">Wake word</h2>
     </div>
     <p class="wake-help">
-      Pick which wake phrase the speaker listens for. Models marked
-      <em>not downloaded</em> failed their install-time fetch and can be
-      retried by re-running <code>bash scripts/deploy-to-pi.sh</code>.
-      Saving restarts the voice daemon; it's listening again in about
-      4 seconds.
+      Choose the wake phrase and sensitivity. Saving restarts voice; it listens
+      again in about 4 seconds. Re-run deploy to retry models marked
+      <em>not downloaded</em>.
     </p>
     {_sensitivity_html()}
 

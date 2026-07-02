@@ -81,7 +81,7 @@ function updateProviderRadioForKey(input) {
     radio.checked = false;
     row.classList.add("is-disabled");
     row.setAttribute("aria-disabled", "true");
-    if (status) status.textContent = "paste a key below first";
+    if (status) status.textContent = "add a key first";
   }
 }
 

@@ -242,7 +242,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
     if read_only:
         progress_button = ""
         intro = (
-            '<p class="form-hint">Reference copy of the 4-step setup. Credentials are already saved on this speaker — see <strong>Connection details</strong> above for which Cloud project the wizard pointed at. Use these steps to re-verify any decision, or to share the setup story with someone building their own JTS.</p>'
+            '<p class="form-hint">Saved for re-checking the original Google Cloud setup. Credentials are already saved on this speaker.</p>'
         )
         mark_done = ""
         redirect_widget = f'<p style="margin-top:0.3em"><code>{redirect_safe}</code></p>'
@@ -252,7 +252,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
         # module; this button just carries the data-action hook.
         progress_button = """<button type="button" class="btn btn--ghost wizard-progress-reset"
         data-action="reset-progress">Reset progress</button>"""
-        intro = '<p class="form-hint">Connect this speaker to Google Calendar + Gmail. Takes about 5 minutes the first time. Each step has a link to the right Google page — open them in new tabs and click <strong>I\'ve done this →</strong> when each is finished.</p>'
+        intro = '<p class="form-hint">Create one Google Cloud OAuth client, then paste its Client ID and Secret here. Each step links to the right Google page.</p>'
         mark_done = '<button class="btn btn--primary mark-done" type="button">I\'ve done this →</button>'
         # data-copy points the delegated copy handler at the input by id.
         redirect_widget = f"""<div class="copy-row" style="margin-top:0.3em">
@@ -319,7 +319,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
         <span class="step-status">~3 minutes</span>
       </summary>
       <div class="step-body">
-        <p>This is what each household member will see when they grant the speaker access. Google runs a single short setup wizard for fresh projects — you do it once.</p>
+        <p>This is the one-time consent screen setup each household member will see when linking Google.</p>
 
         <ol>
           <li>Open the <a href="https://console.cloud.google.com/auth/branding" target="_blank" rel="noopener">Google Auth Platform ↗</a>. You'll see a "Google Auth Platform not configured yet" placeholder — click <strong>GET STARTED</strong>.</li>
@@ -336,11 +336,11 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
         </ol>
 
         <div class="callout">
-          <strong>Publish the app — skips the 7-day refresh-token expiry.</strong>
-          Open the <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Audience tab ↗</a>. Under <strong>Publishing status</strong> (will say "Testing"), click <strong>PUBLISH APP</strong>. The "Push to production?" modal mentions submitting for verification — that doesn't apply under Google's <a href="https://support.google.com/cloud/answer/13464323" target="_blank" rel="noopener">personal-use exception ↗</a> (fewer than 100 users). Click <strong>CONFIRM</strong>. After publish, refresh tokens stop expiring; the FIRST time anyone signs in they'll see a "Google hasn't verified this app" warning — click <strong>Advanced → Go to JTS Speaker (unsafe)</strong> once per household member; afterwards it's invisible.
+          <strong>Publish the app to avoid 7-day token expiry.</strong>
+          Open the <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Audience tab ↗</a>, click <strong>PUBLISH APP</strong>, then confirm. Google's verification note does not apply to personal-use apps under 100 users. The first sign-in shows a one-time "Google hasn't verified this app" warning; choose <strong>Advanced → Go to JTS Speaker</strong>.
         </div>
 
-        <p class="form-hint"><strong>Don't visit the "Data Access" tab.</strong> Scopes are requested at consent regardless of what's there, and that tab is for submitting your app for verification — Google won't let you add Gmail-readonly without a written justification and demo video. Not what we want.</p>
+        <p class="form-hint"><strong>Skip the "Data Access" tab.</strong> It is for verification submissions, not this personal-use OAuth client.</p>
 
         {mark_done}
       </div>
@@ -390,7 +390,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
           <li>Click <strong>CREATE</strong> at the bottom of the form.</li>
           <li>The success modal shows your <strong>Client ID</strong> and <strong>Client Secret</strong>.
             <div class="callout">
-              <strong>The Client Secret is only shown once.</strong> Click <strong>DOWNLOAD JSON</strong> in the modal as a backup before you dismiss it — the Clients page will only show the last 4 characters of the secret afterwards, and you'd have to reset (which invalidates the old secret) if you lose it.
+              <strong>The Client Secret is only shown once.</strong> Click <strong>DOWNLOAD JSON</strong> as a backup before dismissing the modal.
             </div>
           </li>
           <li>Paste the Client ID and Client Secret below. Saving here finishes the setup; the page will move on to linking the first household member.</li>
@@ -496,8 +496,8 @@ def _connection_details_html(client_id: str) -> str:
       <li>Gmail — <strong>read-only</strong>; the speaker cannot send, modify, or delete email</li>
       <li>Profile + email — used once at link time to label the linked account</li>
     </ul>
-    <p class="form-hint">When you ask about mail or calendar, matching message or event content is sent to the household's configured voice AI provider so it can answer.</p>
-    <p class="form-hint">To revoke access from Google's side at any time, visit <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">myaccount.google.com/permissions</a> on each linked account and remove the app (its name is whatever you set on the Branding tab — "JTS Speaker" by default). Removing here only deletes the speaker's local refresh token; revoking at Google invalidates it everywhere.</p>
+    <p class="form-hint">Calendar/Gmail snippets are sent to the active voice provider only when you ask a matching question.</p>
+    <p class="form-hint">Revoke access from Google at <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">myaccount.google.com/permissions</a>. Removing an account here only deletes the speaker's local token.</p>
 
     <h3>OAuth client</h3>
     <p>Client ID: <code id="client-id-display">{masked}</code>
@@ -505,7 +505,7 @@ def _connection_details_html(client_id: str) -> str:
                data-action="reveal-client-id" data-full="{full_attr}"
                style="padding:0.2em 0.7em">Show full</button>
     </p>
-    <p>Client Secret: never displayed. To rotate it, regenerate in the Cloud Console (link below) and re-paste it via Reset credentials below.</p>
+    <p>Client Secret: hidden. Rotate it in Cloud Console, then reset credentials here.</p>
 
     <h3>Cloud Console — audit this project</h3>
     {project_links_html}
@@ -636,14 +636,11 @@ def _management_html(
     # when at least one account is already linked (state 3). State 2
     # uses _redirect_uri_page_html, which has its own intro framing.
     add_account_clarification = (
-        '<p class="form-hint" style="margin-top:1.6em"><strong>Adding another '
-        'household member?</strong> They just sign in with their own '
-        'Google account below — no Google Cloud setup to redo. The '
-        "speaker's OAuth client serves everyone (up to the 100-user "
-        'cap on this Cloud project).</p>'
+        '<p class="form-hint" style="margin-top:1.6em">Add another '
+        'household member below. No Google Cloud setup to redo.</p>'
     )
     body = f"""
-<p class="form-hint">Each household member links their Google account once. The voice loop reads Calendar + Gmail data per-account on demand — say "what's on Brittany's calendar" or "any new emails for Jasper" to disambiguate; bare requests use the default account.</p>
+<p class="form-hint">Linked Google accounts let JTS answer Calendar and Gmail questions on request. Bare requests use the default account.</p>
 
 <h2 class="section__title">Linked accounts</h2>
 <ul class="accounts">
@@ -656,7 +653,7 @@ def _management_html(
 {_connection_details_html(client_id)}
 
 <details class="disclosure">
-  <summary>View setup guide (re-read the original 4-step instructions)</summary>
+  <summary>Google Cloud setup guide</summary>
   <div class="disclosure-body">
     {_setup_wizard_body(redirect_uri, csrf_token, read_only=True)}
   </div>
