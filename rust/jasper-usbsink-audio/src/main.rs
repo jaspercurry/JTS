@@ -862,11 +862,7 @@ fn unique_state_tmp_path(path: &Path) -> PathBuf {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("state.json");
-    path.with_file_name(format!(
-        ".{file_name}.{}.{}.tmp",
-        std::process::id(),
-        seq
-    ))
+    path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), seq))
 }
 
 fn status_json(config: &Config, state: &SharedState, rms_dbfs: f64) -> String {
@@ -1210,9 +1206,7 @@ mod tests {
             None
         );
         assert_eq!(
-            parse_preempt_silenced(
-                "POST /preempt HTTP/1.1\r\n\r\n{\"note\":\"silenced true\"}"
-            ),
+            parse_preempt_silenced("POST /preempt HTTP/1.1\r\n\r\n{\"note\":\"silenced true\"}"),
             None
         );
     }
