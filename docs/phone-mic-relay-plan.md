@@ -270,6 +270,7 @@ capture_spec:
   output:
     format: "wav"             # mono 16-bit PCM WAV at sample_rate_hz
   max_upload_bytes: 33554432  # 32 MB cap; mirror the Pi backend limit
+  return_url: "http://jts5.local/correction/"  # Back to speaker after upload
 ```
 
 ### The page is agnostic; the Pi owns the intelligence
@@ -284,6 +285,10 @@ capture_spec:
 - **Pi:** owns all per-measurement logic (it already does, in
   `correction_setup.py` etc.). It builds the right spec and runs the right
   analysis.
+- **Return navigation:** the Pi mints `return_url` from the local request Host
+  and the measurement route (`/correction/`, `/correction/sync`, ...). The page
+  sanitizes it again and renders it only as a plain post-upload anchor, never as
+  executable code or a cross-origin fetch.
 
 ### Server-driven UI: the screen comes from the Pi — as DATA, not code
 

@@ -95,6 +95,7 @@ def open_capture(
     *,
     relay_base: str,
     capture_origin: str,
+    return_url: str = "",
     ttl_s: int = 900,
 ) -> RelayCapture:
     """Mint + register a relay capture for any `capture_spec`, kind-agnostic.
@@ -104,6 +105,8 @@ def open_capture(
     (room sweep, sync marker, crossover sweep, …) and calls this — so the adapter
     never grows a per-kind function.
     """
+    if return_url:
+        spec = spec.with_return_url(return_url)
     pi_session = mint_session(
         spec, relay_base=relay_base, capture_origin=capture_origin, ttl_s=ttl_s
     )
@@ -118,6 +121,7 @@ def open_room_sweep_capture(
     total_positions: int,
     relay_base: str,
     capture_origin: str,
+    return_url: str = "",
     ttl_s: int = 900,
 ) -> RelayCapture:
     """Mint + register a `room_sweep` relay capture for one measurement position.
@@ -127,7 +131,12 @@ def open_room_sweep_capture(
     """
     spec = build_room_sweep_spec(position=position, total_positions=total_positions)
     return open_capture(
-        client, spec, relay_base=relay_base, capture_origin=capture_origin, ttl_s=ttl_s
+        client,
+        spec,
+        relay_base=relay_base,
+        capture_origin=capture_origin,
+        return_url=return_url,
+        ttl_s=ttl_s,
     )
 
 

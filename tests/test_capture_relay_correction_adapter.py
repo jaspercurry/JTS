@@ -123,13 +123,16 @@ def test_open_room_sweep_capture_registers_and_links():
         total_positions=5,
         relay_base="https://relay.test",
         capture_origin="capture.test",
+        return_url="http://jts5.local/correction/",
     )
     # Registered with the relay, opaque room_sweep spec stored.
     stored = backend.sessions[rc.pi_session.session_id]
-    assert json.loads(stored["capture_spec"])["kind"] == "room_sweep"
+    capture_spec = json.loads(stored["capture_spec"])
+    assert capture_spec["kind"] == "room_sweep"
+    assert capture_spec["return_url"] == "http://jts5.local/correction/"
     # Tap-link carries the handle in the fragment; copy names the position.
     assert rc.tap_link.startswith("https://capture.test/#")
-    assert "position 2 of 5" in json.loads(stored["capture_spec"])["ui"]["screen"][0]["text"]
+    assert "position 2 of 5" in capture_spec["ui"]["screen"][0]["text"]
 
 
 def test_run_and_store_feeds_the_verified_wav(tmp_path):
@@ -237,9 +240,12 @@ def test_open_capture_is_kind_agnostic():
         build_sync_marker_spec(),
         relay_base="https://relay.test",
         capture_origin="capture.test",
+        return_url="http://jts5.local/correction/sync",
     )
     stored = backend.sessions[rc.pi_session.session_id]
-    assert json.loads(stored["capture_spec"])["kind"] == "sync_marker"
+    capture_spec = json.loads(stored["capture_spec"])
+    assert capture_spec["kind"] == "sync_marker"
+    assert capture_spec["return_url"] == "http://jts5.local/correction/sync"
     assert rc.tap_link.startswith("https://capture.test/#")
 
 

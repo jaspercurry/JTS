@@ -24,7 +24,9 @@ a closed component vocabulary mapped to fixed element tags, all text via
 actions that *select* a host-provided handler (never carry one). A hostile
 payload's worst case is wrong text on screen — never code execution. A strict
 CSP in [`index.html`](index.html) is a second layer. Pinned by
-`tests/js/capture_render_test.mjs`.
+`tests/js/capture_render_test.mjs`. The post-upload **Back to speaker** CTA is
+also data from the spec (`return_url`); [`js/return-url.js`](js/return-url.js)
+sanitizes it again before rendering a plain navigation link to the local Pi page.
 
 ## Modules
 
@@ -34,6 +36,7 @@ CSP in [`index.html`](index.html) is a second layer. Pinned by
 | `js/theme.js` | Theme token → fixed CSS value allowlist | (via render) |
 | `js/crypto.js` | AES-256-GCM encrypt + plaintext SHA-256 integrity | `capture_crypto_test.mjs` |
 | `js/relay-client.js` | Phone-side relay requests (upload_token) | `capture_relay_client_test.mjs` |
+| `js/return-url.js` | Sanitized local-Pi return URL for the done CTA | `capture_return_url_test.mjs` |
 | `js/fragment.js` | Parse `#s=&u=&k=` (key never leaves the fragment) | `capture_fragment_test.mjs` |
 | `js/config.js` | `RELAY_BASE` (one relay origin for the fleet) | — |
 | `js/main.js` | Browser orchestration: one tap → record + arm → encrypt → upload | on-device |

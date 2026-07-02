@@ -26,7 +26,10 @@
   (`jasper/capture_relay/correction_adapter.py`) are hardware-free tested; the
   room relay now guides mic choice, calibration choice, and position count on the
   phone, captures passive room noise before any playback, and records until the
-  Pi publishes `sweep_complete` through the relay. The live
+  Pi publishes `sweep_complete` through the relay. The Pi also includes a
+  local `return_url` in each relay spec, so once the phone upload finishes the
+  capture page shows a **Back to speaker** CTA to the originating local
+  management page (for example `http://jts5.local/correction/`). The live
   `getUserMedia`/CSP/Wake-Lock path + the adapter's background sweep playback
   still need on-device validation. Single source of truth for the design,
   deploy, and remaining work:

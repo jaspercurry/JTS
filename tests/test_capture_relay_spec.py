@@ -111,6 +111,17 @@ def test_to_dict_from_dict_round_trip_is_stable():
     assert again.to_dict() == s.to_dict()
 
 
+def test_return_url_round_trips_for_phone_done_cta():
+    s = build_room_sweep_spec().with_return_url("http://jts5.local/correction/")
+    payload = s.to_dict()
+
+    assert payload["return_url"] == "http://jts5.local/correction/"
+    assert (
+        CaptureSpec.from_dict(payload).return_url
+        == "http://jts5.local/correction/"
+    )
+
+
 def test_from_dict_validates_and_reconstructs_sub_records():
     payload = build_room_sweep_spec().to_dict()
     s = CaptureSpec.from_dict(payload)
@@ -216,6 +227,18 @@ def test_rejects_oversize_upload_cap():
             post_roll_ms=0,
             max_upload_bytes=1024 * 1024 * 1024,
         ).validate()
+
+
+def test_rejects_unsafe_return_url():
+    for url in (
+        "javascript:alert(1)",
+        "/correction/",
+        "http://user:pass@jts.local/correction/",
+        "http://jts.local/correction/#frag",
+        "http://bad\nhost/correction/",
+    ):
+        with pytest.raises(CaptureSpecError, match="return_url"):
+            build_room_sweep_spec().with_return_url(url)
 
 
 def test_rejects_unknown_stimulus_player():

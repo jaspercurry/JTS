@@ -17,6 +17,7 @@ import { renderScreen } from "./render.js";
 import { RelayClient } from "./relay-client.js";
 import { importContentKey, encryptWav } from "./crypto.js";
 import { constraintDecision, verifyRealizedConstraints } from "./constraints.js";
+import { safeReturnUrl } from "./return-url.js";
 import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
 import {
   createMonoRecorder,
@@ -88,8 +89,36 @@ function button(label, onClick, secondary = false) {
   );
 }
 
+function linkButton(label, href) {
+  return el("a", {
+    class: "cap-button",
+    href,
+    text: label,
+  });
+}
+
 function setScreen(screenEl, children) {
   screenEl.replaceChildren(...children);
+}
+
+function renderCaptureComplete(ctx) {
+  const returnUrl = safeReturnUrl(ctx.spec);
+  const children = [
+    el("h1", { class: "cap-heading", text: "Measurement uploaded" }),
+    el("p", {
+      class: "cap-note",
+      text: "Your speaker is analyzing the recording. Return to the local speaker page to continue.",
+    }),
+  ];
+  if (returnUrl) {
+    children.push(linkButton("Back to speaker", returnUrl));
+  } else {
+    children.push(el("p", {
+      class: "cap-note",
+      text: "You can now return to the speaker page on your local network.",
+    }));
+  }
+  setScreen(ctx.screenEl, children);
 }
 
 async function enumerateAudioInputs() {
@@ -480,6 +509,7 @@ async function onStart(ctx) {
     }
     await client.putBlob(blob, plaintextLen, sha256);
 
+    renderCaptureComplete(ctx);
     setStatus("Done — your speaker is analyzing the measurement.", "done");
   } catch (err) {
     if (recorder) {
@@ -527,7 +557,7 @@ async function boot() {
     return;
   }
 
-  const ctx = { spec, client, contentKeyB64: handle.contentKeyB64 };
+  const ctx = { spec, client, contentKeyB64: handle.contentKeyB64, screenEl };
   if (spec.kind === "room_sweep") {
     renderIntro(screenEl, ctx);
   } else {
