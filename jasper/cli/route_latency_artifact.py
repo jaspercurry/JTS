@@ -17,7 +17,6 @@ import csv
 import hashlib
 import json
 import math
-import socket
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -41,6 +40,7 @@ from jasper.audio_validation import (
     write_artifact,
     write_latest_pointer,
 )
+from jasper.route_latency.status_socket import read_status_socket
 
 
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
@@ -271,23 +271,6 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _read_status_socket(path: str) -> dict[str, Any]:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(1.0)
-        sock.connect(path)
-        sock.sendall(b"STATUS\n")
-        chunks: list[bytes] = []
-        while True:
-            chunk = sock.recv(65536)
-            if not chunk:
-                break
-            chunks.append(chunk)
-    parsed = json.loads(b"".join(chunks).decode("utf-8"))
-    if not isinstance(parsed, dict):
-        raise ValueError("STATUS response root is not an object")
-    return parsed
-
-
 def _route_live_state_issues_for_current_route() -> tuple[str, ...]:
     plan = build_audio_runtime_plan_from_system()
     issues: list[str] = []
@@ -302,7 +285,7 @@ def _route_live_state_issues_for_current_route() -> tuple[str, ...]:
     except (OSError, json.JSONDecodeError) as e:
         issues.append(f"live_usbsink_state_unreadable:{type(e).__name__}")
     try:
-        fanin_status = _read_status_socket(FANIN_STATUS_SOCKET)
+        fanin_status = read_status_socket(FANIN_STATUS_SOCKET)
     except (OSError, TimeoutError, json.JSONDecodeError, ValueError) as e:
         issues.append(f"live_fanin_status_unreadable:{type(e).__name__}")
     return tuple(

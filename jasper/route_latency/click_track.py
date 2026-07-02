@@ -229,29 +229,64 @@ def _click_samples(amplitude_dbfs: float) -> list[int]:
     return samples
 
 
+# Write the WAV one second at a time so peak memory stays bounded regardless
+# of track length. A materialized promotion track (~36 min stereo S16 at
+# 48 kHz) is ~415 MB — too large to build in one bytearray (plus its copy) on
+# the 1 GB Pi, which is also running the audio stack under test. Streaming
+# `writeframes` per chunk caps the buffer at one chunk (~192 KB).
+_RENDER_CHUNK_FRAMES = SAMPLE_RATE_HZ
+
+
 def render_wav(schedule: ClickSchedule, path: Path) -> Path:
-    """Render `schedule` to a 48 kHz stereo S16_LE WAV at `path`."""
+    """Render `schedule` to a 48 kHz stereo S16_LE WAV at `path`.
+
+    Streams the file in fixed-size frame chunks (see ``_RENDER_CHUNK_FRAMES``)
+    so peak memory is one chunk, not the whole track — important because the
+    promotion preset's full track is hundreds of MB and this can run on the
+    1 GB Pi.
+    """
 
     total_frames = round(schedule.duration_seconds * SAMPLE_RATE_HZ)
     click = _click_samples(schedule.amplitude_dbfs)
-    frames = bytearray(total_frames * CHANNELS * SAMPLE_WIDTH_BYTES)
+    click_len = len(click)
     frame_stride = CHANNELS * SAMPLE_WIDTH_BYTES
-    for onset in schedule.onsets_seconds:
-        start_frame = round(onset * SAMPLE_RATE_HZ)
-        for offset, sample in enumerate(click):
-            frame = start_frame + offset
-            if frame >= total_frames:
-                break
-            byte_off = frame * frame_stride
-            packed = struct.pack("<hh", sample, sample)
-            frames[byte_off : byte_off + frame_stride] = packed
+    start_frames = sorted(round(onset * SAMPLE_RATE_HZ) for onset in schedule.onsets_seconds)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as w:
         w.setnchannels(CHANNELS)
         w.setsampwidth(SAMPLE_WIDTH_BYTES)
         w.setframerate(SAMPLE_RATE_HZ)
-        w.writeframes(bytes(frames))
+
+        # Only clicks whose span [start, start+click_len) can still overlap the
+        # current chunk matter; advance a cursor over the sorted onsets so each
+        # click is considered once. A click that straddles a chunk boundary is
+        # written across both chunks by the per-frame overlap clamp below.
+        onset_cursor = 0
+        chunk_start = 0
+        while chunk_start < total_frames:
+            chunk_frames = min(_RENDER_CHUNK_FRAMES, total_frames - chunk_start)
+            chunk = bytearray(chunk_frames * frame_stride)
+            chunk_end = chunk_start + chunk_frames
+
+            # Skip onsets whose entire click ends before this chunk begins.
+            while onset_cursor < len(start_frames) and start_frames[onset_cursor] + click_len <= chunk_start:
+                onset_cursor += 1
+            # Paint every click that overlaps [chunk_start, chunk_end) without
+            # advancing the cursor past clicks that also reach the next chunk.
+            i = onset_cursor
+            while i < len(start_frames) and start_frames[i] < chunk_end:
+                start_frame = start_frames[i]
+                lo = max(chunk_start, start_frame)
+                hi = min(chunk_end, start_frame + click_len)
+                for frame in range(lo, hi):
+                    sample = click[frame - start_frame]
+                    byte_off = (frame - chunk_start) * frame_stride
+                    chunk[byte_off : byte_off + frame_stride] = struct.pack("<hh", sample, sample)
+                i += 1
+
+            w.writeframes(bytes(chunk))
+            chunk_start = chunk_end
     return path
 
 

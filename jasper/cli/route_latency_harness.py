@@ -34,15 +34,15 @@ Four steps, run separately or via `run`:
 Route-health honesty: this CLI NEVER asserts --route-health-ok on the
 operator's behalf. It prints the before/after counter deltas from the
 bridge/usbsink/fan-in/outputd status surfaces and states whether the
-declaration WOULD be justified; the operator (or an explicit
---assume-route-health-ok flag on `run`) makes the actual call.
+declaration WOULD be justified; the operator makes the actual call by passing
+--confirm-route-health-ok (alongside --invoke-artifact), which is only honored
+when the printed health diff would itself justify it.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import socket
 import subprocess
 import sys
 import time
@@ -74,6 +74,12 @@ from jasper.route_latency.pairing import (
     PairingResult,
     pair_events,
 )
+from jasper.route_latency.status_socket import (
+    FANIN_STATUS_SOCKET,
+    OUTPUTD_STATUS_SOCKET,
+    USBSINK_STATE_PATH,
+    read_status_socket_or_none,
+)
 from jasper.route_latency.tap_client import (
     DEFAULT_TAP_PATH,
     TapArmParams,
@@ -94,9 +100,8 @@ DEFAULT_DISTANCE_COMPENSATION_MS = 0.0
 # operator-supplied `--mic-distance-cm` flag.
 SOUND_MS_PER_CM = 100.0 / 34_300.0
 
-USBSINK_STATE_PATH = Path("/run/jasper-usbsink/state.json")
-FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
-OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
+# Control-socket / state paths come from the shared status_socket module (one
+# route-latency home for "where do I read route health"), imported above.
 
 MIN_MATCH_RATE_DEFAULT = 0.90
 
@@ -136,55 +141,41 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _read_status_socket(path: str, timeout: float = 1.0) -> dict[str, Any] | None:
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
-            sock.connect(path)
-            sock.sendall(b"STATUS\n")
-            chunks: list[bytes] = []
-            while True:
-                chunk = sock.recv(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-    except OSError as e:
-        log_event(
-            logger,
-            "route_latency_harness.health_snapshot_unavailable",
-            source=path,
-            error=str(e),
-            level=logging.DEBUG,
-        )
-        return None
-    try:
-        parsed = json.loads(b"".join(chunks).decode("utf-8"))
-    except json.JSONDecodeError as e:
-        log_event(
-            logger,
-            "route_latency_harness.health_snapshot_invalid",
-            source=path,
-            error=str(e),
-            level=logging.DEBUG,
-        )
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
 def snapshot_route_health() -> dict[str, Any]:
     """Best-effort snapshot of the bridge/usbsink/fan-in/outputd surfaces.
 
     Fails soft per-surface: an unreachable daemon records `null` for that
     key rather than raising, so a snapshot taken before a daemon is up (or
-    after it's gone) still captures whatever IS available.
+    after it's gone) still captures whatever IS available. The fan-in/outputd
+    `STATUS\n` sockets are read through the shared
+    `jasper.route_latency.status_socket` helper (one owner of that protocol);
+    the usbsink surface is a `state.json` FILE, read locally.
     """
 
     return {
         "captured_at_monotonic_ns": time.monotonic_ns(),
-        "usbsink": _read_json_file(USBSINK_STATE_PATH),
-        "fanin": _read_status_socket(FANIN_STATUS_SOCKET),
-        "outputd": _read_status_socket(OUTPUTD_STATUS_SOCKET),
+        "usbsink": _read_json_file(Path(USBSINK_STATE_PATH)),
+        "fanin": read_status_socket_or_none(
+            FANIN_STATUS_SOCKET, event="route_latency_harness.health_snapshot_unavailable"
+        ),
+        "outputd": read_status_socket_or_none(
+            OUTPUTD_STATUS_SOCKET, event="route_latency_harness.health_snapshot_unavailable"
+        ),
     }
+
+
+# Numeric leaf keys that are timestamps, not health counters: they always
+# change between two snapshots (that's their whole purpose) and a huge
+# meaningless delta on them buries the counters that matter. Excluded from the
+# printed/compared deltas by leaf-key name so the generic diff still catches
+# any genuinely new counter a daemon adds.
+_IGNORED_DELTA_LEAF_KEYS = frozenset(
+    {
+        "captured_at_monotonic_ns",  # this harness's own snapshot timestamp
+        "last_progress_epoch_ms",  # usbsink liveness heartbeat
+        "updated_at",  # usbsink state.json write time (string, but guard anyway)
+    }
+)
 
 
 def _numeric_deltas(before: Any, after: Any, *, prefix: tuple[str, ...] = ()) -> dict[str, float]:
@@ -196,6 +187,8 @@ def _numeric_deltas(before: Any, after: Any, *, prefix: tuple[str, ...] = ()) ->
     would silently stop reporting new counters. New/removed keys (a daemon
     added or removed a counter between snapshots) are skipped rather than
     treated as a numeric change — a schema change is not a health signal.
+    Timestamp leaves (see `_IGNORED_DELTA_LEAF_KEYS`) are excluded by name:
+    they always change and are noise in a health report.
     """
 
     deltas: dict[str, float] = {}
@@ -204,6 +197,8 @@ def _numeric_deltas(before: Any, after: Any, *, prefix: tuple[str, ...] = ()) ->
             if key not in before or key not in after:
                 continue
             deltas.update(_numeric_deltas(before[key], after[key], prefix=(*prefix, str(key))))
+        return deltas
+    if prefix and prefix[-1] in _IGNORED_DELTA_LEAF_KEYS:
         return deltas
     if isinstance(before, (int, float)) and not isinstance(before, bool) and isinstance(after, (int, float)) and not isinstance(after, bool):
         if after != before:
@@ -256,6 +251,23 @@ def diff_route_health(before: Mapping[str, Any], after: Mapping[str, Any]) -> Ro
 # --------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class MicCaptureResult:
+    """Outcome of a mic capture window.
+
+    `stopped_early` is True iff the mic source went quiet BEFORE the requested
+    duration elapsed (after delivering at least one chunk). `elapsed_seconds`
+    is how long the window actually ran, and `requested_seconds` what was
+    asked — the caller surfaces the gap loudly so a promotion capture that
+    died at minute 12 of 36 never looks like a quiet success.
+    """
+
+    detections: tuple[MicDetection, ...]
+    stopped_early: bool
+    elapsed_seconds: float
+    requested_seconds: float
+
+
 def capture_mic_detections(
     mic_spec: str,
     *,
@@ -263,9 +275,9 @@ def capture_mic_detections(
     threshold: float = DEFAULT_THRESHOLD,
     hysteresis: float = DEFAULT_HYSTERESIS,
     refractory_ms: float = DEFAULT_REFRACTORY_MS,
-) -> list[MicDetection]:
+) -> MicCaptureResult:
     """Read the mic source for `duration_seconds`, returning every detected
-    impulse re-anchored to its packet's arrival time.
+    impulse re-anchored to its packet's arrival time plus early-stop metadata.
 
     Per the pinned clock rule (see `jasper.route_latency.mic_readers`
     module docstring): each chunk's detector offset is converted to an
@@ -280,21 +292,25 @@ def capture_mic_detections(
     `MicSourceUnavailableError`'s docstring). A source that goes quiet
     AFTER already delivering at least one chunk (a scripted/finite reader
     reaching its end, or a real stream that stops mid-window) ends the
-    capture gracefully with whatever was collected so far, rather than
-    discarding a real partial measurement.
+    capture gracefully with whatever was collected so far, but records
+    `stopped_early=True` so the caller can report the truncation rather than
+    hide it.
     """
 
     reader = build_mic_reader(mic_spec)
     detections: list[MicDetection] = []
     detector: StreamingDetector | None = None
-    deadline = time.monotonic() + duration_seconds
+    started = time.monotonic()
+    deadline = started + duration_seconds
     received_any_chunk = False
+    stopped_early = False
     try:
         while time.monotonic() < deadline:
             try:
                 chunk = reader.read_chunk()
             except MicSourceUnavailableError:
                 if received_any_chunk:
+                    stopped_early = True
                     break
                 raise
             received_any_chunk = True
@@ -316,7 +332,12 @@ def capture_mic_detections(
                 detections.append(MicDetection(monotonic_ns=event_ns, peak=detection.peak))
     finally:
         reader.close()
-    return detections
+    return MicCaptureResult(
+        detections=tuple(detections),
+        stopped_early=stopped_early,
+        elapsed_seconds=time.monotonic() - started,
+        requested_seconds=duration_seconds,
+    )
 
 
 def _bytes_to_int16(data: bytes) -> list[int]:
@@ -365,19 +386,29 @@ def read_mic_detections_jsonl(path: Path) -> list[MicDetection]:
 
 
 def latency_ms_for_match(match, *, mic_distance_compensation_ms: float) -> float:  # type: ignore[no-untyped-def]
-    """(t_mic_detect - t_tap_detect) + ring_fill_frames/48.0 - distance_ms.
+    """(t_mic_detect - t_tap_detect) - mic_distance_compensation_ms.
 
-    `ring_fill_frames` is the Rust ring's fill depth (in FRAMES, not
-    periods — see the pinned JSONL schema) at the moment of tap detection:
-    it is dwell time the audio spent queued in the ring before this
-    measurement's ingress timestamp, so it is additive latency the tap
-    timestamp alone does not capture. Divided by 48.0 because the ring
-    runs at 48 kHz (48 frames/ms).
+    The whole route latency lives in the `t_mic - t_tap` subtraction: the
+    Rust tap timestamps each click at ingress (`run_audio_loop` runs the tap
+    over the just-read period BEFORE `stage_capture_period` pushes it into
+    the ring), and the click's entire physical journey — ring dwell,
+    fan-in, CamillaDSP, outputd, DAC, air, mic — then elapses in real time
+    between `t_tap` and `t_mic`. The ring dwell is therefore already inside
+    the subtraction; adding `ring_fill_frames / 48.0` on top would count it
+    twice (it inflated every sample by ~10.7 ms at the steady-state fill of
+    2 periods).
+
+    `match.tap.ring_fill_frames` is kept in the JSONL and available here as
+    diagnostic context — the pre-read backlog the click had to drain
+    through is genuinely useful when reading a run's per-impulse spread —
+    but it is NOT added to the latency, because the subtraction already
+    captures it. `mic_distance_compensation_ms` (CLI flag, default 0)
+    subtracts the fixed acoustic travel time speaker→mic that is not part
+    of the electrical route.
     """
 
     raw_ms = match.raw_delta_ns / 1_000_000.0
-    ring_dwell_ms = match.tap.ring_fill_frames / 48.0
-    return raw_ms + ring_dwell_ms - mic_distance_compensation_ms
+    return raw_ms - mic_distance_compensation_ms
 
 
 @dataclass(frozen=True)
@@ -421,7 +452,6 @@ def summarize_latencies(latencies_ms: tuple[float, ...]) -> dict[str, Any]:
     values = list(latencies_ms)
     return {
         "count": len(values),
-        "duration_covered_ms": (max(values) - min(values)) if values else 0.0,
         "p50_ms": _percentile(values, 0.50),
         "p95_ms": _percentile(values, 0.95),
         "p99_ms": _percentile(values, 0.99),
@@ -524,7 +554,7 @@ def _cmd_capture(args: argparse.Namespace) -> int:
         f"capturing mic for {schedule.duration_seconds:g}s."
     )
     try:
-        detections = capture_mic_detections(
+        capture = capture_mic_detections(
             args.mic,
             duration_seconds=schedule.duration_seconds,
             threshold=args.mic_threshold,
@@ -545,10 +575,33 @@ def _cmd_capture(args: argparse.Namespace) -> int:
     except TapClientError as e:
         print(f"warning: disarm failed: {e}", file=sys.stderr)
 
+    detections = list(capture.detections)
     mic_path = out_dir / "mic-detections.jsonl"
     write_mic_detections_jsonl(detections, mic_path)
     health_path = out_dir / "route-health-snapshot.json"
     health_path.write_text(json.dumps({"before": before, "after": after}, indent=2), encoding="utf-8")
+
+    if capture.stopped_early:
+        # Loud: a capture that died mid-window must never read as a quiet
+        # success. Downstream honesty gates (match-rate floor, artifact
+        # duration/percentile certification) still protect correctness, but
+        # the operator needs the when/why here — this is an evidence tool.
+        log_event(
+            logger,
+            "route_latency_harness.mic_source_stopped_early",
+            elapsed_seconds=round(capture.elapsed_seconds, 1),
+            requested_seconds=round(capture.requested_seconds, 1),
+            detections=len(detections),
+            level=logging.WARNING,
+        )
+        print(
+            f"WARNING: mic source went quiet at t={capture.elapsed_seconds:.1f}s "
+            f"of {capture.requested_seconds:.1f}s — the capture is TRUNCATED "
+            f"({len(detections)} detections). Was the AEC bridge restarted, or "
+            "the XVF3800 unplugged, mid-run? The samples file (if analyze emits "
+            "one) will cover only the captured window.",
+            file=sys.stderr,
+        )
 
     print(f"mic detections: {len(detections)} -> {mic_path}")
     print(f"route-health snapshot -> {health_path}")
@@ -624,9 +677,25 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     health_report: RouteHealthReport | None = None
     health_snapshot_path = Path(args.route_health_snapshot) if args.route_health_snapshot else None
     if health_snapshot_path and health_snapshot_path.exists():
-        raw = json.loads(health_snapshot_path.read_text(encoding="utf-8"))
-        health_report = diff_route_health(raw.get("before") or {}, raw.get("after") or {})
-        _print_health_report(health_report)
+        try:
+            raw = json.loads(health_snapshot_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            raw = None
+            print(
+                f"warning: could not read route-health snapshot "
+                f"{health_snapshot_path} ({e}); skipping the health report. "
+                "The samples file is unaffected.",
+                file=sys.stderr,
+            )
+        if isinstance(raw, dict):
+            health_report = diff_route_health(raw.get("before") or {}, raw.get("after") or {})
+            _print_health_report(health_report)
+        elif raw is not None:
+            print(
+                f"warning: route-health snapshot {health_snapshot_path} is not "
+                "a JSON object; skipping the health report.",
+                file=sys.stderr,
+            )
 
     out_dir = Path(args.out_dir)
     samples_path = write_samples_json(result.latencies_ms, out_dir / "latency-samples.json")
@@ -664,6 +733,32 @@ def _print_health_report(report: RouteHealthReport) -> None:
     )
 
 
+ARTIFACT_CLI_NAME = "jasper-route-latency-artifact"
+
+
+def _resolve_artifact_cli() -> str:
+    """Resolve the sibling `jasper-route-latency-artifact` executable.
+
+    Under the documented invocation (`sudo /opt/jasper/.venv/bin/
+    jasper-route-latency-harness ...`), the venv's `bin/` is NOT on sudo's
+    PATH/`secure_path`, so a bare `subprocess.run(["jasper-route-latency-
+    artifact"])` dies with `FileNotFoundError`. The artifact CLI is a console
+    entry point installed right next to this one, so we look in the same
+    directory as `sys.executable` (the venv's python → its `bin/`) first, then
+    the dir this script was launched from, and only then fall back to PATH.
+    Returns a name/path suitable for `subprocess.run`; the bare name is the
+    last resort (kept so a PATH-based dev invocation still works).
+    """
+
+    import shutil
+
+    for base in (Path(sys.executable).parent, Path(sys.argv[0]).resolve().parent):
+        candidate = base / ARTIFACT_CLI_NAME
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which(ARTIFACT_CLI_NAME) or ARTIFACT_CLI_NAME
+
+
 def _invoke_artifact(
     samples_path: Path,
     *,
@@ -674,7 +769,7 @@ def _invoke_artifact(
     require_pass: bool,
 ) -> int:
     cmd = [
-        "jasper-route-latency-artifact",
+        _resolve_artifact_cli(),
         "--samples",
         str(samples_path),
         "--duration-seconds",
@@ -691,7 +786,19 @@ def _invoke_artifact(
     if require_pass:
         cmd.append("--require-pass")
     print(f"invoking: {' '.join(cmd)}")
-    result = subprocess.run(cmd)
+    try:
+        result = subprocess.run(cmd)
+    except FileNotFoundError:
+        print(
+            f"error: could not find {ARTIFACT_CLI_NAME} next to this CLI, on "
+            "PATH, or as a bare command. The samples file is already written "
+            f"({samples_path}); run it by hand, e.g.\n"
+            f"  sudo /opt/jasper/.venv/bin/{ARTIFACT_CLI_NAME} "
+            f"--samples {samples_path} --duration-seconds {duration_seconds:g} "
+            f"--harness-id {HARNESS_ID}",
+            file=sys.stderr,
+        )
+        return 1
     return result.returncode
 
 
@@ -818,8 +925,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = [
+    "ARTIFACT_CLI_NAME",
     "HARNESS_ID",
     "AnalyzeResult",
+    "MicCaptureResult",
     "RouteHealthReport",
     "analyze_matches",
     "capture_mic_detections",

@@ -156,6 +156,8 @@ def pair_events(
         mic_claim_counts[mic_i] = mic_claim_counts.get(mic_i, 0) + 1
 
     matched: list[MatchedImpulse] = []
+    matched_tap_idx: set[int] = set()
+    matched_mic_idx: set[int] = set()
     ambiguous_tap_idx: set[int] = set()
     ambiguous_mic_idx: set[int] = set()
     for tap_i, eligible in candidates.items():
@@ -172,10 +174,13 @@ def pair_events(
             # implies "no tap detection is plausibly related to this").
             ambiguous_mic_idx.update(eligible)
             continue
+        # Carry the indices the loop already has rather than re-deriving them
+        # with taps.index()/mics.index() afterward — that would be O(n^2) and
+        # would alias two detections that happen to share a timestamp/peak.
         matched.append(MatchedImpulse(tap=taps[tap_i], mic=mics[mic_i]))
+        matched_tap_idx.add(tap_i)
+        matched_mic_idx.add(mic_i)
 
-    matched_tap_idx = {taps.index(m.tap) for m in matched}
-    matched_mic_idx = {mics.index(m.mic) for m in matched}
     unmatched_tap = [
         taps[i]
         for i in range(len(taps))
