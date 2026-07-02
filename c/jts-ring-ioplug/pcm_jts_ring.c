@@ -17,31 +17,39 @@
 //
 // ---- The eight questions ----
 //
-// 1. What breaks if the reader (outputd) dies? Two cooperating mechanisms keep
+// 1. What breaks if the reader (outputd) dies? Three cooperating mechanisms keep
 //    the writer (Camilla, or aplay's resolvability probe) from wedging on a
-//    readerless ring — one at the ALSA `avail` gate, one at the data path:
-//    (a) DUAL-MODE avail (jts_ring_pointer, Q7): `avail` is computed ONLY in the
-//        `pointer` callback, and ALSA grants `transfer` (the only publish caller)
-//        at most `avail` frames. With period==128/periods==n_slots the ALSA
-//        buffer == ring depth exactly, so an HONEST in_flight (occupancy*period)
-//        pins `avail` at 0 the instant a readerless ring fills — and then
-//        `transfer` stops, so publish's own drop path can never run. `pointer`
-//        therefore gates in_flight on reader liveness: reader dead -> in_flight
-//        discounts published-but-unread slots to 0 (counts only staged frames),
-//        so `avail` stays ~full and `transfer` keeps flowing. Reader live ->
-//        honest occupancy-derived in_flight (the whole point of Q7's honest
-//        pointer), so a real pacer's delay/rate-controller sees the truth.
-//    (b) Given (a) keeps transfer flowing, the writer's space check (in
-//        jts_ring_writer_publish) then FREE-RUNS by dropping the OLDEST slot
+//    readerless ring — two at the ALSA `avail` gate, one at the data path:
+//    (a) DUAL-MODE avail (jts_ring_pointer_report, Q7): `avail` is computed ONLY
+//        from the `pointer` callback, and ALSA grants `transfer` (the only
+//        publish caller) at most `avail` frames. With period==128/
+//        periods==n_slots the ALSA buffer == ring depth exactly, so an HONEST
+//        in_flight (occupancy*period) pins `avail` at 0 the instant a readerless
+//        ring fills — and then `transfer` stops, so publish's own drop path can
+//        never run. The pointer core therefore gates in_flight on reader
+//        liveness: reader dead -> in_flight discounts published-but-unread slots
+//        to 0 (counts only staged frames), so `avail` stays ~full and `transfer`
+//        keeps flowing. Reader live -> honest occupancy-derived in_flight (Q7's
+//        honest pointer), so a real pacer's delay/rate-controller sees the truth.
+//    (b) REPORTED-POSITION clamp (jts_ring_pointer_report, Q7): even with (a),
+//        ALSA infers hw motion as delta = (this - last) mod buffer_size, so a
+//        raw pointer advance of EXACTLY buffer_size in one step aliases to a zero
+//        delta and `avail` sticks at 0 permanently (the round-3 review's deeper
+//        wedge). The core clamps each reported advance to < buffer_size so a
+//        full-lap catch-up is spread over several ticks and every step is a
+//        visible sub-buffer delta. (a) and (b) together keep the gate open on
+//        EVERY readerless shape (steady fill, mid-play reader death, reattach).
+//    (c) Given (a)+(b) keep transfer flowing, the writer's space check (in
+//        jts_ring_writer_publish) FREE-RUNS by dropping the OLDEST slot
 //        (advancing read_seq on the absent reader's behalf,
 //        writer_drop_no_reader++) so occupancy stays bounded and each publish has
-//        a free slot to memcpy into. (a) opens the gate; (b) does the ring
-//        bookkeeping. Neither alone is sufficient — (b) landed first but was
-//        unreachable behind (a)'s gate; (a) is this round's B1 fix.
+//        a free slot to memcpy into. (a)+(b) open the gate; (c) does the ring
+//        bookkeeping. None alone is sufficient — (c) landed first but was
+//        unreachable behind (a)'s gate, and (a) alone still wedged on (b)'s alias.
 //    This is what keeps Camilla healthy when outputd's flag is off and what makes
 //    the `aplay -D jts_ring_playback ... /dev/zero` resolvability probe
-//    terminate. On reader-reattach the dead->live in_flight switch is monotonic-
-//    clamped (jts_ring_pointer) so hw_ptr never steps backward.
+//    terminate. The reported-position clamp (b) also keeps hw_ptr non-decreasing,
+//    so reader reattach never steps it backward.
 // 2. What breaks if the writer (this plugin) dies? write_seq stops advancing;
 //    the reader sees the ring empty and emits silence. On close we clear
 //    writer_pid so the reader reports writer_alive:false.
@@ -67,11 +75,15 @@
 //    position (hw_ptr = appl_frames - in_flight), derived from the same read_seq
 //    the reader releases, so ALSA's avail/delay reflect real drain progress —
 //    NOT frames merely accepted (which read as "instantly played", starved
-//    camilla's rate controller, and tripped its stall detector). While the
-//    reader is heartbeat-dead the pointer switches to DUAL-MODE (in_flight =
-//    staged frames only) so `avail` free-runs instead of sticking at 0 (Q1a);
-//    honest occupancy accounting resumes the instant a reader is live again,
-//    monotonic-clamped across the transition.
+//    camilla's rate controller, and tripped its stall detector). The reported
+//    position is computed by ONE shared function, jts_ring_pointer_report
+//    (jts_ring_shm.h), which owns: (i) the DUAL-MODE in_flight so `avail`
+//    free-runs instead of sticking at 0 while the reader is heartbeat-dead
+//    (Q1a); (ii) the round-4 clamp bounding each reported advance to <
+//    buffer_size so ALSA's mod-buffer hw_ptr inference never aliases a full-lap
+//    jump to a zero delta (Q1b) — the same clamp keeps hw_ptr non-decreasing.
+//    The host test compiles against that shared function, so a regression in it
+//    fails `make test` rather than only showing up on hardware.
 // 8. Productization delta: the timerfd poll (period/4) becomes a FUTEX_WAIT on
 //    the reserved header futex_word; the lab drop-in becomes a reconciler-owned
 //    device. No SHM header change. The reconciler must size n_slots from the
@@ -119,16 +131,14 @@ typedef struct {
     // in-flight count, so ALSA's avail/delay reflect the reader's real progress
     // rather than "everything accepted is already played" (see jts_ring_pointer).
     snd_pcm_uframes_t appl_frames;
-    // Last raw (pre-modulo) hw_ptr reported by jts_ring_pointer. The dual-mode
-    // avail contract switches in_flight between "honest occupancy" (reader live)
-    // and "stage only" (reader dead); at the dead->live transition the reader's
-    // attach-resync collapses occupancy to 0 (hw_ptr == appl-stage) but the very
-    // next slot the reader has not yet consumed re-grows occupancy, which would
-    // step the honest hw_ptr BACKWARD by one period. ALSA requires hw_ptr
-    // monotonic; we clamp against this stored value so a live reader falling one
-    // slot behind never makes the pointer regress (it just pauses until real
-    // drain catches up). Reset to 0 on (re)prepare with appl_frames.
-    snd_pcm_uframes_t last_hw_ptr;
+    // Reported-position state for jts_ring_pointer, carried across calls. The
+    // shared core (jts_ring_pointer_report in jts_ring_shm.h) owns the whole
+    // discipline: dual-mode in_flight (reader live/dead), a non-decreasing
+    // reported floor, AND the round-4 clamp that keeps any single reported
+    // advance below buffer_size so ALSA's mod-buffer hw_ptr inference never
+    // aliases a full-lap jump to a zero delta. Reset to 0 on (re)prepare
+    // alongside appl_frames. See the header for the full rationale.
+    jts_ring_pointer_state_t ptr_state;
     int timer_fd;
 } jts_ring_pcm_t;
 
@@ -187,7 +197,7 @@ static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
     // Reset the staging + pointer on (re)prepare.
     p->stage_frames = 0;
     p->appl_frames = 0;
-    p->last_hw_ptr = 0;
+    p->ptr_state.last_reported = 0;
     return 0;
 }
 
@@ -219,77 +229,54 @@ static snd_pcm_sframes_t jts_ring_pointer(snd_pcm_ioplug_t *io) {
     // genuinely-full ring (poll withholds POLLOUT) as a stall -> the
     // "device stalled"/"resumed"/"Prepare after underrun" flapping.
     //
-    // Honest hw_ptr = appl_frames - in_flight, where in_flight = the frames
-    // published-but-unread (occupancy_slots * period_frames) plus frames staged
-    // but not yet published. That equals what `delay` already reports; deriving
-    // both from the reader's read_seq keeps avail/delay mutually consistent.
-    //
-    // DUAL-MODE avail — the B1 fix. `pointer` is the ONE place ALSA's `avail`
-    // gate is computed, and `transfer` (the only caller of publish during
-    // playback) is granted at most `avail` frames. With the honest in_flight and
-    // period==128/periods==n_slots (so buffer_size == ring depth exactly), a
-    // readerless ring reaches occupancy==n_slots, avail pins at 0, transfer stops
-    // calling publish, and publish's free-run drop-oldest branch becomes
-    // structurally unreachable — the writer (aplay's arm.sh step-3 probe, or
-    // CamillaDSP with outputd down) wedges forever waiting for a hw_ptr that
-    // cannot move. The reviewer reproduced exactly this on jts.local.
-    //
-    // So we gate in_flight on reader liveness, UPSTREAM of the avail gate:
-    //   - reader LIVE  -> honest in_flight (occupancy*period + stage). avail
-    //     tracks real drain; the honest-delay contract above holds exactly when
-    //     it matters (a live pacer whose rate controller reads current_delay).
-    //   - reader DEAD  -> in_flight = stage_frames only. Published-but-unread
-    //     slots are treated as already drained (no reader will ever consume
-    //     them), so avail == buffer - stage (essentially full). transfer keeps
-    //     flowing -> keeps calling publish -> publish's drop-oldest free-run
-    //     branch reclaims a slot per lap and the ring stays bounded. The two
-    //     halves compose: this opens the gate; the already-landed publish reclaim
-    //     does the data-path bookkeeping. avail never sticks at 0 -> no wedge.
+    // The three-part discipline that computes the reported hw_ptr lives in ONE
+    // shared function, jts_ring_pointer_report (jts_ring_shm.h), so the host
+    // test drives the exact same logic (a plugin regression fails `make test`):
+    //   - HONEST hw_ptr = appl_frames - in_flight, in_flight = occupancy*period
+    //     + stage. Deriving avail/delay from the reader's read_seq keeps them
+    //     mutually consistent and reflects the reader's real drain.
+    //   - DUAL-MODE avail (the round-3 B1 fix). `pointer` is the ONE place
+    //     ALSA's `avail` gate is computed, and `transfer` (publish's only
+    //     playback caller) is granted at most `avail` frames. With period==128/
+    //     periods==n_slots (buffer_size == ring depth exactly), an HONEST
+    //     in_flight pins avail at 0 the instant a readerless ring fills, so
+    //     transfer stops and publish's free-run drop is unreachable. So while
+    //     the reader is heartbeat-dead the core discounts published-but-unread
+    //     slots to 0 in-flight -> avail stays ~full -> transfer keeps calling
+    //     publish -> publish's drop-oldest reclaim bounds the ring.
+    //   - REPORTED-POSITION clamp (the round-4 fix). ALSA infers hw motion as
+    //     delta = (this_return - last_return) mod buffer_size. A raw advance of
+    //     exactly buffer_size between two reads aliases to a ZERO delta, ALSA's
+    //     hw_ptr falls a lap behind, avail pins at 0 PERMANENTLY, and the writer
+    //     wedges — the same B1 symptom, one layer down. This bit three shapes on
+    //     jts.local: (a) a live reader draining a full ring during an app gap >=
+    //     one buffer duration; (b) the dead-mode discount flip at occ==n_slots
+    //     when the reader dies mid-play; (c) the dead->live recovery. The core
+    //     clamps each reported advance to <= buffer_size - period so a full-lap
+    //     catch-up completes over several ticks as visible sub-buffer deltas,
+    //     never one aliased-to-zero lap. The same clamp is the non-decreasing
+    //     floor (it only moves the reported position forward), so it subsumes
+    //     round-3's separate monotonic clamp — one unified reported-position
+    //     state.
+    // Before the writer is attached there is no mmap to read occupancy/liveness
+    // from, so both stay 0 (the core then sees in_flight = stage = 0 and hw_ptr
+    // tracks appl — fine for the open/prepare handshake).
     int reader_live = p->opened ? jts_ring_writer_reader_is_live(&p->writer) : 0;
-    uint64_t in_flight;
-    if (!p->opened) {
-        in_flight = 0;
-    } else if (reader_live) {
-        in_flight = jts_ring_writer_occupancy_slots(&p->writer) * (uint64_t)p->period_frames +
-                    (uint64_t)p->stage_frames;
-    } else {
-        // Reader absent: discount published-but-unread slots to 0 in-flight.
-        in_flight = (uint64_t)p->stage_frames;
-    }
-    // appl_frames is monotonic and always >= in_flight (the reader cannot drain
-    // more than was accepted), but clamp defensively against a transient race
-    // where occupancy is sampled a hair before appl_frames is updated.
-    snd_pcm_uframes_t hw_ptr =
-        (p->appl_frames >= in_flight) ? (p->appl_frames - (snd_pcm_uframes_t)in_flight)
-                                      : 0;
-    // Monotonic clamp for the DEAD->LIVE transition edge. While the reader was
-    // dead, hw_ptr ran near appl_frames (discounted in_flight). When a reader
-    // attaches it resyncs read_seq = write_seq, so occupancy collapses to 0 and
-    // the honest hw_ptr momentarily equals appl_frames - stage — CONVERGENT, no
-    // jump. But on the very next tick, before the reader has consumed the newest
-    // published slot, occupancy re-grows to 1 and the honest hw_ptr would step
-    // BACKWARD by one period. ALSA requires a non-decreasing hw_ptr, so we clamp:
-    // the pointer holds at last_hw_ptr until real drain catches back up. Effect:
-    // at reader-appears, hw_ptr freezes for a few periods (avail shrinks as the
-    // reader builds its steady-state occupancy) then resumes honest tracking.
-    // This is the one transition where honest and discounted accounting differ;
-    // clamping keeps the ALSA invariant without a backward jump.
-    if (hw_ptr < p->last_hw_ptr) {
-        hw_ptr = p->last_hw_ptr;
-    } else {
-        p->last_hw_ptr = hw_ptr;
-    }
-    // ALSA wants the position modulo the buffer. NIT (for the futex
-    // productization): if the app is absent while EXACTLY buffer_size frames
-    // drain, two successive `pointer` reads see the same value mod buffer_size —
-    // a whole lap looks like zero delta, so avail momentarily reads 0 until the
-    // next real advance (or camilla's stall recovery) unsticks it. This is
-    // self-limiting (one lap, and only under a precisely-full-buffer drain with
-    // no polling app) and harmless in the timerfd-poll prototype, which re-polls
-    // sub-period. A futex-based productization that wakes exactly on read_seq
-    // advance should report an absolute (non-wrapped) hw_ptr, or wake often
-    // enough that a full lap cannot pass between reads.
-    return (snd_pcm_sframes_t)(hw_ptr % io->buffer_size);
+    uint64_t occupancy =
+        p->opened ? jts_ring_writer_occupancy_slots(&p->writer) : 0;
+    jts_ring_pointer_inputs_t in = {
+        .appl_frames = (uint64_t)p->appl_frames,
+        .occupancy_slots = occupancy,
+        .stage_frames = (uint64_t)p->stage_frames,
+        .period_frames = p->period_frames,
+        .buffer_size = (uint64_t)io->buffer_size,
+        .reader_live = reader_live,
+    };
+    uint64_t reported = jts_ring_pointer_report(&p->ptr_state, &in);
+    // ALSA wants the position modulo the buffer. The clamp above guarantees the
+    // reported value never advanced >= buffer_size since the last call, so the
+    // mod projection here can never alias a full lap to a zero/backward delta.
+    return (snd_pcm_sframes_t)(reported % io->buffer_size);
 }
 
 static snd_pcm_sframes_t jts_ring_transfer(snd_pcm_ioplug_t *io,
@@ -330,6 +317,18 @@ static snd_pcm_sframes_t jts_ring_transfer(snd_pcm_ioplug_t *io,
 static int jts_ring_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp) {
     jts_ring_pcm_t *p = io->private_data;
     // In-flight = published-but-unread slots * period_frames + staged frames.
+    // This is intentionally the HONEST occupancy-derived delay, NOT the
+    // dual-mode value the `pointer`/avail path uses while the reader is dead.
+    // Rationale (round-3 review nit #3): `.delay` is only consulted by a LIVE
+    // pacer's rate controller (CamillaDSP), and a live reader IS the honest
+    // case — so the two agree exactly when `.delay` is actually read. On a
+    // readerless ring there is no rate controller polling delay; what governs
+    // writer progress there is the `avail` GATE (which jts_ring_pointer_report's
+    // dual-mode + clamp keep open), not this delay value. Reporting honest
+    // occupancy here therefore never gates a readerless writer, and mirroring
+    // the pointer's dead-mode discount would only add a code path with no
+    // consumer. If a future consumer reads `.delay` on a readerless ring, revisit
+    // (discount it the same way jts_ring_pointer_report does).
     uint64_t slots = p->opened ? jts_ring_writer_occupancy_slots(&p->writer) : 0;
     snd_pcm_sframes_t delay =
         (snd_pcm_sframes_t)(slots * p->period_frames + p->stage_frames);

@@ -176,18 +176,24 @@ int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
 // lap (return JTS_RING_PUBLISH_DROPPED). This keeps occupancy bounded so Camilla
 // never wedges when outputd's flag is off. Always updates writer_heartbeat_ns.
 //
-// AVAIL-GATE INTERACTION (the B1 contract — read with pcm_jts_ring.c Q1/Q7).
-// This free-run branch is the DATA-PATH half of readerless survival, but it is
-// only REACHABLE when the ioplug keeps calling publish. ALSA's `transfer`
-// (publish's caller during playback) is gated on `avail`, which pcm_jts_ring.c's
-// `pointer` callback computes. With the honest pointer (in_flight =
-// occupancy*period) a readerless full ring pins avail at 0 and transfer stops —
-// this branch never runs. So `pointer` runs a DUAL-MODE contract: while the
-// reader is heartbeat-dead it discounts published-but-unread slots to 0 in-flight
-// (avail free-runs) so transfer keeps calling publish and this branch keeps the
-// ring bounded. Do not "optimize" this into a bare drop-newest: advancing
-// read_seq (not just discarding) is what makes occupancy bounded, which the
-// dual-mode pointer and the honest live-reader delay both depend on.
+// AVAIL-GATE INTERACTION (the B1 contract — read with pcm_jts_ring.c Q1/Q7 and
+// jts_ring_pointer_report below). This free-run branch is the DATA-PATH half of
+// readerless survival, but it is only REACHABLE when the ioplug keeps calling
+// publish. ALSA's `transfer` (publish's caller during playback) is gated on
+// `avail`, which the ioplug's `pointer` callback computes via
+// jts_ring_pointer_report. That function keeps the gate open in TWO ways, both
+// required: (1) DUAL-MODE in_flight — while the reader is heartbeat-dead it
+// discounts published-but-unread slots to 0, so a readerless full ring reports
+// avail ~= full instead of the 0 an honest occupancy*period in_flight would pin;
+// and (2) a REPORTED-POSITION clamp — because ALSA infers hw motion as a
+// mod-buffer delta, a raw pointer jump of exactly buffer_size (which the
+// dead-mode discount flip produces at occupancy == n_slots) would alias to a
+// zero delta and re-pin avail at 0 permanently, so each reported advance is
+// capped below buffer_size. Only with BOTH does transfer keep calling publish so
+// this branch can bound the ring. Do not "optimize" this into a bare
+// drop-newest: advancing read_seq (not just discarding) is what makes occupancy
+// bounded, which the dual-mode pointer and the honest live-reader delay both
+// depend on.
 jts_ring_publish_result_t jts_ring_writer_publish(jts_ring_writer_t *w,
                                                   const int16_t *samples);
 
@@ -219,5 +225,115 @@ void jts_ring_writer_close(jts_ring_writer_t *w);
 // CLOCK_MONOTONIC nanoseconds (shared by the writer heartbeat and the wait
 // helper). Exposed for the bench + host test.
 uint64_t jts_ring_monotonic_ns(void);
+
+// --- ioplug pointer core (shared by pcm_jts_ring.c AND test_ring_core.c) ---
+//
+// The one function that computes the value the ioplug `pointer` callback
+// returns to ALSA. It is a `static inline` in the header (not a .c symbol) so
+// BOTH the plugin (compiled only on-Pi with alsa-lib) and the host test
+// (compiled on any host) call the SAME code. A regression in this logic fails
+// the host `make test` — the round-3 review's "the test hand-copies plugin
+// logic, so a plugin regression leaves host tests green" finding.
+//
+// It owns ALL of the reported-position discipline in one place:
+//
+//   1. DUAL-MODE in_flight (the B1/round-3 avail-gate fix). Reader LIVE ->
+//      honest occupancy-derived in_flight (occupancy*period + stage); reader
+//      DEAD -> stage-only in_flight, so published-but-unread slots discount to
+//      0 and ALSA's `avail` never sticks at 0 on a readerless ring.
+//
+//   2. REPORTED-POSITION clamp (the round-4 mod-buffer-alias fix). ALSA infers
+//      hw motion in snd_pcm_ioplug_hw_ptr_update as
+//        delta = (this_pointer_return - last_pointer_return) mod buffer_size
+//      (verbatim: `if (hw >= last_hw) delta = hw - last_hw; else delta =
+//      buffer_size + hw - last_hw;`). A RAW advance of exactly buffer_size
+//      between two pointer reads aliases to the SAME value mod buffer_size, so
+//      delta reads 0 — ALSA's hw_ptr falls one whole lap behind, `avail` pins
+//      at 0 permanently, and the writer wedges (the round-3 review's Blocker).
+//      An advance > buffer_size in one step is even worse (it can alias to a
+//      backward apparent delta). Three shapes produce an exactly-buffer_size
+//      raw jump: (a) a live reader drains a full ring during an app gap >= one
+//      buffer duration (in_flight: n_slots*period -> 0); (b) the dead-mode
+//      discount flip at occupancy == n_slots when the reader dies mid-play
+//      (in_flight: n_slots*period -> ~0); (c) the dead->live recovery.
+//
+//      The fix: never let the REPORTED position advance >= buffer_size in one
+//      call. We track the last reported (pre-modulo) position in
+//      `last_reported` and clamp each call's forward step to at most
+//      buffer_size - period_frames. A true jump of a full buffer then completes
+//      over successive ~period/4 ticks (each tick reveals one more period of
+//      drain), so ALSA sees a sequence of visible sub-buffer deltas instead of
+//      one aliased-to-zero lap. The clamp ALSO subsumes round-3's monotonic
+//      floor: because we only ever move `last_reported` FORWARD (by a bounded
+//      amount) and never below it, the reported position is non-decreasing by
+//      construction — one unified state, not two clamps.
+//
+// The caller returns `reported % buffer_size` to ALSA. The raw `last_reported`
+// is what this function reads/writes; the modulo happens at the call site
+// (exactly where ALSA wants a mod-buffer value, and where the raw value is
+// available for the delta math above to reason about).
+
+// The reported-position state the pointer core carries across calls. One field:
+// the last RAW (pre-modulo) position reported to ALSA. Reset to 0 (with
+// appl_frames) on (re)prepare. The plugin embeds this inside jts_ring_pcm_t;
+// the host test embeds it inside its ioplug model. Same type, same reset rule.
+typedef struct {
+    uint64_t last_reported; // last raw hw_ptr handed to ALSA (pre-modulo)
+} jts_ring_pointer_state_t;
+
+// Inputs the pointer core needs, gathered by the caller (which owns the ALSA
+// io object / the writer handle). Keeping them in a struct lets the host test
+// drive the exact same function without an ALSA io or a live writer mmap.
+typedef struct {
+    uint64_t appl_frames;    // ALSA appl_ptr mirror (frames accepted from app)
+    uint64_t occupancy_slots; // write_seq - read_seq (published-but-unread)
+    uint64_t stage_frames;   // frames staged but not yet a whole slot
+    uint32_t period_frames;  // frames per slot
+    uint64_t buffer_size;    // n_slots * period_frames (== ALSA buffer)
+    int reader_live;         // 1 iff a reader heartbeat is fresh
+} jts_ring_pointer_inputs_t;
+
+// Compute the RAW (pre-modulo) hw_ptr to report to ALSA, advancing/clamping
+// `st->last_reported`. The caller returns `result % buffer_size`. Pure: no ALSA,
+// no atomics — the caller samples occupancy/liveness and passes them in.
+static inline uint64_t jts_ring_pointer_report(jts_ring_pointer_state_t *st,
+                                               const jts_ring_pointer_inputs_t *in) {
+    // 1. Dual-mode in_flight.
+    uint64_t in_flight;
+    if (in->reader_live) {
+        in_flight = in->occupancy_slots * (uint64_t)in->period_frames + in->stage_frames;
+    } else {
+        in_flight = in->stage_frames; // discount published-but-unread slots to 0
+    }
+    // Honest hw_ptr = appl - in_flight. appl_frames is monotonic and normally
+    // >= in_flight, but clamp defensively against a transient sample race where
+    // occupancy is read a hair before appl_frames is updated.
+    uint64_t honest = (in->appl_frames >= in_flight) ? (in->appl_frames - in_flight) : 0;
+
+    // 2. Reported-position clamp. The reported value only ever moves FORWARD,
+    // and never by >= buffer_size in one call (which would alias to a zero — or
+    // negative — delta in ALSA's mod-buffer hw_ptr inference).
+    uint64_t last = st->last_reported;
+    uint64_t reported;
+    if (honest <= last) {
+        // Honest position went backward (dead->live regrow, or a live reader
+        // lagging) or stayed put: hold at last_reported. Non-decreasing floor.
+        reported = last;
+    } else {
+        uint64_t advance = honest - last;
+        // Cap the per-call advance so ALSA always sees a sub-buffer delta.
+        // period_frames <= buffer_size always (n_slots >= 1), so the cap is
+        // strictly less than buffer_size. A larger true jump catches up over the
+        // next few ticks.
+        uint64_t max_advance =
+            (in->buffer_size > (uint64_t)in->period_frames)
+                ? (in->buffer_size - (uint64_t)in->period_frames)
+                : 0; // pathological buffer_size == period: no advance headroom
+        if (advance > max_advance) advance = max_advance;
+        reported = last + advance;
+    }
+    st->last_reported = reported;
+    return reported;
+}
 
 #endif // JTS_RING_SHM_H

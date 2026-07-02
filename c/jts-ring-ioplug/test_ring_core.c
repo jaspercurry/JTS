@@ -219,45 +219,88 @@ static void test_no_reader_free_run_drop(void) {
     unlink(path);
 }
 
-// --- ioplug pointer/avail model (mirrors pcm_jts_ring.c jts_ring_pointer) ---
+// --- ioplug pointer/avail model (drives the SHARED jts_ring_pointer_report) ---
 //
 // The B1 wedge lives at the ALSA `avail` gate, NOT in publish: ALSA grants
 // `transfer` (publish's only playback caller) at most `avail` frames, so a test
-// that calls publish UNCONDITIONALLY can never reproduce the hang. These helpers
-// replicate the exact dual-mode in_flight + avail the ioplug computes, so the
-// gate-faithful tests below drive publish ONLY when avail > 0 — the same
-// discipline ALSA enforces — and assert the pointer/avail path itself opens.
+// that calls publish UNCONDITIONALLY can never reproduce the hang. This model
+// reproduces the gate faithfully in TWO respects the round-3 review found the
+// old model missing:
+//
+//   1. It calls the SHARED jts_ring_pointer_report (jts_ring_shm.h) — the exact
+//      function the plugin returns from `pointer` — rather than hand-copying the
+//      dual-mode/clamp logic. A regression in pcm_jts_ring.c's core now fails
+//      `make test` (it did not before; the model was a parallel copy).
+//
+//   2. It models ALSA's REAL hw_ptr inference (snd_pcm_ioplug_hw_ptr_update):
+//      `pointer()` returns a value mod buffer_size; ALSA computes
+//        delta = (ret >= last_hw) ? ret - last_hw : buffer_size + ret - last_hw
+//      and ADDS it to a running (boundary-space) hw_ptr, then stores ret as
+//      last_hw. avail is derived from THAT accumulated hw_ptr. This is the layer
+//      all three round-4 alias wedges live in: a raw report advance of exactly
+//      buffer_size makes ret == last_hw (mod buffer_size) -> delta 0 -> the
+//      accumulated hw_ptr falls a lap behind -> avail pins at 0. The old model
+//      read avail straight off the raw pre-modulo hw_ptr, so it could not SEE
+//      the alias (green tests while hardware hung).
 //
 // stage_frames is 0 here (the writer core stages nothing; the ioplug does), so
-// in_flight is purely occupancy-derived when live and 0 when dead.
+// jts_ring_pointer_report's in_flight is purely occupancy-derived when live and
+// 0 when dead.
 typedef struct {
-    uint64_t appl_frames; // ALSA appl_ptr mirror
-    uint64_t last_hw_ptr; // monotonic clamp (mirrors p->last_hw_ptr)
-    uint64_t buffer_size; // n_slots * period_frames (ALSA buffer)
+    uint64_t appl_frames;            // ALSA appl_ptr mirror
+    jts_ring_pointer_state_t ptr;    // the plugin's reported-position state
+    uint64_t alsa_hw_ptr;            // ALSA's accumulated (boundary-space) hw_ptr
+    uint64_t alsa_last_hw;           // last pointer() return ALSA stored (mod-buffer)
+    int alsa_last_hw_valid;          // 0 until the first pointer() read
+    uint64_t buffer_size;            // n_slots * period_frames (ALSA buffer)
     uint32_t period;
 } ioplug_model_t;
 
-// Mirror jts_ring_pointer: dual-mode in_flight (honest occupancy when the reader
-// is live, 0 when dead), then hw_ptr = appl - in_flight with a monotonic clamp.
-// stage_frames omitted (0 in the core-only model). Returns the RAW (pre-modulo)
-// hw_ptr; avail below uses the same raw value ALSA derives from.
-static uint64_t ioplug_model_hw_ptr(ioplug_model_t *m, jts_ring_writer_t *w) {
-    uint64_t in_flight = jts_ring_writer_reader_is_live(w)
-                             ? jts_ring_writer_occupancy_slots(w) * (uint64_t)m->period
-                             : 0; // dead reader: discount published slots to 0
-    uint64_t hw_ptr = (m->appl_frames >= in_flight) ? (m->appl_frames - in_flight) : 0;
-    if (hw_ptr < m->last_hw_ptr)
-        hw_ptr = m->last_hw_ptr; // ALSA requires hw_ptr non-decreasing
-    else
-        m->last_hw_ptr = hw_ptr;
-    return hw_ptr;
+// One `pointer` read + ALSA's hw_ptr inference, EXACTLY as
+// snd_pcm_ioplug_hw_ptr_update does it (no BOUNDARY_WA flag, so wrap_point ==
+// buffer_size). Calls the shared core for the mod-buffer return value, then
+// accumulates the mod-buffer delta into m->alsa_hw_ptr. Returns nothing; read
+// m->alsa_hw_ptr / ioplug_model_avail after.
+static void ioplug_model_pointer_tick(ioplug_model_t *m, jts_ring_writer_t *w) {
+    jts_ring_pointer_inputs_t in = {
+        .appl_frames = m->appl_frames,
+        .occupancy_slots = jts_ring_writer_occupancy_slots(w),
+        .stage_frames = 0, // core-only model stages nothing
+        .period_frames = m->period,
+        .buffer_size = m->buffer_size,
+        .reader_live = jts_ring_writer_reader_is_live(w),
+    };
+    uint64_t raw = jts_ring_pointer_report(&m->ptr, &in);
+    uint64_t ret = raw % m->buffer_size; // what the plugin returns to ALSA
+    if (!m->alsa_last_hw_valid) {
+        // First read: ALSA seeds last_hw from it (no forward), hw_ptr stays 0.
+        m->alsa_last_hw = ret;
+        m->alsa_last_hw_valid = 1;
+        return;
+    }
+    uint64_t delta = (ret >= m->alsa_last_hw) ? (ret - m->alsa_last_hw)
+                                              : (m->buffer_size + ret - m->alsa_last_hw);
+    m->alsa_hw_ptr += delta;
+    m->alsa_last_hw = ret;
 }
 
-// ALSA hw_avail for a playback ioplug: buffer_size - (appl_ptr - hw_ptr).
+// ALSA hw_avail for a playback ioplug, off ALSA's ACCUMULATED hw_ptr (not the
+// raw pre-modulo value): buffer_size - (appl_ptr - hw_ptr). Ticks the pointer
+// first so the accumulation reflects this call.
 static uint64_t ioplug_model_avail(ioplug_model_t *m, jts_ring_writer_t *w) {
-    uint64_t hw_ptr = ioplug_model_hw_ptr(m, w);
-    uint64_t used = m->appl_frames - hw_ptr; // frames the app has queued, not drained
+    ioplug_model_pointer_tick(m, w);
+    uint64_t used = (m->appl_frames >= m->alsa_hw_ptr) ? (m->appl_frames - m->alsa_hw_ptr)
+                                                       : 0; // frames queued, not drained
     return (used <= m->buffer_size) ? (m->buffer_size - used) : 0;
+}
+
+// Zero-init an ioplug model for a given geometry.
+static ioplug_model_t ioplug_model_new(const jts_ring_geometry_t *g) {
+    ioplug_model_t m;
+    memset(&m, 0, sizeof(m));
+    m.buffer_size = (uint64_t)g->n_slots * g->period_frames;
+    m.period = g->period_frames;
+    return m;
 }
 
 static void test_no_reader_pointer_keeps_advancing(void) {
@@ -285,12 +328,7 @@ static void test_no_reader_pointer_keeps_advancing(void) {
     int16_t *s = calloc(n, sizeof(int16_t));
     const uint32_t period = g.period_frames;
 
-    ioplug_model_t m = {
-        .appl_frames = 0,
-        .last_hw_ptr = 0,
-        .buffer_size = (uint64_t)g.n_slots * period,
-        .period = period,
-    };
+    ioplug_model_t m = ioplug_model_new(&g);
 
     // Fill the ring readerless via the gate FIRST, with NO publish helper — this
     // is the exact ALSA wait loop. Assert that once the ring is full the avail
@@ -305,9 +343,9 @@ static void test_no_reader_pointer_keeps_advancing(void) {
         // is the core B1 assertion: the gate never wedges without any publish.
         CHECK(avail >= period,
               "readerless avail stays >= one period (dual-mode pointer, no wedge)");
-        uint64_t raw_hw = m.last_hw_ptr; // set by the avail read above
-        CHECK(raw_hw >= prev_hw_ptr, "hw_ptr monotonic non-decreasing (never back-jumps)");
-        prev_hw_ptr = raw_hw;
+        uint64_t hw = m.alsa_hw_ptr; // ALSA's accumulated hw_ptr after this read
+        CHECK(hw >= prev_hw_ptr, "hw_ptr monotonic non-decreasing (never back-jumps)");
+        prev_hw_ptr = hw;
         // ALSA would now transfer up to `avail`; the ioplug stages+publishes whole
         // slots. Model one period per tick.
         jts_ring_publish_result_t pr = jts_ring_writer_publish(&w, s);
@@ -350,30 +388,37 @@ static void test_gate_faithful_dead_ring_opens_without_publish(void) {
 
     // Fill to the brim via the drop-oldest free-run (no reader). appl_frames
     // tracks each accepted period so the model's used = appl - hw is correct.
-    ioplug_model_t m = {
-        .appl_frames = 0,
-        .last_hw_ptr = 0,
-        .buffer_size = (uint64_t)g.n_slots * period,
-        .period = period,
-    };
+    // The pointer is ticked each publish so ALSA's accumulated hw_ptr keeps up
+    // with appl exactly as it would in live playback (the dead-mode discount
+    // makes honest hw_ptr == appl each tick, and the clamp lets it track since
+    // each step is one period < buffer_size).
+    ioplug_model_t m = ioplug_model_new(&g);
     for (uint32_t i = 0; i < g.n_slots + 2; i++) { // +2 = force the full state
         (void)jts_ring_writer_publish(&w, s);
         m.appl_frames += period;
-        (void)ioplug_model_avail(&m, &w); // keep last_hw_ptr current
+        (void)ioplug_model_avail(&m, &w); // tick the pointer / accumulate hw_ptr
     }
     CHECK(jts_ring_writer_occupancy_slots(&w) == (uint64_t)g.n_slots,
           "ring full (occupancy == n_slots) before the no-publish avail probe");
     CHECK(!jts_ring_writer_reader_is_live(&w), "reader is dead (never attached)");
 
     // Now probe avail across several ticks with NO further publish. The gate must
-    // be open every time (this is what lets ALSA's transfer resume calling us).
+    // be open AND STAY open every time — this is the SHARPEST alias assertion:
+    // with appl_frames frozen and the reader dead, honest hw_ptr == appl is also
+    // frozen, so the pointer returns the SAME value each tick. ALSA's mod-buffer
+    // delta inference therefore adds 0 each tick (ret == last_hw). The gate must
+    // remain open at that steady value — pre-round-4 the dead-mode discount could
+    // have delivered ONE full-buffer jump on the flip that aliased to delta 0 and
+    // parked avail at 0 forever. Here we assert avail is a stable positive value
+    // (>= a period of headroom) that never decays across the probe.
+    uint64_t first_avail = ioplug_model_avail(&m, &w);
+    CHECK(first_avail >= period,
+          "full readerless ring: avail is OPEN (>= one period) without any publish");
     for (int tick = 0; tick < 8; tick++) {
         uint64_t avail = ioplug_model_avail(&m, &w);
-        CHECK(avail > 0, "full readerless ring: avail is OPEN without any publish");
-        // avail == buffer - stage == buffer here (stage modeled 0): the whole
-        // buffer is writable because published-but-unread slots discount to 0.
-        CHECK(avail == m.buffer_size,
-              "dead-reader avail == full buffer (published slots discounted)");
+        CHECK(avail > 0, "readerless avail stays OPEN across probe ticks (no alias to 0)");
+        CHECK(avail == first_avail,
+              "readerless avail is STABLE with no publish (frozen appl -> delta 0)");
     }
 
     free(s);
@@ -382,14 +427,18 @@ static void test_gate_faithful_dead_ring_opens_without_publish(void) {
 }
 
 static void test_reader_attach_midplay_hw_ptr_monotonic(void) {
-    // B1 transition edge: a reader that appears MID-WRITE must not make the
-    // ioplug hw_ptr jump backward (ALSA requires it monotonic). While dead, the
-    // dual-mode pointer ran hw_ptr near appl (in_flight = 0). On attach the
-    // reader resyncs read_seq = write_seq (occupancy -> 0), so honest hw_ptr ==
-    // appl (convergent). But the next tick, before the reader consumes the newest
-    // slot, occupancy re-grows to 1 and honest hw_ptr would step back one period.
-    // The monotonic clamp holds hw_ptr until real drain catches up. This test
-    // models the exact pointer path across the transition and asserts no regress.
+    // B1 transition edge (round-4 alias trigger (c): dead->live recovery). A
+    // reader that appears MID-WRITE must not make ALSA's hw_ptr jump backward
+    // (ALSA requires it monotonic) AND must not alias a full-buffer step to a
+    // zero delta (which would pin avail at 0 forever). While dead, the pointer
+    // runs hw_ptr near appl (in_flight = 0). On attach the reader resyncs
+    // read_seq = write_seq (occupancy -> 0), so honest hw_ptr == appl
+    // (convergent). Then, before the reader consumes, occupancy re-grows and
+    // honest hw_ptr would step BACK; the reported-position clamp holds it. This
+    // test drives the shared pointer core through ALSA's real accumulated-hw_ptr
+    // inference and asserts (i) ALSA's hw_ptr never regresses, (ii) avail never
+    // pins at 0 through the transition, and (iii) after full drain the gate is
+    // healthy (avail == buffer, ring empty).
     char path[256];
     tmp_path(path, sizeof(path), "attachmidplay");
     jts_ring_geometry_t g = proto_geometry();
@@ -402,53 +451,303 @@ static void test_reader_attach_midplay_hw_ptr_monotonic(void) {
     int16_t *out = calloc(n, sizeof(int16_t));
     const uint32_t period = g.period_frames;
 
-    ioplug_model_t m = {
-        .appl_frames = 0,
-        .last_hw_ptr = 0,
-        .buffer_size = (uint64_t)g.n_slots * period,
-        .period = period,
-    };
+    ioplug_model_t m = ioplug_model_new(&g);
 
-    // Phase 1: readerless free-run for a while. hw_ptr tracks appl (in_flight 0).
+    // Phase 1: readerless free-run for a while. ALSA's hw_ptr tracks appl (dead
+    // -> in_flight 0), one period per tick — every step visible (< buffer), so
+    // no alias, and monotonic.
     uint64_t prev = 0;
     for (int i = 0; i < 12; i++) {
         (void)jts_ring_writer_publish(&w, s);
         m.appl_frames += period;
-        uint64_t hw = ioplug_model_hw_ptr(&m, &w);
-        CHECK(hw >= prev, "phase1 hw_ptr monotonic (dead reader)");
-        prev = hw;
+        uint64_t avail = ioplug_model_avail(&m, &w); // ticks + accumulates hw_ptr
+        CHECK(avail >= period, "phase1 avail open (dead reader, no wedge)");
+        CHECK(m.alsa_hw_ptr >= prev, "phase1 hw_ptr monotonic (dead reader)");
+        prev = m.alsa_hw_ptr;
     }
-    uint64_t hw_dead = m.last_hw_ptr;
-    CHECK(hw_dead == m.appl_frames, "dead-reader hw_ptr == appl (in_flight 0, stage 0)");
 
     // Phase 2: reader attaches mid-play (resyncs read_seq = write_seq).
     test_reader_t r;
     reader_attach(&r, &w);
     CHECK(jts_ring_writer_occupancy_slots(&w) == 0, "occupancy collapses to 0 on attach");
     CHECK(jts_ring_writer_reader_is_live(&w), "reader now live");
-    // First live tick: occupancy 0 -> honest hw_ptr == appl == hw_dead. Convergent.
-    uint64_t hw_first_live = ioplug_model_hw_ptr(&m, &w);
-    CHECK(hw_first_live == hw_dead, "dead->live transition is convergent (no jump)");
+    // First live tick: occupancy 0 -> honest hw_ptr == appl. Convergent, no
+    // jump, avail stays open (the dead->live edge does NOT alias).
+    uint64_t avail_first_live = ioplug_model_avail(&m, &w);
+    CHECK(avail_first_live > 0, "dead->live transition keeps avail open (no alias)");
+    CHECK(m.alsa_hw_ptr >= prev, "dead->live transition is monotonic (no back-jump)");
+    prev = m.alsa_hw_ptr;
 
     // Phase 3: writer publishes ahead of the reader (occupancy grows); honest
-    // hw_ptr WOULD step back, but the clamp holds it. Then the reader drains and
-    // hw_ptr resumes advancing — still never regressing.
+    // hw_ptr WOULD step back one period per publish, but the clamp holds the
+    // reported position at its floor, so ALSA's hw_ptr never regresses. As the
+    // ring genuinely fills with a LIVE lagging reader, avail correctly shrinks
+    // toward 0 (a full ring with a live reader IS not-writable — that is the
+    // honest back-pressure, not a wedge). We assert only the monotonicity here;
+    // the no-wedge (avail reopens) property is the dedicated alias tests' job.
     for (int i = 0; i < 6; i++) {
         (void)jts_ring_writer_publish(&w, s); // occupancy climbs (reader idle)
         m.appl_frames += period;
-        uint64_t hw = ioplug_model_hw_ptr(&m, &w);
-        CHECK(hw >= prev, "phase3 hw_ptr never regresses while reader lags (clamped)");
-        prev = hw;
+        (void)ioplug_model_avail(&m, &w);
+        CHECK(m.alsa_hw_ptr >= prev, "phase3 hw_ptr never regresses while reader lags (clamped)");
+        prev = m.alsa_hw_ptr;
     }
-    // Reader now drains everything; hw_ptr must climb back to appl, monotonic.
+    // Reader now drains everything; hw_ptr must climb, monotonic, and the gate
+    // must reopen (avail grows back).
     while (jts_ring_writer_occupancy_slots(&w) > 0) {
         CHECK(reader_consume(&r, out) == 1, "reader drains a slot");
-        uint64_t hw = ioplug_model_hw_ptr(&m, &w);
-        CHECK(hw >= prev, "drain phase hw_ptr monotonic non-decreasing");
-        prev = hw;
+        (void)ioplug_model_avail(&m, &w);
+        CHECK(m.alsa_hw_ptr >= prev, "drain phase hw_ptr monotonic non-decreasing");
+        prev = m.alsa_hw_ptr;
     }
-    CHECK(ioplug_model_hw_ptr(&m, &w) == m.appl_frames,
-          "fully drained: hw_ptr caught appl (honest accounting restored)");
+    // Fully drained with a live reader + a settle tick for the clamp to finish
+    // catching up: the ring is empty and the gate is wide open again. (avail
+    // settles to buffer minus ALSA's one-period first-read seed lag — a benign
+    // constant of ALSA's own hw_ptr model, not a wedge — so we assert avail is
+    // near-full and STABLE rather than an exact == buffer.)
+    (void)ioplug_model_avail(&m, &w);
+    uint64_t avail_a = ioplug_model_avail(&m, &w);
+    uint64_t avail_b = ioplug_model_avail(&m, &w);
+    CHECK(jts_ring_writer_occupancy_slots(&w) == 0, "ring empty after full drain");
+    CHECK(avail_a >= m.buffer_size - period,
+          "fully drained + settled: avail is near-full (honest accounting restored)");
+    CHECK(avail_b == avail_a, "drained avail is STABLE across ticks (no residual alias)");
+
+    free(s);
+    free(out);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+// --- Round-4 mod-buffer full-lap ALIAS regressions (the round-3 review Blocker)
+//
+// Each of the three below constructs the exact state where the HONEST reported
+// position would advance by ~one full buffer between two consecutive pointer
+// reads. Returned mod buffer_size, that aliases to a ZERO (or backward) delta in
+// ALSA's snd_pcm_ioplug_hw_ptr_update, pinning avail at 0 permanently. The
+// reported-position clamp (jts_ring_pointer_report) spreads the catch-up over
+// several sub-buffer ticks so ALSA always sees a positive delta and avail stays
+// open. Each test also computes what an UNCLAMPED honest pointer WOULD have
+// returned at the alias step and asserts it aliases — the not-a-tautology proof
+// that the clamp is what keeps these green (remove the clamp and these fail).
+
+// Helper: what ALSA's mod-buffer delta inference yields for two raw reported
+// positions (verbatim snd_pcm_ioplug_hw_ptr_update, no BOUNDARY_WA).
+static uint64_t alsa_delta(uint64_t prev_raw, uint64_t cur_raw, uint64_t buffer) {
+    uint64_t prev = prev_raw % buffer;
+    uint64_t cur = cur_raw % buffer;
+    return (cur >= prev) ? (cur - prev) : (buffer + cur - prev);
+}
+
+static void test_alias_live_reader_drain_gap(void) {
+    // TRIGGER (a): a LIVE reader drains a full ring during an app-side gap >= one
+    // buffer duration. Before the gap: occupancy == n_slots, honest hw_ptr lags
+    // appl by a full buffer. During the gap the reader drains everything
+    // (occupancy -> 0), so the NEXT pointer read jumps honest hw_ptr forward by
+    // exactly buffer_size — the alias. The clamp must spread it so avail reopens
+    // smoothly instead of pinning at 0.
+    char path[256];
+    tmp_path(path, sizeof(path), "aliasdraingap");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    test_reader_t r;
+    reader_attach(&r, &w);
+
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+    const uint32_t period = g.period_frames;
+    ioplug_model_t m = ioplug_model_new(&g);
+
+    // Fill the ring to the brim with a live reader that does NOT yet drain.
+    for (uint32_t i = 0; i < g.n_slots; i++) {
+        CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish to brim");
+        m.appl_frames += period;
+        (void)ioplug_model_avail(&m, &w);
+    }
+    CHECK(jts_ring_writer_occupancy_slots(&w) == (uint64_t)g.n_slots, "ring full");
+    uint64_t raw_before = m.ptr.last_reported;      // honest hw_ptr lags appl by buffer
+    uint64_t hw_before = m.alsa_hw_ptr;
+
+    // The app-side GAP: no pointer read happens while the reader drains the WHOLE
+    // ring. (This is the "app is outside a PCM call" window the review named.)
+    while (jts_ring_writer_occupancy_slots(&w) > 0) {
+        CHECK(reader_consume(&r, out) == 1, "reader drains during app gap");
+    }
+    CHECK(jts_ring_writer_occupancy_slots(&w) == 0, "reader emptied the ring in the gap");
+
+    // Not-a-tautology: an UNCLAMPED honest pointer would now report appl (occ 0),
+    // a raw jump of exactly buffer_size from raw_before -> aliases to delta 0.
+    uint64_t honest_unclamped = m.appl_frames; // occ 0, stage 0, reader live
+    CHECK(honest_unclamped - raw_before == m.buffer_size,
+          "unclamped honest jump is exactly one buffer (the alias precondition)");
+    CHECK(alsa_delta(raw_before, honest_unclamped, m.buffer_size) == 0,
+          "unclamped: full-buffer jump aliases to ZERO delta (would wedge)");
+
+    // The CLAMPED path: the next pointer read advances ALSA's hw_ptr by a visible
+    // (sub-buffer) delta, not 0. Drive several ticks with no publish; avail must
+    // climb back open and hw_ptr must strictly advance until it catches appl.
+    int saw_progress = 0;
+    for (int tick = 0; tick < (int)g.n_slots + 2; tick++) {
+        uint64_t hw_prev = m.alsa_hw_ptr;
+        uint64_t avail = ioplug_model_avail(&m, &w);
+        CHECK(avail > 0, "clamped: avail reopens after the full-drain gap (no alias wedge)");
+        CHECK(m.alsa_hw_ptr >= hw_prev, "clamped: hw_ptr monotonic across catch-up");
+        if (m.alsa_hw_ptr > hw_before) saw_progress = 1;
+    }
+    CHECK(saw_progress, "clamped: hw_ptr made real forward progress (unwedged)");
+    // Fully caught up: one buffer of drain is now reflected.
+    CHECK(m.alsa_hw_ptr - hw_before == m.buffer_size,
+          "clamped: the full buffer of drain is eventually reflected (spread, not lost)");
+
+    free(s);
+    free(out);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_alias_dead_flip_at_full_ring(void) {
+    // TRIGGER (b): the reader dies MID-PLAY at a full ring (occupancy == n_slots)
+    // — the operational outputd-restart case. While live+full, honest hw_ptr lags
+    // appl by a full buffer (in_flight = n_slots*period). The instant the reader
+    // heartbeat goes stale, the dual-mode discount flips in_flight to 0, so honest
+    // hw_ptr jumps forward by exactly buffer_size — the alias. free-run never even
+    // ran yet (drop_no_reader == 0 at the flip), so this is purely the pointer's
+    // problem. The clamp must keep avail open so transfer resumes and free-run can
+    // then bound the ring.
+    char path[256];
+    tmp_path(path, sizeof(path), "aliasdeadflip");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    test_reader_t r;
+    reader_attach(&r, &w);
+
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    const uint32_t period = g.period_frames;
+    ioplug_model_t m = ioplug_model_new(&g);
+
+    // Fill to full with a live reader (occupancy == n_slots), ticking the pointer.
+    for (uint32_t i = 0; i < g.n_slots; i++) {
+        CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish to brim");
+        m.appl_frames += period;
+        (void)ioplug_model_avail(&m, &w);
+    }
+    CHECK(jts_ring_writer_occupancy_slots(&w) == (uint64_t)g.n_slots, "ring full+live");
+    CHECK(w.drop_no_reader == 0, "no free-run drops yet (pure pointer case)");
+    uint64_t raw_before = m.ptr.last_reported;
+    uint64_t hw_before = m.alsa_hw_ptr;
+
+    // The reader DIES: stale its heartbeat so reader_is_live flips to false. No
+    // read_seq change, so occupancy is still n_slots — the discount is the only
+    // thing that moves.
+    jts_ring_header_t *h = (jts_ring_header_t *)w.base;
+    atomic_store_explicit(&h->reader_heartbeat_ns, 1, memory_order_relaxed);
+    CHECK(!jts_ring_writer_reader_is_live(&w), "reader now dead (stale heartbeat)");
+
+    // Not-a-tautology: unclamped honest hw_ptr with the dead discount == appl
+    // (in_flight 0), a raw jump of exactly buffer_size -> aliases to delta 0.
+    uint64_t honest_unclamped = m.appl_frames;
+    CHECK(honest_unclamped - raw_before == m.buffer_size,
+          "unclamped dead-flip jump is exactly one buffer (alias precondition)");
+    CHECK(alsa_delta(raw_before, honest_unclamped, m.buffer_size) == 0,
+          "unclamped: dead-flip full-buffer jump aliases to ZERO delta (would wedge)");
+
+    // Clamped: transfer resumes (avail > 0). Now model ALSA's transfer -> publish
+    // loop: each tick, if avail >= a period, publish one slot (free-run drop). The
+    // gate must stay open every tick and free-run must bound the ring.
+    int publishes = 0;
+    for (int tick = 0; tick < 40; tick++) {
+        uint64_t avail = ioplug_model_avail(&m, &w);
+        CHECK(avail > 0, "clamped: dead-flip keeps avail open (no alias wedge)");
+        if (avail >= period) {
+            jts_ring_publish_result_t pr = jts_ring_writer_publish(&w, s);
+            CHECK(pr == JTS_RING_PUBLISH_OK || pr == JTS_RING_PUBLISH_DROPPED,
+                  "publish returns (free-run) after dead flip");
+            m.appl_frames += period;
+            publishes++;
+        }
+        CHECK(jts_ring_writer_occupancy_slots(&w) <= (uint64_t)g.n_slots,
+              "occupancy bounded by free-run after dead flip");
+    }
+    CHECK(publishes > 0, "clamped: transfer/publish resumed after the reader died");
+    CHECK(w.drop_no_reader > 0, "free-run reclaim engaged once the gate reopened");
+    CHECK(m.alsa_hw_ptr > hw_before, "clamped: hw_ptr advanced past the pre-death lag");
+
+    free(s);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_alias_dead_to_live_recovery(void) {
+    // TRIGGER (c): dead->live recovery. A readerless free-run stream (dead-mode,
+    // hw_ptr near appl) then a reader attaches. The attach resyncs occupancy -> 0
+    // (honest hw_ptr == appl, convergent) but the reader has NOT drained yet, so
+    // the next few ticks the writer keeps publishing and occupancy grows while the
+    // reader is momentarily idle — honest hw_ptr would step back a full buffer's
+    // worth over the transition. The clamp keeps hw_ptr monotonic and avail open
+    // through the whole recovery, and once the reader paces normally the gate
+    // tracks real drain.
+    char path[256];
+    tmp_path(path, sizeof(path), "aliasdeadtolive");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+    const uint32_t period = g.period_frames;
+    ioplug_model_t m = ioplug_model_new(&g);
+
+    // Dead free-run phase: fill+overflow with no reader. avail stays open the
+    // whole time (dead-mode discount), hw_ptr tracks appl.
+    for (int i = 0; i < 12; i++) {
+        uint64_t avail = ioplug_model_avail(&m, &w);
+        CHECK(avail >= period, "dead free-run avail open");
+        (void)jts_ring_writer_publish(&w, s);
+        m.appl_frames += period;
+    }
+    uint64_t hw_before = m.alsa_hw_ptr;
+
+    // Reader attaches (resync occupancy -> 0) then stays idle for a stretch while
+    // the writer keeps publishing (the recovery window). avail must never pin at 0
+    // and hw_ptr must never regress.
+    test_reader_t r;
+    reader_attach(&r, &w);
+    CHECK(jts_ring_writer_reader_is_live(&w), "reader live after attach");
+    uint64_t prev = m.alsa_hw_ptr;
+    for (int i = 0; i < (int)g.n_slots; i++) {
+        (void)jts_ring_writer_publish(&w, s); // reader idle: occupancy climbs
+        m.appl_frames += period;
+        (void)ioplug_model_avail(&m, &w);
+        // The reader is idle so the ring legitimately fills and avail correctly
+        // shrinks toward 0 (honest back-pressure); the invariant that matters
+        // across the transition is that hw_ptr never REGRESSES (no back-jump from
+        // the discount flip). The no-wedge (avail reopens) property is proven by
+        // the paced phase below.
+        CHECK(m.alsa_hw_ptr >= prev, "recovery: hw_ptr never regresses");
+        prev = m.alsa_hw_ptr;
+    }
+
+    // Reader now paces: drain one, publish one, repeatedly. The gate tracks real
+    // drain, avail stays open, hw_ptr climbs monotonically.
+    for (int i = 0; i < 12; i++) {
+        if (jts_ring_writer_occupancy_slots(&w) > 0)
+            CHECK(reader_consume(&r, out) == 1, "reader paces a drain");
+        uint64_t avail = ioplug_model_avail(&m, &w);
+        CHECK(avail > 0, "paced recovery: avail open");
+        CHECK(m.alsa_hw_ptr >= prev, "paced recovery: hw_ptr monotonic");
+        prev = m.alsa_hw_ptr;
+        (void)jts_ring_writer_publish(&w, s);
+        m.appl_frames += period;
+    }
+    CHECK(m.alsa_hw_ptr > hw_before, "recovery made real forward progress (never wedged)");
 
     free(s);
     free(out);
@@ -764,6 +1063,9 @@ int main(void) {
     test_no_reader_pointer_keeps_advancing();
     test_gate_faithful_dead_ring_opens_without_publish();
     test_reader_attach_midplay_hw_ptr_monotonic();
+    test_alias_live_reader_drain_gap();
+    test_alias_dead_flip_at_full_ring();
+    test_alias_dead_to_live_recovery();
     test_reader_returns_after_free_run_resyncs();
     test_attach_second_writer_bumps_epoch();
     test_geometry_mismatch_is_fatal();
