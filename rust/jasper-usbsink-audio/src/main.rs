@@ -1125,9 +1125,14 @@ impl TapPublisher {
     ) {
         // A fresh arm bumps the generation; (re)open the file with truncate and
         // build a new sink. The generation only advances on arm, so this is the
-        // one place the single-writer file handle is reset. Any events still
-        // queued from a prior arm are discarded here so a re-arm starts truly
-        // clean (they would otherwise land in the freshly-truncated file).
+        // one place the single-writer file handle is reset. The channel is
+        // drained here so a re-arm starts truly clean — this discards any
+        // events still queued from a PRIOR arm (they would otherwise land in
+        // the freshly-truncated file). It also discards, uncounted, any events
+        // the audio thread happened to enqueue in the sub-100ms window between
+        // this arm and this first post-arm poll; that is harmless because the
+        // operator arms human-seconds before starting playback, so no real
+        // click has been played yet when this drain runs.
         let generation = tap.generation_acquire();
         if !self.initialized || generation != self.generation {
             self.initialized = true;
