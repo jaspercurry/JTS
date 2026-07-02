@@ -101,12 +101,38 @@ pub const DEFAULT_REFRACTORY_MS: u64 = 250;
 /// default leaves generous headroom while bounding a runaway file.
 pub const DEFAULT_MAX_EVENTS: u64 = 4000;
 
+/// Hard ceiling on `max_events` a `POST /tap/arm` may request. The 8781 listener
+/// is unauthenticated (loopback by default, but `JASPER_USBSINK_PREEMPT_HOST`
+/// can widen it), and each JSONL line is ~100 bytes on a tmpfs the unit caps at
+/// `MemoryMax=64M`. Without a ceiling a caller (or an operator typo of
+/// `10^18`) could grow the file until the memcg OOM-kills the audio daemon.
+/// 100_000 events ≈ 10 MB — ample for any real run (a promotion run is ~1100
+/// impulses), safely under the memcg cap. Requests above this are rejected at
+/// parse time.
+pub const MAX_EVENTS_CEILING: u64 = 100_000;
+
 /// Default auto-disarm horizon in minutes. Longer than a 33-minute promotion
 /// run with margin; a forgotten tap disarms itself and stops all cost.
 pub const DEFAULT_AUTO_DISARM_MIN: u64 = 45;
 
+/// Hard ceiling on `auto_disarm_min` a `POST /tap/arm` may request (24 h). The
+/// whole point of auto-disarm is that a forgotten tap costs nothing; a caller
+/// asking for a multi-year horizon defeats that. A day is far longer than any
+/// legitimate measurement window and keeps the self-healing guarantee real.
+pub const AUTO_DISARM_MIN_CEILING: u64 = 24 * 60;
+
 /// Default JSONL artifact path (tmpfs, same dir as `state.json`).
 pub const DEFAULT_TAP_PATH: &str = "/run/jasper-usbsink/impulse-tap.jsonl";
+
+/// Basenames the daemon itself owns inside [`TAP_PATH_DIR`]; a `POST /tap/arm`
+/// may NOT target them even though they are in-directory. Truncating
+/// `state.json` would transiently blank the live observability surface (it
+/// self-heals within ~1 s via the atomic-rename state writer) and truncating
+/// `preempt.state` would clear persisted preempt — small blast radii, but an
+/// unauthenticated endpoint should not be able to poke the daemon's own files.
+/// Kept in sync by hand with `DEFAULT_STATE_PATH` / `DEFAULT_PREEMPT_STATE_PATH`
+/// in `main.rs` (both live under this same dir).
+pub const RESERVED_TAP_DIR_BASENAMES: &[&str] = &["state.json", "preempt.state"];
 
 /// One ingress detection, serialized as a single JSONL line by the publisher.
 ///
@@ -211,10 +237,10 @@ impl TapConfig {
             cfg.refractory_ms = positive_u64(refractory_ms)?;
         }
         if let Some(max_events) = obj.get("max_events") {
-            cfg.max_events = positive_u64(max_events)?;
+            cfg.max_events = positive_u64_capped(max_events, MAX_EVENTS_CEILING)?;
         }
         if let Some(auto_disarm_min) = obj.get("auto_disarm_min") {
-            cfg.auto_disarm_min = positive_u64(auto_disarm_min)?;
+            cfg.auto_disarm_min = positive_u64_capped(auto_disarm_min, AUTO_DISARM_MIN_CEILING)?;
         }
         Some(cfg)
     }
@@ -238,6 +264,19 @@ fn positive_u64(value: &Value) -> Option<u64> {
     }
 }
 
+/// A positive `u64` that also must not exceed `ceiling` (inclusive). Rejecting
+/// out-of-range values at parse time keeps an unauthenticated arm request from
+/// installing a resource-unbounded tap (see [`MAX_EVENTS_CEILING`] /
+/// [`AUTO_DISARM_MIN_CEILING`]).
+fn positive_u64_capped(value: &Value, ceiling: u64) -> Option<u64> {
+    let n = positive_u64(value)?;
+    if n <= ceiling {
+        Some(n)
+    } else {
+        None
+    }
+}
+
 /// True iff `path` is a direct child file of [`TAP_PATH_DIR`] with no traversal.
 ///
 /// The check is purely lexical (it never touches the filesystem, so it can't be
@@ -248,7 +287,10 @@ fn positive_u64(value: &Value) -> Option<u64> {
 ///   `/run/jasper-usbsink/../etc/passwd` is rejected before any normalization
 ///   could resolve it out of the dir;
 /// - exactly one trailing file-name component after the dir (no nested
-///   subdirs the daemon would then `create_dir_all` as root).
+///   subdirs the daemon would then `create_dir_all` as root);
+/// - the file-name is not one of the daemon's own reserved basenames
+///   ([`RESERVED_TAP_DIR_BASENAMES`]), so the tap can't clobber `state.json` /
+///   `preempt.state`.
 ///
 /// This scopes the unauthenticated arm endpoint's file write to a directory
 /// that already belongs to the daemon (see [`TAP_PATH_DIR`]).
@@ -260,6 +302,12 @@ pub fn path_is_allowed(path: &Path) -> bool {
         .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
     {
         return false;
+    }
+    // Never let the tap target the daemon's own reserved files.
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        if RESERVED_TAP_DIR_BASENAMES.contains(&name) {
+            return false;
+        }
     }
     match path.parent() {
         Some(parent) => parent == allowed,
@@ -801,9 +849,12 @@ mod tests {
 
     #[test]
     fn arm_body_overrides_all_fields() {
-        let body = r#"{"threshold":0.4,"hysteresis":0.1,"refractory_ms":300,
-                       "max_events":10,"auto_disarm_min":5,
-                       "path":"/run/jasper-usbsink/x.jsonl"}"#;
+        // Keep this JSON on ONE line: the panic-freedom guard
+        // (tests/test_rust_runtime_panic_freedom.py) counts braces with a
+        // lexer that does not understand Rust raw-string literals, so a
+        // multi-line raw string here leaks a `}` into the #[cfg(test)] span
+        // count and misclassifies the rest of the module as runtime code.
+        let body = r#"{"threshold":0.4,"hysteresis":0.1,"refractory_ms":300,"max_events":10,"auto_disarm_min":5,"path":"/run/jasper-usbsink/x.jsonl"}"#;
         let cfg = TapConfig::from_arm_body(body).unwrap();
         assert!((cfg.threshold - 0.4).abs() < 1e-9);
         assert!((cfg.hysteresis - 0.1).abs() < 1e-9);
@@ -839,6 +890,62 @@ mod tests {
         let cfg = TapConfig::from_arm_body(r#"{"path":"/run/jasper-usbsink/run-7.jsonl"}"#)
             .expect("a plain filename in the tap dir is allowed");
         assert_eq!(cfg.path, PathBuf::from("/run/jasper-usbsink/run-7.jsonl"));
+    }
+
+    #[test]
+    fn arm_body_rejects_reserved_daemon_basenames() {
+        // The tap must not be armable at the daemon's own files (truncating
+        // state.json / preempt.state from the unauthenticated endpoint).
+        for evil in [
+            r#"{"path":"/run/jasper-usbsink/state.json"}"#,
+            r#"{"path":"/run/jasper-usbsink/preempt.state"}"#,
+        ] {
+            assert!(
+                TapConfig::from_arm_body(evil).is_none(),
+                "should reject reserved basename: {evil}"
+            );
+            let name = serde_json::from_str::<Value>(evil).unwrap()["path"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                !path_is_allowed(Path::new(&name)),
+                "path_is_allowed should reject: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn arm_body_rejects_resource_unbounded_knobs() {
+        // An unauthenticated arm request must not be able to install a
+        // resource-unbounded tap that could grow tmpfs until the memcg OOM-kills
+        // the audio daemon, or a forgotten-forever tap.
+        assert!(TapConfig::from_arm_body(r#"{"max_events":1000000000000000000}"#).is_none());
+        assert!(TapConfig::from_arm_body(&format!(
+            r#"{{"max_events":{}}}"#,
+            MAX_EVENTS_CEILING + 1
+        ))
+        .is_none());
+        assert!(TapConfig::from_arm_body(&format!(
+            r#"{{"auto_disarm_min":{}}}"#,
+            AUTO_DISARM_MIN_CEILING + 1
+        ))
+        .is_none());
+        // Exactly at the ceiling is accepted (inclusive bound).
+        assert_eq!(
+            TapConfig::from_arm_body(&format!(r#"{{"max_events":{MAX_EVENTS_CEILING}}}"#))
+                .unwrap()
+                .max_events,
+            MAX_EVENTS_CEILING
+        );
+        assert_eq!(
+            TapConfig::from_arm_body(&format!(
+                r#"{{"auto_disarm_min":{AUTO_DISARM_MIN_CEILING}}}"#
+            ))
+            .unwrap()
+            .auto_disarm_min,
+            AUTO_DISARM_MIN_CEILING
+        );
     }
 
     #[test]
