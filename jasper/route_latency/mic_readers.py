@@ -4,13 +4,14 @@
 
 """Mic-side (egress) audio readers for the route-latency harness.
 
-The harness's default mic source is the AEC bridge's always-on corpus-only
-"raw0" leg on localhost UDP ``:9879`` — the XVF3800's channel 2, an
-unprocessed room-mic capture (no chip DSP), documented as a wake-detection
-leg in ``jasper.wake_legs`` and emitted by ``jasper.cli.aec_bridge``. Reading
-it here does NOT add it as a wake-detection input; this module only
-*consumes* the already-emitted stream, matching AGENTS.md's rule that raw0
-stays corpus/tooling-only. On a Pi with no XVF3800 (or no bridge running),
+The harness's default mic source is the AEC bridge's always-on "raw0" leg on
+localhost UDP ``:9879`` — the XVF3800's channel 2, an unprocessed room-mic
+capture (no chip DSP). raw0 is a **corpus-only** leg (``wake_input=False`` in
+``jasper.wake_legs``; pinned by
+``tests/test_route_latency_harness.py``'s wire-constant cross-check), emitted
+by ``jasper.cli.aec_bridge``. Reading it here does NOT add it as a
+wake-detection input; this module only *consumes* the already-emitted stream,
+matching AGENTS.md's rule that raw0 stays corpus/tooling-only. On a Pi with no XVF3800 (or no bridge running),
 nothing feeds :9879 and ``UdpMicReader`` fails loudly on a read timeout
 rather than hanging forever — see :meth:`UdpMicReader.read_chunk`.
 
