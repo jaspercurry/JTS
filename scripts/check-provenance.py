@@ -552,6 +552,20 @@ def _validate_rust_outputd_lock(
     )
 
 
+def _validate_rust_usbsink_audio_lock(
+    data: dict[str, Any],
+    root: Path,
+    errors: list[str],
+) -> None:
+    _validate_rust_crate_lock(
+        data,
+        root,
+        errors,
+        surface_id="rust-usbsink-audio-crates",
+        crate_relpath="rust/jasper-usbsink-audio",
+    )
+
+
 def check_manifest(path: Path = DEFAULT_MANIFEST) -> list[str]:
     errors: list[str] = []
     data = load_manifest(path)
@@ -559,6 +573,7 @@ def check_manifest(path: Path = DEFAULT_MANIFEST) -> list[str]:
     errors.extend(validate_source_consistency(data))
     _validate_rust_fanin_lock(data, ROOT, errors)
     _validate_rust_outputd_lock(data, ROOT, errors)
+    _validate_rust_usbsink_audio_lock(data, ROOT, errors)
     documented = provenance_strings(data)
     for source, urls in discovered_fetch_urls().items():
         for url in sorted(urls):

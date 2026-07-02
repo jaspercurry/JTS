@@ -11,7 +11,9 @@
 
 FANIN_BIN="/opt/jasper/bin/jasper-fanin"
 OUTPUTD_BIN="/opt/jasper/bin/jasper-outputd"
+USBSINK_AUDIO_BIN="/opt/jasper/bin/jasper-usbsink-audio"
 OUTPUTD_SOURCE_MISSING_ERROR="ERROR: jasper-outputd source missing"
+USBSINK_AUDIO_SOURCE_MISSING_ERROR="ERROR: jasper-usbsink-audio source missing"
 RUST_LOW_MEMORY_BUILD_THRESHOLD_KB=1200000
 
 rust_build_memtotal_kb() {
@@ -76,6 +78,10 @@ build_install_rust_daemon() {
         bin_dest="${OUTPUTD_BIN}"
         missing_source_message="${OUTPUTD_SOURCE_MISSING_ERROR}"
         required_reason="This tree requires jasper-outputd as the final output owner."
+    elif [[ "${name}" == "jasper-usbsink-audio" ]]; then
+        bin_dest="${USBSINK_AUDIO_BIN}"
+        missing_source_message="${USBSINK_AUDIO_SOURCE_MISSING_ERROR}"
+        required_reason="This tree requires jasper-usbsink-audio for the production USB low-latency route."
     fi
 
     if [[ ! -d "${src_dir}" ]]; then
@@ -170,4 +176,10 @@ build_install_jasper_fanin() {
 build_install_jasper_outputd() {
     # outputd is the mainline final-output owner and is required.
     build_install_rust_daemon "jasper-outputd" "1"
+}
+
+build_install_jasper_usbsink_audio() {
+    # The production USB low-latency route must not depend on Python
+    # callbacks in the audio data plane.
+    build_install_rust_daemon "jasper-usbsink-audio" "1"
 }

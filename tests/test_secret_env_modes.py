@@ -181,3 +181,46 @@ chmod() { printf 'chmod:%s\n' "${@: -1}" >> "${OPS_LOG}"; }
     assert str(link) not in ops
     assert str(outside) not in ops
     assert f"skipping symlink {link}" in proc.stdout
+
+
+def test_widen_control_secret_env_modes_fails_if_jasper_env_chgrp_fails(
+    tmp_path: Path,
+):
+    """The installer must not claim jasper.env is readable when chgrp failed."""
+    env_dir = tmp_path / "etc"
+    state_dir = tmp_path / "state"
+    env_dir.mkdir()
+    state_dir.mkdir()
+    jasper_env = env_dir / "jasper.env"
+    jasper_env.write_text("JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n")
+
+    lib = ROOT / "deploy/lib/install/env-migrations.sh"
+    helper = subprocess.run(
+        ["bash", "-c", rf"sed -n '/^widen_control_secret_env_modes()/,/^}}/p' '{lib}'"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    stubs = r"""
+getent() { return 0; }
+chgrp() {
+  if [[ "${@: -1}" == "${ENV_DIR}/jasper.env" ]]; then
+    return 1
+  fi
+  return 0
+}
+chmod() { return 0; }
+"""
+    proc = subprocess.run(
+        ["/bin/bash", "-c", f"{stubs}\n{helper}\nwiden_control_secret_env_modes"],
+        env={
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "ENV_DIR": str(env_dir),
+            "STATE_DIR": str(state_dir),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode != 0
+    assert f"failed to chgrp {jasper_env} to jasper" in proc.stderr

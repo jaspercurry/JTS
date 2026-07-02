@@ -105,16 +105,24 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
     LocalSourceLifecycle(
         source=Source.USBSINK,
         intent_unit="jasper-usbsink.service",
-        runtime_units=("jasper-usbsink-init.service", "jasper-usbsink.service"),
+        runtime_units=(
+            "jasper-usbsink-init.service",
+            "jasper-usbsink.service",
+            "jasper-usbsink-volume.service",
+        ),
         # Stop init first: it owns the host-visible gadget, and its PartOf=
         # relationship stops the bridge too. The bridge is included as a
         # belt-and-suspenders stop for systems with partial unit drift.
-        park_units=("jasper-usbsink-init.service", "jasper-usbsink.service"),
+        park_units=(
+            "jasper-usbsink-init.service",
+            "jasper-usbsink.service",
+            "jasper-usbsink-volume.service",
+        ),
         # Restore only the household intent unit. Requires= brings the init
         # gadget up when USB Audio Input is intentionally enabled.
         restore_units=("jasper-usbsink.service",),
         advertise_units=("jasper-usbsink-init.service",),
-        audio_refresh_units=("jasper-usbsink.service",),
+        audio_refresh_units=("jasper-usbsink.service", "jasper-usbsink-volume.service"),
     ),
 )
 

@@ -212,6 +212,7 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-mux.service"
             "${SYSTEMD_DIR}/jasper-usbsink-init.service"
             "${SYSTEMD_DIR}/jasper-usbsink.service"
+            "${SYSTEMD_DIR}/jasper-usbsink-volume.service"
             "${SYSTEMD_DIR}/jts-audio.slice"
             "${SYSTEMD_DIR}/jasper-dongle-recover.service"
             "${SYSTEMD_DIR}/jasper-dac-init.service"
@@ -277,6 +278,9 @@ install_usbsink_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbsink.service" \
         "${SYSTEMD_DIR}/jasper-usbsink.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usbsink-volume.service" \
+        "${SYSTEMD_DIR}/jasper-usbsink-volume.service"
     install -m 0755 \
         "${REPO_DIR}/deploy/usbsink/jasper-usbsink-gadget-up" \
         /usr/local/sbin/jasper-usbsink-gadget-up
@@ -812,8 +816,8 @@ install_systemd_units() {
 
     # jasper-usbsink: fourth music source (USB gadget audio in). The
     # init unit owns the ConfigFS gadget descriptor lifecycle; the
-    # main service is the Python daemon that bridges gadget capture
-    # into usbsink_substream. The main unit is the disabled-by-default
+    # main service is the Rust daemon that bridges gadget capture into
+    # usbsink_substream. The main unit is the disabled-by-default
     # /sources intent unit; init is a required implementation subresource
     # that owns the host-visible gadget and is stopped explicitly on
     # off/parking paths. The dtoverlay must be set + Pi rebooted first
@@ -824,6 +828,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbsink.service" \
         "${SYSTEMD_DIR}/jasper-usbsink.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usbsink-volume.service" \
+        "${SYSTEMD_DIR}/jasper-usbsink-volume.service"
     install -m 0755 \
         "${REPO_DIR}/deploy/usbsink/jasper-usbsink-gadget-up" \
         /usr/local/sbin/jasper-usbsink-gadget-up

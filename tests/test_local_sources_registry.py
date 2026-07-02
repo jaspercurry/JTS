@@ -23,6 +23,7 @@ def test_every_declared_music_source_has_lifecycle():
 def test_usb_runtime_includes_host_visible_gadget_owner():
     lifecycle = local_source_lifecycle(Source.USBSINK)
     assert "jasper-usbsink-init.service" in lifecycle.runtime_units
+    assert "jasper-usbsink-volume.service" in lifecycle.runtime_units
 
 
 def test_usb_parking_includes_host_visible_gadget_owner():
@@ -32,6 +33,7 @@ def test_usb_parking_includes_host_visible_gadget_owner():
     units = local_source_park_units()
     assert "jasper-usbsink-init.service" in units
     assert "jasper-usbsink.service" in units
+    assert "jasper-usbsink-volume.service" in units
 
 
 def test_usb_restore_uses_intent_unit_not_init_unit():
@@ -46,6 +48,7 @@ def test_usb_restore_uses_intent_unit_not_init_unit():
 def test_audio_refresh_units_stay_at_renderer_boundary():
     units = local_source_audio_refresh_units()
     assert "jasper-usbsink.service" in units
+    assert "jasper-usbsink-volume.service" in units
     assert "jasper-usbsink-init.service" not in units
 
 

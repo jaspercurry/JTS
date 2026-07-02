@@ -96,6 +96,7 @@ pub struct OutputdState {
     content_bridge_rate_diff: Mutex<DllSnapshot>,
     local_content_pipe: Option<String>,
     local_content_pipe_requested_pipe_bytes: AtomicU64,
+    local_content_pipe_max_queued_bytes: AtomicU64,
     local_content_pipe_open: AtomicBool,
     local_content_pipe_open_failures: AtomicU64,
     local_content_pipe_read_failures: AtomicU64,
@@ -106,6 +107,9 @@ pub struct OutputdState {
     local_content_pipe_misaligned_bytes: AtomicU64,
     local_content_pipe_available_bytes: AtomicU64,
     local_content_pipe_actual_pipe_bytes: AtomicU64,
+    local_content_pipe_stale_drop_events: AtomicU64,
+    local_content_pipe_stale_drop_bytes: AtomicU64,
+    local_content_pipe_stale_drop_frames: AtomicU64,
     dac_content_fifo: Option<String>,
     dac_content_channel: String,
     dac_content_highpass_hz: Option<f64>,
@@ -263,6 +267,9 @@ impl OutputdState {
             local_content_pipe_requested_pipe_bytes: AtomicU64::new(
                 config.local_content_pipe_bytes as u64,
             ),
+            local_content_pipe_max_queued_bytes: AtomicU64::new(
+                config.local_content_pipe_bytes as u64,
+            ),
             local_content_pipe_open: AtomicBool::new(false),
             local_content_pipe_open_failures: AtomicU64::new(0),
             local_content_pipe_read_failures: AtomicU64::new(0),
@@ -273,6 +280,9 @@ impl OutputdState {
             local_content_pipe_misaligned_bytes: AtomicU64::new(0),
             local_content_pipe_available_bytes: AtomicU64::new(0),
             local_content_pipe_actual_pipe_bytes: AtomicU64::new(0),
+            local_content_pipe_stale_drop_events: AtomicU64::new(0),
+            local_content_pipe_stale_drop_bytes: AtomicU64::new(0),
+            local_content_pipe_stale_drop_frames: AtomicU64::new(0),
             dac_content_fifo: config.dac_content_fifo.clone(),
             dac_content_channel: config.dac_content_channel.as_str().to_string(),
             dac_content_highpass_hz: config.dac_content_highpass_hz,
@@ -604,6 +614,8 @@ impl OutputdState {
             .store(metrics.open, Ordering::Relaxed);
         self.local_content_pipe_requested_pipe_bytes
             .store(metrics.requested_pipe_bytes, Ordering::Relaxed);
+        self.local_content_pipe_max_queued_bytes
+            .store(metrics.max_queued_bytes, Ordering::Relaxed);
         self.local_content_pipe_open_failures
             .store(metrics.open_failures, Ordering::Relaxed);
         self.local_content_pipe_read_failures
@@ -622,6 +634,12 @@ impl OutputdState {
             .store(metrics.available_bytes, Ordering::Relaxed);
         self.local_content_pipe_actual_pipe_bytes
             .store(metrics.actual_pipe_bytes, Ordering::Relaxed);
+        self.local_content_pipe_stale_drop_events
+            .store(metrics.stale_drop_events, Ordering::Relaxed);
+        self.local_content_pipe_stale_drop_bytes
+            .store(metrics.stale_drop_bytes, Ordering::Relaxed);
+        self.local_content_pipe_stale_drop_frames
+            .store(metrics.stale_drop_frames, Ordering::Relaxed);
     }
 
     pub fn mark_content_bridge(&self, metrics: ContentBridgeMetrics) {
@@ -770,6 +788,13 @@ impl OutputdState {
             buf.push(',');
             push_kv_u64(
                 &mut buf,
+                "max_queued_bytes",
+                self.local_content_pipe_max_queued_bytes
+                    .load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
                 "available_bytes",
                 self.local_content_pipe_available_bytes
                     .load(Ordering::Relaxed),
@@ -813,6 +838,27 @@ impl OutputdState {
                 &mut buf,
                 "misaligned_bytes",
                 self.local_content_pipe_misaligned_bytes
+                    .load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "stale_drop_events",
+                self.local_content_pipe_stale_drop_events
+                    .load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "stale_drop_bytes",
+                self.local_content_pipe_stale_drop_bytes
+                    .load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "stale_drop_frames",
+                self.local_content_pipe_stale_drop_frames
                     .load(Ordering::Relaxed),
             );
             buf.push(',');
@@ -1952,6 +1998,7 @@ mod tests {
             open: true,
             frames_read: 512,
             requested_pipe_bytes: 4096,
+            max_queued_bytes: 4096,
             open_failures: 3,
             read_failures: 4,
             reopen_count: 5,
@@ -1961,6 +2008,9 @@ mod tests {
             misaligned_bytes: 6,
             available_bytes: 128,
             actual_pipe_bytes: 4096,
+            stale_drop_events: 9,
+            stale_drop_bytes: 1024,
+            stale_drop_frames: 128,
         });
 
         let j = state.snapshot_json();
@@ -1971,6 +2021,7 @@ mod tests {
             r#""format":"S32_LE""#,
             r#""open":true"#,
             r#""requested_pipe_bytes":4096"#,
+            r#""max_queued_bytes":4096"#,
             r#""available_bytes":128"#,
             r#""actual_pipe_bytes":4096"#,
             r#""reopen_count":5"#,
@@ -1978,6 +2029,9 @@ mod tests {
             r#""empty_periods":2"#,
             r#""partial_periods":1"#,
             r#""misaligned_bytes":6"#,
+            r#""stale_drop_events":9"#,
+            r#""stale_drop_bytes":1024"#,
+            r#""stale_drop_frames":128"#,
             r#""open_failures":3"#,
             r#""read_failures":4"#,
         ] {

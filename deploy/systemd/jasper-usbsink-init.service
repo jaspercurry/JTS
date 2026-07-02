@@ -12,9 +12,9 @@ Description=Jasper USB sink — ConfigFS UAC2 gadget setup
 # only when this unit starts, so RAM stays at baseline (~50 KB
 # dwc2 module) when the USB sink feature is disabled.
 #
-# Stop semantics: ExecStop tears down the ConfigFS tree, ExecStopPost
-# rmmods libcomposite + u_audio. After a clean stop the only resident
-# trace is dwc2 itself.
+# Stop semantics: ExecStop tears down the ConfigFS tree, ExecStopPost rmmods
+# usb_f_uac2, u_audio, then libcomposite in dependency order. After a clean
+# stop the only resident trace is dwc2 itself.
 After=systemd-modules-load.service sys-kernel-config.mount
 Before=jasper-usbsink.service
 ConditionPathExists=/sys/kernel/config
@@ -39,11 +39,11 @@ ExecStartPre=-/usr/local/sbin/jasper-usbsink-name-patch
 ExecStart=/usr/local/sbin/jasper-usbsink-gadget-up
 ExecStartPost=/usr/local/sbin/jasper-usbsink-wait-card 30
 ExecStop=/usr/local/sbin/jasper-usbsink-gadget-down
-# Best-effort rmmod — if u_audio or libcomposite is still in use
-# (e.g. a stale gadget descriptor or a stuck capture), the rmmod
-# fails harmlessly. The leading `-` tells systemd to ignore non-zero
-# exit. Either way the gadget descriptor is gone, so the host stops
-# seeing JTS as an audio device.
+# Best-effort rmmod — if the gadget modules are still in use (e.g. a stale
+# descriptor or a stuck capture), the rmmod fails harmlessly. The leading `-`
+# tells systemd to ignore non-zero exit. Either way the gadget descriptor is
+# gone, so the host stops seeing JTS as an audio device.
+ExecStopPost=-/sbin/rmmod usb_f_uac2
 ExecStopPost=-/sbin/rmmod u_audio
 ExecStopPost=-/sbin/rmmod libcomposite
 StandardOutput=journal

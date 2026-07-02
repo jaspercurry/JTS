@@ -11,6 +11,7 @@ controls.
 """
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -128,6 +129,36 @@ def test_discover_raises_on_amixer_missing_or_timeout():
         run_mock.side_effect = FileNotFoundError("amixer")
         with pytest.raises(VolumeBridgeUnavailable, match="amixer controls failed"):
             bridge._discover()
+
+
+@pytest.mark.asyncio
+async def test_run_retries_discovery_after_transient_mixer_miss():
+    bridge = VolumeBridge(
+        card_name="UAC2Gadget",
+        poll_interval_sec=60.0,
+        discovery_retry_interval_sec=0.01,
+    )
+    calls = 0
+
+    def discover() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise VolumeBridgeUnavailable("not enumerated yet")
+
+    with patch.object(bridge, "_discover", side_effect=discover):
+        task = asyncio.create_task(bridge.run())
+        try:
+            for _ in range(20):
+                if calls >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert calls >= 2
+            assert not task.done()
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
 
     with patch("subprocess.run") as run_mock:
         run_mock.side_effect = subprocess.TimeoutExpired(

@@ -512,7 +512,7 @@ JASPER_FANIN_INPUT_RESAMPLER=                                     # DEFAULT-OFF 
 JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink                         # which lane label the resampler arms on when enabled
 JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512                    # base ring-fill target for the armed lane (~10.7 ms at 48 k)
 JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM=500                   # hard pitch-warp clamp on the host↔DAC rate correction
-JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1024           # extra held headroom added to TARGET_FRAMES; actual DLL target is target+cushion. See "Per-input resampler" below.
+JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=2048           # extra held headroom added to TARGET_FRAMES; actual DLL target is target+cushion. See "Per-input resampler" below.
 JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES=0                        # input-ring burst headroom; 0 = derive from INPUT_BUFFER_FRAMES, non-zero pins an explicit capacity. Raise to absorb input bursts without adding latency (cuts residual overrun).
 ```
 
@@ -719,8 +719,9 @@ period are valid buffer state, not discontinuities; real discontinuities still
 reset the lane on PCM xrun (including xrun reported by `avail_update`) /
 explicit idle reset. When armed, the lane holds a small fixed fill
 (`JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES` +
-`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`, defaults 512 + 1024 =
-1536 frames ≈ 32 ms) instead of the 5–75 ms catch-up sawtooth, and the catch-up
+`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`, daemon defaults 512 + 2048 =
+2560 frames ≈ 53 ms; `usb_low_latency_48k` writes 512 + 1536 =
+2048 frames ≈ 42.7 ms after the 2026-07-01 jts.local lock test) instead of the 5–75 ms catch-up sawtooth, and the catch-up
 drain is bypassed *on that lane only*. Capture-follower sign: a host feeding
 faster than the DAC settles to `ratio > 1` (drain), holding the ring at target.
 The armed-lane read path drains every frame ALSA reports readable, including
@@ -730,17 +731,18 @@ is reached. The kernel lane should therefore never fill/overflow in steady
 state under the validated callback cadence.
 
 **Cold-start warm-up cushion (`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`,
-default 1024 = four periods).** On every (re)lock the resampler PRIMES its ring to
+daemon default 2048 = eight periods; `usb_low_latency_48k` route default 1536 =
+six periods).** On every (re)lock the resampler PRIMES its ring to
 `target + cushion` before producing any output, seats the read cursor at that
 deeper fill, and holds that deeper fill as the DLL target. The earlier c57 path
 seated deep but then drained the cushion back to `TARGET_FRAMES`; hardware
 showed that over-consumption can enter a cold-start limit cycle on the real
 bursty USB feed even though steady-input tests pass. Holding the cushion keeps
 the jittery first seconds of host arrival above the underfill→silence floor. The
-tradeoff is explicit: the cushion adds fixed latency while armed (four periods
-by default), but avoids a startup drain transient. The first locked render
+tradeoff is explicit: the cushion adds fixed latency while armed, but avoids a
+startup drain transient. The first locked render
 period is ramped from silence to de-click the cold zero→audio edge. The held
-four-period cushion is the current conservative DEFAULT-OFF candidate; hardware
+route cushion is the current conservative DEFAULT-OFF candidate; hardware
 must still prove `lock_count=1` / `unlock_count=0` on the bursty USB feed before
 it can become production-default behavior. The prime is bounded
 (`max_prime_periods` ≈ 1 s of periods): a slow-but-real producer that never
@@ -1154,24 +1156,11 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-06-30 (fan-in output-buffer policy now comes from
-`jasper.audio_runtime_plan`; numeric lab overrides live in
-`audio_runtime_overrides.json`, while coupling remains ordered-reconciler-owned;
-JTS2 AirPlay retune: fan-in output 1024 clean,
-512 failed fast with fan-in output xruns; low-latency Apple path offset is
-`-0.058667`; fan-in output 1024 is clean, 512 failed fast with fan-in output
-xruns. Per-input resampler state: DEFAULT-OFF behind
-`JASPER_FANIN_INPUT_RESAMPLER=enabled`; `mixer.rs::step` drains the armed lane
-through `read_into_resampler_and_render` before selection gating. The c57 build
-proved steady-state viability (DLL lock held and USB drops fell ~7x vs catch-up,
-1.80% to 0.26%) but was not production-clean: residual `dropped_full` came from
-not emptying the armed ALSA lane each period, and the cushion-drain warm-up
-backfired on the real bursty USB feed. Current follow-up drains readable ALSA
-frames to empty under a bounded recheck loop, including partial periods; resets
-on `avail_update`/`readi` xrun; holds warm-up cushion as part of the DLL target
-(`target + cushion`) instead of draining it back to the base target; and ramps
-the first locked period from silence. STATUS includes output-buffer delay plus
-nested `resampler` counters/fill. Pending hardware gates before default-on or
-catch-up replacement: `dropped_full=0` over a 10-min steady USB soak, 1 lock / 0
-unlocks / no audible cold-start silence, digital-tap audibility verification,
-jts.local and jts3 coverage, and the merge gate.)
+Last verified: 2026-07-01 (`usb_low_latency_48k` now route-owns the USB input
+resampler: target 512 + cushion 1536, held target 2048, ring 4096, max adjust
+500 ppm. jts.local tuning found the global 4096-frame fan-in input buffer still
+required: 512/1024 never locked, 2048 and 3072 lock-churned and generated
+silence. A clean 5-minute steady-state sample with Rust bridge 256/3, fan-in
+4096/1024, CamillaDSP 256/1536, and outputd 128/256 had zero new bridge xruns,
+zero bridge underflows, zero resampler relocks, and zero resampler silence.
+Route-latency click/capture evidence remains required before claiming p95/p99.)

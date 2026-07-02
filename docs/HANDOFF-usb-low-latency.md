@@ -1,14 +1,195 @@
-# Handoff: USB-in low latency — the USB-only (lean-fifo) path
+# Handoff: USB-in low latency — production `usb_low_latency_48k`
 
-What it takes to get the **lowest** latency for USB-in, and why the shared
-(fan-in) path can't get there. Written after the Phase 1 catch-up drop fix
-(2026-06-28), which made USB near-drop-free but revealed the latency cost.
+Current operational truth for the first production low-latency USB route.
+The shipped route is **not** the old lean-FIFO bypass plan: it keeps USB in
+the shared fan-in/Camilla/outputd protection path and earns any low-latency
+claim only through measured route-latency evidence.
+
+## Current Production Route (2026-07-02)
+
+`usb_low_latency_48k` is the claiming profile:
+
+```
+UAC2 gadget capture
+  → jasper-usbsink-audio (Rust, 256 frames / 3 periods, S32_LE→S16_LE high-word truncation)
+  → usbsink_substream
+  → jasper-fanin USB input resampler (target 512 + cushion 1536, ring 4096)
+  → fan-in output ALSA loopback
+  → CamillaDSP ALSA capture
+  → CamillaDSP protection/correction
+  → outputd content ALSA loopback
+  → outputd final DAC owner + final-speaker reference
+```
+
+Apple USB-C DAC tuned floor after the 2026-07-02 jts.local pass:
+
+| Layer | Shipped floor | Rejected lower setting |
+|---|---:|---|
+| Rust USB bridge | 256 frames / 3 periods | 128 frames, 256/2 |
+| fan-in input buffer | 4096 frames | 512/1024/2048/3072 failed lock/acquisition |
+| fan-in USB resampler | target 512 + cushion 1536 (held target 2048) | held target 1920 and below relocked/silenced |
+| CamillaDSP | chunksize 256 / target 1536 | target 1024 caused bridge playback xruns |
+| outputd | period 128 / DAC buffer 256 | 64/128 caused bridge playback xruns |
+| outputd content capture | buffer 1536 | 640/768/1024/1280 caused content xruns |
+
+Best values to keep for the current Apple USB-C DAC fallback:
+
+```text
+JASPER_USBSINK_BLOCK_FRAMES=256
+JASPER_USBSINK_RING_PERIODS=3
+JASPER_FANIN_INPUT_BUFFER_FRAMES=4096
+JASPER_FANIN_USB_RESAMPLER_TARGET_FRAMES=512
+JASPER_FANIN_USB_RESAMPLER_WARMUP_CUSHION_FRAMES=1536
+JASPER_FANIN_USB_RESAMPLER_RING_FRAMES=4096
+JASPER_FANIN_USB_RESAMPLER_MAX_ADJUST_PPM=500
+JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024
+JASPER_CAMILLA_CHUNKSIZE=256
+JASPER_CAMILLA_TARGET_LEVEL=1536
+JASPER_OUTPUTD_PERIOD_FRAMES=128
+JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256
+JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536
+JASPER_OUTPUTD_CONTENT_BRIDGE=direct
+JASPER_FANIN_CAMILLA_COUPLING=loopback
+```
+
+Clean hardware evidence so far: a 5-minute jts.local steady-state sample with
+outputd content buffer 1536 had zero new outputd content xruns/empty reads,
+zero outputd DAC xruns, zero fan-in output xruns, zero fan-in USB resampler
+relocks/unlocks/silence/overruns, and zero CamillaDSP warnings. A 2048-frame
+content-buffer sample was also clean. Lower content-buffer probes at 640, 768,
+1024, and 1280 each produced a content-side xrun. The 1280 test window also had
+a host-output handoff nearby, but the repeat still showed the same content-side
+failure mode with USB playback active, so 1280 is not accepted.
+
+This proves stability of the tuned loopback floor, **not** the 40 ms end-to-end
+p95 target. The configured buffers alone exceed that target: the fan-in USB
+resampler held target is 2048 frames (~42.7 ms at 48 kHz), before the observed
+fan-in output delay (~16-19 ms), outputd DAC delay (~10-11 ms), CamillaDSP
+targeting, and bridge/ALSA boundary costs. Doctor must keep failing
+`route latency evidence` until a click/capture artifact certifies p95 <= 40 ms
+with >=200 impulses over >=5 minutes; p99 promotion requires >=1000 impulses
+over >=30 minutes with jittered spacing and p99 <= 60 ms.
+
+The claiming route now hard-fails if it is combined with legacy low-latency lab
+transports: `JASPER_FANIN_CAMILLA_COUPLING=transport_pipe` or
+`JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match`. Those paths remain available only as
+default-off diagnostics until they are removed or replaced; they cannot carry
+`usb_low_latency_48k` certification.
+
+The artifact writer is `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact`.
+It does **not** measure audio by itself; the click-in/capture-back harness must
+produce real per-impulse latencies (JSON/CSV/text, milliseconds) or aggregate
+p95/p99 metrics. Run it with `sudo` on the Pi because it must read root-owned
+runtime env files and write `/var/lib/jasper/audio-validation/*.json`. The writer
+binds the measured numbers to the live `jasper.audio_runtime_plan` route identity
+and updates `latest.json`. Raw sample inputs are recorded with source path,
+byte count, and SHA-256 of the parsed file. Aggregate-only inputs require
+`--harness-id` so the artifact cannot anonymously certify externally computed
+percentiles.
+
+Quick gate example:
+
+```sh
+sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact \
+  --samples /var/lib/jasper/audio-validation/usb-route-latencies.json \
+  --duration-seconds 300 \
+  --harness-id jts-click-capture-v1 \
+  --route-health-ok
+```
+
+Promotion gate example:
+
+```sh
+sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact \
+  --samples /var/lib/jasper/audio-validation/usb-route-latencies.json \
+  --duration-seconds 1800 \
+  --impulse-spacing-jittered \
+  --harness-id jts-click-capture-v1 \
+  --measurement-id RUN_ID \
+  --route-health-ok \
+  --require-pass
+```
+
+Only pass `--route-health-ok` when the same measurement window had clean
+bridge/fan-in/outputd deltas: no bridge capture/playback xruns, no bridge
+underflow/overflow/drops, no fan-in USB resampler unlock/silence/overrun, and no
+outputd/fan-in xruns. Without that declaration, the artifact records
+`route_health_anomaly` and doctor rejects the low-latency claim. With the
+declaration, the artifact writer and doctor still compare live Rust bridge
+period/ring state and fan-in USB resampler lock/target state against the route
+identity; any mismatch records/fails the claim as live route-health drift.
+
+## Productization Plan
+
+The current stable loopback path is the fallback floor, not the final
+low-latency architecture. Productization means keeping the protection/correction
+invariant while replacing measured latency bottlenecks with frame-bounded,
+observable clock-domain crossings.
+
+1. **Ship the stable fallback without a low-latency pass.** Keep
+   `usb_low_latency_48k` route policy, Rust USB bridge, fan-in USB resampler,
+   CamillaDSP, and outputd final reference wired as above. Doctor must continue
+   to fail the low-latency claim until measured route evidence exists.
+2. **Build the real measurement harness.** `jasper-route-latency-artifact`
+   already binds samples to the live route identity; the missing producer is the
+   click-in/capture-back harness. It must capture enough impulses for the gate:
+   quick validation is >=200 impulses over >=5 minutes with p95 <= 40 ms;
+   promotion is >=1000 jittered impulses over >=30 minutes with p95 <= 40 ms and
+   p99 <= 60 ms. The same window must record clean bridge/fan-in/outputd deltas.
+3. **Replace the bottleneck, not the DAC owner.** The current loopback graph
+   cannot meet 40 ms because the USB resampler held target alone is ~42.7 ms.
+   The next architecture step is a frame-bounded transport at one or both
+   ALSA-loopback boundaries. Preserve these contracts:
+   - outputd remains the sole physical DAC owner and final-reference publisher;
+   - CamillaDSP remains in the protection/correction path;
+   - TTS/cues still enter the same protected graph and are included in the final
+     reference;
+   - every foreign clock has one explicit rate matcher, surfaced in `/state`.
+4. **Keep source claims honest.** USB can have a low-latency profile because it is
+   wired and local. AirPlay, Spotify, Bluetooth, DLNA, and future network sources
+   stay buffered and observable; they must not inherit USB's route claim. Their
+   `/state` surfaces should report fill/target/lock/ppm/xruns, not pretend to be
+   5 ms clients.
+5. **Keep DAC support declaration-driven.** A new DAC earns low-latency defaults
+   through `DacProfile.latency_floor` plus hardware evidence. Unknown DACs stay on
+   conservative defaults. Composite DACs need their own clock/child-identity
+   contract before they can claim this route.
+6. **Make AEC a profile contract, not a footnote.** The final AEC reference is
+   outputd's post-Camilla/post-protection electrical signal. Any bit-perfect or
+   bypass profile must explicitly declare AEC degraded/unsupported unless it
+   proves final-reference truth. Software AEC must align mic-clock capture to the
+   outputd/DAC reference domain; chip AEC needs a hardware profile that proves the
+   chip reference is coherent with the actual speaker output.
+7. **Promote only with evidence.** A route can move from fallback to production
+   low-latency only after quick validation, promotion validation, and a 24-hour
+   soak with no sustained USB resampler unlocks, no ring rails, no DLL clamp or
+   resync storm, and no outputd/fan-in xruns.
+
+## Legacy Cleanup Plan
+
+Remove legacy only after the replacement is live, measured, and covered by
+doctor/state/tests. Until then, keep old paths default-off or historical so the
+speaker remains recoverable.
+
+| Legacy path | Status | Cleanup trigger |
+|---|---|---|
+| Python/PortAudio USB audio bridge | Explicit lab only: exposed as `jasper-usbsink-python-lab`, refuses without `JASPER_USBSINK_PYTHON_LAB_ALLOW=1`, and not allowed in claiming route | Delete after Rust bridge has any missing hotplug/state coverage and no tests/docs need the old callback model |
+| lean FIFO USB-only route (`JASPER_LEAN_LANE`, `USBSINK_OUTPUT_MODE=fifo`, lean RawFile capture) | Historical/deferred; solo-only and bypasses fan-in mixing | Remove after a shared frame-bounded route either meets 40/60 or the project explicitly chooses a separate solo profile with AEC-degraded semantics |
+| `transport_pipe` fan-in↔Camilla dual FIFO coupling | Failed/default-off lab path for low latency; Pi page size makes it too deep | Remove or quarantine after the new frame-bounded transport replaces its diagnostic value |
+| outputd `rate_match` content bridge for USB | Rejected for this route; produced content xruns/EAGAIN/partials in tuning | Keep only as a DAC/content clock-slip lab tool, or delete once no active diagnostic depends on it |
+| stale low-latency prose and component estimates | Historical context only | Compress into dated appendices as product docs converge on measured route artifacts |
+
+Before deleting any path, add a guard test that the production
+`usb_low_latency_48k` route no longer emits or accepts its env knobs, and run a
+Pi-side doctor pass to prove the fallback route still recovers.
+
+## Historical Lean-FIFO Plan
 
 ## The latency problem (measured, shared/fan-in path)
 
-With USB routed through the shared mixer (the one-path design), the steady-state
-Mac→DAC budget measured on jts.local is **~70–100 ms, and variable** — not the
-<60 ms target. Contributors:
+Before the Rust bridge plus fan-in input resampler, USB routed through the shared
+mixer had a steady-state Mac→DAC budget measured around **~70–100 ms, and
+variable**. Contributors:
 
 | Stage | Latency | Note |
 |---|---|---|
@@ -16,17 +197,18 @@ Mac→DAC budget measured on jts.local is **~70–100 ms, and variable** — not
 | usbsink→fan-in snd-aloop hop | ~one ring | first loopback |
 | fan-in→CamillaDSP snd-aloop hop | ~one ring | second loopback (current `loopback` coupling) |
 | CamillaDSP chunksize | ~5–20 ms | depends on the active chunksize |
-| jasper-outputd DAC buffer | **~64 ms shipped default** | `snd_pcm_delay`, buffer/period 3072/1024 (the conservative global default); the Apple-dongle codified floor is 512/256 ≈ 20.7 ms |
+| jasper-outputd DAC buffer | **~64 ms shipped default** | `snd_pcm_delay`, buffer/period 3072/1024 (the conservative global default); the Apple-dongle codified floor is 256/128 ≈ 10 ms |
 
 Two structural costs dominate: the **catch-up sawtooth** (a drop-control tradeoff —
 the high-water of 14 periods is sized to never false-trigger a healthy AirPlay
 burst+stall, so it inherently buffers up to ~75 ms on the USB lane) and the **two
 snd-aloop hops**. Neither is cheaply removable on the shared path.
 
-## The USB-only answer: the lean-fifo path
+## The Former USB-only Answer: the lean-fifo path
 
-When USB is the *sole* active source, route it through the already-built lean lane
-instead of the mixer:
+This remains historical/deferred. It is no longer the first production route.
+When USB is the *sole* active source, it could route through the already-built
+lean lane instead of the mixer:
 
 ```
 usbsink (OUTPUT_MODE=fifo) → /run/jasper-usbsink/lean.pipe → CamillaDSP RawFile-capture
@@ -42,7 +224,11 @@ budget: CamillaDSP chunksize (~5 ms) + a small fifo + outputd DAC (~15–21 ms) 
 Tradeoff: the lean lane **bypasses the fan-in mixer**, so it is SOLO-only — AirPlay/
 Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared.
 
-## What needs to be done (ordered)
+## Historical Lean-FIFO Worklist (Superseded)
+
+This list records the old solo-lane plan for archaeology. It is not the current
+productionization sequence; use [Productization Plan](#productization-plan)
+above for current work.
 
 1. **Arm the lean lane through the mux ladder, not raw env.** DONE: mux now
    computes one shared source-route decision from
@@ -62,8 +248,9 @@ Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared
    The shipped *global* default stays conservative — CamillaDSP chunk 1024 / target 2048,
    outputd period 1024 / dac_buffer 3072 (~64 ms) — and any DAC with no declared floor
    keeps it (non-breaking). The **Apple-dongle profile** declares the measured floor
-   CamillaDSP chunk 256 / target 1536, outputd period 256 / dac_buffer 512 (≈ 20.7 ms),
-   the value the jts.local `jasper.env` override previously produced by hand. The floor is
+   CamillaDSP chunk 256 / target 1536, outputd period 128 / dac_buffer 256 (≈ 10 ms),
+   after the 2026-07-01 jts.local tuning pass rejected Camilla target 1024 and
+   outputd period 64 / dac_buffer 128 due USB bridge playback xruns. The floor is
    a CamillaDSP (chunksize, target_level) PAIR — target must be ≥ 4x chunk so the resampler
    has fill headroom (chunk 256 → target 1536 on the Apple profile), enforced in
    `LatencyFloor.__post_init__`.
@@ -97,12 +284,11 @@ Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared
      drops the keys so a stale floor from a previously-attached DAC cannot linger.
    DEFERRED: tier-aware chunksize (Pi 5 low / Pi Zero safe) and an install-time xrun
    auto-sweep — not yet built.
-4. **Measure end-to-end on jts.local** (Mac→USB, solo): target <60 ms, ideally <40 ms,
-   stable; confirm drop-free under sustained play + transitions; soak.
-5. **Cross-platform + cross-DAC reliability** (the product bar): repeat the solo lean-fifo
-   measurement on Windows + a second DAC. The lean-fifo's correctness rests on CamillaDSP's
-   async resampler (host-agnostic, DAC-agnostic — it targets whatever DAC clock), so it
-   should hold, but prove it.
+4. **Historical measurement target:** Mac→USB solo was aiming for <60 ms,
+   ideally <40 ms, plus sustained-play and transition soak. The current route
+   target is stricter and artifact-based: p95 <= 40 ms, promotion p99 <= 60 ms.
+5. **Historical cross-platform reliability:** repeat the solo lean-fifo
+   measurement on Windows + a second DAC only if this solo profile is revived.
 
 ## The shared-path alternative: per-input resampler (DEFAULT-OFF, first cut)
 
@@ -130,11 +316,11 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-06-30 (mux lean/adaptive consumers now share
-`jasper.audio_runtime_plan.decide_source_low_latency_route`; lean RawFile
-capture kwargs are plan-owned via `lean_capture_kwargs`; #27 latency-floor
-codification still wires emitters to the active profile floor end-to-end with
-corrected operator-override precedence. Shared-path per-input resampler
-alternative lives in `rust/jasper-fanin/src/lane_resampler.rs`, DEFAULT-OFF
-behind `JASPER_FANIN_INPUT_RESAMPLER=enabled`, and still requires the hardware
-drop-free/glitch-free validation described above.)
+Last verified: 2026-07-02 (jts.local clean 5-minute steady-state sample passed
+with Rust bridge 256/3, fan-in input buffer 4096, USB resampler held target
+2048, CamillaDSP 256/1536, outputd 128/256, outputd content buffer 1536, and
+direct ALSA loopback coupling. Route-latency click/capture artifact is still
+missing, so doctor correctly fails the low-latency claim.
+`sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact` now exists to bind
+measured latency samples to the live route identity once the click/capture
+harness produces them.)

@@ -1213,8 +1213,14 @@ widen_control_secret_env_modes() {
         chmod 0755 "${ENV_DIR}" 2>/dev/null || true
     fi
     if [[ -f "${jasper_env}" ]]; then
-        chgrp jasper "${jasper_env}" 2>/dev/null || true
-        chmod 0640 "${jasper_env}" 2>/dev/null || true
+        if ! chgrp jasper "${jasper_env}" 2>/dev/null; then
+            echo "  ERROR: failed to chgrp ${jasper_env} to jasper" >&2
+            return 1
+        fi
+        if ! chmod 0640 "${jasper_env}" 2>/dev/null; then
+            echo "  ERROR: failed to chmod ${jasper_env} to 0640" >&2
+            return 1
+        fi
     fi
 
     # The wizard-written secret files (under /var/lib/jasper, already group

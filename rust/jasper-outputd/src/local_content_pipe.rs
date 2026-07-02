@@ -23,6 +23,7 @@ pub struct LocalContentPipeMetrics {
     pub open: bool,
     pub frames_read: u64,
     pub requested_pipe_bytes: u64,
+    pub max_queued_bytes: u64,
     pub open_failures: u64,
     pub read_failures: u64,
     pub reopen_count: u64,
@@ -32,6 +33,9 @@ pub struct LocalContentPipeMetrics {
     pub misaligned_bytes: u64,
     pub available_bytes: u64,
     pub actual_pipe_bytes: u64,
+    pub stale_drop_events: u64,
+    pub stale_drop_bytes: u64,
+    pub stale_drop_frames: u64,
 }
 
 pub struct LocalContentPipe {
@@ -40,7 +44,9 @@ pub struct LocalContentPipe {
     period_bytes: usize,
     frame_bytes: usize,
     requested_pipe_bytes: u32,
+    max_queued_bytes: usize,
     read_buf: Vec<u8>,
+    drop_buf: Vec<u8>,
     saw_payload: bool,
     metrics: LocalContentPipeMetrics,
 }
@@ -55,17 +61,21 @@ impl LocalContentPipe {
         ensure_fifo(path)?;
         let frame_bytes = (channels as usize) * S32_BYTES;
         let period_bytes = (period_frames as usize) * frame_bytes;
+        let max_queued_bytes = (requested_pipe_bytes as usize).max(period_bytes);
         Ok(Self {
             path: path.to_string(),
             fd: None,
             period_bytes,
             frame_bytes,
             requested_pipe_bytes,
+            max_queued_bytes,
             read_buf: vec![0u8; period_bytes],
+            drop_buf: vec![0u8; period_bytes],
             saw_payload: false,
             metrics: LocalContentPipeMetrics {
                 enabled: true,
                 requested_pipe_bytes: requested_pipe_bytes as u64,
+                max_queued_bytes: max_queued_bytes as u64,
                 ..LocalContentPipeMetrics::default()
             },
         })
@@ -88,7 +98,7 @@ impl LocalContentPipe {
             return Ok(0);
         };
 
-        self.metrics.available_bytes = pipe_available_bytes(fd).unwrap_or(0);
+        self.drop_stale_queued_audio(fd)?;
         self.read_buf.fill(0);
         let mut total = 0usize;
         while total < self.period_bytes {
@@ -145,6 +155,67 @@ impl LocalContentPipe {
         Ok(frames)
     }
 
+    fn drop_stale_queued_audio(&mut self, fd: RawFd) -> io::Result<()> {
+        let available = pipe_available_bytes(fd).unwrap_or(0);
+        self.metrics.available_bytes = available;
+        let Ok(available_bytes) = usize::try_from(available) else {
+            return Ok(());
+        };
+        if available_bytes <= self.max_queued_bytes {
+            return Ok(());
+        }
+        let excess = available_bytes - self.max_queued_bytes;
+        let mut to_drop = round_up_to_frame(excess, self.frame_bytes).min(available_bytes);
+        let mut dropped = 0usize;
+        while to_drop > 0 {
+            let chunk = to_drop.min(self.drop_buf.len());
+            let n = unsafe {
+                libc::read(
+                    fd,
+                    self.drop_buf[..chunk].as_mut_ptr() as *mut libc::c_void,
+                    chunk,
+                )
+            };
+            if n > 0 {
+                let n = n as usize;
+                dropped += n;
+                to_drop = to_drop.saturating_sub(n);
+                continue;
+            }
+            if n == 0 {
+                break;
+            }
+            let err = io::Error::last_os_error();
+            match err.raw_os_error() {
+                Some(libc::EAGAIN) => break,
+                Some(libc::EINTR) => continue,
+                _ => {
+                    self.metrics.read_failures = self.metrics.read_failures.saturating_add(1);
+                    self.close_fd();
+                    return Err(err);
+                }
+            }
+        }
+        if dropped > 0 {
+            let usable = dropped - (dropped % self.frame_bytes);
+            if usable != dropped {
+                self.metrics.misaligned_bytes = self
+                    .metrics
+                    .misaligned_bytes
+                    .saturating_add((dropped - usable) as u64);
+            }
+            self.metrics.stale_drop_events = self.metrics.stale_drop_events.saturating_add(1);
+            self.metrics.stale_drop_bytes =
+                self.metrics.stale_drop_bytes.saturating_add(usable as u64);
+            self.metrics.stale_drop_frames = self
+                .metrics
+                .stale_drop_frames
+                .saturating_add((usable / self.frame_bytes) as u64);
+        }
+        self.metrics.available_bytes = pipe_available_bytes(fd).unwrap_or(0);
+        Ok(())
+    }
+
     fn open_if_needed(&mut self) {
         if self.fd.is_some() {
             return;
@@ -175,6 +246,10 @@ impl LocalContentPipe {
         self.metrics.reopen_count = self.metrics.reopen_count.saturating_add(1);
         self.metrics.open = true;
         self.metrics.actual_pipe_bytes = pipe_capacity_bytes(fd).unwrap_or(0);
+        if self.metrics.actual_pipe_bytes > 0 {
+            self.max_queued_bytes = self.metrics.actual_pipe_bytes as usize;
+            self.metrics.max_queued_bytes = self.metrics.actual_pipe_bytes;
+        }
         eprintln!(
             "event=outputd.local_content_pipe.opened pipe={} requested_pipe_bytes={} actual_pipe_bytes={}",
             self.path, self.metrics.requested_pipe_bytes, self.metrics.actual_pipe_bytes
@@ -281,6 +356,16 @@ fn s32le_to_i16(bytes: &[u8]) -> i16 {
     (sample >> 16) as i16
 }
 
+fn round_up_to_frame(bytes: usize, frame_bytes: usize) -> usize {
+    if frame_bytes == 0 || bytes == 0 {
+        return bytes;
+    }
+    bytes
+        .saturating_add(frame_bytes - 1)
+        .saturating_div(frame_bytes)
+        .saturating_mul(frame_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,6 +456,59 @@ mod tests {
         assert_eq!(pipe.metrics().startup_empty_periods, 0);
         assert_eq!(pipe.metrics().empty_periods, 1);
 
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn read_period_drops_oldest_frames_above_queue_budget() {
+        let dir =
+            std::env::temp_dir().join(format!("outputd-local-pipe-drop-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("content.pipe");
+        let _ = std::fs::remove_file(&path);
+        ensure_fifo(path.to_str().unwrap()).unwrap();
+
+        let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        let writer_fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+        assert!(writer_fd >= 0);
+        let mut writer = unsafe { std::fs::File::from_raw_fd(writer_fd) };
+
+        let mut pipe = LocalContentPipe::new(path.to_str().unwrap(), 2, 2, 32).unwrap();
+        pipe.open_if_needed();
+        assert!(pipe.metrics().actual_pipe_bytes >= 32);
+        pipe.max_queued_bytes = 32;
+        pipe.metrics.max_queued_bytes = 32;
+        for period in 0..5i16 {
+            let samples = [
+                period * 10,
+                period * 10 + 1,
+                period * 10 + 2,
+                period * 10 + 3,
+            ];
+            for sample in samples {
+                writer
+                    .write_all(&((sample as i32) << 16).to_le_bytes())
+                    .unwrap();
+            }
+        }
+
+        let mut out = [0i16; 4];
+        let frames = pipe.read_period(&mut out).unwrap();
+        assert_eq!(frames, 2);
+        assert_eq!(out, [30, 31, 32, 33]);
+        assert_eq!(pipe.metrics().max_queued_bytes, 32);
+        assert_eq!(pipe.metrics().stale_drop_events, 1);
+        assert_eq!(pipe.metrics().stale_drop_bytes, 48);
+        assert_eq!(pipe.metrics().stale_drop_frames, 6);
+        assert_eq!(pipe.metrics().available_bytes, 32);
+
+        let frames = pipe.read_period(&mut out).unwrap();
+        assert_eq!(frames, 2);
+        assert_eq!(out, [40, 41, 42, 43]);
+        assert_eq!(pipe.metrics().stale_drop_events, 1);
+
+        drop(writer);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
     }
