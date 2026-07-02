@@ -393,8 +393,8 @@ impl TapState {
     /// `sample_rate` and the auto-disarm horizon into a wall-clock deadline
     /// from `arm_epoch_ms` (observability only).
     ///
-    /// Ordering: the knob stores are Relaxed, then `generation` is bumped with
-    /// Release, then `armed` is set Relaxed last. The audio thread's knob
+    /// Ordering: the knob stores are Relaxed, then `armed` is set Relaxed, then
+    /// `generation` is bumped with Release LAST. The audio thread's knob
     /// visibility comes from its Acquire load of `generation` (see
     /// `generation_acquire` / `tap_over_read`), which pairs with the Release
     /// bump here — NOT from the `armed` load, which is Relaxed on both sides.
@@ -404,6 +404,17 @@ impl TapState {
     /// first period or two after arm, the audio thread may run on the previous
     /// generation's (or default) knobs before it notices the generation
     /// changed — harmless because arm precedes playback by human-seconds.
+    ///
+    /// `armed` is stored BEFORE the generation bump on purpose. The publisher
+    /// (`TapPublisher::poll`) reads the generation first, then `tap.armed()`,
+    /// and only (re)opens the sink when the generation advanced. If `armed`
+    /// were set AFTER the generation bump, a publisher poll landing in the
+    /// instruction-scale window between the two stores would consume the new
+    /// generation while still seeing `armed==false`, leave `sink=None`, and
+    /// then never re-open until the NEXT arm — the JSONL would stay empty
+    /// (`armed:true, events_written:0`) with dropped climbing once the channel
+    /// filled. Setting `armed` first closes that race: a poll that observes the
+    /// new generation is guaranteed to also observe `armed==true`.
     pub fn arm(&self, cfg: &TapConfig, sample_rate: u32, arm_epoch_ms: u64) {
         let refractory_frames = ((cfg.refractory_ms as u128) * (sample_rate as u128) / 1000) as u64;
         let auto_disarm_at =
@@ -418,10 +429,11 @@ impl TapState {
             .store(auto_disarm_at, Ordering::Relaxed);
         self.events_written.store(0, Ordering::Relaxed);
         self.events_dropped.store(0, Ordering::Relaxed);
-        // Bump generation with Release so the knob stores above are visible to
-        // any thread that Acquire-loads the generation after seeing armed.
-        self.generation.fetch_add(1, Ordering::Release);
         self.armed.store(true, Ordering::Relaxed);
+        // Bump generation with Release LAST so any thread that Acquire-loads the
+        // new generation also sees the knob stores AND armed==true above (closes
+        // the publisher arm race — see the ordering note in this method's doc).
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     /// Disarm the tap (idempotent). Leaves counters intact for the disarm reply
