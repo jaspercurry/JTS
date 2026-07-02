@@ -458,6 +458,196 @@ def test_usbsink_low_latency_contract_fails_mismatched_exposed_attr(
 
 
 # ----------------------------------------------------------------------
+# check_usbsink_host_clock — Stage 1 host-slaved USB clock ladder
+# telemetry (default-OFF; this check never fails, it only surfaces
+# evidence).
+# ----------------------------------------------------------------------
+
+
+def _host_clock_check_with_state(tmp_path, blob: dict):
+    """Write ``blob`` to a tmp_path state.json, point
+    /run/jasper-usbsink/state.json at it via the same Path-patching
+    idiom every other check_usbsink_* test uses, and run the check
+    while that patch is active."""
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps(blob))
+    with patch.object(doctor.usbsink, "Path") as mock_path:
+        def _path(p):
+            if p == "/run/jasper-usbsink/state.json":
+                return state_path
+            return Path(p)
+        mock_path.side_effect = _path
+        return doctor.check_usbsink_host_clock()
+
+
+def test_host_clock_disabled_service_skip(monkeypatch):
+    _patch_active(monkeypatch, False)
+    r = doctor.check_usbsink_host_clock()
+    assert r.status == "ok"
+    assert "skipped" in r.detail.lower()
+
+
+def test_host_clock_missing_state_file_skips(monkeypatch, tmp_path):
+    _patch_active(monkeypatch, True)
+    missing = tmp_path / "does-not-exist.json"
+    with patch.object(doctor.usbsink, "Path") as mock_path:
+        def _path(p):
+            if p == "/run/jasper-usbsink/state.json":
+                return missing
+            return Path(p)
+        mock_path.side_effect = _path
+        r = doctor.check_usbsink_host_clock()
+    assert r.status == "ok"
+    assert "usbsink state" in r.detail
+
+
+def test_host_clock_corrupt_state_file_skips(monkeypatch, tmp_path):
+    _patch_active(monkeypatch, True)
+    state_path = tmp_path / "state.json"
+    state_path.write_text("not json")
+    with patch.object(doctor.usbsink, "Path") as mock_path:
+        def _path(p):
+            if p == "/run/jasper-usbsink/state.json":
+                return state_path
+            return Path(p)
+        mock_path.side_effect = _path
+        r = doctor.check_usbsink_host_clock()
+    assert r.status == "ok"
+    assert "usbsink state" in r.detail
+
+
+def test_host_clock_block_absent_is_pre_stage1_ok(monkeypatch, tmp_path):
+    _patch_active(monkeypatch, True)
+    r = _host_clock_check_with_state(tmp_path, {
+        "implementation": "rust",
+        "period_frames": 256,
+    })
+    assert r.status == "ok"
+    assert "pre-Stage-1" in r.detail
+
+
+def test_host_clock_disabled_is_ok(monkeypatch, tmp_path):
+    _patch_active(monkeypatch, True)
+    r = _host_clock_check_with_state(tmp_path, {
+        "host_clock": {
+            "enabled": False,
+            "ladder": "disabled",
+            "pitch_ppm_commanded": 0.0,
+            "fill_frames": 0,
+            "fill_slope_ppm": 0.0,
+            "fill_variance": 0.0,
+            "dll": {"err_frames": 0.0, "locked": False},
+            "probe": {"last_result": "none", "response_ratio": None},
+            "demotions": 0,
+            "transitions": 0,
+            "last_transition_reason": "startup",
+        },
+    })
+    assert r.status == "ok"
+    assert "disabled" in r.detail
+    assert "JASPER_USBSINK_HOST_CLOCK=enabled" in r.detail
+
+
+def test_host_clock_l0_locked_is_ok_with_fill_target(monkeypatch, tmp_path):
+    _patch_active(monkeypatch, True)
+    monkeypatch.setenv("JASPER_USBSINK_HOST_CLOCK_TARGET_FILL_FRAMES", "384")
+    r = _host_clock_check_with_state(tmp_path, {
+        "host_clock": {
+            "enabled": True,
+            "ladder": "l0_locked",
+            "pitch_ppm_commanded": -42.5,
+            "fill_frames": 380,
+            "fill_slope_ppm": 1.2,
+            "fill_variance": 4.0,
+            "dll": {"err_frames": -4.0, "locked": True},
+            "probe": {"last_result": "pass", "response_ratio": 0.91},
+            "demotions": 0,
+            "transitions": 2,
+            "last_transition_reason": "probe_pass",
+        },
+    })
+    assert r.status == "ok"
+    assert "ladder=l0_locked" in r.detail
+    assert "pitch_ppm=-42.5" in r.detail
+    assert "fill=380/384" in r.detail
+
+
+def test_host_clock_l2_fallback_is_warn_with_reason_and_demotions(
+    monkeypatch, tmp_path,
+):
+    _patch_active(monkeypatch, True)
+    r = _host_clock_check_with_state(tmp_path, {
+        "host_clock": {
+            "enabled": True,
+            "ladder": "l2_fallback",
+            "pitch_ppm_commanded": 0.0,
+            "fill_frames": 900,
+            "fill_slope_ppm": 55.0,
+            "fill_variance": 1200.0,
+            "dll": {"err_frames": 500.0, "locked": False},
+            "probe": {"last_result": "fail", "response_ratio": 0.1},
+            "demotions": 3,
+            "transitions": 7,
+            "last_transition_reason": "probe_fail",
+        },
+    })
+    assert r.status == "warn"
+    assert "ladder=l2_fallback" in r.detail
+    assert "reason=probe_fail" in r.detail
+    assert "lifetime demotions=3" in r.detail
+
+
+def test_host_clock_l1_warn_is_warn(monkeypatch, tmp_path):
+    _patch_active(monkeypatch, True)
+    r = _host_clock_check_with_state(tmp_path, {
+        "host_clock": {
+            "enabled": True,
+            "ladder": "l1_warn",
+            "pitch_ppm_commanded": 2600.0,
+            "fill_frames": 500,
+            "fill_slope_ppm": 3.0,
+            "fill_variance": 10.0,
+            "dll": {"err_frames": 116.0, "locked": True},
+            "probe": {"last_result": "pass", "response_ratio": 0.8},
+            "demotions": 0,
+            "transitions": 1,
+            "last_transition_reason": "probe_pass",
+        },
+    })
+    assert r.status == "warn"
+    assert "ladder=l1_warn" in r.detail
+
+
+def test_host_clock_missing_target_env_falls_back_to_default(
+    monkeypatch, tmp_path,
+):
+    """No JASPER_USBSINK_HOST_CLOCK_TARGET_FILL_FRAMES set → the
+    check must still render a fill=.../384 detail using the same
+    default the Rust daemon uses, not crash or show a blank target."""
+    _patch_active(monkeypatch, True)
+    monkeypatch.delenv(
+        "JASPER_USBSINK_HOST_CLOCK_TARGET_FILL_FRAMES", raising=False,
+    )
+    r = _host_clock_check_with_state(tmp_path, {
+        "host_clock": {
+            "enabled": True,
+            "ladder": "l0_locked",
+            "pitch_ppm_commanded": 0.0,
+            "fill_frames": 300,
+            "fill_slope_ppm": 0.0,
+            "fill_variance": 0.0,
+            "dll": {"err_frames": 0.0, "locked": True},
+            "probe": {"last_result": "pass", "response_ratio": 1.0},
+            "demotions": 0,
+            "transitions": 1,
+            "last_transition_reason": "probe_pass",
+        },
+    })
+    assert r.status == "ok"
+    assert "fill=300/384" in r.detail
+
+
+# ----------------------------------------------------------------------
 # check_usbsink_active_libcomposite — the asymmetric mirror of the
 # "service inactive + libcomposite loaded" RAM-drift check.
 # ----------------------------------------------------------------------

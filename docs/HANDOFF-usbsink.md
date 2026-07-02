@@ -57,7 +57,11 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 >
 > The bridge publishes `/run/jasper-usbsink/state.json` with
 > `{playing, preempted, host_connected, rms_dbfs, ring, counters,
-> period_frames, updated_at}`.
+> period_frames, updated_at, tap, host_clock}`. `tap` (the Stage 0
+> impulse-click ingress evidence tap) and `host_clock` (the Stage 1
+> default-OFF host-slaved USB clock ladder/telemetry) are documented in
+> [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md), not here — that
+> doc is their single source of truth.
 > `rms_dbfs` is a finite JSON number or `null` before any finite sample exists;
 > the bridge may use `-inf` internally, but state files and `/state` stay
 > standards-compliant JSON.
@@ -1772,4 +1776,7 @@ fan-in USB resampler held target 2048, fan-in output 1024, CamillaDSP 256/1536,
 outputd 128/256, outputd content buffer 1536, direct ALSA loopback. Route-latency
 evidence remains missing, so doctor correctly fails the low-latency claim. The
 old Python/PortAudio bridge and lean FIFO path remain historical/deferred, not
-the claiming production data plane.)
+the claiming production data plane. The state.json field list above now
+includes `tap` and `host_clock`, both pointed at
+[HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
+source of truth per the documentation paradigm.)

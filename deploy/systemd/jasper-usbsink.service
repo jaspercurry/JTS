@@ -51,6 +51,18 @@ EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/usbsink.env
 ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
 ExecStart=/opt/jasper/bin/jasper-usbsink-audio
+# Stage 1 host-slaved USB clock (default-OFF, see docs/HANDOFF-usb-low-latency.md
+# "Host-slaved USB clock"): belt-and-braces for the pitch-neutrality safety
+# invariant. The daemon itself resets the gadget's "Capture Pitch 1000000" ctl
+# to neutral on every normal exit path, but SIGKILL / OOM-kill / watchdog abort
+# skip that in-process cleanup — a host must never stay slaved to a command
+# from a daemon that is no longer running. Runs unconditionally (even when the
+# feature is disabled) because a stale non-neutral value could only exist if
+# the feature was enabled and the daemon died uncleanly. `-` ignores failure
+# when the card is absent (disabled bridge, gadget torn down, or a different
+# capture device); the card name matches the JASPER_USBSINK_MIXER_CARD default
+# (no underscore) — an operator overriding that card also overrides this line.
+ExecStopPost=-/usr/bin/amixer -c UAC2Gadget cset iface=PCM,name='Capture Pitch 1000000' 1000000
 Restart=on-failure
 RestartSec=2s
 Nice=-10
