@@ -219,6 +219,108 @@ static void test_no_reader_free_run_drop(void) {
     unlink(path);
 }
 
+static void test_no_reader_pointer_keeps_advancing(void) {
+    // B1 regression (Blocker): the honest-pointer fix must NOT re-break the Q1
+    // free-run invariant. With no live reader, the writer drop-OLDEST path
+    // advances BOTH write_seq and read_seq, so occupancy stays bounded at
+    // n_slots (never pinned "full forever" with read_seq stuck at 0). That is
+    // what keeps the ioplug's in_flight bounded and hw_ptr = appl_frames -
+    // in_flight ADVANCING, so ALSA's avail never sticks at 0 and aplay/Camilla
+    // never wedge on a readerless ring. Before the fix, occupancy pinned at
+    // n_slots forever, in_flight pinned at buffer_size, avail pinned at 0 -> the
+    // writer wedged waiting for a pointer that could never move.
+    char path[256];
+    tmp_path(path, sizeof(path), "noreaderptr");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    const uint32_t period = g.period_frames;
+
+    uint64_t appl_frames = 0;   // mirrors the ioplug accept counter
+    uint64_t prev_hw_ptr = 0;   // hw_ptr = appl_frames - in_flight (ioplug pointer)
+    // Publish well past the ring depth. Every publish must return promptly (no
+    // hang) and the derived hw_ptr must be monotonically non-decreasing AND
+    // strictly advance once the ring is full (the drop-oldest lap frees a slot
+    // per publish).
+    for (int i = 0; i < 50; i++) {
+        jts_ring_publish_result_t pr = jts_ring_writer_publish(&w, s);
+        CHECK(pr == JTS_RING_PUBLISH_OK || pr == JTS_RING_PUBLISH_DROPPED,
+              "publish returns (never hangs) with no reader");
+        appl_frames += period;
+        uint64_t in_flight = jts_ring_writer_occupancy_slots(&w) * (uint64_t)period;
+        // Occupancy stays bounded at the ring depth — it is NOT pinned to the
+        // buffer with read_seq stuck at 0.
+        CHECK(in_flight <= (uint64_t)g.n_slots * period,
+              "in_flight bounded by ring depth (occupancy not pinned)");
+        uint64_t hw_ptr = appl_frames - in_flight;
+        CHECK(hw_ptr >= prev_hw_ptr, "hw_ptr monotonic non-decreasing (never back-jumps)");
+        prev_hw_ptr = hw_ptr;
+    }
+    // After steady free-run, the ring is full (occupancy == n_slots) but hw_ptr
+    // has advanced far past 0 — avail = buffer - (appl - hw) is stable, not 0.
+    CHECK(jts_ring_writer_occupancy_slots(&w) == (uint64_t)g.n_slots,
+          "ring full at steady free-run");
+    CHECK(prev_hw_ptr == appl_frames - (uint64_t)g.n_slots * period,
+          "hw_ptr trails appl_frames by exactly the ring depth (honest, advancing)");
+
+    free(s);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_reader_returns_after_free_run_resyncs(void) {
+    // B1 regression (Blocker) part (b): after a stretch of readerless free-run
+    // (writer advanced read_seq on the absent reader's behalf), a reader that
+    // attaches must resync cleanly to the writer tip — read_seq = write_seq,
+    // occupancy collapses to 0 — with no lost-lap corruption, and normal
+    // publish/consume ping-pong resumes.
+    char path[256];
+    tmp_path(path, sizeof(path), "resyncafterfreerun");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+
+    // Free-run past the ring depth with NO reader: write_seq and read_seq both
+    // climb (drop-oldest), so occupancy stays full but bounded.
+    for (int i = 0; i < 20; i++) (void)jts_ring_writer_publish(&w, s);
+    jts_ring_header_t *h = (jts_ring_header_t *)w.base;
+    uint64_t wseq_before_attach = atomic_load_explicit(&h->write_seq, memory_order_acquire);
+    uint64_t rseq_before_attach = atomic_load_explicit(&h->read_seq, memory_order_acquire);
+    CHECK(wseq_before_attach - rseq_before_attach == (uint64_t)g.n_slots,
+          "occupancy bounded at n_slots after free-run (read_seq advanced)");
+    CHECK(rseq_before_attach > 0, "read_seq advanced on absent reader's behalf");
+
+    // Reader attaches now: mirrors the Rust reader's attach resync
+    // (read_seq = write_seq, dropping the stale in-ring laps).
+    test_reader_t r;
+    reader_attach(&r, &w);
+    CHECK(r.read_seq == wseq_before_attach, "reader resynced read_seq to write tip");
+    CHECK(jts_ring_writer_occupancy_slots(&w) == 0, "occupancy collapses to 0 on attach");
+    // Empty read right after attach (nothing new published yet).
+    CHECK(reader_consume(&r, out) == 0, "empty read immediately after resync");
+
+    // Distinct payload, publish one, reader must read exactly it — no stale lap.
+    for (size_t i = 0; i < n; i++) s[i] = (int16_t)(i + 100);
+    CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK,
+          "publish OK to a live reader after free-run");
+    CHECK(reader_consume(&r, out) == 1, "reader consumes the post-resync slot");
+    CHECK(memcmp(out, s, n * sizeof(int16_t)) == 0, "post-resync payload is intact");
+
+    free(s);
+    free(out);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
 static void test_attach_second_writer_bumps_epoch(void) {
     char path[256];
     tmp_path(path, sizeof(path), "epoch");
@@ -415,17 +517,75 @@ static void test_occupancy_tracks_reader_drain(void) {
     unlink(path);
 }
 
+static void test_drain_flush_partial_slot(void) {
+    // S1 regression: the ioplug's `.drain` callback publishes the partial
+    // staged slot (zero-padding the remainder) so drain can reach an empty ring
+    // — without it, a partially-staged slot leaves `delay` pinned above 0 and
+    // ALSA's drain loop HANGS. This test pins the CORE primitive the drain
+    // callback relies on: a zero-padded final slot publishes as a normal whole
+    // slot, the reader consumes exactly it (real samples then silence pad), and
+    // the ring drains to empty (occupancy 0) — the terminal state drain waits
+    // for. (The ioplug's flush + bounded-wait loop itself is ALSA-linked and
+    // Pi-only; this proves its building blocks on the host.)
+    char path[256];
+    tmp_path(path, sizeof(path), "drainflush");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    test_reader_t r;
+    reader_attach(&r, &w);
+
+    size_t n = w.samples_per_slot;            // frames*channels in a whole slot
+    const uint32_t period = g.period_frames;  // frames per slot
+    // Simulate a PARTIAL stage: k real frames of nonzero audio, the rest zero-
+    // padded exactly as jts_ring_drain does before publishing.
+    const uint32_t k = period / 3; // a non-slot-aligned tail (e.g. an odd WAV)
+    int16_t *stage = calloc(n, sizeof(int16_t));
+    for (uint32_t f = 0; f < k; f++)
+        for (uint32_t c = 0; c < g.channels; c++)
+            stage[f * g.channels + c] = (int16_t)(f + 1); // nonzero real audio
+    // frames [k, period) stay zero (the drain zero-pad).
+
+    CHECK(jts_ring_writer_publish(&w, stage) == JTS_RING_PUBLISH_OK,
+          "padded partial slot publishes as a whole slot");
+    CHECK(jts_ring_writer_occupancy_slots(&w) == 1, "one slot in flight after flush");
+
+    int16_t *out = calloc(n, sizeof(int16_t));
+    CHECK(reader_consume(&r, out) == 1, "reader consumes the flushed slot");
+    // Real audio survived; the pad tail is silence.
+    int real_ok = 1, pad_ok = 1;
+    for (uint32_t f = 0; f < k; f++)
+        for (uint32_t c = 0; c < g.channels; c++)
+            if (out[f * g.channels + c] != (int16_t)(f + 1)) real_ok = 0;
+    for (uint32_t f = k; f < period; f++)
+        for (uint32_t c = 0; c < g.channels; c++)
+            if (out[f * g.channels + c] != 0) pad_ok = 0;
+    CHECK(real_ok, "flushed slot preserves the real (pre-pad) frames");
+    CHECK(pad_ok, "flushed slot zero-pads the tail (no stale/garbage frames)");
+    // Ring drained to empty — the terminal state jts_ring_drain waits for.
+    CHECK(jts_ring_writer_occupancy_slots(&w) == 0, "ring empty after drain flush+consume");
+
+    free(stage);
+    free(out);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
 int main(void) {
     test_geometry_math_and_validation();
     test_publish_consume_roundtrip();
     test_ping_pong_bounding();
     test_no_reader_free_run_drop();
+    test_no_reader_pointer_keeps_advancing();
+    test_reader_returns_after_free_run_resyncs();
     test_attach_second_writer_bumps_epoch();
     test_geometry_mismatch_is_fatal();
     test_writer_creates_missing_parent_dir();
     test_can_accept_semantics();
     test_deep_ring_16_slots();
     test_occupancy_tracks_reader_drain();
+    test_drain_flush_partial_slot();
 
     if (g_failures == 0) {
         printf("ok: all jts_ring core tests passed\n");

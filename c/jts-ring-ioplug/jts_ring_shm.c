@@ -77,7 +77,7 @@ int jts_ring_geometry_validate(const jts_ring_geometry_t *g, const char **reason
         return 1;
     }
     if (g->n_slots < JTS_RING_MIN_SLOTS || g->n_slots > JTS_RING_MAX_SLOTS) {
-        if (reason) *reason = "n_slots out of range 2..=4";
+        if (reason) *reason = "n_slots out of range 2..=16";
         return 1;
     }
     if (reason) *reason = NULL;
@@ -381,16 +381,32 @@ jts_ring_publish_result_t jts_ring_writer_publish(jts_ring_writer_t *w,
 
     uint64_t wseq = w->write_seq;
     int waited = 0;
+    int dropped_oldest = 0;
     for (;;) {
         uint64_t rseq = atomic_load_explicit(&h->read_seq, memory_order_acquire);
         if (wseq - rseq < (uint64_t)w->geometry.n_slots) {
             break; // space available
         }
-        // Full. If no live reader, free-run drop (prevents Camilla wedging when
-        // outputd's flag is off, and lets the aplay resolvability probe finish).
+        // Full. If no live reader, FREE-RUN by dropping the OLDEST slot: advance
+        // read_seq on the absent reader's behalf so the new slot has room, then
+        // publish over it (the reader will never read it — it is overwritten on
+        // the next lap — but the ring stays bounded). This is what prevents
+        // Camilla wedging when outputd's flag is off and lets the aplay
+        // resolvability probe finish. CRITICALLY it also keeps the ioplug's
+        // pointer/delay HONEST: occupancy = write_seq - read_seq stays bounded at
+        // n_slots (not pinned at "full forever" with read_seq stuck at 0), so
+        // jts_ring_pointer's in_flight stays bounded and hw_ptr advances with
+        // appl_frames — ALSA's `avail` never sticks at 0, so the WRITER (aplay /
+        // Camilla) never blocks forever waiting for a pointer that cannot move.
+        // Writing read_seq here is safe against a reader reattach: attach resyncs
+        // read_seq = write_seq unconditionally, so our advance is discarded (and
+        // occupancy collapses to 0), which only jumps hw_ptr FORWARD (benign —
+        // avail grows). No live reader means no concurrent writer of read_seq.
         if (!reader_is_live(h, jts_ring_monotonic_ns())) {
+            atomic_store_explicit(&h->read_seq, rseq + 1, memory_order_release);
             w->drop_no_reader++;
-            return JTS_RING_PUBLISH_DROPPED;
+            dropped_oldest = 1;
+            break; // room made; publish the new slot over the dropped-oldest lap
         }
         if (waited == 0) w->full_waits++;
         if (++waited > JTS_RING_MAX_FULL_WAIT_TICKS) {
@@ -413,6 +429,14 @@ jts_ring_publish_result_t jts_ring_writer_publish(jts_ring_writer_t *w,
     uint64_t next = wseq + 1;
     atomic_store_explicit(&h->write_seq, next, memory_order_release);
     w->write_seq = next;
+    // A free-run drop-oldest still WROTE the payload into the ring and advanced
+    // write_seq (so the pointer stays honest), but the frames it displaced will
+    // never reach a reader — report DROPPED, not OK, so counters/observability
+    // reflect that no live reader consumed this lap. Do not count it as a
+    // published-to-a-reader slot.
+    if (dropped_oldest) {
+        return JTS_RING_PUBLISH_DROPPED;
+    }
     w->published_slots++;
     return JTS_RING_PUBLISH_OK;
 }

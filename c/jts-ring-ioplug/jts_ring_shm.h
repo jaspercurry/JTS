@@ -50,9 +50,14 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // its target_level (1536), so the rate controller chased an unreachable target,
 // wound up, and drove the writer full (full_waits ~= every publish) into
 // stall/underrun flapping. 16 slots => 2048-frame buffer >= target_level with
-// headroom. Mirrors MAX_N_SLOTS in rust/jasper-ring/src/layout.rs and
-// MAX_SHM_RING_SLOTS in rust/jasper-outputd/src/config.rs (golden-layout +
-// config drift-guarded).
+// headroom. Must be kept in lockstep BY HAND with MAX_N_SLOTS in
+// rust/jasper-ring/src/layout.rs and MAX_SHM_RING_SLOTS in
+// rust/jasper-outputd/src/config.rs. NOTE: unlike the header OFFSETS (pinned
+// bit-for-bit by the golden-layout _Static_assert here and the Rust layout
+// test), no automated check ties these three MAX constants together — a
+// mismatch is caught only at RUNTIME (the reader's geometry validation rejects
+// an n_slots the writer created, failing loud on arm), not at compile time.
+// Change all three in the same commit.
 #define JTS_RING_MAX_SLOTS 16u
 
 // Writer liveness window (ns): past this heartbeat age the reader is treated as

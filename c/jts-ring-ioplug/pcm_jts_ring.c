@@ -18,10 +18,15 @@
 // ---- The eight questions ----
 //
 // 1. What breaks if the reader (outputd) dies? The writer's space check fails
-//    and, seeing no live reader heartbeat, FREE-RUNS and drops frames
-//    (writer_drop_no_reader++) rather than blocking Camilla in writei. This is
-//    what keeps Camilla healthy when outputd's flag is off and what makes the
-//    `aplay -D jts_ring_playback ... /dev/zero` resolvability probe terminate.
+//    and, seeing no live reader heartbeat, FREE-RUNS by dropping the OLDEST slot
+//    (advancing read_seq on the absent reader's behalf, writer_drop_no_reader++)
+//    rather than blocking Camilla in writei. Advancing read_seq — not just
+//    discarding the new slot — is load-bearing for the honest pointer (Q7): it
+//    keeps occupancy bounded at n_slots so in_flight/avail keep advancing, so
+//    aplay/Camilla never wedge on a readerless ring waiting for a pointer that
+//    cannot move. This is what keeps Camilla healthy when outputd's flag is off
+//    and what makes the `aplay -D jts_ring_playback ... /dev/zero`
+//    resolvability probe terminate.
 // 2. What breaks if the writer (this plugin) dies? write_seq stops advancing;
 //    the reader sees the ring empty and emits silence. On close we clear
 //    writer_pid so the reader reports writer_alive:false.
@@ -199,6 +204,16 @@ static snd_pcm_sframes_t jts_ring_pointer(snd_pcm_ioplug_t *io) {
     snd_pcm_uframes_t hw_ptr =
         (p->appl_frames >= in_flight) ? (p->appl_frames - (snd_pcm_uframes_t)in_flight)
                                       : 0;
+    // ALSA wants the position modulo the buffer. NIT (for the futex
+    // productization): if the app is absent while EXACTLY buffer_size frames
+    // drain, two successive `pointer` reads see the same value mod buffer_size —
+    // a whole lap looks like zero delta, so avail momentarily reads 0 until the
+    // next real advance (or camilla's stall recovery) unsticks it. This is
+    // self-limiting (one lap, and only under a precisely-full-buffer drain with
+    // no polling app) and harmless in the timerfd-poll prototype, which re-polls
+    // sub-period. A futex-based productization that wakes exactly on read_seq
+    // advance should report an absolute (non-wrapped) hw_ptr, or wake often
+    // enough that a full lap cannot pass between reads.
     return (snd_pcm_sframes_t)(hw_ptr % io->buffer_size);
 }
 
@@ -244,6 +259,59 @@ static int jts_ring_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp) {
     snd_pcm_sframes_t delay =
         (snd_pcm_sframes_t)(slots * p->period_frames + p->stage_frames);
     if (delayp) *delayp = delay;
+    return 0;
+}
+
+// snd_pcm_drain(): flush whatever is staged/in-flight and return once the ring
+// is empty (or the reader is gone). Without this callback ALSA's default ioplug
+// drain spins until hw_avail (== our `delay`) reaches 0 — but the stage only
+// publishes on FULL slots, so a partially-staged slot (stage_frames > 0, the
+// common case for an arbitrary-length WAV via aplay) leaves delay pinned above
+// 0 forever and drain HANGS, even with a live reader. We instead:
+//   1. Zero-pad and publish the partial slot so no staged audio is lost and
+//      stage_frames returns to 0 (a whole slot is required by the SPSC core).
+//   2. Wait (bounded) for the reader to drain the ring to empty. If the reader
+//      is absent the ring cannot drain, so we stop immediately — the honest
+//      free-run contract (Q1) already covers a readerless ring, and blocking
+//      here would reintroduce the very wedge B1 fixed.
+// The callback is `int (*drain)(snd_pcm_ioplug_t *)` (0 = ok); it must be
+// bounded so aplay/Camilla never hang on close.
+static int jts_ring_drain(snd_pcm_ioplug_t *io) {
+    jts_ring_pcm_t *p = io->private_data;
+    if (!p->opened) return 0;
+    // 1. Flush the partial staged slot (zero-pad the remainder). Do NOT bump
+    // appl_frames for the padding: appl_frames mirrors ALSA's appl_ptr (real
+    // app-submitted frames only), and drain is a blocking terminal op — ALSA
+    // does not interleave pointer/transfer reads while this callback runs, so
+    // the transient in-flight inconsistency (one extra published period vs the
+    // k real frames) is never observed. Once the ring drains to empty below,
+    // in_flight == 0 and hw_ptr == appl_frames == ALSA appl_ptr — the correct
+    // fully-drained terminal state.
+    if (p->stage_frames > 0) {
+        size_t pad_from = p->stage_frames * JTS_RING_CHANNELS;
+        size_t total = p->stage_capacity_frames * JTS_RING_CHANNELS;
+        memset(p->stage + pad_from, 0, (total - pad_from) * sizeof(int16_t));
+        jts_ring_writer_publish(&p->writer, p->stage);
+        p->stage_frames = 0;
+    }
+    // 2. Bounded wait for the reader to drain the ring to empty. period/4 per
+    // tick (matches the poll cadence); the tick BUDGET is the bound that makes
+    // this safe for BOTH failure shapes: a reader draining at DAC pace empties
+    // well within budget, while an absent/wedged reader (the ring can't drain)
+    // simply exhausts the budget and returns rather than hanging the app. The
+    // occupancy read is the only progress signal we need — no can_accept /
+    // liveness branch, which would only distinguish two cases that both resolve
+    // to "stop when drained or when the budget runs out."
+    uint64_t period_ns = (uint64_t)p->period_frames * 1000000000ull / JTS_RING_RATE;
+    uint64_t tick_ns = period_ns / 4;
+    if (tick_ns < 250000ull) tick_ns = 250000ull;
+    if (tick_ns > 2000000ull) tick_ns = 2000000ull;
+    struct timespec nap = {.tv_sec = 0, .tv_nsec = (long)tick_ns};
+    int max_ticks = (int)p->n_slots * 8; // ~2 ring-depths of real time, bounded
+    for (int i = 0; i < max_ticks; i++) {
+        if (jts_ring_writer_occupancy_slots(&p->writer) == 0) break; // fully drained
+        nanosleep(&nap, NULL);
+    }
     return 0;
 }
 
@@ -318,6 +386,7 @@ static const snd_pcm_ioplug_callback_t jts_ring_callback = {
     .pointer = jts_ring_pointer,
     .transfer = jts_ring_transfer,
     .delay = jts_ring_delay,
+    .drain = jts_ring_drain,
     .prepare = jts_ring_prepare,
     .hw_params = jts_ring_hw_params,
     .close = jts_ring_close,
@@ -416,7 +485,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
         return -EINVAL;
     }
     if (n_slots < (long)JTS_RING_MIN_SLOTS || n_slots > (long)JTS_RING_MAX_SLOTS) {
-        SNDERR("jts_ring: n_slots out of range 2..=4");
+        SNDERR("jts_ring: n_slots out of range 2..=16");
         return -EINVAL;
     }
 
