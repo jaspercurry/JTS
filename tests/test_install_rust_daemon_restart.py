@@ -172,6 +172,23 @@ def test_every_built_daemon_service_is_restart_covered():
     )
 
 
+def test_park_covered_outputd_is_actually_restarted():
+    """Park-set membership only proves a STOP (the fragment's consumers run
+    `systemctl stop` + `reset-failed`). jasper-outputd's coverage in
+    test_every_built_daemon_service_is_restart_covered additionally relies
+    on require_outputd_ready's unconditional restart bringing it back with
+    the new binary — pin that line, or removing it would silently turn
+    park-set "coverage" into a stale-binary hole for outputd."""
+    text = (ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
+    body = _extract_function_body(text, "require_outputd_ready")
+    assert "systemctl restart jasper-outputd.service" in body, (
+        "require_outputd_ready no longer restarts jasper-outputd.service; "
+        "the coverage guard's park-set reasoning for outputd is unsound — "
+        "restore the restart or cover outputd through a set that actually "
+        "restarts it"
+    )
+
+
 def test_conditional_and_core_graph_restart_sets_are_disjoint():
     """A unit restarted by both the core-graph sequence AND the conditional
     helper would be double-bounced every deploy — interrupting audio twice."""
