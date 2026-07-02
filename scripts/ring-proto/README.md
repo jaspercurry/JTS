@@ -534,3 +534,40 @@ Every Pi-side step has a rollback (`disarm.sh`) and an observable
 ---
 
 Last verified: 2026-07-02.
+
+## Measured results — 2026-07-02 all-nighter (jts.local, Apple dongle, electrical :9891 mode)
+
+Full arc, 240 impulses per run, 100% match unless noted:
+
+| Config | p50 / p95 / p99 (ms) |
+|---|---|
+| Baseline all-aloop route | 173.6 / 181.5 / 183.5 |
+| Host-slaved + cushion (certified artifact) | 139.3 / 156.7 / 157.6 |
+| Ring B only, target 768 | 134.5 / 137.5 / 138.6 |
+| Ring B + cushion 256 | 104.1 / 107.4 / 108.6 |
+| Ring A+B, rate_adjust ON (lesson) | 194.0 / 196.9 / 197.3 |
+| **Ring A+B, chunk 128, 4-slot rings, rate_adjust OFF** | **125.0 / 128.1 / 128.3** |
+
+The 3.3 ms p50→p99 spread on the final row is the tightest chain ever measured
+on this hardware. Two laws the night established, which own the next steps:
+
+1. **Conservation:** in a fully backpressured (blocking-writer) chain with
+   rate-matched ends, end-to-end latency equals the SUM OF QUEUE CAPACITIES —
+   every warmup head-start becomes permanent fill. `rate_adjust` makes it
+   worse (packs every stage). Productization lever #1: a **target-bounded
+   writer** (publish blocks at occupancy ≥ 2 slots, not at capacity) — the
+   capacity stays large for negotiation/safety, the standing fill does not
+   (est. −26 ms: Ring A 4→2 slots + the usbsink lane stops backing up).
+2. **The last aloop pays the residual:** with Ring A railing, standing fill
+   relocates into the usbsink→fan-in snd-aloop lane (invisible to /state).
+   Productization lever #2: **direct gadget capture in fan-in** (delete the
+   lane) — est. −40 ms. Modeled floor after both levers: **~55–60 ms**, with
+   the 40s reachable via outputd/DAC floor work and CamillaDSP internals.
+
+Operational lessons baked into the scripts (verify before productizing):
+statefile seeding is owned by the unit ExecStartPre (live ws swap is the
+apply lever); orderly transition = stop camilla → restart fanin → restart
+outputd → start camilla → ws swap (violent simultaneous restarts crashed
+camilla on a dual device-death and start-limited fanin); ring files need
+root:jasper 0664 after reader-first creation; the arm probe must not run as
+an unprivileged user against a root-owned ring dir (EACCES).
