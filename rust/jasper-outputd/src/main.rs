@@ -31,6 +31,7 @@ use jasper_outputd::content_bridge::ContentBridge;
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::dac_content::DacContentSource;
 use jasper_outputd::local_content_pipe::{LocalContentPipe, LOCAL_CONTENT_PIPE_FORMAT};
+use jasper_outputd::shm_ring_source::ShmRingSource;
 use jasper_outputd::state::{ChipRefWrite, OutputdState, StateServer};
 use jasper_outputd::tts::{spawn_tts_server, tts_channels, TtsBridge};
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
@@ -49,6 +50,22 @@ const MAX_CONTENT_BRIDGE_DRAIN_READS: usize = 8;
 /// a guard-rejected combination; outputd crash-looped into THREE Pi
 /// reboots before the T5.1 boot-loop guard contained it.
 const EXIT_CONFIG: i32 = 78;
+
+/// Marker attached (via `anyhow::Context`) to a runtime error that is actually
+/// a CONFIG-class fault surfacing after `Config::from_env` — currently only the
+/// PROTOTYPE SHM-ring header/geometry mismatch, which can only be detected once
+/// we attach to the writer's ring at DAC-loop setup. `main` downcasts for it and
+/// exits [`EXIT_CONFIG`] so the unit parks instead of reboot-looping.
+#[derive(Debug)]
+struct ConfigClassError;
+
+impl std::fmt::Display for ConfigClassError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "config-class startup fault (park, do not restart-loop)")
+    }
+}
+
+impl std::error::Error for ConfigClassError {}
 
 fn main() -> Result<()> {
     let config = match Config::from_env() {
@@ -89,6 +106,15 @@ fn main() -> Result<()> {
     };
 
     notify_systemd("STOPPING=1")?;
+    // A config-class fault surfacing after startup (the PROTOTYPE SHM-ring
+    // header/geometry mismatch is the only one today) exits EX_CONFIG so the
+    // unit parks (RestartPreventExitStatus=78) rather than reboot-looping.
+    if let Err(e) = &result {
+        if e.downcast_ref::<ConfigClassError>().is_some() {
+            eprintln!("event=outputd.config_invalid_runtime detail={e:#}");
+            std::process::exit(EXIT_CONFIG);
+        }
+    }
     result
 }
 
@@ -297,7 +323,7 @@ fn run_alsa(
         state.mark_local_content_pipe(src.metrics());
     }
     let mut content_bridge = match config.content_bridge_mode {
-        ContentBridgeMode::Direct => None,
+        ContentBridgeMode::Direct | ContentBridgeMode::ShmRing => None,
         ContentBridgeMode::RateMatch => {
             eprintln!(
                 "event=outputd.content_bridge.enabled mode=rate_match ring_frames={} target_fill_frames={} max_adjust_ppm={}",
@@ -312,6 +338,46 @@ fn run_alsa(
             )?)
         }
     };
+    // PROTOTYPE (latency/ring-proto-shm): the SHM ping-pong ring content source.
+    // Constructed ONLY under JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring; None (the
+    // default) leaves the loop byte-identical. A geometry/version/size mismatch
+    // against an existing ring is a hard error here — mapped to the config-class
+    // exit 78 so the unit parks (RestartPreventExitStatus=78) instead of
+    // reboot-looping on a mismatched writer.
+    let mut shm_ring = match config.shm_ring.as_ref() {
+        Some(ring) => {
+            eprintln!(
+                "event=outputd.shm_ring.enabled path={} slots={} slot_frames={} channels={} sample_rate={}",
+                ring.path,
+                ring.n_slots,
+                config.period_frames,
+                config.content_channels,
+                config.sample_rate,
+            );
+            let src = ShmRingSource::new(
+                &ring.path,
+                config.period_frames,
+                config.content_channels,
+                ring.n_slots,
+            )
+            .map_err(|e| {
+                // A header/geometry/size mismatch is a configuration fault, not a
+                // transient runtime error: tag it so main() exits 78 (EX_CONFIG)
+                // and the unit parks (RestartPreventExitStatus=78) instead of
+                // reboot-looping against a mismatched writer.
+                eprintln!(
+                    "event=outputd.shm_ring.config_error path={} detail={e}",
+                    ring.path
+                );
+                anyhow::Error::new(e).context(ConfigClassError)
+            })?;
+            Some(src)
+        }
+        None => None,
+    };
+    if let Some(src) = shm_ring.as_ref() {
+        state.mark_shm_ring(src.metrics());
+    }
     // Multi-room round-trip lane (Increment 3, HANDOFF-multiroom.md §2):
     // when configured, the DAC is fed from the member-content FIFO with
     // an inv-B fallback to the direct content read below. Lazy + non-
@@ -426,6 +492,13 @@ fn run_alsa(
                     content_buf.fill(0);
                 }
                 state.mark_local_content_pipe(src.metrics());
+            } else if let Some(src) = shm_ring.as_mut() {
+                // PROTOTYPE: try-read one slot from the SHM ping-pong ring;
+                // empty -> silence (read_period zero-fills). Never blocks, never
+                // errors at runtime (a ring fault degrades to silence + counters
+                // — StartLimitAction=reboot discipline).
+                src.read_period(&mut content_buf);
+                state.mark_shm_ring(src.metrics());
             } else if let Some(bridge) = content_bridge.as_mut() {
                 read_content_bridge_period(
                     &mut sink,
