@@ -21,6 +21,13 @@ anyhow = "1"
 # outer pitch loop composes `jasper_clock::Dll` directly, exactly as
 # jasper-outputd / jasper-resampler already do.
 jasper-clock = { path = "../jasper-clock" }
+# The ONE shared S32→S16 UAC2 narrowing (this crate also holds the windowed-sinc
+# resampler jasper-fanin uses for the direct lane). Pure, no ALSA — compiles
+# under `--no-default-features` on a macOS host. Consuming
+# `s32_high_word_to_s16` / `convert_s32_to_s16` from here (rather than a local
+# copy) makes the bridge's narrowing bit-identical to jasper-fanin's
+# direct-capture narrowing by construction (C2).
+jasper-resampler = { path = "../jasper-resampler" }
 libc = "0.2"
 log = "0.4"
 env_logger = "0.11"

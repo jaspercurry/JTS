@@ -133,6 +133,45 @@ pub fn clamp_i16(value: f64) -> i16 {
     value.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16
 }
 
+/// Narrow one S32_LE sample to S16 by keeping the high word — an arithmetic
+/// right shift by 16, sign-preserving, no rounding, no dither.
+///
+/// This is the EXACT UAC2-gadget capture narrowing the JTS USB path uses. It
+/// lives in this pure crate (rather than duplicated in the two ALSA daemons)
+/// so that `jasper-usbsink-audio`'s bridge capture and `jasper-fanin`'s direct
+/// capture share ONE definition — the conversion is bit-identical by
+/// construction, not by a hand-synced test vector. The pinned sign-boundary
+/// vector is asserted in this crate's tests AND re-asserted in both consuming
+/// crates so a drift fails every suite.
+///
+/// Semantics (pinned): `(sample >> 16) as i16` — `>>` on `i32` is arithmetic,
+/// so the sign extends and `i32::MIN` maps to `i16::MIN` (full-scale negative),
+/// `-1` maps to `-1`, `0x7fff_ffff` maps to `0x7fff`. Truncation, not
+/// rounding: `-65_537` (`0xFFFE_FFFF`) maps to `-2`.
+#[inline]
+pub fn s32_high_word_to_s16(sample: i32) -> i16 {
+    (sample >> 16) as i16
+}
+
+/// Narrow a slice of interleaved S32_LE samples into an equal-length S16 slice
+/// via [`s32_high_word_to_s16`]. `input` and `output` MUST be the same length
+/// (the caller sizes both to the same sample count); mismatched lengths are a
+/// programming error and return `false` without touching `output` past the
+/// common prefix.
+///
+/// Returns `true` on success. Allocation-free — the caller owns both slices.
+/// Kept as a slice-map sibling of [`clamp_i16`] so the two ALSA daemons narrow
+/// a captured period identically without either owning the primitive.
+pub fn convert_s32_to_s16(input: &[i32], output: &mut [i16]) -> bool {
+    if input.len() != output.len() {
+        return false;
+    }
+    for (src, dst) in input.iter().zip(output.iter_mut()) {
+        *dst = s32_high_word_to_s16(*src);
+    }
+    true
+}
+
 /// A precomputed windowed-sinc interpolation table.
 ///
 /// Built ONCE (it is `PHASES * TAPS` `f64` ≈ 540 KB) and shared across every
@@ -1119,6 +1158,32 @@ mod tests {
         assert_eq!(AudioRing::new(0, 2).unwrap_err(), RingError::ZeroCapacity);
         assert_eq!(AudioRing::new(16, 0).unwrap_err(), RingError::ZeroChannels);
         assert!(AudioRing::new(16, 2).is_ok());
+    }
+
+    /// The pinned S32→S16 sign-boundary vector (C2). This is the SINGLE
+    /// definition of the UAC2 narrowing math; both `jasper-usbsink-audio`'s
+    /// bridge capture and `jasper-fanin`'s direct capture consume
+    /// [`s32_high_word_to_s16`] from this crate, and each re-asserts this exact
+    /// vector in its own suite so a drift fails everywhere.
+    #[test]
+    fn s32_high_word_truncation_preserves_sign_boundaries() {
+        assert_eq!(s32_high_word_to_s16(0), 0);
+        assert_eq!(s32_high_word_to_s16(0x7fff_ffff), 0x7fff);
+        assert_eq!(s32_high_word_to_s16(i32::MIN), i16::MIN);
+        assert_eq!(s32_high_word_to_s16(-1), -1);
+        assert_eq!(s32_high_word_to_s16(-65_536), -1);
+        assert_eq!(s32_high_word_to_s16(-65_537), -2);
+    }
+
+    #[test]
+    fn convert_s32_to_s16_maps_each_sample_and_rejects_length_mismatch() {
+        let input = [0i32, 0x7fff_ffff, i32::MIN, -1, -65_536, -65_537];
+        let mut output = [7i16; 6];
+        assert!(convert_s32_to_s16(&input, &mut output));
+        assert_eq!(output, [0, 0x7fff, i16::MIN, -1, -1, -2]);
+        // Length mismatch is a programming error: return false, don't panic.
+        let mut short = [0i16; 3];
+        assert!(!convert_s32_to_s16(&input, &mut short));
     }
 
     /// `trim_to` drops the OLDEST frames down to the target fill and keeps the
