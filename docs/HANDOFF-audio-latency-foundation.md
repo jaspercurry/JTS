@@ -97,6 +97,60 @@ Open questions to answer before the next architecture turn:
 
 ---
 
+## 2026-07-02 checkpoint: the ring transport works — measured
+
+The frame-bounded transport the 2026-07-01 checkpoint called for now exists and
+is hardware-proven (prototype branch `latency/ring-proto-shm` + the
+`latency/combo-night` lab vehicle; Ring B = CamillaDSP playback → outputd over
+a SHM slot ring via a custom ALSA ioplug; jasper-ring Rust crate + C core).
+
+Measured on jts.local (electrical :9891 capture-back, 240 impulses/run, 100%
+match, zero stalls unless noted):
+
+| Config | p50 / p95 / p99 (ms) |
+|---|---|
+| Baseline aloop route (shipped floor) | 173.6 / 181.5 / 183.5 |
+| + host-slaved clock + cushion 512-held (certified artifact) | 139.3 / 156.7 / 157.6 |
+| + Ring B @ target_level 1536 (parity, spread 10→5.8 ms) | 149.9 / 154.6 / 155.7 |
+| + Ring B @ target_level 768 (the Ring-B floor, spread 4.2 ms) | 134.5 / 137.5 / 138.6 |
+| + resampler cushion 256 under L0 | 104.1 / 107.4 / 108.6 |
+
+Structural findings the measurements pinned:
+
+- **The 16 KiB page floor is irrelevant to a SHM slot ring** — occupancy is
+  handshake-bounded; the transport_pipe failure class does not recur.
+- **Ring targets below ~768 relocate latency upstream instead of removing it**
+  (t512/t384 runs: p50 rose, spread ×4): CamillaDSP's rate controller can only
+  trade ring fill against the fan-in→Camilla aloop fill. The fan-in→Camilla
+  hop measures ~45–55 ms and is *hysteretic* (restart-flushed, wanders across
+  runs) — it is the remaining boulder, hence Ring A (fan-in → Camilla via the
+  same ring primitive, capture direction).
+- **Two floor classes exist.** Drift-class floors (resampler cushion, ring
+  targets, Camilla target_level) dissolve once the host clock is slaved
+  (UAC2 Capture Pitch, L0-locked, macOS probe ratio ~4×). URB-cadence floors do
+  NOT: the usbsink bridge at 128 frames/2 periods was re-tried under L0 and
+  hard-failed (14.8 k capture xruns in 6 min) — 256/3 is a genuine floor.
+- **ioplug ALSA semantics are the hard part, not the transport**: four
+  adversarial rounds fixed a dishonest playback pointer (delay ≈ 0 starved
+  CamillaDSP's rate controller), a too-shallow ring vs CamillaDSP's buffer
+  model (n_slots×128 must be ≥ its negotiated buffer AND target_level), a
+  readerless free-run wedge at the avail gate, and the classic mod-buffer
+  full-lap alias (reported-advance clamp; shared translation unit so host
+  tests compile the real pointer core).
+- **camilla's unit ExecStartPre re-seeds the statefile from the output-topology
+  contract** — a prototype config must be applied via the live websocket
+  set_config_file_path, and any camilla restart safely reverts to cutover
+  (fail-safe: silence, not noise). Ring mode must become a topology-contract
+  citizen when productized.
+
+Ring A (fan-in → Camilla, plan pinned 2026-07-02) bounds that hop to
+n_slots×128 frames with fan-in blocking-on-full as the transitively DAC-paced
+writer; falsifiable target ≈ −25..35 ms plus the variance the hysteretic aloop
+carried. Certification note: the route-latency artifact binder correctly
+REFUSES shm_ring topologies for `usb_low_latency_48k` (lab-only until the
+route/topology contracts learn the ring) — ring numbers above are harness
+measurements, not certified artifacts, by design.
+
 ## The chain, and where latency lives
 
 ```
@@ -502,7 +556,7 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-07-02 (jts.local tuning found the stable loopback floor:
+Last verified: 2026-07-02 (ring checkpoint added same day) (jts.local tuning found the stable loopback floor:
 Rust bridge 256/3, fan-in USB resampler held target 2048, fan-in output 1024,
 CamillaDSP 256/1536, outputd 128/256, outputd content buffer 1536. This is not a
 40 ms end-to-end route; route-latency evidence remains missing. 2026-07-01
