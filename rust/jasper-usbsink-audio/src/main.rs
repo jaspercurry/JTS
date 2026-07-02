@@ -12,6 +12,8 @@
 //! - keep only a bounded 2-3 period ring in the audio path
 //! - expose preempt/state without letting control-plane work block audio
 
+mod impulse_tap;
+
 use std::env;
 use std::fs;
 #[cfg(feature = "alsa-runtime")]
@@ -23,8 +25,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 #[cfg(feature = "alsa-runtime")]
+use std::sync::Mutex;
+#[cfg(feature = "alsa-runtime")]
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[cfg(feature = "alsa-runtime")]
+use impulse_tap::{ImpulseDetector, SinkAction, TapSink};
+use impulse_tap::{TapConfig, TapEvent, TapState};
 
 #[cfg(feature = "alsa-runtime")]
 use alsa::pcm::{Access, Format, HwParams, PCM};
@@ -53,8 +61,17 @@ const DEFAULT_RING_PERIODS: usize = 3;
 const MIN_RING_PERIODS: usize = 2;
 const MAX_RING_PERIODS: usize = 3;
 const STATE_INTERVAL: Duration = Duration::from_millis(1000);
+// Cadence the publisher drains the impulse-tap channel at. Short enough that a
+// detection burst can never back up the bounded channel, long enough to stay a
+// negligible idle wakeup when disarmed.
+const TAP_DRAIN_INTERVAL: Duration = Duration::from_millis(100);
 const WATCHDOG_INTERVAL: Duration = Duration::from_millis(5000);
 const PLAYING_RMS_DBFS: f64 = -60.0;
+// Bounded impulse-tap channel. The single detector fires at most once per
+// refractory window (~4/s at the 250 ms default), so this can never fill under
+// the harness; it exists purely as a drop-and-count safety net so the audio
+// thread's `try_send` is always non-blocking.
+const TAP_CHANNEL_CAPACITY: usize = 256;
 static STATE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
@@ -369,6 +386,32 @@ impl SharedState {
     }
 }
 
+/// Cross-thread handles for the impulse tap.
+///
+/// - `state` is the lock-free surface the audio thread reads (armed + detector
+///   knobs) and the observable counters (`GET /tap`, `status_json`).
+/// - `config` is the last-armed [`TapConfig`], written by the preempt listener
+///   on arm and read by the publisher when it notices a new arm generation. The
+///   audio thread NEVER locks this — it uses only the atomics on `state`.
+///
+/// The `SyncSender<TapEvent>` (audio → publisher) and its `Receiver` are held
+/// separately because they are not clonable into an `Arc` bundle.
+struct TapShared {
+    state: Arc<TapState>,
+    #[cfg(feature = "alsa-runtime")]
+    config: Arc<Mutex<TapConfig>>,
+}
+
+impl TapShared {
+    fn new() -> Self {
+        Self {
+            state: Arc::new(TapState::default()),
+            #[cfg(feature = "alsa-runtime")]
+            config: Arc::new(Mutex::new(TapConfig::default())),
+        }
+    }
+}
+
 fn s32_high_word_to_s16(sample: i32) -> i16 {
     (sample >> 16) as i16
 }
@@ -390,6 +433,83 @@ fn flush_ring_for_preempt(ring: &mut PeriodRing, state: &SharedState) {
         state
             .preempt_dropped_periods
             .fetch_add(flushed as u64, Ordering::Relaxed);
+    }
+}
+
+/// Audio-thread impulse tap over one freshly-converted capture read.
+///
+/// Runs inline in the capture loop over the S16 slice, before it is staged into
+/// the ring — this is the route's own ingress, so the timestamp binds to route
+/// identity. Cost when disarmed is a single relaxed atomic load (the caller's
+/// `tap.armed()` guard). When armed it is pure arithmetic plus a non-blocking
+/// `try_send`; on a full channel it drops-and-counts and never blocks the audio
+/// thread. Detector params are reloaded lock-free only when a new arm
+/// generation is observed.
+///
+/// - `read_frames`: frames returned by this capture read.
+/// - `read_start_frame`: cumulative captured frames BEFORE this read (the
+///   detector's `period_start_frame`, so refractory anchoring is stable across
+///   reads of any size).
+/// - `read_ns`: `CLOCK_MONOTONIC` ns taken immediately after the read returned.
+/// - `ring_fill_periods` / `period_frames`: ring backlog at the tap moment,
+///   recorded as frames for the harness latency term.
+#[cfg(feature = "alsa-runtime")]
+#[allow(clippy::too_many_arguments)]
+fn tap_over_read(
+    tap: &TapState,
+    detector: &mut Option<ImpulseDetector>,
+    last_generation: &mut u64,
+    sender: &std::sync::mpsc::SyncSender<TapEvent>,
+    converted: &[i16],
+    read_frames: usize,
+    read_start_frame: u64,
+    read_ns: i128,
+    ring_fill_periods: usize,
+    period_frames: u32,
+) {
+    if !tap.armed() {
+        // Keep the local detector fresh for the next arm without holding stale
+        // latch/refractory state across an arm boundary.
+        *detector = None;
+        return;
+    }
+    // Reload detector params only when a fresh arm bumped the generation. The
+    // Acquire load pairs with `TapState::arm`'s Release so the knobs are
+    // visible.
+    let generation = tap.generation_acquire();
+    if detector.is_none() || generation != *last_generation {
+        let (threshold, hysteresis, refractory_frames) = tap.detector_knobs();
+        *detector = Some(ImpulseDetector::new(
+            threshold,
+            hysteresis,
+            refractory_frames,
+            CHANNELS as usize,
+        ));
+        *last_generation = generation;
+    }
+    let Some(detector) = detector.as_mut() else {
+        return;
+    };
+    let Some(hit) = detector.detect(
+        &converted[..read_frames * (CHANNELS as usize)],
+        read_start_frame,
+    ) else {
+        return;
+    };
+    let event = TapEvent {
+        monotonic_ns: impulse_tap::detection_monotonic_ns(
+            read_ns,
+            read_frames,
+            hit.sample_offset_frames,
+            SAMPLE_RATE,
+        ),
+        frame_index: read_start_frame.saturating_add(hit.sample_offset_frames as u64),
+        ring_fill_frames: impulse_tap::ring_fill_frames(ring_fill_periods, period_frames),
+        peak: hit.peak,
+    };
+    // Non-blocking hand-off to the publisher; drop-and-count on a full channel.
+    if sender.try_send(event).is_err() {
+        tap.note_dropped();
     }
 }
 
@@ -632,9 +752,13 @@ fn write_playback_period(pcm: &PCM, output: &[i16], state: &SharedState) -> Resu
 }
 
 #[cfg(feature = "alsa-runtime")]
+#[allow(clippy::too_many_arguments)]
 fn run_audio_loop(
     config: &Config,
     state: &Arc<SharedState>,
+    tap: &Arc<TapState>,
+    tap_config: &Arc<Mutex<TapConfig>>,
+    tap_sender: &std::sync::mpsc::SyncSender<TapEvent>,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
     let capture = open_capture(config)?;
@@ -646,6 +770,10 @@ fn run_audio_loop(
     let mut ring = PeriodRing::new(period_samples, config.ring_periods)?;
     let mut capture_assembler =
         PeriodAssembler::new(config.period_frames as usize, config.channels as usize)?;
+    // Audio-thread-local impulse-tap state: rebuilt on each arm, never shared.
+    let mut tap_detector: Option<ImpulseDetector> = None;
+    let mut tap_last_generation: u64 = 0;
+    let mut capture_frames_cursor: u64 = 0;
 
     info!(
         "event=usbsink_audio.started capture_device={} playback_device={} sample_rate={} channels={} period_frames={} ring_periods={}",
@@ -657,7 +785,7 @@ fn run_audio_loop(
         config.ring_periods,
     );
     state.host_connected.store(true, Ordering::Relaxed);
-    write_state_json(config, state)?;
+    write_state_json(config, state, tap, tap_config)?;
     let _ = sd_notify::notify(&[NotifyState::Ready]);
     state.mark_progress();
 
@@ -668,6 +796,24 @@ fn run_audio_loop(
             else {
                 break;
             };
+            // Timestamp the read immediately (all `frames` are in hand now), then
+            // run the impulse tap over this read's converted slice BEFORE it is
+            // staged — the route's own ingress. Ring fill here is the pre-read
+            // backlog the click must still drain through.
+            let read_ns = monotonic_ns();
+            tap_over_read(
+                tap,
+                &mut tap_detector,
+                &mut tap_last_generation,
+                tap_sender,
+                &converted_i16,
+                frames,
+                capture_frames_cursor,
+                read_ns,
+                ring.fill_periods(),
+                config.period_frames,
+            );
+            capture_frames_cursor = capture_frames_cursor.saturating_add(frames as u64);
             let samples = frames * (config.channels as usize);
             capture_assembler.push_frames(&converted_i16[..samples], frames, |period| {
                 let rms = rms_dbfs_i16(period);
@@ -723,13 +869,15 @@ fn bind_preempt_listener(config: &Config) -> Result<TcpListener> {
 fn run_preempt_listener(
     config: Config,
     state: Arc<SharedState>,
+    tap: Arc<TapState>,
+    tap_config: Arc<Mutex<TapConfig>>,
     shutdown: Arc<AtomicBool>,
     listener: TcpListener,
 ) -> Result<()> {
     while !shutdown.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, _peer)) => {
-                if let Err(e) = handle_preempt_request(stream, &config, &state) {
+                if let Err(e) = handle_preempt_request(stream, &config, &state, &tap, &tap_config) {
                     warn!("event=usbsink_audio.preempt_error detail={}", e);
                 }
             }
@@ -747,6 +895,8 @@ fn handle_preempt_request(
     mut stream: TcpStream,
     config: &Config,
     state: &SharedState,
+    tap: &TapState,
+    tap_config: &Mutex<TapConfig>,
 ) -> Result<()> {
     stream
         .set_read_timeout(Some(Duration::from_millis(250)))
@@ -756,10 +906,23 @@ fn handle_preempt_request(
     let body = String::from_utf8_lossy(&buf[..n]);
     if body.starts_with("GET /status ") || body.starts_with("GET /preempt ") {
         let rms_dbfs = (state.rms_dbfs_x100.load(Ordering::Relaxed) as f64) / 100.0;
-        let status = status_json(config, state, rms_dbfs);
+        let tap_fragment = tap.status_fragment(&tap_config_snapshot(tap_config));
+        let status = status_json(config, state, rms_dbfs, &tap_fragment);
         write_http_json(&mut stream, 200, &status)?;
         let _ = stream.shutdown(Shutdown::Both);
         return Ok(());
+    }
+    if body.starts_with("GET /tap ") {
+        let tap_body = tap.status_body(&tap_config_snapshot(tap_config));
+        write_http_json(&mut stream, 200, &tap_body)?;
+        let _ = stream.shutdown(Shutdown::Both);
+        return Ok(());
+    }
+    if body.starts_with("POST /tap/arm ") {
+        return handle_tap_arm(&mut stream, &body, config, tap, tap_config);
+    }
+    if body.starts_with("POST /tap/disarm ") {
+        return handle_tap_disarm(&mut stream, tap, tap_config);
     }
     let silenced = parse_preempt_silenced(&body);
     match silenced {
@@ -774,6 +937,112 @@ fn handle_preempt_request(
     }
     let _ = stream.shutdown(Shutdown::Both);
     Ok(())
+}
+
+/// Clone the last-armed tap config under its lock (listener/publisher only —
+/// never the audio thread). A poisoned lock is recovered into rather than
+/// crashing the control plane; the tap params are best-effort observability.
+#[cfg(feature = "alsa-runtime")]
+fn tap_config_snapshot(tap_config: &Mutex<TapConfig>) -> TapConfig {
+    match tap_config.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+#[cfg(feature = "alsa-runtime")]
+fn handle_tap_arm(
+    stream: &mut TcpStream,
+    body: &str,
+    config: &Config,
+    tap: &TapState,
+    tap_config: &Mutex<TapConfig>,
+) -> Result<()> {
+    let Some(request_body) = http_request_body(body) else {
+        write_http_json(stream, 400, "{\"ok\":false,\"error\":\"missing body\"}\n")?;
+        let _ = stream.shutdown(Shutdown::Both);
+        return Ok(());
+    };
+    let Some(cfg) = TapConfig::from_arm_body(request_body) else {
+        write_http_json(stream, 400, "{\"ok\":false,\"error\":\"bad arm params\"}\n")?;
+        let _ = stream.shutdown(Shutdown::Both);
+        return Ok(());
+    };
+    // Truncate the JSONL artifact synchronously so the arm reply only claims
+    // success once the file is a clean slate. The publisher then appends.
+    if let Err(e) = truncate_tap_file(&cfg.path) {
+        warn!(
+            "event=usbsink_audio.tap_arm_error detail={} path={}",
+            e,
+            cfg.path.display()
+        );
+        let msg = format!(
+            "{{\"ok\":false,\"error\":\"cannot open path\",\"path\":\"{}\"}}\n",
+            json_escape(&cfg.path.to_string_lossy())
+        );
+        write_http_json(stream, 500, &msg)?;
+        let _ = stream.shutdown(Shutdown::Both);
+        return Ok(());
+    }
+    // Publish config for the publisher first, then flip armed via `arm`.
+    {
+        let mut guard = tap_config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = cfg.clone();
+    }
+    tap.arm(&cfg, config.sample_rate, epoch_millis());
+    info!(
+        "event=usbsink_audio.tap_armed threshold={:.3} hysteresis={:.3} refractory_ms={} max_events={} auto_disarm_min={} path={}",
+        cfg.threshold,
+        cfg.hysteresis,
+        cfg.refractory_ms,
+        cfg.max_events,
+        cfg.auto_disarm_min,
+        cfg.path.display(),
+    );
+    let reply = format!(
+        "{{\"ok\":true,\"armed\":true,\"path\":\"{}\"}}\n",
+        json_escape(&cfg.path.to_string_lossy())
+    );
+    write_http_json(stream, 200, &reply)?;
+    let _ = stream.shutdown(Shutdown::Both);
+    Ok(())
+}
+
+#[cfg(feature = "alsa-runtime")]
+fn handle_tap_disarm(
+    stream: &mut TcpStream,
+    tap: &TapState,
+    tap_config: &Mutex<TapConfig>,
+) -> Result<()> {
+    tap.disarm();
+    let written = tap.events_written();
+    let dropped = tap.events_dropped();
+    info!(
+        "event=usbsink_audio.tap_disarmed events_written={} events_dropped={} path={}",
+        written,
+        dropped,
+        tap_config_snapshot(tap_config).path.display(),
+    );
+    let reply = format!(
+        "{{\"ok\":true,\"armed\":false,\"events_written\":{},\"events_dropped\":{}}}\n",
+        written, dropped,
+    );
+    write_http_json(stream, 200, &reply)?;
+    let _ = stream.shutdown(Shutdown::Both);
+    Ok(())
+}
+
+/// Truncate (or create) the tap JSONL artifact under its tmpfs dir. Called from
+/// the listener on arm so the reply reflects a clean slate. The publisher holds
+/// the write handle after this; here we only create the parent + zero the file.
+#[cfg(feature = "alsa-runtime")]
+fn truncate_tap_file(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    fs::write(path, b"").with_context(|| format!("truncating {}", path.display()))
 }
 
 fn parse_preempt_silenced(request: &str) -> Option<bool> {
@@ -825,26 +1094,158 @@ fn read_preempt_state(path: &Path) -> bool {
     lowered.trim() == "1" || lowered.contains("\"silenced\"") && lowered.contains("true")
 }
 
+/// Publisher-thread ownership of the tap JSONL artifact.
+///
+/// This thread is the SINGLE writer of the JSONL file (the audio thread only
+/// hands events over the channel). On each new arm generation it re-opens the
+/// file with truncate so a fresh arm always starts clean; it then appends one
+/// line per drained event until the [`TapSink`] policy says to stop
+/// (`max_events` cap or `auto_disarm` deadline). On the poll where the deadline
+/// passes it disarms the shared state so a forgotten tap costs nothing.
+#[cfg(feature = "alsa-runtime")]
+#[derive(Default)]
+struct TapPublisher {
+    generation: u64,
+    file: Option<fs::File>,
+    sink: Option<TapSink>,
+    initialized: bool,
+}
+
+#[cfg(feature = "alsa-runtime")]
+impl TapPublisher {
+    /// Drain and process all currently-queued tap events, plus enforce the
+    /// auto-disarm deadline even when the channel is idle. `now_ms` is the
+    /// monotonic clock the sink deadline is measured against.
+    fn poll(
+        &mut self,
+        receiver: &std::sync::mpsc::Receiver<TapEvent>,
+        tap: &TapState,
+        tap_config: &Mutex<TapConfig>,
+        now_ms: i128,
+    ) {
+        // A fresh arm bumps the generation; (re)open the file with truncate and
+        // build a new sink. The generation only advances on arm, so this is the
+        // one place the single-writer file handle is reset. Any events still
+        // queued from a prior arm are discarded here so a re-arm starts truly
+        // clean (they would otherwise land in the freshly-truncated file).
+        let generation = tap.generation_acquire();
+        if !self.initialized || generation != self.generation {
+            self.initialized = true;
+            self.generation = generation;
+            while receiver.try_recv().is_ok() {}
+            if tap.armed() {
+                let cfg = tap_config_snapshot(tap_config);
+                self.file = open_tap_file(&cfg.path);
+                self.sink = Some(TapSink::armed(&cfg, now_ms));
+            } else {
+                self.file = None;
+                self.sink = None;
+            }
+        }
+
+        // Idle auto-disarm: even with no events, a passed deadline disarms.
+        if tap.armed() && self.sink.as_ref().is_some_and(|sink| sink.expired(now_ms)) {
+            self.finish_disarm(tap);
+        }
+
+        while let Ok(event) = receiver.try_recv() {
+            // Events can arrive after disarm (channel not drained yet); ignore.
+            if !tap.armed() {
+                continue;
+            }
+            let Some(sink) = self.sink.as_mut() else {
+                continue;
+            };
+            match sink.decide(now_ms) {
+                SinkAction::Append => {
+                    let wrote = self
+                        .file
+                        .as_mut()
+                        .is_some_and(|file| writeln!(file, "{}", event.to_jsonl()).is_ok());
+                    if wrote {
+                        tap.note_written();
+                    } else {
+                        tap.note_dropped();
+                    }
+                }
+                SinkAction::DropAtCap => tap.note_dropped(),
+                SinkAction::AutoDisarm => {
+                    tap.note_dropped();
+                    self.finish_disarm(tap);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Disarm the shared state and release the publisher-owned file/sink so a
+    /// forgotten or capped tap stops costing anything.
+    fn finish_disarm(&mut self, tap: &TapState) {
+        tap.disarm();
+        self.file = None;
+        self.sink = None;
+    }
+}
+
+/// Open (create + truncate) the tap JSONL file for the publisher to own.
+/// Returns `None` on failure — the arm preflight already surfaced any path
+/// error to the operator, so here we just skip appends (counting drops).
+#[cfg(feature = "alsa-runtime")]
+fn open_tap_file(path: &Path) -> Option<fs::File> {
+    if let Some(parent) = path.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            return None;
+        }
+    }
+    fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .ok()
+}
+
 #[cfg(feature = "alsa-runtime")]
 fn run_state_publisher(
     config: Config,
     state: Arc<SharedState>,
+    tap: Arc<TapState>,
+    tap_config: Arc<Mutex<TapConfig>>,
+    tap_receiver: std::sync::mpsc::Receiver<TapEvent>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
+    let mut publisher = TapPublisher::default();
+    // Drain the tap channel on a short cadence so a burst can't back it up,
+    // while state.json keeps its ~1 s publish rhythm.
+    let mut last_state_write = std::time::Instant::now();
+    write_state_json(&config, &state, &tap, &tap_config)?;
     while !shutdown.load(Ordering::Relaxed) {
-        write_state_json(&config, &state)?;
-        thread::sleep(STATE_INTERVAL);
+        publisher.poll(&tap_receiver, &tap, &tap_config, monotonic_millis());
+        if last_state_write.elapsed() >= STATE_INTERVAL {
+            write_state_json(&config, &state, &tap, &tap_config)?;
+            last_state_write = std::time::Instant::now();
+        }
+        thread::sleep(TAP_DRAIN_INTERVAL);
     }
-    write_state_json(&config, &state)?;
+    // Final drain + state write on shutdown.
+    publisher.poll(&tap_receiver, &tap, &tap_config, monotonic_millis());
+    write_state_json(&config, &state, &tap, &tap_config)?;
     Ok(())
 }
 
-fn write_state_json(config: &Config, state: &SharedState) -> Result<()> {
+#[cfg(feature = "alsa-runtime")]
+fn write_state_json(
+    config: &Config,
+    state: &SharedState,
+    tap: &TapState,
+    tap_config: &Mutex<TapConfig>,
+) -> Result<()> {
     if let Some(parent) = config.state_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let rms_dbfs = (state.rms_dbfs_x100.load(Ordering::Relaxed) as f64) / 100.0;
-    let body = status_json(config, state, rms_dbfs);
+    let tap_fragment = tap.status_fragment(&tap_config_snapshot(tap_config));
+    let body = status_json(config, state, rms_dbfs, &tap_fragment);
     let tmp = unique_state_tmp_path(&config.state_path);
     fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, &config.state_path).with_context(|| {
@@ -865,7 +1266,7 @@ fn unique_state_tmp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), seq))
 }
 
-fn status_json(config: &Config, state: &SharedState, rms_dbfs: f64) -> String {
+fn status_json(config: &Config, state: &SharedState, rms_dbfs: f64, tap_fragment: &str) -> String {
     format!(
         concat!(
             "{{",
@@ -894,6 +1295,7 @@ fn status_json(config: &Config, state: &SharedState, rms_dbfs: f64) -> String {
             "\"capture_frames\":{},",
             "\"playback_frames\":{}",
             "}},",
+            "\"tap\":{},",
             "\"last_progress_epoch_ms\":{}",
             "}}\n"
         ),
@@ -919,6 +1321,7 @@ fn status_json(config: &Config, state: &SharedState, rms_dbfs: f64) -> String {
         state.preempt_dropped_periods.load(Ordering::Relaxed),
         state.capture_frames.load(Ordering::Relaxed),
         state.playback_frames.load(Ordering::Relaxed),
+        tap_fragment,
         state.last_progress_epoch_ms.load(Ordering::Relaxed),
     )
 }
@@ -952,6 +1355,29 @@ fn epoch_millis() -> u64 {
         Ok(duration) => duration.as_millis() as u64,
         Err(_) => 0,
     }
+}
+
+/// `CLOCK_MONOTONIC` in nanoseconds — the tap's ingress timeline.
+///
+/// The impulse tap and the Python mic harness both read `CLOCK_MONOTONIC` on
+/// the same Pi; that shared timeline is the only reason their cross-process
+/// timestamp subtraction is valid, and why the tap never uses epoch time.
+/// On the (never-observed) syscall failure this returns 0 rather than crashing
+/// the audio thread; a stray 0-anchored event is dropped downstream by the
+/// harness's pairing window rather than corrupting the run.
+fn monotonic_ns() -> i128 {
+    let mut ts = MaybeUninit::<libc::timespec>::uninit();
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, ts.as_mut_ptr()) };
+    if rc != 0 {
+        return 0;
+    }
+    let ts = unsafe { ts.assume_init() };
+    (ts.tv_sec as i128) * 1_000_000_000 + (ts.tv_nsec as i128)
+}
+
+/// `CLOCK_MONOTONIC` in milliseconds — the publisher's auto-disarm clock.
+fn monotonic_millis() -> i128 {
+    monotonic_ns() / 1_000_000
 }
 
 fn iso8601_now() -> String {
@@ -1010,24 +1436,47 @@ fn main() -> Result<()> {
     if read_preempt_state(&config.preempt_state_path) {
         shared.preempted.store(true, Ordering::Relaxed);
     }
+    // Impulse-tap wiring. Default-off: `tap.state` starts disarmed, so the audio
+    // loop pays one relaxed atomic load per read until armed via the 8781
+    // control plane. The bounded channel keeps the audio thread's hand-off
+    // non-blocking (drop-and-count on Full); the publisher thread is the sole
+    // JSONL writer.
+    let tap = TapShared::new();
+    let (tap_sender, tap_receiver) =
+        std::sync::mpsc::sync_channel::<TapEvent>(TAP_CHANNEL_CAPACITY);
     let preempt_listener = bind_preempt_listener(&config)?;
-    write_state_json(&config, &shared)?;
+    write_state_json(&config, &shared, &tap.state, &tap.config)?;
 
     let state_thread = {
         let cfg = config.clone();
         let state = Arc::clone(&shared);
+        let tap_state = Arc::clone(&tap.state);
+        let tap_cfg = Arc::clone(&tap.config);
         let stop = Arc::clone(&shutdown);
-        thread::spawn(move || run_state_publisher(cfg, state, stop))
+        thread::spawn(move || {
+            run_state_publisher(cfg, state, tap_state, tap_cfg, tap_receiver, stop)
+        })
     };
     let preempt_thread = {
         let cfg = config.clone();
         let state = Arc::clone(&shared);
+        let tap_state = Arc::clone(&tap.state);
+        let tap_cfg = Arc::clone(&tap.config);
         let stop = Arc::clone(&shutdown);
-        thread::spawn(move || run_preempt_listener(cfg, state, stop, preempt_listener))
+        thread::spawn(move || {
+            run_preempt_listener(cfg, state, tap_state, tap_cfg, stop, preempt_listener)
+        })
     };
     let watchdog_thread = start_watchdog(Arc::clone(&shared), Arc::clone(&shutdown));
 
-    let audio_result = run_audio_loop(&config, &shared, &shutdown);
+    let audio_result = run_audio_loop(
+        &config,
+        &shared,
+        &tap.state,
+        &tap.config,
+        &tap_sender,
+        &shutdown,
+    );
     shutdown.store(true, Ordering::Relaxed);
 
     join_result_thread(state_thread, "state publisher")?;
@@ -1261,7 +1710,9 @@ mod tests {
         state.ring_fill_periods.store(2, Ordering::Relaxed);
         state.underflow_periods.store(5, Ordering::Relaxed);
 
-        let body = status_json(&cfg, &state, -63.25);
+        let tap = TapState::default();
+        let tap_fragment = tap.status_fragment(&TapConfig::default());
+        let body = status_json(&cfg, &state, -63.25, &tap_fragment);
 
         assert!(body.contains("\"implementation\":\"rust\""));
         assert!(body.contains("\"preempted\":true"));
@@ -1269,6 +1720,12 @@ mod tests {
         assert!(body.contains("\"ring\":{\"fill_periods\":2,\"capacity_periods\":3}"));
         assert!(body.contains("\"capture_partial_reads\":0"));
         assert!(body.contains("\"underflow_periods\":5"));
+        // Tap sub-object is folded in and disarmed by default.
+        assert!(body.contains("\"tap\":{\"armed\":false"));
+        // The whole document parses as valid JSON with the tap object nested.
+        let parsed: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(parsed["tap"]["armed"].as_bool(), Some(false));
+        assert_eq!(parsed["tap"]["events_written"].as_u64(), Some(0));
     }
 
     #[test]
@@ -1289,9 +1746,43 @@ mod tests {
         state.host_connected.store(true, Ordering::Relaxed);
         state.playing.store(false, Ordering::Relaxed);
 
-        let body = status_json(&cfg, &state, -120.0);
+        let tap = TapState::default();
+        let tap_fragment = tap.status_fragment(&TapConfig::default());
+        let body = status_json(&cfg, &state, -120.0, &tap_fragment);
 
         assert!(body.contains("\"host_connected\":true"));
         assert!(body.contains("\"playing\":false"));
+    }
+
+    #[test]
+    fn status_json_folds_armed_tap_sub_object() {
+        let cfg = Config {
+            capture_device: "hw:UAC2Gadget".to_string(),
+            playback_device: "usbsink_substream".to_string(),
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+            period_frames: DEFAULT_PERIOD_FRAMES,
+            ring_periods: DEFAULT_RING_PERIODS,
+            state_path: PathBuf::from(DEFAULT_STATE_PATH),
+            preempt_state_path: PathBuf::from(DEFAULT_PREEMPT_STATE_PATH),
+            preempt_host: DEFAULT_PREEMPT_HOST.to_string(),
+            preempt_port: DEFAULT_PREEMPT_PORT,
+        };
+        let state = SharedState::new(DEFAULT_RING_PERIODS);
+        let tap = TapState::default();
+        let tap_cfg = TapConfig::default();
+        tap.arm(&tap_cfg, SAMPLE_RATE, 1_000);
+        let body = status_json(&cfg, &state, -120.0, &tap.status_fragment(&tap_cfg));
+
+        let parsed: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(parsed["tap"]["armed"].as_bool(), Some(true));
+        assert_eq!(
+            parsed["tap"]["max_events"].as_u64(),
+            Some(impulse_tap::DEFAULT_MAX_EVENTS)
+        );
+        assert_eq!(
+            parsed["tap"]["path"].as_str(),
+            Some(impulse_tap::DEFAULT_TAP_PATH)
+        );
     }
 }
