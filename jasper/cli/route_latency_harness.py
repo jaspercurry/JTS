@@ -72,8 +72,10 @@ from jasper.route_latency.mic_readers import (
 )
 from jasper.route_latency.pairing import (
     DEFAULT_WINDOW_MS,
+    MatchedImpulse,
     MicDetection,
     PairingResult,
+    TapEvent,
     pair_events,
 )
 from jasper.route_latency.status_socket import (
@@ -498,7 +500,7 @@ def read_mic_detections_jsonl(path: Path) -> list[MicDetection]:
 # --------------------------------------------------------------------------
 
 
-def latency_ms_for_match(match, *, mic_distance_compensation_ms: float) -> float:  # type: ignore[no-untyped-def]
+def latency_ms_for_match(match: MatchedImpulse, *, mic_distance_compensation_ms: float) -> float:
     """(t_mic_detect - t_tap_detect) - mic_distance_compensation_ms.
 
     The whole route latency lives in the `t_mic - t_tap` subtraction: the
@@ -536,7 +538,7 @@ class AnalyzeResult:
 
 
 def analyze_matches(
-    tap_events,  # type: ignore[no-untyped-def]
+    tap_events: list[TapEvent],
     mic_detections: list[MicDetection],
     *,
     window_ms: float = DEFAULT_WINDOW_MS,
