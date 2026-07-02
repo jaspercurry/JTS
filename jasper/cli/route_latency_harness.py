@@ -107,19 +107,72 @@ SOUND_MS_PER_CM = 100.0 / 34_300.0
 
 MIN_MATCH_RATE_DEFAULT = 0.90
 
-# Counters where an increase during the measurement window means the route
-# was NOT healthy for the whole window — a latency number measured across
-# an xrun/drop is not trustworthy evidence either way. This list is
-# intentionally a curated subset of the full snapshot (which is diffed and
-# printed in full for transparency) rather than the only thing compared:
-# any nonzero delta anywhere is worth an operator's eyes, but these are the
-# ones this CLI explicitly calls out as "this alone means unhealthy."
+# Warn (not fail) when the tap detected fewer than this fraction of the
+# schedule's planned impulses. This is the schedule-vs-detected sanity check
+# the click_track schedule exists for: it catches TAP-SIDE truncation (a
+# daemon restart, an early auto-disarm, the WAV not played to completion) that
+# match-rate cannot — a truncated tap window shrinks BOTH the paired count and
+# the tap-side denominator, so match-rate can stay high while half the run is
+# missing. Kept generous (mirrors the match-rate floor) because the tap fires
+# at ingress before pairing, so some scheduled clicks legitimately fail to
+# cross the tap threshold at a conservative volume; a LARGE deficit is the
+# truncation signal, not a small one.
+MIN_TAP_DETECT_RATE_DEFAULT = 0.90
+
+# Counters where a nonzero change during the measurement window means the
+# route was NOT healthy for the whole window — a latency number measured
+# across an xrun/drop/resampler-unlock is not trustworthy evidence either way.
+# This is a curated subset of the full snapshot (which is diffed and printed in
+# full for transparency) rather than the only thing compared: any nonzero delta
+# anywhere is worth an operator's eyes, but these are the ones this CLI
+# explicitly calls out as "this alone means unhealthy."
+#
+# The set encodes the same "clean window" contract the HANDOFF names (see
+# docs/HANDOFF-usb-low-latency.md "Only pass `--route-health-ok` when…"): no
+# usbsink capture/playback xruns or underflow/overflow/drops, no fan-in USB
+# resampler unlock/silence/overrun, and no outputd/fan-in xruns. The names are
+# cross-checked against the Rust status serializers by
+# `test_known_health_counter_names_exist_in_rust_status_json`, so a Rust-side
+# rename fails loudly rather than silently degrading the verdict to
+# vacuous-true.
+#
+# Two shapes, because the route's counters live at two kinds of location:
+#   * KNOWN_HEALTH_COUNTER_PATHS — counters at a STABLE dict path (navigated to
+#     a single dotted key). usbsink counters + the fan-in OUTPUT xrun + the
+#     outputd content/DAC xruns.
+#   * KNOWN_HEALTH_COUNTER_SUFFIXES — counters that live inside the fan-in
+#     `inputs` ARRAY (per-lane xruns and the per-lane USB-resampler
+#     unlock/silence/overrun). Their dotted path carries a lane INDEX
+#     (`fanin.inputs.0.xrun_count`) that is not stable across a topology
+#     change, so they are matched by dotted-path SUFFIX instead of exact path —
+#     any lane's xrun/unlock/silence/overrun disqualifies. `_numeric_deltas`
+#     recurses into lists so these are visible in `all_deltas`.
 KNOWN_HEALTH_COUNTER_PATHS: tuple[tuple[str, ...], ...] = (
     ("usbsink", "counters", "capture_xruns"),
     ("usbsink", "counters", "playback_xruns"),
     ("usbsink", "counters", "underflow_periods"),
     ("usbsink", "counters", "overflow_events"),
     ("usbsink", "counters", "dropped_periods"),
+    # fan-in output (post-mix ALSA loopback) xruns — a stable dict path.
+    ("fanin", "output", "xrun_count"),
+    # outputd content-capture and final-DAC xruns — stable dict paths.
+    ("outputd", "content", "xrun_count"),
+    ("outputd", "dac", "xrun_count"),
+)
+
+# Dotted-path suffixes matched against any array-indexed fan-in input lane. The
+# fan-in STATUS `inputs` array carries per-lane `xrun_count` and, on the
+# clock-crossing USB lane, a `resampler` object with `unlock_count` /
+# `silence_frames` / `overrun_frames`. Any lane's nonzero delta on one of these
+# disqualifies (the contract's "no fan-in USB resampler unlock/silence/overrun,
+# and no outputd/fan-in xruns"). Suffix-matched because the lane index is not
+# stable across topology changes; leaf names cross-checked against
+# `rust/jasper-fanin/src/state.rs` by the contract test.
+KNOWN_HEALTH_COUNTER_SUFFIXES: tuple[tuple[str, ...], ...] = (
+    ("fanin", "inputs", "xrun_count"),
+    ("fanin", "inputs", "resampler", "unlock_count"),
+    ("fanin", "inputs", "resampler", "silence_frames"),
+    ("fanin", "inputs", "resampler", "overrun_frames"),
 )
 
 
@@ -193,6 +246,15 @@ def _numeric_deltas(before: Any, after: Any, *, prefix: tuple[str, ...] = ()) ->
     treated as a numeric change — a schema change is not a health signal.
     Timestamp leaves (see `_IGNORED_DELTA_LEAF_KEYS`) are excluded by name:
     they always change and are noise in a health report.
+
+    Recurses into LISTS as well as maps, using the element's integer index as
+    the path component (`fanin.inputs.0.xrun_count`). The fan-in STATUS carries
+    its per-lane counters (and the per-lane USB-resampler unlock/silence/overrun
+    counters) inside the `inputs` array, so without list recursion those
+    route-health counters would never appear in a delta at all. Only positional
+    pairs present on BOTH sides are compared; a list that changed length (a lane
+    appeared/disappeared — itself a topology change, not a counter tick) has its
+    extra elements skipped, mirroring the map new/removed-key rule.
     """
 
     deltas: dict[str, float] = {}
@@ -201,6 +263,10 @@ def _numeric_deltas(before: Any, after: Any, *, prefix: tuple[str, ...] = ()) ->
             if key not in before or key not in after:
                 continue
             deltas.update(_numeric_deltas(before[key], after[key], prefix=(*prefix, str(key))))
+        return deltas
+    if isinstance(before, list) and isinstance(after, list):
+        for i in range(min(len(before), len(after))):
+            deltas.update(_numeric_deltas(before[i], after[i], prefix=(*prefix, str(i))))
         return deltas
     if prefix and prefix[-1] in _IGNORED_DELTA_LEAF_KEYS:
         return deltas
@@ -222,8 +288,18 @@ class RouteHealthReport:
 
     @property
     def would_justify_route_health_ok(self) -> bool:
-        """True iff every KNOWN_HEALTH_COUNTER_PATHS delta is <= 0 (i.e. no
-        new xruns/drops) AND every surface answered in both snapshots.
+        """True iff every KNOWN_HEALTH_COUNTER_PATHS delta is EXACTLY 0 AND
+        every surface answered in both snapshots.
+
+        Any nonzero delta on a known counter disqualifies — including a
+        NEGATIVE one. These counters are per-process monotonic, so a delta
+        below zero can only mean the daemon under test restarted mid-window
+        (its counter reset to 0). A restart is by definition an unclean
+        window — the audio path dropped out, the tap disarmed, and the JSONL
+        can be lost on `RuntimeDirectory` teardown — so a "-7 capture_xruns"
+        must NOT read as "cleaner than clean." (The earlier `delta <= 0`
+        treated a restart as justifying the declaration, contradicting the
+        `*** known counter ***` flag the printout puts on that same line.)
 
         This is advisory only — see class docstring and the CLI's printed
         caveat. A CLI that silently asserted this for the operator would
@@ -233,15 +309,48 @@ class RouteHealthReport:
 
         if any(self.before.get(k) is None or self.after.get(k) is None for k in ("usbsink", "fanin", "outputd")):
             return False
-        return all(delta <= 0 for delta in self.known_counter_deltas.values())
+        return all(delta == 0 for delta in self.known_counter_deltas.values())
+
+
+def _dotted_key_matches_input_lane_suffix(key: str, suffix: tuple[str, ...]) -> bool:
+    """True iff `key` is an array-indexed fan-in-input path matching `suffix`.
+
+    A suffix like ``("fanin", "inputs", "resampler", "unlock_count")`` matches
+    any dotted key of the form ``fanin.inputs.<N>.resampler.unlock_count`` where
+    ``<N>`` is a numeric lane index — i.e. the fixed ``fanin.inputs`` head, then
+    exactly one integer index component, then the remaining suffix components.
+    Matching by shape (not by a fixed index) keeps the verdict correct across a
+    topology change that reorders or adds lanes.
+    """
+
+    head = suffix[:2]  # ("fanin", "inputs")
+    tail = suffix[2:]
+    parts = key.split(".")
+    if len(parts) != len(head) + 1 + len(tail):
+        return False
+    if tuple(parts[: len(head)]) != head:
+        return False
+    if not parts[len(head)].isdigit():  # the lane index
+        return False
+    return tuple(parts[len(head) + 1 :]) == tail
 
 
 def diff_route_health(before: Mapping[str, Any], after: Mapping[str, Any]) -> RouteHealthReport:
     all_deltas = _numeric_deltas(dict(before), dict(after))
-    known = {
+    # Stable dict-path counters: present-or-zero so a clean run still reports
+    # each known counter (and the cross-check that the names exist stays honest).
+    known: dict[str, float] = {
         ".".join(path): all_deltas.get(".".join(path), 0.0)
         for path in KNOWN_HEALTH_COUNTER_PATHS
     }
+    # Array-indexed fan-in-input lane counters: fold in every observed delta
+    # whose dotted path matches a per-lane suffix. Unlike the stable paths these
+    # are only added when actually present (the lane index is not known ahead of
+    # time), so a clean/absent lane contributes nothing — but any nonzero
+    # per-lane xrun/unlock/silence/overrun lands here and disqualifies.
+    for key, delta in all_deltas.items():
+        if any(_dotted_key_matches_input_lane_suffix(key, s) for s in KNOWN_HEALTH_COUNTER_SUFFIXES):
+            known[key] = delta
     return RouteHealthReport(
         all_deltas=all_deltas,
         known_counter_deltas=known,
@@ -667,6 +776,18 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         f"ambiguous_rejected={len(result.pairing.ambiguous_tap)} "
         f"match_rate={result.pairing.match_rate:.1%}"
     )
+
+    # Schedule-vs-detected sanity check (the reason the generate step writes a
+    # planned impulse_count): a tap-side truncation — daemon restart, early
+    # auto-disarm, or a WAV not played to completion — shrinks BOTH the paired
+    # count and the match-rate denominator, so match-rate can stay high while
+    # much of the run is missing. Comparing the DETECTED tap count against the
+    # SCHEDULED count is the catch match-rate structurally can't provide.
+    _warn_if_tap_count_far_below_schedule(
+        detected_tap_events=len(tap_events),
+        expected_impulse_count=args.expected_impulse_count,
+        min_tap_detect_rate=args.min_tap_detect_rate,
+    )
     print(
         "latency: "
         f"count={summary['count']} "
@@ -737,6 +858,51 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
 
 def _fmt(value: float | None) -> str:
     return f"{value:.2f}" if value is not None else "n/a"
+
+
+def _warn_if_tap_count_far_below_schedule(
+    *,
+    detected_tap_events: int,
+    expected_impulse_count: int | None,
+    min_tap_detect_rate: float,
+) -> bool:
+    """Loudly flag a tap-side-truncated run; return True iff a warning fired.
+
+    When `expected_impulse_count` is known (from the generate schedule) and the
+    tap detected fewer than `min_tap_detect_rate` of it, emit an `event=` WARN
+    log plus a stderr note naming the likely truncation causes. This is a
+    warning, not a hard fail: the tap fires at ingress before pairing, so at a
+    conservative playback volume some scheduled clicks legitimately miss the
+    tap threshold — a LARGE deficit is the truncation signal. A no-op when the
+    count is unknown or `expected_impulse_count <= 0`.
+    """
+
+    if not expected_impulse_count or expected_impulse_count <= 0:
+        return False
+    detect_rate = detected_tap_events / expected_impulse_count
+    if detect_rate >= min_tap_detect_rate:
+        return False
+    log_event(
+        logger,
+        "route_latency_harness.tap_count_below_schedule",
+        detected_tap_events=detected_tap_events,
+        expected_impulse_count=expected_impulse_count,
+        detect_rate=round(detect_rate, 3),
+        min_tap_detect_rate=min_tap_detect_rate,
+        level=logging.WARNING,
+    )
+    print(
+        f"WARNING: the tap detected {detected_tap_events} impulses but the "
+        f"schedule planned {expected_impulse_count} "
+        f"({detect_rate:.1%}, below the {min_tap_detect_rate:.1%} floor). This "
+        "usually means the tap window was TRUNCATED — the WAV was not played "
+        "to completion, the daemon restarted, or the tap auto-disarmed mid-run. "
+        "match-rate can look fine on a truncated run (missing taps shrink its "
+        "denominator too), so treat any samples file from this run as covering "
+        "only a partial window.",
+        file=sys.stderr,
+    )
+    return True
 
 
 def _print_health_report(report: RouteHealthReport) -> None:
@@ -834,6 +1000,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     schedule = click_track.load_schedule_json(Path(args.schedule))
     args.duration_seconds = schedule.duration_seconds
     args.impulse_spacing_jittered = schedule.jittered
+    # Feed the schedule's planned impulse count into analyze so its
+    # schedule-vs-detected tap sanity check fires automatically on a `run`
+    # (the standalone `analyze` path takes --expected-impulse-count explicitly).
+    args.expected_impulse_count = schedule.impulse_count
     return _cmd_analyze(args)
 
 
@@ -876,6 +1046,8 @@ def _add_analyze_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mic-distance-compensation-ms", type=float, default=DEFAULT_DISTANCE_COMPENSATION_MS, help="Subtract this fixed acoustic travel time (default 0). See --mic-distance-cm for a distance-based shortcut.")
     parser.add_argument("--mic-distance-cm", type=float, default=None, help=f"Alternative to --mic-distance-compensation-ms: mic-to-speaker distance in cm (~{SOUND_MS_PER_CM * 10:.3g} ms per 10 cm at room temperature).")
     parser.add_argument("--min-match-rate", type=float, default=MIN_MATCH_RATE_DEFAULT, help=f"Refuse to emit samples below this tap-side match rate (default {MIN_MATCH_RATE_DEFAULT * 100:g} pct).")
+    parser.add_argument("--expected-impulse-count", type=int, default=None, help="Scheduled impulse count (from the generate schedule). analyze warns if the tap detected far fewer — the tap-side-truncation catch (`run` sets this automatically).")
+    parser.add_argument("--min-tap-detect-rate", type=float, default=MIN_TAP_DETECT_RATE_DEFAULT, help=f"Warn (not fail) if detected tap events fall below this fraction of --expected-impulse-count (default {MIN_TAP_DETECT_RATE_DEFAULT * 100:g} pct); catches a truncated tap window that match-rate alone can hide.")
     parser.add_argument("--measurement-id", default="", help="Optional run id, passed through to --invoke-artifact.")
     parser.add_argument("--invoke-artifact", action="store_true", help="Shell out to jasper-route-latency-artifact after writing samples.")
     parser.add_argument("--confirm-route-health-ok", action="store_true", help="Operator confirms the printed route-health deltas justify --route-health-ok on the artifact CLI. Never inferred automatically.")
@@ -955,6 +1127,8 @@ __all__ = [
     "analyze_matches",
     "capture_mic_detections",
     "diff_route_health",
+    "MIN_MATCH_RATE_DEFAULT",
+    "MIN_TAP_DETECT_RATE_DEFAULT",
     "latency_ms_for_match",
     "main",
     "read_mic_detections_jsonl",

@@ -484,6 +484,116 @@ def test_diff_route_health_reports_all_nonzero_deltas_generically():
     assert report.all_deltas["fanin.custom_new_counter"] == 3.0
 
 
+def _clean_usbsink_counters() -> dict:
+    return {"capture_xruns": 0, "playback_xruns": 0, "underflow_periods": 0, "overflow_events": 0, "dropped_periods": 0}
+
+
+def test_diff_route_health_negative_known_delta_means_restart_not_clean():
+    # S1: a NEGATIVE delta on a per-process monotonic counter can only mean the
+    # daemon restarted mid-window (counter reset to 0). A restart is an unclean
+    # window by definition — it must NOT justify the declaration, even though
+    # "fewer xruns after" superficially looks cleaner.
+    before = {
+        "usbsink": {"counters": {**_clean_usbsink_counters(), "capture_xruns": 7}},
+        "fanin": {"ok": True},
+        "outputd": {"ok": True},
+    }
+    after = {
+        "usbsink": {"counters": _clean_usbsink_counters()},  # reset to 0 -> -7
+        "fanin": {"ok": True},
+        "outputd": {"ok": True},
+    }
+
+    report = harness.diff_route_health(before, after)
+
+    assert report.known_counter_deltas["usbsink.counters.capture_xruns"] == -7.0
+    assert report.would_justify_route_health_ok is False
+
+
+def test_diff_route_health_fanin_output_xrun_would_not_justify_ok():
+    # S2: a new fan-in OUTPUT xrun is on the route's own path — the HANDOFF
+    # clean-window contract names "no outputd/fan-in xruns" explicitly, so it
+    # must disqualify even though nothing on the usbsink surface moved.
+    before = {
+        "usbsink": {"counters": _clean_usbsink_counters()},
+        "fanin": {"output": {"xrun_count": 0}},
+        "outputd": {"ok": True},
+    }
+    after = {
+        "usbsink": {"counters": _clean_usbsink_counters()},
+        "fanin": {"output": {"xrun_count": 4}},
+        "outputd": {"ok": True},
+    }
+
+    report = harness.diff_route_health(before, after)
+
+    assert report.known_counter_deltas["fanin.output.xrun_count"] == 4.0
+    assert report.would_justify_route_health_ok is False
+
+
+def test_diff_route_health_outputd_content_and_dac_xruns_would_not_justify_ok():
+    # S2: outputd content-capture and final-DAC xruns are both on the route.
+    for surface_after in (
+        {"content": {"xrun_count": 1}, "dac": {"xrun_count": 0}},
+        {"content": {"xrun_count": 0}, "dac": {"xrun_count": 2}},
+    ):
+        before = {
+            "usbsink": {"counters": _clean_usbsink_counters()},
+            "fanin": {"ok": True},
+            "outputd": {"content": {"xrun_count": 0}, "dac": {"xrun_count": 0}},
+        }
+        after = {
+            "usbsink": {"counters": _clean_usbsink_counters()},
+            "fanin": {"ok": True},
+            "outputd": surface_after,
+        }
+
+        report = harness.diff_route_health(before, after)
+
+        assert report.would_justify_route_health_ok is False
+
+
+def test_diff_route_health_per_lane_resampler_unlock_would_not_justify_ok():
+    # S2: the fan-in USB resampler unlock/silence/overrun counters live inside
+    # the `inputs` ARRAY, matched by dotted-path suffix regardless of lane
+    # index. A resampler unlock (or silence/overrun) on ANY lane disqualifies.
+    def snapshot(unlock: int, silence: int, overrun: int, lane_xrun: int) -> dict:
+        return {
+            "usbsink": {"counters": _clean_usbsink_counters()},
+            "fanin": {
+                "inputs": [
+                    {"label": "spotify", "xrun_count": 0},
+                    {
+                        "label": "usb",
+                        "xrun_count": lane_xrun,
+                        "resampler": {
+                            "unlock_count": unlock,
+                            "silence_frames": silence,
+                            "overrun_frames": overrun,
+                        },
+                    },
+                ],
+                "output": {"xrun_count": 0},
+            },
+            "outputd": {"content": {"xrun_count": 0}, "dac": {"xrun_count": 0}},
+        }
+
+    # A clean window (no per-lane movement) still justifies.
+    clean = harness.diff_route_health(snapshot(0, 0, 0, 0), snapshot(0, 0, 0, 0))
+    assert clean.would_justify_route_health_ok is True
+
+    # A resampler unlock on the USB lane disqualifies, and the array-indexed
+    # path is what gets flagged.
+    report = harness.diff_route_health(snapshot(0, 0, 0, 0), snapshot(1, 0, 0, 0))
+    assert report.known_counter_deltas["fanin.inputs.1.resampler.unlock_count"] == 1.0
+    assert report.would_justify_route_health_ok is False
+
+    # Silence / overrun / per-lane xrun each independently disqualify.
+    assert harness.diff_route_health(snapshot(0, 0, 0, 0), snapshot(0, 256, 0, 0)).would_justify_route_health_ok is False
+    assert harness.diff_route_health(snapshot(0, 0, 0, 0), snapshot(0, 0, 128, 0)).would_justify_route_health_ok is False
+    assert harness.diff_route_health(snapshot(0, 0, 0, 0), snapshot(0, 0, 0, 3)).would_justify_route_health_ok is False
+
+
 # --------------------------------------------------------------------------
 # CLI end-to-end (main()) — generate, analyze (with real evidence files),
 # match-rate refusal, --invoke-artifact passthrough.
@@ -557,6 +667,90 @@ def test_cli_analyze_end_to_end_writes_artifact_compatible_samples(tmp_path, cap
     out = capsys.readouterr().out
     assert "match_rate=100.0%" in out
     assert "certifiable_percentiles=[95]" in out
+
+
+def test_warn_if_tap_count_far_below_schedule_fires_only_on_large_shortfall(capsys):
+    # S3: the schedule-vs-detected sanity check. Unknown expected count → no-op;
+    # a small deficit within the floor → no warning; a large shortfall → warn.
+    assert (
+        harness._warn_if_tap_count_far_below_schedule(
+            detected_tap_events=50, expected_impulse_count=None, min_tap_detect_rate=0.90
+        )
+        is False
+    )
+    assert (
+        harness._warn_if_tap_count_far_below_schedule(
+            detected_tap_events=95, expected_impulse_count=100, min_tap_detect_rate=0.90
+        )
+        is False
+    )
+    fired = harness._warn_if_tap_count_far_below_schedule(
+        detected_tap_events=40, expected_impulse_count=100, min_tap_detect_rate=0.90
+    )
+    assert fired is True
+    err = capsys.readouterr().err
+    assert "TRUNCATED" in err
+    assert "40" in err and "100" in err
+
+
+def test_cli_analyze_warns_on_tap_side_truncation_but_still_emits(tmp_path, capsys):
+    # A truncated tap window keeps match-rate high (every tap event pairs), so
+    # match-rate alone would certify a half-length run. The schedule count check
+    # is the catch: analyze warns loudly, naming the truncation, while the
+    # samples file still writes (the artifact CLI's duration/percentile gates
+    # remain the hard authority).
+    tap_path = tmp_path / "tap.jsonl"
+    mic_path = tmp_path / "mic.jsonl"
+    n = 200  # every one pairs -> match_rate 100%
+    _write_jsonl(
+        tap_path,
+        [{"monotonic_ns": i * 1_500_000_000, "frame_index": i * 256, "ring_fill_frames": 0, "peak": 0.8} for i in range(n)],
+    )
+    _write_jsonl(
+        mic_path,
+        [{"monotonic_ns": i * 1_500_000_000 + 30_000_000, "peak": 0.5} for i in range(n)],
+    )
+
+    rc = harness.main([
+        "analyze",
+        "--tap-events", str(tap_path),
+        "--mic-detections", str(mic_path),
+        "--out-dir", str(tmp_path),
+        "--duration-seconds", "300",
+        "--expected-impulse-count", "1000",  # schedule planned 1000, tap saw 200
+    ])
+
+    assert rc == 0
+    out = capsys.readouterr()
+    assert "match_rate=100.0%" in out.out  # match-rate is blind to truncation
+    assert "TRUNCATED" in out.err  # ...but the schedule count check catches it
+    assert (tmp_path / "latency-samples.json").exists()
+
+
+def test_cli_analyze_no_truncation_warning_when_count_matches(tmp_path, capsys):
+    tap_path = tmp_path / "tap.jsonl"
+    mic_path = tmp_path / "mic.jsonl"
+    n = 200
+    _write_jsonl(
+        tap_path,
+        [{"monotonic_ns": i * 1_500_000_000, "frame_index": i * 256, "ring_fill_frames": 0, "peak": 0.8} for i in range(n)],
+    )
+    _write_jsonl(
+        mic_path,
+        [{"monotonic_ns": i * 1_500_000_000 + 30_000_000, "peak": 0.5} for i in range(n)],
+    )
+
+    rc = harness.main([
+        "analyze",
+        "--tap-events", str(tap_path),
+        "--mic-detections", str(mic_path),
+        "--out-dir", str(tmp_path),
+        "--duration-seconds", "300",
+        "--expected-impulse-count", "200",
+    ])
+
+    assert rc == 0
+    assert "TRUNCATED" not in capsys.readouterr().err
 
 
 def test_cli_analyze_refuses_below_match_rate_floor_and_writes_nothing(tmp_path, capsys):

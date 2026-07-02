@@ -29,7 +29,10 @@ from pathlib import Path
 
 import pytest
 
-from jasper.cli.route_latency_harness import KNOWN_HEALTH_COUNTER_PATHS
+from jasper.cli.route_latency_harness import (
+    KNOWN_HEALTH_COUNTER_PATHS,
+    KNOWN_HEALTH_COUNTER_SUFFIXES,
+)
 from jasper.route_latency.tap_client import (
     DEFAULT_TAP_PATH,
     TapArmParams,
@@ -40,6 +43,8 @@ from jasper.route_latency.tap_client import (
 
 _REPO = Path(__file__).resolve().parents[1]
 _USBSINK_MAIN_RS = _REPO / "rust" / "jasper-usbsink-audio" / "src" / "main.rs"
+_FANIN_STATE_RS = _REPO / "rust" / "jasper-fanin" / "src" / "state.rs"
+_OUTPUTD_STATE_RS = _REPO / "rust" / "jasper-outputd" / "src" / "state.rs"
 
 
 # --------------------------------------------------------------------------
@@ -172,21 +177,65 @@ def test_default_tap_path_is_under_run_jasper_usbsink():
 # --------------------------------------------------------------------------
 
 
+def _rust_status_emits_leaf(source: str, leaf: str) -> bool:
+    """True iff `source` emits `leaf` as a JSON key.
+
+    Two shapes appear across the Rust status serializers:
+      * usbsink/main.rs builds its counters line with escaped literals
+        (`\\"capture_xruns\\":`), and
+      * jasper-fanin/jasper-outputd use `push_kv_*(&mut buf, "xrun_count", ...)`
+        helpers, so the key is a plain string literal (`"xrun_count"`).
+    Accept either so the cross-check works against all three surfaces.
+    """
+
+    return f'\\"{leaf}\\":' in source or f'"{leaf}"' in source
+
+
+# The three route-health surfaces and the Rust source that serializes each. A
+# pinned counter's leaf must still be emitted by the surface it lives on, so a
+# Rust-side rename fails loudly here instead of silently degrading the verdict.
+_SURFACE_SOURCES = {
+    "usbsink": _USBSINK_MAIN_RS,
+    "fanin": _FANIN_STATE_RS,
+    "outputd": _OUTPUTD_STATE_RS,
+}
+
+
 def test_known_health_counter_names_exist_in_rust_status_json():
-    source = _USBSINK_MAIN_RS.read_text(encoding="utf-8")
+    sources = {name: path.read_text(encoding="utf-8") for name, path in _SURFACE_SOURCES.items()}
     for path in KNOWN_HEALTH_COUNTER_PATHS:
-        # Every pinned path is usbsink.counters.<leaf>; the leaf is the JSON
-        # key the Rust status_json emits inside its "counters" object.
-        assert path[:2] == ("usbsink", "counters"), (
-            f"unexpected health-counter path shape {path!r}; the source "
-            "cross-check below only validates usbsink.counters.* leaves"
+        surface = path[0]
+        assert surface in sources, (
+            f"health-counter path {path!r} names an unknown surface {surface!r}; "
+            f"add its Rust source to _SURFACE_SOURCES to cross-check it"
         )
         leaf = path[-1]
-        assert f'\\"{leaf}\\":' in source, (
-            f"health counter {leaf!r} (in KNOWN_HEALTH_COUNTER_PATHS) is no "
-            "longer emitted by jasper-usbsink-audio's status_json counters "
-            "block — a Rust-side rename would silently make the harness's "
-            "route-health verdict vacuous. Update both sides together."
+        assert _rust_status_emits_leaf(sources[surface], leaf), (
+            f"health counter {leaf!r} (in KNOWN_HEALTH_COUNTER_PATHS path "
+            f"{path!r}) is no longer emitted by {surface}'s status serializer — "
+            "a Rust-side rename would silently make the harness's route-health "
+            "verdict vacuous. Update both sides together."
+        )
+
+
+def test_known_health_counter_suffixes_exist_in_fanin_status_json():
+    # The array-indexed fan-in-input lane counters (per-lane xrun + the USB
+    # resampler unlock/silence/overrun) are matched by dotted-path SUFFIX
+    # because the lane index is not stable. Their leaf names must still exist in
+    # the fan-in status serializer, or a rename makes the suffix match — and the
+    # verdict for the route's own resampler/xrun health — vacuous.
+    fanin_src = _FANIN_STATE_RS.read_text(encoding="utf-8")
+    for suffix in KNOWN_HEALTH_COUNTER_SUFFIXES:
+        assert suffix[:2] == ("fanin", "inputs"), (
+            f"unexpected suffix shape {suffix!r}; the fan-in cross-check only "
+            "validates fanin.inputs.* per-lane counters"
+        )
+        leaf = suffix[-1]
+        assert _rust_status_emits_leaf(fanin_src, leaf), (
+            f"per-lane health counter {leaf!r} (in KNOWN_HEALTH_COUNTER_SUFFIXES "
+            f"{suffix!r}) is no longer emitted by jasper-fanin's state.rs status "
+            "serializer — a Rust-side rename would silently make the harness's "
+            "per-lane route-health verdict vacuous. Update both sides together."
         )
 
 

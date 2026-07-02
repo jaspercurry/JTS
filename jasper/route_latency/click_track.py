@@ -9,10 +9,14 @@ Produces two artifacts a human plays/uses together:
 * a 48 kHz stereo WAV of short clicks at jittered intervals, played on the
   Mac/Windows host into the JTS USB audio device (no host-side software
   beyond a media player); and
-* a JSON schedule recording the *planned* impulse times, so the analyze step
-  can sanity-check its detected/paired impulse count against what was meant
-  to be played (a large mismatch usually means the WAV wasn't played to
-  completion, or was played at the wrong volume for the tap/mic threshold).
+* a JSON schedule recording the *planned* impulse times and count, so the
+  analyze step can sanity-check the DETECTED tap-impulse count against what was
+  meant to be played (`--expected-impulse-count`, wired automatically on
+  `run`). A large shortfall usually means the tap window was truncated — the
+  WAV wasn't played to completion, the daemon restarted, or the tap
+  auto-disarmed mid-run — a failure mode match-rate cannot catch because a
+  truncated run shrinks its denominator too. See
+  `jasper.cli.route_latency_harness._warn_if_tap_count_far_below_schedule`.
 
 Sizing is driven directly by the certification gates in
 ``jasper.audio_validation`` (``percentile_min_samples`` /
