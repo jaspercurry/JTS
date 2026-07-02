@@ -1552,6 +1552,38 @@ mod tests {
     }
 
     #[test]
+    fn reserved_tap_basenames_cover_the_daemons_own_files() {
+        // N4 guard: RESERVED_TAP_DIR_BASENAMES (impulse_tap.rs) is hand-synced
+        // with the daemon's own state files. If either DEFAULT_*_PATH gains a
+        // new basename or moves, the unauthenticated arm endpoint could target
+        // (truncate) the daemon's own file. Pin the two constants against each
+        // other directly — stronger than a source grep, and it lives in the one
+        // crate that can see both. Also assert both files live under the tap
+        // dir (the reservation only matters for files inside TAP_PATH_DIR).
+        for daemon_path in [DEFAULT_STATE_PATH, DEFAULT_PREEMPT_STATE_PATH] {
+            let path = std::path::Path::new(daemon_path);
+            assert_eq!(
+                path.parent(),
+                Some(std::path::Path::new(impulse_tap::TAP_PATH_DIR)),
+                "{daemon_path} is not under TAP_PATH_DIR — the reservation \
+                 assumes the daemon's own files share the tap dir"
+            );
+            let basename = path.file_name().and_then(|n| n.to_str()).unwrap();
+            assert!(
+                impulse_tap::RESERVED_TAP_DIR_BASENAMES.contains(&basename),
+                "daemon file {basename:?} ({daemon_path}) is NOT in \
+                 RESERVED_TAP_DIR_BASENAMES — the unauthenticated /tap/arm \
+                 endpoint could truncate it. Add it to the reserved list."
+            );
+            // The reservation must actually reject an arm targeting that file.
+            assert!(
+                !impulse_tap::path_is_allowed(path),
+                "path_is_allowed must reject the daemon's own file {daemon_path}"
+            );
+        }
+    }
+
+    #[test]
     fn ring_underflow_writes_silence_and_counts() {
         let mut ring = PeriodRing::new(4, 2).unwrap();
         let mut out = [7i16; 4];
