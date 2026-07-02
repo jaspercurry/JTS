@@ -213,6 +213,41 @@ build_manifest_value() {
     return 0
 }
 
+# _is_ancestor <maybe_ancestor> <descendant>
+#
+# Thin wrapper over `git merge-base --is-ancestor` that discriminates its
+# THREE exit states, which the bare `if git merge-base --is-ancestor …`
+# form silently collapses into two:
+#
+#   0    yes    <maybe_ancestor> is an ancestor of <descendant>
+#   1    no     it is definitively NOT an ancestor (a real topological "no")
+#   >1   error  git itself failed — a transient object-DB read race, lock
+#               contention, or a commit-graph rewrite mid-read — which is
+#               NOT a clean "no"
+#
+# Echoes one of yes|no|error. The bare-`if` form treats exit >1 the same
+# as exit 1, so a transient git failure reads as a real "not an ancestor"
+# answer: on 2026-07-02 a deploy from a fresh worktree printed "diverged
+# histories" for an installed commit that was the direct PARENT of local
+# HEAD — a plain "forward" — because the ancestry probe hit a transient
+# error; re-running seconds later with identical inputs returned "forward".
+# Callers map the `error` token to their own can't-compare outcome instead
+# of guessing a topology.
+#
+# set -e-safe: the `|| rc=$?` capture keeps the non-zero git exit from
+# aborting a sourcing script under `set -euo pipefail`, and the function
+# itself always returns 0.
+_is_ancestor() {
+    local rc=0
+    git merge-base --is-ancestor "$1" "$2" 2>/dev/null || rc=$?
+    case "$rc" in
+        0) echo "yes" ;;
+        1) echo "no" ;;
+        *) echo "error" ;;
+    esac
+    return 0
+}
+
 # classify_deploy_direction <local_sha> <installed_sha>
 #
 # Compare the commit about to be deployed against the commit recorded in
@@ -230,7 +265,10 @@ build_manifest_value() {
 #   diverged           histories split — neither contains the other
 #                      (two branches deploying to one Pi)
 #   unknown_installed  installed SHA not in this checkout's history
-#                      (caller should fetch and retry once)
+#                      (caller should fetch and retry once), OR git errored
+#                      while comparing ancestry — either way, can't classify
+#                      reliably, so fall back to the fetch-and-retry outcome
+#                      rather than mislabel a transient failure as diverged
 #
 # Always returns 0: the abort decision depends on an operator override
 # that the caller owns, not this helper.
@@ -248,14 +286,18 @@ classify_deploy_direction() {
         echo "unknown_installed"
         return 0
     fi
-    if git merge-base --is-ancestor "$installed_sha" "$local_sha" 2>/dev/null; then
-        echo "forward"
-        return 0
-    fi
-    if git merge-base --is-ancestor "$local_sha" "$installed_sha" 2>/dev/null; then
-        echo "downgrade"
-        return 0
-    fi
+    # A git error (exit >1) on either ancestry probe must NOT fall through
+    # to "diverged" — that mislabels a transient failure as a real split
+    # history (the 2026-07-02 spurious-diverged incident). Treat it as
+    # can't-compare so the caller's fetch-and-retry path runs instead.
+    case "$(_is_ancestor "$installed_sha" "$local_sha")" in
+        yes) echo "forward"; return 0 ;;
+        error) echo "unknown_installed"; return 0 ;;
+    esac
+    case "$(_is_ancestor "$local_sha" "$installed_sha")" in
+        yes) echo "downgrade"; return 0 ;;
+        error) echo "unknown_installed"; return 0 ;;
+    esac
     echo "diverged"
     return 0
 }
@@ -279,9 +321,10 @@ classify_deploy_direction() {
 #   current   installed is origin/main's tip or a descendant — up to date
 #   behind    installed predates origin/main's tip — stale, advise update
 #   unknown   cannot compare — empty SHA, origin/main does not resolve (no
-#             remote / never fetched), or the installed commit is absent
-#             from this checkout. The caller skips the advisory rather
-#             than guessing; this never blocks a deploy.
+#             remote / never fetched), the installed commit is absent from
+#             this checkout, or git errored during the ancestry probe. The
+#             caller skips the advisory rather than guessing; this never
+#             blocks a deploy.
 #
 # Always returns 0: this drives an advisory print, not a deploy abort.
 classify_installed_vs_main() {
@@ -298,10 +341,12 @@ classify_installed_vs_main() {
         echo "unknown"
         return 0
     fi
-    if git merge-base --is-ancestor "$main_ref" "$installed_sha" 2>/dev/null; then
-        echo "current"
-        return 0
-    fi
+    # A git error (exit >1) must not read as "behind" — a false stale-Pi
+    # warning. Skip the advisory instead (same as an unresolvable ref).
+    case "$(_is_ancestor "$main_ref" "$installed_sha")" in
+        yes) echo "current"; return 0 ;;
+        error) echo "unknown"; return 0 ;;
+    esac
     echo "behind"
     return 0
 }
