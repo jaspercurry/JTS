@@ -149,16 +149,16 @@ def check_usbsink_state() -> CheckResult:
     if not active:
         gadget_visible = init_active or USBSINK_GADGET_PATH.exists()
         if gadget_visible:
-            details: list[str] = []
+            inactive_details: list[str] = []
             if init_active:
-                details.append(f"{USBSINK_INIT_UNIT}=active")
+                inactive_details.append(f"{USBSINK_INIT_UNIT}=active")
             if USBSINK_GADGET_PATH.exists():
-                details.append("ConfigFS gadget present")
+                inactive_details.append("ConfigFS gadget present")
             return CheckResult(
                 "usbsink state",
                 "fail",
                 "bridge inactive but USB Audio Input is still advertised "
-                f"({', '.join(details)}). Toggle USB Audio Input off in "
+                f"({', '.join(inactive_details)}). Toggle USB Audio Input off in "
                 "/sources/ or run `sudo systemctl stop jasper-usbsink-init.service` "
                 "so hosts stop seeing the gadget.",
             )

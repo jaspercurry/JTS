@@ -953,9 +953,9 @@ def build_audio_runtime_plan_from_system(
     try:
         from jasper.output_hardware import load_state
 
-        state = load_state(output_hardware_state_path)
-        if state is not None:
-            profile_id = state.profile_id
+        hardware_state = load_state(output_hardware_state_path)
+        if hardware_state is not None:
+            profile_id = hardware_state.profile_id
     except ImportError:
         profile_id = ""
     route_mode: RouteMode = "unknown"

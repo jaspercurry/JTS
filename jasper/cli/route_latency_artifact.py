@@ -131,6 +131,7 @@ def metrics_from_aggregates(
 
 
 def _latency_values_from_json(payload: Any) -> list[float]:
+    raw_values: Any = None
     if isinstance(payload, list):
         raw_values = payload
     elif isinstance(payload, dict):
@@ -140,8 +141,6 @@ def _latency_values_from_json(payload: Any) -> list[float]:
             or payload.get("samples_ms")
             or payload.get("samples")
         )
-    else:
-        raw_values = None
     if not isinstance(raw_values, list):
         raise ValueError(
             "JSON latency input must be a list, or an object with "
