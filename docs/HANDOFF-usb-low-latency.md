@@ -77,9 +77,13 @@ default-off diagnostics until they are removed or replaced; they cannot carry
 `usb_low_latency_48k` certification.
 
 The artifact writer is `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact`.
-It does **not** measure audio by itself; the click-in/capture-back harness must
-produce real per-impulse latencies (JSON/CSV/text, milliseconds) or aggregate
-p95/p99 metrics. Run it with `sudo` on the Pi because it must read root-owned
+It does **not** measure audio by itself; the click-in/capture-back harness that
+produces real per-impulse latencies (JSON/CSV/text, milliseconds) or aggregate
+p95/p99 metrics is `jasper-route-latency-harness` (source:
+`jasper/cli/route_latency_harness.py` + `jasper/route_latency/`) — see
+[`docs/testing-tooling.md` "Route-latency click/capture harness"](testing-tooling.md#route-latency-clickcapture-harness)
+for the architecture and the end-to-end quick/promotion walkthrough below.
+Run the artifact writer with `sudo` on the Pi because it must read root-owned
 runtime env files and write `/var/lib/jasper/audio-validation/*.json`. The writer
 binds the measured numbers to the live `jasper.audio_runtime_plan` route identity
 and updates `latest.json`. Raw sample inputs are recorded with source path,
@@ -87,21 +91,64 @@ byte count, and SHA-256 of the parsed file. Aggregate-only inputs require
 `--harness-id` so the artifact cannot anonymously certify externally computed
 percentiles.
 
-Quick gate example:
+**End-to-end quick gate** (generates the samples file the artifact writer
+needs, using `jasper-route-latency-harness`; see
+[`docs/testing-tooling.md` "Route-latency click/capture harness"](testing-tooling.md#route-latency-clickcapture-harness)
+for the full architecture):
+
+```sh
+# 1. Generate the click-track WAV + schedule.
+jasper-route-latency-harness generate quick --out-dir /tmp/route-latency
+
+# 2. On the Pi: arm the tap, capture the mic for the schedule's duration
+#    while the WAV plays on the host at a modest, comfortable volume
+#    (start very quiet — CamillaDSP's volume_limit stays the 0 dB
+#    ceiling), then analyze and shell out to the artifact writer. `run`
+#    loads the schedule directly, so it needs no --duration-seconds /
+#    --impulse-spacing-jittered flags (those exist only on `analyze`,
+#    which has no schedule file to read them from). --confirm-route-health-ok
+#    is the harness's OWN flag — read the printed health-delta report first;
+#    it is never inferred automatically:
+sudo jasper-route-latency-harness run \
+  /tmp/route-latency/quick-schedule.json \
+  --out-dir /tmp/route-latency \
+  --invoke-artifact \
+  --confirm-route-health-ok
+```
+
+Or drive `jasper-route-latency-artifact` directly once a samples file already
+exists (equivalent to what `--invoke-artifact` above shells out to, once the
+health deltas justify `--route-health-ok` on THAT CLI):
 
 ```sh
 sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact \
-  --samples /var/lib/jasper/audio-validation/usb-route-latencies.json \
-  --duration-seconds 300 \
+  --samples /tmp/route-latency/latency-samples.json \
+  --duration-seconds 360 \
   --harness-id jts-click-capture-v1 \
   --route-health-ok
 ```
 
-Promotion gate example:
+**End-to-end promotion gate** (`generate promotion` instead of `quick`; `run`
+reads jitteredness straight off the loaded schedule, so no
+`--impulse-spacing-jittered` flag is needed here — see `analyze`'s own
+example below for where that flag lives):
+
+```sh
+jasper-route-latency-harness generate promotion --out-dir /tmp/route-latency
+sudo jasper-route-latency-harness run \
+  /tmp/route-latency/promotion-schedule.json \
+  --out-dir /tmp/route-latency \
+  --measurement-id RUN_ID \
+  --invoke-artifact \
+  --confirm-route-health-ok \
+  --require-pass
+```
+
+or the artifact writer alone, once a samples file exists:
 
 ```sh
 sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact \
-  --samples /var/lib/jasper/audio-validation/usb-route-latencies.json \
+  --samples /tmp/route-latency/latency-samples.json \
   --duration-seconds 1800 \
   --impulse-spacing-jittered \
   --harness-id jts-click-capture-v1 \
@@ -118,6 +165,11 @@ outputd/fan-in xruns. Without that declaration, the artifact records
 declaration, the artifact writer and doctor still compare live Rust bridge
 period/ring state and fan-in USB resampler lock/target state against the route
 identity; any mismatch records/fails the claim as live route-health drift.
+`jasper-route-latency-harness analyze` prints exactly this delta (every
+nonzero bridge/usbsink/fan-in/outputd counter change across the measurement
+window) and states whether the declaration *would* be justified — it never
+asserts `--route-health-ok` on the operator's behalf; read the printed
+deltas and decide.
 
 ## Productization Plan
 
@@ -130,12 +182,20 @@ observable clock-domain crossings.
    `usb_low_latency_48k` route policy, Rust USB bridge, fan-in USB resampler,
    CamillaDSP, and outputd final reference wired as above. Doctor must continue
    to fail the low-latency claim until measured route evidence exists.
-2. **Build the real measurement harness.** `jasper-route-latency-artifact`
-   already binds samples to the live route identity; the missing producer is the
-   click-in/capture-back harness. It must capture enough impulses for the gate:
-   quick validation is >=200 impulses over >=5 minutes with p95 <= 40 ms;
-   promotion is >=1000 jittered impulses over >=30 minutes with p95 <= 40 ms and
-   p99 <= 60 ms. The same window must record clean bridge/fan-in/outputd deltas.
+2. **Build the real measurement harness.** DONE — `jasper-route-latency-harness`
+   (source: `jasper/cli/route_latency_harness.py` + `jasper/route_latency/`) is
+   the click-in/capture-back producer `jasper-route-latency-artifact` binds
+   samples to the live route identity from. Its `quick`/`promotion` presets are
+   sized directly off the certification gates with margin (quick: 240 impulses
+   over 6 minutes for p95 <= 40 ms; promotion: 1200 jittered impulses over 36
+   minutes for p99 <= 60 ms). See
+   [`docs/testing-tooling.md` "Route-latency click/capture harness"](testing-tooling.md#route-latency-clickcapture-harness)
+   for the architecture and the quick/promotion walkthroughs above. **Still
+   owed:** an on-device end-to-end run against real jts.local hardware — the
+   harness is unit-tested against synthetic evidence (`tests/test_route_latency_harness.py`
+   includes a clock-drift injection test) but has not yet produced a real
+   artifact from an actual click-track playback + XVF3800 capture, so the
+   low-latency claim remains correctly failing until that run happens.
 3. **Replace the bottleneck, not the DAC owner.** The current loopback graph
    cannot meet 40 ms because the USB resampler held target alone is ~42.7 ms.
    The next architecture step is a frame-bounded transport at one or both
@@ -319,8 +379,11 @@ peak) — trading latency for drops on every source. The lean-fifo gets low late
 Last verified: 2026-07-02 (jts.local clean 5-minute steady-state sample passed
 with Rust bridge 256/3, fan-in input buffer 4096, USB resampler held target
 2048, CamillaDSP 256/1536, outputd 128/256, outputd content buffer 1536, and
-direct ALSA loopback coupling. Route-latency click/capture artifact is still
-missing, so doctor correctly fails the low-latency claim.
-`sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact` now exists to bind
-measured latency samples to the live route identity once the click/capture
-harness produces them.)
+direct ALSA loopback coupling. `jasper-route-latency-harness` — the
+click-in/capture-back producer this doc previously described as missing — now
+exists (`jasper/cli/route_latency_harness.py` + `jasper/route_latency/`,
+hardware-free pytest including a clock-drift injection test) and
+`sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact` binds its output to
+the live route identity. Neither has yet produced a real on-device artifact
+from an actual click-track playback against jts.local's XVF3800, so doctor
+correctly continues to fail the low-latency claim until that run happens.)
