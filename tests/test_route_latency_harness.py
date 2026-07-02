@@ -31,6 +31,7 @@ from jasper.route_latency.mic_readers import (
     RAW0_UDP_PORT,
     MicChunk,
     MicSourceUnavailableError,
+    UdpMicReader,
 )
 from jasper.route_latency.pairing import MicDetection, TapEvent
 
@@ -53,6 +54,23 @@ def test_raw0_packet_size_matches_1280_samples_16k_mono_s16le():
     assert RAW0_SAMPLES_PER_PACKET == 1280
     assert RAW0_SAMPLE_RATE_HZ == 16_000
     assert RAW0_BYTES_PER_PACKET == RAW0_SAMPLES_PER_PACKET * 2
+
+
+def test_udp_mic_reader_bind_conflict_raises_guided_unavailable():
+    # A live wake-corpus session (or anything) already bound to raw0's UDP
+    # port must surface as the harness's own guided "mic unavailable" error,
+    # not a raw EADDRINUSE traceback — and the caller's socket must be closed
+    # so we don't leak an fd on the failed construction.
+    import socket
+
+    holder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    holder.bind(("127.0.0.1", 0))
+    held_port = holder.getsockname()[1]
+    try:
+        with pytest.raises(MicSourceUnavailableError, match="could not bind"):
+            UdpMicReader(port=held_port, timeout_seconds=0.5)
+    finally:
+        holder.close()
 
 
 # --------------------------------------------------------------------------
@@ -480,6 +498,22 @@ def test_cli_generate_writes_wav_and_schedule(tmp_path, capsys):
     assert (tmp_path / "quick-schedule.json").exists()
     out = capsys.readouterr().out
     assert "impulses=240" in out
+
+
+def test_cli_generate_unwritable_out_dir_fails_gracefully(tmp_path, capsys):
+    # `generate` needs no root; run unprivileged against an unwritable out-dir
+    # (a file where a dir is expected here — same OSError class as the
+    # root-owned default /var/lib/jasper path). It must return 1 with a guided
+    # message pointing at --out-dir, never a raw traceback.
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("", encoding="utf-8")
+
+    rc = harness.main(["generate", "quick", "--out-dir", str(blocker / "sub"), "--seed", "1"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--out-dir" in err
+    assert "could not write" in err
 
 
 def _write_jsonl(path, rows):

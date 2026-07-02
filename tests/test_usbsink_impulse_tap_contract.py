@@ -25,9 +25,11 @@ from __future__ import annotations
 import http.server
 import json
 import threading
+from pathlib import Path
 
 import pytest
 
+from jasper.cli.route_latency_harness import KNOWN_HEALTH_COUNTER_PATHS
 from jasper.route_latency.tap_client import (
     DEFAULT_TAP_PATH,
     TapArmParams,
@@ -35,6 +37,9 @@ from jasper.route_latency.tap_client import (
     TapClientError,
     read_tap_events,
 )
+
+_REPO = Path(__file__).resolve().parents[1]
+_USBSINK_MAIN_RS = _REPO / "rust" / "jasper-usbsink-audio" / "src" / "main.rs"
 
 
 # --------------------------------------------------------------------------
@@ -153,6 +158,36 @@ def test_read_tap_events_skips_lines_missing_required_fields(tmp_path):
 def test_default_tap_path_is_under_run_jasper_usbsink():
     # Pinned per the contract: tmpfs, same dir as state.json.
     assert DEFAULT_TAP_PATH == "/run/jasper-usbsink/impulse-tap.jsonl"
+
+
+# --------------------------------------------------------------------------
+# Health-counter names: the harness's route-health verdict
+# (`RouteHealthReport.would_justify_route_health_ok`, which
+# `--confirm-route-health-ok` gates on) reads specific counter paths out of
+# the usbsink `state.json`. If the Rust `counters` block ever renamed one of
+# those, `all_deltas.get(path, 0.0)` would return 0 forever and the flagged
+# verdict would silently degrade to vacuous-true. Pin the leaf names against
+# the Rust source so a rename fails loudly here — the same cross-language
+# discipline used for the JSONL fixture and the raw0 wire constants.
+# --------------------------------------------------------------------------
+
+
+def test_known_health_counter_names_exist_in_rust_status_json():
+    source = _USBSINK_MAIN_RS.read_text(encoding="utf-8")
+    for path in KNOWN_HEALTH_COUNTER_PATHS:
+        # Every pinned path is usbsink.counters.<leaf>; the leaf is the JSON
+        # key the Rust status_json emits inside its "counters" object.
+        assert path[:2] == ("usbsink", "counters"), (
+            f"unexpected health-counter path shape {path!r}; the source "
+            "cross-check below only validates usbsink.counters.* leaves"
+        )
+        leaf = path[-1]
+        assert f'\\"{leaf}\\":' in source, (
+            f"health counter {leaf!r} (in KNOWN_HEALTH_COUNTER_PATHS) is no "
+            "longer emitted by jasper-usbsink-audio's status_json counters "
+            "block — a Rust-side rename would silently make the harness's "
+            "route-health verdict vacuous. Update both sides together."
+        )
 
 
 # --------------------------------------------------------------------------

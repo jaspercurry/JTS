@@ -32,8 +32,9 @@ Four steps, run separately or via `run`:
               jasper-route-latency-artifact.
 
 Route-health honesty: this CLI NEVER asserts --route-health-ok on the
-operator's behalf. It prints the before/after counter deltas from the
-bridge/usbsink/fan-in/outputd status surfaces and states whether the
+operator's behalf. It prints the before/after counter deltas from the three
+route status surfaces (usbsink — the Rust ingress daemon — plus fan-in and
+outputd) and states whether the
 declaration WOULD be justified; the operator makes the actual call by passing
 --confirm-route-health-ok (alongside --invoke-artifact), which is only honored
 when the printed health diff would itself justify it.
@@ -55,6 +56,7 @@ from jasper.audio_validation import (
     ROUTE_LATENCY_P99_BUDGET_MS,
     certified_route_latency_percentiles,
 )
+from jasper.cli.route_latency_artifact import nearest_rank_percentile
 from jasper.log_event import log_event
 from jasper.route_latency import click_track
 from jasper.route_latency.impulse_detect import (
@@ -122,7 +124,7 @@ KNOWN_HEALTH_COUNTER_PATHS: tuple[tuple[str, ...], ...] = (
 
 
 # --------------------------------------------------------------------------
-# Route-health snapshot (bridge/usbsink/fan-in/outputd) — honesty, not gate
+# Route-health snapshot (usbsink/fan-in/outputd) — honesty, not gate
 # --------------------------------------------------------------------------
 
 
@@ -142,7 +144,9 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
 
 
 def snapshot_route_health() -> dict[str, Any]:
-    """Best-effort snapshot of the bridge/usbsink/fan-in/outputd surfaces.
+    """Best-effort snapshot of the three route surfaces: usbsink (the Rust
+    ingress daemon — its state.json also carries the impulse tap's counters),
+    fan-in, and outputd.
 
     Fails soft per-surface: an unreachable daemon records `null` for that
     key rather than raising, so a snapshot taken before a daemon is up (or
@@ -182,7 +186,7 @@ def _numeric_deltas(before: Any, after: Any, *, prefix: tuple[str, ...] = ()) ->
     """Recursively diff two JSON-like trees, returning {"a.b.c": after-before}
     for every leaf where both sides are numeric and the value changed.
 
-    Generic on purpose: the bridge/usbsink/fan-in/outputd counter surfaces
+    Generic on purpose: the usbsink/fan-in/outputd counter surfaces
     evolve independently of this harness, so hardcoding a fixed field list
     would silently stop reporting new counters. New/removed keys (a daemon
     added or removed a counter between snapshots) are skipped rather than
@@ -438,23 +442,16 @@ def analyze_matches(
     return AnalyzeResult(latencies_ms=latencies, pairing=pairing, match_rate_floor=match_rate_floor)
 
 
-def _percentile(values: list[float], pct: float) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    import math
-
-    idx = max(0, min(len(ordered) - 1, math.ceil(pct * len(ordered)) - 1))
-    return ordered[idx]
-
-
 def summarize_latencies(latencies_ms: tuple[float, ...]) -> dict[str, Any]:
+    # Reuse the CERTIFYING percentile implementation so the harness's printed
+    # p50/p95/p99 can never drift from what jasper-route-latency-artifact
+    # actually gates on (nearest-rank; empty -> None).
     values = list(latencies_ms)
     return {
         "count": len(values),
-        "p50_ms": _percentile(values, 0.50),
-        "p95_ms": _percentile(values, 0.95),
-        "p99_ms": _percentile(values, 0.99),
+        "p50_ms": nearest_rank_percentile(values, 0.50),
+        "p95_ms": nearest_rank_percentile(values, 0.95),
+        "p99_ms": nearest_rank_percentile(values, 0.99),
         "min_ms": min(values) if values else None,
         "max_ms": max(values) if values else None,
     }
@@ -482,8 +479,21 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         seed=args.seed,
     )
     out_dir = Path(args.out_dir)
-    wav_path = click_track.render_wav(schedule, out_dir / f"{args.preset}-click-track.wav")
-    schedule_path = click_track.write_schedule_json(schedule, out_dir / f"{args.preset}-schedule.json")
+    try:
+        wav_path = click_track.render_wav(schedule, out_dir / f"{args.preset}-click-track.wav")
+        schedule_path = click_track.write_schedule_json(schedule, out_dir / f"{args.preset}-schedule.json")
+    except OSError as e:
+        # The default --out-dir lives under the root-owned /var/lib/jasper; a
+        # bare `generate` run unprivileged (or on a laptop) can't create it.
+        # generate needs no daemon/root — point the operator at --out-dir
+        # instead of a raw traceback. Docs always pass an explicit --out-dir.
+        print(
+            f"error: could not write to {out_dir} ({e}). Pass --out-dir to a "
+            "writable location, e.g. --out-dir ./route-latency (generate "
+            "needs no root — it only writes a WAV + JSON schedule).",
+            file=sys.stderr,
+        )
+        return 1
     print(
         f"generated preset={args.preset} impulses={schedule.impulse_count} "
         f"duration_s={schedule.duration_seconds:g} jittered={schedule.jittered} "
@@ -553,6 +563,21 @@ def _cmd_capture(args: argparse.Namespace) -> int:
         f"tap armed. Play {schedule.preset_name}'s click-track WAV now — "
         f"capturing mic for {schedule.duration_seconds:g}s."
     )
+
+    def _disarm_quietly() -> None:
+        # Best-effort: never let a disarm failure mask the real outcome. The
+        # tap also auto-disarms after `auto_disarm_min`, so a missed disarm is
+        # bounded even if this fails.
+        try:
+            client.disarm()
+        except TapClientError as e:
+            print(f"warning: disarm failed: {e}", file=sys.stderr)
+
+    # Every exit path disarms: the success path snapshots `after` first (so the
+    # window bounds the health diff) then disarms; both the unavailable-mic and
+    # the KeyboardInterrupt (operator Ctrl-C mid-capture) paths disarm before
+    # returning/re-raising, rather than leaving the tap armed until the
+    # auto-disarm deadline.
     try:
         capture = capture_mic_detections(
             args.mic,
@@ -563,17 +588,14 @@ def _cmd_capture(args: argparse.Namespace) -> int:
         )
     except MicSourceUnavailableError as e:
         print(f"error: {e}", file=sys.stderr)
-        try:
-            client.disarm()
-        except TapClientError:
-            pass
+        _disarm_quietly()
         return 1
+    except KeyboardInterrupt:
+        print("\ninterrupted — disarming tap.", file=sys.stderr)
+        _disarm_quietly()
+        raise
     after = snapshot_route_health()
-
-    try:
-        client.disarm()
-    except TapClientError as e:
-        print(f"warning: disarm failed: {e}", file=sys.stderr)
+    _disarm_quietly()
 
     detections = list(capture.detections)
     mic_path = out_dir / "mic-detections.jsonl"
