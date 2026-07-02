@@ -536,6 +536,9 @@ start_streambox_runtime_units() {
     systemctl restart nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service \
         2>/dev/null || true
+    # Bounce Rust data-plane daemons OUTSIDE the core-graph restart set
+    # when (and only when) this install replaced their binary content.
+    restart_services_for_changed_rust_daemons
     for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-system-web; do
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
@@ -1138,6 +1141,9 @@ install_systemd_units() {
     systemctl restart nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service \
         2>/dev/null || true
+    # Bounce Rust data-plane daemons OUTSIDE the core-graph restart set
+    # when (and only when) this install replaced their binary content.
+    restart_services_for_changed_rust_daemons
     # The wizard services are socket-activated now. Any currently-
     # running instance is on the old code; stop it so the next incoming
     # request brings up the new code via the .socket. Idempotent: if the
