@@ -1,0 +1,293 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Click-track generator for the route-latency click/capture harness.
+
+Produces two artifacts a human plays/uses together:
+
+* a 48 kHz stereo WAV of short clicks at jittered intervals, played on the
+  Mac/Windows host into the JTS USB audio device (no host-side software
+  beyond a media player); and
+* a JSON schedule recording the *planned* impulse times, so the analyze step
+  can sanity-check its detected/paired impulse count against what was meant
+  to be played (a large mismatch usually means the WAV wasn't played to
+  completion, or was played at the wrong volume for the tap/mic threshold).
+
+Sizing is driven directly by the certification gates in
+``jasper.audio_validation`` (``percentile_min_samples`` /
+``ROUTE_LATENCY_P95_MIN_DURATION_SECONDS`` /
+``ROUTE_LATENCY_P99_MIN_DURATION_SECONDS``) plus a fixed safety margin, so a
+generated track always has enough impulses and enough wall-clock duration to
+certify its target percentile even after some impulses are dropped during
+pairing (a played-but-unmatched click, mic dropout, etc). The margin is
+deliberately generous: pairing rejects ambiguous/double matches (see
+``jasper.route_latency.pairing``), so headroom protects against real-world
+attrition, not just rounding.
+
+Audio-output safety: default click amplitude is -12 dBFS (a deliberately
+modest level — see the safe-volume doctrine in AGENTS.md/README: CamillaDSP's
+``volume_limit`` stays the 0 dB ceiling, and operators must start very quiet
+and ramp up by ear). A click is a short raised-cosine-windowed tone burst,
+not a full-scale impulse — full-scale square-wave clicks risk driver/DAC
+strain and are unnecessary for a threshold-crossing detector.
+"""
+from __future__ import annotations
+
+import json
+import math
+import random
+import struct
+import wave
+from dataclasses import dataclass
+from pathlib import Path
+
+from jasper.audio_validation import (
+    ROUTE_LATENCY_P95_MIN_DURATION_SECONDS,
+    ROUTE_LATENCY_P99_MIN_DURATION_SECONDS,
+    percentile_min_samples,
+)
+
+
+SAMPLE_RATE_HZ = 48_000
+CHANNELS = 2
+SAMPLE_WIDTH_BYTES = 2  # int16
+
+# Click shape: a short raised-cosine-windowed tone burst. A pure impulse
+# (single non-zero sample) carries too little energy to reliably cross a
+# sane detector threshold after USB/ALSA/acoustic-path losses; a tone burst
+# is easy for both the Rust ingress tap (post-conversion S16 samples) and
+# the mic-side detector to see, while staying short enough that its onset
+# is an unambiguous "instant" for latency purposes.
+CLICK_TONE_HZ = 2_000.0
+CLICK_DURATION_MS = 5.0
+DEFAULT_AMPLITUDE_DBFS = -12.0
+
+# Safety margin over the raw certification minimums (see module docstring):
+# pairing can legitimately drop some impulses (mic dropout, an ambiguous
+# double-match near the pairing window edge), so a generated track always
+# clears the gate with room to spare rather than landing exactly on it.
+_COUNT_MARGIN = 1.2
+_DURATION_MARGIN = 1.2
+
+QUICK_PRESET_NAME = "quick"
+PROMOTION_PRESET_NAME = "promotion"
+
+
+@dataclass(frozen=True)
+class ClickTrackPreset:
+    """One named impulse-count/duration/jitter target.
+
+    ``impulse_count`` and ``duration_seconds`` are pre-margined: they already
+    clear the corresponding certification gate in
+    ``jasper.audio_validation`` by ``_COUNT_MARGIN`` / ``_DURATION_MARGIN``.
+    """
+
+    name: str
+    impulse_count: int
+    duration_seconds: float
+    jittered: bool
+
+
+def _preset(name: str, *, percentile: float, min_duration_seconds: float, jittered: bool) -> ClickTrackPreset:
+    min_count = percentile_min_samples(percentile)
+    count = math.ceil(min_count * _COUNT_MARGIN)
+    duration = min_duration_seconds * _DURATION_MARGIN
+    return ClickTrackPreset(
+        name=name,
+        impulse_count=count,
+        duration_seconds=duration,
+        jittered=jittered,
+    )
+
+
+# Quick gate targets p95 certification: >=200 impulses over >=300s.
+# Promotion gate targets p99 certification (which also requires jittered
+# spacing): >=1000 impulses over >=1800s.
+PRESETS: dict[str, ClickTrackPreset] = {
+    p.name: p
+    for p in (
+        _preset(
+            QUICK_PRESET_NAME,
+            percentile=95,
+            min_duration_seconds=ROUTE_LATENCY_P95_MIN_DURATION_SECONDS,
+            jittered=False,
+        ),
+        _preset(
+            PROMOTION_PRESET_NAME,
+            percentile=99,
+            min_duration_seconds=ROUTE_LATENCY_P99_MIN_DURATION_SECONDS,
+            jittered=True,
+        ),
+    )
+}
+
+
+@dataclass(frozen=True)
+class ClickSchedule:
+    """Planned impulse onset times (seconds from track start)."""
+
+    preset_name: str
+    impulse_count: int
+    duration_seconds: float
+    jittered: bool
+    amplitude_dbfs: float
+    onsets_seconds: tuple[float, ...]
+    seed: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "preset": self.preset_name,
+            "impulse_count": self.impulse_count,
+            "duration_seconds": self.duration_seconds,
+            "jittered": self.jittered,
+            "amplitude_dbfs": self.amplitude_dbfs,
+            "sample_rate_hz": SAMPLE_RATE_HZ,
+            "click_tone_hz": CLICK_TONE_HZ,
+            "click_duration_ms": CLICK_DURATION_MS,
+            "seed": self.seed,
+            "onsets_seconds": list(self.onsets_seconds),
+        }
+
+
+def _spacing_seconds(*, count: int, duration_seconds: float, jittered: bool, rng: random.Random) -> list[float]:
+    """Return `count` onset times within `duration_seconds`, first and last
+    pulled in slightly from the track edges so a click never lands exactly
+    at t=0 or t=duration (leaves silent lead-in/lead-out for playback
+    start/stop slop)."""
+
+    lead_seconds = min(1.0, duration_seconds * 0.01)
+    usable = duration_seconds - 2 * lead_seconds
+    if usable <= 0:
+        raise ValueError("duration_seconds too small for the requested lead-in/out margin")
+    mean_spacing = usable / count
+    if not jittered:
+        return [lead_seconds + mean_spacing * (i + 0.5) for i in range(count)]
+
+    # Jittered: each inter-impulse gap is mean_spacing scaled by a uniform
+    # factor in [0.5, 1.5), then the whole sequence is rescaled to exactly
+    # fill `usable` seconds. This guarantees N impulses fit the requested
+    # duration exactly while satisfying the artifact's
+    # `--impulse-spacing-jittered` promotion requirement with real variance
+    # (not a fixed-then-rounded schedule).
+    raw_gaps = [mean_spacing * rng.uniform(0.5, 1.5) for _ in range(count)]
+    raw_total = sum(raw_gaps)
+    scale = usable / raw_total
+    onsets: list[float] = []
+    cursor = lead_seconds
+    for gap in raw_gaps:
+        onsets.append(cursor)
+        cursor += gap * scale
+    return onsets
+
+
+def build_schedule(
+    preset_name: str,
+    *,
+    amplitude_dbfs: float = DEFAULT_AMPLITUDE_DBFS,
+    seed: int = 0,
+) -> ClickSchedule:
+    """Build the planned impulse schedule for a named preset."""
+
+    try:
+        preset = PRESETS[preset_name]
+    except KeyError:
+        raise ValueError(
+            f"unknown preset {preset_name!r}; choose one of {sorted(PRESETS)}"
+        ) from None
+    rng = random.Random(seed)
+    onsets = _spacing_seconds(
+        count=preset.impulse_count,
+        duration_seconds=preset.duration_seconds,
+        jittered=preset.jittered,
+        rng=rng,
+    )
+    return ClickSchedule(
+        preset_name=preset.name,
+        impulse_count=preset.impulse_count,
+        duration_seconds=preset.duration_seconds,
+        jittered=preset.jittered,
+        amplitude_dbfs=amplitude_dbfs,
+        onsets_seconds=tuple(onsets),
+        seed=seed,
+    )
+
+
+def _click_samples(amplitude_dbfs: float) -> list[int]:
+    """One raised-cosine-windowed tone burst as int16 samples."""
+
+    amplitude_lin = 10.0 ** (amplitude_dbfs / 20.0)
+    peak = amplitude_lin * 32767.0
+    n = round(CLICK_DURATION_MS / 1000.0 * SAMPLE_RATE_HZ)
+    samples: list[int] = []
+    for i in range(n):
+        t = i / SAMPLE_RATE_HZ
+        window = 0.5 - 0.5 * math.cos(2.0 * math.pi * i / max(1, n - 1))
+        value = peak * window * math.sin(2.0 * math.pi * CLICK_TONE_HZ * t)
+        samples.append(max(-32768, min(32767, round(value))))
+    return samples
+
+
+def render_wav(schedule: ClickSchedule, path: Path) -> Path:
+    """Render `schedule` to a 48 kHz stereo S16_LE WAV at `path`."""
+
+    total_frames = round(schedule.duration_seconds * SAMPLE_RATE_HZ)
+    click = _click_samples(schedule.amplitude_dbfs)
+    frames = bytearray(total_frames * CHANNELS * SAMPLE_WIDTH_BYTES)
+    frame_stride = CHANNELS * SAMPLE_WIDTH_BYTES
+    for onset in schedule.onsets_seconds:
+        start_frame = round(onset * SAMPLE_RATE_HZ)
+        for offset, sample in enumerate(click):
+            frame = start_frame + offset
+            if frame >= total_frames:
+                break
+            byte_off = frame * frame_stride
+            packed = struct.pack("<hh", sample, sample)
+            frames[byte_off : byte_off + frame_stride] = packed
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(CHANNELS)
+        w.setsampwidth(SAMPLE_WIDTH_BYTES)
+        w.setframerate(SAMPLE_RATE_HZ)
+        w.writeframes(bytes(frames))
+    return path
+
+
+def write_schedule_json(schedule: ClickSchedule, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(schedule.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def load_schedule_json(path: Path) -> ClickSchedule:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return ClickSchedule(
+        preset_name=str(payload["preset"]),
+        impulse_count=int(payload["impulse_count"]),
+        duration_seconds=float(payload["duration_seconds"]),
+        jittered=bool(payload["jittered"]),
+        amplitude_dbfs=float(payload["amplitude_dbfs"]),
+        onsets_seconds=tuple(float(v) for v in payload["onsets_seconds"]),
+        seed=int(payload["seed"]),
+    )
+
+
+__all__ = [
+    "CHANNELS",
+    "CLICK_DURATION_MS",
+    "CLICK_TONE_HZ",
+    "DEFAULT_AMPLITUDE_DBFS",
+    "PROMOTION_PRESET_NAME",
+    "PRESETS",
+    "QUICK_PRESET_NAME",
+    "SAMPLE_RATE_HZ",
+    "SAMPLE_WIDTH_BYTES",
+    "ClickSchedule",
+    "ClickTrackPreset",
+    "build_schedule",
+    "load_schedule_json",
+    "render_wav",
+    "write_schedule_json",
+]
