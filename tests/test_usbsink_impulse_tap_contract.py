@@ -321,3 +321,84 @@ def test_tap_arm_params_to_body_omits_unset_fields():
 
 def test_tap_arm_params_to_body_empty_when_all_unset():
     assert TapArmParams().to_body() == {}
+
+
+# --------------------------------------------------------------------------
+# B1 cross-language round-trip: a `--tap-refractory-ms` (argparse type=float)
+# arrives at TapArmParams as a Python float (300.0). Before the fix, to_body()
+# passed it through and json.dumps emitted "refractory_ms":300.0 — which the
+# Rust `positive_u64` (serde_json `as_u64()`) rejects for any float, so every
+# invocation of the flag 400'd the arm for the whole measurement window. These
+# tests pin BOTH halves of the fix: the Python body must serialize integer
+# knobs as JSON integers, and that exact byte-string must be one the Rust
+# fixtures below (arm_body_overrides_all_fields / _accepts_integral_float_*)
+# accept. We can't call the Rust parser from Python, so we cross-check that the
+# CLI-produced JSON string matches the shape the Rust source's own tests pin.
+# --------------------------------------------------------------------------
+
+_USBSINK_IMPULSE_TAP_RS = _REPO / "rust" / "jasper-usbsink-audio" / "src" / "impulse_tap.rs"
+
+
+def test_arm_body_serializes_float_typed_int_knobs_as_json_integers():
+    # Mirrors exactly what jasper-route-latency-harness builds from a
+    # `--tap-refractory-ms 300` / `--tap-max-events`-style float-typed CLI arg:
+    # the value reaches TapArmParams as a float.
+    params = TapArmParams(
+        threshold=0.4,
+        hysteresis=0.1,
+        refractory_ms=300.0,
+        max_events=10.0,
+        auto_disarm_min=5.0,
+        path="/run/jasper-usbsink/x.jsonl",
+    )
+    body = params.to_body()
+
+    # The three integer knobs must be Python ints (so json.dumps emits `300`,
+    # not `300.0`). The float knobs stay floats.
+    assert body["refractory_ms"] == 300 and isinstance(body["refractory_ms"], int)
+    assert body["max_events"] == 10 and isinstance(body["max_events"], int)
+    assert body["auto_disarm_min"] == 5 and isinstance(body["auto_disarm_min"], int)
+    assert isinstance(body["threshold"], float)
+
+    serialized = json.dumps(body)
+    # The exact wire bytes the daemon receives — no `.0` on any integer knob.
+    assert "300.0" not in serialized
+    assert "10.0" not in serialized
+    assert "5.0" not in serialized
+    assert '"refractory_ms": 300' in serialized
+
+
+def test_arm_body_rounds_fractional_int_knobs_to_nearest():
+    # A fractional ms is rounded to the nearest int rather than truncated, so an
+    # operator's 250.7 lands on 251, not 250. (Rust rejects a non-integral float
+    # outright — the Python round() is what keeps a fractional CLI value usable.)
+    params = TapArmParams(refractory_ms=250.7, max_events=9.4, auto_disarm_min=5.5)
+    body = params.to_body()
+
+    assert body["refractory_ms"] == 251
+    assert body["max_events"] == 9
+    assert body["auto_disarm_min"] == 6  # round-half-to-even: 5.5 -> 6
+
+
+def test_cli_produced_arm_body_matches_rust_integral_float_fixture():
+    # Cross-language: the Rust source pins acceptance of BOTH a native-int body
+    # (arm_body_overrides_all_fields) AND an integral-float body
+    # (arm_body_accepts_integral_float_u64_knobs). The CLI now emits the
+    # native-int shape; assert the Rust fixture that accepts it still exists, so
+    # a Rust-side regression that dropped either acceptance path fails here too.
+    rust_src = _USBSINK_IMPULSE_TAP_RS.read_text(encoding="utf-8")
+    assert "fn arm_body_overrides_all_fields" in rust_src, (
+        "Rust fixture pinning acceptance of the CLI's native-int arm body is "
+        "gone — the B1 wire contract is unpinned on the Rust side."
+    )
+    assert "fn arm_body_accepts_integral_float_u64_knobs" in rust_src, (
+        "Rust fixture pinning the integral-float defense (300.0) is gone — a "
+        "client that emits float-encoded int knobs would silently 400 again."
+    )
+    # The CLI's serialized body uses these exact JSON integer knobs; the Rust
+    # native-int fixture body must carry the same keys as integer literals.
+    body = TapArmParams(refractory_ms=300.0, max_events=10.0, auto_disarm_min=5.0).to_body()
+    serialized = json.dumps(body, separators=(",", ":"))
+    assert '"refractory_ms":300' in serialized
+    assert '"max_events":10' in serialized
+    assert '"auto_disarm_min":5' in serialized

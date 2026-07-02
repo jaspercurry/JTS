@@ -74,12 +74,20 @@ class TapArmParams:
             body["threshold"] = self.threshold
         if self.hysteresis is not None:
             body["hysteresis"] = self.hysteresis
+        # The three integer-valued knobs are coerced to int so a CLI arg typed
+        # with `type=float` (e.g. --tap-refractory-ms 300 → 300.0) serializes as
+        # `300`, not `300.0`. The Rust side parses these with `as_u64()`, which
+        # returns None for a JSON float — so a float here 400s the arm request
+        # for the entire measurement window. `round()` (not `int()`) so an
+        # operator's `250.7` lands on the nearest ms rather than truncating; the
+        # Rust side ALSO accepts integral floats now (defense on both sides), but
+        # emitting a clean int keeps the wire honest and the Rust parser strict.
         if self.refractory_ms is not None:
-            body["refractory_ms"] = self.refractory_ms
+            body["refractory_ms"] = round(self.refractory_ms)
         if self.max_events is not None:
-            body["max_events"] = self.max_events
+            body["max_events"] = round(self.max_events)
         if self.auto_disarm_min is not None:
-            body["auto_disarm_min"] = self.auto_disarm_min
+            body["auto_disarm_min"] = round(self.auto_disarm_min)
         if self.path is not None:
             body["path"] = self.path
         return body
