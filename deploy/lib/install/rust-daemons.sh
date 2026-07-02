@@ -153,6 +153,18 @@ build_install_rust_daemon() {
             "$(dirname "${cache_dir}")/jasper-ring/"
         chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-ring"
     fi
+    # Same for the shared host-clock crate (jasper-host-clock) so the
+    # `path = "../jasper-host-clock"` deps of jasper-usbsink-audio and
+    # jasper-fanin (the Capture Pitch DLL extracted from the bridge)
+    # resolve. Guarded by existence so a branch predating the crate still
+    # builds.
+    if [[ -d "${REPO_DIR}/rust/jasper-host-clock" ]]; then
+        rsync -a --delete \
+            --exclude='target/' \
+            "${REPO_DIR}/rust/jasper-host-clock/" \
+            "$(dirname "${cache_dir}")/jasper-host-clock/"
+        chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-host-clock"
+    fi
     chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     local -a cargo_env=()
