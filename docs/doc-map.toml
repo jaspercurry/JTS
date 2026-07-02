@@ -598,7 +598,7 @@ requires_docs_when = [
   "The route-latency artifact schema/gate thresholds, the click/capture harness's mic-source contract or presets, or the Rust ingress tap's JSONL/HTTP arm-disarm contract change (see HANDOFF-usb-low-latency.md and testing-tooling.md's harness section).",
 ]
 verification = [
-  "pytest tests/test_audio_runtime_plan.py tests/test_mux_lean_lane.py tests/test_sound_camilla_yaml.py tests/test_active_speaker_runtime_contract.py tests/test_route_latency_artifact_cli.py tests/test_route_latency_click_track.py tests/test_route_latency_impulse_detect.py tests/test_route_latency_pairing.py tests/test_route_latency_harness.py tests/test_usbsink_impulse_tap_contract.py",
+  "pytest tests/test_audio_runtime_plan.py tests/test_mux_lean_lane.py tests/test_sound_camilla_yaml.py tests/test_active_speaker_runtime_contract.py tests/test_route_latency_artifact_cli.py tests/test_route_latency_click_track.py tests/test_route_latency_impulse_detect.py tests/test_route_latency_pairing.py tests/test_route_latency_harness.py tests/test_route_latency_status_socket.py tests/test_usbsink_impulse_tap_contract.py",
 ]
 
 [[subsystem]]

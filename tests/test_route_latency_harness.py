@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -101,7 +102,8 @@ def test_capture_mic_detections_reanchors_to_packet_arrival_time(monkeypatch):
     reader = _FakeMicReader([chunk])
     monkeypatch.setattr(harness, "build_mic_reader", lambda spec: reader)
 
-    detections = harness.capture_mic_detections("udp:9879", duration_seconds=0.01)
+    result = harness.capture_mic_detections("udp:9879", duration_seconds=0.01)
+    detections = result.detections
 
     assert len(detections) == 1
     remaining = RAW0_SAMPLES_PER_PACKET - offset
@@ -134,13 +136,13 @@ def test_capture_mic_detections_across_multiple_chunks_preserves_detector_state(
     reader = _FakeMicReader(list(chunks))
     monkeypatch.setattr(harness, "build_mic_reader", lambda spec: reader)
 
-    detections = harness.capture_mic_detections(
+    result = harness.capture_mic_detections(
         "udp:9879",
         duration_seconds=1.0,
         refractory_ms=refractory_ms,
     )
 
-    assert len(detections) == 2
+    assert len(result.detections) == 2
 
 
 def test_capture_mic_detections_propagates_source_unavailable(monkeypatch):
@@ -155,6 +157,58 @@ def test_capture_mic_detections_propagates_source_unavailable(monkeypatch):
 
     with pytest.raises(MicSourceUnavailableError):
         harness.capture_mic_detections("udp:9879", duration_seconds=0.01)
+
+
+def test_capture_mic_detections_flags_early_stop_after_at_least_one_chunk(monkeypatch):
+    # A source that delivers a chunk then goes quiet BEFORE the deadline must
+    # record stopped_early=True (not just silently end): a promotion capture
+    # that died at minute 12 of 36 can't look like a quiet success.
+    reader = _FakeMicReader([_impulse_chunk(1_000_000_000, 0)])
+    monkeypatch.setattr(harness, "build_mic_reader", lambda spec: reader)
+
+    # A long requested window the single chunk can't fill -> early stop.
+    result = harness.capture_mic_detections("udp:9879", duration_seconds=60.0)
+
+    assert result.stopped_early is True
+    assert result.elapsed_seconds < result.requested_seconds
+    assert len(result.detections) == 1
+
+
+def test_cmd_capture_warns_loudly_when_mic_stops_early(tmp_path, monkeypatch, capsys):
+    schedule = harness.click_track.build_schedule("quick", seed=1)
+    schedule_path = tmp_path / "schedule.json"
+    harness.click_track.write_schedule_json(schedule, schedule_path)
+
+    # Stub the tap client (no real daemon) and the health snapshot.
+    class _StubTapClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def arm(self, _params):
+            return {"ok": True, "armed": True}
+
+        def disarm(self):
+            return {"ok": True, "armed": False}
+
+    monkeypatch.setattr(harness, "TapClient", _StubTapClient)
+    monkeypatch.setattr(harness, "snapshot_route_health", lambda: {})
+    monkeypatch.setattr(
+        harness,
+        "capture_mic_detections",
+        lambda *a, **k: harness.MicCaptureResult(
+            detections=(MicDetection(monotonic_ns=1, peak=0.5),),
+            stopped_early=True,
+            elapsed_seconds=12.0,
+            requested_seconds=schedule.duration_seconds,
+        ),
+    )
+
+    rc = harness.main(["capture", str(schedule_path), "--out-dir", str(tmp_path)])
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "mic source went quiet at t=12.0s" in err
+    assert "TRUNCATED" in err
 
 
 # --------------------------------------------------------------------------
@@ -189,9 +243,10 @@ def test_per_impulse_reanchoring_eliminates_100ppm_drift_over_promotion_window(m
     reader = _FakeMicReader(chunks)
     monkeypatch.setattr(harness, "build_mic_reader", lambda spec: reader)
 
-    detections = harness.capture_mic_detections(
+    result = harness.capture_mic_detections(
         "udp:9879", duration_seconds=duration_seconds, refractory_ms=0.0,
     )
+    detections = result.detections
 
     assert len(detections) == 1
     # Ground truth: the impulse sample sits at offset 0 of its packet, i.e.
@@ -228,17 +283,42 @@ def test_per_impulse_reanchoring_eliminates_100ppm_drift_over_promotion_window(m
 # --------------------------------------------------------------------------
 
 
-def test_latency_ms_for_match_combines_delta_ring_fill_and_distance():
+def test_latency_ms_for_match_is_the_raw_tap_to_mic_delta():
     from jasper.route_latency.pairing import MatchedImpulse
 
-    tap = TapEvent(monotonic_ns=0, frame_index=0, ring_fill_frames=480, peak=0.8)
+    tap = TapEvent(monotonic_ns=0, frame_index=0, ring_fill_frames=0, peak=0.8)
     mic = MicDetection(monotonic_ns=30_000_000, peak=0.5)  # 30ms later
     match = MatchedImpulse(tap=tap, mic=mic)
 
     latency = harness.latency_ms_for_match(match, mic_distance_compensation_ms=0.0)
 
-    # 30ms raw + 480/48.0 = 10ms ring dwell = 40ms
-    assert latency == pytest.approx(40.0)
+    assert latency == pytest.approx(30.0)
+
+
+def test_latency_ms_for_match_does_not_add_ring_fill_dwell():
+    # Regression guard for the ring-dwell double-count fix. The tap
+    # timestamps the click at ingress (before it enters the ring), so the
+    # ring dwell is already inside the t_mic - t_tap subtraction. Two matches
+    # with an identical raw delta but very different ring_fill_frames must
+    # yield the SAME latency — the fill is diagnostic context, not an
+    # additive latency term.
+    from jasper.route_latency.pairing import MatchedImpulse
+
+    mic = MicDetection(monotonic_ns=30_000_000, peak=0.5)
+    empty_ring = MatchedImpulse(
+        tap=TapEvent(monotonic_ns=0, frame_index=0, ring_fill_frames=0, peak=0.8),
+        mic=mic,
+    )
+    full_ring = MatchedImpulse(
+        tap=TapEvent(monotonic_ns=0, frame_index=0, ring_fill_frames=768, peak=0.8),
+        mic=mic,
+    )
+
+    a = harness.latency_ms_for_match(empty_ring, mic_distance_compensation_ms=0.0)
+    b = harness.latency_ms_for_match(full_ring, mic_distance_compensation_ms=0.0)
+
+    assert a == pytest.approx(30.0)
+    assert b == pytest.approx(30.0)
 
 
 def test_latency_ms_for_match_subtracts_distance_compensation():
@@ -410,16 +490,19 @@ def test_cli_analyze_end_to_end_writes_artifact_compatible_samples(tmp_path, cap
     tap_path = tmp_path / "tap.jsonl"
     mic_path = tmp_path / "mic.jsonl"
     n = 200
+    # Non-zero ring_fill_frames on every tap event proves it is NOT added to
+    # the latency (the ring-dwell double-count fix): the raw tap→mic delta is
+    # 30ms and the emitted samples are exactly 30ms regardless of the fill.
     _write_jsonl(
         tap_path,
         [
-            {"monotonic_ns": i * 1_500_000_000, "frame_index": i * 256, "ring_fill_frames": 96, "peak": 0.8}
+            {"monotonic_ns": i * 1_500_000_000, "frame_index": i * 256, "ring_fill_frames": 512, "peak": 0.8}
             for i in range(n)
         ],
     )
     _write_jsonl(
         mic_path,
-        [{"monotonic_ns": i * 1_500_000_000 + 28_000_000, "peak": 0.5} for i in range(n)],
+        [{"monotonic_ns": i * 1_500_000_000 + 30_000_000, "peak": 0.5} for i in range(n)],
     )
 
     rc = harness.main([
@@ -435,7 +518,7 @@ def test_cli_analyze_end_to_end_writes_artifact_compatible_samples(tmp_path, cap
     assert samples_path.exists()
     values = route_latency_artifact.load_latency_samples(samples_path)
     assert len(values) == n
-    # 28ms raw + 96/48.0=2ms ring dwell = 30ms
+    # 30ms raw tap→mic delta; ring_fill_frames=512 is diagnostic only.
     assert all(v == pytest.approx(30.0) for v in values)
     out = capsys.readouterr().out
     assert "match_rate=100.0%" in out
@@ -535,6 +618,81 @@ def test_cli_analyze_prints_route_health_and_never_auto_confirms(tmp_path, capsy
     assert "usbsink.counters.capture_xruns: +2" in out
 
 
+def test_health_report_excludes_timestamp_noise_leaves(tmp_path, capsys):
+    # captured_at_monotonic_ns / last_progress_epoch_ms / updated_at always
+    # change between snapshots and are not health counters — they must not
+    # appear in the printed deltas, or they bury the counters that matter.
+    tap_path = tmp_path / "tap.jsonl"
+    mic_path = tmp_path / "mic.jsonl"
+    n = 200
+    _write_jsonl(
+        tap_path,
+        [{"monotonic_ns": i * 1_500_000_000, "frame_index": i, "ring_fill_frames": 0, "peak": 0.8} for i in range(n)],
+    )
+    _write_jsonl(mic_path, [{"monotonic_ns": i * 1_500_000_000 + 30_000_000, "peak": 0.5} for i in range(n)])
+    health_path = tmp_path / "route-health-snapshot.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "before": {
+                    "captured_at_monotonic_ns": 1_000,
+                    "usbsink": {"counters": {"capture_xruns": 0}, "last_progress_epoch_ms": 100},
+                },
+                "after": {
+                    "captured_at_monotonic_ns": 999_999_999,
+                    "usbsink": {"counters": {"capture_xruns": 1}, "last_progress_epoch_ms": 5_000_000},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = harness.main([
+        "analyze",
+        "--tap-events", str(tap_path),
+        "--mic-detections", str(mic_path),
+        "--route-health-snapshot", str(health_path),
+        "--out-dir", str(tmp_path),
+        "--duration-seconds", "300",
+    ])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The real counter delta is printed...
+    assert "usbsink.counters.capture_xruns: +1" in out
+    # ...but the timestamp leaves are not.
+    assert "captured_at_monotonic_ns" not in out
+    assert "last_progress_epoch_ms" not in out
+
+
+def test_analyze_tolerates_malformed_route_health_snapshot(tmp_path, capsys):
+    # A corrupt snapshot must not crash analyze — the samples are still valid.
+    tap_path = tmp_path / "tap.jsonl"
+    mic_path = tmp_path / "mic.jsonl"
+    n = 200
+    _write_jsonl(
+        tap_path,
+        [{"monotonic_ns": i * 1_500_000_000, "frame_index": i, "ring_fill_frames": 0, "peak": 0.8} for i in range(n)],
+    )
+    _write_jsonl(mic_path, [{"monotonic_ns": i * 1_500_000_000 + 30_000_000, "peak": 0.5} for i in range(n)])
+    health_path = tmp_path / "route-health-snapshot.json"
+    health_path.write_text("{not valid json", encoding="utf-8")
+
+    rc = harness.main([
+        "analyze",
+        "--tap-events", str(tap_path),
+        "--mic-detections", str(mic_path),
+        "--route-health-snapshot", str(health_path),
+        "--out-dir", str(tmp_path),
+        "--duration-seconds", "300",
+    ])
+
+    assert rc == 0
+    assert (tmp_path / "latency-samples.json").exists()
+    err = capsys.readouterr().err
+    assert "could not read route-health snapshot" in err
+
+
 def test_cli_invoke_artifact_shells_out_with_harness_id_and_duration(tmp_path, monkeypatch, capsys):
     tap_path = tmp_path / "tap.jsonl"
     mic_path = tmp_path / "mic.jsonl"
@@ -567,7 +725,10 @@ def test_cli_invoke_artifact_shells_out_with_harness_id_and_duration(tmp_path, m
     ])
 
     assert rc == 0
-    assert "jasper-route-latency-artifact" in captured_cmd
+    # The artifact CLI is resolved to a real path (sibling of sys.executable,
+    # then PATH) so it works under sudo where the venv bin dir isn't on PATH;
+    # the invoked command's basename is always the artifact CLI name.
+    assert Path(captured_cmd[0]).name == harness.ARTIFACT_CLI_NAME
     assert "--harness-id" in captured_cmd
     assert captured_cmd[captured_cmd.index("--harness-id") + 1] == harness.HARNESS_ID
     assert "--duration-seconds" in captured_cmd
@@ -628,6 +789,60 @@ def test_cli_invoke_artifact_passes_route_health_ok_only_with_explicit_confirm(t
 
     assert rc == 0
     assert "--route-health-ok" in captured_cmd
+
+
+def test_resolve_artifact_cli_prefers_sibling_of_sys_executable(tmp_path, monkeypatch):
+    # The documented invocation runs the harness from a venv bin dir that is
+    # NOT on sudo's PATH; the artifact CLI is a sibling console entry point, so
+    # resolution must find it next to sys.executable first.
+    sibling = tmp_path / harness.ARTIFACT_CLI_NAME
+    sibling.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(harness.sys, "executable", str(tmp_path / "python"))
+
+    assert harness._resolve_artifact_cli() == str(sibling)
+
+
+def test_resolve_artifact_cli_falls_back_to_bare_name_when_absent(tmp_path, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(harness.sys, "executable", str(tmp_path / "python"))
+    monkeypatch.setattr(harness.sys, "argv", [str(tmp_path / "harness")])
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    assert harness._resolve_artifact_cli() == harness.ARTIFACT_CLI_NAME
+
+
+def test_cli_invoke_artifact_reports_clean_error_when_artifact_missing(tmp_path, monkeypatch, capsys):
+    tap_path = tmp_path / "tap.jsonl"
+    mic_path = tmp_path / "mic.jsonl"
+    n = 200
+    _write_jsonl(
+        tap_path,
+        [{"monotonic_ns": i * 1_500_000_000, "frame_index": i, "ring_fill_frames": 0, "peak": 0.8} for i in range(n)],
+    )
+    _write_jsonl(mic_path, [{"monotonic_ns": i * 1_500_000_000 + 30_000_000, "peak": 0.5} for i in range(n)])
+
+    def _raise_not_found(cmd, **kwargs):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(harness.subprocess, "run", _raise_not_found)
+
+    rc = harness.main([
+        "analyze",
+        "--tap-events", str(tap_path),
+        "--mic-detections", str(mic_path),
+        "--out-dir", str(tmp_path),
+        "--duration-seconds", "300",
+        "--invoke-artifact",
+    ])
+
+    # The samples file is still written; only the passthrough failed, and it
+    # fails with a clean message, not an uncaught traceback.
+    assert rc == 1
+    assert (tmp_path / "latency-samples.json").exists()
+    err = capsys.readouterr().err
+    assert harness.ARTIFACT_CLI_NAME in err
+    assert "could not find" in err
 
 
 def test_cli_run_subcommand_does_not_accept_duration_or_jitter_flags(tmp_path):

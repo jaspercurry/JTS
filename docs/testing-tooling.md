@@ -598,35 +598,46 @@ measurement to route identity by construction. This harness separately reads
 the AEC bridge's always-on `raw0` leg on localhost UDP `:9879` (an
 unprocessed XVF3800 room-mic capture — a corpus-only leg per
 `jasper.wake_legs`, consumed here but never added as a wake-detection input)
-to detect the same clicks acoustically at the far end. Pairing the two
-timestamps, plus the tap's ring-fill dwell time, yields one latency sample
-per impulse — measuring the real Mac→USB→fan-in→CamillaDSP→outputd→DAC→
-speaker→air→mic path.
+to detect the same clicks acoustically at the far end. Each impulse's
+latency is the tap→mic time delta (the click's whole physical journey — ring
+dwell, fan-in, CamillaDSP, outputd, DAC, air, mic — elapses between the two
+timestamps, so it is captured entirely by the subtraction), optionally minus
+a fixed speaker→mic acoustic-distance compensation. This measures the real
+Mac→USB→fan-in→CamillaDSP→outputd→DAC→speaker→air→mic path. The tap also
+records the ring's pre-read fill depth per impulse as diagnostic context, but
+that is not added to the latency (doing so would double-count the ring
+dwell).
 
 **Quick gate (p95 <= 40 ms, >=200 impulses, >=5 min):**
 
+Invoke every CLI by its absolute venv path (`/opt/jasper/.venv/bin/...`):
+under `sudo` the venv `bin/` is not on `secure_path`, so a bare command name
+won't resolve. (The `generate` WAV render is memory-heavy for the promotion
+preset — see the note below — so prefer running `generate promotion` on the
+laptop and copying the WAV to the Pi/playback host.)
+
 ```sh
 # 1. Generate the click-track WAV + schedule (laptop or Pi, no daemon needed):
-jasper-route-latency-harness generate quick --out-dir /tmp/route-latency
+/opt/jasper/.venv/bin/jasper-route-latency-harness generate quick --out-dir /tmp/route-latency
 
 # 2. On the Pi: run capture, then immediately play quick-click-track.wav
 #    on the host into the JTS USB device, at a modest, comfortable volume
 #    (start very quiet and confirm by ear — CamillaDSP's volume_limit 0 dB
 #    ceiling is the hard safety floor either way; see AGENTS.md "COAH
 #    quality bar" / the safe-volume doctrine).
-sudo jasper-route-latency-harness capture \
+sudo /opt/jasper/.venv/bin/jasper-route-latency-harness capture \
   /tmp/route-latency/quick-schedule.json \
   --out-dir /tmp/route-latency
 
 # 3. Analyze the captured evidence and emit an artifact-feedable samples file:
-jasper-route-latency-harness analyze \
+/opt/jasper/.venv/bin/jasper-route-latency-harness analyze \
   --mic-detections /tmp/route-latency/mic-detections.jsonl \
   --route-health-snapshot /tmp/route-latency/route-health-snapshot.json \
   --out-dir /tmp/route-latency \
   --duration-seconds 360
 
 # 4. Feed the real artifact CLI (see docs/HANDOFF-usb-low-latency.md):
-sudo jasper-route-latency-artifact \
+sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact \
   --samples /tmp/route-latency/latency-samples.json \
   --duration-seconds 360 \
   --harness-id jts-click-capture-v1 \
@@ -640,7 +651,7 @@ directly, so it derives duration and jitter itself — it does not take
 `analyze`, which has no schedule file to read them from):
 
 ```sh
-sudo jasper-route-latency-harness run \
+sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
   /tmp/route-latency/quick-schedule.json \
   --out-dir /tmp/route-latency \
   --invoke-artifact
@@ -653,13 +664,24 @@ artifact CLI (`run` needs no such flag — it reads jitteredness straight off
 the loaded schedule):
 
 ```sh
-jasper-route-latency-harness generate promotion --out-dir /tmp/route-latency
-sudo jasper-route-latency-harness run \
+# generate promotion on the laptop (memory-heavy render — see below), then
+# copy promotion-click-track.wav to the playback host:
+/opt/jasper/.venv/bin/jasper-route-latency-harness generate promotion --out-dir /tmp/route-latency
+sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
   /tmp/route-latency/promotion-schedule.json \
   --out-dir /tmp/route-latency \
   --invoke-artifact \
   --require-pass
 ```
+
+**Getting the WAV to the playback host.** The click-track WAV is played by a
+human on the Mac/Windows host (no JTS software runs there). Generate it where
+it's convenient, then transfer it to that host — e.g. `scp` from the Pi, or
+generate on the laptop and drop it on the host directly — and open it in any
+media player, routing output to the JTS USB audio device. `render_wav` streams
+the file one second at a time so memory stays bounded (~192 KB), but the
+promotion track is still ~415 MB on disk; a laptop is the comfortable place to
+generate it (the 1 GB Pi is busy running the audio stack under test).
 
 **Route-health honesty.** `analyze` snapshots
 `/run/jasper-usbsink/state.json`, and the fan-in/outputd `STATUS` sockets
