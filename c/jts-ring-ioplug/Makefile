@@ -16,7 +16,15 @@
 # scripts/ring-proto/build-on-pi.sh drives them on the Pi.
 
 CC ?= cc
-CFLAGS ?= -std=c11 -O2 -Wall -Wextra -Werror -fPIC
+# -std=c11 keeps the language strict (no silent GNU language extensions), but
+# _GNU_SOURCE is required for the POSIX/GNU LIBRARY symbols the core uses under
+# glibc's strict-c11 feature-macro gating: clock_gettime/CLOCK_MONOTONIC,
+# nanosleep, ftruncate, O_CLOEXEC, PATH_MAX. It also resolves alsa-lib's
+# global.h `struct timespec` fallback redefinition (glibc's is hidden without
+# it under bare -std=c11). macOS exposes these by default, so the host targets
+# built even without it; the Pi's glibc does not — `make plugin` failed with
+# "implicit declaration of ftruncate" / "O_CLOEXEC undeclared" before this.
+CFLAGS ?= -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -fPIC
 LDFLAGS ?=
 
 # ALSA plugin install dir (aarch64 Trixie). Override for other multiarch dirs.

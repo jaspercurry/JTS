@@ -441,10 +441,15 @@ impl RingReader {
 impl Drop for RingReader {
     fn drop(&mut self) {
         // Clear reader presence so the writer's liveness check sees us gone and
-        // free-runs (drops frames) rather than blocking on a dead reader.
-        self.map
-            .header_atomic(layout::OFF_READER_PID)
-            .store(0, Ordering::Relaxed);
+        // free-runs (drops frames) rather than blocking on a dead reader — but
+        // only if reader_pid is still OURS. A second reader attaching (which
+        // stamps its own pid) then this instance dropping must not clear the new
+        // reader's presence. Mirrors the C writer_close `cur == mine` guard.
+        let slot = self.map.header_atomic(layout::OFF_READER_PID);
+        let mine = std::process::id() as u64;
+        if slot.load(Ordering::Relaxed) == mine {
+            slot.store(0, Ordering::Relaxed);
+        }
     }
 }
 
@@ -1114,6 +1119,53 @@ mod tests {
         let _reader = RingReader::create_or_attach(&path, g).unwrap();
         let writer = TestRingWriter::create_or_attach(&path, g).unwrap();
         assert_eq!(writer.write_seq(), 0);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn reader_drop_only_clears_its_own_pid() {
+        // N2 regression: RingReader::drop must clear reader_pid ONLY if it is
+        // still ours. If a second reader has attached (stamping its own pid),
+        // this reader dropping must not clear the new reader's presence — else
+        // the writer would wrongly free-run-drop against a live reader. Mirror
+        // of the C writer_close `cur == mine` guard.
+        let path = tmp_ring_path("readerpid");
+        let g = proto_geometry();
+        let reader = RingReader::create_or_attach(&path, g).unwrap();
+        // Our own attach stamped reader_pid to this process id.
+        let ours = std::process::id() as u64;
+        assert_eq!(
+            reader
+                .map
+                .header_atomic(layout::OFF_READER_PID)
+                .load(Ordering::Relaxed),
+            ours
+        );
+        // Simulate a second reader taking over: stamp a foreign pid.
+        let foreign = ours.wrapping_add(1);
+        reader
+            .map
+            .header_atomic(layout::OFF_READER_PID)
+            .store(foreign, Ordering::Relaxed);
+        // Read the header slot out before dropping (drop munmaps our mapping),
+        // by attaching a second mapping to the same file.
+        let checker = RingReader::create_or_attach(&path, g).unwrap();
+        // checker's attach re-stamped reader_pid to `ours` again — reset it to
+        // the foreign value to model "a different reader currently owns it".
+        checker
+            .map
+            .header_atomic(layout::OFF_READER_PID)
+            .store(foreign, Ordering::Relaxed);
+        drop(reader); // must NOT clear reader_pid (it is `foreign`, not `ours`)
+        assert_eq!(
+            checker
+                .map
+                .header_atomic(layout::OFF_READER_PID)
+                .load(Ordering::Relaxed),
+            foreign,
+            "dropping a reader must not clear a foreign reader_pid"
+        );
+        drop(checker);
         cleanup(&path);
     }
 }

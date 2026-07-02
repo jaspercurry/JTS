@@ -12,6 +12,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -126,6 +127,33 @@ static int owned_ring_path(const char *path) {
     if (rest[0] == '\0') return 0;          // the dir itself
     if (strchr(rest, '/') != NULL) return 0; // nested
     return 1;
+}
+
+// Create `path`'s parent directory (mkdir -p of dirname) before the O_EXCL
+// create. Mirrors the Rust reader's ensure_parent_dir: on a fresh box (or after
+// disarm.sh's `rm -rf /dev/shm/jts-ring`) the tmpfs directory does not exist, so
+// the ioplug's create would fail ENOENT. Also heals the reboot-while-armed edge
+// where CamillaDSP opens the ring before outputd (tmpfs is empty on boot). Best
+// effort per component so an already-existing parent (EEXIST) is not an error.
+// Returns 0 on success (parent exists afterward), negative errno on failure.
+static int ensure_parent_dir(const char *path) {
+    const char *slash = strrchr(path, '/');
+    if (!slash || slash == path) return 0; // no parent, or parent is "/"
+    size_t plen = (size_t)(slash - path);
+    char buf[PATH_MAX];
+    if (plen >= sizeof(buf)) return -ENAMETOOLONG;
+    memcpy(buf, path, plen);
+    buf[plen] = '\0';
+    // Walk each component, mkdir-ing as we go (mkdir -p). Skip the leading '/'.
+    for (char *p = buf + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(buf, 0770) < 0 && errno != EEXIST) return -errno;
+            *p = '/';
+        }
+    }
+    if (mkdir(buf, 0770) < 0 && errno != EEXIST) return -errno;
+    return 0;
 }
 
 // Map an already-open fd of `len` bytes.
@@ -257,6 +285,14 @@ int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
         return -EINVAL;
     }
 
+    // Ensure /dev/shm/jts-ring/ exists before O_EXCL create (fresh boot, or
+    // after disarm.sh removed the tmpfs dir). Mirrors the Rust reader.
+    int mkrc = ensure_parent_dir(path);
+    if (mkrc != 0) {
+        fprintf(stderr, "event=jts_ring.writer.mkdir_failed rc=%d path=%s\n", mkrc, path);
+        return mkrc;
+    }
+
     for (int attempt = 0; attempt < 8; attempt++) {
         int create_fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0660);
         if (create_fd >= 0) {
@@ -298,6 +334,16 @@ int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
         // loop and re-create
     }
 
+    // Guard against attempt exhaustion: if every one of the 8 iterations ended
+    // in `continue` (raced an unlink) or reclaim-and-loop (pathological racing),
+    // the loop falls through here with out->base still NULL. Dereferencing it
+    // via hdr(out) below would segfault inside CamillaDSP/aplay. Fail loud
+    // instead — the caller (ioplug open / bench) maps this to an open error.
+    if (out->base == NULL) {
+        fprintf(stderr, "event=jts_ring.writer.attach_exhausted path=%s\n", path);
+        return -EAGAIN;
+    }
+
     // Writer-attach stamp: epoch++ (release), pid, heartbeat, continue from the
     // stored write_seq (file-lifetime monotonic).
     jts_ring_header_t *h = hdr(out);
@@ -317,7 +363,14 @@ static int reader_is_live(const jts_ring_header_t *h, uint64_t now_ns) {
     if (pid == 0) return 0;
     uint64_t hb = atomic_load_explicit(&h->reader_heartbeat_ns, memory_order_relaxed);
     if (hb == 0) return 0;
-    return (now_ns - hb) < JTS_RING_WRITER_LIVENESS_TIMEOUT_NS;
+    // Saturating subtraction: the reader stamps its heartbeat concurrently, so a
+    // heartbeat taken AFTER this writer sampled now_ns would make (now_ns - hb)
+    // underflow to a huge unsigned value — spuriously classifying a live reader
+    // as dead and dropping a slot on the normal full-ring back-pressure path.
+    // Mirrors the Rust reader's now_ns.saturating_sub(hb): a future heartbeat
+    // clamps age to 0 (definitely live).
+    uint64_t age = (now_ns > hb) ? (now_ns - hb) : 0;
+    return age < JTS_RING_WRITER_LIVENESS_TIMEOUT_NS;
 }
 
 jts_ring_publish_result_t jts_ring_writer_publish(jts_ring_writer_t *w,
@@ -368,6 +421,16 @@ uint64_t jts_ring_writer_occupancy_slots(const jts_ring_writer_t *w) {
     const jts_ring_header_t *h = (const jts_ring_header_t *)w->base;
     uint64_t rseq = atomic_load_explicit(&h->read_seq, memory_order_acquire);
     return w->write_seq - rseq;
+}
+
+int jts_ring_writer_can_accept(const jts_ring_writer_t *w) {
+    const jts_ring_header_t *h = (const jts_ring_header_t *)w->base;
+    uint64_t rseq = atomic_load_explicit(&h->read_seq, memory_order_acquire);
+    uint64_t occ = w->write_seq - rseq;
+    if (occ < (uint64_t)w->geometry.n_slots) return 1; // space
+    // Full: only truly not-writable if a live reader is expected to drain it.
+    // With no live reader, publish free-run-drops immediately, so still accept.
+    return reader_is_live(h, jts_ring_monotonic_ns()) ? 0 : 1;
 }
 
 void jts_ring_writer_close(jts_ring_writer_t *w) {

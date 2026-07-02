@@ -255,6 +255,65 @@ static void test_geometry_mismatch_is_fatal(void) {
     unlink(path);
 }
 
+static void test_writer_creates_missing_parent_dir(void) {
+    // B1 regression: the writer must mkdir -p its parent before O_EXCL create.
+    // On a fresh box (or after disarm.sh's `rm -rf /dev/shm/jts-ring`) the
+    // directory does not exist; without ensure_parent_dir the create fails
+    // ENOENT and arm.sh's aplay probe (step 3) dies before outputd ever runs.
+    char dir[256];
+    char path[320];
+    snprintf(dir, sizeof(dir), "/tmp/jts-ring-ctest-%d-mkparent", (int)getpid());
+    // Best-effort clean any prior run's tree.
+    char rm[512];
+    snprintf(rm, sizeof(rm), "rm -rf '%s'", dir);
+    (void)!system(rm);
+    // Two missing levels below /tmp so the mkdir -p walk is exercised.
+    snprintf(path, sizeof(path), "%s/nested/content.ring", dir);
+
+    jts_ring_geometry_t g = proto_geometry();
+    jts_ring_writer_t w;
+    int rc = jts_ring_writer_open(path, &g, &w);
+    CHECK(rc == 0, "writer_open creates the missing parent dir (no ENOENT)");
+    if (rc == 0) jts_ring_writer_close(&w);
+    (void)!system(rm);
+}
+
+static void test_can_accept_semantics(void) {
+    // N1 regression: jts_ring_writer_can_accept must be TRUE when space exists,
+    // FALSE when full WITH a live reader (so the ioplug withholds POLLOUT and
+    // re-polls instead of busy-spinning), and TRUE when full with NO live reader
+    // (free-run drop is "writable"). This is the honest poll the ioplug reports.
+    char path[256];
+    tmp_path(path, sizeof(path), "canaccept");
+    jts_ring_geometry_t g = proto_geometry();
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+
+    // Empty ring, no reader -> space available -> can accept.
+    CHECK(jts_ring_writer_can_accept(&w) == 1, "empty ring accepts");
+
+    test_reader_t r;
+    reader_attach(&r, &w); // live reader, fresh heartbeat
+    CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish 0");
+    CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish 1");
+    CHECK(jts_ring_writer_occupancy_slots(&w) == 2, "full");
+    // Full WITH a live reader that stamped a fresh heartbeat -> not writable.
+    CHECK(jts_ring_writer_can_accept(&w) == 0, "full+live-reader does NOT accept");
+
+    // Now make the reader look dead (stale heartbeat) -> free-run-drop path ->
+    // reports writable again.
+    jts_ring_header_t *h = (jts_ring_header_t *)w.base;
+    atomic_store_explicit(&h->reader_heartbeat_ns, 1, memory_order_relaxed);
+    CHECK(jts_ring_writer_can_accept(&w) == 1, "full+dead-reader accepts (free-run drop)");
+
+    free(s);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
 int main(void) {
     test_geometry_math_and_validation();
     test_publish_consume_roundtrip();
@@ -262,6 +321,8 @@ int main(void) {
     test_no_reader_free_run_drop();
     test_attach_second_writer_bumps_epoch();
     test_geometry_mismatch_is_fatal();
+    test_writer_creates_missing_parent_dir();
+    test_can_accept_semantics();
 
     if (g_failures == 0) {
         printf("ok: all jts_ring core tests passed\n");

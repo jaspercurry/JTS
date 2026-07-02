@@ -12,10 +12,18 @@
 //
 // Usage:
 //   ring-writer-bench [--path P] [--slots N] [--period F] [--seconds S]
-//                     [--pattern tone|click|silence] [--freq HZ] [--paced|--flood]
+//                     [--pattern tone|click|silence] [--freq HZ]
+//                     [--amplitude-dbfs D] [--paced|--flood]
 // Defaults: path=/dev/shm/jts-ring/content.ring, slots=2, period=128,
-//           seconds=10, pattern=tone, freq=440, paced (one slot per period of
-//           real time — matches a DAC pacer).
+//           seconds=10, pattern=tone, freq=440, amplitude=-40 dBFS, paced (one
+//           slot per period of real time — matches a DAC pacer).
+//
+// AMPLITUDE SAFETY: the bench tone enters the chain POST-CamillaDSP (ring ->
+// outputd -> DAC), so CamillaDSP's master_gain cannot attenuate it and there is
+// no ramp. The default is a deliberately quiet -40 dBFS so a lab smoke test on
+// an amp-attached box is not a loud surprise (the JTS safe-test-volume
+// doctrine). Raise it explicitly with --amplitude-dbfs only after confirming
+// the volume is safe on that box, and only with an operator listening.
 //
 // Prints writer counters (published/dropped/full_waits) at the end.
 
@@ -34,19 +42,21 @@
 typedef enum { PAT_TONE, PAT_CLICK, PAT_SILENCE } pattern_t;
 
 static void fill_slot(int16_t *buf, size_t frames, uint32_t channels, pattern_t pat,
-                      double freq, uint64_t frame_base) {
+                      double freq, uint64_t frame_base, double amplitude) {
+    // amplitude is a linear full-scale fraction in [0, 1]; the click peak scales
+    // with it too so a raised amplitude does not defeat the safe default.
+    double peak = amplitude * 32767.0;
     for (size_t f = 0; f < frames; f++) {
         int16_t v = 0;
         switch (pat) {
             case PAT_TONE: {
                 double t = (double)(frame_base + f) / 48000.0;
-                // -12 dBFS tone so a lab listen is comfortable.
-                v = (int16_t)(8192.0 * sin(2.0 * M_PI * freq * t));
+                v = (int16_t)(peak * sin(2.0 * M_PI * freq * t));
                 break;
             }
             case PAT_CLICK:
                 // A short click at the top of each ~0.5 s so drops are audible.
-                v = ((frame_base + f) % 24000 < 24) ? 12000 : 0;
+                v = ((frame_base + f) % 24000 < 24) ? (int16_t)peak : 0;
                 break;
             case PAT_SILENCE:
                 v = 0;
@@ -62,6 +72,9 @@ int main(int argc, char **argv) {
     uint32_t period = 128;
     double seconds = 10.0;
     double freq = 440.0;
+    // Default -40 dBFS: quiet by design (post-CamillaDSP, no master_gain, no
+    // ramp). See the AMPLITUDE SAFETY note at the top.
+    double amplitude_dbfs = -40.0;
     pattern_t pat = PAT_TONE;
     int paced = 1;
 
@@ -76,6 +89,8 @@ int main(int argc, char **argv) {
             seconds = atof(argv[++i]);
         } else if (!strcmp(argv[i], "--freq") && i + 1 < argc) {
             freq = atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--amplitude-dbfs") && i + 1 < argc) {
+            amplitude_dbfs = atof(argv[++i]);
         } else if (!strcmp(argv[i], "--pattern") && i + 1 < argc) {
             const char *p = argv[++i];
             if (!strcmp(p, "tone")) pat = PAT_TONE;
@@ -89,11 +104,23 @@ int main(int argc, char **argv) {
         } else {
             fprintf(stderr,
                     "usage: %s [--path P] [--slots N] [--period F] [--seconds S] "
-                    "[--pattern tone|click|silence] [--freq HZ] [--paced|--flood]\n",
+                    "[--pattern tone|click|silence] [--freq HZ] "
+                    "[--amplitude-dbfs D] [--paced|--flood]\n",
                     argv[0]);
             return 2;
         }
     }
+
+    // Convert dBFS to a linear full-scale fraction, clamped to [0, 1]. 0 dBFS =
+    // full scale; the -40 dBFS default is ~0.01. Refuse a positive value (that
+    // would clip and is never wanted for a lab tone).
+    if (amplitude_dbfs > 0.0) {
+        fprintf(stderr, "error: --amplitude-dbfs must be <= 0 (0 dBFS = full scale)\n");
+        return 2;
+    }
+    double amplitude = pow(10.0, amplitude_dbfs / 20.0);
+    if (amplitude > 1.0) amplitude = 1.0;
+    if (amplitude < 0.0) amplitude = 0.0;
 
     jts_ring_geometry_t g = {
         .rate = 48000,
@@ -110,8 +137,8 @@ int main(int argc, char **argv) {
     }
     fprintf(stderr,
             "event=bench.started path=%s slots=%u period=%u seconds=%.1f pattern=%d "
-            "freq=%.0f paced=%d\n",
-            path, slots, period, seconds, (int)pat, freq, paced);
+            "freq=%.0f amplitude_dbfs=%.1f paced=%d\n",
+            path, slots, period, seconds, (int)pat, freq, amplitude_dbfs, paced);
 
     size_t n = jts_ring_samples_per_slot(&g);
     int16_t *buf = malloc(n * sizeof(int16_t));
@@ -124,7 +151,7 @@ int main(int argc, char **argv) {
     uint64_t next_deadline = jts_ring_monotonic_ns();
 
     for (uint64_t p = 0; p < total_periods; p++) {
-        fill_slot(buf, period, g.channels, pat, freq, frame_base);
+        fill_slot(buf, period, g.channels, pat, freq, frame_base, amplitude);
         jts_ring_writer_publish(&w, buf);
         frame_base += period;
         if (paced) {

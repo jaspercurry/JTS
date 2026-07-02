@@ -192,7 +192,11 @@ static snd_pcm_sframes_t jts_ring_transfer(snd_pcm_ioplug_t *io,
     return (snd_pcm_sframes_t)size;
 }
 
-static snd_pcm_sframes_t jts_ring_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp) {
+// The ioplug `.delay` callback is `int (*)(snd_pcm_ioplug_t *,
+// snd_pcm_sframes_t *)` — it returns an int status (0 = ok) and writes the
+// frame count through *delayp. It is NOT the sframes-returning shape; matching
+// the field type exactly is required (gcc -Werror rejects the mismatch).
+static int jts_ring_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp) {
     jts_ring_pcm_t *p = io->private_data;
     // In-flight = published-but-unread slots * period_frames + staged frames.
     uint64_t slots = p->opened ? jts_ring_writer_occupancy_slots(&p->writer) : 0;
@@ -252,20 +256,17 @@ static int jts_ring_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfd,
         ssize_t r = read(p->timer_fd, &expirations, sizeof(expirations));
         (void)r;
     }
-    // Report POLLOUT (writable) iff the ring currently has space for a slot.
-    // With no live reader the writer free-runs (drops), which is also
-    // "writable" from the app's view — so a stalled/absent reader never blocks
-    // the app on poll. This is the honest prototype poll; a futex wait is the
-    // productization.
-    int writable = 1;
-    if (p->opened) {
-        uint64_t occ = jts_ring_writer_occupancy_slots(&p->writer);
-        writable = (occ < p->n_slots) ? 1 : 0;
-        // Even when full, if the reader is not advancing we will drop, so keep
-        // POLLOUT set to avoid a spurious app-side stall; the transfer path
-        // handles the drop.
-        if (!writable) writable = 1;
-    }
+    // Report POLLOUT (writable) iff a publish would proceed without blocking:
+    // the ring has space, OR there is no live reader (in which case publish
+    // free-run-drops immediately — also "writable" from the app's view, and
+    // what lets a stalled/absent reader never block the app on poll). A FULL
+    // ring WITH a live reader is genuinely not-yet-writable: we withhold POLLOUT
+    // and let the timerfd re-poll rather than reporting a false writable and
+    // busy-spinning the app on a slot it cannot take. This is the honest
+    // prototype poll; a futex wait is the productization. Before the writer is
+    // attached (prepare not yet run) we optimistically report writable so the
+    // open/prepare handshake is not stalled.
+    int writable = p->opened ? jts_ring_writer_can_accept(&p->writer) : 1;
     if (writable) *revents |= POLLOUT;
     return 0;
 }

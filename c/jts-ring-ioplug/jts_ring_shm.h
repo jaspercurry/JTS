@@ -163,6 +163,14 @@ jts_ring_publish_result_t jts_ring_writer_publish(jts_ring_writer_t *w,
 // callback: (W - R) * period_frames.
 uint64_t jts_ring_writer_occupancy_slots(const jts_ring_writer_t *w);
 
+// True (1) iff a publish would proceed without blocking right now: either the
+// ring has space (occupancy < n_slots) OR there is no live reader (in which case
+// publish free-run-drops immediately). Used by the ioplug's poll_revents to
+// report POLLOUT honestly — space-or-free-run is "writable"; a full ring WITH a
+// live reader is genuinely not-yet-writable, so we withhold POLLOUT and let the
+// timerfd re-poll rather than busy-spinning the app on a slot it cannot take.
+int jts_ring_writer_can_accept(const jts_ring_writer_t *w);
+
 // Detach: clear writer_pid (if ours), munmap, close. Safe on a zeroed struct.
 void jts_ring_writer_close(jts_ring_writer_t *w);
 
