@@ -27,6 +27,7 @@
 
 mod config;
 mod fifo;
+mod impulse_tap;
 mod lane_resampler;
 mod loudness;
 mod mixer;
@@ -167,6 +168,24 @@ fn main() -> Result<()> {
         config.input_pcms.len(),
     );
 
+    // Impulse-tap writer thread (C4) — the SINGLE JSONL writer for the USB
+    // DIRECT ingress tap. Default-disarmed, so this thread idles at a 100 ms
+    // wakeup until a TAP_ARM verb arrives. Spawned regardless of the direct
+    // flag (the tap simply never fires when direct is off); it costs one idle
+    // thread and no resident work when disarmed.
+    let tap_state = mixer.direct_tap_state();
+    let tap_config = mixer.direct_tap_config();
+    let tap_receiver = mixer
+        .take_direct_tap_receiver()
+        .expect("tap receiver taken exactly once");
+    let tap_shutdown = Arc::clone(&shutdown);
+    let tap_writer = std::thread::Builder::new()
+        .name("fanin-tap-writer".into())
+        .spawn(move || {
+            crate::impulse_tap::run_tap_writer(tap_receiver, tap_state, tap_config, tap_shutdown);
+        })
+        .context("spawning fanin-tap-writer thread")?;
+
     // mlockall — pin pages in RAM so the audio path is never paged
     // out under memory pressure. Belt to the systemd unit's
     // LimitMEMLOCK=infinity + Slice=jts-audio.slice MemorySwapMax=0
@@ -228,6 +247,7 @@ fn main() -> Result<()> {
     drop(mixer);
     let _ = state_thread.join();
     let _ = xrun_writer.join();
+    let _ = tap_writer.join();
 
     match &result {
         Ok(_) => {

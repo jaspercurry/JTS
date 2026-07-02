@@ -43,9 +43,10 @@
 //! every successful `step()`, satisfying the JTS progress-sentinel
 //! contract documented in `src/watchdog.rs`.
 
+use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::{Arc, Mutex};
 
 use alsa::pcm::{Access, Format, Frames, HwParams, State, PCM};
 use alsa::{Direction, ValueOr};
@@ -56,6 +57,7 @@ use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S16LE};
 
 use crate::config::{Config, Coupling, RING_SLOT_FRAMES};
 use crate::fifo::{FifoWriteOutcome, FifoWriter};
+use crate::impulse_tap::{ImpulseDetector, TapConfig, TapEvent, TapState};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
 use crate::tts::{TtsInput, TtsMixer};
 use crate::watchdog::Heartbeat;
@@ -122,6 +124,26 @@ const CATCHUP_MAX_DRAIN_PERIODS: i64 = 64;
 /// which is already infrequent; this is defense-in-depth against a wedged
 /// producer. Count-based (not time-based) so the hot loop never reads a clock.
 const CATCHUP_LOG_EVERY: u64 = 64;
+
+/// USB DIRECT capture open envelope (C1) — the bridge's PROVEN params, NOT
+/// fanin's aloop-tuned `configure_pcm`. S32_LE 2ch 48k, period 256, buffer
+/// ~768 (near). These MUST match `jasper-usbsink-audio`'s
+/// `open_capture`/`configure_pcm` so the direct lane inherits the exact
+/// negotiation the bridge validated on the UAC2 gadget.
+const DIRECT_PERIOD_FRAMES: u32 = 256;
+const DIRECT_BUFFER_FRAMES: u32 = 768;
+
+/// Bounded impulse-tap channel capacity (C4). The single detector fires at most
+/// once per refractory window (~4/s at the 250 ms default), so this can never
+/// fill under the harness; it exists as a drop-and-count safety net so the
+/// mixer thread's `try_send` is always non-blocking.
+const TAP_CHANNEL_CAPACITY: usize = 256;
+
+/// USB DIRECT reopen retry cadence, in render PERIODS (~2 s at 256/48k = 375).
+/// While the gadget is Absent, the lane attempts a reopen at most once per this
+/// many periods it renders — a period-counted cadence so the hot loop never
+/// reads a wall clock (same discipline as the auto-trim frames-delta latch, C3).
+const DIRECT_REOPEN_RETRY_PERIODS: u64 = 375;
 
 /// Delay, in whole seconds, from a lane's idle→active transition to its
 /// one-shot AUTO-TRIM fire. Gives the chain time to warm up and establish its
@@ -345,6 +367,17 @@ pub struct Mixer {
     /// (no wall clock in the hot loop) to detect idle↔active transitions and to
     /// measure the post-activation delay.
     auto_trim_lane_state: Vec<AutoTrimLaneState>,
+    /// The relocated impulse tap over the USB DIRECT capture ingress (C4). The
+    /// tap detector + the per-lane cumulative capture cursor + the channel to
+    /// the writer thread live here; it runs inline over the converted S16 slice
+    /// in `read_direct_and_render`, before `push_input`. Present regardless of
+    /// the direct flag (a non-direct build simply never calls into it); its
+    /// disarmed cost is one relaxed atomic load per direct read (C4).
+    direct_tap: DirectTapHook,
+    /// The receiver half of the tap channel, taken by `main` to drive the
+    /// `fanin-tap-writer` thread (the single JSONL writer). `None` after
+    /// `take_direct_tap_receiver`.
+    direct_tap_receiver: Option<std::sync::mpsc::Receiver<TapEvent>>,
 }
 
 /// Per-lane AUTO-TRIM bookkeeping. Tracks the cumulative `frames_read` value
@@ -429,8 +462,38 @@ pub struct RingObservability {
     pub mirror_drops: Arc<AtomicU64>,
 }
 
+/// One direct USB capture lane's runtime state (DEFAULT-OFF; only the usbsink
+/// lane when `JASPER_FANIN_USB_DIRECT=enabled`). Owns the `hw:UAC2Gadget`
+/// S32_LE capture PCM directly — the usbsink bridge hop + aloop cable are gone
+/// on this lane. The lane's audio is narrowed to S16 and fed the SAME
+/// `LaneResampler` the aloop path would use.
+///
+/// Presence is dynamic (a UAC2 gadget comes and goes with the host cable), so
+/// this is a small state machine: `Present` while the capture is open and
+/// reading, `Absent` while the device is unplugged/held-by-the-bridge with a
+/// bounded reopen retry counted in periods (C3). No wall clock in the hot loop
+/// — the retry cadence is measured in render periods like the auto-trim latch.
+enum DirectCapture {
+    /// The gadget capture is open; the lane reads it every period.
+    Present(PCM),
+    /// The gadget is absent (never opened, unplugged, or a runtime loss). Reopen
+    /// is retried at most once per `DIRECT_REOPEN_RETRY_PERIODS`; `periods_until_retry`
+    /// counts down each period the lane renders (silence).
+    Absent { periods_until_retry: u64 },
+}
+
 pub struct Input {
-    pcm: PCM,
+    /// The aloop capture PCM for this lane. `None` ONLY on the USB DIRECT lane
+    /// (`direct.is_some()`), which does not open its aloop substream at all —
+    /// its audio comes from the `hw:UAC2Gadget` capture in `direct`. Every other
+    /// lane always has `Some` (the byte-identical-to-today path).
+    pcm: Option<PCM>,
+    /// DEFAULT-OFF USB DIRECT capture. `Some` only on the usbsink lane when
+    /// `JASPER_FANIN_USB_DIRECT=enabled`; the lane then reads `hw:UAC2Gadget`
+    /// directly instead of its aloop substream, deleting the bridge+aloop hop.
+    /// `None` (and `pcm.is_some()`) on every other lane and on this lane when
+    /// the flag is off.
+    direct: Option<DirectCapture>,
     pub label: String,
     pub pcm_name: String,
     /// Per-input read buffer (i16 interleaved stereo). Reused as the
@@ -458,6 +521,31 @@ pub struct Input {
     /// The control endpoint sets `pending`; the work loop trims the resampler
     /// ring at the next period boundary (see `maybe_trim` / `trim_input`).
     trim: Arc<TrimControl>,
+    /// OPTIONAL USB DIRECT observability, shared with the state-server thread.
+    /// `Some` only on the USB DIRECT lane (`direct.is_some()`); STATUS renders a
+    /// `direct{}` block from it (C7). `None` (and absent from STATUS) for every
+    /// other lane.
+    direct_obs: Option<DirectObservability>,
+}
+
+/// Shared USB DIRECT counters for the STATUS `direct{}` block (C7). The mixer
+/// work thread writes them from the direct-capture state machine; the
+/// state-server thread reads them lock-free. Cloned into
+/// [`crate::state::InputSnapshotSource`] at construction.
+#[derive(Clone)]
+pub struct DirectObservability {
+    /// The capture device the direct lane opens (`hw:UAC2Gadget` or override).
+    pub device: String,
+    /// Whether the gadget capture is currently open (`Present`) — the live
+    /// "is the USB host attached and captured" gauge.
+    pub present: Arc<AtomicBool>,
+    /// Cumulative successful opens of the gadget capture (climbs on first open
+    /// and on every reopen after an unplug/loss).
+    pub opens: Arc<AtomicU64>,
+    /// Cumulative reopen attempts made while Absent (a growing value with
+    /// `present=false` means the gadget is not attachable — bridge holding it,
+    /// or no host).
+    pub retries: Arc<AtomicU64>,
 }
 
 impl Mixer {
@@ -470,37 +558,50 @@ impl Mixer {
 
         let mut inputs = Vec::with_capacity(config.input_pcms.len());
         for (label, pcm_name) in config.input_renderers.iter().zip(&config.input_pcms) {
-            // DEFAULT-OFF: build a per-input resampler ONLY for the configured
-            // clock-crossing lane AND only when explicitly enabled. Every other
-            // lane (and every lane when the feature is off) gets `None` — the
-            // byte-identical-to-today path. A construction failure degrades to
-            // `None` with a warning rather than failing the daemon.
-            let resampler =
-                if config.input_resampler_enabled && label == &config.input_resampler_lane_label {
-                    build_lane_resampler(label, config)
-                } else {
-                    None
-                };
-            match open_input(pcm_name, label, config, resampler) {
-                Ok(input) => {
-                    info!(
-                        "event=fanin.input.opened label={} pcm={} period_frames={} buffer_frames={}",
-                        label,
-                        pcm_name,
-                        config.period_frames,
-                        config.input_buffer_frames,
-                    );
-                    inputs.push(input);
+            // DEFAULT-OFF: build a per-input resampler on the configured
+            // clock-crossing lane when EITHER the input resampler OR USB DIRECT
+            // is enabled (both steer this lane to the DAC clock; direct has no
+            // aloop catch-up fallback so it MUST own a resampler — C6). Every
+            // other lane (and every lane when both flags are off) gets `None` —
+            // the byte-identical-to-today path. A construction failure degrades
+            // to `None` with a warning rather than failing the daemon.
+            let resampler = if config.lane_wants_resampler(label) {
+                build_lane_resampler(label, config)
+            } else {
+                None
+            };
+            // USB DIRECT: this lane reads hw:UAC2Gadget directly instead of its
+            // aloop substream (DEFAULT-OFF; only the resampler lane label). The
+            // open is best-effort — a gadget-absent lane starts Absent and
+            // renders silence with a bounded reopen retry (C3), never failing
+            // the daemon (the fail-hard "every input required" contract is
+            // exempted ONLY for this lane).
+            let is_direct =
+                config.usb_direct_enabled && label == &config.input_resampler_lane_label;
+            let input = if is_direct {
+                open_direct_input(label, pcm_name, config, resampler)
+            } else {
+                match open_input(pcm_name, label, config, resampler) {
+                    Ok(input) => input,
+                    Err(e) => {
+                        anyhow::bail!(
+                            "required fan-in input '{}' ({}) failed to open: {:#}",
+                            label,
+                            pcm_name,
+                            e,
+                        );
+                    }
                 }
-                Err(e) => {
-                    anyhow::bail!(
-                        "required fan-in input '{}' ({}) failed to open: {:#}",
-                        label,
-                        pcm_name,
-                        e,
-                    );
-                }
-            }
+            };
+            info!(
+                "event=fanin.input.opened label={} pcm={} period_frames={} buffer_frames={} direct={}",
+                label,
+                pcm_name,
+                config.period_frames,
+                config.input_buffer_frames,
+                is_direct,
+            );
+            inputs.push(input);
         }
 
         if inputs.is_empty() {
@@ -519,7 +620,7 @@ impl Mixer {
         // env var can see WHY they observed no effect, with the available
         // labels to fix the typo.
         if let Some(available) = resampler_lane_not_found(
-            config.input_resampler_enabled,
+            config.input_resampler_enabled || config.usb_direct_enabled,
             &config.input_resampler_lane_label,
             &config.input_renderers,
         ) {
@@ -699,6 +800,24 @@ impl Mixer {
                 AUTO_TRIM_DELAY_SECONDS, auto_trim_delay_frames,
             );
         }
+        if config.usb_direct_enabled {
+            info!(
+                "event=fanin.usb_direct.armed lane={} device={} (bridge hop + aloop cable removed on this lane)",
+                config.input_resampler_lane_label, config.usb_direct_device,
+            );
+        }
+        // Impulse-tap channel (C4). Default-disarmed: the tap state starts
+        // unarmed so the direct read pays one relaxed atomic load until a
+        // TAP_ARM verb arrives. The bounded channel keeps the mixer thread's
+        // hand-off non-blocking (drop-and-count on Full); the fanin-tap-writer
+        // thread (spawned in main) is the sole JSONL writer.
+        let (tap_sender, tap_receiver) =
+            std::sync::mpsc::sync_channel::<TapEvent>(TAP_CHANNEL_CAPACITY);
+        let direct_tap = DirectTapHook::new(
+            Arc::new(TapState::default()),
+            Arc::new(Mutex::new(TapConfig::default())),
+            tap_sender,
+        );
         Ok(Self {
             inputs,
             output,
@@ -720,6 +839,8 @@ impl Mixer {
             auto_trim_enabled: config.auto_trim_enabled,
             auto_trim_delay_frames,
             auto_trim_lane_state: vec![AutoTrimLaneState::default(); input_count],
+            direct_tap,
+            direct_tap_receiver: Some(tap_receiver),
         })
     }
 
@@ -733,6 +854,25 @@ impl Mixer {
     /// (chunk 3 will use this).
     pub fn inputs(&self) -> &[Input] {
         &self.inputs
+    }
+
+    /// The shared impulse-tap state (armed + counters + knobs), cloned for the
+    /// state-server thread's `TAP_ARM`/`TAP_DISARM`/STATUS handling (C4).
+    pub fn direct_tap_state(&self) -> Arc<TapState> {
+        self.direct_tap.state()
+    }
+
+    /// The last-armed impulse-tap config, cloned for the state-server thread
+    /// (published on arm, read on STATUS) and the writer thread (C4).
+    pub fn direct_tap_config(&self) -> Arc<Mutex<TapConfig>> {
+        self.direct_tap.config()
+    }
+
+    /// Take the impulse-tap channel receiver so `main` can drive the
+    /// `fanin-tap-writer` thread (the single JSONL writer). Returns `None` if
+    /// already taken.
+    pub fn take_direct_tap_receiver(&mut self) -> Option<std::sync::mpsc::Receiver<TapEvent>> {
+        self.direct_tap_receiver.take()
     }
 
     /// Shared selected-input index for the STATUS/control endpoint.
@@ -818,7 +958,14 @@ impl Mixer {
         // 3. Read from each input, accumulate into sum_buf.
         let selected_input = self.selected_input_index.load(Ordering::Relaxed);
         for (idx, input) in self.inputs.iter_mut().enumerate() {
-            let frames = if input.resampler.is_some() {
+            let frames = if input.direct.is_some() {
+                // USB DIRECT lane (DEFAULT-OFF): read hw:UAC2Gadget directly,
+                // narrow S32→S16, feed the SAME resampler, render one DAC-paced
+                // period. Gadget-absent → silence + bounded reopen retry (C3).
+                // The aloop substream is never touched (`pcm` is None). The tap
+                // (C4) runs inline over the converted slice inside this call.
+                read_direct_and_render(input, period_frames, &mut self.direct_tap, &self.xrun_tx)
+            } else if input.resampler.is_some() {
                 // ARMED clock-crossing lane (DEFAULT-OFF; only the USB lane when
                 // enabled). The resampler OWNS rate reconciliation: read ALL
                 // available frames into it (DLL-steered to the DAC clock) and
@@ -1106,6 +1253,18 @@ impl Input {
         self.resampler.as_ref().map(|r| r.observability())
     }
 
+    /// The lane's USB DIRECT observability handles for the STATUS `direct{}`
+    /// block, or `None` when this is not the direct lane (C7).
+    pub fn direct_observability(&self) -> Option<DirectObservability> {
+        self.direct_obs.clone()
+    }
+
+    /// Whether this lane is the USB DIRECT lane (its `source` in STATUS is
+    /// `"direct"`; every other lane is `"lane"`). C7.
+    pub fn is_direct(&self) -> bool {
+        self.direct.is_some()
+    }
+
     /// The lane's shared TRIM control + counters, cloned for the state-server
     /// thread. The control endpoint sets `pending` here; the work loop trims
     /// this lane's resampler ring at its next period boundary and bumps the
@@ -1309,7 +1468,8 @@ fn open_input(
         .with_context(|| format!("starting capture PCM {}", pcm_name))?;
     let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
     Ok(Input {
-        pcm,
+        pcm: Some(pcm),
+        direct: None,
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
         read_buf: vec![0i16; period_samples],
@@ -1319,7 +1479,178 @@ fn open_input(
         catchup_events: Arc::new(AtomicU64::new(0)),
         resampler,
         trim: TrimControl::new(),
+        direct_obs: None,
     })
+}
+
+/// Build the USB DIRECT lane. Opens `hw:UAC2Gadget` (or the override) with the
+/// bridge's proven envelope (C1); on failure the lane starts `Absent` and will
+/// render silence with a bounded reopen retry (C3) — a gadget-absent box never
+/// fails the daemon. The aloop substream is NOT opened (`pcm: None`): this
+/// lane's audio comes only from the gadget capture. Never returns `Err` — the
+/// fail-hard "every input required" contract is exempted for this lane alone.
+fn open_direct_input(
+    label: &str,
+    pcm_name: &str,
+    config: &Config,
+    resampler: Option<LaneResampler>,
+) -> Input {
+    let device = config.usb_direct_device.clone();
+    let present = Arc::new(AtomicBool::new(false));
+    let opens = Arc::new(AtomicU64::new(0));
+    let retries = Arc::new(AtomicU64::new(0));
+    let direct = match open_direct_capture(&device) {
+        Ok(pcm) => {
+            present.store(true, Ordering::Relaxed);
+            opens.fetch_add(1, Ordering::Relaxed);
+            info!(
+                "event=fanin.usb_direct.present device={} (initial open) opens=1 retries=0",
+                device,
+            );
+            DirectCapture::Present(pcm)
+        }
+        Err(e) => {
+            // Gadget absent at startup (unplugged host, or the usbsink bridge
+            // is holding hw:UAC2Gadget in a misconfig). Start Absent; the lane
+            // renders silence and retries on its own cadence (C3). Not fatal.
+            warn!(
+                "event=fanin.usb_direct.absent device={} errno={} detail={:#} (startup; will retry ~every {}s)",
+                device,
+                errno_of(&e),
+                e,
+                DIRECT_REOPEN_RETRY_PERIODS * (config.period_frames as u64) / (config.sample_rate.max(1) as u64),
+            );
+            DirectCapture::Absent {
+                periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
+            }
+        }
+    };
+    let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
+    Input {
+        // The direct lane does NOT open its aloop substream — its only source
+        // is the gadget capture in `direct` (C6).
+        pcm: None,
+        direct: Some(direct),
+        label: label.to_string(),
+        pcm_name: pcm_name.to_string(),
+        read_buf: vec![0i16; period_samples],
+        xrun_count: Arc::new(AtomicU64::new(0)),
+        frames_read: Arc::new(AtomicU64::new(0)),
+        catchup_resync_frames: Arc::new(AtomicU64::new(0)),
+        catchup_events: Arc::new(AtomicU64::new(0)),
+        resampler,
+        trim: TrimControl::new(),
+        direct_obs: Some(DirectObservability {
+            device,
+            present,
+            opens,
+            retries,
+        }),
+    }
+}
+
+/// Open the USB DIRECT capture PCM with the usbsink BRIDGE's proven envelope
+/// (C1) — deliberately NOT fanin's aloop-tuned `configure_pcm` (which sets an
+/// exact buffer). S32_LE 2ch 48k, `set_period_size(256, Nearest)`,
+/// `set_buffer_size_near(768)`; then the bridge-parity post-negotiation bails.
+/// Non-blocking (the direct lane rides the resampler read slot like the aloop
+/// lane) and `start()`ed so reads return data / EAGAIN. Returns the open PCM or
+/// an `alsa::Error` the caller maps to the `Absent` state.
+fn open_direct_capture(device: &str) -> std::result::Result<PCM, alsa::Error> {
+    let pcm = PCM::new(device, Direction::Capture, true)?;
+    {
+        let hwp = HwParams::any(&pcm)?;
+        hwp.set_channels(CHANNELS)?;
+        hwp.set_rate(SAMPLE_RATE_HZ, ValueOr::Nearest)?;
+        hwp.set_format(Format::S32LE)?;
+        hwp.set_access(Access::RWInterleaved)?;
+        hwp.set_period_size(DIRECT_PERIOD_FRAMES as i64, ValueOr::Nearest)?;
+        hwp.set_buffer_size_near(DIRECT_BUFFER_FRAMES as i64)?;
+        let rate = hwp.get_rate()?;
+        let period = hwp.get_period_size()? as u32;
+        let buffer = hwp.get_buffer_size()? as u32;
+        pcm.hw_params(&hwp)?;
+        // Bridge-parity validation. Rate/period MUST land exactly (the bridge
+        // bails otherwise); buffer is warn-on-near-mismatch but must clear the
+        // 2×period + alignment structural floor. A validation failure closes
+        // the PCM (drop) and returns an error → the lane goes Absent.
+        if let Err(reason) = direct_open_params_ok(rate, period, buffer) {
+            warn!(
+                "event=fanin.usb_direct.open_rejected device={} rate={} period={} buffer={} reason={}",
+                device, rate, period, buffer, reason,
+            );
+            // Manufacture an errno-bearing alsa::Error so the caller's Absent
+            // path logs a consistent shape. EINVAL = "negotiated an unusable
+            // geometry".
+            return Err(alsa::Error::new("direct_open_params", libc::EINVAL));
+        }
+        if buffer != DIRECT_BUFFER_FRAMES {
+            warn!(
+                "event=fanin.usb_direct.buffer_near device={} requested_frames={} negotiated_frames={}",
+                device, DIRECT_BUFFER_FRAMES, buffer,
+            );
+        }
+    }
+    pcm.start()?;
+    Ok(pcm)
+}
+
+/// Pure post-negotiation validation of the direct capture geometry (C1),
+/// unit-testable without ALSA. Rate must be exactly 48000 and period exactly
+/// 256 (the bridge bails otherwise); buffer must be ≥ 2×period and a whole
+/// multiple of the period (a fractional buffer would shear). Returns the
+/// rejection reason string on failure.
+fn direct_open_params_ok(rate: u32, period: u32, buffer: u32) -> std::result::Result<(), String> {
+    if rate != SAMPLE_RATE_HZ {
+        return Err(format!("rate {rate} != 48000"));
+    }
+    if period != DIRECT_PERIOD_FRAMES {
+        return Err(format!("period {period} != {DIRECT_PERIOD_FRAMES}"));
+    }
+    if buffer < period.saturating_mul(2) {
+        return Err(format!("buffer {buffer} < 2×period ({})", period * 2));
+    }
+    if period == 0 || buffer % period != 0 {
+        return Err(format!("buffer {buffer} not period-aligned to {period}"));
+    }
+    Ok(())
+}
+
+/// Classify a direct-capture read/query errno (C1). `EAGAIN` stops the drain;
+/// `EPIPE`/`ESTRPIPE` is an xrun to recover; ANYTHING else (notably `ENODEV`
+/// on unplug) is a device loss → the lane transitions to `Absent`, never a
+/// daemon error. Pure so the classification is scratch-crate testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectReadFate {
+    /// `EAGAIN` — no data ready right now; stop draining this period.
+    WouldBlock,
+    /// `EPIPE`/`ESTRPIPE` — an overrun; recover the PCM and reset the resampler.
+    Xrun,
+    /// Any other errno (ENODEV on unplug, etc.) — the device is gone; go Absent.
+    DeviceLost,
+}
+
+fn classify_direct_errno(errno: i32) -> DirectReadFate {
+    if errno == libc::EAGAIN {
+        DirectReadFate::WouldBlock
+    } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+        DirectReadFate::Xrun
+    } else {
+        DirectReadFate::DeviceLost
+    }
+}
+
+/// The nominal sample rate the direct lane opens at. Kept as a named const so
+/// the open envelope and the pure validator agree (C1). Distinct from
+/// `config.sample_rate` on purpose: the gadget capture is a FIXED 48 kHz
+/// endpoint (the bridge's contract), not a configurable fan-in knob.
+const SAMPLE_RATE_HZ: u32 = 48_000;
+
+/// Pull the errno out of an `alsa::Error` for logging. Small helper so the
+/// Absent-path log lines stay terse. (`alsa::Error::errno()` already returns the
+/// `i32` errno, matching the `libc::E*` constants the read paths compare against.)
+fn errno_of(e: &alsa::Error) -> i32 {
+    e.errno()
 }
 
 fn open_output(pcm_name: &str, config: &Config) -> Result<PCM> {
@@ -1409,10 +1740,15 @@ fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
 /// log is count-gated, so the common no-resync path touches no clock and
 /// emits nothing.
 fn drain_input_excess(input: &mut Input, period_frames: usize) {
+    // Non-direct lanes always have Some(pcm); the direct lane never reaches
+    // this path (it routes to read_direct_and_render). Guard defensively.
+    let Some(pcm) = input.pcm.as_ref() else {
+        return;
+    };
     // Non-blocking query of how many frames are readable right now.
     // EAGAIN/error here just means "no usable reading right now" — leave
     // the normal read_input path to handle recovery; never block or panic.
-    let avail = match input.pcm.avail_update() {
+    let avail = match pcm.avail_update() {
         Ok(a) => a,
         Err(_) => return,
     };
@@ -1421,7 +1757,7 @@ fn drain_input_excess(input: &mut Input, period_frames: usize) {
         return; // healthy lane — the overwhelmingly common path.
     }
 
-    let io = match input.pcm.io_i16() {
+    let io = match pcm.io_i16() {
         Ok(io) => io,
         Err(_) => return,
     };
@@ -1521,6 +1857,404 @@ fn trim_input(input: &mut Input) -> u64 {
     dropped
 }
 
+/// The mixer-thread side of the relocated impulse tap (C4). Holds the shared
+/// [`TapState`] (armed + detector knobs, read lock-free), the last-armed
+/// [`TapConfig`] (read only on an arm-generation change), the bounded channel to
+/// the `fanin-tap-writer` thread, and the mixer-local detector state + per-lane
+/// cumulative capture cursor. Constructed once in `Mixer::new`; runs inline in
+/// `read_direct_and_render` over the converted S16 slice BEFORE `push_input`.
+///
+/// Disarmed cost: one relaxed atomic load per direct read
+/// ([`TapState::armed`]) and nothing else.
+pub struct DirectTapHook {
+    state: Arc<TapState>,
+    config: Arc<Mutex<TapConfig>>,
+    sender: SyncSender<TapEvent>,
+    /// The mixer-thread-local detector, rebuilt on each arm generation.
+    detector: Option<ImpulseDetector>,
+    last_generation: u64,
+    /// Cumulative direct-capture frames read BEFORE the current read (the
+    /// detector's `read_start_frame`, so refractory anchoring is stable across
+    /// reads of any size — the bridge's `capture_frames_cursor` idiom).
+    capture_frames_cursor: u64,
+}
+
+impl DirectTapHook {
+    fn new(
+        state: Arc<TapState>,
+        config: Arc<Mutex<TapConfig>>,
+        sender: SyncSender<TapEvent>,
+    ) -> Self {
+        Self {
+            state,
+            config,
+            sender,
+            detector: None,
+            last_generation: 0,
+            capture_frames_cursor: 0,
+        }
+    }
+
+    /// Clone the shared state + config for the state-server/writer threads.
+    fn state(&self) -> Arc<TapState> {
+        Arc::clone(&self.state)
+    }
+
+    fn config(&self) -> Arc<Mutex<TapConfig>> {
+        Arc::clone(&self.config)
+    }
+
+    /// Run the tap over one converted S16 read, BEFORE it enters the resampler
+    /// (the route's own ingress). Mirrors usbsink's `tap_over_read`: reloads the
+    /// detector only on a fresh arm generation, timestamps with the caller's
+    /// post-read `read_ns`, and non-blocking `try_send`s the event
+    /// (drop-and-count on Full). Only called from the armed branch; the
+    /// disarmed fast path is the caller's `state.armed()` check.
+    ///
+    /// - `converted`: the S16 slice just narrowed from S32 (this read only).
+    /// - `read_frames`: frames in this read.
+    /// - `read_ns`: `CLOCK_MONOTONIC` ns taken immediately after `readi`.
+    /// - `ring_fill_periods` / `period_frames`: the lane resampler fill BEFORE
+    ///   `push_input`, recorded (as frames) for the JSONL diagnostic field.
+    #[allow(clippy::too_many_arguments)]
+    fn tap_over_read(
+        &mut self,
+        converted: &[i16],
+        read_frames: usize,
+        read_ns: i128,
+        ring_fill_frames: u64,
+    ) {
+        let generation = self.state.generation_acquire();
+        if self.detector.is_none() || generation != self.last_generation {
+            let (threshold, hysteresis, refractory_frames) = self.state.detector_knobs();
+            self.detector = Some(ImpulseDetector::new(
+                threshold,
+                hysteresis,
+                refractory_frames,
+                CHANNELS as usize,
+            ));
+            self.last_generation = generation;
+        }
+        let Some(detector) = self.detector.as_mut() else {
+            return;
+        };
+        let Some(hit) = detector.detect(
+            &converted[..read_frames * (CHANNELS as usize)],
+            self.capture_frames_cursor,
+        ) else {
+            return;
+        };
+        let event = TapEvent {
+            monotonic_ns: crate::impulse_tap::detection_monotonic_ns(
+                read_ns,
+                read_frames,
+                hit.sample_offset_frames,
+                SAMPLE_RATE_HZ,
+            ),
+            frame_index: self
+                .capture_frames_cursor
+                .saturating_add(hit.sample_offset_frames as u64),
+            ring_fill_frames,
+            peak: hit.peak,
+        };
+        if self.sender.try_send(event).is_err() {
+            self.state.note_dropped();
+        }
+    }
+}
+
+/// `CLOCK_MONOTONIC` in nanoseconds — the direct tap's ingress timeline (C4).
+/// The tap and the Python mic harness both read `CLOCK_MONOTONIC` on the same
+/// Pi; that shared timeline is the only reason their cross-process subtraction
+/// is valid. On the (never-observed) syscall failure returns 0 rather than
+/// crashing the work loop; a stray 0-anchored event is dropped by the harness's
+/// pairing window.
+fn monotonic_ns() -> i128 {
+    let mut ts = MaybeUninit::<libc::timespec>::uninit();
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, ts.as_mut_ptr()) };
+    if rc != 0 {
+        return 0;
+    }
+    let ts = unsafe { ts.assume_init() };
+    (ts.tv_sec as i128) * 1_000_000_000 + (ts.tv_nsec as i128)
+}
+
+/// Read the USB DIRECT lane (C1/C3/C4): drain everything the gadget capture
+/// reports ready into the lane resampler (narrowing S32→S16, tapping the
+/// converted slice on the way), then render exactly one DAC-paced period into
+/// `read_buf`. Returns the number of real (non-silence) frames rendered —
+/// `period_frames` when the resampler is locked, `0` while priming/absent.
+///
+/// Never returns `Err`: a device loss (ENODEV on unplug, or a rejected reopen)
+/// transitions the lane to `Absent` and renders silence with a bounded reopen
+/// retry (C3), so the daemon keeps running. Xruns recover exactly like the
+/// aloop resampler lane (`recover_resampler_input_xrun`, but device-open aware).
+fn read_direct_and_render(
+    input: &mut Input,
+    period_frames: usize,
+    tap: &mut DirectTapHook,
+    xrun_tx: &Sender<XrunEvent>,
+) -> usize {
+    // The lane's resampler fill BEFORE this period's push — the diagnostic
+    // `ring_fill_frames` the tap records (not added to harness latency). Read via
+    // the single-atomic gauge, NOT observability() (which clones Arcs — never on
+    // the hot path).
+    let ring_fill_before = input
+        .resampler
+        .as_ref()
+        .map(|r| r.fill_frames_gauge())
+        .unwrap_or(0);
+
+    // Take ownership of the state machine so we can mutate `input` (resampler,
+    // counters) inside the read without a double borrow. Restored at the end.
+    let mut direct = input
+        .direct
+        .take()
+        .expect("read_direct_and_render only called on a direct lane");
+
+    match &direct {
+        DirectCapture::Present(_) => {
+            let outcome = drain_direct_capture(
+                &direct,
+                input,
+                period_frames,
+                tap,
+                ring_fill_before,
+                xrun_tx,
+            );
+            if outcome == DirectDrainOutcome::DeviceLost {
+                // Runtime loss: close the PCM, reset the resampler, go Absent.
+                if let Some(r) = input.resampler.as_mut() {
+                    r.reset();
+                }
+                if let Some(obs) = &input.direct_obs {
+                    obs.present.store(false, Ordering::Relaxed);
+                    warn!(
+                        "event=fanin.usb_direct.absent device={} reason=runtime_loss (will retry ~every {} periods)",
+                        obs.device, DIRECT_REOPEN_RETRY_PERIODS,
+                    );
+                }
+                direct = DirectCapture::Absent {
+                    periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
+                };
+            }
+        }
+        DirectCapture::Absent { .. } => {
+            // Try to reopen at most once per retry window (period-counted).
+            direct = maybe_reopen_direct(direct, input);
+        }
+    }
+
+    // Render one DAC-paced period from whatever the resampler holds (silence
+    // while Absent / priming). Advance the tap's capture cursor only by frames
+    // actually read this period (done inside drain_direct_capture).
+    let real_frames = match input.resampler.as_mut() {
+        Some(r) => r.render_period(&mut input.read_buf),
+        None => {
+            input.read_buf.fill(0);
+            0
+        }
+    };
+    input.direct = Some(direct);
+    real_frames
+}
+
+/// The outcome of one direct-capture drain: normal (kept Present) or a device
+/// loss that must transition the lane to Absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectDrainOutcome {
+    Ok,
+    DeviceLost,
+}
+
+/// Drain all currently-available frames from the gadget capture into the lane
+/// resampler, narrowing S32→S16 and tapping each read (C1/C4). Bounded by
+/// `RESAMPLER_MAX_READ_PERIODS`. EAGAIN stops the drain; EPIPE/ESTRPIPE recovers
+/// the PCM + resets the resampler; any other errno is a device loss.
+fn drain_direct_capture(
+    direct: &DirectCapture,
+    input: &mut Input,
+    period_frames: usize,
+    tap: &mut DirectTapHook,
+    ring_fill_before: u64,
+    xrun_tx: &Sender<XrunEvent>,
+) -> DirectDrainOutcome {
+    let DirectCapture::Present(pcm) = direct else {
+        return DirectDrainOutcome::Ok;
+    };
+    let channels = CHANNELS as usize;
+    // Preallocated i32 scratch (256×2) — no allocation in the hot path.
+    let mut scratch = [0i32; (DIRECT_PERIOD_FRAMES as usize) * (CHANNELS as usize)];
+    let mut read_budget_remaining =
+        period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
+    let armed = tap.state.armed();
+
+    while read_budget_remaining > 0 {
+        let avail = match pcm.avail_update() {
+            Ok(a) => a,
+            Err(e) => match classify_direct_errno(e.errno()) {
+                DirectReadFate::WouldBlock => break,
+                DirectReadFate::Xrun => {
+                    recover_direct_xrun(pcm, input, e, period_frames, xrun_tx, "avail_update");
+                    break;
+                }
+                DirectReadFate::DeviceLost => return DirectDrainOutcome::DeviceLost,
+            },
+        };
+        let want = resampler_read_budget_frames(avail, period_frames).min(read_budget_remaining);
+        if want == 0 {
+            break;
+        }
+        // Read in ≤256-frame chunks (the scratch size) via io_i32().readi.
+        let mut remaining = want;
+        let mut stop = false;
+        while remaining > 0 && !stop {
+            let to_read = remaining.min(DIRECT_PERIOD_FRAMES as usize);
+            let samples = to_read * channels;
+            let read_result = {
+                let io = match pcm.io_i32() {
+                    Ok(io) => io,
+                    Err(_) => return DirectDrainOutcome::DeviceLost,
+                };
+                io.readi(&mut scratch[..samples])
+            };
+            match read_result {
+                Ok(0) => {
+                    stop = true;
+                }
+                Ok(n) => {
+                    let got = n * channels;
+                    // Narrow S32→S16 into the lane's read_buf scratch (reused;
+                    // the render below overwrites it). Bounds to `got`.
+                    let converted = &mut input.read_buf[..got];
+                    let _ = jasper_resampler::convert_s32_to_s16(&scratch[..got], converted);
+                    // Tap the converted slice BEFORE push_input (armed only). The
+                    // read_ns is taken immediately after readi returned above.
+                    if armed {
+                        let read_ns = monotonic_ns();
+                        tap.tap_over_read(&input.read_buf[..got], n, read_ns, ring_fill_before);
+                    }
+                    tap.capture_frames_cursor = tap.capture_frames_cursor.saturating_add(n as u64);
+                    input.frames_read.fetch_add(n as u64, Ordering::Relaxed);
+                    if let Some(r) = input.resampler.as_mut() {
+                        r.push_input(&input.read_buf[..got]);
+                    }
+                    remaining = remaining.saturating_sub(n);
+                    read_budget_remaining = read_budget_remaining.saturating_sub(n);
+                    if n < to_read {
+                        stop = true;
+                    }
+                }
+                Err(e) => match classify_direct_errno(e.errno()) {
+                    DirectReadFate::WouldBlock => stop = true,
+                    DirectReadFate::Xrun => {
+                        recover_direct_xrun(pcm, input, e, period_frames, xrun_tx, "readi");
+                        stop = true;
+                    }
+                    DirectReadFate::DeviceLost => return DirectDrainOutcome::DeviceLost,
+                },
+            }
+        }
+        if stop {
+            break;
+        }
+    }
+    // Reset the tap detector across a disarm transition (mirrors the aloop tap's
+    // arm-boundary reset) so a fresh arm starts clean.
+    if !armed && tap.detector.is_some() {
+        tap.detector = None;
+    }
+    DirectDrainOutcome::Ok
+}
+
+/// Recover a direct-capture xrun (EPIPE/ESTRPIPE): count it, forward the xrun
+/// event, `try_recover` the PCM, restart it if not Running, and reset the
+/// resampler (a discontinuity). Mirrors `recover_resampler_input_xrun` for the
+/// direct lane. Best-effort — a failed recover just leaves the PCM for the next
+/// period's `avail_update` to re-observe (which will classify a hard failure as
+/// a device loss).
+fn recover_direct_xrun(
+    pcm: &PCM,
+    input: &mut Input,
+    error: alsa::Error,
+    period_frames: usize,
+    xrun_tx: &Sender<XrunEvent>,
+    operation: &str,
+) {
+    let count = input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
+    warn!(
+        "event=fanin.xrun source=input label={} count={} op={} (usb_direct lane)",
+        input.label, count, operation,
+    );
+    let _ = xrun_tx.send(XrunEvent {
+        source: XrunSource::Input,
+        label: input.label.clone(),
+        frames: period_frames as u32,
+        count,
+    });
+    if pcm.try_recover(error, true).is_ok() {
+        if pcm.state() != State::Running {
+            let _ = pcm.start();
+        }
+    }
+    if let Some(r) = input.resampler.as_mut() {
+        r.reset();
+    }
+}
+
+/// While `Absent`, count down the period-based retry latch and attempt a reopen
+/// when it reaches 0 (C3). No wall clock — the countdown is one decrement per
+/// render period. A successful reopen transitions to `Present` and re-primes the
+/// resampler from fresh input; a failed reopen re-arms the latch (one retry per
+/// ~2 s) and stays Absent. Exactly one `present`/`absent` transition log line.
+fn maybe_reopen_direct(direct: DirectCapture, input: &mut Input) -> DirectCapture {
+    let DirectCapture::Absent {
+        periods_until_retry,
+    } = direct
+    else {
+        return direct;
+    };
+    if periods_until_retry > 0 {
+        return DirectCapture::Absent {
+            periods_until_retry: periods_until_retry - 1,
+        };
+    }
+    // Retry window elapsed: attempt one reopen.
+    let device = input
+        .direct_obs
+        .as_ref()
+        .map(|o| o.device.clone())
+        .unwrap_or_default();
+    if let Some(obs) = &input.direct_obs {
+        obs.retries.fetch_add(1, Ordering::Relaxed);
+    }
+    match open_direct_capture(&device) {
+        Ok(pcm) => {
+            if let Some(r) = input.resampler.as_mut() {
+                r.reset();
+            }
+            if let Some(obs) = &input.direct_obs {
+                obs.present.store(true, Ordering::Relaxed);
+                let opens = obs.opens.fetch_add(1, Ordering::Relaxed) + 1;
+                info!(
+                    "event=fanin.usb_direct.present device={} opens={} retries={} (reopened)",
+                    obs.device,
+                    opens,
+                    obs.retries.load(Ordering::Relaxed),
+                );
+            }
+            DirectCapture::Present(pcm)
+        }
+        Err(_) => {
+            // Still absent — re-arm the retry latch. No per-retry log (only the
+            // present/absent transitions log, C3).
+            DirectCapture::Absent {
+                periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
+            }
+        }
+    }
+}
+
 /// Read up to `requested_frames` from `input`. Returns the number of
 /// frames actually read (may be less than requested if the kernel
 /// has less ready, or 0 if non-blocking and no data).
@@ -1538,10 +2272,13 @@ fn read_input(
     requested_frames: usize,
     xrun_tx: &Sender<XrunEvent>,
 ) -> Result<usize> {
-    let io = input
-        .pcm
-        .io_i16()
-        .context("getting i16 IO handle for input")?;
+    // Non-direct lanes always have Some(pcm); the direct lane never reaches
+    // this path. A None here means a silent lane — render silence.
+    let Some(pcm) = input.pcm.as_ref() else {
+        input.read_buf.fill(0);
+        return Ok(0);
+    };
+    let io = pcm.io_i16().context("getting i16 IO handle for input")?;
     match io.readi(&mut input.read_buf) {
         Ok(frames) => {
             input
@@ -1585,10 +2322,7 @@ fn read_input(
                     frames: requested_frames as u32,
                     count,
                 });
-                input
-                    .pcm
-                    .try_recover(e, true)
-                    .context("recovering input xrun")?;
+                pcm.try_recover(e, true).context("recovering input xrun")?;
                 input.read_buf.fill(0);
                 Ok(0)
             } else {
@@ -1637,18 +2371,20 @@ fn recover_resampler_input_xrun(
         frames: period_frames as u32,
         count,
     });
-    input
-        .pcm
-        .try_recover(error, true)
+    // The aloop resampler lane always has Some(pcm) (only the direct lane is
+    // None, and it uses recover_direct_xrun instead).
+    let Some(pcm) = input.pcm.as_ref() else {
+        input.read_buf.fill(0);
+        return Ok(());
+    };
+    pcm.try_recover(error, true)
         .context("recovering resampler input xrun")?;
     // `try_recover` can leave a capture PCM in PREPARED. The ordinary
     // read_input path will kick that forward with the next readi(), but the
     // resampler path polls avail_update() before reading; without an explicit
     // restart it can sit at avail=0 forever after a startup xrun.
-    if input.pcm.state() != State::Running {
-        input
-            .pcm
-            .start()
+    if pcm.state() != State::Running {
+        pcm.start()
             .with_context(|| format!("restarting resampler input {} after xrun", input.label))?;
     }
     if let Some(r) = input.resampler.as_mut() {
@@ -1679,6 +2415,12 @@ fn read_into_resampler_and_render(
     period_frames: usize,
     xrun_tx: &Sender<XrunEvent>,
 ) -> Result<usize> {
+    // The aloop resampler lane always has Some(pcm); the direct lane routes to
+    // read_direct_and_render and never reaches here.
+    if input.pcm.is_none() {
+        input.read_buf.fill(0);
+        return Ok(0);
+    }
     let mut read_budget_remaining =
         period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
     if read_budget_remaining > 0 {
@@ -1688,7 +2430,12 @@ fn read_into_resampler_and_render(
         // The total work remains bounded by `read_budget_remaining`.
         let mut stop_drain = false;
         while read_budget_remaining > 0 && !stop_drain {
-            let avail = match input.pcm.avail_update() {
+            let avail = match input
+                .pcm
+                .as_ref()
+                .expect("aloop resampler lane always has Some(pcm)")
+                .avail_update()
+            {
                 Ok(avail) => avail,
                 Err(e) => {
                     let errno = e.errno();
@@ -1722,6 +2469,8 @@ fn read_into_resampler_and_render(
                 let read_result = {
                     let io = input
                         .pcm
+                        .as_ref()
+                        .expect("aloop resampler lane always has Some(pcm)")
                         .io_i16()
                         .context("getting i16 IO handle for resampler input")?;
                     io.readi(&mut input.read_buf[..samples_to_read])
@@ -1914,6 +2663,63 @@ mod tests {
     use super::*;
 
     // Pure-function tests for the mix math. No ALSA needed.
+
+    // ---- USB DIRECT pure helpers (C1/C2) ---------------------------------
+
+    #[test]
+    fn direct_open_params_accepts_bridge_envelope() {
+        assert!(direct_open_params_ok(48_000, 256, 768).is_ok());
+        // Exactly 2×period, period-aligned is the structural floor.
+        assert!(direct_open_params_ok(48_000, 256, 512).is_ok());
+    }
+
+    #[test]
+    fn direct_open_params_rejects_off_envelope() {
+        assert!(direct_open_params_ok(44_100, 256, 768).is_err()); // wrong rate
+        assert!(direct_open_params_ok(48_000, 128, 768).is_err()); // wrong period
+        assert!(direct_open_params_ok(48_000, 256, 256).is_err()); // < 2×period
+        assert!(direct_open_params_ok(48_000, 256, 700).is_err()); // not aligned
+    }
+
+    #[test]
+    fn classify_direct_errno_maps_c1_fates() {
+        assert_eq!(
+            classify_direct_errno(libc::EAGAIN),
+            DirectReadFate::WouldBlock
+        );
+        assert_eq!(classify_direct_errno(libc::EPIPE), DirectReadFate::Xrun);
+        assert_eq!(classify_direct_errno(libc::ESTRPIPE), DirectReadFate::Xrun);
+        // ENODEV on unplug (and any other errno) is a device loss, never a
+        // daemon error.
+        assert_eq!(
+            classify_direct_errno(libc::ENODEV),
+            DirectReadFate::DeviceLost
+        );
+        assert_eq!(classify_direct_errno(libc::EIO), DirectReadFate::DeviceLost);
+    }
+
+    #[test]
+    fn direct_reopen_cadence_is_about_two_seconds() {
+        // 375 periods × 256 frames / 48000 Hz = 2.0 s (C3).
+        let seconds = (DIRECT_REOPEN_RETRY_PERIODS as f64) * (DIRECT_PERIOD_FRAMES as f64)
+            / (SAMPLE_RATE_HZ as f64);
+        assert!(
+            (seconds - 2.0).abs() < 1e-9,
+            "reopen cadence must be ~2 s, got {seconds}"
+        );
+    }
+
+    #[test]
+    fn direct_lane_narrows_via_shared_conversion() {
+        // The direct lane uses jasper_resampler's narrowing (C2). Re-assert the
+        // pinned sign-boundary vector here too so a drift fails the fanin suite.
+        assert_eq!(jasper_resampler::s32_high_word_to_s16(0), 0);
+        assert_eq!(jasper_resampler::s32_high_word_to_s16(0x7fff_ffff), 0x7fff);
+        assert_eq!(jasper_resampler::s32_high_word_to_s16(i32::MIN), i16::MIN);
+        assert_eq!(jasper_resampler::s32_high_word_to_s16(-1), -1);
+        assert_eq!(jasper_resampler::s32_high_word_to_s16(-65_536), -1);
+        assert_eq!(jasper_resampler::s32_high_word_to_s16(-65_537), -2);
+    }
 
     #[test]
     fn mix_into_sums_two_inputs() {

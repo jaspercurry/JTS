@@ -231,6 +231,39 @@ pub struct Config {
     /// `JASPER_FANIN_AUTO_TRIM`. Manual `TRIM` over the control socket works
     /// regardless of this flag.
     pub auto_trim_enabled: bool,
+
+    /// DEFAULT-OFF USB DIRECT capture (PoC). When `true`, the lane labelled
+    /// `input_resampler_lane_label` (the usbsink lane) does NOT read its
+    /// snd-aloop substream; instead the mixer opens `usb_direct_device`
+    /// (`hw:UAC2Gadget`) as an S32_LE capture, narrows to S16, and feeds the
+    /// SAME `LaneResampler` — deleting the usbsink bridge hop + the aloop cable
+    /// (~25 ms measured) from the USB path. Direct mode IMPLIES a resampler on
+    /// that lane regardless of `input_resampler_enabled` (see
+    /// [`Config::lane_wants_resampler`]). Fail-safe: only the exact literal
+    /// `enabled` (case-insensitive) arms it; unset / empty / anything else stays
+    /// OFF (byte-identical to today's aloop-reading lane). HIGH-RISK real-time
+    /// path — keep OFF until validated on-device. Env:
+    /// `JASPER_FANIN_USB_DIRECT` (`enabled` to arm).
+    pub usb_direct_enabled: bool,
+
+    /// The ALSA capture device the USB DIRECT lane opens when `usb_direct_enabled`.
+    /// Default `hw:UAC2Gadget` (the UAC2 gadget card the usbsink bridge captures
+    /// today). Unused when direct is off. Env: `JASPER_FANIN_USB_DIRECT_DEVICE`.
+    pub usb_direct_device: String,
+}
+
+impl Config {
+    /// Whether the lane labelled `label` should be constructed with a
+    /// `LaneResampler`. True when EITHER the DEFAULT-OFF input resampler is
+    /// enabled OR USB direct capture is enabled — both steer the same lane
+    /// (`input_resampler_lane_label`) to the DAC clock, and direct capture has
+    /// no aloop catch-up fallback to reconcile the host↔DAC rate gap, so it
+    /// MUST own a resampler (C6). A label that doesn't match the resampler lane
+    /// never gets one.
+    pub fn lane_wants_resampler(&self, label: &str) -> bool {
+        (self.input_resampler_enabled || self.usb_direct_enabled)
+            && label == self.input_resampler_lane_label
+    }
 }
 
 /// fan-in → CamillaDSP coupling transport. Mirrors `jasper.fanin_coupling`'s
@@ -417,6 +450,19 @@ impl Config {
             Some("enabled")
         );
 
+        // DEFAULT-OFF USB DIRECT capture (PoC). Fail-safe: only the exact
+        // literal `enabled` (case-insensitive) arms it — same idiom as the
+        // resampler / auto-trim flags. Direct mode implies a resampler on the
+        // usbsink lane (see Config::lane_wants_resampler).
+        let usb_direct_enabled = matches!(
+            std::env::var("JASPER_FANIN_USB_DIRECT")
+                .ok()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("enabled")
+        );
+        let usb_direct_device = env_str("JASPER_FANIN_USB_DIRECT_DEVICE", "hw:UAC2Gadget");
+
         let tts_program_duck_db =
             env_f32_fallback("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", "JASPER_DUCK_DB", -25.0)?;
         if tts_program_duck_db > 0.0 {
@@ -488,6 +534,8 @@ impl Config {
             input_resampler_warmup_cushion_frames,
             input_resampler_ring_frames,
             auto_trim_enabled,
+            usb_direct_enabled,
+            usb_direct_device,
         })
     }
 }
@@ -708,6 +756,10 @@ mod tests {
                 // One-shot AUTO-TRIM is DEFAULT-OFF (manual TRIM is the PoC
                 // path; auto is the opt-in convenience).
                 assert!(!cfg.auto_trim_enabled, "auto-trim must default OFF");
+                // USB DIRECT capture is DEFAULT-OFF; device defaults to the
+                // UAC2 gadget card.
+                assert!(!cfg.usb_direct_enabled, "usb-direct must default OFF");
+                assert_eq!(cfg.usb_direct_device, "hw:UAC2Gadget");
             },
         );
     }
@@ -755,6 +807,110 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[test]
+    fn usb_direct_only_armed_by_exact_enabled_literal() {
+        // Fail-safe: ONLY the literal `enabled` (case-insensitive) arms it.
+        for raw in ["enabled", "ENABLED", " Enabled "] {
+            with_env(&[("JASPER_FANIN_USB_DIRECT", Some(raw))], || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(cfg.usb_direct_enabled, "{raw:?} should arm USB direct");
+            });
+        }
+        // Anything else (including truthy-looking values) stays OFF.
+        for raw in ["", "1", "true", "on", "yes", "disabled", "garbage"] {
+            with_env(&[("JASPER_FANIN_USB_DIRECT", Some(raw))], || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(
+                    !cfg.usb_direct_enabled,
+                    "{raw:?} must NOT arm USB direct (only `enabled` does)"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn usb_direct_device_default_and_override() {
+        // Default device is the UAC2 gadget card.
+        with_env(&[("JASPER_FANIN_USB_DIRECT_DEVICE", None)], || {
+            assert_eq!(
+                Config::from_env().unwrap().usb_direct_device,
+                "hw:UAC2Gadget"
+            );
+        });
+        with_env(
+            &[("JASPER_FANIN_USB_DIRECT_DEVICE", Some("hw:UAC2Gadget,0,0"))],
+            || {
+                assert_eq!(
+                    Config::from_env().unwrap().usb_direct_device,
+                    "hw:UAC2Gadget,0,0"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn usb_direct_default_off_is_inert() {
+        // Unset direct + unset resampler: neither is on, and the usbsink lane
+        // does NOT want a resampler (byte-identical to today).
+        with_env(
+            &[
+                ("JASPER_FANIN_USB_DIRECT", None),
+                ("JASPER_FANIN_INPUT_RESAMPLER", None),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert!(!cfg.usb_direct_enabled);
+                assert!(!cfg.input_resampler_enabled);
+                assert!(
+                    !cfg.lane_wants_resampler("usbsink"),
+                    "no resampler on any lane when both flags are off"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn usb_direct_implies_resampler_on_the_usbsink_lane() {
+        // Direct ON but the plain resampler flag OFF: the usbsink lane STILL
+        // wants a resampler (direct capture has no aloop catch-up fallback), and
+        // only that lane does.
+        with_env(
+            &[
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER", None),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert!(cfg.usb_direct_enabled);
+                assert!(!cfg.input_resampler_enabled);
+                assert!(
+                    cfg.lane_wants_resampler("usbsink"),
+                    "direct mode must imply a resampler on the usbsink lane"
+                );
+                assert!(
+                    !cfg.lane_wants_resampler("airplay"),
+                    "only the resampler lane label gets one"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn input_resampler_alone_still_wants_resampler_on_its_lane() {
+        // The pre-existing path: resampler flag on, direct off — the lane still
+        // wants a resampler (unchanged behavior).
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_USB_DIRECT", None),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert!(cfg.lane_wants_resampler("usbsink"));
+            },
+        );
     }
 
     #[test]

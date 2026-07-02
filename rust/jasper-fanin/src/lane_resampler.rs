@@ -279,6 +279,14 @@ impl LaneResampler {
         })
     }
 
+    /// The current published ring fill in frames — the same value STATUS shows,
+    /// read via a single relaxed atomic load (no Arc clones). Hot-path safe: the
+    /// USB DIRECT read calls this every period for the tap's diagnostic
+    /// `ring_fill_frames` field, so it must not allocate like `observability()`.
+    pub fn fill_frames_gauge(&self) -> u64 {
+        self.fill_frames.load(Ordering::Relaxed)
+    }
+
     /// Clone the observability handles for the STATUS snapshot.
     pub fn observability(&self) -> LaneResamplerObservability {
         LaneResamplerObservability {
