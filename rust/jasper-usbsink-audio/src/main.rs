@@ -1114,6 +1114,10 @@ struct TapPublisher {
     file: Option<fs::File>,
     sink: Option<TapSink>,
     initialized: bool,
+    // Logged-once-per-arm latch so hitting `max_events` emits a single journal
+    // breadcrumb, not one line per dropped event (which would be journal spam
+    // at the drop rate). Reset on each re-arm alongside file/sink.
+    cap_hit_logged: bool,
 }
 
 #[cfg(feature = "alsa-runtime")]
@@ -1142,6 +1146,7 @@ impl TapPublisher {
         if !self.initialized || generation != self.generation {
             self.initialized = true;
             self.generation = generation;
+            self.cap_hit_logged = false;
             while receiver.try_recv().is_ok() {}
             if tap.armed() {
                 let cfg = tap_config_snapshot(tap_config);
@@ -1155,7 +1160,7 @@ impl TapPublisher {
 
         // Idle auto-disarm: even with no events, a passed deadline disarms.
         if tap.armed() && self.sink.as_ref().is_some_and(|sink| sink.expired(now_ms)) {
-            self.finish_disarm(tap);
+            self.finish_disarm(tap, "auto_disarm_deadline_idle");
         }
 
         while let Ok(event) = receiver.try_recv() {
@@ -1178,10 +1183,24 @@ impl TapPublisher {
                         tap.note_dropped();
                     }
                 }
-                SinkAction::DropAtCap => tap.note_dropped(),
+                SinkAction::DropAtCap => {
+                    tap.note_dropped();
+                    // Log the cap hit ONCE per arm so a run whose JSONL stopped
+                    // growing has a journal breadcrumb (further drops are silent
+                    // to avoid per-event spam). The tap stays armed and counting
+                    // dropped — only the file stops growing.
+                    if !self.cap_hit_logged {
+                        self.cap_hit_logged = true;
+                        info!(
+                            "event=usbsink_audio.tap_cap_hit events_written={} events_dropped={}",
+                            tap.events_written(),
+                            tap.events_dropped(),
+                        );
+                    }
+                }
                 SinkAction::AutoDisarm => {
                     tap.note_dropped();
-                    self.finish_disarm(tap);
+                    self.finish_disarm(tap, "auto_disarm_deadline");
                     break;
                 }
             }
@@ -1189,8 +1208,18 @@ impl TapPublisher {
     }
 
     /// Disarm the shared state and release the publisher-owned file/sink so a
-    /// forgotten or capped tap stops costing anything.
-    fn finish_disarm(&mut self, tap: &TapState) {
+    /// forgotten or capped tap stops costing anything. `reason` names the
+    /// self-healing trigger for the journal breadcrumb — a run whose tap
+    /// disarmed itself mid-way must not do so silently, or reconstructing why
+    /// tap events stopped is guesswork. (Manual `POST /tap/disarm` logs its own
+    /// `event=usbsink_audio.tap_disarmed`; this covers the automatic paths.)
+    fn finish_disarm(&mut self, tap: &TapState, reason: &str) {
+        info!(
+            "event=usbsink_audio.tap_auto_disarmed reason={} events_written={} events_dropped={}",
+            reason,
+            tap.events_written(),
+            tap.events_dropped(),
+        );
         tap.disarm();
         self.file = None;
         self.sink = None;
