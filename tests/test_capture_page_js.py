@@ -38,6 +38,7 @@ _HARNESSES = [
     "capture_fragment_test.mjs",
     "capture_constraints_test.mjs",
     "capture_wakelock_test.mjs",
+    "capture_return_url_test.mjs",
 ]
 
 
@@ -63,6 +64,16 @@ def test_capture_page_expired_link_message_points_back_to_speaker():
     assert 'message === "not_found"' in main_js
     assert "This one-time capture link has expired." in main_js
     assert "Return to the speaker page" in main_js
+
+
+def test_capture_page_completion_renders_return_cta():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
+
+    assert "safeReturnUrl" in main_js
+    assert "Back to speaker" in main_js
+    assert "renderCaptureComplete(ctx)" in main_js
+    assert "display: inline-flex;" in index_html
 
 
 def test_capture_page_waits_for_pi_sweep_completion():

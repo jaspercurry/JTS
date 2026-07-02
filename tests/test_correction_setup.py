@@ -166,11 +166,15 @@ def test_relay_capture_client_uses_registration_token(monkeypatch):
     correction_setup._set_relay_capture(None)
     seen = {}
 
-    def open_capture(client, relay_base, capture_origin):
+    def open_capture(client, relay_base, capture_origin, return_url):
         seen["registration_token"] = client._registration_token
         seen["relay_base"] = relay_base
         seen["capture_origin"] = capture_origin
-        return SimpleNamespace(tap_link="https://capture.test/#s=cap_1", pi_session=object())
+        seen["return_url"] = return_url
+        return SimpleNamespace(
+            tap_link="https://capture.test/#s=cap_1",
+            pi_session=object(),
+        )
 
     async def run_and_consume(client, pi_session):
         raise AssertionError("background runner is stubbed")
@@ -181,7 +185,11 @@ def test_relay_capture_client_uses_registration_token(monkeypatch):
         run_and_consume=run_and_consume,
     )
     try:
-        result = correction_setup._run_relay_capture(kind, "https://relay.test")
+        result = correction_setup._run_relay_capture(
+            kind,
+            "https://relay.test",
+            return_url="http://jts5.local/correction/",
+        )
     finally:
         correction_setup._set_relay_capture(None)
 
@@ -193,7 +201,28 @@ def test_relay_capture_client_uses_registration_token(monkeypatch):
         "registration_token": "pi-secret",
         "relay_base": "https://relay.test",
         "capture_origin": "capture.jasper.tech",
+        "return_url": "http://jts5.local/correction/",
     }
+
+
+def test_relay_capture_return_url_uses_request_host(monkeypatch):
+    monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
+    handler = SimpleNamespace(headers={"Host": "jts5.local"})
+
+    assert (
+        correction_setup._request_local_return_url(handler, "/correction/")
+        == "http://jts5.local/correction/"
+    )
+
+
+def test_relay_capture_return_url_falls_back_to_configured_hostname(monkeypatch):
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
+    handler = SimpleNamespace(headers={"Host": "bad/host"})
+
+    assert (
+        correction_setup._request_local_return_url(handler, "/correction/sync")
+        == "http://jts3.local/correction/sync"
+    )
 
 
 def test_render_page_delegates_correction_when_bonded_follower(monkeypatch):

@@ -111,6 +111,9 @@ MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
 MAX_CROSSOVER_WAV_BODY_BYTES = 3 * 1024 * 1024
 MAX_DEVICE_FIELD_CHARS = 160
 _FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/balance", "/sync"})
+_RETURN_HOST_RE = re.compile(
+    r"^(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$"
+)
 
 
 class BadRequest(ValueError):
@@ -221,18 +224,48 @@ class RelayCaptureKind:
     bounded registration, the `/status.relay` holder, and the background-task
     lifecycle. Adding a kind is a descriptor, not a fourth copy of the handler.
 
-    `open(client, relay_base, capture_origin) -> RelayCapture` mints+registers the
-    kind's `capture_spec`; `run_and_consume(client, pi_session)` awaits the phone
-    capture (with the kind's stimulus as the `on_armed` callback) and feeds the
-    verified WAV to the kind's existing analysis seam.
+    `open(client, relay_base, capture_origin, return_url) -> RelayCapture`
+    mints+registers the kind's `capture_spec`; `run_and_consume(client,
+    pi_session)` awaits the phone capture (with the kind's stimulus as the
+    `on_armed` callback) and feeds the verified WAV to the kind's existing
+    analysis seam.
     """
 
     label: str
-    open: Callable[[RelayClient, str, str], "RelayCapture"]
+    open: Callable[[RelayClient, str, str, str], "RelayCapture"]
     run_and_consume: Callable[[RelayClient, PiCaptureSession], Awaitable[None]]
 
 
-def _run_relay_capture(kind: RelayCaptureKind, relay_base: str) -> dict[str, Any]:
+def _request_local_return_url(
+    handler: BaseHTTPRequestHandler | None,
+    path: str,
+) -> str:
+    """Build the local Pi URL the phone should return to after upload.
+
+    The POST has already passed `guard_mutating_request`, but this helper still
+    rejects host-shaped surprises before embedding the value in the public capture
+    spec. Prefer the exact Host the user's browser reached (`jts5.local`,
+    `jts5.local:port`, or a LAN IP); fall back to the configured hostname for
+    tests/non-browser callers.
+    """
+    raw_host = ""
+    if handler is not None:
+        raw_host = str(handler.headers.get("Host") or "").strip().rstrip(".")
+    fallback_host = str(os.environ.get("JASPER_HOSTNAME") or "jts.local").strip()
+    fallback_host = re.sub(r"^https?://", "", fallback_host).strip("/").rstrip(".")
+    host = raw_host if _RETURN_HOST_RE.match(raw_host) else fallback_host
+    if not _RETURN_HOST_RE.match(host):
+        host = "jts.local"
+    clean_path = path if path.startswith("/") else f"/{path}"
+    return f"http://{host}{clean_path}"
+
+
+def _run_relay_capture(
+    kind: RelayCaptureKind,
+    relay_base: str,
+    *,
+    return_url: str,
+) -> dict[str, Any]:
     """Own the common relay-capture lifecycle for any kind. The caller has already
     gated on the relay being configured and run the kind's own state/calibration
     prechecks; this claims the slot, registers, spawns the background runner, and
@@ -254,7 +287,7 @@ def _run_relay_capture(kind: RelayCaptureKind, relay_base: str) -> dict[str, Any
             timeout=_RELAY_REGISTER_TIMEOUT_S,
             registration_token=relay_registration_token_from_env(),
         )
-        rc = kind.open(client, relay_base, capture_origin)
+        rc = kind.open(client, relay_base, capture_origin, return_url)
 
         async def _run() -> None:
             try:
@@ -2001,13 +2034,19 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     # not here: the phone's mic — its built-in, or a USB-C measurement mic plugged
     # into it — isn't known until it records and reports its device.
 
-    def _open(client: RelayClient, base: str, capture_origin: str) -> RelayCapture:
+    def _open(
+        client: RelayClient,
+        base: str,
+        capture_origin: str,
+        return_url: str,
+    ) -> RelayCapture:
         return correction_adapter.open_room_sweep_capture(
             client,
             position=sess.current_position + 1,
             total_positions=sess.total_positions,
             relay_base=base,
             capture_origin=capture_origin,
+            return_url=return_url,
         )
 
     async def _run_and_consume(
@@ -2080,7 +2119,11 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     kind = RelayCaptureKind(
         label="room_sweep", open=_open, run_and_consume=_run_and_consume
     )
-    relay = _run_relay_capture(kind, relay_base)
+    relay = _run_relay_capture(
+        kind,
+        relay_base,
+        return_url=_request_local_return_url(handler, "/correction/"),
+    )
     return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
 
 
@@ -2105,12 +2148,18 @@ def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any
     if err is not None:
         raise ValueError(err)
 
-    def _open(client: RelayClient, base: str, capture_origin: str) -> RelayCapture:
+    def _open(
+        client: RelayClient,
+        base: str,
+        capture_origin: str,
+        return_url: str,
+    ) -> RelayCapture:
         return correction_adapter.open_capture(
             client,
             build_sync_marker_spec(),
             relay_base=base,
             capture_origin=capture_origin,
+            return_url=return_url,
         )
 
     kind = RelayCaptureKind(
@@ -2118,7 +2167,13 @@ def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any
         open=_open,
         run_and_consume=sync_flow.relay_run_and_consume,
     )
-    return {"relay": _run_relay_capture(kind, relay_base)}
+    return {
+        "relay": _run_relay_capture(
+            kind,
+            relay_base,
+            return_url=_request_local_return_url(handler, "/correction/sync"),
+        )
+    }
 
 
 def _maybe_restore_main_volume(sess, cam) -> None:

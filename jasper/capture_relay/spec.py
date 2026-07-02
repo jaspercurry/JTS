@@ -35,6 +35,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
+from urllib.parse import urlsplit
 
 # --- Contract constants -------------------------------------------------------
 
@@ -72,6 +73,7 @@ CLOCK_DRIFT_MODES = ("ignore", "single_window", "critical")
 STIMULUS_PLAYERS = ("pi",)
 
 OUTPUT_FORMATS = ("wav",)
+RETURN_URL_SCHEMES = ("http", "https")
 
 
 class CaptureSpecError(ValueError):
@@ -246,6 +248,7 @@ class CaptureSpec:
     channels: int = REQUIRED_CHANNELS
     output_format: str = "wav"
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
+    return_url: str = ""
     schema_version: int = SCHEMA_VERSION
 
     # -- serialization --
@@ -279,6 +282,7 @@ class CaptureSpec:
                 "theme": dict(self.theme),
                 "screen": [dict(component) for component in self.screen],
             },
+            "return_url": self.return_url,
             "output": {"format": self.output_format},
             "max_upload_bytes": self.max_upload_bytes,
         }
@@ -335,6 +339,7 @@ class CaptureSpec:
             max_upload_bytes=_as_int(
                 data, "max_upload_bytes", default=DEFAULT_MAX_UPLOAD_BYTES
             ),
+            return_url=str(data.get("return_url") or ""),
             schema_version=_as_int(data, "schema_version", default=SCHEMA_VERSION),
         )
         # Guard against a screen entry that was not a Mapping (dropped above).
@@ -402,11 +407,16 @@ class CaptureSpec:
         _validate_calibration_models(self.calibration_models)
         _validate_theme(self.theme)
         _validate_screen(self.screen)
+        _validate_return_url(self.return_url)
         return self
 
     def with_screen(self, *components: Mapping[str, Any]) -> CaptureSpec:
         """Return a copy whose `screen` is the given components (validated)."""
         return replace(self, screen=tuple(components)).validate()
+
+    def with_return_url(self, return_url: str) -> CaptureSpec:
+        """Return a copy carrying the local Pi URL the phone should return to."""
+        return replace(self, return_url=str(return_url or "")).validate()
 
 
 # --- Validation helpers -------------------------------------------------------
@@ -517,6 +527,28 @@ def _validate_screen(screen: Sequence[Mapping[str, Any]]) -> None:
                     f"ui.screen[{index}].action must be one of {UI_BUTTON_ACTIONS}, "
                     f"got {component.get('action')!r}"
                 )
+
+
+def _validate_return_url(return_url: str) -> None:
+    if not isinstance(return_url, str):
+        raise CaptureSpecError("return_url must be a string")
+    if not return_url:
+        return
+    if len(return_url) > 2048 or any(
+        ord(ch) < 32 or ord(ch) == 127 for ch in return_url
+    ):
+        raise CaptureSpecError("return_url must be a clean absolute URL")
+    parsed = urlsplit(return_url)
+    if parsed.scheme not in RETURN_URL_SCHEMES:
+        raise CaptureSpecError(
+            f"return_url scheme must be one of {RETURN_URL_SCHEMES}"
+        )
+    if not parsed.netloc or not parsed.hostname:
+        raise CaptureSpecError("return_url must include a host")
+    if parsed.username or parsed.password:
+        raise CaptureSpecError("return_url must not include credentials")
+    if parsed.fragment:
+        raise CaptureSpecError("return_url must not include a URL fragment")
 
 
 def _as_bool(data: Mapping[str, Any], key: str, *, default: bool = False) -> bool:
