@@ -163,11 +163,13 @@ use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod layout;
+pub mod writer;
 
 pub use layout::{
     Geometry, HEADER_BYTES, MAGIC, MAX_N_SLOTS, MIN_N_SLOTS, SAMPLE_FORMAT_S16LE,
     SAMPLE_FORMAT_S32LE, VERSION,
 };
+pub use writer::{PublishOutcome, RingWriter, WriterMetrics, MAX_FULL_WAIT_TICKS};
 
 /// Result of a single non-blocking [`RingReader::try_consume_slot`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
