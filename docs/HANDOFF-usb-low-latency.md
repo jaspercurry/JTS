@@ -253,16 +253,50 @@ python -m jasper.cli.route_latency_harness analyze \
 
 ### Status (PoC bar)
 
-Correct + observable + flag-gated default-off; **not** hardware-validated yet.
+Correct + observable + flag-gated default-off; **hardware-validated on
+jts.local 2026-07-02** (Apple dongle, electrical `:9891` reference mode).
 Conversion parity with the bridge is by construction (both consume
 `jasper_resampler::s32_high_word_to_s16`, pinned by an identical sign-boundary
 vector in all three crates). The direct open uses the bridge's proven envelope
 (S32LE/2ch/48k, period 256, buffer-near 768). Gadget absence/unplug is
 silent-idle with a bounded ~2 s reopen retry (period-counted, never a daemon
-error). On-device latency re-measurement (arm the fan-in tap, run the
-click/capture harness against the direct JSONL) is the next step; hardening
-(deploy wiring, doctor surface, wizard toggle) comes after the direction is
-proven on hardware.
+error). Hardening (deploy wiring, doctor surface, wizard toggle) comes next.
+
+### Measured results — 2026-07-02 descent campaign (jts.local, Apple dongle)
+
+Full ring graph (fan-in → Ring A → CamillaDSP → Ring B → outputd) + USB DIRECT
+combo mode + queuelimit 1 + both rings at 2 slots + DAC 128/256. Click impulses
+via the Mac gadget lane; span = fan-in ingress tap → outputd `:9891` reference
+tap; ALL-IN adds probe-measured gadget dwell (+3.9 ms, mean avail ~186 f) and
+DAC delay (+9.9 ms, mean ~477 f = 256-frame ring + USB URB queue).
+
+| config | measured p50/p95 (ms) | end-to-end p50/p95 (ms) |
+|---|---|---|
+| pre-campaign baseline (aloop chain) | 173.6 / 181.5 | ~187 / ~195 |
+| host-slaved + cushion (certified) | 139.3 / 156.7 | ~153 / ~170 |
+| full ring graph, chunk 128, 4-slot | 70.1 / 73.5 | 83.7 / 87.1 |
+| + USB DIRECT (bridge deleted from path) | 45.1 / 46.8 | 58.7 / 60.5 |
+| **+ both rings 2-slot (floor, 1-min)** | **35.4 / 36.7** | **≈49 / ≈50** |
+| **floor, 5-min confirmation (159 impulses)** | **34.8 / 36.8 / p99 37.1** | **≈48.6 / ≈50.6** |
+
+5-min confirmation: 99.4 % match, zero xruns, zero problem journal lines,
+resampler locked throughout with the gadget **free-running** (host-clock DLL is
+off in standby mode — see gap below).
+
+Refuted knobs (each a clean 1-min negative): resampler cushion 128/128 (lock
+never holds — the 256 floor is lock-hold hysteresis, not aloop burstiness);
+CamillaDSP `target_level` 384→256 (no effect under queuelimit 1); chunk-64 slot
+geometry as config (`RING_SLOT_FRAMES = 128` is a compile-time constant).
+
+The remaining ~9 ms to a 40 ms end-to-end target is located, all product code:
+
+1. **Host-clock DLL relocation into fan-in** (the standby gap): nobody drives
+   `Capture Pitch` in direct mode, so resampler fill wanders (~500 f observed
+   at 5 min vs the 256 target — drift + stream-restart head-starts). Pinning
+   fill at target is worth ~5 ms *and* removes the drift wander.
+2. Gadget drain cadence: standing avail ~186 f → ~64 f (~2.6 ms).
+3. DAC URB queue: `delay` ~477 f against a 256-frame ring (~2–3 ms in
+   snd-usb-audio queueing).
 
 ## Host-slaved USB clock (Stage 1)
 
