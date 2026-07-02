@@ -235,6 +235,18 @@ def _audio_graph_state(
                 if isinstance(usbsink_raw, dict)
                 else None
             ),
+            # Stage 1 host-slaved USB clock (default-OFF). The Rust bridge
+            # emits this block unconditionally (also when the feature is
+            # disabled), so pre-Stage-1 builds and a missing/unreadable
+            # state file are the only ways this comes through as None — a
+            # definite "no evidence yet" rather than a guessed default.
+            # See docs/HANDOFF-usb-low-latency.md "Host-slaved USB clock
+            # (Stage 1)" for field semantics.
+            "host_clock": (
+                usbsink_raw.get("host_clock")
+                if isinstance(usbsink_raw, dict)
+                else None
+            ),
         },
         "fanin": {
             "usbsink_input": fanin_usbsink,
