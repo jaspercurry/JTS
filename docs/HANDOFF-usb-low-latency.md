@@ -38,10 +38,10 @@ Best values to keep for the current Apple USB-C DAC fallback:
 JASPER_USBSINK_BLOCK_FRAMES=256
 JASPER_USBSINK_RING_PERIODS=3
 JASPER_FANIN_INPUT_BUFFER_FRAMES=4096
-JASPER_FANIN_USB_RESAMPLER_TARGET_FRAMES=512
-JASPER_FANIN_USB_RESAMPLER_WARMUP_CUSHION_FRAMES=1536
-JASPER_FANIN_USB_RESAMPLER_RING_FRAMES=4096
-JASPER_FANIN_USB_RESAMPLER_MAX_ADJUST_PPM=500
+JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512
+JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1536
+JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES=4096
+JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM=500
 JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024
 JASPER_CAMILLA_CHUNKSIZE=256
 JASPER_CAMILLA_TARGET_LEVEL=1536
@@ -176,6 +176,54 @@ nonzero usbsink/fan-in/outputd counter change across the measurement
 window) and states whether the declaration *would* be justified — it never
 asserts `--route-health-ok` on the operator's behalf; read the printed
 deltas and decide.
+
+## Measured results — first real artifacts (2026-07-02, jts.local, Apple dongle)
+
+All runs: 240-impulse quick preset, electrical capture-back (tcpdump of the
+:9891 post-Camilla reference; this box's amp is unplugged, so acoustic capture
+was impossible — add outputd's measured DAC delay, ~10 ms, for end-to-end).
+Source pinned via mux manual select for every window (see prerequisites below).
+
+| Run | p50 / p95 / p99 (ms) | Match | Config delta vs shipped floor |
+|---|---|---|---|
+| Baseline (shipped floor) | 173.6 / 181.5 / 183.5 | 240/240 | none |
+| Cushion shrink, unslaved | 139.5 / 156.5 / — | 225/240 ⚠ | resampler held 2048→512 |
+| Cushion shrink + pilot | 136.8 / 156.4 / 158.9 | 234/239 | + pilot tone holding the session |
+| **Certified stage floor** | **139.3 / 156.7 / 157.6** | **240/240, 0 xruns** | + 15 s lock lead-in |
+| Fan-in output 512 (rejected) | 205.6 / 218.4 / — | 204/240 ✗ | 27,221 output xruns — reverted |
+
+What the data established:
+
+- **The docs' old ~90–110 ms estimate was optimistic ~2×.** The measured
+  baseline is ~175 ms electrical with a tight 10 ms p50→p99 spread — stable
+  queue depth, not jitter, i.e. removable by architecture, not tuning.
+- **The resampler cushion cut delivers exactly its frame math** (−34 ms p50
+  for 2048→512 held) and holds 100 % match with zero xruns — but only under
+  an L0-locked host or with continuous content. Unslaved sparse content at a
+  tight cushion loses ~6 % of audio to re-lock episodes: **tight cushions are
+  L0-conditional floors**, which is the Stage 1 ladder's reason to exist.
+- **The fan-in output queue cannot be tuned below ~1024 on the aloop
+  transport** — 512 produced an xrun storm and *worse* latency (re-prime
+  refill). The boundary itself is the floor; removing it is the ring
+  transport's job, not a knob's.
+- Lock acquisition eats the first impulses after a stream start: measurement
+  windows need a ~15 s lead-in (or continuous content) before the first click.
+
+### Harness prerequisites (learned on hardware)
+
+- **Pin the source for the window** (`POST /source/select {"source":"usbsink"}`,
+  restore `auto` after): sparse clicks do not trip usbsink's RMS `playing`
+  bit (threshold −60 dBFS RMS), so in auto mode the mux never routes the lane
+  and the clicks die at the fan-in gate. Alternative: mix a pilot tone at or
+  above ~−50 dBFS RMS under the click track.
+- **On amp-less lab boxes** use the electrical mode: capture the :9891
+  reference with tcpdump (it is consumed by the AEC bridge on mic-ful boxes —
+  packet capture reads alongside without binding) and convert per-impulse
+  packet timestamps to CLOCK_MONOTONIC with a sampled realtime↔monotonic
+  offset. Document the mode in `--measurement-id`.
+- macOS note: the Mac's volume slider does NOT drive this gadget (macOS
+  treats it as fixed-volume; `PCM Capture Volume` never moves) — set the
+  speaker's listening level via `POST /volume/set` instead.
 
 ## Host-slaved USB clock (Stage 1)
 
