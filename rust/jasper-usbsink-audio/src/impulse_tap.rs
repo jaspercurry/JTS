@@ -60,13 +60,25 @@
 //! (`clock_gettime`, the audio-loop hook, the channel between audio and
 //! publisher threads) is `#[cfg(feature = "alsa-runtime")]`.
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use serde_json::Value;
 
 /// Nanoseconds per second (for the frame → time mapping).
 const NANOS_PER_SEC: i128 = 1_000_000_000;
+
+/// The ONLY directory an arm request may place its JSONL artifact in.
+///
+/// The `POST /tap/arm` body is unauthenticated (the 8781 listener has no auth,
+/// and `JASPER_USBSINK_PREEMPT_HOST` can widen it beyond loopback), yet the
+/// daemon truncates+writes this file as root. Constraining the path to this
+/// tmpfs dir — the same one that holds `state.json` — turns "arm the tap" from
+/// an arbitrary-file-truncate primitive into a scoped one: a caller can only
+/// clobber files inside a directory that already belongs to this daemon. The
+/// harness's own `DEFAULT_TAP_PATH` is under here, and `--tap-path` can still
+/// choose any filename within it. See `path_is_allowed`.
+pub const TAP_PATH_DIR: &str = "/run/jasper-usbsink";
 
 /// Default amplitude threshold (normalized 0..1 abs peak) a period must reach
 /// to arm a rising edge. Chosen so the harness's ~-12 dBFS click (peak ≈ 0.25)
@@ -103,7 +115,11 @@ pub const DEFAULT_TAP_PATH: &str = "/run/jasper-usbsink/impulse-tap.jsonl";
 /// - `frame_index`: cumulative captured-frame counter at detection (monotonic
 ///   per process; the audio loop bumps it by `frames` each read).
 /// - `ring_fill_frames`: `ring.fill_periods() * period_frames` at detection —
-///   feeds the harness's `+ ring_fill_frames_at_tap / 48.0` term. The live
+///   the pre-read backlog the click still had to drain through, recorded as
+///   diagnostic context for reading a run's per-impulse spread. It is NOT
+///   added to the harness's latency: the tap timestamps ingress before the
+///   click enters the ring, so the ring dwell already elapses inside the
+///   `t_mic - t_tap` subtraction (adding it too would double-count). The live
 ///   `state.json` reports fill in *periods*; the tap records *frames*.
 /// - `peak`: normalized abs peak of the detected period (0..1).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -160,7 +176,10 @@ impl TapConfig {
     /// Parse a `POST /tap/arm` body onto defaults. All fields optional; unknown
     /// keys ignored. Mirrors `parse_preempt_silenced`'s `serde_json::from_str`
     /// shape. Rejects non-finite / non-positive numeric knobs so a bad request
-    /// can never install a detector that never fires or never releases.
+    /// can never install a detector that never fires or never releases, and
+    /// rejects any `path` outside [`TAP_PATH_DIR`] (see [`path_is_allowed`]) so
+    /// the unauthenticated arm endpoint can't be used to truncate an arbitrary
+    /// root-owned file.
     pub fn from_arm_body(body: &str) -> Option<Self> {
         let value: Value = serde_json::from_str(body.trim()).ok()?;
         let obj = value.as_object()?;
@@ -170,7 +189,11 @@ impl TapConfig {
             if path.is_empty() {
                 return None;
             }
-            cfg.path = PathBuf::from(path);
+            let candidate = PathBuf::from(path);
+            if !path_is_allowed(&candidate) {
+                return None;
+            }
+            cfg.path = candidate;
         }
         if let Some(threshold) = obj.get("threshold") {
             cfg.threshold = finite_positive(threshold)?;
@@ -212,6 +235,35 @@ fn positive_u64(value: &Value) -> Option<u64> {
         Some(n)
     } else {
         None
+    }
+}
+
+/// True iff `path` is a direct child file of [`TAP_PATH_DIR`] with no traversal.
+///
+/// The check is purely lexical (it never touches the filesystem, so it can't be
+/// raced) and deliberately strict:
+/// - the path must be absolute and start with exactly the [`TAP_PATH_DIR`]
+///   components (an attacker can't pick `/run/jasper-usbsink-evil/...`);
+/// - no `..` (parent) or `.` (curdir) components anywhere, so
+///   `/run/jasper-usbsink/../etc/passwd` is rejected before any normalization
+///   could resolve it out of the dir;
+/// - exactly one trailing file-name component after the dir (no nested
+///   subdirs the daemon would then `create_dir_all` as root).
+///
+/// This scopes the unauthenticated arm endpoint's file write to a directory
+/// that already belongs to the daemon (see [`TAP_PATH_DIR`]).
+pub fn path_is_allowed(path: &Path) -> bool {
+    let allowed = Path::new(TAP_PATH_DIR);
+    // Reject any `.`/`..` component outright — no lexical traversal games.
+    if path
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return false;
+    }
+    match path.parent() {
+        Some(parent) => parent == allowed,
+        None => false,
     }
 }
 
@@ -273,10 +325,19 @@ impl TapState {
 
     /// Arm the tap with `cfg`, resolving the refractory window into frames at
     /// `sample_rate` and the auto-disarm horizon into a wall-clock deadline
-    /// from `arm_epoch_ms` (observability only). Publishes the detector knobs
-    /// first, then bumps `generation`, then sets `armed` last so an audio
-    /// thread that sees `armed==true` also sees the new generation and knobs
-    /// (Release/Acquire pairing via the generation bump).
+    /// from `arm_epoch_ms` (observability only).
+    ///
+    /// Ordering: the knob stores are Relaxed, then `generation` is bumped with
+    /// Release, then `armed` is set Relaxed last. The audio thread's knob
+    /// visibility comes from its Acquire load of `generation` (see
+    /// `generation_acquire` / `tap_over_read`), which pairs with the Release
+    /// bump here — NOT from the `armed` load, which is Relaxed on both sides.
+    /// So `armed==true` becoming visible does not by itself guarantee the new
+    /// knobs are visible; the audio thread only rebuilds its detector after it
+    /// Acquire-observes the new generation. The bounded consequence: for the
+    /// first period or two after arm, the audio thread may run on the previous
+    /// generation's (or default) knobs before it notices the generation
+    /// changed — harmless because arm precedes playback by human-seconds.
     pub fn arm(&self, cfg: &TapConfig, sample_rate: u32, arm_epoch_ms: u64) {
         let refractory_frames = ((cfg.refractory_ms as u128) * (sample_rate as u128) / 1000) as u64;
         let auto_disarm_at =
@@ -741,14 +802,48 @@ mod tests {
     #[test]
     fn arm_body_overrides_all_fields() {
         let body = r#"{"threshold":0.4,"hysteresis":0.1,"refractory_ms":300,
-                       "max_events":10,"auto_disarm_min":5,"path":"/tmp/x.jsonl"}"#;
+                       "max_events":10,"auto_disarm_min":5,
+                       "path":"/run/jasper-usbsink/x.jsonl"}"#;
         let cfg = TapConfig::from_arm_body(body).unwrap();
         assert!((cfg.threshold - 0.4).abs() < 1e-9);
         assert!((cfg.hysteresis - 0.1).abs() < 1e-9);
         assert_eq!(cfg.refractory_ms, 300);
         assert_eq!(cfg.max_events, 10);
         assert_eq!(cfg.auto_disarm_min, 5);
-        assert_eq!(cfg.path, PathBuf::from("/tmp/x.jsonl"));
+        assert_eq!(cfg.path, PathBuf::from("/run/jasper-usbsink/x.jsonl"));
+    }
+
+    #[test]
+    fn arm_body_rejects_path_outside_tap_dir() {
+        // The unauthenticated arm endpoint truncates + writes its JSONL as
+        // root; a `path` outside /run/jasper-usbsink/ would be an
+        // arbitrary-file-truncate primitive. These must all be rejected.
+        for evil in [
+            r#"{"path":"/etc/camilladsp/active.yml"}"#,
+            r#"{"path":"/var/lib/jasper/build.txt"}"#,
+            r#"{"path":"/run/jasper-usbsink/../etc/passwd"}"#,
+            r#"{"path":"/run/jasper-usbsink/nested/deep.jsonl"}"#, // no subdirs
+            r#"{"path":"/run/jasper-usbsink-evil/x.jsonl"}"#,      // prefix trick
+            r#"{"path":"relative.jsonl"}"#,                        // not absolute
+            r#"{"path":"/run/jasper-usbsink"}"#,                   // the dir itself
+        ] {
+            assert!(
+                TapConfig::from_arm_body(evil).is_none(),
+                "should reject arm path: {evil}"
+            );
+        }
+    }
+
+    #[test]
+    fn arm_body_accepts_any_filename_within_tap_dir() {
+        let cfg = TapConfig::from_arm_body(r#"{"path":"/run/jasper-usbsink/run-7.jsonl"}"#)
+            .expect("a plain filename in the tap dir is allowed");
+        assert_eq!(cfg.path, PathBuf::from("/run/jasper-usbsink/run-7.jsonl"));
+    }
+
+    #[test]
+    fn path_is_allowed_matches_default_tap_path() {
+        assert!(path_is_allowed(Path::new(DEFAULT_TAP_PATH)));
     }
 
     #[test]
