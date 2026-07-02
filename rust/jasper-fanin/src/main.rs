@@ -261,6 +261,20 @@ fn main() -> Result<()> {
         }
         (true, None) => {
             warn!("event=fanin.host_clock.noop reason=no_direct_resampler");
+            // The fragment was seeded from the effective (enabled) config, but no
+            // thread will ever update it here — so overwrite it with the DISABLED
+            // rendering, or `/state.audio_graph.fanin.host_clock.enabled` would
+            // read `true` forever while nothing runs (review N4). Build a disabled
+            // config with the same setpoint/knobs so only `enabled` flips.
+            let disabled = crate::host_clock::build_config(
+                false,
+                config.host_clock_probe_ppm,
+                config.host_clock_probe_secs,
+                host_clock_setpoint,
+            );
+            *host_clock_fragment
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = crate::host_clock::initial_fragment(disabled);
             None
         }
         (false, _) => None,
