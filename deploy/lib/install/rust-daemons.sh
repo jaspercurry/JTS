@@ -135,6 +135,17 @@ build_install_rust_daemon() {
             "$(dirname "${cache_dir}")/jasper-resampler/"
         chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-resampler"
     fi
+    # Same for the shared SHM ring crate (jasper-ring) so jasper-outputd's
+    # `path = "../jasper-ring"` dep (the Ring B prototype content source)
+    # resolves. Guarded by existence so a branch predating the crate still
+    # builds.
+    if [[ -d "${REPO_DIR}/rust/jasper-ring" ]]; then
+        rsync -a --delete \
+            --exclude='target/' \
+            "${REPO_DIR}/rust/jasper-ring/" \
+            "$(dirname "${cache_dir}")/jasper-ring/"
+        chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-ring"
+    fi
     chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     local -a cargo_env=()
