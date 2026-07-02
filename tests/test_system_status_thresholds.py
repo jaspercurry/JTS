@@ -34,7 +34,7 @@ def test_system_vitals_use_named_threshold_helpers() -> None:
     assert "toneForMemoryHeadroom(memAvail, memTotal)" in sections
     assert "loadPressureInfo(load, cores.length || 4)" in sections
     assert "cpuUsageInfo(cores)" in sections
-    assert "temperatureInfo(temp, throttledNow, throttledHist)" in sections
+    assert "temperatureDisplay(cur.temp_c, throttledNow, throttledHist)" in sections
     assert "toneForDiskUse(diskPct)" in sections
 
     # Regression guard for the old Pi Zero 2 W-hostile memory cutoffs.
@@ -51,6 +51,7 @@ def test_system_threshold_helpers_document_the_colours() -> None:
     assert "value >= capacity * 0.75" in text
     assert "toneForPercent(Number(pct) || 0, 85, 95)" in text
     assert "temp >= 80 || throttledNow" in text
+    assert "Thermal sensor unavailable" in text
 
 
 def test_system_threshold_helpers_scale_by_capacity_with_low_ram_floors() -> None:
@@ -93,6 +94,8 @@ def test_system_threshold_helpers_scale_by_capacity_with_low_ram_floors() -> Non
         cpuDanger: mod.cpuUsageInfo([95, 95, 95, 95]).tone,
         tempWarn: mod.temperatureInfo(75, 0, 0).tone,
         tempDanger: mod.temperatureInfo(80, 0, 0).tone,
+        tempMissing: mod.temperatureDisplay(null, 0, 0),
+        tempZero: mod.temperatureDisplay(0, 0, 0),
       }};
       console.log(JSON.stringify(out));
     """
@@ -170,6 +173,18 @@ def test_system_threshold_helpers_scale_by_capacity_with_low_ram_floors() -> Non
     assert out["cpuDanger"] == "danger"
     assert out["tempWarn"] == "warn"
     assert out["tempDanger"] == "danger"
+    assert out["tempMissing"] == {
+        "value": "Unavailable",
+        "sub": "Thermal sensor unavailable",
+        "tone": "idle",
+        "chartable": False,
+    }
+    assert out["tempZero"] == {
+        "value": "32°F",
+        "sub": "0.0°C",
+        "tone": "ok",
+        "chartable": True,
+    }
 
 
 def test_dashboard_memory_disk_thresholds_match_jasper_doctor() -> None:

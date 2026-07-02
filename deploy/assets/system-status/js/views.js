@@ -76,10 +76,10 @@ export function buildPage(root, handlers) {
   restartVoice.disabled = true;
   restartAudio.disabled = true;
   const actions = titledCard("Actions");
+  actions.section.classList.add("system-actions");
   actions.body.append(
     h("p.info-card__note", null,
-      "Anyone on the same Wi-Fi can trigger these. The page just spins " +
-      "until the daemon comes back."),
+      "Restart services or shut down the Pi. Anyone on this Wi-Fi can run these actions."),
     capabilityNote,
     h("div.btn-row", null,
       restartVoice,
@@ -88,9 +88,7 @@ export function buildPage(root, handlers) {
       actionButton("Power off", { variant: "danger", onClick: handlers.poweroff })),
     actionsStatus,
     h("p.info-card__note", null,
-      "Power off before changing cables or swapping power. The speaker " +
-      "stays off until you physically re-plug power — yanking the cord " +
-      "mid-run can corrupt config files on the SD card."),
+      "Power off before unplugging or changing cables; it stays off until power is re-plugged."),
   );
 
   // Run diagnostics — built once; the output region persists between polls.

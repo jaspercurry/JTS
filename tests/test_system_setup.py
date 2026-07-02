@@ -387,6 +387,7 @@ def test_poweroff_requires_csrf(dashboard_server) -> None:
 
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "deploy" / "assets"
 _MODULE_DIR = _ASSETS_DIR / "system-status" / "js"
+_SYSTEM_CSS = _ASSETS_DIR / "system-status" / "system.css"
 
 # The CSRF/JSON fetch plumbing the /system/ modules used to inline now lives in
 # the cross-page shared module; system-status/api.js just re-exports it. Scan it
@@ -466,6 +467,22 @@ def test_modules_preserve_metric_logic() -> None:
     assert "samplerate_best" in js
     assert "cgroup_enable=memory" in js
     assert "tts dropped" in js
+    assert "Thermal sensor unavailable" in js
+    assert "cur.temp_c || 0" not in js
+
+
+def test_system_mobile_actions_and_tables_are_intentional() -> None:
+    js = _system_js()
+    css = _SYSTEM_CSS.read_text()
+    assert "system-actions" in js
+    assert "Restart services or shut down the Pi." in js
+    assert "Anyone on this Wi-Fi can run these actions." in js
+    assert "Power off before unplugging or changing cables" in js
+    assert "stays off until power is re-plugged" in js
+    assert ".system-actions .btn-row" in css
+    assert "min-height: 44px" in css
+    assert "-webkit-overflow-scrolling: touch" in css
+    assert ".table-wrap" in css
 
 
 def test_modules_warn_before_best_audio_quality() -> None:

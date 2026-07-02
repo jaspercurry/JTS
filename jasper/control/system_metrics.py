@@ -4,10 +4,10 @@
 
 """System metrics sampler for jasper-control.
 
-Polls /proc and vcgencmd at a fixed cadence (5s for cheap metrics —
-memory, load, network, disk, uptime; 30s for the costlier vcgencmd
-subprocess calls — temperature, throttled bitmask) and keeps a 60-min
-ring buffer that the /system dashboard reads via /system/snapshot.
+Polls /proc, thermal sysfs, and vcgencmd at a fixed cadence (5s for cheap
+metrics — memory, load, network, disk, uptime; 30s for the slower thermal
+and throttled-bit reads) and keeps a 60-min ring buffer that the /system
+dashboard reads via /system/snapshot.
 
 Why in-process here:
   - We need a 60-min history for the sparkline in the dashboard, and
@@ -18,7 +18,8 @@ Why in-process here:
     (six 5-second arrays plus the slower temperature history).
 
 What we DON'T do here:
-  - No psutil dep. /proc + vcgencmd via subprocess.run is enough.
+  - No psutil dep. /proc + thermal sysfs + vcgencmd via subprocess.run
+    is enough.
   - No persistent storage. History is in-memory; lost on restart.
     Acceptable: a recently-restarted box has no useful history anyway.
   - No on-disk caching of the latest snapshot. The /state and /system/
@@ -44,6 +45,11 @@ SAMPLE_INTERVAL_SEC = 5.0
 VCGENCMD_INTERVAL_SEC = 30.0
 SERVICE_STATE_INTERVAL_SEC = 30.0
 HISTORY_POINTS = 720  # 60 min @ 5 s
+
+# Kernel thermal zone for SoC temperature. Prefer this over vcgencmd because
+# jasper-control runs as a non-root service user and vcgencmd can be blocked
+# by firmware-device permissions even while the same command works over SSH.
+THERMAL_ZONE_PATH = "/sys/class/thermal/thermal_zone0/temp"
 
 # Subprocess timeout for vcgencmd — if the GPU firmware is wedged
 # (rare but seen on overheating), we don't want to block the sampler.
@@ -158,7 +164,7 @@ class SystemSampler:
         self._mem_total_mb = 0
         self._disk_used_pct = 0.0
         self._disk_total_gb = 0.0
-        self._temp_c = 0.0
+        self._temp_c: float | None = None
         self._throttled_now = 0
         self._throttled_history = 0  # high bits = "ever throttled since boot"
         self._net_rx_bytes = 0
@@ -222,7 +228,11 @@ class SystemSampler:
                     "mem_total_mb": self._mem_total_mb,
                     "disk_used_pct": round(self._disk_used_pct, 1),
                     "disk_total_gb": round(self._disk_total_gb, 1),
-                    "temp_c": round(self._temp_c, 1),
+                    "temp_c": (
+                        round(self._temp_c, 1)
+                        if self._temp_c is not None
+                        else None
+                    ),
                     "throttled_now": self._throttled_now,
                     "throttled_history": self._throttled_history,
                     "net_rx_bytes": self._net_rx_bytes,
@@ -341,13 +351,17 @@ class SystemSampler:
             self._last_sample_at = time.time()
 
     def _tick_vcgencmd(self) -> None:
-        """Expensive-metric sample — forks vcgencmd twice. Done every
-        VCGENCMD_INTERVAL_SEC rather than every sample tick."""
+        """Slower thermal/throttling sample. Temperature prefers thermal
+        sysfs and falls back to vcgencmd; throttled bits still use vcgencmd.
+        Done every VCGENCMD_INTERVAL_SEC rather than every sample tick."""
         temp = self._read_temp_c()
         throttled_now, throttled_history = self._read_throttled()
         with self._lock:
             self._temp_c = temp
-            self._append(self._temp_c_history, temp, self._temp_history_points)
+            if temp is not None:
+                self._append(
+                    self._temp_c_history, temp, self._temp_history_points,
+                )
             self._throttled_now = throttled_now
             self._throttled_history = throttled_history
 
@@ -455,7 +469,26 @@ class SystemSampler:
         return None
 
     @staticmethod
-    def _read_temp_c() -> float:
+    def _read_thermal_zone_temp_c(
+        path: str = THERMAL_ZONE_PATH,
+    ) -> float | None:
+        try:
+            with open(path) as f:
+                raw = f.read().strip()
+            milli_c = float(raw)
+        except (OSError, ValueError):
+            return None
+        return milli_c / 1000.0
+
+    @staticmethod
+    def _read_temp_c(
+        thermal_zone_path: str = THERMAL_ZONE_PATH,
+    ) -> float | None:
+        sysfs_temp = SystemSampler._read_thermal_zone_temp_c(
+            thermal_zone_path,
+        )
+        if sysfs_temp is not None:
+            return sysfs_temp
         try:
             out = subprocess.run(
                 ["vcgencmd", "measure_temp"],
@@ -463,12 +496,12 @@ class SystemSampler:
                 timeout=VCGENCMD_TIMEOUT_SEC,
             )
         except (subprocess.SubprocessError, FileNotFoundError, OSError):
-            return 0.0
+            return None
         # vcgencmd output: "temp=47.7'C\n"
         try:
             return float(out.stdout.split("=")[1].split("'")[0])
         except (IndexError, ValueError):
-            return 0.0
+            return None
 
     def _tick_services(
         self,

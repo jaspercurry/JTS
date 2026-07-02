@@ -90,6 +90,8 @@ def test_setup_wizard_html_is_canonical():
     assert 'name="csrf_token"' in text
     assert 'class="wizard-steps"' in text
     assert "data-step=\"4\"" in text
+    assert "Create one Google Cloud OAuth client" in text
+    assert "Connect this speaker to Google Calendar + Gmail" not in text
 
 
 def test_redirect_uri_page_html_is_canonical():
@@ -121,6 +123,21 @@ def test_management_html_is_canonical_and_escapes_accounts():
     assert 'action="default"' in text
     # Default badge present with the OK status tone.
     assert "--tone: var(--status-ok)" in text
+
+
+def test_management_page_keeps_google_copy_short_on_default_path():
+    account = google_setup.GoogleAccount(
+        name="jasper", token_path="/x", email="jasper@example.com",
+    )
+    registry = SimpleNamespace(accounts=[account], default_name="jasper")
+    text = google_setup._management_html(registry, REDIRECT, GOOD_CLIENT_ID, CSRF).decode()
+
+    assert "Linked Google accounts let JTS answer Calendar and Gmail questions" in text
+    assert "Add another household member below" in text
+    assert "Google Cloud setup guide" in text
+    assert "voice loop reads Calendar + Gmail data per-account" not in text
+    assert "Each household member links their Google account once" not in text
+    assert "Reference copy of the 4-step setup" not in text
 
 
 def test_account_name_is_html_escaped():

@@ -143,14 +143,43 @@ export function cpuUsageInfo(cores) {
   return { tone, value: Math.round(avgCpu) + "%" };
 }
 
+function finiteNumberOrNull(value) {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 // Raspberry Pi firmware progressively throttles Arm cores from 80-85C, so
 // warn before that band and go red when current throttling or 80C appears.
 export function temperatureInfo(tempC, throttledNow, throttledHistory) {
-  const temp = Number(tempC) || 0;
+  const temp = finiteNumberOrNull(tempC);
   let tone = "ok";
-  if (temp >= 80 || throttledNow) tone = "danger";
+  if (temp == null) {
+    tone = throttledNow ? "danger" : (throttledHistory ? "warn" : "idle");
+  }
+  else if (temp >= 80 || throttledNow) tone = "danger";
   else if (temp >= 75 || throttledHistory) tone = "warn";
   return { tone };
+}
+
+export function temperatureDisplay(tempC, throttledNow, throttledHistory) {
+  const temp = finiteNumberOrNull(tempC);
+  const tone = temperatureInfo(temp, throttledNow, throttledHistory).tone;
+  if (temp == null) {
+    let sub = "Thermal sensor unavailable";
+    if (throttledNow) sub += " · throttling now";
+    else if (throttledHistory) sub += " · throttled since boot";
+    return { value: "Unavailable", sub, tone, chartable: false };
+  }
+  let sub = temp.toFixed(1) + "°C";
+  if (throttledNow) sub += " · throttling now";
+  else if (throttledHistory) sub += " · throttled since boot";
+  return {
+    value: (temp * 9 / 5 + 32).toFixed(0) + "°F",
+    sub,
+    tone,
+    chartable: true,
+  };
 }
 
 // 85% warn / 95% danger mirror jasper-doctor's `_DEFAULT_DISK_WARN_PERCENT` /

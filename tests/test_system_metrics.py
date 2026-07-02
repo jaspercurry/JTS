@@ -144,20 +144,28 @@ def test_read_disk_returns_pct_and_total() -> None:
 def test_read_temp_c_parses_vcgencmd_output() -> None:
     fake = type("R", (), {"stdout": "temp=47.7'C\n"})()
     with patch.object(system_metrics.subprocess, "run", return_value=fake):
-        assert SystemSampler._read_temp_c() == 47.7
+        assert SystemSampler._read_temp_c("/no/such/thermal-zone") == 47.7
 
 
-def test_read_temp_c_returns_zero_on_missing_vcgencmd() -> None:
+def test_read_temp_c_prefers_thermal_zone_sysfs(tmp_path) -> None:
+    thermal = tmp_path / "temp"
+    thermal.write_text("45250\n")
+    with patch.object(system_metrics.subprocess, "run") as run:
+        assert SystemSampler._read_temp_c(str(thermal)) == 45.25
+    run.assert_not_called()
+
+
+def test_read_temp_c_returns_none_on_missing_sources() -> None:
     with patch.object(
         system_metrics.subprocess, "run", side_effect=FileNotFoundError(),
     ):
-        assert SystemSampler._read_temp_c() == 0.0
+        assert SystemSampler._read_temp_c("/no/such/thermal-zone") is None
 
 
-def test_read_temp_c_returns_zero_on_unparseable() -> None:
+def test_read_temp_c_returns_none_on_unparseable() -> None:
     fake = type("R", (), {"stdout": "garbage"})()
     with patch.object(system_metrics.subprocess, "run", return_value=fake):
-        assert SystemSampler._read_temp_c() == 0.0
+        assert SystemSampler._read_temp_c("/no/such/thermal-zone") is None
 
 
 def test_read_throttled_splits_current_vs_history() -> None:
@@ -208,6 +216,28 @@ def test_vcgencmd_tick_records_temperature_history() -> None:
     # vcgencmd sampled every 30 seconds, the temperature history keeps
     # the matching two most recent samples.
     assert snap["history"]["temp_c"] == [42.0, 43.0]
+
+
+def test_vcgencmd_tick_reports_missing_temperature_as_null() -> None:
+    s = SystemSampler(
+        sample_interval_sec=5.0,
+        vcgencmd_interval_sec=30.0,
+        history_points=12,
+    )
+    with patch.object(
+        SystemSampler,
+        "_read_temp_c",
+        return_value=None,
+    ), patch.object(
+        SystemSampler,
+        "_read_throttled",
+        return_value=(0, 0),
+    ):
+        s._tick_vcgencmd()
+
+    snap = s.snapshot()
+    assert snap["current"]["temp_c"] is None
+    assert snap["history"]["temp_c"] == []
 
 
 # ---------- fan reader (fake sysfs trees) -------------------------------

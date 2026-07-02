@@ -4,13 +4,11 @@
 
 """Voice provider configuration wizard at /voice/.
 
-UX: a single page with one card per supported provider (Gemini /
-OpenAI / Grok). Each card holds the API key (masked, with a
-"currently: prefix…suffix" hint when set), a model dropdown, a voice
-dropdown, and any provider-specific knob (reasoning effort for
-gpt-realtime-2). At the top: a radio group picks which provider the
-voice loop should USE — disabled for any provider that doesn't have a
-key yet, so the user can't accidentally activate a broken backend.
+UX: a single page with distinct sections for the voice decisions:
+enter provider API keys, choose the active configured provider, select
+model/voice settings, set the spend cap, then adjust advanced pricing.
+The active-provider radios are disabled for any provider that doesn't
+have a key yet, so the user can't accidentally activate a broken backend.
 
 Persistence: non-secret provider selectors stay in
 /var/lib/jasper/voice_provider.env; provider API keys live in
@@ -316,7 +314,7 @@ def _active_radio_html(state: dict[str, str]) -> str:
         )
         status = (
             "configured" if configured
-            else f"no {p.key_env} yet — paste below first"
+            else f"no {p.key_env} yet — add a key first"
         )
         rows.append(f"""
         <label class="{cls}" data-provider-radio-row="{p.id}"{originally_disabled}{aria_disabled}>
@@ -328,9 +326,7 @@ def _active_radio_html(state: dict[str, str]) -> str:
     return f"""
     <div class="info-card active-group">
       <p class="eyebrow">Use this provider for voice</p>
-      <p class="info-card__hint">Pick which real-time backend the wake-word
-      loop talks to. Only providers with a saved API key can be selected.
-      Paste a key below to enable a provider before saving.</p>
+      <p class="info-card__hint">Only providers with a saved or newly pasted API key can be selected.</p>
       {''.join(rows)}
     </div>"""
 
@@ -547,10 +543,12 @@ def _model_select_html(
         )
     # `form="save-form"` associates this input with the outer
     # save-form by ID — necessary because the cards visually live
-    # OUTSIDE the form's <form>...</form> tags so a per-card "Clear
-    # key" form can sit beside them without nesting (HTML forbids
-    # nested forms).
-    return f'<select name="{provider.id}_model" form="save-form">{"".join(rows)}</select>'
+    # OUTSIDE the form's <form>...</form> tags so standalone per-provider
+    # forms can sit beside them without nesting (HTML forbids nested forms).
+    return (
+        f'<select id="{provider.id}_model" name="{provider.id}_model" '
+        f'form="save-form">{"".join(rows)}</select>'
+    )
 
 
 def _model_discovery_status_html(
@@ -598,7 +596,10 @@ def _voice_select_html(provider: ProviderCatalogEntry, current: str) -> str:
             f'<option value="{html.escape(current)}" selected>'
             f'{html.escape(current)} (custom)</option>',
         )
-    return f'<select name="{provider.id}_voice" form="save-form">{"".join(rows)}</select>'
+    return (
+        f'<select id="{provider.id}_voice" name="{provider.id}_voice" '
+        f'form="save-form">{"".join(rows)}</select>'
+    )
 
 
 def _provider_extras_html(
@@ -724,7 +725,7 @@ def _pricing_section_html(
     )
     return f"""
     <details class="pricing-disclosure">
-      <summary>Pricing rates</summary>
+      <summary>{html.escape(provider.label)} Pricing rates</summary>
       <div class="pricing-disclosure__body">
         <p class="form-hint">{as_of_txt}Used by the /voice spend cap status
         and circuit breaker. Blank = use the bundled default; clear a box to reset.
@@ -796,11 +797,8 @@ def _pricing_refresh_html(
     prompt = html.escape(_pricing_research_prompt(discovery))
     return f"""
     <section class="section">
-      <h2 class="section__title">Refresh all rates from a chatbot</h2>
-      <p class="form-hint">No provider API returns voice-model prices, so this
-      speaker can't fetch them automatically. Copy the prompt below into any AI
-      chatbot — it lists the exact models this speaker uses and asks for current
-      official prices — then paste back the JSON it replies with.</p>
+      <h2 class="section__title">Refresh pricing rates</h2>
+      <p class="form-hint">Copy a model-specific pricing prompt, then paste back validated JSON.</p>
       <details class="pricing-disclosure">
         <summary>1. Copy this research prompt</summary>
         <div class="pricing-disclosure__body">
@@ -831,61 +829,25 @@ def _pricing_refresh_html(
     </section>"""
 
 
-def _provider_card_html(
-    provider: ProviderCatalogEntry,
-    state: dict[str, str],
-    csrf_token: str,
-    discovered: DiscoverySnapshot | None,
-    overrides: dict[str, dict],
-    default_as_of: str,
-    *,
-    is_active: bool,
-) -> str:
-    """One .info-card per provider (the canonical provider_cards
-    archetype). The card body holds the masked API-key field, the model
-    + voice selects, any provider extras, the collapsible pricing editor,
-    and a clear-key form (when configured)."""
-    configured = _provider_is_configured(state, provider)
-    key_value = _value_for(state, provider.key_env)
-    masked = mask_secret(key_value) if key_value else ""
-    model_value = _value_for(
-        state, provider.model_env, default_model_id(provider.id),
-    )
-    voice_value = _value_for(
-        state, provider.voice_env, default_voice_id(provider.id),
-    )
+def _provider_status_badge_html(*, configured: bool, is_active: bool) -> str:
     if is_active:
-        status_badge = (
-            '<span class="badge" style="--tone:var(--status-ok)">active</span>'
-        )
-    elif configured:
-        status_badge = (
-            '<span class="badge" style="--tone:var(--status-idle)">configured</span>'
-        )
-    else:
-        status_badge = (
-            '<span class="badge" style="--tone:var(--status-warn)">'
-            'not configured</span>'
-        )
-    key_source = ""
-    if configured and not state.get(provider.key_env):
-        # Key came from /etc/jasper/jasper.env (set by the operator,
-        # not the wizard). Saving here writes a wizard-owned override.
-        key_source = (
-            '<p class="form-hint">Currently sourced from '
-            '<code>/etc/jasper/jasper.env</code> — saving here will override it '
-            'in <code>/var/lib/jasper/voice_provider.env</code>.</p>'
-        )
-    extras = _provider_extras_html(provider, state)
-    placeholder = (
-        "paste new key — leave blank to keep" if configured
-        else f"paste your key ({provider.key_prefix_hint})"
-    )
-    clear_form = ""
+        return '<span class="badge" style="--tone:var(--status-ok)">active</span>'
     if configured:
-        # The clear-key confirm is wired by the page's ES module (a
-        # delegated submit handler on [data-confirm]); no inline JS.
-        clear_form = f"""
+        return (
+            '<span class="badge" style="--tone:var(--status-idle)">'
+            'configured</span>'
+        )
+    return (
+        '<span class="badge" style="--tone:var(--status-warn)">'
+        'not configured</span>'
+    )
+
+
+def _provider_clear_form_html(
+    provider: ProviderCatalogEntry,
+    csrf_token: str,
+) -> str:
+    return f"""
         <form method="post" action="clear-credentials"
               data-confirm="Clear the saved {html.escape(provider.label, quote=True)} key and model/voice override? The daemon will fall back to /etc/jasper/jasper.env defaults."
               data-confirm-danger="1">
@@ -895,63 +857,132 @@ def _provider_card_html(
             <button class="btn btn--danger" type="submit">Clear key</button>
           </div>
         </form>"""
-    refresh_disabled = "" if configured else " disabled"
-    refresh_hint = (
-        "Queries the provider with this speaker's saved key, caches "
-        "the result locally, and labels unknown models as experimental."
-        if configured else
-        f"Paste a {provider.key_env} first, then refresh available models."
+
+
+def _provider_key_card_html(
+    provider: ProviderCatalogEntry,
+    state: dict[str, str],
+    csrf_token: str,
+    *,
+    is_active: bool,
+) -> str:
+    """API-key card for one provider. Model/voice and pricing live in
+    their own sections so this card has one job: add or clear a key."""
+    configured = _provider_is_configured(state, provider)
+    key_value = _value_for(state, provider.key_env)
+    masked = mask_secret(key_value) if key_value else ""
+    status_badge = _provider_status_badge_html(
+        configured=configured,
+        is_active=is_active,
+    )
+    key_source = ""
+    if configured and not state.get(provider.key_env):
+        # Key came from /etc/jasper/jasper.env (set by the operator,
+        # not the wizard). Saving here writes a wizard-owned override.
+        key_source = (
+            '<p class="form-hint">Currently sourced from '
+            '<code>/etc/jasper/jasper.env</code>. Saving here writes a '
+            'wizard-owned override.</p>'
+        )
+    placeholder = (
+        "paste new key — leave blank to keep" if configured
+        else f"paste your key ({provider.key_prefix_hint})"
+    )
+    clear_form = _provider_clear_form_html(provider, csrf_token) if configured else ""
+    saved_hint = (
+        f'<p class="form-hint">Saved: <code>{html.escape(masked)}</code></p>'
+        if masked else ""
     )
     return f"""
     <div class="info-card provider-card">
       <div class="provider-card__head">
         <div>
-          <h2 class="section__title">{html.escape(provider.label)}</h2>
+          <h3 class="provider-card__title">{html.escape(provider.label)}</h3>
           <p class="eyebrow">{html.escape(provider.vendor)}</p>
         </div>
         {status_badge}
       </div>
       <p class="info-card__hint">
-        Cost: <strong>{html.escape(provider.cost_hint)}</strong>.
-        Get a key:
-        <a href="{html.escape(provider.key_url, quote=True)}" target="_blank" rel="noopener">{html.escape(provider.vendor)} console ↗</a>
+        {html.escape(provider.cost_hint)} ·
+        <a href="{html.escape(provider.key_url, quote=True)}" target="_blank" rel="noopener">Get key ↗</a>
       </p>
 
       <div class="field">
-        <label for="{provider.id}_key">{html.escape(provider.key_env)}</label>
+        <label for="{provider.id}_key">API key ({html.escape(provider.key_env)})</label>
         <input id="{provider.id}_key" name="{provider.id}_key" form="save-form"
                type="password" autocomplete="off" autocapitalize="off"
                autocorrect="off" spellcheck="false"
                data-provider-key="{provider.id}"
                placeholder="{html.escape(placeholder, quote=True)}">
-        {f'<p class="form-hint">Currently saved: <code>{html.escape(masked)}</code></p>' if masked else ''}
+        {saved_hint}
         {key_source}
       </div>
 
-      <div class="field">
-        <label for="{provider.id}_model">Model</label>
-        {_model_select_html(provider, model_value, discovered)}
-        {_model_discovery_status_html(provider, discovered)}
-      </div>
-      <form method="post" action="refresh-models">
-        {csrf_field_html(csrf_token)}
-        <input type="hidden" name="provider" value="{provider.id}">
-        <div class="form-actions">
-          <button class="btn btn--ghost" type="submit"{refresh_disabled}>Refresh available models</button>
-          <span class="form-hint">{html.escape(refresh_hint)}</span>
-        </div>
-      </form>
+      {clear_form}
+    </div>"""
 
-      <div class="field">
-        <label for="{provider.id}_voice">TTS voice</label>
-        {_voice_select_html(provider, voice_value)}
+
+def _provider_model_card_html(
+    provider: ProviderCatalogEntry,
+    state: dict[str, str],
+    csrf_token: str,
+    discovered: DiscoverySnapshot | None,
+    *,
+    is_active: bool,
+) -> str:
+    """Model/voice card for one provider. Inputs are associated with the
+    outer save form via ``form=save-form`` because this card also owns the
+    standalone refresh-models form."""
+    configured = _provider_is_configured(state, provider)
+    status_badge = _provider_status_badge_html(
+        configured=configured,
+        is_active=is_active,
+    )
+    model_value = _value_for(
+        state, provider.model_env, default_model_id(provider.id),
+    )
+    voice_value = _value_for(
+        state, provider.voice_env, default_voice_id(provider.id),
+    )
+    refresh_disabled = "" if configured else " disabled"
+    refresh_hint = (
+        "Fetches this provider's available models."
+        if configured else
+        f"Add {provider.key_env} first."
+    )
+    extras = _provider_extras_html(provider, state)
+    return f"""
+    <div class="info-card provider-model-card">
+      <div class="provider-card__head">
+        <div>
+          <h3 class="provider-card__title">{html.escape(provider.label)}</h3>
+          <p class="eyebrow">{html.escape(provider.vendor)}</p>
+        </div>
+        {status_badge}
+      </div>
+
+      <div class="provider-settings-grid">
+        <div class="field">
+          <label for="{provider.id}_model">Model</label>
+          {_model_select_html(provider, model_value, discovered)}
+          {_model_discovery_status_html(provider, discovered)}
+        </div>
+        <form method="post" action="refresh-models" class="model-refresh-form">
+          {csrf_field_html(csrf_token)}
+          <input type="hidden" name="provider" value="{provider.id}">
+          <div class="form-actions">
+            <button class="btn btn--ghost" type="submit"{refresh_disabled}>Refresh available models</button>
+            <span class="form-hint">{html.escape(refresh_hint)}</span>
+          </div>
+        </form>
+
+        <div class="field">
+          <label for="{provider.id}_voice">TTS voice</label>
+          {_voice_select_html(provider, voice_value)}
+        </div>
       </div>
 
       {extras}
-
-      {_pricing_section_html(provider, discovered, overrides, default_as_of, csrf_token)}
-
-      {clear_form}
     </div>"""
 
 
@@ -967,58 +998,89 @@ def _index_html(
     active_id = _active_provider_id(state)
     discovery = discovery or {}
     overrides = overrides or {}
-    cards = "".join(
-        _provider_card_html(
+    key_cards = "".join(
+        _provider_key_card_html(
             p,
             state,
             csrf_token,
-            discovery.get(p.id),
-            overrides,
-            default_as_of,
             is_active=(p.id == active_id),
         )
         for p in PROVIDERS
     )
+    model_cards = "".join(
+        _provider_model_card_html(
+            p,
+            state,
+            csrf_token,
+            discovery.get(p.id),
+            is_active=(p.id == active_id),
+        )
+        for p in PROVIDERS
+    )
+    pricing_cards = "".join(
+        _pricing_section_html(
+            p,
+            discovery.get(p.id),
+            overrides,
+            default_as_of,
+            csrf_token,
+        )
+        for p in PROVIDERS
+    )
     # Page structure note: HTML forbids nested forms, so the outer
-    # "save" form CANNOT enclose the per-card "Clear key" / "Refresh" /
-    # "Pricing" forms. Layout:
+    # "save" form CANNOT enclose key clear / model refresh / pricing forms.
+    # Layout:
+    #   key cards              ← key inputs use form="save-form"; clear-key
+    #                            forms stand alone beside them
     #   <form id="save-form">  ← active radios + csrf
-    #   </form>                ← form closes BEFORE the cards
-    #   {cards}                ← card inputs (key/model/voice/extras) use
-    #                            form="save-form" to associate with the
-    #                            outer form by ID. The per-card clear /
-    #                            refresh / pricing forms stand alone, each
-    #                            with their own csrf field.
+    #   </form>
+    #   model cards            ← model/voice/extras use form="save-form";
+    #                            refresh forms stand alone beside them
+    #   pricing sections       ← standalone pricing forms
     #   <button form="save-form">  ← the Save submit explicitly attaches
     body = f"""
 {canonical_header("Voice provider")}
 {pair_banner_html()}
 <main class="page">
   {canonical_banner(status_msg)}
-  <p class="form-hint">Configure the real-time voice backend for this speaker.
-  Paste an API key into any provider you want to enable, pick which one is
-  active, and save — the voice daemon picks up the change on its next restart
-  (about 5 seconds).</p>
+  <p class="form-hint">Manage the real-time voice backend. Save applies provider, model, voice, and key changes together.</p>
 
-  <form method="post" action="save" id="save-form">
-    {csrf_field_html(csrf_token)}
-    {_active_radio_html(state)}
-  </form>
+  <section class="section">
+    <h2 class="section__title">1. Enter API keys</h2>
+    <p class="form-hint">Add or replace provider keys. Keys stay on this speaker in <code>/var/lib/jasper-secrets/voice_keys.env</code>.</p>
+    <div class="provider-stack">
+      {key_cards}
+    </div>
+  </section>
+
+  <section class="section">
+    <h2 class="section__title">2. Select provider</h2>
+    <form method="post" action="save" id="save-form">
+      {csrf_field_html(csrf_token)}
+      {_active_radio_html(state)}
+    </form>
+  </section>
+
+  <section class="section">
+    <h2 class="section__title">3. Select model and voice</h2>
+    <p class="form-hint">Tune each configured provider here. The active provider is the one JTS uses.</p>
+    <div class="provider-stack">
+      {model_cards}
+    </div>
+  </section>
+
+  <div class="form-actions voice-savebar">
+    <button type="submit" form="save-form" class="btn btn--primary">Save and restart voice</button>
+    <button type="submit" form="save-form" formaction="save-test" class="btn btn--default">Save and Test</button>
+  </div>
 
   {_spend_cap_section_html(state, csrf_token)}
 
   <section class="section">
-    <h2 class="section__title">Provider keys</h2>
-    <p class="form-hint">Pasted keys are stored on this speaker only, written
-    to <code>/var/lib/jasper-secrets/voice_keys.env</code> at mode 0640. They
-    are never sent anywhere except the relevant provider's API.</p>
-    {cards}
+    <h2 class="section__title">Advanced pricing</h2>
+    <p class="form-hint">Used only for spend estimates and the daily cap.</p>
+    {pricing_cards}
   </section>
-
-  <div class="form-actions">
-    <button type="submit" form="save-form" class="btn btn--primary">Save and restart voice</button>
-    <button type="submit" form="save-form" formaction="save-test" class="btn btn--default">Save and Test</button>
-  </div>
 
   {_pricing_refresh_html(discovery, csrf_token)}
 

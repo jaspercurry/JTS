@@ -3,7 +3,7 @@
 > **Status: Phases 1, 2 & 3 implemented (2026-05-30).** Pricing is
 > model-ID-keyed with dated defaults in `jasper/data/model_pricing.json`;
 > the `/voice` page has a per-model "Pricing rates" editor writing
-> `/var/lib/jasper/pricing.json`, plus a "Refresh all rates from a chatbot"
+> `/var/lib/jasper/pricing.json`, plus a "Refresh pricing rates"
 > section that generates a research prompt (auto-filled with the speaker's
 > exact current models) and imports the JSON the chatbot returns. The
 > broader spend/usage accounting truth (how cost is computed, the
@@ -277,8 +277,8 @@ not in scope.
 
 ## Phase 3 — research-prompt generator (IMPLEMENTED)
 
-A "Refresh all rates from a chatbot" section on `/voice` (rendered by
-`_pricing_refresh_html`, after the provider cards):
+A "Refresh pricing rates" section on `/voice` (rendered by
+`_pricing_refresh_html`, after Advanced pricing):
 
 1. **Copy a research prompt** — `_pricing_research_prompt(discovery)`
    builds a copyable block pre-filled with the **exact current model IDs**

@@ -13,7 +13,7 @@ import { sparkline, cpuBars } from "./charts.js";
 import {
   fmtBytes, fmtAgo, fmtEpochAgo, fmtDur, fmtMsAge, fmtRatePerHour,
   baseName, capacityPercent, fanStepInfo, FAN_STEPS,
-  toneForMemoryHeadroom, loadPressureInfo, cpuUsageInfo, temperatureInfo,
+  toneForMemoryHeadroom, loadPressureInfo, cpuUsageInfo, temperatureDisplay,
   toneForDiskUse,
 } from "./format.js";
 import { statCard, defList, badge } from "./components.js";
@@ -95,24 +95,20 @@ export function vitalsCards(cur, hist, cores) {
   }));
 
   // Temperature
-  const temp = cur.temp_c || 0;
-  const tempF = temp * 9 / 5 + 32;
   const throttledNow = cur.throttled_now || 0;
   const throttledHist = cur.throttled_history || 0;
-  const tempTone = temperatureInfo(temp, throttledNow, throttledHist).tone;
-  let tempSub = temp.toFixed(1) + "°C";
-  if (throttledNow) tempSub += " · throttling now";
-  else if (throttledHist) tempSub += " · throttled since boot";
+  const tempDisplay = temperatureDisplay(cur.temp_c, throttledNow, throttledHist);
   const tempHist = hist.temp_c || [];
-  let tempOpts = { tone: tempTone, fill: true };
-  if (tempHist.length) {
+  let tempOpts = { tone: tempDisplay.tone, fill: true };
+  if (tempDisplay.chartable && tempHist.length) {
     const tMin = Math.min(...tempHist), tMax = Math.max(...tempHist);
     const pad = Math.max(2, (tMax - tMin) * 0.15);
     tempOpts = { ...tempOpts, min: Math.max(0, tMin - pad), max: tMax + pad };
   }
   cards.push(statCard({
-    label: "Temperature", value: tempF.toFixed(0) + "°F", sub: tempSub,
-    tone: tempTone, chart: sparkline(tempHist, tempOpts),
+    label: "Temperature", value: tempDisplay.value, sub: tempDisplay.sub,
+    tone: tempDisplay.tone,
+    chart: tempDisplay.chartable ? sparkline(tempHist, tempOpts) : null,
   }));
 
   // Fan — only on hardware with a pwm-fan device.
