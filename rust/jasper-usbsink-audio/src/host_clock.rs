@@ -260,6 +260,23 @@ pub struct HostClockConfig {
 }
 
 impl HostClockConfig {
+    /// A hard-disabled config with default tunables — the standby-mode host
+    /// clock (C5). In standby the audio loop that feeds the DLL never runs, so
+    /// there is no fill source; the feature is forced off regardless of env
+    /// (fan-in's lane resampler owns all rate matching). The startup + exit
+    /// pitch neutralize still run against this config (both are unconditional in
+    /// the publisher and never leave the host slaved), so a crashed predecessor
+    /// is still healed. Never fails (no env parse).
+    pub fn disabled(period_frames: u32) -> Self {
+        Self {
+            enabled: false,
+            target_fill_frames: 384.0,
+            probe_ppm: 300.0,
+            probe_step_secs: 6,
+            period_frames,
+        }
+    }
+
     /// Parse + validate. `enabled` gates the feature entirely; a non-empty
     /// value other than the literal `enabled` (case-insensitive) is a warned
     /// no-op that stays disabled (mirrors `JASPER_USBSINK_PREEMPT`'s literal
