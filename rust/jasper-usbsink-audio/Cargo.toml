@@ -15,6 +15,12 @@ rust-version = "1.75"
 # the usbsink loopback lane.
 alsa = { version = "0.11", optional = true }
 anyhow = "1"
+# Pure, allocation-free, dependency-free clock-tracking DLL (a PipeWire spa_dll
+# port). Non-optional — it compiles under `--no-default-features` (no ALSA), so
+# the host-clock ladder/servo logic and its tests build on a macOS host. The
+# outer pitch loop composes `jasper_clock::Dll` directly, exactly as
+# jasper-outputd / jasper-resampler already do.
+jasper-clock = { path = "../jasper-clock" }
 libc = "0.2"
 log = "0.4"
 env_logger = "0.11"
