@@ -44,7 +44,7 @@
 //! | 12 | channels | u32 | 2 |
 //! | 16 | sample_format | u32 | 1 = S16LE ([`SAMPLE_FORMAT_S16LE`]). 2 = S32LE reserved. |
 //! | 20 | period_frames | u32 | frames per slot |
-//! | 24 | n_slots | u32 | 2 (prototype), 3-4 allowed |
+//! | 24 | n_slots | u32 | 2 (min ping-pong)..=16 ([`MAX_N_SLOTS`]); 16 is the validated camilla geometry |
 //! | 28 | _pad | u32 | zero |
 //! | 32 | writer_epoch | atomic u64 | ++ (Release) per writer attach; reader counts `epoch_resets` on change |
 //! | 40 | write_seq | atomic u64 | total slots PUBLISHED, monotonic across epochs for the file's lifetime |
