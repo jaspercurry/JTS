@@ -180,13 +180,23 @@ def test_execstoppost_resets_pitch_to_neutral():
         f"in line: {line!r}"
     )
 
-    # Card name matches JASPER_USBSINK_MIXER_CARD's documented default
-    # (UAC2Gadget, NO underscore — see the ALSA two-names note in
-    # .env.example). An operator overriding that card also overrides this
-    # unit, per the comment above the line.
-    assert "-c UAC2Gadget" in line, (
-        f"ExecStopPost pitch reset must target the -c UAC2Gadget card (the "
-        f"JASPER_USBSINK_MIXER_CARD default); got: {line!r}"
+    # Card is selected by expanding ${JASPER_USBSINK_MIXER_CARD} rather than a
+    # hardcoded literal, so an operator overriding that card in an
+    # EnvironmentFile also redirects this belt-and-braces neutralize (review
+    # N3 — no hardcoded card drift between the daemon and the stop line).
+    assert "-c ${JASPER_USBSINK_MIXER_CARD}" in line, (
+        f"ExecStopPost pitch reset must target -c ${{JASPER_USBSINK_MIXER_CARD}} "
+        f"(systemd-expanded), not a hardcoded card literal; got: {line!r}"
+    )
+    # And the unit must declare a packaged default for that variable, or the
+    # expansion would resolve to empty and amixer would fail (harmless with the
+    # `-` prefix, but then the neutralize silently never runs). Default is
+    # UAC2Gadget (NO underscore — see the ALSA two-names note in .env.example).
+    assert 'Environment="JASPER_USBSINK_MIXER_CARD=UAC2Gadget"' in body, (
+        "jasper-usbsink.service must declare a packaged "
+        'Environment="JASPER_USBSINK_MIXER_CARD=UAC2Gadget" default so the '
+        "ExecStopPost ${JASPER_USBSINK_MIXER_CARD} expansion resolves to the "
+        "correct card when no operator override is present."
     )
 
     # amixer invoked by absolute path — ExecStopPost= runs outside a login
