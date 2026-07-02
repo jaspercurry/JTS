@@ -62,7 +62,7 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 
 use crate::lane_resampler::LaneResamplerObservability;
-use crate::mixer::{CouplingObservability, Mixer, OUTPUT_DELAY_UNAVAILABLE};
+use crate::mixer::{CouplingObservability, Mixer, TrimControl, OUTPUT_DELAY_UNAVAILABLE};
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
 
@@ -74,6 +74,20 @@ const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// Poll interval for the accept loop, used to honor shutdown without
 /// blocking indefinitely in `accept()`.
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Bound on how long a `TRIM` command waits for the mixer work loop to consume
+/// the armed `pending` flag and publish the dropped-frame delta. The work loop
+/// clears the flag at its next period boundary (~2.7–5.3 ms per period at
+/// 128–256 frames, 48 kHz), so 200 ms is dozens of periods of slack — enough to
+/// ride out a scheduling stall — while staying well under the connection read
+/// timeout (2 s) so a stuck reply can never pin the server thread. On timeout
+/// the reply is an honest `ERR` naming how much was dropped so far.
+const TRIM_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Poll granularity while waiting for the work loop to service a `TRIM`. Short
+/// enough to return promptly once the flag clears (a trim usually completes in
+/// one period), long enough that the poll loop is not a busy-spin.
+const TRIM_WAIT_POLL: Duration = Duration::from_millis(1);
 
 pub struct StateServer {
     /// Process start instant — for uptime in the snapshot.
@@ -122,6 +136,10 @@ pub struct InputSnapshotSource {
     /// configured clock-crossing lane when the DEFAULT-OFF input resampler is
     /// armed; `None` (and absent from STATUS) for every lane otherwise.
     pub resampler: Option<LaneResamplerObservability>,
+    /// Per-lane TRIM control + counters, shared with the mixer work thread. The
+    /// `TRIM` command sets `pending` here; the work loop performs the drain and
+    /// bumps `trims` / `trimmed_frames`, which STATUS surfaces.
+    pub trim: Arc<TrimControl>,
 }
 
 pub struct StateServerConfig {
@@ -158,6 +176,7 @@ impl StateServer {
                 catchup_resync_frames: Arc::clone(&inp.catchup_resync_frames),
                 catchup_events: Arc::clone(&inp.catchup_events),
                 resampler: inp.resampler_observability(),
+                trim: inp.trim_control(),
             })
             .collect();
         Self {
@@ -266,6 +285,11 @@ impl StateServer {
                 let label = cmd.trim_start_matches("SELECT ").trim();
                 self.select_input_json(label)
             }
+            "TRIM" => self.trim_command(None),
+            cmd if cmd.starts_with("TRIM ") => {
+                let label = cmd.trim_start_matches("TRIM ").trim();
+                self.trim_command(Some(label))
+            }
             other => format!(
                 r#"{{"error":"unknown command","received":"{}"}}"#,
                 escape_json(other),
@@ -302,6 +326,102 @@ impl StateServer {
                 escape_json(label),
             )
         }
+    }
+
+    /// Handle a `TRIM` / `TRIM <label>` control command.
+    ///
+    /// `TRIM` (label `None`) requests a trim on EVERY lane; `TRIM <label>`
+    /// targets one. Because the state-server thread cannot touch the `!Sync`
+    /// capture `PCM` or the mixer-owned `LaneResampler` (both live on the mixer
+    /// work thread), this sets each target lane's `pending` flag with a
+    /// `Release` store and then briefly polls the lane's `trimmed_frames`
+    /// counter for the work loop to consume the flag and publish the delta —
+    /// reporting the frames ACTUALLY dropped from the resampler ring, not just
+    /// "the request was queued." Mirrors the SELECT/AUTO/NONE split (control
+    /// sets a shared atomic; the work loop does the state-owning work).
+    ///
+    /// Reply is a plain-text line: `OK trimmed=<frames_dropped>` (summed across
+    /// targeted lanes) or `ERR <reason>`. Distinct from SELECT's JSON snapshot
+    /// because a trim is a fire-and-report action, not a state query — the
+    /// operator wants the one number back on the socket immediately. A lane
+    /// with no armed resampler (the reservoir lives only in the resampler ring)
+    /// clears its flag and reports 0 dropped — a documented no-op, not an error.
+    fn trim_command(&self, label: Option<&str>) -> String {
+        // Resolve the target lane set. An empty explicit label is an error;
+        // `None` (bare `TRIM`) means all lanes.
+        let targets: Vec<&InputSnapshotSource> = match label {
+            Some("") => return "ERR missing input label".to_string(),
+            Some(l) => match self.inputs.iter().find(|inp| inp.label == l) {
+                Some(inp) => vec![inp],
+                None => return format!("ERR unknown input label {}", l),
+            },
+            None => self.inputs.iter().collect(),
+        };
+
+        // Snapshot each target's cumulative trimmed_frames, arm the pending
+        // flag, then wait (bounded) for the work loop to advance the counter.
+        // The delta across all targets is the frames actually dropped.
+        let before: Vec<u64> = targets
+            .iter()
+            .map(|inp| {
+                let prev = inp.trim.trimmed_frames.load(Ordering::Relaxed);
+                // Release so the work loop's Acquire swap observes the request.
+                inp.trim.pending.store(true, Ordering::Release);
+                prev
+            })
+            .collect();
+
+        // Poll for the work loop to consume every armed flag. A trim that drops
+        // 0 frames (lane already at target, or unarmed) still clears its pending
+        // flag, so we wait on the flags clearing, not on the counter moving — a
+        // legitimate 0-frame trim must not spin out the whole timeout.
+        let deadline = Instant::now() + TRIM_WAIT_TIMEOUT;
+        loop {
+            let all_consumed = targets
+                .iter()
+                .all(|inp| !inp.trim.pending.load(Ordering::Acquire));
+            if all_consumed || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(TRIM_WAIT_POLL);
+        }
+
+        let dropped: u64 = targets
+            .iter()
+            .zip(&before)
+            .map(|(inp, &prev)| {
+                inp.trim
+                    .trimmed_frames
+                    .load(Ordering::Relaxed)
+                    .saturating_sub(prev)
+            })
+            .sum();
+
+        // If a flag never cleared, the work loop didn't run within the window
+        // (daemon paused / no periods). Report honestly rather than claim 0.
+        let stuck = targets
+            .iter()
+            .any(|inp| inp.trim.pending.load(Ordering::Acquire));
+        if stuck {
+            info!(
+                "event=fanin.trim.request result=timeout label={} dropped_so_far={}",
+                label.unwrap_or("all"),
+                dropped,
+            );
+            return format!(
+                "ERR trim not serviced within {}ms (mixer loop idle?) dropped_so_far={}",
+                TRIM_WAIT_TIMEOUT.as_millis(),
+                dropped,
+            );
+        }
+
+        info!(
+            "event=fanin.trim.request result=ok label={} lanes={} dropped_frames={}",
+            label.unwrap_or("all"),
+            targets.len(),
+            dropped,
+        );
+        format!("OK trimmed={}", dropped)
     }
 
     /// Build the JSON snapshot. Reads each atomic with Relaxed
@@ -399,6 +519,30 @@ impl StateServer {
                 "catchup_events",
                 input.catchup_events.load(Ordering::Relaxed),
             );
+            buf.push(',');
+            // TRIM counters (the standing-fill one-shot drop). `trims` is how
+            // many TRIMs actually dropped ≥1 frame on this lane; `trimmed_frames`
+            // is the cumulative total dropped from the resampler ring; `pending`
+            // shows an armed but not-yet-serviced request. All 0/false on a lane
+            // never trimmed (including every unarmed lane), so the shape is
+            // stable for the common case. Always present (unlike the optional
+            // resampler block) — a flat, greppable pair like the catch-up
+            // counters above.
+            buf.push_str(r#""trim":{"#);
+            push_kv_u64(&mut buf, "trims", input.trim.trims.load(Ordering::Relaxed));
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "trimmed_frames",
+                input.trim.trimmed_frames.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_bool(
+                &mut buf,
+                "pending",
+                input.trim.pending.load(Ordering::Relaxed),
+            );
+            buf.push('}');
             // OPTIONAL per-input adaptive resampler (DEFAULT-OFF). Rendered as a
             // nested object only when armed on this lane — absent for every lane
             // when the feature is off, so the default STATUS shape is unchanged.
@@ -807,6 +951,8 @@ mod tests {
                     catchup_events: Arc::new(AtomicU64::new(0)),
                     // No resampler armed on this lane (the default).
                     resampler: None,
+                    // Never-trimmed lane: all counters 0, no pending request.
+                    trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
                 },
                 InputSnapshotSource {
                     label: "airplay".to_string(),
@@ -833,6 +979,9 @@ mod tests {
                         fill_frames: Arc::new(AtomicU64::new(520)),
                         target_fill_frames: 512,
                     }),
+                    // A lane that HAS been trimmed (fixture): 3 trims, 4608 frames
+                    // dropped total, no request currently pending.
+                    trim: Arc::new(TrimControl::test_fixture(3, 4608, false)),
                 },
             ],
             output_pcm: "hw:Loopback,0,7".to_string(),
@@ -1218,5 +1367,137 @@ mod tests {
         assert_eq!(escape_json("plain"), "plain");
         assert_eq!(escape_json(r#"a"b"#), r#"a\"b"#);
         assert_eq!(escape_json("a\nb"), "a\\nb");
+    }
+
+    // ---- TRIM STATUS shape ------------------------------------------------
+
+    #[test]
+    fn snapshot_json_per_input_trim_block() {
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        // Every lane renders a flat trim block (like the catch-up counters).
+        assert_eq!(
+            j.matches(r#""trim":{"#).count(),
+            2,
+            "each lane must render exactly one trim block: {j}"
+        );
+        // spotify fixture: never trimmed.
+        assert!(
+            j.contains(r#""trim":{"trims":0,"trimmed_frames":0,"pending":false}"#),
+            "spotify trim block (never trimmed): {j}"
+        );
+        // airplay fixture: 3 trims, 4608 frames dropped.
+        assert!(
+            j.contains(r#""trim":{"trims":3,"trimmed_frames":4608,"pending":false}"#),
+            "airplay trim block (fixture): {j}"
+        );
+    }
+
+    // ---- TRIM command parse + dispatch ------------------------------------
+
+    #[test]
+    fn trim_command_rejects_empty_label() {
+        let server = make_test_server();
+        let resp = server.trim_command(Some(""));
+        assert_eq!(resp, "ERR missing input label");
+    }
+
+    #[test]
+    fn trim_command_rejects_unknown_label() {
+        let server = make_test_server();
+        let resp = server.trim_command(Some("bluetooth"));
+        assert_eq!(resp, "ERR unknown input label bluetooth");
+        // No flag armed on any lane.
+        for inp in &server.inputs {
+            assert!(!inp.trim.pending.load(Ordering::Acquire));
+        }
+    }
+
+    #[test]
+    fn trim_command_labeled_arms_only_the_target_and_reports_delta() {
+        // Simulate the mixer work loop from another thread: once the target's
+        // pending flag is armed, clear it and bump its trimmed_frames counter.
+        let server = std::sync::Arc::new(make_test_server());
+        let worker = std::sync::Arc::clone(&server);
+        std::thread::spawn(move || {
+            // airplay is index 1.
+            let airplay = &worker.inputs[1];
+            for _ in 0..2000 {
+                if airplay.trim.pending.load(Ordering::Acquire) {
+                    airplay
+                        .trim
+                        .trimmed_frames
+                        .fetch_add(1024, Ordering::Relaxed);
+                    airplay.trim.pending.store(false, Ordering::Release);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+        });
+        let resp = server.trim_command(Some("airplay"));
+        assert_eq!(resp, "OK trimmed=1024", "got: {resp}");
+        // spotify (index 0) was never armed.
+        assert!(!server.inputs[0].trim.pending.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn trim_command_all_arms_every_lane_and_sums_delta() {
+        let server = std::sync::Arc::new(make_test_server());
+        let worker = std::sync::Arc::clone(&server);
+        std::thread::spawn(move || {
+            let mut done = [false; 2];
+            for _ in 0..4000 {
+                for (i, inp) in worker.inputs.iter().enumerate() {
+                    if !done[i] && inp.trim.pending.load(Ordering::Acquire) {
+                        // Distinct amounts per lane so the sum is unambiguous.
+                        inp.trim
+                            .trimmed_frames
+                            .fetch_add(if i == 0 { 512 } else { 256 }, Ordering::Relaxed);
+                        inp.trim.pending.store(false, Ordering::Release);
+                        done[i] = true;
+                    }
+                }
+                if done.iter().all(|d| *d) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+        });
+        let resp = server.trim_command(None);
+        assert_eq!(resp, "OK trimmed=768", "got: {resp}");
+    }
+
+    #[test]
+    fn trim_command_times_out_when_loop_never_services() {
+        // No work loop consumes the flag: bounded wait elapses, honest ERR.
+        let server = make_test_server();
+        let resp = server.trim_command(Some("spotify"));
+        assert!(
+            resp.starts_with("ERR trim not serviced within"),
+            "got: {resp}"
+        );
+        assert!(resp.contains("dropped_so_far=0"), "got: {resp}");
+    }
+
+    #[test]
+    fn trim_command_via_handle_connection_replies_plaintext() {
+        // Exercise the full socket dispatch for `TRIM <label>`: the reply is the
+        // plain-text OK/ERR line, not a JSON snapshot.
+        use std::io::{Read, Write};
+        use std::net::Shutdown;
+        use std::os::unix::net::UnixStream;
+
+        let server = make_test_server();
+        let (mut client, server_stream) = UnixStream::pair().unwrap();
+        client.write_all(b"TRIM spotify\n").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        // No work loop here, so spotify's flag never clears -> timeout ERR.
+        server.handle_connection(server_stream).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(
+            response.starts_with("ERR trim not serviced within"),
+            "got: {response}"
+        );
     }
 }

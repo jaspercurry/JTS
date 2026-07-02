@@ -262,6 +262,33 @@ impl AudioRing {
         self.read_frame = self.write_frame;
     }
 
+    /// Drop the OLDEST buffered frames so that at most `target_fill_frames`
+    /// remain — a keep-NEWEST trim. Advances `read_frame` toward `write_frame`
+    /// (never touches `write_frame`, so the newest audio is preserved) and
+    /// returns the number of frames dropped.
+    ///
+    /// This is the standing-fill trim primitive: when a streaming consumer's
+    /// buffer has accumulated more latency than its held target, this discards
+    /// the excess oldest history in one step. It is a no-op (returns 0) when the
+    /// ring already holds `<= target_fill_frames`.
+    ///
+    /// Unlike [`AudioRing::clear`], this keeps a live window: the caller's
+    /// fractional read cursor, which lives in the same monotonic frame space,
+    /// must be re-seated past the new `read_frame` by the caller (the ring
+    /// cannot know the cursor). The single discontinuity is at the dropped
+    /// boundary; the retained newest frames are untouched, so a cursor seated
+    /// into them keeps its recent interpolation history.
+    pub fn trim_to(&mut self, target_fill_frames: usize) -> u64 {
+        let target = target_fill_frames as u64;
+        let fill = self.write_frame - self.read_frame;
+        if fill <= target {
+            return 0;
+        }
+        let drop = fill - target;
+        self.read_frame += drop;
+        drop
+    }
+
     /// Advance `read_frame` up to (but not past) `frame`, freeing history the
     /// cursor no longer needs. A non-positive or already-consumed `frame` is a
     /// no-op; it never advances past `write_frame`.
@@ -1092,6 +1119,83 @@ mod tests {
         assert_eq!(AudioRing::new(0, 2).unwrap_err(), RingError::ZeroCapacity);
         assert_eq!(AudioRing::new(16, 0).unwrap_err(), RingError::ZeroChannels);
         assert!(AudioRing::new(16, 2).is_ok());
+    }
+
+    /// `trim_to` drops the OLDEST frames down to the target fill and keeps the
+    /// NEWEST — the standing-fill trim primitive. The retained window is the
+    /// most-recently-written frames; the dropped count is `fill - target`.
+    #[test]
+    fn trim_to_keeps_newest_frames_down_to_target() {
+        let mut ring = AudioRing::new(4096, 2).unwrap();
+        // Write 1000 distinct frames: left channel = frame index, so we can
+        // prove WHICH frames survive.
+        let mut samples = Vec::with_capacity(2000);
+        for n in 0..1000i16 {
+            samples.push(n); // L = frame index
+            samples.push(-n); // R
+        }
+        ring.push_interleaved(&samples);
+        assert_eq!(ring.fill_frames(), 1000);
+        let write_before = ring.write_frame();
+
+        // Trim down to 256: drops the oldest 744.
+        let dropped = ring.trim_to(256);
+        assert_eq!(dropped, 744);
+        assert_eq!(ring.fill_frames(), 256);
+        // write_frame is untouched — the newest frame is preserved.
+        assert_eq!(ring.write_frame(), write_before);
+        // read_frame advanced to keep exactly the newest 256 frames: frames
+        // [744, 1000). Sample the oldest surviving and newest frames by index.
+        let oldest_kept = ring.read_frame();
+        assert_eq!(oldest_kept, 744);
+        assert_eq!(ring.sample(744, 0), 744, "oldest kept frame is index 744");
+        assert_eq!(ring.sample(999, 0), 999, "newest frame preserved");
+        // Dropped frames read as 0 (outside the live window).
+        assert_eq!(ring.sample(743, 0), 0, "dropped frame is gone");
+    }
+
+    #[test]
+    fn trim_to_is_noop_when_at_or_below_target() {
+        let mut ring = AudioRing::new(1024, 2).unwrap();
+        let block: Vec<i16> = (0..100).flat_map(|n| [n as i16, n as i16]).collect();
+        ring.push_interleaved(&block); // 100 frames
+        assert_eq!(ring.fill_frames(), 100);
+        // Target above current fill: nothing dropped.
+        assert_eq!(ring.trim_to(256), 0);
+        assert_eq!(ring.fill_frames(), 100);
+        // Target exactly equal: still nothing dropped.
+        assert_eq!(ring.trim_to(100), 0);
+        assert_eq!(ring.fill_frames(), 100);
+        // Target 0 drops everything.
+        assert_eq!(ring.trim_to(0), 100);
+        assert_eq!(ring.fill_frames(), 0);
+    }
+
+    /// After a trim, the streaming resampler's read cursor (which lives in the
+    /// SAME monotonic frame space) can be re-seated past the new `read_frame`
+    /// and interpolation still reads live samples — proving the retained window
+    /// is intact and usable, not just accounted for.
+    #[test]
+    fn trim_to_leaves_a_usable_window_for_the_cursor() {
+        let table = SincTable::new();
+        let mut ring = AudioRing::new(8192, 2).unwrap();
+        let signal = stereo_signal(4096);
+        ring.push_interleaved(&signal);
+        let dropped = ring.trim_to(512);
+        assert_eq!(dropped, 4096 - 512);
+        // Seat a cursor RADIUS_FRAMES into the retained window and interpolate:
+        // must read real (non-zero-padded) audio, i.e. the window is live.
+        let pos = ring.read_frame() as f64 + RADIUS_FRAMES as f64 + 1.0;
+        let sample = table.interpolate(&ring, pos, 0);
+        // Compare against the untrimmed reference at the same absolute frame:
+        // trimming the oldest frames must not perturb the retained samples.
+        let mut ref_ring = AudioRing::new(8192, 2).unwrap();
+        ref_ring.push_interleaved(&signal);
+        let ref_sample = table.interpolate(&ref_ring, pos, 0);
+        assert_eq!(
+            sample, ref_sample,
+            "retained-window interpolation must match the untrimmed ring at the same frame"
+        );
     }
 
     /// The committed cross-language golden fixture. A short deterministic stereo

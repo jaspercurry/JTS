@@ -406,6 +406,72 @@ impl LaneResampler {
         self.period_frames
     }
 
+    /// Drop the lane's standing latency down to its held target by discarding
+    /// the OLDEST buffered input, WITHOUT losing lock or resetting the
+    /// controller. Returns the number of input frames dropped (0 when the lane
+    /// is unlocked or already at/below its held target).
+    ///
+    /// ## Why this exists (the standing-fill trim, v2)
+    ///
+    /// The lane's live latency is the CURSOR-RELATIVE fill —
+    /// `write_frame - next_input_frame`, the same value [`render_period`]
+    /// disciplines toward [`hold_fill_frames`]. On hardware the USB lane was
+    /// observed sitting at ~1919 frames against a 512-held target with lock
+    /// churn: each idle/xrun/underfill `reset()` re-primed the DLL and the fill
+    /// crept back up, deepening with every relock. A `reset()`-based trim is
+    /// therefore the WRONG tool — it is the very lock-loss that produced the
+    /// churn. This trim drops the excess in place: it advances the fractional
+    /// read cursor forward over the oldest buffered frames (skipping past the
+    /// stale head-start), then frees the ring history the cursor no longer
+    /// needs. The only discontinuity is the one skip at the drop boundary — a
+    /// single glitch, not a lock loss. `locked`, the `RateController` loop
+    /// state, and the retained recent history all survive.
+    ///
+    /// ## Keep-newest, lock-preserving mechanics
+    ///
+    /// - No-op unless locked and `fill > hold_fill_frames()` (nothing to trim).
+    /// - Advance `next_input_frame` forward by the excess so the post-trim
+    ///   cursor-relative fill equals `hold_fill_frames()` — the newest frames
+    ///   (those ahead of the new cursor) are preserved; the oldest are skipped.
+    /// - Re-seat the cursor no earlier than the ring's live read boundary (guard
+    ///   against a cursor that had lagged `read_frame`), then `drop_before` frees
+    ///   the history behind it, keeping the kernel's left taps.
+    /// - `locked`, `controller`, `real_periods_since_lock`, and the startup ramp
+    ///   are untouched — the next `render_period` continues from the new cursor
+    ///   with the same loop state, so the DLL simply sees the fill snap to target
+    ///   (an error step it already handles) rather than a re-acquisition.
+    pub fn trim_ring(&mut self) -> u64 {
+        if !self.locked {
+            return 0;
+        }
+        // A reader-overrun could have advanced read_frame past the cursor; the
+        // same guard render_period uses keeps the cursor at/after the oldest
+        // live frame so the fill below is never negative.
+        let read = self.ring.read_frame() as f64;
+        if self.next_input_frame < read {
+            self.next_input_frame = read;
+        }
+        let write = self.ring.write_frame() as f64;
+        let fill = write - self.next_input_frame;
+        let target = self.hold_fill_frames() as f64;
+        if fill <= target {
+            return 0;
+        }
+        let drop = fill - target;
+        // Skip the cursor forward over the oldest `drop` frames — keeping the
+        // newest `target` frames ahead of it. One discontinuity at this skip;
+        // lock and loop state are preserved.
+        self.next_input_frame += drop;
+        // Free ring history behind the new cursor, keeping the kernel's left
+        // taps (identical bookkeeping to the end of render_period).
+        let keep_from = self.next_input_frame.floor() as i64 - RADIUS_FRAMES - 1;
+        self.ring.drop_before(keep_from);
+        // Republish the (now-at-target) fill so STATUS reflects the drop
+        // immediately, before the next render period runs.
+        self.publish_fill(target.max(0.0) as u64);
+        drop.round() as u64
+    }
+
     /// Discard buffered input and re-prime on the next render (a hard
     /// discontinuity: a host pause/seek that steps the fill). The mixer calls
     /// this when the lane goes idle so a fresh play starts clean.
@@ -740,6 +806,163 @@ mod tests {
             r.overrun_frames.load(Ordering::Relaxed) > 0,
             "a ring overflow must be counted"
         );
+    }
+
+    // ---- trim_ring: keep-newest, lock-preserving standing-fill trim -------
+
+    /// Drive the lane to a DEEP cursor-relative fill (a standing head-start well
+    /// above the held target), then `trim_ring` and assert: lock survives, no
+    /// unlock/relock happened, the published fill snapped to the held target,
+    /// and the newest audio is what remains (the cursor kept the recent frames).
+    #[test]
+    fn trim_ring_drops_to_target_without_losing_lock() {
+        let mut r = build();
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        // Lock on a normal prefill.
+        r.push_input(&tone(deep_prefill() + 64));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize);
+        let locks_before = r.lock_count.load(Ordering::Relaxed);
+        let unlocks_before = r.unlock_count.load(Ordering::Relaxed);
+        assert_eq!(locks_before, 1);
+        assert_eq!(unlocks_before, 0);
+
+        // Slam a big burst in so the cursor-relative fill sits far above the
+        // held target (simulates the on-device 1919-vs-512 standing head-start).
+        r.push_input(&tone(4000));
+        let fill_before = r.ring.write_frame() as f64 - r.next_input_frame;
+        let held = r.hold_fill_frames() as f64;
+        assert!(
+            fill_before > held + PERIOD as f64,
+            "precondition: fill {fill_before} must be well above held target {held}"
+        );
+        let write_before = r.ring.write_frame();
+
+        let dropped = r.trim_ring();
+
+        // Frames were dropped, and the post-trim cursor-relative fill is exactly
+        // the held target — the newest `target` frames are kept.
+        assert!(dropped > 0, "a fill above target must drop frames");
+        let fill_after = r.ring.write_frame() as f64 - r.next_input_frame;
+        assert!(
+            (fill_after - held).abs() < 1.0,
+            "post-trim cursor fill {fill_after} must equal held target {held}"
+        );
+        assert_eq!(
+            dropped as f64,
+            (fill_before - held).round(),
+            "dropped count must be the excess above target"
+        );
+        // write_frame is untouched: the newest audio is preserved, only the
+        // oldest head-start was skipped.
+        assert_eq!(r.ring.write_frame(), write_before);
+        // Lock state and loop are intact — no reset, no unlock, no relock.
+        assert!(r.locked, "trim must NOT drop lock");
+        assert_eq!(
+            r.lock_count.load(Ordering::Relaxed),
+            locks_before,
+            "trim must not re-lock (lock_count unchanged)"
+        );
+        assert_eq!(
+            r.unlock_count.load(Ordering::Relaxed),
+            unlocks_before,
+            "trim must not unlock (unlock_count unchanged)"
+        );
+        // Published fill reflects the drop immediately.
+        assert_eq!(
+            r.fill_frames.load(Ordering::Relaxed),
+            held as u64,
+            "STATUS fill must snap to the held target after trim"
+        );
+    }
+
+    /// After a trim, the lane keeps rendering DAC-paced real audio from the
+    /// retained newest window — no silence gap, no relock. This is the
+    /// "single glitch at the drop boundary, not a lock loss" contract.
+    #[test]
+    fn trim_ring_keeps_rendering_real_audio_after_the_drop() {
+        let mut r = build();
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        r.push_input(&tone(deep_prefill() + 64));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize);
+        r.push_input(&tone(4000));
+        assert!(r.trim_ring() > 0);
+        // Feed on-rate and keep rendering: every period must be a full real
+        // period (never silence), proving the lane stayed locked through the
+        // trim and reads the retained window.
+        let block = tone(PERIOD as usize);
+        for i in 0..200 {
+            r.push_input(&block);
+            assert_eq!(
+                r.render_period(&mut out),
+                PERIOD as usize,
+                "post-trim render {i} must stay locked (no silence)"
+            );
+        }
+        assert_eq!(
+            r.unlock_count.load(Ordering::Relaxed),
+            0,
+            "no unlock across the trim + continued playback"
+        );
+        assert_eq!(
+            r.lock_count.load(Ordering::Relaxed),
+            1,
+            "locked exactly once"
+        );
+    }
+
+    /// `trim_ring` is a no-op when the lane is already at/below its held target
+    /// (an on-rate lane the DLL is holding) — nothing to drop, no state change.
+    #[test]
+    fn trim_ring_is_noop_at_or_below_target() {
+        let mut r = build();
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        // Lock and run on-rate so the fill holds near the target.
+        r.push_input(&tone(deep_prefill()));
+        let block = tone(PERIOD as usize);
+        for _ in 0..500 {
+            r.push_input(&block);
+            r.render_period(&mut out);
+        }
+        assert!(r.locked);
+        let fill_before = r.ring.write_frame() as f64 - r.next_input_frame;
+        let held = r.hold_fill_frames() as f64;
+        // On-rate lane holds at/near target; only trim if there is genuine
+        // excess. If the DLL happens to sit a hair above target, a trim of that
+        // tiny excess is still a no-op-ish; assert the strict boundary instead.
+        if fill_before <= held {
+            let cursor_before = r.next_input_frame;
+            assert_eq!(r.trim_ring(), 0, "at/below target must not drop");
+            assert_eq!(
+                r.next_input_frame, cursor_before,
+                "no-op trim must not move the cursor"
+            );
+        }
+        // Regardless, lock is preserved.
+        assert!(r.locked);
+        assert_eq!(r.unlock_count.load(Ordering::Relaxed), 0);
+    }
+
+    /// An UNLOCKED lane (priming / underfilled) has no standing fill to trim —
+    /// `trim_ring` returns 0 and touches nothing, so it can never perturb
+    /// acquisition.
+    #[test]
+    fn trim_ring_noop_while_unlocked() {
+        let mut r = build();
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        // Below the prefill threshold: still priming (unlocked).
+        r.push_input(&tone(TARGET / 2));
+        assert_eq!(r.render_period(&mut out), 0);
+        assert!(!r.locked);
+        let cursor_before = r.next_input_frame;
+        let fill_before = r.ring.fill_frames();
+        assert_eq!(r.trim_ring(), 0, "unlocked lane has nothing to trim");
+        assert_eq!(r.next_input_frame, cursor_before, "cursor untouched");
+        assert_eq!(
+            r.ring.fill_frames(),
+            fill_before,
+            "buffered input untouched"
+        );
+        assert_eq!(r.lock_count.load(Ordering::Relaxed), 0);
     }
 
     #[test]
