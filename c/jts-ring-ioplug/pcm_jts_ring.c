@@ -564,6 +564,15 @@ static size_t capture_refill_destage(jts_ring_pcm_t *p) {
         // gap arms its FIRST silence period immediately (no dead-air lag), then
         // paces subsequent ones from that point.
         p->last_silence_ns = 0;
+        // Discard any silence that was ARMED but not yet CONSUMED. The poll tick
+        // arms one period of pending silence when the writer is dead + the ring is
+        // empty; if the writer then publishes a real slot BEFORE that armed period
+        // is consumed, the arm is stale. Leaving it set would splice a spurious
+        // silence period into live audio the next time the ring momentarily drains
+        // between two paced real slots (real data wins here, so the pending frames
+        // would otherwise survive until an empty read fired the pending>=period
+        // branch below). Real data supersedes any pending silence — clear it.
+        p->pending_silence_frames = 0;
         return p->stage_frames;
     }
     // Empty real ring. If a silence period has been armed (writer dead, poll tick
@@ -637,14 +646,28 @@ static int jts_ring_capture_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pf
     // ARM SILENCE (the virtual writer), WALL-CLOCK PACED. If the writer is dead
     // and the real ring is empty, arm one period of pending silence — but only
     // once one period of REAL time (CLOCK_MONOTONIC) has elapsed since the last
-    // fabrication, so silence flows at ~48 kHz, exactly like a live writer
-    // publishing one slot per period. This pacing is load-bearing: without it an
-    // unpaced consumer (arecord, which re-polls immediately) drains fabricated
-    // silence at multiples of realtime, so a writer that returns mid-capture finds
-    // its whole audio window already consumed as silence and gets no live reader
-    // (drop_no_reader). Bounded to <= one period so avail never runs away. This is
-    // also what makes a COLD-START dead-writer ring (the `arecord` resolvability
-    // probe with no fanin) advance hw and terminate — just at realtime pace.
+    // fabrication, so silence flows at ~48 kHz. This pacing is load-bearing:
+    // without it an unpaced consumer (arecord, which re-polls immediately) drains
+    // fabricated silence at multiples of realtime, so a writer that returns
+    // mid-capture finds its whole audio window already consumed as silence and
+    // gets no live reader (drop_no_reader). Bounded to <= one period so avail
+    // never runs away. This is also what makes a COLD-START dead-writer ring (the
+    // `arecord` resolvability probe with no fanin) advance hw and terminate — just
+    // at realtime pace.
+    //
+    // PACING ERROR IS INTENTIONALLY IN THE SAFE (SLOW) DIRECTION. `now` is only
+    // sampled on a timerfd tick (arm_timer's period/4 cadence, plus scheduler
+    // jitter), and `last_silence_ns = now` re-anchors to that tick rather than to
+    // the ideal period boundary, so the observed silence rate runs ~14% SLOW of
+    // realtime (measured: 4 s of silence ~= 4.66 s wall). That is the SAFE
+    // direction: slightly-slow silence makes the consumer block marginally longer
+    // and NEVER over-drains, so a returning writer's real audio is never
+    // pre-consumed as silence (the fast direction would). It is warn-only
+    // (`stop_on_rate_change` is unset). The honest-prototype timerfd poll (Q8) is
+    // approximate on purpose; the FUTEX_WAIT productization removes the tick
+    // quantization and the drift with it. Do NOT "fix" this by advancing
+    // last_silence_ns past `now` to catch up — that pushes the error toward the
+    // UNSAFE fast direction and can re-open the pre-consumed-audio drop.
     if (p->opened) {
         int writer_live = jts_ring_reader_writer_is_live(&p->reader);
         uint64_t occ = jts_ring_reader_occupancy_slots(&p->reader);
@@ -762,10 +785,31 @@ static int jts_ring_set_hw_constraints(jts_ring_pcm_t *p) {
     snd_pcm_ioplug_t *io = &p->io;
     int rc;
 
-    static const unsigned int accesses[] = {SND_PCM_ACCESS_RW_INTERLEAVED,
-                                            SND_PCM_ACCESS_MMAP_INTERLEAVED};
-    rc = snd_pcm_ioplug_set_param_list(io, SND_PCM_IOPLUG_HW_ACCESS,
-                                       sizeof(accesses) / sizeof(accesses[0]), accesses);
+    // Access modes. PLAYBACK advertises RW + MMAP: the emulated mmap area a
+    // playback app writes into is APP-authored, so alsa-lib's mmap-commit path
+    // only ever hands our `transfer` the frames the app itself wrote — no stale
+    // bytes can reach the ring. CAPTURE advertises RW ONLY. With mmap_rw=0 the
+    // capture mmap area is filled by OUR `transfer`, and this transfer legitimately
+    // returns SHORT (delivered < requested) on the writer-alive-empty pacing block.
+    // alsa-lib's ioplug mmap-capture avail/commit accounting can expose the mmap
+    // region beyond `delivered` — stale/uninitialised bytes camilla would read as
+    // audio — whereas the RW path's return value directly bounds what the app sees,
+    // so a short read never leaks unfilled bytes. Forcing camilla (and the arecord
+    // probe) onto the bounded RW path closes that stale-bytes lane; both use RW
+    // already, so this costs nothing.
+    static const unsigned int accesses_rw_only[] = {SND_PCM_ACCESS_RW_INTERLEAVED};
+    static const unsigned int accesses_rw_mmap[] = {SND_PCM_ACCESS_RW_INTERLEAVED,
+                                                    SND_PCM_ACCESS_MMAP_INTERLEAVED};
+    const unsigned int *accesses;
+    unsigned int n_accesses;
+    if (io->stream == SND_PCM_STREAM_CAPTURE) {
+        accesses = accesses_rw_only;
+        n_accesses = sizeof(accesses_rw_only) / sizeof(accesses_rw_only[0]);
+    } else {
+        accesses = accesses_rw_mmap;
+        n_accesses = sizeof(accesses_rw_mmap) / sizeof(accesses_rw_mmap[0]);
+    }
+    rc = snd_pcm_ioplug_set_param_list(io, SND_PCM_IOPLUG_HW_ACCESS, n_accesses, accesses);
     if (rc < 0) return rc;
 
     static const unsigned int formats[] = {SND_PCM_FORMAT_S16_LE};

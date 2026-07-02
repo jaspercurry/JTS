@@ -675,6 +675,19 @@ int jts_ring_reader_open(const char *path, const jts_ring_geometry_t *expected,
     // AFTER the mmap but BEFORE stamping our own pid, so a rejected open leaves
     // read_seq / reader_pid exactly as the incumbent left them (no corruption of
     // the live reader's state). munmap + close and return -EBUSY.
+    //
+    // BEST-EFFORT, NOT A HARD MUTEX (finding 7 — the residual is beyond the
+    // threat model). Two corners are intentionally out of scope for this lab
+    // prototype: (a) a TOCTOU window — two readers that both pass this check
+    // before either stamps its pid would both proceed (there is no compare-and-
+    // swap on reader_pid here); and (b) pid reuse — the close guard's `cur ==
+    // mine` test could misfire if the OS recycled the incumbent's pid onto this
+    // process. Neither is reachable in the intended single-controlled-reader
+    // topology (CamillaDSP is the sole capture opener; the arecord probe runs
+    // only while camilla is stopped), and the SPSC invariant it protects
+    // (exactly one reader advancing read_seq) is a lab correctness aid, not a
+    // security boundary. The productization (a futex/robust-mutex on the reserved
+    // header word) closes both if a genuinely concurrent opener ever exists.
     if (foreign_reader_is_live(h, jts_ring_monotonic_ns())) {
         uint64_t other = atomic_load_explicit(&h->reader_pid, memory_order_relaxed);
         fprintf(stderr,

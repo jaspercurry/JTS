@@ -45,6 +45,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 RING_PROTO_DIR = ROOT / "scripts" / "ring-proto"
+IOPLUG_DIR = ROOT / "c" / "jts-ring-ioplug"
 
 MUTATING_SCRIPTS = (
     "arm.sh",
@@ -80,6 +81,46 @@ def test_ring_proto_directory_contains_the_expected_files() -> None:
     present = {p.name for p in RING_PROTO_DIR.iterdir() if p.is_file()}
     missing = expected - present
     assert not missing, f"scripts/ring-proto/ is missing: {sorted(missing)}"
+
+
+def test_capture_ioplug_access_list_is_rw_only_no_mmap() -> None:
+    """Finding 4 (staff review, Ring A capture): the capture ioplug MUST advertise
+    RW_INTERLEAVED access ONLY — never MMAP_INTERLEAVED.
+
+    With mmap_rw=0 the emulated capture mmap area is filled by our own `transfer`,
+    which legitimately returns SHORT on the writer-alive-empty pacing block; alsa-
+    lib's ioplug mmap-capture avail/commit accounting can then expose the region
+    beyond `delivered` (stale/uninitialised bytes camilla would read as audio). The
+    RW path bounds what the app sees by the transfer return value, so a short read
+    never leaks unfilled bytes. Playback is unaffected (its mmap area is app-authored).
+
+    Hardware-proven via `arecord --dump-hw-params` (capture: RW_INTERLEAVED only;
+    playback: MMAP_INTERLEAVED RW_INTERLEAVED). This is the CI-visible static pin so
+    the capture direction can never silently re-add MMAP.
+    """
+    src = (IOPLUG_DIR / "pcm_jts_ring.c").read_text(encoding="utf-8")
+    # The direction-aware access selection: a CAPTURE-only list and an RW+MMAP list.
+    assert "accesses_rw_only" in src, (
+        "expected a CAPTURE-only access list variable in jts_ring_set_hw_constraints"
+    )
+    # The CAPTURE list literal must contain RW and must NOT contain MMAP.
+    m = re.search(
+        r"accesses_rw_only\[\]\s*=\s*\{([^}]*)\}",
+        src,
+    )
+    assert m, "could not locate the accesses_rw_only[] initializer"
+    rw_only = m.group(1)
+    assert "SND_PCM_ACCESS_RW_INTERLEAVED" in rw_only, (
+        "capture access list must include RW_INTERLEAVED"
+    )
+    assert "MMAP" not in rw_only, (
+        "capture access list must NOT include MMAP (finding 4 stale-bytes lane)"
+    )
+    # The capture branch must select the RW-only list.
+    assert re.search(
+        r"stream\s*==\s*SND_PCM_STREAM_CAPTURE\s*\)\s*\{\s*accesses\s*=\s*accesses_rw_only",
+        src,
+    ), "capture branch must select accesses_rw_only"
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS + ("_guard.sh",))
@@ -267,6 +308,88 @@ def _extract_disarm_sed_command(disarm_text: str) -> str:
     raise AssertionError("could not extract the sed marker-strip command from disarm.sh")
 
 
+def test_disarm_removes_only_this_modes_rollback_record_not_the_shared_dir() -> None:
+    """Finding 2 (staff review, cross-mode rollback-state destruction).
+
+    The rollback state DIR is SHARED between Ring A (rollback-a.env) and Ring B
+    (rollback.env); a combo box can have BOTH armed at once. disarm.sh step 5 must
+    remove ONLY this mode's own record file (${ROLLBACK_ENV}) — NEVER `rm -rf` the
+    whole ${ROLLBACK_STATE_DIR}, which would destroy the sibling direction's
+    rollback state and strand the still-armed other ring at a later disarm. The
+    shared dir is rmdir'd only when empty.
+    """
+    disarm_text = (RING_PROTO_DIR / "disarm.sh").read_text(encoding="utf-8")
+    # The destructive `rm -rf ${ROLLBACK_STATE_DIR}` MUST be gone.
+    assert "rm -rf ${ROLLBACK_STATE_DIR}" not in disarm_text, (
+        "disarm.sh must NOT `rm -rf` the shared ROLLBACK_STATE_DIR — that destroys "
+        "a sibling mode's rollback record on a combo box (finding 2)"
+    )
+    # Step 5 must remove the mode-specific record file, and clean the dir only via
+    # an empty-only rmdir.
+    assert "sudo rm -f ${ROLLBACK_ENV}" in disarm_text, (
+        "disarm.sh step 5 must remove only this mode's ${ROLLBACK_ENV} record"
+    )
+    assert "sudo rmdir ${ROLLBACK_STATE_DIR}" in disarm_text, (
+        "disarm.sh must rmdir the shared dir (empty-only) rather than rm -rf it"
+    )
+
+
+def test_disarm_step5_preserves_sibling_rollback_record() -> None:
+    """Real execution of disarm.sh's step-5 removal semantics against a synthetic
+    combo-box state dir, proving the sibling mode's record SURVIVES.
+
+    We reproduce EXACTLY the two commands disarm.sh runs (with `sudo` stripped for
+    the unprivileged test): `rm -f <this-record>` then `rmdir <dir>` (which fails
+    harmlessly when a sibling record remains). The record filenames are lifted from
+    disarm.sh's own ROLLBACK_ENV assignments so a rename there flows into this test.
+    """
+    disarm_text = (RING_PROTO_DIR / "disarm.sh").read_text(encoding="utf-8")
+    # Both mode-specific record basenames, lifted from disarm.sh's assignments.
+    ring_a_env = _rollback_env_basename(disarm_text, "rollback-a.env")
+    ring_b_env = _rollback_env_basename(disarm_text, "rollback.env")
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "ring-proto"
+        state_dir.mkdir()
+        a_record = state_dir / ring_a_env
+        b_record = state_dir / ring_b_env
+        a_record.write_text("ORIGINAL_CAMILLA_CONFIG_PATH=/a.yml\n")
+        b_record.write_text("ORIGINAL_CAMILLA_CONFIG_PATH=/b.yml\n")
+
+        # Disarm Ring A: `rm -f <a>` then empty-only `rmdir <dir>` (must fail, b left).
+        subprocess.run(["rm", "-f", str(a_record)], check=True)
+        rc = subprocess.run(
+            ["rmdir", str(state_dir)], capture_output=True
+        )
+        assert rc.returncode != 0, "rmdir should refuse a non-empty dir (b record left)"
+        assert not a_record.exists(), "Ring A record removed"
+        assert b_record.exists(), (
+            "Ring B (sibling) rollback record MUST survive a Ring A disarm on a combo box"
+        )
+        assert state_dir.is_dir(), "shared dir preserved while a sibling record remains"
+
+        # Now disarm Ring B too: dir becomes empty and the empty-only rmdir succeeds.
+        subprocess.run(["rm", "-f", str(b_record)], check=True)
+        rc2 = subprocess.run(["rmdir", str(state_dir)], capture_output=True)
+        assert rc2.returncode == 0, "empty shared dir cleaned once the last record is gone"
+        assert not state_dir.exists(), "shared dir removed after the last mode disarms"
+
+
+def _rollback_env_basename(disarm_text: str, expected_basename: str) -> str:
+    """Confirm disarm.sh assigns ROLLBACK_ENV to a path ending in expected_basename
+    and return that basename, so the real-execution test tracks disarm.sh's own
+    record filenames."""
+    for line in disarm_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("ROLLBACK_ENV=") and expected_basename in stripped:
+            return expected_basename
+    raise AssertionError(
+        f"disarm.sh has no ROLLBACK_ENV assignment ending in {expected_basename!r}"
+    )
+
+
 def _ring_b_marker(disarm_text: str, var_name: str) -> str:
     """The Ring B (non-ring-a) marker from disarm.sh — the one containing
     'jts-ring-proto' but NOT 'jts-ring-a-proto'."""
@@ -329,6 +452,37 @@ def test_arm_ring_a_capture_device_matches_fanin_coupling_ssot() -> None:
     assert RING_WIRE_FORMAT in make_text, (
         f"make-camilla-ring-config.sh --ring-a must pin the SSOT wire format "
         f"{RING_WIRE_FORMAT!r}"
+    )
+
+
+def test_arm_ring_a_removes_stale_ring_before_fanin_restart() -> None:
+    """Finding 3 (staff review, stale-ring crash-loop race).
+
+    jasper-fanin is the ring WRITER and its unit carries StartLimitBurst=5 +
+    StartLimitAction=reboot. If it restarts into shm_ring and finds a STALE ring
+    it cannot cleanly attach to — the step-3 arecord probe's own SSH-user-owned
+    ring (EACCES for a non-root fanin), or a prior-arm ring with a different
+    geometry (n_slots mismatch, Fatal) — it crash-loops and REBOOTS THE BOX.
+    arm-ring-a.sh must remove ${RING_PATH} BEFORE restarting fanin so fanin
+    creates a fresh, correctly-owned, correct-geometry ring on attach.
+    """
+    arm_text = (RING_PROTO_DIR / "arm-ring-a.sh").read_text(encoding="utf-8")
+    # The stale-ring removal must be present.
+    assert "sudo rm -f ${RING_PATH}" in arm_text, (
+        "arm-ring-a.sh must remove a pre-existing/stale ${RING_PATH} so fanin does "
+        "not crash-loop into StartLimitAction=reboot on a stale ring (finding 3)"
+    )
+    # It must appear BEFORE the fanin restart. Anchor on the ordered_restart call.
+    rm_idx = arm_text.index("sudo rm -f ${RING_PATH}")
+    restart_idx = arm_text.index("ordered_restart jasper-fanin")
+    assert rm_idx < restart_idx, (
+        "the stale-ring removal must come BEFORE `ordered_restart jasper-fanin` — "
+        "removing it after the restart cannot prevent the crash-loop (finding 3)"
+    )
+    # And it must reference the reboot hazard in a comment so the intent survives.
+    assert "StartLimitAction=reboot" in arm_text, (
+        "arm-ring-a.sh should document WHY the stale-ring removal exists (the "
+        "fanin reboot ladder) so a later edit does not drop it as 'redundant'"
     )
 
 
@@ -638,23 +792,29 @@ def test_disarm_preserves_rollback_record_when_restore_failed() -> None:
         "disarm.sh no longer tracks whether the statefile restore succeeded — "
         "step 5 could delete the sole copy of the original config_path (S4)"
     )
-    # The removal of the rollback dir must be guarded by the flag. Find the
-    # step-5 region and confirm the guard is present before the rm.
+    # The removal of the rollback record must be guarded by the flag. Find the
+    # step-5 region and confirm the guard is present before the rm. (Step 5's
+    # header now names the mode-specific record — see finding 2 — so anchor on the
+    # stable "Step 5/6:" prefix rather than the old "remove rollback state" text.)
     lines = disarm_text.splitlines()
     step5_idx = next(
-        (i for i, ln in enumerate(lines) if "Step 5/6: remove rollback state" in ln),
+        (i for i, ln in enumerate(lines) if "Step 5/6:" in ln and "rollback record" in ln),
         None,
     )
     assert step5_idx is not None, "could not locate disarm.sh step 5"
-    step5_region = "\n".join(lines[step5_idx : step5_idx + 20])
+    step5_region = "\n".join(lines[step5_idx : step5_idx + 30])
     assert 'statefile_restore_ok" -ne 1' in step5_region or "statefile_restore_ok" in step5_region, (
-        "disarm.sh step 5 removes the rollback state without gating on "
+        "disarm.sh step 5 removes the rollback record without gating on "
         "statefile_restore_ok — a failed restore would lose the original "
         "config_path (S4)"
     )
-    assert f"rm -rf {_extract_assignment(disarm_text, 'ROLLBACK_STATE_DIR')}" in disarm_text or (
-        "ROLLBACK_STATE_DIR" in step5_region
-    ), "disarm.sh step 5 should still remove ROLLBACK_STATE_DIR on the safe path"
+    # On the safe path step 5 removes this mode's record file (finding 2 replaced
+    # the destructive `rm -rf ${ROLLBACK_STATE_DIR}` with a mode-scoped
+    # `rm -f ${ROLLBACK_ENV}` + empty-only rmdir).
+    assert "rm -f ${ROLLBACK_ENV}" in step5_region, (
+        "disarm.sh step 5 should remove this mode's ${ROLLBACK_ENV} record on the "
+        "safe path"
+    )
 
 
 # ---------------------------------------------------------------------

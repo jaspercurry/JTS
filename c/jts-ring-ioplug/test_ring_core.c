@@ -1415,6 +1415,10 @@ static int cap_model_read_period(cap_model_t *m, jts_ring_reader_t *r, int16_t *
         jts_ring_slot_read_t got = jts_ring_reader_consume(r, out);
         if (got == JTS_RING_SLOT_FILLED) {
             m->destage_frames = m->period;
+            // Mirror capture_refill_destage: real data supersedes any silence that
+            // was armed-but-not-yet-consumed, so a stale arm cannot splice a
+            // spurious silence period into live audio on a later brief drain.
+            m->pending_silence_frames = 0;
         } else if (m->pending_silence_frames >= m->period) {
             // Armed silence: fabricate a period (out is already zeros), consume the arm.
             m->pending_silence_frames -= m->period;
@@ -1702,6 +1706,134 @@ static void test_capture_silence_mode_entry_exit(void) {
     unlink(path);
 }
 
+// Model the plugin's jts_ring_capture_poll_revents ARM predicate exactly, so the
+// wall-clock silence pacing is host-tested (finding 5 closed the "host-untested"
+// gap). Given a monotonic clock `now`, arm one period iff the writer is dead, the
+// ring is empty, no period is already armed, and either this is the first arm
+// (last_silence_ns == 0) or a full period_ns has elapsed. On arm, re-anchor
+// last_silence_ns to `now` (the tick time — the source of the ~14% slow, safe-
+// direction drift). Returns 1 if a period was armed this tick, 0 otherwise.
+static int cap_pacing_arm_tick(uint64_t now, uint64_t period_ns,
+                               int writer_dead, int ring_empty,
+                               uint64_t *pending, uint64_t *last_silence_ns,
+                               uint32_t period_frames) {
+    if (writer_dead && ring_empty && *pending < (uint64_t)period_frames) {
+        if (*last_silence_ns == 0 || now - *last_silence_ns >= period_ns) {
+            *pending = (uint64_t)period_frames;
+            *last_silence_ns = now;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void test_capture_silence_pacing_never_faster_than_realtime(void) {
+    // Finding 5: the writer-dead silence pacing was host-untested. Pin the two
+    // load-bearing properties of jts_ring_capture_poll_revents' arm step:
+    //   (1) the per-tick BOUND — pending_silence_frames never exceeds one period
+    //       (avail can never run away), AND
+    //   (2) the SAFE-DIRECTION guarantee — over any real-time window, silence is
+    //       never armed FASTER than realtime. Slow is fine (measured ~14% slow);
+    //       fast would pre-consume a returning writer's audio as silence.
+    // We simulate the ALSA rw loop's poll cadence (a tick every period/4) over a
+    // fixed wall-clock window with the writer dead + ring empty, and count arms.
+    const uint32_t period_frames = 128;
+    const uint64_t period_ns = (uint64_t)period_frames * 1000000000ull / 48000; // 2666666 ns
+    const uint64_t tick_ns = period_ns / 4; // the plugin's arm_timer cadence
+    uint64_t pending = 0;
+    uint64_t last_silence_ns = 0;
+
+    // Consume the armed period on the tick AFTER it is armed (mirrors the transfer
+    // draining one period), so `pending < period` re-opens for the next arm — the
+    // steady writer-dead free-run the arecord probe drives.
+    const int ticks = 4000; // 4000 * tick_ns ~= 2.667 s of simulated wall time
+    uint64_t window_ns = 0;
+    int arms = 0;
+    for (int t = 0; t < ticks; t++) {
+        uint64_t now = (uint64_t)t * tick_ns;
+        window_ns = now;
+        arms += cap_pacing_arm_tick(now, period_ns, /*writer_dead=*/1,
+                                    /*ring_empty=*/1, &pending, &last_silence_ns,
+                                    period_frames);
+        // (1) The per-tick bound: never more than one period armed at once.
+        CHECK(pending <= (uint64_t)period_frames, "pending silence bounded to <= one period");
+        // Drain the armed period (the app read it) so the next tick can re-arm.
+        if (pending >= (uint64_t)period_frames) pending -= (uint64_t)period_frames;
+    }
+    // (2) Safe direction: the number of armed periods over the window must not
+    // exceed what realtime would produce (window/period + 1 for the immediate
+    // first arm). Faster-than-realtime would fail here.
+    uint64_t realtime_periods = window_ns / period_ns + 1;
+    CHECK((uint64_t)arms <= realtime_periods,
+          "silence armed no FASTER than realtime (safe direction; slow is fine)");
+    // And it actually paced (not stuck): at least half of realtime, proving the
+    // gate opens (a totally stuck pacer would fail the writer-return handoff too).
+    CHECK((uint64_t)arms >= realtime_periods / 2,
+          "silence pacing actually advances (not wedged)");
+}
+
+static void test_capture_stale_armed_silence_discarded_on_writer_return(void) {
+    // Finding 1 (silence-invariant at writer-return). The poll tick ARMS one period
+    // of pending silence whenever the writer is dead and the ring is empty. That arm
+    // is CONSUMED lazily, on a later transfer. If the writer PUBLISHES a real slot
+    // AFTER the arm but BEFORE it is consumed, the arm is stale: real data wins on
+    // the next transfer, but the (uncleared) pending frames would then survive and
+    // splice a SPURIOUS silence period into live audio the next time the ring
+    // momentarily drains between two paced real slots. The fix clears
+    // pending_silence_frames when a real slot is consumed; this test reproduces the
+    // exact arm-then-writer-returns ordering and proves no stale silence is emitted.
+    char path[256];
+    tmp_path(path, sizeof(path), "cap-stale-silence");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+    cap_model_t m = cap_model_new(&g);
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+    jts_ring_header_t *h = (jts_ring_header_t *)w.base;
+
+    // 1. Writer DIES and the ring is empty: a poll tick ARMS one period of silence
+    // WITHOUT consuming it (mirrors the ALSA rw loop's poll-before-transfer).
+    atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
+    cap_model_poll_arm(&m, &r);
+    CHECK(m.pending_silence_frames == g.period_frames, "silence armed while writer dead");
+    CHECK(m.silence_periods == 0, "armed but not yet consumed");
+
+    // 2. Writer RETURNS (fresh heartbeat) and PUBLISHES a real slot BEFORE the armed
+    // silence is consumed — the stale-arm race window.
+    atomic_store_explicit(&h->writer_heartbeat_ns, jts_ring_monotonic_ns(),
+                          memory_order_relaxed);
+    mark_slot(s, n, 1717);
+    CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "writer publishes a real slot");
+
+    // 3. The app reads: real data must win AND the stale arm must be discarded.
+    uint64_t sil_before = m.silence_periods;
+    CHECK(cap_model_read_period(&m, &r, out) == 1, "read the real slot");
+    CHECK(m.silence_periods == sil_before, "no silence fabricated on the real read");
+    CHECK(memcmp(out, s, n * sizeof(int16_t)) == 0, "real audio, not zeros");
+    CHECK(m.pending_silence_frames == 0,
+          "stale armed silence CLEARED by the real consume (the finding-1 fix)");
+
+    // 4. The ring is now empty again with the writer STILL ALIVE (the brief drain
+    // between two paced real slots). WITHOUT the fix, the stale 128 frames from
+    // step 1 would fire the pending>=period branch and inject a silence period here.
+    // WITH the fix, pending is 0, so the app correctly BLOCKS (that block is the
+    // pacing) and NO silence is emitted into the live stream.
+    CHECK(cap_model_read_period(&m, &r, out) == 0,
+          "empty + writer alive: BLOCK (pacing) — no spurious silence spliced in");
+    CHECK(m.silence_periods == sil_before, "still no fabricated silence in live audio");
+
+    free(s);
+    free(out);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
 static void test_capture_destage_partial_reads(void) {
     // Sub-slot reads: the app reads FEWER frames than a whole slot at a time. The
     // destage buffer must serve the slot across multiple readi()s with exact byte
@@ -1784,6 +1916,8 @@ int main(void) {
     test_capture_alias_writer_death_flip();
     test_capture_alias_dead_to_live_recovery();
     test_capture_silence_mode_entry_exit();
+    test_capture_silence_pacing_never_faster_than_realtime();
+    test_capture_stale_armed_silence_discarded_on_writer_return();
     test_capture_destage_partial_reads();
 
     if (g_failures == 0) {

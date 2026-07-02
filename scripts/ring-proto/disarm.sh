@@ -324,28 +324,48 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------
-# Step 5 — remove the rollback state file
+# Step 5 — remove THIS mode's rollback record (never the sibling's)
 # ---------------------------------------------------------------------
 # ONLY when the statefile is known to be restored (or there was nothing to
 # restore). If step 1's restore failed, the rollback record is the sole
 # surviving copy of the original config_path while the statefile still
 # points at ring_proto.yml — deleting it here would strand the box and make
 # a later re-arm record ring_proto.yml as the "original". Keep it.
-echo "--- Step 5/6: remove rollback state ---"
+#
+# CROSS-MODE SAFETY (combo box): the rollback state DIR (${ROLLBACK_STATE_DIR})
+# is SHARED between Ring A (rollback-a.env) and Ring B (rollback.env). A combo
+# box can have BOTH armed at once. So this step removes ONLY this mode's own
+# record file (${ROLLBACK_ENV}) — never `rm -rf` the whole dir, which would
+# destroy the sibling direction's rollback state and strand the still-armed
+# other ring at a later disarm. The shared dir is rmdir'd ONLY when it is empty
+# (the sibling record is absent), so a Ring-A-only or Ring-B-only box still
+# cleans up fully, while a combo box keeps the sibling's record intact.
+echo "--- Step 5/6: remove ${RING_LABEL} rollback record (${ROLLBACK_ENV}) ---"
 if [[ "${statefile_restore_ok}" -ne 1 ]]; then
-    echo "  SKIP preserving ${ROLLBACK_STATE_DIR}: the statefile was NOT confirmed" \
+    echo "  SKIP preserving ${ROLLBACK_ENV}: the statefile was NOT confirmed" \
         "restored in step 1, so this record (the original config_path) must" \
         "survive for a later disarm re-run. Fix the statefile restore, then" \
         "re-run disarm.sh to clean up." >&2
-elif ssh_ok "test -d ${ROLLBACK_STATE_DIR}"; then
-    if ssh_ok "sudo rm -rf ${ROLLBACK_STATE_DIR}"; then
-        echo "  OK   removed ${ROLLBACK_STATE_DIR}"
+elif ssh_ok "test -f ${ROLLBACK_ENV}"; then
+    if ssh_ok "sudo rm -f ${ROLLBACK_ENV}"; then
+        echo "  OK   removed ${ROLLBACK_ENV} (this mode's record only)"
+        # rmdir the shared dir ONLY if now empty — preserves a sibling mode's
+        # record on a combo box. `rmdir` fails (harmlessly) on a non-empty dir.
+        if ssh_ok "sudo rmdir ${ROLLBACK_STATE_DIR} 2>/dev/null"; then
+            echo "  OK   removed now-empty ${ROLLBACK_STATE_DIR}"
+        else
+            echo "  KEEP ${ROLLBACK_STATE_DIR} not empty (a sibling ring's rollback" \
+                "record is still present — leaving the shared dir for it)."
+        fi
     else
-        echo "  ERROR: could not remove ${ROLLBACK_STATE_DIR}." >&2
+        echo "  ERROR: could not remove ${ROLLBACK_ENV}." >&2
         overall_ok=0
     fi
 else
-    echo "  SKIP ${ROLLBACK_STATE_DIR} does not exist."
+    echo "  SKIP ${ROLLBACK_ENV} does not exist."
+    # Still attempt to clean up an orphaned empty shared dir (no records at all).
+    ssh_ok "sudo rmdir ${ROLLBACK_STATE_DIR} 2>/dev/null" && \
+        echo "  OK   removed now-empty ${ROLLBACK_STATE_DIR}" || true
 fi
 echo ""
 

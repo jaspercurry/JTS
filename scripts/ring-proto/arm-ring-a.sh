@@ -277,6 +277,33 @@ echo ""
 # ---------------------------------------------------------------------
 echo "--- Step 4/7: arm jasper-fanin (JASPER_FANIN_CAMILLA_COUPLING=shm_ring) ---"
 
+# STALE-RING GUARD (before the fanin restart). jasper-fanin is the WRITER here,
+# and its unit carries StartLimitBurst=5 + StartLimitAction=reboot. If fanin
+# restarts into shm_ring and finds a STALE ring at ${RING_PATH} it cannot cleanly
+# attach to, it crash-loops and — after 5 failures — REBOOTS THE BOX. Two stale
+# shapes reach here on a lab box:
+#   (a) the step-3 arecord resolvability probe CREATES ${RING_PATH} owned by the
+#       SSH user (e.g. pi:pi 0660). A non-root fanin (WS1 privilege separation)
+#       then cannot open it O_RDWR -> EACCES -> crash-loop. (Step 5 fixes perms,
+#       but step 5 runs AFTER this restart.)
+#   (b) a ring left by a PRIOR arm with a DIFFERENT geometry (a re-arm at a new
+#       JASPER_RING_PROTO_SLOTS) -> fanin's create_or_attach hits an n_slots
+#       mismatch -> Fatal -> crash-loop. Root ownership does not help here.
+# Removing the stale file first makes fanin CREATE a fresh ring with the exact
+# requested geometry AND correct ownership (fanin's own user) on attach, closing
+# both lanes. Safe: the ring is tmpfs and fanin recreates it; and this is a
+# Ring-A-only removal of the FILE (never the /dev/shm/jts-ring dir), so an armed
+# Ring B sharing that dir is untouched (mirrors disarm.sh --ring-a step 4).
+if ssh_ok "test -e ${RING_PATH}"; then
+    if ssh_ok "sudo rm -f ${RING_PATH}"; then
+        echo "  OK   removed a pre-existing ${RING_PATH} (probe/stale) so fanin creates a fresh, correctly-owned ring"
+    else
+        echo "  jasper-fanin would restart into a stale ring it may crash-loop on" \
+            "(StartLimitAction=reboot) — could not remove ${RING_PATH}." >&2
+        fail_and_rollback "step 4 (remove stale ring ${RING_PATH} before fanin restart)"
+    fi
+fi
+
 fanin_block="$(cat <<EOF
 ${BEGIN_MARKER}
 JASPER_FANIN_CAMILLA_COUPLING=shm_ring
