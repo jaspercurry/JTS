@@ -577,6 +577,10 @@ fi
 if [[ -n "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-}" ]]; then
     install_env="${install_env} JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=$(shell_quote "$JASPER_ACCEPT_INSTALL_PROFILE_CHANGE")"
 fi
+# Forward selected env vars into the remote install.sh (non-empty only).
+# SKIP_RESTART is forwarded here too so install.sh's changed-Rust-binary
+# restart step (restart_services_for_changed_rust_daemons) can honor it,
+# in addition to this script's own post-install daemon-restart skip below.
 for key in \
     JASPER_CAPTURE_RELAY_BASE \
     JASPER_CAPTURE_ORIGIN \
@@ -592,7 +596,8 @@ for key in \
     JASPER_BUILD_SWAP_PATH \
     JASPER_BUILD_SWAP_SIZE_MB \
     JASPER_BUILD_SWAP_PRIORITY \
-    JASPER_RUST_LOW_MEMORY_BUILD
+    JASPER_RUST_LOW_MEMORY_BUILD \
+    SKIP_RESTART
 do
     if [[ -n "${!key:-}" ]]; then
         install_env="${install_env} ${key}=$(shell_quote "${!key}")"

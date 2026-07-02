@@ -436,6 +436,11 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      jasper-outputd, jasper-audio-hardware-reconcile, jasper-mux,
      renderer services, nginx, Avahi, identity reconciliation, and the
      multi-room grouping reconciler.
+   - Try-restart jasper-usbsink.service only when the installed
+     jasper-usbsink-audio binary content changed (sha256-compared at
+     install), so USB-in never keeps serving a stale daemon; fanin and
+     outputd are already covered by the core-graph restarts above.
+     SKIP_RESTART=1 skips this conditional restart.
    - Enable socket-activated streambox-safe web surfaces:
      /spotify/, /sources/, /sound/, /speaker/, /wifi/, /rooms/,
      /bluetooth/, /system/, and HTTPS /correction/.
@@ -617,6 +622,11 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      jasper-outputd, audio-hardware reconciliation, DAC init,
      headphone monitor, nginx, Avahi, CamillaGUI socket, the WiFi
      guardian, and the boot-loop guard.
+   - Try-restart jasper-usbsink.service only when the installed
+     jasper-usbsink-audio binary content changed (sha256-compared at
+     install), so USB-in never keeps serving a stale daemon; fanin and
+     outputd are already covered by the core-graph restarts above.
+     SKIP_RESTART=1 skips this conditional restart.
    - Require jasper-outputd to be active and answering STATUS before
      voice starts against the final-output path.
    - Seed or validate the outputd Camilla statefile while preserving

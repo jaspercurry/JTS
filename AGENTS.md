@@ -661,7 +661,14 @@ This is the **only** supported deploy path. It does, in order:
    mid-install abort leaves the prior good manifest rather than a SHA the
    box isn't cleanly running — the direction-guard reads an honest value.
    Also migrates units to socket activation, conditionally enables AEC on
-   6-ch firmware. See "Runtime Python lives in /opt/jasper" below and
+   6-ch firmware. Rust daemon binaries are sha256-compared on install: the
+   core audio graph (jasper-fanin, jasper-outputd) is bounced by the
+   systemd step on every deploy regardless — expect a brief local-audio
+   interruption — and `jasper-usbsink.service` is try-restarted only when
+   the installed `jasper-usbsink-audio` binary content actually changed, so
+   USB-in cannot keep serving a stale daemon (the 2026-07-02 404-endpoints
+   class). `SKIP_RESTART=1` is forwarded into install.sh and skips that
+   conditional restart. See "Runtime Python lives in /opt/jasper" below and
    [docs/HANDOFF-install-update-transaction.md](docs/HANDOFF-install-update-transaction.md).
 5. `systemctl restart jasper-control` + `systemctl start
    jasper-aec-reconcile` — picks up Python control code and lets the
@@ -743,7 +750,8 @@ interactive-sudo deploys skip it too. The helper
 `tests/test_lib_deploy_direction.py`.
 
 **Skip / opt-in flags:** `SKIP_INSTALL=1` (rsync only),
-`SKIP_RESTART=1` (install but don't restart/reconcile),
+`SKIP_RESTART=1` (install but don't restart/reconcile; forwarded into
+install.sh, where it also skips the changed-Rust-binary service restart),
 `JTS_ACCEPT_NEW_IDENTITY=1` (accept a changed deploy-target peer_id),
 `JASPER_DEPLOY_ALLOW_DOWNGRADE=1` (deploy an older commit deliberately),
 `JASPER_BUILD_OPTIONAL_FIRMWARE=1` (explicitly rebuild optional
