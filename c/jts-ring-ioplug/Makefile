@@ -53,8 +53,15 @@ bench: ring_writer_bench
 
 # --- Pi-only (needs alsa-lib) ---
 
+# -DPIC is load-bearing, not redundant with -fPIC: alsa/global.h keys
+# SND_PCM_PLUGIN_SYMBOL on the PIC *preprocessor* macro (#ifdef PIC).
+# -fPIC alone does not define it, so without -DPIC the macro expands to
+# the static-build snd_dlsym_start registration path and the .so fails
+# at dlopen with "undefined symbol: snd_dlsym_start" (observed on
+# jts.local 2026-07-02). libtool passes -DPIC implicitly; hand-rolled
+# Makefiles must do it themselves.
 plugin: pcm_jts_ring.c $(CORE) jts_ring_shm.h
-	$(CC) $(CFLAGS) -shared -o $(PLUGIN_SO) pcm_jts_ring.c $(CORE) -lasound $(LDFLAGS)
+	$(CC) $(CFLAGS) -DPIC -shared -o $(PLUGIN_SO) pcm_jts_ring.c $(CORE) -lasound $(LDFLAGS)
 
 install: plugin
 	install -d $(ALSA_PLUGIN_DIR)
