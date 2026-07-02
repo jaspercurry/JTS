@@ -111,3 +111,102 @@ def test_packaged_defaults_do_not_override_operator_or_generated_env():
     )
 
     assert default_idx < base_env_idx < generated_env_idx
+
+
+# ----------------------------------------------------------------------
+# Stage 1 host-slaved USB clock (default-OFF): the pitch-neutrality safety
+# invariant needs a belt-and-braces ExecStopPost= reset, because the in-
+# process reset (on clean exit / SIGTERM / demotion / disable) cannot run
+# when the daemon is SIGKILLed, OOM-killed, or watchdog-aborted. A host must
+# never stay slaved to a pitch command from a daemon that is no longer
+# running. See docs/HANDOFF-usb-low-latency.md "Host-slaved USB clock".
+# ----------------------------------------------------------------------
+
+
+def _exec_stop_post_lines(unit_text: str) -> list[str]:
+    """Every ``ExecStopPost=`` line's value (multiple are valid systemd
+    syntax — unlike Environment=/ExecStart=, they do NOT "last wins"; all
+    of them run in sequence on stop). Ignores comments."""
+    values: list[str] = []
+    for ln in unit_text.splitlines():
+        s = ln.strip()
+        if s.startswith("#"):
+            continue
+        if s.startswith("ExecStopPost="):
+            values.append(s[len("ExecStopPost="):])
+    return values
+
+
+def test_execstoppost_resets_pitch_to_neutral():
+    body = UNIT_PATH.read_text()
+    matches = [
+        v for v in _exec_stop_post_lines(body)
+        if "Capture Pitch 1000000" in v
+    ]
+    assert matches, (
+        "jasper-usbsink.service must carry an ExecStopPost= that resets the "
+        "gadget's 'Capture Pitch 1000000' ctl to neutral — belt-and-braces "
+        "for the pitch-neutrality safety invariant when the daemon is "
+        "SIGKILLed/OOM-killed and cannot run its own in-process reset."
+    )
+    line = matches[0]
+
+    # `-` prefix: ignore failure when the card is absent (feature disabled,
+    # gadget torn down, or a different capture device) — a missing card
+    # must not fail the stop/restart of the unit itself.
+    assert line.startswith("-"), (
+        f"ExecStopPost pitch reset must be prefixed with '-' to ignore "
+        f"failure when the UAC2Gadget card is absent; got: {line!r}"
+    )
+
+    # Targets the exact ctl this Stage 1 module writes: iface=PCM,
+    # name='Capture Pitch 1000000' (verified live on jts.local kernel
+    # 6.12.75: iface=PCM numid=1, range 750000..1005000).
+    assert "iface=PCM" in line, (
+        f"ExecStopPost pitch reset must target iface=PCM; got: {line!r}"
+    )
+    assert "name='Capture Pitch 1000000'" in line, (
+        f"ExecStopPost pitch reset must target the 'Capture Pitch 1000000' "
+        f"control by name; got: {line!r}"
+    )
+
+    # Resets to the neutral value (1000000 = unity, no pitch bias) — the
+    # trailing numeric argument to `amixer cset`, not the "1000000" that is
+    # part of the control's own NAME.
+    trailing_value = line.rsplit(None, 1)[-1]
+    assert trailing_value == "1000000", (
+        f"ExecStopPost pitch reset must write the neutral value 1000000, "
+        f"not a stale/non-neutral bias; got trailing value {trailing_value!r} "
+        f"in line: {line!r}"
+    )
+
+    # Card name matches JASPER_USBSINK_MIXER_CARD's documented default
+    # (UAC2Gadget, NO underscore — see the ALSA two-names note in
+    # .env.example). An operator overriding that card also overrides this
+    # unit, per the comment above the line.
+    assert "-c UAC2Gadget" in line, (
+        f"ExecStopPost pitch reset must target the -c UAC2Gadget card (the "
+        f"JASPER_USBSINK_MIXER_CARD default); got: {line!r}"
+    )
+
+    # amixer invoked by absolute path — ExecStopPost= runs outside a login
+    # shell, so a bare command name would not resolve via $PATH.
+    assert "/usr/bin/amixer" in line, (
+        f"ExecStopPost pitch reset must invoke amixer by absolute path; "
+        f"got: {line!r}"
+    )
+
+
+def test_execstoppost_pitch_reset_runs_unconditionally():
+    # The invariant must hold even when the feature was never enabled: a
+    # value could only be non-neutral if the feature was enabled and the
+    # daemon then died uncleanly, so the reset runs on every stop rather
+    # than being gated on JASPER_USBSINK_HOST_CLOCK.
+    body = UNIT_PATH.read_text()
+    idx = _line_index(body, "Capture Pitch 1000000")
+    line = body.splitlines()[idx].strip()
+    assert "JASPER_USBSINK_HOST_CLOCK" not in line, (
+        "the ExecStopPost pitch-neutrality reset must not be gated on the "
+        "host-clock feature flag — it is a belt-and-braces safety net that "
+        "must run unconditionally"
+    )
