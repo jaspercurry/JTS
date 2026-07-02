@@ -91,16 +91,27 @@ per-IP **registration** limit (`reg:<cf-connecting-ip>`) that bounds open
 per-isolate in-memory counter that never writes R2 (so it can neither amplify
 writes nor clobber session state).
 
-On each Pi, set the relay origin, capture-page origin, and the same private
-registration value in `/etc/jasper/jasper.env`. Public/open-source installs
-leave these blank, so the relay path stays inert. For laptop-driven Jasper-fleet
-deploys, putting these lines in the gitignored `.env.local` (or exporting them
-in the shell) lets `scripts/deploy-to-pi.sh` forward them through `install.sh`
-without committing or printing the token:
+Fresh JTS installs default to the Jasper Tech deployment:
 
 ```sh
 JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech
 JASPER_CAPTURE_ORIGIN=capture.jasper.tech
+```
+
+This default exists because phone microphone access (`getUserMedia`) requires a
+secure context with a publicly trusted HTTPS certificate. A LAN-only Raspberry Pi
+with a self-signed cert is fragile on iOS and blocked for microphone access by
+Android Chrome; the trusted capture page records on `capture.jasper.tech`, while
+the Pi stays behind NAT and pulls only E2E-encrypted blobs over outbound HTTPS.
+
+To self-host, deploy this Worker from `relay/`, deploy the trusted capture page
+from [`capture-page/`](../capture-page/README.md), then override the Pi's
+`/etc/jasper/jasper.env` values (or export them for `scripts/deploy-to-pi.sh` /
+`deploy/install.sh`):
+
+```sh
+JASPER_CAPTURE_RELAY_BASE=https://relay.example.com
+JASPER_CAPTURE_ORIGIN=capture.example.com
 JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=<same hex value>
 ```
 

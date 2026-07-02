@@ -16,8 +16,11 @@ not live session state:
 
 Both read `JASPER_CAPTURE_RELAY_BASE` — the deploy-time relay origin the Pi pulls
 from — plus the optional `JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN` registration
-gate. Until the base is set, the speaker uses the existing on-Pi same-origin
-capture; the doctor check skips cleanly rather than warning.
+gate. Fresh installs seed the Jasper Tech public relay
+(`https://relay.jasper.tech`) because phone microphone capture needs a
+publicly-trusted HTTPS origin; an operator may still clear the base to use the
+existing on-Pi same-origin capture, in which case the doctor check skips cleanly
+rather than warning.
 """
 from __future__ import annotations
 

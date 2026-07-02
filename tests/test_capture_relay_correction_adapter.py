@@ -168,7 +168,8 @@ def test_run_and_store_feeds_the_verified_wav(tmp_path):
 
 # --- daemon endpoint: the safety-relevant gate + guard ------------------------
 # The background sweep playback + real measurement are on-device; only the
-# default-off gate, the state guard, and the /status holder are tested here.
+# explicitly-unconfigured gate, the state guard, and the /status holder are
+# tested here.
 
 
 def test_endpoint_is_inert_when_relay_not_configured(monkeypatch):
@@ -177,8 +178,8 @@ def test_endpoint_is_inert_when_relay_not_configured(monkeypatch):
     monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
     from jasper.web import correction_setup
 
-    # Gated off by default — raises before touching the session or any network,
-    # so the standard on-Pi flow is unaffected.
+    # An explicitly unconfigured relay raises before touching the session or any
+    # network, so the standard on-Pi flow is unaffected.
     with pytest.raises(ValueError, match="not configured"):
         correction_setup._handle_relay_capture(None)
 
