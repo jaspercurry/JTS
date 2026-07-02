@@ -25,7 +25,15 @@
 // 2. What breaks if the writer (this plugin) dies? write_seq stops advancing;
 //    the reader sees the ring empty and emits silence. On close we clear
 //    writer_pid so the reader reports writer_alive:false.
-// 3. Latency: <= n_slots * period_frames of buffering (2*128 ~= 5.3 ms).
+// 3. Latency: the ring depth is n_slots * period_frames (16*128 = 2048 frames,
+//    ~42.7 ms) but that is the CEILING, not the steady-state latency. Steady
+//    state is set by the WRITER's own buffering target: CamillaDSP parks its
+//    device delay at `target_level` (1536 frames ~= 32 ms in the current
+//    ring_proto config), so observed occupancy sits ~12/16 slots. n_slots MUST
+//    be >= ceil(target_level / period_frames) with headroom, or camilla's rate
+//    controller chases a target the reported delay can never reach (see the
+//    n_slots 4 -> 16 note in jts_ring_shm.h). Effective latency == the writer's
+//    target_level, not the ring depth.
 // 4. Observability: writer counters (published/dropped/full_waits) are logged
 //    at close; the reader publishes occupancy/empty_reads/writer_alive to
 //    /state.shm_ring.
@@ -35,10 +43,15 @@
 // 6. Default-off: the .so is never loaded outside the lab drop-in.
 // 7. Memory ordering: publish is Release on write_seq after the payload memcpy;
 //    the core documents the pairing with the reader's Acquire. C11 atomics ->
-//    aarch64 ldar/stlr.
+//    aarch64 ldar/stlr. The `pointer` callback reports the READER's drain
+//    position (hw_ptr = appl_frames - in_flight), derived from the same read_seq
+//    the reader releases, so ALSA's avail/delay reflect real drain progress —
+//    NOT frames merely accepted (which read as "instantly played", starved
+//    camilla's rate controller, and tripped its stall detector).
 // 8. Productization delta: the timerfd poll (period/4) becomes a FUTEX_WAIT on
 //    the reserved header futex_word; the lab drop-in becomes a reconciler-owned
-//    device. No SHM header change.
+//    device. No SHM header change. The reconciler must size n_slots from the
+//    active camilla config's target_level (Q3), not a fixed ping-pong 2.
 //
 // Poll model: cross-process SHM means the reader cannot arm an eventfd in this
 // process, so we cannot signal "space became available" the way an in-process
@@ -77,8 +90,11 @@ typedef struct {
     int16_t *stage;
     size_t stage_frames;
     size_t stage_capacity_frames; // == period_frames
-    // hw_ptr in frames (total frames accepted from the app), for `pointer`.
-    snd_pcm_uframes_t hw_ptr;
+    // Total frames ACCEPTED from the app (== ALSA appl_ptr). `pointer` derives
+    // the honest hw_ptr (frames the READER has drained) from this minus the
+    // in-flight count, so ALSA's avail/delay reflect the reader's real progress
+    // rather than "everything accepted is already played" (see jts_ring_pointer).
+    snd_pcm_uframes_t appl_frames;
     int timer_fd;
 } jts_ring_pcm_t;
 
@@ -136,7 +152,7 @@ static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
     }
     // Reset the staging + pointer on (re)prepare.
     p->stage_frames = 0;
-    p->hw_ptr = 0;
+    p->appl_frames = 0;
     return 0;
 }
 
@@ -154,11 +170,36 @@ static int jts_ring_stop(snd_pcm_ioplug_t *io) {
 
 static snd_pcm_sframes_t jts_ring_pointer(snd_pcm_ioplug_t *io) {
     jts_ring_pcm_t *p = io->private_data;
-    // hw_ptr advances by the frames we have ACCEPTED (staged + published). ALSA
-    // treats this as the boundary the app may write up to; since we stage +
-    // publish synchronously in transfer, the accepted count is the honest
-    // pointer. Wrap into the buffer boundary ALSA set.
-    return (snd_pcm_sframes_t)(p->hw_ptr % io->buffer_size);
+    // ioplug `pointer` must return the PLAYBACK hw_ptr: the frame position the
+    // hardware (here: the outputd reader) has DRAINED, not the frames we merely
+    // accepted. ALSA derives avail = buffer_size - (appl_ptr - hw_ptr); a
+    // playback writer (CamillaDSP) then treats current_delay = buffer_size -
+    // avail = appl_ptr - hw_ptr as the frames still buffered in the device, and
+    // feeds that to its rate controller and stall detector.
+    //
+    // The original code advanced hw_ptr on ACCEPT (hw_ptr == appl_ptr), so
+    // avail was always ~full and current_delay always ~0. CamillaDSP saw the
+    // device as instantly drained, wound its rate controller up toward
+    // target_level (1536) that the reported delay could never reach, and read a
+    // genuinely-full ring (poll withholds POLLOUT) as a stall -> the
+    // "device stalled"/"resumed"/"Prepare after underrun" flapping.
+    //
+    // Honest hw_ptr = appl_frames - in_flight, where in_flight = the frames
+    // published-but-unread (occupancy_slots * period_frames) plus frames staged
+    // but not yet published. That equals what `delay` already reports; deriving
+    // both from the reader's read_seq keeps avail/delay mutually consistent.
+    uint64_t in_flight =
+        p->opened
+            ? jts_ring_writer_occupancy_slots(&p->writer) * (uint64_t)p->period_frames +
+                  (uint64_t)p->stage_frames
+            : 0;
+    // appl_frames is monotonic and always >= in_flight (the reader cannot drain
+    // more than was accepted), but clamp defensively against a transient race
+    // where occupancy is sampled a hair before appl_frames is updated.
+    snd_pcm_uframes_t hw_ptr =
+        (p->appl_frames >= in_flight) ? (p->appl_frames - (snd_pcm_uframes_t)in_flight)
+                                      : 0;
+    return (snd_pcm_sframes_t)(hw_ptr % io->buffer_size);
 }
 
 static snd_pcm_sframes_t jts_ring_transfer(snd_pcm_ioplug_t *io,
@@ -188,7 +229,7 @@ static snd_pcm_sframes_t jts_ring_transfer(snd_pcm_ioplug_t *io,
             p->stage_frames = 0;
         }
     }
-    p->hw_ptr += size;
+    p->appl_frames += size;
     return (snd_pcm_sframes_t)size;
 }
 
