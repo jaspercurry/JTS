@@ -338,6 +338,90 @@ def check_usbsink_low_latency_contract() -> CheckResult:
         )
     return CheckResult("usbsink low-latency contract", "ok", detail)
 
+@doctor_check(order=59.7, group="usbsink")
+def check_usbsink_host_clock() -> CheckResult:
+    """Stage 1 host-slaved USB clock — default-OFF ladder telemetry.
+
+    The Rust bridge always emits a ``host_clock`` block in
+    ``state.json`` (also when the feature is disabled), so a missing
+    block after a valid parse means a pre-Stage-1 build rather than a
+    real failure. This check is pure telemetry surfacing — it never
+    fails, because a mis-slaved host degrades to the same audio the
+    speaker already produces without the feature (default-OFF, and
+    the ladder itself falls back to neutral pitch on any evidence of
+    non-compliance). See docs/HANDOFF-usb-low-latency.md "Host-slaved
+    USB clock (Stage 1)" for the ladder/field semantics.
+
+    Skips (ok, no detail beyond the reason) when:
+      - the service is inactive (nothing to report)
+      - state.json is missing/unparseable (check_usbsink_state already
+        owns that failure mode)
+      - the block is absent (pre-Stage-1 build)
+      - the feature is disabled (default)
+
+    Warns when the ladder has fallen back to L2 (with the reason +
+    lifetime demotion count) or is at L1 (elevated commanded ppm).
+    Otherwise ok, showing the live ladder/ppm/fill numbers.
+    """
+    if not _systemd_is_active(USBSINK_UNIT):
+        return CheckResult(
+            "usbsink host clock", "ok",
+            "service disabled — host-clock check skipped",
+        )
+    state_path = Path("/run/jasper-usbsink/state.json")
+    try:
+        data = json.loads(state_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        # check_usbsink_state already reports a missing/corrupt state
+        # file as fail; don't duplicate that failure here.
+        return CheckResult(
+            "usbsink host clock", "ok",
+            f"can't read {state_path} — see 'usbsink state' check",
+        )
+    host_clock = data.get("host_clock")
+    if not isinstance(host_clock, dict):
+        return CheckResult(
+            "usbsink host clock", "ok",
+            "no host_clock block in state.json (pre-Stage-1 build)",
+        )
+    if not host_clock.get("enabled"):
+        return CheckResult(
+            "usbsink host clock", "ok",
+            "disabled (default) — set JASPER_USBSINK_HOST_CLOCK=enabled "
+            "to arm the ladder",
+        )
+
+    ladder = host_clock.get("ladder")
+    pitch_ppm = host_clock.get("pitch_ppm_commanded")
+    fill_frames = host_clock.get("fill_frames")
+    try:
+        target_fill = int(
+            os.environ.get(
+                "JASPER_USBSINK_HOST_CLOCK_TARGET_FILL_FRAMES", "384",
+            ),
+        )
+    except ValueError:
+        target_fill = 384
+    detail = f"ladder={ladder} pitch_ppm={pitch_ppm} fill={fill_frames}/{target_fill}"
+
+    if ladder == "l2_fallback":
+        reason = host_clock.get("last_transition_reason")
+        demotions = host_clock.get("demotions")
+        return CheckResult(
+            "usbsink host clock", "warn",
+            f"{detail} — fell back to neutral pitch (reason={reason}, "
+            f"lifetime demotions={demotions}). Host is not honoring "
+            "feedback reliably; the ladder will re-probe on the next "
+            "session.",
+        )
+    if ladder == "l1_warn":
+        return CheckResult(
+            "usbsink host clock", "warn",
+            f"{detail} — locked but commanding an unusually large bias; "
+            "watch for a demotion to L2.",
+        )
+    return CheckResult("usbsink host clock", "ok", detail)
+
 @doctor_check(order=62, group="usbsink")
 def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
     """When jasper-usbsink is enabled, verify the host-visible device
