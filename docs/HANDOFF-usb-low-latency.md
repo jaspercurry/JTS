@@ -172,7 +172,7 @@ declaration, the artifact writer and doctor still compare live Rust bridge
 period/ring state and fan-in USB resampler lock/target state against the route
 identity; any mismatch records/fails the claim as live route-health drift.
 `jasper-route-latency-harness analyze` prints exactly this delta (every
-nonzero bridge/usbsink/fan-in/outputd counter change across the measurement
+nonzero usbsink/fan-in/outputd counter change across the measurement
 window) and states whether the declaration *would* be justified — it never
 asserts `--route-health-ok` on the operator's behalf; read the printed
 deltas and decide.

@@ -13,7 +13,10 @@ by ``jasper.cli.aec_bridge``. Reading it here does NOT add it as a
 wake-detection input; this module only *consumes* the already-emitted stream,
 matching AGENTS.md's rule that raw0 stays corpus/tooling-only. On a Pi with no XVF3800 (or no bridge running),
 nothing feeds :9879 and ``UdpMicReader`` fails loudly on a read timeout
-rather than hanging forever — see :meth:`UdpMicReader.read_chunk`.
+rather than hanging forever — see :meth:`UdpMicReader.read_chunk`. If the raw0
+port is already held (e.g. a live wake-corpus session), construction fails
+loudly with a guided :class:`MicSourceUnavailableError` rather than a raw
+``EADDRINUSE`` traceback — see :meth:`UdpMicReader.__init__`.
 
 CRITICAL CLOCK RULE — read this before touching timestamps in this module:
 the mic's sample clock rides the XVF3800's USB UAC2 clock, which drifts
@@ -121,7 +124,21 @@ class UdpMicReader:
     ) -> None:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.settimeout(timeout_seconds)
-        self._sock.bind((host, port))
+        try:
+            self._sock.bind((host, port))
+        except OSError as e:
+            # Most commonly EADDRINUSE: a live wake-corpus session is already
+            # bound to raw0's :9879 (only one process can hold the UDP port).
+            # Surface it as the harness's own "mic unavailable" signal with a
+            # guided message rather than a raw bind traceback.
+            self._sock.close()
+            raise MicSourceUnavailableError(
+                f"could not bind {host}:{port} for the raw0 mic leg ({e}). "
+                "Another process may hold it — most often a live wake-corpus "
+                "recording session (they share raw0's :9879). Stop that "
+                "session and retry, or point --mic at a dedicated capture "
+                "device (alsa:<device>)."
+            ) from e
         self._timeout_seconds = timeout_seconds
 
     @property

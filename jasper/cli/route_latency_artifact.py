@@ -40,11 +40,14 @@ from jasper.audio_validation import (
     write_artifact,
     write_latest_pointer,
 )
-from jasper.route_latency.status_socket import read_status_socket
-
-
-FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
-USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
+# The control-socket / state paths live in ONE route-latency home
+# (jasper.route_latency.status_socket) so the artifact writer and the
+# click/capture harness can never drift. Do not re-declare them here.
+from jasper.route_latency.status_socket import (
+    FANIN_STATUS_SOCKET,
+    USBSINK_STATE_PATH,
+    read_status_socket,
+)
 
 
 @dataclass(frozen=True)
