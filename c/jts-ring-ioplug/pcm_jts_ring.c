@@ -2,14 +2,26 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 //
-// JTS Ring B — ALSA ioplug PLAYBACK plugin (`pcm.jts_ring`).
+// JTS Ring — ALSA ioplug (`pcm.jts_ring`), BOTH directions.
 //
-// CamillaDSP (or aplay, for the resolvability probe) opens the ALSA PCM
-// `jts_ring_playback` and writes S16LE/2ch/48 kHz interleaved frames; this
-// plugin stages them into whole slots and publishes each full slot into the SHM
-// ping-pong ring (jts_ring_shm.c, the WRITER core). jasper-outputd is the
-// reader (rust/jasper-ring) and the DAC pacer. This replaces the outputd
+// PLAYBACK (Ring B): CamillaDSP (or aplay, for the resolvability probe) opens
+// the ALSA PCM `jts_ring_playback` and writes S16LE/2ch/48 kHz interleaved
+// frames; this plugin stages them into whole slots and publishes each full slot
+// into the SHM ping-pong ring (jts_ring_shm.c, the WRITER core). jasper-outputd
+// is the reader (rust/jasper-ring) and the DAC pacer. This replaces the outputd
 // content snd-aloop hop.
+//
+// CAPTURE (Ring A): CamillaDSP (or arecord, for the resolvability probe) opens
+// `jts_ring_capture` and READS S16LE/2ch/48 kHz frames; this plugin attaches the
+// SHM reader core (jts_ring_shm.c), destages slots the WRITER (jasper-fanin,
+// rust/jasper-ring RingWriter) published, and — when the writer is heartbeat-
+// dead — fabricates timer-paced silence so camilla stays DAC-paced through a
+// fanin restart. This replaces the fan-in -> camilla dsnoop capture hop. The
+// capture direction is the exact MIRROR of the playback pointer/avail/alias
+// discipline (roles flipped); see jts_ring_capture_pointer_report in the header.
+// Ring A and Ring B are SEPARATE ring instances (program.ring vs content.ring);
+// the SPSC contract, the mod-buffer clamp, and the writer/reader-dead survival
+// discipline are shared code.
 //
 // PROTOTYPE, flag-gated: only reachable via the lab-only asound drop-in
 // (scripts/ring-proto/arm.sh installs /etc/alsa/conf.d/98-jts-ring-proto.conf).
@@ -115,29 +127,56 @@
 
 typedef struct {
     snd_pcm_ioplug_t io;
+    // Exactly ONE of these is used per PCM, selected by io.stream:
+    //   PLAYBACK -> writer (Ring B: CamillaDSP writes -> outputd reads)
+    //   CAPTURE  -> reader (Ring A: CamillaDSP reads  <- fanin writes)
     jts_ring_writer_t writer;
+    jts_ring_reader_t reader;
     char path[256];
     uint32_t period_frames;
     uint32_t n_slots;
-    int opened; // writer attached
-    // Frame staging: Camilla may writei() fewer than a whole slot at a time; we
-    // accumulate into `stage` until a full slot (period_frames) is ready, then
-    // publish. `stage_frames` counts frames buffered.
+    int opened; // writer/reader attached
+    // --- PLAYBACK staging (writer) ---
+    // Camilla may writei() fewer than a whole slot at a time; we accumulate into
+    // `stage` until a full slot (period_frames) is ready, then publish.
+    // On CAPTURE `stage` is the DESTAGE buffer instead: one slot copied out of
+    // the ring, drained to the app across possibly-multiple readi() calls, with
+    // `stage_frames` = frames still UNREAD in the destage buffer (so the slot
+    // origin index for the next read is stage_capacity - stage_frames). See
+    // jts_ring_capture_transfer.
     int16_t *stage;
     size_t stage_frames;
     size_t stage_capacity_frames; // == period_frames
-    // Total frames ACCEPTED from the app (== ALSA appl_ptr). `pointer` derives
-    // the honest hw_ptr (frames the READER has drained) from this minus the
-    // in-flight count, so ALSA's avail/delay reflect the reader's real progress
-    // rather than "everything accepted is already played" (see jts_ring_pointer).
+    // Total frames ACCEPTED from / DELIVERED to the app (== ALSA appl_ptr).
+    // Playback: frames written by the app. Capture: frames read by the app. The
+    // pointer callbacks derive the honest hw_ptr from this ± in-flight/readable.
     snd_pcm_uframes_t appl_frames;
-    // Reported-position state for jts_ring_pointer, carried across calls. The
-    // shared core (jts_ring_pointer_report in jts_ring_shm.h) owns the whole
-    // discipline: dual-mode in_flight (reader live/dead), a non-decreasing
+    // CAPTURE writer-dead silence (the "virtual writer"). When the writer is
+    // heartbeat-dead and the real ring is empty, the poll tick ARMS one period of
+    // pending silence (wall-clock paced, exactly as a live writer would publish
+    // one slot per period), bounded so avail never runs away. The pointer adds
+    // `pending_silence_frames` to `readable` so avail opens; the transfer callback
+    // consumes it (zeros to the app, appl advances, pending decrements) and bumps
+    // `silence_periods` (observability, logged at close). Decoupling the
+    // fabrication (poll, time-paced) from the pointer (pure) is what makes a
+    // COLD-START dead-writer ring (the `arecord` resolvability probe with no
+    // fanin) advance hw and terminate, not just the mid-stream fanin-restart case.
+    uint64_t pending_silence_frames; // armed-but-unconsumed fabricated silence
+    uint64_t silence_periods;        // total fabricated-silence periods (observability)
+    // Wall-clock pacing for the writer-dead silence: a new period is armed only
+    // after one period of REAL time has elapsed since the last (CLOCK_MONOTONIC),
+    // so silence flows at ~48 kHz instead of as-fast-as-the-app-asks. Without this
+    // an unpaced consumer (arecord) drains fabricated silence at multiples of
+    // realtime, so a writer returning mid-capture finds no live reader and its
+    // audio is dropped. 0 = not yet armed since the last real data.
+    uint64_t last_silence_ns;
+    // Reported-position state for the pointer callback, carried across calls.
+    // The shared cores (jts_ring_pointer_report for playback,
+    // jts_ring_capture_pointer_report for capture, both in jts_ring_shm.h) own
+    // the whole discipline: dual-mode / silence-mode readable, a non-decreasing
     // reported floor, AND the round-4 clamp that keeps any single reported
     // advance below buffer_size so ALSA's mod-buffer hw_ptr inference never
-    // aliases a full-lap jump to a zero delta. Reset to 0 on (re)prepare
-    // alongside appl_frames. See the header for the full rationale.
+    // aliases a full-buffer jump to a zero delta. Reset to 0 on (re)prepare.
     jts_ring_pointer_state_t ptr_state;
     int timer_fd;
 } jts_ring_pcm_t;
@@ -400,17 +439,245 @@ static int jts_ring_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
 static int jts_ring_close(snd_pcm_ioplug_t *io) {
     jts_ring_pcm_t *p = io->private_data;
     if (p->opened) {
-        SNDERR("jts_ring: closing published_slots=%llu drop_no_reader=%llu full_waits=%llu",
-               (unsigned long long)p->writer.published_slots,
-               (unsigned long long)p->writer.drop_no_reader,
-               (unsigned long long)p->writer.full_waits);
-        jts_ring_writer_close(&p->writer);
+        if (io->stream == SND_PCM_STREAM_CAPTURE) {
+            SNDERR("jts_ring: closing (capture) frames_read_slots=%llu "
+                   "silence_periods=%llu empty_reads=%llu startup_empty_reads=%llu "
+                   "reader_resyncs=%llu epoch_resets=%llu",
+                   (unsigned long long)p->reader.frames_read_slots,
+                   (unsigned long long)p->silence_periods,
+                   (unsigned long long)p->reader.empty_reads,
+                   (unsigned long long)p->reader.startup_empty_reads,
+                   (unsigned long long)p->reader.reader_resyncs,
+                   (unsigned long long)p->reader.epoch_resets);
+            jts_ring_reader_close(&p->reader);
+        } else {
+            SNDERR("jts_ring: closing published_slots=%llu drop_no_reader=%llu full_waits=%llu",
+                   (unsigned long long)p->writer.published_slots,
+                   (unsigned long long)p->writer.drop_no_reader,
+                   (unsigned long long)p->writer.full_waits);
+            jts_ring_writer_close(&p->writer);
+        }
         free(p->stage);
         p->stage = NULL;
         p->opened = 0;
     }
     if (p->timer_fd >= 0) close(p->timer_fd);
     free(p);
+    return 0;
+}
+
+// ============================================================================
+// CAPTURE direction callbacks (Ring A: fanin writes -> CamillaDSP reads).
+//
+// The mirror of the playback set above. The ioplug is now the READER: it
+// attaches the SHM reader core, and its `pointer` advances hw_ptr on the
+// WRITER's PUBLISH (so ALSA's capture avail = readable frames), draining slots
+// into a per-slot DESTAGE buffer for sub-slot readi() support. When the writer
+// is heartbeat-dead the transfer callback fabricates timer-paced silence
+// periods (silence_periods++) so camilla stays up and DAC-paced through a fanin
+// restart instead of flapping into capture-error/prepare; real audio resumes
+// seamlessly on writer reattach (epoch observed, silence stops).
+// ============================================================================
+
+static int jts_ring_capture_prepare(snd_pcm_ioplug_t *io) {
+    jts_ring_pcm_t *p = io->private_data;
+    if (!p->opened) {
+        jts_ring_geometry_t g = {
+            .rate = JTS_RING_RATE,
+            .channels = JTS_RING_CHANNELS,
+            .sample_format = JTS_RING_SAMPLE_FORMAT_S16LE,
+            .period_frames = p->period_frames,
+            .n_slots = p->n_slots,
+        };
+        int rc = jts_ring_reader_open(p->path, &g, &p->reader);
+        if (rc != 0) {
+            // -EBUSY (a live foreign reader already owns the ring) is the SPSC
+            // guard firing — surface it verbatim so a stray second capture opener
+            // sees EBUSY rather than corrupting the incumbent's read_seq.
+            SNDERR("jts_ring: reader_open(%s) failed rc=%d%s", p->path, rc,
+                   rc == -EBUSY ? " (ring already has a live reader — EBUSY)" : "");
+            return rc < 0 ? rc : -EIO;
+        }
+        p->stage_capacity_frames = p->period_frames;
+        p->stage = calloc(p->stage_capacity_frames * JTS_RING_CHANNELS, sizeof(int16_t));
+        if (!p->stage) {
+            jts_ring_reader_close(&p->reader);
+            return -ENOMEM;
+        }
+        p->opened = 1;
+    }
+    // Reset the destage + pointer + silence state on (re)prepare. stage_frames is
+    // the count of frames still UNREAD in the current destage slot; 0 means "no
+    // slot currently destaged" (transfer pulls a fresh one).
+    p->stage_frames = 0;
+    p->appl_frames = 0;
+    p->pending_silence_frames = 0;
+    p->silence_periods = 0;
+    p->last_silence_ns = 0;
+    p->ptr_state.last_reported = 0;
+    return 0;
+}
+
+static snd_pcm_sframes_t jts_ring_capture_pointer(snd_pcm_ioplug_t *io) {
+    jts_ring_pcm_t *p = io->private_data;
+    // Capture hw_ptr advances on the WRITER's PUBLISH: hw = appl_frames +
+    // readable, so ALSA's capture avail = hw - appl = readable. The three-part
+    // discipline lives in the shared jts_ring_capture_pointer_report (see the
+    // header): (1) readable = in-ring unread + destage remainder + fabricated
+    // writer-dead silence; (2) writer-dead silence keeps avail open on a gone
+    // producer while writer-alive+empty honestly reports 0 (camilla blocks =
+    // pacing); (3) the round-4 clamp bounds each reported advance below
+    // buffer_size so ALSA's mod-buffer hw_ptr inference never aliases a
+    // full-buffer writer burst to a zero delta. The host test drives the same
+    // function so a regression fails `make test`.
+    uint64_t occupancy = p->opened ? jts_ring_reader_occupancy_slots(&p->reader) : 0;
+    // destage remainder = frames copied out of a slot but not yet returned to the
+    // app. stage_frames counts UNREAD destage frames, so that is exactly the
+    // remainder (already-read frames were consumed by prior readi()s and folded
+    // into appl_frames).
+    uint64_t destage_remainder = (uint64_t)p->stage_frames;
+    jts_ring_capture_pointer_inputs_t in = {
+        .appl_frames = (uint64_t)p->appl_frames,
+        .occupancy_slots = occupancy,
+        .destage_frames = destage_remainder,
+        .pending_silence_frames = p->pending_silence_frames,
+        .period_frames = p->period_frames,
+        .buffer_size = (uint64_t)io->buffer_size,
+    };
+    uint64_t reported = jts_ring_capture_pointer_report(&p->ptr_state, &in);
+    return (snd_pcm_sframes_t)(reported % io->buffer_size);
+}
+
+// Refill the destage buffer with one slot when it is empty. Real ring data takes
+// priority (a writer that came back is served before any pending silence). On an
+// empty real ring: if silence has been ARMED (pending_silence_frames >= a period,
+// set by the poll tick while the writer is dead) fabricate that period of zeros
+// and CONSUME the pending arm; otherwise return 0 (the caller reports a short read
+// and re-polls — the writer-alive-and-empty pacing block). Returns readable frames
+// now in the destage buffer (period_frames on success, 0 if it must block).
+static size_t capture_refill_destage(jts_ring_pcm_t *p) {
+    if (p->stage_frames > 0) return p->stage_frames; // still draining a slot
+    jts_ring_slot_read_t got = jts_ring_reader_consume(&p->reader, p->stage);
+    if (got == JTS_RING_SLOT_FILLED) {
+        p->stage_frames = p->stage_capacity_frames;
+        // Real data flowed: reset the silence pacing clock so a later writer-death
+        // gap arms its FIRST silence period immediately (no dead-air lag), then
+        // paces subsequent ones from that point.
+        p->last_silence_ns = 0;
+        return p->stage_frames;
+    }
+    // Empty real ring. If a silence period has been armed (writer dead, poll tick
+    // advanced pending_silence_frames), deliver it: p->stage is already zeros from
+    // reader_consume's empty-fill. Consume one period of the pending arm.
+    if (p->pending_silence_frames >= p->period_frames) {
+        p->pending_silence_frames -= p->period_frames;
+        p->stage_frames = p->stage_capacity_frames;
+        p->silence_periods++;
+        return p->stage_frames;
+    }
+    return 0; // writer alive + empty (no armed silence): block (short read), re-poll
+}
+
+static snd_pcm_sframes_t jts_ring_capture_transfer(snd_pcm_ioplug_t *io,
+                                                   const snd_pcm_channel_area_t *areas,
+                                                   snd_pcm_uframes_t offset,
+                                                   snd_pcm_uframes_t size) {
+    jts_ring_pcm_t *p = io->private_data;
+    // Interleaved S16LE: one contiguous destination, all channels in areas[0].
+    int16_t *dst =
+        (int16_t *)((char *)areas[0].addr + (areas[0].first / 8) +
+                    (size_t)offset * (areas[0].step / 8));
+
+    snd_pcm_uframes_t delivered = 0;
+    while (delivered < size) {
+        size_t avail = capture_refill_destage(p);
+        if (avail == 0) {
+            // Writer alive + ring empty: cannot serve more right now. Return what
+            // we delivered so far (a short read); ALSA re-polls and the timerfd/
+            // POLLIN gate serves the rest once the writer publishes. Returning 0
+            // (nothing yet) is also valid — ALSA treats it as "try again".
+            break;
+        }
+        // Copy from the destage buffer starting at the already-read offset.
+        size_t origin = p->stage_capacity_frames - p->stage_frames; // frames already read
+        size_t take = (size - delivered) < p->stage_frames ? (size - delivered) : p->stage_frames;
+        memcpy(dst + delivered * JTS_RING_CHANNELS,
+               p->stage + origin * JTS_RING_CHANNELS,
+               take * JTS_RING_CHANNELS * sizeof(int16_t));
+        p->stage_frames -= take;
+        delivered += take;
+    }
+    p->appl_frames += delivered;
+    return (snd_pcm_sframes_t)delivered;
+}
+
+static int jts_ring_capture_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp) {
+    jts_ring_pcm_t *p = io->private_data;
+    // Capture delay = frames already captured/available but not yet read by the
+    // app = readable = in-ring unread + destage remainder. Honest occupancy-
+    // derived, same rationale as the playback delay (a live consumer's rate
+    // controller reads it; the writer-dead silence path is governed by the avail
+    // GATE, not this value).
+    uint64_t slots = p->opened ? jts_ring_reader_occupancy_slots(&p->reader) : 0;
+    snd_pcm_sframes_t delay =
+        (snd_pcm_sframes_t)(slots * p->period_frames + p->stage_frames);
+    if (delayp) *delayp = delay;
+    return 0;
+}
+
+static int jts_ring_capture_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfd,
+                                         unsigned int nfds, unsigned short *revents) {
+    jts_ring_pcm_t *p = io->private_data;
+    *revents = 0;
+    if (nfds >= 1 && (pfd[0].revents & POLLIN)) {
+        uint64_t expirations = 0;
+        ssize_t r = read(p->timer_fd, &expirations, sizeof(expirations));
+        (void)r;
+    }
+    // ARM SILENCE (the virtual writer), WALL-CLOCK PACED. If the writer is dead
+    // and the real ring is empty, arm one period of pending silence — but only
+    // once one period of REAL time (CLOCK_MONOTONIC) has elapsed since the last
+    // fabrication, so silence flows at ~48 kHz, exactly like a live writer
+    // publishing one slot per period. This pacing is load-bearing: without it an
+    // unpaced consumer (arecord, which re-polls immediately) drains fabricated
+    // silence at multiples of realtime, so a writer that returns mid-capture finds
+    // its whole audio window already consumed as silence and gets no live reader
+    // (drop_no_reader). Bounded to <= one period so avail never runs away. This is
+    // also what makes a COLD-START dead-writer ring (the `arecord` resolvability
+    // probe with no fanin) advance hw and terminate — just at realtime pace.
+    if (p->opened) {
+        int writer_live = jts_ring_reader_writer_is_live(&p->reader);
+        uint64_t occ = jts_ring_reader_occupancy_slots(&p->reader);
+        int real_empty = (occ == 0) && (p->stage_frames == 0);
+        if (!writer_live && real_empty &&
+            p->pending_silence_frames < (uint64_t)p->period_frames) {
+            uint64_t now = jts_ring_monotonic_ns();
+            uint64_t period_ns = (uint64_t)p->period_frames * 1000000000ull / JTS_RING_RATE;
+            // First silence period after real data (last_silence_ns == 0) arms
+            // immediately so the gate opens without a period of dead air; each
+            // subsequent one waits a full period of realtime.
+            if (p->last_silence_ns == 0 || now - p->last_silence_ns >= period_ns) {
+                p->pending_silence_frames = (uint64_t)p->period_frames;
+                p->last_silence_ns = now;
+            }
+        }
+    }
+    // Report POLLIN (readable) iff the app can consume a frame right now:
+    //   - a slot is in the ring (occupancy > 0), OR
+    //   - the destage buffer still has unread frames (stage_frames > 0), OR
+    //   - a silence period is armed (pending_silence_frames > 0).
+    // Empty ring WITH a live writer + no armed silence -> withhold POLLIN: camilla
+    // blocks in poll, and that block IS the pacing (the DAC-paced writer publishes
+    // the next slot). Before attach (prepare not yet run) optimistically report
+    // readable so the open handshake is not stalled.
+    int readable;
+    if (!p->opened) {
+        readable = 1;
+    } else {
+        uint64_t occ = jts_ring_reader_occupancy_slots(&p->reader);
+        readable = (occ > 0) || (p->stage_frames > 0) || (p->pending_silence_frames > 0);
+    }
+    if (readable) *revents |= POLLIN;
     return 0;
 }
 
@@ -469,6 +736,28 @@ static const snd_pcm_ioplug_callback_t jts_ring_callback = {
     .poll_revents = jts_ring_poll_revents,
 };
 
+// CAPTURE table (Ring A). start/stop/hw_params/close and the poll-descriptor
+// pair are shared with playback (timer-based, stream-agnostic); the
+// direction-specific callbacks are the capture set. No `.drain`: draining a
+// capture stream has nothing to flush OUTWARD (the app pulls remaining frames
+// via ordinary reads), so ALSA's default capture drain (stop) is correct — a
+// custom bounded drain would only duplicate that with no benefit and risk
+// blocking on a live-but-empty ring the way the playback drain deliberately
+// avoids.
+static const snd_pcm_ioplug_callback_t jts_ring_capture_callback = {
+    .start = jts_ring_start,
+    .stop = jts_ring_stop,
+    .pointer = jts_ring_capture_pointer,
+    .transfer = jts_ring_capture_transfer,
+    .delay = jts_ring_capture_delay,
+    .prepare = jts_ring_capture_prepare,
+    .hw_params = jts_ring_hw_params,
+    .close = jts_ring_close,
+    .poll_descriptors_count = jts_ring_poll_descriptors_count,
+    .poll_descriptors = jts_ring_poll_descriptors,
+    .poll_revents = jts_ring_capture_poll_revents,
+};
+
 static int jts_ring_set_hw_constraints(jts_ring_pcm_t *p) {
     snd_pcm_ioplug_t *io = &p->io;
     int rc;
@@ -518,8 +807,11 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
     // it used so `-Werror` does not trip on the unused macro parameter.
     (void)root;
 
-    if (stream != SND_PCM_STREAM_PLAYBACK) {
-        SNDERR("jts_ring: playback only");
+    // Both directions are supported: PLAYBACK is Ring B (this plugin WRITES the
+    // ring, outputd reads) and CAPTURE is Ring A (this plugin READS the ring,
+    // fanin writes). The callback table + io.name are chosen by `stream` below.
+    if (stream != SND_PCM_STREAM_PLAYBACK && stream != SND_PCM_STREAM_CAPTURE) {
+        SNDERR("jts_ring: unsupported stream direction");
         return -EINVAL;
     }
 
@@ -577,9 +869,14 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
     p->n_slots = (uint32_t)n_slots;
 
     p->io.version = SND_PCM_IOPLUG_VERSION;
-    p->io.name = "JTS Ring B playback (SHM ping-pong)";
+    if (stream == SND_PCM_STREAM_CAPTURE) {
+        p->io.name = "JTS Ring A capture (SHM ping-pong)";
+        p->io.callback = &jts_ring_capture_callback;
+    } else {
+        p->io.name = "JTS Ring B playback (SHM ping-pong)";
+        p->io.callback = &jts_ring_callback;
+    }
     p->io.mmap_rw = 0;
-    p->io.callback = &jts_ring_callback;
     p->io.private_data = p;
 
     rc = snd_pcm_ioplug_create(&p->io, name, stream, mode);

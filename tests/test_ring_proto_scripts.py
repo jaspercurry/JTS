@@ -48,6 +48,7 @@ RING_PROTO_DIR = ROOT / "scripts" / "ring-proto"
 
 MUTATING_SCRIPTS = (
     "arm.sh",
+    "arm-ring-a.sh",
     "disarm.sh",
     "build-on-pi.sh",
     "make-camilla-ring-config.sh",
@@ -69,6 +70,7 @@ def test_ring_proto_directory_contains_the_expected_files() -> None:
     expected = {
         "README.md",
         "arm.sh",
+        "arm-ring-a.sh",
         "disarm.sh",
         "build-on-pi.sh",
         "make-camilla-ring-config.sh",
@@ -174,23 +176,45 @@ def test_guard_defines_require_explicit_ring_proto_target() -> None:
     assert "exit 1" in text
 
 
-@pytest.mark.parametrize("name", ("arm.sh", "disarm.sh"))
-def test_arm_and_disarm_agree_on_marked_block_markers(name: str) -> None:
+def test_arm_and_disarm_agree_on_marked_block_markers() -> None:
     """arm.sh writes a BEGIN/END marked block into
     /var/lib/jasper/outputd.env; disarm.sh must strip the SAME literal
     markers, or a re-arm/disarm cycle silently leaves stale content
-    behind (or disarm silently no-ops on a real block)."""
+    behind (or disarm silently no-ops on a real block).
+
+    disarm.sh now carries BOTH the Ring B and Ring A markers (the two
+    mode branches), so we pin each arm script's markers against the
+    matching literal disarm.sh line rather than "the first assignment"."""
     arm_text = (RING_PROTO_DIR / "arm.sh").read_text(encoding="utf-8")
     disarm_text = (RING_PROTO_DIR / "disarm.sh").read_text(encoding="utf-8")
     arm_begin = _extract_assignment(arm_text, "BEGIN_MARKER")
     arm_end = _extract_assignment(arm_text, "END_MARKER")
-    disarm_begin = _extract_assignment(disarm_text, "BEGIN_MARKER")
-    disarm_end = _extract_assignment(disarm_text, "END_MARKER")
-    assert arm_begin == disarm_begin, (
-        f"BEGIN_MARKER differs: arm.sh={arm_begin!r} disarm.sh={disarm_begin!r}"
+    # The Ring B marker must appear verbatim as a BEGIN_MARKER/END_MARKER
+    # assignment somewhere in disarm.sh (the else branch).
+    assert arm_begin in _all_assignments(disarm_text, "BEGIN_MARKER"), (
+        f"arm.sh BEGIN_MARKER {arm_begin!r} not found among disarm.sh markers"
     )
-    assert arm_end == disarm_end, (
-        f"END_MARKER differs: arm.sh={arm_end!r} disarm.sh={disarm_end!r}"
+    assert arm_end in _all_assignments(disarm_text, "END_MARKER"), (
+        f"arm.sh END_MARKER {arm_end!r} not found among disarm.sh markers"
+    )
+
+
+def test_arm_ring_a_and_disarm_agree_on_marked_block_markers() -> None:
+    """arm-ring-a.sh writes its BEGIN/END marked block into
+    /var/lib/jasper/fanin.env; disarm.sh --ring-a must strip the SAME
+    literal markers."""
+    arm_text = (RING_PROTO_DIR / "arm-ring-a.sh").read_text(encoding="utf-8")
+    disarm_text = (RING_PROTO_DIR / "disarm.sh").read_text(encoding="utf-8")
+    arm_begin = _extract_assignment(arm_text, "BEGIN_MARKER")
+    arm_end = _extract_assignment(arm_text, "END_MARKER")
+    assert "jts-ring-a-proto" in arm_begin, (
+        f"arm-ring-a.sh BEGIN_MARKER should be the Ring A marker, got {arm_begin!r}"
+    )
+    assert arm_begin in _all_assignments(disarm_text, "BEGIN_MARKER"), (
+        f"arm-ring-a.sh BEGIN_MARKER {arm_begin!r} not found among disarm.sh markers"
+    )
+    assert arm_end in _all_assignments(disarm_text, "END_MARKER"), (
+        f"arm-ring-a.sh END_MARKER {arm_end!r} not found among disarm.sh markers"
     )
 
 
@@ -202,20 +226,33 @@ def _extract_assignment(text: str, var_name: str) -> str:
     raise AssertionError(f"could not find {var_name}= assignment")
 
 
+def _all_assignments(text: str, var_name: str) -> list[str]:
+    """Every RHS of `VAR="..."` lines (disarm.sh assigns the same var in both
+    mode branches, so a single-value extractor is not enough)."""
+    out = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f'{var_name}="') and stripped.endswith('"'):
+            out.append(stripped[len(var_name) + 2 : -1])
+    return out
+
+
 def _extract_disarm_sed_command(disarm_text: str) -> str:
     """Lift the exact sed command out of disarm.sh's marker-strip step, verbatim,
     as the string disarm.sh's local bash expands and hands to the remote shell.
 
-    disarm.sh runs `ssh_ok "sudo sed -i '<prog>' ${OUTPUTD_ENV}"`. The OUTER
+    disarm.sh runs `ssh_ok "sudo sed -i '<prog>' ${OTHER_ENV}"`. The OUTER
     double quotes are what make bash expand `${BEGIN_MARKER//\\//\\\\/}` and
-    `${OUTPUTD_ENV}` before the command is sent; the single quotes around the
+    `${OTHER_ENV}` before the command is sent; the single quotes around the
     program are literal-to-the-remote-shell. We return the inside of that outer
     quote with two edits: drop the leading `sudo ` (the test is unprivileged)
     and turn `sed -i` into `sed` (the test drives sed via stdout to sidestep the
     GNU-vs-BSD `sed -i` suffix-argument difference; disarm.sh runs on the Pi's
     GNU sed). The caller wraps this in a double-quoted `eval` so bash performs
     the SAME `${...}` expansion disarm.sh does — the extraction, not a
-    hand-retype, is what makes a disarm.sh edit flow into this test.
+    hand-retype, is what makes a disarm.sh edit flow into this test. The sed
+    command is generic (parameterized by BEGIN/END/OTHER_ENV) so it strips a
+    marked block identically for both the Ring A and Ring B mode branches.
     """
     for line in disarm_text.splitlines():
         stripped = line.strip()
@@ -225,20 +262,84 @@ def _extract_disarm_sed_command(disarm_text: str) -> str:
             end = after.rfind('"')  # trim the closing `"; then`
             if end == -1:
                 break
-            inner = after[:end]  # sed -i '<prog>' ${OUTPUTD_ENV}
+            inner = after[:end]  # sed -i '<prog>' ${OTHER_ENV}
             return inner.replace("sed -i ", "sed ", 1)
     raise AssertionError("could not extract the sed marker-strip command from disarm.sh")
 
 
+def _ring_b_marker(disarm_text: str, var_name: str) -> str:
+    """The Ring B (non-ring-a) marker from disarm.sh — the one containing
+    'jts-ring-proto' but NOT 'jts-ring-a-proto'."""
+    for value in _all_assignments(disarm_text, var_name):
+        if "jts-ring-a-proto" not in value and "jts-ring-proto" in value:
+            return value
+    raise AssertionError(f"could not find a Ring B {var_name} in disarm.sh")
+
+
 def test_arm_and_disarm_agree_on_the_conf_d_path() -> None:
     """The ALSA plugin drop-in path arm.sh installs must be the exact
-    path disarm.sh removes."""
+    path disarm.sh removes (Ring B)."""
     arm_text = (RING_PROTO_DIR / "arm.sh").read_text(encoding="utf-8")
     disarm_text = (RING_PROTO_DIR / "disarm.sh").read_text(encoding="utf-8")
     arm_path = _extract_assignment(arm_text, "CONF_D_PATH")
-    disarm_path = _extract_assignment(disarm_text, "CONF_D_PATH")
-    assert arm_path == disarm_path
     assert arm_path == "/etc/alsa/conf.d/98-jts-ring-proto.conf"
+    # disarm.sh assigns CONF_D_PATH in both mode branches; the Ring B path must
+    # be one of them.
+    assert arm_path in _all_assignments(disarm_text, "CONF_D_PATH")
+
+
+def test_arm_ring_a_and_disarm_agree_on_the_conf_d_path() -> None:
+    """The Ring A capture conf.d path arm-ring-a.sh installs must be the
+    exact path disarm.sh --ring-a removes."""
+    arm_text = (RING_PROTO_DIR / "arm-ring-a.sh").read_text(encoding="utf-8")
+    disarm_text = (RING_PROTO_DIR / "disarm.sh").read_text(encoding="utf-8")
+    arm_path = _extract_assignment(arm_text, "CONF_D_PATH")
+    assert arm_path == "/etc/alsa/conf.d/98-jts-ring-a-proto.conf"
+    assert arm_path in _all_assignments(disarm_text, "CONF_D_PATH")
+
+
+def test_arm_ring_a_slots_default_and_cap() -> None:
+    """arm-ring-a.sh's RING_SLOTS default is 8 (the validated Ring A capture
+    geometry) and its validation cap is 2..16 (the ring ceiling)."""
+    arm_text = (RING_PROTO_DIR / "arm-ring-a.sh").read_text(encoding="utf-8")
+    ring_slots_default = _extract_assignment_after_default(arm_text, "RING_SLOTS")
+    assert ring_slots_default == "8", (
+        f"arm-ring-a.sh RING_SLOTS default is {ring_slots_default!r}; expected 8"
+    )
+    assert "RING_SLOTS < 2 || RING_SLOTS > 16" in arm_text, (
+        "arm-ring-a.sh must cap JASPER_RING_PROTO_SLOTS at 2..16"
+    )
+    assert "2..16" in arm_text
+
+
+def test_arm_ring_a_capture_device_matches_fanin_coupling_ssot() -> None:
+    """The capture device arm-ring-a.sh + make-camilla-ring-config.sh --ring-a
+    default to must match jasper.fanin_coupling.RING_CAPTURE_DEVICE — the SSOT
+    the Rust writer and Python both read. A drift would arm a config CamillaDSP
+    resolves against a conf.d entry that does not exist."""
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_WIRE_FORMAT
+
+    arm_text = (RING_PROTO_DIR / "arm-ring-a.sh").read_text(encoding="utf-8")
+    make_text = (RING_PROTO_DIR / "make-camilla-ring-config.sh").read_text(encoding="utf-8")
+    # The literal device + format names must appear in both scripts.
+    assert RING_CAPTURE_DEVICE in arm_text, (
+        f"arm-ring-a.sh must reference the SSOT capture device {RING_CAPTURE_DEVICE!r}"
+    )
+    assert RING_CAPTURE_DEVICE in make_text
+    assert RING_WIRE_FORMAT in make_text, (
+        f"make-camilla-ring-config.sh --ring-a must pin the SSOT wire format "
+        f"{RING_WIRE_FORMAT!r}"
+    )
+
+
+def _extract_assignment_after_default(text: str, var_name: str) -> str:
+    """Extract the default from a `VAR="${OVERRIDE:-DEFAULT}"` assignment."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        m = re.match(rf'{var_name}="\$\{{[A-Z_]+:-([^}}]*)\}}"', stripped)
+        if m:
+            return m.group(1)
+    raise AssertionError(f"could not find {var_name}=default assignment")
 
 
 def test_arm_slots_default_and_cap_match_the_ring_ceiling() -> None:
@@ -295,8 +396,8 @@ def test_disarm_sed_marker_strip_actually_works(tmp_path: Path) -> None:
     if not _has("sed"):
         pytest.skip("sed not on PATH")
     disarm_text = (RING_PROTO_DIR / "disarm.sh").read_text(encoding="utf-8")
-    begin_marker = _extract_assignment(disarm_text, "BEGIN_MARKER")
-    end_marker = _extract_assignment(disarm_text, "END_MARKER")
+    begin_marker = _ring_b_marker(disarm_text, "BEGIN_MARKER")
+    end_marker = _ring_b_marker(disarm_text, "END_MARKER")
 
     env_file = tmp_path / "outputd.env"
     env_file.write_text(
@@ -312,13 +413,13 @@ def test_disarm_sed_marker_strip_actually_works(tmp_path: Path) -> None:
     # Extract the ACTUAL sed command from disarm.sh (not a hand-retyped copy)
     # so this test genuinely breaks if that command is ever hand-edited without
     # a matching test change. `eval` inside the double-quoted string reproduces
-    # the ${BEGIN_MARKER//...}/${OUTPUTD_ENV} expansion disarm.sh's outer
+    # the ${BEGIN_MARKER//...}/${OTHER_ENV} expansion disarm.sh's outer
     # `ssh_ok "..."` double quote performs; the extractor already turned
     # `sed -i` into `sed` so we can read stdout and dodge the GNU-vs-BSD
     # `sed -i` suffix difference.
     sed_command = _extract_disarm_sed_command(disarm_text)
     script = (
-        'BEGIN_MARKER="$1"; END_MARKER="$2"; OUTPUTD_ENV="$3"; '
+        'BEGIN_MARKER="$1"; END_MARKER="$2"; OTHER_ENV="$3"; '
         f'eval "{sed_command}"'
     )
     result = subprocess.run(
@@ -339,6 +440,52 @@ def test_disarm_sed_marker_strip_actually_works(tmp_path: Path) -> None:
     # Content outside the marked block must survive untouched.
     assert "JASPER_OUTPUTD_BACKEND=alsa" in remaining
     assert "JASPER_OUTPUTD_ANOTHER_VAR=foo" in remaining
+
+
+def test_disarm_ring_a_sed_marker_strip_actually_works(tmp_path: Path) -> None:
+    """The SAME extracted sed command must strip the RING A marked block from a
+    synthetic fanin.env, leaving everything outside the block untouched. The Ring
+    A marker embeds parentheses too ("(scripts/ring-proto/arm-ring-a.sh)"); this
+    exercises the real command against the Ring A markers, not just Ring B."""
+    if not _has("sed"):
+        pytest.skip("sed not on PATH")
+    disarm_text = (RING_PROTO_DIR / "disarm.sh").read_text(encoding="utf-8")
+    # The Ring A markers (containing 'jts-ring-a-proto').
+    begin_marker = next(
+        v for v in _all_assignments(disarm_text, "BEGIN_MARKER") if "jts-ring-a-proto" in v
+    )
+    end_marker = next(
+        v for v in _all_assignments(disarm_text, "END_MARKER") if "jts-ring-a-proto" in v
+    )
+    env_file = tmp_path / "fanin.env"
+    env_file.write_text(
+        "JASPER_FANIN_SOMETHING=1\n"
+        f"{begin_marker}\n"
+        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
+        "JASPER_FANIN_RING_PATH=/dev/shm/jts-ring/program.ring\n"
+        "JASPER_FANIN_RING_SLOTS=8\n"
+        f"{end_marker}\n"
+        "JASPER_FANIN_OTHER=keep\n",
+        encoding="utf-8",
+    )
+    sed_command = _extract_disarm_sed_command(disarm_text)
+    script = 'BEGIN_MARKER="$1"; END_MARKER="$2"; OTHER_ENV="$3"; ' + f'eval "{sed_command}"'
+    result = subprocess.run(
+        ["bash", "-c", script, "--", begin_marker, end_marker, str(env_file)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, f"sed command failed: {result.stderr}"
+    env_file.write_text(result.stdout, encoding="utf-8")
+    remaining = env_file.read_text(encoding="utf-8")
+    assert begin_marker not in remaining
+    assert end_marker not in remaining
+    assert "JASPER_FANIN_CAMILLA_COUPLING=shm_ring" not in remaining
+    assert "JASPER_FANIN_RING_SLOTS=8" not in remaining
+    # Content outside the marked block must survive untouched.
+    assert "JASPER_FANIN_SOMETHING=1" in remaining
+    assert "JASPER_FANIN_OTHER=keep" in remaining
 
 
 def test_arm_bench_writer_invocation_uses_flags_the_binary_actually_accepts() -> None:

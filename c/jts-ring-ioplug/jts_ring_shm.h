@@ -146,6 +146,40 @@ typedef enum {
     JTS_RING_PUBLISH_ERROR = -1,  // fatal (should not happen mid-run)
 } jts_ring_publish_result_t;
 
+// The reader's attached ring (Ring A CAPTURE direction). Mirrors the Rust
+// jasper_ring::RingReader: attach resyncs read_seq = write_seq, stamps
+// reader_pid + heartbeat every consume, consumes the OLDEST unread slot, and
+// releases read_seq with Release. Unlike the writer struct this carries a LOCAL
+// read_seq mirror the reader owns while live (the writer only borrows read_seq
+// on its no-live-reader free-run path — see the SPSC contract in
+// rust/jasper-ring/src/lib.rs).
+typedef struct {
+    void *base;          // mmap base (the header, then slots)
+    size_t map_len;      // mmapped byte length
+    int fd;              // the shm fd
+    jts_ring_geometry_t geometry;
+    uint64_t read_seq;   // local mirror of the header read_seq (reader-owned while live)
+    uint64_t last_epoch; // last-observed writer_epoch; a change = writer reattach
+    size_t slot_bytes;
+    size_t samples_per_slot;
+    int saw_filled;      // 0 until the first Filled read (startup-vs-steady empty split)
+    // Counters (reader-side observability; the capture ioplug + reader bench
+    // print these at close).
+    uint64_t frames_read_slots;  // slots consumed (== reader-owned read_seq advances)
+    uint64_t empty_reads;        // ring-empty reads AFTER the first fill (steady slips)
+    uint64_t startup_empty_reads; // ring-empty reads BEFORE the first fill (priming)
+    uint64_t reader_resyncs;     // defensive resyncs (W - R > n_slots — should be 0)
+    uint64_t attach_resyncs;     // resyncs at attach (1 iff write_seq > 0)
+    uint64_t epoch_resets;       // observed writer_epoch changes (writer reattached)
+    uint64_t occupancy;          // W - R at the last read (0..=n_slots)
+} jts_ring_reader_t;
+
+// Result of jts_ring_reader_consume.
+typedef enum {
+    JTS_RING_SLOT_FILLED = 1, // a slot was copied into `out`; read_seq advanced
+    JTS_RING_SLOT_EMPTY = 0,  // ring empty; `out` zero-filled (caller emits silence)
+} jts_ring_slot_read_t;
+
 // --- Geometry helpers (pure) ---
 
 size_t jts_ring_slot_bytes(const jts_ring_geometry_t *g);
@@ -221,6 +255,56 @@ int jts_ring_writer_can_accept(const jts_ring_writer_t *w);
 
 // Detach: clear writer_pid (if ours), munmap, close. Safe on a zeroed struct.
 void jts_ring_writer_close(jts_ring_writer_t *w);
+
+// --- Reader attach / consume / close (Ring A CAPTURE direction) ---
+
+// Create-or-attach as the READER: O_EXCL create (init + magic-last) or attach
+// (bounded magic wait + geometry validation against `expected`), then:
+//   - resync read_seq = write_seq (drop the <= n_slots stale slots accumulated
+//     while the reader was down; count attach_resyncs) and publish it (Release)
+//     so the writer's space check is correct;
+//   - stamp reader_pid + reader_heartbeat so the writer's liveness gate sees us;
+//   - snapshot writer_epoch for reattach detection.
+// SPSC GUARD: the ring tolerates EXACTLY ONE reader. If a live foreign
+// reader_pid is already stamped (pid != 0, pid != getpid(), heartbeat younger
+// than the liveness window), open refuses with -EBUSY and does NOT stamp
+// anything — a stray second `arecord -D jts_ring_capture` while CamillaDSP is
+// attached would otherwise corrupt read_seq. (The Rust reader has no such guard
+// because outputd owns Ring B's reader singleton by construction; Ring A's
+// capture device is operator-openable, so the guard is load-bearing here.)
+// Returns 0 on success (fills *out), <0 (negative errno-ish) on a fatal error
+// (-EBUSY on a live foreign reader, -EINVAL on geometry mismatch). `path` must
+// be an absolute /dev/shm/jts-ring/... path for the magic-invalid reclaim.
+int jts_ring_reader_open(const char *path, const jts_ring_geometry_t *expected,
+                         jts_ring_reader_t *out);
+
+// Consume the OLDEST unread slot into `out` (jts_ring_samples_per_slot
+// interleaved i16). NEVER blocks. Stamps reader_heartbeat + observes epoch every
+// call (filled or not — the writer's block-vs-drop gate reads the heartbeat, so
+// it must bump even on empty periods, exactly like the Rust reader). Defensive:
+// if W - R > n_slots (a correct writer never lets this happen), fast-forwards
+// read_seq = write_seq and counts reader_resyncs rather than reading a slot the
+// writer may be mid-overwriting. Returns JTS_RING_SLOT_FILLED (copied + advanced
+// read_seq with Release) or JTS_RING_SLOT_EMPTY (zero-filled `out`).
+jts_ring_slot_read_t jts_ring_reader_consume(jts_ring_reader_t *r, int16_t *out);
+
+// Frames of buffering readable right now (W - R) * period_frames, for the
+// capture ioplug's avail/pointer honesty. Reads read_seq from the local mirror
+// (the reader owns it) and write_seq with Acquire.
+uint64_t jts_ring_reader_occupancy_slots(const jts_ring_reader_t *r);
+
+// True (1) iff the WRITER is currently live: writer_pid != 0 AND its heartbeat
+// is younger than JTS_RING_WRITER_LIVENESS_TIMEOUT_NS. The capture side uses
+// this to decide the writer-dead silence path (empty + writer dead -> fabricate
+// timer-paced silence; empty + writer alive -> withhold POLLIN so camilla blocks
+// = the pacing). Same-process convenience wrapper over the reader's mmap.
+int jts_ring_reader_writer_is_live(const jts_ring_reader_t *r);
+
+// Detach: clear reader_pid (if ours — a second reader that stamped its own pid
+// and this instance dropping must not clear the new reader's presence, mirroring
+// the writer close `cur == mine` guard and the Rust RingReader Drop), munmap,
+// close. Safe on a zeroed struct.
+void jts_ring_reader_close(jts_ring_reader_t *r);
 
 // CLOCK_MONOTONIC nanoseconds (shared by the writer heartbeat and the wait
 // helper). Exposed for the bench + host test.
@@ -329,6 +413,105 @@ static inline uint64_t jts_ring_pointer_report(jts_ring_pointer_state_t *st,
             (in->buffer_size > (uint64_t)in->period_frames)
                 ? (in->buffer_size - (uint64_t)in->period_frames)
                 : 0; // pathological buffer_size == period: no advance headroom
+        if (advance > max_advance) advance = max_advance;
+        reported = last + advance;
+    }
+    st->last_reported = reported;
+    return reported;
+}
+
+// --- ioplug CAPTURE pointer core (Ring A; shared by pcm_jts_ring.c AND
+//     test_ring_core.c, exactly like the playback core above) ---
+//
+// The capture direction is the MIRROR of the playback pointer discipline, with
+// two things flipped:
+//
+//   * ROLES. On playback the ioplug is the WRITER and hw_ptr tracks the READER's
+//     drain (appl - in_flight). On capture the ioplug is the READER and hw_ptr
+//     tracks the WRITER's PUBLISH: hw = appl_frames + readable, where `readable`
+//     is what the app can consume right now. ALSA's capture avail is
+//     hw_ptr - appl_ptr = readable, and it grants `transfer` at most `avail`
+//     frames — so `readable` is the gate that lets camilla pull data.
+//
+//   * THE DUAL MODE. On playback a DEAD reader discounts in_flight to 0 so avail
+//     stays OPEN (the writer must keep flowing to bound the ring). On capture a
+//     DEAD WRITER is the case that must keep avail open the OTHER way: the ring
+//     is empty and never refills, so an honest `readable` (= 0) would pin avail
+//     at 0 forever and camilla would block in poll on a producer that is gone —
+//     pushing it toward capture-error/prepare flap during a routine fanin
+//     restart. So writer-dead FABRICATES one period of readable per silence tick
+//     (the caller supplies `silence_frames`, incremented on the timer path),
+//     which advances hw_ptr and arms POLLIN so `transfer` pulls a period of
+//     zeros. Writer ALIVE + ring empty is DIFFERENT and correct: `readable` is
+//     honestly 0, avail is 0, camilla blocks in poll — that block IS the pacing
+//     (the writer, DAC-paced transitively, will publish the next slot). We never
+//     fabricate silence while the writer is alive.
+//
+// THE ALIAS HAZARD MIRRORS EXACTLY. ALSA infers capture hw motion the same way
+// (delta = (this - last) mod buffer_size in snd_pcm_ioplug_hw_ptr_update). A
+// writer BURST of exactly buffer_size frames between two pointer reads (a fanin
+// step that publishes a full buffer while the app was mid-gap) makes the raw
+// hw advance by exactly buffer_size in one call -> aliases to a ZERO delta ->
+// ALSA's accumulated hw_ptr falls a lap behind -> avail pins at 0 permanently ->
+// camilla wedges reading a producer that is actually full. Same fix: never let
+// the REPORTED position advance >= buffer_size in one call; a full-buffer catch-
+// up spreads over successive ~period/4 ticks as visible sub-buffer deltas. The
+// clamp is also the non-decreasing floor (hw_ptr never steps backward across a
+// writer reattach / epoch flip). One unified reported-position state, same
+// jts_ring_pointer_state_t the playback path uses.
+typedef struct {
+    uint64_t appl_frames;    // ALSA appl_ptr mirror (frames the app has READ, real + silence)
+    uint64_t occupancy_slots; // write_seq - read_seq (published-but-unread)
+    uint64_t destage_frames; // frames staged from a slot but not yet returned to the app
+    uint64_t pending_silence_frames; // fabricated writer-dead silence armed but not yet consumed
+    uint32_t period_frames;  // frames per slot
+    uint64_t buffer_size;    // n_slots * period_frames (== ALSA buffer)
+} jts_ring_capture_pointer_inputs_t;
+
+// Compute the RAW (pre-modulo) capture hw_ptr to report to ALSA, advancing/
+// clamping `st->last_reported`. The caller returns `result % buffer_size`. Pure:
+// no ALSA, no atomics — the caller samples occupancy/destage/pending-silence and
+// passes them in.
+static inline uint64_t
+jts_ring_capture_pointer_report(jts_ring_pointer_state_t *st,
+                                const jts_ring_capture_pointer_inputs_t *in) {
+    // 1. Readable = what the app can consume right now:
+    //   - In-ring unread slots (occupancy*period) + the sub-slot destage
+    //     remainder are readable whether the writer is live or dead (already-
+    //     published frames are valid to drain either way).
+    //   - WRITER-DEAD SILENCE: `pending_silence_frames` is the fabricated
+    //     "virtual writer" output the caller ARMS one period per timer tick while
+    //     the writer is heartbeat-dead and the real ring is empty (wall-clock
+    //     paced, exactly like a live writer publishing one slot per period). It is
+    //     already 0 whenever the writer is alive OR real data is available (the
+    //     caller only arms it in the writer-dead-and-empty branch and consumes it
+    //     as the app reads), so it needs no liveness flag here: adding it always
+    //     is correct because it is only ever nonzero in the case it must open the
+    //     gate. This is what makes even a COLD-START dead-writer ring (no fanin,
+    //     the `arecord` resolvability probe) advance hw and terminate — the pointer
+    //     is not itself time-aware, but the value it reads is, so it stays pure.
+    //   - WRITER-ALIVE + empty: occupancy 0 + destage 0 + pending 0 -> readable 0
+    //     -> avail 0 -> camilla blocks in poll = the pacing.
+    uint64_t readable = in->occupancy_slots * (uint64_t)in->period_frames +
+                        in->destage_frames + in->pending_silence_frames;
+    // Honest capture hw_ptr = appl + readable (frames available to be captured).
+    uint64_t honest = in->appl_frames + readable;
+
+    // 2. Reported-position clamp (identical shape to the playback core): forward-
+    // only, and never by >= buffer_size in one call so ALSA's mod-buffer delta
+    // inference never aliases a full-buffer writer burst to a zero delta.
+    uint64_t last = st->last_reported;
+    uint64_t reported;
+    if (honest <= last) {
+        // Held or regressed (can't happen for an honest appl+readable, but the
+        // clamp keeps the floor unconditional): hold at last_reported.
+        reported = last;
+    } else {
+        uint64_t advance = honest - last;
+        uint64_t max_advance =
+            (in->buffer_size > (uint64_t)in->period_frames)
+                ? (in->buffer_size - (uint64_t)in->period_frames)
+                : 0;
         if (advance > max_advance) advance = max_advance;
         reported = last + advance;
     }

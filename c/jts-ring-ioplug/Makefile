@@ -49,7 +49,12 @@ test: test_ring_core
 ring_writer_bench: ring_writer_bench.c $(CORE) jts_ring_shm.h
 	$(CC) $(CFLAGS) -o $@ ring_writer_bench.c $(CORE) -lm
 
-bench: ring_writer_bench
+ring_reader_bench: ring_reader_bench.c $(CORE) jts_ring_shm.h
+	$(CC) $(CFLAGS) -o $@ ring_reader_bench.c $(CORE)
+
+# Both benches: writer feeds the ring (Ring B smoke / interop), reader drains it
+# (Ring A smoke / interop). Host-safe (no ALSA).
+bench: ring_writer_bench ring_reader_bench
 
 # --- Pi-only (needs alsa-lib) ---
 
@@ -68,4 +73,4 @@ install: plugin
 	install -m 0644 $(PLUGIN_SO) $(ALSA_PLUGIN_DIR)/$(PLUGIN_SO)
 
 clean:
-	rm -f test_ring_core ring_writer_bench $(PLUGIN_SO)
+	rm -f test_ring_core ring_writer_bench ring_reader_bench $(PLUGIN_SO)

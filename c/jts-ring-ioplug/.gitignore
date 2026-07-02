@@ -7,5 +7,6 @@
 # build-on-pi.sh straight to the ALSA plugin dir; nothing here is committed.
 test_ring_core
 ring_writer_bench
+ring_reader_bench
 *.so
 *.o

@@ -127,14 +127,18 @@ sudo install -m 0644 "${so_path}" "${plugin_dir}/libasound_module_pcm_jts_ring.s
 echo "installed: ${plugin_dir}/libasound_module_pcm_jts_ring.so"
 REMOTE
 
-echo "--- Verifying bench binary ---"
+echo "--- Verifying bench binaries ---"
 ssh -o BatchMode=yes "${PI_USER}@${PI_HOST}" bash -c "
-    if [[ -x '${REMOTE_WORK_DIR}/c/jts-ring-ioplug/ring_writer_bench' ]]; then
-        echo 'bench binary: ${REMOTE_WORK_DIR}/c/jts-ring-ioplug/ring_writer_bench'
-    else
-        echo 'error: bench binary not produced' >&2
-        exit 1
-    fi
+    ok=1
+    for b in ring_writer_bench ring_reader_bench; do
+        if [[ -x '${REMOTE_WORK_DIR}/c/jts-ring-ioplug/'\$b ]]; then
+            echo \"bench binary: ${REMOTE_WORK_DIR}/c/jts-ring-ioplug/\$b\"
+        else
+            echo \"error: bench binary \$b not produced\" >&2
+            ok=0
+        fi
+    done
+    [[ \$ok -eq 1 ]]
 "
 
 cat <<EOF
@@ -142,7 +146,8 @@ cat <<EOF
 === Build complete ===
 
 Plugin:  ${ALSA_PLUGIN_DIR}/libasound_module_pcm_jts_ring.so  (on ${PI_HOST})
-Bench:   ${REMOTE_WORK_DIR}/c/jts-ring-ioplug/ring_writer_bench  (on ${PI_HOST})
+Bench:   ${REMOTE_WORK_DIR}/c/jts-ring-ioplug/ring_writer_bench  (Ring B writer, on ${PI_HOST})
+         ${REMOTE_WORK_DIR}/c/jts-ring-ioplug/ring_reader_bench  (Ring A reader, on ${PI_HOST})
 
 Next: bash scripts/ring-proto/arm.sh  (this is a build-only step — arm.sh
 wires it into the live ALSA/outputd/Camilla chain).

@@ -57,19 +57,20 @@ parallel effort on the same branch and are NOT edited by anything here:
 If any of the above hasn't landed yet when you run these scripts, the
 scripts degrade gracefully — see "Degraded/partial states" below.
 
-## The six scripts
+## The scripts
 
 | Script | Runs on | Mutates anything? |
 |---|---|---|
 | `host-check.sh` | laptop (macOS/Linux) | No — pure build+test gate |
 | `build-on-pi.sh` | laptop, drives the Pi over SSH | Yes — stages source, builds, installs one `.so` |
-| `make-camilla-ring-config.sh` | laptop, drives the Pi over SSH | Yes — writes one new Camilla config file (does NOT load it) |
-| `arm.sh` | laptop, drives the Pi over SSH | Yes — the full wiring sequence below |
-| `disarm.sh` | laptop, drives the Pi over SSH | Yes — unconditional rollback, idempotent |
-| `_guard.sh` | sourced by the four mutating scripts above | No — safety gate only |
+| `make-camilla-ring-config.sh` | laptop, drives the Pi over SSH | Yes — writes one new Camilla config file (does NOT load it). `--ring-a` swaps `devices.capture` instead of `devices.playback` |
+| `arm.sh` | laptop, drives the Pi over SSH | Yes — the full Ring **B** wiring sequence below |
+| `arm-ring-a.sh` | laptop, drives the Pi over SSH | Yes — the Ring **A** capture-mirror wiring (see "Ring A" below) |
+| `disarm.sh` | laptop, drives the Pi over SSH | Yes — unconditional rollback, idempotent. `--ring-a` rolls back Ring A |
+| `_guard.sh` | sourced by the five mutating scripts above | No — safety gate only |
 
-**Safety gate on every mutating script:** each of `arm.sh`, `disarm.sh`,
-`build-on-pi.sh`, and `make-camilla-ring-config.sh` refuses to run
+**Safety gate on every mutating script:** each of `arm.sh`, `arm-ring-a.sh`,
+`disarm.sh`, `build-on-pi.sh`, and `make-camilla-ring-config.sh` refuses to run
 unless `PI_HOST` is explicitly set (by you, or already persisted in
 `.env.local` — see AGENTS.md "Laptop-side state"). Running any of them
 bare, with no `PI_HOST` and no `.env.local`, is a `No changes made`
@@ -282,6 +283,86 @@ outputd_udp` is the existing diagnostic that can bind `:9891` directly
 for a one-off electrical capture without touching the AEC bridge; see
 `docs/AEC-DIAG-03-timing-probe.md` for the full `--ref-source` menu and
 usage. This prototype does not add a new electrical-capture tool.
+
+## Ring A — the capture mirror (fan-in → CamillaDSP)
+
+Everything above is **Ring B** (CamillaDSP writes the ring, `jasper-outputd`
+reads — the output hop). **Ring A** is the mirror on the *input* side:
+**`jasper-fanin` writes the ring, CamillaDSP's capture reads it** — replacing
+the fan-in → camilla `dsnoop` capture hop. Same SHM contract v1, byte-identical
+header; separate ring instance (`program.ring`, vs Ring B's `content.ring`).
+
+**Roles flip, code is shared.** The C ioplug (`pcm_jts_ring.c`) dispatches on
+`io->stream`: playback = the Ring B writer path, capture = the Ring A reader
+path. The reader core (`jts_ring_reader_*` in `jts_ring_shm.c`) mirrors the Rust
+`RingReader` (attach-resync `read_seq = write_seq`, defensive resync on
+`W − R > n_slots`, reader pid/heartbeat stamped every consume, consume-oldest
+with a Release `read_seq` advance). The capture pointer core
+(`jts_ring_capture_pointer_report`) is the exact mirror of the playback one — the
+same round-4 mod-buffer alias clamp, roles flipped (`hw` advances on writer
+PUBLISH; a writer burst of exactly `buffer_size` between two pointer reads must
+never alias to a zero delta).
+
+**Two Ring-A-only behaviours to know:**
+
+- **`-EBUSY` second-reader guard.** The ring is strictly SPSC. Unlike Ring B
+  (where `jasper-outputd` owns the reader by construction), Ring A's capture
+  device is operator-openable — a stray `arecord -D jts_ring_capture` while
+  CamillaDSP is attached would corrupt `read_seq`. `jts_ring_reader_open` refuses
+  with `-EBUSY` if a *live foreign* reader pid is already stamped (a dead/stale
+  one does not block a fresh attach). Verified on hardware: a second concurrent
+  `arecord` gets `rc=-16`, the incumbent keeps the ring uninterrupted.
+- **Writer-dead timer-paced silence.** When `jasper-fanin` is heartbeat-dead
+  (a routine deploy restart) the reader fabricates **wall-clock-paced** silence
+  (one 128-frame period per period of realtime) so CamillaDSP stays up and
+  DAC-paced instead of flapping into capture-error/prepare. Real audio resumes
+  seamlessly on writer reattach (epoch observed). This is what makes
+  `arecord -D jts_ring_capture -d 1` terminate (the resolvability probe) even
+  with no fan-in running. Verified on hardware: writer death mid-`arecord` →
+  paced silence → writer return (880 Hz) all captured cleanly, `arecord` exit 0,
+  no xruns.
+
+### Arm / disarm Ring A
+
+```sh
+# Build the .so on the Pi first (shared with Ring B):
+PI_HOST=jts.local bash scripts/ring-proto/build-on-pi.sh
+
+# Arm Ring A (default 8 slots — the capture BufferManager negotiates a
+# 1024-frame buffer = 8 * 128; overridable 2..16):
+PI_HOST=jts.local bash scripts/ring-proto/arm-ring-a.sh
+JASPER_RING_PROTO_SLOTS=8 PI_HOST=jts.local bash scripts/ring-proto/arm-ring-a.sh
+
+# Roll back:
+PI_HOST=jts.local bash scripts/ring-proto/disarm.sh --ring-a
+```
+
+`arm-ring-a.sh` runs, in order, with an automatic `disarm.sh --ring-a` rollback
+on ANY step failure: preflight (`.so` installed, `jasper-fanin` running on the
+`loopback` default, host **reachable — unreachable is a FAILURE, not a skip**) →
+install `/etc/alsa/conf.d/98-jts-ring-a-proto.conf` (`pcm.jts_ring_capture`,
+`period_frames 128`, `n_slots 8`) → `arecord` resolvability probe (terminates via
+the writer-dead silence path) → flip `jasper-fanin` to
+`JASPER_FANIN_CAMILLA_COUPLING=shm_ring` (marked block in `/var/lib/jasper/fanin.env`,
+the last `EnvironmentFile`), ordered restart (`reset-failed` + a 90 s spacing
+guard so the two daemons that share the ring do not race the create/attach
+handshake) → **enforce ring perms** (`program.ring` `root:jasper` `0664`, dir
+`0775` — the reader WRITES `read_seq`+heartbeat, so the CamillaDSP user needs rw;
+this is the EACCES class the outputd fix round hit) → build+load the Ring A hand
+Camilla config (`make-camilla-ring-config.sh --ring-a`: `devices.capture →
+{type: Alsa, device: jts_ring_capture, format: S16_LE}`, `camilladsp --check`-gated)
+→ ordered `jasper-camilla` restart.
+
+The capture device (`jts_ring_capture`) and wire format (`S16_LE`) are the SSOT
+shared with `jasper.fanin_coupling.capture_kwargs_for_coupling("shm_ring")`; the
+`--ring-a` config generator asserts they match at build time and fails loud on a
+drift. `disarm.sh --ring-a` removes **only** the `program.ring` file (never the
+`/dev/shm/jts-ring` dir — an armed Ring B's `content.ring` may share it).
+
+**Reader bench for on-Pi interop:** `ring_reader_bench` (the capture-direction
+mirror of `ring_writer_bench`) attaches, drains at DAC pace, and counts
+`frames_read / silence_periods / epoch_resets` — the interop proof of the Rust
+`RingWriter` → C reader wire format without a full CamillaDSP capture path.
 
 ## Rollback
 

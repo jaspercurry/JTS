@@ -485,3 +485,310 @@ void jts_ring_writer_close(jts_ring_writer_t *w) {
     w->base = NULL;
     w->fd = -1;
 }
+
+// ============================================================================
+// Reader core (Ring A CAPTURE direction) — mirrors rust/jasper-ring RingReader.
+// ============================================================================
+
+static jts_ring_header_t *rdr_hdr(const jts_ring_reader_t *r) {
+    return (jts_ring_header_t *)r->base;
+}
+
+// True iff the WRITER is live: writer_pid != 0 AND heartbeat younger than the
+// liveness window. Symmetric to reader_is_live (which the writer uses); this is
+// the predicate the capture side runs to decide the writer-dead silence path.
+static int writer_is_live(const jts_ring_header_t *h, uint64_t now_ns) {
+    uint64_t pid = atomic_load_explicit(&h->writer_pid, memory_order_relaxed);
+    if (pid == 0) return 0;
+    uint64_t hb = atomic_load_explicit(&h->writer_heartbeat_ns, memory_order_relaxed);
+    if (hb == 0) return 0;
+    // Saturating subtraction (mirrors reader_is_live / the Rust reader's
+    // saturating_sub): a heartbeat stamped AFTER we sampled now_ns must clamp
+    // age to 0 (definitely live), never underflow to a huge age that would
+    // spuriously flip us into the silence path against a live writer.
+    uint64_t age = (now_ns > hb) ? (now_ns - hb) : 0;
+    return age < JTS_RING_WRITER_LIVENESS_TIMEOUT_NS;
+}
+
+// True iff a live FOREIGN reader already owns the ring (SPSC guard). pid stamped,
+// pid != ours, heartbeat fresh. A dead/stale foreign reader (pid set but
+// heartbeat older than the window, e.g. a crashed prior arecord) does NOT block
+// us — we take ownership by stamping our own pid, exactly as a fresh attach
+// should. Our OWN pid never blocks (re-open / re-prepare of the same process).
+static int foreign_reader_is_live(const jts_ring_header_t *h, uint64_t now_ns) {
+    uint64_t pid = atomic_load_explicit(&h->reader_pid, memory_order_relaxed);
+    if (pid == 0) return 0;
+    if (pid == (uint64_t)getpid()) return 0; // ours — re-prepare, not a conflict
+    uint64_t hb = atomic_load_explicit(&h->reader_heartbeat_ns, memory_order_relaxed);
+    if (hb == 0) return 0; // stamped a pid but never a heartbeat: treat as dead
+    uint64_t age = (now_ns > hb) ? (now_ns - hb) : 0;
+    return age < JTS_RING_WRITER_LIVENESS_TIMEOUT_NS;
+}
+
+// Fill the reader's common (geometry/mmap) fields from an already-mapped ring.
+// Shared by init_created_reader (fresh create) and attach_existing_reader.
+static void reader_fill_common(jts_ring_reader_t *r, void *base, size_t map_len,
+                               int fd, const jts_ring_geometry_t *g) {
+    r->base = base;
+    r->map_len = map_len;
+    r->fd = fd;
+    r->geometry = *g;
+    r->slot_bytes = jts_ring_slot_bytes(g);
+    r->samples_per_slot = jts_ring_samples_per_slot(g);
+}
+
+// Init a freshly-created (O_EXCL) fd as the reader-creator (reboot-while-armed:
+// camilla may open before fanin). ftruncate + map + write config + publish magic
+// LAST with Release — byte-identical to init_created (the writer creator) so
+// either side can create the ring. Returns 0 on success.
+static int init_created_reader(int fd, const jts_ring_geometry_t *g,
+                               jts_ring_reader_t *out) {
+    size_t file_size = jts_ring_file_size(g);
+    if (ftruncate(fd, (off_t)file_size) < 0) return -errno;
+    void *base = map_fd(fd, file_size);
+    if (!base) return -errno;
+    jts_ring_header_t *h = (jts_ring_header_t *)base;
+    h->version = JTS_RING_VERSION;
+    h->rate = g->rate;
+    h->channels = g->channels;
+    h->sample_format = g->sample_format;
+    h->period_frames = g->period_frames;
+    h->n_slots = g->n_slots;
+    h->_pad = 0;
+    h->futex_word = 0;
+    uint64_t magic_qword = (uint64_t)JTS_RING_MAGIC | ((uint64_t)JTS_RING_VERSION << 32);
+    atomic_store_explicit(magic_qword_ptr(base), magic_qword, memory_order_release);
+    reader_fill_common(out, base, file_size, fd, g);
+    return 0;
+}
+
+// Attach to an existing fd as the reader. Same tri-state as attach_existing
+// (the writer's): 0 = attached to a valid ring, 1 = torn init (reclaimable if
+// owned), -1 = fatal geometry mismatch.
+static int attach_existing_reader(int fd, const jts_ring_geometry_t *expected,
+                                  jts_ring_reader_t *out, const char **reason) {
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        if (reason) *reason = "fstat failed";
+        return -1;
+    }
+    if ((uint64_t)st.st_size < (uint64_t)JTS_RING_HEADER_BYTES) {
+        return 1; // mid-init / not a ring
+    }
+    size_t actual = (size_t)st.st_size;
+    void *base = map_fd(fd, actual);
+    if (!base) {
+        if (reason) *reason = "mmap failed";
+        return -1;
+    }
+    jts_ring_header_t *h = (jts_ring_header_t *)base;
+    if (!wait_for_magic(base)) {
+        munmap(base, actual);
+        return 1; // torn init
+    }
+    jts_ring_geometry_t header_g = {.rate = h->rate,
+                                    .channels = h->channels,
+                                    .sample_format = h->sample_format,
+                                    .period_frames = h->period_frames,
+                                    .n_slots = h->n_slots};
+    if (jts_ring_file_size(&header_g) != actual) {
+        munmap(base, actual);
+        if (reason) *reason = "file size inconsistent with header geometry";
+        return -1;
+    }
+    if (h->version != JTS_RING_VERSION || header_g.rate != expected->rate ||
+        header_g.channels != expected->channels ||
+        header_g.sample_format != expected->sample_format ||
+        header_g.period_frames != expected->period_frames ||
+        header_g.n_slots != expected->n_slots) {
+        munmap(base, actual);
+        if (reason) *reason = "ring header does not match expected geometry";
+        return -1;
+    }
+    reader_fill_common(out, base, actual, fd, expected);
+    return 0;
+}
+
+int jts_ring_reader_open(const char *path, const jts_ring_geometry_t *expected,
+                         jts_ring_reader_t *out) {
+    memset(out, 0, sizeof(*out));
+    out->fd = -1;
+    const char *reason = NULL;
+    if (jts_ring_geometry_validate(expected, &reason) != 0) {
+        fprintf(stderr, "event=jts_ring.reader.bad_geometry reason=%s\n",
+                reason ? reason : "(unknown)");
+        return -EINVAL;
+    }
+
+    int mkrc = ensure_parent_dir(path);
+    if (mkrc != 0) {
+        fprintf(stderr, "event=jts_ring.reader.mkdir_failed rc=%d path=%s\n", mkrc, path);
+        return mkrc;
+    }
+
+    for (int attempt = 0; attempt < 8; attempt++) {
+        int create_fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0660);
+        if (create_fd >= 0) {
+            int rc = init_created_reader(create_fd, expected, out);
+            if (rc != 0) {
+                close(create_fd);
+                unlink(path);
+                fprintf(stderr, "event=jts_ring.reader.create_failed rc=%d\n", rc);
+                return rc;
+            }
+            break; // created; fall through to reader-attach stamp
+        }
+        if (errno != EEXIST) {
+            fprintf(stderr, "event=jts_ring.reader.create_open_failed errno=%d\n", errno);
+            return -errno;
+        }
+
+        int fd = open(path, O_RDWR | O_CLOEXEC);
+        if (fd < 0) {
+            if (errno == ENOENT) continue; // raced an unlink; retry create
+            return -errno;
+        }
+        int rc = attach_existing_reader(fd, expected, out, &reason);
+        if (rc == 0) break; // attached to a valid ring
+        close(fd);
+        if (rc < 0) {
+            fprintf(stderr, "event=jts_ring.reader.attach_fatal reason=%s\n",
+                    reason ? reason : "(unknown)");
+            return -EINVAL;
+        }
+        if (!owned_ring_path(path)) {
+            fprintf(stderr, "event=jts_ring.reader.torn_not_reclaimable path=%s\n", path);
+            return -EINVAL;
+        }
+        unlink(path);
+        fprintf(stderr, "event=jts_ring.reader.reclaimed_magic_invalid path=%s\n", path);
+    }
+
+    if (out->base == NULL) {
+        fprintf(stderr, "event=jts_ring.reader.attach_exhausted path=%s\n", path);
+        return -EAGAIN;
+    }
+
+    jts_ring_header_t *h = rdr_hdr(out);
+
+    // SPSC GUARD: refuse if a live FOREIGN reader already owns the ring. Do this
+    // AFTER the mmap but BEFORE stamping our own pid, so a rejected open leaves
+    // read_seq / reader_pid exactly as the incumbent left them (no corruption of
+    // the live reader's state). munmap + close and return -EBUSY.
+    if (foreign_reader_is_live(h, jts_ring_monotonic_ns())) {
+        uint64_t other = atomic_load_explicit(&h->reader_pid, memory_order_relaxed);
+        fprintf(stderr,
+                "event=jts_ring.reader.busy path=%s existing_reader_pid=%llu\n",
+                path, (unsigned long long)other);
+        munmap(out->base, out->map_len);
+        if (out->fd >= 0) close(out->fd);
+        memset(out, 0, sizeof(*out));
+        out->fd = -1;
+        return -EBUSY;
+    }
+
+    // Reader-attach: resync read_seq = write_seq (drop <= n_slots stale slots),
+    // publish it (Release) so the writer's space check is correct, stamp
+    // reader_pid + heartbeat, snapshot writer_epoch. Mirrors the Rust
+    // RingReader::create_or_attach.
+    uint64_t wseq = atomic_load_explicit(&h->write_seq, memory_order_acquire);
+    out->read_seq = wseq;
+    atomic_store_explicit(&h->read_seq, wseq, memory_order_release);
+    out->last_epoch = atomic_load_explicit(&h->writer_epoch, memory_order_acquire);
+    atomic_store_explicit(&h->reader_pid, (uint64_t)getpid(), memory_order_relaxed);
+    atomic_store_explicit(&h->reader_heartbeat_ns, jts_ring_monotonic_ns(),
+                          memory_order_relaxed);
+    out->attach_resyncs = (wseq > 0) ? 1 : 0;
+    out->saw_filled = 0;
+    return 0;
+}
+
+jts_ring_slot_read_t jts_ring_reader_consume(jts_ring_reader_t *r, int16_t *out) {
+    jts_ring_header_t *h = rdr_hdr(r);
+    uint64_t now = jts_ring_monotonic_ns();
+    // Heartbeat every consume, filled or not — the writer's block-vs-drop gate
+    // reads it, so it MUST bump on empty periods too (the Rust reader does the
+    // same; a heartbeat only on filled reads would let a legitimately-empty
+    // reader look dead and the writer free-run-drop while a real reader waits).
+    atomic_store_explicit(&h->reader_heartbeat_ns, now, memory_order_relaxed);
+
+    // Observe writer epoch (reattach detection).
+    uint64_t epoch = atomic_load_explicit(&h->writer_epoch, memory_order_acquire);
+    if (epoch != r->last_epoch) {
+        r->last_epoch = epoch;
+        r->epoch_resets++;
+    }
+
+    uint64_t wseq = atomic_load_explicit(&h->write_seq, memory_order_acquire);
+    uint64_t rr = r->read_seq;
+
+    // Defensive: a correct writer never lets W - R exceed n_slots. If it somehow
+    // did (a wedged reader whose read_seq fell far behind while the writer
+    // free-ran drop-oldest), fast-forward to the tip and count it — never read a
+    // slot the writer may be mid-overwriting. Mirrors the Rust reader.
+    if (wseq - rr > (uint64_t)r->geometry.n_slots) {
+        rr = wseq;
+        r->read_seq = rr;
+        atomic_store_explicit(&h->read_seq, rr, memory_order_release);
+        r->reader_resyncs++;
+    }
+
+    if (wseq == rr) {
+        // Empty: zero-fill, split startup priming from steady-state slips.
+        memset(out, 0, r->slot_bytes);
+        if (r->saw_filled) {
+            r->empty_reads++;
+        } else {
+            r->startup_empty_reads++;
+        }
+        r->occupancy = 0;
+        return JTS_RING_SLOT_EMPTY;
+    }
+
+    // A slot is available. Copy slot (rr % n_slots) out — the Acquire load of
+    // write_seq above ordered the writer's payload stores before this read.
+    uint32_t slot_index = (uint32_t)(rr % (uint64_t)r->geometry.n_slots);
+    const uint8_t *base = (const uint8_t *)r->base;
+    const int16_t *slot =
+        (const int16_t *)(base + JTS_RING_HEADER_BYTES + (size_t)slot_index * r->slot_bytes);
+    memcpy(out, slot, r->slot_bytes);
+
+    // Release the slot: store read_seq = rr+1 with Release so the copy-out cannot
+    // be reordered after the writer observes the slot as free.
+    uint64_t next = rr + 1;
+    r->read_seq = next;
+    atomic_store_explicit(&h->read_seq, next, memory_order_release);
+
+    r->saw_filled = 1;
+    r->frames_read_slots++;
+    r->occupancy = wseq - next;
+    return JTS_RING_SLOT_FILLED;
+}
+
+uint64_t jts_ring_reader_occupancy_slots(const jts_ring_reader_t *r) {
+    const jts_ring_header_t *h = (const jts_ring_header_t *)r->base;
+    uint64_t wseq = atomic_load_explicit(&h->write_seq, memory_order_acquire);
+    return wseq - r->read_seq;
+}
+
+int jts_ring_reader_writer_is_live(const jts_ring_reader_t *r) {
+    const jts_ring_header_t *h = (const jts_ring_header_t *)r->base;
+    return writer_is_live(h, jts_ring_monotonic_ns());
+}
+
+void jts_ring_reader_close(jts_ring_reader_t *r) {
+    if (!r || !r->base) return;
+    jts_ring_header_t *h = rdr_hdr(r);
+    // Clear reader_pid only if it is ours (a second reader that stamped its own
+    // pid must not have its presence cleared by this instance dropping). Mirrors
+    // the writer close guard and the Rust RingReader Drop.
+    uint64_t mine = (uint64_t)getpid();
+    uint64_t cur = atomic_load_explicit(&h->reader_pid, memory_order_relaxed);
+    if (cur == mine) {
+        atomic_store_explicit(&h->reader_pid, 0, memory_order_relaxed);
+    }
+    munmap(r->base, r->map_len);
+    if (r->fd >= 0) close(r->fd);
+    r->base = NULL;
+    r->fd = -1;
+}

@@ -20,6 +20,7 @@
 #include "jts_ring_shm.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1055,6 +1056,703 @@ static void test_drain_flush_partial_slot(void) {
     unlink(path);
 }
 
+// ============================================================================
+// Ring A CAPTURE-direction tests (the reader core + the capture pointer core).
+//
+// These mirror the playback tests above with roles flipped: the REAL
+// jts_ring_writer_* is the producer, the REAL jts_ring_reader_* is the consumer
+// (no hand-copied reader — the SPSC discipline is exercised through the shipped
+// code), and a capture ioplug model drives the SHARED
+// jts_ring_capture_pointer_report so a plugin regression fails `make test`.
+// ============================================================================
+
+// Fill a slot buffer with a distinct per-slot marker so a roundtrip can prove
+// the CORRECT (oldest-first) slot came out, not just "some 512 bytes".
+static void mark_slot(int16_t *buf, size_t samples, int16_t marker) {
+    for (size_t i = 0; i < samples; i++) buf[i] = (int16_t)(marker + (int16_t)(i & 0x7));
+}
+
+static void test_reader_roundtrip_vs_writer(void) {
+    // Real writer publishes distinct slots; real reader consumes them oldest-
+    // first with exact payload fidelity. Proves the C-writer<->C-reader wire
+    // format (the same format the Rust writer emits — proven on-Pi by the reader
+    // bench).
+    char path[256];
+    tmp_path(path, sizeof(path), "rdr-roundtrip");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+
+    // Publish three marked slots, consume, assert oldest-first + fidelity.
+    for (int16_t k = 0; k < 3; k++) {
+        mark_slot(s, n, (int16_t)(1000 + k * 100));
+        CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish marked slot");
+    }
+    CHECK(jts_ring_reader_occupancy_slots(&r) == 3, "reader sees 3 unread slots");
+    for (int16_t k = 0; k < 3; k++) {
+        mark_slot(s, n, (int16_t)(1000 + k * 100)); // expected
+        CHECK(jts_ring_reader_consume(&r, out) == JTS_RING_SLOT_FILLED, "consume filled");
+        CHECK(memcmp(out, s, n * sizeof(int16_t)) == 0, "oldest-first payload fidelity");
+    }
+    // Empty now.
+    CHECK(jts_ring_reader_consume(&r, out) == JTS_RING_SLOT_EMPTY, "empty after drain");
+    // Empty-read zero-fills.
+    int all_zero = 1;
+    for (size_t i = 0; i < n; i++) if (out[i] != 0) all_zero = 0;
+    CHECK(all_zero, "empty read zero-fills out");
+    CHECK(r.frames_read_slots == 3, "frames_read_slots counter");
+
+    free(s);
+    free(out);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_reader_attach_resync_drops_stale(void) {
+    // The writer runs ahead (fills the ring, no reader). A reader attaching LATER
+    // must resync read_seq = write_seq (drop the <= n_slots stale slots a pacer
+    // has no use for), count one attach_resync, and see the ring as EMPTY — not
+    // replay old audio. Mirrors the Rust RingReader attach.
+    char path[256];
+    tmp_path(path, sizeof(path), "rdr-resync");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    // Writer publishes with no reader (free-run drop keeps write_seq climbing).
+    for (int i = 0; i < 10; i++) {
+        mark_slot(s, n, (int16_t)(i * 10));
+        (void)jts_ring_writer_publish(&w, s);
+    }
+    uint64_t wseq_at_attach =
+        atomic_load_explicit(&((jts_ring_header_t *)w.base)->write_seq, memory_order_acquire);
+    CHECK(wseq_at_attach == 10, "writer advanced write_seq to 10 (free-run)");
+
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader attach after writer ran ahead");
+    CHECK(r.read_seq == wseq_at_attach, "reader resynced read_seq = write_seq");
+    CHECK(r.attach_resyncs == 1, "counted one attach resync");
+    int16_t *out = calloc(n, sizeof(int16_t));
+    CHECK(jts_ring_reader_consume(&r, out) == JTS_RING_SLOT_EMPTY,
+          "post-resync ring is EMPTY (stale slots dropped, no replay)");
+
+    free(s);
+    free(out);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_reader_defensive_resync_on_overrun(void) {
+    // A wedged reader whose local read_seq fell far behind while the writer
+    // free-ran drop-oldest: W - R > n_slots. The next consume must fast-forward
+    // to the tip and count a reader_resync rather than read a slot the writer may
+    // be mid-overwriting. Mirrors the Rust reader's defensive branch.
+    char path[256];
+    tmp_path(path, sizeof(path), "rdr-defensive");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+
+    // Force W - R > n_slots by hand: the reader's local read_seq is 0, and we
+    // drive write_seq far ahead directly in the header (simulating a writer that
+    // free-ran while this reader was wedged, without the reader observing it).
+    jts_ring_header_t *h = (jts_ring_header_t *)w.base;
+    atomic_store_explicit(&h->write_seq, (uint64_t)g.n_slots + 3, memory_order_release);
+    r.read_seq = 0; // wedged mirror
+    CHECK(jts_ring_reader_consume(&r, out) == JTS_RING_SLOT_EMPTY,
+          "defensive resync fast-forwards to tip -> empty (not a torn slot)");
+    CHECK(r.reader_resyncs == 1, "counted one defensive resync");
+    CHECK(r.read_seq == (uint64_t)g.n_slots + 3, "read_seq fast-forwarded to write_seq");
+
+    free(s);
+    free(out);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_reader_ebusy_second_reader(void) {
+    // The SPSC guard. Reader 1 attaches (stamps a fresh pid+heartbeat). Reader 2
+    // opening the SAME ring must be refused with -EBUSY and must NOT corrupt
+    // reader 1's read_seq/pid. This is the guard the Rust reader lacks (outputd
+    // owns Ring B by construction) but Ring A's operator-openable capture device
+    // needs. A stray `arecord -D jts_ring_capture` while camilla is attached is
+    // exactly the shape.
+    char path[256];
+    tmp_path(path, sizeof(path), "rdr-ebusy");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+
+    jts_ring_reader_t r1;
+    CHECK(jts_ring_reader_open(path, &g, &r1) == 0, "reader 1 attaches");
+    // Advance reader 1's read_seq to a nonzero value so a corrupting second
+    // attach would be observable (a resync would zero the wrong thing).
+    jts_ring_header_t *h = (jts_ring_header_t *)r1.base;
+    uint64_t pid1 = atomic_load_explicit(&h->reader_pid, memory_order_relaxed);
+    uint64_t rseq_before = atomic_load_explicit(&h->read_seq, memory_order_relaxed);
+
+    // NOTE: reader 1's pid == getpid() here (same process), so foreign_reader_is_live
+    // returns 0 for OUR pid — that is correct for re-prepare in the SAME process.
+    // To model a DIFFERENT process holding the ring, overwrite reader_pid with a
+    // foreign live pid (any nonzero != getpid()) and a fresh heartbeat, then try
+    // to open: it must return -EBUSY.
+    uint64_t foreign = (uint64_t)getpid() + 1; // definitely not us
+    atomic_store_explicit(&h->reader_pid, foreign, memory_order_relaxed);
+    atomic_store_explicit(&h->reader_heartbeat_ns, jts_ring_monotonic_ns(),
+                          memory_order_relaxed);
+
+    jts_ring_reader_t r2;
+    memset(&r2, 0, sizeof(r2));
+    int rc = jts_ring_reader_open(path, &g, &r2);
+    CHECK(rc == -EBUSY, "second live reader refused with -EBUSY");
+    // The incumbent's state is untouched: pid + read_seq unchanged from the
+    // foreign values we stamped (the guard bailed BEFORE any resync/stamp).
+    CHECK(atomic_load_explicit(&h->reader_pid, memory_order_relaxed) == foreign,
+          "EBUSY did not clobber the incumbent reader_pid");
+    CHECK(atomic_load_explicit(&h->read_seq, memory_order_relaxed) == rseq_before,
+          "EBUSY did not clobber read_seq");
+    CHECK(r2.base == NULL, "refused reader struct left detached");
+
+    // A DEAD foreign reader (stale heartbeat) must NOT block a fresh attach —
+    // ownership is takeable when the incumbent is gone.
+    atomic_store_explicit(&h->reader_heartbeat_ns, 1, memory_order_relaxed); // ancient
+    jts_ring_reader_t r3;
+    CHECK(jts_ring_reader_open(path, &g, &r3) == 0,
+          "dead foreign reader does not block a fresh attach");
+    CHECK(atomic_load_explicit(&h->reader_pid, memory_order_relaxed) == (uint64_t)getpid(),
+          "fresh attach took ownership (our pid)");
+
+    (void)pid1;
+    jts_ring_reader_close(&r3);
+    // r1's pid was overwritten by `foreign`/us above; close only clears if ours.
+    jts_ring_reader_close(&r1);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_reader_close_clears_pid_only_if_ours(void) {
+    // Close must clear reader_pid ONLY if it is still ours — a second reader that
+    // stamped its own pid then this instance dropping must not clear the new
+    // reader's presence. Mirrors the writer close guard + the Rust RingReader
+    // Drop.
+    char path[256];
+    tmp_path(path, sizeof(path), "rdr-close-guard");
+    jts_ring_geometry_t g = proto_geometry();
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+    // Read the header through the WRITER's still-valid mapping (w.base), NOT the
+    // reader's — close() munmaps r.base, so a post-close read through r.base would
+    // touch freed memory. w and r map the same file, so w.base sees the reader's
+    // header writes.
+    jts_ring_header_t *h = (jts_ring_header_t *)w.base;
+    // Simulate a takeover: some OTHER reader stamped its pid after us.
+    uint64_t other = (uint64_t)getpid() + 7;
+    atomic_store_explicit(&h->reader_pid, other, memory_order_relaxed);
+    jts_ring_reader_close(&r);
+    CHECK(atomic_load_explicit(&h->reader_pid, memory_order_relaxed) == other,
+          "close did not clear a foreign reader_pid (takeover safe)");
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_reader_epoch_reset_on_writer_reattach(void) {
+    // A writer reattach bumps writer_epoch; the reader must observe the change and
+    // count an epoch_reset on its next consume. This is the seamless
+    // writer-returns path the silence contract relies on.
+    char path[256];
+    tmp_path(path, sizeof(path), "rdr-epoch");
+    jts_ring_geometry_t g = proto_geometry();
+    jts_ring_writer_t w1;
+    CHECK(jts_ring_writer_open(path, &g, &w1) == 0, "writer 1 open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+    int16_t *out = calloc(g.period_frames * g.channels, sizeof(int16_t));
+    (void)jts_ring_reader_consume(&r, out); // observes epoch 1
+    CHECK(r.epoch_resets == 0, "no epoch reset yet");
+
+    // Second writer attaches to the SAME ring (writer 1 still mapped) -> epoch++.
+    jts_ring_writer_t w2;
+    CHECK(jts_ring_writer_open(path, &g, &w2) == 0, "writer 2 reattach (epoch++)");
+    (void)jts_ring_reader_consume(&r, out); // observes the epoch change
+    CHECK(r.epoch_resets == 1, "reader counted the writer reattach epoch reset");
+
+    free(out);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w2);
+    jts_ring_writer_close(&w1);
+    unlink(path);
+}
+
+// --- capture ioplug model (drives the SHARED jts_ring_capture_pointer_report) ---
+//
+// The MIRROR of ioplug_model_t: models ALSA's real capture hw_ptr inference
+// (snd_pcm_ioplug_hw_ptr_update accumulates delta = (ret - last) mod buffer),
+// and derives CAPTURE avail = hw_ptr - appl_ptr (readable). It calls the shared
+// jts_ring_capture_pointer_report (the exact function the plugin's capture
+// `pointer` returns from) so a regression in the capture core fails `make test`.
+// The model tracks the ioplug's DESTAGE + ARMED-silence state the same way the
+// plugin does: a slot destaged is one period of readable; the poll tick ARMS a
+// period of pending silence when the writer is dead and the real ring is empty
+// (bounded to one period); the transfer CONSUMES the armed silence, advancing
+// appl. cap_model_avail includes cap_model_poll_arm so every avail read reflects
+// the poll-tick arming, exactly as the ALSA rw loop interleaves poll + pointer.
+typedef struct {
+    uint64_t appl_frames;         // ALSA appl_ptr mirror (frames the app READ)
+    jts_ring_pointer_state_t ptr; // reported-position state
+    uint64_t alsa_hw_ptr;         // ALSA's accumulated (boundary-space) hw_ptr
+    uint64_t alsa_last_hw;        // last pointer() return ALSA stored (mod-buffer)
+    int alsa_last_hw_valid;
+    uint64_t buffer_size;
+    uint32_t period;
+    uint64_t pending_silence_frames; // armed-but-unconsumed fabricated silence
+    uint64_t silence_periods;        // total fabricated-silence periods delivered (observability)
+    uint64_t destage_frames;         // unread frames in the current destage slot
+} cap_model_t;
+
+static cap_model_t cap_model_new(const jts_ring_geometry_t *g) {
+    cap_model_t m;
+    memset(&m, 0, sizeof(m));
+    m.buffer_size = (uint64_t)g->n_slots * g->period_frames;
+    m.period = g->period_frames;
+    return m;
+}
+
+// Mirror jts_ring_capture_poll_revents' arm step: on a (virtual) timer tick, if
+// the writer is dead and the real ring is empty, arm one period of pending
+// silence (bounded to one period). Called by cap_model_avail so every avail read
+// reflects a poll tick, matching the ALSA rw loop's poll-then-pointer cadence.
+static void cap_model_poll_arm(cap_model_t *m, jts_ring_reader_t *r) {
+    int writer_live = jts_ring_reader_writer_is_live(r);
+    uint64_t occ = jts_ring_reader_occupancy_slots(r);
+    int real_empty = (occ == 0) && (m->destage_frames == 0);
+    if (!writer_live && real_empty && m->pending_silence_frames < (uint64_t)m->period) {
+        m->pending_silence_frames = (uint64_t)m->period;
+    }
+}
+
+// One capture `pointer` read + ALSA's accumulation, EXACTLY as
+// snd_pcm_ioplug_hw_ptr_update does it. Reads occupancy off the REAL reader
+// handle; pending-silence off the model (the plugin reads its own field).
+static void cap_model_pointer_tick(cap_model_t *m, jts_ring_reader_t *r) {
+    jts_ring_capture_pointer_inputs_t in = {
+        .appl_frames = m->appl_frames,
+        .occupancy_slots = jts_ring_reader_occupancy_slots(r),
+        .destage_frames = m->destage_frames,
+        .pending_silence_frames = m->pending_silence_frames,
+        .period_frames = m->period,
+        .buffer_size = m->buffer_size,
+    };
+    uint64_t raw = jts_ring_capture_pointer_report(&m->ptr, &in);
+    uint64_t ret = raw % m->buffer_size;
+    if (!m->alsa_last_hw_valid) {
+        m->alsa_last_hw = ret;
+        m->alsa_last_hw_valid = 1;
+        return;
+    }
+    uint64_t delta = (ret >= m->alsa_last_hw) ? (ret - m->alsa_last_hw)
+                                              : (m->buffer_size + ret - m->alsa_last_hw);
+    m->alsa_hw_ptr += delta;
+    m->alsa_last_hw = ret;
+}
+
+// ALSA capture avail off the ACCUMULATED hw_ptr: hw_ptr - appl_ptr (readable).
+// PURE pointer read (no arming) — mirrors the plugin, whose `pointer` callback
+// never arms; only `poll_revents` (cap_model_poll_arm) does. The ALSA rw loop's
+// order is: an initial `pointer` read (baseline, pending==0) BEFORE the first
+// `poll_revents`, so the first avail read establishes hw_ptr==0 and armed silence
+// only ever shows up as a POSITIVE delta on a later read. Getting this order
+// right is exactly what avoids the first-read-seed swallowing a front-loaded
+// readable (the wedge the earlier "avail always arms first" model hit).
+static uint64_t cap_model_avail(cap_model_t *m, jts_ring_reader_t *r) {
+    cap_model_pointer_tick(m, r);
+    uint64_t readable =
+        (m->alsa_hw_ptr >= m->appl_frames) ? (m->alsa_hw_ptr - m->appl_frames) : 0;
+    return (readable <= m->buffer_size) ? readable : m->buffer_size;
+}
+
+// A poll tick THEN an avail read — the ALSA rw-loop cadence when the app is
+// waiting for data (poll_revents arms silence, then the next pointer read
+// reflects it). Use this in tests that drive the writer-dead silence path so the
+// arming happens in the right order relative to the baseline.
+static uint64_t cap_model_poll_then_avail(cap_model_t *m, jts_ring_reader_t *r) {
+    cap_model_poll_arm(m, r);
+    return cap_model_avail(m, r);
+}
+
+// Model the plugin's capture transfer of ONE period: refill the destage buffer
+// from the ring (real data first, then armed silence), then the app reads a
+// period. Returns 1 if a period was delivered (real or silence), 0 if the app
+// must block (writer alive + ring empty + no armed silence). Mirrors
+// capture_refill_destage + the transfer copy loop for one period. Arms silence
+// first (a transfer is preceded by a poll tick in the rw loop) so a writer-dead
+// read fabricates without a separate avail call.
+static int cap_model_read_period(cap_model_t *m, jts_ring_reader_t *r, int16_t *out) {
+    cap_model_poll_arm(m, r);
+    if (m->destage_frames == 0) {
+        jts_ring_slot_read_t got = jts_ring_reader_consume(r, out);
+        if (got == JTS_RING_SLOT_FILLED) {
+            m->destage_frames = m->period;
+        } else if (m->pending_silence_frames >= m->period) {
+            // Armed silence: fabricate a period (out is already zeros), consume the arm.
+            m->pending_silence_frames -= m->period;
+            m->destage_frames = m->period;
+            m->silence_periods++;
+        } else {
+            return 0; // writer alive + empty + no armed silence: block
+        }
+    }
+    // Deliver a period from the destage buffer.
+    m->destage_frames -= m->period; // one whole period consumed
+    m->appl_frames += m->period;
+    return 1;
+}
+
+static void test_capture_pointer_advances_on_publish(void) {
+    // The core capture-pointer honesty: hw_ptr advances on the WRITER's PUBLISH,
+    // so ALSA's capture avail = readable frames. Publish slots (no read yet) and
+    // avail must climb to occupancy*period; read them and avail must fall back.
+    char path[256];
+    tmp_path(path, sizeof(path), "cap-pointer");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+    cap_model_t m = cap_model_new(&g);
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+
+    // Prime the model's first pointer read (ALSA seeds last_hw, hw stays 0).
+    (void)cap_model_avail(&m, &r);
+    CHECK(cap_model_avail(&m, &r) == 0, "empty ring + live writer: avail 0 (block=pacing)");
+
+    // Publish 3 slots; avail climbs toward 3 periods as the pointer reflects the
+    // writer's publish.
+    for (int i = 0; i < 3; i++) {
+        jts_ring_writer_publish(&w, s);
+    }
+    uint64_t avail = 0;
+    for (int tick = 0; tick < 6; tick++) avail = cap_model_avail(&m, &r); // let the clamp catch up
+    CHECK(avail == 3 * (uint64_t)g.period_frames, "avail == 3 periods after 3 publishes");
+
+    // App reads all 3 periods; avail falls to 0.
+    for (int i = 0; i < 3; i++) CHECK(cap_model_read_period(&m, &r, out) == 1, "read a period");
+    for (int tick = 0; tick < 6; tick++) avail = cap_model_avail(&m, &r);
+    CHECK(avail == 0, "avail back to 0 after reading everything");
+
+    free(s);
+    free(out);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_capture_alias_writer_burst_gap(void) {
+    // CAPTURE alias TRIGGER (a) — mirror of the playback drain-gap: while the app
+    // is mid-gap (no pointer read), the WRITER publishes a full buffer of slots.
+    // The next pointer read would jump hw_ptr forward by exactly buffer_size — the
+    // alias to a ZERO delta that pins avail at 0 and wedges camilla reading a
+    // producer that is actually full. The clamp must spread it into sub-buffer
+    // deltas so avail reopens.
+    char path[256];
+    tmp_path(path, sizeof(path), "cap-alias-burst");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+    cap_model_t m = cap_model_new(&g);
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+
+    // Seed the pointer at an empty ring (hw_ptr == appl == 0).
+    (void)cap_model_avail(&m, &r);
+    uint64_t raw_before = m.ptr.last_reported;
+
+    // The GAP: the writer publishes a FULL buffer of slots while no pointer read
+    // happens (the app is outside a PCM call).
+    for (uint32_t i = 0; i < g.n_slots; i++) jts_ring_writer_publish(&w, s);
+    CHECK(jts_ring_reader_occupancy_slots(&r) == (uint64_t)g.n_slots, "ring full after burst");
+
+    // Not-a-tautology: an UNCLAMPED honest capture pointer would now report
+    // appl + occupancy*period = 0 + buffer_size, a raw jump of exactly
+    // buffer_size -> aliases to delta 0 (would wedge avail at 0 permanently).
+    uint64_t honest_unclamped = m.appl_frames + (uint64_t)g.n_slots * g.period_frames;
+    CHECK(honest_unclamped - raw_before == m.buffer_size,
+          "unclamped capture burst jump is exactly one buffer (alias precondition)");
+    CHECK(alsa_delta(raw_before, honest_unclamped, m.buffer_size) == 0,
+          "unclamped: full-buffer writer burst aliases to ZERO delta (would wedge)");
+
+    // Clamped: avail reopens over successive ticks (sub-buffer deltas), hw_ptr
+    // monotonic, and eventually reflects the full buffer of readable data.
+    uint64_t avail = 0;
+    int saw_open = 0;
+    for (int tick = 0; tick < (int)g.n_slots + 2; tick++) {
+        uint64_t hw_prev = m.alsa_hw_ptr;
+        avail = cap_model_avail(&m, &r);
+        CHECK(m.alsa_hw_ptr >= hw_prev, "clamped: capture hw_ptr monotonic across catch-up");
+        if (avail > 0) saw_open = 1;
+    }
+    CHECK(saw_open, "clamped: avail reopens after the writer-burst gap (no alias wedge)");
+    CHECK(avail == m.buffer_size, "clamped: full buffer of readable eventually reflected");
+
+    free(s);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_capture_alias_writer_death_flip(void) {
+    // CAPTURE alias TRIGGER (b) — mirror of the playback dead-flip: the ring is
+    // full of unread slots and the WRITER dies. The app must keep pulling those
+    // real slots, then transition to fabricated silence. The alias risk is the
+    // readable value stepping by a full buffer in one pointer read across the
+    // silence transition; the clamp must keep avail open (POLLIN armed) the whole
+    // time so the app never wedges — this is the "fanin restart while the ring
+    // was full" operational shape.
+    char path[256];
+    tmp_path(path, sizeof(path), "cap-alias-death");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+    cap_model_t m = cap_model_new(&g);
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+
+    (void)cap_model_avail(&m, &r);
+    for (uint32_t i = 0; i < g.n_slots; i++) jts_ring_writer_publish(&w, s);
+    for (int tick = 0; tick < (int)g.n_slots + 2; tick++) (void)cap_model_avail(&m, &r);
+
+    // The WRITER dies (stale heartbeat). occupancy unchanged (n_slots real slots
+    // still unread), so the writer-dead classification is now true but there is
+    // still real data.
+    jts_ring_header_t *h = (jts_ring_header_t *)w.base;
+    atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
+    CHECK(!jts_ring_reader_writer_is_live(&r), "writer now dead (stale heartbeat)");
+
+    // The app keeps reading: first the real slots, then fabricated silence — avail
+    // must stay open (POLLIN) the whole time (no wedge on a gone producer).
+    int silence_seen = 0, real_seen = 0;
+    for (int i = 0; i < 3 * (int)g.n_slots; i++) {
+        uint64_t before_sil = m.silence_periods;
+        CHECK(cap_model_read_period(&m, &r, out) == 1,
+              "read a period through writer death (real or fabricated silence)");
+        if (m.silence_periods > before_sil) silence_seen = 1;
+        else real_seen = 1;
+        // Poll re-arms (silence if the ring has drained; a no-op while real slots
+        // remain), then avail must be open: real data OR a freshly-armed silence
+        // period — never a wedge on the gone producer.
+        uint64_t avail = cap_model_poll_then_avail(&m, &r);
+        CHECK(avail > 0, "clamped: writer-dead keeps capture avail open (no wedge)");
+    }
+    CHECK(real_seen, "read the real slots that were in the ring at death");
+    CHECK(silence_seen, "transitioned to fabricated silence once the ring drained");
+
+    free(s);
+    free(out);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_capture_alias_dead_to_live_recovery(void) {
+    // CAPTURE alias TRIGGER (c) — writer dies, app free-runs on fabricated
+    // silence, then a NEW writer reattaches (epoch++). hw_ptr must never regress
+    // across the transition and real audio must resume once the writer publishes.
+    char path[256];
+    tmp_path(path, sizeof(path), "cap-alias-recover");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w1;
+    CHECK(jts_ring_writer_open(path, &g, &w1) == 0, "writer 1 open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+    cap_model_t m = cap_model_new(&g);
+    size_t n = w1.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+
+    // Writer 1 dies immediately (stale heartbeat); the app free-runs on silence.
+    jts_ring_header_t *h = (jts_ring_header_t *)w1.base;
+    atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
+    (void)cap_model_avail(&m, &r);
+    uint64_t hw_before = m.alsa_hw_ptr;
+    uint64_t prev = m.alsa_hw_ptr;
+    int silence_periods = 0;
+    for (int i = 0; i < 6; i++) {
+        CHECK(cap_model_read_period(&m, &r, out) == 1, "free-run on silence");
+        silence_periods++;
+        // A poll tick re-arms silence, then avail reflects it: the writer-dead
+        // silence free-run keeps avail open (one period) so POLLIN re-fires each
+        // wait, and it is bounded by the buffer.
+        uint64_t avail = cap_model_poll_then_avail(&m, &r);
+        CHECK(avail > 0 && avail <= m.buffer_size, "silence free-run: avail open + bounded");
+        CHECK(m.alsa_hw_ptr >= prev, "silence free-run: hw_ptr never regresses");
+        prev = m.alsa_hw_ptr;
+    }
+    CHECK(silence_periods == 6, "fabricated silence periods while writer dead");
+
+    // A NEW writer reattaches (epoch++), fresh heartbeat. It publishes real slots.
+    jts_ring_writer_t w2;
+    CHECK(jts_ring_writer_open(path, &g, &w2) == 0, "writer 2 reattach (epoch++)");
+    for (int i = 0; i < 3; i++) {
+        mark_slot(s, n, (int16_t)(2000 + i));
+        jts_ring_writer_publish(&w2, s);
+    }
+    CHECK(jts_ring_reader_writer_is_live(&r), "writer live again after reattach");
+
+    // Real audio resumes; hw_ptr keeps climbing, never regresses, no silence now.
+    int real_periods = 0;
+    for (int i = 0; i < 6; i++) {
+        uint64_t before_sil = m.silence_periods;
+        if (cap_model_read_period(&m, &r, out) == 1) {
+            if (m.silence_periods == before_sil) real_periods++;
+        }
+        CHECK(m.alsa_hw_ptr >= prev, "recovery: hw_ptr monotonic across writer reattach");
+        prev = m.alsa_hw_ptr;
+        (void)cap_model_avail(&m, &r);
+    }
+    CHECK(real_periods >= 3, "real audio resumed after writer reattach (no silence)");
+    CHECK(m.alsa_hw_ptr > hw_before, "recovery made real forward progress (never wedged)");
+
+    free(s);
+    free(out);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w2);
+    jts_ring_writer_close(&w1);
+    unlink(path);
+}
+
+static void test_capture_silence_mode_entry_exit(void) {
+    // The writer-dead silence decision in isolation: empty + writer ALIVE ->
+    // withhold (block=pacing, read_period returns 0); empty + writer DEAD ->
+    // fabricate a period of silence (read_period returns 1, silence_periods bumps);
+    // writer returns -> silence stops, real audio flows.
+    char path[256];
+    tmp_path(path, sizeof(path), "cap-silence");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+    cap_model_t m = cap_model_new(&g);
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+
+    // Empty + writer ALIVE: the app must BLOCK (no fabricated silence).
+    CHECK(cap_model_read_period(&m, &r, out) == 0,
+          "empty + writer alive: block (no silence), that IS the pacing");
+    CHECK(m.silence_periods == 0, "no silence fabricated while writer is alive");
+
+    // Writer DIES: now the app fabricates timer-paced silence and never blocks.
+    jts_ring_header_t *h = (jts_ring_header_t *)w.base;
+    atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
+    CHECK(cap_model_read_period(&m, &r, out) == 1, "writer dead: fabricate a silence period");
+    CHECK(m.silence_periods == 1, "one silence period fabricated");
+    int all_zero = 1;
+    for (size_t i = 0; i < n; i++) if (out[i] != 0) all_zero = 0;
+    CHECK(all_zero, "fabricated silence is zeros");
+
+    // Writer RETURNS (fresh heartbeat + a real slot): silence stops, audio flows.
+    atomic_store_explicit(&h->writer_heartbeat_ns, jts_ring_monotonic_ns(),
+                          memory_order_relaxed);
+    mark_slot(s, n, 4242);
+    jts_ring_writer_publish(&w, s);
+    uint64_t sil_before = m.silence_periods;
+    CHECK(cap_model_read_period(&m, &r, out) == 1, "writer back: read a real slot");
+    CHECK(m.silence_periods == sil_before, "no new silence fabricated once the writer is back");
+    CHECK(memcmp(out, s, n * sizeof(int16_t)) == 0, "real audio resumes seamlessly");
+
+    free(s);
+    free(out);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_capture_destage_partial_reads(void) {
+    // Sub-slot reads: the app reads FEWER frames than a whole slot at a time. The
+    // destage buffer must serve the slot across multiple readi()s with exact byte
+    // continuity (no dropped or duplicated frames at the sub-slot boundary). This
+    // models the plugin's jts_ring_capture_transfer copy loop directly (the
+    // cap_model reads whole periods, so this test drives the real reader + a
+    // hand destage to prove the partial-read arithmetic).
+    char path[256];
+    tmp_path(path, sizeof(path), "cap-partial");
+    jts_ring_geometry_t g = proto_geometry();
+    g.period_frames = 128;
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+    size_t spp = w.samples_per_slot; // 128 * 2 = 256
+    int16_t *s = calloc(spp, sizeof(int16_t));
+    // Distinct per-frame content so a boundary bug is visible.
+    for (size_t f = 0; f < g.period_frames; f++) {
+        s[f * 2 + 0] = (int16_t)(f + 1);       // L
+        s[f * 2 + 1] = (int16_t)(-(int)(f + 1)); // R
+    }
+    CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "publish one slot");
+
+    // Destage the slot once, then drain it in 30-frame chunks (128 = 30*4 + 8),
+    // exactly the plugin's origin = capacity - remaining arithmetic.
+    int16_t *destage = calloc(spp, sizeof(int16_t));
+    CHECK(jts_ring_reader_consume(&r, destage) == JTS_RING_SLOT_FILLED, "destage the slot");
+    size_t remaining = g.period_frames; // frames unread in destage
+    size_t total_read = 0;
+    int16_t *appbuf = calloc(g.period_frames * 2, sizeof(int16_t));
+    while (remaining > 0) {
+        size_t chunk = remaining < 30 ? remaining : 30;
+        size_t origin = g.period_frames - remaining; // frames already read
+        memcpy(appbuf + total_read * 2, destage + origin * 2, chunk * 2 * sizeof(int16_t));
+        remaining -= chunk;
+        total_read += chunk;
+    }
+    CHECK(total_read == g.period_frames, "read the whole slot in sub-slot chunks");
+    CHECK(memcmp(appbuf, s, spp * sizeof(int16_t)) == 0,
+          "sub-slot destage preserved every frame in order (no boundary bug)");
+
+    free(s);
+    free(destage);
+    free(appbuf);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
 int main(void) {
     test_geometry_math_and_validation();
     test_publish_consume_roundtrip();
@@ -1074,6 +1772,19 @@ int main(void) {
     test_deep_ring_16_slots();
     test_occupancy_tracks_reader_drain();
     test_drain_flush_partial_slot();
+    // Ring A CAPTURE-direction (reader core + capture pointer core).
+    test_reader_roundtrip_vs_writer();
+    test_reader_attach_resync_drops_stale();
+    test_reader_defensive_resync_on_overrun();
+    test_reader_ebusy_second_reader();
+    test_reader_close_clears_pid_only_if_ours();
+    test_reader_epoch_reset_on_writer_reattach();
+    test_capture_pointer_advances_on_publish();
+    test_capture_alias_writer_burst_gap();
+    test_capture_alias_writer_death_flip();
+    test_capture_alias_dead_to_live_recovery();
+    test_capture_silence_mode_entry_exit();
+    test_capture_destage_partial_reads();
 
     if (g_failures == 0) {
         printf("ok: all jts_ring core tests passed\n");

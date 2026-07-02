@@ -4,18 +4,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# disarm.sh — unconditional rollback for the Ring B prototype. Restores
-# the box to the exact state arm.sh found it in.
+# disarm.sh — unconditional rollback for the SHM ring prototype. Two modes:
+#   default / --ring-b: rolls back Ring B (arm.sh — CamillaDSP writes,
+#     jasper-outputd reads; JASPER_OUTPUTD_CONTENT_BRIDGE in outputd.env).
+#   --ring-a:           rolls back Ring A (arm-ring-a.sh — jasper-fanin writes,
+#     CamillaDSP capture reads; JASPER_FANIN_CAMILLA_COUPLING in fanin.env).
+# Restores the box to the exact state the matching arm script found it in.
 #
 # IDEMPOTENT AND SAFE TO RUN COLD: every step below checks whether its
 # own target exists before touching it, so running this against a box
 # that was never armed (or was only partially armed, or was already
 # disarmed) is a no-op for anything not present — never an error, never
-# a change to something arm.sh did not touch.
+# a change to something the arm script did not touch.
 #
-# This is what arm.sh itself calls on any mid-arm failure (see
-# fail_and_rollback in arm.sh), so it must never assume every marked
-# block is present.
+# This is what arm.sh / arm-ring-a.sh themselves call on any mid-arm
+# failure (see fail_and_rollback there), so it must never assume every
+# marked block is present.
 #
 # Steps, in REVERSE order of arm.sh (statefile/Camilla first, since
 # that is the most audible thing a household would notice if this
@@ -75,26 +79,52 @@ REPO_ROOT="$(cd "${RING_PROTO_DIR}/../.." && pwd)"
 require_explicit_ring_proto_target
 
 PURGE=0
+RING_MODE="ring_b"
 for arg in "$@"; do
     case "${arg}" in
         --purge) PURGE=1 ;;
+        --ring-a) RING_MODE="ring_a" ;;
+        --ring-b) RING_MODE="ring_b" ;;
         *)
-            echo "usage: $(basename "$0") [--purge]" >&2
+            echo "usage: $(basename "$0") [--ring-a|--ring-b] [--purge]" >&2
             exit 1
             ;;
     esac
 done
 
-CONF_D_PATH="/etc/alsa/conf.d/98-jts-ring-proto.conf"
-OUTPUTD_ENV="/var/lib/jasper/outputd.env"
+# Ring B (default): CamillaDSP writes the ring -> the writer daemon flipped is
+# jasper-outputd (JASPER_OUTPUTD_CONTENT_BRIDGE in outputd.env).
+# Ring A (--ring-a): jasper-fanin writes the ring -> the daemon flipped is
+# jasper-fanin (JASPER_FANIN_CAMILLA_COUPLING in fanin.env). Both share the
+# statefile-restore + camilla-restart shape; only the env file, marker, ring
+# path, conf.d file, and the "other" daemon differ.
 ROLLBACK_STATE_DIR="/var/lib/jasper/ring-proto"
-ROLLBACK_ENV="${ROLLBACK_STATE_DIR}/rollback.env"
-BEGIN_MARKER="# BEGIN jts-ring-proto (scripts/ring-proto/arm.sh)"
-END_MARKER="# END jts-ring-proto"
 REMOTE_WORK_DIR="${JASPER_RING_PROTO_REMOTE_DIR:-/home/${PI_USER}/jts-ring-proto}"
 ALSA_PLUGIN_DIR="/usr/lib/aarch64-linux-gnu/alsa-lib"
 
-echo "=== Ring B prototype: DISARM on ${PI_USER}@${PI_HOST} ==="
+if [[ "${RING_MODE}" == "ring_a" ]]; then
+    CONF_D_PATH="/etc/alsa/conf.d/98-jts-ring-a-proto.conf"
+    OTHER_ENV="/var/lib/jasper/fanin.env"           # holds the coupling marked block
+    OTHER_UNIT="jasper-fanin"
+    RING_PATH="${JASPER_RING_PROTO_RING_PATH:-/dev/shm/jts-ring/program.ring}"
+    ROLLBACK_ENV="${ROLLBACK_STATE_DIR}/rollback-a.env"
+    BEGIN_MARKER="# BEGIN jts-ring-a-proto (scripts/ring-proto/arm-ring-a.sh)"
+    END_MARKER="# END jts-ring-a-proto"
+    OTHER_SOURCE_TOKEN="JASPER_FANIN_CAMILLA_COUPLING"
+    RING_LABEL="Ring A"
+else
+    CONF_D_PATH="/etc/alsa/conf.d/98-jts-ring-proto.conf"
+    OTHER_ENV="/var/lib/jasper/outputd.env"         # holds the content-bridge marked block
+    OTHER_UNIT="jasper-outputd"
+    RING_PATH="/dev/shm/jts-ring"                    # Ring B removes the whole dir (see step 4)
+    ROLLBACK_ENV="${ROLLBACK_STATE_DIR}/rollback.env"
+    BEGIN_MARKER="# BEGIN jts-ring-proto (scripts/ring-proto/arm.sh)"
+    END_MARKER="# END jts-ring-proto"
+    OTHER_SOURCE_TOKEN="JASPER_OUTPUTD_CONTENT_BRIDGE"
+    RING_LABEL="Ring B"
+fi
+
+echo "=== ${RING_LABEL} prototype: DISARM on ${PI_USER}@${PI_HOST} ==="
 [[ "${PURGE}" -eq 1 ]] && echo "  (--purge: also removing the built ioplug .so and bench working dir)"
 echo ""
 
@@ -180,50 +210,63 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------
-# Step 2 — strip the outputd.env marked block + restart jasper-outputd
+# Step 2 — strip the writer daemon's env marked block + restart it
+#   Ring B: outputd.env (JASPER_OUTPUTD_CONTENT_BRIDGE) + jasper-outputd
+#   Ring A: fanin.env  (JASPER_FANIN_CAMILLA_COUPLING) + jasper-fanin
 # ---------------------------------------------------------------------
-echo "--- Step 2/6: strip ${OUTPUTD_ENV} marked block ---"
-has_block="$(ssh_ok "test -f ${OUTPUTD_ENV} && grep -qF '${BEGIN_MARKER}' ${OUTPUTD_ENV} && echo yes || echo no")"
+echo "--- Step 2/6: strip ${OTHER_ENV} marked block ---"
+has_block="$(ssh_ok "test -f ${OTHER_ENV} && grep -qF '${BEGIN_MARKER}' ${OTHER_ENV} && echo yes || echo no")"
 if [[ "${has_block}" == "yes" ]]; then
     # Delete the inclusive BEGIN..END range in place. sed -i without a
     # backup suffix is GNU sed's in-place syntax, which Raspberry Pi OS
     # ships (util-linux/coreutils toolchain, not BSD sed).
-    if ssh_ok "sudo sed -i '/^${BEGIN_MARKER//\//\\/}\$/,/^${END_MARKER//\//\\/}\$/d' ${OUTPUTD_ENV}"; then
-        echo "  OK   removed the marked block from ${OUTPUTD_ENV}"
+    if ssh_ok "sudo sed -i '/^${BEGIN_MARKER//\//\\/}\$/,/^${END_MARKER//\//\\/}\$/d' ${OTHER_ENV}"; then
+        echo "  OK   removed the marked block from ${OTHER_ENV}"
     else
-        echo "  ERROR: sed failed to strip the marked block from ${OUTPUTD_ENV} —" \
-            "inspect and clean up by hand: ssh ${PI_USER}@${PI_HOST} cat ${OUTPUTD_ENV}" >&2
+        echo "  ERROR: sed failed to strip the marked block from ${OTHER_ENV} —" \
+            "inspect and clean up by hand: ssh ${PI_USER}@${PI_HOST} cat ${OTHER_ENV}" >&2
         overall_ok=0
     fi
 else
-    echo "  SKIP no jts-ring-proto marked block found in ${OUTPUTD_ENV}" \
+    echo "  SKIP no marked block found in ${OTHER_ENV}" \
         "(absent file, or block already removed)."
 fi
 
-if ssh_ok "systemctl is-active --quiet jasper-outputd"; then
-    if ssh_ok "sudo systemctl restart jasper-outputd"; then
+if ssh_ok "systemctl is-active --quiet ${OTHER_UNIT}"; then
+    # reset-failed clears any start-limit state so this restart is not refused.
+    if ssh_ok "sudo systemctl reset-failed ${OTHER_UNIT} 2>/dev/null; sudo systemctl restart ${OTHER_UNIT}"; then
         sleep 2
-        outputd_active="$(ssh_ok 'systemctl is-active jasper-outputd' 2>/dev/null)"
-        if [[ "${outputd_active}" == "active" ]]; then
-            content_source="$(ssh_ok "journalctl -u jasper-outputd -n 20 --no-pager | grep -o 'content_source=[a-z_]*' | tail -1")"
-            echo "  OK   jasper-outputd restarted and active (${content_source:-content_source unknown — check journal})"
-            if [[ "${content_source}" == "content_source=shm_ring" ]]; then
-                echo "  WARNING: jasper-outputd journal still reports content_source=shm_ring" \
-                    "after disarm — the outputd.env strip may not have taken effect." \
-                    "Check by hand: ssh ${PI_USER}@${PI_HOST} cat ${OUTPUTD_ENV}" >&2
-                overall_ok=0
+        other_active="$(ssh_ok "systemctl is-active ${OTHER_UNIT}" 2>/dev/null)"
+        if [[ "${other_active}" == "active" ]]; then
+            # Confirm the daemon's resolved runtime no longer carries the ring
+            # token: read /proc/<MainPID>/environ (the layered EnvironmentFile
+            # surface, not `systemctl show`). If the token still resolves to a
+            # ring value the strip did not take — warn.
+            other_pid="$(ssh_ok "systemctl show ${OTHER_UNIT}.service -p MainPID --value" 2>/dev/null | tr -dc '0-9')"
+            token_value=""
+            if [[ -n "${other_pid}" && "${other_pid}" != "0" ]]; then
+                token_value="$(ssh_ok "sudo sh -c 'tr \"\\0\" \"\\n\" < /proc/${other_pid}/environ'" 2>/dev/null | sed -n "s/^${OTHER_SOURCE_TOKEN}=//p" | head -1)"
             fi
+            echo "  OK   ${OTHER_UNIT} restarted and active (${OTHER_SOURCE_TOKEN}=${token_value:-<unset/default>})"
+            case "${token_value}" in
+                shm_ring)
+                    echo "  WARNING: ${OTHER_UNIT} still resolves ${OTHER_SOURCE_TOKEN}=shm_ring" \
+                        "after disarm — the ${OTHER_ENV} strip may not have taken effect." \
+                        "Check by hand: ssh ${PI_USER}@${PI_HOST} cat ${OTHER_ENV}" >&2
+                    overall_ok=0
+                    ;;
+            esac
         else
-            echo "  ERROR: jasper-outputd is ${outputd_active} after restart — check by hand:" \
-                "ssh ${PI_USER}@${PI_HOST} journalctl -u jasper-outputd -n 40" >&2
+            echo "  ERROR: ${OTHER_UNIT} is ${other_active} after restart — check by hand:" \
+                "ssh ${PI_USER}@${PI_HOST} journalctl -u ${OTHER_UNIT} -n 40" >&2
             overall_ok=0
         fi
     else
-        echo "  ERROR: systemctl restart jasper-outputd failed." >&2
+        echo "  ERROR: systemctl restart ${OTHER_UNIT} failed." >&2
         overall_ok=0
     fi
 else
-    echo "  SKIP jasper-outputd is not currently active — not restarting it."
+    echo "  SKIP ${OTHER_UNIT} is not currently active — not restarting it."
 fi
 echo ""
 
@@ -244,19 +287,39 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------
-# Step 4 — remove the SHM ring directory (tmpfs; safe, self-heals)
+# Step 4 — remove the SHM ring (tmpfs; safe, self-heals)
+#   Ring B: removes the whole /dev/shm/jts-ring dir (content.ring is the only
+#     tenant of the dir in a Ring-B-only arm).
+#   Ring A: removes ONLY the program.ring FILE, never the dir — Ring B's
+#     content.ring may share /dev/shm/jts-ring, and blowing away the dir would
+#     take an armed Ring B down with it. Removing just the file guarantees no
+#     stale ring geometry survives into a later Ring A arm.
 # ---------------------------------------------------------------------
-echo "--- Step 4/6: remove /dev/shm/jts-ring ---"
-if ssh_ok "test -e /dev/shm/jts-ring"; then
-    if ssh_ok "sudo rm -rf /dev/shm/jts-ring"; then
-        echo "  OK   removed /dev/shm/jts-ring (tmpfs — will be recreated on next" \
-            "arm.sh run, or ignored entirely while the flag is off)"
+echo "--- Step 4/6: remove ${RING_PATH} (${RING_LABEL}) ---"
+if [[ "${RING_MODE}" == "ring_a" ]]; then
+    if ssh_ok "test -e ${RING_PATH}"; then
+        if ssh_ok "sudo rm -f ${RING_PATH}"; then
+            echo "  OK   removed ${RING_PATH} (tmpfs file — recreated on next arm-ring-a.sh;" \
+                "the /dev/shm/jts-ring dir is left alone so an armed Ring B is untouched)"
+        else
+            echo "  ERROR: could not remove ${RING_PATH}." >&2
+            overall_ok=0
+        fi
     else
-        echo "  ERROR: could not remove /dev/shm/jts-ring." >&2
-        overall_ok=0
+        echo "  SKIP ${RING_PATH} does not exist."
     fi
 else
-    echo "  SKIP /dev/shm/jts-ring does not exist."
+    if ssh_ok "test -e ${RING_PATH}"; then
+        if ssh_ok "sudo rm -rf ${RING_PATH}"; then
+            echo "  OK   removed ${RING_PATH} (tmpfs — will be recreated on next" \
+                "arm.sh run, or ignored entirely while the flag is off)"
+        else
+            echo "  ERROR: could not remove ${RING_PATH}." >&2
+            overall_ok=0
+        fi
+    else
+        echo "  SKIP ${RING_PATH} does not exist."
+    fi
 fi
 echo ""
 

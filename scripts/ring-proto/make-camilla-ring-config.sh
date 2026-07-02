@@ -5,14 +5,25 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # make-camilla-ring-config.sh — build the HAND CamillaDSP config variant
-# for the Ring B prototype: an exact copy of the box's currently-loaded
-# config with ONLY devices.playback.device swapped to jts_ring_playback.
+# for the SHM ring prototype. Two modes:
+#
+#   default (Ring B): swap ONLY devices.playback.device -> jts_ring_playback
+#     (CamillaDSP writes the ring, outputd reads). Output S16LE is implicit —
+#     the playback device string is the only edit.
+#
+#   --ring-a (Ring A): swap ONLY devices.capture -> {type: Alsa, device:
+#     jts_ring_capture, format: S16_LE} (fan-in writes the ring, CamillaDSP
+#     reads). The capture format is pinned to S16_LE (the SHM ring's wire
+#     format — fan-in is S16 native, no widening) which is a delta from the
+#     box's current S32 dsnoop capture; CamillaDSP floats internally so there
+#     is no downstream effect. The device name + format are the SSOT shared
+#     with jasper.fanin_coupling.capture_kwargs_for_coupling("shm_ring").
 #
 # This NEVER touches the product emitters (jasper/camilla_emit.py,
 # jasper/active_speaker/camilla_yaml.py, etc.) or any packaged config
 # under /etc/camilladsp/ — it reads whatever config the live statefile
-# currently points at, copies it byte-for-byte apart from one device
-# string, writes the copy to a prototype-only path, and validates it
+# currently points at, copies it byte-for-byte apart from the one device
+# entry, writes the copy to a prototype-only path, and validates it
 # with CamillaDSP's own --check (plus the JTS volume_limit safety-
 # ceiling check) before telling the caller it's safe to load.
 #
@@ -69,11 +80,43 @@ REPO_ROOT="$(cd "${RING_PROTO_DIR}/../.." && pwd)"
 . "${RING_PROTO_DIR}/_guard.sh"
 require_explicit_ring_proto_target
 
-RING_DEVICE="${JASPER_RING_PROTO_ALSA_DEVICE:-jts_ring_playback}"
-OUT_CONFIG_REMOTE="${JASPER_RING_PROTO_CAMILLA_CONFIG:-/var/lib/camilladsp/ring_proto.yml}"
+# Mode: Ring B (playback swap, default) or Ring A (capture swap, --ring-a).
+RING_MODE="ring_b"
+for arg in "$@"; do
+    case "${arg}" in
+        --ring-a) RING_MODE="ring_a" ;;
+        --ring-b) RING_MODE="ring_b" ;;
+        *)
+            echo "usage: $(basename "$0") [--ring-a|--ring-b]" >&2
+            exit 1
+            ;;
+    esac
+done
 
-echo "=== Ring B prototype: build hand Camilla config on ${PI_USER}@${PI_HOST} ==="
-echo "Ring ALSA device name: ${RING_DEVICE}"
+if [[ "${RING_MODE}" == "ring_a" ]]; then
+    # Ring A capture-swap: the SSOT capture device + format are duplicated here
+    # from jasper.fanin_coupling (RING_CAPTURE_DEVICE / RING_WIRE_FORMAT) because
+    # this bash runs the config surgery on the Pi before importing Python; the
+    # embedded Python below asserts they match capture_kwargs_for_coupling so a
+    # drift fails loud.
+    # CamillaDSP capture format uses the underscore form (the live config
+    # captures S32_LE), matching jasper.fanin_coupling.RING_WIRE_FORMAT="S16_LE".
+    RING_DEVICE="${JASPER_RING_PROTO_ALSA_DEVICE:-jts_ring_capture}"
+    RING_CAPTURE_FORMAT="${JASPER_RING_PROTO_CAPTURE_FORMAT:-S16_LE}"
+    OUT_CONFIG_REMOTE="${JASPER_RING_PROTO_CAMILLA_CONFIG:-/var/lib/camilladsp/ring_proto_a.yml}"
+else
+    RING_DEVICE="${JASPER_RING_PROTO_ALSA_DEVICE:-jts_ring_playback}"
+    RING_CAPTURE_FORMAT=""
+    OUT_CONFIG_REMOTE="${JASPER_RING_PROTO_CAMILLA_CONFIG:-/var/lib/camilladsp/ring_proto.yml}"
+fi
+
+if [[ "${RING_MODE}" == "ring_a" ]]; then
+    echo "=== Ring A prototype: build hand Camilla config on ${PI_USER}@${PI_HOST} ==="
+    echo "Capture ring device:  ${RING_DEVICE} (format ${RING_CAPTURE_FORMAT})"
+else
+    echo "=== Ring B prototype: build hand Camilla config on ${PI_USER}@${PI_HOST} ==="
+    echo "Playback ring device: ${RING_DEVICE}"
+fi
 echo "Output config path:    ${OUT_CONFIG_REMOTE}"
 
 if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "${PI_USER}@${PI_HOST}" true; then
@@ -88,7 +131,9 @@ fi
 # writes the new prototype config path.
 remote_exit=0
 ssh -o BatchMode=yes "${PI_USER}@${PI_HOST}" sudo \
+    JASPER_RING_PROTO_MODE="${RING_MODE}" \
     JASPER_RING_PROTO_ALSA_DEVICE="${RING_DEVICE}" \
+    JASPER_RING_PROTO_CAPTURE_FORMAT="${RING_CAPTURE_FORMAT}" \
     JASPER_RING_PROTO_CAMILLA_CONFIG="${OUT_CONFIG_REMOTE}" \
     /opt/jasper/.venv/bin/python <<'PY' || remote_exit=$?
 import os
@@ -106,9 +151,31 @@ except ImportError as e:
     print(f"error: PyYAML not importable in /opt/jasper/.venv: {e}", file=sys.stderr)
     sys.exit(1)
 
+ring_mode = os.environ.get("JASPER_RING_PROTO_MODE", "ring_b")
 ring_device = os.environ["JASPER_RING_PROTO_ALSA_DEVICE"]
+ring_capture_format = os.environ.get("JASPER_RING_PROTO_CAPTURE_FORMAT", "")
 out_path = os.environ["JASPER_RING_PROTO_CAMILLA_CONFIG"]
 statefile_path = str(DEFAULT_CAMILLA_STATEFILE)
+
+# Ring A SSOT cross-check: the capture device + format the bash chose MUST match
+# jasper.fanin_coupling.capture_kwargs_for_coupling("shm_ring") so the hand
+# config, the Rust writer, and Python never drift. Fail loud on a mismatch.
+if ring_mode == "ring_a":
+    from jasper.fanin_coupling import COUPLING_SHM_RING, capture_kwargs_for_coupling
+
+    kw = capture_kwargs_for_coupling(COUPLING_SHM_RING)
+    want_device = kw.get("capture_device")
+    want_format = kw.get("capture_format")
+    if ring_device != want_device or ring_capture_format != want_format:
+        print(
+            "error: Ring A capture SSOT drift — the script chose "
+            f"device={ring_device!r} format={ring_capture_format!r} but "
+            "jasper.fanin_coupling.capture_kwargs_for_coupling('shm_ring') says "
+            f"device={want_device!r} format={want_format!r}. Reconcile the two "
+            "(the fanin_coupling constants are canonical).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 try:
     statefile_text = open(statefile_path, encoding="utf-8").read()
@@ -144,36 +211,63 @@ if not isinstance(doc, dict) or "devices" not in doc:
     sys.exit(1)
 
 devices = doc["devices"]
-if not isinstance(devices, dict) or "playback" not in devices:
-    print("error: source config has no 'devices.playback' block", file=sys.stderr)
+if not isinstance(devices, dict):
+    print("error: source config's 'devices' is not a mapping", file=sys.stderr)
     sys.exit(1)
 
-playback = devices["playback"]
-if not isinstance(playback, dict):
-    print("error: 'devices.playback' is not a mapping", file=sys.stderr)
-    sys.exit(1)
-
-original_device = playback.get("device")
-original_type = playback.get("type")
-if original_type != "Alsa":
+if ring_mode == "ring_a":
+    # RING A capture-swap. THE ONLY EDIT: point devices.capture at the ring
+    # ioplug as an Alsa device with the pinned S16_LE format. Everything else —
+    # samplerate, chunksize, target_level, the playback block, every
+    # filter/mixer/pipeline entry, volume_limit — is preserved byte-for-byte.
+    if "capture" not in devices:
+        print("error: source config has no 'devices.capture' block", file=sys.stderr)
+        sys.exit(1)
+    capture = devices["capture"]
+    if not isinstance(capture, dict):
+        print("error: 'devices.capture' is not a mapping", file=sys.stderr)
+        sys.exit(1)
+    original_type = capture.get("type")
+    original_device = capture.get("device")
+    original_format = capture.get("format")
+    # Rewrite to the ring capture device. Preserve the channels the config
+    # already declares (2 for the solo stereo path); set type/device/format.
+    capture["type"] = "Alsa"
+    capture["device"] = ring_device
+    capture["format"] = ring_capture_format
     print(
-        f"error: source config's playback.type is {original_type!r}, not "
-        "'Alsa' — this script only swaps an Alsa device string. A File-sink "
-        "config (bonded/transport-pipe topology) is out of scope for this "
-        "prototype and would need a different arm procedure.",
-        file=sys.stderr,
+        "swapped devices.capture: "
+        f"type {original_type!r}->'Alsa' device {original_device!r}->{ring_device!r} "
+        f"format {original_format!r}->{ring_capture_format!r}"
     )
-    sys.exit(1)
-
-# THE ONLY EDIT: swap the playback device string. Everything else in the
-# document — samplerate, chunksize, target_level, capture device, every
-# filter/mixer/pipeline entry, volume_limit — is preserved byte-for-byte
-# via round-tripping the parsed structure. This does not add or remove a
-# 'filename' key, so jasper-camilla-pipe-guard's playback-filename probe
-# still sees an empty playback_filename and logs solo_config, exactly as
-# it does for the live Alsa config today.
-playback["device"] = ring_device
-print(f"swapped devices.playback.device: {original_device!r} -> {ring_device!r}")
+else:
+    # RING B playback-swap. THE ONLY EDIT: swap the playback device string.
+    # Everything else — samplerate, chunksize, target_level, capture device,
+    # every filter/mixer/pipeline entry, volume_limit — is preserved byte-for-
+    # byte via round-tripping the parsed structure. This does not add or remove a
+    # 'filename' key, so jasper-camilla-pipe-guard's playback-filename probe
+    # still sees an empty playback_filename and logs solo_config, exactly as it
+    # does for the live Alsa config today.
+    if "playback" not in devices:
+        print("error: source config has no 'devices.playback' block", file=sys.stderr)
+        sys.exit(1)
+    playback = devices["playback"]
+    if not isinstance(playback, dict):
+        print("error: 'devices.playback' is not a mapping", file=sys.stderr)
+        sys.exit(1)
+    original_device = playback.get("device")
+    original_type = playback.get("type")
+    if original_type != "Alsa":
+        print(
+            f"error: source config's playback.type is {original_type!r}, not "
+            "'Alsa' — this script only swaps an Alsa device string. A File-sink "
+            "config (bonded/transport-pipe topology) is out of scope for this "
+            "prototype and would need a different arm procedure.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    playback["device"] = ring_device
+    print(f"swapped devices.playback.device: {original_device!r} -> {ring_device!r}")
 
 new_text = yaml.safe_dump(doc, sort_keys=False)
 
