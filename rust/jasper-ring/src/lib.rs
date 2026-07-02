@@ -48,7 +48,7 @@
 //! | 28 | _pad | u32 | zero |
 //! | 32 | writer_epoch | atomic u64 | ++ (Release) per writer attach; reader counts `epoch_resets` on change |
 //! | 40 | write_seq | atomic u64 | total slots PUBLISHED, monotonic across epochs for the file's lifetime |
-//! | 48 | read_seq | atomic u64 | total slots CONSUMED; written only by the reader |
+//! | 48 | read_seq | atomic u64 | total slots CONSUMED; reader owns it WHILE LIVE — the writer may advance it only on the no-live-reader free-run path (see below) |
 //! | 56 | writer_pid | atomic u64 | 0 = detached; set on attach, cleared on clean close |
 //! | 64 | writer_heartbeat_ns | atomic u64 | CLOCK_MONOTONIC ns, relaxed store per publish/wait tick |
 //! | 72 | reader_pid | atomic u64 | 0 = detached |
@@ -72,6 +72,17 @@
 //! 3. `store(write_seq, W+1, Release)` — publishes: a reader whose Acquire load
 //!    observes `write_seq > W` observes the complete slot payload.
 //!
+//! **Writer free-run (no live reader).** When step 1 finds the ring full AND the
+//! reader is heartbeat-dead (`reader_pid == 0` or heartbeat older than
+//! [`WRITER_LIVENESS_TIMEOUT_NS`]), the writer drops the OLDEST slot: it
+//! `store(read_seq, R+1, Release)` on the absent reader's behalf, then publishes
+//! over the freed lap. This is the ONLY path on which the writer touches
+//! `read_seq`, and it keeps occupancy bounded so a readerless ring cannot wedge
+//! the writer (see the ioplug's dual-mode `avail` in `pcm_jts_ring.c`). It is
+//! why the "read_seq written only by the reader" statement is qualified above —
+//! the reader owns `read_seq` while live; the writer borrows it only when no live
+//! reader exists.
+//!
 //! **Reader consume** (once per DAC period, NEVER blocks — [`RingReader::try_consume_slot`]):
 //! 1. `W = load(write_seq, Acquire)`; `R = local read_seq`.
 //! 2. `W == R` -> [`SlotRead::Empty`] (caller emits silence).
@@ -82,13 +93,28 @@
 //! 5. `store(read_seq, R+1, Release)` — releases the slot: the copy-out cannot
 //!    be reordered after the writer sees the slot free.
 //!
-//! **Torn-write safety:** a slot is only ever touched by one side at a time
-//! (writer needs `W - R < n_slots`; reader needs `W > R`). A writer crash
-//! mid-memcpy leaves `write_seq` unbumped — the garbage slot is never
-//! readable. A creator crash mid-init leaves `magic` unset — attachers spin
+//! **Torn-write safety:** while a reader is LIVE, a slot is only ever touched by
+//! one side at a time (writer needs `W - R < n_slots`; reader needs `W > R`) and
+//! the writer never touches `read_seq`, so the two-sided discipline is exact. A
+//! writer crash mid-memcpy leaves `write_seq` unbumped — the garbage slot is
+//! never readable. A creator crash mid-init leaves `magic` unset — attachers spin
 //! <=100 ms for magic then error; the reader unlinks-and-recreates a
 //! magic-invalid file under its owned `/dev/shm/jts-ring/` path (narrow-path
 //! check, mirroring outputd's `is_owned_runtime_pipe_path`).
+//!
+//! There is ONE narrow window where writer and reader may store `read_seq`
+//! concurrently: a reader whose heartbeat has gone stale (wedged > liveness
+//! timeout) but which then resumes. During the stall the writer took the free-run
+//! path and advanced `read_seq`; if the reader wakes in the exact window where
+//! its stale local `read_seq` mirror satisfies `W - R_local == n_slots` (so its
+//! defensive `W - R_local > n_slots` resync does NOT fire) while the writer is
+//! mid-memcpy of that same slot index, the reader can copy out one torn 128-frame
+//! slot. This is bounded (at most one slot), self-healing (the next period's
+//! Acquire load of `write_seq` re-establishes ordering, and a real drift trips
+//! the `> n_slots` resync), and acceptable for the prototype — but it means the
+//! planned futex productization, which builds `FUTEX_WAKE` semantics directly on
+//! `read_seq`, must account for the writer as a possible `read_seq` writer on the
+//! no-live-reader path, not assume reader-exclusive ownership.
 //!
 //! ## Productization note (why `futex_word` is reserved, not used)
 //!
@@ -261,7 +287,10 @@ pub struct RingReader {
     map: RingMapping,
     path: String,
     /// The reader's local view of how many slots it has consumed. Authoritative
-    /// mirror of `read_seq` in the header (which only this reader writes).
+    /// mirror of `read_seq` in the header, which this reader owns WHILE LIVE — the
+    /// writer advances it only on its no-live-reader free-run path (see the
+    /// module doc's "Writer free-run"), so a live reader is the sole writer of
+    /// this field.
     read_seq: u64,
     /// Last-observed writer epoch; a change means the writer reattached.
     last_epoch: u64,
