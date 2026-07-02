@@ -165,28 +165,27 @@ def test_execstoppost_resets_pitch_to_neutral():
     assert "iface=PCM" in line, (
         f"ExecStopPost pitch reset must target iface=PCM; got: {line!r}"
     )
-    assert "name='Capture Pitch 1000000'" in line, (
+    assert 'name="Capture Pitch 1000000"' in line, (
         f"ExecStopPost pitch reset must target the 'Capture Pitch 1000000' "
         f"control by name; got: {line!r}"
     )
 
-    # Resets to the neutral value (1000000 = unity, no pitch bias) — the
-    # trailing numeric argument to `amixer cset`, not the "1000000" that is
-    # part of the control's own NAME.
-    trailing_value = line.rsplit(None, 1)[-1]
-    assert trailing_value == "1000000", (
+    # Resets to the neutral value (1000000 = unity, no pitch bias). The line is
+    # an `sh -c '... 1000000'` wrapper (review F2 gate below), so the neutral
+    # value is the last token before the closing single quote.
+    assert "1000000'" in line or line.rstrip().endswith("1000000"), (
         f"ExecStopPost pitch reset must write the neutral value 1000000, "
-        f"not a stale/non-neutral bias; got trailing value {trailing_value!r} "
-        f"in line: {line!r}"
+        f"not a stale/non-neutral bias; got line: {line!r}"
     )
 
-    # Card is selected by expanding ${JASPER_USBSINK_MIXER_CARD} rather than a
-    # hardcoded literal, so an operator overriding that card in an
-    # EnvironmentFile also redirects this belt-and-braces neutralize (review
-    # N3 — no hardcoded card drift between the daemon and the stop line).
-    assert "-c ${JASPER_USBSINK_MIXER_CARD}" in line, (
-        f"ExecStopPost pitch reset must target -c ${{JASPER_USBSINK_MIXER_CARD}} "
-        f"(systemd-expanded), not a hardcoded card literal; got: {line!r}"
+    # Card is selected by expanding $JASPER_USBSINK_MIXER_CARD (shell expansion
+    # inside the sh -c wrapper) rather than a hardcoded literal, so an operator
+    # overriding that card in an EnvironmentFile also redirects this
+    # belt-and-braces neutralize (review N3 — no hardcoded card drift between the
+    # daemon and the stop line).
+    assert '"$JASPER_USBSINK_MIXER_CARD"' in line, (
+        f"ExecStopPost pitch reset must target -c $JASPER_USBSINK_MIXER_CARD "
+        f"(shell-expanded), not a hardcoded card literal; got: {line!r}"
     )
     # And the unit must declare a packaged default for that variable, or the
     # expansion would resolve to empty and amixer would fail (harmless with the
@@ -207,16 +206,35 @@ def test_execstoppost_resets_pitch_to_neutral():
     )
 
 
-def test_execstoppost_pitch_reset_runs_unconditionally():
-    # The invariant must hold even when the feature was never enabled: a
-    # value could only be non-neutral if the feature was enabled and the
-    # daemon then died uncleanly, so the reset runs on every stop rather
-    # than being gated on JASPER_USBSINK_HOST_CLOCK.
+def test_execstoppost_pitch_reset_gated_on_not_standby():
+    # Review F2: the belt must NOT be gated on the host-clock feature flag (a
+    # value could only be non-neutral if the feature was enabled and the daemon
+    # died uncleanly, so gating on JASPER_USBSINK_HOST_CLOCK would skip the reset
+    # exactly when it is needed) — but it MUST be gated on NOT-standby.
+    #
+    # In combo mode this bridge runs in standby (JASPER_USBSINK_AUDIO_STANDBY=1)
+    # and does not own the pitch ctl — fan-in does, and commands non-neutral
+    # pitch. An unconditional neutralize here would fire on every stop of this
+    # unit (deploy try-restart, operator restart) and stomp fan-in's live L0
+    # command, desyncing fan-in's >10 ppm write-suppression epsilon → the host
+    # free-runs un-slaved for minutes. So the belt fires only when this bridge is
+    # NOT in standby (i.e. when it is the daemon that actually owns the ctl).
     body = UNIT_PATH.read_text()
-    idx = _line_index(body, "Capture Pitch 1000000")
-    line = body.splitlines()[idx].strip()
+    matches = [
+        v for v in _exec_stop_post_lines(body)
+        if "Capture Pitch 1000000" in v
+    ]
+    assert matches, "no ExecStopPost pitch-reset line found"
+    line = matches[0]
     assert "JASPER_USBSINK_HOST_CLOCK" not in line, (
         "the ExecStopPost pitch-neutrality reset must not be gated on the "
-        "host-clock feature flag — it is a belt-and-braces safety net that "
-        "must run unconditionally"
+        "host-clock feature flag — gating there would skip the reset exactly "
+        "when a stale non-neutral value could exist (feature on, unclean death)"
+    )
+    assert '"$JASPER_USBSINK_AUDIO_STANDBY" != "1"' in line, (
+        "the ExecStopPost pitch reset MUST gate on NOT-standby "
+        '([ "$JASPER_USBSINK_AUDIO_STANDBY" != "1" ]) — in combo mode this '
+        "bridge runs in standby and fan-in owns the ctl; an unconditional "
+        "neutralize would stomp fan-in's live L0 command and desync its epsilon "
+        f"gate (review F2). Got: {line!r}"
     )

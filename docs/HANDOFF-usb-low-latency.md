@@ -248,15 +248,24 @@ command once. usbsink self-recovers via its own probe / L2 machinery, and audio
 is unaffected either way. Fix by putting the bridge in standby
 (`JASPER_USBSINK_AUDIO_STANDBY=1`) — the intended combo posture.
 
-**Neutrality belt-and-braces:** `jasper-fanin.service` carries a
-**combo-gated** `ExecStopPost` that resets the pitch to `1000000` on SIGKILL /
-OOM / watchdog abort — but ONLY when `$JASPER_FANIN_HOST_CLOCK = enabled`. The
-gate is load-bearing: fan-in restarts on every deploy, and an unconditional
-belt would desync a solo-mode usbsink L0 command (usbsink's write-suppression
-epsilon believes the last written value is its own and would not rewrite until
->10 ppm drift). So the belt fires only when fan-in is the configured clock
-owner. Mirrors `jasper-usbsink.service`'s name-based `ExecStopPost`; both
-writers target the same element by (iface, name), never numid.
+**Neutrality belt-and-braces — BOTH belts are owner-gated (the epsilon-desync
+class is symmetric).** Each USB-clock owner carries a `ExecStopPost` that resets
+the pitch to `1000000` on SIGKILL / OOM / watchdog abort, and **each gates on
+being the current owner** so it never stomps the *other* daemon's live command
+(which would desync that daemon's >10 ppm write-suppression epsilon — it believes
+its last written value is still live and won't rewrite until real drift crosses
+the gate, leaving the host un-slaved for minutes):
+
+| Unit | Belt gate | Fires when… | Would-desync-if-unconditional |
+|---|---|---|---|
+| `jasper-fanin.service` | `$JASPER_FANIN_HOST_CLOCK = enabled` | fan-in owns the ctl (combo mode) | a **solo-mode** usbsink L0 command (fan-in restarts every deploy) |
+| `jasper-usbsink.service` | `$JASPER_USBSINK_AUDIO_STANDBY != 1` | usbsink owns the ctl (solo/aloop mode) | a **combo-mode** fan-in L0 command while usbsink stands by (deploy try-restarts usbsink on binary change; operators restart it) |
+
+Both gates are load-bearing and mirror each other: the owner is exactly the
+daemon holding `hw:UAC2Gadget`, and only the owner writes the ctl. Both target
+the same element by (iface, name), never numid. Before F2 only fan-in's belt was
+gated; usbsink's unconditional belt was the reverse leak — it stomped fan-in's
+live combo command on every usbsink stop.
 
 Combo host-clock telemetry:
 
