@@ -338,6 +338,17 @@ jobs:
         working-directory: rust/jasper-ring
         run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
+      - name: jts-ring-ioplug — C core host test (compiles the _Static_asserts)
+        if: steps.rust-needed.outputs.run == 'true'
+        # The C HALF of the golden-layout drift pin. `make test` compiles
+        # jts_ring_shm.c (which pulls in jts_ring_shm.h's offsetof/_Static_assert
+        # gates and the ATOMIC_LLONG_LOCK_FREE==2 assert) and runs test_ring_core.
+        # Without this the Rust golden-layout test alone runs in CI, so a C-side
+        # offset drift would only fail on-Pi at build-on-pi.sh time. Host-safe
+        # (no libasound); `make plugin` stays Pi-only.
+        working-directory: c/jts-ring-ioplug
+        run: make test
+
       - name: jasper-tts-protocol — build + test (shared wire-protocol crate)
         if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-tts-protocol

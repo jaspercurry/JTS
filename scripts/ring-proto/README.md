@@ -107,12 +107,19 @@ household's only speaker).
 active-speaker staged startup topology (a saved multi-DAC/crossover
 graph), not the plain full-range stereo `direct` topology Ring B
 requires. `arm.sh`'s own preflight checks this (`JASPER_OUTPUTD_SINK`,
-`JASPER_OUTPUTD_ACTIVE_CHANNELS`, `JASPER_OUTPUTD_ACTIVE_LANE` via
-`systemctl show jasper-outputd.service -p Environment --value`) and
-refuses cleanly if the box is not full-range stereo. If jts3 is
-currently staged into an active topology, revert it to the plain
-stereo baseline first (see `docs/HANDOFF-speaker-output-reference.md`);
-this prototype does not attempt that reversion for you.
+`JASPER_OUTPUTD_ACTIVE_CHANNELS`, `JASPER_OUTPUTD_ACTIVE_LANE`) by
+reading the running daemon's true environment from
+`/proc/<MainPID>/environ` — **not** `systemctl show -p Environment`,
+which returns only the unit's `Environment=` directives and misses the
+`EnvironmentFile=` layers where JTS actually keeps this state
+(`/var/lib/jasper/outputd.env`, `grouping-outputd.env`). Verified
+2026-07-02: on jts3 `ACTIVE_LANE=1` lives in `outputd.env` and is
+invisible to `systemctl show`, so reading that surface would blind the
+tweeter-safety refusal. The preflight refuses cleanly if the box is not
+full-range stereo. If jts3 is currently staged into an active topology,
+revert it to the plain stereo baseline first (see
+`docs/HANDOFF-speaker-output-reference.md`); this prototype does not
+attempt that reversion for you.
 
 ### 1. Host-side build+test gate (no SSH, no Pi touched)
 
@@ -187,7 +194,13 @@ failure (see "Rollback" below):
 5. **Bench writer smoke test:** plays a short tone directly into the
    ring via `ring_writer_bench` (built by `build-on-pi.sh`), proving the
    reader end-to-end WITHOUT CamillaDSP in the loop. Soft-skips (not a
-   failure) if the bench binary isn't built yet.
+   failure) if the bench binary isn't built yet. **Volume:** this tone
+   enters POST-CamillaDSP (ring → outputd → DAC), so `master_gain` cannot
+   attenuate it and there is no ramp. arm.sh pins a deliberately quiet
+   `-40 dBFS` (the bench's own default) per the JTS safe-test-volume
+   doctrine; raise it only via `JASPER_RING_PROTO_BENCH_DBFS=<dbfs>` (or the
+   bench's `--amplitude-dbfs`) after confirming the volume is safe on the
+   box, with an operator listening.
 6. **Build + load the hand Camilla config:** calls
    `make-camilla-ring-config.sh` (below), then points the
    `outputd-statefile.yml` at the result via the SAME
@@ -297,13 +310,24 @@ installed `.so` and the `build-on-pi.sh` scratch directory.
 
 Unit ordering is already correct for this without any change:
 `jasper-outputd.service` carries `Before=jasper-camilla.service`, so on
-a reboot with the ring armed, outputd starts (and creates/attaches the
-ring) before Camilla tries to open `pcm.jts_ring_playback` as a writer.
-`/dev/shm/jts-ring/content.ring` is tmpfs and is gone after a reboot;
-whichever side opens the path first (per the SHM contract's create-or-
-attach discipline) recreates it. No manual step is needed to survive a
-reboot while armed — though a reboot is still a good moment to consider
-whether you meant to `disarm.sh` first.
+a reboot with the ring armed, outputd normally starts (and
+creates/attaches the ring) before Camilla tries to open
+`pcm.jts_ring_playback` as a writer.
+
+`/dev/shm/jts-ring/content.ring` is tmpfs and is gone after a reboot,
+**including the `/dev/shm/jts-ring/` directory itself.** Both sides
+create the directory (`mkdir -p` of the parent) before the O_EXCL create
+— the Rust reader's `ensure_parent_dir` and the C writer's matching
+`ensure_parent_dir` in `jts_ring_shm.c` — so whichever side opens the
+path first recreates both the dir and the file (per the SHM contract's
+create-or-attach discipline). This matters for the case where outputd
+does NOT win the race: if outputd parks at boot (e.g. its DAC gate is
+not yet satisfied) while Camilla is up, Camilla is the first opener. The
+C writer then creates the directory + ring and free-run-drops (no live
+reader), so Camilla does not ENOENT-crash-loop waiting for outputd. No
+manual step is needed to survive a reboot while armed — though a reboot
+is still a good moment to consider whether you meant to `disarm.sh`
+first.
 
 ## Known hazards while armed
 
