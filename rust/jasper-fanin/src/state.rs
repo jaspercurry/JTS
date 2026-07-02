@@ -136,6 +136,13 @@ pub struct StateServer {
     /// (the fan-in mix rate); the direct gadget capture is a fixed 48 kHz
     /// endpoint.
     tap_sample_rate: u32,
+    /// The combo-mode host-clock STATUS fragment (C7). Rendered once per tick by
+    /// the `fanin-host-clock` thread into this shared string, embedded verbatim
+    /// in `snapshot_json`. Always present (initialized to the disabled block by
+    /// `main`), so the top-level `host_clock` key is stable whether the feature
+    /// is armed or off. The state-server thread only READS it (single writer is
+    /// the host-clock thread).
+    host_clock_fragment: Arc<Mutex<String>>,
 }
 
 pub struct InputSnapshotSource {
@@ -174,6 +181,11 @@ pub struct StateServerConfig {
     pub output_pcm: String,
     pub music_output_pcm: Option<String>,
     pub tts_metrics: Option<TtsMetrics>,
+    /// The combo-mode host-clock STATUS fragment (C7), created and initialized
+    /// (to the disabled block) by `main` and updated by the `fanin-host-clock`
+    /// thread. Always present so STATUS carries a definite top-level
+    /// `host_clock` key.
+    pub host_clock_fragment: Arc<Mutex<String>>,
 }
 
 impl StateServer {
@@ -187,6 +199,7 @@ impl StateServer {
             output_pcm,
             music_output_pcm,
             tts_metrics,
+            host_clock_fragment,
         } = config;
         let inputs = mixer
             .inputs()
@@ -228,6 +241,7 @@ impl StateServer {
             // The direct gadget capture is a fixed 48 kHz endpoint; the tap's
             // refractory window resolves against that, not the mix rate.
             tap_sample_rate: 48_000,
+            host_clock_fragment,
         }
     }
 
@@ -982,6 +996,23 @@ impl StateServer {
         buf.push_str(&self.tap.status_fragment(&tap_cfg));
         buf.push(',');
 
+        // host_clock object (C7) — always present, additive. In combo mode
+        // (JASPER_FANIN_USB_DIRECT + JASPER_FANIN_HOST_CLOCK) fan-in owns the
+        // gadget capture and drives the host-slaved USB clock, so this is the
+        // combo-box analogue of usbsink's state.json host_clock block (solo
+        // mode). Rendered verbatim from the fragment the `fanin-host-clock`
+        // thread publishes each tick; the disabled block (enabled:false) when
+        // the feature is off, so the top-level key is byte-stable either way.
+        buf.push_str(r#""host_clock":"#);
+        {
+            let guard = self
+                .host_clock_fragment
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            buf.push_str(&guard);
+        }
+        buf.push(',');
+
         // watchdog object
         buf.push_str(r#""watchdog":{"#);
         push_kv_u64(&mut buf, "pings_sent", self.heartbeat.pings_sent());
@@ -1202,6 +1233,12 @@ mod tests {
             tap: Arc::new(TapState::default()),
             tap_config: Arc::new(Mutex::new(TapConfig::default())),
             tap_sample_rate: 48_000,
+            // The disabled host-clock fragment — the common (feature-off) shape
+            // STATUS always carries. `crate::host_clock::initial_fragment` on a
+            // disabled config renders exactly this.
+            host_clock_fragment: Arc::new(Mutex::new(crate::host_clock::initial_fragment(
+                crate::host_clock::build_config(false, 300, 6, 2048),
+            ))),
         }
     }
 
@@ -1263,6 +1300,50 @@ mod tests {
                 j,
             );
         }
+    }
+
+    #[test]
+    fn snapshot_json_always_carries_host_clock_block() {
+        // C7: the combo-mode host-clock block is a top-level, always-present
+        // sibling of `tap` — the disabled block when the feature is off, so the
+        // key is byte-stable. It must parse as valid JSON (the fragment is
+        // rendered by the shared crate; here we prove the fold-in is well-formed
+        // and the disabled default shows through).
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        assert!(
+            j.contains(r#""host_clock":{"#),
+            "STATUS must always carry a top-level host_clock block: {j}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
+        let hc = &parsed["host_clock"];
+        assert_eq!(
+            hc["enabled"].as_bool(),
+            Some(false),
+            "disabled fixture ⇒ enabled:false"
+        );
+        assert_eq!(hc["ladder"].as_str(), Some("disabled"));
+        assert!(hc["probe"]["response_ratio"].is_null());
+        // Sibling of tap, not nested inside it.
+        assert!(parsed["tap"].is_object());
+    }
+
+    #[test]
+    fn snapshot_json_embeds_an_enabled_host_clock_fragment_verbatim() {
+        // When the host-clock thread publishes an armed fragment, STATUS embeds
+        // it verbatim (the state-server only READS the shared string). Simulate
+        // by swapping the fragment for an armed-config render.
+        let mut server = make_test_server();
+        server.host_clock_fragment = Arc::new(Mutex::new(crate::host_clock::initial_fragment(
+            crate::host_clock::build_config(true, 300, 6, 2048),
+        )));
+        let j = server.snapshot_json();
+        let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
+        assert_eq!(
+            parsed["host_clock"]["enabled"].as_bool(),
+            Some(true),
+            "an armed fragment shows through verbatim: {j}"
+        );
     }
 
     #[test]

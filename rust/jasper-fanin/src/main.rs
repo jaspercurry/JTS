@@ -27,6 +27,7 @@
 
 mod config;
 mod fifo;
+mod host_clock;
 mod impulse_tap;
 mod lane_resampler;
 mod loudness;
@@ -186,6 +187,85 @@ fn main() -> Result<()> {
         })
         .context("spawning fanin-tap-writer thread")?;
 
+    // Combo-mode host-slaved USB clock (C5). DEFAULT-OFF. When
+    // JASPER_FANIN_HOST_CLOCK=enabled AND USB DIRECT is armed, a dedicated
+    // `fanin-host-clock` thread steers the gadget's Capture Pitch ctl toward the
+    // DAC clock (the shared jasper_host_clock ladder). The direct-off gate is
+    // resolved HERE so a `enabled`+direct-off box logs one noop line and never
+    // opens the ctl (in aloop mode the usbsink bridge owns the clock — the
+    // "daemon that owns the capture owns the pitch ctl" invariant).
+    //
+    // The STATUS fragment Arc is created regardless (initialized to the
+    // disabled block) so /state carries a definite host_clock from boot; the
+    // thread updates it once per tick when armed.
+    let host_clock_enabled_effective = if config.host_clock_enabled && !config.usb_direct_enabled {
+        // enabled + direct-off: inert, one warn, zero ctl writes. In aloop mode
+        // the usbsink bridge owns the gadget capture and its clock.
+        warn!("event=fanin.host_clock.noop reason=usb_direct_off");
+        false
+    } else {
+        config.host_clock_enabled
+    };
+    // The setpoint is the resampler's HELD target (target + warmup cushion),
+    // shared with the inner RateController (C4). Fall back to the config sum
+    // when the mixer has no direct-lane resampler (signals absent) — the config
+    // is inert then anyway, but keep the fragment coherent.
+    let host_clock_signals = mixer.host_clock_signals();
+    let host_clock_setpoint = host_clock_signals
+        .as_ref()
+        .map(|s| s.target_fill_frames)
+        .unwrap_or_else(|| {
+            u64::from(config.input_resampler_target_frames)
+                + u64::from(config.input_resampler_warmup_cushion_frames)
+        });
+    let host_clock_config = crate::host_clock::build_config(
+        host_clock_enabled_effective,
+        config.host_clock_probe_ppm,
+        config.host_clock_probe_secs,
+        host_clock_setpoint,
+    );
+    let host_clock_fragment = Arc::new(std::sync::Mutex::new(crate::host_clock::initial_fragment(
+        host_clock_config,
+    )));
+    // Spawn the servo thread ONLY when armed AND the mixer exposes the direct
+    // lane's signals. `enabled` without signals (resampler construction failed
+    // → fail-soft) or direct-off both fall through to inert: no thread, the
+    // fragment stays the disabled block. Spawned BEFORE lock_memory() per the
+    // mlockall/pthread-stack ordering contract documented below.
+    let host_clock_thread = match (host_clock_enabled_effective, host_clock_signals) {
+        (true, Some(signals)) => {
+            // The ctl card the servo thread opens — computed here (cheap string
+            // op) and moved in, because the `AlsaPitchCtl` handle is `!Send` and
+            // must be constructed inside the thread.
+            let ctl_card = crate::host_clock::ctl_card_for_device(&config.usb_direct_device);
+            let hc_fragment = Arc::clone(&host_clock_fragment);
+            let hc_shutdown = Arc::clone(&shutdown);
+            info!(
+                "event=fanin.host_clock.armed probe_ppm={} probe_secs={} setpoint_frames={}",
+                config.host_clock_probe_ppm, config.host_clock_probe_secs, host_clock_setpoint,
+            );
+            Some(
+                std::thread::Builder::new()
+                    .name("fanin-host-clock".into())
+                    .spawn(move || {
+                        crate::host_clock::run_host_clock_thread(
+                            host_clock_config,
+                            signals,
+                            ctl_card,
+                            hc_fragment,
+                            hc_shutdown,
+                        );
+                    })
+                    .context("spawning fanin-host-clock thread")?,
+            )
+        }
+        (true, None) => {
+            warn!("event=fanin.host_clock.noop reason=no_direct_resampler");
+            None
+        }
+        (false, _) => None,
+    };
+
     // mlockall — pin pages in RAM so the audio path is never paged
     // out under memory pressure. Belt to the systemd unit's
     // LimitMEMLOCK=infinity + Slice=jts-audio.slice MemorySwapMax=0
@@ -217,6 +297,7 @@ fn main() -> Result<()> {
             output_pcm: config.output_pcm.clone(),
             music_output_pcm: config.music_output_pcm.clone(),
             tts_metrics,
+            host_clock_fragment: Arc::clone(&host_clock_fragment),
         },
     );
     let state_server_shutdown = Arc::clone(&shutdown);
@@ -248,6 +329,13 @@ fn main() -> Result<()> {
     let _ = state_thread.join();
     let _ = xrun_writer.join();
     let _ = tap_writer.join();
+    // Join the host-clock thread last: its loop exited on the shutdown flag and
+    // forced a neutral pitch write on the way out (the neutrality invariant),
+    // so by the time we return the host is un-slaved. `None` when the feature
+    // was off / inert (no thread was spawned).
+    if let Some(handle) = host_clock_thread {
+        let _ = handle.join();
+    }
 
     match &result {
         Ok(_) => {

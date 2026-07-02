@@ -163,6 +163,7 @@ dependencies = [
  "alsa",
  "anyhow",
  "env_logger",
+ "jasper-host-clock",
  "jasper-resampler",
  "jasper-ring",
  "jasper-tts-protocol",
@@ -171,6 +172,15 @@ dependencies = [
  "sd-notify",
  "serde_json",
  "signal-hook",
+]
+
+[[package]]
+name = "jasper-host-clock"
+version = "0.1.0"
+dependencies = [
+ "alsa",
+ "jasper-clock",
+ "log",
 ]
 
 [[package]]

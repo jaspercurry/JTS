@@ -871,6 +871,32 @@ impl Mixer {
         &self.inputs
     }
 
+    /// Clone the cross-thread signals the combo-mode `fanin-host-clock` thread
+    /// reads (C5). Returns `Some` ONLY when the USB DIRECT lane exists AND owns a
+    /// resampler (the normal combo-mode shape); `None` when direct is off, or
+    /// when resampler construction failed and the lane fell back to no resampler
+    /// (fail-soft — the caller then runs inert, warn-once). The `HostClock`
+    /// thread holds only these `Arc` atomics; it never touches the mixer.
+    ///
+    /// The signals ride the atomics the mixer already publishes for STATUS
+    /// (resampler `fill_frames`/`input_frames`/`output_frames`/`locked`, direct
+    /// `present`, trim `trimmed_frames`), so this adds no new hot-path work — it
+    /// only clones the existing `Arc`s. `main` calls this before `mixer.run`.
+    pub fn host_clock_signals(&self) -> Option<crate::host_clock::HostClockSignals> {
+        let direct = self.inputs.iter().find(|inp| inp.is_direct())?;
+        let resampler = direct.resampler_observability()?;
+        let direct_obs = direct.direct_observability()?;
+        Some(crate::host_clock::HostClockSignals {
+            fill_frames: Arc::clone(&resampler.fill_frames),
+            input_frames: Arc::clone(&resampler.input_frames),
+            output_frames: Arc::clone(&resampler.output_frames),
+            locked: Arc::clone(&resampler.locked),
+            present: Arc::clone(&direct_obs.present),
+            trim: direct.trim_control(),
+            target_fill_frames: resampler.target_fill_frames,
+        })
+    }
+
     /// The shared impulse-tap state (armed + counters + knobs), cloned for the
     /// state-server thread's `TAP_ARM`/`TAP_DISARM`/STATUS handling (C4).
     pub fn direct_tap_state(&self) -> Arc<TapState> {

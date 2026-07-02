@@ -154,5 +154,24 @@ EnvironmentFile=-/var/lib/jasper/fanin.env
 
 ExecStart=/opt/jasper/bin/jasper-fanin
 
+# Combo-mode host-slaved USB clock (C6) — belt-and-braces for the
+# pitch-neutrality safety invariant. In combo mode
+# (JASPER_FANIN_USB_DIRECT=enabled + JASPER_FANIN_HOST_CLOCK=enabled) the
+# `fanin-host-clock` thread owns the gadget's "Capture Pitch 1000000" ctl and
+# resets it to neutral on every clean exit path — but SIGKILL / OOM-kill /
+# watchdog abort skip that in-process cleanup, and a host must never stay
+# slaved to a command from a daemon that is no longer running.
+#
+# The `$JASPER_FANIN_HOST_CLOCK = enabled` gate is LOAD-BEARING, not cosmetic:
+# fan-in restarts on every deploy, and an UNCONDITIONAL neutralize here would,
+# on a solo-mode box (usbsink owns the clock in aloop mode), overwrite an
+# active usbsink L0 command with 1000000 behind usbsink's back — desyncing its
+# write-suppression epsilon gate (it believes the last written value is its own
+# command and won't rewrite until >10 ppm drift). So the belt fires ONLY when
+# THIS daemon is the configured clock owner. `-` ignores failure when the card
+# is absent (combo off, gadget torn down). Mirrors jasper-usbsink.service's
+# name-based ExecStopPost so both writers target the same element the same way.
+ExecStopPost=-/bin/sh -c '[ "$JASPER_FANIN_HOST_CLOCK" = "enabled" ] && exec /usr/bin/amixer -c UAC2Gadget cset iface=PCM,name="Capture Pitch 1000000" 1000000'
+
 [Install]
 WantedBy=multi-user.target

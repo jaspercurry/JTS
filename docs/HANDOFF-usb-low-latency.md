@@ -205,6 +205,65 @@ Both halves are DEFAULT-OFF and fail-safe (only the exact literals arm them:
 | `enabled` | off | Misconfig, **safe**: the bridge holds `hw:UAC2Gadget`, so fan-in's direct open fails → the lane goes silent-idle with a 2 s reopen retry (`/state` fan-in `usbsink.direct.present=false`, `retries` grows, one transition log). USB source is SILENT (the direct lane never opens its aloop PCM). Recover by fixing the flags — no crash. |
 | off | `1` | Misconfig, **safe**: the bridge doesn't bridge; fan-in reads an unfed aloop substream → silence via EAGAIN. Observable: bridge `standby:true` while fan-in lane `source:"lane"`. |
 
+### Host-slaved USB clock in combo mode (fan-in owns the ctl)
+
+The Stage 1 host-slaved USB clock (steer the gadget's `Capture Pitch 1000000`
+ctl so the host tracks the DAC clock, closing the standing rate offset at its
+source) has **one home per mode**, decided by the invariant *the daemon that
+owns the gadget capture owns the pitch ctl*:
+
+- **solo (aloop) mode** — the usbsink bridge owns `hw:UAC2Gadget`, so it drives
+  the ladder: `JASPER_USBSINK_HOST_CLOCK=enabled` (see "Host-slaved USB clock
+  (Stage 1)" below).
+- **combo (USB DIRECT) mode** — fan-in owns the capture, so a dedicated
+  `fanin-host-clock` thread drives it: `JASPER_FANIN_HOST_CLOCK=enabled`.
+
+Both run the **same** shared ladder/probe/servo (`rust/jasper-host-clock`,
+byte-identical semantics; the only per-daemon difference is the `event=` log
+prefix — `usbsink_audio` vs `fanin` — and which `JASPER_*` keys each parses).
+Combo mode pins the DIRECT lane's resampler fill at target, removing the
+standby-mode drift wander (the ~9 ms "standby gap" measured below). The
+setpoint is the resampler's HELD target
+(`JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES +
+JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`) — one setpoint shared with
+the inner rate controller, so the outer loop never fights the inner integrator
+(the ≥10× bandwidth separation of the cascade is derived in the
+`jasper-host-clock` module docstring).
+
+#### `HOST_CLOCK × USB_DIRECT` flag matrix (fan-in)
+
+| `FANIN_HOST_CLOCK` | `FANIN_USB_DIRECT` | Result |
+|---|---|---|
+| off (default) | any | **Inert.** No `fanin-host-clock` thread; `/state` fan-in `host_clock.enabled=false`. In solo mode usbsink owns the clock (its own flag). |
+| `enabled` | `enabled` | **Combo target.** fan-in owns the gadget capture and steers `Capture Pitch`; per-session probe → L0 pins the DIRECT lane fill at target. `/state.audio_graph.fanin.host_clock` carries the ladder/DLL/probe block. |
+| `enabled` | off | **Inert, warned.** One `event=fanin.host_clock.noop reason=usb_direct_off`; zero ctl writes ever — in aloop mode the usbsink bridge owns the clock. No thread spawned. |
+| `enabled` | `enabled`, but no direct-lane resampler | **Inert, warned.** One `event=fanin.host_clock.noop reason=no_direct_resampler` (resampler construction fell back to none — fail-soft). No thread. |
+
+**Double-enable misconfig (R5):** `JASPER_FANIN_HOST_CLOCK=enabled` +
+`JASPER_FANIN_USB_DIRECT=enabled` while the usbsink bridge is NOT in standby
+(both own-the-clock daemons armed at once). fan-in's direct open fails (the
+bridge holds `hw:UAC2Gadget`), so no session ever starts and the ladder holds
+neutral — but fan-in's **one** startup neutralize can stomp an active usbsink L0
+command once. usbsink self-recovers via its own probe / L2 machinery, and audio
+is unaffected either way. Fix by putting the bridge in standby
+(`JASPER_USBSINK_AUDIO_STANDBY=1`) — the intended combo posture.
+
+**Neutrality belt-and-braces:** `jasper-fanin.service` carries a
+**combo-gated** `ExecStopPost` that resets the pitch to `1000000` on SIGKILL /
+OOM / watchdog abort — but ONLY when `$JASPER_FANIN_HOST_CLOCK = enabled`. The
+gate is load-bearing: fan-in restarts on every deploy, and an unconditional
+belt would desync a solo-mode usbsink L0 command (usbsink's write-suppression
+epsilon believes the last written value is its own and would not rewrite until
+>10 ppm drift). So the belt fires only when fan-in is the configured clock
+owner. Mirrors `jasper-usbsink.service`'s name-based `ExecStopPost`; both
+writers target the same element by (iface, name), never numid.
+
+Combo host-clock telemetry:
+
+```sh
+curl -s http://jts.local:8780/state | jq .audio_graph.fanin.host_clock
+```
+
 ### Observability
 
 - Fan-in STATUS (`/run/jasper-fanin/control.sock` `STATUS`, surfaced on `/state`):
