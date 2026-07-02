@@ -143,33 +143,47 @@ EOF
 fi
 echo "  OK   ioplug .so is installed"
 
-# Resolve outputd's ACTUAL runtime env (systemctl show already merges
-# Environment= directives with every EnvironmentFile= layer, honoring
-# the optional-file "-" prefix) rather than grepping the packaged unit
-# file, which would see the packaged JASPER_OUTPUTD_PERIOD_FRAMES=1024
-# default instead of a live box's tuned override.
-outputd_env_raw="$(ssh_ok 'systemctl show jasper-outputd.service -p Environment --value' 2>/dev/null)"
+# Resolve outputd's ACTUAL running env from the daemon's own process:
+# /proc/<MainPID>/environ. This is the AGENTS.md "verify at the user's
+# surface" rule — the running daemon's behavior is governed by exactly
+# these values.
+#
+# We deliberately do NOT use `systemctl show -p Environment`: that returns
+# ONLY the unit's `Environment=` directives, NOT the `EnvironmentFile=`
+# layers. On this project the real topology state lives in those files
+# (`/var/lib/jasper/outputd.env` carries the Stage-0 PERIOD_FRAMES=128
+# retune and the SINK/ACTIVE_LANE keys; a bonded member's
+# DAC_CONTENT_FIFO lives in grouping-outputd.env). Verified empirically
+# 2026-07-02: on jts.local `systemctl show` reports PERIOD_FRAMES=1024
+# while the box actually runs 128; on jts3 ACTIVE_LANE=1 is invisible to
+# `systemctl show`. Reading the wrong surface there would install the
+# wrong ring geometry (period mismatch -> outputd exit 78 mid-arm) and
+# blind the tweeter-safety refusal. /proc/PID/environ carries the fully
+# resolved EnvironmentFile chain systemd exec'd with.
+outputd_mainpid="$(ssh_ok 'systemctl show jasper-outputd.service -p MainPID --value' 2>/dev/null | tr -dc '0-9')"
+if [[ -z "${outputd_mainpid}" || "${outputd_mainpid}" == "0" ]]; then
+    echo "error: jasper-outputd has no MainPID on ${PI_HOST} — the daemon is not" \
+        "running (parked/failed?), so its resolved runtime env cannot be read." \
+        "Bring it up (systemctl start jasper-outputd) and re-run." >&2
+    echo "No changes made." >&2
+    exit 1
+fi
+# NUL-delimited environ -> newline-delimited KEY=VALUE. The redirect MUST be
+# inside the sudo'd shell (root reads /proc/<pid>/environ; a plain redirect
+# opens the file as the SSH user and gets EACCES).
+outputd_env_raw="$(ssh_ok "sudo sh -c 'tr \"\\0\" \"\\n\" < /proc/${outputd_mainpid}/environ'" 2>/dev/null)"
 if [[ -z "${outputd_env_raw}" ]]; then
-    echo "error: could not read jasper-outputd.service's resolved environment (is the unit installed?)." >&2
+    echo "error: could not read /proc/${outputd_mainpid}/environ for jasper-outputd" \
+        "on ${PI_HOST} (permission or the process exited between calls?)." >&2
     echo "No changes made." >&2
     exit 1
 fi
 
 resolved_env_get() {
-    # resolved_env_get <KEY> — extract KEY=value from the systemctl show
-    # --value output, which is a single space-separated, shell-quoted line.
+    # resolved_env_get <KEY> — extract KEY=value from the newline-delimited
+    # environ dump. Each line is KEY=VALUE (values may be empty or contain '=').
     local key="$1"
-    python3 -c "
-import shlex, sys
-key = sys.argv[1]
-line = sys.argv[2]
-for tok in shlex.split(line):
-    if '=' in tok:
-        k, _, v = tok.partition('=')
-        if k == key:
-            print(v)
-            break
-" "${key}" "${outputd_env_raw}"
+    printf '%s\n' "${outputd_env_raw}" | sed -n "s/^${key}=//p" | head -1
 }
 
 sink="$(resolved_env_get JASPER_OUTPUTD_SINK)"
@@ -268,10 +282,16 @@ echo "--- Step 2/7: install ${CONF_D_PATH} ---"
 # period_frames MUST equal outputd's resolved JASPER_OUTPUTD_PERIOD_FRAMES
 # (the shared crate treats this as one less drift axis — see the SHM
 # contract doc: "Slot size derives from outputd's period_frames, not a
-# hardcoded 256"). Read it the same resolved-env way as the guards above.
+# hardcoded 256"). Read it from the same /proc/<MainPID>/environ surface
+# as the guards above so a retuned box (jts.local runs 128, not the
+# packaged 1024) gets the right ring geometry. If the key is somehow
+# absent from environ, fall back to outputd's compiled default
+# (DEFAULT_PERIOD_FRAMES=1024 in config.rs) — but the guard block above
+# already required a live MainPID, so a set-in-env-file value will be
+# present here.
 period_frames="$(resolved_env_get JASPER_OUTPUTD_PERIOD_FRAMES)"
 period_frames="${period_frames:-1024}"
-echo "  period_frames (from outputd's resolved env): ${period_frames}"
+echo "  period_frames (from outputd's resolved runtime env): ${period_frames}"
 
 # NOTE for future edits: this heredoc's delimiter is UNQUOTED (<<EOF, not
 # <<'EOF') because the body needs ${RING_DEVICE}/${period_frames}/
@@ -386,8 +406,17 @@ if ! ssh_ok "test -x ${bench_bin}"; then
         "confirmation (step 4) already proved the ring end-to-end at the" \
         "ALSA-open and reader-attach layers." >&2
 else
-    echo "  playing a short tone via the bench writer (listen for audio; check counters below)"
-    bench_out="$(ssh_ok "sudo ${bench_bin} --path /dev/shm/jts-ring/content.ring --seconds 3 --pattern tone --freq 440 --paced" 2>&1)"
+    # SAFETY: this tone enters POST-CamillaDSP (ring -> outputd -> DAC), so
+    # master_gain cannot attenuate it and there is no ramp. Pin a deliberately
+    # quiet -40 dBFS (the bench default, made explicit here) per the JTS
+    # safe-test-volume doctrine — a lab smoke test on an amp-attached box must
+    # not be a loud surprise. Raise it only by editing this line after
+    # confirming the volume is safe on the target box, with an operator
+    # listening. JASPER_RING_PROTO_BENCH_DBFS overrides for a deliberate test.
+    bench_dbfs="${JASPER_RING_PROTO_BENCH_DBFS:--40}"
+    echo "  playing a short quiet tone (${bench_dbfs} dBFS) via the bench writer" \
+        "(listen for audio; check counters below)"
+    bench_out="$(ssh_ok "sudo ${bench_bin} --path /dev/shm/jts-ring/content.ring --seconds 3 --pattern tone --freq 440 --amplitude-dbfs ${bench_dbfs} --paced" 2>&1)"
     bench_status=$?
     printf '%s\n' "${bench_out}" | sed 's/^/    /'
     if [[ "${bench_status}" -ne 0 ]]; then

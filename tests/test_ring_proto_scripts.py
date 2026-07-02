@@ -202,6 +202,34 @@ def _extract_assignment(text: str, var_name: str) -> str:
     raise AssertionError(f"could not find {var_name}= assignment")
 
 
+def _extract_disarm_sed_command(disarm_text: str) -> str:
+    """Lift the exact sed command out of disarm.sh's marker-strip step, verbatim,
+    as the string disarm.sh's local bash expands and hands to the remote shell.
+
+    disarm.sh runs `ssh_ok "sudo sed -i '<prog>' ${OUTPUTD_ENV}"`. The OUTER
+    double quotes are what make bash expand `${BEGIN_MARKER//\\//\\\\/}` and
+    `${OUTPUTD_ENV}` before the command is sent; the single quotes around the
+    program are literal-to-the-remote-shell. We return the inside of that outer
+    quote with two edits: drop the leading `sudo ` (the test is unprivileged)
+    and turn `sed -i` into `sed` (the test drives sed via stdout to sidestep the
+    GNU-vs-BSD `sed -i` suffix-argument difference; disarm.sh runs on the Pi's
+    GNU sed). The caller wraps this in a double-quoted `eval` so bash performs
+    the SAME `${...}` expansion disarm.sh does — the extraction, not a
+    hand-retype, is what makes a disarm.sh edit flow into this test.
+    """
+    for line in disarm_text.splitlines():
+        stripped = line.strip()
+        marker = 'ssh_ok "sudo '
+        if marker in stripped and "sed -i" in stripped:
+            after = stripped[stripped.index(marker) + len(marker) :]
+            end = after.rfind('"')  # trim the closing `"; then`
+            if end == -1:
+                break
+            inner = after[:end]  # sed -i '<prog>' ${OUTPUTD_ENV}
+            return inner.replace("sed -i ", "sed ", 1)
+    raise AssertionError("could not extract the sed marker-strip command from disarm.sh")
+
+
 def test_arm_and_disarm_agree_on_the_conf_d_path() -> None:
     """The ALSA plugin drop-in path arm.sh installs must be the exact
     path disarm.sh removes."""
@@ -214,15 +242,16 @@ def test_arm_and_disarm_agree_on_the_conf_d_path() -> None:
 
 
 def test_disarm_sed_marker_strip_actually_works(tmp_path: Path) -> None:
-    """Run disarm.sh's exact marker-stripping sed command (extracted from
-    its source, not re-typed by hand) against a synthetic env file,
-    locally, with a real sed.
+    """Run disarm.sh's exact marker-stripping sed command — lifted verbatim
+    from disarm.sh's source via _extract_disarm_sed_expr, NOT re-typed by
+    hand — against a synthetic env file, locally, with a real sed.
 
     The markers embed parentheses ("(scripts/ring-proto/arm.sh)"), which
     are BRE-literal in sed's default mode — not a metacharacter hazard —
     but "looks right" is not the same as "runs right" for a regex built
-    from string interpolation. This exercises the real command rather
-    than only reading it as source text.
+    from string interpolation. This exercises the real command; because
+    the sed expression is extracted from the script, a hand-edit of that
+    expression in disarm.sh that broke the strip would fail this test.
     """
     if not _has("sed"):
         pytest.skip("sed not on PATH")
@@ -241,15 +270,17 @@ def test_disarm_sed_marker_strip_actually_works(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    # The exact bash expression from disarm.sh, with the shell variable
-    # names it uses locally (${BEGIN_MARKER//\//\\/} etc.) reproduced
-    # verbatim so this test breaks if that expression is ever hand-edited
-    # without updating this test in the same change.
+    # Extract the ACTUAL sed command from disarm.sh (not a hand-retyped copy)
+    # so this test genuinely breaks if that command is ever hand-edited without
+    # a matching test change. `eval` inside the double-quoted string reproduces
+    # the ${BEGIN_MARKER//...}/${OUTPUTD_ENV} expansion disarm.sh's outer
+    # `ssh_ok "..."` double quote performs; the extractor already turned
+    # `sed -i` into `sed` so we can read stdout and dodge the GNU-vs-BSD
+    # `sed -i` suffix difference.
+    sed_command = _extract_disarm_sed_command(disarm_text)
     script = (
-        'BEGIN_MARKER="$1"; END_MARKER="$2"; TARGET="$3"; '
-        "sed -i.bak "
-        '"/^${BEGIN_MARKER//\\//\\\\/}\\$/,/^${END_MARKER//\\//\\\\/}\\$/d" '
-        '"$TARGET"'
+        'BEGIN_MARKER="$1"; END_MARKER="$2"; OUTPUTD_ENV="$3"; '
+        f'eval "{sed_command}"'
     )
     result = subprocess.run(
         ["bash", "-c", script, "--", begin_marker, end_marker, str(env_file)],
@@ -258,6 +289,8 @@ def test_disarm_sed_marker_strip_actually_works(tmp_path: Path) -> None:
         timeout=10,
     )
     assert result.returncode == 0, f"sed command failed: {result.stderr}"
+    # Emulate the in-place edit disarm.sh does (`sed -i`) by writing stdout back.
+    env_file.write_text(result.stdout, encoding="utf-8")
 
     remaining = env_file.read_text(encoding="utf-8")
     assert begin_marker not in remaining
@@ -365,6 +398,77 @@ def test_no_ring_proto_script_is_referenced_from_install_sh() -> None:
     assert "ring-proto" not in install_sh
     assert "jts_ring_playback" not in install_sh
     assert "jts-ring-ioplug" not in install_sh
+
+
+def test_arm_reads_outputd_env_from_proc_environ_not_systemctl_show() -> None:
+    """arm.sh's preflight must read jasper-outputd's TRUE running env from
+    /proc/<MainPID>/environ, not `systemctl show -p Environment`.
+
+    B2 regression: `systemctl show -p Environment` returns ONLY the unit's
+    `Environment=` directives and drops every `EnvironmentFile=` layer — but
+    JTS keeps the topology state that gates this arm (PERIOD_FRAMES retune,
+    SINK/ACTIVE_LANE, DAC_CONTENT_FIFO) in those files. Reading the wrong
+    surface installs the wrong ring geometry (period mismatch -> outputd
+    exit 78 mid-arm) and blinds the tweeter-safety refusal. Empirically
+    verified 2026-07-02: on jts.local `systemctl show` reports
+    PERIOD_FRAMES=1024 while the box runs 128; on jts3 ACTIVE_LANE=1 is
+    invisible to it.
+    """
+    arm_text = (RING_PROTO_DIR / "arm.sh").read_text(encoding="utf-8")
+    # It resolves the daemon's env from its process image...
+    assert "/proc/" in arm_text and "/environ" in arm_text, (
+        "arm.sh no longer reads /proc/<MainPID>/environ — the preflight's "
+        "topology guards would be blind to EnvironmentFile= layers"
+    )
+    assert "MainPID" in arm_text, "arm.sh must resolve the daemon MainPID to read its /proc environ"
+    # ...and MUST NOT INVOKE `systemctl show ... -p Environment` (which only
+    # returns Environment= directives, not the EnvironmentFile= chain). A bare
+    # `-p MainPID` systemctl show is fine and expected. Check non-comment lines
+    # only — the header comment legitimately explains why that surface is wrong.
+    code_lines = [
+        ln for ln in arm_text.splitlines() if not ln.lstrip().startswith("#")
+    ]
+    for ln in code_lines:
+        assert "-p Environment" not in ln, (
+            "arm.sh invokes `systemctl show ... -p Environment`, which misses the "
+            "EnvironmentFile= layers where the real topology state lives (B2): "
+            f"{ln.strip()!r}"
+        )
+
+
+def test_disarm_preserves_rollback_record_when_restore_failed() -> None:
+    """disarm.sh's step 5 must NOT delete the rollback state unless the
+    statefile restore succeeded (or there was nothing to restore).
+
+    S4 regression: if step 1's statefile restore errors, the rollback record
+    is the ONLY surviving copy of the original config_path while the statefile
+    still points at ring_proto.yml. Deleting it unconditionally would strand
+    the box and make a later re-arm record ring_proto.yml as the "original".
+    The fix gates the removal on a `statefile_restore_ok` flag set only on the
+    two safe outcomes (restore succeeded, or no record existed).
+    """
+    disarm_text = (RING_PROTO_DIR / "disarm.sh").read_text(encoding="utf-8")
+    assert "statefile_restore_ok" in disarm_text, (
+        "disarm.sh no longer tracks whether the statefile restore succeeded — "
+        "step 5 could delete the sole copy of the original config_path (S4)"
+    )
+    # The removal of the rollback dir must be guarded by the flag. Find the
+    # step-5 region and confirm the guard is present before the rm.
+    lines = disarm_text.splitlines()
+    step5_idx = next(
+        (i for i, ln in enumerate(lines) if "Step 5/6: remove rollback state" in ln),
+        None,
+    )
+    assert step5_idx is not None, "could not locate disarm.sh step 5"
+    step5_region = "\n".join(lines[step5_idx : step5_idx + 20])
+    assert 'statefile_restore_ok" -ne 1' in step5_region or "statefile_restore_ok" in step5_region, (
+        "disarm.sh step 5 removes the rollback state without gating on "
+        "statefile_restore_ok — a failed restore would lose the original "
+        "config_path (S4)"
+    )
+    assert f"rm -rf {_extract_assignment(disarm_text, 'ROLLBACK_STATE_DIR')}" in disarm_text or (
+        "ROLLBACK_STATE_DIR" in step5_region
+    ), "disarm.sh step 5 should still remove ROLLBACK_STATE_DIR on the safe path"
 
 
 # ---------------------------------------------------------------------

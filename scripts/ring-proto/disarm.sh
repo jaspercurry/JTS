@@ -31,7 +31,10 @@
 #   4. Remove /dev/shm/jts-ring/ (tmpfs — safe, it is recreated by
 #      whichever side opens next; removing it here guarantees no stale
 #      ring geometry survives into a later arm attempt).
-#   5. Remove the rollback state file itself.
+#   5. Remove the rollback state file itself — but ONLY if step 1
+#      confirmed the statefile is back at its original config_path (or
+#      there was nothing recorded to restore). If the restore failed,
+#      the record is preserved so a re-run can still find the original.
 #   6. With --purge: also remove the installed .so and the bench
 #      working directory (the two artifacts build-on-pi.sh created).
 #      Without --purge, those are left in place so a re-arm does not
@@ -102,6 +105,13 @@ fi
 ssh_ok() { ssh -o BatchMode=yes -o ConnectTimeout=8 "${PI_USER}@${PI_HOST}" "$@"; }
 
 overall_ok=1
+# Whether the CamillaDSP statefile is known to be back at its original
+# config_path — gates step 5's deletion of the rollback record. Only the
+# two SAFE outcomes set this to 1: (a) restore succeeded, or (b) there was
+# no rollback state to begin with (nothing recorded to lose). A present but
+# empty/unreadable record, or a failed restore, leaves it 0 so step 5
+# preserves the only copy of the original config_path.
+statefile_restore_ok=0
 
 # ---------------------------------------------------------------------
 # Step 1 — restore the CamillaDSP statefile + restart jasper-camilla
@@ -114,6 +124,8 @@ if [[ "${rollback_present}" == "yes" ]]; then
         echo "  WARNING: ${ROLLBACK_ENV} exists but has no" \
             "ORIGINAL_CAMILLA_CONFIG_PATH — leaving the statefile as-is." >&2
         overall_ok=0
+        # statefile_restore_ok stays 0: the record is broken but present;
+        # do NOT delete it in step 5 (it is all we have of the original).
     else
         statefile_block=$(cat <<PYEOF
 import sys
@@ -128,17 +140,22 @@ PYEOF
 )
         if printf '%s\n' "${statefile_block}" | ssh_ok "sudo /opt/jasper/.venv/bin/python"; then
             echo "  OK   statefile restored to ${original_config_path}"
+            statefile_restore_ok=1
         else
             echo "  ERROR: could not restore the statefile to ${original_config_path}." \
                 "The box may still be pointed at the ring config — check by hand:" \
                 "ssh ${PI_USER}@${PI_HOST} cat /var/lib/camilladsp/outputd-statefile.yml" >&2
             overall_ok=0
+            # statefile_restore_ok stays 0: keep the record so a later
+            # disarm re-run can still find the original config_path.
         fi
     fi
 else
     echo "  SKIP no rollback state recorded (${ROLLBACK_ENV} absent) —" \
         "nothing to restore. This is normal if arm.sh never got past its" \
         "own preflight, or if disarm.sh already ran once."
+    # Nothing recorded, so nothing to lose by cleaning up in step 5.
+    statefile_restore_ok=1
 fi
 
 if ssh_ok "systemctl is-active --quiet jasper-camilla"; then
@@ -246,8 +263,18 @@ echo ""
 # ---------------------------------------------------------------------
 # Step 5 — remove the rollback state file
 # ---------------------------------------------------------------------
+# ONLY when the statefile is known to be restored (or there was nothing to
+# restore). If step 1's restore failed, the rollback record is the sole
+# surviving copy of the original config_path while the statefile still
+# points at ring_proto.yml — deleting it here would strand the box and make
+# a later re-arm record ring_proto.yml as the "original". Keep it.
 echo "--- Step 5/6: remove rollback state ---"
-if ssh_ok "test -d ${ROLLBACK_STATE_DIR}"; then
+if [[ "${statefile_restore_ok}" -ne 1 ]]; then
+    echo "  SKIP preserving ${ROLLBACK_STATE_DIR}: the statefile was NOT confirmed" \
+        "restored in step 1, so this record (the original config_path) must" \
+        "survive for a later disarm re-run. Fix the statefile restore, then" \
+        "re-run disarm.sh to clean up." >&2
+elif ssh_ok "test -d ${ROLLBACK_STATE_DIR}"; then
     if ssh_ok "sudo rm -rf ${ROLLBACK_STATE_DIR}"; then
         echo "  OK   removed ${ROLLBACK_STATE_DIR}"
     else
