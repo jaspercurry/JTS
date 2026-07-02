@@ -538,6 +538,46 @@ impl StateServer {
             );
             buf.push('}');
         }
+        // Ring A (shm_ring): the SPSC SHM ring counter block. `occupancy` is the
+        // live write_seq-read_seq depth; `published` slots reached a live reader;
+        // `full_waits` is the bounded live-reader back-pressure count; `drops`
+        // folds no-reader + stuck-reader drops; `mirror_drops` is the lossy aloop
+        // side-tap's drop count (never load-bearing). Only present under
+        // shm_ring — byte-identical observability to today under loopback.
+        if let Some(ring) = &self.coupling.ring {
+            buf.push(',');
+            buf.push_str(r#""ring":{"#);
+            push_kv_str(&mut buf, "path", &ring.path);
+            buf.push(',');
+            push_kv_u64(&mut buf, "slots", ring.slots as u64);
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "occupancy",
+                ring.occupancy.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "published",
+                ring.published.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "full_waits",
+                ring.full_waits.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(&mut buf, "drops", ring.drops.load(Ordering::Relaxed));
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "mirror_drops",
+                ring.mirror_drops.load(Ordering::Relaxed),
+            );
+            buf.push('}');
+        }
         buf.push('}');
         buf.push(',');
 
@@ -794,6 +834,7 @@ mod tests {
             coupling: CouplingObservability {
                 transport: "loopback",
                 pipe: None,
+                ring: None,
             },
             music_output_pcm: Some("hw:Loopback,0,6".to_string()),
             music_frames_written: Arc::new(AtomicU64::new(54321)),
@@ -819,6 +860,26 @@ mod tests {
                 reopen_count: Arc::new(AtomicU64::new(2)),
                 dropped_periods: Arc::new(AtomicU64::new(7)),
                 actual_pipe_bytes: Arc::new(AtomicU64::new(8192)),
+            }),
+            ring: None,
+        };
+        server
+    }
+
+    fn make_ring_test_server() -> StateServer {
+        use crate::mixer::RingObservability;
+        let mut server = make_test_server();
+        server.coupling = CouplingObservability {
+            transport: "shm_ring",
+            pipe: None,
+            ring: Some(RingObservability {
+                path: "/dev/shm/jts-ring/program.ring".to_string(),
+                slots: 8,
+                occupancy: Arc::new(AtomicU64::new(6)),
+                published: Arc::new(AtomicU64::new(12345)),
+                full_waits: Arc::new(AtomicU64::new(9)),
+                drops: Arc::new(AtomicU64::new(4)),
+                mirror_drops: Arc::new(AtomicU64::new(2)),
             }),
         };
         server
@@ -971,6 +1032,52 @@ mod tests {
         assert!(
             j.contains(r#""dropped_periods":7"#),
             "missing dropped_periods: {j}"
+        );
+        // transport_pipe carries NO ring block.
+        assert!(
+            !j.contains(r#""ring":{"#),
+            "transport_pipe must emit no ring block: {j}"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_shm_ring_reports_ring_observability() {
+        // shm_ring: transport + the shared ring counter block.
+        let server = make_ring_test_server();
+        let j = server.snapshot_json();
+        assert!(
+            j.contains(r#""transport":"shm_ring""#),
+            "missing transport: {j}"
+        );
+        assert!(j.contains(r#""ring":{"#), "missing ring block: {j}");
+        assert!(
+            j.contains(r#""path":"/dev/shm/jts-ring/program.ring""#),
+            "missing ring path: {j}"
+        );
+        assert!(j.contains(r#""slots":8"#), "missing slots: {j}");
+        assert!(j.contains(r#""occupancy":6"#), "missing occupancy: {j}");
+        assert!(j.contains(r#""published":12345"#), "missing published: {j}");
+        assert!(j.contains(r#""full_waits":9"#), "missing full_waits: {j}");
+        assert!(j.contains(r#""drops":4"#), "missing drops: {j}");
+        assert!(
+            j.contains(r#""mirror_drops":2"#),
+            "missing mirror_drops: {j}"
+        );
+        // shm_ring carries NO pipe block.
+        assert!(
+            !j.contains(r#""pipe":{"#),
+            "shm_ring must emit no pipe block: {j}"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_loopback_has_no_ring_block() {
+        // Default coupling emits neither pipe nor ring — byte-identical to today.
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        assert!(
+            !j.contains(r#""ring":{"#),
+            "loopback must emit no ring block: {j}"
         );
     }
 

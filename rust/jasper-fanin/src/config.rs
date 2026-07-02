@@ -18,6 +18,19 @@ use anyhow::{Context, Result};
 
 use crate::loudness::AssistantLoudnessConfig;
 
+/// The SHM ring's pinned slot size in frames (Ring A). Matches the outputd
+/// DAC-period contract and the ring header geometry; fan-in publishes
+/// `period_frames / RING_SLOT_FRAMES` slots per mixer step. Kept in lockstep by
+/// value (not import) with the ring's 128-frame slots — the `period_frames %
+/// RING_SLOT_FRAMES == 0` config guard is the drift catch.
+pub const RING_SLOT_FRAMES: u32 = 128;
+
+/// The ring's `n_slots` bounds (Ring A). Mirrors `jasper_ring::MIN_N_SLOTS` /
+/// `MAX_N_SLOTS` and Python's `resolve_ring_slots` clamp; the ring header
+/// validates the same range at attach.
+pub const RING_SLOTS_MIN: u32 = 2;
+pub const RING_SLOTS_MAX: u32 = 16;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// ALSA PCM name (or `hw:Card,Dev,Sub`) for the summed output.
@@ -114,10 +127,13 @@ pub struct Config {
     /// CamillaDSP dsnoop-captures it — byte-identical to the pre-coupling
     /// daemon. `TransportPipe` writes a bounded named pipe
     /// (`camilla_pipe_path`) instead, which CamillaDSP RawFile-captures as the
-    /// first half of the end-to-end DAC-paced pipe topology. The Python config
+    /// first half of the end-to-end DAC-paced pipe topology. `ShmRing` (Ring A,
+    /// PROTOTYPE) publishes an SPSC ping-pong SHM ring (`ring_path`, `ring_slots`)
+    /// that CamillaDSP reads via a capture-direction ioplug. The Python config
     /// generator (`jasper.fanin_coupling`) is the cross-language source of truth;
     /// this normalization MUST agree with `resolve_coupling` there.
-    /// Env: `JASPER_FANIN_CAMILLA_COUPLING` (`loopback` | `transport_pipe`).
+    /// Env: `JASPER_FANIN_CAMILLA_COUPLING` (`loopback` | `transport_pipe` |
+    /// `shm_ring`).
     pub camilla_coupling: Coupling,
 
     /// The shared-capture named pipe written under `Coupling::TransportPipe`.
@@ -131,6 +147,24 @@ pub struct Config {
     /// it is the named-pipe equivalent of the snd-aloop output ring depth.
     /// Env: `JASPER_FANIN_CAMILLA_PIPE_BYTES`. Swept during the soak.
     pub camilla_pipe_bytes: u32,
+
+    /// The SPSC SHM ring file written under `Coupling::ShmRing` (Ring A). Unused
+    /// for `Loopback`/`TransportPipe`. Default `/dev/shm/jts-ring/program.ring`
+    /// (the owned tmpfs root, so a magic-invalid file is reclaimable). Env:
+    /// `JASPER_FANIN_RING_PATH`. Python `fanin_coupling.resolve_ring_path` uses
+    /// the same default.
+    pub ring_path: String,
+
+    /// The ring's slot count under `Coupling::ShmRing`. Buffer depth is
+    /// `ring_slots * 128` frames — the ONLY latency axis with slot_frames pinned
+    /// at 128 (the outputd DAC-period contract). Default 8 (1024 frames ≈
+    /// 21.3 ms, clearing camilla's negotiated capture buffer at chunksize 256);
+    /// clamped to 2..=16 (the ring header's MIN/MAX). Env:
+    /// `JASPER_FANIN_RING_SLOTS`. Python `fanin_coupling.resolve_ring_slots`
+    /// uses the same default + clamp. The n_slots <-> JASPER_FANIN_RING_SLOTS
+    /// pairing is the drift axis with the ioplug conf.d geometry; the ring
+    /// header's own validation is the runtime fail-loud backstop.
+    pub ring_slots: u32,
 
     /// DEFAULT-OFF: arm the per-input adaptive resampler on the clock-crossing
     /// (USB) lane (`src/lane_resampler.rs`). When `false` (the default — env
@@ -187,14 +221,18 @@ pub struct Config {
 }
 
 /// fan-in → CamillaDSP coupling transport. Mirrors `jasper.fanin_coupling`'s
-/// `loopback` / `transport_pipe` selector. Fail-SAFE: an unset/unrecognized env value
-/// resolves to `Loopback` (the byte-identical-to-today path).
+/// `loopback` / `transport_pipe` / `shm_ring` selector. Fail-SAFE: an
+/// unset/unrecognized env value resolves to `Loopback` (the
+/// byte-identical-to-today path).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Coupling {
     /// ALSA snd-aloop substream output; CamillaDSP dsnoop-captures it. Default.
     Loopback,
     /// Bounded named-pipe output; CamillaDSP RawFile-captures it.
     TransportPipe,
+    /// SPSC ping-pong SHM ring output (Ring A, PROTOTYPE); CamillaDSP reads it
+    /// via a capture-direction ioplug.
+    ShmRing,
 }
 
 impl Coupling {
@@ -204,6 +242,7 @@ impl Coupling {
     fn from_env_value(raw: Option<&str>) -> Self {
         match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
             Some("transport_pipe") => Coupling::TransportPipe,
+            Some("shm_ring") => Coupling::ShmRing,
             _ => Coupling::Loopback,
         }
     }
@@ -294,6 +333,40 @@ impl Config {
         );
         let camilla_pipe_bytes = env_u32("JASPER_FANIN_CAMILLA_PIPE_BYTES", 8192)?;
 
+        // Ring A (shm_ring) knobs. Parsed unconditionally (sane defaults) but
+        // only USED under Coupling::ShmRing. Path default matches Python's
+        // resolve_ring_path; slots default 8, clamped to the ring header's
+        // 2..=16 range (RING_SLOTS_MIN/MAX) — a fail-loud out-of-range value is
+        // a config error, not a silent clamp, so a typo can't ship a geometry
+        // the ring header would reject at attach.
+        let ring_path = env_str("JASPER_FANIN_RING_PATH", "/dev/shm/jts-ring/program.ring");
+        let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 8)?;
+        if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {
+            anyhow::bail!(
+                "JASPER_FANIN_RING_SLOTS={} out of range {}..={} — the SHM ring \
+                 header validates this at attach; a shear-prone geometry must \
+                 fail loud at config, not at runtime",
+                ring_slots,
+                RING_SLOTS_MIN,
+                RING_SLOTS_MAX,
+            );
+        }
+        // The ring's slot is pinned at RING_SLOT_FRAMES (128, the outputd
+        // DAC-period contract): fan-in publishes period_frames/128 slots per
+        // step, so period_frames MUST be a whole multiple of 128 or a step would
+        // shear a slot. Fail LOUD at config (only when shm_ring is actually
+        // selected — an odd period under loopback/pipe is fine).
+        if camilla_coupling == Coupling::ShmRing && period_frames % RING_SLOT_FRAMES != 0 {
+            anyhow::bail!(
+                "JASPER_FANIN_PERIOD_FRAMES={} must be a whole multiple of the \
+                 pinned SHM ring slot size ({} frames) under \
+                 JASPER_FANIN_CAMILLA_COUPLING=shm_ring — a fractional slot count \
+                 would shear the ring",
+                period_frames,
+                RING_SLOT_FRAMES,
+            );
+        }
+
         // DEFAULT-OFF per-input adaptive resampler (clock-crossing/USB lane).
         // Fail-safe: only the exact literal `enabled` (case-insensitive) arms
         // it; unset / empty / anything else stays OFF (byte-identical to today).
@@ -382,6 +455,8 @@ impl Config {
             camilla_coupling,
             camilla_pipe_path,
             camilla_pipe_bytes,
+            ring_path,
+            ring_slots,
             input_resampler_enabled,
             input_resampler_lane_label,
             input_resampler_target_frames,
@@ -954,6 +1029,122 @@ mod tests {
         assert_eq!(
             Coupling::from_env_value(Some("garbage")),
             Coupling::Loopback
+        );
+        // Ring A (shm_ring) token — must agree with Python's resolve_coupling.
+        assert_eq!(
+            Coupling::from_env_value(Some("shm_ring")),
+            Coupling::ShmRing
+        );
+        assert_eq!(
+            Coupling::from_env_value(Some(" SHM_RING ")),
+            Coupling::ShmRing
+        );
+        // A near-miss typo fails safe to loopback, never the shared ring.
+        assert_eq!(Coupling::from_env_value(Some("ring")), Coupling::Loopback);
+        assert_eq!(
+            Coupling::from_env_value(Some("shm-ring")),
+            Coupling::Loopback
+        );
+    }
+
+    #[test]
+    fn shm_ring_coupling_parses_with_ring_defaults() {
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                ("JASPER_FANIN_RING_PATH", None),
+                ("JASPER_FANIN_RING_SLOTS", None),
+            ],
+            || {
+                let cfg = Config::from_env().expect("shm_ring defaults must parse");
+                assert_eq!(cfg.camilla_coupling, Coupling::ShmRing);
+                assert_eq!(cfg.ring_path, "/dev/shm/jts-ring/program.ring");
+                assert_eq!(cfg.ring_slots, 8);
+                // Default period (256) is a multiple of the 128-frame slot.
+                assert_eq!(cfg.period_frames, 256);
+            },
+        );
+    }
+
+    #[test]
+    fn shm_ring_ring_path_and_slots_override() {
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                ("JASPER_FANIN_RING_PATH", Some("/dev/shm/jts-ring/lab.ring")),
+                ("JASPER_FANIN_RING_SLOTS", Some("16")),
+            ],
+            || {
+                let cfg = Config::from_env().expect("shm_ring overrides must parse");
+                assert_eq!(cfg.ring_path, "/dev/shm/jts-ring/lab.ring");
+                assert_eq!(cfg.ring_slots, 16);
+            },
+        );
+    }
+
+    #[test]
+    fn shm_ring_slots_out_of_range_fails_loud() {
+        for bad in ["1", "17", "0", "100"] {
+            with_env(
+                &[
+                    ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                    ("JASPER_FANIN_RING_SLOTS", Some(bad)),
+                ],
+                || {
+                    let err = Config::from_env().expect_err("out-of-range ring slots must error");
+                    let msg = format!("{:#}", err);
+                    assert!(
+                        msg.contains("JASPER_FANIN_RING_SLOTS"),
+                        "expected ring-slots range error, got: {}",
+                        msg,
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn shm_ring_period_must_be_multiple_of_slot_frames() {
+        // 200 is not a multiple of 128 -> shear -> fail loud, but ONLY under
+        // shm_ring (loopback/pipe tolerate any period).
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("200")),
+                // 200*2 = 400 >= 2*200 buffer floor, so the buffer guard passes
+                // and the slot-shear guard is what fires.
+                ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("4096")),
+                ("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", Some("1024")),
+            ],
+            || {
+                let err = Config::from_env()
+                    .expect_err("non-128-multiple period under shm_ring must error");
+                let msg = format!("{:#}", err);
+                assert!(
+                    msg.contains("multiple") && msg.contains("slot"),
+                    "expected slot-shear error, got: {}",
+                    msg,
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn non_shm_ring_tolerates_odd_period() {
+        // The 128-multiple guard is scoped to shm_ring: loopback with a
+        // non-128-multiple period must still parse (byte-identical to today).
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("loopback")),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("200")),
+                ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("4096")),
+                ("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", Some("1024")),
+            ],
+            || {
+                let cfg = Config::from_env().expect("loopback tolerates odd period");
+                assert_eq!(cfg.period_frames, 200);
+                assert_eq!(cfg.camilla_coupling, Coupling::Loopback);
+            },
         );
     }
 

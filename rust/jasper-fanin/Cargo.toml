@@ -19,6 +19,11 @@ jasper-tts-protocol = { path = "../jasper-tts-protocol" }
 # DLL-steered to the DAC clock. See src/lane_resampler.rs and
 # docs/HANDOFF-usb-low-latency.md.
 jasper-resampler = { path = "../jasper-resampler" }
+# The SPSC ping-pong SHM ring — the same crate jasper-outputd's Ring B reader
+# consumes. Pure (mmap via libc, no ALSA). Ring A (PROTOTYPE, flag-gated behind
+# JASPER_FANIN_CAMILLA_COUPLING=shm_ring) uses its production RingWriter as the
+# Output::Ring publish half; CamillaDSP reads it via a capture-direction ioplug.
+jasper-ring = { path = "../jasper-ring" }
 # Idiomatic Rust wrapper around libasound — the daemon's primary I/O
 # surface. Mature crate, used by most Rust ALSA projects (paplay,
 # pulse-pipewire-bridge, etc.). Compiles against Trixie's

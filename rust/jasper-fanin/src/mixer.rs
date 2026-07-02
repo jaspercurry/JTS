@@ -52,7 +52,9 @@ use alsa::{Direction, ValueOr};
 use anyhow::{Context, Result};
 use log::{info, warn};
 
-use crate::config::{Config, Coupling};
+use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S16LE};
+
+use crate::config::{Config, Coupling, RING_SLOT_FRAMES};
 use crate::fifo::{FifoWriteOutcome, FifoWriter};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
 use crate::tts::{TtsInput, TtsMixer};
@@ -125,11 +127,36 @@ const CATCHUP_LOG_EVERY: u64 = 64;
 /// substream and is paced by the blocking ALSA `writei` — byte-identical to the
 /// pre-coupling daemon. `Fifo` is the writer primitive used by the public
 /// `transport_pipe` mode: it writes a bounded named pipe that CamillaDSP
-/// RawFile-captures. Both are the sole timing owner of the fan-in work loop in
-/// their respective modes; only one is ever active.
+/// RawFile-captures. `Ring` is the Ring A (PROTOTYPE) SPSC SHM ring writer;
+/// CamillaDSP reads it via a capture-direction ioplug. Each is the sole timing
+/// owner of the fan-in work loop in its mode; only one is ever active.
 enum Output {
     Alsa(PCM),
     Fifo(FifoWriter),
+    /// The SPSC SHM ring writer plus its lossy aloop MIRROR PCM. The blocking
+    /// ring publish (bounded, on a full-ring-with-live-reader) is the pacer; the
+    /// mirror is a `write_music_only`-shaped non-blocking side-tap so the AEC
+    /// fallback dsnoop and any aloop diagnostics stay live. `RingOutput` owns the
+    /// per-step slot fan-out and the reader-absent self-pacing.
+    Ring(RingOutput),
+}
+
+/// The Ring A output: the SPSC ring writer, its shared observability counters,
+/// the lossy aloop mirror PCM (never the pacer), and the derived self-pacing
+/// period (used only when the reader is absent — one period's sleep per dropped
+/// publish so a readerless ring does not hot-spin the loop).
+struct RingOutput {
+    writer: RingWriter,
+    counters: RingCounters,
+    /// The lossy aloop mirror (non-blocking `hw:Loopback,0,7`). `None` if the
+    /// mirror PCM could not be opened — the ring still runs (the mirror is a
+    /// diagnostic side-tap, never load-bearing for the primary path).
+    mirror: Option<PCM>,
+    /// Frames written to the mirror, for STATUS parity with music_frames_written.
+    mirror_frames_written: Arc<AtomicU64>,
+    /// One period in nanoseconds (period_frames / 48000). The reader-absent
+    /// self-pacing sleep, precomputed so the hot loop never divides.
+    self_pace_period_ns: u64,
 }
 
 pub struct Mixer {
@@ -189,15 +216,16 @@ pub struct Mixer {
     pub coupling: CouplingObservability,
 }
 
-/// Coupling transport echo + the shared pipe counters for the STATUS endpoint.
-/// Under `Loopback` (default), `pipe` is `None` and STATUS reports only
-/// `transport:"loopback"`. Under `transport_pipe`, `pipe` carries the pipe path
-/// + the reopen / dropped-period / live-pipe-size atomics the `FifoWriter`
-///   updates.
+/// Coupling transport echo + the shared observability block for the STATUS
+/// endpoint. Under `Loopback` (default), both `pipe` and `ring` are `None` and
+/// STATUS reports only `transport:"loopback"`. Under `transport_pipe`, `pipe`
+/// carries the pipe counters; under `shm_ring`, `ring` carries the ring
+/// counters. At most one of `pipe`/`ring` is ever `Some`.
 #[derive(Clone)]
 pub struct CouplingObservability {
     pub transport: &'static str,
     pub pipe: Option<PipeObservability>,
+    pub ring: Option<RingObservability>,
 }
 
 /// The shared pipe counters (cloned Arcs from the live `FifoWriter`).
@@ -208,6 +236,48 @@ pub struct PipeObservability {
     pub reopen_count: Arc<AtomicU64>,
     pub dropped_periods: Arc<AtomicU64>,
     pub actual_pipe_bytes: Arc<AtomicU64>,
+}
+
+/// The live SPSC ring counters the mixer step updates each period (from the
+/// writer's [`jasper_ring::WriterMetrics`] + the mirror side-tap). Cloned into
+/// [`RingObservability`] for STATUS so the endpoint reads the same atomics the
+/// work loop writes. Distinct from `WriterMetrics` (a value snapshot): these are
+/// the shared atomics.
+#[derive(Clone)]
+struct RingCounters {
+    published: Arc<AtomicU64>,
+    full_waits: Arc<AtomicU64>,
+    drops: Arc<AtomicU64>,
+    mirror_drops: Arc<AtomicU64>,
+    occupancy: Arc<AtomicU64>,
+}
+
+impl RingCounters {
+    fn new() -> Self {
+        Self {
+            published: Arc::new(AtomicU64::new(0)),
+            full_waits: Arc::new(AtomicU64::new(0)),
+            drops: Arc::new(AtomicU64::new(0)),
+            mirror_drops: Arc::new(AtomicU64::new(0)),
+            occupancy: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+/// The shared ring counters (cloned Arcs) for the STATUS endpoint's `ring`
+/// block: `{path, slots, occupancy, published, full_waits, drops, mirror_drops}`.
+/// `drops` folds the writer's no-reader + stuck-reader drops (both mean "a
+/// live reader did not consume this slot"); `mirror_drops` is the lossy aloop
+/// side-tap's drop count.
+#[derive(Clone)]
+pub struct RingObservability {
+    pub path: String,
+    pub slots: u32,
+    pub occupancy: Arc<AtomicU64>,
+    pub published: Arc<AtomicU64>,
+    pub full_waits: Arc<AtomicU64>,
+    pub drops: Arc<AtomicU64>,
+    pub mirror_drops: Arc<AtomicU64>,
 }
 
 pub struct Input {
@@ -323,6 +393,7 @@ impl Mixer {
                     CouplingObservability {
                         transport: "loopback",
                         pipe: None,
+                        ring: None,
                     },
                 )
             }
@@ -355,6 +426,81 @@ impl Mixer {
                             dropped_periods,
                             actual_pipe_bytes,
                         }),
+                        ring: None,
+                    },
+                )
+            }
+            Coupling::ShmRing => {
+                // Ring A (PROTOTYPE). Create-or-attach the SPSC ring as the
+                // WRITER. Geometry: S16LE / 2ch / 48k, slot = 128 frames pinned
+                // (the outputd DAC-period contract; period_frames % 128 == 0 was
+                // validated at config parse), n_slots = ring_slots. A geometry
+                // mismatch against an already-created ring is fail-loud (systemd
+                // parks, not reboot-loops).
+                let geometry = Geometry {
+                    rate: config.sample_rate,
+                    channels: CHANNELS,
+                    sample_format: SAMPLE_FORMAT_S16LE,
+                    period_frames: RING_SLOT_FRAMES,
+                    n_slots: config.ring_slots,
+                };
+                let writer = RingWriter::create_or_attach(&config.ring_path, geometry)
+                    .with_context(|| {
+                        format!("opening fan-in→camilla SHM ring {}", config.ring_path)
+                    })?;
+                // The lossy aloop MIRROR keeps the AEC-fallback dsnoop + aloop
+                // diagnostics live. BEST-EFFORT (non-blocking open): a failure
+                // to open it must NOT take down the ring — the mirror is a
+                // diagnostic side-tap, never the pacer.
+                let mirror = match open_music_output(&config.output_pcm, config) {
+                    Ok(pcm) => {
+                        info!(
+                            "event=fanin.ring.mirror_opened pcm={} (lossy aloop mirror)",
+                            config.output_pcm,
+                        );
+                        Some(pcm)
+                    }
+                    Err(e) => {
+                        warn!(
+                            "event=fanin.ring.mirror_open_failed pcm={} detail={:#} — \
+                             continuing WITHOUT the aloop mirror (ring path unaffected)",
+                            config.output_pcm, e,
+                        );
+                        None
+                    }
+                };
+                let counters = RingCounters::new();
+                let self_pace_period_ns =
+                    (config.period_frames as u64) * 1_000_000_000 / (config.sample_rate as u64);
+                info!(
+                    "event=fanin.ring.opened path={} slots={} slot_frames={} period_frames={} slots_per_step={}",
+                    config.ring_path,
+                    config.ring_slots,
+                    RING_SLOT_FRAMES,
+                    config.period_frames,
+                    config.period_frames / RING_SLOT_FRAMES,
+                );
+                let observability = RingObservability {
+                    path: config.ring_path.clone(),
+                    slots: config.ring_slots,
+                    occupancy: Arc::clone(&counters.occupancy),
+                    published: Arc::clone(&counters.published),
+                    full_waits: Arc::clone(&counters.full_waits),
+                    drops: Arc::clone(&counters.drops),
+                    mirror_drops: Arc::clone(&counters.mirror_drops),
+                };
+                (
+                    Output::Ring(RingOutput {
+                        writer,
+                        counters,
+                        mirror,
+                        mirror_frames_written: Arc::new(AtomicU64::new(0)),
+                        self_pace_period_ns,
+                    }),
+                    CouplingObservability {
+                        transport: "shm_ring",
+                        pipe: None,
+                        ring: Some(observability),
                     },
                 )
             }
@@ -573,6 +719,12 @@ impl Mixer {
         //      no-reader turn returns Waited (the bounded reopen-wait already
         //      slept), dropping this period; we still return Ok so run() bumps
         //      the heartbeat — the loop is alive and bounded, never wedged.
+        //    - Ring: publish period_frames/128 slots into the SHM ring. The
+        //      blocking-on-full publish (bounded, live reader) is the pacer;
+        //      reader-absent self-paces (one period's sleep per dropped publish)
+        //      so a readerless ring never hot-spins. The mixed sum_buf (post-duck,
+        //      post-TTS) is what enters — TTS/duck ride along with zero special
+        //      handling. The lossy aloop mirror is written (never the pacer).
         match &mut self.output {
             Output::Alsa(pcm) => {
                 write_output(
@@ -599,8 +751,92 @@ impl Mixer {
                     }
                 }
             }
+            Output::Ring(ring) => {
+                write_ring_period(ring, &self.output_buf, self.period_frames);
+                self.frames_written
+                    .fetch_add(self.period_frames as u64, Ordering::Relaxed);
+            }
         }
         Ok(())
+    }
+}
+
+/// Publish one mixer period into the SPSC SHM ring as `period_frames / 128`
+/// slots, then mirror the same period to the lossy aloop side-tap.
+///
+/// **Pacing (the Ring A contract).** Each `RingWriter::publish` BLOCKS (bounded
+/// ~64 ms) while the ring is full AND a live reader (CamillaDSP) is draining —
+/// that block is the loop's pacer, transitively DAC-paced through Ring B. When
+/// the reader is ABSENT/stale the writer free-run-drops instead of blocking, so
+/// the daemon must self-pace: sleep one period per dropped publish so a
+/// readerless ring settles to ~48 kHz instead of hot-spinning. The bounded
+/// publish wait plus at most one period sleep keeps `step()` well under the 5 s
+/// watchdog threshold; the writer's heartbeat is bumped inside each publish.
+///
+/// The mirror is a `write_music_only`-shaped non-blocking side-tap: it is
+/// avail-checked and drop-on-full, so it can NEVER back-pressure the loop (that
+/// would re-couple to the aloop timer and silently reintroduce the hop being
+/// removed). It exists only to keep the AEC-fallback dsnoop + aloop diagnostics
+/// live.
+fn write_ring_period(ring: &mut RingOutput, output_buf: &[i16], period_frames: u32) {
+    let slots_per_step = period_frames / RING_SLOT_FRAMES;
+    let samples_per_slot = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize);
+    let mut dropped_this_period = false;
+    for slot in 0..slots_per_step as usize {
+        let start = slot * samples_per_slot;
+        let slot_samples = &output_buf[start..start + samples_per_slot];
+        match ring.writer.publish(slot_samples) {
+            PublishOutcome::Published => {}
+            PublishOutcome::DroppedNoReader | PublishOutcome::DroppedStuck => {
+                dropped_this_period = true;
+            }
+        }
+    }
+
+    // Publish the writer's counter snapshot into the shared atomics for STATUS.
+    let m = ring.writer.metrics();
+    ring.counters
+        .published
+        .store(m.published_slots, Ordering::Relaxed);
+    ring.counters
+        .full_waits
+        .store(m.full_waits, Ordering::Relaxed);
+    // `drops` folds no-reader + stuck-reader drops — both mean a live reader did
+    // not consume the slot.
+    ring.counters.drops.store(
+        m.drop_no_reader.saturating_add(m.stuck_reader_drops),
+        Ordering::Relaxed,
+    );
+    ring.counters
+        .occupancy
+        .store(m.occupancy, Ordering::Relaxed);
+
+    // Lossy aloop mirror (never the pacer). `write_music_only`-shaped:
+    // avail-check + drop-on-full so it can never block the loop.
+    if let Some(mirror) = ring.mirror.as_ref() {
+        write_music_only(
+            mirror,
+            output_buf,
+            &ring.mirror_frames_written,
+            &ring.counters.mirror_drops,
+        );
+    }
+
+    // Reader-absent self-pacing: if ANY slot free-run-dropped this period, sleep
+    // one period so a readerless ring settles to ~48 kHz instead of hot-spinning
+    // (the blocking publish is the pacer only while a live reader drains). A
+    // live-reader period never sleeps here — the publish block already paced it.
+    if dropped_this_period {
+        let ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: ring.self_pace_period_ns as _,
+        };
+        // SAFETY: a valid timespec pointer; NULL remainder is fine (a signal-
+        // interrupted sleep just shortens this one self-pace tick — the next
+        // period re-evaluates).
+        unsafe {
+            libc::nanosleep(&ts, std::ptr::null_mut());
+        }
     }
 }
 
@@ -1709,5 +1945,131 @@ mod tests {
             CATCHUP_HIGH_WATER_PERIODS,
             DEFAULT_INPUT_BUFFER_PERIODS,
         );
+    }
+
+    // Ring A output path. These construct a real SPSC ring (via jasper_ring)
+    // under the OS temp dir and drive `write_ring_period` directly, so they run
+    // on any host that can build the crate (CI Linux). `mirror: None` keeps ALSA
+    // out of the test — the ring publish + reader roundtrip is the contract.
+
+    use jasper_ring::{RingReader, SlotRead};
+    use std::sync::atomic::AtomicU64 as TestAtomicU64;
+
+    static RING_MIXER_TEST_SEQ: TestAtomicU64 = TestAtomicU64::new(0);
+
+    fn ring_geometry(n_slots: u32) -> Geometry {
+        Geometry {
+            rate: 48_000,
+            channels: CHANNELS,
+            sample_format: SAMPLE_FORMAT_S16LE,
+            period_frames: RING_SLOT_FRAMES,
+            n_slots,
+        }
+    }
+
+    fn tmp_ring_output(n_slots: u32, tag: &str) -> (RingOutput, String) {
+        let dir = std::env::temp_dir().join(format!(
+            "jts-fanin-ring-{}-{}-{}",
+            tag,
+            std::process::id(),
+            RING_MIXER_TEST_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("program.ring").to_string_lossy().into_owned();
+        let writer = RingWriter::create_or_attach(&path, ring_geometry(n_slots)).unwrap();
+        let counters = RingCounters::new();
+        let ring = RingOutput {
+            writer,
+            counters,
+            mirror: None,
+            mirror_frames_written: Arc::new(AtomicU64::new(0)),
+            // One 256-frame period at 48k, in ns — used only on the reader-absent
+            // self-pace path (avoided in these live-reader tests).
+            self_pace_period_ns: 256 * 1_000_000_000 / 48_000,
+        };
+        (ring, path)
+    }
+
+    fn cleanup_ring(path: &str) {
+        let _ = std::fs::remove_file(path);
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+
+    /// Q2 (TTS/duck ride-along): the ring output receives the FINAL mixed period
+    /// — post-duck AND post-TTS — verbatim. `step()` mixes TTS and applies the
+    /// duck into sum_buf BEFORE saturating into output_buf, and `write_ring_period`
+    /// publishes exactly that output_buf, so whatever the mix produced is what the
+    /// ring reader sees. This test stands in a post-TTS-mixed period and asserts
+    /// the reader reads back those exact bytes.
+    #[test]
+    fn ring_output_carries_post_duck_post_tts_period() {
+        let period_frames = 256u32; // 2 slots of 128 frames
+        let (mut ring, path) = tmp_ring_output(8, "tts_ridealong");
+        let mut reader = RingReader::create_or_attach(&path, ring_geometry(8)).unwrap();
+        // Prime the reader heartbeat so the writer takes the publish path.
+        let slot_samples = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize);
+        let mut slot_out = vec![0i16; slot_samples];
+        assert_eq!(reader.try_consume_slot(&mut slot_out), SlotRead::Empty);
+
+        // Model step()'s output_buf: build a summed program, apply a duck, then
+        // add a TTS contribution — the SAME order step() uses — and saturate.
+        let total = (period_frames as usize) * (CHANNELS as usize);
+        let mut sum = vec![0i32; total];
+        mix_into(&mut sum, &vec![10_000i16; total]); // program lane
+        apply_gain_to_sum(&mut sum, 0.5); // duck (TTS active)
+        for s in sum.iter_mut() {
+            *s = s.saturating_add(4_000); // stand-in for tts.mix_period
+        }
+        let mut output_buf = vec![0i16; total];
+        saturate_to_i16(&sum, &mut output_buf); // expected: 5000 + 4000 = 9000
+
+        write_ring_period(&mut ring, &output_buf, period_frames);
+
+        // The reader reads the two published slots back — byte-identical to the
+        // post-duck post-TTS output_buf.
+        let mut got = Vec::with_capacity(total);
+        for _ in 0..(period_frames / RING_SLOT_FRAMES) {
+            assert_eq!(reader.try_consume_slot(&mut slot_out), SlotRead::Filled);
+            got.extend_from_slice(&slot_out);
+        }
+        assert_eq!(got, output_buf, "ring must carry the final mixed period");
+        assert!(got.iter().all(|&s| s == 9_000), "post-duck+TTS value");
+        // Counters reflect two published slots (a live reader, no drops).
+        assert_eq!(ring.counters.published.load(Ordering::Relaxed), 2);
+        assert_eq!(ring.counters.drops.load(Ordering::Relaxed), 0);
+        cleanup_ring(&path);
+    }
+
+    /// Reader-absent: `write_ring_period` free-run-drops and self-paces (never
+    /// hot-spins). Counters reflect the drops; occupancy stays bounded. This
+    /// stands in the "CamillaDSP not yet up / reloading" turn.
+    #[test]
+    fn ring_output_free_runs_and_self_paces_without_reader() {
+        let period_frames = 256u32;
+        let (mut ring, path) = tmp_ring_output(2, "no_reader");
+        // No reader attached: reader_pid == 0.
+        let total = (period_frames as usize) * (CHANNELS as usize);
+        let output_buf = vec![7i16; total];
+
+        // Fill the ring, then publish several more periods. Each free-run-drops
+        // the oldest and self-paces one period; bound the wall time so the
+        // self-pacing sleep can't wedge the loop.
+        let start = std::time::Instant::now();
+        for _ in 0..4 {
+            write_ring_period(&mut ring, &output_buf, period_frames);
+        }
+        let elapsed = start.elapsed();
+        // 4 periods * (2 slots each) with a per-period self-pace sleep (~5.3 ms):
+        // bounded well under the 5 s watchdog threshold.
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "self-pacing must stay bounded, got {elapsed:?}"
+        );
+        // Drops accrued (no live reader); occupancy bounded at n_slots.
+        assert!(ring.counters.drops.load(Ordering::Relaxed) > 0);
+        assert!(ring.counters.occupancy.load(Ordering::Relaxed) <= 2);
+        cleanup_ring(&path);
     }
 }
