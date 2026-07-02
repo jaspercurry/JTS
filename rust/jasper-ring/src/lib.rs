@@ -19,9 +19,13 @@
 //! constants the C header (`jts_ring_shm.h`) `_Static_assert`s — the
 //! cross-language drift guard.
 //!
-//! **This is a prototype and flag-gated everywhere.** Nothing here runs unless
-//! `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring` is set (outputd's default is
-//! `direct`). The crate has no product callers.
+//! **This is a prototype and flag-gated everywhere.** Nothing here runs in a
+//! product path unless a lab flag is set: `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`
+//! for the outputd (Ring B) reader (default `direct`), or
+//! `JASPER_FANIN_CAMILLA_COUPLING=shm_ring` for the fan-in (Ring A) writer
+//! ([`RingWriter`], called from `jasper-fanin`'s mixer only under
+//! `Coupling::ShmRing`; default `loopback`). With both flags unset the crate is
+//! compiled-in but inert.
 //!
 //! # SHM contract v1 (`/dev/shm/jts-ring/content.ring`)
 //!
@@ -62,8 +66,10 @@
 //! `slot_index(seq) = seq % n_slots`. Invariant:
 //! `read_seq <= write_seq <= read_seq + n_slots`.
 //!
-//! **Writer publish** (slot `W = write_seq`, implemented in C; documented here
-//! because the ordering is the shared contract):
+//! **Writer publish** (slot `W = write_seq`; implemented in both the C writer
+//! (`jts_ring_writer_publish`) and this crate's Rust [`writer::RingWriter`],
+//! which mirror each other op-for-op so the two are interchangeable across the
+//! SPSC boundary; documented here because the ordering is the shared contract):
 //! 1. `R = load(read_seq, Acquire)`; require `W - R < n_slots` (space). The
 //!    Acquire pairs with the reader's Release of `read_seq`, so the writer's
 //!    payload stores into slot `W % n_slots` cannot be reordered before the
@@ -594,9 +600,11 @@ fn init_created(fd: RawFd, g: Geometry) -> io::Result<RingMapping> {
     write_u32(&map, layout::OFF_PERIOD_FRAMES, g.period_frames);
     write_u32(&map, layout::OFF_N_SLOTS, g.n_slots);
     write_u32(&map, layout::OFF_PAD, 0);
-    // Seqs/epoch/pids/heartbeats start at 0 (ftruncate zeroed them). The reader
-    // is the creator here; its create_or_attach caller stamps reader_pid.
-    // Publish magic LAST with Release so an attacher that observes the magic
+    // Seqs/epoch/pids/heartbeats start at 0 (ftruncate zeroed them). Whichever
+    // role wins the create race (the reader under Ring B, the writer under
+    // Ring A) leaves the pids at 0 here; each side's own create_or_attach caller
+    // stamps its pid (reader_pid on the reader path, writer attach on the writer
+    // path). Publish magic LAST with Release so an attacher that observes the magic
     // observes the fully-initialized header (version already written above; the
     // Release store preserves it in the qword's high half).
     write_u32_release_magic(&map);
@@ -807,12 +815,20 @@ fn monotonic_ns() -> u64 {
 
 /// A minimal in-process WRITER, used ONLY by tests and by the outputd cfg
 /// tests to drive the reader without the C ioplug. It implements the exact
-/// publish discipline the C writer implements (space check with Acquire,
-/// payload memcpy, Release publish), so the cross-language interop the bench
-/// proves on-Pi is exercised in-process here too.
+/// publish discipline the C writer and the production [`writer::RingWriter`]
+/// implement (space check with Acquire, payload memcpy, Release publish), so the
+/// cross-language interop the bench proves on-Pi is exercised in-process here
+/// too.
 ///
-/// Not a product path — the real writer is the C ioplug. Gated behind the
-/// public API but intended for test/bench use only.
+/// This is the deliberate NON-BLOCKING test twin: `try_publish_slot` returns
+/// `false` on a full ring, whereas the product writers block/poll or free-run —
+/// keeping the reader-side tests simple. It is NOT a product path (the product
+/// writers are the C ioplug under Ring B and [`writer::RingWriter`] under
+/// Ring A). If the shared publish ordering ever changes, update BOTH this twin
+/// and `writer::RingWriter`. (A future cleanup could retire this in favour of a
+/// non-blocking mode on `RingWriter`; deferred to avoid rewriting the ALSA-gated
+/// reader tests here.) Gated behind the public API but intended for test/bench
+/// use only.
 pub struct TestRingWriter {
     map: RingMapping,
     write_seq: u64,

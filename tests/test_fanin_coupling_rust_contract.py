@@ -27,6 +27,9 @@ from jasper.fanin_coupling import (
     PIPE_WIRE_FORMAT,
     RING_PATH_ENV_VAR,
     RING_SLOTS_ENV_VAR,
+    RING_SLOTS_MAX,
+    RING_SLOTS_MIN,
+    resolve_ring_slots,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -132,6 +135,48 @@ def test_shm_ring_env_var_names_and_defaults_agree():
     )
 
 
+def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
+    # SF-1: the JASPER_FANIN_RING_SLOTS normalizer is a declared must-agree axis.
+    # BOTH sides fail loud on a present out-of-range value — no silent clamp,
+    # per repo doctrine. Otherwise a future arm script that resolved slots via the
+    # Python resolver could write an N-slot ioplug conf.d geometry while the
+    # daemon refuses to start on the same env (split-brain, fail-closed but
+    # maximally confusing on-Pi). This pins the exact agreed behavior:
+    #   unset      -> the same default (8) on both sides
+    #   2 and 16   -> accepted on both sides
+    #   17 (and other out-of-range) -> rejected on both sides
+
+    # Python side (runs live).
+    assert resolve_ring_slots(None) == DEFAULT_FANIN_RING_SLOTS
+    assert resolve_ring_slots(str(RING_SLOTS_MIN)) == RING_SLOTS_MIN
+    assert resolve_ring_slots(str(RING_SLOTS_MAX)) == RING_SLOTS_MAX
+    for bad in (RING_SLOTS_MAX + 1, RING_SLOTS_MIN - 1, 0, 100):
+        with pytest.raises(ValueError):
+            resolve_ring_slots(str(bad))
+
+    # Rust side (source pin — the crate does not build on macOS). The daemon
+    # bails on the same range with the same bound constants, and its from_env
+    # fail-loud is exercised by the Rust unit test in the CI rust job.
+    text = _config_rs_text()
+    assert f"pub const RING_SLOTS_MIN: u32 = {RING_SLOTS_MIN};" in text, (
+        "Rust RING_SLOTS_MIN must match the Python RING_SLOTS_MIN bound"
+    )
+    assert f"pub const RING_SLOTS_MAX: u32 = {RING_SLOTS_MAX};" in text, (
+        "Rust RING_SLOTS_MAX must match the Python RING_SLOTS_MAX bound"
+    )
+    # The out-of-range guard bails (anyhow::bail!), it does NOT clamp.
+    assert "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {" in text, (
+        "Rust must range-check JASPER_FANIN_RING_SLOTS against the shared bounds"
+    )
+    guard = text.split(
+        "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {", 1
+    )[1].split("}", 1)[0]
+    assert "anyhow::bail!" in guard, (
+        "Rust out-of-range ring slots must FAIL LOUD (anyhow::bail!), not clamp"
+    )
+    assert "clamp" not in guard.lower(), "Rust must not silently clamp ring slots"
+
+
 def test_shm_ring_status_block_emitted_by_rust_state():
     # The Rust STATUS snapshot emits the ring counter block under shm_ring —
     # the /state.transport + ring:{...} contract the doctor/dashboard read.
@@ -145,6 +190,7 @@ def test_shm_ring_status_block_emitted_by_rust_state():
         "published",
         "full_waits",
         "drops",
+        "mirror_frames",
         "mirror_drops",
     ):
         assert f'"{field}"' in text, f"ring block missing {field!r} key"

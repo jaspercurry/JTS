@@ -26,8 +26,11 @@ use crate::loudness::AssistantLoudnessConfig;
 pub const RING_SLOT_FRAMES: u32 = 128;
 
 /// The ring's `n_slots` bounds (Ring A). Mirrors `jasper_ring::MIN_N_SLOTS` /
-/// `MAX_N_SLOTS` and Python's `resolve_ring_slots` clamp; the ring header
-/// validates the same range at attach.
+/// `MAX_N_SLOTS`; the ring header validates the same range at attach. A present
+/// out-of-range value FAILS LOUD here (`Config::from_env` bails) — Python's
+/// `fanin_coupling.resolve_ring_slots` raises on the same range, so the two
+/// normalizers agree on the drift axis (unset => default 8; out-of-range =>
+/// error on BOTH sides, never a silent clamp).
 pub const RING_SLOTS_MIN: u32 = 2;
 pub const RING_SLOTS_MAX: u32 = 16;
 
@@ -159,11 +162,13 @@ pub struct Config {
     /// `ring_slots * 128` frames — the ONLY latency axis with slot_frames pinned
     /// at 128 (the outputd DAC-period contract). Default 8 (1024 frames ≈
     /// 21.3 ms, clearing camilla's negotiated capture buffer at chunksize 256);
-    /// clamped to 2..=16 (the ring header's MIN/MAX). Env:
-    /// `JASPER_FANIN_RING_SLOTS`. Python `fanin_coupling.resolve_ring_slots`
-    /// uses the same default + clamp. The n_slots <-> JASPER_FANIN_RING_SLOTS
-    /// pairing is the drift axis with the ioplug conf.d geometry; the ring
-    /// header's own validation is the runtime fail-loud backstop.
+    /// a present value outside 2..=16 (the ring header's MIN/MAX) FAILS LOUD in
+    /// `Config::from_env` — NOT clamped. Env: `JASPER_FANIN_RING_SLOTS`. Python
+    /// `fanin_coupling.resolve_ring_slots` uses the same default and likewise
+    /// raises on the same range, so both normalizers agree on the drift axis. The
+    /// n_slots <-> JASPER_FANIN_RING_SLOTS pairing is the drift axis with the
+    /// ioplug conf.d geometry; the ring header's own validation is the runtime
+    /// fail-loud backstop.
     pub ring_slots: u32,
 
     /// DEFAULT-OFF: arm the per-input adaptive resampler on the clock-crossing

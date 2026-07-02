@@ -541,9 +541,11 @@ impl StateServer {
         // Ring A (shm_ring): the SPSC SHM ring counter block. `occupancy` is the
         // live write_seq-read_seq depth; `published` slots reached a live reader;
         // `full_waits` is the bounded live-reader back-pressure count; `drops`
-        // folds no-reader + stuck-reader drops; `mirror_drops` is the lossy aloop
-        // side-tap's drop count (never load-bearing). Only present under
-        // shm_ring — byte-identical observability to today under loopback.
+        // folds no-reader + stuck-reader drops; `mirror_frames` / `mirror_drops`
+        // are the lossy aloop side-tap's written-frame and drop counts (never
+        // load-bearing; parity with music_output's frames_written/drops). Only
+        // present under shm_ring — byte-identical observability to today under
+        // loopback.
         if let Some(ring) = &self.coupling.ring {
             buf.push(',');
             buf.push_str(r#""ring":{"#);
@@ -570,6 +572,12 @@ impl StateServer {
             );
             buf.push(',');
             push_kv_u64(&mut buf, "drops", ring.drops.load(Ordering::Relaxed));
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "mirror_frames",
+                ring.mirror_frames.load(Ordering::Relaxed),
+            );
             buf.push(',');
             push_kv_u64(
                 &mut buf,
@@ -879,6 +887,7 @@ mod tests {
                 published: Arc::new(AtomicU64::new(12345)),
                 full_waits: Arc::new(AtomicU64::new(9)),
                 drops: Arc::new(AtomicU64::new(4)),
+                mirror_frames: Arc::new(AtomicU64::new(7654)),
                 mirror_drops: Arc::new(AtomicU64::new(2)),
             }),
         };
@@ -1059,6 +1068,10 @@ mod tests {
         assert!(j.contains(r#""published":12345"#), "missing published: {j}");
         assert!(j.contains(r#""full_waits":9"#), "missing full_waits: {j}");
         assert!(j.contains(r#""drops":4"#), "missing drops: {j}");
+        assert!(
+            j.contains(r#""mirror_frames":7654"#),
+            "missing mirror_frames: {j}"
+        );
         assert!(
             j.contains(r#""mirror_drops":2"#),
             "missing mirror_drops: {j}"

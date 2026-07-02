@@ -152,8 +152,6 @@ struct RingOutput {
     /// mirror PCM could not be opened — the ring still runs (the mirror is a
     /// diagnostic side-tap, never load-bearing for the primary path).
     mirror: Option<PCM>,
-    /// Frames written to the mirror, for STATUS parity with music_frames_written.
-    mirror_frames_written: Arc<AtomicU64>,
     /// One period in nanoseconds (period_frames / 48000). The reader-absent
     /// self-pacing sleep, precomputed so the hot loop never divides.
     self_pace_period_ns: u64,
@@ -248,6 +246,7 @@ struct RingCounters {
     published: Arc<AtomicU64>,
     full_waits: Arc<AtomicU64>,
     drops: Arc<AtomicU64>,
+    mirror_frames: Arc<AtomicU64>,
     mirror_drops: Arc<AtomicU64>,
     occupancy: Arc<AtomicU64>,
 }
@@ -258,6 +257,7 @@ impl RingCounters {
             published: Arc::new(AtomicU64::new(0)),
             full_waits: Arc::new(AtomicU64::new(0)),
             drops: Arc::new(AtomicU64::new(0)),
+            mirror_frames: Arc::new(AtomicU64::new(0)),
             mirror_drops: Arc::new(AtomicU64::new(0)),
             occupancy: Arc::new(AtomicU64::new(0)),
         }
@@ -265,10 +265,11 @@ impl RingCounters {
 }
 
 /// The shared ring counters (cloned Arcs) for the STATUS endpoint's `ring`
-/// block: `{path, slots, occupancy, published, full_waits, drops, mirror_drops}`.
-/// `drops` folds the writer's no-reader + stuck-reader drops (both mean "a
-/// live reader did not consume this slot"); `mirror_drops` is the lossy aloop
-/// side-tap's drop count.
+/// block: `{path, slots, occupancy, published, full_waits, drops, mirror_frames,
+/// mirror_drops}`. `drops` folds the writer's no-reader + stuck-reader drops
+/// (both mean "a live reader did not consume this slot"); `mirror_frames` /
+/// `mirror_drops` are the lossy aloop side-tap's written-frame and drop counts
+/// (parity with the music-only tap's `music_frames_written` / drops).
 #[derive(Clone)]
 pub struct RingObservability {
     pub path: String,
@@ -277,6 +278,7 @@ pub struct RingObservability {
     pub published: Arc<AtomicU64>,
     pub full_waits: Arc<AtomicU64>,
     pub drops: Arc<AtomicU64>,
+    pub mirror_frames: Arc<AtomicU64>,
     pub mirror_drops: Arc<AtomicU64>,
 }
 
@@ -487,6 +489,7 @@ impl Mixer {
                     published: Arc::clone(&counters.published),
                     full_waits: Arc::clone(&counters.full_waits),
                     drops: Arc::clone(&counters.drops),
+                    mirror_frames: Arc::clone(&counters.mirror_frames),
                     mirror_drops: Arc::clone(&counters.mirror_drops),
                 };
                 (
@@ -494,7 +497,6 @@ impl Mixer {
                         writer,
                         counters,
                         mirror,
-                        mirror_frames_written: Arc::new(AtomicU64::new(0)),
                         self_pace_period_ns,
                     }),
                     CouplingObservability {
@@ -752,9 +754,15 @@ impl Mixer {
                 }
             }
             Output::Ring(ring) => {
-                write_ring_period(ring, &self.output_buf, self.period_frames);
+                // Count only frames that actually ENTERED the ring — a
+                // fully-dropped period (reader absent / stuck) adds nothing,
+                // matching the Fifo arm's Waited (which deliberately doesn't
+                // count). `drops` disambiguates, so the top-line counter stays
+                // honest rather than optimistic.
+                let published_frames =
+                    write_ring_period(ring, &self.output_buf, self.period_frames);
                 self.frames_written
-                    .fetch_add(self.period_frames as u64, Ordering::Relaxed);
+                    .fetch_add(published_frames as u64, Ordering::Relaxed);
             }
         }
         Ok(())
@@ -762,31 +770,39 @@ impl Mixer {
 }
 
 /// Publish one mixer period into the SPSC SHM ring as `period_frames / 128`
-/// slots, then mirror the same period to the lossy aloop side-tap.
+/// slots, then mirror the same period to the lossy aloop side-tap. Returns the
+/// number of frames that actually ENTERED the ring this period (published slots
+/// × `RING_SLOT_FRAMES`) so the caller counts only real throughput — a
+/// fully-dropped period returns 0, matching the Fifo arm's `Waited`.
 ///
-/// **Pacing (the Ring A contract).** Each `RingWriter::publish` BLOCKS (bounded
-/// ~64 ms) while the ring is full AND a live reader (CamillaDSP) is draining —
-/// that block is the loop's pacer, transitively DAC-paced through Ring B. When
-/// the reader is ABSENT/stale the writer free-run-drops instead of blocking, so
-/// the daemon must self-pace: sleep one period per dropped publish so a
-/// readerless ring settles to ~48 kHz instead of hot-spinning. The bounded
-/// publish wait plus at most one period sleep keeps `step()` well under the 5 s
-/// watchdog threshold; the writer's heartbeat is bumped inside each publish.
+/// **Pacing (the Ring A contract).** Each `RingWriter::publish` BLOCKS (bounded:
+/// 32 ticks × the clamped `min(period/4, 2 ms)` sleep — with the pinned 128-frame
+/// slot that tick is ~0.667 ms, so the cap is ~21 ms per full slot) while the
+/// ring is full AND a live reader (CamillaDSP) is draining — that block is the
+/// loop's pacer, transitively DAC-paced through Ring B. When the reader is
+/// ABSENT/stale the writer free-run-drops instead of blocking, so the daemon must
+/// self-pace: sleep one period per dropped publish so a readerless ring settles
+/// to ~48 kHz instead of hot-spinning. The bounded publish wait plus at most one
+/// period sleep keeps `step()` well under the 5 s watchdog threshold; the
+/// writer's heartbeat is bumped inside each publish.
 ///
 /// The mirror is a `write_music_only`-shaped non-blocking side-tap: it is
 /// avail-checked and drop-on-full, so it can NEVER back-pressure the loop (that
 /// would re-couple to the aloop timer and silently reintroduce the hop being
 /// removed). It exists only to keep the AEC-fallback dsnoop + aloop diagnostics
 /// live.
-fn write_ring_period(ring: &mut RingOutput, output_buf: &[i16], period_frames: u32) {
+fn write_ring_period(ring: &mut RingOutput, output_buf: &[i16], period_frames: u32) -> u32 {
     let slots_per_step = period_frames / RING_SLOT_FRAMES;
     let samples_per_slot = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize);
     let mut dropped_this_period = false;
+    let mut published_slots: u32 = 0;
     for slot in 0..slots_per_step as usize {
         let start = slot * samples_per_slot;
         let slot_samples = &output_buf[start..start + samples_per_slot];
         match ring.writer.publish(slot_samples) {
-            PublishOutcome::Published => {}
+            PublishOutcome::Published => {
+                published_slots += 1;
+            }
             PublishOutcome::DroppedNoReader | PublishOutcome::DroppedStuck => {
                 dropped_this_period = true;
             }
@@ -817,7 +833,7 @@ fn write_ring_period(ring: &mut RingOutput, output_buf: &[i16], period_frames: u
         write_music_only(
             mirror,
             output_buf,
-            &ring.mirror_frames_written,
+            &ring.counters.mirror_frames,
             &ring.counters.mirror_drops,
         );
     }
@@ -838,6 +854,10 @@ fn write_ring_period(ring: &mut RingOutput, output_buf: &[i16], period_frames: u
             libc::nanosleep(&ts, std::ptr::null_mut());
         }
     }
+
+    // Frames that actually entered the ring this period — the caller counts only
+    // these toward `frames_written` (a fully-dropped period returns 0).
+    published_slots * RING_SLOT_FRAMES
 }
 
 fn store_output_delay(pcm: &PCM, delay_frames: &AtomicU64) {
@@ -1982,7 +2002,6 @@ mod tests {
             writer,
             counters,
             mirror: None,
-            mirror_frames_written: Arc::new(AtomicU64::new(0)),
             // One 256-frame period at 48k, in ns — used only on the reader-absent
             // self-pace path (avoided in these live-reader tests).
             self_pace_period_ns: 256 * 1_000_000_000 / 48_000,
@@ -2025,7 +2044,9 @@ mod tests {
         let mut output_buf = vec![0i16; total];
         saturate_to_i16(&sum, &mut output_buf); // expected: 5000 + 4000 = 9000
 
-        write_ring_period(&mut ring, &output_buf, period_frames);
+        let published_frames = write_ring_period(&mut ring, &output_buf, period_frames);
+        // Two slots reached a live reader -> the full period is counted.
+        assert_eq!(published_frames, period_frames);
 
         // The reader reads the two published slots back — byte-identical to the
         // post-duck post-TTS output_buf.
@@ -2057,10 +2078,21 @@ mod tests {
         // the oldest and self-paces one period; bound the wall time so the
         // self-pacing sleep can't wedge the loop.
         let start = std::time::Instant::now();
+        let mut per_period_published = Vec::with_capacity(4);
         for _ in 0..4 {
-            write_ring_period(&mut ring, &output_buf, period_frames);
+            per_period_published.push(write_ring_period(&mut ring, &output_buf, period_frames));
         }
         let elapsed = start.elapsed();
+        // Accounting (nit-2): the first period fills the empty 2-slot ring and
+        // counts both slots (period_frames); once the ring is full every later
+        // period free-run-drops entirely and counts 0 — the top-line
+        // frames_written never over-counts a fully-dropped period.
+        assert_eq!(per_period_published[0], period_frames);
+        assert_eq!(
+            *per_period_published.last().unwrap(),
+            0,
+            "a fully-dropped readerless period must count 0 frames"
+        );
         // 4 periods * (2 slots each) with a per-period self-pace sleep (~5.3 ms):
         // bounded well under the 5 s watchdog threshold.
         assert!(

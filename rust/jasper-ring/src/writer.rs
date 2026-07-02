@@ -37,8 +37,12 @@
 //!    synchronizes-with this and observes the complete payload.
 //! 3. **Full + live reader** (`reader_pid != 0` AND heartbeat younger than
 //!    [`crate::WRITER_LIVENESS_TIMEOUT_NS`]): clamped nanosleep (period/4, capped
-//!    at 2 ms), re-check up to [`MAX_FULL_WAIT_TICKS`] times (~64 ms cap). This
-//!    is the back-pressure path — the DAC-paced reader drains and frees a slot.
+//!    at 2 ms), re-check up to [`MAX_FULL_WAIT_TICKS`] times. The tick is
+//!    `min(period/4, 2 ms)`, so the cap is slot-size dependent: with the fanin
+//!    Ring A 128-frame slot at 48 kHz the tick is ~0.667 ms and the cap is
+//!    ~21 ms; the ~64 ms figure is only the ≥2 ms-tick worst case (32 × 2 ms).
+//!    This is the back-pressure path — the DAC-paced reader drains and frees a
+//!    slot.
 //!    If the reader heartbeats but never advances `read_seq` past the tick cap,
 //!    give up: drop this period and count `stuck_reader_drops`
 //!    ([`PublishOutcome::DroppedStuck`]).
@@ -67,8 +71,11 @@ use crate::{monotonic_ns, RingMapping, WRITER_LIVENESS_TIMEOUT_NS};
 
 /// Bounded number of full-ring wait ticks before a live-reader publish gives up
 /// and drops (defends against a reader that stamps a heartbeat but never
-/// advances `read_seq`). At <= 2 ms/tick this caps the writer stall at ~64 ms —
-/// the same bound as the C writer's `JTS_RING_MAX_FULL_WAIT_TICKS`.
+/// advances `read_seq`). The tick is `min(period/4, 2 ms)`, so the stall cap is
+/// slot-size dependent: ~64 ms is only the ≥2 ms-tick worst case (32 × 2 ms);
+/// with the fanin 128-frame slot at 48 kHz the tick is ~0.667 ms and the cap is
+/// ~21 ms. Same tick-count bound as the C writer's
+/// `JTS_RING_MAX_FULL_WAIT_TICKS`.
 pub const MAX_FULL_WAIT_TICKS: u32 = 32;
 
 /// The upper clamp on one full-ring wait tick: 1/4 period, never longer than
@@ -181,7 +188,9 @@ impl RingWriter {
     /// Publish exactly one slot from `samples` (`samples.len()` must equal
     /// `period_frames * channels`). Blocks (bounded) on a full ring with a live
     /// reader; free-run drop-oldest on a full ring with a dead reader. ALWAYS
-    /// returns within the ~64 ms wait cap so the caller's watchdog stays fresh.
+    /// returns within the bounded wait cap (`MAX_FULL_WAIT_TICKS` × the
+    /// `min(period/4, 2 ms)` tick — ~21 ms with the fanin 128-frame slot, ~64 ms
+    /// only at the ≥2 ms-tick worst case) so the caller's watchdog stays fresh.
     ///
     /// Returns the [`PublishOutcome`] so the caller can self-pace on a dropped
     /// publish (the reader-absent one-period sleep lives in the daemon, not
@@ -459,7 +468,8 @@ mod tests {
 
     /// Full ring with a live-but-STUCK reader (heartbeat fresh, read_seq never
     /// advances): the writer waits the bounded tick cap, then drops and counts
-    /// stuck_reader_drops. Bounds the whole thing under ~64 ms.
+    /// stuck_reader_drops. With this 128-frame slot the tick is ~0.667 ms so the
+    /// cap is ~21 ms (the loose 500 ms wall-time assert below is a sanity bound).
     #[test]
     fn full_ring_stuck_reader_drops_after_bounded_wait() {
         let path = tmp_ring_path("stuck");
@@ -480,7 +490,7 @@ mod tests {
             .store(monotonic_ns(), Ordering::Relaxed);
 
         // The third publish must wait the bounded ticks then drop. Bound the
-        // wall time as a sanity check on the ~64 ms cap.
+        // wall time as a sanity check on the ~21 ms cap (128-frame slot tick).
         let start = std::time::Instant::now();
         assert_eq!(writer.publish(&s), PublishOutcome::DroppedStuck);
         let elapsed = start.elapsed();
