@@ -880,8 +880,11 @@ impl Mixer {
     ///
     /// The signals ride the atomics the mixer already publishes for STATUS
     /// (resampler `fill_frames`/`input_frames`/`output_frames`/`locked`, direct
-    /// `present`, trim `trimmed_frames`), so this adds no new hot-path work — it
-    /// only clones the existing `Arc`s. `main` calls this before `mixer.run`.
+    /// `present`), so this adds no new hot-path work — it only clones the
+    /// existing `Arc`s. `main` calls this before `mixer.run`. Note: `input_frames`
+    /// is passed RAW; the host-clock adapter must NOT trim-compensate it (a
+    /// `trim_ring` moves only the read cursor, so the `capture − playback`
+    /// divergence the ladder differences is already trim-invariant).
     pub fn host_clock_signals(&self) -> Option<crate::host_clock::HostClockSignals> {
         let direct = self.inputs.iter().find(|inp| inp.is_direct())?;
         let resampler = direct.resampler_observability()?;
@@ -892,7 +895,6 @@ impl Mixer {
             output_frames: Arc::clone(&resampler.output_frames),
             locked: Arc::clone(&resampler.locked),
             present: Arc::clone(&direct_obs.present),
-            trim: direct.trim_control(),
             target_fill_frames: resampler.target_fill_frames,
         })
     }

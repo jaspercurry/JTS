@@ -14,11 +14,11 @@
 //!
 //! 1. [`HostClockSignals`] — the Arc atomics the mixer already publishes for the
 //!    USB DIRECT lane (resampler fill gauge / input / output / lock, direct
-//!    `present`, trim `trimmed_frames`), cloned once in `main` before the mixer
-//!    starts. This is the ONLY coupling to the mixer; the ladder never touches
-//!    a `LaneResampler` or a `PCM`.
+//!    `present`), cloned once in `main` before the mixer starts. This is the ONLY
+//!    coupling to the mixer; the ladder never touches a `LaneResampler` or a
+//!    `PCM`.
 //! 2. [`build_obs`] — maps those atomics onto the shared [`Obs`], including the
-//!    TRIM compensation and the resampler-derived setpoint (see below).
+//!    resampler-derived setpoint (see below).
 //! 3. [`HostClockActuator`] — the fan-in pitch-ctl actuator: fail-soft open,
 //!    rate-limited write-error logs, and (unlike usbsink) a session-edge REOPEN
 //!    so a boot-order race that opened the ctl before the gadget bound does not
@@ -40,15 +40,22 @@
 //! |                   | while deselected, keeping the lane converged)        |
 //! | `fill_frames`     | resampler `fill_frames` gauge (cursor-relative,      |
 //! |                   | frame-granular, published every render period)       |
-//! | `capture_frames`  | `input_frames − trimmed_frames` (TRIM compensation)  |
+//! | `capture_frames`  | resampler `input_frames` (raw, monotone)             |
 //! | `playback_frames` | resampler `output_frames` (real periods only)        |
 //!
-//! **TRIM compensation** is load-bearing: `LaneResampler::trim_ring` is
-//! lock-preserving, so an uncompensated trim would inject a phantom negative
-//! divergence STEP into the slope estimator and corrupt an in-flight probe
-//! verdict. Subtracting the cumulative trimmed frames from `input_frames`
-//! cancels the step. (`output_frames` is DAC-paced and never trimmed, so the
-//! divergence `capture − playback` stays clean.)
+//! **`capture_frames` is the RAW input counter — a `LaneResampler::trim_ring`
+//! must NOT be subtracted from it.** The divergence the slope estimator
+//! differences is `capture − playback = input_frames − output_frames`; a trim
+//! only advances the resampler's read CURSOR (`next_input_frame`), touching
+//! neither `input_frames` (bumped at `push_input`) nor `output_frames`
+//! (DAC-paced), so the divergence is already smooth across a trim. An earlier
+//! revision subtracted the cumulative `trimmed_frames` here as "TRIM
+//! compensation"; that INJECTED the very phantom negative divergence STEP it
+//! claimed to cancel. At a 1400-frame auto-trim — which fires at 2 s
+//! (`AUTO_TRIM_DELAY_SECONDS`), inside the 4 s probe baseline — the subtraction
+//! drove the probe `response_ratio` from ~0.85 to ~43 and railed the
+//! feed-forward at +1000 ppm in the wrong direction. So the mapping is a plain
+//! load of `input_frames`, no trim term.
 //!
 //! ## Setpoint (C4) — one setpoint shared with the inner loop
 //!
@@ -75,8 +82,6 @@ use jasper_host_clock::{
     ctl_card_from_capture, ppm_to_ctl_value, Action, AlsaPitchCtl, HostClock, HostClockConfig, Obs,
     TICK_INTERVAL_MS,
 };
-
-use crate::mixer::TrimControl;
 
 /// The `event=` log-line namespace prefix for the fan-in ladder.
 pub const LOG_PREFIX: &str = "fanin";
@@ -107,12 +112,6 @@ pub struct HostClockSignals {
     pub locked: Arc<AtomicBool>,
     /// USB DIRECT capture presence — the fan-in `host_connected` proxy.
     pub present: Arc<AtomicBool>,
-    /// The lane's TRIM control. `trim.trimmed_frames` is the cumulative frames
-    /// dropped by `LaneResampler::trim_ring` (lock-preserving trim), subtracted
-    /// from `input_frames` so a trim does not inject a phantom divergence step
-    /// into the slope estimator (TRIM compensation). Held as the whole `Arc`
-    /// because `TrimControl::trimmed_frames` is a bare `AtomicU64` inside it.
-    pub trim: Arc<TrimControl>,
     /// The resampler's HELD target fill (`target + warmup cushion`), the ONE
     /// setpoint the outer loop shares with the inner `RateController`. Static
     /// for the lane's life.
@@ -141,10 +140,8 @@ pub fn build_config(
 }
 
 /// Snapshot an [`Obs`] from the mixer's shared atomics. Pure (only relaxed atomic
-/// loads); the TRIM compensation and the mapping are the whole content.
+/// loads); the mapping is the whole content.
 pub fn build_obs(signals: &HostClockSignals) -> Obs {
-    let input = signals.input_frames.load(Ordering::Relaxed);
-    let trimmed = signals.trim.trimmed_frames.load(Ordering::Relaxed);
     Obs {
         // The mixer preempt path targets the standby usbsink HTTP daemon, never
         // this lane; SELECT/NONE gates the SUM downstream. So the ladder never
@@ -157,10 +154,13 @@ pub fn build_obs(signals: &HostClockSignals) -> Obs {
         playing: signals.locked.load(Ordering::Relaxed),
         // Cursor-relative fill (frame-granular) — the DLL's error signal.
         fill_frames: signals.fill_frames.load(Ordering::Relaxed) as f64,
-        // TRIM compensation: subtract cumulative trimmed frames so a
-        // lock-preserving `trim_ring` does not inject a phantom divergence step.
-        capture_frames: input.saturating_sub(trimmed),
-        // DAC-paced, never trimmed — the divergence anchor.
+        // RAW cumulative input — NOT trim-compensated. A `trim_ring` only moves
+        // the read cursor, never `input_frames` or `output_frames`, so the
+        // divergence `capture − playback` is already smooth across a trim.
+        // Subtracting `trimmed_frames` here would INJECT the phantom divergence
+        // step it purported to cancel (see the module-level `Obs mapping` note).
+        capture_frames: signals.input_frames.load(Ordering::Relaxed),
+        // DAC-paced — the divergence anchor.
         playback_frames: signals.output_frames.load(Ordering::Relaxed),
     }
 }
@@ -309,39 +309,56 @@ pub fn run_host_clock_thread(
     }
     publish_fragment(&fragment, hc.status_fragment());
 
-    let mut last_session = false;
-    let mut last_tick = Instant::now();
-    while !shutdown.load(Ordering::Relaxed) {
-        if last_tick.elapsed() >= Duration::from_millis(TICK_INTERVAL_MS) {
-            let obs = build_obs(&signals);
-            // Session rising edge: if the ctl never opened (boot-order race),
-            // re-attempt now. On a late open, force ONE neutralize before any
-            // command so a stale pitch from a crashed predecessor is cleared.
-            let session = obs.host_connected && obs.playing && !obs.preempted;
-            if session && !last_session && !actuator.is_open() && actuator.reopen_if_closed() {
-                actuator.apply(
-                    Action::WritePitch {
-                        ppm: 0.0,
-                        reset: true,
-                    },
-                    now_ms(&start),
-                );
-                log::info!("event=fanin.host_clock_pitch_reset reason=late_ctl_open");
-            }
-            last_session = session;
+    // The steering loop runs inside `catch_unwind` (N5). A panic mid-tick on
+    // THIS helper thread would otherwise unwind past the exit-neutralize below
+    // while the daemon keeps running — leaving the host slaved to the last
+    // command until the unit stops (only then does the ExecStopPost belt fire).
+    // Catching the unwind lets the same exit-neutralize run on the panic path.
+    // `AssertUnwindSafe`: the only state touched after a caught panic is the
+    // final neutral ctl write + fragment publish, both idempotent and safe on a
+    // partially-updated `hc`/`actuator`.
+    let loop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut last_session = false;
+        let mut last_tick = Instant::now();
+        while !shutdown.load(Ordering::Relaxed) {
+            if last_tick.elapsed() >= Duration::from_millis(TICK_INTERVAL_MS) {
+                let obs = build_obs(&signals);
+                // Session rising edge: if the ctl never opened (boot-order race),
+                // re-attempt now. On a late open, force ONE neutralize before any
+                // command so a stale pitch from a crashed predecessor is cleared.
+                let session = obs.host_connected && obs.playing && !obs.preempted;
+                if session && !last_session && !actuator.is_open() && actuator.reopen_if_closed() {
+                    actuator.apply(
+                        Action::WritePitch {
+                            ppm: 0.0,
+                            reset: true,
+                        },
+                        now_ms(&start),
+                    );
+                    log::info!("event=fanin.host_clock_pitch_reset reason=late_ctl_open");
+                }
+                last_session = session;
 
-            for action in hc.tick(obs, now_ms(&start)) {
-                actuator.apply(action, now_ms(&start));
+                for action in hc.tick(obs, now_ms(&start)) {
+                    actuator.apply(action, now_ms(&start));
+                }
+                publish_fragment(&fragment, hc.status_fragment());
+                last_tick = Instant::now();
             }
-            publish_fragment(&fragment, hc.status_fragment());
-            last_tick = Instant::now();
+            std::thread::sleep(Duration::from_millis(100));
         }
-        std::thread::sleep(Duration::from_millis(100));
+    }));
+    if loop_result.is_err() {
+        // A caught panic: log it, fall through to the exit-neutralize so the
+        // host is still un-slaved. (The thread then ends; the daemon keeps
+        // running with the ladder inert until a restart re-spawns it.)
+        log::error!("event=fanin.host_clock.thread_panic detail=caught_unwind_neutralizing");
     }
 
-    // Exit: force the host back to a free-running clock. A stopped thread must
-    // NEVER leave the host slaved. SIGKILL / watchdog is covered by the unit's
-    // combo-gated ExecStopPost belt-and-braces (C6).
+    // Exit: force the host back to a free-running clock — on BOTH the graceful
+    // shutdown path and a caught panic. A stopped thread must NEVER leave the
+    // host slaved. SIGKILL / watchdog is covered by the unit's combo-gated
+    // ExecStopPost belt-and-braces (C6).
     actuator.apply(hc.neutralize_for_exit("shutdown"), now_ms(&start));
     log::info!("event=fanin.host_clock_pitch_reset reason=shutdown");
     publish_fragment(&fragment, hc.status_fragment());
@@ -378,7 +395,6 @@ mod tests {
             output_frames: Arc::new(AtomicU64::new(0)),
             locked: Arc::new(AtomicBool::new(false)),
             present: Arc::new(AtomicBool::new(false)),
-            trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
             target_fill_frames: 2048,
         }
     }
@@ -424,39 +440,40 @@ mod tests {
     }
 
     #[test]
-    fn obs_trim_compensation_subtracts_trimmed_from_capture() {
+    fn obs_capture_is_raw_input_not_trim_compensated() {
+        // capture_frames is the RAW cumulative input. A `LaneResampler::trim_ring`
+        // only advances the read cursor; it does NOT bump `input_frames` (pushed
+        // at capture) or `output_frames` (DAC-paced), so the divergence
+        // `capture − playback` is already smooth across a trim. The Obs mapping
+        // must therefore NOT subtract any trimmed-frames term — doing so was the
+        // inverted-compensation bug that injected a phantom −N divergence step
+        // into the slope estimator (probe response_ratio ~0.85 → ~43, +1000 ppm
+        // feed-forward rail in the wrong direction).
         let s = signals();
         s.input_frames.store(100_000, Ordering::Relaxed);
         s.output_frames.store(95_000, Ordering::Relaxed);
-        // No trim yet: capture = input.
-        let obs = build_obs(&s);
-        assert_eq!(obs.capture_frames, 100_000);
-        assert_eq!(obs.playback_frames, 95_000);
-
-        // A lock-preserving trim drops 1919 frames from the ring. Without
-        // compensation the divergence (capture − playback) would step by
-        // −1919 and corrupt the slope. WITH compensation, capture tracks the
-        // trim so the divergence stays clean.
-        s.trim.trimmed_frames.store(1919, Ordering::Relaxed);
         let obs = build_obs(&s);
         assert_eq!(
-            obs.capture_frames, 98_081,
-            "capture = input − trimmed (TRIM compensation)"
+            obs.capture_frames, 100_000,
+            "capture_frames must be the raw input counter (no trim subtraction)"
         );
         assert_eq!(
             obs.playback_frames, 95_000,
-            "playback (DAC-paced) is never trimmed"
+            "playback (DAC-paced) is the divergence anchor"
         );
-    }
 
-    #[test]
-    fn obs_trim_compensation_saturates_not_underflows() {
-        // Defensive: a trimmed count somehow exceeding input must not underflow
-        // the u64 (saturating_sub returns 0, not a giant wraparound).
-        let s = signals();
-        s.input_frames.store(10, Ordering::Relaxed);
-        s.trim.trimmed_frames.store(100, Ordering::Relaxed);
-        assert_eq!(build_obs(&s).capture_frames, 0);
+        // A trim happening between two ticks bumps neither counter, so the very
+        // next Obs sees the SAME divergence — no step. Emulate a period where
+        // input/output advanced by one on-rate period each (a trim in between is
+        // invisible to these counters by construction).
+        s.input_frames.store(100_256, Ordering::Relaxed);
+        s.output_frames.store(95_256, Ordering::Relaxed);
+        let obs = build_obs(&s);
+        assert_eq!(
+            obs.capture_frames as i64 - obs.playback_frames as i64,
+            5_000,
+            "the divergence is unchanged across a trim — no phantom step"
+        );
     }
 
     #[test]
