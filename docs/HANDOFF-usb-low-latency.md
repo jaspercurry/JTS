@@ -177,6 +177,93 @@ window) and states whether the declaration *would* be justified — it never
 asserts `--route-health-ok` on the operator's behalf; read the printed
 deltas and decide.
 
+## USB DIRECT (combo mode) — delete the bridge hop + aloop cable (DEFAULT-OFF PoC)
+
+`JASPER_FANIN_USB_DIRECT=enabled` + `JASPER_USBSINK_AUDIO_STANDBY=1` removes the
+usbsink **bridge hop + the snd-aloop cable** (~25 ms measured) from the USB path:
+fan-in captures `hw:UAC2Gadget` **directly** and narrows S32→S16 itself, feeding
+the SAME per-input `LaneResampler` the aloop path used. The bridge drops to
+state/HTTP-only standby (opens NO PCM, leaving the gadget free), so nothing else
+in the chain changes.
+
+```
+UAC2 gadget capture
+  → jasper-fanin DIRECT capture (hw:UAC2Gadget, S32_LE→S16 high-word truncation, period 256/buffer 768)
+  → jasper-fanin USB input resampler (same target/cushion/ring)  ← bridge hop + aloop cable GONE
+  → fan-in output → CamillaDSP → outputd  (unchanged)
+```
+
+Both halves are DEFAULT-OFF and fail-safe (only the exact literals arm them:
+`JASPER_FANIN_USB_DIRECT=enabled`, `JASPER_USBSINK_AUDIO_STANDBY=1`).
+
+### Flag matrix (C6)
+
+| `FANIN_USB_DIRECT` | `USBSINK_STANDBY` | Result |
+|---|---|---|
+| off (default) | off (default) | **Today's lane** — byte-identical. Bridge bridges gadget→aloop; fan-in reads aloop. |
+| `enabled` | `1` | **PoC target.** Fan-in captures the gadget directly; bridge is state/HTTP-only. The bridge hop + aloop cable (~25 ms) are gone. |
+| `enabled` | off | Misconfig, **safe**: the bridge holds `hw:UAC2Gadget`, so fan-in's direct open fails → the lane goes silent-idle with a 2 s reopen retry (`/state` fan-in `usbsink.direct.present=false`, `retries` grows, one transition log). USB source is SILENT (the direct lane never opens its aloop PCM). Recover by fixing the flags — no crash. |
+| off | `1` | Misconfig, **safe**: the bridge doesn't bridge; fan-in reads an unfed aloop substream → silence via EAGAIN. Observable: bridge `standby:true` while fan-in lane `source:"lane"`. |
+
+### Observability
+
+- Fan-in STATUS (`/run/jasper-fanin/control.sock` `STATUS`, surfaced on `/state`):
+  every input gains `"source":"lane"|"direct"`; the direct lane also gains
+  `"direct":{"device","present","opens","retries"}`. The lane's frames/xruns
+  ride the existing `frames_read`/`xrun_count`; its rate-lock rides the existing
+  `resampler{}` block.
+- Bridge STATUS/state.json gains additive `"standby":true|false` (schema_version
+  stays 1); in standby `playing:false`, `rms_dbfs:-120`, ring/counters zero, and
+  `host_connected` is best-effort from sysfs (`/sys/class/udc/*/state ==
+  "configured"`). A misdirected harness run is diagnosable from `standby:true`.
+- Transition logs: `event=fanin.usb_direct.present` / `.absent` (one line per
+  presence change, device + errno + cumulative retries), `event=fanin.usb_direct.armed`
+  at config load, `event=usbsink_audio.standby active=true` at bridge start.
+
+### Impulse tap moves to fan-in (C4)
+
+In direct mode the certified route's ingress is fan-in's `hw:UAC2Gadget`
+capture, so the impulse tap is **relocated into fan-in** (ported verbatim from
+`jasper-usbsink-audio`: same JSONL schema, same detector, same arm validation).
+It runs inline in the direct read over the converted S16 slice, before the
+resampler. **The bridge's own tap is DEAD in direct mode** (the bridge is in
+standby and opens no capture), so the fan-in JSONL is the ONLY ingress evidence.
+
+- Path: `/run/jasper-fanin/impulse-tap.jsonl` (the JSONL schema is unchanged:
+  `{"monotonic_ns","frame_index","ring_fill_frames","peak"}`).
+- Arm/disarm are **control-socket verbs** (not HTTP): `TAP_ARM {json}` /
+  `TAP_DISARM` on `/run/jasper-fanin/control.sock`. STATUS gains a top-level
+  `"tap":{armed,events_written,events_dropped,threshold,refractory_ms,max_events,auto_disarm_at_epoch_ms,path}`.
+
+**Director commands (PoC).** The route-latency harness's `analyze --tap-events`
+already reads any JSONL path, so no HTTP port is needed — arm via the socket
+verb, point `--tap-events` at the fan-in JSONL:
+
+```sh
+# 1. Arm (disarm with TAP_DISARM):
+printf 'TAP_ARM {"threshold":0.2,"refractory_ms":250}\n' \
+  | socat - UNIX-CONNECT:/run/jasper-fanin/control.sock
+printf 'TAP_DISARM\n' | socat - UNIX-CONNECT:/run/jasper-fanin/control.sock
+
+# 2. Analyze against the fan-in JSONL (mic-wav / other args as today):
+python -m jasper.cli.route_latency_harness analyze \
+  --tap-events /run/jasper-fanin/impulse-tap.jsonl \
+  --mic-detections <capture>.jsonl <other args as today>
+```
+
+### Status (PoC bar)
+
+Correct + observable + flag-gated default-off; **not** hardware-validated yet.
+Conversion parity with the bridge is by construction (both consume
+`jasper_resampler::s32_high_word_to_s16`, pinned by an identical sign-boundary
+vector in all three crates). The direct open uses the bridge's proven envelope
+(S32LE/2ch/48k, period 256, buffer-near 768). Gadget absence/unplug is
+silent-idle with a bounded ~2 s reopen retry (period-counted, never a daemon
+error). On-device latency re-measurement (arm the fan-in tap, run the
+click/capture harness against the direct JSONL) is the next step; hardening
+(deploy wiring, doctor surface, wizard toggle) comes after the direction is
+proven on hardware.
+
 ## Host-slaved USB clock (Stage 1)
 
 Default-**OFF** mechanism + telemetry + evidence, landed alongside the Stage 0
