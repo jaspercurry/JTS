@@ -55,6 +55,19 @@ anyhow = "1"
 # and Slice=jts-audio.slice MemorySwapMax=0).
 libc = "0.2"
 
+# JSON parsing for the relocated impulse-tap arm-body endpoint
+# (src/impulse_tap.rs `TapConfig::from_arm_body`). NOTE: state.rs's STATUS
+# response is still hand-rolled JSON with NO serde — the "no serde_json" note
+# in that module's docstring covers the response-emit side, which is small and
+# stable. The tap-arm PARSE side is a mixed string/number/bool object with
+# integral-float coercion and reserved-path rejection; it was ported verbatim
+# from jasper-usbsink-audio (which already carries this dep) and re-hand-rolling
+# a correctness-critical object parser for the PoC would trade a large new
+# surface for marginal binary savings. serde's proc-macro machinery is already
+# in the lock via jiff, so the delta here is small. Revisit at hardening if the
+# fan-in binary size ever matters.
+serde_json = "1"
+
 [profile.release]
 # Optimize aggressively. The hot path (per-frame mixer) is small;
 # compile time isn't a concern on a Pi 5. Smaller binary via

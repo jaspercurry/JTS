@@ -27,11 +27,14 @@
 //!   code) and avoids long-lived connections eating file descriptors
 //!   if a client misbehaves.
 //!
-//! - **Hand-rolled JSON, no `serde`.** Same reasoning as
-//!   `xrun_log.rs`: the shape is small and stable. Adding `serde`
-//!   for one response shape would bring `serde_json` into the
-//!   dependency graph, ~200 KB of compiled code, for marginal
-//!   benefit.
+//! - **Hand-rolled JSON on the STATUS emit side, no `serde`.** Same
+//!   reasoning as `xrun_log.rs`: the response shape is small and
+//!   stable, so `status_body` builds it by hand. (`serde_json` IS a
+//!   crate dependency now — `impulse_tap.rs`'s `TapConfig::from_arm_body`
+//!   needs the value model to PARSE an untrusted arm-body object — but
+//!   this STATUS response deliberately does not use it: hand-rolling one
+//!   fixed emit shape stays trivial and keeps the response path
+//!   allocation-light.)
 //!
 //! - **Shared atomic counters.** The mixer's `frames_written`,
 //!   per-input `frames_read`, `xrun_count` are already

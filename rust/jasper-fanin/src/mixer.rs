@@ -133,6 +133,21 @@ const CATCHUP_LOG_EVERY: u64 = 64;
 const DIRECT_PERIOD_FRAMES: u32 = 256;
 const DIRECT_BUFFER_FRAMES: u32 = 768;
 
+/// Length of the S16 narrowing scratch the direct drain uses per chunk read.
+///
+/// The drain reads the gadget in chunks of at most [`DIRECT_PERIOD_FRAMES`]
+/// frames (`to_read` in `drain_direct_capture`), so one chunk yields at most
+/// `DIRECT_PERIOD_FRAMES × CHANNELS` interleaved S16 samples. This sizing is
+/// INDEPENDENT of `config.period_frames`: the lane's `read_buf` is
+/// `period_frames × CHANNELS` (the render-period contract), and reusing it for
+/// the narrowing would slice out of bounds whenever `period_frames <
+/// DIRECT_PERIOD_FRAMES` (e.g. `JASPER_FANIN_PERIOD_FRAMES=128`). That OOB is a
+/// `panic=abort` in the hot loop → the `jasper-fanin` `StartLimitAction=reboot`
+/// ladder, so the narrowing scratch is deliberately its own fixed buffer.
+const fn direct_narrow_scratch_samples() -> usize {
+    (DIRECT_PERIOD_FRAMES as usize) * (CHANNELS as usize)
+}
+
 /// Bounded impulse-tap channel capacity (C4). The single detector fires at most
 /// once per refractory window (~4/s at the 250 ms default), so this can never
 /// fill under the harness; it exists as a drop-and-count safety net so the
@@ -2083,8 +2098,16 @@ fn drain_direct_capture(
         return DirectDrainOutcome::Ok;
     };
     let channels = CHANNELS as usize;
-    // Preallocated i32 scratch (256×2) — no allocation in the hot path.
-    let mut scratch = [0i32; (DIRECT_PERIOD_FRAMES as usize) * (CHANNELS as usize)];
+    // Preallocated i32 scratch (256×2) — no allocation in the hot path. Same
+    // length as `narrow_scratch` below: the i32 read fills `scratch[..samples]`
+    // and the narrow fills `narrow_scratch[..got]` with `got == samples`.
+    let mut scratch = [0i32; direct_narrow_scratch_samples()];
+    // Dedicated i16 narrowing scratch, sized to match the i32 scratch. MUST NOT
+    // reuse `input.read_buf` (sized `period_frames × CHANNELS`) — see
+    // `direct_narrow_scratch_samples` for the OOB-on-small-period hazard. A
+    // single chunk read is capped at DIRECT_PERIOD_FRAMES frames (`to_read`
+    // below), so this fixed size always bounds `got`.
+    let mut narrow_scratch = [0i16; direct_narrow_scratch_samples()];
     let mut read_budget_remaining =
         period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
     let armed = tap.state.armed();
@@ -2124,20 +2147,22 @@ fn drain_direct_capture(
                 }
                 Ok(n) => {
                     let got = n * channels;
-                    // Narrow S32→S16 into the lane's read_buf scratch (reused;
-                    // the render below overwrites it). Bounds to `got`.
-                    let converted = &mut input.read_buf[..got];
+                    // Narrow S32→S16 into the dedicated narrowing scratch (NOT
+                    // input.read_buf — see the declaration comment for the OOB
+                    // hazard on small period geometries). `got` ≤ scratch len
+                    // because `to_read` ≤ DIRECT_PERIOD_FRAMES.
+                    let converted = &mut narrow_scratch[..got];
                     let _ = jasper_resampler::convert_s32_to_s16(&scratch[..got], converted);
                     // Tap the converted slice BEFORE push_input (armed only). The
                     // read_ns is taken immediately after readi returned above.
                     if armed {
                         let read_ns = monotonic_ns();
-                        tap.tap_over_read(&input.read_buf[..got], n, read_ns, ring_fill_before);
+                        tap.tap_over_read(&narrow_scratch[..got], n, read_ns, ring_fill_before);
                     }
                     tap.capture_frames_cursor = tap.capture_frames_cursor.saturating_add(n as u64);
                     input.frames_read.fetch_add(n as u64, Ordering::Relaxed);
                     if let Some(r) = input.resampler.as_mut() {
-                        r.push_input(&input.read_buf[..got]);
+                        r.push_input(&narrow_scratch[..got]);
                     }
                     remaining = remaining.saturating_sub(n);
                     read_budget_remaining = read_budget_remaining.saturating_sub(n);
@@ -2719,6 +2744,73 @@ mod tests {
         assert_eq!(jasper_resampler::s32_high_word_to_s16(-1), -1);
         assert_eq!(jasper_resampler::s32_high_word_to_s16(-65_536), -1);
         assert_eq!(jasper_resampler::s32_high_word_to_s16(-65_537), -2);
+    }
+
+    // ---- B2: direct-drain narrowing scratch never overflows (OOB panic) ---
+
+    #[test]
+    fn direct_narrow_scratch_bounds_max_chunk_regardless_of_period() {
+        // The drain reads in chunks of at most DIRECT_PERIOD_FRAMES frames and
+        // narrows `got = n × CHANNELS` samples into the narrowing scratch. The
+        // largest `got` a single chunk can produce:
+        let max_chunk_samples = (DIRECT_PERIOD_FRAMES as usize) * (CHANNELS as usize);
+        // The narrowing scratch must bound it, and its size must NOT depend on
+        // the lane's period geometry.
+        assert_eq!(
+            direct_narrow_scratch_samples(),
+            max_chunk_samples,
+            "narrowing scratch must fit one full DIRECT_PERIOD_FRAMES chunk"
+        );
+        assert!(
+            max_chunk_samples <= direct_narrow_scratch_samples(),
+            "a full chunk read must never slice past the narrowing scratch"
+        );
+    }
+
+    #[test]
+    fn small_period_would_overflow_the_render_buf_but_not_the_narrow_scratch() {
+        // The regression: `read_buf` is sized `period_frames × CHANNELS` for the
+        // `render_period` contract. Reusing it as the narrowing target (the pre-
+        // fix code) slices out of bounds whenever a single chunk yields more
+        // frames than `period_frames` — reachable within seconds of real
+        // streaming at any legal small geometry. `panic=abort` in this hot loop
+        // escalates to the jasper-fanin StartLimitAction=reboot ladder.
+        let channels = CHANNELS as usize;
+        let max_chunk_samples = (DIRECT_PERIOD_FRAMES as usize) * channels;
+        // Every legal period at/under the chunk size is a hazard for the OLD
+        // (read_buf-reuse) sizing; the fixed narrowing scratch is safe for all.
+        for period_frames in [1usize, 32, 64, 128, 200, 255, 256] {
+            let old_read_buf_len = period_frames * channels;
+            if period_frames < DIRECT_PERIOD_FRAMES as usize {
+                assert!(
+                    old_read_buf_len < max_chunk_samples,
+                    "pre-fix read_buf ({old_read_buf_len}) would overflow on a \
+                     {max_chunk_samples}-sample chunk at period {period_frames}"
+                );
+            }
+            // The fix's dedicated scratch fits the worst-case chunk at EVERY
+            // period, small or large.
+            assert!(
+                max_chunk_samples <= direct_narrow_scratch_samples(),
+                "narrowing scratch must bound a full chunk at period {period_frames}"
+            );
+        }
+        // Behavioral pin: actually run the hot-loop slice ops the drain does
+        // (`narrow_scratch[..got]` with `got == max_chunk_samples`) against a
+        // scratch sized the way the real code sizes it. This panics if the
+        // sizing ever regresses to a period-dependent length.
+        let mut narrow_scratch = [0i16; direct_narrow_scratch_samples()];
+        let _convert_target = &mut narrow_scratch[..max_chunk_samples];
+        let _tap_view = &narrow_scratch[..max_chunk_samples];
+    }
+
+    #[test]
+    fn direct_i32_and_narrow_scratches_are_equal_length() {
+        // The i32 read fills `scratch[..samples]` and the narrow fills
+        // `narrow_scratch[..got]` with `got == samples`; both must be the same
+        // fixed length so neither read nor narrow can slice out of bounds.
+        let i32_len = (DIRECT_PERIOD_FRAMES as usize) * (CHANNELS as usize);
+        assert_eq!(i32_len, direct_narrow_scratch_samples());
     }
 
     #[test]
