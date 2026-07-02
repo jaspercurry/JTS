@@ -31,7 +31,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use host_clock::{HostClock, HostClockConfig, Obs};
+use host_clock::{HostClock, HostClockConfig};
 #[cfg(feature = "alsa-runtime")]
 use impulse_tap::{ImpulseDetector, SinkAction, TapSink};
 use impulse_tap::{TapConfig, TapEvent, TapState};
@@ -116,9 +116,9 @@ impl Config {
         // startup + exit neutralize still run (they heal a crashed predecessor
         // and never leave the host slaved).
         let host_clock = if audio_standby {
-            HostClockConfig::disabled(period_frames)
+            host_clock::disabled_config(period_frames)
         } else {
-            HostClockConfig::from_env(|key| env::var(key).ok(), period_frames)
+            host_clock::from_env(|key| env::var(key).ok(), period_frames)
                 .map_err(anyhow::Error::msg)?
         };
         let cfg = Self {
@@ -1434,7 +1434,7 @@ fn run_state_publisher(
     while !shutdown.load(Ordering::Relaxed) {
         publisher.poll(&tap_receiver, &tap, &tap_config, monotonic_millis());
         if last_hc_tick.elapsed() >= Duration::from_millis(host_clock::TICK_INTERVAL_MS) {
-            let obs = Obs::from_shared(&state, config.period_frames);
+            let obs = host_clock::obs_from_shared(&state, config.period_frames);
             for action in host_clock.tick(obs, monotonic_millis() as u64) {
                 pitch.apply(action);
             }
@@ -1870,7 +1870,7 @@ mod tests {
     /// The host-clock ladder itself is tested exhaustively in `host_clock.rs`;
     /// these tests only assert the daemon folds the block in.
     fn test_host_clock_config() -> HostClockConfig {
-        HostClockConfig::from_env(|_| None, DEFAULT_PERIOD_FRAMES).unwrap()
+        host_clock::from_env(|_| None, DEFAULT_PERIOD_FRAMES).unwrap()
     }
 
     /// The disabled host-clock fragment, for status_json fold-in tests.
@@ -2275,7 +2275,7 @@ mod tests {
             preempt_state_path: PathBuf::from(DEFAULT_PREEMPT_STATE_PATH),
             preempt_host: DEFAULT_PREEMPT_HOST.to_string(),
             preempt_port: DEFAULT_PREEMPT_PORT,
-            host_clock: HostClockConfig::disabled(DEFAULT_PERIOD_FRAMES),
+            host_clock: host_clock::disabled_config(DEFAULT_PERIOD_FRAMES),
             audio_standby,
         }
     }
@@ -2321,8 +2321,8 @@ mod tests {
         // Even with the host-clock env set to `enabled`, standby resolves the
         // host clock to disabled (no fill source in standby). We can't call
         // Config::from_env (it reads the process env), so exercise the same
-        // decision the from_env branch makes: standby → HostClockConfig::disabled.
-        let hc = HostClockConfig::disabled(DEFAULT_PERIOD_FRAMES);
+        // decision the from_env branch makes: standby → host_clock::disabled_config.
+        let hc = host_clock::disabled_config(DEFAULT_PERIOD_FRAMES);
         assert!(!hc.enabled, "standby host clock must be disabled");
         // The disabled config renders the disabled fragment.
         let fragment = HostClock::new(hc).status_fragment();

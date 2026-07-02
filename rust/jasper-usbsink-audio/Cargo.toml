@@ -15,12 +15,13 @@ rust-version = "1.75"
 # the usbsink loopback lane.
 alsa = { version = "0.11", optional = true }
 anyhow = "1"
-# Pure, allocation-free, dependency-free clock-tracking DLL (a PipeWire spa_dll
-# port). Non-optional — it compiles under `--no-default-features` (no ALSA), so
-# the host-clock ladder/servo logic and its tests build on a macOS host. The
-# outer pitch loop composes `jasper_clock::Dll` directly, exactly as
-# jasper-outputd / jasper-resampler already do.
-jasper-clock = { path = "../jasper-clock" }
+# The shared host-slaved USB clock: ladder + probe + servo + write-gate +
+# (feature-gated) ALSA pitch actuator. The pure ladder/servo compiles under
+# `--no-default-features` (no ALSA); the real `AlsaPitchCtl` is behind the
+# crate's `alsa` feature, enabled here only under this crate's `alsa-runtime`
+# (see [features]). fan-in consumes the SAME crate for combo mode, so the two
+# daemons share byte-identical servo semantics by construction.
+jasper-host-clock = { path = "../jasper-host-clock" }
 # The ONE shared S32→S16 UAC2 narrowing (this crate also holds the windowed-sinc
 # resampler jasper-fanin uses for the direct lane). Pure, no ALSA — compiles
 # under `--no-default-features` on a macOS host. Consuming
@@ -37,7 +38,12 @@ signal-hook = { version = "0.4", optional = true }
 
 [features]
 default = ["alsa-runtime"]
-alsa-runtime = ["dep:alsa", "dep:sd-notify", "dep:signal-hook"]
+# `alsa-runtime` is the production build: the ALSA data plane plus the shared
+# host-clock crate's `alsa` feature (the real `AlsaPitchCtl`). Under
+# `--no-default-features` the pure host-clock ladder/servo still compiles on a
+# macOS host, and the `#[cfg(feature = "alsa-runtime")]`-gated `AlsaPitchCtl`
+# re-export in host_clock.rs is simply absent.
+alsa-runtime = ["dep:alsa", "dep:sd-notify", "dep:signal-hook", "jasper-host-clock/alsa"]
 
 [profile.release]
 opt-level = 3

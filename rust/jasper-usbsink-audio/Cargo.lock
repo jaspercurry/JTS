@@ -195,6 +195,15 @@ name = "jasper-clock"
 version = "0.1.0"
 
 [[package]]
+name = "jasper-host-clock"
+version = "0.1.0"
+dependencies = [
+ "alsa",
+ "jasper-clock",
+ "log",
+]
+
+[[package]]
 name = "jasper-resampler"
 version = "0.1.0"
 dependencies = [
@@ -208,7 +217,7 @@ dependencies = [
  "alsa",
  "anyhow",
  "env_logger",
- "jasper-clock",
+ "jasper-host-clock",
  "jasper-resampler",
  "libc",
  "log",
