@@ -189,6 +189,11 @@ def _unit_active(unit: str) -> bool:
     return rc == 0 and out == "active"
 
 
+def _unit_starting(unit: str) -> bool:
+    _rc, out = _systemctl("is-active", unit, timeout=5)
+    return out == "activating"
+
+
 def _local_sources_allowed() -> bool:
     """True when this install role may run local source resource groups."""
     try:
@@ -231,7 +236,11 @@ def _stop_unit(unit: str, *, reason: str) -> None:
 
 
 def _source_state(
-    *, enabled: bool, available: bool, unavailable_reason: str = "",
+    *,
+    enabled: bool,
+    available: bool,
+    unavailable_reason: str = "",
+    degraded_reason: str = "",
 ) -> dict[str, bool | str]:
     state: dict[str, bool | str] = {
         "enabled": bool(enabled and available),
@@ -239,6 +248,8 @@ def _source_state(
     }
     if not available and unavailable_reason:
         state["unavailableReason"] = unavailable_reason
+    if available and degraded_reason:
+        state["degradedReason"] = degraded_reason
     return state
 
 
@@ -315,6 +326,19 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
         )
     else:
         usbsink_reason = ""
+    usbsink_main_active = _unit_active(USBSINK_UNIT)
+    usbsink_init_active = _unit_active(USBSINK_INIT_UNIT)
+    usbsink_starting = _unit_starting(USBSINK_UNIT)
+    usbsink_effectively_on = (
+        usbsink_main_active or usbsink_starting or usbsink_init_active
+    )
+    usbsink_degraded_reason = ""
+    if usbsink_available and usbsink_init_active and not usbsink_main_active:
+        usbsink_degraded_reason = (
+            "USB Audio Input is advertised to hosts, but its audio bridge "
+            "is not active yet. Toggle it off to hide the USB device, or "
+            "check jasper-doctor if it stays here."
+        )
     bt_available_for_role = local_sources_allowed and bt_available
     if not local_sources_allowed:
         bt_unavailable_reason = SOURCE_UNAVAILABLE["bluetooth"]
@@ -342,9 +366,10 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
             "spotify_connect", SPOTIFY_CONNECT_UNIT,
         ),
         "usbsink": _source_state(
-            enabled=_unit_active(USBSINK_UNIT) if usbsink_available else False,
+            enabled=usbsink_effectively_on if usbsink_available else False,
             available=usbsink_available,
             unavailable_reason=usbsink_reason,
+            degraded_reason=usbsink_degraded_reason,
         ),
     }
 

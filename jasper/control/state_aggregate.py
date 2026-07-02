@@ -116,6 +116,151 @@ def _safe_audio_quality_state() -> dict[str, Any]:
         }
 
 
+def _fanin_input_status(
+    fanin_status: dict[str, Any] | None,
+    label: str,
+) -> dict[str, Any] | None:
+    if not isinstance(fanin_status, dict):
+        return None
+    inputs = fanin_status.get("inputs")
+    if not isinstance(inputs, list):
+        return None
+    for entry in inputs:
+        if isinstance(entry, dict) and entry.get("label") == label:
+            return entry
+    return None
+
+
+def _route_latency_artifact_state(plan: Any) -> dict[str, Any] | None:
+    if not getattr(plan.route_profile, "low_latency_claim", False):
+        return None
+    try:
+        from ..audio_validation import (
+            ROUTE_LATENCY_MIC_ID,
+            ROUTE_LATENCY_PROFILE,
+            ROUTE_LATENCY_STALE_AFTER,
+            artifact_directory,
+            assess_route_latency_artifact,
+            load_latest_artifact,
+        )
+
+        dac_id = None if plan.profile_id == "unknown" else plan.profile_id
+        result = load_latest_artifact(
+            artifact_directory(),
+            mic_id=ROUTE_LATENCY_MIC_ID,
+            dac_id=dac_id,
+            profile=ROUTE_LATENCY_PROFILE,
+            max_age=ROUTE_LATENCY_STALE_AFTER,
+        )
+        return assess_route_latency_artifact(
+            result,
+            route_config_hash=plan.route_config_hash,
+            expected_identity=plan.route_latency_identity(),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("route latency artifact state read failed")
+        return {"status": "fail", "reason": str(e)}
+
+
+def _audio_graph_state(
+    *,
+    usbsink_raw: dict[str, Any] | None,
+    fanin_status: dict[str, Any] | None,
+    outputd_status: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    try:
+        from ..audio_runtime_plan import build_audio_runtime_plan_from_system
+
+        plan = build_audio_runtime_plan_from_system()
+    except Exception as e:  # noqa: BLE001
+        logger.exception("audio graph route plan read failed")
+        return {"route": {"status": "unavailable", "error": str(e)}}
+
+    usbsink_counters = None
+    usbsink_ring = None
+    if isinstance(usbsink_raw, dict):
+        counters = usbsink_raw.get("counters")
+        ring = usbsink_raw.get("ring")
+        usbsink_counters = counters if isinstance(counters, dict) else None
+        usbsink_ring = ring if isinstance(ring, dict) else None
+    fanin_usbsink = _fanin_input_status(fanin_status, "usbsink")
+    outputd_dac = (
+        outputd_status.get("dac")
+        if isinstance(outputd_status, dict)
+        and isinstance(outputd_status.get("dac"), dict)
+        else None
+    )
+    outputd_aec_clock = (
+        outputd_status.get("aec_clock")
+        if isinstance(outputd_status, dict)
+        and isinstance(outputd_status.get("aec_clock"), dict)
+        else None
+    )
+    outputd_latency = (
+        outputd_aec_clock.get("latency")
+        if isinstance(outputd_aec_clock, dict)
+        and isinstance(outputd_aec_clock.get("latency"), dict)
+        else None
+    )
+    artifact = _route_latency_artifact_state(plan)
+    route_status = "unclaimed"
+    if plan.route_profile.low_latency_claim:
+        route_status = (
+            str(artifact.get("status"))
+            if isinstance(artifact, dict) and artifact.get("status")
+            else "fail"
+        )
+    return {
+        "route": {
+            "id": plan.route_profile.route_id,
+            "source_id": plan.route_profile.source_id,
+            "claim_status": route_status,
+            "low_latency_claim": plan.route_profile.low_latency_claim,
+            "route_config_hash": plan.route_config_hash,
+            "p95_budget_ms": plan.route_profile.p95_budget_ms,
+            "p99_budget_ms": plan.route_profile.p99_budget_ms,
+            "contract": plan.route_profile.to_dict(),
+        },
+        "artifact": artifact,
+        "rust_bridge": {
+            "implementation": (
+                usbsink_raw.get("implementation")
+                if isinstance(usbsink_raw, dict)
+                else None
+            ),
+            "ring": usbsink_ring,
+            "counters": usbsink_counters,
+            "period_frames": (
+                usbsink_raw.get("period_frames")
+                if isinstance(usbsink_raw, dict)
+                else None
+            ),
+        },
+        "fanin": {
+            "usbsink_input": fanin_usbsink,
+            "resampler": (
+                fanin_usbsink.get("resampler")
+                if isinstance(fanin_usbsink, dict)
+                else None
+            ),
+        },
+        "outputd": {
+            "dac_delay_ms": (
+                outputd_dac.get("snd_pcm_delay_ms")
+                if isinstance(outputd_dac, dict)
+                else None
+            ),
+            "dac_delay_frames": (
+                outputd_dac.get("snd_pcm_delay_frames")
+                if isinstance(outputd_dac, dict)
+                else None
+            ),
+            "final_reference_health": outputd_aec_clock,
+            "route_latency_components": outputd_latency,
+        },
+    }
+
+
 def _conversation_history_state() -> dict[str, Any] | None:
     """Read /state.chat fresh from the conversation-history SSOT + store."""
     from datetime import datetime, timezone
@@ -650,6 +795,7 @@ async def _get_state(
     # (no state file) so consumers can distinguish "off" from
     # "on but idle".
     usbsink_state: dict | None = None
+    usbsink_raw: dict[str, Any] | None = None
     try:
         with open(
             os.environ.get(
@@ -658,6 +804,8 @@ async def _get_state(
             ),
         ) as f:
             usbsink_blob = json.load(f)
+        if isinstance(usbsink_blob, dict):
+            usbsink_raw = usbsink_blob
         usbsink_state = {
             "playing": bool(usbsink_blob.get("playing", False)),
             "preempted": bool(usbsink_blob.get("preempted", False)),
@@ -770,6 +918,12 @@ async def _get_state(
         logger.exception("output hardware state read failed")
         output_hardware_state = None
 
+    audio_graph_state = _audio_graph_state(
+        usbsink_raw=usbsink_raw,
+        fanin_status=fanin_st,
+        outputd_status=outputd_st,
+    )
+
     # Tool catalog summary. Fresh read of /run/jasper/tools.json (written by
     # jasper-voice) + the wizard-owned disabled-set — never os.environ, since
     # jasper-control isn't restarted on a /tools/ toggle. Light view module
@@ -880,6 +1034,7 @@ async def _get_state(
             "sound": sound_profile,
             "output_hardware": output_hardware_state,
         },
+        "audio_graph": audio_graph_state,
         "active_speaker_setup": active_speaker_setup,
         "renderers": {
             "spotify": spotify,

@@ -167,6 +167,11 @@ pub struct LaneResampler {
     /// Frames left in the startup de-click ramp. Set to one render period on
     /// every lock, then counted down to zero while rendering real audio.
     startup_ramp_frames_remaining: usize,
+    /// Consecutive real render periods since the most recent lock. Early
+    /// underfills during acquisition retain buffered input so the lane can keep
+    /// priming; after this reaches `max_prime_periods`, underfill is treated as
+    /// a real discontinuity and clears stale buffered audio.
+    real_periods_since_lock: u32,
     // Lifetime counters mirrored into observability atomics on update.
     input_frames: Arc<AtomicU64>,
     output_frames: Arc<AtomicU64>,
@@ -191,9 +196,9 @@ impl LaneResampler {
     /// DLL setpoint. The earlier c57 warm-up path seated this deep but then let
     /// the DLL drain the cushion away; on hardware, that over-consumed the
     /// bursty USB feed during acquisition and caused lock/unlock cycling. The
-    /// current DEFAULT-OFF build keeps a conservative four-period held cushion;
-    /// hardware soak/cold-start validation must pass before it becomes
-    /// production-default behavior.
+    /// current `usb_low_latency_48k` route keeps a conservative six-period
+    /// held cushion (`512 + 1536 = 2048` frames total); hardware soak/cold-start
+    /// validation must pass before any lower route default ships.
     ///
     /// `ring_frames` is the input buffer depth: it MUST exceed
     /// `target_fill_frames` plus the warm-up cushion plus one render period plus
@@ -261,6 +266,7 @@ impl LaneResampler {
             prime_periods: 0,
             max_prime_periods,
             startup_ramp_frames_remaining: 0,
+            real_periods_since_lock: 0,
             input_frames: Arc::new(AtomicU64::new(0)),
             output_frames: Arc::new(AtomicU64::new(0)),
             silence_frames: Arc::new(AtomicU64::new(0)),
@@ -396,6 +402,7 @@ impl LaneResampler {
         self.ring.drop_before(keep_from);
         self.output_frames
             .fetch_add(self.period_frames as u64, Ordering::Relaxed);
+        self.real_periods_since_lock = self.real_periods_since_lock.saturating_add(1);
         self.period_frames
     }
 
@@ -410,6 +417,7 @@ impl LaneResampler {
         self.locked_state.store(false, Ordering::Relaxed);
         self.prime_periods = 0;
         self.startup_ramp_frames_remaining = 0;
+        self.real_periods_since_lock = 0;
         self.publish_ratio();
     }
 
@@ -442,8 +450,12 @@ impl LaneResampler {
         let seat = if fill >= deep_prefill {
             // Enough for the full held warm-up cushion.
             self.hold_fill_frames()
-        } else if prime_expired && fill > self.minimum_safe_fill_frames() + RADIUS_FRAMES as usize {
-            // Slow producer: seat at whatever we have, headroom for the kernel.
+        } else if prime_expired && fill >= self.fallthrough_prefill_frames() {
+            // Slow producer: seat at whatever we have, but only after there is
+            // one render period of runway beyond the hard interpolation floor.
+            // Hardware USB acquisition can arrive in short bursts; seating at
+            // the bare minimum caused lock→underfill→relock chatter before the
+            // ring built enough depth to run continuously.
             fill - (RADIUS_FRAMES as usize + 1)
         } else {
             // Keep priming.
@@ -456,6 +468,7 @@ impl LaneResampler {
         self.locked_state.store(true, Ordering::Relaxed);
         self.prime_periods = 0;
         self.startup_ramp_frames_remaining = self.period_frames;
+        self.real_periods_since_lock = 0;
         self.controller.reset();
         self.lock_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -464,12 +477,20 @@ impl LaneResampler {
         self.locked = false;
         self.locked_state.store(false, Ordering::Relaxed);
         self.unlock_count.fetch_add(1, Ordering::Relaxed);
-        self.ring.clear();
+        let acquisition_underfill = self.real_periods_since_lock < self.max_prime_periods;
+        if !acquisition_underfill {
+            self.ring.clear();
+        }
         self.controller.reset();
         self.next_input_frame = 0.0;
         self.prime_periods = 0;
         self.startup_ramp_frames_remaining = 0;
-        self.publish_fill(0);
+        self.real_periods_since_lock = 0;
+        self.publish_fill(if acquisition_underfill {
+            self.ring.fill_frames() as u64
+        } else {
+            0
+        });
         self.publish_ratio();
     }
 
@@ -490,6 +511,18 @@ impl LaneResampler {
     /// target (`target + warm-up cushion`) with kernel headroom.
     fn startup_prefill_frames(&self) -> usize {
         self.hold_fill_frames() + RADIUS_FRAMES as usize + 1
+    }
+
+    /// Minimum buffered frames for the bounded-prime fallback. This is lower
+    /// than the full held-cushion prefill, but high enough that the first
+    /// fallback lock has one full render period of runway if the next USB burst
+    /// is late.
+    fn fallthrough_prefill_frames(&self) -> usize {
+        let interpolation_runway =
+            self.minimum_safe_fill_frames() + self.period_frames + RADIUS_FRAMES as usize + 1;
+        let usb_burst_runway =
+            self.target_fill_frames + (2 * self.period_frames) + RADIUS_FRAMES as usize + 1;
+        interpolation_runway.max(usb_burst_runway)
     }
 
     fn hold_fill_frames(&self) -> usize {
@@ -516,9 +549,9 @@ mod tests {
     const RATE: u32 = 48_000;
     const PERIOD: u32 = 256;
     const TARGET: usize = 512;
-    /// Warm-up cushion used in unit tests. Runtime defaults to a deeper
-    /// four-period held cushion; one period keeps the test fixtures compact
-    /// while preserving the same held-target behavior.
+    /// Warm-up cushion used in unit tests. The `usb_low_latency_48k` route
+    /// defaults to a deeper six-period held cushion; one period keeps the test
+    /// fixtures compact while preserving the same held-target behavior.
     const CUSHION: usize = PERIOD as usize;
     const MAX_PPM: f64 = 500.0;
     const RING: usize = 8192;
@@ -728,6 +761,37 @@ mod tests {
     }
 
     #[test]
+    fn acquisition_underfill_retains_buffered_input_before_reprime() {
+        let mut r = build();
+        let obs = r.observability();
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        r.push_input(&tone(deep_prefill() + 64));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize);
+
+        // Starve immediately after the first real period. This is still the
+        // acquisition window, so an underfill must NOT clear the buffered input:
+        // keeping it lets real hardware burst fill continue priming instead of
+        // throwing away progress and lock/unlock cycling forever.
+        for _ in 0..20 {
+            if !r.locked {
+                break;
+            }
+            r.render_period(&mut out);
+        }
+
+        assert!(!r.locked, "starved acquisition must unlock");
+        assert_eq!(r.unlock_count.load(Ordering::Relaxed), 1);
+        assert!(
+            r.ring.fill_frames() > 0,
+            "early acquisition underfill must retain buffered input"
+        );
+        assert!(
+            obs.fill_frames.load(Ordering::Relaxed) > 0,
+            "published fill keeps showing retained acquisition input"
+        );
+    }
+
+    #[test]
     fn underfill_unlock_drops_stale_tail_before_reprime() {
         let mut r = build();
         let obs = r.observability();
@@ -735,9 +799,15 @@ mod tests {
         r.push_input(&tone(deep_prefill() + 64));
         assert_eq!(r.render_period(&mut out), PERIOD as usize);
 
-        // Stop feeding input. The lane eventually underfills; that is a hard
+        // First prove the lane was truly stable for the same duration used as
+        // the acquisition grace window. After that, underfill is a hard
         // discontinuity boundary, so stale pre-pause samples must not survive
         // into the next acquisition.
+        let block = tone(PERIOD as usize);
+        for _ in 0..r.max_prime_periods {
+            r.push_input(&block);
+            assert_eq!(r.render_period(&mut out), PERIOD as usize);
+        }
         for _ in 0..20 {
             if !r.locked {
                 break;
@@ -943,18 +1013,19 @@ mod tests {
     /// the bounded prime falls through and locks at whatever safe depth exists.
     #[test]
     fn slow_producer_falls_through_and_locks_within_the_prime_bound() {
-        // A tiny rate so max_prime_periods is small and the test is fast: at
+        // Use a runtime-like cushion so the fallback threshold sits below the
+        // deep prefill. The compact test cushion locks via the deep path first,
+        // which is fine for ordinary tests but would not exercise fallback.
+        // A tiny rate keeps max_prime_periods small and the test fast: at
         // 4800 Hz / 256 period, max_prime_periods = 18.
-        let mut r = LaneResampler::new(2, PERIOD, 4_800, TARGET, CUSHION, MAX_PPM, RING).unwrap();
+        let mut r = LaneResampler::new(2, PERIOD, 4_800, TARGET, 1536, MAX_PPM, RING).unwrap();
         let max_prime = r.max_prime_periods;
         assert!(max_prime >= 1);
         let mut out = vec![0i16; PERIOD as usize * 2];
 
-        // Feed enough to clear minimum_safe_fill (so a fall-through CAN seat) but
-        // never enough for the full cushion: ~ (TARGET) frames, just below the
-        // deep prefill.
-        let min_safe = r.minimum_safe_fill_frames();
-        let buffered = min_safe + RADIUS_FRAMES as usize + 8; // safely above the floor
+        // Feed enough for the bounded-prime fallback, but never enough for the
+        // full cushion: below the deep prefill, above the USB-burst runway.
+        let buffered = r.fallthrough_prefill_frames();
         assert!(
             buffered < r.startup_prefill_frames(),
             "below the deep prefill"

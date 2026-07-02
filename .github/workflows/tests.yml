@@ -238,6 +238,7 @@ jobs:
             rust/jasper-tts-protocol \
             rust/jasper-fanin \
             rust/jasper-outputd \
+            rust/jasper-usbsink-audio \
             rust/jasper-dual-dac-lab
           do
             (cd "$crate" && cargo +"$RUST_TOOLCHAIN" fmt --all -- --check)
@@ -257,6 +258,7 @@ jobs:
             rust/jasper-resampler
             rust/jasper-fanin
             rust/jasper-outputd
+            rust/jasper-usbsink-audio
             rust/jasper-dual-dac-lab
             rust/jasper-tts-protocol
 
@@ -285,6 +287,11 @@ jobs:
       - name: jasper-outputd — clippy
         if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-outputd
+        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
+
+      - name: jasper-usbsink-audio — clippy
+        if: steps.rust-needed.outputs.run == 'true'
+        working-directory: rust/jasper-usbsink-audio
         run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
 
       - name: jasper-dual-dac-lab — clippy
@@ -323,6 +330,14 @@ jobs:
       - name: jasper-outputd — build + test (release, locked; mirrors install.sh)
         if: steps.rust-needed.outputs.run == 'true'
         working-directory: rust/jasper-outputd
+        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
+
+      - name: jasper-usbsink-audio — build + test (release, locked; mirrors install.sh)
+        if: steps.rust-needed.outputs.run == 'true'
+        # Production USB low-latency data plane. This default-feature test builds
+        # the ALSA-backed binary on Linux with libasound2-dev, unlike local macOS
+        # no-default-feature unit tests.
+        working-directory: rust/jasper-usbsink-audio
         run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
       - name: jasper-dual-dac-lab — build + test (release, locked)

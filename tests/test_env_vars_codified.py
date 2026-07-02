@@ -145,12 +145,10 @@ _UNCODIFIED = {
     #    members of the family (JASPER_USBSINK_PREEMPT,
     #    _CAPTURE_DEVICE, _MIXER_CARD) are documented in .env.example
     #    and are not in this list.
-    "JASPER_USBSINK_CHANNELS",
     "JASPER_USBSINK_CONTROL_URL",
     "JASPER_USBSINK_LOG_LEVEL",
     "JASPER_USBSINK_PREEMPT_HOST",
     "JASPER_USBSINK_PREEMPT_PORT",
-    "JASPER_USBSINK_SAMPLE_RATE",
     # -- Internal timing / safety tunables with code defaults, below
     #    the operator surface. Promote one to .env.example (with the
     #    required prose comment) if it ever becomes household-relevant.

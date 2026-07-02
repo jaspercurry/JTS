@@ -433,12 +433,12 @@ def test_latency_floor_rejects_nonpositive_values() -> None:
 
 def test_apple_dongle_declares_the_measured_floor() -> None:
     # The codified floor must match the measured Apple-dongle floor. The exact
-    # 4x Camilla target (1024) is too tight under live AirPlay + voice/AEC load.
+    # 4x Camilla target (1024) and outputd 64/128 were too tight on jts.local.
     assert APPLE_USB_C_DONGLE.latency_floor == LatencyFloor(
         camilla_chunksize=256,
         camilla_target_level=1536,
-        outputd_period_frames=256,
-        outputd_dac_buffer_frames=512,
+        outputd_period_frames=128,
+        outputd_dac_buffer_frames=256,
     )
 
 
@@ -451,7 +451,7 @@ def test_latency_floor_for_round_trips_for_bash() -> None:
         floor.camilla_target_level,
         floor.outputd_period_frames,
         floor.outputd_dac_buffer_frames,
-    ) == (256, 1536, 256, 512)
+    ) == (256, 1536, 128, 256)
 
 
 def test_latency_floor_for_is_none_for_undeclared_and_unknown() -> None:

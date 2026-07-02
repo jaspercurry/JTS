@@ -1,0 +1,24 @@
+[Unit]
+Description=Jasper USB sink host-volume observer
+# Non-real-time helper for jasper-usbsink.service. The Rust bridge owns the
+# audio data plane and preempt endpoint; this Python process only polls the
+# UAC2 gadget mixer and reports host slider changes to jasper-control.
+After=jasper-usbsink-init.service jasper-control.service
+Requires=jasper-usbsink-init.service
+PartOf=jasper-usbsink.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/usbsink.env
+ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
+ExecStart=/opt/jasper/.venv/bin/jasper-usbsink-volume
+Restart=on-failure
+RestartSec=2s
+Nice=5
+OOMScoreAdjust=100
+MemoryHigh=32M
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

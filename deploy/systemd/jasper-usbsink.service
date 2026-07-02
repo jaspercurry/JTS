@@ -16,7 +16,7 @@ Description=Jasper USB sink — audio bridge from UAC2 gadget into the music cha
 # See docs/HANDOFF-usbsink.md for the full design.
 After=jasper-usbsink-init.service jasper-fanin.service jasper-camilla.service sound.target
 Requires=jasper-usbsink-init.service
-Wants=jasper-fanin.service
+Wants=jasper-fanin.service jasper-usbsink-volume.service
 # PartOf= propagates a stop/restart of the init service to the daemon.
 # If init is stopped (toggle off in /sources/), this stops too. If init
 # crashes and systemd restarts it, the daemon restarts in sync.
@@ -38,22 +38,27 @@ PartOf=jasper-usbsink-init.service
 Type=notify
 WatchdogSec=15s
 TimeoutStopSec=5s
+# Packaged defaults first; operator/generated env files below override them
+# because systemd's later assignments win.
+Environment="JASPER_USBSINK_CAPTURE_DEVICE=hw:UAC2Gadget"
+Environment="JASPER_USBSINK_PLAYBACK_DEVICE=usbsink_substream"
+Environment="JASPER_USBSINK_SAMPLE_RATE=48000"
+Environment="JASPER_USBSINK_CHANNELS=2"
 # Pull operator-supplied tunables (capture/playback device overrides,
 # log level) from the same env file the rest of the stack reads.
 # Leading `-` makes systemd skip silently if the file isn't there.
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/usbsink.env
-Environment="JASPER_USBSINK_PLAYBACK_DEVICE=usbsink_substream"
 ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
-ExecStart=/opt/jasper/.venv/bin/jasper-usbsink
+ExecStart=/opt/jasper/bin/jasper-usbsink-audio
 Restart=on-failure
 RestartSec=2s
 Nice=-10
 # Join the zram-shielded audio tier. usbsink is a real-time music source whose
-# capture/playback run on fixed-deadline (~10 ms) PortAudio callbacks; off this
-# slice its pages can swap to zram, and zram-decompression jitter makes a callback
-# miss its deadline in bursts -> snd-aloop xruns -> the bounded queue overflows
-# (dropped_full). jts-audio.slice carries MemorySwapMax=0 (the swap shield) — a
+# capture/playback loop runs in Rust on fixed periods; off this slice its pages
+# can swap to zram, and zram-decompression jitter can make a period miss its
+# deadline in bursts -> snd-aloop xruns -> ring drops. jts-audio.slice carries
+# MemorySwapMax=0 (the swap shield) — a
 # MEMORY policy, not a CPU cap, so it respects the no-CPU-caps rule. usbsink was the
 # only music-path daemon left OUTSIDE this slice (diagnosed 2026-06-28 as the dominant
 # cause of the bursty USB-drop tail). OOMScoreAdjust sits below the output chain

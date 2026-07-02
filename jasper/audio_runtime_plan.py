@@ -16,6 +16,7 @@ explain the current intent.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 from dataclasses import dataclass
@@ -64,7 +65,10 @@ DEFAULT_FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 DEFAULT_GROUPING_ENV_PATH = "/var/lib/jasper/grouping.env"
 
 DEFAULT_OUTPUTD_PERIOD_FRAMES = 1024
+DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES = 4096
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES = 3072
+OUTPUTD_CONTENT_BRIDGE_KEY = "JASPER_OUTPUTD_CONTENT_BRIDGE"
+OUTPUTD_CONTENT_BRIDGE_DIRECT = "direct"
 MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES = 512
 FANIN_INPUT_BUFFER_KEY = "JASPER_FANIN_INPUT_BUFFER_FRAMES"
 FANIN_OUTPUT_BUFFER_KEY = "JASPER_FANIN_OUTPUT_BUFFER_FRAMES"
@@ -72,14 +76,49 @@ FANIN_ADAPTIVE_SHRUNK_FRAMES_ENV = "JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES"
 DEFAULT_FANIN_INPUT_BUFFER_FRAMES = 4096
 DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES = 1024
 MIN_FANIN_OUTPUT_BUFFER_FRAMES = 1024
+FANIN_INPUT_RESAMPLER_KEY = "JASPER_FANIN_INPUT_RESAMPLER"
+FANIN_INPUT_RESAMPLER_LANE_KEY = "JASPER_FANIN_INPUT_RESAMPLER_LANE"
+FANIN_INPUT_RESAMPLER_TARGET_KEY = "JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES"
+FANIN_INPUT_RESAMPLER_MAX_ADJUST_KEY = "JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM"
+FANIN_INPUT_RESAMPLER_CUSHION_KEY = (
+    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES"
+)
+FANIN_INPUT_RESAMPLER_RING_KEY = "JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES"
+DEFAULT_USB_LOW_LATENCY_RESAMPLER_TARGET_FRAMES = 512
+DEFAULT_USB_LOW_LATENCY_RESAMPLER_MAX_ADJUST_PPM = 500
+DEFAULT_USB_LOW_LATENCY_RESAMPLER_CUSHION_FRAMES = 1536
+DEFAULT_USB_LOW_LATENCY_RESAMPLER_RING_FRAMES = 4096
 USBSINK_OUTPUT_MODE_KEY = "JASPER_USBSINK_OUTPUT_MODE"
 USBSINK_OUTPUT_MODE_ALOOP = "aloop"
 USBSINK_OUTPUT_MODE_FIFO = "fifo"
+LEGACY_USBSINK_AUDIO_IMPL_KEY = "JASPER_USBSINK_AUDIO_IMPL"
+USBSINK_BLOCK_FRAMES_KEY = "JASPER_USBSINK_BLOCK_FRAMES"
+USBSINK_RING_PERIODS_KEY = "JASPER_USBSINK_RING_PERIODS"
+USBSINK_LATENCY_KEY = "JASPER_USBSINK_LATENCY"
+DEFAULT_USB_LOW_LATENCY_BLOCK_FRAMES = 256
+DEFAULT_USB_LOW_LATENCY_RING_PERIODS = 3
+DEFAULT_USB_LOW_LATENCY_LATENCY_HINT = "low"
+DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES = 1536
+AUDIO_ROUTE_PROFILE_KEY = "JASPER_AUDIO_ROUTE_PROFILE"
+ROUTE_CORRECTED_48K = "corrected_48k"
+ROUTE_USB_LOW_LATENCY_48K = "usb_low_latency_48k"
+ROUTE_BITPERFECT_DECLARED = "bitperfect_passthrough_declared"
+ROUTE_LATENCY_PROFILE = "route_latency"
+USB_LOW_LATENCY_SOURCE_ID = "usbsink"
+USB_LOW_LATENCY_P95_BUDGET_MS = 40.0
+USB_LOW_LATENCY_P99_BUDGET_MS = 60.0
+ROUTE_CONFIG_HASH_SCHEMA_VERSION = 3
+UAC2_LOW_LATENCY_EXPECTED_ATTRS = {
+    "c_sync": "async",
+    "req_number": "2",
+    "c_hs_bint": "1",
+}
 
 OUTPUTD_LATENCY_KEYS = (
     "JASPER_CAMILLA_CHUNKSIZE",
     "JASPER_CAMILLA_TARGET_LEVEL",
     "JASPER_OUTPUTD_PERIOD_FRAMES",
+    "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES",
     "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
 )
 AUDIO_RUNTIME_OVERRIDE_KEYS = frozenset(
@@ -88,6 +127,13 @@ AUDIO_RUNTIME_OVERRIDE_KEYS = frozenset(
         FANIN_INPUT_BUFFER_KEY,
         FANIN_OUTPUT_BUFFER_KEY,
     )
+)
+BASE_ENV_PROCESS_FALLBACK_KEYS = frozenset(
+    AUDIO_RUNTIME_OVERRIDE_KEYS
+    | {
+        AUDIO_ROUTE_PROFILE_KEY,
+        COUPLING_ENV_VAR,
+    }
 )
 
 RouteMode = Literal[
@@ -121,6 +167,11 @@ _VALID_COUPLINGS = {COUPLING_LOOPBACK, COUPLING_TRANSPORT_PIPE}
 _VALID_USBSINK_OUTPUT_MODES = {
     USBSINK_OUTPUT_MODE_ALOOP,
     USBSINK_OUTPUT_MODE_FIFO,
+}
+_VALID_AUDIO_ROUTE_PROFILES = {
+    ROUTE_CORRECTED_48K,
+    ROUTE_USB_LOW_LATENCY_48K,
+    ROUTE_BITPERFECT_DECLARED,
 }
 
 _ACTIVE_LEADER_TRANSPORT_PIPE_REASON = "fanin_transport_pipe_coupling_unsupported"
@@ -268,6 +319,56 @@ class TransportTopology:
 
 
 @dataclass(frozen=True)
+class AudioRouteProfile:
+    """Resolved processing-route contract for latency claims."""
+
+    route_id: str
+    source_id: str
+    fixed_sample_rate: int
+    low_latency_claim: bool
+    rust_usb_audio_required: bool
+    fanin_input_resampler_required: bool
+    camilla_required: bool
+    outputd_final_reference_required: bool
+    bitperfect: bool = False
+    active: bool = True
+    aec_reference_mode: str = "outputd_final_electrical"
+    p95_budget_ms: float | None = None
+    p99_budget_ms: float | None = None
+    evidence_profile: str | None = None
+    blocking_reason: str = ""
+    warnings: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "route_id": self.route_id,
+            "source_id": self.source_id,
+            "fixed_sample_rate": self.fixed_sample_rate,
+            "low_latency_claim": self.low_latency_claim,
+            "rust_usb_audio_required": self.rust_usb_audio_required,
+            "fanin_input_resampler_required": self.fanin_input_resampler_required,
+            "camilla_required": self.camilla_required,
+            "outputd_final_reference_required": (
+                self.outputd_final_reference_required
+            ),
+            "bitperfect": self.bitperfect,
+            "active": self.active,
+            "aec_reference_mode": self.aec_reference_mode,
+        }
+        if self.p95_budget_ms is not None:
+            out["p95_budget_ms"] = self.p95_budget_ms
+        if self.p99_budget_ms is not None:
+            out["p99_budget_ms"] = self.p99_budget_ms
+        if self.evidence_profile:
+            out["evidence_profile"] = self.evidence_profile
+        if self.blocking_reason:
+            out["blocking_reason"] = self.blocking_reason
+        if self.warnings:
+            out["warnings"] = list(self.warnings)
+        return out
+
+
+@dataclass(frozen=True)
 class CorrectionLatencyEligibility:
     """Whether the loaded/generated correction shape may claim low latency."""
 
@@ -309,7 +410,11 @@ class AudioRuntimePlan:
     settings: tuple[RuntimeSetting, ...]
     coupling_support: CouplingSupport
     transport_topology: TransportTopology
+    route_profile: AudioRouteProfile
+    route_config_hash: str
+    camilla_config_hash: str
     correction_latency_eligibility: CorrectionLatencyEligibility
+    route_policy_errors: tuple[str, ...] = ()
     plan_warnings: tuple[str, ...] = ()
 
     def setting(self, key: str) -> RuntimeSetting:
@@ -343,6 +448,17 @@ class AudioRuntimePlan:
                 "transport_pipe low-latency mode is blocked by correction "
                 f"latency: {self.correction_latency_eligibility.blocking_reason}"
             )
+        if (
+            self.route_profile.low_latency_claim
+            and not self.correction_latency_eligibility.eligible
+        ):
+            out.append(
+                "low-latency route is blocked by correction latency: "
+                f"{self.correction_latency_eligibility.blocking_reason}"
+            )
+        if self.route_profile.blocking_reason:
+            out.append(self.route_profile.blocking_reason)
+        out.extend(self.route_policy_errors)
         return tuple(out)
 
     def to_dict(self) -> dict[str, Any]:
@@ -353,12 +469,28 @@ class AudioRuntimePlan:
             "settings": [setting.to_dict() for setting in self.settings],
             "coupling_support": self.coupling_support.to_dict(),
             "transport_topology": self.transport_topology.to_dict(),
+            "route_profile": self.route_profile.to_dict(),
+            "route_config_hash": self.route_config_hash,
+            "camilla_config_hash": self.camilla_config_hash,
+            "route_latency_identity": self.route_latency_identity(),
             "correction_latency_eligibility": (
                 self.correction_latency_eligibility.to_dict()
             ),
+            "route_policy_errors": list(self.route_policy_errors),
             "warnings": list(self.warnings),
             "errors": list(self.errors),
         }
+
+    def route_latency_identity(self) -> dict[str, Any]:
+        """Expected identity fields for a route-latency validation artifact."""
+
+        return route_latency_identity_for_plan(
+            route=self.route_profile,
+            settings=self.settings,
+            route_config_hash=self.route_config_hash,
+            camilla_config_hash=self.camilla_config_hash,
+            dac_profile_id=None if self.profile_id == "unknown" else self.profile_id,
+        )
 
 
 def coupling_supported_for_route(coupling: str, route_mode: RouteMode) -> CouplingSupport:
@@ -474,6 +606,309 @@ def _enabled_literal(raw: str | None) -> bool:
     return (raw or "").strip().lower() == "enabled"
 
 
+def resolve_audio_route_profile(
+    env: Mapping[str, str] | None = None,
+) -> AudioRouteProfile:
+    """Resolve the audio processing route.
+
+    Unknown route ids fail safe to ``corrected_48k`` and carry a warning. The
+    route contract is intentionally separate from source selection: it says what
+    a route is allowed to claim, while mux/fan-in still decide what source is
+    currently audible.
+    """
+
+    values = dict(os.environ if env is None else env)
+    raw = str(values.get(AUDIO_ROUTE_PROFILE_KEY, "")).strip().lower()
+    route_id = raw or ROUTE_CORRECTED_48K
+    warnings: tuple[str, ...] = ()
+    if route_id not in _VALID_AUDIO_ROUTE_PROFILES:
+        warnings = (
+            f"invalid {AUDIO_ROUTE_PROFILE_KEY}={raw!r}; using {ROUTE_CORRECTED_48K}",
+        )
+        route_id = ROUTE_CORRECTED_48K
+
+    if route_id == ROUTE_USB_LOW_LATENCY_48K:
+        return AudioRouteProfile(
+            route_id=route_id,
+            source_id=USB_LOW_LATENCY_SOURCE_ID,
+            fixed_sample_rate=DEFAULT_SAMPLE_RATE,
+            low_latency_claim=True,
+            rust_usb_audio_required=True,
+            fanin_input_resampler_required=True,
+            camilla_required=True,
+            outputd_final_reference_required=True,
+            p95_budget_ms=USB_LOW_LATENCY_P95_BUDGET_MS,
+            p99_budget_ms=USB_LOW_LATENCY_P99_BUDGET_MS,
+            evidence_profile=ROUTE_LATENCY_PROFILE,
+            warnings=warnings,
+        )
+
+    if route_id == ROUTE_BITPERFECT_DECLARED:
+        return AudioRouteProfile(
+            route_id=route_id,
+            source_id=USB_LOW_LATENCY_SOURCE_ID,
+            fixed_sample_rate=0,
+            low_latency_claim=False,
+            rust_usb_audio_required=True,
+            fanin_input_resampler_required=False,
+            camilla_required=False,
+            outputd_final_reference_required=True,
+            bitperfect=True,
+            active=False,
+            aec_reference_mode="degraded_until_final_reference_proven",
+            blocking_reason=(
+                "bit-perfect passthrough is declared but inactive; it must "
+                "prove passive/full-range safety and final-reference truth "
+                "before activation"
+            ),
+            warnings=warnings,
+        )
+
+    return AudioRouteProfile(
+        route_id=ROUTE_CORRECTED_48K,
+        source_id="all",
+        fixed_sample_rate=DEFAULT_SAMPLE_RATE,
+        low_latency_claim=False,
+        rust_usb_audio_required=False,
+        fanin_input_resampler_required=False,
+        camilla_required=True,
+        outputd_final_reference_required=True,
+        warnings=warnings,
+    )
+
+
+def route_owned_env_actions(
+    route: AudioRouteProfile | str,
+) -> tuple[RuntimeEnvAction, ...]:
+    """Return generated-env actions implied by an audio route profile."""
+
+    profile = (
+        resolve_audio_route_profile({AUDIO_ROUTE_PROFILE_KEY: route})
+        if isinstance(route, str)
+        else route
+    )
+    if profile.route_id != ROUTE_USB_LOW_LATENCY_48K:
+        return (
+            RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_KEY),
+            RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_LANE_KEY),
+            RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_TARGET_KEY),
+            RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_MAX_ADJUST_KEY),
+            RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_CUSHION_KEY),
+            RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_RING_KEY),
+            RuntimeEnvAction("unset", LEGACY_USBSINK_AUDIO_IMPL_KEY),
+            RuntimeEnvAction("unset", USBSINK_BLOCK_FRAMES_KEY),
+            RuntimeEnvAction("unset", USBSINK_RING_PERIODS_KEY),
+            RuntimeEnvAction("unset", USBSINK_LATENCY_KEY),
+            RuntimeEnvAction("set", USBSINK_OUTPUT_MODE_KEY, USBSINK_OUTPUT_MODE_ALOOP),
+        )
+
+    return (
+        RuntimeEnvAction("set", FANIN_INPUT_RESAMPLER_KEY, "enabled"),
+        RuntimeEnvAction("set", FANIN_INPUT_RESAMPLER_LANE_KEY, USB_LOW_LATENCY_SOURCE_ID),
+        RuntimeEnvAction(
+            "set",
+            FANIN_INPUT_RESAMPLER_TARGET_KEY,
+            str(DEFAULT_USB_LOW_LATENCY_RESAMPLER_TARGET_FRAMES),
+        ),
+        RuntimeEnvAction(
+            "set",
+            FANIN_INPUT_RESAMPLER_MAX_ADJUST_KEY,
+            str(DEFAULT_USB_LOW_LATENCY_RESAMPLER_MAX_ADJUST_PPM),
+        ),
+        RuntimeEnvAction(
+            "set",
+            FANIN_INPUT_RESAMPLER_CUSHION_KEY,
+            str(DEFAULT_USB_LOW_LATENCY_RESAMPLER_CUSHION_FRAMES),
+        ),
+        RuntimeEnvAction(
+            "set",
+            FANIN_INPUT_RESAMPLER_RING_KEY,
+            str(DEFAULT_USB_LOW_LATENCY_RESAMPLER_RING_FRAMES),
+        ),
+        RuntimeEnvAction("unset", LEGACY_USBSINK_AUDIO_IMPL_KEY),
+        RuntimeEnvAction(
+            "set",
+            USBSINK_BLOCK_FRAMES_KEY,
+            str(DEFAULT_USB_LOW_LATENCY_BLOCK_FRAMES),
+        ),
+        RuntimeEnvAction(
+            "set",
+            USBSINK_RING_PERIODS_KEY,
+            str(DEFAULT_USB_LOW_LATENCY_RING_PERIODS),
+        ),
+        RuntimeEnvAction("set", USBSINK_LATENCY_KEY, DEFAULT_USB_LOW_LATENCY_LATENCY_HINT),
+        RuntimeEnvAction("set", USBSINK_OUTPUT_MODE_KEY, USBSINK_OUTPUT_MODE_ALOOP),
+    )
+
+
+def camilla_config_hash_for_path(path: str | None) -> str:
+    """Return a stable short content hash for the active Camilla config."""
+
+    if not path:
+        return ""
+    try:
+        body = Path(path).read_bytes()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unreadable"
+    return hashlib.sha256(body).hexdigest()[:16]
+
+
+def _route_action_values(route: AudioRouteProfile) -> dict[str, str]:
+    return {
+        action.key: action.value
+        for action in route_owned_env_actions(route)
+        if action.action == "set"
+    }
+
+
+def _int_like(value: str | int) -> int | str:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def fanin_resampler_config_for_route(route: AudioRouteProfile) -> dict[str, Any]:
+    """Route-owned fan-in resampler config expected for latency evidence."""
+
+    values = _route_action_values(route)
+    if values.get(FANIN_INPUT_RESAMPLER_KEY) != "enabled":
+        return {}
+    return {
+        "enabled": True,
+        "lane": values.get(FANIN_INPUT_RESAMPLER_LANE_KEY, ""),
+        "target_frames": _int_like(
+            values.get(FANIN_INPUT_RESAMPLER_TARGET_KEY, ""),
+        ),
+        "max_adjust_ppm": _int_like(
+            values.get(FANIN_INPUT_RESAMPLER_MAX_ADJUST_KEY, ""),
+        ),
+        "warmup_cushion_frames": _int_like(
+            values.get(FANIN_INPUT_RESAMPLER_CUSHION_KEY, ""),
+        ),
+        "ring_frames": _int_like(values.get(FANIN_INPUT_RESAMPLER_RING_KEY, "")),
+    }
+
+
+def rust_bridge_config_for_route(route: AudioRouteProfile) -> dict[str, Any]:
+    """Route-owned Rust USB bridge config expected for latency evidence."""
+
+    values = _route_action_values(route)
+    if not route.rust_usb_audio_required:
+        return {}
+    return {
+        "implementation": "rust",
+        "period_frames": _int_like(values.get(USBSINK_BLOCK_FRAMES_KEY, "")),
+        "ring_periods": _int_like(values.get(USBSINK_RING_PERIODS_KEY, "")),
+        "latency_hint": values.get(USBSINK_LATENCY_KEY, ""),
+        "output_mode": values.get(USBSINK_OUTPUT_MODE_KEY, ""),
+    }
+
+
+def outputd_config_for_settings(
+    settings: tuple[RuntimeSetting, ...],
+) -> dict[str, Any]:
+    """Output/Camilla buffering knobs that are part of latency identity."""
+
+    keys = set(OUTPUTD_LATENCY_KEYS)
+    return {
+        setting.key: setting.value
+        for setting in settings
+        if setting.key in keys
+    }
+
+
+def route_latency_identity_for_plan(
+    *,
+    route: AudioRouteProfile,
+    settings: tuple[RuntimeSetting, ...],
+    route_config_hash: str,
+    camilla_config_hash: str,
+    dac_profile_id: str | None = None,
+) -> dict[str, Any]:
+    """Expected validation identity for the effective low-latency route."""
+
+    return {
+        "route_id": route.route_id,
+        "source_id": route.source_id,
+        "dac_profile_id": dac_profile_id or "",
+        "route_config_hash": route_config_hash,
+        "camilla_config_hash": camilla_config_hash,
+        "fanin_resampler_config": fanin_resampler_config_for_route(route),
+        "outputd_config": outputd_config_for_settings(settings),
+        "rust_bridge_config": rust_bridge_config_for_route(route),
+        "uac2_gadget_attrs": (
+            dict(UAC2_LOW_LATENCY_EXPECTED_ATTRS)
+            if route.route_id == ROUTE_USB_LOW_LATENCY_48K
+            else {}
+        ),
+    }
+
+
+def route_config_hash_for_plan(
+    *,
+    route: AudioRouteProfile,
+    settings: tuple[RuntimeSetting, ...],
+    coupling: str,
+    correction_latency: CorrectionLatencyEligibility,
+    camilla_config_hash: str = "",
+) -> str:
+    """Stable short hash for matching latency artifacts to this plan."""
+
+    payload = {
+        "schema_version": ROUTE_CONFIG_HASH_SCHEMA_VERSION,
+        "route": route.to_dict(),
+        "route_env_actions": [
+            action.to_dict()
+            for action in route_owned_env_actions(route)
+        ],
+        "settings": [setting.to_dict() for setting in settings],
+        "coupling": coupling,
+        "correction_latency": correction_latency.to_dict(),
+        "camilla_config_hash": camilla_config_hash,
+        "uac2_gadget_attrs": (
+            dict(UAC2_LOW_LATENCY_EXPECTED_ATTRS)
+            if route.route_id == ROUTE_USB_LOW_LATENCY_48K
+            else {}
+        ),
+    }
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+
+
+def _route_policy_errors(
+    *,
+    route: AudioRouteProfile,
+    coupling: str,
+    outputd_env: Mapping[str, str],
+) -> tuple[str, ...]:
+    if route.route_id != ROUTE_USB_LOW_LATENCY_48K:
+        return ()
+
+    errors: list[str] = []
+    normalized_coupling = resolve_coupling(coupling)
+    if normalized_coupling != COUPLING_LOOPBACK:
+        errors.append(
+            f"{ROUTE_USB_LOW_LATENCY_48K} requires {COUPLING_ENV_VAR}=loopback; "
+            f"{normalized_coupling} is a lab/deferred transport and cannot carry "
+            "the production low-latency claim"
+        )
+
+    content_bridge = str(
+        outputd_env.get(OUTPUTD_CONTENT_BRIDGE_KEY, OUTPUTD_CONTENT_BRIDGE_DIRECT)
+        or OUTPUTD_CONTENT_BRIDGE_DIRECT
+    ).strip().lower()
+    if content_bridge != OUTPUTD_CONTENT_BRIDGE_DIRECT:
+        errors.append(
+            f"{ROUTE_USB_LOW_LATENCY_48K} requires "
+            f"{OUTPUTD_CONTENT_BRIDGE_KEY}={OUTPUTD_CONTENT_BRIDGE_DIRECT}; "
+            f"{content_bridge} is lab-only and failed the 2026-07-02 USB tuning"
+        )
+    return tuple(errors)
+
+
 def build_audio_runtime_plan_from_system(
     *,
     base_env_path: str = DEFAULT_BASE_ENV_PATH,
@@ -488,6 +923,27 @@ def build_audio_runtime_plan_from_system(
     base = read_env_file_state(base_env_path)
     outputd = read_env_file_state(outputd_env_path)
     fanin = read_env_file_state(fanin_env_path)
+    base_values = dict(base.values)
+    env_read_warnings: list[str] = []
+    if base.status == "unreadable":
+        base_values.update(
+            {
+                key: value
+                for key, value in os.environ.items()
+                if key in BASE_ENV_PROCESS_FALLBACK_KEYS
+            }
+        )
+    for label, state in (
+        ("base", base),
+        ("outputd", outputd),
+        ("fanin", fanin),
+    ):
+        if state.status == "unreadable":
+            detail = f": {state.error}" if state.error else ""
+            env_read_warnings.append(
+                f"unreadable audio runtime {label} env file {state.path}{detail}; "
+                "runtime plan may be using stale or partial settings"
+            )
     resolved_overrides_path = overrides_path or runtime_overrides_path()
     overrides = load_runtime_overrides(
         resolved_overrides_path,
@@ -497,9 +953,9 @@ def build_audio_runtime_plan_from_system(
     try:
         from jasper.output_hardware import load_state
 
-        state = load_state(output_hardware_state_path)
-        if state is not None:
-            profile_id = state.profile_id
+        hardware_state = load_state(output_hardware_state_path)
+        if hardware_state is not None:
+            profile_id = hardware_state.profile_id
     except ImportError:
         profile_id = ""
     route_mode: RouteMode = "unknown"
@@ -511,7 +967,7 @@ def build_audio_runtime_plan_from_system(
         route_mode = "unknown"
     correction_config_path = _active_camilla_config_path_from_statefile()
     return build_audio_runtime_plan(
-        base_env=base.values,
+        base_env=base_values,
         outputd_env=outputd.values,
         fanin_env=fanin.values,
         overrides=overrides.values(),
@@ -522,7 +978,7 @@ def build_audio_runtime_plan_from_system(
         outputd_env_label=outputd.path,
         fanin_env_label=fanin.path,
         override_label=resolved_overrides_path,
-        plan_warnings=overrides.warnings,
+        plan_warnings=tuple(env_read_warnings) + overrides.warnings,
     )
 
 
@@ -550,32 +1006,48 @@ def build_audio_runtime_plan(
     profile_id = (profile_id or "").strip()
     profile = dac_profile_by_id(profile_id) if profile_id else None
     floor = latency_floor_for(profile_id) if profile_id else None
+    route_profile = resolve_audio_route_profile(base_values)
 
+    camilla_chunksize_setting = _resolve_profile_floor_int(
+        key="JASPER_CAMILLA_CHUNKSIZE",
+        default=DEFAULT_CHUNKSIZE,
+        floor_value=getattr(floor, "camilla_chunksize", None),
+        base_env=base_values,
+        override_env=override_values,
+        generated_env=outputd_values,
+        base_label=base_env_label,
+        override_label=override_label,
+        generated_label=outputd_env_label,
+        profile_id=profile_id,
+    )
+    camilla_target_setting = _resolve_profile_floor_int(
+        key="JASPER_CAMILLA_TARGET_LEVEL",
+        default=DEFAULT_TARGET_LEVEL,
+        floor_value=getattr(floor, "camilla_target_level", None),
+        base_env=base_values,
+        override_env=override_values,
+        generated_env=outputd_values,
+        base_label=base_env_label,
+        override_label=override_label,
+        generated_label=outputd_env_label,
+        profile_id=profile_id,
+    )
+    coupling_setting = _resolve_coupling(
+        base_env=base_values,
+        override_env=override_values,
+        fanin_env=fanin_values,
+        base_label=base_env_label,
+        override_label=override_label,
+        fanin_label=fanin_env_label,
+    )
+    camilla_target_setting = _effective_camilla_target_setting(
+        chunksize_setting=camilla_chunksize_setting,
+        target_setting=camilla_target_setting,
+        coupling=str(coupling_setting.value),
+    )
     settings = [
-        _resolve_profile_floor_int(
-            key="JASPER_CAMILLA_CHUNKSIZE",
-            default=DEFAULT_CHUNKSIZE,
-            floor_value=getattr(floor, "camilla_chunksize", None),
-            base_env=base_values,
-            override_env=override_values,
-            generated_env=outputd_values,
-            base_label=base_env_label,
-            override_label=override_label,
-            generated_label=outputd_env_label,
-            profile_id=profile_id,
-        ),
-        _resolve_profile_floor_int(
-            key="JASPER_CAMILLA_TARGET_LEVEL",
-            default=DEFAULT_TARGET_LEVEL,
-            floor_value=getattr(floor, "camilla_target_level", None),
-            base_env=base_values,
-            override_env=override_values,
-            generated_env=outputd_values,
-            base_label=base_env_label,
-            override_label=override_label,
-            generated_label=outputd_env_label,
-            profile_id=profile_id,
-        ),
+        camilla_chunksize_setting,
+        camilla_target_setting,
         _resolve_profile_floor_int(
             key="JASPER_OUTPUTD_PERIOD_FRAMES",
             default=DEFAULT_OUTPUTD_PERIOD_FRAMES,
@@ -587,6 +1059,15 @@ def build_audio_runtime_plan(
             override_label=override_label,
             generated_label=outputd_env_label,
             profile_id=profile_id,
+        ),
+        _resolve_outputd_content_buffer_int(
+            route=route_profile,
+            base_env=base_values,
+            override_env=override_values,
+            generated_env=outputd_values,
+            base_label=base_env_label,
+            override_label=override_label,
+            generated_label=outputd_env_label,
         ),
         _resolve_profile_floor_int(
             key="JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
@@ -621,14 +1102,6 @@ def build_audio_runtime_plan(
             fanin_label=fanin_env_label,
         ),
     ]
-    coupling_setting = _resolve_coupling(
-        base_env=base_values,
-        override_env=override_values,
-        fanin_env=fanin_values,
-        base_label=base_env_label,
-        override_label=override_label,
-        fanin_label=fanin_env_label,
-    )
     settings.append(coupling_setting)
     support = coupling_supported_for_route(str(coupling_setting.value), route_mode)
     topology = transport_topology_for_coupling(
@@ -636,11 +1109,22 @@ def build_audio_runtime_plan(
         fanin_env=fanin_values,
         outputd_env=outputd_values,
     )
+    correction_latency = correction_latency_eligibility_for_config(
+        correction_config_path
+    )
+    camilla_config_hash = camilla_config_hash_for_path(correction_config_path)
+    route_hash = route_config_hash_for_plan(
+        route=route_profile,
+        settings=tuple(settings),
+        coupling=str(coupling_setting.value),
+        correction_latency=correction_latency,
+        camilla_config_hash=camilla_config_hash,
+    )
     combined_plan_warnings = tuple(plan_warnings) + _transport_pipe_env_warnings(
         coupling=str(coupling_setting.value),
         outputd_env=outputd_values,
         outputd_env_label=outputd_env_label,
-    )
+    ) + route_profile.warnings
     return AudioRuntimePlan(
         profile_id=profile_id or "unknown",
         profile_label=profile.label if profile is not None else "unknown",
@@ -648,8 +1132,14 @@ def build_audio_runtime_plan(
         settings=tuple(settings),
         coupling_support=support,
         transport_topology=topology,
-        correction_latency_eligibility=correction_latency_eligibility_for_config(
-            correction_config_path
+        route_profile=route_profile,
+        route_config_hash=route_hash,
+        camilla_config_hash=camilla_config_hash,
+        correction_latency_eligibility=correction_latency,
+        route_policy_errors=_route_policy_errors(
+            route=route_profile,
+            coupling=str(coupling_setting.value),
+            outputd_env=outputd_values,
         ),
         plan_warnings=combined_plan_warnings,
     )
@@ -936,6 +1426,7 @@ def outputd_latency_floor_actions(
     override_values = dict(overrides or {})
     profile = (profile_id or "").strip()
     floor = latency_floor_for(profile) if profile else None
+    route = resolve_audio_route_profile(base_values)
     floor_values: dict[str, int] = {}
     if floor is not None:
         floor_values = {
@@ -944,6 +1435,10 @@ def outputd_latency_floor_actions(
             "JASPER_OUTPUTD_PERIOD_FRAMES": floor.outputd_period_frames,
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES": floor.outputd_dac_buffer_frames,
         }
+    if route.route_id == ROUTE_USB_LOW_LATENCY_48K:
+        floor_values["JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"] = (
+            DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
+        )
 
     actions: list[RuntimeEnvAction] = []
     for key in OUTPUTD_LATENCY_KEYS:
@@ -1223,6 +1718,170 @@ def _resolve_profile_floor_int(
         unit="frames",
         operator_value=operator_raw,
         generated_value=generated_raw,
+        warnings=tuple(warnings),
+    )
+
+
+def _resolve_outputd_content_buffer_int(
+    *,
+    route: AudioRouteProfile,
+    base_env: Mapping[str, str],
+    override_env: Mapping[str, str],
+    generated_env: Mapping[str, str],
+    base_label: str,
+    override_label: str,
+    generated_label: str,
+) -> RuntimeSetting:
+    key = "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
+    operator_raw = _raw(base_env, key)
+    override_raw = _raw(override_env, key)
+    generated_raw = _raw(generated_env, key)
+    operator_value, operator_error = _positive_int(operator_raw)
+    override_value, override_error = _positive_int(override_raw)
+    generated_value, generated_error = _positive_int(generated_raw)
+    route_value = (
+        DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
+        if route.route_id == ROUTE_USB_LOW_LATENCY_48K
+        else None
+    )
+    warnings: list[str] = []
+
+    if override_error is not None:
+        warnings.append(
+            f"{key} in {override_label} is invalid ({override_raw!r}: "
+            f"{override_error}); ignored"
+        )
+    if operator_error is not None:
+        warnings.append(
+            f"{key} in {base_label} is invalid ({operator_raw!r}: "
+            f"{operator_error}); ignored"
+        )
+    if generated_error is not None:
+        warnings.append(
+            f"{key} in {generated_label} is invalid ({generated_raw!r}: "
+            f"{generated_error}); remove it or rerun audio hardware reconcile"
+        )
+    if operator_raw is not None and generated_raw is not None:
+        warnings.append(
+            f"{key} is set in both {base_label} and {generated_label}; "
+            "one knob has two homes"
+        )
+    if override_raw is not None and (operator_raw is not None or generated_raw is not None):
+        warnings.append(
+            f"{key} lab override in {override_label} is active; it intentionally "
+            "wins over env/route values"
+        )
+
+    if override_value is not None:
+        return RuntimeSetting(
+            key=key,
+            value=override_value,
+            source_kind="lab_override",
+            source=override_label,
+            unit="frames",
+            override_value=override_raw,
+            operator_value=operator_raw,
+            generated_value=generated_raw,
+            warnings=tuple(warnings),
+        )
+
+    if operator_value is not None:
+        return RuntimeSetting(
+            key=key,
+            value=operator_value,
+            source_kind="operator_env",
+            source=base_label,
+            unit="frames",
+            operator_value=operator_raw,
+            generated_value=generated_raw,
+            warnings=tuple(warnings),
+        )
+
+    if route_value is not None:
+        if generated_value is None:
+            warnings.append(
+                f"{key} route policy for {route.route_id} is {route_value}, but "
+                f"{generated_label} does not emit it; run "
+                "jasper-audio-hardware-reconcile"
+            )
+        elif generated_value != route_value:
+            warnings.append(
+                f"{key} in {generated_label} is {generated_value}, but the "
+                f"{route.route_id} route policy is {route_value}; rerun "
+                "audio hardware reconcile"
+            )
+        return RuntimeSetting(
+            key=key,
+            value=route_value,
+            source_kind="route_policy",
+            source=f"AudioRouteProfile:{route.route_id}",
+            unit="frames",
+            operator_value=operator_raw,
+            generated_value=generated_raw,
+            warnings=tuple(warnings),
+        )
+
+    if generated_value is not None and generated_value != DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES:
+        warnings.append(
+            f"{key} in {generated_label} is {generated_value}, but the active "
+            f"route has no content-buffer policy; stale generated value will "
+            f"override the packaged default {DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES}"
+        )
+    return RuntimeSetting(
+        key=key,
+        value=DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
+        source_kind="packaged_default",
+        source="packaged systemd/outputd default",
+        unit="frames",
+        operator_value=operator_raw,
+        generated_value=generated_raw,
+        warnings=tuple(warnings),
+    )
+
+
+def _effective_camilla_target_setting(
+    *,
+    chunksize_setting: RuntimeSetting,
+    target_setting: RuntimeSetting,
+    coupling: str,
+) -> RuntimeSetting:
+    """Return the Camilla target that generated YAML actually emits.
+
+    In the ordinary ALSA loopback topology, CamillaDSP's target_level is a real
+    playback-buffer latency/stability knob. In the local transport-pipe topology
+    (`RawFile` capture + `File` playback), outputd's DAC loop is the pace root
+    and Camilla target_level is only schema padding; `emit_sound_config` clamps
+    it to 2 x chunksize. Keep the route plan/hash on that same effective value
+    so latency artifacts match the loaded graph instead of the generated env
+    floor used by loopback profiles.
+    """
+
+    if resolve_coupling(coupling) != COUPLING_TRANSPORT_PIPE:
+        return target_setting
+    try:
+        chunksize = int(chunksize_setting.value)
+    except (TypeError, ValueError):
+        return target_setting
+    effective = max(chunksize, chunksize * 2)
+    if target_setting.value == effective and target_setting.source_kind == "route_policy":
+        return target_setting
+    warnings = list(target_setting.warnings)
+    if target_setting.value != effective:
+        warnings.append(
+            "JASPER_CAMILLA_TARGET_LEVEL effective value is "
+            f"{effective} under transport_pipe (=2 x chunksize); "
+            f"{target_setting.value} from {target_setting.source} is the "
+            "loopback/hardware-floor value, not the File/RawFile runtime value"
+        )
+    return RuntimeSetting(
+        key=target_setting.key,
+        value=effective,
+        source_kind="route_policy",
+        source="transport_pipe File/RawFile schema floor",
+        unit=target_setting.unit,
+        override_value=target_setting.override_value,
+        generated_value=target_setting.generated_value,
+        operator_value=target_setting.operator_value,
         warnings=tuple(warnings),
     )
 

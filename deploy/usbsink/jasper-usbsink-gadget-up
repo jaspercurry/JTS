@@ -33,6 +33,14 @@ if [[ -r "$SPEAKER_NAME_FILE" ]]; then
 fi
 SPEAKER_NAME="${JASPER_SPEAKER_NAME:-JTS}"
 
+write_if_present() {
+    local path="$1"
+    local value="$2"
+    if [[ -e "${path}" ]]; then
+        echo "${value}" > "${path}"
+    fi
+}
+
 # Idempotent: if descriptor exists AND is bound to a UDC, we're done.
 # (If a partial setup left an unbound descriptor, the down script
 # clears it before this runs again — see ExecStop in the unit file.)
@@ -104,6 +112,13 @@ echo 3 > functions/uac2.usb0/c_chmask
 echo 1 > functions/uac2.usb0/c_volume_present
 echo 1 > functions/uac2.usb0/c_mute_present
 echo 0 > functions/uac2.usb0/p_chmask
+# Low-latency route hints, only where the running kernel exposes them.
+# c_sync=async keeps host pacing honest for the UAC2 capture endpoint;
+# req_number/c_hs_bint reduce avoidable USB scheduling slack without making
+# this script depend on kernel-version-specific ConfigFS attrs.
+write_if_present functions/uac2.usb0/c_sync async
+write_if_present functions/uac2.usb0/req_number 2
+write_if_present functions/uac2.usb0/c_hs_bint 1
 echo "JTS Capture Endpoint" > functions/uac2.usb0/function_name
 echo "JTS Capture Input" > functions/uac2.usb0/c_it_name
 echo "JTS Capture Output" > functions/uac2.usb0/c_ot_name

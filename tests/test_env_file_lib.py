@@ -115,6 +115,31 @@ def test_env_file_set_creates_file_with_requested_mode(tmp_path: Path) -> None:
     assert (env_file.parent.stat().st_mode & 0o777) == 0o750
 
 
+def test_env_file_set_assigns_parent_group_before_publish(tmp_path: Path) -> None:
+    env_file = tmp_path / "sub" / "new.env"
+    env_file.parent.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    chgrp_log = tmp_path / "chgrp.log"
+    fake_chgrp = fake_bin / "chgrp"
+    fake_chgrp.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" >> \"$JTS_CHGRP_LOG\"\n"
+    )
+    fake_chgrp.chmod(0o755)
+
+    result = _bash(
+        f'PATH="{fake_bin}:$PATH" '
+        f'JTS_CHGRP_LOG="{chgrp_log}" '
+        f'jasper_env_file_set "{env_file}" KEY value 0640 0750'
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = chgrp_log.read_text().splitlines()
+    assert args[0] == f"--reference={env_file.parent}"
+    assert args[1].startswith(str(env_file.parent / ".KEY."))
+
+
 def test_env_file_set_preserves_existing_ownership_before_rename(
     tmp_path: Path,
 ) -> None:
@@ -136,10 +161,18 @@ def test_env_file_set_preserves_existing_ownership_before_rename(
         "printf '%s\\n' \"$@\" >> \"$JTS_CHOWN_LOG\"\n"
     )
     fake_chown.chmod(0o755)
+    chgrp_log = tmp_path / "chgrp.log"
+    fake_chgrp = fake_bin / "chgrp"
+    fake_chgrp.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" >> \"$JTS_CHGRP_LOG\"\n"
+    )
+    fake_chgrp.chmod(0o755)
 
     result = _bash(
         f'PATH="{fake_bin}:$PATH" '
         f'JTS_CHOWN_LOG="{chown_log}" '
+        f'JTS_CHGRP_LOG="{chgrp_log}" '
         f'jasper_env_file_set "{env_file}" A 2 0640 0755'
     )
 
@@ -149,6 +182,36 @@ def test_env_file_set_preserves_existing_ownership_before_rename(
     assert args[0] == f"--reference={env_file}"
     assert args[1].startswith(str(env_file.parent / ".A."))
     assert args[1] != str(env_file)
+    assert not chgrp_log.exists(), "rewrites must not replace file group with parent group"
+
+
+def test_env_file_repair_permissions_uses_parent_group(tmp_path: Path) -> None:
+    env_file = tmp_path / "outputd.env"
+    env_file.write_text("A=1\n", encoding="utf-8")
+    env_file.chmod(0o600)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    chgrp_log = tmp_path / "chgrp.log"
+    fake_chgrp = fake_bin / "chgrp"
+    fake_chgrp.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" >> \"$JTS_CHGRP_LOG\"\n"
+    )
+    fake_chgrp.chmod(0o755)
+
+    result = _bash(
+        f'PATH="{fake_bin}:$PATH" '
+        f'JTS_CHGRP_LOG="{chgrp_log}" '
+        f'jasper_env_file_repair_permissions "{env_file}" 0640 0750'
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_text(encoding="utf-8") == "A=1\n"
+    assert (env_file.stat().st_mode & 0o777) == 0o640
+    assert chgrp_log.read_text().splitlines() == [
+        f"--reference={env_file.parent}",
+        str(env_file),
+    ]
 
 
 def test_env_file_unset_removes_key(tmp_path: Path) -> None:

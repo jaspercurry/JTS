@@ -81,6 +81,36 @@ def _active_camilla_floor(field: str) -> int | None:
     return getattr(floor, field, None)
 
 
+def _lab_override_allows_below_floor(
+    env_var: str,
+    value: int,
+    env: Mapping[str, str],
+) -> bool:
+    """Return whether an explicit audio-runtime lab override owns ``value``.
+
+    The DacProfile latency floor is the production safety/stability floor. Lab
+    tuning may intentionally probe below it, but only when the dedicated
+    ``audio_runtime_overrides.json`` artifact carries the same active value.
+    This keeps ordinary stale ``outputd.env`` values clamped while allowing the
+    generated CamillaDSP config to match the route plan during visible lab work.
+    """
+
+    try:
+        from jasper.audio_runtime_overrides import (
+            load_runtime_overrides,
+            runtime_overrides_path,
+        )
+    except ImportError:
+        return False
+    overrides = load_runtime_overrides(runtime_overrides_path(env))
+    raw = overrides.values().get(env_var)
+    try:
+        override_value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return False
+    return override_value == value
+
+
 def _resolve_camilla_int(
     env_var: str,
     default: int,
@@ -117,6 +147,8 @@ def _resolve_camilla_int(
     if value <= 0:
         return fallback
     if profile_floor is not None and value < profile_floor:
+        if _lab_override_allows_below_floor(env_var, value, env):
+            return value
         return profile_floor
     return value
 

@@ -74,11 +74,29 @@ function applyState(state) {
       el("bt-note").textContent = state.bluetooth.unavailableReason;
     }
   }
-  // USB sink shows a "needs reboot" note when the dtoverlay is missing
-  // or when the USB-sink unit is not installed in this profile.
-  const usbUnavailable = state.usbsink && state.usbsink.available === false;
+  // USB sink has two warning shapes: unavailable means the toggle cannot
+  // work; degraded means the host-visible gadget is up but the bridge is
+  // not healthy yet. Both hide the ordinary "plug a computer in" note.
+  const usb = state.usbsink || {};
+  const usbUnavailable = usb.available === false;
+  const usbDegraded =
+    typeof usb.degradedReason === "string" && usb.degradedReason;
+  const usbWarning = usbUnavailable || usbDegraded;
+  const usbUnavailableNote = el("usbsink-unavailable-note");
+  if (usbUnavailableNote) {
+    usbUnavailableNote.style.display = usbWarning ? "" : "none";
+    if (usbDegraded) {
+      usbUnavailableNote.textContent = usb.degradedReason;
+    } else if (
+      usbUnavailable &&
+      typeof usb.unavailableReason === "string" &&
+      usb.unavailableReason
+    ) {
+      usbUnavailableNote.textContent = usb.unavailableReason;
+    }
+  }
   if (el("usbsink-note")) {
-    el("usbsink-note").style.display = usbUnavailable ? "none" : "";
+    el("usbsink-note").style.display = usbWarning ? "none" : "";
   }
 }
 

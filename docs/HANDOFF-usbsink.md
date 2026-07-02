@@ -6,7 +6,7 @@
 **Predecessor project**: [PiCorrect](https://github.com/jaspercurry/PiCorrect) — proves the
 UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 
-> ### Current operational truth (updated 2026-06-30)
+> ### Current operational truth (updated 2026-07-02)
 >
 > USB Audio Input is shipped and off by default. The installer writes
 > the gadget overlay/config and requires reboot for the host-facing
@@ -22,15 +22,29 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > `ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed`, so a boot
 > or manual start while the speaker is a valid bonded follower skips before the
 > host-visible gadget can advertise. At runtime, `jasper-usbsink`
-> is a peer music renderer: it bridges the gadget capture endpoint into
-> `usbsink_substream`, and `jasper-fanin` sums that lane with AirPlay,
-> Spotify, Bluetooth, and correction audio into substream 7 for
-> CamillaDSP/AEC. Diagrams below that show direct writes to
-> `hw:Loopback,0,0` are historical.
-> The bridge defaults to one fan-in period per callback
-> (`JASPER_USBSINK_BLOCK_FRAMES=256`) and a 16-block PortAudio queue,
-> avoiding period-mismatch bunching while preserving roughly the old
-> 8×480-frame slack.
+> is a peer music renderer: the production bridge is the Rust
+> `jasper-usbsink-audio` binary, which captures S32_LE stereo/48 kHz
+> from `hw:UAC2Gadget`, narrows deterministically to S16_LE by signed
+> high-word truncation, and writes period-aligned blocks into
+> `usbsink_substream`. `jasper-fanin` then sums that lane with AirPlay,
+> Spotify, Bluetooth, TTS, and correction audio before CamillaDSP/AEC.
+> Diagrams below that show direct writes to `hw:Loopback,0,0`, Python
+> PortAudio data-plane behavior, or the lean FIFO route are historical
+> unless explicitly marked as future/lab work.
+>
+> The production claiming route is `usb_low_latency_48k`: Rust bridge
+> `256` frames / `3` periods, fan-in USB input resampler enabled with
+> target `512` + warm-up cushion `1536` (held target `2048`), fan-in
+> input buffer `4096`, fan-in output buffer `1024`, CamillaDSP
+> `256/1536`, and outputd `128/256` on the Apple USB-C DAC profile.
+> A clean 5-minute jts.local steady-state sample on 2026-07-02 produced
+> zero new bridge xruns/underflows, zero fan-in resampler relocks, and
+> zero resampler silence. The low-latency claim still requires a
+> route-latency click/capture artifact before doctor will pass it. Produce that
+> artifact with `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact`
+> after an external click/capture harness has measured per-impulse latencies;
+> the canonical gate and command examples live in
+> [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md).
 >
 > Cross-cutting source metadata lives in `jasper/music_sources.py`:
 > `Source.USBSINK` uses `VolumeMode.CAMILLA_MASTER`, so CamillaDSP is
@@ -41,8 +55,9 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > `/source/select` surface can choose USB without enabling/disabling
 > the source.
 >
-> The daemon publishes `/run/jasper-usbsink/state.json` with
-> `{playing, preempted, host_connected, rms_dbfs, updated_at}`.
+> The bridge publishes `/run/jasper-usbsink/state.json` with
+> `{playing, preempted, host_connected, rms_dbfs, ring, counters,
+> period_frames, updated_at}`.
 > `rms_dbfs` is a finite JSON number or `null` before any finite sample exists;
 > the bridge may use `-inf` internally, but state files and `/state` stay
 > standards-compliant JSON.
@@ -52,14 +67,13 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > USB capture idleness is normal: the feature may be enabled while no
 > host is plugged in, while a host is plugged in but paused, or while
 > another renderer is being used. `jasper-usbsink` therefore treats
-> playback/output callback progress as daemon liveness for the systemd
-> watchdog, because that callback should keep writing either host audio
-> or explicit silence into `usbsink_substream`. Capture callback stalls
-> are INFO-level `event=usbsink.capture_idle` / `capture_resumed`
-> diagnostics plus `playing=false`, not restart decisions.
+> ALSA playback-period forward progress as daemon liveness for the systemd
+> watchdog, because the Rust bridge should keep writing either host audio or
+> explicit silence into `usbsink_substream`.
 >
 > Disabled cost is effectively zero resident daemon memory; enabled
-> cost is about 18-22 MB Pss. When adding another music source, use
+> bridge cost is about 2 MB Pss for the Rust data plane, plus the
+> non-real-time host-volume observer when enabled. When adding another music source, use
 > `docs/audio-paths.md#adding-a-new-music-source` as the canonical
 > checklist. This document's phase plan below is retained for
 > historical implementation context.
@@ -75,15 +89,13 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > time, remove or gate USB Audio Input for Zero-class streamboxes rather
 > than letting it silently compromise playback.
 >
-> Two other Tier 1 fixes applied at rebase time:
+> Current production-boundary pins:
 >
-> 1. **RMS scratch buffer pre-allocated.** The capture callback in
->    [`audio_bridge.py`](../jasper/usbsink/audio_bridge.py) no longer
->    allocates a float64 array per bridge block — it uses a scratch
->    buffer sized once in `__init__` and reuses it. The S32→S16
->    conversion is now a stride view (`arr.view(np.int16)[1::2]`)
->    rather than an allocation. Eliminates the realtime-thread malloc
->    risk that the original §6 RAM-budget table did not account for.
+> 1. **Rust is the only production USB data plane.**
+>    [`deploy/systemd/jasper-usbsink.service`](../deploy/systemd/jasper-usbsink.service)
+>    runs `/opt/jasper/bin/jasper-usbsink-audio`. The old Python/PortAudio
+>    bridge is exposed only as `jasper-usbsink-python-lab` and refuses to run
+>    unless `JASPER_USBSINK_PYTHON_LAB_ALLOW=1` is set.
 > 2. **Asoundrc path migration.** The codebase moved
 >    `/root/.asoundrc` → `/etc/asound.conf` (mode 0644, world-readable)
 >    in PR #223. usbsink doesn't reference asoundrc by path; the
@@ -140,18 +152,20 @@ operation assumes the splitter-backed path.
 ## Executive summary
 
 The USB gadget feature reuses the existing renderer-into-Loopback
-pattern. A new oneshot service `jasper-usbsink-init.service` performs the
-ConfigFS gadget setup at start; a small Python daemon
-`jasper-usbsink.service` does three things:
+pattern. A oneshot service `jasper-usbsink-init.service` performs the
+ConfigFS gadget setup at start. The runtime is split deliberately:
 
-1. Loops audio from the gadget capture endpoint into `usbsink_substream`
-   so it joins the fan-in music chain
-2. Polls the gadget's `PCM Capture Volume` mixer control at 4 Hz and
-   forwards changes to `VolumeCoordinator.observe_source_volume()`
-3. Computes RMS-based playing state and publishes it to a state file
-   that `jasper.source_state` reads
+1. `jasper-usbsink.service` starts the Rust `jasper-usbsink-audio` data
+   plane, looping audio from the gadget capture endpoint into
+   `usbsink_substream` so it joins the fan-in music chain.
+2. `jasper-usbsink-volume.service` is a non-real-time helper that polls the
+   gadget's `PCM Capture Volume` mixer control and forwards changes to
+   `VolumeCoordinator.observe_source_volume()`.
+3. The Rust bridge computes RMS-based playing state and publishes ring/counter
+   health to `/run/jasper-usbsink/state.json`.
 
-Total new RAM when enabled: **~18-22 MB Pss** (one Python daemon).
+Total new RAM when enabled: low single-digit MB for the Rust data plane plus
+the non-real-time volume helper.
 Total new RAM when disabled: **0 MB** (no service runs, no kernel
 modules loaded, no gadget descriptor present). The dtoverlay
 `dwc2,dr_mode=peripheral` is permanently set after install but costs
@@ -231,20 +245,12 @@ shared libs deduplicated) on a Pi 5 running Raspberry Pi OS Lite Trixie.
 |---|---|---|
 | libcomposite + u_audio kernel modules | ~60 KB | Loaded by `jasper-usbsink-init` |
 | ConfigFS gadget descriptor | <1 KB | Just in-kernel state |
-| `jasper-usbsink.service` (Python daemon) | **18-22 MB** | sounddevice (PortAudio) + `amixer`-cget mixer poller + RMS + state publisher |
-| **Total new RAM (enabled)** | **~22 MB** | Comparable to `jasper-mux` (~13 MB) and `jasper-input` (~16 MB) |
+| `jasper-usbsink.service` (Rust bridge) | **~2 MB** | ALSA capture/playback bridge + state/preempt publisher |
+| `jasper-usbsink-volume.service` | non-real-time helper | Host volume observer; separate from the audio data plane |
+| **Total new RAM (enabled)** | **low single-digit MB for data plane** | The audio bridge is no longer a Python/PortAudio process |
 
-The daemon budget breakdown:
-- Python 3.11 interpreter: ~10 MB
-- sounddevice + PortAudio: ~6 MB
-- numpy (only for RMS computation, can be omitted if needed): ~3 MB
-- `amixer` polling (subprocess spawned per 4 Hz poll; no resident ALSA binding): negligible
-- Daemon code: <1 MB
-
-If we end up needing to trim further, the RMS computation can be done
-with `struct.unpack` and pure-Python sum-of-squares math (no numpy);
-that saves ~3 MB. For the first cut, numpy is fine — `jasper-voice`
-already loads it.
+The old Python/PortAudio bridge budget is preserved below as history only.
+It is not the claiming `usb_low_latency_48k` data plane.
 
 ### How "zero RAM when disabled" is enforced
 
@@ -273,8 +279,8 @@ Host computer (USB-C via 8086 splitter)
    ▼
 hw:CARD=UAC2Gadget,DEV=0  (gadget capture endpoint, Pi-side)
    │
-   │ jasper-usbsink reads frames here
-   │   (sounddevice InputStream, callback-driven)
+   │ jasper-usbsink-audio reads frames here
+   │   (Rust ALSA capture, 256-frame periods, 3-period bounded ring)
    │
    ▼ writes here when not preempted; writes silence when preempted
 pcm.usbsink_substream ──► hw:Loopback,0,3
@@ -307,48 +313,47 @@ PiCorrect's topology is single-source — the host is the *only* audio
 input. JTS is multi-source — AirPlay, Spotify Connect, Bluetooth, and
 now USB must all sum before CamillaDSP/AEC. The fan-in topology is the
 mixing point, and the clean way to add USB is to make it a peer writer
-into `usbsink_substream`. Bridging UAC2Gadget → fan-in is a tiny daemon
-(~80 lines of sounddevice code) and keeps CamillaDSP's capture
-configuration unchanged.
+into `usbsink_substream`. Bridging UAC2Gadget → fan-in is a small Rust ALSA
+daemon and keeps CamillaDSP's capture configuration unchanged.
 
-Latency budget (updated 2026-06-30 for the fan-in 1024-frame production
-floor and DAC-profile latency floors; computed from buffer sizes, **not**
-hardware-measured):
+Latency budget (updated 2026-07-01 for the Rust bridge, fan-in USB
+resampler, transport-pipe coupling, and Apple DAC-profile latency floor;
+component estimates only until a route-latency artifact exists):
 - Host → gadget USB endpoint: ~3-5 ms
-- `jasper-usbsink` bridge: ~50-90 ms (two PortAudio streams at the
-  PortAudio default `latency='high'`, joined by the 16-block
-  period-aligned queue —
-  the host-clock↔Pi-clock crossing; the dominant USB-*specific* term
-  and the one never profiled on hardware)
-- snd-aloop usbsink lane → fan-in: ~5-10 ms (the fan-in *input* buffer,
-  4096 fr ≈ 85 ms, is WiFi-burst-absorption headroom for AirPlay; a
-  steady USB writer leaves it near-empty, so it adds ~0 ms here)
-- fan-in output buffer: 1024 fr ≈ 21 ms
-- CamillaDSP / outputd: conservative global defaults are still chunk
-  1024 / target 2048 and outputd DAC buffer 3072, but the active DAC
-  profile may lower them. The Apple USB-C dongle profile is chunk
-  256 / target 1536, outputd period 256 / DAC buffer 512.
-- outputd content bridge (`direct`): ~0 ms
-- **Total**: still above the <60 ms video target on the shared path,
-  dominated by the bridge term plus downstream buffers; use the lean/FIFO
-  path for USB-only low-latency experiments.
+- `jasper-usbsink-audio` bridge: 256-frame ALSA period with a bounded
+  3-period ring. 128-frame periods and 256/2 failed on jts.local; 256/3
+  is the stable floor.
+- snd-aloop usbsink lane → fan-in: fan-in keeps the global 4096-frame
+  input buffer because lower global input buffers (512/1024/2048/3072)
+  failed the USB resampler lock tests and would regress AirPlay burst
+  absorption. The USB resampler is the latency-control point, not the
+  global input ring.
+- fan-in USB resampler: route-owned target 512 + cushion 1536, held
+  target 2048. This replaces the old catch-up sawtooth for the USB lane.
+- fan-in output buffer: 1024 frames ≈ 21 ms.
+- CamillaDSP / outputd: Apple USB-C dongle profile is chunk 256 /
+  target 1536, outputd period 128 / DAC buffer 256 after the
+  2026-07-01 jts.local tuning pass. Camilla target 1024 and outputd
+  64/128 both produced bridge playback xruns and are not the shipped floor.
+- outputd content capture: direct ALSA loopback with buffer 1536. Lower
+  640/768/1024/1280 content-buffer probes produced content-side xruns.
+- **Claim status**: unproven until click/capture measurement. Doctor fails
+  `route latency evidence` without a matching artifact: p95 needs >=200
+  impulses over >=5 minutes and p99 promotion needs >=1000 impulses over
+  >=30 minutes with jittered spacing. Run
+  `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact` to write the
+  artifact from measured samples or aggregate p95/p99 values and bind it to the
+  live route identity; it is not itself the audio measurement harness.
 
-> **Tunable since the Stage 2 / Stage 4b latency work (2026-06-27).** The
-> bridge's dominant ~50-90 ms term is now adjustable on-device:
-> `JASPER_USBSINK_LATENCY` (the PortAudio latency hint — usually the biggest
-> single lever; `low`/`high`/float-seconds), `JASPER_USBSINK_QUEUE_MAXBLOCKS`,
-> and `JASPER_USBSINK_BLOCK_FRAMES`. The default bridge block is now 256 frames
-> (one fan-in period) with 16 queued blocks, preserving roughly the old
-> 8×480-frame slack while avoiding period-mismatch bunching that overflowed the
-> bridge queue before the per-input resampler could absorb it. Keep
-> `JASPER_USBSINK_LATENCY` unset/`high` unless a hardware soak proves a lower
-> hint has zero playback callback errors. And
-> `JASPER_USBSINK_OUTPUT_MODE=fifo` switches the bridge to the **lean lane**: a
-> writer thread blocking-writes full S32_LE PCM to `JASPER_USBSINK_FIFO_PATH`
-> for CamillaDSP to File-capture directly, shedding the fan-in input ring.
-> Both are default-OFF (the lean lane is also soak-gated). Env action
-> validation lives in `jasper.audio_runtime_plan.usbsink_output_mode_action`;
-> the reconciler still owns the env write, restart, and rollback. Grammar lives
+> **Production low-latency knobs (2026-07-01).** The current claiming route
+> uses the Rust bridge with `JASPER_USBSINK_BLOCK_FRAMES=256` and
+> `JASPER_USBSINK_RING_PERIODS=3`. `JASPER_USBSINK_LATENCY=low` is now a route
+> hint/state label, not a PortAudio runtime selector. The lean FIFO
+> `JASPER_USBSINK_OUTPUT_MODE=fifo` path is historical/deferred; the production
+> `usb_low_latency_48k` route keeps USB in fan-in and uses the fan-in USB input
+> resampler plus direct ALSA loopback through Camilla/outputd. Env action validation lives
+> in `jasper.audio_runtime_plan`; the reconciler still owns the env write,
+> restart, and rollback. Grammar lives
 > in `.env.example`; the lane design is in
 > [HANDOFF-audio-latency-foundation.md](HANDOFF-audio-latency-foundation.md).
 
@@ -358,14 +363,13 @@ come from the active DAC profile. See
 [HANDOFF-audio-latency-foundation.md](HANDOFF-audio-latency-foundation.md)
 for the current low-latency Apple-dongle budget.
 
-That's well within "music streaming" expectations. It is **not** good
-for video: ~250-300 ms of audio lag is far past the ~125 ms A/V-sync
-comfort threshold, and — unlike AirPlay, which reports the offset above
-to the sender so it can delay the picture — UAC2 has no back-channel to
-tell the host about this delay. A manual audio-offset in the host's
-video player is the only in-tool fix today. (Also not suitable for
-real-time monitoring — singing into a mic on the host while listening
-on JTS — but JTS isn't a DAW.)
+The tuned values are stable enough for the fallback route, but they are **not**
+a 40 ms end-to-end result. The fan-in USB resampler held target alone is 2048
+frames (~42.7 ms at 48 kHz), before fan-in output, CamillaDSP, outputd content,
+and DAC delay. UAC2 also has no AirPlay-style back-channel to tell the host to
+delay video, so video/lip-sync remains unclaimed until a measured route artifact
+proves otherwise. For now, a host-side manual audio offset is the only honest
+video workaround.
 
 ### 3.2 Volume model — USB gadget is camilla-as-master
 
@@ -664,7 +668,12 @@ is visible. (Reverting entirely: `rm /lib/modules/*/updates/usb_f_uac2.ko`
 
 ### 4.2 jasper-usbsink daemon
 
-**New package**:
+> **Historical Python bridge design.** The production service now runs
+> `/opt/jasper/bin/jasper-usbsink-audio`; the package/script sketch below is
+> retained only to explain the original implementation. Do not copy this
+> `ExecStart` for the current runtime.
+
+**Original Python package**:
 
 ```
 jasper/usbsink/
@@ -1756,12 +1765,11 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-06-30 (current operational truth rechecked against
-`jasper/usbsink/audio_bridge.py`: default bridge block is 256 frames with
-16 queued blocks; USB output-mode env action now lives in
-`jasper.audio_runtime_plan`; current-state latency prose updated for the
-1024-frame fan-in output floor and DAC-profile latency floors. 2026-06-28
-removed §3.4 drift rate-match — the capture-follower spa_dll resample stage
-was cut as the wrong tool for the observed USB drops, which are
-consumer-pacing/clock-domain overflow, not ±500 ppm drift; rate reconciliation
-will be redone in CamillaDSP rate_adjust / a fan-in per-lane resampler)
+Last verified: 2026-07-02 (current operational truth rechecked against
+`deploy/systemd/jasper-usbsink.service`, `rust/jasper-usbsink-audio`,
+`jasper.audio_runtime_plan`, and jts.local hardware tuning: Rust bridge 256/3,
+fan-in USB resampler held target 2048, fan-in output 1024, CamillaDSP 256/1536,
+outputd 128/256, outputd content buffer 1536, direct ALSA loopback. Route-latency
+evidence remains missing, so doctor correctly fails the low-latency claim. The
+old Python/PortAudio bridge and lean FIFO path remain historical/deferred, not
+the claiming production data plane.)

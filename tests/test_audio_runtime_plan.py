@@ -8,16 +8,28 @@ import json
 import re
 from pathlib import Path
 
+from jasper import audio_runtime_plan as audio_plan
 from jasper.audio_hardware.dac import APPLE_USB_C_DONGLE_ID
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
+    AUDIO_ROUTE_PROFILE_KEY,
     FANIN_OUTPUT_BUFFER_KEY,
+    FANIN_INPUT_RESAMPLER_KEY,
+    FANIN_INPUT_RESAMPLER_LANE_KEY,
     MIN_FANIN_OUTPUT_BUFFER_FRAMES,
+    OUTPUTD_CONTENT_BRIDGE_KEY,
+    ROUTE_BITPERFECT_DECLARED,
+    ROUTE_CORRECTED_48K,
+    ROUTE_USB_LOW_LATENCY_48K,
+    USBSINK_BLOCK_FRAMES_KEY,
+    USBSINK_RING_PERIODS_KEY,
     apply_capture_precedence,
     DEFAULT_FANIN_INPUT_BUFFER_FRAMES,
     DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES,
+    DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
     DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
     DEFAULT_OUTPUTD_PERIOD_FRAMES,
+    DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES,
     build_audio_runtime_plan,
     coupling_supported_for_route,
     correction_latency_eligibility,
@@ -29,10 +41,13 @@ from jasper.audio_runtime_plan import (
     lean_capture_kwargs,
     low_latency_feature_flags,
     outputd_latency_floor_actions,
+    resolve_audio_route_profile,
+    route_owned_env_actions,
     resolve_fanin_output_buffer_target,
     transport_topology_for_coupling,
     usbsink_output_mode_action,
 )
+from jasper.env_load import EnvFileState
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
@@ -51,17 +66,37 @@ def test_plan_uses_dac_profile_floor_as_intended_source():
         outputd_env={
             "JASPER_CAMILLA_CHUNKSIZE": "256",
             "JASPER_CAMILLA_TARGET_LEVEL": "1536",
-            "JASPER_OUTPUTD_PERIOD_FRAMES": "256",
-            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES": "512",
+            "JASPER_OUTPUTD_PERIOD_FRAMES": "128",
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES": "256",
         },
     )
 
     assert plan.setting("JASPER_CAMILLA_CHUNKSIZE").value == 256
     assert plan.setting("JASPER_CAMILLA_TARGET_LEVEL").value == 1536
-    assert plan.setting("JASPER_OUTPUTD_PERIOD_FRAMES").value == 256
-    assert plan.setting("JASPER_OUTPUTD_DAC_BUFFER_FRAMES").value == 512
+    assert plan.setting("JASPER_OUTPUTD_PERIOD_FRAMES").value == 128
+    assert plan.setting("JASPER_OUTPUTD_DAC_BUFFER_FRAMES").value == 256
     assert plan.setting("JASPER_CAMILLA_TARGET_LEVEL").source_kind == "device_profile"
     assert plan.warnings == ()
+
+
+def test_transport_pipe_plan_uses_effective_camilla_file_target():
+    plan = build_audio_runtime_plan(
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        route_mode="solo",
+        fanin_env={COUPLING_ENV_VAR: COUPLING_TRANSPORT_PIPE},
+        outputd_env={
+            "JASPER_CAMILLA_CHUNKSIZE": "256",
+            "JASPER_CAMILLA_TARGET_LEVEL": "1536",
+            "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE": "/run/jasper-outputd/content.pipe",
+        },
+    )
+
+    target = plan.setting("JASPER_CAMILLA_TARGET_LEVEL")
+    assert target.value == 512
+    assert target.source_kind == "route_policy"
+    assert target.generated_value == "1536"
+    assert "transport_pipe" in target.source
+    assert any("2 x chunksize" in warning for warning in target.warnings)
 
 
 def test_operator_env_wins_but_duplicate_generated_home_warns():
@@ -132,9 +167,22 @@ def test_outputd_latency_floor_actions_set_profile_floor_when_no_operator_env():
     assert [(a.action, a.key, a.value) for a in actions] == [
         ("set", "JASPER_CAMILLA_CHUNKSIZE", "256"),
         ("set", "JASPER_CAMILLA_TARGET_LEVEL", "1536"),
-        ("set", "JASPER_OUTPUTD_PERIOD_FRAMES", "256"),
-        ("set", "JASPER_OUTPUTD_DAC_BUFFER_FRAMES", "512"),
+        ("set", "JASPER_OUTPUTD_PERIOD_FRAMES", "128"),
+        ("unset", "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES", ""),
+        ("set", "JASPER_OUTPUTD_DAC_BUFFER_FRAMES", "256"),
     ]
+
+
+def test_outputd_latency_floor_actions_set_usb_route_content_buffer():
+    actions = outputd_latency_floor_actions(
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        outputd_env={},
+    )
+
+    by_key = {action.key: action for action in actions}
+    assert by_key["JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"].action == "set"
+    assert by_key["JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"].value == "1536"
 
 
 def test_outputd_latency_floor_actions_unset_when_operator_env_owns_key():
@@ -242,6 +290,192 @@ def test_usbsink_output_mode_action_rejects_unknown_mode():
         assert "invalid usbsink output mode" in str(exc)
     else:  # pragma: no cover - assertion clarity
         raise AssertionError("unknown usbsink output mode was accepted")
+
+
+def test_audio_route_profile_defaults_to_corrected_safe_path():
+    plan = build_audio_runtime_plan(route_mode="solo")
+
+    assert plan.route_profile.route_id == ROUTE_CORRECTED_48K
+    assert plan.route_profile.low_latency_claim is False
+    assert plan.route_profile.camilla_required is True
+    assert plan.route_profile.outputd_final_reference_required is True
+    assert plan.route_config_hash
+    assert plan.to_dict()["route_profile"]["route_id"] == ROUTE_CORRECTED_48K
+
+
+def test_system_plan_warns_and_uses_process_route_when_base_env_unreadable(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """jasper-control must not silently downgrade /state on EACCES.
+
+    systemd injects /etc/jasper/jasper.env before dropping privileges. If the
+    later fresh file read fails, the plan may use the process copy for the base
+    route keys, but it must still surface the unreadable source-of-truth file.
+    """
+
+    def fake_read(path: str) -> EnvFileState:
+        if path == "base.env":
+            return EnvFileState(
+                path,
+                {},
+                "unreadable",
+                "PermissionError: [Errno 13] Permission denied",
+            )
+        return EnvFileState(path, {}, "missing")
+
+    monkeypatch.setattr(audio_plan, "read_env_file_state", fake_read)
+    monkeypatch.setenv(AUDIO_ROUTE_PROFILE_KEY, ROUTE_USB_LOW_LATENCY_48K)
+
+    plan = audio_plan.build_audio_runtime_plan_from_system(
+        base_env_path="base.env",
+        outputd_env_path="outputd.env",
+        fanin_env_path="fanin.env",
+        grouping_env_path=str(tmp_path / "grouping.env"),
+        overrides_path=str(tmp_path / "overrides.json"),
+        output_hardware_state_path=str(tmp_path / "output_hardware.json"),
+    )
+
+    assert plan.route_profile.route_id == ROUTE_USB_LOW_LATENCY_48K
+    assert any(
+        "unreadable audio runtime base env file base.env" in warning
+        for warning in plan.warnings
+    )
+
+
+def test_invalid_audio_route_profile_falls_back_with_warning():
+    profile = resolve_audio_route_profile({AUDIO_ROUTE_PROFILE_KEY: "fastish"})
+
+    assert profile.route_id == ROUTE_CORRECTED_48K
+    assert any("invalid" in warning for warning in profile.warnings)
+
+
+def test_usb_low_latency_route_requires_rust_fanin_resampler_and_reference():
+    profile = resolve_audio_route_profile(
+        {AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K}
+    )
+    actions = route_owned_env_actions(profile)
+    by_key = {action.key: action for action in actions}
+
+    assert profile.low_latency_claim is True
+    assert profile.rust_usb_audio_required is True
+    assert profile.fanin_input_resampler_required is True
+    assert profile.camilla_required is True
+    assert profile.outputd_final_reference_required is True
+    assert profile.p95_budget_ms == 40.0
+    assert profile.p99_budget_ms == 60.0
+    assert by_key[FANIN_INPUT_RESAMPLER_KEY].value == "enabled"
+    assert by_key[FANIN_INPUT_RESAMPLER_LANE_KEY].value == "usbsink"
+    assert by_key["JASPER_USBSINK_AUDIO_IMPL"].action == "unset"
+    assert by_key[USBSINK_BLOCK_FRAMES_KEY].value == "256"
+    assert by_key[USBSINK_RING_PERIODS_KEY].value == "3"
+    assert (
+        by_key["JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES"].value
+        == "1536"
+    )
+
+
+def test_usb_low_latency_route_identity_carries_planned_bridge_and_resampler():
+    plan = build_audio_runtime_plan(
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        route_mode="solo",
+    )
+    identity = plan.route_latency_identity()
+
+    assert identity["dac_profile_id"] == APPLE_USB_C_DONGLE_ID
+    assert identity["route_config_hash"] == plan.route_config_hash
+    assert identity["fanin_resampler_config"] == {
+        "enabled": True,
+        "lane": "usbsink",
+        "target_frames": 512,
+        "max_adjust_ppm": 500,
+        "warmup_cushion_frames": 1536,
+        "ring_frames": 4096,
+    }
+    assert identity["rust_bridge_config"]["implementation"] == "rust"
+    assert identity["rust_bridge_config"]["period_frames"] == 256
+    assert identity["rust_bridge_config"]["ring_periods"] == 3
+    assert identity["outputd_config"]["JASPER_OUTPUTD_PERIOD_FRAMES"] == 128
+    assert (
+        identity["outputd_config"]["JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"]
+        == DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
+    )
+    assert identity["uac2_gadget_attrs"]["c_sync"] == "async"
+
+
+def test_usb_low_latency_route_rejects_legacy_low_latency_lab_paths():
+    plan = build_audio_runtime_plan(
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        fanin_env={COUPLING_ENV_VAR: COUPLING_TRANSPORT_PIPE},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "rate_match"},
+        route_mode="solo",
+    )
+
+    assert any(
+        "requires JASPER_FANIN_CAMILLA_COUPLING=loopback" in error
+        for error in plan.errors
+    )
+    assert any(
+        "requires JASPER_OUTPUTD_CONTENT_BRIDGE=direct" in error
+        for error in plan.errors
+    )
+
+
+def test_route_config_hash_includes_route_owned_env_actions(monkeypatch):
+    base_env = {AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K}
+    default_plan = build_audio_runtime_plan(base_env=base_env, route_mode="solo")
+
+    monkeypatch.setattr(audio_plan, "DEFAULT_USB_LOW_LATENCY_BLOCK_FRAMES", 128)
+    changed_plan = build_audio_runtime_plan(base_env=base_env, route_mode="solo")
+
+    assert changed_plan.route_latency_identity()["rust_bridge_config"][
+        "period_frames"
+    ] == 128
+    assert changed_plan.route_config_hash != default_plan.route_config_hash
+
+
+def test_route_config_hash_includes_active_camilla_config_hash(tmp_path):
+    config = tmp_path / "camilla.yml"
+    base_env = {AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K}
+    config.write_text("filters: {}\n", encoding="utf-8")
+    first = build_audio_runtime_plan(
+        base_env=base_env,
+        route_mode="solo",
+        correction_config_path=str(config),
+    )
+
+    config.write_text("filters:\n  peq:\n    type: Biquad\n", encoding="utf-8")
+    second = build_audio_runtime_plan(
+        base_env=base_env,
+        route_mode="solo",
+        correction_config_path=str(config),
+    )
+
+    assert first.camilla_config_hash != second.camilla_config_hash
+    assert first.route_config_hash != second.route_config_hash
+
+
+def test_non_low_latency_route_disarms_rust_bridge_claiming_knobs():
+    actions = route_owned_env_actions(ROUTE_CORRECTED_48K)
+    by_key = {action.key: action for action in actions}
+
+    assert by_key[FANIN_INPUT_RESAMPLER_KEY].action == "unset"
+    assert by_key["JASPER_USBSINK_AUDIO_IMPL"].action == "unset"
+    assert by_key[USBSINK_BLOCK_FRAMES_KEY].action == "unset"
+    assert by_key["JASPER_USBSINK_OUTPUT_MODE"].value == "aloop"
+
+
+def test_bitperfect_route_is_declared_but_inactive_and_aec_degraded():
+    profile = resolve_audio_route_profile(
+        {AUDIO_ROUTE_PROFILE_KEY: ROUTE_BITPERFECT_DECLARED}
+    )
+
+    assert profile.active is False
+    assert profile.bitperfect is True
+    assert profile.camilla_required is False
+    assert profile.aec_reference_mode == "degraded_until_final_reference_proven"
+    assert "inactive" in profile.blocking_reason
 
 
 def test_lean_capture_kwargs_emit_plan_owned_rawfile_shape():
@@ -657,6 +891,9 @@ def test_packaged_systemd_defaults_match_plan_constants():
 
     assert _env_int(outputd_unit, "JASPER_OUTPUTD_PERIOD_FRAMES") == (
         DEFAULT_OUTPUTD_PERIOD_FRAMES
+    )
+    assert _env_int(outputd_unit, "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES") == (
+        DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
     )
     assert _env_int(outputd_unit, "JASPER_OUTPUTD_DAC_BUFFER_FRAMES") == (
         DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES

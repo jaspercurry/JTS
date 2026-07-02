@@ -872,7 +872,63 @@ _OUTPUTD_EXPECTED_DUAL_DAC_PCM = "dual_apple_usb_c_dac_4ch"
 
 _OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 
+_FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
+
 _OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
+
+
+def _read_status_socket(socket_path: str) -> dict[str, object]:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1.0)
+        sock.connect(socket_path)
+        sock.sendall(b"STATUS\n")
+        chunks: list[bytes] = []
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    payload = b"".join(chunks).decode("utf-8")
+    parsed = json.loads(payload)
+    if not isinstance(parsed, dict):
+        raise ValueError("STATUS response root is not an object")
+    return parsed
+
+
+def _route_live_state_issues_for_doctor(plan: object) -> tuple[str, ...]:
+    from jasper.audio_validation import route_live_state_issues
+
+    identity = plan.route_latency_identity()
+    issues: list[str] = []
+    usbsink_state: dict[str, object] | None = None
+    fanin_status: dict[str, object] | None = None
+
+    try:
+        parsed = json.loads(Path("/run/jasper-usbsink/state.json").read_text())
+        if isinstance(parsed, dict):
+            usbsink_state = parsed
+        else:
+            issues.append("live_usbsink_state_malformed")
+    except (OSError, json.JSONDecodeError) as e:
+        issues.append(f"live_usbsink_state_unreadable:{type(e).__name__}")
+
+    try:
+        fanin_status = _read_status_socket(_FANIN_STATUS_SOCKET)
+    except (OSError, TimeoutError, json.JSONDecodeError, ValueError) as e:
+        issues.append(f"live_fanin_status_unreadable:{type(e).__name__}")
+
+    return tuple(
+        dict.fromkeys(
+            (
+                *issues,
+                *route_live_state_issues(
+                    identity,
+                    usbsink_state=usbsink_state,
+                    fanin_status=fanin_status,
+                ),
+            )
+        )
+    )
 
 
 def _outputd_reconciled_env() -> dict[str, str]:
@@ -1495,11 +1551,14 @@ def check_audio_runtime_plan() -> CheckResult:
     plan = build_audio_runtime_plan_from_system()
     summary = (
         f"profile={plan.profile_id}, route={plan.route_mode}, "
+        f"route_profile={plan.route_profile.route_id}, "
+        f"route_hash={plan.route_config_hash}, "
         f"coupling={plan.setting('JASPER_FANIN_CAMILLA_COUPLING').value}, "
         f"camilla={plan.setting('JASPER_CAMILLA_CHUNKSIZE').value}/"
         f"{plan.setting('JASPER_CAMILLA_TARGET_LEVEL').value}, "
         f"outputd={plan.setting('JASPER_OUTPUTD_PERIOD_FRAMES').value}/"
         f"{plan.setting('JASPER_OUTPUTD_DAC_BUFFER_FRAMES').value}, "
+        f"content_buffer={plan.setting('JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES').value}, "
         f"fanin={plan.setting('JASPER_FANIN_INPUT_BUFFER_FRAMES').value}/"
         f"{plan.setting('JASPER_FANIN_OUTPUT_BUFFER_FRAMES').value}"
     )
@@ -1516,6 +1575,81 @@ def check_audio_runtime_plan() -> CheckResult:
             summary + "; " + "; ".join(plan.warnings[:3]),
         )
     return CheckResult("audio runtime plan", "ok", summary)
+
+
+@doctor_check(order=51.65, group="audio")
+def check_route_latency_evidence() -> CheckResult:
+    """Low-latency route claims require a fresh measured artifact."""
+
+    from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
+    from jasper.audio_validation import (
+        ROUTE_LATENCY_MIC_ID,
+        ROUTE_LATENCY_PROFILE,
+        ROUTE_LATENCY_STALE_AFTER,
+        artifact_directory,
+        assess_route_latency_artifact,
+        load_latest_artifact,
+    )
+
+    plan = build_audio_runtime_plan_from_system()
+    route = plan.route_profile
+    if not route.low_latency_claim:
+        return CheckResult(
+            "route latency evidence",
+            "ok",
+            f"route_profile={route.route_id} has no low-latency claim",
+        )
+    if plan.errors:
+        return CheckResult(
+            "route latency evidence",
+            "fail",
+            f"route_profile={route.route_id}, route_hash={plan.route_config_hash}, "
+            "runtime plan errors block latency certification: "
+            + "; ".join(plan.errors),
+        )
+
+    dac_id = None if plan.profile_id == "unknown" else plan.profile_id
+    result = load_latest_artifact(
+        artifact_directory(),
+        mic_id=ROUTE_LATENCY_MIC_ID,
+        dac_id=dac_id,
+        profile=ROUTE_LATENCY_PROFILE,
+        max_age=ROUTE_LATENCY_STALE_AFTER,
+    )
+    summary = assess_route_latency_artifact(
+        result,
+        route_config_hash=plan.route_config_hash,
+        expected_identity=plan.route_latency_identity(),
+    )
+    detail = (
+        f"route_profile={route.route_id}, route_hash={plan.route_config_hash}, "
+        f"artifact_status={summary.get('status')}, state={summary.get('state')}, "
+        f"p95_ms={summary.get('p95_ms')}, p99_ms={summary.get('p99_ms')}, "
+        f"samples={summary.get('sample_count')}, "
+        f"duration_seconds={summary.get('duration_seconds')}, "
+        f"certified={summary.get('certified_percentiles')}, "
+        f"config_match={summary.get('config_match')}, "
+        f"issues={summary.get('issues')}, "
+        f"artifact={summary.get('artifact_path')}"
+    )
+    status = str(summary.get("status") or "fail")
+    if status in {"pass", "warn"}:
+        live_issues = _route_live_state_issues_for_doctor(plan)
+        if live_issues:
+            status = "fail"
+            detail += f", live_issues={list(live_issues)}"
+    if status == "pass":
+        return CheckResult("route latency evidence", "ok", detail)
+    if status == "warn":
+        return CheckResult("route latency evidence", "warn", detail)
+    return CheckResult(
+        "route latency evidence",
+        "fail",
+        detail + "; Run route-latency validation for usb_low_latency_48k; "
+        "p95 must be "
+        "<=40 ms with >=200 impulses over >=5 minutes, and promotion p99 "
+        "requires >=1000 impulses over >=30 minutes.",
+    )
 
 
 @doctor_check(order=51.7, group="audio")
@@ -1792,8 +1926,11 @@ def check_outputd_service() -> CheckResult:
             f"local_pipe_format={local_pipe.get('format')}, "
             f"local_pipe_open={bool(local_pipe.get('open', False))}, "
             f"local_pipe_requested_bytes={local_pipe.get('requested_pipe_bytes', 0)}, "
+            f"local_pipe_max_queued_bytes={local_pipe.get('max_queued_bytes', 0)}, "
             f"local_pipe_actual_bytes={local_pipe.get('actual_pipe_bytes', 0)}, "
             f"local_pipe_available_bytes={local_pipe.get('available_bytes', 0)}, "
+            f"local_pipe_stale_drop_events={local_pipe.get('stale_drop_events', 0)}, "
+            f"local_pipe_stale_drop_frames={local_pipe.get('stale_drop_frames', 0)}, "
             f"local_pipe_startup_empty_periods={local_pipe.get('startup_empty_periods', 0)}, "
             f"local_pipe_empty_periods={local_pipe.get('empty_periods', 0)}, "
             f"local_pipe_partial_periods={local_pipe.get('partial_periods', 0)}, "
@@ -1974,10 +2111,10 @@ def check_outputd_service() -> CheckResult:
                 f"actual_pipe_ms={actual_ms:.1f}. "
                 "Check JASPER_OUTPUTD_LOCAL_CONTENT_PIPE_BYTES and F_SETPIPE_SZ.",
             )
+        max_available_frames = period_frames * 8
         local_pipe_available_frames = (
             local_pipe_available_bytes // local_pipe_frame_bytes
         )
-        max_available_frames = period_frames * 8
         if local_pipe_available_frames > max_available_frames:
             available_ms = local_pipe_available_frames * 1000.0 / 48000.0
             return CheckResult(

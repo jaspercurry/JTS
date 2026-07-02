@@ -15,6 +15,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from jasper import audio_runtime_plan
 from jasper.cli import doctor
 
 
@@ -85,6 +86,25 @@ def test_usbsink_state_disabled_libcomposite_loaded_is_warn(monkeypatch):
     assert r.status == "warn"
     assert "libcomposite" in r.detail.lower()
     assert "ram" in r.detail.lower() or "drift" in r.detail.lower()
+
+
+def test_usbsink_state_disabled_with_gadget_is_fail(monkeypatch, tmp_path):
+    """Computers seeing USB audio while the bridge is inactive is not RAM drift.
+
+    The gadget itself is advertised, so doctor must hard-fail the split-brain
+    state that made /sources look off while hosts still saw JTS.
+    """
+    gadget = tmp_path / "jts-usb-audio"
+    gadget.mkdir()
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
+    _patch_active(monkeypatch, False)
+    _patch_libcomp_loaded(monkeypatch, True)
+
+    r = doctor.check_usbsink_state()
+
+    assert r.status == "fail"
+    assert "advertised" in r.detail.lower()
+    assert "bridge inactive" in r.detail.lower()
 
 
 def test_usbsink_state_parked_clean(monkeypatch, tmp_path):
@@ -287,6 +307,154 @@ def test_usbsink_card_active_missing_is_fail(monkeypatch, tmp_path):
         r = doctor.check_usbsink_card()
     assert r.status == "fail"
     assert "init" in r.detail.lower() or "missing" in r.detail.lower()
+
+
+# ----------------------------------------------------------------------
+# check_usbsink_low_latency_contract
+# ----------------------------------------------------------------------
+
+
+def _low_latency_plan():
+    return audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            )
+        },
+        route_mode="solo",
+    )
+
+
+def test_usbsink_low_latency_contract_skips_non_claiming_route(monkeypatch):
+    plan = audio_runtime_plan.build_audio_runtime_plan(route_mode="solo")
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+
+    r = doctor.check_usbsink_low_latency_contract()
+
+    assert r.status == "ok"
+    assert "no USB low-latency claim" in r.detail
+
+
+def test_usbsink_low_latency_contract_requires_rust_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        _low_latency_plan,
+    )
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({"implementation": "python"}))
+    with patch.object(doctor.usbsink, "Path") as mock_path:
+        def _path(p):
+            if p == "/run/jasper-usbsink/state.json":
+                return state_path
+            return Path(p)
+        mock_path.side_effect = _path
+
+        r = doctor.check_usbsink_low_latency_contract()
+
+    assert r.status == "fail"
+    assert "implementation='rust'" in r.detail
+
+
+def test_usbsink_low_latency_contract_warns_missing_optional_attrs(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        _low_latency_plan,
+    )
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "implementation": "rust",
+        "period_frames": 256,
+        "ring": {"fill_periods": 1, "capacity_periods": 3},
+        "counters": {},
+    }))
+    gadget = tmp_path / "gadget"
+    (gadget / "functions" / "uac2.usb0").mkdir(parents=True)
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
+    with patch.object(doctor.usbsink, "Path") as mock_path:
+        def _path(p):
+            if p == "/run/jasper-usbsink/state.json":
+                return state_path
+            return Path(p)
+        mock_path.side_effect = _path
+
+        r = doctor.check_usbsink_low_latency_contract()
+
+    assert r.status == "warn"
+    assert "kernel does not expose" in r.detail
+
+
+def test_usbsink_low_latency_contract_fails_bridge_period_mismatch(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        _low_latency_plan,
+    )
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "implementation": "rust",
+        "period_frames": 128,
+        "ring": {"fill_periods": 1, "capacity_periods": 2},
+        "counters": {},
+    }))
+    with patch.object(doctor.usbsink, "Path") as mock_path:
+        def _path(p):
+            if p == "/run/jasper-usbsink/state.json":
+                return state_path
+            return Path(p)
+        mock_path.side_effect = _path
+
+        r = doctor.check_usbsink_low_latency_contract()
+
+    assert r.status == "fail"
+    assert "period_frames" in r.detail
+    assert "ring_periods" in r.detail
+
+
+def test_usbsink_low_latency_contract_fails_mismatched_exposed_attr(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        _low_latency_plan,
+    )
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "implementation": "rust",
+        "period_frames": 256,
+        "ring": {"fill_periods": 1, "capacity_periods": 3},
+        "counters": {},
+    }))
+    function_path = tmp_path / "gadget" / "functions" / "uac2.usb0"
+    function_path.mkdir(parents=True)
+    (function_path / "c_sync").write_text("adaptive\n")
+    (function_path / "req_number").write_text("2\n")
+    (function_path / "c_hs_bint").write_text("1\n")
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", tmp_path / "gadget")
+    with patch.object(doctor.usbsink, "Path") as mock_path:
+        def _path(p):
+            if p == "/run/jasper-usbsink/state.json":
+                return state_path
+            return Path(p)
+        mock_path.side_effect = _path
+
+        r = doctor.check_usbsink_low_latency_contract()
+
+    assert r.status == "fail"
+    assert "c_sync" in r.detail
 
 
 # ----------------------------------------------------------------------

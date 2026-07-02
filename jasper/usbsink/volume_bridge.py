@@ -109,11 +109,13 @@ class VolumeBridge:
         control_url: str = DEFAULT_CONTROL_URL,
         *,
         poll_interval_sec: float = POLL_INTERVAL_SEC,
+        discovery_retry_interval_sec: float = 5.0,
         http_timeout_sec: float = 2.0,
     ) -> None:
         self._card_name = card_name
         self._control_url = control_url.rstrip("/")
         self._poll_interval = poll_interval_sec
+        self._discovery_retry_interval = discovery_retry_interval_sec
         self._http_timeout = http_timeout_sec
 
         # Cached lookups, populated in _discover().
@@ -128,9 +130,9 @@ class VolumeBridge:
         self._last_published_pct: Optional[int] = None
 
         # Bound once `run()` clears mixer discovery (mirrors where the old
-        # httpx client was opened). None means the bridge never started —
-        # `_post` no-ops in that disabled state. The client carries no
-        # connection pool, so there's nothing to close on shutdown.
+        # httpx client was opened). None means discovery has not succeeded
+        # yet. The client carries no connection pool, so there's nothing
+        # to close on shutdown.
         self._control: Optional[AsyncControlClient] = None
 
     async def run(self) -> None:
@@ -139,20 +141,19 @@ class VolumeBridge:
         # Defer mixer discovery until run() — at __init__ time the
         # gadget card may not have enumerated yet (init.service has
         # only just returned).
-        try:
-            self._discover()
-        except VolumeBridgeUnavailable as e:
-            log_event(
-                logger,
-                "usbsink.volume_bridge_disabled",
-                reason=e,
-                level=logging.WARNING,
-            )
-            # Mixer isn't present. We'll quietly sit here waiting for
-            # cancellation rather than spinning on discovery retries —
-            # if the gadget card never enumerated, something at the
-            # init.service level is broken and that's where to fix it.
-            return
+        while True:
+            try:
+                self._discover()
+                break
+            except VolumeBridgeUnavailable as e:
+                log_event(
+                    logger,
+                    "usbsink.volume_bridge_unavailable",
+                    reason=e,
+                    retry_sec=self._discovery_retry_interval,
+                    level=logging.WARNING,
+                )
+                await asyncio.sleep(self._discovery_retry_interval)
 
         self._control = AsyncControlClient(
             self._control_url, timeout=self._http_timeout,
@@ -330,6 +331,6 @@ class VolumeBridge:
 
 class VolumeBridgeUnavailable(RuntimeError):
     """Raised by _discover() when the gadget mixer can't be read.
-    The daemon's run() catches this and idles — `jasper-doctor`'s
-    usbsink card check is responsible for surfacing the underlying
-    cause (no card, descriptor missing controls, etc.)."""
+    The helper retries discovery with a bounded sleep; `jasper-doctor`'s
+    usbsink card check surfaces the underlying cause when the card or
+    descriptor stays broken."""

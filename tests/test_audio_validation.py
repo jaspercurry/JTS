@@ -22,7 +22,13 @@ from jasper.audio_validation import (
     load_artifact,
     load_latest_artifact,
     make_artifact,
+    make_route_latency_artifact,
     parse_artifact_payload,
+    percentile_min_samples,
+    route_latency_gate_status,
+    route_live_state_issues,
+    certified_route_latency_percentiles,
+    assess_route_latency_artifact,
     write_artifact,
     write_latest_pointer,
 )
@@ -119,6 +125,295 @@ def test_make_artifact_defaults_timestamp_to_timezone_aware_utc():
     )
 
     assert artifact.validated_at.tzinfo is not None
+
+
+def test_route_latency_percentile_sample_rules_are_statistically_pinned():
+    assert percentile_min_samples(0.95) == 200
+    assert percentile_min_samples(95) == 200
+    assert percentile_min_samples(0.99) == 1000
+    assert percentile_min_samples(99) == 1000
+    with pytest.raises(ValueError):
+        percentile_min_samples(100)
+
+
+def test_route_latency_certification_requires_samples_and_duration():
+    assert certified_route_latency_percentiles(
+        sample_count=199,
+        duration_seconds=5 * 60,
+    ) == ()
+    assert certified_route_latency_percentiles(
+        sample_count=200,
+        duration_seconds=(5 * 60) - 1,
+    ) == ()
+    assert certified_route_latency_percentiles(
+        sample_count=200,
+        duration_seconds=5 * 60,
+    ) == (95,)
+    assert certified_route_latency_percentiles(
+        sample_count=1000,
+        duration_seconds=(30 * 60) - 1,
+    ) == (95,)
+    assert certified_route_latency_percentiles(
+        sample_count=1000,
+        duration_seconds=30 * 60,
+    ) == (95,)
+    assert certified_route_latency_percentiles(
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        jittered_impulse_spacing=True,
+    ) == (95, 99)
+
+
+def test_route_latency_gate_status_pass_warn_fail_boundaries():
+    status, _rec, certified, issues = route_latency_gate_status(
+        p95_ms=39.0,
+        p99_ms=59.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        jittered_impulse_spacing=True,
+    )
+    assert status == "pass"
+    assert certified == (95, 99)
+    assert issues == ()
+
+    status, _rec, certified, issues = route_latency_gate_status(
+        p95_ms=39.0,
+        p99_ms=None,
+        sample_count=200,
+        duration_seconds=5 * 60,
+    )
+    assert status == "warn"
+    assert certified == (95,)
+    assert issues == ("p99_missing",)
+
+    status, _rec, _certified, issues = route_latency_gate_status(
+        p95_ms=41.0,
+        p99_ms=59.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        jittered_impulse_spacing=True,
+    )
+    assert status == "fail"
+    assert "p95_exceeds_40ms" in issues
+
+    status, _rec, certified, issues = route_latency_gate_status(
+        p95_ms=39.0,
+        p99_ms=59.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+    )
+    assert status == "warn"
+    assert certified == (95,)
+    assert issues == ("p99_spacing_unverified",)
+
+
+def test_make_route_latency_artifact_records_identity_and_certification():
+    artifact = make_route_latency_artifact(
+        route_id="usb_low_latency_48k",
+        source_id="usbsink",
+        dac_id="apple_usb_c_dongle",
+        route_config_hash="abc123",
+        camilla_config_hash="camilla123",
+        fanin_resampler_config={"target_frames": 512},
+        outputd_config={"period_frames": 256},
+        rust_bridge_config={"period_frames": 256, "ring_periods": 3},
+        uac2_gadget_attrs={"c_sync": "async"},
+        measurement_provenance={
+            "input_kind": "raw_samples",
+            "sample_sha256": "0" * 64,
+            "harness_id": "jts-click-capture",
+        },
+        p95_ms=38.5,
+        p99_ms=58.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        impulse_spacing_jittered=True,
+        validated_at=NOW,
+    )
+
+    assert artifact.profile == audio_validation.ROUTE_LATENCY_PROFILE
+    assert artifact.status == "pass"
+    checks = artifact.checks
+    assert checks["identity"]["dac_profile_id"] == "apple_usb_c_dongle"
+    assert checks["identity"]["route_config_hash"] == "abc123"
+    assert checks["identity"]["camilla_config_hash"] == "camilla123"
+    assert checks["certified_percentiles"] == [95, 99]
+    assert checks["evidence"]["input_kind"] == "raw_samples"
+    assert checks["evidence"]["sample_sha256"] == "0" * 64
+    assert checks["evidence"]["harness_id"] == "jts-click-capture"
+
+
+def test_route_live_state_issues_detect_runtime_mismatches():
+    identity = {
+        "rust_bridge_config": {
+            "implementation": "rust",
+            "period_frames": 256,
+            "ring_periods": 3,
+        },
+        "fanin_resampler_config": {
+            "enabled": True,
+            "lane": "usbsink",
+            "target_frames": 512,
+            "warmup_cushion_frames": 1536,
+        },
+    }
+
+    assert route_live_state_issues(
+        identity,
+        usbsink_state={
+            "implementation": "rust",
+            "period_frames": 256,
+            "ring": {"capacity_periods": 3},
+        },
+        fanin_status={
+            "inputs": [
+                {
+                    "label": "usbsink",
+                    "resampler": {
+                        "locked": True,
+                        "target_fill_frames": 2048,
+                    },
+                }
+            ]
+        },
+    ) == ()
+
+    issues = route_live_state_issues(
+        identity,
+        usbsink_state={
+            "implementation": "rust",
+            "period_frames": 128,
+            "ring": {"capacity_periods": 2},
+        },
+        fanin_status={
+            "inputs": [
+                {
+                    "label": "usbsink",
+                    "resampler": {
+                        "locked": False,
+                        "target_fill_frames": 1536,
+                    },
+                }
+            ]
+        },
+    )
+
+    assert "live_usbsink_bridge_mismatch:period_frames" in issues
+    assert "live_usbsink_bridge_mismatch:ring_periods" in issues
+    assert "live_fanin_resampler_unlocked:usbsink" in issues
+    assert "live_fanin_resampler_mismatch:usbsink:target_fill_frames" in issues
+
+
+def test_assess_route_latency_artifact_fails_mismatched_hash(tmp_path):
+    artifact = make_route_latency_artifact(
+        route_id="usb_low_latency_48k",
+        source_id="usbsink",
+        dac_id="apple_usb_c_dongle",
+        route_config_hash="old",
+        p95_ms=38.5,
+        p99_ms=58.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        validated_at=NOW,
+    )
+    path = write_artifact(artifact, directory=tmp_path)
+    result = load_artifact(path, now=NOW + timedelta(days=1))
+
+    summary = assess_route_latency_artifact(result, route_config_hash="new")
+
+    assert summary["status"] == "fail"
+    assert summary["config_match"] is False
+    assert "config_mismatch" in summary["issues"]
+
+
+def test_assess_route_latency_artifact_fails_identity_mismatch(tmp_path):
+    artifact = make_route_latency_artifact(
+        route_id="usb_low_latency_48k",
+        source_id="usbsink",
+        dac_id="apple_usb_c_dongle",
+        route_config_hash="same",
+        camilla_config_hash="camilla-a",
+        fanin_resampler_config={"target_frames": 512},
+        outputd_config={"JASPER_OUTPUTD_PERIOD_FRAMES": 1024},
+        rust_bridge_config={"period_frames": 256, "ring_periods": 3},
+        p95_ms=38.5,
+        p99_ms=58.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        impulse_spacing_jittered=True,
+        validated_at=NOW,
+    )
+    path = write_artifact(artifact, directory=tmp_path)
+    result = load_artifact(path, now=NOW + timedelta(days=1))
+
+    summary = assess_route_latency_artifact(
+        result,
+        route_config_hash="same",
+        expected_identity={
+            "route_id": "usb_low_latency_48k",
+            "source_id": "usbsink",
+            "dac_profile_id": "apple_usb_c_dongle",
+            "route_config_hash": "same",
+            "camilla_config_hash": "camilla-b",
+            "fanin_resampler_config": {"target_frames": 512},
+            "outputd_config": {"JASPER_OUTPUTD_PERIOD_FRAMES": 1024},
+            "rust_bridge_config": {"period_frames": 256, "ring_periods": 3},
+        },
+    )
+
+    assert summary["status"] == "fail"
+    assert summary["config_match"] is False
+    assert "identity_mismatch:camilla_config_hash" in summary["issues"]
+
+
+def test_route_latency_artifact_uses_fresh_24h_window(tmp_path):
+    artifact = make_route_latency_artifact(
+        route_id="usb_low_latency_48k",
+        source_id="usbsink",
+        dac_id="apple_usb_c_dongle",
+        route_config_hash="same",
+        p95_ms=38.5,
+        p99_ms=58.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        impulse_spacing_jittered=True,
+        validated_at=NOW,
+    )
+    path = write_artifact(artifact, directory=tmp_path)
+    result = load_artifact(
+        path,
+        now=NOW + timedelta(hours=25),
+        max_age=audio_validation.ROUTE_LATENCY_STALE_AFTER,
+    )
+
+    summary = assess_route_latency_artifact(result, route_config_hash="same")
+
+    assert result.state == "stale"
+    assert summary["status"] == "fail"
+    assert "artifact_stale" in summary["issues"]
+
+
+def test_assess_route_latency_artifact_preserves_route_health_anomaly(tmp_path):
+    artifact = make_route_latency_artifact(
+        route_id="usb_low_latency_48k",
+        source_id="usbsink",
+        dac_id="apple_usb_c_dongle",
+        route_config_hash="same",
+        p95_ms=38.5,
+        p99_ms=58.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        impulse_spacing_jittered=True,
+        route_health_ok=False,
+        validated_at=NOW,
+    )
+    path = write_artifact(artifact, directory=tmp_path)
+    result = load_artifact(path, now=NOW + timedelta(days=1))
+
+    summary = assess_route_latency_artifact(result, route_config_hash="same")
+
+    assert summary["status"] == "fail"
+    assert "route_health_anomaly" in summary["issues"]
 
 
 def test_load_missing_returns_missing_result(tmp_path):

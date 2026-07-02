@@ -14,12 +14,17 @@ import json
 import math
 import os
 from pathlib import Path
+
+from jasper.audio_runtime_plan import UAC2_LOW_LATENCY_EXPECTED_ATTRS
+from jasper.audio_validation import route_live_state_issues
+
 from ._registry import doctor_check
 from ._shared import CheckResult, _parked_as_bonded_follower, _run
 
 USBSINK_UNIT = "jasper-usbsink.service"
 USBSINK_INIT_UNIT = "jasper-usbsink-init.service"
 USBSINK_GADGET_PATH = Path("/sys/kernel/config/usb_gadget/jts-usb-audio")
+UAC2_EXPECTED_LOW_LATENCY_ATTRS = UAC2_LOW_LATENCY_EXPECTED_ATTRS
 
 
 def _format_rms_dbfs(raw: object) -> tuple[str | None, str | None]:
@@ -48,6 +53,10 @@ def _module_loaded(name: str) -> bool:
         line.split() and line.split()[0] == name
         for line in proc.stdout.splitlines()
     )
+
+
+def _uac2_function_path() -> Path:
+    return USBSINK_GADGET_PATH / "functions" / "uac2.usb0"
 
 @doctor_check(order=57, group="usbsink")
 def check_usbsink_dtoverlay() -> CheckResult:
@@ -96,10 +105,10 @@ def check_usbsink_state() -> CheckResult:
     written recently (catches a wedged daemon that's somehow still
     showing active to systemd).
 
-    When the service is inactive, verify libcomposite is NOT loaded —
-    if it is, the previous stop didn't tear cleanly and the gadget
-    descriptor is leaking RAM (~60 KB). Not catastrophic but worth
-    surfacing so the operator can `sudo rmmod libcomposite` or reboot.
+    When the service is inactive, verify the host-visible gadget is also
+    inactive. A bound ConfigFS gadget with the bridge down is a split-brain
+    source state: computers still see JTS as USB audio while /sources can
+    otherwise appear off. A leftover module without a gadget is only RAM drift.
     """
     active = _systemd_is_active(USBSINK_UNIT)
     init_active = _systemd_is_active(USBSINK_INIT_UNIT)
@@ -138,6 +147,21 @@ def check_usbsink_state() -> CheckResult:
         )
 
     if not active:
+        gadget_visible = init_active or USBSINK_GADGET_PATH.exists()
+        if gadget_visible:
+            inactive_details: list[str] = []
+            if init_active:
+                inactive_details.append(f"{USBSINK_INIT_UNIT}=active")
+            if USBSINK_GADGET_PATH.exists():
+                inactive_details.append("ConfigFS gadget present")
+            return CheckResult(
+                "usbsink state",
+                "fail",
+                "bridge inactive but USB Audio Input is still advertised "
+                f"({', '.join(inactive_details)}). Toggle USB Audio Input off in "
+                "/sources/ or run `sudo systemctl stop jasper-usbsink-init.service` "
+                "so hosts stop seeing the gadget.",
+            )
         if libcomp:
             return CheckResult(
                 "usbsink state", "warn",
@@ -224,6 +248,95 @@ def check_usbsink_card() -> CheckResult:
         "init.service didn't bind the UDC. Check "
         "`systemctl status jasper-usbsink-init` for the failure mode.",
     )
+
+
+@doctor_check(order=59.5, group="usbsink")
+def check_usbsink_low_latency_contract() -> CheckResult:
+    """When the route claims low latency, verify the USB bridge contract."""
+
+    from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
+
+    plan = build_audio_runtime_plan_from_system()
+    if not plan.route_profile.low_latency_claim:
+        return CheckResult(
+            "usbsink low-latency contract",
+            "ok",
+            f"route_profile={plan.route_profile.route_id} has no USB low-latency claim",
+        )
+
+    state_path = Path("/run/jasper-usbsink/state.json")
+    if not state_path.exists():
+        return CheckResult(
+            "usbsink low-latency contract",
+            "fail",
+            f"route_profile={plan.route_profile.route_id} requires Rust bridge state at {state_path}",
+        )
+    try:
+        data = json.loads(state_path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return CheckResult(
+            "usbsink low-latency contract",
+            "fail",
+            f"can't parse {state_path}: {e}",
+        )
+    if data.get("implementation") != "rust":
+        return CheckResult(
+            "usbsink low-latency contract",
+            "fail",
+            "usb_low_latency_48k requires implementation='rust' in "
+            f"{state_path}; got {data.get('implementation')!r}",
+        )
+    live_issues = tuple(
+        issue
+        for issue in route_live_state_issues(
+            plan.route_latency_identity(),
+            usbsink_state=data,
+        )
+        if issue.startswith("live_usbsink_")
+    )
+    if live_issues:
+        return CheckResult(
+            "usbsink low-latency contract",
+            "fail",
+            "usb_low_latency_48k live Rust bridge state does not match route "
+            f"identity: {list(live_issues)}",
+        )
+
+    missing: list[str] = []
+    mismatched: list[str] = []
+    function_path = _uac2_function_path()
+    for name, expected in UAC2_EXPECTED_LOW_LATENCY_ATTRS.items():
+        path = function_path / name
+        if not path.exists():
+            missing.append(name)
+            continue
+        try:
+            observed = path.read_text().strip()
+        except OSError as e:
+            mismatched.append(f"{name}=unreadable({e}) expected={expected}")
+            continue
+        if observed != expected:
+            mismatched.append(f"{name}={observed!r} expected={expected!r}")
+    detail = (
+        f"route_profile={plan.route_profile.route_id}, implementation=rust, "
+        f"ring={data.get('ring')}, counters={data.get('counters')}"
+    )
+    if mismatched:
+        return CheckResult(
+            "usbsink low-latency contract",
+            "fail",
+            detail
+            + "; UAC2 attrs mismatched: "
+            + ", ".join(mismatched)
+            + "; Restart jasper-usbsink-init so the gadget descriptor is recreated.",
+        )
+    if missing:
+        return CheckResult(
+            "usbsink low-latency contract",
+            "warn",
+            detail + "; kernel does not expose UAC2 attrs: " + ", ".join(missing),
+        )
+    return CheckResult("usbsink low-latency contract", "ok", detail)
 
 @doctor_check(order=62, group="usbsink")
 def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:

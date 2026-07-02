@@ -5,8 +5,9 @@ the music path while keeping the speaker resilient and supporting flexible
 output/mic hardware. Read this before touching the lean lane, the USB-input
 bridge latency, or the snapcast bond buffer.
 
-**Targets:** USB-audio-input end-to-end latency under ~60 ms all-in
-(source → DAC, including CamillaDSP and room correction);
+**Targets:** USB-audio-input end-to-end latency at p95 <= 40 ms all-in
+(source → DAC, including CamillaDSP and room correction), with promotion
+requiring p99 <= 60 ms from a statistically adequate route-latency artifact;
 AirPlay (Apple TV → bonded pair) staying within the ~2 s presentation budget;
 and, in general, *only* adding latency where a specific piece of hardware
 genuinely requires it.
@@ -39,8 +40,9 @@ Current implication:
   floor.
 - Treat the shipped transport-pipe code as a failed/default-off lab path until
   it is either removed or repurposed for non-low-latency diagnostics.
-- Preserve the original latency goal: **sub-60 ms all-in USB → DAC**, proven by
-  a click-in/capture-back sample count, not by summed buffer math alone.
+- Preserve the latency goal: **p95 <= 40 ms all-in USB → DAC**, with p99 <= 60 ms
+  for promotion, proven by a click-in/capture-back sample count and not by summed
+  buffer math alone.
 
 Design direction from the checkpoint:
 
@@ -63,11 +65,25 @@ Design direction from the checkpoint:
    frame-bounded shared-memory/ALSA-facing transport or a JACK/PipeWire graph
    with outputd's DAC-owner role redesigned deliberately.
 
+2026-07-02 tuning result: the best stable loopback values on jts.local are Rust
+USB bridge 256/3, fan-in USB resampler held target 2048, fan-in output buffer
+1024, CamillaDSP 256/1536, outputd 128/256, and outputd content buffer 1536.
+Those values are useful as the stable fallback floor, but they do not make a
+credible 40 ms end-to-end route: the resampler held target alone is ~42.7 ms
+before fan-in output, CamillaDSP, outputd content, and DAC delay. Further work
+should treat the 40 ms target as an architecture/transport problem, not as more
+blind loopback tuning.
+
+The route-specific productization and legacy cleanup plan lives in
+[HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md#productization-plan).
+Keep this file as the clock-domain architecture reference; do not duplicate the
+USB route gates here.
+
 Open questions to answer before the next architecture turn:
 
-- Can the existing loopback chain, with smaller ALSA periods/buffers plus
-  SCHED_FIFO/performance-governor/mlock/IRQ-affinity hardening, hit a stable
-  measured sub-60 ms USB path while preserving TTS and CamillaDSP?
+- Can a frame-bounded replacement for one or both ALSA loopback boundaries hit a
+  stable measured p95 <= 40 ms USB path while preserving TTS, CamillaDSP, and
+  outputd as the final DAC/reference owner?
 - Should USB input bypass its snd-aloop ingress and be captured directly, with
   the ingress DLL/resampler crossing host clock → DAC clock?
 - If a shared-memory ring is built, how does CamillaDSP consume it without
@@ -486,7 +502,11 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-07-01 (`jasper.audio_runtime_plan` / `jasper-audio-config
+Last verified: 2026-07-02 (jts.local tuning found the stable loopback floor:
+Rust bridge 256/3, fan-in USB resampler held target 2048, fan-in output 1024,
+CamillaDSP 256/1536, outputd 128/256, outputd content buffer 1536. This is not a
+40 ms end-to-end route; route-latency evidence remains missing. 2026-07-01
+`jasper.audio_runtime_plan` / `jasper-audio-config
 explain` / `jasper-audio-config outputd-floor-actions` / `jasper-doctor`
 runtime-plan check added as the SSOT layer; numeric lab override artifact added
 while fan-in coupling remains ordered-reconciler-owned; audio-hardware, usbsink

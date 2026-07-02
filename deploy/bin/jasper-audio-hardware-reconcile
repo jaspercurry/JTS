@@ -14,6 +14,8 @@ set -euo pipefail
 
 ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
+FANIN_ENV_FILE="${JASPER_FANIN_ENV_FILE:-/var/lib/jasper/fanin.env}"
+USBSINK_ENV_FILE="${JASPER_USBSINK_ENV_FILE:-/var/lib/jasper/usbsink.env}"
 ASOUND_SOURCE_TEMPLATE="${JASPER_ASOUND_SOURCE_TEMPLATE:-/etc/jasper/asoundrc.jasper.source}"
 ASOUND_TEMPLATE="${JASPER_ASOUND_TEMPLATE:-/etc/jasper/asoundrc.jasper.template}"
 RENDER_ASOUND_CONF="${JASPER_RENDER_ASOUND_CONF:-/usr/local/sbin/jasper-render-asound-conf}"
@@ -274,6 +276,12 @@ set_env_file_var_if_changed() {
     return 0
 }
 
+repair_generated_env_permissions() {
+    jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640 0750
+    jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750
+    jasper_env_file_repair_permissions "$USBSINK_ENV_FILE" 0640 0750
+}
+
 APPLE_DONGLE_CARD=""
 APPLE_DONGLE_PRESENT=0
 APPLE_DONGLE_SERVICE_CARD="auto"
@@ -474,6 +482,7 @@ _fallback_latency_floor_actions() {
     printf 'unset JASPER_CAMILLA_CHUNKSIZE\n'
     printf 'unset JASPER_CAMILLA_TARGET_LEVEL\n'
     printf 'unset JASPER_OUTPUTD_PERIOD_FRAMES\n'
+    printf 'unset JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES\n'
     printf 'unset JASPER_OUTPUTD_DAC_BUFFER_FRAMES\n'
 }
 
@@ -495,6 +504,53 @@ latency_floor_actions_for_dac() {
     fi
 }
 
+route_env_actions() {
+    if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+        return 1
+    fi
+    "$OUTPUT_HARDWARE_PYTHON" -m jasper.cli.audio_config \
+        route-actions \
+        --base-env "$ENV_FILE" 2>/dev/null
+}
+
+apply_route_env() {
+    local changed=0
+    local actions target kind key value file
+    if ! actions="$(route_env_actions)"; then
+        log_event "route_env_skip" "reason=audio_config_unavailable"
+        return 1
+    fi
+    while read -r target kind key value; do
+        [[ -n "${target:-}" ]] || continue
+        if [[ "$target" == "summary" ]]; then
+            continue
+        fi
+        case "$target" in
+            fanin) file="$FANIN_ENV_FILE" ;;
+            usbsink) file="$USBSINK_ENV_FILE" ;;
+            *) continue ;;
+        esac
+        case "$kind" in
+            set)
+                if set_env_file_var_if_changed "$file" "$key" "$value"; then
+                    changed=1
+                fi
+                ;;
+            unset)
+                if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null; then
+                    jasper_env_file_unset "$file" "$key" 0640 0750
+                    changed=1
+                fi
+                ;;
+        esac
+    done <<<"$actions"
+    log_event "route_env" "fanin_env=${FANIN_ENV_FILE} usbsink_env=${USBSINK_ENV_FILE} changed=${changed}"
+    if [[ "$changed" == "1" ]]; then
+        return 0
+    fi
+    return 1
+}
+
 # Apply the active DAC latency-floor actions into the wizard-owned outputd.env.
 # The decisions come from jasper.audio_runtime_plan; this function only performs
 # the requested set/unset mutations and reports whether the file changed.
@@ -503,7 +559,7 @@ apply_latency_floor_env() {
     LATENCY_FLOOR_CHANGED=0
     local dac_id="$1"
     local actions kind key value
-    local camilla_chunk="" camilla_target="" outputd_period="" outputd_buffer=""
+    local camilla_chunk="" camilla_target="" outputd_period="" outputd_content_buffer="" outputd_buffer=""
     actions="$(latency_floor_actions_for_dac "$dac_id")"
     while read -r kind key value; do
         [[ -n "${kind:-}" ]] || continue
@@ -513,6 +569,7 @@ apply_latency_floor_env() {
                     JASPER_CAMILLA_CHUNKSIZE) camilla_chunk="$value" ;;
                     JASPER_CAMILLA_TARGET_LEVEL) camilla_target="$value" ;;
                     JASPER_OUTPUTD_PERIOD_FRAMES) outputd_period="$value" ;;
+                    JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES) outputd_content_buffer="$value" ;;
                     JASPER_OUTPUTD_DAC_BUFFER_FRAMES) outputd_buffer="$value" ;;
                 esac
                 ;;
@@ -530,7 +587,7 @@ apply_latency_floor_env() {
         esac
     done <<<"$actions"
     log_event "latency_floor" \
-        "output_dac_id=${dac_id} camilla_chunksize=${camilla_chunk:-default} camilla_target_level=${camilla_target:-default} outputd_period_frames=${outputd_period:-default} outputd_dac_buffer_frames=${outputd_buffer:-default} changed=${LATENCY_FLOOR_CHANGED}"
+        "output_dac_id=${dac_id} camilla_chunksize=${camilla_chunk:-default} camilla_target_level=${camilla_target:-default} outputd_period_frames=${outputd_period:-default} outputd_content_buffer_frames=${outputd_content_buffer:-default} outputd_dac_buffer_frames=${outputd_buffer:-default} changed=${LATENCY_FLOOR_CHANGED}"
 }
 
 print_env() {
@@ -622,6 +679,17 @@ restart_audio_if_needed() {
     "$SYSTEMCTL" --no-block restart jasper-outputd.service 2>/dev/null || true
     "$SYSTEMCTL" --no-block restart jasper-aec-reconcile.service 2>/dev/null || true
     log_event "audio_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
+}
+
+restart_route_runtime_if_needed() {
+    local restart_needed="$1"
+    if [[ "$restart_needed" != "1" || "$NO_RESTART" == "1" ]]; then
+        return
+    fi
+    "$SYSTEMCTL" reset-failed jasper-fanin.service jasper-usbsink.service jasper-usbsink-volume.service 2>/dev/null || true
+    "$SYSTEMCTL" --no-block restart jasper-fanin.service 2>/dev/null || true
+    "$SYSTEMCTL" --no-block try-restart jasper-usbsink.service jasper-usbsink-volume.service 2>/dev/null || true
+    log_event "route_runtime_restarted" "fanin_env=${FANIN_ENV_FILE} usbsink_env=${USBSINK_ENV_FILE}"
 }
 
 start_outputd_if_recognized() {
@@ -741,9 +809,14 @@ observe_output_hardware_state 1
 apply_observed_composite_policy
 
 env_changed=0
+route_env_changed=0
 set_env_var_if_changed "JASPER_AUDIO_DAC_ID" "$OUTPUT_DAC_ID" && env_changed=1
 set_env_var_if_changed "JASPER_AUDIO_DAC_CARD" "$OUTPUT_DAC_CARD" && env_changed=1
 apply_audio_runtime_env && env_changed=1
+if apply_route_env; then
+    env_changed=1
+    route_env_changed=1
+fi
 # Emit the active DAC's codified latency floor (#27). For a recognized DAC this
 # is its profile floor (or cleared when the profile declares none); for an
 # unrecognized/parked DAC clear any stale floor with an empty id.
@@ -755,6 +828,7 @@ fi
 if [[ "$LATENCY_FLOOR_CHANGED" == "1" ]]; then
     env_changed=1
 fi
+repair_generated_env_permissions
 
 render_changed=0
 render_asound_if_needed && render_changed=1
@@ -766,10 +840,13 @@ if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
     fi
     if [[ "$restart_needed" == "1" ]]; then
         restart_audio_if_needed "$restart_needed"
+        restart_route_runtime_if_needed "$route_env_changed"
     else
         start_outputd_if_recognized
+        restart_route_runtime_if_needed "$route_env_changed"
     fi
 else
+    restart_route_runtime_if_needed "$route_env_changed"
     park_output_audio
 fi
 

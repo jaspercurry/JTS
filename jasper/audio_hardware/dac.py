@@ -311,14 +311,15 @@ APPLE_USB_C_DONGLE = DacProfile(
     chip_aec_detail="Apple USB-C dongle is the measured known-good chip-AEC baseline",
     udev_rule="deploy/udev/99-jasper-apple-dongle.rules",
     # Measured stable floor on Apple-dongle lab boxes: CamillaDSP chunk 256 /
-    # target 1536, outputd period 256 / dac_buffer 512. The exact 4x Camilla
-    # target (1024) underruns on jts2 under live AirPlay + voice/AEC load, so
-    # the floor keeps one extra 512-frame cushion while staying low-latency.
+    # target 1536, outputd period 128 / dac_buffer 256. The exact 4x Camilla
+    # target (1024) caused USB bridge playback xruns on jts.local under the
+    # usb_low_latency_48k path; outputd period 64 / dac_buffer 128 also produced
+    # bridge xruns. Keep the Camilla cushion and the 128-frame outputd period.
     latency_floor=LatencyFloor(
         camilla_chunksize=256,
         camilla_target_level=1536,
-        outputd_period_frames=256,
-        outputd_dac_buffer_frames=512,
+        outputd_period_frames=128,
+        outputd_dac_buffer_frames=256,
     ),
 )
 
