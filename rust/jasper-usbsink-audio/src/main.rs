@@ -440,11 +440,12 @@ fn flush_ring_for_preempt(ring: &mut PeriodRing, state: &SharedState) {
 ///
 /// Runs inline in the capture loop over the S16 slice, before it is staged into
 /// the ring — this is the route's own ingress, so the timestamp binds to route
-/// identity. Cost when disarmed is a single relaxed atomic load (the caller's
-/// `tap.armed()` guard). When armed it is pure arithmetic plus a non-blocking
-/// `try_send`; on a full channel it drops-and-counts and never blocks the audio
-/// thread. Detector params are reloaded lock-free only when a new arm
-/// generation is observed.
+/// identity. The CALLER owns the `tap.armed()` gate (the single relaxed atomic
+/// load that is the whole disarmed-path cost) and only invokes this when armed;
+/// it also owns resetting the local detector to `None` on the disarm transition.
+/// When armed this is pure arithmetic plus a non-blocking `try_send`; on a full
+/// channel it drops-and-counts and never blocks the audio thread. Detector
+/// params are reloaded lock-free only when a new arm generation is observed.
 ///
 /// - `read_frames`: frames returned by this capture read.
 /// - `read_start_frame`: cumulative captured frames BEFORE this read (the
@@ -467,12 +468,6 @@ fn tap_over_read(
     ring_fill_periods: usize,
     period_frames: u32,
 ) {
-    if !tap.armed() {
-        // Keep the local detector fresh for the next arm without holding stale
-        // latch/refractory state across an arm boundary.
-        *detector = None;
-        return;
-    }
     // Reload detector params only when a fresh arm bumped the generation. The
     // Acquire load pairs with `TapState::arm`'s Release so the knobs are
     // visible.
@@ -796,23 +791,33 @@ fn run_audio_loop(
             else {
                 break;
             };
-            // Timestamp the read immediately (all `frames` are in hand now), then
-            // run the impulse tap over this read's converted slice BEFORE it is
-            // staged — the route's own ingress. Ring fill here is the pre-read
-            // backlog the click must still drain through.
-            let read_ns = monotonic_ns();
-            tap_over_read(
-                tap,
-                &mut tap_detector,
-                &mut tap_last_generation,
-                tap_sender,
-                &converted_i16,
-                frames,
-                capture_frames_cursor,
-                read_ns,
-                ring.fill_periods(),
-                config.period_frames,
-            );
+            // Disarmed-cost invariant: one relaxed atomic load per period and
+            // nothing else — in particular NOT the `monotonic_ns()` vDSO read,
+            // which is taken only inside the armed branch (immediately after the
+            // read returns, with just this atomic load intervening, so the
+            // sample-accurate timestamp is unaffected). When armed, run the
+            // impulse tap over this read's converted slice BEFORE it is staged —
+            // the route's own ingress. Ring fill here is the pre-read backlog the
+            // click must still drain through.
+            if tap.armed() {
+                let read_ns = monotonic_ns();
+                tap_over_read(
+                    tap,
+                    &mut tap_detector,
+                    &mut tap_last_generation,
+                    tap_sender,
+                    &converted_i16,
+                    frames,
+                    capture_frames_cursor,
+                    read_ns,
+                    ring.fill_periods(),
+                    config.period_frames,
+                );
+            } else if tap_detector.is_some() {
+                // Drop stale latch/refractory state across an arm boundary so a
+                // fresh arm starts clean. Cheap and only runs on the transition.
+                tap_detector = None;
+            }
             capture_frames_cursor = capture_frames_cursor.saturating_add(frames as u64);
             let samples = frames * (config.channels as usize);
             capture_assembler.push_frames(&converted_i16[..samples], frames, |period| {
