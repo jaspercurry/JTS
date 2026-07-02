@@ -12,6 +12,7 @@
 //! - keep only a bounded 2-3 period ring in the audio path
 //! - expose preempt/state without letting control-plane work block audio
 
+mod host_clock;
 mod impulse_tap;
 
 use std::env;
@@ -30,6 +31,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use host_clock::{HostClock, HostClockConfig, Obs};
 #[cfg(feature = "alsa-runtime")]
 use impulse_tap::{ImpulseDetector, SinkAction, TapSink};
 use impulse_tap::{TapConfig, TapEvent, TapState};
@@ -86,16 +88,21 @@ struct Config {
     preempt_state_path: PathBuf,
     preempt_host: String,
     preempt_port: u16,
+    /// Stage 1 host-slaved USB clock config. Default OFF; when disabled the
+    /// feature is entirely inert (only the startup pitch neutralize runs, to
+    /// heal a crashed predecessor). Daemon-local like every JASPER_USBSINK_*.
+    host_clock: HostClockConfig,
 }
 
 impl Config {
     fn from_env() -> Result<Self> {
+        let period_frames = env_u32("JASPER_USBSINK_BLOCK_FRAMES", DEFAULT_PERIOD_FRAMES)?;
         let cfg = Self {
             capture_device: env_string("JASPER_USBSINK_CAPTURE_DEVICE", DEFAULT_CAPTURE_DEVICE),
             playback_device: env_string("JASPER_USBSINK_PLAYBACK_DEVICE", DEFAULT_PLAYBACK_DEVICE),
             sample_rate: env_u32("JASPER_USBSINK_SAMPLE_RATE", SAMPLE_RATE)?,
             channels: env_u32("JASPER_USBSINK_CHANNELS", CHANNELS)?,
-            period_frames: env_u32("JASPER_USBSINK_BLOCK_FRAMES", DEFAULT_PERIOD_FRAMES)?,
+            period_frames,
             ring_periods: env_usize("JASPER_USBSINK_RING_PERIODS", DEFAULT_RING_PERIODS)?,
             state_path: PathBuf::from(env_string("JASPER_USBSINK_STATE_PATH", DEFAULT_STATE_PATH)),
             preempt_state_path: PathBuf::from(env_string(
@@ -104,6 +111,8 @@ impl Config {
             )),
             preempt_host: env_string("JASPER_USBSINK_PREEMPT_HOST", DEFAULT_PREEMPT_HOST),
             preempt_port: env_u16("JASPER_USBSINK_PREEMPT_PORT", DEFAULT_PREEMPT_PORT)?,
+            host_clock: HostClockConfig::from_env(|key| env::var(key).ok(), period_frames)
+                .map_err(anyhow::Error::msg)?,
         };
         cfg.validate()?;
         Ok(cfg)
@@ -410,6 +419,62 @@ impl TapShared {
             config: Arc::new(Mutex::new(TapConfig::default())),
         }
     }
+}
+
+/// Cross-thread publication of the host-clock telemetry fragment.
+///
+/// The [`HostClock`] ladder/servo lives on — and is written ONLY by — the
+/// state-publisher thread (single writer, structurally: the pitch ctl handle
+/// and the `HostClock` never leave that thread). But `state.json` is also
+/// rendered by the preempt-listener thread (`GET /status`) and once from
+/// `main`/the audio loop at startup. Those threads MUST NOT touch the
+/// `HostClock`; instead the publisher renders the block once per state write
+/// and stores the string here, and every `status_json` caller reads this
+/// snapshot. Absent a publisher write yet, the initial value is the disabled
+/// block so the first state.json is coherent.
+#[cfg(feature = "alsa-runtime")]
+struct HostClockShared {
+    fragment: Arc<Mutex<String>>,
+}
+
+#[cfg(feature = "alsa-runtime")]
+impl HostClockShared {
+    fn new(cfg: HostClockConfig) -> Self {
+        // Render the initial (disabled/idle) block so the very first state.json
+        // write — before the publisher ticks — carries a definite host_clock.
+        let initial = HostClock::new(cfg).status_fragment();
+        Self {
+            fragment: Arc::new(Mutex::new(initial)),
+        }
+    }
+
+    /// The current fragment snapshot for a `status_json` caller (startup +
+    /// audio-loop paths). A poisoned lock is recovered into rather than
+    /// crashing the control plane — the telemetry is best-effort.
+    fn snapshot(&self) -> String {
+        read_host_clock_fragment(&self.fragment)
+    }
+}
+
+/// Read the shared host-clock fragment, recovering into a poisoned lock rather
+/// than crashing (best-effort telemetry). Used by every reader thread that
+/// holds only the raw `Arc<Mutex<String>>` (preempt listener, audio loop).
+#[cfg(feature = "alsa-runtime")]
+fn read_host_clock_fragment(fragment: &Mutex<String>) -> String {
+    match fragment.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+/// Store a freshly-rendered host-clock fragment (publisher thread only, the
+/// single writer). Recovers into a poisoned lock rather than crashing.
+#[cfg(feature = "alsa-runtime")]
+fn publish_host_clock_fragment(fragment: &Mutex<String>, rendered: String) {
+    let mut guard = fragment
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = rendered;
 }
 
 fn s32_high_word_to_s16(sample: i32) -> i16 {
@@ -753,6 +818,7 @@ fn run_audio_loop(
     state: &Arc<SharedState>,
     tap: &Arc<TapState>,
     tap_config: &Arc<Mutex<TapConfig>>,
+    host_clock_fragment: &Arc<Mutex<String>>,
     tap_sender: &std::sync::mpsc::SyncSender<TapEvent>,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
@@ -780,7 +846,8 @@ fn run_audio_loop(
         config.ring_periods,
     );
     state.host_connected.store(true, Ordering::Relaxed);
-    write_state_json(config, state, tap, tap_config)?;
+    let hc_snapshot = read_host_clock_fragment(host_clock_fragment);
+    write_state_json(config, state, tap, tap_config, &hc_snapshot)?;
     let _ = sd_notify::notify(&[NotifyState::Ready]);
     state.mark_progress();
 
@@ -871,18 +938,23 @@ fn bind_preempt_listener(config: &Config) -> Result<TcpListener> {
 }
 
 #[cfg(feature = "alsa-runtime")]
+#[allow(clippy::too_many_arguments)]
 fn run_preempt_listener(
     config: Config,
     state: Arc<SharedState>,
     tap: Arc<TapState>,
     tap_config: Arc<Mutex<TapConfig>>,
+    host_clock_fragment: Arc<Mutex<String>>,
     shutdown: Arc<AtomicBool>,
     listener: TcpListener,
 ) -> Result<()> {
     while !shutdown.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, _peer)) => {
-                if let Err(e) = handle_preempt_request(stream, &config, &state, &tap, &tap_config) {
+                let hc_snapshot = read_host_clock_fragment(&host_clock_fragment);
+                if let Err(e) =
+                    handle_preempt_request(stream, &config, &state, &tap, &tap_config, &hc_snapshot)
+                {
                     warn!("event=usbsink_audio.preempt_error detail={}", e);
                 }
             }
@@ -902,6 +974,7 @@ fn handle_preempt_request(
     state: &SharedState,
     tap: &TapState,
     tap_config: &Mutex<TapConfig>,
+    host_clock_fragment: &str,
 ) -> Result<()> {
     stream
         .set_read_timeout(Some(Duration::from_millis(250)))
@@ -912,7 +985,7 @@ fn handle_preempt_request(
     if body.starts_with("GET /status ") || body.starts_with("GET /preempt ") {
         let rms_dbfs = (state.rms_dbfs_x100.load(Ordering::Relaxed) as f64) / 100.0;
         let tap_fragment = tap.status_fragment(&tap_config_snapshot(tap_config));
-        let status = status_json(config, state, rms_dbfs, &tap_fragment);
+        let status = status_json(config, state, rms_dbfs, &tap_fragment, host_clock_fragment);
         write_http_json(&mut stream, 200, &status)?;
         let _ = stream.shutdown(Shutdown::Both);
         return Ok(());
@@ -1245,31 +1318,133 @@ fn open_tap_file(path: &Path) -> Option<fs::File> {
 }
 
 #[cfg(feature = "alsa-runtime")]
+#[allow(clippy::too_many_arguments)]
 fn run_state_publisher(
     config: Config,
     state: Arc<SharedState>,
     tap: Arc<TapState>,
     tap_config: Arc<Mutex<TapConfig>>,
+    host_clock_fragment: Arc<Mutex<String>>,
     tap_receiver: std::sync::mpsc::Receiver<TapEvent>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     let mut publisher = TapPublisher::default();
+    // Host-clock: the publisher is the SOLE owner of the ladder AND the pitch
+    // ctl handle — single-writer by construction (the audio thread and preempt
+    // listener never touch either). The ctl open is fail-soft: on failure we
+    // still run the ladder and publish telemetry, but WritePitch actions no-op
+    // with a rate-limited error log; a missing card must never crash the
+    // publisher (a UAC2 gadget can come and go).
+    let mut host_clock = HostClock::new(config.host_clock);
+    let mut pitch = HostClockActuator::open(&config);
+    // Startup neutralize runs unconditionally (even when the feature is
+    // disabled) so a crashed predecessor that left the host slaved is healed.
+    if let Some(action) = host_clock.startup_neutralize() {
+        pitch.apply(action);
+        log::info!("event=usbsink_audio.host_clock_pitch_reset reason=startup");
+    }
+    publish_host_clock_fragment(&host_clock_fragment, host_clock.status_fragment());
+
     // Drain the tap channel on a short cadence so a burst can't back it up,
-    // while state.json keeps its ~1 s publish rhythm.
+    // while state.json keeps its ~1 s publish rhythm. The host-clock tick runs
+    // on the same 1 s STATE_INTERVAL rhythm (gated inside the 100 ms loop).
     let mut last_state_write = std::time::Instant::now();
-    write_state_json(&config, &state, &tap, &tap_config)?;
+    write_state_json(
+        &config,
+        &state,
+        &tap,
+        &tap_config,
+        &host_clock.status_fragment(),
+    )?;
+    let mut last_hc_tick = std::time::Instant::now();
     while !shutdown.load(Ordering::Relaxed) {
         publisher.poll(&tap_receiver, &tap, &tap_config, monotonic_millis());
+        if last_hc_tick.elapsed() >= Duration::from_millis(host_clock::TICK_INTERVAL_MS) {
+            let obs = Obs::from_shared(&state, config.period_frames);
+            for action in host_clock.tick(obs, monotonic_millis() as u64) {
+                pitch.apply(action);
+            }
+            last_hc_tick = std::time::Instant::now();
+        }
         if last_state_write.elapsed() >= STATE_INTERVAL {
-            write_state_json(&config, &state, &tap, &tap_config)?;
+            let fragment = host_clock.status_fragment();
+            publish_host_clock_fragment(&host_clock_fragment, fragment.clone());
+            write_state_json(&config, &state, &tap, &tap_config, &fragment)?;
             last_state_write = std::time::Instant::now();
         }
         thread::sleep(TAP_DRAIN_INTERVAL);
     }
+    // Exit path: the neutrality invariant. Force the host back to a free-running
+    // clock before we stop — a stopped daemon must NEVER leave the host slaved.
+    // This runs on clean exit AND on SIGTERM/SIGINT (the shared shutdown flag)
+    // AND on audio-thread error (main sets shutdown before joining). SIGKILL /
+    // watchdog / OOM is covered by the unit's ExecStopPost belt-and-braces.
+    pitch.apply(host_clock.neutralize_for_exit("shutdown"));
+    log::info!("event=usbsink_audio.host_clock_pitch_reset reason=shutdown");
     // Final drain + state write on shutdown.
     publisher.poll(&tap_receiver, &tap, &tap_config, monotonic_millis());
-    write_state_json(&config, &state, &tap, &tap_config)?;
+    let fragment = host_clock.status_fragment();
+    publish_host_clock_fragment(&host_clock_fragment, fragment.clone());
+    write_state_json(&config, &state, &tap, &tap_config, &fragment)?;
     Ok(())
+}
+
+/// The publisher-thread wrapper around the optional pitch actuator. Holds the
+/// real [`host_clock::AlsaPitchCtl`] when the card opens, else `None` (fail-soft
+/// — the ladder still runs and publishes telemetry). Applies a ladder
+/// [`host_clock::Action`], translating the commanded ppm to the ctl integer and
+/// rate-limiting ctl-error logs so a flapping card cannot spam the journal.
+#[cfg(feature = "alsa-runtime")]
+struct HostClockActuator {
+    ctl: Option<host_clock::AlsaPitchCtl>,
+    last_error_ms: Option<u64>,
+}
+
+#[cfg(feature = "alsa-runtime")]
+impl HostClockActuator {
+    fn open(config: &Config) -> Self {
+        let card = host_clock::ctl_card_from_capture(&config.capture_device);
+        match host_clock::AlsaPitchCtl::open(&card) {
+            Ok(ctl) => {
+                info!("event=usbsink_audio.host_clock_ctl_opened card={card}");
+                Self {
+                    ctl: Some(ctl),
+                    last_error_ms: None,
+                }
+            }
+            Err(e) => {
+                // Not fatal: the gadget card may not be present (feature can be
+                // enabled before a host is plugged, or on a box without the
+                // dtoverlay). The ladder runs and publishes; pitch writes no-op.
+                warn!("event=usbsink_audio.host_clock_ctl_error detail={e}");
+                Self {
+                    ctl: None,
+                    last_error_ms: None,
+                }
+            }
+        }
+    }
+
+    fn apply(&mut self, action: host_clock::Action) {
+        use host_clock::PitchCtl;
+        let host_clock::Action::WritePitch { ppm, .. } = action;
+        let value = host_clock::ppm_to_ctl_value(ppm);
+        let Some(ctl) = self.ctl.as_mut() else {
+            return;
+        };
+        if let Err(e) = ctl.write(value) {
+            // Rate-limit ctl-error logs to at most one per ~10 s so repeated
+            // write failures do not crash or spam the publisher.
+            let now = monotonic_millis() as u64;
+            let should_log = self
+                .last_error_ms
+                .is_none_or(|last| now.saturating_sub(last) >= 10_000);
+            if should_log {
+                self.last_error_ms = Some(now);
+                warn!("event=usbsink_audio.host_clock_ctl_error detail={e}");
+            }
+        }
+    }
 }
 
 #[cfg(feature = "alsa-runtime")]
@@ -1278,13 +1453,14 @@ fn write_state_json(
     state: &SharedState,
     tap: &TapState,
     tap_config: &Mutex<TapConfig>,
+    host_clock_fragment: &str,
 ) -> Result<()> {
     if let Some(parent) = config.state_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let rms_dbfs = (state.rms_dbfs_x100.load(Ordering::Relaxed) as f64) / 100.0;
     let tap_fragment = tap.status_fragment(&tap_config_snapshot(tap_config));
-    let body = status_json(config, state, rms_dbfs, &tap_fragment);
+    let body = status_json(config, state, rms_dbfs, &tap_fragment, host_clock_fragment);
     let tmp = unique_state_tmp_path(&config.state_path);
     fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, &config.state_path).with_context(|| {
@@ -1305,7 +1481,13 @@ fn unique_state_tmp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), seq))
 }
 
-fn status_json(config: &Config, state: &SharedState, rms_dbfs: f64, tap_fragment: &str) -> String {
+fn status_json(
+    config: &Config,
+    state: &SharedState,
+    rms_dbfs: f64,
+    tap_fragment: &str,
+    host_clock_fragment: &str,
+) -> String {
     format!(
         concat!(
             "{{",
@@ -1335,6 +1517,7 @@ fn status_json(config: &Config, state: &SharedState, rms_dbfs: f64, tap_fragment
             "\"playback_frames\":{}",
             "}},",
             "\"tap\":{},",
+            "\"host_clock\":{},",
             "\"last_progress_epoch_ms\":{}",
             "}}\n"
         ),
@@ -1361,6 +1544,7 @@ fn status_json(config: &Config, state: &SharedState, rms_dbfs: f64, tap_fragment
         state.capture_frames.load(Ordering::Relaxed),
         state.playback_frames.load(Ordering::Relaxed),
         tap_fragment,
+        host_clock_fragment,
         state.last_progress_epoch_ms.load(Ordering::Relaxed),
     )
 }
@@ -1481,19 +1665,38 @@ fn main() -> Result<()> {
     // non-blocking (drop-and-count on Full); the publisher thread is the sole
     // JSONL writer.
     let tap = TapShared::new();
+    // Shared host-clock telemetry fragment: the publisher renders it, the
+    // preempt listener and the startup/audio paths read a snapshot. Seeded with
+    // the initial (disabled/idle) block so the first state.json is coherent.
+    let host_clock_shared = HostClockShared::new(config.host_clock);
     let (tap_sender, tap_receiver) =
         std::sync::mpsc::sync_channel::<TapEvent>(TAP_CHANNEL_CAPACITY);
     let preempt_listener = bind_preempt_listener(&config)?;
-    write_state_json(&config, &shared, &tap.state, &tap.config)?;
+    write_state_json(
+        &config,
+        &shared,
+        &tap.state,
+        &tap.config,
+        &host_clock_shared.snapshot(),
+    )?;
 
     let state_thread = {
         let cfg = config.clone();
         let state = Arc::clone(&shared);
         let tap_state = Arc::clone(&tap.state);
         let tap_cfg = Arc::clone(&tap.config);
+        let hc_fragment = Arc::clone(&host_clock_shared.fragment);
         let stop = Arc::clone(&shutdown);
         thread::spawn(move || {
-            run_state_publisher(cfg, state, tap_state, tap_cfg, tap_receiver, stop)
+            run_state_publisher(
+                cfg,
+                state,
+                tap_state,
+                tap_cfg,
+                hc_fragment,
+                tap_receiver,
+                stop,
+            )
         })
     };
     let preempt_thread = {
@@ -1501,9 +1704,18 @@ fn main() -> Result<()> {
         let state = Arc::clone(&shared);
         let tap_state = Arc::clone(&tap.state);
         let tap_cfg = Arc::clone(&tap.config);
+        let hc_fragment = Arc::clone(&host_clock_shared.fragment);
         let stop = Arc::clone(&shutdown);
         thread::spawn(move || {
-            run_preempt_listener(cfg, state, tap_state, tap_cfg, stop, preempt_listener)
+            run_preempt_listener(
+                cfg,
+                state,
+                tap_state,
+                tap_cfg,
+                hc_fragment,
+                stop,
+                preempt_listener,
+            )
         })
     };
     let watchdog_thread = start_watchdog(Arc::clone(&shared), Arc::clone(&shutdown));
@@ -1513,6 +1725,7 @@ fn main() -> Result<()> {
         &shared,
         &tap.state,
         &tap.config,
+        &host_clock_shared.fragment,
         &tap_sender,
         &shutdown,
     );
@@ -1540,6 +1753,18 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A disabled host-clock config for the daemon-level status_json tests.
+    /// The host-clock ladder itself is tested exhaustively in `host_clock.rs`;
+    /// these tests only assert the daemon folds the block in.
+    fn test_host_clock_config() -> HostClockConfig {
+        HostClockConfig::from_env(|_| None, DEFAULT_PERIOD_FRAMES).unwrap()
+    }
+
+    /// The disabled host-clock fragment, for status_json fold-in tests.
+    fn test_host_clock_fragment() -> String {
+        HostClock::new(test_host_clock_config()).status_fragment()
+    }
 
     #[test]
     fn s32_high_word_truncation_preserves_sign_boundaries() {
@@ -1775,6 +2000,7 @@ mod tests {
             preempt_state_path: PathBuf::from(DEFAULT_PREEMPT_STATE_PATH),
             preempt_host: DEFAULT_PREEMPT_HOST.to_string(),
             preempt_port: DEFAULT_PREEMPT_PORT,
+            host_clock: test_host_clock_config(),
         };
         let state = SharedState::new(DEFAULT_RING_PERIODS);
         state.preempted.store(true, Ordering::Relaxed);
@@ -1783,7 +2009,13 @@ mod tests {
 
         let tap = TapState::default();
         let tap_fragment = tap.status_fragment(&TapConfig::default());
-        let body = status_json(&cfg, &state, -63.25, &tap_fragment);
+        let body = status_json(
+            &cfg,
+            &state,
+            -63.25,
+            &tap_fragment,
+            &test_host_clock_fragment(),
+        );
 
         assert!(body.contains("\"implementation\":\"rust\""));
         assert!(body.contains("\"preempted\":true"));
@@ -1812,6 +2044,7 @@ mod tests {
             preempt_state_path: PathBuf::from(DEFAULT_PREEMPT_STATE_PATH),
             preempt_host: DEFAULT_PREEMPT_HOST.to_string(),
             preempt_port: DEFAULT_PREEMPT_PORT,
+            host_clock: test_host_clock_config(),
         };
         let state = SharedState::new(DEFAULT_RING_PERIODS);
         state.host_connected.store(true, Ordering::Relaxed);
@@ -1819,7 +2052,13 @@ mod tests {
 
         let tap = TapState::default();
         let tap_fragment = tap.status_fragment(&TapConfig::default());
-        let body = status_json(&cfg, &state, -120.0, &tap_fragment);
+        let body = status_json(
+            &cfg,
+            &state,
+            -120.0,
+            &tap_fragment,
+            &test_host_clock_fragment(),
+        );
 
         assert!(body.contains("\"host_connected\":true"));
         assert!(body.contains("\"playing\":false"));
@@ -1838,12 +2077,19 @@ mod tests {
             preempt_state_path: PathBuf::from(DEFAULT_PREEMPT_STATE_PATH),
             preempt_host: DEFAULT_PREEMPT_HOST.to_string(),
             preempt_port: DEFAULT_PREEMPT_PORT,
+            host_clock: test_host_clock_config(),
         };
         let state = SharedState::new(DEFAULT_RING_PERIODS);
         let tap = TapState::default();
         let tap_cfg = TapConfig::default();
         tap.arm(&tap_cfg, SAMPLE_RATE, 1_000);
-        let body = status_json(&cfg, &state, -120.0, &tap.status_fragment(&tap_cfg));
+        let body = status_json(
+            &cfg,
+            &state,
+            -120.0,
+            &tap.status_fragment(&tap_cfg),
+            &test_host_clock_fragment(),
+        );
 
         let parsed: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
         assert_eq!(parsed["tap"]["armed"].as_bool(), Some(true));
@@ -1855,5 +2101,40 @@ mod tests {
             parsed["tap"]["path"].as_str(),
             Some(impulse_tap::DEFAULT_TAP_PATH)
         );
+    }
+
+    #[test]
+    fn status_json_nests_host_clock_block() {
+        let cfg = Config {
+            capture_device: "hw:UAC2Gadget".to_string(),
+            playback_device: "usbsink_substream".to_string(),
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+            period_frames: DEFAULT_PERIOD_FRAMES,
+            ring_periods: DEFAULT_RING_PERIODS,
+            state_path: PathBuf::from(DEFAULT_STATE_PATH),
+            preempt_state_path: PathBuf::from(DEFAULT_PREEMPT_STATE_PATH),
+            preempt_host: DEFAULT_PREEMPT_HOST.to_string(),
+            preempt_port: DEFAULT_PREEMPT_PORT,
+            host_clock: test_host_clock_config(),
+        };
+        let state = SharedState::new(DEFAULT_RING_PERIODS);
+        let tap = TapState::default();
+        let tap_fragment = tap.status_fragment(&TapConfig::default());
+        let body = status_json(
+            &cfg,
+            &state,
+            -120.0,
+            &tap_fragment,
+            &test_host_clock_fragment(),
+        );
+
+        // The whole document parses and the host_clock block is a sibling of tap.
+        let parsed: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(parsed["host_clock"]["enabled"].as_bool(), Some(false));
+        assert_eq!(parsed["host_clock"]["ladder"].as_str(), Some("disabled"));
+        assert!(parsed["host_clock"]["probe"]["response_ratio"].is_null());
+        // schema_version stays 1 (additive block).
+        assert_eq!(parsed["schema_version"].as_u64(), Some(1));
     }
 }
