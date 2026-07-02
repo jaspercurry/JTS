@@ -235,6 +235,7 @@ jobs:
           for crate in \
             rust/jasper-clock \
             rust/jasper-resampler \
+            rust/jasper-ring \
             rust/jasper-tts-protocol \
             rust/jasper-fanin \
             rust/jasper-outputd \
@@ -256,6 +257,7 @@ jobs:
           workspaces: |
             rust/jasper-clock
             rust/jasper-resampler
+            rust/jasper-ring
             rust/jasper-fanin
             rust/jasper-outputd
             rust/jasper-usbsink-audio
@@ -272,6 +274,15 @@ jobs:
         # Pure windowed-sinc resampler + rate controller (depends on
         # jasper-clock). No ALSA, so this clippy/test runs on any host.
         working-directory: rust/jasper-resampler
+        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
+
+      - name: jasper-ring — clippy
+        if: steps.rust-needed.outputs.run == 'true'
+        # PROTOTYPE (latency/ring-proto-shm): the SPSC SHM ping-pong ring reader
+        # for jasper-outputd's shm_ring content bridge. Pure Rust (mmap via
+        # libc, no ALSA), so this clippy/test runs on any host — the sibling of
+        # jasper-clock/jasper-resampler in the gate.
+        working-directory: rust/jasper-ring
         run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
 
       - name: jasper-tts-protocol — clippy
@@ -315,6 +326,16 @@ jobs:
         # for the daemon path (jasper-outputd's content_bridge), its sole
         # consumer.
         working-directory: rust/jasper-resampler
+        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
+
+      - name: jasper-ring — build + test (pure SHM ring crate; no ALSA)
+        if: steps.rust-needed.outputs.run == 'true'
+        # PROTOTYPE (latency/ring-proto-shm): the SPSC SHM ping-pong ring
+        # reader. Pure Rust (mmap via libc), so its seq/wrap/epoch/attach-resync
+        # and golden-layout properties (the cross-language drift pin against the
+        # C `_Static_assert`ed header) are the regression gate for the shm_ring
+        # content bridge, and run on any host.
+        working-directory: rust/jasper-ring
         run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
       - name: jasper-tts-protocol — build + test (shared wire-protocol crate)
