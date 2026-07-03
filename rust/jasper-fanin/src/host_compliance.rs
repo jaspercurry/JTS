@@ -1059,6 +1059,37 @@ mod tests {
     }
 
     #[test]
+    fn tracker_relock_after_in_window_revoke_does_not_double_revoke() {
+        // The revalidation runs BEFORE the rising-edge re-baseline, so a relock must
+        // not see the just-revoked lock's advanced unlock count against the OLD
+        // baseline and fire a second EarlyUnlock. The per-lock latch (set by the
+        // falling-edge revoke, still true on the relock's rising-edge period, cleared
+        // only after that period's revalidation read) is what prevents it.
+        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
+        // Lock, then an in-window underfill → revoke #1 on the falling edge.
+        for _ in 0..3 {
+            assert_eq!(t.step(true, 0, 1, false).revoke, None);
+        }
+        assert_eq!(
+            t.step(false, 1, 1, false).revoke,
+            Some(RevokeReason::EarlyUnlock)
+        );
+        assert!(t.revoked_this_lock());
+        // Re-prime + relock (rising edge) with unlock_count STILL advanced past the
+        // old baseline. The rising-edge period must NOT double-revoke; the latch
+        // clears only after this period's (skipped) revalidation.
+        let relock = t.step(true, 1, 1, false);
+        assert_eq!(
+            relock.revoke, None,
+            "the relock rising edge must not double-revoke off the old unlock baseline"
+        );
+        assert!(relock.rising_edge);
+        assert!(!t.revoked_this_lock(), "the latch clears on the fresh lock");
+        // A clean re-proven session then runs quietly (baseline re-armed to 1).
+        assert_eq!(t.step(true, 1, 1, false).revoke, None);
+    }
+
+    #[test]
     fn tracker_live_probe_fail_revokes() {
         // A LIVE probe FAIL (code 2 corroborated by ladder L2) revokes as ProbeFail.
         let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
