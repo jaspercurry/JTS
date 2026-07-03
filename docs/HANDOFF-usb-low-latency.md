@@ -837,10 +837,22 @@ The cushion decay's ~2.5-min descent (held-target ceiling → floor) is otherwis
 paid at EVERY session start, because priming always begins at the full ceiling.
 Host-compliance persistence removes that recurring cost: once a session **proves**
 the host and the decay has **landed at the floor cleanly**, the proof is written to
-`/var/lib/jasper/fanin/host_compliance.json`, and the NEXT session primes the
-resampler AT the decay floor — the descent is skipped. There is **no new top-level
-flag**: this extends `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` (it is inert on a
-decay-off box). Path override: `JASPER_FANIN_HOST_COMPLIANCE_PATH`.
+`/var/lib/jasper/fanin/host_compliance.json`, and every subsequent session (whether
+across a reboot OR later in the SAME daemon lifetime) primes the resampler AT the
+decay floor — the descent is skipped. There is **no new top-level flag**: this
+extends `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` (it is inert on a decay-off box).
+Path override: `JASPER_FANIN_HOST_COMPLIANCE_PATH`.
+
+> **The prime is PER-SESSION, not construction-only (fixed 2026-07-03).** The
+> common real-world case is a Mac that sleeps nightly and wakes to a NEW session
+> with the fan-in daemon up for months. That every-morning session must prime at
+> the floor, not pay the ~110 s descent again. The prime is therefore seeded at
+> BOTH lane construction AND at every session boundary: the session-end snap-back
+> (`snap_decay_back_honoring_proof`) re-primes at the floor when a live, unrevoked
+> proof is present, and at the ceiling otherwise. See "Prime-at-floor" and
+> "session-boundary snap" below. (Before this fix the prime ran only in
+> `Mixer::new`; session B in one daemon lifetime silently descended from the
+> ceiling — hardware-diagnosed on jts.local, two sessions in one daemon lifetime.)
 
 Schema (v1, atomic tempfile+rename, world-readable 0644):
 `{schema, proved_at_epoch_s, probe_response_ratio, floor_frames, consecutive_failures}`.
@@ -854,13 +866,33 @@ re-arms the window. Owned by the pure `ComplianceProof` state machine in
 `rust/jasper-fanin/src/host_compliance.rs`, ticked once per render
 period by `mixer::step`.
 
-**Prime-at-floor.** At lane build time, if a valid proof is on disk whose
-`floor_frames` equals the live decay floor (a floor retune between sessions
-invalidates it — descend normally), the resampler is seeded at the floor
-(`CushionDecay::prime_at_floor`): the held target starts at the floor and a
-`floor_prime_pending` latch holds it there across the not-yet-locked prime periods
-so `try_lock` seats the cursor shallow. The ceiling is unchanged, so ANY
-discontinuity after lock still snaps all the way back to it.
+**Prime-at-floor (per session).** The prime is seeded at the floor
+(`CushionDecay::prime_at_floor`) at TWO points: (1) at lane build time
+(`build_host_compliance_state` → `resampler.prime_decay_at_floor`) if a valid proof
+is on disk whose `floor_frames` equals the live decay floor (a floor retune between
+sessions invalidates it — descend normally); and (2) at every **session boundary**
+within the daemon lifetime, via `snap_decay_back_honoring_proof` — the primitive
+`reset()` (idle/host-pause/device-loss/xrun-recovery — the aloop and usb-direct
+xrun-recovery paths `recover_resampler_input_xrun` / `recover_direct_xrun` call it
+too) and `unlock_for_underfill()` (starvation = the natural session end, e.g. the
+Mac stops streaming) both call. In both cases the held target starts at the floor
+and a `floor_prime_pending` latch holds it there across the not-yet-locked prime
+periods so `try_lock` seats the cursor shallow. The ceiling is unchanged, so a
+REVOKE still snaps all the way back to it.
+
+**Session-boundary snap destination (the single source of truth).** At a session
+boundary the snap goes to the FLOOR iff a live, unrevoked proof is present, else the
+CEILING. The "is the proof live" signal is the SAME `flag_present` atomic the mixer
+sets on a valid load / successful write (`on_written`) and CLEARS on a revoke
+(`on_revoked`) — read at snap time by `LaneResampler::live_proof_present`. There is
+no second copy of "is the proof valid": a revoke clears `flag_present` before any
+subsequent snap, so the very next session boundary after a revoke lands at the
+ceiling; a clean floor session lands at the floor. The **unconditional** ceiling
+snap (`snap_decay_back` via `snap_decay_to_ceiling`) is reserved for the
+revalidation-failure escape below — it always re-acquires deep. The same
+`flag_present` also drives the per-lock `floor_primed` the revalidation tracker
+re-samples at each rising edge (below), so the snap destination and the
+revalidation gate can never disagree.
 
 **Immediate revalidation (one strike → revoke).** The servo's per-session probe
 (the #1142 post-lock `AwaitLock` gate) runs on EVERY session start — that IS the
@@ -869,9 +901,23 @@ probe FAIL, a DLL demotion to L2, or an underfill unlock within the first
 `HOST_COMPLIANCE_EARLY_REVALIDATION_SECS` (60 s). The revalidation runs in the pure
 `RevalidationTracker` (`host_compliance.rs`), driven each render period by
 `mixer::service_host_compliance` from the resampler's live `is_locked()` /
-`unlock_count()`. Two correctness details the tracker encodes: (1) the underfill
-trigger is evaluated on the lock-LOSS edge as well as while locked, because
-`unlock_for_underfill` sets `locked=false` in the SAME render period it bumps
+`unlock_count()`. **The underfill trigger is window-bounded, so it does NOT
+self-revoke a slow periodic-stall host.** A host that delivers a mid-stream stall
+deep enough to underflow the floor's headroom but shallower than the ceiling's
+(floor-fatal, ceiling-survivable), spaced **>60 s apart**, never trips this
+trigger: each stall lands after the 60 s window has re-armed (post-window churn is
+"ordinary," not revocation evidence), and each subsequent session end re-primes at
+the floor — so the lane runs shallow indefinitely, one dropout per stall, with the
+proof NEVER revoking on that profile (only a live probe FAIL or an L2 demotion
+reverts it). Exposure is small — the pre-per-session steady state already sat at the
+floor most of the time, and stalls spaced <60 s apart are bounded to two incidents by
+the re-armed window — but if you are debugging *periodic* USB dropouts on an
+otherwise-locked host, know that the compliance proof will not self-heal this
+pattern; force a descent by demoting the ladder (a probe FAIL / L2) or deleting
+`host_compliance.json` + restarting fan-in. Two correctness details the tracker
+encodes: (1) the underfill trigger is evaluated on the lock-LOSS edge as well as
+while locked, because `unlock_for_underfill` sets `locked=false` in the SAME render
+period it bumps
 `unlock_count` — so the period that carries the churn evidence is the one where
 `locked` is already false (a `locked`-only window gate would make this trigger
 unreachable, the class of probe-passing-but-can't-hold-the-floor host this promise
@@ -879,14 +925,21 @@ exists to catch); (2) a probe FAIL only revokes when it is LIVE — the servo le
 `probe_result=Fail` across a session boundary, so a fresh lock on a new compliant
 host reads the stale FAIL until its own probe runs; the tracker gates on the ladder
 sitting at L2 (which always accompanies a live fail) so a stale carryover FAIL
-(ladder back in `Probing`, `ladder_l2=false`) is ignored. The per-lock revoke latch
-resets on every fresh lock, so a re-proven session can strike again if the host
-later misbehaves — it is per-lock, not per-daemon-lifetime. On any trigger the mixer
-snaps the held target back to the full ceiling (the existing snap-back primitive),
-deletes the file, and logs `event=fanin.host_compliance.revoked reason=…`. The
-normal descent then re-proves and re-writes. **USB re-enumeration / a new host / a
-new port need NO special handling** — a new session simply re-probes, and the probe
-verdict revalidates; that is the new-machine/new-port answer. A missing/corrupt/stale
+(ladder back in `Probing`, `ladder_l2=false`) is ignored. Because the prime is
+per-session, `floor_primed` is **re-sampled per lock** from the live `flag_present`
+at each rising edge (the mixer passes it into `RevalidationTracker::step`): a
+session B that primed at the floor off session A's fresh proof runs the one-strike
+revalidation exactly as a construction-time prime would; the session after a revoke
+(proof cleared) is NOT floor-primed and descends + re-proves without it. The
+per-lock revoke latch likewise resets on every fresh lock, so a re-proven session
+can strike again if the host later misbehaves — both are per-lock, not
+per-daemon-lifetime. On any trigger the mixer snaps the held target back to the full
+ceiling via the **unconditional** escape (`snap_decay_to_ceiling`, distinct from the
+proof-honouring session-boundary snap), clears `flag_present`, deletes the file, and
+logs `event=fanin.host_compliance.revoked reason=…`. The normal descent then
+re-proves and re-writes. **USB re-enumeration / a new host / a new port need NO
+special handling** — a new session simply re-probes, and the probe verdict
+revalidates; that is the new-machine/new-port answer. A missing/corrupt/stale
 file means "no proof" (descend as today) — fail toward today's behaviour, never a
 crash.
 
@@ -911,10 +964,19 @@ silent-but-streaming host; the on-device validation run proves it on hardware.
 3. Confirm the descent runs (~2.5 min, `decay.frozen_reason` walks
    `warmup→""(decaying)→at_floor`), then `event=fanin.host_compliance.written` and
    `compliance.flag_present=true`, `proved_at` set.
-4. **Cold-start win:** stop + restart the Mac stream (new session). Confirm
-   `event=fanin.host_compliance.prime_at_floor`, the held target sits at the floor
-   from the first lock (no 2.5-min descent), the probe passes, and no revoke fires.
-   Measure e2e latency — expect the settled floor number (~46.1), not the ceiling.
+4. **Per-session win (SAME daemon lifetime):** stop + restart the Mac stream (a new
+   session, fan-in still up). This is the every-morning-wake case. The
+   session-boundary re-prime is SILENT in the journal (the resampler is log-free by
+   design) — verify it from `/state` instead: the held target sits at the floor from
+   the first lock (`resampler.held_target_frames` == the floor, `decay.frozen_reason`
+   == `at_floor`) with no 2.5-min descent, `compliance.flag_present` stays `true`, the
+   probe passes, and no revoke fires. Measure e2e latency — expect the settled floor
+   number (~46.1), not the ceiling. (`event=fanin.host_compliance.prime_at_floor` is
+   the CONSTRUCTION-time signal — it fires once at daemon start when a boot proof is
+   loaded, step 4b below — not on a within-lifetime session boundary.)
+4b. **Cold-start win (across a reboot):** restart fan-in (or reboot) with the proof
+   on disk. Confirm `event=fanin.host_compliance.prime_at_floor` at startup, the held
+   target at the floor from the first lock, the probe passes, and no revoke fires.
 5. **Silence check:** repeat step 4 with the Mac output OPEN but PLAYING NOTHING
    (pure silence). The lane must still lock, the probe still run, and the prime
    still hold — proving the calibration is content-agnostic.
