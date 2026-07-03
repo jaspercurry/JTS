@@ -1222,6 +1222,9 @@ def test_arm_shm_ring_refused_on_ineligible_topology_recovers(
     assert result.recovered is True
     assert result.desired == COUPLING_SHM_RING
     assert "ring-eligible" in result.detail
+    # DEFECT 2: the refusal names the actionable remediation for a plain-stereo
+    # box carrying stale roleful/subwoofer artifacts (jts.local's shape).
+    assert "jasper-output-topology-reset" in result.detail
     assert "camilla:shm_ring" not in calls  # never armed
     assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
 

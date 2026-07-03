@@ -13,6 +13,14 @@ the resolved kwargs, so a coupling=transport_pipe box re-emits the dual-pipe
 RawFile/File topology on every reconcile (the always-on contract) and a default
 box passes ``{}`` (byte-
 identical).
+
+The ``coupling=None`` CLI/install path (``jasper-sound reconcile-current-dsp``)
+resolves the coupling token FILE-FRESH from the persisted ``fanin.env`` SSOT —
+NOT ``os.environ``. That is the DEFECT-1 fix: on jts.local a polluted
+``os.environ`` coupling made the CLI reconcile emit a RING capture/playback
+config on a LOOPBACK box (``fanin.env=loopback``), and CamillaDSP crash-looped on
+a ring nobody writes. ``test_reconcile_current_dsp_emits_loopback_devices_over_
+stale_ring_yaml_on_loopback_box`` reproduces the hardware scenario end-to-end.
 """
 from __future__ import annotations
 
@@ -42,11 +50,19 @@ def _capture_reemit_coupling(
     The fake carrier returns a base_flat noop result so reconcile short-circuits
     on ``flat_profile_noop`` BEFORE the apply engine runs — we only need the
     dry-run reemit call.
+
+    ``coupling_env`` names the PERSISTED coupling. The ``coupling=None`` CLI path
+    resolves the token FILE-FRESH via ``read_persisted_coupling`` (the SSOT), so
+    we drive it by monkeypatching that reader — NOT ``os.environ``. We also clear
+    ``JASPER_FANIN_CAMILLA_COUPLING`` from ``os.environ`` to prove the None path
+    ignores it (the stale-``os.environ`` bug this suite guards): the persisted
+    file wins.
     """
-    if coupling_env is None:
-        monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
-    else:
-        monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", coupling_env)
+    monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: coupling_env if coupling_env is not None else "loopback",
+    )
 
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -179,8 +195,23 @@ def test_resolver_helper_override_beats_env(monkeypatch):
     assert pipe_kwargs["enable_rate_adjust"] is False
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "transport_pipe")
     assert fanin_coupling_capture_kwargs("loopback") == {}
-    # None falls through to the env (every existing caller's behavior).
+    # None resolves the token FILE-FRESH from the persisted SSOT (NOT os.environ):
+    # os.environ says transport_pipe above, but the persisted file drives the
+    # result. This is the DEFECT-1 fix — the CLI/install reconcile-current-dsp
+    # path must not honor a stale os.environ coupling (which on jts.local emitted a
+    # RING config on a loopback box). A transport_pipe persisted file => pipe
+    # kwargs; a loopback persisted file (or read fail-safe) => {}.
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "transport_pipe",
+    )
     assert "capture_pipe_path" in fanin_coupling_capture_kwargs(None)
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "loopback",
+    )
+    # os.environ still says transport_pipe — the file-fresh loopback wins.
+    assert fanin_coupling_capture_kwargs(None) == {}
 
 
 def test_reconcile_explicit_transport_pipe_override_arms_regardless_of_env(monkeypatch, tmp_path):
@@ -208,3 +239,63 @@ def test_reconcile_explicit_loopback_override_beats_transport_pipe_env(monkeypat
     assert seen["fanin_coupling_capture_kwargs"] == {}
     assert result["reason"] == "flat_profile_noop"
     assert seen.get("apply_called") is not True
+
+
+def test_reconcile_current_dsp_emits_loopback_devices_over_stale_ring_yaml_on_loopback_box(
+    monkeypatch, tmp_path,
+):
+    """DEFECT 1 (hardware-reproduced twice on jts.local): the CLI/install
+    ``jasper-sound reconcile-current-dsp`` path (``coupling=None``) must resolve
+    the coupling token FILE-FRESH from the persisted ``fanin.env`` SSOT, not from
+    a stale ``os.environ``.
+
+    jts.local's exact state:
+      * ``fanin.env`` (the ONLY coupling line anywhere) = ``loopback``;
+      * a prior ``sound_current.yml`` on disk carrying RING devices
+        (``jts_ring_capture`` / ``jts_ring_playback``);
+      * ``os.environ[JASPER_FANIN_CAMILLA_COUPLING]`` polluted to ``shm_ring``.
+
+    Pre-fix, ``fanin_coupling_capture_kwargs(None)`` synthesized
+    ``dict(os.environ)`` and read the STALE ``shm_ring``, re-emitting a RING
+    capture/playback config on a LOOPBACK box — CamillaDSP then crash-looped
+    (SIGKILLed via the LimitRTTIME busy-loop) on the missing/writer-dead ring.
+    This drives the REAL emit path (``carrier.reemit`` -> ``emit_sound_config``)
+    and asserts LOOPBACK devices land in the emitted YAML.
+    """
+    from jasper.audio_runtime_plan import fanin_coupling_capture_kwargs
+    from jasper.sound.camilla_yaml import emit_flat_ring_config
+    from jasper.sound.graph_carrier import carrier_for_loaded_config
+    from jasper.sound.profile import SoundProfile
+
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    # The prior on-disk config has RING devices (the jts.local sound_current.yml).
+    current = config_dir / "sound_current.yml"
+    emit_flat_ring_config(out_path=current)
+    assert "jts_ring_capture" in current.read_text()
+
+    # The pollution: os.environ carries a STALE ring coupling...
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "shm_ring")
+    # ...but the persisted SSOT (fanin.env) is loopback.
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "loopback",
+    )
+
+    # The CLI resolves coupling=None -> file-fresh loopback -> {} (no ring kwargs).
+    kwargs = fanin_coupling_capture_kwargs(None)
+    assert kwargs == {}, f"stale os.environ leaked ring kwargs: {kwargs}"
+
+    # End-to-end: the real emit path writes LOOPBACK devices, not the prior ring.
+    carrier = carrier_for_loaded_config(current, config_dir=config_dir)
+    out_path = config_dir / "sound_out.yml"
+    carrier.reemit(
+        SoundProfile(enabled=False),
+        out_path=out_path,
+        fanin_coupling_capture_kwargs=kwargs,
+    )
+    emitted = out_path.read_text()
+    assert "jts_ring_capture" not in emitted
+    assert "jts_ring_playback" not in emitted
+    assert 'device: "plug:jasper_capture"' in emitted
+    assert 'device: "outputd_content_playback"' in emitted

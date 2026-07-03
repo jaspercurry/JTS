@@ -758,11 +758,26 @@ def ring_topology_ready() -> tuple[bool, str]:
         return True, f"topology unreadable ({exc}); deferring to outputd's own guard"
     if topology_supports_shm_ring(topology):
         return True, "topology is ring-eligible (stereo/unconfigured single sink)"
+    # Not ring-eligible. This is CORRECT for a genuinely roleful/composite/mono box
+    # (dac8x active speaker, dual-Apple, explicit mono) — the household knows that
+    # setup and loopback is the right coupling. But a plain stereo single-sink box
+    # (e.g. the shipped-default Apple dongle) whose SAVED topology carries STALE
+    # roleful/subwoofer speaker_groups from a prior campaign (jts.local's shape
+    # after the 2026-06 subwoofer campaign) is a false refusal *of the box*, not of
+    # the topology: the classifier honestly reports the saved subwoofer role, and a
+    # stereo ring truly cannot drive it. The remediation is to CLEAR the drifted
+    # topology so it re-derives the plain-stereo shape from detected hardware —
+    # ``jasper-output-topology-reset`` (returns speaker_groups=[] -> unconfigured ->
+    # ring-eligible). Name it here so the operator has an actionable next step
+    # instead of an opaque refusal.
     return False, (
         "saved output topology is not ring-eligible (shm_ring is a full-range "
         "stereo single-sink coupling; roleful/protected/subwoofer, composite "
         "dual-DAC, and explicit-mono topologies are excluded until ring v2 / P8). "
-        "Keeping the coupling on loopback"
+        "Keeping the coupling on loopback. If this box is actually a plain stereo "
+        "single-sink speaker carrying a stale roleful/subwoofer topology, run "
+        "`jasper-output-topology-reset` to re-derive a clean passive topology from "
+        "detected hardware, then re-arm."
     )
 
 
