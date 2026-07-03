@@ -61,20 +61,38 @@ _OBSERVED_OUTPUT_HARDWARE_CLOCK_ISSUE_CODES = frozenset({
 # The ALSA plugin dir ALSA actually dlopen()s ioplugs from on aarch64
 # Trixie (verified live on jts.local/jts3; bluealsa/jack register plugins
 # here too). Kept in lockstep with JTS_RING_ALSA_PLUGIN_DIR in
-# deploy/lib/install/ring-platform.sh.
+# deploy/lib/install/ring-platform.sh. NOTE: this is a hardcoded aarch64
+# multiarch path in two places (here + ring-platform.sh's env-overridable
+# JTS_RING_ALSA_PLUGIN_DIR). Fine for the mandated 64-bit fleet
+# (BRINGUP/QUICKSTART pin RPiOS Lite 64-bit); if the installer dir is ever
+# overridden for another arch, this constant would need to move with it
+# (deriving both from `dpkg-architecture -qDEB_HOST_MULTIARCH` would remove
+# the assumption).
 _JTS_RING_ALSA_PLUGIN_DIR = "/usr/lib/aarch64-linux-gnu/alsa-lib"
 _JTS_RING_IOPLUG_SO = "libasound_module_pcm_jts_ring.so"
 _JTS_RING_CONF_D = "/etc/alsa/conf.d/60-jts-ring.conf"
 # The tmpfs directory the ring files live in (shipped by
 # deploy/tmpfiles/jts-ring.conf). Module constant so tests can repoint it.
 _JTS_RING_SHM_DIR = "/dev/shm/jts-ring"
-# The two inert PCM names the conf.d defines. The open probe against these
-# both resolves the name AND forces ALSA to dlopen the ioplug .so; with no
-# ring present it exercises the writer-dead / no-reader silence path, which
-# terminates safely (the lab ring-proto resolvability step relies on this).
+# The two inert PCM names the conf.d defines, each paired with (probe tool,
+# ring-file basename). The open probe against these both resolves the name
+# AND forces ALSA to dlopen the ioplug .so; with no ring present it exercises
+# the writer-dead / no-reader silence path, which terminates safely (the lab
+# ring-proto resolvability step relies on this).
+#
+# The ring-file basename matters because the ioplug's open path is
+# create-or-attach (O_RDWR|O_CREAT|O_EXCL in jts_ring_reader_open /
+# jts_ring_writer_open): probing an ABSENT ring CREATES the file. That would
+# violate P1's inertness invariant ("no ring file exists until P2 arms") and
+# poison P2's first arm (a valid-magic ring with the conf.d placeholder
+# geometry is a fail-closed open error, not a reclaimable magic-less file).
+# The probe therefore snapshots each ring path's existence and unlinks only
+# what it created — see _jts_ring_pcm_resolves. Basenames match
+# deploy/alsa/conf.d/60-jts-ring.conf's `path` values (capture -> program.ring
+# via the reader; playback -> content.ring via the writer).
 _JTS_RING_PCMS = (
-    ("jts_ring_capture", "arecord"),
-    ("jts_ring_playback", "aplay"),
+    ("jts_ring_capture", "arecord", "program.ring"),
+    ("jts_ring_playback", "aplay", "content.ring"),
 )
 
 
@@ -1785,6 +1803,17 @@ def check_fanin_coupling() -> CheckResult:
     )
 
 
+def _jts_ring_path_for(pcm: str) -> str | None:
+    """The SHM ring-file path a given inert PCM's open probe would create,
+    or None if the PCM name is not one of ours. Derived from _JTS_RING_SHM_DIR
+    (so tests can repoint the dir) + the basename registered in _JTS_RING_PCMS
+    (which mirrors deploy/alsa/conf.d/60-jts-ring.conf's `path` values)."""
+    for name, _tool, ring_basename in _JTS_RING_PCMS:
+        if name == pcm:
+            return os.path.join(_JTS_RING_SHM_DIR, ring_basename)
+    return None
+
+
 def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     """Open-probe one inert jts_ring PCM. Success means ALSA resolved the
     conf.d name AND dlopen()ed the ioplug .so AND the writer-dead/no-reader
@@ -1792,12 +1821,25 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     safe: the ioplug free-runs (playback) or emits timer-paced silence
     (capture) rather than blocking (the lab resolvability-step contract).
 
+    Leaves no residue: the ioplug open path is create-or-attach
+    (O_RDWR|O_CREAT|O_EXCL), so probing an ABSENT ring CREATES the ring file.
+    A doctor-created ring would (a) violate P1's inertness invariant ("no ring
+    file exists until P2 arms") on every box after every deploy, and (b) poison
+    P2's first arm, because a valid-magic ring carrying the conf.d PLACEHOLDER
+    geometry is a fail-closed open error (only magic-less files are reclaimed).
+    So we snapshot the ring path's existence before the probe and unlink ONLY a
+    file the probe itself created. A live armed ring pre-exists (it is in the
+    "existed before" set and is never unlinked; it also EBUSYs the probe via the
+    SPSC guard), so this can never remove a ring in use.
+
     Returns (ok, detail). detail carries the tail of stderr on failure so
     a broken registration (e.g. the -DPIC "undefined symbol: snd_dlsym_start"
     class) is legible, not just "probe failed".
     """
     if not shutil.which(tool):
         return False, f"{tool} not found"
+    ring_path = _jts_ring_path_for(pcm)
+    pre_existed = bool(ring_path) and os.path.exists(ring_path)
     # arecord -> /dev/null (discard captured silence); aplay -> /dev/zero
     # (feed silence in). Both 2ch/48k/S16_LE/1s, matching the lab probe.
     sink = "/dev/null" if tool == "arecord" else "/dev/zero"
@@ -1809,6 +1851,15 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
         )
     except subprocess.TimeoutExpired:
         return False, "open probe hung (>6 s) — ioplug no-reader/no-writer path may be broken"
+    finally:
+        # Remove a ring file the probe created (it did not exist beforehand).
+        # Best-effort: a failure to unlink must not turn a clean probe into a
+        # doctor error, but the residue would still be visible next run.
+        if ring_path and not pre_existed and os.path.exists(ring_path):
+            try:
+                os.unlink(ring_path)
+            except OSError:
+                pass
     if proc.returncode == 0:
         return True, "resolved"
     err = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")
@@ -1831,17 +1882,36 @@ def check_ring_platform_assets() -> CheckResult:
 
     Statuses:
       ok    — .so + conf.d + shm dir present, both PCMs open-probe cleanly.
-      warn  — an asset is missing (build failed or drift). P1 is inert and
-              loopback remains the transport, so a missing .so is degraded,
-              not broken — the next deploy rebuilds. (This flips to fail
-              after P9, when the ioplug becomes load-bearing.)
-      fail  — the .so is installed but a PCM fails to open. That is a real
-              defect: the plugin is present but ALSA can't use it (bad
-              registration / arch mismatch), which would break P2's arm.
+              CAVEAT: this cannot distinguish a freshly-built .so from a STALE
+              one left by a failed rebuild (the 2026-07-02 class) — a stale but
+              structurally-valid .so open-probes fine and reads ok here. The
+              install transcript's build-failure WARN is the signal for that;
+              ioplug-vs-Rust protocol-drift detection is P2's job (when the .so
+              becomes load-bearing). See ring-platform.sh.
+      warn  — an asset is MISSING (a first-ever build failed, or drift). P1 is
+              inert and loopback remains the transport, so a missing .so is
+              degraded, not broken — the next deploy rebuilds. (This flips to
+              fail after P9, when the ioplug becomes load-bearing.)
+      fail  — the .so is installed but a PCM fails to open. In the inert
+              phase that is a real defect (bad registration / arch mismatch,
+              e.g. the -DPIC class), which would break P2's arm. The EBUSY
+              exception is called out below.
 
-    Probe is safe anytime: it opens each device for 1 s against an absent
-    ring, exercising only the writer-dead / no-reader silence path (feeds
-    or discards silence, never touches a live ring).
+    Probe leaves no residue: it opens each device for 1 s against an absent
+    ring, exercising only the writer-dead / no-reader silence path (feeds or
+    discards silence). Because the ioplug open path is create-or-attach, the
+    probe would create the ring file; _jts_ring_pcm_resolves snapshots and
+    unlinks only what it created, so P1's "no ring file until P2 arms"
+    invariant holds after every deploy.
+
+    Armed-state caveat (revisit at P2): this check assumes the INERT phase.
+    On a lab-armed box (the ring-proto experiment live) — or once P2 arms a
+    coupling for real — the ring has a live reader/writer and the ioplug's
+    SPSC guard EBUSYs the probe. The probe never touches that live ring (it
+    pre-exists, so the residue cleanup leaves it alone), but the open failing
+    with EBUSY is reported as fail with an "in use, not a defect" remediation
+    rather than a registration error. Making this check first-class
+    armed-aware (report ok/skip when a coupling is armed) is P2's job.
     """
     label = "ring platform"
     so_path = f"{_JTS_RING_ALSA_PLUGIN_DIR}/{_JTS_RING_IOPLUG_SO}"
@@ -1872,23 +1942,40 @@ def check_ring_platform_assets() -> CheckResult:
     # All assets present — the .so being installed means it MUST dlopen and
     # register; a failure to open is a genuine defect.
     probe_failures: list[str] = []
-    for pcm, tool in _JTS_RING_PCMS:
+    for pcm, tool, _ring_basename in _JTS_RING_PCMS:
         ok, detail = _jts_ring_pcm_resolves(pcm, tool)
         if not ok:
             probe_failures.append(f"{pcm}: {detail}")
     if probe_failures:
+        # EBUSY is NOT a registration defect: on a lab-armed box (the ring-proto
+        # experiment live, or after P2 arms a coupling) the ring already has a
+        # live foreign reader/writer, and the ioplug's SPSC guard refuses the
+        # probe with -EBUSY ("Device or resource busy"). The .so is fine — the
+        # ring is simply in use. (check_ring_platform_assets and its "probe is
+        # safe anytime" docstring assume the inert phase; P2 must make this check
+        # armed-state-aware so an armed ring reports ok/skip, not fail.)
+        joined = "; ".join(probe_failures)
+        if re.search(r"resource busy|EBUSY|Device or resource busy", joined, re.I):
+            remediation = (
+                "ring is in use (a live reader/writer already owns it — e.g. a "
+                "lab arm) — not a registration defect; re-run with the ring "
+                "disarmed / camilla stopped to probe the .so."
+            )
+        else:
+            remediation = (
+                "Rebuild the ioplug (check -DPIC / arch); the .so is present but "
+                "ALSA can't use it."
+            )
         return CheckResult(
             label,
             "fail",
-            f"ioplug .so installed but PCM open failed: {'; '.join(probe_failures)}. "
-            "Rebuild the ioplug (check -DPIC / arch); the .so is present but "
-            "ALSA can't use it.",
+            f"ioplug .so installed but PCM open failed: {joined}. {remediation}",
         )
     return CheckResult(
         label,
         "ok",
         f"ioplug + conf.d + /dev/shm/jts-ring staged (inert); "
-        f"{', '.join(pcm for pcm, _ in _JTS_RING_PCMS)} resolve",
+        f"{', '.join(name for name, _tool, _ring in _JTS_RING_PCMS)} resolve",
     )
 
 

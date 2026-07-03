@@ -44,11 +44,22 @@ JTS_RING_IOPLUG_SRC_SUBDIR="c/jts-ring-ioplug"
 #
 # Degrade-to-warn contract (campaign risk #5): a build failure MUST NOT
 # fail the install. In P1 the ring platform is inert and loopback remains
-# the transport, so an absent .so changes nothing operationally — the
-# doctor `ring platform` check warns, and the next deploy retries. This
+# the transport, so a missing/stale .so changes nothing operationally. This
 # is deliberately the OPPOSITE of build_install_rust_daemon's required=1
 # fatal path; after P9 (when the ioplug becomes load-bearing) this gate
 # flips to fatal, tracked in the campaign done-criteria.
+#
+# Two build-failure shapes, and what the doctor sees for each:
+#   - First-ever build fails (no prior .so): so_dest is absent, so the
+#     doctor's `ring platform` check goes `warn` (asset missing). Honest.
+#   - Rebuild fails on a box with a prior good deploy: the pre-build rm -f
+#     below only cleans the CACHE copy, so the PREVIOUS .so stays installed
+#     at so_dest and the doctor open-probes it fine -> `ok`, NOT warn. The
+#     doctor cannot tell a stale .so from a fresh one, so a failed rebuild is
+#     surfaced ONLY by the extra transcript WARN emitted below (the
+#     2026-07-02 stale-binary class). Protocol-drift detection between the
+#     ioplug and the Rust ring is P2's job (when the .so becomes load-bearing),
+#     not P1's.
 build_install_jts_ring_ioplug() {
     local src_dir="${REPO_DIR}/${JTS_RING_IOPLUG_SRC_SUBDIR}"
     local cache_dir="/var/cache/jts-ring-ioplug-build"
@@ -85,6 +96,22 @@ build_install_jts_ring_ioplug() {
         sudo -u "${BUILD_USER}" -H bash -c "cd '${cache_dir}' && make plugin"; then
         echo "  WARN: jts_ring ioplug build failed; ring platform unavailable this deploy" >&2
         echo "  WARN: loopback coupling remains the transport (inert phase) — doctor 'ring platform' will warn" >&2
+        # STALE-BINARY HAZARD (the 2026-07-02 class): the pre-build rm -f above
+        # only cleans the CACHE copy, so on a box with a prior good deploy the
+        # PREVIOUS .so is still installed at so_dest. In P1 nothing runs it, so
+        # this is harmless — but the doctor's `ring platform` check sees all
+        # three assets present and the stale .so open-probes fine, so it reports
+        # `ok`, NOT `warn`: the doctor cannot distinguish a fresh build from a
+        # leftover. Name that explicitly here so the deploy transcript is honest
+        # (a build failure is not silently masked as "unchanged"). We do NOT
+        # remove the stale .so: an installed-but-stale ioplug is strictly less
+        # broken than none in P1 (loopback carries audio either way), and P2 —
+        # where the .so becomes load-bearing — is where ioplug-vs-Rust protocol
+        # drift detection must land (campaign done-criteria dependency), not
+        # here. Until then the transcript is the signal.
+        if [[ -e "${so_dest}" ]]; then
+            echo "  WARN: a previously-installed ${so_dest} REMAINS in place; the doctor cannot distinguish it from a fresh build and will report 'ring platform' ok — treat the two WARN lines above as the real signal for this deploy" >&2
+        fi
         return 0
     fi
 
@@ -145,9 +172,16 @@ install_jts_ring_conf_assets() {
         install -m 0644 "${tmpfiles_src}" /etc/tmpfiles.d/jts-ring.conf
         # --create is idempotent; a failure here (e.g. group `jasper` not
         # yet present on a partial box) must not fail the install — the
-        # dir self-heals on the next boot/apply.
-        systemd-tmpfiles --create --prefix=/dev/shm/jts-ring 2>/dev/null || \
-            echo "  WARN: systemd-tmpfiles --create for /dev/shm/jts-ring deferred to next boot" >&2
+        # dir self-heals on the next boot/apply. Capture stderr into the WARN
+        # so a PERSISTENT failure (not the transient partial-box case) carries
+        # its reason instead of a bare "deferred to next boot" with no cause.
+        # `if ! ...` keeps set -e from aborting on the non-zero exit.
+        local tmpfiles_err
+        if ! tmpfiles_err="$(systemd-tmpfiles --create --prefix=/dev/shm/jts-ring 2>&1)"; then
+            # Single-line the reason so the WARN stays one line.
+            tmpfiles_err="${tmpfiles_err//$'\n'/ }"
+            echo "  WARN: systemd-tmpfiles --create for /dev/shm/jts-ring deferred to next boot${tmpfiles_err:+: ${tmpfiles_err}}" >&2
+        fi
         echo "  Installed /etc/tmpfiles.d/jts-ring.conf and applied /dev/shm/jts-ring (inert)"
     else
         echo "  WARN: ${tmpfiles_src} missing; /dev/shm/jts-ring lifecycle not installed" >&2

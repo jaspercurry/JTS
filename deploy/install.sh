@@ -414,8 +414,11 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
      (needs libasound2-dev), installed to the arch ALSA plugin dir,
      sha256-compared like the Rust daemons. Audio-graph consolidation
-     P1: shipped INERT (nothing opens the ring); a build failure
-     degrades to "ring unavailable + doctor warn," never a failed install.
+     P1: shipped INERT (nothing opens the ring); a build failure never
+     fails the install. On a first-ever build failure the .so is absent
+     and the doctor 'ring platform' check warns; on a REBUILD failure a
+     prior good .so stays installed and the doctor reads ok (stale-binary
+     class) — the build-failure WARN in the transcript is the only signal.
    - The shairport-sync/nqptp source builds and Rust daemon builds
      run RAM-bounded and cgroup-contained via
      deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
@@ -562,8 +565,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      (needs libasound2-dev), installed to the arch ALSA plugin dir,
      sha256-compared like the Rust daemons. Audio-graph consolidation
      P1: shipped INERT (nothing opens the ring; loopback stays the
-     coupling). A build failure degrades to "ring unavailable + doctor
-     warn," never a failed install.
+     coupling). A build failure never fails the install: a first-ever
+     failure leaves the .so absent (doctor warns); a REBUILD failure
+     leaves the prior .so installed and the doctor reads ok (stale-binary
+     class) — the transcript build-failure WARN is the only signal.
    - Optional ESP32 dial/satellite firmware only when
      JASPER_BUILD_OPTIONAL_FIRMWARE=1.
    - All heavy source builds above (webrtc AEC3, jasper_aec3, the Rust
