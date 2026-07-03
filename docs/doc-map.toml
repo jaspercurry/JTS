@@ -223,11 +223,13 @@ docs = [
   "docs/HANDOFF-audio-capability-platform.md",
   "docs/HANDOFF-airplay.md",
   "docs/HANDOFF-dlna.md",
+  "docs/HANDOFF-audio-graph-consolidation.md",
 ]
 requires_docs_when = [
   "A source lane, fan-in buffer, ALSA PCM, mux arbitration rule, renderer device, or source-selection behavior changes.",
   "A source starts using a different volume carrier or bypasses/enters CamillaDSP differently.",
   "Output hardware profile detection, DAC hotplug reconcile behavior, or Apple DAC mixer pinning changes.",
+  "A snd-aloop lane, ring transport, or legacy path named in the consolidation campaign's no-dupes audit is added, migrated, or deleted (see HANDOFF-audio-graph-consolidation.md's phase map).",
 ]
 verification = [
   "pytest tests/test_fanin_wiring.py tests/test_fanin_systemd.py tests/test_volume_coordinator.py tests/test_airplay_render.py",
@@ -591,6 +593,7 @@ code = [
 docs = [
   "docs/HANDOFF-audio-latency-foundation.md",
   "docs/HANDOFF-usb-low-latency.md",
+  "docs/HANDOFF-audio-graph-consolidation.md",
   "docs/testing-tooling.md",
 ]
 requires_docs_when = [
