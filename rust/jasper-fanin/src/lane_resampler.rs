@@ -604,21 +604,103 @@ impl LaneResampler {
     fn try_lock(&mut self) {
         let fill = self.ring.fill_frames();
         let deep_prefill = self.startup_prefill_frames();
+        // FLOOR-PRIME SEATING — DEFENSE-IN-DEPTH for exotic geometry, NOT the fix
+        // for the jts.local 2026-07-03 probe false-fail. When the lane is
+        // floor-primed off a valid host-compliance proof, `hold_fill_frames()`
+        // already equals the decay floor, so `deep_prefill` (= floor + radius + 1)
+        // is one render period plus ~radius of ring. This gate DISABLES the shallow
+        // bounded-prime fall-through while primed so the lock can only seat AT the
+        // full floor depth, never below it.
+        //
+        // WHAT THIS GATE ACTUALLY CHANGES. Whether it does anything depends purely
+        // on ring geometry: the fall-through arm requires `fill >=
+        // fallthrough_prefill_frames()`, and the deep arm (checked FIRST) requires
+        // `fill >= floor + radius + 1`. Whenever `floor + radius + 1 <=
+        // fallthrough_prefill_frames()` — i.e. `floor <= fallthrough − radius − 1`
+        // (~1024 fr with default period 256 / target 512) — the deep arm is the
+        // ONLY arm a floor-primed lane can reach, so the fall-through was already
+        // unreachable while primed and this gate is a no-op. That covers EVERY
+        // default box (jts.local: target 512, period 256, floor 576, ceiling 2048
+        // → deep-prefill 593, fallthrough 1041; the fall-through needs fill>=1041
+        // AND fill<593 — the empty set). So on jts.local a floor-primed lock ALWAYS
+        // seated exactly at the floor (593 fr) via the deep arm — at the PARENT
+        // commit too. The gate only bites when `floor > ~1024` (operator-set decay
+        // floor), the geometry where the fall-through prefill sits below the floor
+        // prefill; there it stops a shallow seat that would otherwise rail while the
+        // fill built up to the (now-higher) floor.
+        //
+        // WHAT ACTUALLY CAUSED THE OBSERVED RAIL (still OPEN — do not chase the
+        // seat depth). The jts.local false-fail sat at baseline≈step≈−500 ppm FLAT
+        // for ≥19 s (through the 4 s baseline AND 15 s step). A floor-height held
+        // target (576) cannot produce that: from the deepest shallow seat the
+        // underfill-unlock threshold (`minimum_safe_fill` ≈274) bounds the deficit
+        // at (576−274)=302 fr, so at ±500 ppm the rail could last at most
+        // 302/(48000·5e-4)≈12.6 s and would SHRINK as the fill builds — it could
+        // not read −500.0 flat through the step tail. A ≥19 s exact rail therefore
+        // requires a CEILING-SCALE held target (~2048) relative to the fill during
+        // the probe — i.e. something RAISED the held target AFTER lock. The leading
+        // suspect is the decay's `snap_back`: the FIRST locked `tick_decay` runs
+        // while the outer ladder is still Probing (`dll_l0_locked == false`), so it
+        // clears the prime latch and takes the `NotL0` branch (decay.rs), snapping
+        // the held target from the floor up to the ceiling and railing the DLL to
+        // rebuild the fill from 576→~2048. That is a real, un-fixed bug; this PR
+        // does not fix it. It is not audible or proof-costing because Part 2 (the
+        // unrailed-settle guard) holds the probe in AwaitLock while the correction
+        // is railed and Part 3 (two-strike) would absorb any residual fail — but a
+        // primed session still silently pays the ceiling rebuild + re-descent (the
+        // exact latency win the feature exists to deliver). Pinning the mechanism is
+        // OWED on-device work (see HANDOFF-usb-low-latency.md validation step 6:
+        // watch `resampler.decay.frozen_reason` / `resampler.held_target_frames`
+        // through a primed session's first 30 s — the signature is at_floor→not_l0
+        // with held_target_frames jumping floor→ceiling).
+        //
+        // COST. In DEFAULT geometry the cost vs the parent is ZERO — the deep arm
+        // was already the only reachable path for a primed lane, so the seat depth,
+        // lock-error, and first-audio latency are byte-identical. Only in the
+        // exotic `floor > ~1024` geometry does the gate add latency: the lock then
+        // waits for `floor − minimum_safe` extra buffered frames before the first
+        // audio period (a one-time per-session cost). A floor-primed host is
+        // proven-compliant and delivers at ~DAC rate, and the lane consumes NOTHING
+        // while priming (the ring only grows), so reaching the floor depth is a few
+        // render periods for any real stream.
+        //
+        // HONESTY — silent trickle in the exotic geometry. In that same `floor >
+        // ~1024` geometry a producer stalled with fill in `[fallthrough_prefill,
+        // floor_prefill)` previously locked (railed but AUDIBLE) and now primes
+        // SILENTLY with no bound and no cue until the fill reaches the floor. No
+        // default box reaches this, and STATUS's `resampler.held_target_frames` /
+        // fill gauges expose it; but the fall-through's slow-producer guard IS
+        // load-bearing at that depth, so this suppression trades an audible-but-
+        // railed start for a silent wait there. Acceptable for the operator-set
+        // deep-floor case; revisit if a real box ever runs a floor that high.
+        //
+        // NON-PRIMED (ceiling) sessions are UNCHANGED: `is_floor_primed()` is
+        // false, so `deep_prefill` is the full ceiling (target + warm-up cushion +
+        // radius + 1) and the shallow fall-through still fires on the bounded-prime
+        // expiry exactly as before — a fresh cold start still acquires deep.
+        let floor_primed = self.is_floor_primed();
         // Fall-through seat depth once the bounded prime expires: the most we
         // can safely seat given what's buffered, never below the safe minimum
         // (so we don't lock straight into an underfill→silence) and never above
-        // the full cushion depth.
+        // the full cushion depth. Gated off while floor-primed (see above) so the
+        // lock can only seat at the floor — a no-op in default geometry where the
+        // deep arm already wins, load-bearing only for an exotic deep floor.
         let prime_expired =
             self.max_prime_periods > 0 && self.prime_periods >= self.max_prime_periods;
         let seat = if fill >= deep_prefill {
-            // Enough for the full held warm-up cushion.
+            // Enough for the full held target (the floor when floor-primed, the
+            // warm-up cushion otherwise).
             self.hold_fill_frames()
-        } else if prime_expired && fill >= self.fallthrough_prefill_frames() {
-            // Slow producer: seat at whatever we have, but only after there is
-            // one render period of runway beyond the hard interpolation floor.
-            // Hardware USB acquisition can arrive in short bursts; seating at
-            // the bare minimum caused lock→underfill→relock chatter before the
-            // ring built enough depth to run continuously.
+        } else if !floor_primed && prime_expired && fill >= self.fallthrough_prefill_frames() {
+            // Slow producer (ceiling acquisition only): seat at whatever we have,
+            // but only after there is one render period of runway beyond the hard
+            // interpolation floor. Hardware USB acquisition can arrive in short
+            // bursts; seating at the bare minimum caused lock→underfill→relock
+            // chatter before the ring built enough depth to run continuously.
+            // Gated off while floor-primed: in default geometry the deep-prefill
+            // arm above is the only reachable one anyway (this arm's threshold sits
+            // ABOVE it), so the `!floor_primed` guard only changes behaviour in the
+            // exotic deep-floor geometry (see the block above).
             fill - (RADIUS_FRAMES as usize + 1)
         } else {
             // Keep priming.
@@ -752,10 +834,11 @@ impl LaneResampler {
     /// host-compliance prime-at-floor entry). Called at lane build time, BEFORE
     /// the first render period, when the mixer has a VALID persisted proof whose
     /// recorded floor matches this lane's live floor. Seeds the held target at the
-    /// floor so the first `try_lock` seats the cursor shallow (skipping the
-    /// ~2.5-min descent) and re-publishes the held-target + decay atomics so
-    /// STATUS and the outer DLL setpoint read the floor from period one. A
-    /// no-op-cheap when decay is disabled (the held target stays at the ceiling).
+    /// floor so the first `try_lock` seats the cursor AT the floor depth (shallower
+    /// than the ceiling, skipping the ~2.5-min descent) and re-publishes the
+    /// held-target + decay atomics so STATUS and the outer DLL setpoint read the
+    /// floor from period one. A no-op-cheap when decay is disabled (the held target
+    /// stays at the ceiling).
     ///
     /// Build time is the FIRST prime; subsequent per-session primes ride
     /// [`snap_decay_back_honoring_proof`](Self::snap_decay_back_honoring_proof) at
@@ -778,6 +861,20 @@ impl LaneResampler {
     /// `false` when decay is disabled (the machine never reaches AtFloor).
     pub fn decay_at_floor(&self) -> bool {
         self.decay.frozen_reason() == Some(DecayFrozenReason::AtFloor)
+    }
+
+    /// Whether the lane is currently FLOOR-PRIMED and awaiting its first lock —
+    /// the held target is seeded at the floor and `try_lock` has not yet seated
+    /// the cursor. When true, `try_lock` gates OFF the shallow bounded-prime
+    /// fall-through so the lock can only seat AT the floor depth. This is
+    /// defense-in-depth for the exotic `floor > ~1024` geometry; in default
+    /// geometry the deep-prefill arm already wins for a primed lane, so the gate
+    /// is a no-op there (see `try_lock`; the observed jts.local false-fail's rail
+    /// came from the post-lock `NotL0` snap, NOT from shallow seating). Always
+    /// `false` on a non-primed lane (feature off or no valid proof), so a
+    /// ceiling session's seating is unchanged. A plain delegated field read.
+    fn is_floor_primed(&self) -> bool {
+        self.decay.floor_prime_pending()
     }
 
     /// The cumulative underfill-unlock count — the compliance proof's churn gauge
@@ -820,8 +917,11 @@ impl LaneResampler {
         jasper_resampler::minimum_safe_fill_frames(self.period_frames as u32, self.max_adjust_ppm)
     }
 
-    /// Frames the ring must hold before lock seats the cursor at the held
-    /// target (`target + warm-up cushion`) with kernel headroom.
+    /// Frames the ring must hold before lock seats the cursor at the LIVE held
+    /// target with kernel headroom. The held target is the decay floor when the
+    /// lane is floor-primed (so this is the small floor-seat depth that makes the
+    /// lock land at the target with no railed post-lock build) and the
+    /// acquisition ceiling (`target + warm-up cushion`) otherwise.
     fn startup_prefill_frames(&self) -> usize {
         self.hold_fill_frames() + RADIUS_FRAMES as usize + 1
     }
@@ -1154,6 +1254,22 @@ mod decay {
         /// The current frozen reason (for STATUS). `None` while decaying.
         pub fn frozen_reason(&self) -> Option<DecayFrozenReason> {
             self.frozen_reason
+        }
+
+        /// Whether a prime-at-floor is currently PENDING — the held target is
+        /// seeded at the floor and the lane has NOT yet locked since the prime
+        /// (`prime_at_floor` set the latch; the first locked `tick` clears it).
+        /// Read by `LaneResampler::try_lock` to gate OFF the shallow bounded-prime
+        /// fall-through so a floor-primed lock can only seat AT the floor depth.
+        /// This is defense-in-depth for the exotic `floor > ~1024` geometry; in
+        /// default geometry the deep-prefill arm already wins for a primed lane, so
+        /// the gate changes nothing there (the observed jts.local false-fail's rail
+        /// was the post-lock `NotL0` snap raising the held target to the ceiling,
+        /// NOT shallow seating — see `try_lock`). Always `false` on a machine that
+        /// was never primed (feature off, or no valid proof), so the ceiling path
+        /// is byte-identical to today.
+        pub fn floor_prime_pending(&self) -> bool {
+            self.floor_prime_pending
         }
 
         /// Snap the held target back to the ceiling and reset decay progress.
@@ -2781,7 +2897,7 @@ mod tests {
         r: &mut LaneResampler,
         flag_present: bool,
     ) -> crate::host_compliance::HostComplianceObservability {
-        let obs = crate::host_compliance::HostComplianceObservability::new(flag_present, 0);
+        let obs = crate::host_compliance::HostComplianceObservability::new(flag_present, 0, 0);
         r.set_compliance_observability(obs.clone_handles());
         obs
     }
@@ -2889,6 +3005,107 @@ mod tests {
         assert!(
             seated_fill <= FLOOR + RADIUS_FRAMES as u64,
             "session B seats shallow (fill {seated_fill} near floor {FLOOR}), not at the ceiling"
+        );
+    }
+
+    /// FLOOR-PRIME SEATING (Part 1) — the `!floor_primed` fall-through gate, for
+    /// the EXOTIC deep-floor geometry only. NOT the fix for the jts.local
+    /// 2026-07-03 hardware false-fail: in default geometry a floor-primed lock
+    /// already seats AT the floor via the deep-prefill arm (the fall-through is
+    /// unreachable while primed), so the gate is a no-op there and the observed
+    /// rail came from the post-lock `NotL0` held-target snap, not shallow seating
+    /// (see the `try_lock` comment). This gate matters only when the operator sets
+    /// the decay floor above ~1024, where the fall-through prefill drops BELOW the
+    /// floor prefill and a floor-primed lock COULD otherwise seat shallow and rail
+    /// while building up to the higher floor.
+    ///
+    /// This test CONSTRUCTS that exotic geometry (a big cushion + a high floor 1100)
+    /// so the fall-through prefill sits below the floor prefill, then asserts the
+    /// primed lane keeps priming (no shallow lock) and seats at the floor once the
+    /// floor depth is buffered. It is ALSO the mutation guard: reverting the
+    /// `!floor_primed` gate in `try_lock` (so the fall-through fires while primed)
+    /// makes the lane lock shallow here and the assertions fail. A green result
+    /// proves the gate's exotic-geometry behaviour — NOT that Part 1 fixed the
+    /// hardware false-fail.
+    #[test]
+    fn floor_primed_lock_does_not_seat_shallow_via_fallthrough() {
+        // Geometry: a big cushion so the floor can sit ABOVE the fall-through
+        // prefill. target 512, cushion 768 (ceiling 1280), floor 1100. A low rate
+        // keeps max_prime_periods small (18 at 4800/256) so the test is fast.
+        //
+        // NOTE — this geometry is CONSTRUCTED to make the `!floor_primed`
+        // fall-through gate observable (floor 1100 > ~1024 so the fall-through
+        // prefill sits below the floor prefill). It is NOT the default/jts.local
+        // geometry (floor 576), where the deep-prefill arm already wins for a
+        // primed lane and the gate is a no-op. So a green result here proves the
+        // gate does what it claims in the exotic deep-floor case — NOT that Part 1
+        // fixed the jts.local probe false-fail (that rail came from the post-lock
+        // `NotL0` snap; see the `try_lock` comment).
+        const FP_TARGET: usize = 512;
+        const FP_CUSHION: usize = 768;
+        const FP_FLOOR: u64 = 1100;
+        let params = DecayParams {
+            enabled: true,
+            floor_frames: FP_FLOOR,
+            step_frames: 16,
+            interval_ms: 1,
+            stability_ms: 1,
+            cascade_guard_ppm: 400.0,
+        };
+        let mut r = LaneResampler::new(
+            2, PERIOD, 4_800, FP_TARGET, FP_CUSHION, MAX_PPM, RING, params,
+        )
+        .expect("resampler builds");
+        let _obs = arm_compliance(&mut r, true);
+        // Prime at the floor (a valid proof primed this session), so the held
+        // target — and the deep prefill — are the FLOOR, and the fall-through must
+        // be suppressed.
+        r.prime_decay_at_floor();
+        assert_eq!(r.hold_fill_frames() as u64, FP_FLOOR, "primed at the floor");
+        assert!(r.is_floor_primed(), "the floor-prime latch is set pre-lock");
+
+        let floor_prefill = r.startup_prefill_frames(); // FP_FLOOR + 16 + 1 = 1117
+        let fallthrough = r.fallthrough_prefill_frames(); // 1041 for this geometry
+        assert!(
+            fallthrough < floor_prefill,
+            "geometry must expose the fall-through-below-floor window \
+             (fallthrough {fallthrough} < floor prefill {floor_prefill})"
+        );
+        let mut out = vec![0i16; PERIOD as usize * 2];
+
+        // Buffer EXACTLY the fall-through depth — enough for the old shallow seat,
+        // NOT enough for the floor seat. Under the old code this would lock at
+        // `fill - (RADIUS+1)` (≈1024), which is BELOW the floor 1100.
+        r.push_input(&tone(fallthrough));
+        // Drive well past the bounded-prime bound so `prime_expired` is true.
+        for _ in 0..(r.max_prime_periods + 4) {
+            assert_eq!(
+                r.render_period(&mut out),
+                0,
+                "a floor-primed lane must NOT seat shallow — it stays priming until \
+                 the floor depth is buffered (the fall-through is suppressed)"
+            );
+            assert!(!r.is_locked());
+        }
+
+        // Now top up to the floor prefill. The lane seats AT the floor.
+        r.push_input(&tone(floor_prefill - fallthrough + 32));
+        assert_eq!(
+            r.render_period(&mut out),
+            PERIOD as usize,
+            "with the floor depth buffered the lane finally locks"
+        );
+        assert!(r.is_locked());
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            FP_FLOOR,
+            "the held target is the floor"
+        );
+        let seated_fill = r.fill_frames_gauge();
+        assert!(
+            seated_fill >= FP_FLOOR - RADIUS_FRAMES as u64,
+            "the lock seated AT the floor ({seated_fill} ≈ {FP_FLOOR}), not shallow — \
+             so there is no post-lock railed fill-build"
         );
     }
 

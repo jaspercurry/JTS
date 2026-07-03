@@ -753,8 +753,11 @@ impl StateServer {
                 // Rendered only when the DEFAULT-OFF feature is armed on this lane;
                 // absent otherwise (byte-identical STATUS shape). flag_present =
                 // a persisted proof is believed present; proved_at = its epoch-s
-                // timestamp (0 when absent); revoked_reason_last = the last
-                // one-strike revoke reason ("" until one happens).
+                // timestamp (0 when absent); revoked_reason_last = the last revoke
+                // OR retained-strike reason ("" until one happens);
+                // consecutive_failures = the two-strike probe-fail counter (0 for a
+                // clean proof, 1 after a first spurious probe fail whose proof was
+                // retained; a 2nd fail deletes the proof so it never sits at ≥2).
                 if let Some(c) = &r.compliance {
                     buf.push(',');
                     buf.push_str(r#""compliance":{"#);
@@ -776,6 +779,12 @@ impl StateServer {
                         crate::host_compliance::revoke_reason_code_str(
                             c.revoked_reason_last_code.load(Ordering::Relaxed),
                         ),
+                    );
+                    buf.push(',');
+                    push_kv_u64(
+                        &mut buf,
+                        "consecutive_failures",
+                        c.consecutive_failures.load(Ordering::Relaxed),
                     );
                     buf.push('}');
                 }
@@ -1345,11 +1354,13 @@ mod tests {
                         decay_floor_frames: 544,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
                         // Host-compliance persistence ARMED fixture: a proof is
-                        // present (proved_at set, no revoke yet), exercising the
-                        // STATUS `compliance` block's populated path.
+                        // present (proved_at set, no revoke yet, clean strike
+                        // counter), exercising the STATUS `compliance` block's
+                        // populated path.
                         compliance: Some(crate::host_compliance::HostComplianceObservability::new(
                             true,
                             1_700_000_000,
+                            0,
                         )),
                     }),
                     trim: Arc::new(TrimControl::test_fixture(0, 0, false)),

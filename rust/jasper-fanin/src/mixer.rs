@@ -599,8 +599,22 @@ struct HostComplianceState {
     /// The shared STATUS observability handles (`resampler.compliance`). The mixer
     /// is the sole writer; the resampler holds a clone for STATUS rendering. This is
     /// the ONLY place the surfaced state (flag_present / proved_at /
-    /// revoked_reason_last) lives — updated via `on_written` / `on_revoked`.
+    /// revoked_reason_last / consecutive_failures) lives — updated via `on_written`
+    /// / `on_revoked` / `on_strike_retained` / `on_pass_reset`.
     obs: crate::host_compliance::HostComplianceObservability,
+    /// The proof record the mixer BELIEVES is on disk right now (the last thing it
+    /// wrote / loaded), or `None` when no proof is present (never written, or
+    /// revoked+deleted). The two-strike `ProbeFail` RETAIN write re-serialises THIS
+    /// record with a bumped `consecutive_failures` (preserving the original
+    /// `proved_at` / `probe_response_ratio` / `floor_frames`), so the retained
+    /// proof still primes the next session at the same floor. Kept in lock-step
+    /// with `obs.flag_present`: `Some` iff `flag_present` is true.
+    record: Option<crate::host_compliance::HostCompliance>,
+    /// Write-once-per-lock guard for the probe-PASS strike-counter reset: a live
+    /// probe PASS on a floor-primed session with a nonzero counter persists a
+    /// counter=0 record exactly once, not every settled period. Reset on each lock
+    /// edge (mirrors the tracker's per-lock latches).
+    pass_reset_done_this_lock: bool,
 }
 
 /// Per-lane AUTO-TRIM bookkeeping. Tracks the cumulative `frames_read` value
@@ -1530,6 +1544,19 @@ impl Mixer {
     /// 2. TICK the pure proof machine; on its `Write` outcome, persist a fresh
     ///    record (atomic tempfile+rename). Written at most once per session.
     ///
+    /// RENDER-THREAD I/O CAVEAT. The three `HostCompliance::store` paths here (the
+    /// settle-write in (2), plus the two-strike `strike_retained` retain-write and
+    /// the `pass_reset` clear-write in (1)) each do a synchronous
+    /// `File::create`+`sync_all`+`rename` on THIS render thread — SD-card I/O inside
+    /// the ~5.3 ms period budget. Each is bounded to at most once per lock (settle
+    /// once per descent; strike/pass-reset gated by `pass_reset_done_this_lock` and
+    /// the strike edge), so the steady-state period does ZERO proof I/O, and a slow
+    /// fsync only risks a self-inflicted underfill at the exact rare moment the
+    /// machinery is judging underfills. Acceptable for now (same class as the
+    /// pre-existing settle-write, kept pattern-consistent); hoisting proof I/O onto a
+    /// dedicated writer thread is a clean follow-up if a slow-fsync underfill is ever
+    /// observed.
+    ///
     /// Uses `Option::take` on `self.host_compliance` so it can freely borrow
     /// `self.inputs` (the resampler lane) without a double-mutable-borrow; the
     /// state is put back before returning. All the gate DECISIONS are in the pure
@@ -1542,7 +1569,12 @@ impl Mixer {
         probe_code: u64,
         probe_response_ratio: Option<f64>,
     ) {
-        use crate::host_compliance::{HostCompliance, ProofOutcome, ProofSignals};
+        use crate::host_compliance::{classify_strike, HostCompliance, ProofOutcome, ProofSignals};
+        // The servo probe-result code for a PASS (see
+        // `host_clock::probe_result_code`: 0 None, 1 Pass, 2 Fail, 3 Aborted).
+        // Kept a plain literal so this method stays independent of the host_clock
+        // adapter (the pure module already inlines the FAIL value the same way).
+        const PROBE_RESULT_PASS: u64 = 1;
         let Some(mut hc) = self.host_compliance.take() else {
             return;
         };
@@ -1584,31 +1616,176 @@ impl Mixer {
             floor_primed_now,
         );
         if let Some(reason) = step.revoke {
-            // One strike: snap the held target back to the full ceiling and delete
-            // the persisted proof so the next session descends + re-proves.
+            // A floor-primed revalidation failure. EVERY strike snaps the held
+            // target back to the full ceiling so THIS session re-acquires deep and
+            // re-descends — identical user-visible behaviour regardless of whether
+            // the proof is deleted or retained. The two-strike policy
+            // (`classify_strike`) then decides the ON-DISK outcome: a DLL demotion
+            // or confirmed churn deletes immediately (one strike); a probe FAIL
+            // RETAINS the proof (bumping `consecutive_failures`) the first time and
+            // deletes only on the second, so one spurious probe read (a lock-gated
+            // probe firing during a railed acquisition) never costs the household
+            // the ~2.5-min descent on the NEXT session.
             resampler.snap_decay_to_ceiling();
-            match HostCompliance::revoke(&hc.path) {
-                Ok(()) => {}
-                Err(e) => warn!(
-                    "event=fanin.host_compliance.revoke_io_failed reason={} path={} detail={}",
-                    reason.as_str(),
-                    hc.path.display(),
-                    e,
-                ),
+            // A strike only fires on a floor-primed lock, which requires a live
+            // proof, so `record` is normally `Some`. Bind it directly (no
+            // unwrap/expect): a `None` here (proof already gone) means there is
+            // nothing to retain — do a plain revoke, which is idempotent on an
+            // absent file. Take the record out so the retain branch can move it
+            // into the updated copy without a borrow tangle; the branches put back
+            // whatever the outcome leaves (`Some` on a retain, `None` on a delete).
+            let record = hc.record.take();
+            let current_failures = record.as_ref().map(|r| r.consecutive_failures).unwrap_or(0);
+            let action = match &record {
+                Some(_) => classify_strike(reason, current_failures),
+                None => crate::host_compliance::StrikeAction::Revoke,
+            };
+            match (action, record) {
+                (
+                    crate::host_compliance::StrikeAction::RetainWithStrike {
+                        consecutive_failures,
+                    },
+                    Some(rec),
+                ) => {
+                    // First probe-fail strike: keep the proof, persist the bumped
+                    // counter, and leave `flag_present` TRUE so the NEXT session
+                    // still primes at the floor.
+                    let updated = rec.with_consecutive_failures(consecutive_failures);
+                    match updated.store(&hc.path) {
+                        Ok(()) => {
+                            hc.obs.on_strike_retained(reason, consecutive_failures);
+                            hc.record = Some(updated);
+                            warn!(
+                                "event=fanin.host_compliance.strike_retained reason={} \
+                                 consecutive_failures={} path={} — snapped held target back to \
+                                 the ceiling for THIS session; proof RETAINED (one bad \
+                                 measurement does not cost the floor), next session still primes",
+                                reason.as_str(),
+                                consecutive_failures,
+                                hc.path.display(),
+                            );
+                        }
+                        Err(e) => {
+                            // The retain write failed. The proof on disk is
+                            // unchanged (still the pre-strike counter), and
+                            // `flag_present` stays true, so the next session still
+                            // primes — the strike is simply not recorded this time.
+                            // Audio is unaffected (this session already snapped to
+                            // the ceiling). Keep the record so `flag_present` and
+                            // the in-memory proof stay coherent (fail toward "keep
+                            // priming", matching the retain intent).
+                            hc.record = Some(updated);
+                            warn!(
+                                "event=fanin.host_compliance.strike_write_io_failed reason={} \
+                                 path={} detail={} — strike not persisted (proof retained at the \
+                                 prior counter; audio unaffected)",
+                                reason.as_str(),
+                                hc.path.display(),
+                                e,
+                            );
+                        }
+                    }
+                }
+                // Every other case is a DELETE revoke: a `Revoke` action (DLL
+                // demotion, confirmed churn, or the 2nd consecutive probe fail), or
+                // the defensive `None`-record path. `hc.record` was already taken
+                // (left `None`), which is exactly the post-delete state.
+                (_, _record) => {
+                    match HostCompliance::revoke(&hc.path) {
+                        Ok(()) => {}
+                        Err(e) => warn!(
+                            "event=fanin.host_compliance.revoke_io_failed reason={} path={} detail={}",
+                            reason.as_str(),
+                            hc.path.display(),
+                            e,
+                        ),
+                    }
+                    hc.obs.on_revoked(reason);
+                    // `consecutive_failures` in this log is the PROBE-FAIL counter,
+                    // which only `ProbeFail` increments. A `ProbeFail` delete is the
+                    // 2nd consecutive fail, so `current + 1` (= the limit) is the
+                    // honest count. A `DllDemotion` / confirmed `EarlyUnlock` delete
+                    // is a ONE-strike revoke that does NOT touch the probe-fail
+                    // counter (classify_strike returns Revoke regardless of it), so
+                    // log the counter UNCHANGED — reporting `current + 1` there would
+                    // fabricate a probe-fail count that never happened (e.g.
+                    // `consecutive_failures=1` on a clean proof), misleading incident
+                    // forensics on this very event stream.
+                    let logged_consecutive_failures = match reason {
+                        crate::host_compliance::RevokeReason::ProbeFail => {
+                            current_failures.saturating_add(1)
+                        }
+                        crate::host_compliance::RevokeReason::DllDemotion
+                        | crate::host_compliance::RevokeReason::EarlyUnlock => current_failures,
+                    };
+                    warn!(
+                        "event=fanin.host_compliance.revoked reason={} consecutive_failures={} \
+                         path={} — deleted the proof, snapped held target back to the ceiling; \
+                         the normal descent will re-prove",
+                        reason.as_str(),
+                        logged_consecutive_failures,
+                        hc.path.display(),
+                    );
+                }
             }
-            hc.obs.on_revoked(reason);
-            warn!(
-                "event=fanin.host_compliance.revoked reason={} path={} — snapped held target \
-                 back to the ceiling; the normal descent will re-prove",
-                reason.as_str(),
-                hc.path.display(),
-            );
+        } else if hc.record.is_some()
+            && !hc.pass_reset_done_this_lock
+            && floor_primed_now
+            && probe_code == PROBE_RESULT_PASS
+            && dll_l0
+        {
+            // Probe-PASS strike-counter reset. A LIVE probe pass on a floor-primed
+            // session (verdict PASS *and* the DLL sitting at L0 — the pass promoted
+            // it there, so a STALE carried-over pass, which reads while the ladder
+            // is still Probing with `dll_l0 == false`, is ignored) forgives an
+            // earlier spurious probe fail: re-persist the proof with
+            // `consecutive_failures == 0`. Only when the current counter is nonzero
+            // (nothing to reset otherwise) and at most once per lock (the
+            // `pass_reset_done_this_lock` latch), so a settled L0 session does not
+            // re-write every period. This is the explicit companion to the natural
+            // reset the full-descent re-write already performs via `on_written`.
+            // Bind the record directly (the outer `hc.record.is_some()` guard is
+            // this branch's condition; no unwrap/expect). Only rewrite when the
+            // counter is nonzero — otherwise there is nothing to clear, just latch
+            // done so we don't re-check every settled period.
+            let cleared = hc
+                .record
+                .as_ref()
+                .filter(|r| r.consecutive_failures != 0)
+                .map(|r| r.with_consecutive_failures(0));
+            match cleared {
+                Some(cleared) => match cleared.store(&hc.path) {
+                    Ok(()) => {
+                        hc.obs.on_pass_reset();
+                        hc.record = Some(cleared);
+                        hc.pass_reset_done_this_lock = true;
+                        info!(
+                            "event=fanin.host_compliance.pass_reset path={} — live probe pass on \
+                             a floor-primed session cleared the strike counter to 0",
+                            hc.path.display(),
+                        );
+                    }
+                    Err(e) => warn!(
+                        "event=fanin.host_compliance.pass_reset_io_failed path={} detail={} — \
+                         strike counter not cleared this session (proof otherwise intact)",
+                        hc.path.display(),
+                        e,
+                    ),
+                },
+                None => {
+                    // Counter already 0 — nothing to persist, but mark done so we
+                    // do not re-check every settled period.
+                    hc.pass_reset_done_this_lock = true;
+                }
+            }
         }
         // Reset the pure proof machine on either lock edge so a fresh session
         // re-earns the proof (rising: a new session begins; falling: the current
-        // session ended).
+        // session ended). The per-lock pass-reset latch clears on the SAME edges
+        // so each fresh lock can reset its counter once.
         if step.rising_edge || step.falling_edge {
             hc.proof.reset();
+            hc.pass_reset_done_this_lock = false;
         }
 
         // 2. Proof tick + persist. A just-revoked lane still ticks (it is
@@ -1633,6 +1810,10 @@ impl Mixer {
             match rec.store(&hc.path) {
                 Ok(()) => {
                     hc.obs.on_written(now_epoch_s);
+                    // Track the fresh clean proof (counter 0) as the believed
+                    // on-disk record so a later probe-fail RETAIN write re-serialises
+                    // THIS proof's evidence with a bumped counter.
+                    hc.record = Some(rec);
                     info!(
                         "event=fanin.host_compliance.written path={} floor_frames={} \
                          probe_response_ratio={:.3} — future sessions prime at the floor",
@@ -2061,15 +2242,27 @@ fn build_host_compliance_state(
     let live_floor = resampler.decay_floor_frames();
     // Load the persisted proof (None on missing/corrupt/schema-mismatch — safe).
     let loaded = HostCompliance::load(&path);
+    // The believed-on-disk record + strike counter the mixer tracks (Some iff a
+    // valid proof primed this session; the two-strike RETAIN write re-serialises
+    // it). A present-but-stale-geometry file is NOT a live prime authority, so it
+    // reads as `None` here just as it does for `flag_present`.
+    let mut record: Option<HostCompliance> = None;
+    let mut consecutive_failures: u32 = 0;
     let (floor_primed, proved_at_epoch_s) = match &loaded {
         Some(rec) if rec.valid_for(live_floor) => {
             resampler.prime_decay_at_floor();
             info!(
                 "event=fanin.host_compliance.prime_at_floor lane={} floor_frames={} \
-                 proved_at={} probe_response_ratio={:.3} — skipping the cushion descent \
-                 (per-session probe revalidates)",
-                label, live_floor, rec.proved_at_epoch_s, rec.probe_response_ratio,
+                 proved_at={} probe_response_ratio={:.3} consecutive_failures={} — skipping \
+                 the cushion descent (per-session probe revalidates)",
+                label,
+                live_floor,
+                rec.proved_at_epoch_s,
+                rec.probe_response_ratio,
+                rec.consecutive_failures,
             );
+            record = Some(rec.clone());
+            consecutive_failures = rec.consecutive_failures;
             (true, rec.proved_at_epoch_s)
         }
         Some(rec) => {
@@ -2112,10 +2305,14 @@ fn build_host_compliance_state(
     );
     // STATUS observability: `flag_present` reflects whether a VALID proof primed
     // this session (a present-but-stale file is not an authority, so it reads as
-    // absent for STATUS purposes). Inject a clone into the resampler so
-    // `resampler.compliance` renders.
-    let obs =
-        crate::host_compliance::HostComplianceObservability::new(floor_primed, proved_at_epoch_s);
+    // absent for STATUS purposes). `consecutive_failures` seeds from the loaded
+    // proof (0 unless a prior spurious probe fail retained a strike). Inject a
+    // clone into the resampler so `resampler.compliance` renders.
+    let obs = crate::host_compliance::HostComplianceObservability::new(
+        floor_primed,
+        proved_at_epoch_s,
+        consecutive_failures,
+    );
     resampler.set_compliance_observability(obs.clone_handles());
     HostComplianceState {
         path,
@@ -2126,6 +2323,8 @@ fn build_host_compliance_state(
             churn_confirm_periods,
         ),
         obs,
+        record,
+        pass_reset_done_this_lock: false,
     }
 }
 
