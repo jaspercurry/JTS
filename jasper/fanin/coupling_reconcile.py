@@ -6,8 +6,22 @@
 
 WHY THIS EXISTS — the two daemons must transition in a specific order.
 :mod:`jasper.fanin_coupling` owns the *vocabulary* (the flag, the pipe path, the
-emit kwargs); this module owns the *transition* across all three audio daemons.
-The ``transport_pipe`` coupling is an end-to-end DAC-paced path:
+ring device names, the emit kwargs); this module owns the *transition* across all
+three audio daemons. Two non-loopback couplings are supported:
+
+- ``shm_ring`` (audio-graph consolidation P2) — the end-to-end SHM-ring path.
+  fan-in writes Ring A (program.ring) that CamillaDSP captures via
+  ``jts_ring_capture``; CamillaDSP writes its post-DSP program to Ring B
+  (content.ring) via ``jts_ring_playback`` that jasper-outputd reads. Arming it is
+  ONE coherent flip of BOTH ends: ``JASPER_FANIN_CAMILLA_COUPLING=shm_ring``
+  (fanin.env) AND ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the Ring B
+  path/slots (outputd.env). ``_outputd_actions`` is the single writer of that
+  pair; ``_arm_ring`` PREFLIGHTs the P1 ring assets (``ring_assets_ready``) and
+  fail-safes to loopback+direct on any failure, so a half-installed ring platform
+  or a partial flip never strands the realtime path. Arming stays explicit
+  env/reconciler-driven; the DEFAULT is still loopback until P4.
+
+- ``transport_pipe`` (lab) — an end-to-end DAC-paced named-pipe path:
 
     fan-in -> RawFile pipe -> CamillaDSP -> File pipe -> outputd -> DAC
 
@@ -68,10 +82,17 @@ from jasper.env_file import read_value, remove, upsert
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
+    COUPLING_SHM_RING,
     COUPLING_TRANSPORT_PIPE,
+    OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
+    OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+    OUTPUTD_RING_PATH_ENV_VAR,
+    OUTPUTD_RING_SLOTS_ENV_VAR,
     PIPE_PATH_ENV_VAR,
     OUTPUTD_PIPE_PATH_ENV_VAR,
     resolve_coupling,
+    resolve_outputd_ring_path,
+    resolve_outputd_ring_slots,
     resolve_pipe_path,
     resolve_outputd_pipe_path,
 )
@@ -187,7 +208,14 @@ def _reconcile_camilla(coupling: str, *, reason: str) -> tuple[bool, str]:
     status = payload.get("status")
     if status in ("reconciled", "unchanged"):
         return True, str(status)
-    if status == "skipped" and coupling != COUPLING_TRANSPORT_PIPE:
+    # A "skipped" reconcile is acceptable only for loopback (a flat box with
+    # nothing to flip). For a COUPLED mode (transport_pipe OR shm_ring) the whole
+    # point is applying the pipe/ring config — a skip means the config was NOT
+    # loaded, so treat it as a failure and fail-safe back to loopback.
+    if status == "skipped" and coupling not in (
+        COUPLING_TRANSPORT_PIPE,
+        COUPLING_SHM_RING,
+    ):
         return True, str(status)
     return False, str(payload.get("reason") or status or "unknown")
 
@@ -267,9 +295,8 @@ def reconcile_coupling(
             detail=support.detail or "unsupported coupling action",
         )
     fanin_new_text, fanin_changed = _apply_action(fanin_snapshot.text, action)
-    outputd_action = _outputd_local_pipe_action(desired, outputd_snapshot.text)
-    outputd_new_text, outputd_changed = _apply_action(
-        outputd_snapshot.text, outputd_action
+    outputd_new_text, outputd_changed = _apply_actions(
+        outputd_snapshot.text, _outputd_actions(desired, outputd_snapshot.text)
     )
     changed = fanin_changed or outputd_changed
 
@@ -367,6 +394,16 @@ def reconcile_coupling(
             outputd_snapshot,
             do_validate_transport_pipe,
         )
+    if desired == COUPLING_SHM_RING:
+        return _arm_ring(
+            do_restart,
+            do_restart_outputd,
+            do_reconcile,
+            desired,
+            reason,
+            fanin_snapshot,
+            outputd_snapshot,
+        )
     return _disarm(do_restart, do_restart_outputd, do_reconcile, desired, reason)
 
 
@@ -418,10 +455,12 @@ def _block_transport_for_active_leader(
         "the grouped active-leader transport-pipe topology exists"
     )
     fanin_action = RuntimeEnvAction("set", COUPLING_ENV_VAR, COUPLING_LOOPBACK)
-    outputd_action = RuntimeEnvAction("unset", OUTPUTD_PIPE_PATH_ENV_VAR)
     fanin_new_text, fanin_changed = _apply_action(fanin_snapshot.text, fanin_action)
-    outputd_new_text, outputd_changed = _apply_action(
-        outputd_snapshot.text, outputd_action
+    # Clear ALL reconciler-owned outputd content-source keys (pipe + Ring B) for
+    # the loopback fallback, so the block never leaves outputd on a stale content
+    # source that fan-in's loopback coupling no longer feeds.
+    outputd_new_text, outputd_changed = _apply_actions(
+        outputd_snapshot.text, _outputd_actions(COUPLING_LOOPBACK, outputd_snapshot.text)
     )
     stale_transport = current == COUPLING_TRANSPORT_PIPE or outputd_changed
     if stale_transport:
@@ -626,6 +665,125 @@ def _arm(
         ok=True, desired=desired, changed=True, direction="arm",
         restarted_fanin=True, restarted_outputd=True, reconciled_camilla=True,
         validated_transport_pipe=validated,
+    )
+
+
+def ring_assets_ready() -> tuple[bool, str]:
+    """The shm_ring PREFLIGHT gate: are the P1 ring-platform assets present?
+
+    Checked BEFORE arming the ring coupling. Fail-SAFE: if the ioplug ``.so`` /
+    conf.d / ``/dev/shm/jts-ring`` are not all present, arming would install a
+    CamillaDSP config whose ``jts_ring_capture`` / ``jts_ring_playback`` devices
+    cannot resolve — CamillaDSP would crash-loop on its statefile and the fan-in
+    ``StartLimitAction=reboot`` could compound it. So the reconciler refuses to
+    arm and stays on loopback. Presence-only (the doctor owns the deep open-probe);
+    ``jasper.ring_assets`` is the SSOT shared with ``check_ring_platform_assets``.
+    """
+    from jasper.ring_assets import ring_asset_presence
+
+    presence = ring_asset_presence()
+    if presence.all_present:
+        return True, "ring platform assets present (ioplug .so + conf.d + shm dir)"
+    return False, "ring platform assets incomplete: " + "; ".join(presence.missing())
+
+
+def _arm_ring(
+    do_restart,
+    do_restart_outputd,
+    do_reconcile,
+    desired,
+    reason,
+    fanin_snapshot,
+    outputd_snapshot,
+) -> CouplingResult:
+    """Arm the ``shm_ring`` coupling (Ring A + Ring B), fail-safe to loopback.
+
+    PREFLIGHT: refuse to arm when the P1 ring assets are missing (a half-installed
+    ring platform would strand the realtime path). Then the SAME ordered spine as
+    transport_pipe — outputd (Ring B reader) first, fan-in (Ring A writer) second,
+    CamillaDSP (loads the ring config, opening jts_ring_capture/jts_ring_playback)
+    last — matching the validated ring-proto arm order. Any failure rolls the whole
+    box back to loopback + direct (``recovered=True``). The rings are forgiving
+    (empty-ring reader/writer emit/drop silence), so unlike transport_pipe there is
+    no queue-drift activation window; the gate is asset-presence + the ordered
+    restart landing, and the fan-in STATUS transport is confirmed by the doctor.
+    """
+    assets_ok, assets_detail = ring_assets_ready()
+    if not assets_ok:
+        recovered = _recover_to_loopback(
+            do_restart,
+            do_restart_outputd,
+            do_reconcile,
+            fanin_snapshot.path,
+            outputd_snapshot.path,
+            reason,
+        )
+        log_event(
+            logger, "fanin.coupling_reconcile", result="arm_ring_assets_missing",
+            desired=desired, reason=reason, detail=assets_detail,
+            recovered=recovered, level=logging.WARNING,
+        )
+        return CouplingResult(
+            ok=False, desired=desired, changed=False, direction="arm",
+            detail=assets_detail, recovered=recovered,
+        )
+
+    out_ok, out_detail = do_restart_outputd()
+    if not out_ok:
+        recovered = _recover_to_loopback(
+            do_restart, do_restart_outputd, do_reconcile,
+            fanin_snapshot.path, outputd_snapshot.path, reason,
+        )
+        log_event(
+            logger, "fanin.coupling_reconcile", result="arm_ring_outputd_failed",
+            desired=desired, reason=reason, detail=out_detail or None,
+            recovered=recovered, level=logging.WARNING,
+        )
+        return CouplingResult(
+            ok=False, desired=desired, changed=False, direction="arm",
+            restarted_outputd=False, detail=out_detail, recovered=recovered,
+        )
+
+    fan_ok, fan_detail = do_restart()
+    if not fan_ok:
+        recovered = _recover_to_loopback(
+            do_restart, do_restart_outputd, do_reconcile,
+            fanin_snapshot.path, outputd_snapshot.path, reason,
+        )
+        log_event(
+            logger, "fanin.coupling_reconcile", result="arm_ring_fanin_failed",
+            desired=desired, reason=reason, detail=fan_detail or None,
+            recovered=recovered, level=logging.WARNING,
+        )
+        return CouplingResult(
+            ok=False, desired=desired, changed=False, direction="arm",
+            restarted_outputd=True, detail=fan_detail, recovered=recovered,
+        )
+
+    cam_ok, cam_detail = do_reconcile(COUPLING_SHM_RING)
+    if not cam_ok:
+        recovered = _recover_to_loopback(
+            do_restart, do_restart_outputd, do_reconcile,
+            fanin_snapshot.path, outputd_snapshot.path, reason,
+        )
+        log_event(
+            logger, "fanin.coupling_reconcile", result="arm_ring_camilla_failed",
+            desired=desired, reason=reason, detail=cam_detail or None,
+            recovered=recovered, level=logging.WARNING,
+        )
+        return CouplingResult(
+            ok=False, desired=desired, changed=False, direction="arm",
+            restarted_fanin=True, restarted_outputd=True,
+            detail=cam_detail, recovered=recovered,
+        )
+
+    log_event(
+        logger, "fanin.coupling_reconcile", result="armed_ring",
+        desired=desired, reason=reason, detail=cam_detail or None,
+    )
+    return CouplingResult(
+        ok=True, desired=desired, changed=True, direction="arm",
+        restarted_fanin=True, restarted_outputd=True, reconciled_camilla=True,
     )
 
 
@@ -1106,7 +1264,13 @@ def _recover_to_loopback(
         existing_outputd = Path(outputd_path).read_text(encoding="utf-8")
     except OSError:
         existing_outputd = ""
-    new_outputd, _ = remove(existing_outputd, OUTPUTD_PIPE_PATH_ENV_VAR)
+    # Clear EVERY reconciler-owned outputd content-source key (pipe AND Ring B
+    # bridge/path/slots) so a failed ring arm never leaves a stale
+    # JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring pointing outputd at a ring nobody
+    # writes. _outputd_actions(loopback) is the single source of that set.
+    new_outputd, _ = _apply_actions(
+        existing_outputd, _outputd_actions(COUPLING_LOOPBACK, existing_outputd)
+    )
     try:
         _write_env_text(Path(outputd_path), new_outputd)
     except OSError:
@@ -1150,18 +1314,80 @@ def _apply_action(text: str, action: RuntimeEnvAction) -> tuple[str, bool]:
     return remove(text, action.key)
 
 
-def _outputd_local_pipe_action(coupling: str, outputd_text: str) -> RuntimeEnvAction:
+def _outputd_actions(coupling: str, outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
+    """The COMPLETE set of reconciler-owned outputd.env actions for a coupling.
+
+    outputd's content source is coupling-specific and MUTUALLY EXCLUSIVE across
+    couplings, so this writes exactly one content-source key set and unsets the
+    others — the two ends must never split (a stale outputd key while fan-in flips
+    strands one transport):
+
+    - ``transport_pipe``: set ``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` (Camilla ->
+      outputd File pipe); clear the Ring B bridge keys.
+    - ``shm_ring``: set ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the Ring B
+      path/slots (outputd reads content.ring); clear the transport-pipe key. The
+      two rings flip together — fan-in's Ring A capture (fanin.env) and outputd's
+      Ring B bridge (here) are ONE coupling.
+    - ``loopback``: clear BOTH — outputd reads the snd-aloop content lane.
+    """
     if coupling == COUPLING_TRANSPORT_PIPE:
-        # Preserve an existing custom pipe path in the reconciler-owned outputd
-        # env; otherwise write the canonical default.
-        return RuntimeEnvAction(
-            "set",
-            OUTPUTD_PIPE_PATH_ENV_VAR,
-            resolve_outputd_pipe_path(
-                read_value(outputd_text, OUTPUTD_PIPE_PATH_ENV_VAR)
+        return (
+            # Preserve an existing custom pipe path in the reconciler-owned outputd
+            # env; otherwise write the canonical default.
+            RuntimeEnvAction(
+                "set",
+                OUTPUTD_PIPE_PATH_ENV_VAR,
+                resolve_outputd_pipe_path(
+                    read_value(outputd_text, OUTPUTD_PIPE_PATH_ENV_VAR)
+                ),
             ),
+            RuntimeEnvAction("unset", OUTPUTD_CONTENT_BRIDGE_ENV_VAR),
+            RuntimeEnvAction("unset", OUTPUTD_RING_PATH_ENV_VAR),
+            RuntimeEnvAction("unset", OUTPUTD_RING_SLOTS_ENV_VAR),
         )
-    return RuntimeEnvAction("unset", OUTPUTD_PIPE_PATH_ENV_VAR)
+    if coupling == COUPLING_SHM_RING:
+        return (
+            RuntimeEnvAction(
+                "set", OUTPUTD_CONTENT_BRIDGE_ENV_VAR, OUTPUTD_CONTENT_BRIDGE_SHM_RING
+            ),
+            # Preserve custom ring path/slots if the operator set them; else the
+            # canonical Ring B defaults. resolve_* validates the slot range.
+            RuntimeEnvAction(
+                "set",
+                OUTPUTD_RING_PATH_ENV_VAR,
+                resolve_outputd_ring_path(
+                    read_value(outputd_text, OUTPUTD_RING_PATH_ENV_VAR)
+                ),
+            ),
+            RuntimeEnvAction(
+                "set",
+                OUTPUTD_RING_SLOTS_ENV_VAR,
+                str(
+                    resolve_outputd_ring_slots(
+                        read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR)
+                    )
+                ),
+            ),
+            RuntimeEnvAction("unset", OUTPUTD_PIPE_PATH_ENV_VAR),
+        )
+    # loopback / anything else: outputd reads the snd-aloop content lane.
+    return (
+        RuntimeEnvAction("unset", OUTPUTD_PIPE_PATH_ENV_VAR),
+        RuntimeEnvAction("unset", OUTPUTD_CONTENT_BRIDGE_ENV_VAR),
+        RuntimeEnvAction("unset", OUTPUTD_RING_PATH_ENV_VAR),
+        RuntimeEnvAction("unset", OUTPUTD_RING_SLOTS_ENV_VAR),
+    )
+
+
+def _apply_actions(
+    text: str, actions: tuple[RuntimeEnvAction, ...]
+) -> tuple[str, bool]:
+    """Fold a sequence of env actions onto ``text``; changed = any moved the file."""
+    changed = False
+    for action in actions:
+        text, moved = _apply_action(text, action)
+        changed = changed or moved
+    return text, changed
 
 
 def _sync_process_env_for_emit(
@@ -1169,7 +1395,15 @@ def _sync_process_env_for_emit(
     fanin_text: str,
     outputd_text: str,
 ) -> None:
-    """Make the in-process Camilla re-emit see the env we just persisted."""
+    """Make the in-process Camilla re-emit see the env we just persisted.
+
+    Mirrors :func:`_outputd_actions`: the in-process env must carry the SAME
+    content-source keys the files now carry so the immediate camilla re-emit
+    (``fanin_coupling_capture_kwargs`` reads ``os.environ``) names the right
+    devices. shm_ring's capture/playback devices come from the coupling constant,
+    not the env, so setting the coupling key is enough for the emit; the outputd
+    ring keys below keep the in-process env coherent for any reader.
+    """
     os.environ[COUPLING_ENV_VAR] = coupling
     os.environ[PIPE_PATH_ENV_VAR] = resolve_pipe_path(
         read_value(fanin_text, PIPE_PATH_ENV_VAR)
@@ -1178,8 +1412,25 @@ def _sync_process_env_for_emit(
         os.environ[OUTPUTD_PIPE_PATH_ENV_VAR] = resolve_outputd_pipe_path(
             read_value(outputd_text, OUTPUTD_PIPE_PATH_ENV_VAR)
         )
+        os.environ.pop(OUTPUTD_CONTENT_BRIDGE_ENV_VAR, None)
+        os.environ.pop(OUTPUTD_RING_PATH_ENV_VAR, None)
+        os.environ.pop(OUTPUTD_RING_SLOTS_ENV_VAR, None)
+    elif coupling == COUPLING_SHM_RING:
+        os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
+        os.environ[OUTPUTD_RING_PATH_ENV_VAR] = resolve_outputd_ring_path(
+            read_value(outputd_text, OUTPUTD_RING_PATH_ENV_VAR)
+        )
+        os.environ[OUTPUTD_RING_SLOTS_ENV_VAR] = str(
+            resolve_outputd_ring_slots(
+                read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR)
+            )
+        )
+        os.environ.pop(OUTPUTD_PIPE_PATH_ENV_VAR, None)
     else:
         os.environ.pop(OUTPUTD_PIPE_PATH_ENV_VAR, None)
+        os.environ.pop(OUTPUTD_CONTENT_BRIDGE_ENV_VAR, None)
+        os.environ.pop(OUTPUTD_RING_PATH_ENV_VAR, None)
+        os.environ.pop(OUTPUTD_RING_SLOTS_ENV_VAR, None)
 
 
 def read_persisted_coupling(env_path: str | Path = FANIN_ENV_PATH) -> str:
@@ -1202,7 +1453,12 @@ def main(argv: "list[str] | None" = None) -> int:
         description="Arm/disarm the fan-in -> CamillaDSP coupling in order.",
     )
     parser.add_argument(
-        "coupling", choices=[COUPLING_LOOPBACK, COUPLING_TRANSPORT_PIPE],
+        "coupling",
+        choices=[COUPLING_LOOPBACK, COUPLING_TRANSPORT_PIPE, COUPLING_SHM_RING],
+        help=(
+            "loopback (default, snd-aloop); transport_pipe (lab dual-pipe); "
+            "shm_ring (Ring A + Ring B SHM rings — arms both fan-in and outputd)"
+        ),
     )
     parser.add_argument("--reason", default="cli")
     parser.add_argument(

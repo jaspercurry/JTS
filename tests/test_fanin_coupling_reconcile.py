@@ -886,3 +886,167 @@ def test_transport_pipe_status_gate_allows_idle_usb_unlocked_resampler():
 
     assert ok is True
     assert "activation gate ok" in detail
+
+
+# --- shm_ring coupling (Ring A + Ring B, P2) ---------------------------------
+
+import pytest  # noqa: E402
+
+from jasper.fanin_coupling import (  # noqa: E402
+    COUPLING_LOOPBACK,
+    COUPLING_SHM_RING,
+    OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
+    OUTPUTD_RING_SLOTS_ENV_VAR,
+)
+
+
+@pytest.fixture
+def _ring_assets_present(monkeypatch):
+    """Force the shm_ring activation gate's asset presence to True."""
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra,
+        "ring_asset_presence",
+        lambda **kw: ra.RingAssetPresence(True, True, True),
+    )
+
+
+def test_arm_shm_ring_writes_coherent_pair_in_order(tmp_path, _ring_assets_present):
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert result.ok
+    assert result.direction == "arm"
+    # Ordered spine: outputd (Ring B reader) -> fanin (Ring A writer) -> camilla.
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    outputd_text = outputd_env.read_text()
+    assert read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR) == "shm_ring"
+    assert read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR) == "2"
+
+
+def test_arm_shm_ring_refused_when_assets_missing_recovers_to_loopback(
+    tmp_path, monkeypatch
+):
+    import jasper.ring_assets as ra
+
+    # ioplug .so missing -> the activation gate refuses the arm.
+    monkeypatch.setattr(
+        ra,
+        "ring_asset_presence",
+        lambda **kw: ra.RingAssetPresence(
+            so_present=False, conf_present=True, shm_dir_present=True
+        ),
+    )
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert not result.ok
+    assert result.recovered
+    assert "assets" in result.detail.lower()
+    # Fail-safe: persisted coupling is back to loopback, not shm_ring.
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    # No fanin restart happened before the assets gate (only the recovery ops).
+    assert "camilla:loopback" in calls
+
+
+def test_arm_shm_ring_camilla_failure_recovers_to_loopback(
+    tmp_path, _ring_assets_present
+):
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    # camilla reconcile fails for shm_ring specifically -> full rollback.
+    calls, ro, rf, rc = _recorder(camilla_fail_for=COUPLING_SHM_RING)
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert not result.ok
+    assert result.recovered
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    # The recovery re-reconciled camilla to loopback.
+    assert calls.count("camilla:loopback") >= 1
+
+
+def test_disarm_shm_ring_clears_ring_bridge_keys(tmp_path, _ring_assets_present):
+    # Pre-arm to shm_ring, then disarm to loopback.
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(
+        tmp_path / "outputd.env", "JASPER_OUTPUTD_SINK=dual_apple\n"
+    )
+    calls, ro, rf, rc = _recorder()
+    _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) == "shm_ring"
+
+    calls.clear()
+    result = _reconcile(
+        COUPLING_LOOPBACK,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert result.ok
+    assert result.direction == "disarm"
+    # Disarm order: camilla off ring first, then fanin, then outputd.
+    assert calls == ["camilla:loopback", "fanin", "outputd"]
+    outputd_text = outputd_env.read_text()
+    # Ring B keys cleared; the operator's own line survives.
+    assert read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
+    assert "JASPER_OUTPUTD_SHM_RING" not in outputd_text
+    assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_text
+
+
+def test_shm_ring_cli_choices_accept_ring(tmp_path, monkeypatch, _ring_assets_present):
+    # The CLI must accept shm_ring as a valid coupling argument.
+    import jasper.fanin.coupling_reconcile as cr
+
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    captured = {}
+
+    def fake_reconcile(coupling, **kw):
+        captured["coupling"] = coupling
+        from jasper.fanin.coupling_reconcile import CouplingResult
+
+        return CouplingResult(
+            ok=True, desired=coupling, changed=True, direction="arm"
+        )
+
+    monkeypatch.setattr(cr, "reconcile_coupling", fake_reconcile)
+    rc = cr.main(["shm_ring", "--no-apply"])
+    assert rc == 0
+    assert captured["coupling"] == "shm_ring"
