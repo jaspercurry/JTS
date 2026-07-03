@@ -251,6 +251,18 @@ pub struct Config {
     /// today). Unused when direct is off. Env: `JASPER_FANIN_USB_DIRECT_DEVICE`.
     pub usb_direct_device: String,
 
+    /// The gadget capture OPEN period (frames) the USB DIRECT lane negotiates
+    /// (lever 2 — the H1 "hw-pointer/period granularity" test knob). Default 256
+    /// (byte-identical to today's bridge-proven envelope); fail-loud range
+    /// 32..=1024. Shrinking it (e.g. 64) is the H1 experiment: if the gadget's
+    /// readable `avail` advances in period-sized steps, a smaller open period
+    /// exposes ready frames sooner. The capture BUFFER stays DEEP regardless
+    /// (`mixer::resolve_direct_buffer_frames`: ≥ 3 periods AND ≥ 768 frames) so a
+    /// small period rides a deep buffer — NOT the refuted shallow 2-period URB-
+    /// headroom failure. Unused when direct is off. Env:
+    /// `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`.
+    pub usb_direct_period_frames: u32,
+
     /// DEFAULT-OFF combo-mode host-slaved USB clock (`JASPER_FANIN_HOST_CLOCK`).
     /// When `true` AND `usb_direct_enabled`, a dedicated `fanin-host-clock`
     /// thread steers the gadget's `Capture Pitch 1000000` ctl so the host tracks
@@ -491,6 +503,21 @@ impl Config {
             Some("enabled")
         );
         let usb_direct_device = env_str("JASPER_FANIN_USB_DIRECT_DEVICE", "hw:UAC2Gadget");
+        // The gadget OPEN period (frames). Default 256 = byte-identical to the
+        // bridge-proven envelope. Fail-loud range 32..=1024: below 32 the period
+        // IRQ storms the mixer thread, above 1024 the open period would exceed
+        // the deep-buffer floor's own headroom and defeat the low-latency intent.
+        // Only consulted on the direct lane, but parsed unconditionally (like the
+        // other USB DIRECT knobs) so a typo fails loud on any boot, not only when
+        // direct is armed.
+        let usb_direct_period_frames = env_u32("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES", 256)?;
+        if !(32..=1024).contains(&usb_direct_period_frames) {
+            anyhow::bail!(
+                "JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES={} out of range 32..=1024 (the gadget \
+                 open period; 256 is the bridge-proven default, 64 is the lever-2 H1 test knob)",
+                usb_direct_period_frames,
+            );
+        }
 
         // DEFAULT-OFF combo-mode host-slaved USB clock. Fail-safe: only the
         // exact literal `enabled` (case-insensitive) arms it. Unlike the sibling
@@ -609,6 +636,7 @@ impl Config {
             auto_trim_enabled,
             usb_direct_enabled,
             usb_direct_device,
+            usb_direct_period_frames,
             host_clock_enabled,
             host_clock_probe_ppm,
             host_clock_probe_secs,
@@ -1317,6 +1345,43 @@ mod tests {
                 );
             },
         );
+    }
+
+    #[test]
+    fn usb_direct_period_defaults_to_256() {
+        with_env(&[("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES", None)], || {
+            let cfg = Config::from_env().expect("defaults must parse");
+            assert_eq!(cfg.usb_direct_period_frames, 256);
+        });
+    }
+
+    #[test]
+    fn usb_direct_period_accepts_h1_knob() {
+        with_env(
+            &[("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES", Some("64"))],
+            || {
+                let cfg = Config::from_env().expect("H1 period must parse");
+                assert_eq!(cfg.usb_direct_period_frames, 64);
+            },
+        );
+    }
+
+    #[test]
+    fn usb_direct_period_fails_loud_out_of_range() {
+        for bad in ["31", "1025", "0"] {
+            with_env(
+                &[("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES", Some(bad))],
+                || {
+                    let err =
+                        Config::from_env().expect_err("out-of-range direct period must error");
+                    let msg = format!("{:#}", err);
+                    assert!(
+                        msg.contains("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES"),
+                        "expected direct-period range error, got: {msg}",
+                    );
+                },
+            );
+        }
     }
 
     #[test]

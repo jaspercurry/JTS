@@ -130,8 +130,74 @@ const CATCHUP_LOG_EVERY: u64 = 64;
 /// ~768 (near). These MUST match `jasper-usbsink-audio`'s
 /// `open_capture`/`configure_pcm` so the direct lane inherits the exact
 /// negotiation the bridge validated on the UAC2 gadget.
+///
+/// `DIRECT_PERIOD_FRAMES` is the DEFAULT gadget open period; the actual open
+/// period is overridable via `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES` (lever 2 —
+/// the H1 "hw-pointer/period granularity" test knob). Unset ⇒ this default ⇒
+/// byte-identical to today. The chunk-read cap and the narrowing scratch below
+/// stay pinned to this default regardless of the open period: they bound the
+/// per-`readi` granularity (256 frames), which is independent of the gadget's
+/// period IRQ cadence, so a larger open period never overflows the fixed
+/// scratch and a smaller one never under-reads.
 const DIRECT_PERIOD_FRAMES: u32 = 256;
-const DIRECT_BUFFER_FRAMES: u32 = 768;
+
+/// Deep-buffer safety floor for the (tunable) direct open period (lever 2). The
+/// negotiated capture buffer must clear BOTH bounds so the H1 experiment (open
+/// period 64) rides a DEEP buffer (12 periods) rather than the refuted shallow
+/// 2-period URB-headroom class: at least three whole periods, and at least the
+/// proven 768-frame floor. At the default period 256 this reproduces the old
+/// fixed 768-frame envelope exactly (3×256 = 768). `resolve_direct_buffer_frames`
+/// is the single owner of this rule (pure, scratch-crate tested).
+const DIRECT_BUFFER_MIN_PERIODS: u32 = 3;
+const DIRECT_BUFFER_MIN_FRAMES: u32 = 768;
+
+/// Compute the direct capture buffer for a given open period, honoring the
+/// deep-buffer safety floor (≥ `DIRECT_BUFFER_MIN_PERIODS` periods AND ≥
+/// `DIRECT_BUFFER_MIN_FRAMES`), then rounded UP to a whole period multiple so
+/// the negotiated geometry is period-aligned (a fractional buffer would shear;
+/// `direct_open_params_ok` rejects it). At the default period 256 this yields
+/// exactly 768 (byte-identical to today: 3×256 = 768 ≥ 768). Pure so the floor
+/// math is unit-testable without ALSA.
+fn resolve_direct_buffer_frames(period: u32) -> u32 {
+    let by_periods = period.saturating_mul(DIRECT_BUFFER_MIN_PERIODS);
+    let floor = by_periods.max(DIRECT_BUFFER_MIN_FRAMES);
+    // Round up to the next whole period so buffer % period == 0.
+    let period = period.max(1);
+    floor.div_ceil(period).saturating_mul(period)
+}
+
+/// Number of fixed histogram buckets for the drain-entry avail distribution
+/// (lever 2 observability). Boundaries at 64-frame steps: `[0,64) [64,128)
+/// [128,192) [192,256) [256,320) [320,+)`. Chosen so the measured ~186-frame
+/// standing gadget avail lands mid-histogram and the H1 signature (avail
+/// quantized near 0/256 — bimodal in bucket 0 and buckets 3/4) is visible.
+const DRAIN_AVAIL_BUCKETS: usize = 6;
+
+/// Classify a drain-entry `avail` (frames) into one of [`DRAIN_AVAIL_BUCKETS`]
+/// fixed buckets. Pure so the bucketing is scratch-crate testable without ALSA.
+/// Negative avail (never observed at a real `avail_update` Ok, but the ALSA
+/// `Frames` type is `i64`) and 0 both land in bucket 0; anything ≥ 320 saturates
+/// into the top bucket.
+fn drain_avail_bucket(avail: i64) -> usize {
+    if avail < 64 {
+        0
+    } else if avail < 128 {
+        1
+    } else if avail < 192 {
+        2
+    } else if avail < 256 {
+        3
+    } else if avail < 320 {
+        4
+    } else {
+        5
+    }
+}
+
+/// Emit the rate-limited drain-stats INFO line every this many drains. Gated by
+/// the drain counter itself (no wall clock, no extra state) so the log cadence
+/// is O(1) and self-throttling on the hot path.
+const DRAIN_STATS_LOG_EVERY: u64 = 2048;
 
 /// Length of the S16 narrowing scratch the direct drain uses per chunk read.
 ///
@@ -551,6 +617,13 @@ pub struct Input {
 pub struct DirectObservability {
     /// The capture device the direct lane opens (`hw:UAC2Gadget` or override).
     pub device: String,
+    /// The gadget open period this lane negotiated (frames). Default 256 unless
+    /// `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES` overrides it — surfaced in STATUS
+    /// so an operator can confirm which geometry the H1 experiment is running.
+    pub period_frames: u32,
+    /// The gadget capture buffer this lane negotiated (frames) — the deep-buffer
+    /// floor applied over `period_frames` (see `resolve_direct_buffer_frames`).
+    pub buffer_frames: u32,
     /// Whether the gadget capture is currently open (`Present`) — the live
     /// "is the USB host attached and captured" gauge.
     pub present: Arc<AtomicBool>,
@@ -561,6 +634,66 @@ pub struct DirectObservability {
     /// `present=false` means the gadget is not attachable — bridge holding it,
     /// or no host).
     pub retries: Arc<AtomicU64>,
+    /// Drain-entry avail dwell stats (lever 2). SINCE-BOOT cumulative (matches
+    /// the `opens`/`retries` idiom in this block — no reset-on-read state to
+    /// carry, and a monotonic denominator makes the STATUS `mean` a lifetime
+    /// average rather than a since-last-poll one). Written lock-free by the
+    /// mixer work thread on each drain entry; read lock-free by the state-server
+    /// thread for the STATUS `drain_avail{}` sub-block.
+    pub drain_stats: DrainStats,
+}
+
+/// Since-boot drain-entry avail dwell accumulators (lever 2). One sample per
+/// `drain_direct_capture` call: the `avail_update()` reading at drain entry,
+/// which is the standing gadget-capture dwell the ~186-frame symptom measures.
+/// All fields are lock-free atomics so the mixer work thread can record without
+/// a mutex and the state-server thread can read a consistent-enough snapshot for
+/// STATUS (each field is independently monotonic; a torn read across fields at
+/// most skews one poll's mean by one sample — acceptable for observability).
+#[derive(Clone)]
+pub struct DrainStats {
+    /// Number of drain-entry samples recorded (the histogram/mean denominator).
+    pub count: Arc<AtomicU64>,
+    /// Running sum of drain-entry avail (frames). `mean = sum / count`.
+    pub sum: Arc<AtomicU64>,
+    /// Maximum drain-entry avail observed (frames).
+    pub max: Arc<AtomicU64>,
+    /// Fixed 64-frame-step histogram of drain-entry avail (see
+    /// [`drain_avail_bucket`]). Index i counts samples in that bucket.
+    pub hist: [Arc<AtomicU64>; DRAIN_AVAIL_BUCKETS],
+}
+
+impl Default for DrainStats {
+    fn default() -> Self {
+        DrainStats::new()
+    }
+}
+
+impl DrainStats {
+    /// Fresh zeroed accumulators. `pub` so the state-server fixtures can build a
+    /// direct-lane snapshot without reaching into the atomics field-by-field.
+    pub fn new() -> Self {
+        DrainStats {
+            count: Arc::new(AtomicU64::new(0)),
+            sum: Arc::new(AtomicU64::new(0)),
+            max: Arc::new(AtomicU64::new(0)),
+            hist: std::array::from_fn(|_| Arc::new(AtomicU64::new(0))),
+        }
+    }
+
+    /// Record one drain-entry avail sample (frames). Lock-free, allocation-free,
+    /// syscall-free — safe to call every render cycle on the hot path. Negative
+    /// avail (never seen at a real `Ok` reading) is clamped to 0. Returns the
+    /// post-increment count so the caller can rate-limit its INFO log off it
+    /// without a second load.
+    fn record(&self, avail: i64) -> u64 {
+        let a = avail.max(0) as u64;
+        let count = self.count.fetch_add(1, Ordering::Relaxed) + 1;
+        self.sum.fetch_add(a, Ordering::Relaxed);
+        self.max.fetch_max(a, Ordering::Relaxed);
+        self.hist[drain_avail_bucket(avail)].fetch_add(1, Ordering::Relaxed);
+        count
+    }
 }
 
 impl Mixer {
@@ -1539,16 +1672,18 @@ fn open_direct_input(
     resampler: Option<LaneResampler>,
 ) -> Input {
     let device = config.usb_direct_device.clone();
+    let open_period = config.usb_direct_period_frames;
+    let buffer_frames = resolve_direct_buffer_frames(open_period);
     let present = Arc::new(AtomicBool::new(false));
     let opens = Arc::new(AtomicU64::new(0));
     let retries = Arc::new(AtomicU64::new(0));
-    let direct = match open_direct_capture(&device) {
+    let direct = match open_direct_capture(&device, open_period) {
         Ok(pcm) => {
             present.store(true, Ordering::Relaxed);
             opens.fetch_add(1, Ordering::Relaxed);
             info!(
-                "event=fanin.usb_direct.present device={} (initial open) opens=1 retries=0",
-                device,
+                "event=fanin.usb_direct.present device={} period_frames={} buffer_frames={} (initial open) opens=1 retries=0",
+                device, open_period, buffer_frames,
             );
             DirectCapture::Present(pcm)
         }
@@ -1585,21 +1720,28 @@ fn open_direct_input(
         trim: TrimControl::new(),
         direct_obs: Some(DirectObservability {
             device,
+            period_frames: open_period,
+            buffer_frames,
             present,
             opens,
             retries,
+            drain_stats: DrainStats::new(),
         }),
     }
 }
 
 /// Open the USB DIRECT capture PCM with the usbsink BRIDGE's proven envelope
 /// (C1) — deliberately NOT fanin's aloop-tuned `configure_pcm` (which sets an
-/// exact buffer). S32_LE 2ch 48k, `set_period_size(256, Nearest)`,
-/// `set_buffer_size_near(768)`; then the bridge-parity post-negotiation bails.
-/// Non-blocking (the direct lane rides the resampler read slot like the aloop
-/// lane) and `start()`ed so reads return data / EAGAIN. Returns the open PCM or
-/// an `alsa::Error` the caller maps to the `Absent` state.
-fn open_direct_capture(device: &str) -> std::result::Result<PCM, alsa::Error> {
+/// exact buffer). S32_LE 2ch 48k, `set_period_size(open_period, Nearest)`,
+/// `set_buffer_size_near(resolve_direct_buffer_frames(open_period))`; then the
+/// bridge-parity post-negotiation bails. `open_period` is 256 by default
+/// (byte-identical to today) or the `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`
+/// override (lever 2 H1 knob). Non-blocking (the direct lane rides the resampler
+/// read slot like the aloop lane) and `start()`ed so reads return data / EAGAIN.
+/// Returns the open PCM or an `alsa::Error` the caller maps to the `Absent`
+/// state.
+fn open_direct_capture(device: &str, open_period: u32) -> std::result::Result<PCM, alsa::Error> {
+    let want_buffer = resolve_direct_buffer_frames(open_period);
     let pcm = PCM::new(device, Direction::Capture, true)?;
     {
         let hwp = HwParams::any(&pcm)?;
@@ -1607,17 +1749,17 @@ fn open_direct_capture(device: &str) -> std::result::Result<PCM, alsa::Error> {
         hwp.set_rate(SAMPLE_RATE_HZ, ValueOr::Nearest)?;
         hwp.set_format(Format::S32LE)?;
         hwp.set_access(Access::RWInterleaved)?;
-        hwp.set_period_size(DIRECT_PERIOD_FRAMES as i64, ValueOr::Nearest)?;
-        hwp.set_buffer_size_near(DIRECT_BUFFER_FRAMES as i64)?;
+        hwp.set_period_size(open_period as i64, ValueOr::Nearest)?;
+        hwp.set_buffer_size_near(want_buffer as i64)?;
         let rate = hwp.get_rate()?;
         let period = hwp.get_period_size()? as u32;
         let buffer = hwp.get_buffer_size()? as u32;
         pcm.hw_params(&hwp)?;
         // Bridge-parity validation. Rate/period MUST land exactly (the bridge
         // bails otherwise); buffer is warn-on-near-mismatch but must clear the
-        // 2×period + alignment structural floor. A validation failure closes
+        // deep-buffer + alignment structural floor. A validation failure closes
         // the PCM (drop) and returns an error → the lane goes Absent.
-        if let Err(reason) = direct_open_params_ok(rate, period, buffer) {
+        if let Err(reason) = direct_open_params_ok(rate, period, buffer, open_period) {
             warn!(
                 "event=fanin.usb_direct.open_rejected device={} rate={} period={} buffer={} reason={}",
                 device, rate, period, buffer, reason,
@@ -1627,10 +1769,10 @@ fn open_direct_capture(device: &str) -> std::result::Result<PCM, alsa::Error> {
             // geometry".
             return Err(alsa::Error::new("direct_open_params", libc::EINVAL));
         }
-        if buffer != DIRECT_BUFFER_FRAMES {
+        if buffer != want_buffer {
             warn!(
                 "event=fanin.usb_direct.buffer_near device={} requested_frames={} negotiated_frames={}",
-                device, DIRECT_BUFFER_FRAMES, buffer,
+                device, want_buffer, buffer,
             );
         }
     }
@@ -1640,18 +1782,31 @@ fn open_direct_capture(device: &str) -> std::result::Result<PCM, alsa::Error> {
 
 /// Pure post-negotiation validation of the direct capture geometry (C1),
 /// unit-testable without ALSA. Rate must be exactly 48000 and period exactly
-/// 256 (the bridge bails otherwise); buffer must be ≥ 2×period and a whole
-/// multiple of the period (a fractional buffer would shear). Returns the
-/// rejection reason string on failure.
-fn direct_open_params_ok(rate: u32, period: u32, buffer: u32) -> std::result::Result<(), String> {
+/// `want_period` (the requested open period — the bridge bails on any drift);
+/// buffer must clear the deep-buffer floor (≥ `DIRECT_BUFFER_MIN_PERIODS`
+/// periods AND ≥ `DIRECT_BUFFER_MIN_FRAMES`) and be a whole multiple of the
+/// period (a fractional buffer would shear). Returns the rejection reason string
+/// on failure.
+fn direct_open_params_ok(
+    rate: u32,
+    period: u32,
+    buffer: u32,
+    want_period: u32,
+) -> std::result::Result<(), String> {
     if rate != SAMPLE_RATE_HZ {
         return Err(format!("rate {rate} != 48000"));
     }
-    if period != DIRECT_PERIOD_FRAMES {
-        return Err(format!("period {period} != {DIRECT_PERIOD_FRAMES}"));
+    if period != want_period {
+        return Err(format!("period {period} != {want_period}"));
     }
-    if buffer < period.saturating_mul(2) {
-        return Err(format!("buffer {buffer} < 2×period ({})", period * 2));
+    let min_buffer = period
+        .saturating_mul(DIRECT_BUFFER_MIN_PERIODS)
+        .max(DIRECT_BUFFER_MIN_FRAMES);
+    if buffer < min_buffer {
+        return Err(format!(
+            "buffer {buffer} < deep-buffer floor ({min_buffer}: max({}×period, {}))",
+            DIRECT_BUFFER_MIN_PERIODS, DIRECT_BUFFER_MIN_FRAMES,
+        ));
     }
     if period == 0 || buffer % period != 0 {
         return Err(format!("buffer {buffer} not period-aligned to {period}"));
@@ -2139,6 +2294,13 @@ fn drain_direct_capture(
     let mut read_budget_remaining =
         period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
     let armed = tap.state.armed();
+    // Sample the drain-ENTRY avail exactly once per drain call (lever 2). The
+    // first `avail_update()` reading is the standing gadget-capture dwell — the
+    // frames sitting readable when the mixer render cycle reaches this lane,
+    // which is the ~186-frame (3.9 ms) latency the symptom measures. Later
+    // in-loop `avail_update`s reflect drain progress, not the standing dwell, so
+    // they are NOT recorded (recording every iteration would multi-count).
+    let mut drain_entry_recorded = false;
 
     while read_budget_remaining > 0 {
         let avail = match pcm.avail_update() {
@@ -2152,6 +2314,10 @@ fn drain_direct_capture(
                 DirectReadFate::DeviceLost => return DirectDrainOutcome::DeviceLost,
             },
         };
+        if !drain_entry_recorded {
+            drain_entry_recorded = true;
+            record_drain_entry(input, avail);
+        }
         let want = resampler_read_budget_frames(avail, period_frames).min(read_budget_remaining);
         if want == 0 {
             break;
@@ -2220,6 +2386,40 @@ fn drain_direct_capture(
     DirectDrainOutcome::Ok
 }
 
+/// Record one drain-ENTRY avail sample into the lane's since-boot drain stats
+/// (lever 2) and, every [`DRAIN_STATS_LOG_EVERY`] drains, emit a rate-limited
+/// summary INFO line. Lock-free, allocation-free, syscall-free apart from the
+/// throttled log — safe on the hot path. A `None` `direct_obs` (never true on a
+/// direct lane) is a silent no-op.
+fn record_drain_entry(input: &Input, avail: i64) {
+    let Some(obs) = &input.direct_obs else {
+        return;
+    };
+    let stats = &obs.drain_stats;
+    let count = stats.record(avail);
+    // The counter itself is the rate limiter: log only on the exact multiple so
+    // there is no separate "last logged" state and the cadence is O(1).
+    if count % DRAIN_STATS_LOG_EVERY == 0 {
+        let sum = stats.sum.load(Ordering::Relaxed);
+        let max = stats.max.load(Ordering::Relaxed);
+        let mean = (sum as f64) / (count as f64);
+        info!(
+            "event=fanin.direct.drain_stats device={} drains={} mean_avail={:.1} max_avail={} \
+             hist=[{},{},{},{},{},{}] (frames; buckets [0,64,128,192,256,320,+))",
+            obs.device,
+            count,
+            mean,
+            max,
+            stats.hist[0].load(Ordering::Relaxed),
+            stats.hist[1].load(Ordering::Relaxed),
+            stats.hist[2].load(Ordering::Relaxed),
+            stats.hist[3].load(Ordering::Relaxed),
+            stats.hist[4].load(Ordering::Relaxed),
+            stats.hist[5].load(Ordering::Relaxed),
+        );
+    }
+}
+
 /// Recover a direct-capture xrun (EPIPE/ESTRPIPE): count it, forward the xrun
 /// event, `try_recover` the PCM, restart it if not Running, and reset the
 /// resampler (a discontinuity). Mirrors `recover_resampler_input_xrun` for the
@@ -2270,16 +2470,23 @@ fn maybe_reopen_direct(direct: DirectCapture, input: &mut Input) -> DirectCaptur
             periods_until_retry: periods_until_retry - 1,
         };
     }
-    // Retry window elapsed: attempt one reopen.
+    // Retry window elapsed: attempt one reopen. The open period is the one this
+    // lane negotiated at construction (stashed in direct_obs) so a reopen uses
+    // the same geometry as the initial open, not a hardcoded default.
     let device = input
         .direct_obs
         .as_ref()
         .map(|o| o.device.clone())
         .unwrap_or_default();
+    let open_period = input
+        .direct_obs
+        .as_ref()
+        .map(|o| o.period_frames)
+        .unwrap_or(DIRECT_PERIOD_FRAMES);
     if let Some(obs) = &input.direct_obs {
         obs.retries.fetch_add(1, Ordering::Relaxed);
     }
-    match open_direct_capture(&device) {
+    match open_direct_capture(&device, open_period) {
         Ok(pcm) => {
             if let Some(r) = input.resampler.as_mut() {
                 r.reset();
@@ -2719,17 +2926,98 @@ mod tests {
 
     #[test]
     fn direct_open_params_accepts_bridge_envelope() {
-        assert!(direct_open_params_ok(48_000, 256, 768).is_ok());
-        // Exactly 2×period, period-aligned is the structural floor.
-        assert!(direct_open_params_ok(48_000, 256, 512).is_ok());
+        // Default geometry: period 256, buffer 768 = 3×period (the deep-buffer
+        // floor), byte-identical to the pre-lever-2 envelope.
+        assert!(direct_open_params_ok(48_000, 256, 768, 256).is_ok());
+        // H1 geometry: open period 64 with a DEEP buffer (768 = 12 periods, well
+        // over the 3-period + 768-frame floor).
+        assert!(direct_open_params_ok(48_000, 64, 768, 64).is_ok());
+        // A larger negotiated buffer at the default period is fine (period-aligned).
+        assert!(direct_open_params_ok(48_000, 256, 1024, 256).is_ok());
     }
 
     #[test]
     fn direct_open_params_rejects_off_envelope() {
-        assert!(direct_open_params_ok(44_100, 256, 768).is_err()); // wrong rate
-        assert!(direct_open_params_ok(48_000, 128, 768).is_err()); // wrong period
-        assert!(direct_open_params_ok(48_000, 256, 256).is_err()); // < 2×period
-        assert!(direct_open_params_ok(48_000, 256, 700).is_err()); // not aligned
+        // Baseline passes; each of the following fails for the noted reason.
+        assert!(direct_open_params_ok(48_000, 256, 768, 256).is_ok());
+        // Wrong rate.
+        assert!(direct_open_params_ok(44_100, 256, 768, 256).is_err());
+        // Negotiated period drifted from the requested one.
+        assert!(direct_open_params_ok(48_000, 128, 768, 256).is_err());
+        // Buffer below the 768-frame deep floor.
+        assert!(direct_open_params_ok(48_000, 256, 512, 256).is_err());
+        // Buffer not period-aligned.
+        assert!(direct_open_params_ok(48_000, 256, 700, 256).is_err());
+        // A shallow 2-period buffer at period 64 (128 frames) is the REFUTED
+        // shallow-buffer class — it clears 2×period but not the deep floor.
+        assert!(direct_open_params_ok(48_000, 64, 128, 64).is_err());
+    }
+
+    #[test]
+    fn resolve_direct_buffer_frames_holds_deep_floor() {
+        // Default period reproduces the historical fixed 768-frame buffer.
+        assert_eq!(resolve_direct_buffer_frames(256), 768);
+        // Small period is floored to ≥768 AND ≥3 periods, period-aligned:
+        // 64 → 768 (12 periods, 768 ≥ max(192, 768)).
+        assert_eq!(resolve_direct_buffer_frames(64), 768);
+        // A period whose 3× exceeds 768 is driven by the period floor:
+        // 512 → 1536 (3×512), still period-aligned.
+        assert_eq!(resolve_direct_buffer_frames(512), 1536);
+        // 320 → max(960, 768) = 960, already a whole multiple of 320? 960/320=3.
+        assert_eq!(resolve_direct_buffer_frames(320), 960);
+        // A period where the 768 floor is NOT a whole multiple rounds UP:
+        // 200 → max(600, 768)=768 → ceil(768/200)*200 = 4*200 = 800.
+        assert_eq!(resolve_direct_buffer_frames(200), 800);
+        // Every resolved buffer must pass its own validator at that period.
+        for p in [32u32, 64, 128, 200, 256, 320, 512, 1024] {
+            let b = resolve_direct_buffer_frames(p);
+            assert!(
+                direct_open_params_ok(48_000, p, b, p).is_ok(),
+                "resolved buffer {b} must validate at period {p}",
+            );
+        }
+    }
+
+    #[test]
+    fn drain_avail_bucket_boundaries() {
+        // 64-frame step buckets: [0,64) [64,128) [128,192) [192,256) [256,320) [320,+)
+        assert_eq!(drain_avail_bucket(-5), 0); // negative clamps into bucket 0
+        assert_eq!(drain_avail_bucket(0), 0);
+        assert_eq!(drain_avail_bucket(63), 0);
+        assert_eq!(drain_avail_bucket(64), 1);
+        assert_eq!(drain_avail_bucket(127), 1);
+        assert_eq!(drain_avail_bucket(128), 2);
+        assert_eq!(drain_avail_bucket(191), 2);
+        assert_eq!(drain_avail_bucket(192), 3);
+        assert_eq!(drain_avail_bucket(255), 3);
+        assert_eq!(drain_avail_bucket(256), 4);
+        assert_eq!(drain_avail_bucket(319), 4);
+        assert_eq!(drain_avail_bucket(320), 5);
+        assert_eq!(drain_avail_bucket(100_000), 5); // saturates in top bucket
+                                                    // The measured ~186-frame standing dwell lands in bucket 2 ([128,192)).
+        assert_eq!(drain_avail_bucket(186), 2);
+    }
+
+    #[test]
+    fn drain_stats_record_accumulates() {
+        let stats = DrainStats::new();
+        // Record three samples across three buckets.
+        assert_eq!(stats.record(64), 1); // bucket 1
+        assert_eq!(stats.record(186), 2); // bucket 2
+        assert_eq!(stats.record(320), 3); // bucket 5
+        assert_eq!(stats.count.load(Ordering::Relaxed), 3);
+        assert_eq!(stats.sum.load(Ordering::Relaxed), 64 + 186 + 320);
+        assert_eq!(stats.max.load(Ordering::Relaxed), 320);
+        assert_eq!(stats.hist[1].load(Ordering::Relaxed), 1);
+        assert_eq!(stats.hist[2].load(Ordering::Relaxed), 1);
+        assert_eq!(stats.hist[5].load(Ordering::Relaxed), 1);
+        // Untouched buckets stay 0.
+        assert_eq!(stats.hist[0].load(Ordering::Relaxed), 0);
+        // A negative avail records as 0 into bucket 0 and does not raise max.
+        stats.record(-1);
+        assert_eq!(stats.hist[0].load(Ordering::Relaxed), 1);
+        assert_eq!(stats.max.load(Ordering::Relaxed), 320);
+        assert_eq!(stats.sum.load(Ordering::Relaxed), 64 + 186 + 320);
     }
 
     #[test]
