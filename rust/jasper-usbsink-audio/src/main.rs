@@ -31,7 +31,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use host_clock::{HostClock, HostClockConfig, Obs};
+use host_clock::{HostClock, HostClockConfig};
 #[cfg(feature = "alsa-runtime")]
 use impulse_tap::{ImpulseDetector, SinkAction, TapSink};
 use impulse_tap::{TapConfig, TapEvent, TapState};
@@ -111,7 +111,7 @@ impl Config {
             )),
             preempt_host: env_string("JASPER_USBSINK_PREEMPT_HOST", DEFAULT_PREEMPT_HOST),
             preempt_port: env_u16("JASPER_USBSINK_PREEMPT_PORT", DEFAULT_PREEMPT_PORT)?,
-            host_clock: HostClockConfig::from_env(|key| env::var(key).ok())
+            host_clock: host_clock::from_env(|key| env::var(key).ok())
                 .map_err(anyhow::Error::msg)?,
         };
         cfg.validate()?;
@@ -1360,7 +1360,7 @@ fn run_state_publisher(
     while !shutdown.load(Ordering::Relaxed) {
         publisher.poll(&tap_receiver, &tap, &tap_config, monotonic_millis());
         if last_hc_tick.elapsed() >= Duration::from_millis(host_clock::TICK_INTERVAL_MS) {
-            let obs = Obs::from_shared(&state, config.period_frames);
+            let obs = host_clock::obs_from_shared(&state, config.period_frames);
             for action in host_clock.tick(obs, monotonic_millis() as u64) {
                 pitch.apply(action);
             }
@@ -1772,10 +1772,11 @@ mod tests {
     use super::*;
 
     /// A disabled host-clock config for the daemon-level status_json tests.
-    /// The host-clock ladder itself is tested exhaustively in `host_clock.rs`;
-    /// these tests only assert the daemon folds the block in.
+    /// The host-clock ladder itself is tested exhaustively in the shared
+    /// `jasper-host-clock` crate; these tests only assert the daemon folds the
+    /// block in.
     fn test_host_clock_config() -> HostClockConfig {
-        HostClockConfig::from_env(|_| None).unwrap()
+        host_clock::from_env(|_| None).unwrap()
     }
 
     /// The disabled host-clock fragment, for status_json fold-in tests.
