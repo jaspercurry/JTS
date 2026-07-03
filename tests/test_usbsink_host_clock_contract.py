@@ -47,7 +47,18 @@ from jasper.cli.doctor import usbsink as doctor_usbsink
 from jasper.control import state_aggregate
 
 _REPO = Path(__file__).resolve().parents[1]
+# The usbsink-side shim: it still owns the JASPER_USBSINK_HOST_CLOCK* env parse
+# (`from_env`), so the env-key pins below grep THIS file.
 _HOST_CLOCK_RS = _REPO / "rust" / "jasper-usbsink-audio" / "src" / "host_clock.rs"
+# The daemon-agnostic ladder + probe + servo + write-gate + ALSA actuator moved
+# to this shared crate when combo mode gave fan-in its own copy of the loop. The
+# pinned constants, the `host_clock` JSON fragment, the ladder/probe enum
+# vocabulary, and the by-name (not numid) ctl resolution now live HERE — so the
+# fragment/ladder/constant/numid pins below grep this file. Keeping the two
+# paths distinct is load-bearing: after the move a grep for the fragment against
+# the old usbsink file would silently `pytest.skip()`-weaken (the file still
+# exists, so `.exists()` is True, but the fragment is gone) — see R1.
+_SHARED_HOST_CLOCK_RS = _REPO / "rust" / "jasper-host-clock" / "src" / "lib.rs"
 _MAIN_RS = _REPO / "rust" / "jasper-usbsink-audio" / "src" / "main.rs"
 _ENV_EXAMPLE = _REPO / ".env.example"
 
@@ -56,6 +67,12 @@ def _host_clock_rs_text() -> str:
     if not _HOST_CLOCK_RS.exists():
         pytest.skip(f"rust source not present: {_HOST_CLOCK_RS}")
     return _HOST_CLOCK_RS.read_text(encoding="utf-8")
+
+
+def _shared_host_clock_rs_text() -> str:
+    if not _SHARED_HOST_CLOCK_RS.exists():
+        pytest.skip(f"rust source not present: {_SHARED_HOST_CLOCK_RS}")
+    return _SHARED_HOST_CLOCK_RS.read_text(encoding="utf-8")
 
 
 def _main_rs_text() -> str:
@@ -137,7 +154,8 @@ def test_pinned_host_clock_fragment_matches_rust_fixture_verbatim():
     # _decode_rust_string_continuations). A drift in either side's compact-
     # JSON formatting (a stray space, reordered keys, a renamed field, a
     # different float precision) fails here.
-    rust_src = _decode_rust_string_continuations(_host_clock_rs_text())
+    # The fragment fixture moved to the shared jasper-host-clock crate.
+    rust_src = _decode_rust_string_continuations(_shared_host_clock_rs_text())
     assert _PINNED_HOST_CLOCK_FRAGMENT in rust_src, (
         "the pinned host_clock JSON fragment is no longer byte-identical to "
         "the Rust crate's own fixture (host_clock_fragment_shape_is_stable) "
@@ -149,8 +167,9 @@ def test_rust_fixture_test_still_exists():
     # Cross-reference: the Rust crate must still carry the test that pins
     # this fragment on its side, or a Rust-side deletion would silently
     # make this Python pin the only remaining evidence (and eventually
-    # stale, since nothing on the Rust side would re-verify it).
-    rust_src = _host_clock_rs_text()
+    # stale, since nothing on the Rust side would re-verify it). The fixture
+    # test moved to the shared crate with the servo.
+    rust_src = _shared_host_clock_rs_text()
     assert "fn host_clock_fragment_shape_is_stable" in rust_src, (
         "Rust fixture pinning the host_clock JSON fragment is gone — the "
         "Stage 1 state.json wire contract is unpinned on the Rust side."
@@ -330,12 +349,14 @@ def test_doctor_check_recognizes_every_pinned_ladder_value(monkeypatch, tmp_path
 def test_rust_source_still_names_every_pinned_ladder_variant():
     # Cross-check: if the Rust enum ever drops or renames a ladder variant,
     # the Python-side pins above would silently stop covering real states.
-    rust_src = _host_clock_rs_text()
+    # The ladder enum + its as_str() tokens moved to the shared crate.
+    rust_src = _shared_host_clock_rs_text()
     for ladder in _PINNED_LADDER_VALUES:
         assert f'"{ladder}"' in rust_src, (
             f"ladder value {ladder!r} (pinned in _PINNED_LADDER_VALUES) no "
-            "longer appears as a JSON string literal in host_clock.rs — "
-            "the Rust ladder enum may have renamed/removed a variant."
+            "longer appears as a JSON string literal in the shared "
+            "jasper-host-clock crate — the Rust ladder enum may have "
+            "renamed/removed a variant."
         )
 
 
@@ -457,8 +478,9 @@ def test_pitch_ctl_resolves_by_name_not_numid():
     # input) first would silently retarget every write — including the
     # unconditional startup neutralize that runs even with the feature OFF.
     # The unit's ExecStopPost already uses the safer name-based amixer path;
-    # this pins the in-daemon path to match.
-    rust_src = _host_clock_rs_text()
+    # this pins the in-daemon path to match. The AlsaPitchCtl actuator moved to
+    # the shared jasper-host-clock crate (behind its `alsa` feature).
+    rust_src = _shared_host_clock_rs_text()
     for lineno, line in enumerate(rust_src.splitlines(), start=1):
         stripped = line.lstrip()
         if stripped.startswith("//") or stripped.startswith("///"):
@@ -486,24 +508,25 @@ def test_pitch_ctl_resolves_by_name_not_numid():
 def test_rust_source_pins_the_documented_non_env_constants():
     # Match the actual named-constant declarations (not a bare numeric
     # substring like "1000", which appears constantly throughout the file
-    # for unrelated reasons and would make this pin nearly vacuous).
-    rust_src = _host_clock_rs_text()
+    # for unrelated reasons and would make this pin nearly vacuous). These
+    # servo constants moved to the shared jasper-host-clock crate.
+    rust_src = _shared_host_clock_rs_text()
     assert "PITCH_NEUTRAL: i64 = 1_000_000;" in rust_src, (
         "PITCH_NEUTRAL constant (neutral pitch = 1_000_000) not declared "
-        "as expected in host_clock.rs"
+        "as expected in the shared jasper-host-clock crate"
     )
     assert "MAX_BIAS_PPM: f64 = 1000.0;" in rust_src, (
         "MAX_BIAS_PPM constant (the ±1000 ppm servo clamp, independent of "
         "the wider hw range 750000..1005000) not declared as expected in "
-        "host_clock.rs"
+        "the shared jasper-host-clock crate"
     )
     assert "WRITE_EPSILON_PPM: f64 = 10.0;" in rust_src, (
         "WRITE_EPSILON_PPM constant (the ctl write-suppression epsilon) "
-        "not declared as expected in host_clock.rs"
+        "not declared as expected in the shared jasper-host-clock crate"
     )
     assert "WRITE_MIN_INTERVAL_MS: u64 = 1000;" in rust_src, (
         "WRITE_MIN_INTERVAL_MS constant (the <=1 Hz ctl write cadence "
-        "cap) not declared as expected in host_clock.rs"
+        "cap) not declared as expected in the shared jasper-host-clock crate"
     )
 
 

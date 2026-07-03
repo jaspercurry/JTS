@@ -235,6 +235,7 @@ jobs:
           for crate in \
             rust/jasper-clock \
             rust/jasper-resampler \
+            rust/jasper-host-clock \
             rust/jasper-tts-protocol \
             rust/jasper-fanin \
             rust/jasper-outputd \
@@ -256,6 +257,7 @@ jobs:
           workspaces: |
             rust/jasper-clock
             rust/jasper-resampler
+            rust/jasper-host-clock
             rust/jasper-fanin
             rust/jasper-outputd
             rust/jasper-usbsink-audio
@@ -273,6 +275,16 @@ jobs:
         # jasper-clock). No ALSA, so this clippy/test runs on any host.
         working-directory: rust/jasper-resampler
         run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
+
+      - name: jasper-host-clock — clippy (all features incl. the ALSA actuator)
+        if: steps.rust-needed.outputs.run == 'true'
+        # The daemon-agnostic host-slaved USB clock ladder + servo + write-gate,
+        # shared by jasper-usbsink-audio (solo mode) and jasper-fanin (combo
+        # mode). The pure ladder/servo compiles with no features; `--all-features`
+        # links the ALSA `AlsaPitchCtl` actuator so it is linted too (libasound2-dev
+        # is installed above). Same -D warnings gate as its siblings.
+        working-directory: rust/jasper-host-clock
+        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets --all-features -- --no-deps -D warnings
 
       - name: jasper-tts-protocol — clippy
         if: steps.rust-needed.outputs.run == 'true'
@@ -315,6 +327,16 @@ jobs:
         # for the daemon path (jasper-outputd's content_bridge), its sole
         # consumer.
         working-directory: rust/jasper-resampler
+        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
+
+      - name: jasper-host-clock — build + test (pure ladder/servo; no ALSA)
+        if: steps.rust-needed.outputs.run == 'true'
+        # The shared host-slaved USB clock. The pure ladder/probe/servo/write-gate
+        # + the status-fragment byte-shape run with NO features (no libasound), so
+        # its ladder-transition / probe / write-gate / clamp / anti-windup /
+        # fragment-shape properties are the regression gate for BOTH consumers
+        # (jasper-usbsink-audio solo, jasper-fanin combo) and run on any host.
+        working-directory: rust/jasper-host-clock
         run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
       - name: jasper-tts-protocol — build + test (shared wire-protocol crate)
