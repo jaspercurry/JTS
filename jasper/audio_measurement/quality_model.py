@@ -27,9 +27,19 @@ Three profiles ship:
   already called room correction's ``assess_capture`` verbatim; only the
   driver-specific *verdict* fields (``silent_peak_dbfs``, ``null_threshold_db``,
   ``overlap_min_bins``) carried distinct driver values.
-* :data:`RAMP` — placeholder for the upcoming level-ramp (P2). It reuses
-  :data:`ROOM`'s values for now; retune when the ramp's real SNR window /
-  stop-threshold work lands. Documented as reused, not yet derived.
+* :data:`RAMP` — the level-match ramp (P2). It shares :data:`ROOM`'s *structural*
+  digital-full-scale facts (``dbfs_floor``, ``clip_abs_threshold``,
+  ``clip_fraction_fail``) because those are the same facts the phone's
+  ``level-events.js`` and the kernel's clip detection agree on, and it carries a
+  ``peak_too_low_dbfs`` / ``rms_too_low_dbfs`` pair for parity with the other
+  layers. The ramp's *live* tuning — the safe target window, the
+  ``noise_floor + trust_margin`` trust floor, the stop-ahead / settle / confirm
+  cadence, and the drift thresholds — deliberately does NOT live here: it lives on
+  :class:`~jasper.audio_measurement.ramp.MeasurementRamp` (a validated,
+  overshoot-guarded config with its own env knobs), because those are ramp
+  control-loop parameters, not capture-quality gates read by ``assess_capture``.
+  So ``RAMP`` intentionally equals ``ROOM`` today; the ramp's hardware-gated
+  numbers (H1) are tuned on ``MeasurementRamp``, not on this profile.
 
 The structural clip / dBFS-floor knobs (``clip_abs_threshold``,
 ``clip_fraction_fail``, ``dbfs_floor``) are shared by every profile — they are
