@@ -655,13 +655,15 @@ impl LaneResampler {
         // (a written proof is EVIDENCE the floor held for the settle window with
         // zero churn), else at the ceiling (a fresh cold start acquires deep).
         // Self-healing if the floor is later unsustainable: the re-lock re-arms the
-        // early-revalidation window, so an immediate re-underfill revokes the proof
-        // and reverts to the ceiling. NOTE the "immediate": the window is bounded
-        // (`HOST_COMPLIANCE_EARLY_REVALIDATION_SECS`), so a host that stalls
-        // floor-fatally but >60 s apart never trips this — the proof does not
-        // self-revoke that periodic-dropout profile (see HANDOFF-usb-low-latency.md
-        // revalidation section). Without a snap here, a re-lock after decay
-        // would seat at the shallow decayed depth and re-thrash lock.
+        // early-revalidation window, and the RevalidationTracker's churn
+        // discriminator revokes the proof if this unlock is FOLLOWED by a relock
+        // within `HOST_COMPLIANCE_CHURN_CONFIRM_SECS` — i.e. the host kept streaming
+        // but the floor could not hold (unlock→relock churn). A terminal stream-end
+        // (this unlock with NO relock — the macOS short-session norm) does NOT revoke:
+        // the pending strike expires harmlessly, so the proof survives and the next
+        // real stream still primes at the floor (see HANDOFF-usb-low-latency.md
+        // revalidation section). Without a snap here, a re-lock after decay would seat
+        // at the shallow decayed depth and re-thrash lock.
         self.snap_decay_back_honoring_proof(DecayFrozenReason::Unlocked);
         self.publish_fill(if acquisition_underfill {
             self.ring.fill_frames() as u64

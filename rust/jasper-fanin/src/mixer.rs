@@ -289,6 +289,36 @@ const HOST_COMPLIANCE_SETTLE_MS: u64 = CUSHION_DECAY_STABILITY_MS;
 /// regardless of this window (they are direct host-non-compliance evidence).
 const HOST_COMPLIANCE_EARLY_REVALIDATION_SECS: u64 = 60;
 
+/// The host-compliance CHURN-CONFIRMATION horizon — an early-window underfill
+/// unlock only ARMS a pending EarlyUnlock strike; the strike CONFIRMS (revoke)
+/// only if a RELOCK arrives within this many seconds of the arming unlock. Converted
+/// to render periods at the live geometry and compared purely in ticks by the pure
+/// `RevalidationTracker` (never a wall clock).
+///
+/// Why a relock is required (the terminal-stream-end fix, hardware-diagnosed on
+/// jts.local 2026-07-03): EVERY session end presents as an underfill unlock
+/// (deliveries stop → the fill drains below `minimum_safe_fill` within ms, long
+/// before any idle classification), so the old "any early-window unlock revokes"
+/// rule burned the proof on every sub-60 s session. macOS CoreAudio stops the
+/// device stream seconds after the last client, making short sessions (notification
+/// dings / previews) the COMMON case. Only unlock→relock CYCLING proves the host is
+/// still present and the floor is genuinely failing — that is churn worth revoking.
+///
+/// 5 s comfortably covers a real re-acquisition after a floor-fatal underfill (the
+/// lane re-primes and relocks in well under a second) while expiring a terminal
+/// stream-end's pending strike well before the usual gap to the next macOS stream
+/// (seconds-to-minutes later). The honest bound, NOT an absolute "never": a strike
+/// survives only into a relock arriving ≤ `HOST_COMPLIANCE_CHURN_CONFIRM_SECS` after
+/// the arming unlock. The tracker has NO signal to tell a genuinely-new stream's
+/// first lock (a fresh clip started ≤ 5 s after the prior stopped) apart from a churn
+/// relock — both are "armed strike + rising edge inside the horizon" — so such a
+/// restart WILL confirm the dead session's strike: one spurious revoke, self-healing
+/// via re-prove on that session's ~2.5-min descent. That residual is accepted (the
+/// horizon cannot shrink below ~2× the bounded-prime fall-through without missing
+/// genuine bursty-host churn); see the revalidation section of
+/// docs/HANDOFF-usb-low-latency.md.
+const HOST_COMPLIANCE_CHURN_CONFIRM_SECS: u64 = 5;
+
 /// Per-lane TRIM control + counters, shared (`Arc`) between the mixer work
 /// thread (which owns the `LaneResampler` and performs the actual ring trim)
 /// and the state-server thread (which requests trims and reads the counters for
@@ -1485,12 +1515,18 @@ impl Mixer {
     /// No-op (a single `Option::is_none`) when the feature is off. When armed:
     ///
     /// 1. Drive the pure `RevalidationTracker`: it runs the one-strike revalidation
-    ///    of a floor-primed session against the pre-reset lock baseline (a LIVE
-    ///    probe FAIL, a DLL demotion to L2, or an underfill unlock inside the early
-    ///    window — INCLUDING the lock-loss period the unlock lands on — revoke), then
-    ///    applies the lock-edge bookkeeping and returns the decision + the edges. On
-    ///    a returned revoke, snap the held target back to the ceiling and delete the
-    ///    persisted proof. Reset the pure proof machine on either lock edge.
+    ///    of a floor-primed session against the pre-reset lock baseline. Immediate
+    ///    triggers (a LIVE probe FAIL, a DLL demotion to L2) revoke the period the
+    ///    evidence appears; the EarlyUnlock churn trigger is two-phase — an
+    ///    early-window underfill unlock ARMS a pending strike that CONFIRMS (revoke)
+    ///    only if a RELOCK follows within the churn-confirm horizon, so a terminal
+    ///    stream-end (unlock with no relock — the macOS short-session norm) expires
+    ///    harmlessly and does NOT burn the proof. The tracker applies the lock-edge
+    ///    bookkeeping and returns the decision + the edges. On a returned revoke,
+    ///    snap the held target back to the ceiling and delete the persisted proof;
+    ///    `on_revoked` clears `flag_present` so the relocked lock is not floor-primed
+    ///    (the revoke wins the relock's floor consideration). Reset the pure proof
+    ///    machine on either lock edge.
     /// 2. TICK the pure proof machine; on its `Write` outcome, persist a fresh
     ///    record (atomic tempfile+rename). Written at most once per session.
     ///
@@ -2069,6 +2105,11 @@ fn build_host_compliance_state(
         config.period_frames,
         config.sample_rate,
     );
+    let churn_confirm_periods = ms_to_periods(
+        HOST_COMPLIANCE_CHURN_CONFIRM_SECS.saturating_mul(1000),
+        config.period_frames,
+        config.sample_rate,
+    );
     // STATUS observability: `flag_present` reflects whether a VALID proof primed
     // this session (a present-but-stale file is not an authority, so it reads as
     // absent for STATUS purposes). Inject a clone into the resampler so
@@ -2082,6 +2123,7 @@ fn build_host_compliance_state(
         revalidation: crate::host_compliance::RevalidationTracker::new(
             floor_primed,
             early_window_periods,
+            churn_confirm_periods,
         ),
         obs,
     }
