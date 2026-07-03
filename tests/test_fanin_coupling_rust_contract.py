@@ -298,6 +298,33 @@ def test_cushion_decay_snaps_back_to_ceiling_on_lock_loss():
     )
 
 
+def test_servo_thread_exit_clears_reverse_signals():
+    """A stopped `fanin-host-clock` servo thread must clear its REVERSE signals.
+
+    The exit path (graceful shutdown OR caught panic) neutralizes the pitch ctl so
+    the host free-runs. It must ALSO clear the outer-loop signals the mixer's decay
+    tick reads (`ladder_l0`, `commanded_milli_ppm`) — otherwise a dead thread
+    leaves `ladder_l0=true` frozen, and the decay engine keeps stepping the held
+    target toward the floor with no live DLL pinning the fill, driving the
+    thin-cushion free-run churn loop until a daemon restart. Both stores sit AFTER
+    the `catch_unwind` block so they run on both exit paths.
+    """
+    host_clock_text = (
+        _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_clock.rs"
+    ).read_text(encoding="utf-8")
+    # The exit-neutralize block ends the thread body; both reverse-signal clears
+    # follow the actuator neutralize (so they run on graceful + caught-panic exit).
+    exit_start = host_clock_text.index('neutralize_for_exit("shutdown")')
+    exit_tail = host_clock_text[exit_start:]
+    assert "signals.ladder_l0.store(false, Ordering::Relaxed)" in exit_tail, (
+        "servo-thread exit must clear ladder_l0 so a dead thread cannot leave the "
+        "decay tick reading a stale l0=true"
+    )
+    assert "signals.commanded_milli_ppm.store(0, Ordering::Relaxed)" in exit_tail, (
+        "servo-thread exit must clear commanded_milli_ppm"
+    )
+
+
 def test_input_resampler_recovery_restarts_capture_pcm():
     text = _mixer_rs_text()
     recovery_start = text.index("fn recover_resampler_input_xrun(")

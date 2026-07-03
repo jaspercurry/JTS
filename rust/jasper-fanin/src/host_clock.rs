@@ -118,9 +118,10 @@ pub struct HostClockSignals {
     /// lowers the held target while the DLL is in this steady state.
     pub ladder_l0: Arc<AtomicBool>,
     /// REVERSE signal (servo thread → mixer): the DLL's last commanded bias in
-    /// milli-ppm (ppm × 1000, i64 stored as u64 bits — the same encoding the
-    /// resampler's `ratio_milli_ppm` uses). The decay tick reads its magnitude
-    /// for the cascade-stability guard.
+    /// milli-ppm (ppm × 1000, rounded to a plain signed `AtomicI64` — no bit-cast;
+    /// the sign is native, unlike the resampler's `ratio_milli_ppm` which packs an
+    /// i64 into an `AtomicU64`). The decay tick reads its magnitude for the
+    /// cascade-stability guard.
     pub commanded_milli_ppm: Arc<AtomicI64>,
 }
 
@@ -388,6 +389,18 @@ pub fn run_host_clock_thread(
     actuator.apply(hc.neutralize_for_exit("shutdown"), now_ms(&start));
     log::info!("event=fanin.host_clock_pitch_reset reason=shutdown");
     publish_fragment(&fragment, hc.status_fragment());
+
+    // Clear the REVERSE signals too, so a stopped servo thread (graceful OR
+    // caught-panic) does not leave the mixer's decay tick reading a frozen
+    // `ladder_l0=true`. Neutralizing only the actuator un-slaves the host but
+    // leaves the outer-loop signal stale: the decay engine would keep stepping
+    // the held target toward the floor with no live DLL pinning the fill,
+    // driving the thin-cushion free-run churn loop (underfill unlock → snap-back
+    // → relock → warmup → re-decay) until a daemon restart. Publishing
+    // `l0=false` / `commanded=0` makes the very next decay tick snap the cushion
+    // back to the ceiling (`DecayFrozenReason::NotL0`) and hold it there.
+    signals.ladder_l0.store(false, Ordering::Relaxed);
+    signals.commanded_milli_ppm.store(0, Ordering::Relaxed);
 }
 
 /// Derive the ctl card spec (e.g. `hw:UAC2Gadget`) from the direct-capture

@@ -528,40 +528,58 @@ impl Config {
                 .as_deref(),
             Some("enabled")
         );
-        // The tightest safe floor is the base target plus a small margin the DLL
-        // always keeps above target. Default the floor to exactly that so the
-        // out-of-box decay reclaims the maximum cushion; an operator can raise it.
-        let cushion_decay_floor_default =
-            input_resampler_target_frames + CUSHION_DECAY_FLOOR_MARGIN_FRAMES;
+        // The tightest safe floor is the LARGER of two constraints, both a DLL
+        // working margin above their anchor:
+        //   1. `target + DLL margin` — keep a working cushion above the base
+        //      target the DLL always has to steer within.
+        //   2. `minimum_safe_fill_frames + DLL margin` — the PHYSICAL floor. The
+        //      resampler underfill-unlocks the moment the cursor-relative fill
+        //      drops below `minimum_safe_fill_frames` (= ceil(period × max_ratio)
+        //      + kernel radius + 1). A held target at/below that value sits on the
+        //      unlock threshold — churn-by-construction (audible gap → snap-back →
+        //      relock → warm-up → re-descend, on repeat). Constraint 1 alone does
+        //      NOT imply constraint 2: for a small base target (below ~period)
+        //      `target + margin` can land below the physical floor.
+        // Default the floor to that bound so the out-of-box decay reclaims the
+        // maximum SAFE cushion; an operator can raise it. `min_safe` is derived
+        // from the same shared `jasper_resampler` helper the lane's underfill gate
+        // uses, so the two can never disagree about the physical threshold.
+        let cushion_decay_min_safe_fill = jasper_resampler::minimum_safe_fill_frames(
+            period_frames,
+            input_resampler_max_adjust_ppm as f64,
+        ) as u32;
+        let cushion_decay_floor_min = (input_resampler_target_frames
+            + CUSHION_DECAY_FLOOR_MARGIN_FRAMES)
+            .max(cushion_decay_min_safe_fill + CUSHION_DECAY_FLOOR_MARGIN_FRAMES);
+        let cushion_decay_floor_default = cushion_decay_floor_min;
         let input_resampler_cushion_decay_floor_frames = env_u32(
             "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
             cushion_decay_floor_default,
         )?;
         // The acquisition ceiling the decay descends FROM. The floor must sit in
-        // [target + margin, ceiling]: below the margin the DLL loses its working
-        // cushion above the base target; above the ceiling there is nothing to
-        // decay. Validate fail-loud (the `validate_audio_config` idiom) — but only
-        // when the feature is armed, so a stale floor on a decay-off box never
-        // blocks boot.
+        // [floor_min, ceiling]: above the ceiling there is nothing to decay.
+        // Validate fail-loud (the `validate_audio_config` idiom) — but only when
+        // the feature is armed, so a stale floor on a decay-off box never blocks
+        // boot.
         let cushion_decay_ceiling =
             input_resampler_target_frames + input_resampler_warmup_cushion_frames;
-        if input_resampler_cushion_decay_enabled {
-            let floor_min = input_resampler_target_frames + CUSHION_DECAY_FLOOR_MARGIN_FRAMES;
-            if !(floor_min..=cushion_decay_ceiling)
+        if input_resampler_cushion_decay_enabled
+            && !(cushion_decay_floor_min..=cushion_decay_ceiling)
                 .contains(&input_resampler_cushion_decay_floor_frames)
-            {
-                anyhow::bail!(
-                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES={} out of range {}..={} \
-                     (>= input_resampler_target_frames {} + {}-frame DLL margin, \
-                     <= the acquisition ceiling target+cushion {})",
-                    input_resampler_cushion_decay_floor_frames,
-                    floor_min,
-                    cushion_decay_ceiling,
-                    input_resampler_target_frames,
-                    CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
-                    cushion_decay_ceiling,
-                );
-            }
+        {
+            anyhow::bail!(
+                "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES={} out of range {}..={} \
+                 (>= max(target {} , minimum_safe_fill {}) + {}-frame DLL margin — a floor \
+                 at/below minimum_safe_fill would underfill-unlock every period; \
+                 <= the acquisition ceiling target+cushion {})",
+                input_resampler_cushion_decay_floor_frames,
+                cushion_decay_floor_min,
+                cushion_decay_ceiling,
+                input_resampler_target_frames,
+                cushion_decay_min_safe_fill,
+                CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
+                cushion_decay_ceiling,
+            );
         }
         let input_resampler_cushion_decay_step_frames =
             env_u32("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES", 16)?;
@@ -1592,6 +1610,66 @@ mod tests {
                 assert!(
                     msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES"),
                     "expected decay-floor ceiling error, got: {msg}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn cushion_decay_floor_fails_loud_below_minimum_safe_fill_when_armed() {
+        // A small base target makes `target + margin` land BELOW the physical
+        // minimum-safe-fill floor — a floor there is churn-by-construction (it
+        // sits on the underfill-unlock threshold). The validation must reject it
+        // fail-loud even though it is above `target + margin`.
+        //
+        // target 200, period 256, max_ppm 500 → min_safe = ceil(256*1.0005)+16+1
+        // = 274. floor_min = max(200+32, 274+32) = 306. A floor of 240 is above
+        // target+margin (232) but below floor_min (306) → must error.
+        with_env(
+            &[
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("200")),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
+                (
+                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
+                    Some("240"),
+                ),
+            ],
+            || {
+                let err = Config::from_env().expect_err(
+                    "floor below minimum-safe-fill must error even above target+margin",
+                );
+                let msg = format!("{:#}", err);
+                assert!(
+                    msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES")
+                        && msg.contains("minimum_safe_fill"),
+                    "expected minimum-safe-fill floor error, got: {msg}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn cushion_decay_floor_default_respects_minimum_safe_fill() {
+        // For a small base target the DEFAULT floor must be lifted to
+        // `minimum_safe_fill + margin`, not `target + margin` — the default must
+        // never itself be churn-by-construction. target 200 / period 256 /
+        // max_ppm 500 → min_safe 274 → default floor 306 (not 232).
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("200")),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
+            ],
+            || {
+                let cfg = Config::from_env().expect("defaults must parse");
+                let min_safe = jasper_resampler::minimum_safe_fill_frames(256, 500.0) as u32;
+                assert_eq!(
+                    cfg.input_resampler_cushion_decay_floor_frames,
+                    min_safe + CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
+                    "default floor for a small target must respect the physical floor"
                 );
             },
         );

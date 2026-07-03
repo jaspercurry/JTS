@@ -284,7 +284,7 @@ impl LaneResampler {
         let max_prime_periods = (sample_rate / period_frames.max(1) as u32).max(1);
         // The acquisition CEILING the decay lowers FROM and snaps back TO.
         let ceiling = (target_fill_frames + warmup_cushion_frames) as u64;
-        let decay = decay_params.build(ceiling, period_frames as u32, sample_rate);
+        let decay = decay_params.build(ceiling, period_frames as u32, sample_rate, max_adjust_ppm);
         Ok(Self {
             channels,
             period_frames,
@@ -661,9 +661,10 @@ impl LaneResampler {
 
     /// Minimum buffered frames to safely render one period at the worst-case
     /// (max-ppm) ratio with kernel headroom. Same shape as content_bridge.
+    /// Delegates to the shared `jasper_resampler` helper — the single source of
+    /// truth the config-time decay-floor validation also uses.
     fn minimum_safe_fill_frames(&self) -> usize {
-        let max_ratio = 1.0 + self.max_adjust_ppm / 1_000_000.0;
-        (self.period_frames as f64 * max_ratio).ceil() as usize + RADIUS_FRAMES as usize + 1
+        jasper_resampler::minimum_safe_fill_frames(self.period_frames as u32, self.max_adjust_ppm)
     }
 
     /// Frames the ring must hold before lock seats the cursor at the held
@@ -853,16 +854,44 @@ mod decay {
         }
 
         /// Build the runtime state machine, deriving the render-period intervals
-        /// from the lane geometry and clamping the floor to `ceiling` defensively.
-        pub fn build(self, ceiling: u64, period_frames: u32, sample_rate: u32) -> CushionDecay {
+        /// from the lane geometry and clamping the floor defensively.
+        ///
+        /// Two clamps, both fail-safe (a bad knob degrades to a safe run, never
+        /// misbehaviour): the floor is raised to the physical
+        /// `minimum_safe_fill_frames` (the underfill-unlock threshold) so decay
+        /// can never descend onto churn-by-construction — a held target at/below
+        /// that value sits on the unlock threshold and per-period fill jitter
+        /// would trip lock churn. It is then capped at `ceiling` (nothing to
+        /// decay above the acquisition depth). Config validation rejects an
+        /// out-of-range floor fail-loud when the feature is armed; this is the
+        /// belt-and-braces for anything that slips past (a custom geometry where
+        /// `minimum_safe` exceeds the validated `target + margin` bound).
+        pub fn build(
+            self,
+            ceiling: u64,
+            period_frames: u32,
+            sample_rate: u32,
+            max_adjust_ppm: f64,
+        ) -> CushionDecay {
             let interval_periods =
                 Self::ms_to_periods(self.interval_ms, period_frames, sample_rate);
             let stability_periods =
                 Self::ms_to_periods(self.stability_ms, period_frames, sample_rate);
+            let min_safe =
+                jasper_resampler::minimum_safe_fill_frames(period_frames, max_adjust_ppm) as u64;
+            // Never decay onto (or below) the underfill-unlock threshold. Keep the
+            // same working margin above it that the config validation enforces, so
+            // ordinary DLL steering jitter around the pinned setpoint cannot cross
+            // the threshold from the floor. The `.min(ceiling)` keeps a
+            // pathological `min_safe > ceiling` geometry (nothing safe to decay
+            // to) degrading to "no decay" rather than a floor above the ceiling.
+            let safe_floor =
+                min_safe.saturating_add(crate::config::CUSHION_DECAY_FLOOR_MARGIN_FRAMES as u64);
+            let floor = self.floor_frames.max(safe_floor).min(ceiling);
             CushionDecay::new(
                 self.enabled,
                 ceiling,
-                self.floor_frames,
+                floor,
                 self.step_frames,
                 interval_periods,
                 stability_periods,
@@ -1216,6 +1245,82 @@ mod decay {
             for _ in 0..100_000 {
                 assert_eq!(d.tick(locked_l0(0.0)), 512);
             }
+        }
+
+        #[test]
+        fn last_step_clamps_to_floor_on_non_divisible_geometry() {
+            // Nit 3: every other test geometry has (ceiling - floor) an exact
+            // multiple of STEP, so `held.saturating_sub(step).max(floor)` never
+            // exercises a non-divisible remainder. Here ceiling - floor = 2560 -
+            // 545 = 2015 = 125*16 + 15, so the final step is a 15-frame remainder
+            // that must clamp EXACTLY to the floor (never overshoot below it), and
+            // decay must then stop with AtFloor.
+            const ODD_FLOOR: u64 = 545;
+            let mut d = CushionDecay::new(true, CEIL, ODD_FLOOR, STEP, INTERVAL, STABILITY, 400.0);
+            let mut prev = CEIL;
+            for _ in 0..2_000_000 {
+                let h = d.tick(locked_l0(0.0));
+                // Monotone non-increasing, never below the floor.
+                assert!(h <= prev);
+                assert!(
+                    h >= ODD_FLOOR,
+                    "held {h} must never dip below floor {ODD_FLOOR}"
+                );
+                prev = h;
+                if h == ODD_FLOOR {
+                    break;
+                }
+            }
+            assert_eq!(d.held(), ODD_FLOOR, "must land exactly on the floor");
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::AtFloor));
+            assert!(!d.active());
+            // Stays pinned at the floor.
+            for _ in 0..1000 {
+                assert_eq!(d.tick(locked_l0(0.0)), ODD_FLOOR);
+            }
+        }
+
+        #[test]
+        fn build_lifts_a_churny_floor_above_minimum_safe_fill() {
+            // Finding 2: DecayParams::build must defensively lift a floor that
+            // sits on/below the physical underfill-unlock threshold
+            // (minimum_safe_fill_frames) so decay is never churn-by-construction,
+            // even if a churny value slips past config validation.
+            const PERIOD: u32 = 256;
+            const RATE: u32 = 48_000;
+            const MAX_PPM: f64 = 500.0;
+            let min_safe = jasper_resampler::minimum_safe_fill_frames(PERIOD, MAX_PPM) as u64;
+            let safe_floor = min_safe + crate::config::CUSHION_DECAY_FLOOR_MARGIN_FRAMES as u64;
+            let ceiling = 4096u64; // roomy — well above safe_floor
+            let params = DecayParams {
+                enabled: true,
+                floor_frames: min_safe, // churn-by-construction: on the threshold
+                step_frames: STEP,
+                interval_ms: 1000,
+                stability_ms: 10_000,
+                cascade_guard_ppm: 400.0,
+            };
+            let d = params.build(ceiling, PERIOD, RATE, MAX_PPM);
+            assert_eq!(
+                d.floor(),
+                safe_floor,
+                "the churny floor must be lifted to minimum_safe_fill + margin"
+            );
+
+            // A floor already comfortably above the safe floor is left untouched.
+            let params = DecayParams {
+                floor_frames: safe_floor + 500,
+                ..params
+            };
+            let d = params.build(ceiling, PERIOD, RATE, MAX_PPM);
+            assert_eq!(d.floor(), safe_floor + 500, "a safe floor is not perturbed");
+
+            // A pathological geometry where even the safe floor exceeds the
+            // ceiling degrades to "no decay" (floor capped at ceiling), never a
+            // floor above the ceiling.
+            let tiny_ceiling = min_safe; // below safe_floor
+            let d = params.build(tiny_ceiling, PERIOD, RATE, MAX_PPM);
+            assert_eq!(d.floor(), tiny_ceiling, "floor never exceeds the ceiling");
         }
 
         #[test]
