@@ -331,7 +331,11 @@ def _coupling_state(*, fanin_status: dict[str, Any] | None) -> dict[str, Any]:
             "coherent": ring_pair_is_coherent(coupling, content_bridge),
             "live_transport": live_transport,
         }
-    except Exception as e:  # noqa: BLE001 - fail-soft, never break /state
+    except (ImportError, OSError, ValueError, TypeError, AttributeError) as e:
+        # Fail-soft: any read/resolve error degrades to the loopback default so a
+        # transient issue never breaks the whole /state call. Concrete exception
+        # set (no blind except) — an import miss, an unreadable env file, or a
+        # malformed value are the only ways this fails.
         logger.debug("coupling state read failed: %s", e)
         return {
             "persisted": "loopback",

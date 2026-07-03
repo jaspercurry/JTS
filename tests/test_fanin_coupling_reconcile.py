@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from jasper.camilla_config_contract import DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
 from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
@@ -19,8 +21,12 @@ from jasper.fanin.coupling_reconcile import (
 )
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
+    COUPLING_LOOPBACK,
+    COUPLING_SHM_RING,
     COUPLING_TRANSPORT_PIPE,
+    OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_PIPE_PATH_ENV_VAR,
+    OUTPUTD_RING_SLOTS_ENV_VAR,
 )
 
 
@@ -889,15 +895,6 @@ def test_transport_pipe_status_gate_allows_idle_usb_unlocked_resampler():
 
 
 # --- shm_ring coupling (Ring A + Ring B, P2) ---------------------------------
-
-import pytest  # noqa: E402
-
-from jasper.fanin_coupling import (  # noqa: E402
-    COUPLING_LOOPBACK,
-    COUPLING_SHM_RING,
-    OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
-    OUTPUTD_RING_SLOTS_ENV_VAR,
-)
 
 
 @pytest.fixture

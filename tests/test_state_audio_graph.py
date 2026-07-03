@@ -158,9 +158,11 @@ def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
 
 
 def test_coupling_state_fail_soft_on_read_error(monkeypatch):
-    # A read failure degrades to the loopback default, never raises.
+    # A read failure degrades to the loopback default, never raises. OSError is a
+    # realistic failure (an unreadable env file); the fail-soft catch is a
+    # concrete exception set, not a blind except.
     def _boom(*a, **k):
-        raise RuntimeError("boom")
+        raise OSError("boom")
 
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.read_persisted_coupling", _boom
