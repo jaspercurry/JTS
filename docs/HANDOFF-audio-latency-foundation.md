@@ -1,5 +1,17 @@
 # Handoff: JTS audio-latency foundation
 
+> **Status: largely superseded (2026-07-03).** The USB-input latency
+> workstream this doc planned has shipped: the One-Clock Ring Graph
+> (SHM rings + `jts_ring` ioplug + fan-in USB DIRECT capture) merged as
+> the #1137–#1142 PR train, hardware-validated at an end-to-end floor of
+> ~46 ms p50 on the Apple-dongle profile (~2.6× below the −125 ms
+> audio-lag detectability threshold). Current operational truth,
+> measured ladder, lever outcomes, and the remaining engineered headroom
+> live in [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md)
+> "Final state — 2026-07-03". This doc remains the archaeology for the
+> lean-lane/transport_pipe/snapcast-buffer investigations and the
+> 16 KiB-page-floor finding that motivated the SHM-ring design.
+
 Canonical reference for JTS's local-audio-latency work: lowering latency on
 the music path while keeping the speaker resilient and supporting flexible
 output/mic hardware. Read this before touching the lean lane, the USB-input

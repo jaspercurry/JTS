@@ -363,6 +363,66 @@ vector in all three crates). The direct open uses the bridge's proven envelope
 silent-idle with a bounded ~2 s reopen retry (period-counted, never a daemon
 error). Hardening (deploy wiring, doctor surface, wizard toggle) comes next.
 
+### Final state — 2026-07-03 overnight productization (where we landed and why)
+
+**Everything below is merged to main** as the reviewed PR train #1137 (jasper-host-clock
+crate) → #1138 (fan-in USB-DIRECT platform + DLL + jasper-ring + usbsink standby) →
+#1139 (ring consumers: ioplug + outputd reader + lab tooling, EXPERIMENTAL) → #1140
+(drain-dwell instrumentation + tunable gadget period) → #1141 (cushion decay,
+default-off) → #1142 (probe lock-gate). Every PR passed a separate adversarial staff
+review with zero unresolved Blockers/Should-fixes before merge. All features are
+**default-off**; a box that opts into nothing is byte-identical to the pre-train build
+(hardware-verified on jts3: default-off main, doctor clean, AirPlay pass).
+
+**Final measured floor** (jts.local, Apple USB-C dongle, electrical `:9891` reference,
+final settings = USB DIRECT + rings 2-slot + camilla chunk 128/queuelimit 1/target 128 +
+resampler 256+256, host-clock and decay OFF — see "why" below). A diagnostic
+unlock-counter burst (~295 in one 2-min window) occurred mid-20-min-run with zero
+measured effect (all impulses in the window matched; percentiles tight) — filed as a
+follow-up with the armed-path churn evidence:
+
+| run | measured p50/p95/p99 | end-to-end p50/p95/p99 |
+|---|---|---|
+| 5-min (160/160, unlocks 4, 0 overruns) | 34.99 / 36.13 / 37.21 | 46.1 / 47.2 / 48.3 |
+| **20-min FINAL (640/640, 100 %, zero USB-lane xruns)** | **34.71 / 36.18 / 36.97** | **45.8 / 47.3 / 48.1** |
+
+End-to-end = measured span + 1.2 ms gadget dwell (delta-windowed drain-entry evidence,
+#1140 instrumentation; replaces the earlier conservative 3.9) + 9.9 ms DAC-side delay
+(probe: 477 fr = 256-fr ring + ~220-fr snd-usb-audio URB queue on the dongle).
+
+**Lever outcomes (systematic, each hardware-gated):**
+- *Gadget drain dwell*: H2 confirmed — true frame-dwell ≈ 1.2 ms (accounting win, −2.7 on
+  the honest number). Period-64 variant REFUTED (entry backlog doubled + xrun storm —
+  URB-cadence class). Instrumentation is permanent (`drain_avail` in STATUS).
+- *DAC-side trim*: REFUTED both halves. outputd period is graph-quantum-coupled (period
+  64 → Ring B slot mismatch → camilla EINVAL, fail-closed park verified); the dongle is a
+  FULL-SPEED device (192-byte/1 ms packets) with `lowlatency=Y` already active — the
+  ~4.6 ms URB queue is FS transport physics. I2S/HAT outputs never pay this term
+  (equivalent graph there ≈ −4.6 ms).
+- *Cushion decay (the ~5 ms lever)*: built, reviewed, merged default-off (#1141) — but
+  **engagement is blocked by a diagnosed ladder design gap**: with the lane resampler
+  locked, its inner controller absorbs the probe's pitch step, so the post-lock probe
+  (#1142) reliably fails (ratio −0.88) and the ladder never reaches l0. The combo-mode
+  probe must observe the resampler's correction ppm, not fill slope (follow-up filed).
+  A second follow-up: arming decay (even frozen) raised unlock churn (16/115 vs 0-5
+  baseline) — armed-path divergence bug; default path verified clean (unlocks 1).
+- *Why host-clock is OFF in final settings*: until the probe redesign, the DLL cannot
+  pass its own probe in combo mode; its probe steps perturb each session start for zero
+  benefit. The resampler alone (±500 ppm) carries stability — proven across 5-min and
+  20-min runs free-running.
+
+**Fleet validation (2026-07-03):** AirPlay PASS on jts3 (HiFiBerry), jts4 (Pi Zero 2 W
+streambox), jts5 (post-deploy; pre-deploy receiver was wedged — reset cleared it), and
+jts.local (after a shairport AP2-wedge reset — the known Tier-3 class). Spotify PASS on
+jts.local (router `start_playback` → librespot) and jts3 (`transfer_playback`). Snapcast:
+no bond configured fleet-wide — nothing to regress.
+
+**Perceptual context (why we stopped here):** ITU-R BT.1359 audio-lag detectability is
+−125 ms; the floor sits ~2.6× below it. Between ~46 and the theoretical-report's 20 ms,
+no supported use case changes state (live-monitoring needs ≤10–15 ms, unreachable on any
+variant of this product). Remaining engineered headroom if ever needed: probe redesign +
+decay (−3..5), HAT output profile (−4.6).
+
 ### Measured results — 2026-07-02 descent campaign (jts.local, Apple dongle)
 
 Full ring graph (fan-in → Ring A → CamillaDSP → Ring B → outputd) + USB DIRECT
@@ -968,8 +1028,8 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-02 (jts.local clean 5-minute steady-state sample passed
-with Rust bridge 256/3, fan-in input buffer 4096, USB resampler held target
+Last verified: 2026-07-03 (20-minute final run at the merged floor: 640/640
+impulses, e2e p50 45.8 / p95 47.3 / p99 48.1 ms; fleet AirPlay/Spotify pass).
 2048, CamillaDSP 256/1536, outputd 128/256, outputd content buffer 1536, and
 direct ALSA loopback coupling. `jasper-route-latency-harness` — the
 click-in/capture-back producer this doc previously described as missing — now
