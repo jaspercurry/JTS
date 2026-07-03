@@ -743,9 +743,12 @@ pub const PROBE_SETTLE_SECS: u64 = 2;
 ///
 /// Why: the compliance probe is lock-gated, so [`Obs::locked`] alone was the
 /// only gate on leaving AwaitLock. A lock can seat while the lane is still
-/// RAILING its ±500 ppm correction authority — e.g. a shallow-seated floor
-/// prime building the fill up to the floor target, where the correction sits at
-/// −500 ppm for ~13 s. Baselining THEN read the railed value (baseline ≈ step ≈
+/// RAILING its ±500 ppm correction authority — the jts.local 2026-07-03
+/// false-fail was a floor-primed lock whose held target snapped to the ceiling
+/// on the first locked decay tick (`NotL0`), forcing the DLL to rail at −500 ppm
+/// while it rebuilt the fill floor→ceiling for many seconds. This guard gates on
+/// the railed MAGNITUDE, not that specific cause, so it also covers any other
+/// post-lock transient. Baselining THEN read the railed value (baseline ≈ step ≈
 /// −500 → response_ratio ≈ 0 → a spurious FAIL). A railed correction means the
 /// lane is NOT in its steady regime regardless of lock state, so the settle
 /// window must not accrue while |correction| is at the rail — hold in AwaitLock,
@@ -1032,10 +1035,12 @@ impl HostClock {
     /// the pre-probe [`ProbePhase::AwaitLock`] settle window to accrue. Requires
     /// [`Obs::locked`] always, and in [`ObsMode::Correction`] ADDITIONALLY that
     /// the resampler's smoothed correction ppm is UNRAILED (magnitude below
-    /// [`CORRECTION_SETTLE_RAIL_GUARD_PPM`]). A railed correction (e.g. a
-    /// shallow-seated floor prime driving the fill up to target at −500 ppm) means
-    /// the lane is not in its steady regime even though it is locked, so the
-    /// baseline must not start against it (jts.local 2026-07-03). Reads the
+    /// [`CORRECTION_SETTLE_RAIL_GUARD_PPM`]). A railed correction (whatever its
+    /// cause — the jts.local 2026-07-03 false-fail rail was a post-lock held-target
+    /// snap to the ceiling forcing the DLL to rebuild the fill, but this guard gates
+    /// on the railed MAGNITUDE, not the mechanism) means the lane is not in its
+    /// steady regime even though it is locked, so the baseline must not start
+    /// against it. Reads the
     /// smoothed mean the probe itself will baseline against
     /// ([`SlopeEstimator::correction_mean_ppm`], updated at the top of every
     /// `tick`), so the gate and the observable agree. In FILL mode the correction
@@ -2616,12 +2621,14 @@ mod tests {
 
     /// UNRAILED-SETTLE guard (jts.local 2026-07-03): in CORRECTION mode the
     /// AwaitLock settle window must NOT accrue while the resampler's correction is
-    /// RAILED, even though the lane is LOCKED. A shallow-seated floor prime holds
-    /// the correction at −500 ppm for the ~13 s it takes to build the fill up to
-    /// the floor; baselining THEN reads the railed value (baseline ≈ step ≈ −500
-    /// → response_ratio ≈ 0 → a spurious FAIL). The guard holds the probe in
-    /// AwaitLock (commanding neutral) until the correction comes off the rail,
-    /// then the settle window runs against the quiescent baseline and passes.
+    /// RAILED, even though the lane is LOCKED. A post-lock held-target snap to the
+    /// ceiling (`NotL0`) holds the correction at −500 ppm for the many seconds it
+    /// takes the DLL to rebuild the fill floor→ceiling; baselining THEN reads the
+    /// railed value (baseline ≈ step ≈ −500 → response_ratio ≈ 0 → a spurious
+    /// FAIL). The guard holds the probe in AwaitLock (commanding neutral) until the
+    /// correction comes off the rail, then the settle window runs against the
+    /// quiescent baseline and passes. (The test feeds the rail directly, so it
+    /// pins the guard regardless of which post-lock transient caused it.)
     #[test]
     fn correction_probe_does_not_settle_while_railed() {
         let mut hc = HostClock::new(correction_cfg());
@@ -2630,7 +2637,7 @@ mod tests {
         let mut play: u64 = cap;
         let mut t = 0u64;
         // RAILED for well over the settle window: locked, but the correction sits
-        // at −500 ppm (the shallow-seat fill-build). Without the rail guard the
+        // at −500 ppm (a post-lock fill rebuild). Without the rail guard the
         // 2 s settle would elapse and the baseline would start against −500 —
         // exactly the false-fail. WITH the guard the probe stays in AwaitLock,
         // commanding only neutral pitch, for the whole railed stretch.

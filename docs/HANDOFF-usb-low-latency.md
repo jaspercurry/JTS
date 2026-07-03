@@ -877,8 +877,8 @@ xrun-recovery paths `recover_resampler_input_xrun` / `recover_direct_xrun` call 
 too) and `unlock_for_underfill()` (starvation = the natural session end, e.g. the
 Mac stops streaming) both call. In both cases the held target starts at the floor
 and a `floor_prime_pending` latch holds it there across the not-yet-locked prime
-periods so `try_lock` seats the cursor shallow. The ceiling is unchanged, so a
-REVOKE still snaps all the way back to it.
+periods so `try_lock` seats the cursor AT the floor (the deep-prefill arm). The
+ceiling is unchanged, so a REVOKE still snaps all the way back to it.
 
 **Session-boundary snap destination (the single source of truth).** At a session
 boundary the snap goes to the FLOOR iff a live, unrevoked proof is present, else the
@@ -905,11 +905,13 @@ CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
 
 > **Two-strike probe fail (jts.local 2026-07-03).** A probe FAIL is a
 > MEASUREMENT, not proof the host changed — the lock-gated probe can spuriously
-> fail if it runs during a railed acquisition (the exact false-fail below that the
-> floor-prime-seating + unrailed-settle fixes address: a shallow-seated floor
-> prime railed at −500 ppm while the fill built to the floor, so the probe read
-> baseline ≈ step ≈ −500 → response_ratio ≈ 0 → FAIL). Costing the household the
-> ~2.5-min descent on ONE ambiguous read is the wrong trade. So a probe fail is
+> fail if it runs while the resampler's correction is railed (the exact false-fail
+> that the unrailed-settle guard now prevents: a floor-primed session whose held
+> target snapped to the ceiling post-lock railed at −500 ppm while the DLL rebuilt
+> the fill, so a probe reading against that rail would see baseline ≈ step ≈ −500 →
+> response_ratio ≈ 0 → FAIL; the rail's exact mechanism — the `NotL0` snap — is
+> still open, see the floor-prime bullet). Costing the household the ~2.5-min
+> descent on ONE ambiguous read is the wrong trade. So a probe fail is
 > handled by the pure `classify_strike` (`PROBE_FAIL_STRIKE_LIMIT = 2`): the FIRST
 > fail RETAINS the proof, persisting an incremented `consecutive_failures` (and
 > leaving `flag_present` TRUE), and only the SECOND consecutive fail — two
@@ -939,25 +941,58 @@ CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
 > re-proves, exactly as before. STATUS surfaces the counter as
 > `resampler.compliance.consecutive_failures`.
 
-**Two defense-in-depth fixes that make the probe not fire during a railed
-acquisition (so the two-strike tolerance is rarely even exercised):**
+**Two guards near the railed-acquisition failure mode. The unrailed-settle guard
+(below) is the one that actually keeps the probe from baselining against a rail (so
+the two-strike tolerance is rarely even exercised); floor-prime seating is
+defense-in-depth for an exotic geometry and a no-op on default boxes:**
 
-- **Floor-prime seating (`lane_resampler::try_lock`).** When a lane is
-  floor-primed, `try_lock` requires the FULL floor prefill (`floor + kernel radius
-  + 1`) and seats the cursor AT the floor — the shallow bounded-prime fall-through
-  is SUPPRESSED while primed. Before this, a floor-primed lock could seat at the
-  bare interpolation minimum (≈ `minimum_safe_fill`, ~274 fr at period 256) while
-  the held target sat at the floor (~576 fr), so the resampler RAILED its ±500 ppm
-  correction for the ~13 s it took to build the fill from the shallow seat up to
-  the floor. Seating at the floor removes that post-lock railed build entirely.
-  COST: on a floor-primed session the first audio waits for ~`floor − minimum_safe`
-  extra frames of buffered stream (~302 frames ≈ 6 ms at 48 kHz) — a one-time
-  per-session cost paid to keep the (much larger) descent skip honest. A
-  floor-primed host is proven-compliant and delivers at ~DAC rate, and the lane
-  consumes NOTHING while priming (the ring only grows), so reaching the floor depth
-  is a few render periods for any real stream. NON-PRIMED (ceiling) sessions are
-  unchanged — `is_floor_primed()` is false, so the deep prefill is the full ceiling
-  and the fall-through still fires on the bounded-prime expiry exactly as before.
+- **Floor-prime seating (`lane_resampler::try_lock`) — DEFENSE-IN-DEPTH for an
+  exotic geometry, NOT the fix for the observed rail.** When a lane is floor-primed,
+  `try_lock` gates OFF the shallow bounded-prime fall-through so the lock can only
+  seat AT the full floor depth (`floor + kernel radius + 1`). **In default geometry
+  this is a no-op.** The fall-through arm requires `fill >=
+  fallthrough_prefill_frames()` while the deep arm (checked first) requires `fill >=
+  floor + radius + 1`; whenever `floor <= fallthrough − radius − 1` (~1024 fr at the
+  default period 256 / target 512) the deep arm is the ONLY arm a floor-primed lane
+  can reach, so the fall-through was already unreachable while primed. jts.local
+  (target 512, period 256, floor 576, ceiling 2048) has deep-prefill 593 and
+  fallthrough 1041, so a floor-primed lock ALWAYS seated exactly at the floor (593
+  fr) via the deep arm — **at the parent commit too**. The gate only bites when the
+  operator raises the decay floor above ~1024 (the geometry where the fall-through
+  prefill sits below the floor prefill); there it stops a shallow seat that would
+  rail while the fill built up to the higher floor, and its regression test
+  (`floor_primed_lock_does_not_seat_shallow_via_fallthrough`) constructs exactly
+  that geometry (floor 1100). COST: **zero vs the parent in default geometry** (the
+  deep seat was already the only reachable path — byte-identical seat, lock-error,
+  and first-audio latency); only the exotic deep-floor case pays `floor −
+  minimum_safe` extra buffered frames before first audio. **Honesty:** in that same
+  exotic geometry, a trickle producer stalled with fill in `[fallthrough_prefill,
+  floor_prefill)` previously locked (railed but AUDIBLE) and now primes SILENTLY
+  with no bound and no cue — the fall-through's slow-producer guard IS load-bearing
+  at that depth. STATUS's fill / `held_target_frames` gauges expose it; acceptable
+  for the operator-set deep-floor case. NON-PRIMED (ceiling) sessions are unchanged —
+  `is_floor_primed()` is false, so the deep prefill is the full ceiling and the
+  fall-through still fires on the bounded-prime expiry exactly as before.
+
+  > **The observed jts.local rail's true cause is still OPEN (not fixed by this
+  > PR).** The false-fail sat at baseline≈step≈−500 ppm FLAT for ≥19 s (through the
+  > 4 s baseline AND the 15 s step). A floor-height held target (576) cannot produce
+  > that — from the deepest shallow seat the underfill-unlock threshold
+  > (`minimum_safe_fill` ≈274) bounds the deficit at (576−274)=302 fr, so the rail
+  > could last at most 302/(48000·5e-4)≈12.6 s and would SHRINK as the fill builds,
+  > never reading −500.0 flat through the step tail. A ≥19 s exact rail requires a
+  > CEILING-SCALE held target (~2048) relative to the fill during the probe — i.e.
+  > something RAISED the held target AFTER lock. The leading suspect is the decay's
+  > `snap_back`: the FIRST locked `tick_decay` runs while the outer ladder is still
+  > Probing (`dll_l0_locked == false`), so it clears the prime latch and takes the
+  > `NotL0` branch, snapping the held target from the floor to the ceiling and
+  > railing the DLL to rebuild the fill 576→~2048. This is intermittent/race-
+  > dependent (a 2026-07-03 primed-session PASS with baseline −9.6 shows the regime
+  > is not deterministic), so the mechanism is genuinely unpinned. It is NOT audible
+  > or proof-costing because the unrailed-settle guard holds the probe and the
+  > two-strike policy absorbs any residual fail — but a primed session still silently
+  > pays the ceiling rebuild + re-descent (the latency win the feature exists to
+  > deliver). **Pinning it is owed on-device work; see validation step 6.**
 
 - **Unrailed-settle guard (`jasper-host-clock`, CORRECTION mode only).** The
   pre-probe `AwaitLock` settle window now requires, in CORRECTION mode, that the
@@ -1106,6 +1141,22 @@ silent-but-streaming host; the on-device validation run proves it on hardware.
 4b. **Cold-start win (across a reboot):** restart fan-in (or reboot) with the proof
    on disk. Confirm `event=fanin.host_compliance.prime_at_floor` at startup, the held
    target at the floor from the first lock, the probe passes, and no revoke fires.
+4c. **OWED — pin the `NotL0`-snap rail (open root cause of the 2026-07-03 false-fail).**
+   During a floor-primed session's FIRST ~30 s, poll `/state` at high cadence
+   (e.g. every 200 ms:
+   `curl -s http://jts.local:8780/state | jq '.audio_graph.fanin.inputs[]|select(.resampler).resampler|{held_target_frames,decay:.decay.frozen_reason}'`)
+   and grab the fan-in journal for the same window. The floor-prime bullet above
+   argues the observed −500-ppm rail is the decay's `NotL0` snap on the FIRST locked
+   tick (ladder still Probing, `dll_l0=false`) raising the held target floor→ceiling.
+   The SIGNATURE that confirms it: `decay.frozen_reason` transitions
+   `at_floor`→`not_l0` and `held_target_frames` JUMPS from the floor (576) up toward
+   the ceiling (2048) right after the first lock, with `correction_ppm` sitting at
+   the ±500 rail while it rebuilds. If instead `frozen_reason` stays `at_floor` and
+   `held_target_frames` holds at 576 through the settle window, the `NotL0` snap is
+   NOT the cause and the mechanism is still open — capture the trace and re-diagnose.
+   Either way this run is what finally pins (or refutes) the mechanism; the guards
+   already shipped make it non-audible and non-proof-costing, but the latency win is
+   silently lost on every primed session until the root cause is fixed.
 5. **Silence check:** repeat step 4 with the Mac output OPEN but PLAYING NOTHING
    (pure silence). The lane must still lock, the probe still run, and the prime
    still hold — proving the calibration is content-agnostic.
@@ -1524,21 +1575,35 @@ pytest/cargo coverage on both sides of the state.json contract; on-device
 compliance-probe validation against jts.local's Apple dongle host is a
 separate, not-yet-run task.)
 
-The **probe false-fail triad** — floor-prime seating (`lane_resampler::try_lock`),
-the unrailed-settle guard (`jasper-host-clock` `settle_regime_ok` /
-`CORRECTION_SETTLE_RAIL_GUARD_PPM = 450`), and the two-strike probe fail
-(`classify_strike` / `PROBE_FAIL_STRIKE_LIMIT = 2`) — landed 2026-07-03 in response
-to the jts.local journal evidence (floor-primed session → shallow lock ~274 fr →
-resampler railed −500 ppm for ~13 s building to the 576 floor → the lock-gated probe
-ran during that railed build and measured baseline=step=−500 → response_ratio=0.000 →
-one-strike ProbeFail revoked a proof that the SAME host had passed at ratio 1.312 the
-prior session). Verified hardware-free: the `jasper-host-clock` crate tests (railed
-settle holds + FILL-mode no-op, mutation-guarded); macOS scratch crates for the
-`jasper-fanin` pure logic (the floor-prime shallow-seat regression with a both-ways
-mutation guard, the `classify_strike` two-strike policy + on-disk lifecycle, the
-observability strike-counter transitions, and the Part 1 × #1156 interaction — a
-floor-SEATED lock still confirms churn on relock); and the `test_fanin_coupling_rust_contract`
-Python twin (STATUS `consecutive_failures`, the strike_retained/pass_reset events,
-the `classify_strike`/`PROBE_FAIL_STRIKE_LIMIT` policy). On-device re-verification of
-the full prove→prime→spurious-probe-fail→retain→re-prove cycle against jts.local's
-Apple dongle is a separate, not-yet-run task (this session touched no Pi).
+The **probe false-fail hardening** — the unrailed-settle guard (`jasper-host-clock`
+`settle_regime_ok` / `CORRECTION_SETTLE_RAIL_GUARD_PPM = 450`), the two-strike probe
+fail (`classify_strike` / `PROBE_FAIL_STRIKE_LIMIT = 2`), and floor-prime seating
+(`lane_resampler::try_lock`, defense-in-depth) — landed 2026-07-03 in response to the
+jts.local journal evidence: a floor-primed session that had passed the probe at ratio
+1.312 the prior session then read baseline=step=−500 ppm → response_ratio=0.000 → a
+one-strike ProbeFail revoked the proof. **The rail's mechanism is NOT the one an
+earlier draft of this doc asserted (a shallow lock ~274 fr building to the 576 floor).
+That is provably impossible here** — floor-primed locks seat AT the floor (593 fr) via
+the deep-prefill arm in jts.local's geometry, at the parent commit too, and a
+floor-height held target bounds any shallow-seat rail below ~13 s and cannot read
+−500.0 FLAT through the ≥19 s baseline+step. The real rail requires a CEILING-SCALE
+held target during the probe; the leading suspect is the decay's `NotL0` snap on the
+first locked tick (ladder still Probing, `dll_l0=false`), which raises the held target
+floor→ceiling and rails the DLL to rebuild the fill. **That root cause is still OPEN**
+(see the floor-prime bullet above). What the three guards DO deliver: the unrailed-
+settle guard holds the probe in AwaitLock while any correction is railed (so it never
+baselines against the rail — this is the guard that actually prevents the false-fail);
+the two-strike policy means even one spurious probe read never costs the floor on the
+next session; floor-prime seating is a no-op in default geometry and only bites the
+exotic operator-set deep floor. Verified hardware-free: the `jasper-host-clock` crate
+tests (railed settle holds + FILL-mode no-op, mutation-guarded); macOS scratch crates
+for the `jasper-fanin` pure logic (the constructed-geometry floor-prime seat regression
+with a both-ways mutation guard, the `classify_strike` two-strike policy + on-disk
+lifecycle, the observability strike-counter transitions, and the Part 1 × #1156
+interaction — a floor-SEATED lock still confirms churn on relock); and the
+`test_fanin_coupling_rust_contract` Python twin (STATUS `consecutive_failures`, the
+strike_retained/pass_reset events, the `classify_strike`/`PROBE_FAIL_STRIKE_LIMIT`
+policy). On-device re-verification of the full prove→prime→spurious-probe-fail→retain→
+re-prove cycle against jts.local's Apple dongle — AND pinning the `NotL0`-snap rail
+mechanism (validation step 6) — is a separate, not-yet-run task (this session touched
+no Pi).

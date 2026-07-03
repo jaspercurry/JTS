@@ -38,10 +38,13 @@
 //! snap back to the ceiling, and let the normal descent re-prove from scratch.
 //!
 //! A probe FAIL is different: it is a MEASUREMENT, and the lock-gated probe can
-//! spuriously fail if it runs during a railed acquisition (the hardware-diagnosed
-//! jts.local 2026-07-03 false-fail — a shallow-seated floor prime railing at
-//! −500 ppm while the fill built, so the probe read baseline ≈ step ≈ −500 →
-//! response_ratio ≈ 0 → FAIL). Costing the household the ~2.5-min descent on ONE
+//! spuriously fail if it runs while the resampler's correction is railed (the
+//! jts.local 2026-07-03 false-fail — a floor-primed session whose held target
+//! snapped to the ceiling post-lock railed at −500 ppm while the DLL rebuilt the
+//! fill, so the probe read baseline ≈ step ≈ −500 → response_ratio ≈ 0 → FAIL; the
+//! rail's exact mechanism — the `NotL0` snap — is still open, and the
+//! unrailed-settle guard in `jasper-host-clock` is what actually prevents the
+//! false-fail regardless of cause). Costing the household the ~2.5-min descent on ONE
 //! ambiguous read is the wrong trade. So a probe fail is TWO-strike (see
 //! [`classify_strike`] / [`PROBE_FAIL_STRIKE_LIMIT`]): the first fail RETAINS the
 //! proof but persists an incremented `consecutive_failures` (and `flag_present`

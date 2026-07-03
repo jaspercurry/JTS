@@ -1544,6 +1544,19 @@ impl Mixer {
     /// 2. TICK the pure proof machine; on its `Write` outcome, persist a fresh
     ///    record (atomic tempfile+rename). Written at most once per session.
     ///
+    /// RENDER-THREAD I/O CAVEAT. The three `HostCompliance::store` paths here (the
+    /// settle-write in (2), plus the two-strike `strike_retained` retain-write and
+    /// the `pass_reset` clear-write in (1)) each do a synchronous
+    /// `File::create`+`sync_all`+`rename` on THIS render thread — SD-card I/O inside
+    /// the ~5.3 ms period budget. Each is bounded to at most once per lock (settle
+    /// once per descent; strike/pass-reset gated by `pass_reset_done_this_lock` and
+    /// the strike edge), so the steady-state period does ZERO proof I/O, and a slow
+    /// fsync only risks a self-inflicted underfill at the exact rare moment the
+    /// machinery is judging underfills. Acceptable for now (same class as the
+    /// pre-existing settle-write, kept pattern-consistent); hoisting proof I/O onto a
+    /// dedicated writer thread is a clean follow-up if a slow-fsync underfill is ever
+    /// observed.
+    ///
     /// Uses `Option::take` on `self.host_compliance` so it can freely borrow
     /// `self.inputs` (the resampler lane) without a double-mutable-borrow; the
     /// state is put back before returning. All the gate DECISIONS are in the pure
@@ -1688,12 +1701,29 @@ impl Mixer {
                         ),
                     }
                     hc.obs.on_revoked(reason);
+                    // `consecutive_failures` in this log is the PROBE-FAIL counter,
+                    // which only `ProbeFail` increments. A `ProbeFail` delete is the
+                    // 2nd consecutive fail, so `current + 1` (= the limit) is the
+                    // honest count. A `DllDemotion` / confirmed `EarlyUnlock` delete
+                    // is a ONE-strike revoke that does NOT touch the probe-fail
+                    // counter (classify_strike returns Revoke regardless of it), so
+                    // log the counter UNCHANGED — reporting `current + 1` there would
+                    // fabricate a probe-fail count that never happened (e.g.
+                    // `consecutive_failures=1` on a clean proof), misleading incident
+                    // forensics on this very event stream.
+                    let logged_consecutive_failures = match reason {
+                        crate::host_compliance::RevokeReason::ProbeFail => {
+                            current_failures.saturating_add(1)
+                        }
+                        crate::host_compliance::RevokeReason::DllDemotion
+                        | crate::host_compliance::RevokeReason::EarlyUnlock => current_failures,
+                    };
                     warn!(
                         "event=fanin.host_compliance.revoked reason={} consecutive_failures={} \
                          path={} — deleted the proof, snapped held target back to the ceiling; \
                          the normal descent will re-prove",
                         reason.as_str(),
-                        current_failures.saturating_add(1),
+                        logged_consecutive_failures,
                         hc.path.display(),
                     );
                 }
