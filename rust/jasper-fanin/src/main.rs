@@ -211,9 +211,16 @@ fn main() -> Result<()> {
     // when the mixer has no direct-lane resampler (signals absent) — the config
     // is inert then anyway, but keep the fragment coherent.
     let host_clock_signals = mixer.host_clock_signals();
+    // The INITIAL setpoint that seeds the config / disabled-fragment. Once the
+    // servo thread runs it re-pins the setpoint each tick from the resampler's
+    // LIVE held-target gauge (single source of truth — tracks the cushion decay),
+    // so this is only the boot-time seed (the ceiling, before any decay).
     let host_clock_setpoint = host_clock_signals
         .as_ref()
-        .map(|s| s.target_fill_frames)
+        .map(|s| {
+            s.held_target_frames
+                .load(std::sync::atomic::Ordering::Relaxed)
+        })
         .unwrap_or_else(|| {
             u64::from(config.input_resampler_target_frames)
                 + u64::from(config.input_resampler_warmup_cushion_frames)

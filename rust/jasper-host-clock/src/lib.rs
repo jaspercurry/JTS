@@ -532,6 +532,28 @@ impl HostClock {
     pub fn commanded_ppm(&self) -> f64 {
         self.commanded_ppm
     }
+
+    /// Update the fill setpoint the locked loop disciplines toward. The setpoint
+    /// is normally fixed at construction (usbsink solo mode), but fan-in combo
+    /// mode shares it with the inner resampler's LIVE held target — which the
+    /// DEFAULT-OFF post-lock cushion decay lowers over time — so the servo thread
+    /// re-pins it each tick from the resampler's held-target gauge. This is the
+    /// single-source-of-truth wiring: the resampler owns the value; the ladder
+    /// only ever reads it. No effect on the ladder state — the next `tick_locked`
+    /// simply sees the new `error = fill − target` (a bounded step the DLL
+    /// already handles), so a slowly-descending setpoint is a gentle ramp, not a
+    /// re-acquisition. `NaN`/non-finite is ignored (keeps the last good value).
+    pub fn set_target_fill_frames(&mut self, target_fill_frames: f64) {
+        if target_fill_frames.is_finite() {
+            self.cfg.target_fill_frames = target_fill_frames;
+        }
+    }
+
+    /// The fill setpoint the locked loop currently disciplines toward (for tests
+    /// / telemetry). Tracks `set_target_fill_frames`.
+    pub fn target_fill_frames(&self) -> f64 {
+        self.cfg.target_fill_frames
+    }
     pub fn fill_variance(&self) -> f64 {
         self.slope.fill_variance()
     }
@@ -1137,6 +1159,62 @@ mod tests {
             capture_frames: cap,
             playback_frames: play,
         }
+    }
+
+    // ---- Live setpoint (fan-in cushion-decay single source of truth) -------
+
+    #[test]
+    fn set_target_fill_frames_updates_the_locked_setpoint() {
+        // The fan-in combo mode re-pins the setpoint each tick from the
+        // resampler's live held target (which the cushion decay lowers). The
+        // setter must move the value the locked loop disciplines toward, and
+        // ignore a non-finite input (keeping the last good value).
+        let mut hc = HostClock::new(enabled_cfg());
+        assert_eq!(hc.target_fill_frames(), 384.0);
+        hc.set_target_fill_frames(320.0);
+        assert_eq!(hc.target_fill_frames(), 320.0);
+        // Non-finite is ignored (no NaN poisoning the error term).
+        hc.set_target_fill_frames(f64::NAN);
+        assert_eq!(hc.target_fill_frames(), 320.0);
+        hc.set_target_fill_frames(f64::INFINITY);
+        assert_eq!(hc.target_fill_frames(), 320.0);
+    }
+
+    #[test]
+    fn lowering_the_setpoint_shifts_the_locked_error_toward_slower_host() {
+        // Drive to L0 at a steady fill, then lower the setpoint below the fill:
+        // the error (fill − target) becomes positive, so the loop commands the
+        // host SLOWER (negative bias) to drain the ring to the new lower target —
+        // exactly the descent the cushion decay wants, with no re-acquisition.
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        drive_to_l0(&mut hc, 0.0);
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        // Hold the fill AT the old target so the loop is settled.
+        let mut t = 100_000u64;
+        let mut cap = hc_cap_start();
+        for _ in 0..30 {
+            t += 1000;
+            hc.tick(obs(true, true, 384.0, cap, cap), t);
+            cap += (OUTER_DLL_RATE * 1000.0 / 1000.0) as u64;
+        }
+        // Now lower the setpoint; keep feeding the SAME fill (384). The error is
+        // now +64 (fill above the new 320 target), so the command trends negative
+        // (slow the host) to drain toward the lower setpoint.
+        hc.set_target_fill_frames(320.0);
+        for _ in 0..30 {
+            t += 1000;
+            hc.tick(obs(true, true, 384.0, cap, cap), t);
+            cap += (OUTER_DLL_RATE * 1000.0 / 1000.0) as u64;
+        }
+        assert!(
+            hc.commanded_ppm() < 0.0,
+            "a fill above the lowered setpoint must command the host slower, got {} ppm",
+            hc.commanded_ppm()
+        );
+        // And it stays LOCKED — a setpoint step is a bounded error the loop
+        // handles, not a re-acquisition.
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
     }
 
     // ---- Pinned constants --------------------------------------------------

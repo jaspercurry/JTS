@@ -74,13 +74,13 @@
 //! (`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES` descent), exactly the
 //! sequencing the shared module doc prescribes.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use jasper_host_clock::{
-    ctl_card_from_capture, ppm_to_ctl_value, Action, AlsaPitchCtl, HostClock, HostClockConfig, Obs,
-    TICK_INTERVAL_MS,
+    ctl_card_from_capture, ppm_to_ctl_value, Action, AlsaPitchCtl, HostClock, HostClockConfig,
+    Ladder, Obs, TICK_INTERVAL_MS,
 };
 
 /// The `event=` log-line namespace prefix for the fan-in ladder.
@@ -106,10 +106,22 @@ pub struct HostClockSignals {
     pub locked: Arc<AtomicBool>,
     /// USB DIRECT capture presence — the fan-in `host_connected` proxy.
     pub present: Arc<AtomicBool>,
-    /// The resampler's HELD target fill (`target + warmup cushion`), the ONE
-    /// setpoint the outer loop shares with the inner `RateController`. Static
-    /// for the lane's life.
-    pub target_fill_frames: u64,
+    /// The resampler's LIVE HELD target fill — the ONE setpoint the outer loop
+    /// shares with the inner `RateController` (single source of truth). Equal to
+    /// `target + warmup cushion` unless the DEFAULT-OFF post-lock cushion decay
+    /// has lowered it; the servo thread reads it fresh every tick and re-pins the
+    /// ladder's setpoint to it, so the two controllers can never disagree about
+    /// where the fill should sit.
+    pub held_target_frames: Arc<AtomicU64>,
+    /// REVERSE signal (servo thread → mixer): 1 iff the DLL ladder is
+    /// `l0_locked`. The mixer's per-period decay tick reads this — decay only
+    /// lowers the held target while the DLL is in this steady state.
+    pub ladder_l0: Arc<AtomicBool>,
+    /// REVERSE signal (servo thread → mixer): the DLL's last commanded bias in
+    /// milli-ppm (ppm × 1000, i64 stored as u64 bits — the same encoding the
+    /// resampler's `ratio_milli_ppm` uses). The decay tick reads its magnitude
+    /// for the cascade-stability guard.
+    pub commanded_milli_ppm: Arc<AtomicI64>,
 }
 
 /// Build the validated shared [`HostClockConfig`] for the fan-in ladder from the
@@ -332,9 +344,30 @@ pub fn run_host_clock_thread(
                 }
                 last_session = session;
 
+                // Single-source-of-truth setpoint: re-pin the ladder's target to
+                // the resampler's LIVE held target every tick (the DEFAULT-OFF
+                // cushion decay lowers it over time). The resampler OWNS the value
+                // via its `held_target_frames` gauge; the ladder only reads it, so
+                // the outer loop can never disagree with the inner controller
+                // about where the fill should sit. A no-op when decay is off (the
+                // gauge stays at the ceiling forever).
+                hc.set_target_fill_frames(signals.held_target_frames.load(Ordering::Relaxed) as f64);
+
                 for action in hc.tick(obs, now_ms(&start)) {
                     actuator.apply(action, now_ms(&start));
                 }
+                // Publish the REVERSE signals the mixer's per-period decay tick
+                // reads: whether the ladder is `l0_locked` (decay's steady-state
+                // gate) and the last commanded bias in milli-ppm (its cascade
+                // guard). Written every servo tick (~1 Hz); the decay tick reads
+                // the latest snapshot each render period.
+                signals
+                    .ladder_l0
+                    .store(hc.ladder() == Ladder::L0Locked, Ordering::Relaxed);
+                signals.commanded_milli_ppm.store(
+                    (hc.commanded_ppm() * 1000.0).round() as i64,
+                    Ordering::Relaxed,
+                );
                 publish_fragment(&fragment, hc.status_fragment());
                 last_tick = Instant::now();
             }
@@ -388,7 +421,9 @@ mod tests {
             output_frames: Arc::new(AtomicU64::new(0)),
             locked: Arc::new(AtomicBool::new(false)),
             present: Arc::new(AtomicBool::new(false)),
-            target_fill_frames: 2048,
+            held_target_frames: Arc::new(AtomicU64::new(2048)),
+            ladder_l0: Arc::new(AtomicBool::new(false)),
+            commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
         }
     }
 

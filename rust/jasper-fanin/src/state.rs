@@ -709,7 +709,38 @@ impl StateServer {
                     r.fill_frames.load(Ordering::Relaxed),
                 );
                 buf.push(',');
+                // The static acquisition ceiling (target + full cushion) — the
+                // snap-back target, unchanged shape for backward compat.
                 push_kv_u64(&mut buf, "target_fill_frames", r.target_fill_frames);
+                buf.push(',');
+                // The LIVE held target the controller (and the outer DLL) hold
+                // the fill toward RIGHT NOW — equal to target_fill_frames unless
+                // the DEFAULT-OFF post-lock cushion decay has lowered it. This is
+                // the single-source-of-truth setpoint; watch it descend from the
+                // ceiling toward the decay floor when decay is engaged.
+                push_kv_u64(
+                    &mut buf,
+                    "held_target_frames",
+                    r.held_target_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // Post-lock cushion-decay state (all inert while decay is off):
+                // active = actively decaying; floor = the configured decay floor;
+                // frozen_reason = why decay is paused ("" while actively decaying,
+                // else unlocked / not_l0 / cascade / warmup / at_floor).
+                buf.push_str(r#""decay":{"#);
+                push_kv_bool(&mut buf, "active", r.decay_active.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(&mut buf, "floor_frames", r.decay_floor_frames);
+                buf.push(',');
+                push_kv_str(
+                    &mut buf,
+                    "frozen_reason",
+                    crate::lane_resampler::DecayFrozenReason::code_str(
+                        r.decay_frozen_reason.load(Ordering::Relaxed),
+                    ),
+                );
+                buf.push('}');
                 buf.push(',');
                 push_kv_u64(&mut buf, "lock_count", r.lock_count.load(Ordering::Relaxed));
                 buf.push(',');
@@ -1218,6 +1249,12 @@ mod tests {
                         // shape STATUS surfaces.
                         fill_frames: Arc::new(AtomicU64::new(520)),
                         target_fill_frames: 512,
+                        // Decay INACTIVE on this fixture (held == ceiling); frozen
+                        // reason code 0 → "" (actively-decaying rendering).
+                        held_target_frames: Arc::new(AtomicU64::new(512)),
+                        decay_active: Arc::new(AtomicBool::new(false)),
+                        decay_floor_frames: 0,
+                        decay_frozen_reason: Arc::new(AtomicU64::new(0)),
                     }),
                     // A lane that HAS been trimmed (fixture): 3 trims, 4608 frames
                     // dropped total, no request currently pending.
@@ -1264,8 +1301,16 @@ mod tests {
                         ratio_milli_ppm: Arc::new(AtomicU64::new(0)),
                         lock_count: Arc::new(AtomicU64::new(1)),
                         unlock_count: Arc::new(AtomicU64::new(0)),
-                        fill_frames: Arc::new(AtomicU64::new(2048)),
-                        target_fill_frames: 2048,
+                        // ACTIVELY DECAYING fixture: the held target (1024) has
+                        // dropped below the acquisition ceiling (2560) toward the
+                        // floor (544), exercising the decay STATUS block's live
+                        // path (active:true, frozen_reason:"").
+                        fill_frames: Arc::new(AtomicU64::new(1024)),
+                        target_fill_frames: 2560,
+                        held_target_frames: Arc::new(AtomicU64::new(1024)),
+                        decay_active: Arc::new(AtomicBool::new(true)),
+                        decay_floor_frames: 544,
+                        decay_frozen_reason: Arc::new(AtomicU64::new(0)),
                     }),
                     trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
                 },
@@ -1459,6 +1504,31 @@ mod tests {
         assert!(
             j.contains(r#""target_fill_frames":512"#),
             "missing resampler target_fill_frames: {j}"
+        );
+        // The airplay fixture has decay INACTIVE (held == ceiling 512).
+        assert!(
+            j.contains(r#""held_target_frames":512"#),
+            "missing live held_target_frames on the inactive-decay fixture: {j}"
+        );
+        // Every armed lane carries a decay block (inert when off). The airplay
+        // fixture is not decaying: active:false, empty frozen_reason.
+        assert!(
+            j.contains(r#""decay":{"active":false,"floor_frames":0,"frozen_reason":""}"#),
+            "missing inactive decay block on the airplay fixture: {j}"
+        );
+        // The direct fixture is ACTIVELY DECAYING: the held target (1024) sits
+        // below its ceiling (2560) heading for the floor (544).
+        assert!(
+            j.contains(r#""target_fill_frames":2560"#),
+            "missing the direct fixture's acquisition ceiling: {j}"
+        );
+        assert!(
+            j.contains(r#""held_target_frames":1024"#),
+            "missing the direct fixture's live (decayed) held target: {j}"
+        );
+        assert!(
+            j.contains(r#""decay":{"active":true,"floor_frames":544,"frozen_reason":""}"#),
+            "missing active decay block on the direct fixture: {j}"
         );
         assert!(
             j.contains(r#""lock_count":1"#),

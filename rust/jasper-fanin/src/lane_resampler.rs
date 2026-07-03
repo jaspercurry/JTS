@@ -76,6 +76,8 @@ use std::sync::Arc;
 
 use jasper_resampler::{clamp_i16, AudioRing, RateController, SincTable, RADIUS_FRAMES};
 
+pub use decay::{CushionDecay, DecayFrozenReason, DecayParams, DecaySignals};
+
 /// Observability counters for one armed lane resampler, cloned into the STATUS
 /// snapshot. All `0` while the resampler is disabled (no instance exists).
 #[derive(Clone)]
@@ -115,11 +117,26 @@ pub struct LaneResamplerObservability {
     /// proof (a steady value near target = engaged & holding, a value drifting
     /// away from target = losing lock). Published every `render_period`.
     pub fill_frames: Arc<AtomicU64>,
-    /// The actual target fill the controller holds the ring at (base target
-    /// plus held warm-up cushion, static for the lane's life). Paired with
-    /// `fill_frames` so STATUS shows current vs. target without the reader
+    /// The acquisition CEILING the controller holds the ring at after lock
+    /// (base target plus the full warm-up cushion). Static for the lane's life —
+    /// the value the held target snaps back to on any discontinuity. Paired with
+    /// `fill_frames` so STATUS shows current vs. ceiling without the reader
     /// having to know the config.
     pub target_fill_frames: u64,
+    /// The LIVE held target the controller is disciplining the ring toward right
+    /// now — equal to `target_fill_frames` (the ceiling) unless the DEFAULT-OFF
+    /// post-lock cushion decay has lowered it. Republished every render period.
+    /// This is the ONE authoritative held-target value: the host-clock DLL reads
+    /// the same atomic as its setpoint (single source of truth), so the two
+    /// controllers can never disagree about where the fill should sit.
+    pub held_target_frames: Arc<AtomicU64>,
+    /// Live cushion-decay state (all `0`/inert while the decay feature is off).
+    /// `active` = actively decaying; `floor` = the configured decay floor;
+    /// `frozen_reason` = the stringly-typed reason decay is currently paused
+    /// (`""` while actively decaying).
+    pub decay_active: Arc<AtomicBool>,
+    pub decay_floor_frames: u64,
+    pub decay_frozen_reason: Arc<AtomicU64>,
 }
 
 /// A per-input windowed-sinc resampler that turns a free-running (host-clocked)
@@ -134,9 +151,11 @@ pub struct LaneResampler {
     ring: AudioRing,
     sinc_table: SincTable,
     controller: RateController,
-    /// Base configured target. The controller holds
-    /// `target_fill_frames + warmup_cushion_frames`; the held target is the
-    /// small fixed fill that replaces the catch-up sawtooth.
+    /// Base configured target. The acquisition CEILING is
+    /// `target_fill_frames + warmup_cushion_frames`; the small fixed fill that
+    /// replaces the catch-up sawtooth. The LIVE held target
+    /// (`hold_fill_frames()`) is that ceiling unless [`CushionDecay`] has lowered
+    /// it post-lock.
     target_fill_frames: usize,
     /// Extra frames added to the DLL hold target for the armed lane. This is
     /// the WARM-UP cushion: the headroom that keeps the first jittery seconds
@@ -184,6 +203,19 @@ pub struct LaneResampler {
     /// can show the buffer is being held near target.
     fill_frames: Arc<AtomicU64>,
     locked_state: Arc<AtomicBool>,
+    /// The DEFAULT-OFF post-lock cushion-decay state machine. Owns the LIVE held
+    /// target (`decay.held()`), lowered from the acquisition ceiling toward the
+    /// configured floor while locked + DLL-l0 + calm, snapped back on any
+    /// discontinuity. When disabled it pins the held target at the ceiling
+    /// forever (`hold_fill_frames()` == `target + cushion`, current behaviour).
+    decay: CushionDecay,
+    /// The LIVE held target gauge — the single source of truth the STATUS layer
+    /// and the outer host-clock DLL both read. Republished whenever the decay
+    /// tick changes the held target. Owned (written) ONLY here.
+    held_target_frames: Arc<AtomicU64>,
+    /// Decay observability atomics, republished on every decay tick.
+    decay_active: Arc<AtomicBool>,
+    decay_frozen_reason: Arc<AtomicU64>,
 }
 
 impl LaneResampler {
@@ -206,6 +238,13 @@ impl LaneResampler {
     /// string (rather than a typed error) so the caller can log-and-fall-back
     /// without a new error enum — a construction failure here must degrade to
     /// "no resampler", never crash the daemon.
+    ///
+    /// The argument list is one over clippy's default seven: all but
+    /// `decay_params` are flat primitive lane geometry that reads clearly at the
+    /// single call site (`build_lane_resampler`), and bundling them into a struct
+    /// would be churn without added clarity — so the lint is allowed here rather
+    /// than obscuring a well-understood constructor.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         channels: usize,
         period_frames: u32,
@@ -214,6 +253,7 @@ impl LaneResampler {
         warmup_cushion_frames: usize,
         max_adjust_ppm: f64,
         ring_frames: usize,
+        decay_params: DecayParams,
     ) -> Result<Self, String> {
         if channels == 0 {
             return Err("lane resampler channels must be > 0".to_string());
@@ -225,7 +265,9 @@ impl LaneResampler {
         let radius = RADIUS_FRAMES as usize;
         // The ring must hold the deepest seating the lock ever uses (target +
         // warm-up cushion) plus one period of fresh arrival plus the kernel
-        // radius, or the deep prefill could never accumulate.
+        // radius, or the deep prefill could never accumulate. The decay only ever
+        // LOWERS the held target below this ceiling, so the ring stays sized for
+        // the acquisition depth (the ceiling) regardless of decay.
         let min_ring = target_fill_frames + warmup_cushion_frames + period_frames + radius + 1;
         if ring_frames < min_ring {
             return Err(format!(
@@ -240,6 +282,9 @@ impl LaneResampler {
         // silence: after ~1 s of priming with some input buffered, fall through
         // and seat at whatever safe depth exists. 1 s of periods at this rate.
         let max_prime_periods = (sample_rate / period_frames.max(1) as u32).max(1);
+        // The acquisition CEILING the decay lowers FROM and snaps back TO.
+        let ceiling = (target_fill_frames + warmup_cushion_frames) as u64;
+        let decay = decay_params.build(ceiling, period_frames as u32, sample_rate);
         Ok(Self {
             channels,
             period_frames,
@@ -276,6 +321,12 @@ impl LaneResampler {
             unlock_count: Arc::new(AtomicU64::new(0)),
             fill_frames: Arc::new(AtomicU64::new(0)),
             locked_state: Arc::new(AtomicBool::new(false)),
+            decay,
+            // Seed the live held-target gauge at the ceiling (== hold_fill_frames
+            // before any decay). Republished on every decay tick.
+            held_target_frames: Arc::new(AtomicU64::new(ceiling)),
+            decay_active: Arc::new(AtomicBool::new(false)),
+            decay_frozen_reason: Arc::new(AtomicU64::new(DecayFrozenReason::NONE_CODE)),
         })
     }
 
@@ -300,7 +351,15 @@ impl LaneResampler {
             lock_count: Arc::clone(&self.lock_count),
             unlock_count: Arc::clone(&self.unlock_count),
             fill_frames: Arc::clone(&self.fill_frames),
-            target_fill_frames: self.hold_fill_frames() as u64,
+            // The static acquisition ceiling (target + full cushion) — the value
+            // the held target snaps back to. STATUS shows this as
+            // `target_fill_frames` (unchanged shape); the LIVE held target is the
+            // separate `held_target_frames` gauge below.
+            target_fill_frames: self.ceiling_fill_frames() as u64,
+            held_target_frames: Arc::clone(&self.held_target_frames),
+            decay_active: Arc::clone(&self.decay_active),
+            decay_floor_frames: self.decay.floor(),
+            decay_frozen_reason: Arc::clone(&self.decay_frozen_reason),
         }
     }
 
@@ -492,6 +551,11 @@ impl LaneResampler {
         self.prime_periods = 0;
         self.startup_ramp_frames_remaining = 0;
         self.real_periods_since_lock = 0;
+        // Snap the decayed held target back to the acquisition ceiling NOW so the
+        // next `try_lock` seats at the full cushion (a re-acquisition must start
+        // deep, not at whatever shallow depth decay had reached). Instant + no
+        // glitch — raising a setpoint just lets the fill refill from input.
+        self.snap_decay_back(DecayFrozenReason::Unlocked);
         self.publish_ratio();
     }
 
@@ -560,12 +624,33 @@ impl LaneResampler {
         self.prime_periods = 0;
         self.startup_ramp_frames_remaining = 0;
         self.real_periods_since_lock = 0;
+        // Snap the decayed held target back to the acquisition ceiling so the
+        // NEXT lock seats deep (`startup_prefill_frames` / `try_lock` read
+        // `hold_fill_frames()` == the live gauge). Without this, a re-lock after
+        // decay would seat at the shallow decayed depth and re-thrash lock.
+        self.snap_decay_back(DecayFrozenReason::Unlocked);
         self.publish_fill(if acquisition_underfill {
             self.ring.fill_frames() as u64
         } else {
             0
         });
         self.publish_ratio();
+    }
+
+    /// Snap the decay's held target back to the acquisition ceiling and publish
+    /// the raised gauge + decay observability immediately. Called from the lock-
+    /// loss paths (`reset`, `unlock_for_underfill`) so a re-acquisition seats at
+    /// the full cushion. Inert (no-op-cheap) when the decay feature is off.
+    fn snap_decay_back(&mut self, reason: DecayFrozenReason) {
+        self.decay.snap_back(reason);
+        self.held_target_frames
+            .store(self.decay.held(), Ordering::Relaxed);
+        self.decay_active
+            .store(self.decay.active(), Ordering::Relaxed);
+        self.decay_frozen_reason.store(
+            DecayFrozenReason::code(self.decay.frozen_reason()),
+            Ordering::Relaxed,
+        );
     }
 
     fn render_silence(&mut self, out: &mut [i16]) {
@@ -599,8 +684,44 @@ impl LaneResampler {
         interpolation_runway.max(usb_burst_runway)
     }
 
+    /// The LIVE held target the controller disciplines the ring toward — the
+    /// decayed setpoint when the DEFAULT-OFF cushion decay is engaged, otherwise
+    /// the static ceiling. Read from the held-target gauge (the single source of
+    /// truth), so `render_period`'s DLL error, `trim_ring`'s drop target, and the
+    /// STATUS/outer-DLL setpoint can never disagree.
     fn hold_fill_frames(&self) -> usize {
+        self.held_target_frames.load(Ordering::Relaxed) as usize
+    }
+
+    /// The static acquisition ceiling (`target + full warm-up cushion`) — the
+    /// value the held target snaps back to on any discontinuity, and the depth
+    /// the lock always seats at. Independent of the live decay.
+    fn ceiling_fill_frames(&self) -> usize {
         self.target_fill_frames + self.warmup_cushion_frames
+    }
+
+    /// Advance the DEFAULT-OFF post-lock cushion decay one render period and
+    /// publish the (possibly-lowered) held target + decay observability. The
+    /// caller (the mixer work loop) supplies the outer-DLL signals the decay
+    /// needs (`dll_l0_locked`, `commanded_ppm_abs`); the resampler's own
+    /// `locked` state is filled in here. No-op-cheap when the feature is off
+    /// (one `CushionDecay::tick` early-return + three relaxed stores).
+    ///
+    /// The decay clock is render PERIODS — this is called exactly once per
+    /// `render_period`, never on a wall clock.
+    pub fn tick_decay(&mut self, dll_l0_locked: bool, commanded_ppm_abs: f64) {
+        let held = self.decay.tick(DecaySignals {
+            locked: self.locked,
+            dll_l0_locked,
+            commanded_ppm_abs,
+        });
+        self.held_target_frames.store(held, Ordering::Relaxed);
+        self.decay_active
+            .store(self.decay.active(), Ordering::Relaxed);
+        self.decay_frozen_reason.store(
+            DecayFrozenReason::code(self.decay.frozen_reason()),
+            Ordering::Relaxed,
+        );
     }
 
     fn publish_ratio(&self) {
@@ -612,6 +733,525 @@ impl LaneResampler {
 
     fn publish_fill(&self, frames: u64) {
         self.fill_frames.store(frames, Ordering::Relaxed);
+    }
+}
+
+/// The DEFAULT-OFF post-lock cushion-decay engine — a PURE, render-period-clocked
+/// state machine that lowers the resampler's held target from its acquisition
+/// ceiling toward a floor while the lane is locked, the outer host-clock DLL is
+/// `l0_locked`, and the DLL is not commanding hard. No atomics, no ALSA, no
+/// clock: the mixer ticks it once per render period. Scratch-crate-testable on
+/// any host (fan-in cannot compile on macOS).
+///
+/// ## Why decay, not a static lower cushion
+///
+/// The full acquisition cushion is load-bearing during the bursty USB cold start
+/// (a static 128-frame cushion was refuted twice on hardware — free-run never
+/// locks; under the live DLL it locks but latency REGRESSES from lock churn
+/// re-priming the fill above the setpoint). Steady state, once the DLL has pinned
+/// the fill at the setpoint, does NOT need the full cushion. So: acquire deep,
+/// then decay the held target only while the system proves it is in the stable
+/// `l0_locked` regime, and snap all the way back the instant it leaves.
+mod decay {
+    /// Why the held target is currently frozen (not decaying) — surfaced in
+    /// STATUS so an operator can see *why* a decay run stalled. `None` (via the
+    /// `code`/`NONE_CODE` mapping) means actively decaying.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum DecayFrozenReason {
+        /// Resampler is not locked — snapped back to the ceiling.
+        Unlocked,
+        /// The DLL ladder is not `l0_locked` — snapped back to the ceiling.
+        NotL0,
+        /// The DLL is commanding hard (|commanded_ppm| > guard) — hold, no step.
+        Cascade,
+        /// Locked + l0 but still inside the post-lock stability window — hold.
+        Warmup,
+        /// Held target is already at the floor — nothing left to decay.
+        AtFloor,
+    }
+
+    impl DecayFrozenReason {
+        /// The STATUS wire code for "actively decaying" (no frozen reason).
+        pub const NONE_CODE: u64 = 0;
+
+        /// Map an optional reason to its stable STATUS integer code (stored in a
+        /// lock-free atomic; the state layer maps back to a string). `0` == none
+        /// (actively decaying). Codes are a wire contract — append, never renumber.
+        pub fn code(reason: Option<DecayFrozenReason>) -> u64 {
+            match reason {
+                None => Self::NONE_CODE,
+                Some(DecayFrozenReason::Unlocked) => 1,
+                Some(DecayFrozenReason::NotL0) => 2,
+                Some(DecayFrozenReason::Cascade) => 3,
+                Some(DecayFrozenReason::Warmup) => 4,
+                Some(DecayFrozenReason::AtFloor) => 5,
+            }
+        }
+
+        /// Map a STATUS code back to its lowercase string for the JSON block.
+        /// Unknown codes render as `""` (treated as "actively decaying").
+        pub fn code_str(code: u64) -> &'static str {
+            match code {
+                1 => "unlocked",
+                2 => "not_l0",
+                3 => "cascade",
+                4 => "warmup",
+                5 => "at_floor",
+                _ => "",
+            }
+        }
+    }
+
+    /// Validated decay knobs from config, plus the derived `enabled` gate. The
+    /// resampler owns the ceiling (target + cushion) and derives the render-period
+    /// intervals from the sample rate / period at construction — the caller passes
+    /// only the frame/ms knobs so there is ONE place (`build`) that converts ms →
+    /// periods.
+    #[derive(Debug, Clone, Copy)]
+    pub struct DecayParams {
+        pub enabled: bool,
+        /// Total held-target floor in frames (must be >= base target + a small
+        /// margin; config validates fail-loud).
+        pub floor_frames: u64,
+        /// Frames dropped per decay step.
+        pub step_frames: u64,
+        /// Wall interval between steps, in ms — converted to render periods here.
+        pub interval_ms: u64,
+        /// Post-lock stability window before the first step, in ms — converted to
+        /// render periods here.
+        pub stability_ms: u64,
+        /// |commanded_ppm| above which decay pauses (the cascade-stability guard).
+        pub cascade_guard_ppm: f64,
+    }
+
+    impl DecayParams {
+        /// A hard-disabled params (current behaviour: held pinned at ceiling).
+        pub fn disabled() -> Self {
+            Self {
+                enabled: false,
+                floor_frames: 0,
+                step_frames: 16,
+                interval_ms: 1000,
+                stability_ms: 10_000,
+                cascade_guard_ppm: 400.0,
+            }
+        }
+
+        /// Convert `ms` at the lane's `period_frames`/`sample_rate` to a
+        /// render-period count (>= 1 so a tiny ms value still ticks). The decay
+        /// clock is render periods, so every wall-time knob is normalised HERE.
+        fn ms_to_periods(ms: u64, period_frames: u32, sample_rate: u32) -> u64 {
+            let period_frames = period_frames.max(1) as u64;
+            let sample_rate = sample_rate.max(1) as u64;
+            // periods = ms/1000 * rate / period_frames.
+            ((ms.saturating_mul(sample_rate)) / (1000 * period_frames)).max(1)
+        }
+
+        /// Build the runtime state machine, deriving the render-period intervals
+        /// from the lane geometry and clamping the floor to `ceiling` defensively.
+        pub fn build(self, ceiling: u64, period_frames: u32, sample_rate: u32) -> CushionDecay {
+            let interval_periods =
+                Self::ms_to_periods(self.interval_ms, period_frames, sample_rate);
+            let stability_periods =
+                Self::ms_to_periods(self.stability_ms, period_frames, sample_rate);
+            CushionDecay::new(
+                self.enabled,
+                ceiling,
+                self.floor_frames,
+                self.step_frames,
+                interval_periods,
+                stability_periods,
+                self.cascade_guard_ppm,
+            )
+        }
+    }
+
+    /// The per-tick signals the decay reads that it cannot derive itself: the
+    /// resampler's own lock state plus the outer DLL's ladder/command. Sampled
+    /// once per render period.
+    #[derive(Debug, Clone, Copy)]
+    pub struct DecaySignals {
+        /// The resampler is locked and rendering real DAC-paced audio.
+        pub locked: bool,
+        /// The outer host-clock DLL ladder is `l0_locked` (the only steady state
+        /// where the fill is pinned at the setpoint). Decay REQUIRES this — with
+        /// the DLL off / probing / demoted, the held cushion is load-bearing.
+        pub dll_l0_locked: bool,
+        /// The DLL's last commanded bias magnitude in ppm. When the DLL is
+        /// working hard (> the cascade guard) the fill is in transient, so decay
+        /// pauses.
+        pub commanded_ppm_abs: f64,
+    }
+
+    /// The decay state machine. See the module docstring for the "acquire deep,
+    /// decay in steady state, snap back on any discontinuity" rationale.
+    #[derive(Debug, Clone)]
+    pub struct CushionDecay {
+        enabled: bool,
+        /// The acquisition hold the held target starts at and snaps back to.
+        ceiling: u64,
+        /// The lowest the held target may decay to (total frames).
+        floor: u64,
+        /// Frames dropped per decay step.
+        step: u64,
+        /// Render periods between decay steps.
+        interval_periods: u64,
+        /// Render periods of continuous locked+l0+calm required before the FIRST
+        /// step (the post-lock warm-up window).
+        stability_periods: u64,
+        /// |commanded_ppm| above which decay pauses.
+        cascade_guard_ppm: f64,
+
+        /// Current held target (the live setpoint). Starts at `ceiling`.
+        held: u64,
+        /// Consecutive locked+l0+calm periods (resets on any freeze condition).
+        stable_periods: u64,
+        /// Periods since the last decay step (only advances while decaying).
+        periods_since_step: u64,
+        /// Last computed reason; `None` while actively decaying.
+        frozen_reason: Option<DecayFrozenReason>,
+    }
+
+    impl CushionDecay {
+        /// Build the machine. The caller (config) validates the knobs fail-loud;
+        /// this constructor clamps defensively (`floor <= ceiling`, `step >= 1`,
+        /// `interval >= 1`) so a bad value degrades to "no decay" not misbehaviour.
+        pub fn new(
+            enabled: bool,
+            ceiling: u64,
+            floor: u64,
+            step: u64,
+            interval_periods: u64,
+            stability_periods: u64,
+            cascade_guard_ppm: f64,
+        ) -> Self {
+            Self {
+                enabled,
+                ceiling,
+                floor: floor.min(ceiling),
+                step: step.max(1),
+                interval_periods: interval_periods.max(1),
+                stability_periods,
+                cascade_guard_ppm,
+                held: ceiling,
+                stable_periods: 0,
+                periods_since_step: 0,
+                frozen_reason: if enabled {
+                    Some(DecayFrozenReason::Warmup)
+                } else {
+                    None
+                },
+            }
+        }
+
+        /// The live held target (the resampler's setpoint). Always `ceiling` when
+        /// disabled.
+        pub fn held(&self) -> u64 {
+            self.held
+        }
+
+        /// The floor (for STATUS).
+        pub fn floor(&self) -> u64 {
+            self.floor
+        }
+
+        /// True iff actively decaying (enabled, not frozen, above the floor).
+        pub fn active(&self) -> bool {
+            self.enabled && self.frozen_reason.is_none() && self.held > self.floor
+        }
+
+        /// The current frozen reason (for STATUS). `None` while decaying.
+        pub fn frozen_reason(&self) -> Option<DecayFrozenReason> {
+            self.frozen_reason
+        }
+
+        /// Snap the held target back to the ceiling and reset decay progress.
+        /// Called on any hard boundary (unlock / DLL demotion / stream stop).
+        /// Raising a setpoint needs no drop — the fill refills from input.
+        pub fn snap_back(&mut self, reason: DecayFrozenReason) {
+            self.held = self.ceiling;
+            self.stable_periods = 0;
+            self.periods_since_step = 0;
+            if self.enabled {
+                self.frozen_reason = Some(reason);
+            }
+        }
+
+        /// Advance one render period, returning the (possibly-lowered) held
+        /// target. Pure: no clock, no I/O. The decay clock is render PERIODS.
+        pub fn tick(&mut self, s: DecaySignals) -> u64 {
+            if !self.enabled {
+                return self.held;
+            }
+            // Hard boundaries first: any loss of lock or DLL steady-state snaps
+            // the held target back to the ceiling in one tick.
+            if !s.locked {
+                self.snap_back(DecayFrozenReason::Unlocked);
+                return self.held;
+            }
+            if !s.dll_l0_locked {
+                self.snap_back(DecayFrozenReason::NotL0);
+                return self.held;
+            }
+            // Cascade-stability guard: the DLL is working hard, so the fill is in
+            // a transient — hold the current held target (do NOT step, do NOT snap
+            // back), and reset stability so a burst re-earns the warm-up window.
+            if s.commanded_ppm_abs > self.cascade_guard_ppm {
+                self.stable_periods = 0;
+                self.periods_since_step = 0;
+                self.frozen_reason = Some(DecayFrozenReason::Cascade);
+                return self.held;
+            }
+            // Locked + l0 + calm: accrue stability.
+            self.stable_periods = self.stable_periods.saturating_add(1);
+            if self.stable_periods < self.stability_periods {
+                self.frozen_reason = Some(DecayFrozenReason::Warmup);
+                return self.held;
+            }
+            // Past the warm-up window. If already at floor, nothing to do.
+            if self.held <= self.floor {
+                self.held = self.floor;
+                self.frozen_reason = Some(DecayFrozenReason::AtFloor);
+                return self.held;
+            }
+            // Actively decaying: step once per interval.
+            self.frozen_reason = None;
+            self.periods_since_step = self.periods_since_step.saturating_add(1);
+            if self.periods_since_step >= self.interval_periods {
+                self.periods_since_step = 0;
+                self.held = self.held.saturating_sub(self.step).max(self.floor);
+                if self.held <= self.floor {
+                    self.frozen_reason = Some(DecayFrozenReason::AtFloor);
+                }
+            }
+            self.held
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const CEIL: u64 = 2560; // target 512 + cushion 2048
+        const FLOOR: u64 = 544; // target 512 + 32
+        const STEP: u64 = 16;
+        const INTERVAL: u64 = 188; // ~1 s at 48k / 256
+        const STABILITY: u64 = 1880; // ~10 s
+
+        fn locked_l0(commanded_ppm_abs: f64) -> DecaySignals {
+            DecaySignals {
+                locked: true,
+                dll_l0_locked: true,
+                commanded_ppm_abs,
+            }
+        }
+
+        fn build() -> CushionDecay {
+            CushionDecay::new(true, CEIL, FLOOR, STEP, INTERVAL, STABILITY, 400.0)
+        }
+
+        #[test]
+        fn disabled_pins_ceiling_forever() {
+            let mut d = CushionDecay::new(false, CEIL, FLOOR, STEP, INTERVAL, STABILITY, 400.0);
+            for _ in 0..100_000 {
+                assert_eq!(d.tick(locked_l0(0.0)), CEIL);
+            }
+            assert!(!d.active());
+            assert_eq!(d.frozen_reason(), None);
+        }
+
+        #[test]
+        fn holds_ceiling_through_warmup_then_decays() {
+            let mut d = build();
+            for _ in 0..STABILITY - 1 {
+                assert_eq!(d.tick(locked_l0(0.0)), CEIL);
+            }
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::Warmup));
+            // The stability-th tick crosses the window (first decaying tick).
+            assert_eq!(d.tick(locked_l0(0.0)), CEIL);
+            assert!(d.active(), "past warm-up, should be actively decaying");
+            for _ in 0..INTERVAL - 2 {
+                assert_eq!(d.tick(locked_l0(0.0)), CEIL);
+            }
+            // The INTERVAL-th decaying tick fires the first step.
+            assert_eq!(d.tick(locked_l0(0.0)), CEIL - STEP);
+        }
+
+        #[test]
+        fn decays_monotonically_to_floor_and_stops() {
+            let mut d = build();
+            for _ in 0..2_000_000 {
+                let h = d.tick(locked_l0(0.0));
+                assert!((FLOOR..=CEIL).contains(&h));
+                if h == FLOOR {
+                    break;
+                }
+            }
+            assert_eq!(d.held(), FLOOR);
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::AtFloor));
+            assert!(!d.active(), "at floor is not active");
+            for _ in 0..1000 {
+                assert_eq!(d.tick(locked_l0(0.0)), FLOOR);
+            }
+        }
+
+        #[test]
+        fn steps_are_exactly_step_frames_each_interval() {
+            let mut d = build();
+            for _ in 0..STABILITY {
+                d.tick(locked_l0(0.0));
+            }
+            let mut last = d.held();
+            for _ in 0..10 {
+                for _ in 0..INTERVAL {
+                    d.tick(locked_l0(0.0));
+                }
+                assert_eq!(last - d.held(), STEP);
+                last = d.held();
+            }
+        }
+
+        #[test]
+        fn unlock_snaps_back_to_ceiling_in_one_tick() {
+            let mut d = build();
+            for _ in 0..STABILITY + INTERVAL * 5 {
+                d.tick(locked_l0(0.0));
+            }
+            assert!(d.held() < CEIL);
+            let h = d.tick(DecaySignals {
+                locked: false,
+                dll_l0_locked: true,
+                commanded_ppm_abs: 0.0,
+            });
+            assert_eq!(h, CEIL);
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::Unlocked));
+            assert!(!d.active());
+        }
+
+        #[test]
+        fn dll_demotion_snaps_back_to_ceiling() {
+            let mut d = build();
+            for _ in 0..STABILITY + INTERVAL * 5 {
+                d.tick(locked_l0(0.0));
+            }
+            assert!(d.held() < CEIL);
+            let h = d.tick(DecaySignals {
+                locked: true,
+                dll_l0_locked: false,
+                commanded_ppm_abs: 0.0,
+            });
+            assert_eq!(h, CEIL);
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::NotL0));
+        }
+
+        #[test]
+        fn cascade_guard_pauses_without_snapping_back_but_resets_warmup() {
+            let mut d = build();
+            for _ in 0..STABILITY + INTERVAL * 3 {
+                d.tick(locked_l0(0.0));
+            }
+            let held_before = d.held();
+            assert!(held_before < CEIL);
+            let h = d.tick(locked_l0(401.0));
+            assert_eq!(h, held_before, "cascade guard holds, does not snap back");
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::Cascade));
+            assert!(!d.active());
+            for _ in 0..STABILITY - 1 {
+                assert_eq!(d.tick(locked_l0(0.0)), held_before);
+            }
+            for _ in 0..INTERVAL {
+                d.tick(locked_l0(0.0));
+            }
+            assert_eq!(d.held(), held_before - STEP);
+        }
+
+        #[test]
+        fn cascade_guard_boundary_is_strict_greater_than() {
+            let mut d = build();
+            for _ in 0..STABILITY {
+                d.tick(locked_l0(0.0));
+            }
+            // Exactly at the guard: NOT paused (strict >).
+            d.tick(locked_l0(400.0));
+            assert_ne!(
+                d.frozen_reason(),
+                Some(DecayFrozenReason::Cascade),
+                "commanded_ppm == guard must not pause (strict >)"
+            );
+            // Just over: paused.
+            d.tick(locked_l0(400.001));
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::Cascade));
+        }
+
+        #[test]
+        fn snap_back_then_recovery_re_earns_full_warmup() {
+            let mut d = build();
+            for _ in 0..STABILITY + INTERVAL * 2 {
+                d.tick(locked_l0(0.0));
+            }
+            d.tick(DecaySignals {
+                locked: false,
+                dll_l0_locked: true,
+                commanded_ppm_abs: 0.0,
+            });
+            assert_eq!(d.held(), CEIL);
+            for _ in 0..STABILITY - 1 {
+                assert_eq!(d.tick(locked_l0(0.0)), CEIL);
+            }
+            for _ in 0..INTERVAL {
+                d.tick(locked_l0(0.0));
+            }
+            assert_eq!(d.held(), CEIL - STEP);
+        }
+
+        #[test]
+        fn floor_clamped_to_ceiling_when_misconfigured() {
+            let mut d = CushionDecay::new(true, 512, 9999, STEP, INTERVAL, 1, 400.0);
+            assert_eq!(d.floor(), 512);
+            for _ in 0..100_000 {
+                assert_eq!(d.tick(locked_l0(0.0)), 512);
+            }
+        }
+
+        #[test]
+        fn frozen_reason_codes_roundtrip() {
+            // The wire codes are a contract: append, never renumber.
+            assert_eq!(DecayFrozenReason::code(None), 0);
+            assert_eq!(DecayFrozenReason::code_str(0), "");
+            for r in [
+                DecayFrozenReason::Unlocked,
+                DecayFrozenReason::NotL0,
+                DecayFrozenReason::Cascade,
+                DecayFrozenReason::Warmup,
+                DecayFrozenReason::AtFloor,
+            ] {
+                let code = DecayFrozenReason::code(Some(r));
+                assert_ne!(code, 0);
+                assert_eq!(DecayFrozenReason::code_str(code), r.as_expected_str());
+            }
+        }
+
+        impl DecayFrozenReason {
+            fn as_expected_str(self) -> &'static str {
+                match self {
+                    DecayFrozenReason::Unlocked => "unlocked",
+                    DecayFrozenReason::NotL0 => "not_l0",
+                    DecayFrozenReason::Cascade => "cascade",
+                    DecayFrozenReason::Warmup => "warmup",
+                    DecayFrozenReason::AtFloor => "at_floor",
+                }
+            }
+        }
+
+        #[test]
+        fn ms_to_periods_converts_at_lane_geometry() {
+            // 1000 ms at 48k / 256 ≈ 187.5 → 187 periods.
+            assert_eq!(DecayParams::ms_to_periods(1000, 256, 48_000), 187);
+            // 10_000 ms → 1875 periods.
+            assert_eq!(DecayParams::ms_to_periods(10_000, 256, 48_000), 1875);
+            // Tiny ms still yields >= 1 period.
+            assert_eq!(DecayParams::ms_to_periods(1, 256, 48_000), 1);
+        }
     }
 }
 
@@ -631,8 +1271,17 @@ mod tests {
     const RING: usize = 8192;
 
     fn build() -> LaneResampler {
-        LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, RING)
-            .expect("resampler builds")
+        LaneResampler::new(
+            2,
+            PERIOD,
+            RATE,
+            TARGET,
+            CUSHION,
+            MAX_PPM,
+            RING,
+            DecayParams::disabled(),
+        )
+        .expect("resampler builds")
     }
 
     /// Frames that must be buffered for the held-cushion lock to seat:
@@ -670,15 +1319,18 @@ mod tests {
     fn rejects_undersized_ring_and_zero_dims() {
         // Ring smaller than target+cushion+period+radius+1 must be rejected, not
         // silently unable to seat the deep prefill.
-        assert!(LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, TARGET).is_err());
-        assert!(LaneResampler::new(0, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, RING).is_err());
-        assert!(LaneResampler::new(2, 0, RATE, TARGET, CUSHION, MAX_PPM, RING).is_err());
-        assert!(LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, RING).is_ok());
+        let d = DecayParams::disabled;
+        assert!(
+            LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, TARGET, d()).is_err()
+        );
+        assert!(LaneResampler::new(0, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, RING, d()).is_err());
+        assert!(LaneResampler::new(2, 0, RATE, TARGET, CUSHION, MAX_PPM, RING, d()).is_err());
+        assert!(LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, RING, d()).is_ok());
         // The cushion is part of the minimum ring: a ring that would fit
         // target+period+radius but NOT the cushion is rejected.
         let just_under = TARGET + PERIOD as usize + RADIUS_FRAMES as usize + 1;
         assert!(
-            LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, just_under).is_err(),
+            LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, just_under, d()).is_err(),
             "ring must include the warm-up cushion in its minimum"
         );
     }
@@ -1249,7 +1901,17 @@ mod tests {
         // which is fine for ordinary tests but would not exercise fallback.
         // A tiny rate keeps max_prime_periods small and the test fast: at
         // 4800 Hz / 256 period, max_prime_periods = 18.
-        let mut r = LaneResampler::new(2, PERIOD, 4_800, TARGET, 1536, MAX_PPM, RING).unwrap();
+        let mut r = LaneResampler::new(
+            2,
+            PERIOD,
+            4_800,
+            TARGET,
+            1536,
+            MAX_PPM,
+            RING,
+            DecayParams::disabled(),
+        )
+        .unwrap();
         let max_prime = r.max_prime_periods;
         assert!(max_prime >= 1);
         let mut out = vec![0i16; PERIOD as usize * 2];
@@ -1295,10 +1957,28 @@ mod tests {
         // catch-up read after a host stall).
         let burst = tight + 1024;
 
-        let mut tight_r =
-            LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, tight).unwrap();
-        let mut roomy_r =
-            LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, roomy).unwrap();
+        let mut tight_r = LaneResampler::new(
+            2,
+            PERIOD,
+            RATE,
+            TARGET,
+            CUSHION,
+            MAX_PPM,
+            tight,
+            DecayParams::disabled(),
+        )
+        .unwrap();
+        let mut roomy_r = LaneResampler::new(
+            2,
+            PERIOD,
+            RATE,
+            TARGET,
+            CUSHION,
+            MAX_PPM,
+            roomy,
+            DecayParams::disabled(),
+        )
+        .unwrap();
         // Both lock at the same target.
         let mut out = vec![0i16; PERIOD as usize * 2];
         tight_r.push_input(&tone(deep_prefill() + 64));
@@ -1318,6 +1998,206 @@ mod tests {
             roomy_r.overrun_frames.load(Ordering::Relaxed),
             0,
             "the larger ring must absorb the same burst with no overrun"
+        );
+    }
+
+    // ---- post-lock cushion decay (the held-target single source of truth) --
+
+    /// Build a resampler with the DEFAULT-OFF decay ARMED. Floor is `TARGET + 32`
+    /// (base target plus a small margin); interval/stability are tiny so tests
+    /// run fast (interval 1 period, stability 3 periods).
+    fn build_with_decay() -> LaneResampler {
+        let params = DecayParams {
+            enabled: true,
+            floor_frames: (TARGET + 32) as u64,
+            step_frames: 16,
+            interval_ms: 1,  // → 1 period (clamped up)
+            stability_ms: 1, // → 1 period (clamped up)
+            cascade_guard_ppm: 400.0,
+        };
+        LaneResampler::new(2, PERIOD, RATE, TARGET, CUSHION, MAX_PPM, RING, params)
+            .expect("resampler builds with decay armed")
+    }
+
+    #[test]
+    fn decay_disabled_holds_target_at_ceiling_forever() {
+        // With decay off (the default), hold_fill_frames and the published held
+        // target both equal the static ceiling, byte-for-byte today's behaviour.
+        let mut r = build();
+        let ceiling = (TARGET + CUSHION) as u64;
+        assert_eq!(r.hold_fill_frames() as u64, ceiling);
+        assert_eq!(r.held_target_frames.load(Ordering::Relaxed), ceiling);
+        r.push_input(&tone(deep_prefill() + 64));
+        for _ in 0..500 {
+            r.push_input(&tone(PERIOD as usize));
+            r.render_period(&mut vec![0i16; PERIOD as usize * 2]);
+            // Ticking decay while disabled never moves the held target.
+            r.tick_decay(true, 0.0);
+            assert_eq!(r.hold_fill_frames() as u64, ceiling);
+            assert!(!r.decay_active.load(Ordering::Relaxed));
+        }
+    }
+
+    #[test]
+    fn decay_lowers_held_target_only_while_locked_and_l0() {
+        let mut r = build_with_decay();
+        let ceiling = (TARGET + CUSHION) as u64;
+        let floor = (TARGET + 32) as u64;
+        // Before lock: ticking decay never lowers (locked == false).
+        for _ in 0..100 {
+            r.tick_decay(true, 0.0);
+        }
+        assert_eq!(r.hold_fill_frames() as u64, ceiling, "unlocked → ceiling");
+
+        // Lock the lane.
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        r.push_input(&tone(deep_prefill() + 64));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize);
+        assert!(r.locked);
+
+        // Feed on-rate and tick decay each period with the DLL at l0 and calm:
+        // the held target must descend toward the floor.
+        let block = tone(PERIOD as usize);
+        for _ in 0..5000 {
+            r.push_input(&block);
+            r.render_period(&mut out);
+            r.tick_decay(true, 0.0);
+            if r.hold_fill_frames() as u64 == floor {
+                break;
+            }
+        }
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            floor,
+            "decay must descend to the floor under sustained lock+l0"
+        );
+        // The published gauge tracks the live held target (single source).
+        assert_eq!(r.held_target_frames.load(Ordering::Relaxed), floor);
+        assert_eq!(
+            r.observability().held_target_frames.load(Ordering::Relaxed),
+            floor
+        );
+        // The static ceiling STATUS field is unchanged (it is the snap-back
+        // target, not the live setpoint).
+        assert_eq!(r.observability().target_fill_frames, ceiling);
+        assert_eq!(r.observability().decay_floor_frames, floor);
+    }
+
+    #[test]
+    fn decay_frozen_when_dll_not_l0() {
+        let mut r = build_with_decay();
+        let ceiling = (TARGET + CUSHION) as u64;
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        r.push_input(&tone(deep_prefill() + 64));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize);
+        let block = tone(PERIOD as usize);
+        // DLL not at l0: decay must never lower the held target.
+        for _ in 0..2000 {
+            r.push_input(&block);
+            r.render_period(&mut out);
+            r.tick_decay(false, 0.0);
+        }
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            ceiling,
+            "held target must stay at the ceiling while DLL is not l0"
+        );
+        assert!(!r.decay_active.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn decay_cascade_guard_pauses_above_threshold() {
+        let mut r = build_with_decay();
+        let ceiling = (TARGET + CUSHION) as u64;
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        r.push_input(&tone(deep_prefill() + 64));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize);
+        let block = tone(PERIOD as usize);
+        // DLL commanding hard (> guard): decay pauses, held stays at ceiling.
+        for _ in 0..2000 {
+            r.push_input(&block);
+            r.render_period(&mut out);
+            r.tick_decay(true, 401.0);
+        }
+        assert_eq!(r.hold_fill_frames() as u64, ceiling);
+        assert!(!r.decay_active.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn decay_snaps_back_to_ceiling_on_reset() {
+        let mut r = build_with_decay();
+        let ceiling = (TARGET + CUSHION) as u64;
+        let floor = (TARGET + 32) as u64;
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        r.push_input(&tone(deep_prefill() + 64));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize);
+        let block = tone(PERIOD as usize);
+        // Decay down a bit.
+        for _ in 0..5000 {
+            r.push_input(&block);
+            r.render_period(&mut out);
+            r.tick_decay(true, 0.0);
+            if r.hold_fill_frames() as u64 == floor {
+                break;
+            }
+        }
+        assert!(r.hold_fill_frames() as u64 <= floor + 16);
+        // Reset (host pause / idle): the held target must snap back to ceiling
+        // IMMEDIATELY so the next lock seats at the full cushion.
+        r.reset();
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            ceiling,
+            "reset must snap the held target back to the acquisition ceiling"
+        );
+        assert_eq!(r.held_target_frames.load(Ordering::Relaxed), ceiling);
+    }
+
+    #[test]
+    fn decay_relock_after_underfill_seats_at_ceiling() {
+        // The regression that matters: after decay lowers the held target, an
+        // underfill unlock must snap it back so the re-lock's startup prefill
+        // targets the FULL cushion (not the shallow decayed depth), avoiding
+        // relock chatter.
+        let mut r = build_with_decay();
+        let ceiling = (TARGET + CUSHION) as u64;
+        let floor = (TARGET + 32) as u64;
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        r.push_input(&tone(deep_prefill() + 64));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize);
+        let block = tone(PERIOD as usize);
+        // Prove stable for the acquisition grace window, then decay down.
+        for _ in 0..r.max_prime_periods {
+            r.push_input(&block);
+            r.render_period(&mut out);
+            r.tick_decay(true, 0.0);
+        }
+        for _ in 0..5000 {
+            r.push_input(&block);
+            r.render_period(&mut out);
+            r.tick_decay(true, 0.0);
+            if r.hold_fill_frames() as u64 == floor {
+                break;
+            }
+        }
+        assert!(r.hold_fill_frames() as u64 <= floor + 16);
+        // Starve → underfill unlock. Held target must be back at ceiling.
+        for _ in 0..20 {
+            if !r.locked {
+                break;
+            }
+            r.render_period(&mut out);
+        }
+        assert!(!r.locked, "starved lane must unlock");
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            ceiling,
+            "underfill unlock must snap the held target back to the ceiling"
+        );
+        // startup_prefill now targets the full ceiling again.
+        assert_eq!(
+            r.startup_prefill_frames(),
+            ceiling as usize + RADIUS_FRAMES as usize + 1
         );
     }
 }
