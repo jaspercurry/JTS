@@ -27,6 +27,13 @@ alsa = { version = "0.11", optional = true }
 [dev-dependencies]
 # One in-module test asserts the status_fragment() byte shape is valid JSON.
 serde_json = "1"
+# The REAL inner rate controller the CORRECTION-mode servo-sim closes against —
+# `jasper_resampler::RateController` constructed exactly as `lane_resampler`
+# builds it (±500 ppm, period 256 @ 48 kHz, max_resync disabled). Pure (no ALSA,
+# only jasper-clock), so it composes into the host-side `cargo test` and the
+# servo-sim measures the composite loop's ACTUAL dynamics instead of a
+# first-order tracker that hid the limit cycle (review PR #1144).
+jasper-resampler = { path = "../jasper-resampler" }
 
 [features]
 default = []

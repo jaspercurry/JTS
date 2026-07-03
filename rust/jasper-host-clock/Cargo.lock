@@ -52,8 +52,16 @@ version = "0.1.0"
 dependencies = [
  "alsa",
  "jasper-clock",
+ "jasper-resampler",
  "log",
  "serde_json",
+]
+
+[[package]]
+name = "jasper-resampler"
+version = "0.1.0"
+dependencies = [
+ "jasper-clock",
 ]
 
 [[package]]

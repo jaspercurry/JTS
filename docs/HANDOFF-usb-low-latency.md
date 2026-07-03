@@ -238,16 +238,94 @@ owns the gadget capture owns the pitch ctl*:
   `fanin-host-clock` thread drives it: `JASPER_FANIN_HOST_CLOCK=enabled`.
 
 Both run the **same** shared ladder/probe/servo (`rust/jasper-host-clock`,
-byte-identical semantics; the only per-daemon difference is the `event=` log
-prefix — `usbsink_audio` vs `fanin` — and which `JASPER_*` keys each parses).
-Combo mode pins the DIRECT lane's resampler fill at target, removing the
-standby-mode drift wander (the ~9 ms "standby gap" measured below). The
-setpoint is the resampler's HELD target
+one servo core; the per-daemon differences are the `event=` log prefix —
+`usbsink_audio` vs `fanin` — which `JASPER_*` keys each parses, and the
+**observable mode** below). Combo mode pins the DIRECT lane's resampler fill at
+target, removing the standby-mode drift wander (the ~9 ms "standby gap" measured
+below). The setpoint is the resampler's HELD target
 (`JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES +
 JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`) — one setpoint shared with
 the inner rate controller, so the outer loop never fights the inner integrator
 (the ≥10× bandwidth separation of the cascade is derived in the
 `jasper-host-clock` module docstring).
+
+#### Observable mode — fill slope (solo) vs resampler correction (combo)
+
+The one servo core runs on **two different observables**, chosen by a TYPED
+`ObsMode` on the shared `HostClockConfig` (never inferred): usbsink solo passes
+`ObsMode::Fill`, fan-in combo passes `ObsMode::Correction`. This is the fix for
+the hardware-diagnosed combo-mode defect (jts.local 2026-07-03).
+
+- **`Fill` (usbsink solo, aloop).** No rate-matching stage sits between the
+  gadget ring and playback, so the gadget FILL slope is a faithful readout of the
+  host-vs-DAC rate error. The probe reads the fill-slope response to the pitch
+  step; the L0 servo drives `fill − target → 0`. **Unchanged** from the original
+  servo.
+- **`Correction` (fan-in combo, USB DIRECT).** The lane resampler (±500 ppm
+  authority) sits between the gadget ring and the mix and ABSORBS host-clock
+  drift to hold its fill at the held target — so the fill observable is
+  structurally dead: the resampler flattens the slope the probe wants to measure
+  and pins the fill by its OWN action, not by the pitch commands. On jts.local
+  the fill-based post-lock probe reliably failed (`response_ratio=-0.88`) and the
+  ladder parked in `l2_fallback`; even a prior `l0_locked` had a dead fill-error
+  signal (fill sat ~500 pinned BY THE RESAMPLER). In combo mode the honest
+  observable is the resampler's OWN live correction ppm (its `ratio_milli_ppm`
+  gauge, the same atomic STATUS reads — single source of truth, owned by the
+  resampler on the mixer thread, threaded into `Obs.correction_ppm`). The probe
+  reads how far the resampler's mean correction MOVES between the neutral baseline
+  window and the step window; the L0 servo drives `correction_ppm → 0`. When the
+  correction is ~0 sustained the host is truly slaved to the DAC, the resampler is
+  idle, and the fill rides the resampler's held target for free.
+
+  **The `Correction` outer control law is a PURE INTEGRAL, not the `Fill`-mode
+  DLL** (`CORRECTION_INTEGRAL_GAIN` in `jasper-host-clock`). This is the structural
+  correction the observable choice demanded (staff review of PR #1144): the two
+  modes present the outer loop DIFFERENT plants. `Fill`-mode's plant is an
+  INTEGRATOR (a pitch command sets the gadget-fill *slope*), so the DLL's own
+  integrators plus that plant integrator is the well-behaved cascade. `Correction`-
+  mode's plant is near-UNITY DC gain through the inner resampler's lag (a ppm
+  command becomes, after the inner `RateController` settles, ~the same ppm of
+  correction — ppm→ppm, no integrator). Driving that unity-gain-plus-lag plant with
+  the `Fill`-tuned third-order DLL puts loop gain > 1 past 180° of phase, so it
+  limit-cycles — verified against the REAL inner controller (a compliant Mac at
+  +20 ppm crystal railed correction ±460 ppm on a ~21 s period). A single slow
+  integrator around a near-unity plant is unconditionally stable at a small gain;
+  the feed-forward seed (`−baseline_correction`) carries the DC crystal cancel and
+  the integrator only trims the residual. Anti-windup is conditional integration
+  (skip the step when the total command is railed and this step would push it
+  further into the rail). The servo-sim tests close the ladder against
+  `jasper_resampler::RateController` (built exactly as `lane_resampler` does), so
+  they measure the composite loop's ACTUAL dynamics and pin that it converges
+  without oscillating across the crystal / lag / noise / 3600 s matrix.
+
+  **The `Correction` probe uses a longer step window and an adaptive step
+  direction** (`CORRECTION_PROBE_STEP_SECS`, `CORRECTION_PROBE_FLIP_DEADBAND_PPM`)
+  because the inner-loop observable is slower than the fill slope and bounded by
+  the resampler's ±500 ppm authority. A 6 s step reads a compliant host only
+  partway through the inner loop's slew (a −250 ppm crystal measured
+  `response_ratio ≈ +0.16` — a false FAIL), so `Correction` holds the step for
+  15 s. And a fixed `+probe_ppm` step against a host already near a rail (e.g.
+  +450 ppm crystal) pushes a compliant host past the +500 clamp so the observable
+  can't show the full response (`+0.19` — another false FAIL); so `Correction`
+  steps AWAY from the nearer rail (down when the baseline correction is strongly
+  positive, up when strongly negative), and normalizes the verdict by the SIGNED
+  step. A non-compliant host's natural crystal drift runs OPPOSITE the away-from-
+  rail step, so it reads a clearly negative ratio and still fails. `Fill` mode is
+  unchanged (always `+probe_ppm`, `probe_step_secs`, hardware-validated at 6 s).
+
+Both observables share the same sign property, so the feed-forward seed is
+byte-identical across modes: a compliant host commanded a `+step` moves the
+observable `+step` (fill climbs in `Fill`; the resampler must consume faster to
+hold fill, so its correction ppm rises in `Correction`), giving
+`response_ratio ≈ +1`; a host that ignores the step moves it ~0, giving `≈ 0`
+(same `>= 0.5` pass band, same demotion). The neutral baseline value is the host's
+natural excess rate, cancelled by the `-baseline_obs` feed-forward. STATUS
+surfaces the mode as `host_clock.obs_mode` (`"fill"`/`"correction"`) and the live
+correction as `host_clock.correction_ppm` (additive; 0 in `Fill` mode), so the
+combo L0 end-state (`correction_ppm → ~0` at `l0_locked`) is directly observable.
+The `dll` block in the STATUS fragment reads idle in `Correction` mode — the DLL
+is not the controller there, so its `err_frames`/`locked` are diagnostic zeros,
+not a live signal.
 
 #### `HOST_CLOCK × USB_DIRECT` flag matrix (fan-in)
 
@@ -428,17 +506,32 @@ End-to-end = measured span + 1.2 ms gadget dwell (delta-windowed drain-entry evi
   FULL-SPEED device (192-byte/1 ms packets) with `lowlatency=Y` already active — the
   ~4.6 ms URB queue is FS transport physics. I2S/HAT outputs never pay this term
   (equivalent graph there ≈ −4.6 ms).
-- *Cushion decay (the ~5 ms lever)*: built, reviewed, merged default-off (#1141) — but
-  **engagement is blocked by a diagnosed ladder design gap**: with the lane resampler
-  locked, its inner controller absorbs the probe's pitch step, so the post-lock probe
-  (#1142) reliably fails (ratio −0.88) and the ladder never reaches l0. The combo-mode
-  probe must observe the resampler's correction ppm, not fill slope (follow-up filed).
-  A second follow-up observation — arming decay (even frozen) *appeared* to raise
-  unlock churn (16/115 vs 0-5 baseline) — was **diagnosed as NOT an armed-path bug**
-  (2026-07). A cross-mode sim (drain→render→tick_decay, faithful to `mixer::step`)
-  proves an ARMED+frozen(`not_l0`) decay is BIT-IDENTICAL to disabled over the same
-  delivery trace (unlocks/locks/held/silence/output **and a per-period FNV checksum
-  of the rendered PCM** all equal), and the code path confirms it: `tick_decay` with
+- *Cushion decay (the ~5 ms lever)*: built, reviewed, merged default-off (#1141). Its
+  engagement was blocked by a diagnosed ladder design gap: with the lane resampler
+  locked, its inner controller absorbs the probe's pitch step, so the fill-based
+  post-lock probe (#1142) reliably failed (ratio −0.88) and the ladder never reached l0.
+  **Fixed by the combo-mode observable redesign** (#1144): combo mode now runs
+  `ObsMode::Correction` — the probe and L0 servo observe the resampler's OWN correction
+  ppm (its `ratio_milli_ppm` gauge threaded into `Obs.correction_ppm`), not the dead
+  fill slope. The `Correction` outer control law is a PURE INTEGRAL
+  (`CORRECTION_INTEGRAL_GAIN`), not the `Fill`-mode DLL — the observable choice changed
+  the plant from an integrator to a near-unity-gain one, and the `Fill`-tuned DLL
+  limit-cycles against it (staff review of PR #1144 caught this by composing the real
+  crates; fixed in the same branch). The probe also uses a longer step window and steps
+  away from the nearer inner-authority rail so a compliant host at any crystal offset
+  (including near ±500 ppm) passes. Servo-sim tests close the ladder against the REAL
+  `jasper_resampler::RateController` (built as `lane_resampler` does), pinning that the
+  probe passes compliant / fails non-compliant AND that L0 converges without a limit
+  cycle across the crystal/lag/noise/3600 s matrix. On-hardware validation
+  (STATUS `host_clock.obs_mode=correction`, `correction_ppm → ~0` at `l0_locked`, no
+  periodic `correction_ppm` in a soak) is still owed before decay is re-armed and
+  re-measured.
+  A second observation — arming decay (even frozen) *appeared* to raise unlock churn
+  (16/115 vs 0-5 baseline) — was **diagnosed as NOT an armed-path bug** (2026-07).
+  A cross-mode sim (drain→render→tick_decay, faithful to `mixer::step`) proves an
+  ARMED+frozen(`not_l0`) decay is BIT-IDENTICAL to disabled over the same delivery
+  trace (unlocks/locks/held/silence/output **and a per-period FNV checksum of the
+  rendered PCM** all equal), and the code path confirms it: `tick_decay` with
   `dll_l0=false` snaps the held target back to the ceiling every tick, so the
   setpoint never differs from the disabled path — mechanically inert. The 16-vs-115
   spread is the same environmental USB-coalescing variance that moves the
@@ -454,10 +547,12 @@ End-to-end = measured span + 1.2 ms gadget dwell (delta-windowed drain-entry evi
   a divergence the churn window alone can NOT catch (every unlock resets
   `stable_periods`, so decay could never step there regardless). The churn itself is
   the static-cushion geometry issue guarded above, not the decay code.
-- *Why host-clock is OFF in final settings*: until the probe redesign, the DLL cannot
-  pass its own probe in combo mode; its probe steps perturb each session start for zero
-  benefit. The resampler alone (±500 ppm) carries stability — proven across 5-min and
-  20-min runs free-running.
+- *Why host-clock is OFF in final settings*: the fill-based probe could not pass in
+  combo mode, so its probe steps perturbed each session start for zero benefit; the
+  resampler alone (±500 ppm) carries stability, proven across 5-min and 20-min runs
+  free-running. The correction-observable redesign (#1144) removes the "cannot pass
+  its own probe" blocker; host-clock stays OFF by default pending the on-hardware
+  validation and decay re-measurement above.
 
 **Fleet validation (2026-07-03):** AirPlay PASS on jts3 (HiFiBerry), jts4 (Pi Zero 2 W
 streambox), jts5 (post-deploy; pre-deploy receiver was wedged — reset cleared it), and
@@ -671,40 +766,70 @@ Stage 1 closes a delay-locked loop over that control:
 ### Two controllers in cascade — the defense
 
 With the feature enabled, the fan-in `lane_resampler` (fast inner loop,
-`rust/jasper-fanin/src/lane_resampler.rs`) and this pitch DLL (slow outer
-loop) both discipline the same chain. JTS has a documented oscillation
-failure class when two rate controllers fight (the CamillaDSP `rate_adjust` +
-`AsyncSinc` incident, above). This is a legitimate CASCADE instead — a fast
-inner loop absorbing residual + jitter, a slow outer loop removing the
-standing offset at its source (the host) — defended by bandwidth separation
-derived from the actual inner-loop constant, not asserted:
+`rust/jasper-fanin/src/lane_resampler.rs`) and the outer pitch loop both
+discipline the same chain. JTS has a documented oscillation failure class when
+two rate controllers fight (the CamillaDSP `rate_adjust` + `AsyncSinc` incident,
+above). This is a legitimate CASCADE instead — a fast inner loop absorbing
+residual + jitter, a slow outer loop removing the standing offset at its source
+(the host). **The two modes defend against a fighting cascade with DIFFERENT
+outer control laws**, because they present the outer loop different plants:
 
-- **Inner loop**: `RateController::with_max_resync` → `DllConfig::for_rate(256,
-  48000)` (`JASPER_FANIN_PERIOD_FRAMES` defaults to 256), updated once per
-  rendered period (≈5.33 ms). Adaptive bandwidth clamped to
-  `[BW_MIN, BW_MAX] = [0.016, 0.128] Hz` (`jasper-clock`). Locked floor
-  **0.016 Hz**, acquiring maximum **0.128 Hz**.
-- **Outer loop** (this module): `DllConfig{period:4800, rate:48000,
-  initial_bw:BW_MIN, bw_retune_period:0}` ticked at exactly 1 Hz, adaptive
-  retune disabled so the number is fixed and testable. Effective bandwidth =
-  `0.016 × (4800/48000) / 1s = 0.0016 Hz`.
-- **Separation**: 10x below the inner loop's locked floor, 80x below its
-  acquiring maximum — >=10x in every inner-loop state.
+- **`Fill` mode (usbsink solo) — the DLL, defended by bandwidth separation.**
+  The plant is an integrator (a pitch command sets the gadget-fill *slope*), so a
+  slow DLL is the right outer law, and the defense is bandwidth separation derived
+  from the actual inner-loop constant, not asserted:
+  - **Inner loop**: `RateController::with_max_resync` → `DllConfig::for_rate(256,
+    48000)`, updated once per rendered period (≈5.33 ms). Adaptive bandwidth
+    clamped to `[BW_MIN, BW_MAX] = [0.016, 0.128] Hz`. Locked floor **0.016 Hz**,
+    acquiring maximum **0.128 Hz**.
+  - **Outer loop**: `DllConfig{period:4800, rate:48000, initial_bw:BW_MIN,
+    bw_retune_period:0}` ticked at exactly 1 Hz, retune disabled so the number is
+    fixed and testable. Effective bandwidth = `0.016 × (4800/48000) / 1s =
+    0.0016 Hz`.
+  - **Separation**: 10× below the inner loop's locked floor, 80× below its
+    acquiring maximum — ≥10× in every inner-loop state.
+- **`Correction` mode (fan-in combo) — a pure integral, NOT the DLL.** The plant
+  is near-UNITY DC gain through the inner loop's lag (ppm→ppm, no integrator), and
+  a third-order DLL against that plant limit-cycles regardless of its bandwidth —
+  bandwidth separation is the wrong defense here. The outer law is a single slow
+  integrator (`CORRECTION_INTEGRAL_GAIN`, chosen a factor of ~5 below the measured
+  ring threshold against the real inner controller); one integrator around a near-
+  unity plant is unconditionally stable at that gain. See the mode's control-law
+  discussion in the mode-selection section above, and the servo-sim tests that
+  close the ladder against the real `RateController`.
 
-The slow settle is deliberate: PipeWire's docs warn UAC2 pitch control
-oscillates at a normal DLL bandwidth, and at 0.0016 Hz alone the DLL would
-take ~100 s to correct a standing offset — long enough to rail the tiny
-3×256-frame gadget ring. The per-session probe's neutral baseline phase
-measures the raw host offset and seeds the commanded bias with
-`-baseline_slope` on entering `L0_LOCKED` (feed-forward), so coarse
-correction is immediate and the slow DLL only trims the residual.
+The slow settle is deliberate: PipeWire's docs warn UAC2 pitch control oscillates
+at a normal DLL bandwidth. In both modes the per-session probe's neutral baseline
+phase measures the raw host offset and seeds the commanded bias with
+`-baseline_obs` on entering `L0_LOCKED` (feed-forward), so coarse correction is
+immediate and the slow outer law only trims the residual.
 
 **The falsifier**: `fill_variance` (EW variance of the gadget fill) and
 `fill_slope_ppm` are published on every enabled tick precisely so a soak can
-detect a cascade limit-cycle — a two-controller oscillation shows up as
-periodic fill variance the counters make visible. Watch both across a soak
-before trusting L0 lock long-term; if either shows periodicity, the answer is
-to widen the bandwidth separation further or leave the feature off.
+detect a cascade limit-cycle — a two-controller oscillation shows up as periodic
+fill variance the counters make visible. In combo (`Correction`) mode
+`correction_ppm` is the additional limit-cycle tell: a fighting cascade shows
+periodic correction ppm even though the servo's L0 target is `correction → 0`.
+Watch all three across a soak before trusting L0 lock long-term; if any shows
+periodicity, the remediation is mode-specific — widen the bandwidth separation in
+`Fill` mode, LOWER `CORRECTION_INTEGRAL_GAIN` in `Correction` mode, or leave the
+feature off.
+
+**Cascade interaction with cushion decay (holds under the integral law).** The
+DEFAULT-OFF post-lock cushion decay gates on the servo's REVERSE signals —
+`ladder_l0` (decay only steps while `l0_locked`) and `commanded_milli_ppm` (the
+`|commanded_ppm| > 400` cascade-stability freeze guard). Both signals keep their
+exact meaning under the correction-observable servo: `commanded_ppm` is still the
+pitch command (same units, same ±1000 clamp), so the 400-ppm guard still freezes
+decay while the servo is working hard, and the stability gate still reads `l0`
+exactly as before. With the pure-integral `Correction` law a settled L0 genuinely
+sits at a small, STEADY `commanded_ppm` (the feed-forward that cancels the crystal
+offset) with the correction relaxed to ~0 — verified against the real inner loop
+across the crystal/lag/noise/3600 s matrix, NOT the limit cycle the earlier DLL
+law produced — so it is well inside the guard and decay proceeds normally once the
+post-lock warm-up window elapses. (Under the pre-fix DLL law this paragraph was
+false: the composite loop railed `commanded_ppm` ±350 ppm on a ~21 s period, so
+the freeze guard flapped twice per cycle and decay never advanced.)
 
 ### Cross-platform conditions
 
@@ -730,9 +855,10 @@ change between sessions (a Mac unplugged and a Windows box plugged in later;
 an app that opens the endpoint in a mode that pins the rate). Compliance is
 therefore re-measured on every `(host_connected && playing)` edge rather than
 trusted once at boot — a probe commands a bounded step (default +300 ppm for
-a 4 s baseline + 6 s step window) and measures the fill-slope response; a
-response under half the commanded step demotes straight to `L2_FALLBACK`
-(neutral pitch) without ever entering `L0_LOCKED`.
+a 4 s baseline + 6 s step window) and measures the observable's response (the
+fill-slope in `Fill` mode, the resampler-correction mean in `Correction` mode —
+see "Observable mode" above); a response under half the commanded step demotes
+straight to `L2_FALLBACK` (neutral pitch) without ever entering `L0_LOCKED`.
 
 **The probe does NOT baseline at the session edge — it waits for the lane to
 leave its warmup ramp first.** A session begins the instant audio starts
@@ -1078,6 +1204,13 @@ peak) — trading latency for drops on every source. The lean-fifo gets low late
 
 Last verified: 2026-07-03 (20-minute final run at the merged floor: 640/640
 impulses, e2e p50 45.8 / p95 47.3 / p99 48.1 ms; fleet AirPlay/Spotify pass).
+Ladder "Observable mode" + "Two controllers in cascade" sections re-verified
+2026-07-03 against the correction-observable redesign AND its staff-review fix
+(`ObsMode::Fill`/`Correction`, `Obs.correction_ppm`, the pure-integral
+`Correction` outer law `CORRECTION_INTEGRAL_GAIN`, the longer/adaptive-direction
+`Correction` probe, `host_clock.obs_mode`/`correction_ppm` STATUS) on branch
+`latency/combo-servo-correction`; servo-sim now closes against the real
+`jasper_resampler::RateController`. Combo on-hardware validation still owed.
 2048, CamillaDSP 256/1536, outputd 128/256, outputd content buffer 1536, and
 direct ALSA loopback coupling. `jasper-route-latency-harness` — the
 click-in/capture-back producer this doc previously described as missing — now

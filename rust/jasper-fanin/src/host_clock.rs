@@ -80,7 +80,7 @@ use std::time::{Duration, Instant};
 
 use jasper_host_clock::{
     ctl_card_from_capture, ppm_to_ctl_value, Action, AlsaPitchCtl, HostClock, HostClockConfig,
-    Ladder, Obs, TICK_INTERVAL_MS,
+    Ladder, Obs, ObsMode, TICK_INTERVAL_MS,
 };
 
 /// The `event=` log-line namespace prefix for the fan-in ladder.
@@ -106,6 +106,16 @@ pub struct HostClockSignals {
     pub locked: Arc<AtomicBool>,
     /// USB DIRECT capture presence — the fan-in `host_connected` proxy.
     pub present: Arc<AtomicBool>,
+    /// The lane resampler's LIVE correction ppm (its rate-adjustment relative to
+    /// nominal), in **milli-ppm** (ppm × 1000) stored as i64 bits in this
+    /// `AtomicU64` — the SAME atomic the resampler already publishes for STATUS
+    /// (`LaneResamplerObservability::ratio_milli_ppm`), owned/written ONLY by the
+    /// resampler on the mixer thread. This is the COMBO-mode probe/servo
+    /// observable: with the resampler absorbing the host clock, its correction ppm
+    /// is the honest host-vs-DAC rate-error readout (the fill slope is dead
+    /// weight). Decoded in [`build_obs`] the same way the STATUS layer does
+    /// (`(load() as i64) as f64 / 1000.0`).
+    pub correction_milli_ppm: Arc<AtomicU64>,
     /// The resampler's LIVE HELD target fill — the ONE setpoint the outer loop
     /// shares with the inner `RateController` (single source of truth). Equal to
     /// `target + warmup cushion` unless the DEFAULT-OFF post-lock cushion decay
@@ -141,6 +151,13 @@ pub fn build_config(
         target_fill_frames: target_fill_frames as f64,
         probe_ppm: probe_ppm as f64,
         probe_step_secs: probe_secs,
+        // Combo mode runs the CORRECTION-ppm observable: a lane resampler sits
+        // between the gadget ring and the mix and absorbs the host clock, so the
+        // fill slope is structurally dead (the resampler flattens it — the
+        // hardware defect on jts.local 2026-07-03). The probe reads the
+        // resampler's own correction ppm, and the L0 servo drives it to 0. usbsink
+        // solo, with no such stage, keeps `ObsMode::Fill`.
+        obs_mode: ObsMode::Correction,
         log_prefix: LOG_PREFIX,
     }
 }
@@ -175,6 +192,11 @@ pub fn build_obs(signals: &HostClockSignals) -> Obs {
         capture_frames: signals.input_frames.load(Ordering::Relaxed),
         // DAC-paced — the divergence anchor.
         playback_frames: signals.output_frames.load(Ordering::Relaxed),
+        // The lane resampler's LIVE correction ppm — the COMBO-mode probe/servo
+        // observable. Decoded from the milli-ppm atomic exactly as the STATUS
+        // layer does: the value is an i64 (signed) stored in the u64's bits.
+        correction_ppm: (signals.correction_milli_ppm.load(Ordering::Relaxed) as i64) as f64
+            / 1000.0,
     }
 }
 
@@ -441,6 +463,7 @@ mod tests {
             output_frames: Arc::new(AtomicU64::new(0)),
             locked: Arc::new(AtomicBool::new(false)),
             present: Arc::new(AtomicBool::new(false)),
+            correction_milli_ppm: Arc::new(AtomicU64::new(0)),
             held_target_frames: Arc::new(AtomicU64::new(2048)),
             ladder_l0: Arc::new(AtomicBool::new(false)),
             commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
@@ -534,6 +557,35 @@ mod tests {
         let s = signals();
         s.fill_frames.store(2050, Ordering::Relaxed);
         assert_eq!(build_obs(&s).fill_frames, 2050.0);
+    }
+
+    #[test]
+    fn obs_correction_ppm_decodes_the_signed_milli_ppm_gauge() {
+        // The correction observable is the resampler's `ratio_milli_ppm` (the same
+        // atomic STATUS reads): milli-ppm, i64-bits-in-u64. build_obs must decode
+        // it the SAME way the state layer does — `(load() as i64) as f64 / 1000`
+        // — so a NEGATIVE correction (resampler running slower than nominal) reads
+        // back with the right sign, not a giant positive u64.
+        let s = signals();
+        // +120.5 ppm ⇒ 120_500 milli-ppm.
+        s.correction_milli_ppm.store(120_500, Ordering::Relaxed);
+        assert_eq!(build_obs(&s).correction_ppm, 120.5);
+        // −250.0 ppm ⇒ −250_000 milli-ppm, stored as its u64 bit pattern.
+        s.correction_milli_ppm
+            .store((-250_000i64) as u64, Ordering::Relaxed);
+        assert_eq!(
+            build_obs(&s).correction_ppm,
+            -250.0,
+            "a negative correction must decode with the right sign"
+        );
+    }
+
+    #[test]
+    fn build_config_selects_correction_obs_mode() {
+        // Combo mode ALWAYS runs the CORRECTION observable — the fill slope is
+        // dead when a lane resampler sits between the gadget ring and the mix.
+        let cfg = build_config(true, 300, 6, 2048);
+        assert_eq!(cfg.obs_mode, ObsMode::Correction);
     }
 
     // ---- ctl card derivation ----------------------------------------------
