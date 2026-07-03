@@ -28,6 +28,7 @@ Architecture (per docs/HANDOFF-correction.md):
       GET  /bass            bass measurement placeholder page render
       GET  /healthz         liveness
       GET  /status          session snapshot JSON
+      GET  /envelope        server-computed screen envelope (dumb-frontend)
       GET  /sessions        recent measurement bundle summaries
       GET  /session-report  read-only evidence packet for one bundle
       POST /start           reset DSP, create session, request noise capture
@@ -1769,6 +1770,18 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return snap
 
 
+def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """GET /envelope: the server-computed screen envelope for the current
+    session (revision plan §3.2). Additive alongside /status — a pure
+    read that the dumb-frontend wizard renders each step from. The legacy
+    single-page UI keeps using /status untouched; the page migration is a
+    later PR."""
+    from jasper.correction.envelope import build_envelope_logged
+
+    sess = _get_or_create_session()
+    return build_envelope_logged(sess)
+
+
 def _handle_sessions(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """GET /sessions: list recent session bundles for debugging /
     future UI history. Returns the parsed info.json for each entry,
@@ -2396,6 +2409,20 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
+        def _serve_json_route(
+            self, label: str, handler_fn: Callable[[BaseHTTPRequestHandler], dict[str, Any]],
+        ) -> None:
+            """Shared JSON GET-route wrapper: any handler failure surfaces
+            as a 500 JSON error instead of a stack-trace page or a dead
+            request thread — the poll posture /status, /envelope, and
+            /sessions share (one wrapper so the blanket net isn't
+            re-declared per route)."""
+            try:
+                self._send_json(handler_fn(self))
+            except Exception as e:  # noqa: BLE001 — route-level 500 net
+                logger.exception("%s failed", label)
+                self._send_json({"error": str(e)}, status=500)
+
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
             send_html_response(self, body, status=status)
 
@@ -2616,6 +2643,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/room",
                 "/healthz",
                 "/status",
+                "/envelope",
                 "/sessions",
                 "/session-report",
                 "/calibration/models",
@@ -2706,18 +2734,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 self.wfile.write(body)
                 return
             if path == "/status":
-                try:
-                    self._send_json(_handle_status(self))
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("/status failed")
-                    self._send_json({"error": str(e)}, status=500)
+                self._serve_json_route("/status", _handle_status)
+                return
+            if path == "/envelope":
+                self._serve_json_route("/envelope", _handle_envelope)
                 return
             if path == "/sessions":
-                try:
-                    self._send_json(_handle_sessions(self))
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("/sessions failed")
-                    self._send_json({"error": str(e)}, status=500)
+                self._serve_json_route("/sessions", _handle_sessions)
                 return
             if path == "/session-report":
                 try:
