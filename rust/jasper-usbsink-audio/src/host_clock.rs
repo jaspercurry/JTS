@@ -580,12 +580,6 @@ impl HostClock {
 
     // ---- Accessors for telemetry --------------------------------------------
 
-    pub fn ladder(&self) -> Ladder {
-        self.ladder
-    }
-    pub fn commanded_ppm(&self) -> f64 {
-        self.commanded_ppm
-    }
     pub fn fill_variance(&self) -> f64 {
         self.slope.fill_variance()
     }
@@ -594,22 +588,6 @@ impl HostClock {
     }
     pub fn dll_locked(&self) -> bool {
         self.dll.is_locked()
-    }
-    pub fn probe_result(&self) -> ProbeResult {
-        self.probe_result
-    }
-    pub fn response_ratio(&self) -> Option<f64> {
-        self.response_ratio
-    }
-    pub fn demotions(&self) -> u64 {
-        self.demotions
-    }
-    pub fn transitions(&self) -> u64 {
-        self.transitions
-    }
-    /// Lifetime count of outer-DLL anti-windup resets (diagnostic).
-    pub fn anti_windup_events(&self) -> u64 {
-        self.anti_windup_events
     }
 
     /// The one-time startup neutralize action. Emitted ONCE, unconditionally
@@ -1332,7 +1310,7 @@ mod tests {
             let a = hc.tick(obs(true, true, 400.0, t * 48000, t * 48000), t * 1000);
             assert!(a.is_empty(), "disabled feature must not command");
         }
-        assert_eq!(hc.ladder(), Ladder::Disabled);
+        assert_eq!(hc.ladder, Ladder::Disabled);
     }
 
     // ---- Probe pass path ---------------------------------------------------
@@ -1359,12 +1337,12 @@ mod tests {
             cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
             play += 48000;
             hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
-            ladder_seen.push(hc.ladder());
+            ladder_seen.push(hc.ladder);
             t += 1;
         }
-        assert_eq!(hc.probe_result(), ProbeResult::Pass);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        let ratio = hc.response_ratio().unwrap();
+        assert_eq!(hc.probe_result, ProbeResult::Pass);
+        assert_eq!(hc.ladder, Ladder::L0Locked);
+        let ratio = hc.response_ratio.unwrap();
         assert!(ratio >= 0.5, "response_ratio should pass: {ratio}");
     }
 
@@ -1386,9 +1364,9 @@ mod tests {
                 last_action_neutral = *ppm == 0.0;
             }
         }
-        assert_eq!(hc.probe_result(), ProbeResult::Fail);
-        assert_eq!(hc.ladder(), Ladder::L2Fallback);
-        assert_eq!(hc.demotions(), 1);
+        assert_eq!(hc.probe_result, ProbeResult::Fail);
+        assert_eq!(hc.ladder, Ladder::L2Fallback);
+        assert_eq!(hc.demotions, 1);
         assert!(last_action_neutral, "L2 must command neutral pitch");
     }
 
@@ -1406,17 +1384,17 @@ mod tests {
             play += 48000;
             hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
         }
-        assert_eq!(hc.ladder(), Ladder::L2Fallback);
+        assert_eq!(hc.ladder, Ladder::L2Fallback);
         // Keep the session playing: still L2, no re-probe.
         for t in 14u64..30 {
             cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
             play += 48000;
             hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
-            assert_eq!(hc.ladder(), Ladder::L2Fallback, "no mid-stream re-probe");
+            assert_eq!(hc.ladder, Ladder::L2Fallback, "no mid-stream re-probe");
         }
         // Stream stops (playing=false): idle boundary → Probing (armed).
         let stop = hc.tick(obs(false, true, 400.0, cap, play), 30_000);
-        assert_eq!(hc.ladder(), Ladder::Probing);
+        assert_eq!(hc.ladder, Ladder::Probing);
         assert!(
             matches!(stop.last(), Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0),
             "idle boundary forces neutral pitch"
@@ -1430,14 +1408,14 @@ mod tests {
         hc.startup_neutralize();
         // Session 1: rising edge begins a probe.
         hc.tick(obs(true, true, 400.0, 48000, 48000), 1000);
-        assert_eq!(hc.ladder(), Ladder::Probing);
+        assert_eq!(hc.ladder, Ladder::Probing);
         // Session stop.
         hc.tick(obs(false, true, 400.0, 96000, 96000), 2000);
-        assert_eq!(hc.ladder(), Ladder::Probing);
-        let t1 = hc.transitions();
+        assert_eq!(hc.ladder, Ladder::Probing);
+        let t1 = hc.transitions;
         // Session 2 rising edge: a NEW probe begins (transition recorded).
         hc.tick(obs(true, true, 400.0, 144000, 144000), 3000);
-        assert!(hc.transitions() >= t1, "a new session re-probes");
+        assert!(hc.transitions >= t1, "a new session re-probes");
     }
 
     /// Preempt (or mid-probe stop) aborts the probe: last_result="aborted",
@@ -1447,12 +1425,12 @@ mod tests {
         let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
         hc.tick(obs(true, true, 400.0, 48000, 48000), 1000);
-        assert_eq!(hc.ladder(), Ladder::Probing);
+        assert_eq!(hc.ladder, Ladder::Probing);
         // Preempt: session ends → probe aborted.
         let mut ob = obs(true, true, 400.0, 96000, 96000);
         ob.preempted = true;
         let actions = hc.tick(ob, 2000);
-        assert_eq!(hc.probe_result(), ProbeResult::Aborted);
+        assert_eq!(hc.probe_result, ProbeResult::Aborted);
         assert!(
             matches!(actions.last(), Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0),
             "abort forces neutral pitch"
@@ -1473,7 +1451,7 @@ mod tests {
             // Force into L0 quickly with a clean compliant probe, then hand off
             // to the closed loop below.
             drive_to_l0(&mut hc, offset_ppm);
-            assert_eq!(hc.ladder(), Ladder::L0Locked, "must lock before servo test");
+            assert_eq!(hc.ladder, Ladder::L0Locked, "must lock before servo test");
 
             // Closed loop: the host's *effective* delivery rate = its crystal
             // offset PLUS the commanded bias it is honoring (with a 1-tick lag).
@@ -1503,7 +1481,7 @@ mod tests {
                     None => *commanded_history.last().unwrap(),
                 };
                 commanded_history.push(cmd);
-                fills.push(hc.commanded_ppm());
+                fills.push(hc.commanded_ppm);
                 t += 1;
             }
             // Settled tail: the commanded ppm should converge to ~ −offset (to
@@ -1550,7 +1528,7 @@ mod tests {
         let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
         drive_to_l0(&mut hc, 500.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        assert_eq!(hc.ladder, Ladder::L0Locked);
         // A huge positive fill error (ring far above target). Feed it for a few
         // ticks and assert the command rails at the clamp and a saturation is
         // observable — checked inside the pre-L2 window (< L2_SUSTAIN_TICKS).
@@ -1561,17 +1539,17 @@ mod tests {
             cap += 48000;
             play += 48000;
             hc.tick(obs(true, true, 20000.0, cap, play), (100 + i as u64) * 1000);
-            if hc.commanded_ppm().abs() >= MAX_BIAS_PPM - 1e-6 {
+            if hc.commanded_ppm.abs() >= MAX_BIAS_PPM - 1e-6 {
                 railed = true;
             }
         }
         assert!(
             railed,
             "command must rail at ±{MAX_BIAS_PPM} ppm under a huge fill error, got {}",
-            hc.commanded_ppm()
+            hc.commanded_ppm
         );
         // And it never exceeded the clamp on any tick.
-        assert!(hc.commanded_ppm().abs() <= MAX_BIAS_PPM + 1e-6);
+        assert!(hc.commanded_ppm.abs() <= MAX_BIAS_PPM + 1e-6);
     }
 
     /// Mid-stream demotion: a locked host that STOPS honoring the command (the
@@ -1583,8 +1561,8 @@ mod tests {
         let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
         drive_to_l0(&mut hc, 500.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        let demotions_before = hc.demotions();
+        assert_eq!(hc.ladder, Ladder::L0Locked);
+        let demotions_before = hc.demotions;
         // Host ignores the command: fill pinned huge AND the slope keeps pushing
         // fill up (capture persistently outruns playback) — the "uncorrected"
         // condition. Command saturates negative; slope stays strongly positive.
@@ -1596,15 +1574,15 @@ mod tests {
             cap += (48000.0 * (1.0 + 2000.0 / 1.0e6)) as u64;
             play += 48000;
             let actions = hc.tick(obs(true, true, 20000.0, cap, play), (100 + i as u64) * 1000);
-            if hc.ladder() == Ladder::L2Fallback && !neutral_after_demote {
+            if hc.ladder == Ladder::L2Fallback && !neutral_after_demote {
                 neutral_after_demote = matches!(
                     actions.last(),
                     Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
                 );
             }
         }
-        assert_eq!(hc.ladder(), Ladder::L2Fallback, "must demote mid-stream");
-        assert_eq!(hc.demotions(), demotions_before + 1, "demotion counted");
+        assert_eq!(hc.ladder, Ladder::L2Fallback, "must demote mid-stream");
+        assert_eq!(hc.demotions, demotions_before + 1, "demotion counted");
         assert!(neutral_after_demote, "demotion forces neutral pitch");
     }
 
@@ -1622,7 +1600,7 @@ mod tests {
         let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
         drive_to_l0(&mut hc, 0.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        assert_eq!(hc.ladder, Ladder::L0Locked);
         let target = hc.cfg.target_fill_frames;
 
         let mut cap = hc_cap_start();
@@ -1639,11 +1617,11 @@ mod tests {
             t += 1;
         }
         assert!(
-            hc.commanded_ppm() < -MAX_BIAS_PPM + 1.0,
+            hc.commanded_ppm < -MAX_BIAS_PPM + 1.0,
             "command should rail negative during the high-fill transient, got {}",
-            hc.commanded_ppm()
+            hc.commanded_ppm
         );
-        let windup_before = hc.anti_windup_events();
+        let windup_before = hc.anti_windup_events;
         // Phase 2: the ring collapses to FAR BELOW target (error flips sign).
         // A wound DLL would keep commanding negative for many ticks; the guard
         // resets it so the command swings positive toward the new error.
@@ -1655,19 +1633,19 @@ mod tests {
                 obs(true, true, (target - 5000.0).max(0.0), cap, play),
                 t * 1000,
             );
-            if hc.commanded_ppm() > 0.0 {
+            if hc.commanded_ppm > 0.0 {
                 recovered_positive = true;
             }
             t += 1;
         }
         assert!(
-            hc.anti_windup_events() > windup_before,
+            hc.anti_windup_events > windup_before,
             "anti-windup should engage on the sign-flip transient"
         );
         assert!(
             recovered_positive,
             "after the fill crossed below target the command must point back toward target (positive), not stay railed negative — commanded={}",
-            hc.commanded_ppm()
+            hc.commanded_ppm
         );
     }
 
@@ -1678,7 +1656,7 @@ mod tests {
         let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
         drive_to_l0(&mut hc, 100.0);
-        let before = hc.anti_windup_events();
+        let before = hc.anti_windup_events;
         let mut cap = hc_cap_start();
         let mut play = cap;
         for i in 0..60 {
@@ -1688,8 +1666,7 @@ mod tests {
             hc.tick(obs(true, true, 384.0, cap, play), (300 + i as u64) * 1000);
         }
         assert_eq!(
-            hc.anti_windup_events(),
-            before,
+            hc.anti_windup_events, before,
             "anti-windup must not engage while tracking on-target"
         );
     }
@@ -1709,7 +1686,7 @@ mod tests {
         let mut hc = HostClock::new(cfg);
         hc.startup_neutralize();
         drive_to_l0(&mut hc, 100.0); // compliant probe follows +100 step
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        assert_eq!(hc.ladder, Ladder::L0Locked);
         // Ring pinned huge (command rails negative) AND a +70 ppm wrong-way
         // drift — ABOVE probe_ppm/2 (50) but BELOW the floor (100). A pure
         // probe_ppm/2 threshold would demote; the floor must prevent it.
@@ -1721,7 +1698,7 @@ mod tests {
             hc.tick(obs(true, true, 20000.0, cap, play), (400 + i as u64) * 1000);
         }
         assert_ne!(
-            hc.ladder(),
+            hc.ladder,
             Ladder::L2Fallback,
             "a 70 ppm drift (below the 100 ppm floor) must NOT demote even with \
              a tiny probe — the floor decouples demotion sensitivity from the \
@@ -1739,8 +1716,8 @@ mod tests {
         let mut hc = HostClock::new(cfg);
         hc.startup_neutralize();
         drive_to_l0(&mut hc, 100.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
-        let demotions_before = hc.demotions();
+        assert_eq!(hc.ladder, Ladder::L0Locked);
+        let demotions_before = hc.demotions;
         let mut cap = hc_cap_start();
         let mut play = cap;
         for i in 0..(L2_SUSTAIN_TICKS + 5) {
@@ -1749,11 +1726,11 @@ mod tests {
             hc.tick(obs(true, true, 20000.0, cap, play), (400 + i as u64) * 1000);
         }
         assert_eq!(
-            hc.ladder(),
+            hc.ladder,
             Ladder::L2Fallback,
             "drift above floor must demote"
         );
-        assert_eq!(hc.demotions(), demotions_before + 1);
+        assert_eq!(hc.demotions, demotions_before + 1);
     }
 
     /// At the DEFAULT probe (probe_ppm=300 ⇒ probe_ppm/2 = 150) the floor (100)
@@ -1767,7 +1744,7 @@ mod tests {
         let mut hc = HostClock::new(enabled_cfg()); // probe_ppm = 300
         hc.startup_neutralize();
         drive_to_l0(&mut hc, 500.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        assert_eq!(hc.ladder, Ladder::L0Locked);
         // A +120 ppm wrong-way drift: below probe_ppm/2 (150). Must NOT demote
         // within the L2 window — the default threshold is unchanged at 150.
         let mut cap = hc_cap_start();
@@ -1778,7 +1755,7 @@ mod tests {
             hc.tick(obs(true, true, 20000.0, cap, play), (500 + i as u64) * 1000);
         }
         assert_ne!(
-            hc.ladder(),
+            hc.ladder,
             Ladder::L2Fallback,
             "at default probe (threshold 150) a 120 ppm drift is sub-threshold; \
              the railed command must NOT demote — the floor must not lower the \
@@ -1838,7 +1815,7 @@ mod tests {
                 reset: true
             }
         );
-        assert_eq!(hc.ladder(), Ladder::Disabled);
+        assert_eq!(hc.ladder, Ladder::Disabled);
     }
 
     // ---- Pitch reset on every exit path ------------------------------------
@@ -1872,7 +1849,7 @@ mod tests {
             cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
             play += 48000;
             let actions = hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
-            if hc.ladder() == Ladder::L2Fallback {
+            if hc.ladder == Ladder::L2Fallback {
                 demote_neutral |= matches!(actions.last(), Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0);
             }
         }
@@ -1904,7 +1881,7 @@ mod tests {
         let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
         drive_to_l0(&mut hc, 100.0);
-        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        assert_eq!(hc.ladder, Ladder::L0Locked);
         // A persistent moderate fill error (err = 1384 - 384 = 1000 frames)
         // drives the DLL demand well past L1_WARN_PPM within the sustain window,
         // while a SMALL steady slope (+100 ppm < probe_ppm/2 = 150) keeps the L2
@@ -1917,14 +1894,14 @@ mod tests {
             cap += (48000.0 * (1.0 + 100.0 / 1.0e6)) as u64; // +100 ppm slope
             play += 48000;
             hc.tick(obs(true, true, 1384.0, cap, play), (100 + i as u64) * 1000);
-            if hc.ladder() == Ladder::L1Warn {
+            if hc.ladder == Ladder::L1Warn {
                 saw_l1 = true;
             }
-            if hc.ladder() == Ladder::L2Fallback {
+            if hc.ladder == Ladder::L2Fallback {
                 ever_demoted = true;
             }
             // The command never leaves the clamp even while warned.
-            assert!(hc.commanded_ppm().abs() <= MAX_BIAS_PPM + 1e-6);
+            assert!(hc.commanded_ppm.abs() <= MAX_BIAS_PPM + 1e-6);
         }
         assert!(saw_l1, "sustained high demand must raise L1_WARN");
         assert!(
