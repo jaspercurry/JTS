@@ -197,8 +197,9 @@ const OUTER_DLL_RATE: f64 = 48000.0;
 pub enum Ladder {
     /// Feature off, or no session yet. Pitch neutral, no DLL, no probe.
     Disabled,
-    /// A session started; running the compliance probe (armed → baseline →
-    /// step) before trusting the host.
+    /// A session started; running the compliance probe (await-lock → baseline →
+    /// step) before trusting the host. The await-lock phase holds neutral until
+    /// the lane leaves its warmup ramp so the baseline measures clock drift.
     Probing,
     /// Probe passed; the DLL is actively steering the host, clamped.
     L0Locked,
@@ -226,8 +227,13 @@ impl Ladder {
 /// Probe sub-phase while [`Ladder::Probing`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProbePhase {
-    /// Just entered; waiting for the first tick to seat the baseline start.
-    Armed,
+    /// Pre-probe wait: commanding neutral, holding until the lane reports
+    /// [`Obs::locked`] continuously for [`PROBE_SETTLE_SECS`] before baselining.
+    /// This is where the probe sits from the session rising edge until the lane
+    /// leaves its warmup ramp, so the baseline measures clock drift, not the
+    /// resampler's one-time fill ramp. Lock loss here (or in a later phase)
+    /// returns to this state and restarts the settle timer.
+    AwaitLock,
     /// Commanding neutral, measuring the host's natural rate slope.
     Baseline,
     /// Commanding +probe_ppm, measuring the fill-slope response.
@@ -312,6 +318,19 @@ pub struct Obs {
     pub playing: bool,
     pub host_connected: bool,
     pub preempted: bool,
+    /// The lane is in its STEADY regime — the gate for starting the probe's
+    /// baseline. A session (`host_connected && playing && !preempted`) begins the
+    /// moment audio starts flowing, but at that instant the lane is still in its
+    /// warmup ramp: the fan-in resampler's held target is filling from empty (0 →
+    /// held target) and the gadget ring is priming. Baselining THEN measures that
+    /// one-time warmup fill ramp as if it were the host's natural rate slope,
+    /// contaminating the probe verdict (hardware-diagnosed on jts.local
+    /// 2026-07-03: `baseline_slope_ppm=1460.6` measured the ramp, not clock
+    /// drift). So the ladder holds a pre-probe wait, commanding neutral, until
+    /// this signal is true (plus a settle delay). Each daemon maps its own steady
+    /// indicator: fan-in → resampler LOCKED; usbsink solo → its playing/steady
+    /// signal AND the gadget ring primed to target fill.
+    pub locked: bool,
     /// Gadget PeriodRing fill in frames (ring_fill_periods × period_frames).
     pub fill_frames: f64,
     /// Cumulative captured frames (monotone).
@@ -452,6 +471,10 @@ pub struct HostClock {
     ladder: Ladder,
     probe_phase: ProbePhase,
     probe_started_ms: u64,
+    /// Monotonic ms at which the lane first reported `locked` in the current
+    /// AwaitLock wait; `None` until lock is seen (or after it is lost). The probe
+    /// leaves AwaitLock once `now_ms − lock_since_ms >= PROBE_SETTLE_SECS`.
+    lock_since_ms: Option<u64>,
     probe_baseline_slope_ppm: f64,
     probe_step_slope_ppm: f64,
     probe_result: ProbeResult,
@@ -477,6 +500,16 @@ pub struct HostClock {
 
 /// Fixed 4 s neutral baseline before the step (contract §2). Not tunable.
 const PROBE_BASELINE_SECS: u64 = 4;
+
+/// Settle delay after the lane first reports [`Obs::locked`] before the probe's
+/// baseline phase begins. The lock edge means "warmup ramp done", but the fill
+/// can still be settling for a tick or two as the inner rate controller trims
+/// the last of the ramp; this holds neutral a little longer so the baseline
+/// slope reflects the steady host rate, not the tail of the ramp. Measured on
+/// the tick clock (accumulated `now_ms`), never wall time — so it is fake-time
+/// testable and unaffected by the owning thread's wake jitter. Not env-tunable
+/// (contract §2 fixed-constant discipline); a `const` so a test can pin it.
+pub const PROBE_SETTLE_SECS: u64 = 2;
 
 impl HostClock {
     /// Build the ladder from validated config. The DLL is created with adaptive
@@ -506,8 +539,9 @@ impl HostClock {
             raw_demand_ppm: 0.0,
             saturated: false,
             ladder: Ladder::Disabled,
-            probe_phase: ProbePhase::Armed,
+            probe_phase: ProbePhase::AwaitLock,
             probe_started_ms: 0,
+            lock_since_ms: None,
             probe_baseline_slope_ppm: 0.0,
             probe_step_slope_ppm: 0.0,
             probe_result: ProbeResult::None,
@@ -565,6 +599,14 @@ impl HostClock {
     }
     pub fn probe_result(&self) -> ProbeResult {
         self.probe_result
+    }
+    /// True iff the ladder is in the pre-probe wait — `Probing` and holding
+    /// neutral in [`ProbePhase::AwaitLock`] until the lane leaves its warmup ramp
+    /// (locked for the settle window). Distinguishes "probing but waiting for the
+    /// lane to settle" from "probing and actively measuring", which the bare
+    /// `ladder=probing` token cannot. Surfaced in the status fragment.
+    pub fn probe_waiting_for_lock(&self) -> bool {
+        self.ladder == Ladder::Probing && self.probe_phase == ProbePhase::AwaitLock
     }
     pub fn response_ratio(&self) -> Option<f64> {
         self.response_ratio
@@ -664,7 +706,7 @@ impl HostClock {
 
         // ---- Active-session ladder step -------------------------------------
         match self.ladder {
-            Ladder::Probing => self.tick_probe(now_ms, &mut actions),
+            Ladder::Probing => self.tick_probe(obs, now_ms, &mut actions),
             Ladder::L0Locked | Ladder::L1Warn => self.tick_locked(obs, &mut actions),
             // Disabled/L2 while session_active only occurs transiently; L2 holds
             // neutral until the idle boundary re-probes (handled above).
@@ -677,7 +719,12 @@ impl HostClock {
 
     fn begin_probe(&mut self, now_ms: u64, actions: &mut Vec<Action>) {
         self.transition_to(Ladder::Probing, "session_start");
-        self.probe_phase = ProbePhase::Armed;
+        // Enter the pre-probe wait: hold neutral until the lane reports `locked`
+        // for PROBE_SETTLE_SECS. `probe_started_ms` is (re)seated at the AwaitLock
+        // → Baseline transition, so the 4 s baseline window is measured from lock,
+        // not from this session edge (that was the warmup-ramp contamination).
+        self.probe_phase = ProbePhase::AwaitLock;
+        self.lock_since_ms = None;
         self.probe_started_ms = now_ms;
         self.probe_baseline_slope_ppm = 0.0;
         self.probe_step_slope_ppm = 0.0;
@@ -687,24 +734,53 @@ impl HostClock {
         // Command neutral for the baseline measurement (forced write).
         self.command(0.0, true, actions);
         log::info!(
-            "event={}.host_clock_probe_start ppm={:.0} baseline_s={} step_s={}",
+            "event={}.host_clock_probe_wait reason=await_lock settle_s={}",
             self.cfg.log_prefix,
-            self.cfg.probe_ppm,
-            PROBE_BASELINE_SECS,
-            self.cfg.probe_step_secs,
+            PROBE_SETTLE_SECS,
         );
     }
 
-    fn tick_probe(&mut self, now_ms: u64, actions: &mut Vec<Action>) {
+    fn tick_probe(&mut self, obs: Obs, now_ms: u64, actions: &mut Vec<Action>) {
+        // Lock loss AFTER the wait (during baseline or step) means the lane fell
+        // back into its warmup regime — the measurement in flight is now
+        // contaminated, so restart the wait rather than trust it. Handled first
+        // so it takes priority over the phase's own elapsed-time checks.
+        if !obs.locked && self.probe_phase != ProbePhase::AwaitLock {
+            self.restart_probe_wait(actions);
+            return;
+        }
+
         let elapsed_ms = now_ms.saturating_sub(self.probe_started_ms);
         let baseline_ms = PROBE_BASELINE_SECS * 1000;
         let step_ms = baseline_ms + self.cfg.probe_step_secs * 1000;
 
         match self.probe_phase {
-            ProbePhase::Armed => {
-                // First tick after arming: enter baseline (still commanding
-                // neutral). The slope estimator anchors this tick.
-                self.probe_phase = ProbePhase::Baseline;
+            ProbePhase::AwaitLock => {
+                if obs.locked {
+                    // Track when lock first became continuously true; once it has
+                    // held for the settle window, begin the baseline. The timer is
+                    // on the tick clock (`now_ms`), never wall time.
+                    let since = *self.lock_since_ms.get_or_insert(now_ms);
+                    if now_ms.saturating_sub(since) >= PROBE_SETTLE_SECS * 1000 {
+                        // Seat the baseline window fresh from HERE and re-anchor the
+                        // slope so the natural-rate measurement starts clean (the
+                        // next tick's slope update is the baseline's first sample).
+                        self.probe_phase = ProbePhase::Baseline;
+                        self.probe_started_ms = now_ms;
+                        self.slope.rearm();
+                        log::info!(
+                            "event={}.host_clock_probe_start ppm={:.0} baseline_s={} step_s={}",
+                            self.cfg.log_prefix,
+                            self.cfg.probe_ppm,
+                            PROBE_BASELINE_SECS,
+                            self.cfg.probe_step_secs,
+                        );
+                    }
+                } else {
+                    // Not locked (yet, or lost before settling): reset the timer so
+                    // the settle window requires CONTINUOUS lock.
+                    self.lock_since_ms = None;
+                }
             }
             ProbePhase::Baseline => {
                 if elapsed_ms >= baseline_ms {
@@ -721,6 +797,27 @@ impl HostClock {
                 }
             }
         }
+    }
+
+    /// Lock was lost mid-measurement: drop back to the AwaitLock wait, command
+    /// neutral, rearm the slope, and clear the settle timer so the next lock edge
+    /// must again hold for PROBE_SETTLE_SECS before baselining. Stays in
+    /// [`Ladder::Probing`] (no L2 demotion — a warmup re-entry is not a
+    /// compliance failure).
+    fn restart_probe_wait(&mut self, actions: &mut Vec<Action>) {
+        self.probe_phase = ProbePhase::AwaitLock;
+        self.lock_since_ms = None;
+        self.probe_baseline_slope_ppm = 0.0;
+        self.probe_step_slope_ppm = 0.0;
+        self.slope.rearm();
+        self.dll.reset();
+        self.feed_forward_ppm = 0.0;
+        self.command(0.0, true, actions);
+        log::info!(
+            "event={}.host_clock_probe_wait reason=lock_lost settle_s={}",
+            self.cfg.log_prefix,
+            PROBE_SETTLE_SECS,
+        );
     }
 
     fn finish_probe(&mut self, actions: &mut Vec<Action>) {
@@ -875,10 +972,11 @@ impl HostClock {
         self.feed_forward_ppm = 0.0;
         self.l1_high_ticks = 0;
         self.l2_evidence_ticks = 0;
-        // ANY → PROBING(armed) at the idle boundary; pitch → neutral. This is
-        // the ONLY place L2 re-promotes toward PROBING.
+        // ANY → PROBING(await-lock) at the idle boundary; pitch → neutral. This
+        // is the ONLY place L2 re-promotes toward PROBING.
         self.transition_to(Ladder::Probing, reason);
-        self.probe_phase = ProbePhase::Armed;
+        self.probe_phase = ProbePhase::AwaitLock;
+        self.lock_since_ms = None;
         self.dll.reset();
         self.slope.rearm();
         self.command(0.0, true, actions);
@@ -969,7 +1067,7 @@ impl HostClock {
                 "\"fill_slope_ppm\":{:.2},",
                 "\"fill_variance\":{:.2},",
                 "\"dll\":{{\"err_frames\":{:.2},\"locked\":{}}},",
-                "\"probe\":{{\"last_result\":\"{}\",\"response_ratio\":{}}},",
+                "\"probe\":{{\"last_result\":\"{}\",\"response_ratio\":{},\"waiting_for_lock\":{}}},",
                 "\"demotions\":{},",
                 "\"transitions\":{},",
                 "\"last_transition_reason\":\"{}\"",
@@ -985,6 +1083,7 @@ impl HostClock {
             json_bool(self.dll_locked()),
             self.probe_result.as_str(),
             ratio,
+            json_bool(self.probe_waiting_for_lock()),
             self.demotions,
             self.transitions,
             self.last_transition_reason,
@@ -1150,11 +1249,25 @@ mod tests {
         }
     }
 
+    /// Build an [`Obs`] with the lane already LOCKED (steady regime). Most tests
+    /// want a lane that has left its warmup ramp, so the probe's AwaitLock wait
+    /// clears after the settle window; `obs_unlocked` covers the warmup case.
     fn obs(playing: bool, host: bool, fill: f64, cap: u64, play: u64) -> Obs {
+        obs_locked(playing, host, fill, cap, play, true)
+    }
+
+    /// An [`Obs`] whose lane is NOT locked (still in its warmup ramp). Used to
+    /// prove the probe holds in AwaitLock until the lane settles.
+    fn obs_unlocked(playing: bool, host: bool, fill: f64, cap: u64, play: u64) -> Obs {
+        obs_locked(playing, host, fill, cap, play, false)
+    }
+
+    fn obs_locked(playing: bool, host: bool, fill: f64, cap: u64, play: u64, locked: bool) -> Obs {
         Obs {
             playing,
             host_connected: host,
             preempted: false,
+            locked,
             fill_frames: fill,
             capture_frames: cap,
             playback_frames: play,
@@ -1298,21 +1411,19 @@ mod tests {
         hc.startup_neutralize();
         let mut cap: u64 = 0;
         let mut play: u64 = 0;
-        // Host runs +200 ppm fast at baseline; during the step it FOLLOWS the
-        // +300 command (delivers 300 ppm faster) — a compliant response.
-        let mut t = 1u64;
-        // Rising edge → begin probe.
-        let mut ladder_seen = Vec::new();
-        for _ in 0..14 {
-            // capture advances a bit faster than playback => positive divergence
-            // slope. Baseline: +200 ppm. Step (after t>=5s): +200+300.
-            let elapsed_s = t.saturating_sub(1);
-            let host_ppm = if elapsed_s >= 4 { 200.0 + 300.0 } else { 200.0 };
+        // The lane is LOCKED from the first tick, so the probe clears its
+        // AwaitLock settle then runs baseline → step. A COMPLIANT host runs at a
+        // +200 ppm crystal offset PLUS the commanded pitch: at baseline the
+        // command is neutral (host +200), during the +300 step it follows
+        // (host +500). Keying on `hc.commanded_ppm()` (not a hardcoded tick
+        // schedule) makes the response track the ACTUAL step timing regardless of
+        // the settle delay.
+        let offset = 200.0;
+        for t in 1u64..=(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + 6 + 3) {
+            let host_ppm = offset + hc.commanded_ppm();
             cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
             play += 48000;
             hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
-            ladder_seen.push(hc.ladder());
-            t += 1;
         }
         assert_eq!(hc.probe_result(), ProbeResult::Pass);
         assert_eq!(hc.ladder(), Ladder::L0Locked);
@@ -1409,6 +1520,231 @@ mod tests {
             matches!(actions.last(), Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0),
             "abort forces neutral pitch"
         );
+    }
+
+    // ---- Probe lock-gate (session-start warmup-ramp fix) -------------------
+
+    /// The core defect fix: while the lane is UNLOCKED (its warmup fill ramp),
+    /// the probe must NOT begin its baseline — it holds in AwaitLock, commanding
+    /// neutral, so the baseline never measures the ramp as clock drift. The
+    /// hardware evidence (jts.local 2026-07-03) was a baseline_slope of +1460 ppm
+    /// that was purely the resampler's 0→held-target fill ramp.
+    #[test]
+    fn probe_does_not_baseline_while_unlocked() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let mut cap: u64 = 0;
+        let mut play: u64 = 0;
+        // 20 s of playing-but-UNLOCKED with a huge divergence slope (the warmup
+        // ramp): capture races ahead of playback. If the probe baselined here it
+        // would measure this ramp and (once stepped) fail. It must not: the
+        // ladder stays Probing/AwaitLock, pitch neutral, and never reaches a
+        // verdict.
+        for t in 1u64..=20 {
+            cap += (48000.0 * (1.0 + 1460.0 / 1.0e6)) as u64; // the ramp slope
+            play += 48000;
+            let actions = hc.tick(obs_unlocked(true, true, 400.0, cap, play), t * 1000);
+            assert_eq!(hc.ladder(), Ladder::Probing, "unlocked ⇒ still probing");
+            assert!(
+                hc.probe_waiting_for_lock(),
+                "unlocked ⇒ probe is waiting for lock"
+            );
+            // Any write while waiting is neutral (never the +probe_ppm step).
+            if let Some(Action::WritePitch { ppm, .. }) = actions.last() {
+                assert_eq!(*ppm, 0.0, "await-lock commands only neutral pitch");
+            }
+        }
+        assert_eq!(
+            hc.probe_result(),
+            ProbeResult::None,
+            "no verdict is reached while the lane never locks"
+        );
+    }
+
+    /// Once the lane locks, the probe waits PROBE_SETTLE_SECS of CONTINUOUS lock
+    /// before the baseline starts (measured on the tick clock), then runs a clean
+    /// baseline+step over locked, on-rate data → passes and locks L0.
+    #[test]
+    fn probe_starts_after_lock_plus_settle_and_passes() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let mut cap: u64 = 0;
+        let mut play: u64 = 0;
+        let mut t = 0u64;
+        // Phase A: 5 s unlocked warmup with a steep ramp slope. Probe waits.
+        for _ in 0..5 {
+            t += 1;
+            cap += (48000.0 * (1.0 + 1460.0 / 1.0e6)) as u64;
+            play += 48000;
+            hc.tick(obs_unlocked(true, true, 400.0, cap, play), t * 1000);
+        }
+        assert!(hc.probe_waiting_for_lock(), "still waiting during warmup");
+        assert_eq!(hc.probe_result(), ProbeResult::None);
+        // Phase B: lane locks; a compliant host at a modest +100 ppm offset that
+        // follows the commanded step. The settle + baseline + step now run over
+        // clean locked data.
+        let offset = 100.0;
+        for _ in 0..(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + 6 + 3) {
+            t += 1;
+            let host_ppm = offset + hc.commanded_ppm();
+            cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
+            play += 48000;
+            hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
+        }
+        assert_eq!(
+            hc.probe_result(),
+            ProbeResult::Pass,
+            "clean locked baseline+step passes"
+        );
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        assert!(
+            !hc.probe_waiting_for_lock(),
+            "locked ⇒ no longer waiting for lock"
+        );
+    }
+
+    /// The settle timer is on the TICK clock, not wall time: it requires the
+    /// accumulated `now_ms` since lock to reach PROBE_SETTLE_SECS. A single lock
+    /// tick does not immediately baseline; a lock that is younger than the settle
+    /// window keeps waiting, and only crossing the window (in tick time) starts
+    /// the baseline. We drive fake time in exact 1 s steps and assert the
+    /// baseline has NOT started one tick before the settle boundary and HAS by
+    /// two ticks after.
+    #[test]
+    fn settle_timer_uses_tick_clock_not_wall_time() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let mut cap: u64 = 1_000_000_000;
+        let mut play: u64 = cap;
+        // Rising edge at t=10 s → AwaitLock, lock_since=10 s.
+        let mut t = 10u64;
+        cap += 48000;
+        play += 48000;
+        hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
+        assert!(hc.probe_waiting_for_lock(), "just entered await-lock");
+        // One tick later (t=11 s): only 1 s of lock < 2 s settle ⇒ still waiting.
+        t += 1;
+        cap += 48000;
+        play += 48000;
+        hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
+        assert!(
+            hc.probe_waiting_for_lock(),
+            "1 s of lock is below the {PROBE_SETTLE_SECS}s settle ⇒ still waiting"
+        );
+        // At t=12 s: 2 s of lock == settle ⇒ baseline begins (no longer waiting).
+        t += 1;
+        cap += 48000;
+        play += 48000;
+        hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
+        assert!(
+            !hc.probe_waiting_for_lock(),
+            "at the settle boundary the baseline starts"
+        );
+        assert_eq!(hc.ladder(), Ladder::Probing, "baselining is still Probing");
+    }
+
+    /// Lock loss DURING the baseline restarts the wait: the in-flight measurement
+    /// is contaminated (the lane re-entered its warmup regime), so the ladder
+    /// drops back to AwaitLock, commands neutral, and requires a fresh
+    /// lock+settle before baselining again. It does NOT demote to L2 (a warmup
+    /// re-entry is not a compliance failure).
+    #[test]
+    fn lock_loss_during_baseline_restarts_the_wait() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let mut cap: u64 = 1_000_000_000;
+        let mut play: u64 = cap;
+        let mut t = 0u64;
+        // Get into the baseline: lock + settle, then one baseline tick.
+        for _ in 0..(PROBE_SETTLE_SECS + 1) {
+            t += 1;
+            cap += 48000;
+            play += 48000;
+            hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
+        }
+        assert!(!hc.probe_waiting_for_lock(), "baseline has started");
+        assert_eq!(hc.ladder(), Ladder::Probing);
+        // Now lose lock mid-baseline → restart the wait.
+        t += 1;
+        cap += 48000;
+        play += 48000;
+        let actions = hc.tick(obs_unlocked(true, true, 400.0, cap, play), t * 1000);
+        assert!(
+            hc.probe_waiting_for_lock(),
+            "lock loss mid-baseline returns to await-lock"
+        );
+        assert_eq!(
+            hc.ladder(),
+            Ladder::Probing,
+            "no demotion to L2 on warmup re-entry"
+        );
+        assert_ne!(hc.ladder(), Ladder::L2Fallback);
+        assert!(
+            matches!(actions.last(), Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0),
+            "restart forces neutral pitch"
+        );
+        // The restarted wait requires a fresh full settle: one lock tick is not
+        // enough to re-baseline.
+        t += 1;
+        cap += 48000;
+        play += 48000;
+        hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
+        assert!(
+            hc.probe_waiting_for_lock(),
+            "one lock tick after a restart is below the settle window"
+        );
+    }
+
+    /// usbsink solo maps `Obs::locked` from playing AND ring-primed-to-target.
+    /// A ring below the target while playing is NOT the steady regime, so the
+    /// probe waits; once the ring reaches target it clears (after settle). This
+    /// pins the daemon-side steady mapping used by `obs_from_shared`.
+    #[test]
+    fn usbsink_style_ring_below_target_is_not_locked() {
+        // Emulate the usbsink mapping: locked = playing && fill >= target.
+        let target = 384.0;
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let mut cap: u64 = 1_000_000_000;
+        let mut play: u64 = cap;
+        let mut t = 0u64;
+        let ob = |fill: f64, cap: u64, play: u64| -> Obs {
+            let mut o = obs(true, true, fill, cap, play);
+            o.locked = fill >= target; // playing is already true
+            o
+        };
+        // 6 s with the ring priming BELOW target: not locked ⇒ waits.
+        for _ in 0..6 {
+            t += 1;
+            cap += (48000.0 * (1.0 + 800.0 / 1.0e6)) as u64;
+            play += 48000;
+            hc.tick(ob(256.0, cap, play), t * 1000);
+            assert!(hc.probe_waiting_for_lock(), "ring below target ⇒ waiting");
+        }
+        // Ring reaches target; after the settle the baseline begins.
+        for _ in 0..(PROBE_SETTLE_SECS + 1) {
+            t += 1;
+            cap += 48000;
+            play += 48000;
+            hc.tick(ob(384.0, cap, play), t * 1000);
+        }
+        assert!(
+            !hc.probe_waiting_for_lock(),
+            "ring at target for the settle window ⇒ baseline starts"
+        );
+    }
+
+    /// The disabled-config fragment now carries `probe.waiting_for_lock:false`
+    /// (the new observable). Pins the additive shape at the accessor level in
+    /// addition to the byte-exact `host_clock_fragment_shape_is_stable`.
+    #[test]
+    fn waiting_for_lock_is_false_when_not_probing() {
+        let hc = HostClock::new(enabled_cfg());
+        assert!(
+            !hc.probe_waiting_for_lock(),
+            "Disabled ladder is not waiting for lock"
+        );
+        assert!(hc.status_fragment().contains("\"waiting_for_lock\":false"));
     }
 
     // ---- Closed-loop servo -------------------------------------------------
@@ -1905,7 +2241,7 @@ mod tests {
         let fragment = hc.status_fragment();
         assert_eq!(
             fragment,
-            r#"{"enabled":false,"ladder":"disabled","pitch_ppm_commanded":0.0,"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"dll":{"err_frames":0.00,"locked":false},"probe":{"last_result":"none","response_ratio":null},"demotions":0,"transitions":0,"last_transition_reason":"startup"}"#
+            r#"{"enabled":false,"ladder":"disabled","pitch_ppm_commanded":0.0,"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"dll":{"err_frames":0.00,"locked":false},"probe":{"last_result":"none","response_ratio":null,"waiting_for_lock":false},"demotions":0,"transitions":0,"last_transition_reason":"startup"}"#
         );
         // And it parses as valid JSON.
         let parsed: serde_json::Value = serde_json::from_str(&fragment).unwrap();
@@ -2014,17 +2350,20 @@ mod tests {
 
     /// Fast-forward a HostClock into L0_LOCKED with a compliant probe at the
     /// given crystal offset. Used by servo tests to isolate the locked loop.
+    ///
+    /// The lane is LOCKED from the first tick (`obs` sets `locked=true`), so the
+    /// probe clears its AwaitLock settle after PROBE_SETTLE_SECS, then runs the
+    /// 4 s baseline + 6 s step. A COMPLIANT host follows the commanded pitch: its
+    /// effective rate is `offset + commanded`, so during the +probe_ppm step the
+    /// divergence slope moves ~probe_ppm ⇒ a passing response_ratio. Keying the
+    /// host rate on `hc.commanded_ppm()` (not a hardcoded tick schedule) makes
+    /// this robust to the settle-delay shift in phase timing.
     fn drive_to_l0(hc: &mut HostClock, offset_ppm: f64) {
         let mut cap: u64 = 0;
         let mut play: u64 = 0;
-        for t in 1u64..14 {
-            let elapsed_s = t.saturating_sub(1);
-            // Compliant: follows the +probe_ppm step during the step phase.
-            let host_ppm = if elapsed_s >= 4 {
-                offset_ppm + 300.0
-            } else {
-                offset_ppm
-            };
+        // settle (2) + baseline (4) + step (6) + slack. The rising edge is tick 1.
+        for t in 1u64..=(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + 6 + 3) {
+            let host_ppm = offset_ppm + hc.commanded_ppm();
             cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
             play += 48000;
             hc.tick(obs(true, true, 384.0, cap, play), t * 1000);

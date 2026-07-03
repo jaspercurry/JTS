@@ -1450,7 +1450,11 @@ fn run_state_publisher(
     while !shutdown.load(Ordering::Relaxed) {
         publisher.poll(&tap_receiver, &tap, &tap_config, monotonic_millis());
         if last_hc_tick.elapsed() >= Duration::from_millis(host_clock::TICK_INTERVAL_MS) {
-            let obs = host_clock::obs_from_shared(&state, config.period_frames);
+            let obs = host_clock::obs_from_shared(
+                &state,
+                config.period_frames,
+                config.host_clock.target_fill_frames,
+            );
             for action in host_clock.tick(obs, monotonic_millis() as u64) {
                 pitch.apply(action);
             }

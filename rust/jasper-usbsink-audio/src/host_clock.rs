@@ -147,13 +147,26 @@ where
 
 /// Snapshot an [`Obs`] from the daemon's shared atomics. Used by the real
 /// publisher; the shared crate's tests build `Obs` directly with fake values.
-pub fn obs_from_shared(state: &SharedState, period_frames: u32) -> Obs {
+///
+/// `target_fill_frames` is the host-clock setpoint (`cfg.target_fill_frames`).
+/// It is only used to derive `Obs::locked` — usbsink solo's steady-regime gate
+/// for the probe baseline. usbsink has no resampler lock atomic to read, so its
+/// steady signal is: audio is flowing (`playing`, the RMS gate) AND the gadget
+/// ring has primed to at least its target fill (the warmup ramp — ring filling
+/// from empty — is done). Baselining before the ring reaches target would
+/// measure that prime ramp as host clock drift (the contamination this gate
+/// exists to prevent).
+pub fn obs_from_shared(state: &SharedState, period_frames: u32, target_fill_frames: f64) -> Obs {
     let fill_periods = state.ring_fill_periods.load(Ordering::Relaxed);
+    let fill_frames = (fill_periods as f64) * (period_frames as f64);
+    let playing = state.playing.load(Ordering::Relaxed);
     Obs {
-        playing: state.playing.load(Ordering::Relaxed),
+        playing,
         host_connected: state.host_connected.load(Ordering::Relaxed),
         preempted: state.preempted.load(Ordering::Relaxed),
-        fill_frames: (fill_periods as f64) * (period_frames as f64),
+        // Steady regime: playing AND the ring primed to the setpoint.
+        locked: playing && fill_frames >= target_fill_frames,
+        fill_frames,
         capture_frames: state.capture_frames.load(Ordering::Relaxed),
         playback_frames: state.playback_frames.load(Ordering::Relaxed),
     }

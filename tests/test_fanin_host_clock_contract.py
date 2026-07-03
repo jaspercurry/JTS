@@ -50,7 +50,7 @@ _PINNED_HOST_CLOCK_FRAGMENT = (
     '{"enabled":false,"ladder":"disabled","pitch_ppm_commanded":0.0,'
     '"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,'
     '"dll":{"err_frames":0.00,"locked":false},'
-    '"probe":{"last_result":"none","response_ratio":null},'
+    '"probe":{"last_result":"none","response_ratio":null,"waiting_for_lock":false},'
     '"demotions":0,"transitions":0,"last_transition_reason":"startup"}'
 )
 
