@@ -402,6 +402,20 @@ anything, restarts `jasper-camilla`; strips the marked block from
 the recorded rollback state. `--purge` additionally removes the
 installed `.so` and the `build-on-pi.sh` scratch directory.
 
+> **Interaction with the P1 product install (post-2026-07 branches).**
+> Audio-graph consolidation P1 promoted `libasound_module_pcm_jts_ring.so`
+> and the `/dev/shm/jts-ring` directory to PRODUCT assets (shipped INERT by
+> `deploy/lib/install/ring-platform.sh`; the doctor's `ring platform` check
+> verifies them). On a box that has that P1 deploy, two disarm actions touch
+> product-owned files: `--purge` removes the now-product `.so`, and the Ring-B
+> `disarm.sh` removes the whole `/dev/shm/jts-ring` directory. Both are still
+> safe and self-healing — the next `bash scripts/deploy-to-pi.sh` rebuilds the
+> `.so` and re-applies the tmpfiles dir — but until that redeploy (or a reboot,
+> which re-applies the tmpfiles entry) the doctor's `ring platform` check will
+> report `warn` ("inert platform incomplete"). That warn is expected after a
+> disarm on a P1 box, not a regression. (Ring-A `disarm.sh --ring-a` removes
+> only `program.ring`, never the dir, so it leaves the product dir intact.)
+
 ## Reboot-while-armed
 
 Unit ordering is already correct for this without any change:

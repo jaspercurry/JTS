@@ -167,13 +167,21 @@ are immune.
 
 Verified missing on main (2026-07-03):
 
-1. **ioplug build/ship**: `install.sh` builds the three Rust daemons but
+1. **ioplug build/ship**: ~~`install.sh` builds the three Rust daemons but
    has zero `ioplug`/`jts_ring` references; the `.so` is built only by
    `scripts/ring-proto/build-on-pi.sh` into
-   `/usr/lib/aarch64-linux-gnu/alsa-lib/`.
-2. **conf.d shipping**: `pcm.jts_ring_playback` / `pcm.jts_ring_capture`
+   `/usr/lib/aarch64-linux-gnu/alsa-lib/`.~~ **CLOSED by P1**:
+   `deploy/lib/install/ring-platform.sh` (`build_install_jts_ring_ioplug`)
+   compiles `c/jts-ring-ioplug` via `make plugin` on-Pi (contained,
+   sha-compared, degrade-to-warn on failure) and installs the `.so` to the
+   arch plugin dir. Called from both install paths in `install.sh` main().
+2. **conf.d shipping**: ~~`pcm.jts_ring_playback` / `pcm.jts_ring_capture`
    exist only as lab drop-ins (`/etc/alsa/conf.d/98-jts-ring*-proto.conf`,
-   written by `scripts/ring-proto/arm*.sh`).
+   written by `scripts/ring-proto/arm*.sh`).~~ **CLOSED by P1**: shipped as
+   the product file `deploy/alsa/conf.d/60-jts-ring.conf` (installed to
+   `/etc/alsa/conf.d/`, 0644), plus the `/dev/shm/jts-ring` directory via
+   `deploy/tmpfiles/jts-ring.conf` (mode 2775 `root:jasper`). Both INERT —
+   nothing opens the PCMs / no ring file is created until P2 arms a coupling.
 3. **Config emission**: no product emitter can produce a ring CamillaDSP
    config — `jasper/sound/camilla_yaml.py`, `camilla_config_contract.py`,
    and `output_topology.py` contain zero ring references; today's ring yml
@@ -186,8 +194,14 @@ Verified missing on main (2026-07-03):
    arm/disarm, no activation gate, no fail-safe-to-loopback.
 5. **Topology-contract citizenship**: `jasper/output_topology.py` and the
    camilla statefile seeding know nothing of ring mode.
-6. **Doctor**: no ring asset/drift checks; existing loopback checks would
-   false-fail a ring box at E's list.
+6. **Doctor**: ~~no ring asset/drift checks;~~ existing loopback checks would
+   false-fail a ring box at E's list. **Ring-asset check CLOSED by P1**:
+   `check_ring_platform_assets` (`jasper/cli/doctor/audio.py`, order 51.8)
+   verifies the `.so` + conf.d + `/dev/shm/jts-ring` are present and open-
+   probes both PCMs (a `warn` when an asset is missing since loopback still
+   carries audio in the inert phase; a `fail` when the `.so` is installed but
+   a PCM cannot open — the `-DPIC` registration class). The loopback-check
+   rewrites for E's list remain a later-phase (P7/P9) task.
 7. **/state observability**: fan-in STATUS has ring blocks
    (`RingObservability`) but `/state.audio_graph` needs the resolved
    transport surfaced fleet-wide; doctor + dashboards read loopback truth.

@@ -732,12 +732,36 @@ def test_arm_never_invokes_product_camilla_emitters_or_reconcilers() -> None:
 
 def test_no_ring_proto_script_is_referenced_from_install_sh() -> None:
     """The flip side of the rule above: install.sh must never learn about
-    this prototype. A reference there would mean the lab wiring leaked
-    into the product installer."""
+    the LAB prototype under scripts/ring-proto/. A reference there would
+    mean the lab wiring (arm/disarm choreography, the hand Camilla config,
+    the on-Pi lab build helper, the ``*-proto.conf`` drop-ins) leaked into
+    the product installer.
+
+    NOTE (audio-graph consolidation P1, 2026-07-03): the ring *platform*
+    itself is now a PRODUCT concern — install.sh builds ``c/jts-ring-ioplug``
+    and ships ``pcm.jts_ring_playback`` / ``pcm.jts_ring_capture`` via
+    ``deploy/lib/install/ring-platform.sh`` (INERT, nothing arms). So the
+    product NAMES (``jts-ring-ioplug``, ``jts_ring_playback``) now correctly
+    appear in install.sh; what must STILL stay out is the lab tooling under
+    ``scripts/ring-proto/``, which the product install path never invokes.
+    """
     install_sh = (ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
-    assert "ring-proto" not in install_sh
-    assert "jts_ring_playback" not in install_sh
-    assert "jts-ring-ioplug" not in install_sh
+    # The lab scripts dir + its lab-only artifacts must never be referenced.
+    assert "ring-proto" not in install_sh, (
+        "install.sh references scripts/ring-proto/ — the lab prototype must "
+        "not be wired into the product installer (P1 ships the ring platform "
+        "via deploy/lib/install/ring-platform.sh, not the lab scripts)"
+    )
+    assert "-proto.conf" not in install_sh, (
+        "install.sh references a lab *-proto.conf drop-in (e.g. "
+        "98-jts-ring-proto.conf) — the product conf.d is 60-jts-ring.conf"
+    )
+    for lab_script in ("arm.sh", "arm-ring-a.sh", "disarm.sh", "build-on-pi.sh",
+                       "make-camilla-ring-config.sh"):
+        assert lab_script not in install_sh, (
+            f"install.sh references the lab script {lab_script!r}; the product "
+            "install path must not call scripts/ring-proto/ tooling"
+        )
 
 
 def test_arm_reads_outputd_env_from_proc_environ_not_systemctl_show() -> None:

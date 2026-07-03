@@ -47,6 +47,10 @@ source "${REPO_DIR}/deploy/lib/install/renderers.sh"
 source "${REPO_DIR}/deploy/lib/install/web-assets.sh"
 source "${REPO_DIR}/deploy/lib/install/model-staging.sh"
 source "${REPO_DIR}/deploy/lib/install/rust-daemons.sh"
+# Ring platform (audio-graph consolidation P1): builds the jts_ring ALSA
+# ioplug + ships its conf.d/tmpfiles assets INERT. Sourced after
+# build-sandbox.sh (uses run_contained_build).
+source "${REPO_DIR}/deploy/lib/install/ring-platform.sh"
 source "${REPO_DIR}/deploy/lib/install/python-runtime.sh"
 source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"
 
@@ -407,6 +411,14 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - jasper-usbsink-audio daemon from rust/jasper-usbsink-audio with
      cargo build --release --locked; this keeps the production USB
      low-latency route out of Python's callback tail.
+   - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
+     (needs libasound2-dev), installed to the arch ALSA plugin dir,
+     sha256-compared like the Rust daemons. Audio-graph consolidation
+     P1: shipped INERT (nothing opens the ring); a build failure never
+     fails the install. On a first-ever build failure the .so is absent
+     and the doctor 'ring platform' check warns; on a REBUILD failure a
+     prior good .so stays installed and the doctor reads ok (stale-binary
+     class) — the build-failure WARN in the transcript is the only signal.
    - The shairport-sync/nqptp source builds and Rust daemon builds
      run RAM-bounded and cgroup-contained via
      deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
@@ -425,6 +437,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      docs, Avahi service templates, systemd units, renderer configs,
      udev rules, ALSA templates, and helper binaries.
    - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
+   - Install the inert jts_ring device definitions
+     (/etc/alsa/conf.d/60-jts-ring.conf) and the /dev/shm/jts-ring
+     directory lifecycle (/etc/tmpfiles.d/jts-ring.conf). Nothing opens
+     them in P1.
    - Write output hardware state before Camilla statefile seed.
    - Render outputd flat startup config with active DAC latency floor.
    - Move HA/Spotify integration secrets into
@@ -545,6 +561,14 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - jasper-usbsink-audio daemon from rust/jasper-usbsink-audio with
      cargo build --release --locked; enabled by the USB Audio Input
      source unit when the source is toggled on.
+   - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
+     (needs libasound2-dev), installed to the arch ALSA plugin dir,
+     sha256-compared like the Rust daemons. Audio-graph consolidation
+     P1: shipped INERT (nothing opens the ring; loopback stays the
+     coupling). A build failure never fails the install: a first-ever
+     failure leaves the .so absent (doctor warns); a REBUILD failure
+     leaves the prior .so installed and the doctor reads ok (stale-binary
+     class) — the transcript build-failure WARN is the only signal.
    - Optional ESP32 dial/satellite firmware only when
      JASPER_BUILD_OPTIONAL_FIRMWARE=1.
    - All heavy source builds above (webrtc AEC3, jasper_aec3, the Rust
@@ -569,6 +593,11 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      landing pages, nginx config, Avahi service templates, systemd
      units, udev rules, ALSA templates, and helper binaries.
    - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
+   - Install the inert jts_ring device definitions
+     (/etc/alsa/conf.d/60-jts-ring.conf, pcm.jts_ring_capture +
+     pcm.jts_ring_playback) and the /dev/shm/jts-ring directory lifecycle
+     (/etc/tmpfiles.d/jts-ring.conf, applied immediately). Nothing opens
+     them in P1.
    - Write output hardware state before Camilla statefile seed.
    - Render outputd flat startup config with active DAC latency floor.
 
@@ -2294,6 +2323,7 @@ main() {
         build_install_jasper_fanin
         build_install_jasper_outputd
         build_install_jasper_usbsink_audio
+        install_jts_ring_platform  # P1: jts_ring ioplug + conf.d + shm dir (INERT; nothing arms)
         install_streambox_systemd_units
         retire_audio_topology_switch
         migrate_wifi_guardian
@@ -2339,6 +2369,7 @@ main() {
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     build_install_jasper_usbsink_audio  # Rust USB data-plane bridge
+    install_jts_ring_platform     # P1: jts_ring ioplug + conf.d + shm dir (INERT; nothing arms)
     install_systemd_units
     retire_audio_topology_switch # Remove stale dmix/fanin state; fanin is canonical
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram

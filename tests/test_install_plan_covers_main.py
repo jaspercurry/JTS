@@ -64,6 +64,7 @@ _STEP_TO_PLAN_MARKER = {
     "build_install_jasper_fanin": "jasper-fanin Rust daemon",
     "build_install_jasper_outputd": "jasper-outputd daemon from rust/jasper-outputd",
     "build_install_jasper_usbsink_audio": "jasper-usbsink-audio daemon from rust/jasper-usbsink-audio",
+    "install_jts_ring_platform": "jts_ring ALSA ioplug from c/jts-ring-ioplug",
     "install_systemd_units": "Enable socket-activated setup wizards",
     "retire_audio_topology_switch": "stale legacy audio-topology state",
     "migrate_wifi_guardian": "WiFi guardian recovery",
