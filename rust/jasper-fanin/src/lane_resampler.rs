@@ -2233,6 +2233,163 @@ mod tests {
         assert!(!r.decay_active.load(Ordering::Relaxed));
     }
 
+    /// PR #1141's inertness claim, pinned: an ARMED cushion decay that is FROZEN
+    /// by `dll_l0=false` (the evidence-(a) condition — `frozen_reason=not_l0`,
+    /// held pinned at the ceiling) must behave BIT-IDENTICALLY to decay disabled
+    /// over the SAME delivery trace. This is the mechanical proof that the
+    /// armed-but-frozen decay path in the observed 16/115-vs-0-5 hardware run did
+    /// not amplify (or cause) the unlock churn — the churn is a property of the
+    /// static held target and the delivery pattern, not the decay code.
+    ///
+    /// The trace has TWO regimes, both load-bearing for the pin:
+    ///
+    /// 1. An initial COALESCING-CHURN window (every 8th period stalls) that DOES
+    ///    produce unlocks — this pins that a NotL0-branch mutant which touched
+    ///    lock / silence / output accounting would diverge, and keeps the
+    ///    identity non-vacuous (`disabled` really churns).
+    /// 2. A long CLEAN LOCKED TAIL, delivered on time with `dll_l0=false`
+    ///    throughout — the lane stays locked, so `stable_periods` accrues past
+    ///    the ~1875-period warm-up window and the decay's step interval elapses.
+    ///    This is the ONLY regime where the NotL0 freeze does mechanical work: in
+    ///    the shipped code the freeze holds `held` at the ceiling; delete the
+    ///    freeze and the armed run decays `held` down over the tail, diverging
+    ///    the `held` field. The churn window alone can NOT catch that — every
+    ///    unlock resets `stable_periods`, so decay could never step there
+    ///    regardless of the NotL0 branch (the mutant-passes hole the tail closes).
+    ///
+    /// The comparison folds a running FNV checksum of every rendered `out`
+    /// period, so "bit-identical" is a claim about output PCM, not just the five
+    /// aggregate counters (both runs are deterministic — no RNG, no clock).
+    #[test]
+    fn armed_frozen_decay_is_bit_identical_to_disabled_over_the_same_trace() {
+        // The exact churny LAB geometry (base target 256 + one-period cushion =
+        // 512 held), NOT the module TARGET (512). Period 256, min_safe 274: the
+        // DLL holds the pre-render fill at 512, so a single fully-withheld
+        // delivery period drops it to 512 - 256 = 256 (below min_safe 274) →
+        // underfill-unlock → immediate re-lock next period. This is the observed
+        // churn cycle. (The production default held=2560 could never dip that far
+        // on one stall — that is why it is immune.)
+        const CHURNY_TARGET: usize = 256;
+        // Churn only in the first window; the rest of the trace is a clean locked
+        // tail long enough (≥ the ~1875-period stability window + a few step
+        // intervals) that an unfrozen armed decay would step `held` down.
+        const CHURN_PERIODS: usize = 1000;
+        const TRACE_PERIODS: usize = 6000;
+        fn run(decay_enabled: bool) -> (u64, u64, u64, u64, u64, u64) {
+            let params = DecayParams {
+                enabled: decay_enabled,
+                floor_frames: 306,
+                step_frames: 16,
+                interval_ms: 1000,
+                stability_ms: 10_000,
+                cascade_guard_ppm: 400.0,
+            };
+            let mut r = LaneResampler::new(
+                2,
+                PERIOD,
+                RATE,
+                CHURNY_TARGET,
+                PERIOD as usize,
+                MAX_PPM,
+                RING,
+                params,
+            )
+            .expect("lane builds");
+            let mut out = vec![0i16; PERIOD as usize * 2];
+            let period = PERIOD as usize;
+            // FNV-1a over every rendered output sample — makes the identity a
+            // claim about the emitted PCM, not merely the aggregate counters.
+            let mut checksum: u64 = 0xcbf2_9ce4_8422_2325;
+            let mut absorb = |out: &[i16]| {
+                for s in out {
+                    checksum ^= *s as u16 as u64;
+                    checksum = checksum.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            };
+            // Faithful delivery model (the mixer's per-period order + the gadget's
+            // coalescing shape): the host produces one period of frames every
+            // render period, but delivery to the ring is GATED during a stall
+            // window — frames accumulate and flush in one burst when the stall
+            // ends (the max_avail≈2×period signature). The render still consumes a
+            // period each step, so during a stall the cursor-relative fill drops.
+            // A stall long enough to drop the post-render fill below min_safe (274)
+            // unlocks; the immediate re-lock the next period is the churn cycle.
+            // Deterministic (no RNG / clock) so both runs replay byte-identically.
+            let mut phase = 0usize;
+            let mut pending = 0usize; // host-produced but not yet delivered
+                                      // First fully prefill + lock on a clean burst, then run the churn
+                                      // regime. Deliver the deep prefill up front so both runs lock once.
+            r.push_input(&tone_at(phase, CHURNY_TARGET + PERIOD as usize + 64));
+            phase += CHURNY_TARGET + PERIOD as usize + 64;
+            r.render_period(&mut out);
+            absorb(&out);
+            r.tick_decay(false, 0.0);
+            // Regime 1 (i < CHURN_PERIODS): the host produces exactly one period
+            // per interval and it is delivered ON TIME (fill held tight at the
+            // setpoint) EXCEPT on an isolated stall period, where delivery is
+            // withheld (fill dips one period below the setpoint → below min_safe →
+            // unlock) and flushed the next period (immediate re-lock). Every 8th
+            // period stalls; the 7 between keep the fill tight so each stall
+            // reliably dips it. This is the isolated-coalescing shape.
+            //
+            // Regime 2 (i ≥ CHURN_PERIODS): clean on-time delivery every period.
+            // The lane stays LOCKED, so `stable_periods` accrues past the warm-up
+            // window — the regime where the NotL0 freeze does its work.
+            for i in 0..TRACE_PERIODS {
+                pending += period; // host produced one period this interval
+                if i % 8 == 7 && i < CHURN_PERIODS {
+                    // Stall: withhold this interval's delivery (fill will dip).
+                } else {
+                    r.push_input(&tone_at(phase, pending));
+                    phase += pending;
+                    pending = 0;
+                }
+                r.render_period(&mut out);
+                absorb(&out);
+                // The frozen condition from evidence (a): dll_l0 = false on every
+                // tick, so an armed decay must SNAP BACK to the ceiling (never
+                // lower). The freeze fires in both regimes, but only regime 2's
+                // long locked run lets `stable_periods` reach warm-up, so that is
+                // where deleting it would let `held` decay — the load-bearing case.
+                r.tick_decay(false, 0.0);
+            }
+            let o = r.observability();
+            (
+                o.unlock_count.load(Ordering::Relaxed),
+                o.lock_count.load(Ordering::Relaxed),
+                o.held_target_frames.load(Ordering::Relaxed),
+                o.silence_frames.load(Ordering::Relaxed),
+                o.output_frames.load(Ordering::Relaxed),
+                checksum,
+            )
+        }
+        let disabled = run(false);
+        let armed_frozen = run(true);
+        assert_eq!(
+            armed_frozen, disabled,
+            "ARMED+frozen(not_l0) decay must be bit-identical to disabled \
+             (unlocks, locks, held, silence, output, PCM checksum) — any \
+             divergence means the NotL0 freeze is NOT mechanically inert (PR \
+             #1141 regression). The clean locked tail is what makes deleting the \
+             NotL0 snap-back diverge `held`; the churn window keeps it non-vacuous."
+        );
+        // Sanity: the trace really did churn (else the identity is vacuous), AND
+        // the armed run stayed frozen at the ceiling through the whole tail (if it
+        // had decayed, `held` would be below the ceiling and the assert above
+        // would already have fired — this re-states the ceiling explicitly).
+        assert!(
+            disabled.0 > 0,
+            "the coalescing window must produce unlocks, or the identity proves nothing"
+        );
+        assert_eq!(
+            disabled.2,
+            (CHURNY_TARGET + PERIOD as usize) as u64,
+            "the disabled run's held target must stay at the static ceiling \
+             (target 256 + cushion 256 = 512); if this drifts the trace geometry \
+             changed and the freeze comparison is no longer meaningful"
+        );
+    }
+
     #[test]
     fn decay_snaps_back_to_ceiling_on_reset() {
         let mut r = build_with_decay();
