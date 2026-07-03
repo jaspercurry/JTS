@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import time
 from pathlib import Path
 from ...audio_hardware.dac import (
@@ -55,6 +56,26 @@ _OBSERVED_OUTPUT_HARDWARE_CLOCK_ISSUE_CODES = frozenset({
     "dual_apple_stable_identity_missing",
     "dual_apple_endpoint_not_synchronous",
 })
+
+# --- jts_ring platform assets (audio-graph consolidation P1) ---
+# The ALSA plugin dir ALSA actually dlopen()s ioplugs from on aarch64
+# Trixie (verified live on jts.local/jts3; bluealsa/jack register plugins
+# here too). Kept in lockstep with JTS_RING_ALSA_PLUGIN_DIR in
+# deploy/lib/install/ring-platform.sh.
+_JTS_RING_ALSA_PLUGIN_DIR = "/usr/lib/aarch64-linux-gnu/alsa-lib"
+_JTS_RING_IOPLUG_SO = "libasound_module_pcm_jts_ring.so"
+_JTS_RING_CONF_D = "/etc/alsa/conf.d/60-jts-ring.conf"
+# The tmpfs directory the ring files live in (shipped by
+# deploy/tmpfiles/jts-ring.conf). Module constant so tests can repoint it.
+_JTS_RING_SHM_DIR = "/dev/shm/jts-ring"
+# The two inert PCM names the conf.d defines. The open probe against these
+# both resolves the name AND forces ALSA to dlopen the ioplug .so; with no
+# ring present it exercises the writer-dead / no-reader silence path, which
+# terminates safely (the lab ring-proto resolvability step relies on this).
+_JTS_RING_PCMS = (
+    ("jts_ring_capture", "arecord"),
+    ("jts_ring_playback", "aplay"),
+)
 
 
 def _observed_output_hardware_clock_blockers(
@@ -1761,6 +1782,113 @@ def check_fanin_coupling() -> CheckResult:
         f"intent={coupling} but loaded capture={capture} (expected {expected}); "
         f"half-applied transition — run: "
         f"sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile {coupling}",
+    )
+
+
+def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
+    """Open-probe one inert jts_ring PCM. Success means ALSA resolved the
+    conf.d name AND dlopen()ed the ioplug .so AND the writer-dead/no-reader
+    silence path terminated. A 1-second probe against an absent ring is
+    safe: the ioplug free-runs (playback) or emits timer-paced silence
+    (capture) rather than blocking (the lab resolvability-step contract).
+
+    Returns (ok, detail). detail carries the tail of stderr on failure so
+    a broken registration (e.g. the -DPIC "undefined symbol: snd_dlsym_start"
+    class) is legible, not just "probe failed".
+    """
+    if not shutil.which(tool):
+        return False, f"{tool} not found"
+    # arecord -> /dev/null (discard captured silence); aplay -> /dev/zero
+    # (feed silence in). Both 2ch/48k/S16_LE/1s, matching the lab probe.
+    sink = "/dev/null" if tool == "arecord" else "/dev/zero"
+    try:
+        proc = _run(
+            [tool, "-D", pcm, "-c", "2", "-r", "48000", "-f", "S16_LE",
+             "-d", "1", sink],
+            timeout=6.0,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "open probe hung (>6 s) — ioplug no-reader/no-writer path may be broken"
+    if proc.returncode == 0:
+        return True, "resolved"
+    err = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")
+    if len(err) > 160:
+        err = err[:157] + "..."
+    return False, err or f"{tool} exit {proc.returncode}"
+
+
+@doctor_check(order=51.8, group="audio", exclusive_group="audio-probe")
+def check_ring_platform_assets() -> CheckResult:
+    """Verify the jts_ring transport platform assets are present and the
+    ioplug actually dlopens (audio-graph consolidation P1).
+
+    Three assets ship INERT in P1: the compiled ioplug .so, the conf.d
+    PCM definitions (pcm.jts_ring_capture / pcm.jts_ring_playback), and
+    the /dev/shm/jts-ring directory. Nothing opens them yet — the default
+    coupling is still loopback — but the platform must be correctly staged
+    for P2 to arm it, and a broken .so (the -DPIC registration class) or a
+    missing asset should surface here rather than at first arm.
+
+    Statuses:
+      ok    — .so + conf.d + shm dir present, both PCMs open-probe cleanly.
+      warn  — an asset is missing (build failed or drift). P1 is inert and
+              loopback remains the transport, so a missing .so is degraded,
+              not broken — the next deploy rebuilds. (This flips to fail
+              after P9, when the ioplug becomes load-bearing.)
+      fail  — the .so is installed but a PCM fails to open. That is a real
+              defect: the plugin is present but ALSA can't use it (bad
+              registration / arch mismatch), which would break P2's arm.
+
+    Probe is safe anytime: it opens each device for 1 s against an absent
+    ring, exercising only the writer-dead / no-reader silence path (feeds
+    or discards silence, never touches a live ring).
+    """
+    label = "ring platform"
+    so_path = f"{_JTS_RING_ALSA_PLUGIN_DIR}/{_JTS_RING_IOPLUG_SO}"
+    so_present = os.path.exists(so_path)
+    conf_present = os.path.exists(_JTS_RING_CONF_D)
+    shm_dir_present = os.path.isdir(_JTS_RING_SHM_DIR)
+
+    missing: list[str] = []
+    if not so_present:
+        missing.append(f"ioplug .so absent ({so_path})")
+    if not conf_present:
+        missing.append(f"conf.d absent ({_JTS_RING_CONF_D})")
+    if not shm_dir_present:
+        missing.append(f"{_JTS_RING_SHM_DIR} absent")
+
+    if missing:
+        # Inert phase: a missing asset means the ring platform is
+        # unavailable, but loopback still carries audio — degraded, not
+        # a hard failure. Redeploy to rebuild/replace.
+        return CheckResult(
+            label,
+            "warn",
+            "inert platform incomplete (loopback still active): "
+            + "; ".join(missing)
+            + " — redeploy (bash scripts/deploy-to-pi.sh) to rebuild",
+        )
+
+    # All assets present — the .so being installed means it MUST dlopen and
+    # register; a failure to open is a genuine defect.
+    probe_failures: list[str] = []
+    for pcm, tool in _JTS_RING_PCMS:
+        ok, detail = _jts_ring_pcm_resolves(pcm, tool)
+        if not ok:
+            probe_failures.append(f"{pcm}: {detail}")
+    if probe_failures:
+        return CheckResult(
+            label,
+            "fail",
+            f"ioplug .so installed but PCM open failed: {'; '.join(probe_failures)}. "
+            "Rebuild the ioplug (check -DPIC / arch); the .so is present but "
+            "ALSA can't use it.",
+        )
+    return CheckResult(
+        label,
+        "ok",
+        f"ioplug + conf.d + /dev/shm/jts-ring staged (inert); "
+        f"{', '.join(pcm for pcm, _ in _JTS_RING_PCMS)} resolve",
     )
 
 
