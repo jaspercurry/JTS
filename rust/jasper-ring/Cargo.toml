@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Ring B prototype (latency/ring-proto-shm): the SPSC ping-pong SHM ring the
+# CamillaDSP-playback ALSA ioplug (writer, C) and jasper-outputd (reader, Rust)
+# share to replace the outputd content snd-aloop hop with a bounded 2-slot
+# frame ring. This crate is the READER + the shared header/seq/geometry logic
+# and the golden-layout pin that keeps the Rust reader and the C writer
+# byte-for-byte agreed on the on-disk header.
+#
+# PROTOTYPE, flag-gated everywhere: nothing in this crate runs unless
+# JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring is set (default is Direct). The crate
+# itself has no product callers.
+#
+# Pure like jasper-clock / jasper-resampler: mmap + clock_gettime via `libc`
+# only (no ALSA, no threads), so `cargo test -p jasper-ring` runs on macOS and
+# in CI. The daemons that consume it link libasound; this crate does not. Pin
+# to the same edition the production daemons use; CI builds it on Trixie-era
+# rustc (1.85.0). `AtomicU64::from_ptr` (used on the mmap) is stable since 1.75.
+#
+# The on-disk contract this crate pins is documented in the module doc of
+# src/lib.rs (SHM contract v1) and mirrored by the C `_Static_assert`ed header
+# in c/jts-ring-ioplug/jts_ring_shm.h — the golden-layout test is the
+# cross-language drift guard.
+
+[package]
+name = "jasper-ring"
+version = "0.1.0"
+edition = "2021"
+description = "SPSC ping-pong SHM frame ring (reader + shared header/seq logic) for the JTS Ring B latency prototype."
+license = "Apache-2.0"
+repository = "https://github.com/jaspercurry/JTS"
+authors = ["Jasper Curry <jaspercurry@gmail.com>"]
+rust-version = "1.75"
+
+[lib]
+name = "jasper_ring"
+
+[dependencies]
+# mmap / ftruncate / open / clock_gettime — compiles on macOS and Linux, so the
+# reader logic is host-testable exactly like jasper-clock / jasper-resampler.
+libc = "0.2"

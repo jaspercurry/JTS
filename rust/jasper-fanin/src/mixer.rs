@@ -43,17 +43,21 @@
 //! every successful `step()`, satisfying the JTS progress-sentinel
 //! contract documented in `src/watchdog.rs`.
 
+use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::{Arc, Mutex};
 
 use alsa::pcm::{Access, Format, Frames, HwParams, State, PCM};
 use alsa::{Direction, ValueOr};
 use anyhow::{Context, Result};
 use log::{info, warn};
 
-use crate::config::{Config, Coupling};
+use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S16LE};
+
+use crate::config::{Config, Coupling, RING_SLOT_FRAMES};
 use crate::fifo::{FifoWriteOutcome, FifoWriter};
+use crate::impulse_tap::{ImpulseDetector, TapConfig, TapEvent, TapState};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
 use crate::tts::{TtsInput, TtsMixer};
 use crate::watchdog::Heartbeat;
@@ -121,15 +125,191 @@ const CATCHUP_MAX_DRAIN_PERIODS: i64 = 64;
 /// producer. Count-based (not time-based) so the hot loop never reads a clock.
 const CATCHUP_LOG_EVERY: u64 = 64;
 
+/// USB DIRECT capture open envelope (C1) — the bridge's PROVEN params, NOT
+/// fanin's aloop-tuned `configure_pcm`. S32_LE 2ch 48k, period 256, buffer
+/// ~768 (near). These MUST match `jasper-usbsink-audio`'s
+/// `open_capture`/`configure_pcm` so the direct lane inherits the exact
+/// negotiation the bridge validated on the UAC2 gadget.
+const DIRECT_PERIOD_FRAMES: u32 = 256;
+const DIRECT_BUFFER_FRAMES: u32 = 768;
+
+/// Length of the S16 narrowing scratch the direct drain uses per chunk read.
+///
+/// The drain reads the gadget in chunks of at most [`DIRECT_PERIOD_FRAMES`]
+/// frames (`to_read` in `drain_direct_capture`), so one chunk yields at most
+/// `DIRECT_PERIOD_FRAMES × CHANNELS` interleaved S16 samples. This sizing is
+/// INDEPENDENT of `config.period_frames`: the lane's `read_buf` is
+/// `period_frames × CHANNELS` (the render-period contract), and reusing it for
+/// the narrowing would slice out of bounds whenever `period_frames <
+/// DIRECT_PERIOD_FRAMES` (e.g. `JASPER_FANIN_PERIOD_FRAMES=128`). That OOB is a
+/// `panic=abort` in the hot loop → the `jasper-fanin` `StartLimitAction=reboot`
+/// ladder, so the narrowing scratch is deliberately its own fixed buffer.
+const fn direct_narrow_scratch_samples() -> usize {
+    (DIRECT_PERIOD_FRAMES as usize) * (CHANNELS as usize)
+}
+
+/// Bounded impulse-tap channel capacity (C4). The single detector fires at most
+/// once per refractory window (~4/s at the 250 ms default), so this can never
+/// fill under the harness; it exists as a drop-and-count safety net so the
+/// mixer thread's `try_send` is always non-blocking.
+const TAP_CHANNEL_CAPACITY: usize = 256;
+
+/// USB DIRECT reopen retry cadence, in render PERIODS (~2 s at 256/48k = 375).
+/// While the gadget is Absent, the lane attempts a reopen at most once per this
+/// many periods it renders — a period-counted cadence so the hot loop never
+/// reads a wall clock (same discipline as the auto-trim frames-delta latch, C3).
+const DIRECT_REOPEN_RETRY_PERIODS: u64 = 375;
+
+/// Delay, in whole seconds, from a lane's idle→active transition to its
+/// one-shot AUTO-TRIM fire. Gives the chain time to warm up and establish its
+/// standing fill before the trim drops it — trimming at t=0 (before the fill
+/// has accumulated) would be a no-op. Converted to a `frames_read` budget at
+/// the live sample rate (`sample_rate × seconds`) so the wall-clock delay is
+/// stable across period geometries. Only consulted when
+/// `JASPER_FANIN_AUTO_TRIM=enabled`.
+const AUTO_TRIM_DELAY_SECONDS: u64 = 2;
+
+/// Per-lane TRIM control + counters, shared (`Arc`) between the mixer work
+/// thread (which owns the `LaneResampler` and performs the actual ring trim)
+/// and the state-server thread (which requests trims and reads the counters for
+/// STATUS). Mirrors the `selected_input_index` cross-thread atomic idiom: the
+/// control endpoint cannot touch the mixer-owned resampler directly, so it sets
+/// `pending` and the work loop does the trim at its next period boundary.
+#[derive(Debug)]
+pub struct TrimControl {
+    /// Set by a `TRIM` control command; consumed (cleared) by the work loop at
+    /// the next period boundary, which then performs the trim. Idempotent — a
+    /// second `TRIM` before the loop consumed the first just re-sets the same
+    /// flag (one trim results).
+    pub pending: AtomicBool,
+    /// Cumulative TRIM operations that actually dropped ≥1 frame on this lane.
+    pub trims: AtomicU64,
+    /// Cumulative frames dropped by TRIM from this lane's resampler ring. Paired
+    /// with `trims` so STATUS shows both how often and how much (like the
+    /// catch-up pair).
+    pub trimmed_frames: AtomicU64,
+    /// AUTO-TRIM one-shot latch. `false` while the lane is idle (armed to fire);
+    /// set `true` once the auto-trim has fired for the current active session so
+    /// it fires exactly once per idle→active→…→idle cycle. Re-armed (set back to
+    /// `false`) when the lane goes idle. Only used when auto-trim is enabled.
+    pub auto_fired: AtomicBool,
+}
+
+impl TrimControl {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            pending: AtomicBool::new(false),
+            trims: AtomicU64::new(0),
+            trimmed_frames: AtomicU64::new(0),
+            auto_fired: AtomicBool::new(false),
+        })
+    }
+
+    /// Construct a `TrimControl` seeded with explicit counter values, for the
+    /// state-server STATUS/command tests (which build `InputSnapshotSource`
+    /// fixtures directly, without a live mixer). Not compiled into the daemon.
+    #[cfg(test)]
+    pub fn test_fixture(trims: u64, trimmed_frames: u64, pending: bool) -> Self {
+        Self {
+            pending: AtomicBool::new(pending),
+            trims: AtomicU64::new(trims),
+            trimmed_frames: AtomicU64::new(trimmed_frames),
+            auto_fired: AtomicBool::new(false),
+        }
+    }
+}
+
+/// The outcome of the pure AUTO-TRIM latch update for one lane in one period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AutoTrimDecision {
+    /// The lane's updated latch state to store back.
+    next: AutoTrimLaneState,
+    /// `true` iff this lane's one-shot auto-trim should fire THIS period.
+    fire: bool,
+}
+
+/// Pure AUTO-TRIM latch update for one lane. Given the lane's cumulative
+/// `frames_read` now, its previous latch `state`, and the post-activation
+/// `delay_frames`, decide whether the one-shot trim fires and produce the next
+/// latch state. No ALSA, no clock, no atomics — unit-testable on any host.
+///
+/// State machine (one latch per lane, re-armed each idle→active cycle):
+///   - Lane read audio this period iff `frames_read > state.last_frames_read`.
+///   - idle→active (was `None`, now active): record `active_since = frames_read`
+///     and do NOT fire yet (the standing fill hasn't accumulated).
+///   - active and `frames_read - active_since >= delay_frames`: report `fire`.
+///     This function reports `fire` on EVERY period past the delay; the caller's
+///     `TrimControl::auto_fired` latch makes it one-shot and survives across
+///     periods (encoding "already fired this session" as an atomic the pure
+///     function cannot see).
+///   - active→idle (no read this period, was active): clear `active_since` to
+///     `None` so the NEXT activation re-arms.
+///
+/// `last_frames_read` is always advanced to the current value.
+fn auto_trim_decision(
+    frames_read: u64,
+    state: AutoTrimLaneState,
+    delay_frames: u64,
+) -> AutoTrimDecision {
+    let active_this_period = frames_read > state.last_frames_read;
+    let mut next = AutoTrimLaneState {
+        last_frames_read: frames_read,
+        active_since: state.active_since,
+    };
+    if active_this_period {
+        match state.active_since {
+            None => {
+                // idle→active: arm the delay from here; never fire on the
+                // activation period itself.
+                next.active_since = Some(frames_read);
+                AutoTrimDecision { next, fire: false }
+            }
+            Some(since) => {
+                let elapsed = frames_read.saturating_sub(since);
+                let fire = elapsed >= delay_frames;
+                AutoTrimDecision { next, fire }
+            }
+        }
+    } else {
+        // No read this period. If the lane was active, it just went idle —
+        // re-arm for the next activation. An already-idle lane stays idle.
+        next.active_since = None;
+        AutoTrimDecision { next, fire: false }
+    }
+}
+
 /// The final-output transport. `Alsa` (the default) writes the snd-aloop
 /// substream and is paced by the blocking ALSA `writei` — byte-identical to the
 /// pre-coupling daemon. `Fifo` is the writer primitive used by the public
 /// `transport_pipe` mode: it writes a bounded named pipe that CamillaDSP
-/// RawFile-captures. Both are the sole timing owner of the fan-in work loop in
-/// their respective modes; only one is ever active.
+/// RawFile-captures. `Ring` is the Ring A (PROTOTYPE) SPSC SHM ring writer;
+/// CamillaDSP reads it via a capture-direction ioplug. Each is the sole timing
+/// owner of the fan-in work loop in its mode; only one is ever active.
 enum Output {
     Alsa(PCM),
     Fifo(FifoWriter),
+    /// The SPSC SHM ring writer plus its lossy aloop MIRROR PCM. The blocking
+    /// ring publish (bounded, on a full-ring-with-live-reader) is the pacer; the
+    /// mirror is a `write_music_only`-shaped non-blocking side-tap so the AEC
+    /// fallback dsnoop and any aloop diagnostics stay live. `RingOutput` owns the
+    /// per-step slot fan-out and the reader-absent self-pacing.
+    Ring(RingOutput),
+}
+
+/// The Ring A output: the SPSC ring writer, its shared observability counters,
+/// the lossy aloop mirror PCM (never the pacer), and the derived self-pacing
+/// period (used only when the reader is absent — one period's sleep per dropped
+/// publish so a readerless ring does not hot-spin the loop).
+struct RingOutput {
+    writer: RingWriter,
+    counters: RingCounters,
+    /// The lossy aloop mirror (non-blocking `hw:Loopback,0,7`). `None` if the
+    /// mirror PCM could not be opened — the ring still runs (the mirror is a
+    /// diagnostic side-tap, never load-bearing for the primary path).
+    mirror: Option<PCM>,
+    /// One period in nanoseconds (period_frames / 48000). The reader-absent
+    /// self-pacing sleep, precomputed so the hot loop never divides.
+    self_pace_period_ns: u64,
 }
 
 pub struct Mixer {
@@ -187,17 +367,58 @@ pub struct Mixer {
     /// `Loopback` (the default), so STATUS reports `transport=loopback` with no
     /// pipe block — byte-identical to the pre-coupling snapshot.
     pub coupling: CouplingObservability,
+    /// DEFAULT-OFF one-shot AUTO-TRIM (`JASPER_FANIN_AUTO_TRIM=enabled`). When
+    /// set, the work loop schedules ONE trim per lane ~`AUTO_TRIM_DELAY_SECONDS`
+    /// after that lane transitions idle→active, latched via
+    /// `TrimControl::auto_fired`. Manual `TRIM` works regardless of this flag.
+    auto_trim_enabled: bool,
+    /// Frames-active gate for the AUTO-TRIM delay: a lane must have read this
+    /// many real frames since going active before its one-shot auto-trim fires
+    /// (`AUTO_TRIM_DELAY_SECONDS` worth at the live sample rate). Derived once at
+    /// construction so the work loop compares against a plain integer.
+    auto_trim_delay_frames: u64,
+    /// Per-lane AUTO-TRIM latch state, indexed parallel to `inputs`. Only
+    /// maintained when `auto_trim_enabled`. Uses cumulative `frames_read` deltas
+    /// (no wall clock in the hot loop) to detect idle↔active transitions and to
+    /// measure the post-activation delay.
+    auto_trim_lane_state: Vec<AutoTrimLaneState>,
+    /// The relocated impulse tap over the USB DIRECT capture ingress (C4). The
+    /// tap detector + the per-lane cumulative capture cursor + the channel to
+    /// the writer thread live here; it runs inline over the converted S16 slice
+    /// in `read_direct_and_render`, before `push_input`. Present regardless of
+    /// the direct flag (a non-direct build simply never calls into it); its
+    /// disarmed cost is one relaxed atomic load per direct read (C4).
+    direct_tap: DirectTapHook,
+    /// The receiver half of the tap channel, taken by `main` to drive the
+    /// `fanin-tap-writer` thread (the single JSONL writer). `None` after
+    /// `take_direct_tap_receiver`.
+    direct_tap_receiver: Option<std::sync::mpsc::Receiver<TapEvent>>,
 }
 
-/// Coupling transport echo + the shared pipe counters for the STATUS endpoint.
-/// Under `Loopback` (default), `pipe` is `None` and STATUS reports only
-/// `transport:"loopback"`. Under `transport_pipe`, `pipe` carries the pipe path
-/// + the reopen / dropped-period / live-pipe-size atomics the `FifoWriter`
-///   updates.
+/// Per-lane AUTO-TRIM bookkeeping. Tracks the cumulative `frames_read` value
+/// seen last period (to detect this-period activity) and the value at the most
+/// recent idle→active transition (to measure the post-activation delay).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AutoTrimLaneState {
+    /// `frames_read` observed at the previous `maybe_trim` call. The lane read
+    /// audio this period iff the current value exceeds this.
+    last_frames_read: u64,
+    /// `frames_read` at the lane's most recent idle→active transition. The
+    /// one-shot trim fires once `frames_read - active_since >= delay_frames`.
+    /// `None` while the lane is idle (nothing active to delay from).
+    active_since: Option<u64>,
+}
+
+/// Coupling transport echo + the shared observability block for the STATUS
+/// endpoint. Under `Loopback` (default), both `pipe` and `ring` are `None` and
+/// STATUS reports only `transport:"loopback"`. Under `transport_pipe`, `pipe`
+/// carries the pipe counters; under `shm_ring`, `ring` carries the ring
+/// counters. At most one of `pipe`/`ring` is ever `Some`.
 #[derive(Clone)]
 pub struct CouplingObservability {
     pub transport: &'static str,
     pub pipe: Option<PipeObservability>,
+    pub ring: Option<RingObservability>,
 }
 
 /// The shared pipe counters (cloned Arcs from the live `FifoWriter`).
@@ -210,8 +431,84 @@ pub struct PipeObservability {
     pub actual_pipe_bytes: Arc<AtomicU64>,
 }
 
+/// The live SPSC ring counters the mixer step updates each period (from the
+/// writer's [`jasper_ring::WriterMetrics`] + the mirror side-tap). Cloned into
+/// [`RingObservability`] for STATUS so the endpoint reads the same atomics the
+/// work loop writes. Distinct from `WriterMetrics` (a value snapshot): these are
+/// the shared atomics.
+#[derive(Clone)]
+struct RingCounters {
+    published: Arc<AtomicU64>,
+    full_waits: Arc<AtomicU64>,
+    drops: Arc<AtomicU64>,
+    mirror_frames: Arc<AtomicU64>,
+    mirror_drops: Arc<AtomicU64>,
+    occupancy: Arc<AtomicU64>,
+}
+
+impl RingCounters {
+    fn new() -> Self {
+        Self {
+            published: Arc::new(AtomicU64::new(0)),
+            full_waits: Arc::new(AtomicU64::new(0)),
+            drops: Arc::new(AtomicU64::new(0)),
+            mirror_frames: Arc::new(AtomicU64::new(0)),
+            mirror_drops: Arc::new(AtomicU64::new(0)),
+            occupancy: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+/// The shared ring counters (cloned Arcs) for the STATUS endpoint's `ring`
+/// block: `{path, slots, occupancy, published, full_waits, drops, mirror_frames,
+/// mirror_drops}`. `drops` folds the writer's no-reader + stuck-reader drops
+/// (both mean "a live reader did not consume this slot"); `mirror_frames` /
+/// `mirror_drops` are the lossy aloop side-tap's written-frame and drop counts
+/// (parity with the music-only tap's `music_frames_written` / drops).
+#[derive(Clone)]
+pub struct RingObservability {
+    pub path: String,
+    pub slots: u32,
+    pub occupancy: Arc<AtomicU64>,
+    pub published: Arc<AtomicU64>,
+    pub full_waits: Arc<AtomicU64>,
+    pub drops: Arc<AtomicU64>,
+    pub mirror_frames: Arc<AtomicU64>,
+    pub mirror_drops: Arc<AtomicU64>,
+}
+
+/// One direct USB capture lane's runtime state (DEFAULT-OFF; only the usbsink
+/// lane when `JASPER_FANIN_USB_DIRECT=enabled`). Owns the `hw:UAC2Gadget`
+/// S32_LE capture PCM directly — the usbsink bridge hop + aloop cable are gone
+/// on this lane. The lane's audio is narrowed to S16 and fed the SAME
+/// `LaneResampler` the aloop path would use.
+///
+/// Presence is dynamic (a UAC2 gadget comes and goes with the host cable), so
+/// this is a small state machine: `Present` while the capture is open and
+/// reading, `Absent` while the device is unplugged/held-by-the-bridge with a
+/// bounded reopen retry counted in periods (C3). No wall clock in the hot loop
+/// — the retry cadence is measured in render periods like the auto-trim latch.
+enum DirectCapture {
+    /// The gadget capture is open; the lane reads it every period.
+    Present(PCM),
+    /// The gadget is absent (never opened, unplugged, or a runtime loss). Reopen
+    /// is retried at most once per `DIRECT_REOPEN_RETRY_PERIODS`; `periods_until_retry`
+    /// counts down each period the lane renders (silence).
+    Absent { periods_until_retry: u64 },
+}
+
 pub struct Input {
-    pcm: PCM,
+    /// The aloop capture PCM for this lane. `None` ONLY on the USB DIRECT lane
+    /// (`direct.is_some()`), which does not open its aloop substream at all —
+    /// its audio comes from the `hw:UAC2Gadget` capture in `direct`. Every other
+    /// lane always has `Some` (the byte-identical-to-today path).
+    pcm: Option<PCM>,
+    /// DEFAULT-OFF USB DIRECT capture. `Some` only on the usbsink lane when
+    /// `JASPER_FANIN_USB_DIRECT=enabled`; the lane then reads `hw:UAC2Gadget`
+    /// directly instead of its aloop substream, deleting the bridge+aloop hop.
+    /// `None` (and `pcm.is_some()`) on every other lane and on this lane when
+    /// the flag is off.
+    direct: Option<DirectCapture>,
     pub label: String,
     pub pcm_name: String,
     /// Per-input read buffer (i16 interleaved stereo). Reused as the
@@ -235,6 +532,35 @@ pub struct Input {
     /// (drop-free) instead of catch-up-drained; when `None` (the default for
     /// every lane), the read path is byte-for-byte today's behaviour.
     resampler: Option<LaneResampler>,
+    /// Per-lane TRIM control + counters, shared with the state-server thread.
+    /// The control endpoint sets `pending`; the work loop trims the resampler
+    /// ring at the next period boundary (see `maybe_trim` / `trim_input`).
+    trim: Arc<TrimControl>,
+    /// OPTIONAL USB DIRECT observability, shared with the state-server thread.
+    /// `Some` only on the USB DIRECT lane (`direct.is_some()`); STATUS renders a
+    /// `direct{}` block from it (C7). `None` (and absent from STATUS) for every
+    /// other lane.
+    direct_obs: Option<DirectObservability>,
+}
+
+/// Shared USB DIRECT counters for the STATUS `direct{}` block (C7). The mixer
+/// work thread writes them from the direct-capture state machine; the
+/// state-server thread reads them lock-free. Cloned into
+/// [`crate::state::InputSnapshotSource`] at construction.
+#[derive(Clone)]
+pub struct DirectObservability {
+    /// The capture device the direct lane opens (`hw:UAC2Gadget` or override).
+    pub device: String,
+    /// Whether the gadget capture is currently open (`Present`) — the live
+    /// "is the USB host attached and captured" gauge.
+    pub present: Arc<AtomicBool>,
+    /// Cumulative successful opens of the gadget capture (climbs on first open
+    /// and on every reopen after an unplug/loss).
+    pub opens: Arc<AtomicU64>,
+    /// Cumulative reopen attempts made while Absent (a growing value with
+    /// `present=false` means the gadget is not attachable — bridge holding it,
+    /// or no host).
+    pub retries: Arc<AtomicU64>,
 }
 
 impl Mixer {
@@ -247,37 +573,50 @@ impl Mixer {
 
         let mut inputs = Vec::with_capacity(config.input_pcms.len());
         for (label, pcm_name) in config.input_renderers.iter().zip(&config.input_pcms) {
-            // DEFAULT-OFF: build a per-input resampler ONLY for the configured
-            // clock-crossing lane AND only when explicitly enabled. Every other
-            // lane (and every lane when the feature is off) gets `None` — the
-            // byte-identical-to-today path. A construction failure degrades to
-            // `None` with a warning rather than failing the daemon.
-            let resampler =
-                if config.input_resampler_enabled && label == &config.input_resampler_lane_label {
-                    build_lane_resampler(label, config)
-                } else {
-                    None
-                };
-            match open_input(pcm_name, label, config, resampler) {
-                Ok(input) => {
-                    info!(
-                        "event=fanin.input.opened label={} pcm={} period_frames={} buffer_frames={}",
-                        label,
-                        pcm_name,
-                        config.period_frames,
-                        config.input_buffer_frames,
-                    );
-                    inputs.push(input);
+            // DEFAULT-OFF: build a per-input resampler on the configured
+            // clock-crossing lane when EITHER the input resampler OR USB DIRECT
+            // is enabled (both steer this lane to the DAC clock; direct has no
+            // aloop catch-up fallback so it MUST own a resampler — C6). Every
+            // other lane (and every lane when both flags are off) gets `None` —
+            // the byte-identical-to-today path. A construction failure degrades
+            // to `None` with a warning rather than failing the daemon.
+            let resampler = if config.lane_wants_resampler(label) {
+                build_lane_resampler(label, config)
+            } else {
+                None
+            };
+            // USB DIRECT: this lane reads hw:UAC2Gadget directly instead of its
+            // aloop substream (DEFAULT-OFF; only the resampler lane label). The
+            // open is best-effort — a gadget-absent lane starts Absent and
+            // renders silence with a bounded reopen retry (C3), never failing
+            // the daemon (the fail-hard "every input required" contract is
+            // exempted ONLY for this lane).
+            let is_direct =
+                config.usb_direct_enabled && label == &config.input_resampler_lane_label;
+            let input = if is_direct {
+                open_direct_input(label, pcm_name, config, resampler)
+            } else {
+                match open_input(pcm_name, label, config, resampler) {
+                    Ok(input) => input,
+                    Err(e) => {
+                        anyhow::bail!(
+                            "required fan-in input '{}' ({}) failed to open: {:#}",
+                            label,
+                            pcm_name,
+                            e,
+                        );
+                    }
                 }
-                Err(e) => {
-                    anyhow::bail!(
-                        "required fan-in input '{}' ({}) failed to open: {:#}",
-                        label,
-                        pcm_name,
-                        e,
-                    );
-                }
-            }
+            };
+            info!(
+                "event=fanin.input.opened label={} pcm={} period_frames={} buffer_frames={} direct={}",
+                label,
+                pcm_name,
+                config.period_frames,
+                config.input_buffer_frames,
+                is_direct,
+            );
+            inputs.push(input);
         }
 
         if inputs.is_empty() {
@@ -296,7 +635,7 @@ impl Mixer {
         // env var can see WHY they observed no effect, with the available
         // labels to fix the typo.
         if let Some(available) = resampler_lane_not_found(
-            config.input_resampler_enabled,
+            config.input_resampler_enabled || config.usb_direct_enabled,
             &config.input_resampler_lane_label,
             &config.input_renderers,
         ) {
@@ -323,6 +662,7 @@ impl Mixer {
                     CouplingObservability {
                         transport: "loopback",
                         pipe: None,
+                        ring: None,
                     },
                 )
             }
@@ -355,6 +695,81 @@ impl Mixer {
                             dropped_periods,
                             actual_pipe_bytes,
                         }),
+                        ring: None,
+                    },
+                )
+            }
+            Coupling::ShmRing => {
+                // Ring A (PROTOTYPE). Create-or-attach the SPSC ring as the
+                // WRITER. Geometry: S16LE / 2ch / 48k, slot = 128 frames pinned
+                // (the outputd DAC-period contract; period_frames % 128 == 0 was
+                // validated at config parse), n_slots = ring_slots. A geometry
+                // mismatch against an already-created ring is fail-loud (systemd
+                // parks, not reboot-loops).
+                let geometry = Geometry {
+                    rate: config.sample_rate,
+                    channels: CHANNELS,
+                    sample_format: SAMPLE_FORMAT_S16LE,
+                    period_frames: RING_SLOT_FRAMES,
+                    n_slots: config.ring_slots,
+                };
+                let writer = RingWriter::create_or_attach(&config.ring_path, geometry)
+                    .with_context(|| {
+                        format!("opening fan-in→camilla SHM ring {}", config.ring_path)
+                    })?;
+                // The lossy aloop MIRROR keeps the AEC-fallback dsnoop + aloop
+                // diagnostics live. BEST-EFFORT (non-blocking open): a failure
+                // to open it must NOT take down the ring — the mirror is a
+                // diagnostic side-tap, never the pacer.
+                let mirror = match open_music_output(&config.output_pcm, config) {
+                    Ok(pcm) => {
+                        info!(
+                            "event=fanin.ring.mirror_opened pcm={} (lossy aloop mirror)",
+                            config.output_pcm,
+                        );
+                        Some(pcm)
+                    }
+                    Err(e) => {
+                        warn!(
+                            "event=fanin.ring.mirror_open_failed pcm={} detail={:#} — \
+                             continuing WITHOUT the aloop mirror (ring path unaffected)",
+                            config.output_pcm, e,
+                        );
+                        None
+                    }
+                };
+                let counters = RingCounters::new();
+                let self_pace_period_ns =
+                    (config.period_frames as u64) * 1_000_000_000 / (config.sample_rate as u64);
+                info!(
+                    "event=fanin.ring.opened path={} slots={} slot_frames={} period_frames={} slots_per_step={}",
+                    config.ring_path,
+                    config.ring_slots,
+                    RING_SLOT_FRAMES,
+                    config.period_frames,
+                    config.period_frames / RING_SLOT_FRAMES,
+                );
+                let observability = RingObservability {
+                    path: config.ring_path.clone(),
+                    slots: config.ring_slots,
+                    occupancy: Arc::clone(&counters.occupancy),
+                    published: Arc::clone(&counters.published),
+                    full_waits: Arc::clone(&counters.full_waits),
+                    drops: Arc::clone(&counters.drops),
+                    mirror_frames: Arc::clone(&counters.mirror_frames),
+                    mirror_drops: Arc::clone(&counters.mirror_drops),
+                };
+                (
+                    Output::Ring(RingOutput {
+                        writer,
+                        counters,
+                        mirror,
+                        self_pace_period_ns,
+                    }),
+                    CouplingObservability {
+                        transport: "shm_ring",
+                        pipe: None,
+                        ring: Some(observability),
                     },
                 )
             }
@@ -390,6 +805,34 @@ impl Mixer {
             }
         };
 
+        let input_count = inputs.len();
+        // AUTO-TRIM delay in frames: `AUTO_TRIM_DELAY_SECONDS` at the live rate.
+        // Only consulted when the DEFAULT-OFF flag is set.
+        let auto_trim_delay_frames = (config.sample_rate as u64) * AUTO_TRIM_DELAY_SECONDS;
+        if config.auto_trim_enabled {
+            info!(
+                "event=fanin.auto_trim.armed delay_seconds={} delay_frames={}",
+                AUTO_TRIM_DELAY_SECONDS, auto_trim_delay_frames,
+            );
+        }
+        if config.usb_direct_enabled {
+            info!(
+                "event=fanin.usb_direct.armed lane={} device={} (bridge hop + aloop cable removed on this lane)",
+                config.input_resampler_lane_label, config.usb_direct_device,
+            );
+        }
+        // Impulse-tap channel (C4). Default-disarmed: the tap state starts
+        // unarmed so the direct read pays one relaxed atomic load until a
+        // TAP_ARM verb arrives. The bounded channel keeps the mixer thread's
+        // hand-off non-blocking (drop-and-count on Full); the fanin-tap-writer
+        // thread (spawned in main) is the sole JSONL writer.
+        let (tap_sender, tap_receiver) =
+            std::sync::mpsc::sync_channel::<TapEvent>(TAP_CHANNEL_CAPACITY);
+        let direct_tap = DirectTapHook::new(
+            Arc::new(TapState::default()),
+            Arc::new(Mutex::new(TapConfig::default())),
+            tap_sender,
+        );
         Ok(Self {
             inputs,
             output,
@@ -408,6 +851,11 @@ impl Mixer {
             music_frames_written: Arc::new(AtomicU64::new(0)),
             music_output_drops: Arc::new(AtomicU64::new(0)),
             coupling,
+            auto_trim_enabled: config.auto_trim_enabled,
+            auto_trim_delay_frames,
+            auto_trim_lane_state: vec![AutoTrimLaneState::default(); input_count],
+            direct_tap,
+            direct_tap_receiver: Some(tap_receiver),
         })
     }
 
@@ -421,6 +869,53 @@ impl Mixer {
     /// (chunk 3 will use this).
     pub fn inputs(&self) -> &[Input] {
         &self.inputs
+    }
+
+    /// Clone the cross-thread signals the combo-mode `fanin-host-clock` thread
+    /// reads (C5). Returns `Some` ONLY when the USB DIRECT lane exists AND owns a
+    /// resampler (the normal combo-mode shape); `None` when direct is off, or
+    /// when resampler construction failed and the lane fell back to no resampler
+    /// (fail-soft — the caller then runs inert, warn-once). The `HostClock`
+    /// thread holds only these `Arc` atomics; it never touches the mixer.
+    ///
+    /// The signals ride the atomics the mixer already publishes for STATUS
+    /// (resampler `fill_frames`/`input_frames`/`output_frames`/`locked`, direct
+    /// `present`), so this adds no new hot-path work — it only clones the
+    /// existing `Arc`s. `main` calls this before `mixer.run`. Note: `input_frames`
+    /// is passed RAW; the host-clock adapter must NOT trim-compensate it (a
+    /// `trim_ring` moves only the read cursor, so the `capture − playback`
+    /// divergence the ladder differences is already trim-invariant).
+    pub fn host_clock_signals(&self) -> Option<crate::host_clock::HostClockSignals> {
+        let direct = self.inputs.iter().find(|inp| inp.is_direct())?;
+        let resampler = direct.resampler_observability()?;
+        let direct_obs = direct.direct_observability()?;
+        Some(crate::host_clock::HostClockSignals {
+            fill_frames: Arc::clone(&resampler.fill_frames),
+            input_frames: Arc::clone(&resampler.input_frames),
+            output_frames: Arc::clone(&resampler.output_frames),
+            locked: Arc::clone(&resampler.locked),
+            present: Arc::clone(&direct_obs.present),
+            target_fill_frames: resampler.target_fill_frames,
+        })
+    }
+
+    /// The shared impulse-tap state (armed + counters + knobs), cloned for the
+    /// state-server thread's `TAP_ARM`/`TAP_DISARM`/STATUS handling (C4).
+    pub fn direct_tap_state(&self) -> Arc<TapState> {
+        self.direct_tap.state()
+    }
+
+    /// The last-armed impulse-tap config, cloned for the state-server thread
+    /// (published on arm, read on STATUS) and the writer thread (C4).
+    pub fn direct_tap_config(&self) -> Arc<Mutex<TapConfig>> {
+        self.direct_tap.config()
+    }
+
+    /// Take the impulse-tap channel receiver so `main` can drive the
+    /// `fanin-tap-writer` thread (the single JSONL writer). Returns `None` if
+    /// already taken.
+    pub fn take_direct_tap_receiver(&mut self) -> Option<std::sync::mpsc::Receiver<TapEvent>> {
+        self.direct_tap_receiver.take()
     }
 
     /// Shared selected-input index for the STATUS/control endpoint.
@@ -496,11 +991,24 @@ impl Mixer {
             }
         }
 
-        // 3. Read from each input, accumulate into sum_buf.
+        // 2b. Service TRIM requests (manual control-endpoint `pending` flags +
+        // the DEFAULT-OFF one-shot AUTO-TRIM latch) at the period boundary,
+        // before the read loop, so the render below sees the trimmed ring. A
+        // no-request period does one atomic load per lane and nothing else.
         let period_frames = self.period_frames as usize;
+        self.maybe_trim();
+
+        // 3. Read from each input, accumulate into sum_buf.
         let selected_input = self.selected_input_index.load(Ordering::Relaxed);
         for (idx, input) in self.inputs.iter_mut().enumerate() {
-            let frames = if input.resampler.is_some() {
+            let frames = if input.direct.is_some() {
+                // USB DIRECT lane (DEFAULT-OFF): read hw:UAC2Gadget directly,
+                // narrow S32→S16, feed the SAME resampler, render one DAC-paced
+                // period. Gadget-absent → silence + bounded reopen retry (C3).
+                // The aloop substream is never touched (`pcm` is None). The tap
+                // (C4) runs inline over the converted slice inside this call.
+                read_direct_and_render(input, period_frames, &mut self.direct_tap, &self.xrun_tx)
+            } else if input.resampler.is_some() {
                 // ARMED clock-crossing lane (DEFAULT-OFF; only the USB lane when
                 // enabled). The resampler OWNS rate reconciliation: read ALL
                 // available frames into it (DLL-steered to the DAC clock) and
@@ -573,6 +1081,12 @@ impl Mixer {
         //      no-reader turn returns Waited (the bounded reopen-wait already
         //      slept), dropping this period; we still return Ok so run() bumps
         //      the heartbeat — the loop is alive and bounded, never wedged.
+        //    - Ring: publish period_frames/128 slots into the SHM ring. The
+        //      blocking-on-full publish (bounded, live reader) is the pacer;
+        //      reader-absent self-paces (one period's sleep per dropped publish)
+        //      so a readerless ring never hot-spins. The mixed sum_buf (post-duck,
+        //      post-TTS) is what enters — TTS/duck ride along with zero special
+        //      handling. The lossy aloop mirror is written (never the pacer).
         match &mut self.output {
             Output::Alsa(pcm) => {
                 write_output(
@@ -599,9 +1113,174 @@ impl Mixer {
                     }
                 }
             }
+            Output::Ring(ring) => {
+                // Count only frames that actually ENTERED the ring — a
+                // fully-dropped period (reader absent / stuck) adds nothing,
+                // matching the Fifo arm's Waited (which deliberately doesn't
+                // count). `drops` disambiguates, so the top-line counter stays
+                // honest rather than optimistic.
+                let published_frames =
+                    write_ring_period(ring, &self.output_buf, self.period_frames);
+                self.frames_written
+                    .fetch_add(published_frames as u64, Ordering::Relaxed);
+            }
         }
         Ok(())
     }
+
+    /// Service TRIM at the period boundary, before the render loop. Two
+    /// triggers, both funnel through the single `trim_input` path:
+    ///   - MANUAL: a control-endpoint `TRIM` set the lane's `pending` flag.
+    ///     Consumed (cleared) here with an `Acquire` swap so the request is
+    ///     handled exactly once even if two `TRIM`s raced in.
+    ///   - AUTO (DEFAULT-OFF): the one-shot latch, ~`AUTO_TRIM_DELAY_SECONDS`
+    ///     after a lane goes active, guarded by `TrimControl::auto_fired` so it
+    ///     fires at most once per idle→active session.
+    ///
+    /// The common no-request period is one `pending` load per lane (plus, when
+    /// auto-trim is enabled, one pure latch update) and nothing else.
+    fn maybe_trim(&mut self) {
+        for (idx, input) in self.inputs.iter_mut().enumerate() {
+            // MANUAL: consume the pending flag with an Acquire swap. `Acquire`
+            // pairs with the control thread's `Release` store so we observe the
+            // request; the actual counters are Relaxed (staleness across the
+            // STATUS read is fine, same as every other fan-in counter).
+            let manual = input.trim.pending.swap(false, Ordering::Acquire);
+            if manual {
+                trim_input(input);
+                // A manual trim also satisfies this session's auto-trim latch —
+                // no point double-trimming a lane the operator just trimmed.
+                if self.auto_trim_enabled {
+                    input.trim.auto_fired.store(true, Ordering::Relaxed);
+                }
+                // Fall through: the auto latch below still advances its
+                // frames_read bookkeeping so a later idle→active re-arms.
+            }
+
+            if !self.auto_trim_enabled {
+                continue;
+            }
+
+            // AUTO: advance the pure latch on this lane's cumulative frames_read.
+            let frames_read = input.frames_read.load(Ordering::Relaxed);
+            let decision = auto_trim_decision(
+                frames_read,
+                self.auto_trim_lane_state[idx],
+                self.auto_trim_delay_frames,
+            );
+            self.auto_trim_lane_state[idx] = decision.next;
+
+            // Re-arm the one-shot guard when the lane returns to idle so the next
+            // activation can fire again. `active_since == None` after the update
+            // means "idle right now".
+            if decision.next.active_since.is_none() {
+                input.trim.auto_fired.store(false, Ordering::Relaxed);
+                continue;
+            }
+
+            // Fire exactly once per active session: the pure decision says the
+            // delay elapsed AND we have not already fired this session.
+            if decision.fire && !input.trim.auto_fired.swap(true, Ordering::Relaxed) {
+                let dropped = trim_input(input);
+                info!(
+                    "event=fanin.auto_trim.fired label={} dropped_frames={} \
+                     delay_frames={}",
+                    input.label, dropped, self.auto_trim_delay_frames,
+                );
+            }
+        }
+    }
+}
+
+/// Publish one mixer period into the SPSC SHM ring as `period_frames / 128`
+/// slots, then mirror the same period to the lossy aloop side-tap. Returns the
+/// number of frames that actually ENTERED the ring this period (published slots
+/// × `RING_SLOT_FRAMES`) so the caller counts only real throughput — a
+/// fully-dropped period returns 0, matching the Fifo arm's `Waited`.
+///
+/// **Pacing (the Ring A contract).** Each `RingWriter::publish` BLOCKS (bounded:
+/// 32 ticks × the clamped `min(period/4, 2 ms)` sleep — with the pinned 128-frame
+/// slot that tick is ~0.667 ms, so the cap is ~21 ms per full slot) while the
+/// ring is full AND a live reader (CamillaDSP) is draining — that block is the
+/// loop's pacer, transitively DAC-paced through Ring B. When the reader is
+/// ABSENT/stale the writer free-run-drops instead of blocking, so the daemon must
+/// self-pace: sleep one period per dropped publish so a readerless ring settles
+/// to ~48 kHz instead of hot-spinning. The bounded publish wait plus at most one
+/// period sleep keeps `step()` well under the 5 s watchdog threshold; the
+/// writer's heartbeat is bumped inside each publish.
+///
+/// The mirror is a `write_music_only`-shaped non-blocking side-tap: it is
+/// avail-checked and drop-on-full, so it can NEVER back-pressure the loop (that
+/// would re-couple to the aloop timer and silently reintroduce the hop being
+/// removed). It exists only to keep the AEC-fallback dsnoop + aloop diagnostics
+/// live.
+fn write_ring_period(ring: &mut RingOutput, output_buf: &[i16], period_frames: u32) -> u32 {
+    let slots_per_step = period_frames / RING_SLOT_FRAMES;
+    let samples_per_slot = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize);
+    let mut dropped_this_period = false;
+    let mut published_slots: u32 = 0;
+    for slot in 0..slots_per_step as usize {
+        let start = slot * samples_per_slot;
+        let slot_samples = &output_buf[start..start + samples_per_slot];
+        match ring.writer.publish(slot_samples) {
+            PublishOutcome::Published => {
+                published_slots += 1;
+            }
+            PublishOutcome::DroppedNoReader | PublishOutcome::DroppedStuck => {
+                dropped_this_period = true;
+            }
+        }
+    }
+
+    // Publish the writer's counter snapshot into the shared atomics for STATUS.
+    let m = ring.writer.metrics();
+    ring.counters
+        .published
+        .store(m.published_slots, Ordering::Relaxed);
+    ring.counters
+        .full_waits
+        .store(m.full_waits, Ordering::Relaxed);
+    // `drops` folds no-reader + stuck-reader drops — both mean a live reader did
+    // not consume the slot.
+    ring.counters.drops.store(
+        m.drop_no_reader.saturating_add(m.stuck_reader_drops),
+        Ordering::Relaxed,
+    );
+    ring.counters
+        .occupancy
+        .store(m.occupancy, Ordering::Relaxed);
+
+    // Lossy aloop mirror (never the pacer). `write_music_only`-shaped:
+    // avail-check + drop-on-full so it can never block the loop.
+    if let Some(mirror) = ring.mirror.as_ref() {
+        write_music_only(
+            mirror,
+            output_buf,
+            &ring.counters.mirror_frames,
+            &ring.counters.mirror_drops,
+        );
+    }
+
+    // Reader-absent self-pacing: if ANY slot free-run-dropped this period, sleep
+    // one period so a readerless ring settles to ~48 kHz instead of hot-spinning
+    // (the blocking publish is the pacer only while a live reader drains). A
+    // live-reader period never sleeps here — the publish block already paced it.
+    if dropped_this_period {
+        let ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: ring.self_pace_period_ns as _,
+        };
+        // SAFETY: a valid timespec pointer; NULL remainder is fine (a signal-
+        // interrupted sleep just shortens this one self-pace tick — the next
+        // period re-evaluates).
+        unsafe {
+            libc::nanosleep(&ts, std::ptr::null_mut());
+        }
+    }
+
+    // Frames that actually entered the ring this period — the caller counts only
+    // these toward `frames_written` (a fully-dropped period returns 0).
+    published_slots * RING_SLOT_FRAMES
 }
 
 fn store_output_delay(pcm: &PCM, delay_frames: &AtomicU64) {
@@ -615,6 +1294,26 @@ impl Input {
     /// resampler is armed on this lane (the default — DEFAULT-OFF feature).
     pub fn resampler_observability(&self) -> Option<LaneResamplerObservability> {
         self.resampler.as_ref().map(|r| r.observability())
+    }
+
+    /// The lane's USB DIRECT observability handles for the STATUS `direct{}`
+    /// block, or `None` when this is not the direct lane (C7).
+    pub fn direct_observability(&self) -> Option<DirectObservability> {
+        self.direct_obs.clone()
+    }
+
+    /// Whether this lane is the USB DIRECT lane (its `source` in STATUS is
+    /// `"direct"`; every other lane is `"lane"`). C7.
+    pub fn is_direct(&self) -> bool {
+        self.direct.is_some()
+    }
+
+    /// The lane's shared TRIM control + counters, cloned for the state-server
+    /// thread. The control endpoint sets `pending` here; the work loop trims
+    /// this lane's resampler ring at its next period boundary and bumps the
+    /// counters.
+    pub fn trim_control(&self) -> Arc<TrimControl> {
+        Arc::clone(&self.trim)
     }
 }
 
@@ -812,7 +1511,8 @@ fn open_input(
         .with_context(|| format!("starting capture PCM {}", pcm_name))?;
     let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
     Ok(Input {
-        pcm,
+        pcm: Some(pcm),
+        direct: None,
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
         read_buf: vec![0i16; period_samples],
@@ -821,7 +1521,179 @@ fn open_input(
         catchup_resync_frames: Arc::new(AtomicU64::new(0)),
         catchup_events: Arc::new(AtomicU64::new(0)),
         resampler,
+        trim: TrimControl::new(),
+        direct_obs: None,
     })
+}
+
+/// Build the USB DIRECT lane. Opens `hw:UAC2Gadget` (or the override) with the
+/// bridge's proven envelope (C1); on failure the lane starts `Absent` and will
+/// render silence with a bounded reopen retry (C3) — a gadget-absent box never
+/// fails the daemon. The aloop substream is NOT opened (`pcm: None`): this
+/// lane's audio comes only from the gadget capture. Never returns `Err` — the
+/// fail-hard "every input required" contract is exempted for this lane alone.
+fn open_direct_input(
+    label: &str,
+    pcm_name: &str,
+    config: &Config,
+    resampler: Option<LaneResampler>,
+) -> Input {
+    let device = config.usb_direct_device.clone();
+    let present = Arc::new(AtomicBool::new(false));
+    let opens = Arc::new(AtomicU64::new(0));
+    let retries = Arc::new(AtomicU64::new(0));
+    let direct = match open_direct_capture(&device) {
+        Ok(pcm) => {
+            present.store(true, Ordering::Relaxed);
+            opens.fetch_add(1, Ordering::Relaxed);
+            info!(
+                "event=fanin.usb_direct.present device={} (initial open) opens=1 retries=0",
+                device,
+            );
+            DirectCapture::Present(pcm)
+        }
+        Err(e) => {
+            // Gadget absent at startup (unplugged host, or the usbsink bridge
+            // is holding hw:UAC2Gadget in a misconfig). Start Absent; the lane
+            // renders silence and retries on its own cadence (C3). Not fatal.
+            warn!(
+                "event=fanin.usb_direct.absent device={} errno={} detail={:#} (startup; will retry ~every {}s)",
+                device,
+                errno_of(&e),
+                e,
+                DIRECT_REOPEN_RETRY_PERIODS * (config.period_frames as u64) / (config.sample_rate.max(1) as u64),
+            );
+            DirectCapture::Absent {
+                periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
+            }
+        }
+    };
+    let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
+    Input {
+        // The direct lane does NOT open its aloop substream — its only source
+        // is the gadget capture in `direct` (C6).
+        pcm: None,
+        direct: Some(direct),
+        label: label.to_string(),
+        pcm_name: pcm_name.to_string(),
+        read_buf: vec![0i16; period_samples],
+        xrun_count: Arc::new(AtomicU64::new(0)),
+        frames_read: Arc::new(AtomicU64::new(0)),
+        catchup_resync_frames: Arc::new(AtomicU64::new(0)),
+        catchup_events: Arc::new(AtomicU64::new(0)),
+        resampler,
+        trim: TrimControl::new(),
+        direct_obs: Some(DirectObservability {
+            device,
+            present,
+            opens,
+            retries,
+        }),
+    }
+}
+
+/// Open the USB DIRECT capture PCM with the usbsink BRIDGE's proven envelope
+/// (C1) — deliberately NOT fanin's aloop-tuned `configure_pcm` (which sets an
+/// exact buffer). S32_LE 2ch 48k, `set_period_size(256, Nearest)`,
+/// `set_buffer_size_near(768)`; then the bridge-parity post-negotiation bails.
+/// Non-blocking (the direct lane rides the resampler read slot like the aloop
+/// lane) and `start()`ed so reads return data / EAGAIN. Returns the open PCM or
+/// an `alsa::Error` the caller maps to the `Absent` state.
+fn open_direct_capture(device: &str) -> std::result::Result<PCM, alsa::Error> {
+    let pcm = PCM::new(device, Direction::Capture, true)?;
+    {
+        let hwp = HwParams::any(&pcm)?;
+        hwp.set_channels(CHANNELS)?;
+        hwp.set_rate(SAMPLE_RATE_HZ, ValueOr::Nearest)?;
+        hwp.set_format(Format::S32LE)?;
+        hwp.set_access(Access::RWInterleaved)?;
+        hwp.set_period_size(DIRECT_PERIOD_FRAMES as i64, ValueOr::Nearest)?;
+        hwp.set_buffer_size_near(DIRECT_BUFFER_FRAMES as i64)?;
+        let rate = hwp.get_rate()?;
+        let period = hwp.get_period_size()? as u32;
+        let buffer = hwp.get_buffer_size()? as u32;
+        pcm.hw_params(&hwp)?;
+        // Bridge-parity validation. Rate/period MUST land exactly (the bridge
+        // bails otherwise); buffer is warn-on-near-mismatch but must clear the
+        // 2×period + alignment structural floor. A validation failure closes
+        // the PCM (drop) and returns an error → the lane goes Absent.
+        if let Err(reason) = direct_open_params_ok(rate, period, buffer) {
+            warn!(
+                "event=fanin.usb_direct.open_rejected device={} rate={} period={} buffer={} reason={}",
+                device, rate, period, buffer, reason,
+            );
+            // Manufacture an errno-bearing alsa::Error so the caller's Absent
+            // path logs a consistent shape. EINVAL = "negotiated an unusable
+            // geometry".
+            return Err(alsa::Error::new("direct_open_params", libc::EINVAL));
+        }
+        if buffer != DIRECT_BUFFER_FRAMES {
+            warn!(
+                "event=fanin.usb_direct.buffer_near device={} requested_frames={} negotiated_frames={}",
+                device, DIRECT_BUFFER_FRAMES, buffer,
+            );
+        }
+    }
+    pcm.start()?;
+    Ok(pcm)
+}
+
+/// Pure post-negotiation validation of the direct capture geometry (C1),
+/// unit-testable without ALSA. Rate must be exactly 48000 and period exactly
+/// 256 (the bridge bails otherwise); buffer must be ≥ 2×period and a whole
+/// multiple of the period (a fractional buffer would shear). Returns the
+/// rejection reason string on failure.
+fn direct_open_params_ok(rate: u32, period: u32, buffer: u32) -> std::result::Result<(), String> {
+    if rate != SAMPLE_RATE_HZ {
+        return Err(format!("rate {rate} != 48000"));
+    }
+    if period != DIRECT_PERIOD_FRAMES {
+        return Err(format!("period {period} != {DIRECT_PERIOD_FRAMES}"));
+    }
+    if buffer < period.saturating_mul(2) {
+        return Err(format!("buffer {buffer} < 2×period ({})", period * 2));
+    }
+    if period == 0 || buffer % period != 0 {
+        return Err(format!("buffer {buffer} not period-aligned to {period}"));
+    }
+    Ok(())
+}
+
+/// Classify a direct-capture read/query errno (C1). `EAGAIN` stops the drain;
+/// `EPIPE`/`ESTRPIPE` is an xrun to recover; ANYTHING else (notably `ENODEV`
+/// on unplug) is a device loss → the lane transitions to `Absent`, never a
+/// daemon error. Pure so the classification is scratch-crate testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectReadFate {
+    /// `EAGAIN` — no data ready right now; stop draining this period.
+    WouldBlock,
+    /// `EPIPE`/`ESTRPIPE` — an overrun; recover the PCM and reset the resampler.
+    Xrun,
+    /// Any other errno (ENODEV on unplug, etc.) — the device is gone; go Absent.
+    DeviceLost,
+}
+
+fn classify_direct_errno(errno: i32) -> DirectReadFate {
+    if errno == libc::EAGAIN {
+        DirectReadFate::WouldBlock
+    } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+        DirectReadFate::Xrun
+    } else {
+        DirectReadFate::DeviceLost
+    }
+}
+
+/// The nominal sample rate the direct lane opens at. Kept as a named const so
+/// the open envelope and the pure validator agree (C1). Distinct from
+/// `config.sample_rate` on purpose: the gadget capture is a FIXED 48 kHz
+/// endpoint (the bridge's contract), not a configurable fan-in knob.
+const SAMPLE_RATE_HZ: u32 = 48_000;
+
+/// Pull the errno out of an `alsa::Error` for logging. Small helper so the
+/// Absent-path log lines stay terse. (`alsa::Error::errno()` already returns the
+/// `i32` errno, matching the `libc::E*` constants the read paths compare against.)
+fn errno_of(e: &alsa::Error) -> i32 {
+    e.errno()
 }
 
 fn open_output(pcm_name: &str, config: &Config) -> Result<PCM> {
@@ -911,10 +1783,15 @@ fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
 /// log is count-gated, so the common no-resync path touches no clock and
 /// emits nothing.
 fn drain_input_excess(input: &mut Input, period_frames: usize) {
+    // Non-direct lanes always have Some(pcm); the direct lane never reaches
+    // this path (it routes to read_direct_and_render). Guard defensively.
+    let Some(pcm) = input.pcm.as_ref() else {
+        return;
+    };
     // Non-blocking query of how many frames are readable right now.
     // EAGAIN/error here just means "no usable reading right now" — leave
     // the normal read_input path to handle recovery; never block or panic.
-    let avail = match input.pcm.avail_update() {
+    let avail = match pcm.avail_update() {
         Ok(a) => a,
         Err(_) => return,
     };
@@ -923,7 +1800,7 @@ fn drain_input_excess(input: &mut Input, period_frames: usize) {
         return; // healthy lane — the overwhelmingly common path.
     }
 
-    let io = match input.pcm.io_i16() {
+    let io = match pcm.io_i16() {
         Ok(io) => io,
         Err(_) => return,
     };
@@ -967,6 +1844,468 @@ fn drain_input_excess(input: &mut Input, period_frames: usize) {
     }
 }
 
+/// Perform ONE lock-preserving TRIM on `input`: drop the lane's standing
+/// latency down to the resampler's held target by discarding the OLDEST
+/// buffered input, keeping the newest and keeping lock. Returns the number of
+/// frames dropped (0 when the lane has no armed resampler, is unlocked, or is
+/// already at/below its held target — never panics, never blocks, never does
+/// ALSA I/O).
+///
+/// ## Why the reservoir is the resampler ring (v2)
+///
+/// The full-ring-graph standing head-start does NOT live in the ALSA readable
+/// backlog on the armed lane: `read_into_resampler_and_render` already drains
+/// every frame ALSA reports ready each period, so the kernel ring is held
+/// shallow by design. The reservoir is the resampler's CURSOR-RELATIVE fill
+/// (`write_frame - next_input_frame`) — observed on-device at ~1919 frames
+/// against a 512-held target with lock churn. This trim drops THAT in place via
+/// [`LaneResampler::trim_ring`]: the cursor skips forward over the oldest
+/// buffered frames (one discontinuity at the skip) while lock and the DLL loop
+/// state survive — the exact opposite of the v1 `reset()` path, which was the
+/// unlock/reprime churn we are eliminating.
+///
+/// An UNARMED lane (no resampler) has no such userspace reservoir — its
+/// standing fill would be the ALSA backlog, which the catch-up drain already
+/// bounds and which is not the full-ring-graph carrier this trim targets — so
+/// TRIM on an unarmed lane is a documented 0-frame no-op. It still clears its
+/// `pending` flag so the control command completes cleanly.
+///
+/// RT-safety: pure host-memory work inside the resampler (one fill compute, one
+/// cursor advance, one `drop_before`), no syscalls, no allocation, no blocking.
+/// Runs on the WORK thread (which owns the mixer's `LaneResampler`), triggered
+/// by a control-endpoint `pending` flag or the AUTO-TRIM latch — never on the
+/// state-server thread.
+fn trim_input(input: &mut Input) -> u64 {
+    let dropped = match input.resampler.as_mut() {
+        Some(r) => r.trim_ring(),
+        // No resampler on this lane: the standing-fill reservoir this PoC
+        // targets does not exist here. A documented no-op (see fn docs).
+        None => 0,
+    };
+    if dropped == 0 {
+        return 0;
+    }
+    let trims = input.trim.trims.fetch_add(1, Ordering::Relaxed) + 1;
+    let total = input
+        .trim
+        .trimmed_frames
+        .fetch_add(dropped, Ordering::Relaxed)
+        + dropped;
+    // One log line per trim (trims are operator/auto events, not per-period —
+    // no spam gate needed).
+    info!(
+        "event=fanin.trim label={} dropped_ring_frames={} trims={} total_trimmed_frames={}",
+        input.label, dropped, trims, total,
+    );
+    dropped
+}
+
+/// The mixer-thread side of the relocated impulse tap (C4). Holds the shared
+/// [`TapState`] (armed + detector knobs, read lock-free), the last-armed
+/// [`TapConfig`] (read only on an arm-generation change), the bounded channel to
+/// the `fanin-tap-writer` thread, and the mixer-local detector state + per-lane
+/// cumulative capture cursor. Constructed once in `Mixer::new`; runs inline in
+/// `read_direct_and_render` over the converted S16 slice BEFORE `push_input`.
+///
+/// Disarmed cost: one relaxed atomic load per direct read
+/// ([`TapState::armed`]) and nothing else.
+pub struct DirectTapHook {
+    state: Arc<TapState>,
+    config: Arc<Mutex<TapConfig>>,
+    sender: SyncSender<TapEvent>,
+    /// The mixer-thread-local detector, rebuilt on each arm generation.
+    detector: Option<ImpulseDetector>,
+    last_generation: u64,
+    /// Cumulative direct-capture frames read BEFORE the current read (the
+    /// detector's `read_start_frame`, so refractory anchoring is stable across
+    /// reads of any size — the bridge's `capture_frames_cursor` idiom).
+    capture_frames_cursor: u64,
+}
+
+impl DirectTapHook {
+    fn new(
+        state: Arc<TapState>,
+        config: Arc<Mutex<TapConfig>>,
+        sender: SyncSender<TapEvent>,
+    ) -> Self {
+        Self {
+            state,
+            config,
+            sender,
+            detector: None,
+            last_generation: 0,
+            capture_frames_cursor: 0,
+        }
+    }
+
+    /// Clone the shared state + config for the state-server/writer threads.
+    fn state(&self) -> Arc<TapState> {
+        Arc::clone(&self.state)
+    }
+
+    fn config(&self) -> Arc<Mutex<TapConfig>> {
+        Arc::clone(&self.config)
+    }
+
+    /// Run the tap over one converted S16 read, BEFORE it enters the resampler
+    /// (the route's own ingress). Mirrors usbsink's `tap_over_read`: reloads the
+    /// detector only on a fresh arm generation, timestamps with the caller's
+    /// post-read `read_ns`, and non-blocking `try_send`s the event
+    /// (drop-and-count on Full). Only called from the armed branch; the
+    /// disarmed fast path is the caller's `state.armed()` check.
+    ///
+    /// - `converted`: the S16 slice just narrowed from S32 (this read only).
+    /// - `read_frames`: frames in this read.
+    /// - `read_ns`: `CLOCK_MONOTONIC` ns taken immediately after `readi`.
+    /// - `ring_fill_periods` / `period_frames`: the lane resampler fill BEFORE
+    ///   `push_input`, recorded (as frames) for the JSONL diagnostic field.
+    #[allow(clippy::too_many_arguments)]
+    fn tap_over_read(
+        &mut self,
+        converted: &[i16],
+        read_frames: usize,
+        read_ns: i128,
+        ring_fill_frames: u64,
+    ) {
+        let generation = self.state.generation_acquire();
+        if self.detector.is_none() || generation != self.last_generation {
+            let (threshold, hysteresis, refractory_frames) = self.state.detector_knobs();
+            self.detector = Some(ImpulseDetector::new(
+                threshold,
+                hysteresis,
+                refractory_frames,
+                CHANNELS as usize,
+            ));
+            self.last_generation = generation;
+        }
+        let Some(detector) = self.detector.as_mut() else {
+            return;
+        };
+        let Some(hit) = detector.detect(
+            &converted[..read_frames * (CHANNELS as usize)],
+            self.capture_frames_cursor,
+        ) else {
+            return;
+        };
+        let event = TapEvent {
+            monotonic_ns: crate::impulse_tap::detection_monotonic_ns(
+                read_ns,
+                read_frames,
+                hit.sample_offset_frames,
+                SAMPLE_RATE_HZ,
+            ),
+            frame_index: self
+                .capture_frames_cursor
+                .saturating_add(hit.sample_offset_frames as u64),
+            ring_fill_frames,
+            peak: hit.peak,
+        };
+        if self.sender.try_send(event).is_err() {
+            self.state.note_dropped();
+        }
+    }
+}
+
+/// `CLOCK_MONOTONIC` in nanoseconds — the direct tap's ingress timeline (C4).
+/// The tap and the Python mic harness both read `CLOCK_MONOTONIC` on the same
+/// Pi; that shared timeline is the only reason their cross-process subtraction
+/// is valid. On the (never-observed) syscall failure returns 0 rather than
+/// crashing the work loop; a stray 0-anchored event is dropped by the harness's
+/// pairing window.
+fn monotonic_ns() -> i128 {
+    let mut ts = MaybeUninit::<libc::timespec>::uninit();
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, ts.as_mut_ptr()) };
+    if rc != 0 {
+        return 0;
+    }
+    let ts = unsafe { ts.assume_init() };
+    (ts.tv_sec as i128) * 1_000_000_000 + (ts.tv_nsec as i128)
+}
+
+/// Read the USB DIRECT lane (C1/C3/C4): drain everything the gadget capture
+/// reports ready into the lane resampler (narrowing S32→S16, tapping the
+/// converted slice on the way), then render exactly one DAC-paced period into
+/// `read_buf`. Returns the number of real (non-silence) frames rendered —
+/// `period_frames` when the resampler is locked, `0` while priming/absent.
+///
+/// Never returns `Err`: a device loss (ENODEV on unplug, or a rejected reopen)
+/// transitions the lane to `Absent` and renders silence with a bounded reopen
+/// retry (C3), so the daemon keeps running. Xruns recover exactly like the
+/// aloop resampler lane (`recover_resampler_input_xrun`, but device-open aware).
+fn read_direct_and_render(
+    input: &mut Input,
+    period_frames: usize,
+    tap: &mut DirectTapHook,
+    xrun_tx: &Sender<XrunEvent>,
+) -> usize {
+    // The lane's resampler fill BEFORE this period's push — the diagnostic
+    // `ring_fill_frames` the tap records (not added to harness latency). Read via
+    // the single-atomic gauge, NOT observability() (which clones Arcs — never on
+    // the hot path).
+    let ring_fill_before = input
+        .resampler
+        .as_ref()
+        .map(|r| r.fill_frames_gauge())
+        .unwrap_or(0);
+
+    // Take ownership of the state machine so we can mutate `input` (resampler,
+    // counters) inside the read without a double borrow. Restored at the end.
+    let mut direct = input
+        .direct
+        .take()
+        .expect("read_direct_and_render only called on a direct lane");
+
+    match &direct {
+        DirectCapture::Present(_) => {
+            let outcome = drain_direct_capture(
+                &direct,
+                input,
+                period_frames,
+                tap,
+                ring_fill_before,
+                xrun_tx,
+            );
+            if outcome == DirectDrainOutcome::DeviceLost {
+                // Runtime loss: close the PCM, reset the resampler, go Absent.
+                if let Some(r) = input.resampler.as_mut() {
+                    r.reset();
+                }
+                if let Some(obs) = &input.direct_obs {
+                    obs.present.store(false, Ordering::Relaxed);
+                    warn!(
+                        "event=fanin.usb_direct.absent device={} reason=runtime_loss (will retry ~every {} periods)",
+                        obs.device, DIRECT_REOPEN_RETRY_PERIODS,
+                    );
+                }
+                direct = DirectCapture::Absent {
+                    periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
+                };
+            }
+        }
+        DirectCapture::Absent { .. } => {
+            // Try to reopen at most once per retry window (period-counted).
+            direct = maybe_reopen_direct(direct, input);
+        }
+    }
+
+    // Render one DAC-paced period from whatever the resampler holds (silence
+    // while Absent / priming). Advance the tap's capture cursor only by frames
+    // actually read this period (done inside drain_direct_capture).
+    let real_frames = match input.resampler.as_mut() {
+        Some(r) => r.render_period(&mut input.read_buf),
+        None => {
+            input.read_buf.fill(0);
+            0
+        }
+    };
+    input.direct = Some(direct);
+    real_frames
+}
+
+/// The outcome of one direct-capture drain: normal (kept Present) or a device
+/// loss that must transition the lane to Absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectDrainOutcome {
+    Ok,
+    DeviceLost,
+}
+
+/// Drain all currently-available frames from the gadget capture into the lane
+/// resampler, narrowing S32→S16 and tapping each read (C1/C4). Bounded by
+/// `RESAMPLER_MAX_READ_PERIODS`. EAGAIN stops the drain; EPIPE/ESTRPIPE recovers
+/// the PCM + resets the resampler; any other errno is a device loss.
+fn drain_direct_capture(
+    direct: &DirectCapture,
+    input: &mut Input,
+    period_frames: usize,
+    tap: &mut DirectTapHook,
+    ring_fill_before: u64,
+    xrun_tx: &Sender<XrunEvent>,
+) -> DirectDrainOutcome {
+    let DirectCapture::Present(pcm) = direct else {
+        return DirectDrainOutcome::Ok;
+    };
+    let channels = CHANNELS as usize;
+    // Preallocated i32 scratch (256×2) — no allocation in the hot path. Same
+    // length as `narrow_scratch` below: the i32 read fills `scratch[..samples]`
+    // and the narrow fills `narrow_scratch[..got]` with `got == samples`.
+    let mut scratch = [0i32; direct_narrow_scratch_samples()];
+    // Dedicated i16 narrowing scratch, sized to match the i32 scratch. MUST NOT
+    // reuse `input.read_buf` (sized `period_frames × CHANNELS`) — see
+    // `direct_narrow_scratch_samples` for the OOB-on-small-period hazard. A
+    // single chunk read is capped at DIRECT_PERIOD_FRAMES frames (`to_read`
+    // below), so this fixed size always bounds `got`.
+    let mut narrow_scratch = [0i16; direct_narrow_scratch_samples()];
+    let mut read_budget_remaining =
+        period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
+    let armed = tap.state.armed();
+
+    while read_budget_remaining > 0 {
+        let avail = match pcm.avail_update() {
+            Ok(a) => a,
+            Err(e) => match classify_direct_errno(e.errno()) {
+                DirectReadFate::WouldBlock => break,
+                DirectReadFate::Xrun => {
+                    recover_direct_xrun(pcm, input, e, period_frames, xrun_tx, "avail_update");
+                    break;
+                }
+                DirectReadFate::DeviceLost => return DirectDrainOutcome::DeviceLost,
+            },
+        };
+        let want = resampler_read_budget_frames(avail, period_frames).min(read_budget_remaining);
+        if want == 0 {
+            break;
+        }
+        // Read in ≤256-frame chunks (the scratch size) via io_i32().readi.
+        let mut remaining = want;
+        let mut stop = false;
+        while remaining > 0 && !stop {
+            let to_read = remaining.min(DIRECT_PERIOD_FRAMES as usize);
+            let samples = to_read * channels;
+            let read_result = {
+                let io = match pcm.io_i32() {
+                    Ok(io) => io,
+                    Err(_) => return DirectDrainOutcome::DeviceLost,
+                };
+                io.readi(&mut scratch[..samples])
+            };
+            match read_result {
+                Ok(0) => {
+                    stop = true;
+                }
+                Ok(n) => {
+                    let got = n * channels;
+                    // Narrow S32→S16 into the dedicated narrowing scratch (NOT
+                    // input.read_buf — see the declaration comment for the OOB
+                    // hazard on small period geometries). `got` ≤ scratch len
+                    // because `to_read` ≤ DIRECT_PERIOD_FRAMES.
+                    let converted = &mut narrow_scratch[..got];
+                    let _ = jasper_resampler::convert_s32_to_s16(&scratch[..got], converted);
+                    // Tap the converted slice BEFORE push_input (armed only). The
+                    // read_ns is taken immediately after readi returned above.
+                    if armed {
+                        let read_ns = monotonic_ns();
+                        tap.tap_over_read(&narrow_scratch[..got], n, read_ns, ring_fill_before);
+                    }
+                    tap.capture_frames_cursor = tap.capture_frames_cursor.saturating_add(n as u64);
+                    input.frames_read.fetch_add(n as u64, Ordering::Relaxed);
+                    if let Some(r) = input.resampler.as_mut() {
+                        r.push_input(&narrow_scratch[..got]);
+                    }
+                    remaining = remaining.saturating_sub(n);
+                    read_budget_remaining = read_budget_remaining.saturating_sub(n);
+                    if n < to_read {
+                        stop = true;
+                    }
+                }
+                Err(e) => match classify_direct_errno(e.errno()) {
+                    DirectReadFate::WouldBlock => stop = true,
+                    DirectReadFate::Xrun => {
+                        recover_direct_xrun(pcm, input, e, period_frames, xrun_tx, "readi");
+                        stop = true;
+                    }
+                    DirectReadFate::DeviceLost => return DirectDrainOutcome::DeviceLost,
+                },
+            }
+        }
+        if stop {
+            break;
+        }
+    }
+    // Reset the tap detector across a disarm transition (mirrors the aloop tap's
+    // arm-boundary reset) so a fresh arm starts clean.
+    if !armed && tap.detector.is_some() {
+        tap.detector = None;
+    }
+    DirectDrainOutcome::Ok
+}
+
+/// Recover a direct-capture xrun (EPIPE/ESTRPIPE): count it, forward the xrun
+/// event, `try_recover` the PCM, restart it if not Running, and reset the
+/// resampler (a discontinuity). Mirrors `recover_resampler_input_xrun` for the
+/// direct lane. Best-effort — a failed recover just leaves the PCM for the next
+/// period's `avail_update` to re-observe (which will classify a hard failure as
+/// a device loss).
+fn recover_direct_xrun(
+    pcm: &PCM,
+    input: &mut Input,
+    error: alsa::Error,
+    period_frames: usize,
+    xrun_tx: &Sender<XrunEvent>,
+    operation: &str,
+) {
+    let count = input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
+    warn!(
+        "event=fanin.xrun source=input label={} count={} op={} (usb_direct lane)",
+        input.label, count, operation,
+    );
+    let _ = xrun_tx.send(XrunEvent {
+        source: XrunSource::Input,
+        label: input.label.clone(),
+        frames: period_frames as u32,
+        count,
+    });
+    if pcm.try_recover(error, true).is_ok() && pcm.state() != State::Running {
+        let _ = pcm.start();
+    }
+    if let Some(r) = input.resampler.as_mut() {
+        r.reset();
+    }
+}
+
+/// While `Absent`, count down the period-based retry latch and attempt a reopen
+/// when it reaches 0 (C3). No wall clock — the countdown is one decrement per
+/// render period. A successful reopen transitions to `Present` and re-primes the
+/// resampler from fresh input; a failed reopen re-arms the latch (one retry per
+/// ~2 s) and stays Absent. Exactly one `present`/`absent` transition log line.
+fn maybe_reopen_direct(direct: DirectCapture, input: &mut Input) -> DirectCapture {
+    let DirectCapture::Absent {
+        periods_until_retry,
+    } = direct
+    else {
+        return direct;
+    };
+    if periods_until_retry > 0 {
+        return DirectCapture::Absent {
+            periods_until_retry: periods_until_retry - 1,
+        };
+    }
+    // Retry window elapsed: attempt one reopen.
+    let device = input
+        .direct_obs
+        .as_ref()
+        .map(|o| o.device.clone())
+        .unwrap_or_default();
+    if let Some(obs) = &input.direct_obs {
+        obs.retries.fetch_add(1, Ordering::Relaxed);
+    }
+    match open_direct_capture(&device) {
+        Ok(pcm) => {
+            if let Some(r) = input.resampler.as_mut() {
+                r.reset();
+            }
+            if let Some(obs) = &input.direct_obs {
+                obs.present.store(true, Ordering::Relaxed);
+                let opens = obs.opens.fetch_add(1, Ordering::Relaxed) + 1;
+                info!(
+                    "event=fanin.usb_direct.present device={} opens={} retries={} (reopened)",
+                    obs.device,
+                    opens,
+                    obs.retries.load(Ordering::Relaxed),
+                );
+            }
+            DirectCapture::Present(pcm)
+        }
+        Err(_) => {
+            // Still absent — re-arm the retry latch. No per-retry log (only the
+            // present/absent transitions log, C3).
+            DirectCapture::Absent {
+                periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
+            }
+        }
+    }
+}
+
 /// Read up to `requested_frames` from `input`. Returns the number of
 /// frames actually read (may be less than requested if the kernel
 /// has less ready, or 0 if non-blocking and no data).
@@ -984,10 +2323,13 @@ fn read_input(
     requested_frames: usize,
     xrun_tx: &Sender<XrunEvent>,
 ) -> Result<usize> {
-    let io = input
-        .pcm
-        .io_i16()
-        .context("getting i16 IO handle for input")?;
+    // Non-direct lanes always have Some(pcm); the direct lane never reaches
+    // this path. A None here means a silent lane — render silence.
+    let Some(pcm) = input.pcm.as_ref() else {
+        input.read_buf.fill(0);
+        return Ok(0);
+    };
+    let io = pcm.io_i16().context("getting i16 IO handle for input")?;
     match io.readi(&mut input.read_buf) {
         Ok(frames) => {
             input
@@ -1031,10 +2373,7 @@ fn read_input(
                     frames: requested_frames as u32,
                     count,
                 });
-                input
-                    .pcm
-                    .try_recover(e, true)
-                    .context("recovering input xrun")?;
+                pcm.try_recover(e, true).context("recovering input xrun")?;
                 input.read_buf.fill(0);
                 Ok(0)
             } else {
@@ -1083,18 +2422,20 @@ fn recover_resampler_input_xrun(
         frames: period_frames as u32,
         count,
     });
-    input
-        .pcm
-        .try_recover(error, true)
+    // The aloop resampler lane always has Some(pcm) (only the direct lane is
+    // None, and it uses recover_direct_xrun instead).
+    let Some(pcm) = input.pcm.as_ref() else {
+        input.read_buf.fill(0);
+        return Ok(());
+    };
+    pcm.try_recover(error, true)
         .context("recovering resampler input xrun")?;
     // `try_recover` can leave a capture PCM in PREPARED. The ordinary
     // read_input path will kick that forward with the next readi(), but the
     // resampler path polls avail_update() before reading; without an explicit
     // restart it can sit at avail=0 forever after a startup xrun.
-    if input.pcm.state() != State::Running {
-        input
-            .pcm
-            .start()
+    if pcm.state() != State::Running {
+        pcm.start()
             .with_context(|| format!("restarting resampler input {} after xrun", input.label))?;
     }
     if let Some(r) = input.resampler.as_mut() {
@@ -1125,6 +2466,12 @@ fn read_into_resampler_and_render(
     period_frames: usize,
     xrun_tx: &Sender<XrunEvent>,
 ) -> Result<usize> {
+    // The aloop resampler lane always has Some(pcm); the direct lane routes to
+    // read_direct_and_render and never reaches here.
+    if input.pcm.is_none() {
+        input.read_buf.fill(0);
+        return Ok(0);
+    }
     let mut read_budget_remaining =
         period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
     if read_budget_remaining > 0 {
@@ -1134,7 +2481,12 @@ fn read_into_resampler_and_render(
         // The total work remains bounded by `read_budget_remaining`.
         let mut stop_drain = false;
         while read_budget_remaining > 0 && !stop_drain {
-            let avail = match input.pcm.avail_update() {
+            let avail = match input
+                .pcm
+                .as_ref()
+                .expect("aloop resampler lane always has Some(pcm)")
+                .avail_update()
+            {
                 Ok(avail) => avail,
                 Err(e) => {
                     let errno = e.errno();
@@ -1168,6 +2520,8 @@ fn read_into_resampler_and_render(
                 let read_result = {
                     let io = input
                         .pcm
+                        .as_ref()
+                        .expect("aloop resampler lane always has Some(pcm)")
                         .io_i16()
                         .context("getting i16 IO handle for resampler input")?;
                     io.readi(&mut input.read_buf[..samples_to_read])
@@ -1360,6 +2714,130 @@ mod tests {
     use super::*;
 
     // Pure-function tests for the mix math. No ALSA needed.
+
+    // ---- USB DIRECT pure helpers (C1/C2) ---------------------------------
+
+    #[test]
+    fn direct_open_params_accepts_bridge_envelope() {
+        assert!(direct_open_params_ok(48_000, 256, 768).is_ok());
+        // Exactly 2×period, period-aligned is the structural floor.
+        assert!(direct_open_params_ok(48_000, 256, 512).is_ok());
+    }
+
+    #[test]
+    fn direct_open_params_rejects_off_envelope() {
+        assert!(direct_open_params_ok(44_100, 256, 768).is_err()); // wrong rate
+        assert!(direct_open_params_ok(48_000, 128, 768).is_err()); // wrong period
+        assert!(direct_open_params_ok(48_000, 256, 256).is_err()); // < 2×period
+        assert!(direct_open_params_ok(48_000, 256, 700).is_err()); // not aligned
+    }
+
+    #[test]
+    fn classify_direct_errno_maps_c1_fates() {
+        assert_eq!(
+            classify_direct_errno(libc::EAGAIN),
+            DirectReadFate::WouldBlock
+        );
+        assert_eq!(classify_direct_errno(libc::EPIPE), DirectReadFate::Xrun);
+        assert_eq!(classify_direct_errno(libc::ESTRPIPE), DirectReadFate::Xrun);
+        // ENODEV on unplug (and any other errno) is a device loss, never a
+        // daemon error.
+        assert_eq!(
+            classify_direct_errno(libc::ENODEV),
+            DirectReadFate::DeviceLost
+        );
+        assert_eq!(classify_direct_errno(libc::EIO), DirectReadFate::DeviceLost);
+    }
+
+    #[test]
+    fn direct_reopen_cadence_is_about_two_seconds() {
+        // 375 periods × 256 frames / 48000 Hz = 2.0 s (C3).
+        let seconds = (DIRECT_REOPEN_RETRY_PERIODS as f64) * (DIRECT_PERIOD_FRAMES as f64)
+            / (SAMPLE_RATE_HZ as f64);
+        assert!(
+            (seconds - 2.0).abs() < 1e-9,
+            "reopen cadence must be ~2 s, got {seconds}"
+        );
+    }
+
+    #[test]
+    fn direct_lane_narrows_via_shared_conversion() {
+        // The direct lane uses jasper_resampler's narrowing (C2). Re-assert the
+        // pinned sign-boundary vector here too so a drift fails the fanin suite.
+        assert_eq!(jasper_resampler::s32_high_word_to_s16(0), 0);
+        assert_eq!(jasper_resampler::s32_high_word_to_s16(0x7fff_ffff), 0x7fff);
+        assert_eq!(jasper_resampler::s32_high_word_to_s16(i32::MIN), i16::MIN);
+        assert_eq!(jasper_resampler::s32_high_word_to_s16(-1), -1);
+        assert_eq!(jasper_resampler::s32_high_word_to_s16(-65_536), -1);
+        assert_eq!(jasper_resampler::s32_high_word_to_s16(-65_537), -2);
+    }
+
+    // ---- B2: direct-drain narrowing scratch never overflows (OOB panic) ---
+
+    #[test]
+    fn direct_narrow_scratch_bounds_max_chunk_regardless_of_period() {
+        // The drain reads in chunks of at most DIRECT_PERIOD_FRAMES frames and
+        // narrows `got = n × CHANNELS` samples into the narrowing scratch. The
+        // largest `got` a single chunk can produce:
+        let max_chunk_samples = (DIRECT_PERIOD_FRAMES as usize) * (CHANNELS as usize);
+        // The narrowing scratch must bound it, and its size must NOT depend on
+        // the lane's period geometry.
+        assert_eq!(
+            direct_narrow_scratch_samples(),
+            max_chunk_samples,
+            "narrowing scratch must fit one full DIRECT_PERIOD_FRAMES chunk"
+        );
+        assert!(
+            max_chunk_samples <= direct_narrow_scratch_samples(),
+            "a full chunk read must never slice past the narrowing scratch"
+        );
+    }
+
+    #[test]
+    fn small_period_would_overflow_the_render_buf_but_not_the_narrow_scratch() {
+        // The regression: `read_buf` is sized `period_frames × CHANNELS` for the
+        // `render_period` contract. Reusing it as the narrowing target (the pre-
+        // fix code) slices out of bounds whenever a single chunk yields more
+        // frames than `period_frames` — reachable within seconds of real
+        // streaming at any legal small geometry. `panic=abort` in this hot loop
+        // escalates to the jasper-fanin StartLimitAction=reboot ladder.
+        let channels = CHANNELS as usize;
+        let max_chunk_samples = (DIRECT_PERIOD_FRAMES as usize) * channels;
+        // Every legal period at/under the chunk size is a hazard for the OLD
+        // (read_buf-reuse) sizing; the fixed narrowing scratch is safe for all.
+        for period_frames in [1usize, 32, 64, 128, 200, 255, 256] {
+            let old_read_buf_len = period_frames * channels;
+            if period_frames < DIRECT_PERIOD_FRAMES as usize {
+                assert!(
+                    old_read_buf_len < max_chunk_samples,
+                    "pre-fix read_buf ({old_read_buf_len}) would overflow on a \
+                     {max_chunk_samples}-sample chunk at period {period_frames}"
+                );
+            }
+            // The fix's dedicated scratch fits the worst-case chunk at EVERY
+            // period, small or large.
+            assert!(
+                max_chunk_samples <= direct_narrow_scratch_samples(),
+                "narrowing scratch must bound a full chunk at period {period_frames}"
+            );
+        }
+        // Behavioral pin: actually run the hot-loop slice ops the drain does
+        // (`narrow_scratch[..got]` with `got == max_chunk_samples`) against a
+        // scratch sized the way the real code sizes it. This panics if the
+        // sizing ever regresses to a period-dependent length.
+        let mut narrow_scratch = [0i16; direct_narrow_scratch_samples()];
+        let _convert_target = &mut narrow_scratch[..max_chunk_samples];
+        let _tap_view = &narrow_scratch[..max_chunk_samples];
+    }
+
+    #[test]
+    fn direct_i32_and_narrow_scratches_are_equal_length() {
+        // The i32 read fills `scratch[..samples]` and the narrow fills
+        // `narrow_scratch[..got]` with `got == samples`; both must be the same
+        // fixed length so neither read nor narrow can slice out of bounds.
+        let i32_len = (DIRECT_PERIOD_FRAMES as usize) * (CHANNELS as usize);
+        assert_eq!(i32_len, direct_narrow_scratch_samples());
+    }
 
     #[test]
     fn mix_into_sums_two_inputs() {
@@ -1709,5 +3187,211 @@ mod tests {
             CATCHUP_HIGH_WATER_PERIODS,
             DEFAULT_INPUT_BUFFER_PERIODS,
         );
+    }
+
+    // Ring A output path. These construct a real SPSC ring (via jasper_ring)
+    // under the OS temp dir and drive `write_ring_period` directly, so they run
+    // on any host that can build the crate (CI Linux). `mirror: None` keeps ALSA
+    // out of the test — the ring publish + reader roundtrip is the contract.
+
+    use jasper_ring::{RingReader, SlotRead};
+    use std::sync::atomic::AtomicU64 as TestAtomicU64;
+
+    static RING_MIXER_TEST_SEQ: TestAtomicU64 = TestAtomicU64::new(0);
+
+    fn ring_geometry(n_slots: u32) -> Geometry {
+        Geometry {
+            rate: 48_000,
+            channels: CHANNELS,
+            sample_format: SAMPLE_FORMAT_S16LE,
+            period_frames: RING_SLOT_FRAMES,
+            n_slots,
+        }
+    }
+
+    fn tmp_ring_output(n_slots: u32, tag: &str) -> (RingOutput, String) {
+        let dir = std::env::temp_dir().join(format!(
+            "jts-fanin-ring-{}-{}-{}",
+            tag,
+            std::process::id(),
+            RING_MIXER_TEST_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("program.ring").to_string_lossy().into_owned();
+        let writer = RingWriter::create_or_attach(&path, ring_geometry(n_slots)).unwrap();
+        let counters = RingCounters::new();
+        let ring = RingOutput {
+            writer,
+            counters,
+            mirror: None,
+            // One 256-frame period at 48k, in ns — used only on the reader-absent
+            // self-pace path (avoided in these live-reader tests).
+            self_pace_period_ns: 256 * 1_000_000_000 / 48_000,
+        };
+        (ring, path)
+    }
+
+    fn cleanup_ring(path: &str) {
+        let _ = std::fs::remove_file(path);
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+
+    /// Q2 (TTS/duck ride-along): the ring output receives the FINAL mixed period
+    /// — post-duck AND post-TTS — verbatim. `step()` mixes TTS and applies the
+    /// duck into sum_buf BEFORE saturating into output_buf, and `write_ring_period`
+    /// publishes exactly that output_buf, so whatever the mix produced is what the
+    /// ring reader sees. This test stands in a post-TTS-mixed period and asserts
+    /// the reader reads back those exact bytes.
+    #[test]
+    fn ring_output_carries_post_duck_post_tts_period() {
+        let period_frames = 256u32; // 2 slots of 128 frames
+        let (mut ring, path) = tmp_ring_output(8, "tts_ridealong");
+        let mut reader = RingReader::create_or_attach(&path, ring_geometry(8)).unwrap();
+        // Prime the reader heartbeat so the writer takes the publish path.
+        let slot_samples = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize);
+        let mut slot_out = vec![0i16; slot_samples];
+        assert_eq!(reader.try_consume_slot(&mut slot_out), SlotRead::Empty);
+
+        // Model step()'s output_buf: build a summed program, apply a duck, then
+        // add a TTS contribution — the SAME order step() uses — and saturate.
+        let total = (period_frames as usize) * (CHANNELS as usize);
+        let mut sum = vec![0i32; total];
+        mix_into(&mut sum, &vec![10_000i16; total]); // program lane
+        apply_gain_to_sum(&mut sum, 0.5); // duck (TTS active)
+        for s in sum.iter_mut() {
+            *s = s.saturating_add(4_000); // stand-in for tts.mix_period
+        }
+        let mut output_buf = vec![0i16; total];
+        saturate_to_i16(&sum, &mut output_buf); // expected: 5000 + 4000 = 9000
+
+        let published_frames = write_ring_period(&mut ring, &output_buf, period_frames);
+        // Two slots reached a live reader -> the full period is counted.
+        assert_eq!(published_frames, period_frames);
+
+        // The reader reads the two published slots back — byte-identical to the
+        // post-duck post-TTS output_buf.
+        let mut got = Vec::with_capacity(total);
+        for _ in 0..(period_frames / RING_SLOT_FRAMES) {
+            assert_eq!(reader.try_consume_slot(&mut slot_out), SlotRead::Filled);
+            got.extend_from_slice(&slot_out);
+        }
+        assert_eq!(got, output_buf, "ring must carry the final mixed period");
+        assert!(got.iter().all(|&s| s == 9_000), "post-duck+TTS value");
+        // Counters reflect two published slots (a live reader, no drops).
+        assert_eq!(ring.counters.published.load(Ordering::Relaxed), 2);
+        assert_eq!(ring.counters.drops.load(Ordering::Relaxed), 0);
+        cleanup_ring(&path);
+    }
+
+    /// Reader-absent: `write_ring_period` free-run-drops and self-paces (never
+    /// hot-spins). Counters reflect the drops; occupancy stays bounded. This
+    /// stands in the "CamillaDSP not yet up / reloading" turn.
+    #[test]
+    fn ring_output_free_runs_and_self_paces_without_reader() {
+        let period_frames = 256u32;
+        let (mut ring, path) = tmp_ring_output(2, "no_reader");
+        // No reader attached: reader_pid == 0.
+        let total = (period_frames as usize) * (CHANNELS as usize);
+        let output_buf = vec![7i16; total];
+
+        // Fill the ring, then publish several more periods. Each free-run-drops
+        // the oldest and self-paces one period; bound the wall time so the
+        // self-pacing sleep can't wedge the loop.
+        let start = std::time::Instant::now();
+        let mut per_period_published = Vec::with_capacity(4);
+        for _ in 0..4 {
+            per_period_published.push(write_ring_period(&mut ring, &output_buf, period_frames));
+        }
+        let elapsed = start.elapsed();
+        // Accounting (nit-2): the first period fills the empty 2-slot ring and
+        // counts both slots (period_frames); once the ring is full every later
+        // period free-run-drops entirely and counts 0 — the top-line
+        // frames_written never over-counts a fully-dropped period.
+        assert_eq!(per_period_published[0], period_frames);
+        assert_eq!(
+            *per_period_published.last().unwrap(),
+            0,
+            "a fully-dropped readerless period must count 0 frames"
+        );
+        // 4 periods * (2 slots each) with a per-period self-pace sleep (~5.3 ms):
+        // bounded well under the 5 s watchdog threshold.
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "self-pacing must stay bounded, got {elapsed:?}"
+        );
+        // Drops accrued (no live reader); occupancy bounded at n_slots.
+        assert!(ring.counters.drops.load(Ordering::Relaxed) > 0);
+        assert!(ring.counters.occupancy.load(Ordering::Relaxed) <= 2);
+        cleanup_ring(&path);
+    }
+
+    // ---- AUTO-TRIM: one-shot latch decision (pure) ------------------------
+
+    const TEST_DELAY: u64 = 96_000; // 2 s @ 48 kHz
+
+    #[test]
+    fn auto_trim_activation_period_never_fires() {
+        // idle (default) -> reads audio this period: arm the delay, never fire
+        // on the activation period itself (the standing fill hasn't accumulated).
+        let d = auto_trim_decision(128, AutoTrimLaneState::default(), TEST_DELAY);
+        assert!(!d.fire);
+        assert_eq!(d.next.active_since, Some(128));
+        assert_eq!(d.next.last_frames_read, 128);
+    }
+
+    #[test]
+    fn auto_trim_fires_once_delay_elapsed() {
+        // active_since=128; fires the first period frames_read - since >= delay.
+        let state = AutoTrimLaneState {
+            last_frames_read: 95_000,
+            active_since: Some(128),
+        };
+        let d = auto_trim_decision(96_128, state, TEST_DELAY); // 96000 elapsed
+        assert!(d.fire);
+        assert_eq!(d.next.active_since, Some(128));
+    }
+
+    #[test]
+    fn auto_trim_does_not_fire_before_delay() {
+        let state = AutoTrimLaneState {
+            last_frames_read: 1000,
+            active_since: Some(128),
+        };
+        let d = auto_trim_decision(5000, state, TEST_DELAY); // only ~4872 elapsed
+        assert!(!d.fire);
+    }
+
+    #[test]
+    fn auto_trim_rearms_on_idle() {
+        // Active then no read this period => active_since cleared (re-armed) so
+        // the NEXT idle->active session fires again.
+        let state = AutoTrimLaneState {
+            last_frames_read: 5000,
+            active_since: Some(128),
+        };
+        let d = auto_trim_decision(5000, state, TEST_DELAY); // no advance => idle
+        assert!(!d.fire);
+        assert_eq!(d.next.active_since, None);
+        let d2 = auto_trim_decision(5128, d.next, TEST_DELAY); // fresh activation
+        assert!(!d2.fire);
+        assert_eq!(d2.next.active_since, Some(5128));
+    }
+
+    #[test]
+    fn auto_trim_delay_measured_from_activation_not_stream_start() {
+        // A lane already deep into playback when auto-trim arms: active_since
+        // captures the CURRENT frames_read, so the delay is relative to
+        // activation, not to the absolute frame count.
+        let state = AutoTrimLaneState {
+            last_frames_read: 1_000_000,
+            active_since: None,
+        };
+        let d = auto_trim_decision(1_000_128, state, TEST_DELAY);
+        assert_eq!(d.next.active_since, Some(1_000_128));
+        assert!(!d.fire);
+        let d2 = auto_trim_decision(1_096_128, d.next, TEST_DELAY);
+        assert!(d2.fire);
     }
 }

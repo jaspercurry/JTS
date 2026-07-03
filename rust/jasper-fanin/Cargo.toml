@@ -19,6 +19,19 @@ jasper-tts-protocol = { path = "../jasper-tts-protocol" }
 # DLL-steered to the DAC clock. See src/lane_resampler.rs and
 # docs/HANDOFF-usb-low-latency.md.
 jasper-resampler = { path = "../jasper-resampler" }
+# The SPSC ping-pong SHM ring — the same crate jasper-outputd's Ring B reader
+# consumes. Pure (mmap via libc, no ALSA). Ring A (PROTOTYPE, flag-gated behind
+# JASPER_FANIN_CAMILLA_COUPLING=shm_ring) uses its production RingWriter as the
+# Output::Ring publish half; CamillaDSP reads it via a capture-direction ioplug.
+jasper-ring = { path = "../jasper-ring" }
+# The shared host-slaved USB clock ladder + servo + ALSA pitch actuator (the
+# same crate jasper-usbsink-audio consumes for solo mode). In combo mode
+# (JASPER_FANIN_USB_DIRECT=enabled) fan-in owns the gadget capture, so the
+# `fanin-host-clock` thread drives this to steer the host's Capture Pitch ctl
+# toward the DAC clock. The `alsa` feature enables the real `AlsaPitchCtl`;
+# fan-in always links libasound so it is enabled unconditionally here. Default
+# OFF via JASPER_FANIN_HOST_CLOCK. See docs/HANDOFF-usb-low-latency.md.
+jasper-host-clock = { path = "../jasper-host-clock", features = ["alsa"] }
 # Idiomatic Rust wrapper around libasound — the daemon's primary I/O
 # surface. Mature crate, used by most Rust ALSA projects (paplay,
 # pulse-pipewire-bridge, etc.). Compiles against Trixie's
@@ -49,6 +62,19 @@ anyhow = "1"
 # belt-and-suspenders alongside the systemd unit's LimitMEMLOCK=infinity
 # and Slice=jts-audio.slice MemorySwapMax=0).
 libc = "0.2"
+
+# JSON parsing for the relocated impulse-tap arm-body endpoint
+# (src/impulse_tap.rs `TapConfig::from_arm_body`). NOTE: state.rs's STATUS
+# response is still hand-rolled JSON with NO serde — the "no serde_json" note
+# in that module's docstring covers the response-emit side, which is small and
+# stable. The tap-arm PARSE side is a mixed string/number/bool object with
+# integral-float coercion and reserved-path rejection; it was ported verbatim
+# from jasper-usbsink-audio (which already carries this dep) and re-hand-rolling
+# a correctness-critical object parser for the PoC would trade a large new
+# surface for marginal binary savings. serde's proc-macro machinery is already
+# in the lock via jiff, so the delta here is small. Revisit at hardening if the
+# fan-in binary size ever matters.
+serde_json = "1"
 
 [profile.release]
 # Optimize aggressively. The hot path (per-frame mixer) is small;

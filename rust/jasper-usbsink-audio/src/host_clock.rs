@@ -16,12 +16,11 @@
 //! See [`jasper_host_clock`]'s module docstring for the authoritative
 //! derivation (cascade defense, feed-forward, cross-platform conditions).
 //!
-//! The invariant that motivates the shared crate: **the daemon that owns the
-//! gadget capture owns the pitch ctl.** In solo (aloop) mode the usbsink bridge
-//! owns `hw:UAC2Gadget`, so it drives the ladder from `run_state_publisher`.
-//! The combo (USB DIRECT) mode where fan-in owns the capture and drives the
-//! ladder instead is a later stage; the crate exists so that mode can reuse
-//! byte-identical servo semantics without a fork.
+//! The invariant pinned across both daemons: **the daemon that owns the gadget
+//! capture owns the pitch ctl.** In solo (aloop) mode the usbsink bridge owns
+//! `hw:UAC2Gadget`, so it drives the ladder from `run_state_publisher`; in
+//! combo (USB DIRECT) mode fan-in owns the capture and drives it instead, and
+//! usbsink runs in standby with the feature force-disabled (C5).
 
 use std::sync::atomic::Ordering;
 
@@ -118,6 +117,16 @@ where
         probe_step_secs,
         log_prefix: LOG_PREFIX,
     })
+}
+
+/// A hard-disabled usbsink config (C5 standby). In standby the audio loop that
+/// feeds the DLL never runs, so there is no fill source; the feature is forced
+/// off regardless of env (fan-in's lane resampler owns all rate matching). The
+/// startup + exit pitch neutralize still run against this config (both are
+/// unconditional in the publisher and never leave the host slaved), so a
+/// crashed predecessor is still healed. Never fails (no env parse).
+pub fn disabled_config() -> HostClockConfig {
+    HostClockConfig::disabled(LOG_PREFIX)
 }
 
 fn parse_env_u64<F>(getenv: &F, key: &str, default: u64) -> Result<u64, String>
@@ -222,5 +231,12 @@ mod tests {
         assert_eq!(cfg.target_fill_frames, 384.0);
         assert_eq!(cfg.probe_ppm, 300.0);
         assert_eq!(cfg.probe_step_secs, 6);
+    }
+
+    #[test]
+    fn disabled_config_is_off_with_usbsink_prefix() {
+        let cfg = disabled_config();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.log_prefix, "usbsink_audio");
     }
 }
