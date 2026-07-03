@@ -734,6 +734,49 @@ impl StateServer {
                 push_kv_u64(&mut buf, "opens", d.opens.load(Ordering::Relaxed));
                 buf.push(',');
                 push_kv_u64(&mut buf, "retries", d.retries.load(Ordering::Relaxed));
+                buf.push(',');
+                // Negotiated gadget geometry (lever 2). 256/768 by default;
+                // JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES overrides the period and
+                // resolve_direct_buffer_frames derives the requested deep buffer.
+                // buffer_frames is the ACTUALLY-negotiated hwp.get_buffer_size()
+                // (the kernel may round the near-request up), read live so STATUS
+                // matches the running PCM rather than the request.
+                push_kv_u64(&mut buf, "period_frames", d.period_frames as u64);
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "buffer_frames",
+                    d.buffer_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // drain_avail{} — since-boot drain-ENTRY avail dwell stats
+                // (lever 2). `mean`/`max` in frames; `hist` is a fixed 6-bucket
+                // 64-frame-step histogram (boundaries [0,64,128,192,256,320,+]).
+                // Additive sub-block; absent for every non-direct lane.
+                let s = &d.drain_stats;
+                let count = s.count.load(Ordering::Relaxed);
+                let sum = s.sum.load(Ordering::Relaxed);
+                let mean = if count == 0 {
+                    0.0
+                } else {
+                    (sum as f64) / (count as f64)
+                };
+                buf.push_str(r#""drain_avail":{"#);
+                push_kv_u64(&mut buf, "count", count);
+                buf.push(',');
+                push_kv_f64(&mut buf, "mean", mean, 1);
+                buf.push(',');
+                push_kv_u64(&mut buf, "max", s.max.load(Ordering::Relaxed));
+                buf.push(',');
+                buf.push_str(r#""hist":["#);
+                for (i, bucket) in s.hist.iter().enumerate() {
+                    if i > 0 {
+                        buf.push(',');
+                    }
+                    buf.push_str(&bucket.load(Ordering::Relaxed).to_string());
+                }
+                buf.push(']');
+                buf.push('}');
                 buf.push('}');
             }
             buf.push('}');
@@ -1127,6 +1170,9 @@ mod tests {
     use super::*;
 
     fn make_test_server() -> StateServer {
+        // Test-only: the direct fixture builds a DrainStats. Scoped here (not a
+        // module-level import) so a non-test build doesn't carry an unused import.
+        use crate::mixer::DrainStats;
         StateServer {
             started_at: Instant::now(),
             socket_path: PathBuf::from("/tmp/fanin-test.sock"),
@@ -1186,9 +1232,22 @@ mod tests {
                     is_direct: true,
                     direct: Some(DirectObservability {
                         device: "hw:UAC2Gadget".to_string(),
+                        period_frames: 256,
+                        buffer_frames: Arc::new(AtomicU64::new(768)),
                         present: Arc::new(AtomicBool::new(true)),
                         opens: Arc::new(AtomicU64::new(1)),
                         retries: Arc::new(AtomicU64::new(0)),
+                        // Two drain-entry samples (128 + 192 = 320, mean 160,
+                        // max 192) exercising buckets 2 and 3.
+                        drain_stats: {
+                            let s = DrainStats::new();
+                            s.count.store(2, Ordering::Relaxed);
+                            s.sum.store(320, Ordering::Relaxed);
+                            s.max.store(192, Ordering::Relaxed);
+                            s.hist[2].store(1, Ordering::Relaxed);
+                            s.hist[3].store(1, Ordering::Relaxed);
+                            s
+                        },
                     }),
                     frames_read: Arc::new(AtomicU64::new(96000)),
                     xrun_count: Arc::new(AtomicU64::new(0)),
@@ -1842,6 +1901,19 @@ mod tests {
         let direct = inputs.iter().find(|i| i["label"] == "usbsink").unwrap();
         assert_eq!(direct["source"].as_str(), Some("direct"));
         assert_eq!(direct["direct"]["present"].as_bool(), Some(true));
+        // ADDITIVE (lever 2): negotiated geometry + drain-entry dwell stats.
+        assert_eq!(direct["direct"]["period_frames"].as_u64(), Some(256));
+        assert_eq!(direct["direct"]["buffer_frames"].as_u64(), Some(768));
+        let da = &direct["direct"]["drain_avail"];
+        assert_eq!(da["count"].as_u64(), Some(2));
+        assert_eq!(da["max"].as_u64(), Some(192));
+        // mean = 320/2 = 160.0 (serialized with one decimal).
+        assert_eq!(da["mean"].as_f64(), Some(160.0));
+        let hist = da["hist"].as_array().unwrap();
+        assert_eq!(hist.len(), 6, "fixed 6-bucket histogram: {j}");
+        assert_eq!(hist[2].as_u64(), Some(1)); // [128,192) — the 128 sample
+        assert_eq!(hist[3].as_u64(), Some(1)); // [192,256) — the 192 sample
+        assert_eq!(hist[0].as_u64(), Some(0));
         // A non-direct lane has no direct block.
         let spotify = inputs.iter().find(|i| i["label"] == "spotify").unwrap();
         assert!(spotify.get("direct").is_none());

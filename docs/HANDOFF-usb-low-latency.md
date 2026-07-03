@@ -414,7 +414,48 @@ floor. The real remaining levers are:
    the DLL locks, with the DLL holding the decayed target so lock churn does not
    re-prime fill above setpoint (the cushion-128-under-DLL run locked but
    regressed +1.9 ms p50 without decay). Est. −2.7..5.3 ms.
-2. Gadget drain cadence: standing avail ~186 f → ~64 f (~2.6 ms).
+2. Gadget drain cadence: standing avail ~186 f → ~64 f (~2.6 ms). **Lever-2
+   instrumentation + knob shipped (default-preserving, still lab-only):**
+   `drain_direct_capture` now records the drain-ENTRY `avail` into a since-boot
+   `DrainStats` (count/sum/max + a fixed 6-bucket 64-frame-step histogram,
+   boundaries `[0,64,128,192,256,320,+]`), surfaced additively in STATUS at
+   `inputs[].direct.drain_avail{count,mean,max,hist}` and logged every 2048
+   drains as `event=fanin.direct.drain_stats`. The gadget OPEN period is now
+   tunable via `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES` (default 256 =
+   byte-identical to today; fail-loud range 32..=1024). The capture buffer stays
+   DEEP regardless (`resolve_direct_buffer_frames`: ≥ 3 periods AND ≥ 768 frames,
+   period-aligned) — a small period rides a deep buffer, NOT the refuted shallow
+   2-period URB-headroom failure.
+
+   **Read the stats as WINDOW DELTAS, not the raw lifetime `mean`.** `drain_stats`
+   is since-boot cumulative, and one drain is sampled *every* render cycle the
+   gadget PCM is open — including while the host is attached but silent (Mac
+   wired, nothing playing). Those attached-idle drains record `avail≈0` into
+   bucket 0 and into the `sum`/`count` denominator, so the lifetime `mean`
+   **understates the real playback dwell in proportion to idle time**. On
+   jts.local (Mac wired 24/7) a 10-min idle before a 1-min playback run buries
+   ~11k playback samples under ~112k zeros → STATUS `mean` reads ≈17 f even if the
+   true playback dwell is unchanged at ~186 f. Do NOT read the lifetime `mean`
+   directly. Instead poll STATUS twice — once immediately before the playback
+   window, once immediately after — and compute the window mean from the deltas:
+   `Δsum/Δcount`, with the `Δhist` bucket deltas as the window's distribution.
+   `count`/`sum`/`hist` are proper monotonic counters, so the bracketed deltas
+   isolate the playback dwell from idle zeros. (An attached-idle `avail≈0` sample
+   *during playback* is itself the H1 quantization signal — the recording is
+   correct; only the lifetime aggregate is diluted.)
+
+   On-hardware decision rules (all reads are window deltas per the note above):
+   - **H1 (period granularity):** set `=64`, run ≥1 min of playback bracketed by
+     two STATUS polls, and look at the WINDOW mean (`Δsum/Δcount`) and `Δhist`. If
+     the window mean drops toward ~64 f (and the `Δhist` distribution de-quantizes
+     off the 0/256 bimodal) **with zero new capture xruns**
+     (`event=fanin.xrun … usb_direct lane`), the pointer-granularity hypothesis
+     holds — keep 64. Any new capture xruns → revert (`unset`, back to 256).
+   - **H2 (drain-phase artifact):** if the WINDOW mean (`Δsum/Δcount` across the
+     playback bracket, NOT the idle-diluted lifetime mean) is already ~64 f
+     (0..128) while the older probe read ~186, the standing dwell was a probe
+     sampling artifact, not real latency ahead of the tap — the honest fix is
+     accounting (this instrumentation IS the evidence), not a period change.
 3. DAC URB queue: `delay` ~477 f against a 256-frame ring (~2–3 ms in
    snd-usb-audio queueing).
 
