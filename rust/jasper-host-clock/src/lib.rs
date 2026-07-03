@@ -184,9 +184,96 @@ pub const L2_SLOPE_FLOOR_PPM: f64 = 100.0;
 /// frames is the same "the error is genuinely non-trivial" gate.
 pub const ANTI_WINDUP_THRESHOLD_FRAMES: f64 = 128.0;
 
-// The outer DLL's loop timescale. `period / rate` is the DLL's per-update
-// timescale in seconds; with a 1 s tick and this period/rate the effective
-// bandwidth is `BW_MIN × (period/rate) / T_tick = 0.016 × 0.1 / 1 = 0.0016 Hz`.
+/// CORRECTION-mode outer-loop integral gain (ppm of command per ppm of smoothed
+/// correction error, per 1 s tick). CORRECTION mode does **not** use the outer
+/// DLL as its control law — the plant is structurally different from FILL mode
+/// and the DLL's constants are wrong for it (review PR #1144). In FILL mode the
+/// plant is an INTEGRATOR (a rate command sets the gadget-fill *slope*, so the
+/// error the DLL sees is a slowly-ramping frame count); the DLL's own
+/// integrators plus that plant integrator is the well-behaved cascade the module
+/// docs describe. In CORRECTION mode the plant is instead **near-unity DC gain
+/// through the inner resampler's lag** (a ppm command becomes, after the inner
+/// `RateController` settles, ~the same ppm of correction — ppm→ppm, no
+/// integrator). Driving that unity-gain-plus-lag plant with the FILL-tuned
+/// third-order DLL puts loop gain > 1 past 180° of phase (inner lag at its
+/// 0.016 Hz locked floor τ≈10 s + the 0.3-α estimator + 1 s sampling + host
+/// application lag), so it limit-cycles — the exact fighting cascade the review
+/// caught (compliant Mac at +20 ppm rails correction ±460 ppm on a ~21 s period).
+///
+/// The fix is a **pure-integral outer law** for CORRECTION mode: a single slow
+/// integrator around the near-unity plant. One integrator + one dominant plant
+/// pole is unconditionally stable for a small enough gain, and the feed-forward
+/// seed (`−baseline_correction`) already cancels the DC crystal offset so the
+/// integrator only trims the residual. `Ki = 0.05` was chosen against the REAL
+/// inner `RateController` (composed exactly as `lane_resampler` builds it) across
+/// the crystal / lag / noise / 3600 s matrix: it is a factor of ~5 below the
+/// stability edge (`Ki ≳ 0.25` begins to ring, `≥ 0.5` limit-cycles), settles a
+/// 100–250 ppm feed-forward miss in ~30–90 s with no overshoot, and holds
+/// `correction_ppm → 0` with `cmd_p2p` at the ctl-quantization floor. Not
+/// env-tunable (contract §2 fixed-constant discipline); a `const` a test pins.
+pub const CORRECTION_INTEGRAL_GAIN: f64 = 0.05;
+
+// Compile-time tripwire: the shipped integral gain must stay a healthy factor
+// below the ~0.25 ring threshold measured against the real inner loop, and be
+// strictly positive (a zero/negative gain would freeze or reverse the trim). If
+// someone bumps `CORRECTION_INTEGRAL_GAIN` toward instability this fails the
+// BUILD, not just a test — the servo-sim in `tests` proves it converges at this
+// value, this pins that the value can't silently drift up.
+const _: () = assert!(CORRECTION_INTEGRAL_GAIN > 0.0 && CORRECTION_INTEGRAL_GAIN <= 0.1);
+
+/// CORRECTION-mode probe step-phase duration, in seconds — LONGER than FILL
+/// mode's `probe_step_secs` because the observable is slower to respond.
+///
+/// The probe reads how far the observable MOVES under a pitch step. In FILL mode
+/// the observable is the gadget-fill slope, which responds within a couple of
+/// seconds (the fill starts diverging the instant the host rate changes). In
+/// CORRECTION mode the observable is the INNER resampler's correction ppm, which
+/// only moves as fast as that inner spa_dll loop can slew — and at its locked
+/// floor (bw = 0.016 Hz, τ ≈ 10 s) that is much slower. Measured against the real
+/// inner loop (review PR #1144): a 6 s step window reads a compliant −250 ppm
+/// host at response_ratio ≈ +0.16 (FAIL — the inner correction has only slewed a
+/// fraction of the way), but a 15 s window reads it at +0.84 (PASS), and the mid-
+/// range stays ≥ +0.84 out to ±250 ppm. So the CORRECTION probe holds the step
+/// for this fixed longer window regardless of `probe_step_secs`. FILL mode is
+/// unchanged (hardware-validated at 6 s). Not env-tunable (contract §2); a `const`
+/// a test pins.
+pub const CORRECTION_PROBE_STEP_SECS: u64 = 15;
+
+/// CORRECTION-mode probe: how far the baseline observable must be from zero (in
+/// ppm, toward a rail) before the probe steps AWAY from that rail instead of
+/// always stepping `+probe_ppm`.
+///
+/// The inner resampler's correction authority is only ±500 ppm. If the host's
+/// crystal already sits near one rail (say +450 ppm, so baseline correction
+/// ≈ +450), a fixed `+probe_ppm` step pushes a compliant host past +500 where the
+/// inner correction CLAMPS — so the observable can only move the ~50 ppm of
+/// remaining headroom and the response_ratio false-negatives (measured +0.19–0.33
+/// against the real loop, FAIL, feature silently dead for that host — review
+/// PR #1144). Worse, a headroom-normalized verdict then over-credits a NON-
+/// compliant near-rail host (its natural crystal drift pushes correction the same
+/// way). The physical fix: step AWAY from the nearer rail — command the host
+/// SLOWER when its baseline correction is strongly positive, FASTER when strongly
+/// negative — so a compliant response always has authority to show and a non-
+/// compliant host's natural drift runs OPPOSITE the step (clearly negative ratio).
+/// The verdict then normalizes by the SIGNED step actually applied, so compliant
+/// → +1 in either direction. This deadband keeps the default `+probe_ppm` step for
+/// near-zero baselines (the common Mac case) and only flips direction when the
+/// baseline is genuinely near a rail. FILL mode is unaffected (always `+probe_ppm`).
+pub const CORRECTION_PROBE_FLIP_DEADBAND_PPM: f64 = 150.0;
+
+/// CORRECTION-mode anti-windup: when the total command is railed at
+/// ±[`MAX_BIAS_PPM`] and the integral trim is still pushing further in the WRONG
+/// direction relative to the current correction error (a windup that would keep
+/// the command railed the wrong way and drain the fan-in cushion), the integrator
+/// is HELD (not stepped further) so the next in-band error walks it back. This is
+/// the CORRECTION-mode analog of the FILL-mode DLL reset-and-reapply — a pure
+/// integrator has no hidden `z2+z3` to reset, so freezing its accumulation is the
+/// equivalent bounded response. Gated on the correction error being non-trivial,
+/// mode-scaled the same way the FILL gate is (half the probe step).
+// The outer DLL's loop timescale (FILL mode only). `period / rate` is the DLL's
+// per-update timescale in seconds; with a 1 s tick and this period/rate the
+// effective bandwidth is `BW_MIN × (period/rate) / T_tick = 0.016 × 0.1 / 1 =
+// 0.0016 Hz`.
 const OUTER_DLL_PERIOD: f64 = 4800.0;
 const OUTER_DLL_RATE: f64 = 48000.0;
 
@@ -571,8 +658,15 @@ pub struct HostClock {
     dll: Dll,
     slope: SlopeEstimator,
     /// The feed-forward bias seeded on L0 entry from the measured baseline
-    /// slope; the DLL trims the residual around it.
+    /// slope; the outer trim (DLL in FILL mode, integral in CORRECTION mode)
+    /// trims the residual around it.
     feed_forward_ppm: f64,
+    /// CORRECTION-mode outer-loop integral accumulator, in ppm. The pure-integral
+    /// control law for CORRECTION mode ([`CORRECTION_INTEGRAL_GAIN`]) steps this
+    /// each locked tick by `−Ki · correction_mean`; the DLL is not ticked in that
+    /// mode. Zero in FILL mode (which uses the DLL). Reset to 0 on every L0 entry
+    /// and every session/probe boundary alongside `feed_forward_ppm` and the DLL.
+    correction_trim_ppm: f64,
     /// Last commanded (clamped) bias — what telemetry reports and what the
     /// suppression epsilon compares against for the NEXT command.
     commanded_ppm: f64,
@@ -597,6 +691,12 @@ pub struct HostClock {
     /// pair, reused, so the probe-verdict machinery is byte-identical across modes.
     probe_baseline_obs_ppm: f64,
     probe_step_obs_ppm: f64,
+    /// The SIGNED pitch step actually applied in the current probe's step phase.
+    /// FILL mode always uses `+probe_ppm`; CORRECTION mode steps AWAY from the
+    /// nearer inner-authority rail (see [`CORRECTION_PROBE_FLIP_DEADBAND_PPM`]), so
+    /// this can be `−probe_ppm`. `finish_probe` normalizes the response by THIS
+    /// signed magnitude so a compliant host reads ≈ +1 in either direction.
+    probe_step_ppm: f64,
     probe_result: ProbeResult,
     response_ratio: Option<f64>,
     l1_high_ticks: u32,
@@ -657,6 +757,7 @@ impl HostClock {
             dll,
             slope,
             feed_forward_ppm: 0.0,
+            correction_trim_ppm: 0.0,
             commanded_ppm: 0.0,
             last_written_ppm: 0.0,
             last_write_ms: None,
@@ -668,6 +769,7 @@ impl HostClock {
             lock_since_ms: None,
             probe_baseline_obs_ppm: 0.0,
             probe_step_obs_ppm: 0.0,
+            probe_step_ppm: 0.0,
             probe_result: ProbeResult::None,
             response_ratio: None,
             l1_high_ticks: 0,
@@ -780,6 +882,7 @@ impl HostClock {
         self.transition_to(Ladder::Disabled, reason);
         self.commanded_ppm = 0.0;
         self.feed_forward_ppm = 0.0;
+        self.correction_trim_ppm = 0.0;
         Action::WritePitch {
             ppm: 0.0,
             reset: true,
@@ -873,9 +976,11 @@ impl HostClock {
         self.probe_started_ms = now_ms;
         self.probe_baseline_obs_ppm = 0.0;
         self.probe_step_obs_ppm = 0.0;
+        self.probe_step_ppm = 0.0;
         self.slope.rearm();
         self.dll.reset();
         self.feed_forward_ppm = 0.0;
+        self.correction_trim_ppm = 0.0;
         // Command neutral for the baseline measurement (forced write).
         self.command(0.0, true, actions);
         log::info!(
@@ -912,7 +1017,15 @@ impl HostClock {
 
         let elapsed_ms = now_ms.saturating_sub(self.probe_started_ms);
         let baseline_ms = PROBE_BASELINE_SECS * 1000;
-        let step_ms = baseline_ms + self.cfg.probe_step_secs * 1000;
+        // The step-phase duration is mode-specific: FILL uses the configured
+        // `probe_step_secs` (hardware-validated at 6 s); CORRECTION holds the step
+        // for the longer fixed window because its inner-loop observable is slower
+        // to slew (see CORRECTION_PROBE_STEP_SECS).
+        let step_secs = match self.cfg.obs_mode {
+            ObsMode::Fill => self.cfg.probe_step_secs,
+            ObsMode::Correction => CORRECTION_PROBE_STEP_SECS,
+        };
+        let step_ms = baseline_ms + step_secs * 1000;
 
         match self.probe_phase {
             ProbePhase::AwaitLock => {
@@ -933,7 +1046,7 @@ impl HostClock {
                             self.cfg.log_prefix,
                             self.cfg.probe_ppm,
                             PROBE_BASELINE_SECS,
-                            self.cfg.probe_step_secs,
+                            step_secs,
                         );
                     }
                 } else {
@@ -945,16 +1058,42 @@ impl HostClock {
             ProbePhase::Baseline => {
                 if elapsed_ms >= baseline_ms {
                     // Baseline done: record the natural observable (fill slope OR
-                    // resampler correction, per mode), then command the step.
+                    // resampler correction, per mode), then command the step. The
+                    // step DIRECTION is mode-specific: FILL always steps +probe_ppm;
+                    // CORRECTION steps AWAY from the nearer inner-authority rail so a
+                    // near-rail host still has room to show a compliant response (see
+                    // CORRECTION_PROBE_FLIP_DEADBAND_PPM). The signed step is recorded
+                    // so finish_probe normalizes the response by the right magnitude.
                     self.probe_baseline_obs_ppm = self.probe_observable_ppm();
+                    self.probe_step_ppm = self.choose_probe_step_ppm();
                     self.probe_phase = ProbePhase::Step;
-                    self.command(self.cfg.probe_ppm, true, actions);
+                    self.command(self.probe_step_ppm, true, actions);
                 }
             }
             ProbePhase::Step => {
                 if elapsed_ms >= step_ms {
                     self.probe_step_obs_ppm = self.probe_observable_ppm();
                     self.finish_probe(actions);
+                }
+            }
+        }
+    }
+
+    /// The signed pitch step to apply for the probe's step phase. FILL mode always
+    /// steps `+probe_ppm`. CORRECTION mode steps `−probe_ppm` when the baseline
+    /// correction is strongly positive (host already near the +rail, so a +step
+    /// would clamp) and `+probe_ppm` otherwise — stepping AWAY from the nearer rail
+    /// so a compliant response always has inner authority to show. The deadband
+    /// (`CORRECTION_PROBE_FLIP_DEADBAND_PPM`) keeps the default `+probe_ppm` for the
+    /// common near-zero-baseline case (a Mac at a small crystal offset).
+    fn choose_probe_step_ppm(&self) -> f64 {
+        match self.cfg.obs_mode {
+            ObsMode::Fill => self.cfg.probe_ppm,
+            ObsMode::Correction => {
+                if self.probe_baseline_obs_ppm > CORRECTION_PROBE_FLIP_DEADBAND_PPM {
+                    -self.cfg.probe_ppm
+                } else {
+                    self.cfg.probe_ppm
                 }
             }
         }
@@ -970,9 +1109,11 @@ impl HostClock {
         self.lock_since_ms = None;
         self.probe_baseline_obs_ppm = 0.0;
         self.probe_step_obs_ppm = 0.0;
+        self.probe_step_ppm = 0.0;
         self.slope.rearm();
         self.dll.reset();
         self.feed_forward_ppm = 0.0;
+        self.correction_trim_ppm = 0.0;
         self.command(0.0, true, actions);
         log::info!(
             "event={}.host_clock_probe_wait reason=lock_lost settle_s={}",
@@ -982,21 +1123,33 @@ impl HostClock {
     }
 
     fn finish_probe(&mut self, actions: &mut Vec<Action>) {
-        // response_ratio = (step_obs − baseline_obs) / probe_ppm.
+        // response_ratio = (step_obs − baseline_obs) / probe_step_ppm, normalized
+        // by the SIGNED step actually applied (`probe_step_ppm`, not the unsigned
+        // `probe_ppm`) so a compliant host reads ≈ +1 regardless of step direction.
         //
         // The observable differs by mode, but the sign property is the SAME, so
         // this formula and the +1-for-compliant normalization hold for both:
-        //   * FILL (usbsink solo): a compliant host commanded +probe_ppm shifts
+        //   * FILL (usbsink solo): always steps +probe_ppm; a compliant host shifts
         //     its delivery rate so the fill slope moves by ~+probe_ppm.
-        //   * CORRECTION (fan-in combo): the resampler absorbs the host's clock,
-        //     so it flattens the fill slope — but its OWN correction ppm reveals
-        //     the host rate. A compliant host commanded +probe_ppm runs faster, so
-        //     the resampler must consume faster to hold fill and its correction ppm
-        //     moves by ~+probe_ppm (see `ObsMode::Correction` / `Obs::correction_ppm`
-        //     sign notes). Either way the response is +probe_ppm ⇒ ratio ≈ +1 for a
-        //     compliant host; a host that ignores the step moves the observable ~0
-        //     ⇒ ratio ≈ 0. Same pass band (>= 0.5) and demotion semantics.
-        let ratio = (self.probe_step_obs_ppm - self.probe_baseline_obs_ppm) / self.cfg.probe_ppm;
+        //   * CORRECTION (fan-in combo): may step ±probe_ppm (away from the nearer
+        //     inner-authority rail — see choose_probe_step_ppm). The resampler
+        //     absorbs the host's clock, so it flattens the fill slope — but its OWN
+        //     correction ppm reveals the host rate. A compliant host commanded
+        //     `+step` runs faster (or `−step` slower), so its correction ppm moves
+        //     by ~the same signed step; dividing by that signed step gives ratio
+        //     ≈ +1 either way (see `ObsMode::Correction` / `Obs::correction_ppm`).
+        //   In both modes a host that ignores the step moves the observable ~0 ⇒
+        //   ratio ≈ 0 (a NON-compliant near-rail host's natural crystal drift runs
+        //   OPPOSITE the away-from-rail step ⇒ clearly negative). Same pass band
+        //   (>= 0.5) and demotion semantics.
+        //
+        // A degenerate `probe_step_ppm == 0` (never produced — the step is always
+        // ±probe_ppm with probe_ppm > 0) would divide by zero; guard it to a fail.
+        let ratio = if self.probe_step_ppm.abs() > f64::EPSILON {
+            (self.probe_step_obs_ppm - self.probe_baseline_obs_ppm) / self.probe_step_ppm
+        } else {
+            0.0
+        };
         self.response_ratio = Some(ratio);
         if ratio >= 0.5 {
             self.probe_result = ProbeResult::Pass;
@@ -1008,6 +1161,10 @@ impl HostClock {
             // must be commanded SLOWER ⇒ negative bias.
             self.feed_forward_ppm = clamp_bias(-self.probe_baseline_obs_ppm);
             self.dll.reset();
+            // CORRECTION mode's integral trim starts from 0 on L0 entry — the
+            // feed-forward carries the DC crystal cancel and the integrator only
+            // trims the residual around it (no-op in FILL mode, which uses the DLL).
+            self.correction_trim_ppm = 0.0;
             self.transition_to(Ladder::L0Locked, "probe_pass");
             self.command(self.feed_forward_ppm, true, actions);
             log::info!(
@@ -1037,73 +1194,123 @@ impl HostClock {
     // ---- Locked (L0/L1) -----------------------------------------------------
 
     fn tick_locked(&mut self, obs: Obs, actions: &mut Vec<Action>) {
-        // The DLL error signal is mode-specific (the ONE observable-specific
-        // branch on the servo side). Both signs are chosen so a POSITIVE error
-        // means "host too fast" and the DLL's producer-side response (`+error ⇒
-        // trim < 0`) commands the host SLOWER — closed negative feedback in both
-        // modes. (`RateController` is NOT reused — its consumer-drain sign is
-        // inverted for this producer-side use, and it hides the bandwidth knobs
-        // this cascade must pin. See module docs.)
+        // The control law AND its error signal are mode-specific (the ONE
+        // observable-specific branch on the servo side). Both signs are chosen so
+        // a POSITIVE error means "host too fast" and the response commands the
+        // host SLOWER (`+error ⇒ trim < 0`) — closed negative feedback in both
+        // modes.
         //
-        //  * FILL (usbsink solo): `err = fill − target` (frames). Ring too full ⇒
-        //    err > 0 ⇒ command slower ⇒ fill falls to target. The end-state is
-        //    fill ≈ target.
+        //  * FILL (usbsink solo): `err = fill − target` (frames), and the outer
+        //    control law is the DLL. Ring too full ⇒ err > 0 ⇒ command slower ⇒
+        //    fill falls to target. The plant is an INTEGRATOR (a rate command sets
+        //    the fill SLOPE), so the DLL's own integrators plus that plant
+        //    integrator is the well-behaved cascade the module docs describe.
+        //    (`RateController` is NOT reused — its consumer-drain sign is inverted
+        //    for this producer-side use, and it hides the bandwidth knobs this
+        //    cascade must pin. See module docs.) The end-state is fill ≈ target.
         //  * CORRECTION (fan-in combo): `err = correction_ppm` (the resampler's
-        //    live correction, EW-smoothed). The resampler pins fill by its OWN
-        //    action, so `fill − target` is dead weight; instead we drive the
+        //    live correction, EW-smoothed), and the outer control law is a
+        //    PURE INTEGRAL, NOT the DLL. The lane resampler pins the fill by its
+        //    OWN action, so `fill − target` is dead weight; instead we drive the
         //    resampler's correction to 0. correction > 0 (host faster than DAC, the
         //    resampler consuming faster to hold fill) ⇒ err > 0 ⇒ command host
         //    slower ⇒ the host slaves to the DAC and the correction relaxes to ~0.
-        //    The end-state is correction_ppm ≈ 0, at which point the resampler is
-        //    idle and the fill rides its held target for free.
+        //    The plant here is near-unity DC gain through the inner loop's lag
+        //    (ppm→ppm, no integrator), so the FILL-tuned third-order DLL would
+        //    limit-cycle against it (review PR #1144); a single slow integrator
+        //    ([`CORRECTION_INTEGRAL_GAIN`]) around a near-unity plant is
+        //    unconditionally stable at this gain, with the feed-forward carrying
+        //    the DC crystal cancel. The end-state is correction_ppm ≈ 0, at which
+        //    point the resampler is idle and the fill rides its held target for
+        //    free.
         let err = match self.cfg.obs_mode {
             ObsMode::Fill => obs.fill_frames - self.cfg.target_fill_frames,
             ObsMode::Correction => self.slope.correction_mean_ppm(),
         };
-        self.dll.update(err);
-        let mut dll_trim_ppm = self.dll.ratio_ppm();
 
-        // ---- Anti-windup ----------------------------------------------------
-        // The ±MAX_BIAS_PPM clamp is a SAFETY bound on the actuator, not a bound
-        // on the DLL's integrators (`z2 + z3` accumulate without limit — the
-        // jasper-clock docs call out the clamped-actuator windup regime). A long
-        // railed excursion can leave the DLL demanding correction in the WRONG
-        // direction after the error has crossed back past zero, so the command
-        // stays railed the wrong way and drains the fan-in cushion (the inner
-        // lane resampler's authority is only ±500 ppm — see
-        // rust/jasper-fanin/src/config.rs). When the total demand is railed AND
-        // the DLL is wound against the current error, reset the loop and
-        // re-apply the error so the first bounded output points back toward the
-        // target. Mirrors jasper_resampler::RateController::is_wound_against_error
-        // (reset-and-reapply idiom); the SIGN test differs by construction:
-        // there the DLL is fed −error so a wound loop has raw_ppm.sign ==
-        // error.sign; here the DLL is fed +error (producer sign), so normal
-        // operation has trim.sign == −err.sign and a WOUND loop is trim.sign ==
-        // err.sign. The "the error is non-trivial" gate is mode-scaled: half a
+        // ---- Outer trim (mode-specific control law) + anti-windup -----------
+        // The ±MAX_BIAS_PPM clamp is a SAFETY bound on the ACTUATOR, not a bound
+        // on the loop's internal integrators — the jasper-clock docs call out the
+        // clamped-actuator windup regime. A long railed excursion can leave the
+        // loop demanding correction in the WRONG direction after the error has
+        // crossed back past zero, so the command stays railed the wrong way and
+        // drains the fan-in cushion (the inner lane resampler's authority is only
+        // ±500 ppm — see rust/jasper-fanin/src/config.rs). The "the error is
+        // genuinely non-trivial" gate that arms anti-windup is mode-scaled: half a
         // period (128 frames) in FILL, half the probe step in CORRECTION (where
         // err is a ppm, not a frame count).
         let anti_windup_threshold = match self.cfg.obs_mode {
             ObsMode::Fill => ANTI_WINDUP_THRESHOLD_FRAMES,
             ObsMode::Correction => self.cfg.probe_ppm / 2.0,
         };
-        let total_raw = self.feed_forward_ppm + dll_trim_ppm;
-        if total_raw.is_finite()
-            && total_raw.abs() > MAX_BIAS_PPM
-            && err.abs() >= anti_windup_threshold
-            && dll_trim_ppm.signum() != 0.0
-            && err.signum() != 0.0
-            && dll_trim_ppm.signum() == err.signum()
-        {
-            self.dll.reset();
-            self.anti_windup_events = self.anti_windup_events.saturating_add(1);
-            self.dll.update(err);
-            dll_trim_ppm = self.dll.ratio_ppm();
-        }
+        let trim_ppm = match self.cfg.obs_mode {
+            ObsMode::Fill => {
+                self.dll.update(err);
+                let mut dll_trim_ppm = self.dll.ratio_ppm();
+                // When the total demand is railed AND the DLL is wound against the
+                // current error, reset the loop and re-apply the error so the
+                // first bounded output points back toward the target. Mirrors
+                // jasper_resampler::RateController::is_wound_against_error
+                // (reset-and-reapply idiom); the SIGN test differs by
+                // construction: there the DLL is fed −error so a wound loop has
+                // raw_ppm.sign == error.sign; here the DLL is fed +error (producer
+                // sign), so normal operation has trim.sign == −err.sign and a
+                // WOUND loop is trim.sign == err.sign.
+                let total_raw = self.feed_forward_ppm + dll_trim_ppm;
+                if total_raw.is_finite()
+                    && total_raw.abs() > MAX_BIAS_PPM
+                    && err.abs() >= anti_windup_threshold
+                    && dll_trim_ppm.signum() != 0.0
+                    && err.signum() != 0.0
+                    && dll_trim_ppm.signum() == err.signum()
+                {
+                    self.dll.reset();
+                    self.anti_windup_events = self.anti_windup_events.saturating_add(1);
+                    self.dll.update(err);
+                    dll_trim_ppm = self.dll.ratio_ppm();
+                }
+                dll_trim_ppm
+            }
+            ObsMode::Correction => {
+                // Pure-integral outer law: `trim += −Ki · err` (negative feedback,
+                // matching the FILL sign — a positive correction error commands the
+                // host slower). The DLL is intentionally NOT ticked in this mode.
+                //
+                // Anti-windup by CONDITIONAL INTEGRATION: a pure integrator has no
+                // hidden `z2+z3` to reset, and the ±MAX_BIAS_PPM clamp is applied to
+                // the OUTPUT (`raw` below), not the accumulator — so left unchecked
+                // the accumulator would wind past the rail and, once the error
+                // reverses, take many ticks to unwind while the command stays
+                // pinned. The standard fix is to skip the integration step whenever
+                // the total command is ALREADY railed and this step would push it
+                // FURTHER into the rail (`step` same sign as the railed total).
+                // Steps that move the total back toward zero always apply, so the
+                // integrator unwinds immediately when the error reverses. Gated on a
+                // non-trivial error (probe_ppm/2) so ordinary near-target jitter
+                // doesn't count as a windup event.
+                let step = -CORRECTION_INTEGRAL_GAIN * err;
+                let candidate = self.correction_trim_ppm + step;
+                let total_raw = self.feed_forward_ppm + candidate;
+                let railed_further = total_raw.is_finite()
+                    && total_raw.abs() > MAX_BIAS_PPM
+                    && err.abs() >= anti_windup_threshold
+                    && step.signum() != 0.0
+                    && total_raw.signum() == step.signum();
+                if railed_further {
+                    self.anti_windup_events = self.anti_windup_events.saturating_add(1);
+                    // Hold the integrator (do not accumulate further into the rail);
+                    // the output clamp below still bounds the command.
+                } else if candidate.is_finite() {
+                    self.correction_trim_ppm = candidate;
+                }
+                self.correction_trim_ppm
+            }
+        };
 
-        // Total raw demand = feed-forward seed + DLL trim. The clamp bounds the
+        // Total raw demand = feed-forward seed + outer trim. The clamp bounds the
         // COMMAND; the raw demand still drives L1/L2 evidence so a railed host
         // is visible.
-        let raw = self.feed_forward_ppm + dll_trim_ppm;
+        let raw = self.feed_forward_ppm + trim_ppm;
         self.raw_demand_ppm = raw;
 
         // ---- L2 mid-stream demotion evidence --------------------------------
@@ -1136,6 +1343,7 @@ impl HostClock {
             self.demotions += 1;
             self.transition_to(Ladder::L2Fallback, "saturated_slope");
             self.feed_forward_ppm = 0.0;
+            self.correction_trim_ppm = 0.0;
             self.command(0.0, true, actions); // pitch → neutral (forced)
             return;
         }
@@ -1184,6 +1392,7 @@ impl HostClock {
             }
         }
         self.feed_forward_ppm = 0.0;
+        self.correction_trim_ppm = 0.0;
         self.l1_high_ticks = 0;
         self.l2_evidence_ticks = 0;
         // ANY → PROBING(await-lock) at the idle boundary; pitch → neutral. This
@@ -1520,112 +1729,207 @@ mod tests {
         }
     }
 
-    /// A CORRECTION-mode [`Obs`]: `locked`, and carrying an explicit resampler
-    /// `correction_ppm`. `fill_frames` is passed but IGNORED by the correction
-    /// servo/probe (they read `correction_ppm`), so the tests can prove the fill is
-    /// dead weight by pinning it flat while the correction moves.
-    fn obs_corr(fill: f64, cap: u64, play: u64, correction_ppm: f64) -> Obs {
-        Obs {
-            playing: true,
-            host_connected: true,
-            preempted: false,
-            locked: true,
-            fill_frames: fill,
-            capture_frames: cap,
-            playback_frames: play,
-            correction_ppm,
-        }
-    }
-
     // ---- CORRECTION-mode servo-sim (fan-in combo) --------------------------
     //
     // The combo-mode redesign: with a lane resampler between the gadget ring and
     // the mix, the FILL slope is dead (the resampler flattens it). The honest
-    // observable is the resampler's OWN correction ppm. These tests drive a
-    // synthetic resampler model that captures the essential physics: the
-    // resampler consumes at whatever rate holds its fill at target, so its
-    // correction ppm tracks the host's EFFECTIVE delivery rate relative to the
-    // DAC — the crystal offset plus whatever pitch command the host is honoring.
-    // The fill is pinned FLAT the whole time to prove it is dead weight (a
-    // fill-slope probe/servo would see nothing and fail, exactly the hardware
-    // defect this redesign fixes).
+    // observable is the resampler's OWN correction ppm. These tests close the
+    // CORRECTION-mode ladder against the REAL inner loop —
+    // `jasper_resampler::RateController` constructed EXACTLY as
+    // `jasper-fanin`'s `lane_resampler` builds it (±500 ppm authority, period
+    // 256 @ 48 kHz, `max_resync` disabled) — not a hand-written first-order
+    // tracker. That fidelity is the whole point of this rewrite (review PR
+    // #1144): the earlier `SyntheticResampler` modelled the inner loop as a fast
+    // one-pole tracker (α = 0.5/tick, no ±500 clamp, no adaptive-bandwidth
+    // dynamics), so the FILL-tuned outer DLL looked convergent; against the real
+    // spa_dll (locked-floor τ ≈ 10 s + adaptive-bw + clamp nonlinearities) that
+    // same DLL law LIMIT-CYCLES. The fix is the pure-integral CORRECTION-mode
+    // outer law ([`CORRECTION_INTEGRAL_GAIN`]); these tests pin that it converges
+    // and does NOT oscillate against the real dynamics.
+    //
+    // The host honors commands the way hardware does: it reads the ladder's
+    // `Action::WritePitch` output (so the 10 ppm epsilon + 1 Hz cadence + integer
+    // ctl resolution all apply), applies it after a lag, and the fill integrates
+    // the host-vs-consumer rate difference honestly (the inner loop's lag shows up
+    // as real fill motion). `published_ppm()` mirrors the fan-in adapter's
+    // milli-ppm rounding of the resampler ratio.
 
-    /// A synthetic lane resampler for the CORRECTION-mode tests. Its correction
-    /// ppm is a first-order tracker (one-tick memory) of the host's effective
-    /// rate relative to the DAC: `crystal_offset + honored_command`. A compliant
-    /// host honors the commanded pitch (with a 1-tick reaction lag, like the real
-    /// FILL-mode servo test models); a non-compliant one ignores it. Because the
-    /// resampler holds fill flat, the model's `fill` never moves — the fill
-    /// observable is structurally dead, which is the whole point.
-    struct SyntheticResampler {
-        crystal_offset_ppm: f64,
-        compliant: bool,
-        /// The resampler's tracked correction ppm (its rate-adjustment).
-        correction_ppm: f64,
-        /// One-tick command history (the host reacts with a lag).
-        last_cmd: f64,
-        prev_cmd: f64,
+    /// The real inner lane: `jasper_resampler::RateController` built exactly as
+    /// `lane_resampler` constructs it, plus the honest fill integration
+    /// (`fill += period·(host − consume)`), so the CORRECTION observable it
+    /// publishes carries the real composite-loop dynamics.
+    struct RealLane {
+        ctl: jasper_resampler::RateController,
+        fill: f64,
+        corr_ppm: f64,
     }
 
-    impl SyntheticResampler {
-        fn new(crystal_offset_ppm: f64, compliant: bool) -> Self {
+    /// The held target the fan-in lane disciplines toward in combo mode.
+    const CORR_SIM_TARGET_FILL: f64 = 2048.0;
+    /// Inner render period (frames) and rate — the lane_resampler geometry.
+    const CORR_SIM_PERIOD: f64 = 256.0;
+    const CORR_SIM_RATE: f64 = 48_000.0;
+
+    impl RealLane {
+        fn new() -> Self {
+            // try_lock() seats fill at the held target and resets the controller;
+            // `with_max_resync(_, _, _, Some(0.0))` is the exact lane_resampler
+            // construction (max_resync disabled so a large valid fill excursion
+            // slews through the ±500 clamp instead of hard-jumping).
+            let ctl =
+                jasper_resampler::RateController::with_max_resync(500.0, 256, 48_000, Some(0.0));
             Self {
-                crystal_offset_ppm,
-                compliant,
-                correction_ppm: crystal_offset_ppm,
-                last_cmd: 0.0,
-                prev_cmd: 0.0,
+                ctl,
+                fill: CORR_SIM_TARGET_FILL,
+                corr_ppm: 0.0,
             }
         }
 
-        /// Advance one tick given the ladder's freshly-commanded pitch ppm, and
-        /// return the [`Obs`] to feed back. `fill` is pinned FLAT (the resampler
-        /// holds it at target); only `correction_ppm` carries information.
-        fn step(&mut self, commanded_ppm: f64, tick: u64) -> Obs {
-            // 1-tick reaction lag on the honored command (compliant host only).
-            let honored = if self.compliant { self.prev_cmd } else { 0.0 };
-            self.prev_cmd = self.last_cmd;
-            self.last_cmd = commanded_ppm;
-            // The host's effective rate relative to the DAC.
-            let host_effective = self.crystal_offset_ppm + honored;
-            // The resampler must consume at that rate to hold fill ⇒ its
-            // correction ppm tracks it (first-order, ~3-tick memory to match the
-            // ladder's own 0.3-alpha estimator so the test isn't over-idealized).
-            self.correction_ppm += 0.5 * (host_effective - self.correction_ppm);
-            // Fill pinned exactly flat at a plausible held target (2048). Capture
-            // and playback advance on-rate so the divergence stays ~0 (the fill
-            // observable is dead — only correction moves).
-            let cap = 1_000_000_000 + tick * 48_000;
-            obs_corr(2048.0, cap, cap, self.correction_ppm)
+        /// One inner render period: the host delivers at `(1 + host_ppm/1e6)`, the
+        /// resampler consumes at `(1 + corr/1e6)`; the fill integrates the
+        /// difference; the controller updates from `fill − target`.
+        fn step(&mut self, host_ppm: f64, noise: f64) {
+            self.fill += CORR_SIM_PERIOD * (host_ppm - self.corr_ppm) / 1.0e6 + noise;
+            let _ratio = self.ctl.next_ratio(self.fill - CORR_SIM_TARGET_FILL);
+            self.corr_ppm = self.ctl.ratio_ppm();
+        }
+
+        /// The fan-in adapter's milli-ppm-rounded publish (`ratio_milli_ppm`
+        /// atomic decoded back to ppm), so the ladder sees the same quantized
+        /// signal the daemon would.
+        fn published_ppm(&self) -> f64 {
+            ((self.corr_ppm * 1000.0).round() as i64) as f64 / 1000.0
         }
     }
 
-    /// Run a CORRECTION-mode HostClock against a synthetic resampler through a
-    /// full session probe. Returns the ladder after the probe window. Drives the
-    /// host rate off `hc.commanded_ppm()` so the response tracks the ACTUAL step
-    /// timing regardless of the settle delay.
-    fn run_correction_probe(crystal_offset_ppm: f64, compliant: bool) -> HostClock {
+    /// A host that honors the ladder's `Action::WritePitch` commands after a lag,
+    /// at integer-ppm ctl resolution — or ignores them entirely (non-compliant).
+    struct SimHost {
+        crystal_ppm: f64,
+        compliant: bool,
+        /// (apply-at-ms, ppm) pending writes.
+        pending: std::collections::VecDeque<(u64, f64)>,
+        applied_ppm: f64,
+        lag_ms: u64,
+    }
+
+    impl SimHost {
+        fn new(crystal_ppm: f64, compliant: bool, lag_ms: u64) -> Self {
+            Self {
+                crystal_ppm,
+                compliant,
+                pending: std::collections::VecDeque::new(),
+                applied_ppm: 0.0,
+                lag_ms,
+            }
+        }
+        fn write_pitch(&mut self, now_ms: u64, ppm: f64) {
+            if self.compliant {
+                self.pending.push_back((now_ms + self.lag_ms, ppm.round()));
+            }
+        }
+        fn effective_ppm(&mut self, now_ms: u64) -> f64 {
+            while let Some(&(at, ppm)) = self.pending.front() {
+                if at <= now_ms {
+                    self.applied_ppm = ppm;
+                    self.pending.pop_front();
+                } else {
+                    break;
+                }
+            }
+            self.crystal_ppm + self.applied_ppm
+        }
+    }
+
+    /// Deterministic xorshift jitter (bounded ±amp frames), so the noise variant
+    /// is reproducible.
+    fn corr_sim_noise(state: &mut u64, amp: f64) -> f64 {
+        if amp == 0.0 {
+            return 0.0;
+        }
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        ((*state as f64 / u64::MAX as f64) - 0.5) * 2.0 * amp
+    }
+
+    /// The composite-loop trace of a CORRECTION-mode run against the REAL inner
+    /// controller: for `secs` outer ticks, run one second of inner render periods,
+    /// feed the published correction to the ladder, and route its pitch writes
+    /// back into the host (honored with lag + ctl-integer resolution). Returns the
+    /// HostClock plus the published-correction / commanded-ppm / fill traces.
+    fn run_correction_real(
+        crystal: f64,
+        compliant: bool,
+        lag_ms: u64,
+        noise_amp: f64,
+        secs: usize,
+    ) -> (HostClock, Vec<f64>, Vec<f64>, Vec<f64>) {
         let mut hc = HostClock::new(correction_cfg());
         hc.startup_neutralize();
-        let mut res = SyntheticResampler::new(crystal_offset_ppm, compliant);
-        for t in 1u64..=(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + 6 + 4) {
-            let obs = res.step(hc.commanded_ppm(), t);
-            hc.tick(obs, t * 1000);
+        let mut lane = RealLane::new();
+        let mut host = SimHost::new(crystal, compliant, lag_ms);
+        let inner_dt_ms = CORR_SIM_PERIOD / CORR_SIM_RATE * 1000.0; // ≈ 5.333 ms
+        let inner_per_outer = (1000.0 / inner_dt_ms).round() as usize; // ≈ 188
+        let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut now_ms = 0.0f64;
+        let mut cap: u64 = 1_000_000_000;
+        let mut corr_trace = Vec::with_capacity(secs);
+        let mut cmd_trace = Vec::with_capacity(secs);
+        let mut fill_trace = Vec::with_capacity(secs);
+        for sec in 1..=secs as u64 {
+            for _ in 0..inner_per_outer {
+                now_ms += inner_dt_ms;
+                let h = host.effective_ppm(now_ms as u64);
+                lane.step(h, corr_sim_noise(&mut rng, noise_amp));
+            }
+            cap += 48_000;
+            let obs = Obs {
+                playing: true,
+                host_connected: true,
+                preempted: false,
+                locked: true,
+                fill_frames: lane.fill,
+                capture_frames: cap,
+                playback_frames: cap,
+                correction_ppm: lane.published_ppm(),
+            };
+            let t_ms = sec * 1000;
+            for Action::WritePitch { ppm, .. } in hc.tick(obs, t_ms) {
+                host.write_pitch(t_ms, ppm);
+            }
+            corr_trace.push(lane.published_ppm());
+            cmd_trace.push(hc.commanded_ppm());
+            fill_trace.push(lane.fill);
         }
-        hc
+        (hc, corr_trace, cmd_trace, fill_trace)
+    }
+
+    /// Peak-to-peak of the last `n` samples (the oscillation magnitude the review
+    /// used to characterise the limit cycle).
+    fn tail_p2p(trace: &[f64], n: usize) -> f64 {
+        let tail = &trace[trace.len().saturating_sub(n)..];
+        let max = tail.iter().cloned().fold(f64::MIN, f64::max);
+        let min = tail.iter().cloned().fold(f64::MAX, f64::min);
+        max - min
+    }
+
+    fn tail_mean(trace: &[f64], n: usize) -> f64 {
+        let tail = &trace[trace.len().saturating_sub(n)..];
+        tail.iter().sum::<f64>() / tail.len() as f64
     }
 
     #[test]
     fn correction_mode_compliant_host_probes_pass_and_locks_l0() {
-        // A compliant host at a +250 ppm crystal offset. Under the +probe_ppm
-        // step it runs faster, so the resampler's correction ppm rises by
-        // ~probe_ppm ⇒ response_ratio ≈ +1 ⇒ pass ⇒ L0. The fill is FLAT the
-        // whole time — a fill-slope probe would have measured nothing.
-        let hc = run_correction_probe(250.0, true);
+        // A compliant host at a +250 ppm crystal offset, closed against the REAL
+        // inner controller. Under the +probe_ppm step it runs faster, so the
+        // resampler's published correction ppm rises by ~probe_ppm ⇒
+        // response_ratio in the pass band ⇒ L0.
+        let (hc, ..) = run_correction_real(250.0, true, 200, 0.0, 40);
         assert_eq!(
             hc.probe_result(),
             ProbeResult::Pass,
-            "a compliant host must pass the correction-mode probe"
+            "a compliant host must pass the correction-mode probe against the real inner loop"
         );
         assert_eq!(hc.ladder(), Ladder::L0Locked);
         let ratio = hc.response_ratio().unwrap();
@@ -1633,19 +1937,14 @@ mod tests {
             ratio >= 0.5,
             "correction-mode response_ratio must pass (>= 0.5), got {ratio}"
         );
-        // Normalized so a compliant host is ~+1 (the sign-correct band).
-        assert!(
-            (0.5..=1.6).contains(&ratio),
-            "compliant response_ratio should be ~+1, got {ratio}"
-        );
     }
 
     #[test]
     fn correction_mode_noncompliant_host_probes_fail_and_falls_to_l2() {
-        // A host that ignores the pitch command: its correction ppm never moves
-        // under the step ⇒ response_ratio ≈ 0 ⇒ fail ⇒ L2, pitch neutral,
-        // demotion counted. This is the fleet-safe fallback in combo mode too.
-        let hc = run_correction_probe(250.0, false);
+        // A host that ignores the pitch command: the real inner loop holds its
+        // correction near the crystal offset regardless of the step ⇒
+        // response_ratio ≈ 0 ⇒ fail ⇒ L2, pitch neutral, demotion counted.
+        let (hc, ..) = run_correction_real(250.0, false, 200, 0.0, 40);
         assert_eq!(
             hc.probe_result(),
             ProbeResult::Fail,
@@ -1663,53 +1962,155 @@ mod tests {
 
     #[test]
     fn correction_mode_l0_servo_drives_correction_toward_zero() {
-        // The headline L0 convergence test. Lock a compliant host at a constant
-        // crystal offset, then run the closed loop: the servo must drive the
-        // resampler's correction ppm toward 0 (the host truly slaved) while the
-        // fill stays flat. We assert the correction magnitude at the tail is far
-        // smaller than the initial offset and the command ~cancels the offset.
-        for offset in [-300.0, 300.0] {
-            let mut hc = HostClock::new(correction_cfg());
-            hc.startup_neutralize();
-            let mut res = SyntheticResampler::new(offset, true);
-            // Run the full probe first (locks L0 with the feed-forward seed).
-            let mut t = 1u64;
-            for _ in 0..(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + 6 + 4) {
-                let obs = res.step(hc.commanded_ppm(), t);
-                hc.tick(obs, t * 1000);
-                t += 1;
-            }
-            assert_eq!(hc.ladder(), Ladder::L0Locked, "must lock before servo");
-            // Closed loop: run long enough for the DLL trim to settle the residual.
-            let mut corrections = Vec::new();
-            let mut commands = Vec::new();
-            for _ in 0..400 {
-                let obs = res.step(hc.commanded_ppm(), t);
-                // Feed the model's live correction back through the ladder.
-                hc.tick(obs, t * 1000);
-                corrections.push(res.correction_ppm);
-                commands.push(hc.commanded_ppm());
-                t += 1;
-            }
-            // Tail: correction driven to ~0 (host slaved), command ~cancels offset.
-            let tail_corr: f64 = corrections[300..].iter().map(|c| c.abs()).sum::<f64>() / 100.0;
-            let tail_cmd: f64 = commands[300..].iter().sum::<f64>() / 100.0;
-            assert!(
-                tail_corr < offset.abs() * 0.25,
-                "L0 servo must drive |correction| well below the initial offset \
-                 {offset}; tail |correction| was {tail_corr}"
-            );
-            assert!(
-                (tail_cmd + offset).abs() < 120.0,
-                "settled command {tail_cmd} should ~cancel the crystal offset {offset}"
-            );
+        // The headline L0 convergence test, now against the REAL inner controller
+        // (this is the exact assertion the earlier synthetic model passed while
+        // the real dynamics limit-cycled — review PR #1144). Lock a compliant host
+        // at a range of realistic crystal offsets, run the closed loop, and assert
+        // the pure-integral outer law drives the published correction ppm toward 0
+        // AND does not oscillate (tail peak-to-peak stays tiny — a limit cycle
+        // would show hundreds of ppm of periodic swing).
+        for offset in [-250.0, 20.0, 250.0] {
+            let (hc, corr, cmd, _fill) = run_correction_real(offset, true, 200, 0.0, 900);
             assert_eq!(
                 hc.ladder(),
                 Ladder::L0Locked,
-                "stays locked through convergence"
+                "must stay L0 through convergence at crystal {offset}"
             );
-            // Command never leaves the clamp.
-            assert!(commands.iter().all(|c| c.abs() <= MAX_BIAS_PPM + 1e-6));
+            // Tail correction driven to ~0 (host truly slaved).
+            let tail_corr = tail_mean(&corr, 300).abs();
+            assert!(
+                tail_corr < offset.abs() * 0.25 + 5.0,
+                "L0 servo must drive |correction| well below the initial offset \
+                 {offset}; tail |correction| mean was {tail_corr}"
+            );
+            // No limit cycle: the published-correction and command tails are
+            // essentially flat (the FILL-tuned DLL railed these ±hundreds of ppm).
+            let corr_p2p = tail_p2p(&corr, 300);
+            let cmd_p2p = tail_p2p(&cmd, 300);
+            assert!(
+                corr_p2p < 40.0,
+                "correction must not limit-cycle at crystal {offset}; tail corr_p2p={corr_p2p} ppm"
+            );
+            assert!(
+                cmd_p2p < 40.0,
+                "command must not limit-cycle at crystal {offset}; tail cmd_p2p={cmd_p2p} ppm"
+            );
+            // The settled command ~cancels the crystal offset.
+            let tail_cmd = tail_mean(&cmd, 300);
+            assert!(
+                (tail_cmd + offset).abs() < 60.0,
+                "settled command {tail_cmd} should ~cancel the crystal offset {offset}"
+            );
+            // Command never leaves the ±MAX_BIAS_PPM clamp.
+            assert!(cmd.iter().all(|c| c.abs() <= MAX_BIAS_PPM + 1e-6));
+        }
+    }
+
+    #[test]
+    fn correction_mode_l0_does_not_limit_cycle_under_lag_noise_and_long_soak() {
+        // Robustness matrix: the pure-integral outer law must stay flat (no
+        // fighting-cascade limit cycle) across host application lag, injected fill
+        // jitter, near-authority crystals, and a long soak — the exact conditions
+        // the review swept where the old DLL law railed correction ±460 ppm on a
+        // ~21 s period. Each entry asserts the tail correction/command are not
+        // oscillating; the noise variant is allowed a wider (but still bounded)
+        // band because the injected jitter itself propagates into the observable.
+        struct Case {
+            crystal: f64,
+            lag_ms: u64,
+            noise: f64,
+            secs: usize,
+            corr_p2p_max: f64,
+            cmd_p2p_max: f64,
+        }
+        let cases = [
+            // Typical Mac crystal, instant and lagged hosts.
+            Case {
+                crystal: 20.0,
+                lag_ms: 0,
+                noise: 0.0,
+                secs: 900,
+                corr_p2p_max: 40.0,
+                cmd_p2p_max: 40.0,
+            },
+            Case {
+                crystal: 20.0,
+                lag_ms: 200,
+                noise: 0.0,
+                secs: 900,
+                corr_p2p_max: 40.0,
+                cmd_p2p_max: 40.0,
+            },
+            // Larger offsets, both signs.
+            Case {
+                crystal: -250.0,
+                lag_ms: 200,
+                noise: 0.0,
+                secs: 900,
+                corr_p2p_max: 40.0,
+                cmd_p2p_max: 40.0,
+            },
+            Case {
+                crystal: 250.0,
+                lag_ms: 1000,
+                noise: 0.0,
+                secs: 900,
+                corr_p2p_max: 40.0,
+                cmd_p2p_max: 40.0,
+            },
+            // Near the ±500 ppm inner authority.
+            Case {
+                crystal: 450.0,
+                lag_ms: 200,
+                noise: 0.0,
+                secs: 900,
+                corr_p2p_max: 40.0,
+                cmd_p2p_max: 40.0,
+            },
+            // Injected fill jitter: the observable wanders but the COMMAND stays
+            // quiet (no self-sustained oscillation the servo is driving).
+            Case {
+                crystal: 250.0,
+                lag_ms: 200,
+                noise: 0.5,
+                secs: 900,
+                corr_p2p_max: 250.0,
+                cmd_p2p_max: 120.0,
+            },
+            // Long soak: the +20 ppm case that periodically railed at 3600 s under
+            // the old law must stay flat.
+            Case {
+                crystal: 20.0,
+                lag_ms: 200,
+                noise: 0.0,
+                secs: 3600,
+                corr_p2p_max: 40.0,
+                cmd_p2p_max: 40.0,
+            },
+        ];
+        for c in cases {
+            let (hc, corr, cmd, _fill) =
+                run_correction_real(c.crystal, true, c.lag_ms, c.noise, c.secs);
+            assert_eq!(
+                hc.ladder(),
+                Ladder::L0Locked,
+                "must stay L0 (no spurious demotion) at crystal {} lag {}ms noise {}",
+                c.crystal,
+                c.lag_ms,
+                c.noise
+            );
+            let corr_p2p = tail_p2p(&corr, 300);
+            let cmd_p2p = tail_p2p(&cmd, 300);
+            assert!(
+                corr_p2p < c.corr_p2p_max,
+                "correction limit-cycles at crystal {} lag {}ms noise {}: tail corr_p2p={corr_p2p} ppm (max {})",
+                c.crystal, c.lag_ms, c.noise, c.corr_p2p_max
+            );
+            assert!(
+                cmd_p2p < c.cmd_p2p_max,
+                "command limit-cycles at crystal {} lag {}ms noise {}: tail cmd_p2p={cmd_p2p} ppm (max {})",
+                c.crystal, c.lag_ms, c.noise, c.cmd_p2p_max
+            );
         }
     }
 
