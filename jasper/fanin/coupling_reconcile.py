@@ -727,6 +727,41 @@ def _resolved_outputd_period_frames(outputd_text: str) -> int:
     return value if value > 0 else DEFAULT_OUTPUTD_PERIOD_FRAMES
 
 
+def ring_topology_ready() -> tuple[bool, str]:
+    """The shm_ring PREFLIGHT gate for topology eligibility.
+
+    Ring A/Ring B carry a full-range STEREO program on a single coherent ALSA
+    sink, so ``shm_ring`` is legal only for the plain-stereo / unconfigured output
+    contract — NOT roleful/protected/subwoofer (needs a per-driver crossover),
+    NOT composite (dual-Apple — the ring is one 2-ch device, not the 4-ch child
+    sink), NOT explicit mono. This consults ``topology_supports_shm_ring`` (the
+    single ring-eligibility predicate) so arming a non-eligible box refuses with a
+    crisp reason here, instead of failing later at outputd's Rust full-range-stereo
+    rejection (a confusing daemon-level rollback). Fail-SAFE: if the topology can't
+    be read (a transient/absent topology file), do NOT block — that is not a
+    confirmed non-eligible topology, and outputd's own guard is the backstop.
+    """
+    from jasper.active_speaker.runtime_contract import topology_supports_shm_ring
+    from jasper.output_topology import (
+        OutputTopologyError,
+        load_output_topology_strict,
+    )
+
+    try:
+        topology = load_output_topology_strict()
+    except (OutputTopologyError, OSError, ValueError) as exc:
+        # Indeterminate topology -> don't refuse a legitimate arm (fail-safe).
+        return True, f"topology unreadable ({exc}); deferring to outputd's own guard"
+    if topology_supports_shm_ring(topology):
+        return True, "topology is ring-eligible (stereo/unconfigured single sink)"
+    return False, (
+        "saved output topology is not ring-eligible (shm_ring is a full-range "
+        "stereo single-sink coupling; roleful/protected/subwoofer, composite "
+        "dual-DAC, and explicit-mono topologies are excluded until ring v2 / P8). "
+        "Keeping the coupling on loopback"
+    )
+
+
 def ring_geometry_ready(outputd_text: str) -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate for slot geometry: conf.d period == outputd period.
 
@@ -789,6 +824,26 @@ def _arm_ring(
         return CouplingResult(
             ok=False, desired=desired, changed=False, direction="arm",
             detail=assets_detail, recovered=recovered,
+        )
+
+    # Topology-eligibility preflight: the ring is a full-range stereo single-sink
+    # coupling. A roleful/composite/mono box would fail outputd's Rust full-range-
+    # stereo rejection later (a confusing rollback); refuse UP FRONT with a crisp
+    # reason. Fail-safe: an unreadable topology does NOT block (outputd guards it).
+    topo_ok, topo_detail = ring_topology_ready()
+    if not topo_ok:
+        recovered = _recover_to_loopback(
+            do_restart, do_restart_outputd, do_reconcile,
+            fanin_snapshot.path, outputd_snapshot.path, reason,
+        )
+        log_event(
+            logger, "fanin.coupling_reconcile", result="arm_ring_topology_ineligible",
+            desired=desired, reason=reason, detail=topo_detail,
+            recovered=recovered, level=logging.WARNING,
+        )
+        return CouplingResult(
+            ok=False, desired=desired, changed=False, direction="arm",
+            detail=topo_detail, recovered=recovered,
         )
 
     # Slot-geometry preflight: the conf.d ring period MUST equal outputd's resolved

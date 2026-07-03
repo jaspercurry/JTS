@@ -203,8 +203,18 @@ Verified missing on main (2026-07-03):
 5. **Topology-contract citizenship**: ~~know nothing of ring mode.~~ **CLOSED by
    P2**: `topology_supports_shm_ring` (`jasper/active_speaker/runtime_contract.py`)
    is the ring-eligibility predicate — solo-stereo/unconfigured only, NOT roleful /
-   composite (P8's ring-v2 problem); the statefile seeder + multiroom prechecks
-   consult it. `transport_topology_for_coupling` names the resolved ring topology.
+   composite / explicit-mono (P8's ring-v2 problem). Two consumers actually consult
+   it: (a) the coupling reconciler's arm preflight (`ring_topology_ready` in
+   `jasper/fanin/coupling_reconcile.py`) refuses `shm_ring` on a non-eligible
+   topology with a crisp reason (fail-safe to loopback), before outputd's Rust
+   full-range-stereo rejection would; (b) the statefile seeder's ring branch
+   (`safe_graph_for_current_topology`) gates the ring flat config on the predicate,
+   not just `not requires_roleful_graph`, so a composite/mono box carrying a stale
+   `coupling=shm_ring` falls back to the loopback flat config instead of seeding a
+   stereo-ring config it cannot play. The multiroom bond-formation precheck is a
+   *coupling* gate (`read_persisted_coupling == shm_ring` refuses a bond), not a
+   topology gate — it does not consult this predicate.
+   `transport_topology_for_coupling` names the resolved ring topology.
 6. **Doctor**: ~~no ring asset/drift checks;~~ **Ring-asset check CLOSED by P1**
    (`check_ring_platform_assets`), **made ARMED-AWARE + a coherence check added by
    P2**: armed boxes skip the open-probe (EBUSY is not a defect) and a missing

@@ -1087,6 +1087,70 @@ def test_arm_shm_ring_succeeds_when_geometry_matches(tmp_path, monkeypatch):
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
 
 
+def test_arm_shm_ring_refused_on_ineligible_topology_recovers(
+    tmp_path, monkeypatch, _ring_assets_present
+):
+    # SF4: a non-ring-eligible saved topology (composite/roleful/mono) must be
+    # refused UP FRONT via the topology_supports_shm_ring predicate — a crisp reason
+    # instead of failing later at outputd's Rust full-range-stereo rejection.
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_contract.topology_supports_shm_ring",
+        lambda topology: False,
+    )
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is False
+    assert result.recovered is True
+    assert result.desired == COUPLING_SHM_RING
+    assert "ring-eligible" in result.detail
+    assert "camilla:shm_ring" not in calls  # never armed
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+
+
+def test_arm_shm_ring_topology_unreadable_is_failsafe_not_blocking(
+    tmp_path, monkeypatch, _ring_assets_present
+):
+    # Fail-safe: an UNREADABLE topology (transient) must NOT refuse a legitimate
+    # arm — outputd's own guard is the backstop. The gate returns eligible.
+    from jasper.output_topology import OutputTopologyError
+
+    def _boom(*a, **k):
+        raise OutputTopologyError("corrupt topology")
+
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict", _boom
+    )
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is True
+    assert result.direction == "arm"
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+
+
 def test_disarm_shm_ring_clears_ring_bridge_keys(tmp_path, _ring_assets_present):
     # Pre-arm to shm_ring, then disarm to loopback.
     fanin_env = _write(tmp_path / "fanin.env", "")

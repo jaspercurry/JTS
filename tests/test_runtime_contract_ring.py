@@ -170,8 +170,10 @@ def test_no_coupling_arg_defaults_to_loopback_flat(tmp_path: Path):
 
 
 def test_ring_armed_falls_back_to_loopback_when_ring_config_missing(tmp_path: Path):
-    # Ring config not written (P1 assets not staged / emitter hasn't run) — a ring
-    # box must still boot with audio, so seeding fails SAFE to the loopback flat.
+    # Ring config not written (P1 assets not staged / emitter hasn't run) — seeding
+    # fails SAFE to the loopback flat config. NB: on an armed box this does NOT
+    # restore audio (outputd still reads Ring B); its value is no camilla
+    # crash-loop + doctor visibility so the operator can disarm.
     loop = tmp_path / "outputd-cutover.yml"
     emit_flat_outputd_cutover_config(out_path=loop)
     missing_ring = tmp_path / "outputd-cutover-ring.yml"  # never created
@@ -184,6 +186,26 @@ def test_ring_armed_falls_back_to_loopback_when_ring_config_missing(tmp_path: Pa
     )
     assert decision.ok
     assert Path(decision.selected_config_path) == loop
+
+
+def test_ring_armed_composite_box_does_not_seed_ring_config(tmp_path: Path):
+    # SF4: the seeder ring branch must consult topology_supports_shm_ring, not just
+    # `not requires_roleful_graph`. A composite (dual-Apple) box is NOT roleful but
+    # is NOT ring-eligible (the stereo ring cannot drive a 4-ch composite sink). A
+    # stale coupling=shm_ring on such a box must fall back to the loopback flat
+    # config, never seed a stereo-ring config it cannot play.
+    loop, ring = _write_ring_and_loopback(tmp_path)
+    decision = safe_graph_for_current_topology(
+        _dual_apple_stereo(),
+        flat_config_path=loop,
+        ring_flat_config_path=ring,
+        coupling="shm_ring",
+        staged_config={},
+    )
+    assert decision.ok
+    # Falls back to the LOOPBACK flat config — the ring path was refused.
+    assert Path(decision.selected_config_path) == loop
+    assert "ring-armed" not in decision.reason
 
 
 def test_default_ring_flat_config_path_is_named_next_to_loopback():
