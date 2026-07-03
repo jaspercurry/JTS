@@ -28,6 +28,7 @@ Architecture (per docs/HANDOFF-correction.md):
       GET  /bass            bass measurement placeholder page render
       GET  /healthz         liveness
       GET  /status          session snapshot JSON
+      GET  /envelope        server-computed screen envelope (dumb-frontend)
       GET  /sessions        recent measurement bundle summaries
       GET  /session-report  read-only evidence packet for one bundle
       POST /start           reset DSP, create session, request noise capture
@@ -1769,6 +1770,18 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return snap
 
 
+def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """GET /envelope: the server-computed screen envelope for the current
+    session (revision plan §3.2). Additive alongside /status — a pure
+    read that the dumb-frontend wizard renders each step from. The legacy
+    single-page UI keeps using /status untouched; the page migration is a
+    later PR."""
+    from jasper.correction.envelope import build_envelope_logged
+
+    sess = _get_or_create_session()
+    return build_envelope_logged(sess)
+
+
 def _handle_sessions(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """GET /sessions: list recent session bundles for debugging /
     future UI history. Returns the parsed info.json for each entry,
@@ -2616,6 +2629,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/room",
                 "/healthz",
                 "/status",
+                "/envelope",
                 "/sessions",
                 "/session-report",
                 "/calibration/models",
@@ -2710,6 +2724,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(_handle_status(self))
                 except Exception as e:  # noqa: BLE001
                     logger.exception("/status failed")
+                    self._send_json({"error": str(e)}, status=500)
+                return
+            if path == "/envelope":
+                try:
+                    self._send_json(_handle_envelope(self))
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("/envelope failed")
                     self._send_json({"error": str(e)}, status=500)
                 return
             if path == "/sessions":
