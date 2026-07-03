@@ -711,7 +711,10 @@ __TABS__
       <span style="color:#888">gray dashed</span> = target,
       <span style="color:#1db954">green</span> = predicted post-correction.
       <span style="color:#2b7bb9">blue dashed</span> = filter effect.
-      After Verify: <span style="color:#a050d0">purple dashed</span> = post-correction measurement.
+      After Verify: <span style="color:#a050d0">purple dashed</span> = post-correction measurement,
+      with the measured before→after gap shaded
+      <span style="color:#1db954">green</span> where it moved toward target and
+      <span style="color:#d68200">amber</span> where it moved away.
     </p>
     <p id="verify-summary" class="hint hidden"></p>
     <div id="design-report" class="hidden"></div>
@@ -1973,6 +1976,7 @@ def _handle_upload_capture(
             sess.verify_curve.__dict__ if sess.verify_curve else None
         ),
         "verify_metrics": sess.verify_metrics,
+        "verify_before_after": sess.verify_before_after,
         "capture_quality": sess.capture_quality,
         "noise_reports": sess.noise_reports,
         "repeat": (

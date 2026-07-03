@@ -129,6 +129,144 @@ def test_deviation_metrics_f_low_default_is_50():
     assert sig.parameters["f_low"].default == 50.0
 
 
+# ---------- Honest measured before/after -----------------------------------
+
+
+def test_before_after_delta_uses_one_consistent_band():
+    """The band-mismatch trap: a naive before/after would take the
+    measured "before" over the PEQ design band (down to 20 Hz) and the
+    verify "after" over 50-350 Hz, so the delta would subtract two
+    different bands. `before_after_delta` computes BOTH sides over the
+    SAME band, so a huge sub-50 Hz artifact in the "before" cannot leak
+    into the delta.
+
+    Construct a before curve that is flat 0 dB in-band (50-350 Hz) but
+    -50 dB below 50 Hz (the iPhone-HPF artifact zone), and an after
+    curve identical in-band. A band-consistent delta is ~0; a
+    band-mismatched one (before over 20+ Hz, after over 50+ Hz) would
+    report a large spurious change.
+    """
+    freqs = np.geomspace(20.0, 20000.0, 480)
+    target = np.zeros_like(freqs)
+    before = np.where(freqs < 50.0, -50.0, 0.0)  # artifact only below band
+    after = np.zeros_like(freqs)  # identical inside the band
+    ba = analysis.before_after_delta(freqs, before, after, target)
+    # Both sides are flat 0 dB across 50-350 Hz → deviations ~0, delta ~0.
+    assert ba["band_hz"] == [50.0, 350.0]
+    assert ba["before"]["rms_db"] == pytest.approx(0.0, abs=1e-9)
+    assert ba["after"]["rms_db"] == pytest.approx(0.0, abs=1e-9)
+    assert ba["delta"]["rms_db"] == pytest.approx(0.0, abs=1e-9)
+    # Sub-50 Hz artifact never entered either metric.
+    assert ba["before"]["n_points"] == ba["after"]["n_points"]
+
+
+def test_before_after_delta_positive_when_deviation_shrinks():
+    """A real +6 dB modal peak flattened to +1 dB → positive delta."""
+    freqs = np.geomspace(20.0, 20000.0, 480)
+    target = np.zeros_like(freqs)
+    peak = (freqs >= 78) & (freqs <= 82)
+    before = np.where(peak, 6.0, 0.0)
+    after = np.where(peak, 1.0, 0.0)
+    ba = analysis.before_after_delta(freqs, before, after, target)
+    assert ba["before"]["rms_db"] > ba["after"]["rms_db"]
+    assert ba["delta"]["rms_db"] > 0
+    assert ba["delta"]["max_db"] == pytest.approx(5.0, abs=0.01)
+
+
+def test_before_after_delta_negative_when_deviation_grows():
+    """If the "correction" made the room worse in-band, the delta is
+    negative — we never dress a regression up as an improvement."""
+    freqs = np.geomspace(20.0, 20000.0, 480)
+    target = np.zeros_like(freqs)
+    band = (freqs >= 100) & (freqs <= 120)
+    before = np.where(band, 2.0, 0.0)
+    after = np.where(band, 8.0, 0.0)  # worse
+    ba = analysis.before_after_delta(freqs, before, after, target)
+    assert ba["delta"]["rms_db"] < 0
+    assert ba["delta"]["max_db"] < 0
+
+
+def test_fill_segments_tags_improved_and_regressed():
+    """A band that got closer to target reads improved; a band that
+    moved away reads regressed. Both must appear when both happen."""
+    freqs = np.geomspace(20.0, 20000.0, 480)
+    target = np.zeros_like(freqs)
+    good = (freqs >= 70) & (freqs <= 90)     # 6 → 1 dB (toward target)
+    bad = (freqs >= 200) & (freqs <= 260)    # 1 → 5 dB (away from target)
+    before = np.zeros_like(freqs)
+    after = np.zeros_like(freqs)
+    before[good] = 6.0
+    after[good] = 1.0
+    before[bad] = 1.0
+    after[bad] = 5.0
+    segs = analysis.before_after_fill_segments(freqs, before, after, target)
+    tones = {s["tone"] for s in segs}
+    assert "improved" in tones
+    assert "regressed" in tones
+    # The improved segment must cover ~70-90 Hz; the regressed ~200-260.
+    improved = [s for s in segs if s["tone"] == "improved"]
+    regressed = [s for s in segs if s["tone"] == "regressed"]
+    assert any(s["f_lo_hz"] <= 90 and s["f_hi_hz"] >= 70 for s in improved)
+    assert any(s["f_lo_hz"] <= 260 and s["f_hi_hz"] >= 200 for s in regressed)
+
+
+def test_fill_segments_are_contiguous_and_index_aligned():
+    """Segments tile the band with no gaps/overlaps and their indices
+    address the same arrays the caller holds (so the browser can slice
+    the before/after curves it already has)."""
+    freqs = np.geomspace(20.0, 20000.0, 480)
+    target = np.zeros_like(freqs)
+    before = np.zeros_like(freqs)
+    after = np.zeros_like(freqs)
+    after[(freqs >= 80) & (freqs <= 120)] = -3.0  # a regressed island
+    segs = analysis.before_after_fill_segments(freqs, before, after, target)
+    band_idx = np.nonzero((freqs >= 50) & (freqs <= 350))[0]
+    # Segments partition the in-band index range exactly once.
+    covered: list[int] = []
+    for s in segs:
+        assert s["i_hi"] >= s["i_lo"]
+        covered.extend(range(s["i_lo"], s["i_hi"] + 1))
+    assert covered == list(band_idx)
+    # Frequency bounds match the indexed grid points.
+    for s in segs:
+        assert s["f_lo_hz"] == pytest.approx(float(freqs[s["i_lo"]]))
+        assert s["f_hi_hz"] == pytest.approx(float(freqs[s["i_hi"]]))
+
+
+def test_fill_segments_tie_reads_regressed_not_improved():
+    """Equal distance-from-target is NOT an improvement. A curve that
+    didn't move (before == after) must read regressed, never improved —
+    honest framing refuses to claim gains without evidence."""
+    freqs = np.geomspace(20.0, 20000.0, 480)
+    target = np.zeros_like(freqs)
+    before = np.full_like(freqs, 3.0)
+    after = np.full_like(freqs, 3.0)  # identical → no improvement
+    segs = analysis.before_after_fill_segments(freqs, before, after, target)
+    assert segs  # band is non-empty
+    assert all(s["tone"] == "regressed" for s in segs)
+
+
+def test_fill_segments_out_of_band_excluded():
+    """Only the 50-350 Hz band is tagged — a swing at 1 kHz is ignored."""
+    freqs = np.geomspace(20.0, 20000.0, 480)
+    target = np.zeros_like(freqs)
+    before = np.zeros_like(freqs)
+    after = np.zeros_like(freqs)
+    after[(freqs >= 900) & (freqs <= 1100)] = -6.0  # out of band
+    segs = analysis.before_after_fill_segments(freqs, before, after, target)
+    for s in segs:
+        assert 50.0 <= s["f_lo_hz"]
+        assert s["f_hi_hz"] <= 350.0
+
+
+def test_fill_segments_length_mismatch_raises():
+    freqs = np.geomspace(20.0, 20000.0, 10)
+    with pytest.raises(ValueError, match="length mismatch"):
+        analysis.before_after_fill_segments(
+            freqs, np.zeros(9), np.zeros(10), np.zeros(10),
+        )
+
+
 # ---------- Session flow ----------------------------------------------------
 
 
@@ -303,6 +441,36 @@ async def test_verify_pass_after_apply(tmp_path: Path):
     assert sess.verify_metrics["rms_db"] >= 0
     assert sess.verify_metrics["max_db"] >= 0
     assert sess.verify_metrics["n_points"] > 0
+
+    # Honest MEASURED before/after must be populated once verify lands.
+    ba = sess.verify_before_after
+    assert ba is not None
+    # The verify handler passes f_high=peq_f_high (350) and default
+    # f_low=50, so the before/after band must match verify_metrics'
+    # band — this is the guard against the band-mismatch trap.
+    assert ba["band_hz"] == [50.0, sess.cfg.peq_f_high]
+    # `after` is the SAME measured deviation verify_metrics already
+    # reported (same curve, same band) — the two must agree.
+    assert ba["after"]["rms_db"] == pytest.approx(
+        sess.verify_metrics["rms_db"], abs=1e-9,
+    )
+    # The flatter verify capture (1 dB residual) is closer to target
+    # than the design measurement (6 dB residual) → measured improvement.
+    assert ba["before"]["rms_db"] > ba["after"]["rms_db"]
+    assert ba["delta"]["rms_db"] > 0
+    assert ba["fill_segments"]
+    # `before` is the pre-correction measured curve's deviation over the
+    # SAME band — recompute it directly and confirm it was not sourced
+    # from the design report's (different-band) predicted "before".
+    pre = np.asarray(sess.measured_curve.magnitude_db, dtype=float)
+    pre_f = np.asarray(sess.measured_curve.freqs_hz, dtype=float)
+    tgt = sess._design_target(pre_f)
+    expected_before = analysis.deviation_metrics(
+        pre, tgt, pre_f, f_high=sess.cfg.peq_f_high,
+    )
+    assert ba["before"]["rms_db"] == pytest.approx(
+        expected_before["rms_db"], abs=1e-9,
+    )
 
 
 @pytest.mark.asyncio

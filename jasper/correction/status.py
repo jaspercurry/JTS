@@ -341,6 +341,7 @@ def session_snapshot(session: Any) -> dict[str, Any]:
             else None
         ),
         "verify_metrics": session.verify_metrics,
+        "verify_before_after": session.verify_before_after,
         "autolevel": session.autolevel.snapshot(),
     }
 
@@ -395,6 +396,7 @@ def info_json_payload(session: Any) -> dict[str, Any]:
             else None
         ),
         "verify_metrics": session.verify_metrics,
+        "verify_before_after": session.verify_before_after,
         "config": session_config_payload(session),
     }
 
@@ -412,6 +414,7 @@ def result_json_payload(session: Any) -> dict[str, Any]:
         "predicted": _curve_payload(session.predicted_curve),
         "verify": _curve_payload(session.verify_curve),
         "verify_metrics": session.verify_metrics,
+        "verify_before_after": session.verify_before_after,
         "capture_quality": session.capture_quality,
         "noise_reports": session.noise_reports,
         "repeat": _curve_payload(session.repeat_curve),

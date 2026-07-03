@@ -240,7 +240,7 @@ def test_predicted_overlay_matches_realized_biquads_on_peak_null_pair():
     null — the predicted post-correction curve matches the real RBJ biquad
     realization within ~0.1 dB in-band (pre-fix this gap was ~0.77 dB).
 
-    NOTE: improvement.max_abs stays slightly negative and prediction_worse
+    NOTE: predicted.max_abs_db stays slightly negative and prediction_worse
     still fires here — cutting a peak 0.35 octaves from a null genuinely
     deepens the null; that is real acoustics, not a prediction artifact.
     The fix corrects the PREDICTION's accuracy, not that physical fact."""

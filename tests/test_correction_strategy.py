@@ -31,7 +31,32 @@ def test_balanced_strategy_matches_existing_peq_defaults():
     assert [(p.freq, p.q, p.gain) for p in design.peqs] == [
         (p.freq, p.q, p.gain) for p in old
     ]
-    assert design.report["improvement"]["filter_count"] == len(old)
+    assert design.report["predicted"]["filter_count"] == len(old)
+
+
+def test_design_report_labels_estimate_predicted_not_improvement():
+    """The design report's before/after estimate is a MODEL prediction
+    (measured + PEQ model, never re-measured). It must be exposed under
+    `predicted`, and the old dishonest `improvement` key must be gone —
+    no downstream surface should be able to call a prediction an
+    improvement. The honest measured improvement only appears once a
+    verify sweep lands (session.verify_before_after)."""
+    freqs = _log_freqs()
+    measured = peq._bell_response_db(freqs, 80.0, 4.0, 6.0)
+    design = strategy.design_correction(measured, freqs, strategy_choice="balanced")
+
+    assert "predicted" in design.report
+    assert "improvement" not in design.report
+    predicted = design.report["predicted"]
+    # Same numeric fields as before, just honestly named.
+    assert set(predicted) >= {
+        "rms_db", "max_abs_db", "filter_count", "total_positive_boost_db",
+    }
+    # `before`/`after` here are the strategy-band estimate, distinct from
+    # the verify path's 50-350 Hz measured band.
+    assert design.report["band_hz"] == [
+        design.strategy.f_low_hz, design.strategy.f_high_hz,
+    ]
 
 
 def test_safe_strategy_is_more_conservative_than_balanced():
@@ -70,7 +95,7 @@ def test_assertive_strategy_reports_boost_policy_and_headroom():
 
     assert design.peqs
     assert any(p.gain > 0 for p in design.peqs)
-    assert 0 < design.report["improvement"]["total_positive_boost_db"] <= 3.0
+    assert 0 < design.report["predicted"]["total_positive_boost_db"] <= 3.0
     assert any(
         warning["code"] == "boosts_enabled"
         for warning in design.report["warnings"]
@@ -93,7 +118,7 @@ def test_design_report_explains_filter_choices():
     first_filter = report["filters"][0]
     assert first_filter["action"] == "cut_peak"
     assert "Cut a +" in first_filter["rationale"]
-    assert first_filter["local_improvement_db"] > 0
+    assert first_filter["local_predicted_delta_db"] > 0
 
 
 def test_design_report_adds_spatial_confidence_when_positions_provided():

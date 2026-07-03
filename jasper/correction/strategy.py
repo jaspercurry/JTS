@@ -302,7 +302,11 @@ def _filter_audit(
             "action": action,
             "residual_before_db": before,
             "residual_after_db": after,
-            "local_improvement_db": abs(before) - abs(after),
+            # PREDICTED residual change at this filter's frequency
+            # (positive = the model expects the residual to shrink).
+            # Named "predicted", not "improvement" — same honesty rule
+            # as the report-level `predicted` block.
+            "local_predicted_delta_db": abs(before) - abs(after),
             "rationale": rationale,
         }
         if position_magnitudes is not None:
@@ -471,7 +475,13 @@ def design_correction(
         ],
         "before": before_metrics,
         "after": after_metrics,
-        "improvement": {
+        # PREDICTED, not measured: `after` here is measured+PEQ run
+        # through the filter model, never re-measured. The key is named
+        # `predicted` (not `improvement`) so no downstream surface can
+        # honestly claim the room "got better" from a model estimate.
+        # The measured before/after delta only exists once a verify
+        # sweep lands (session.verify_before_after).
+        "predicted": {
             "rms_db": before_metrics["rms_db"] - after_metrics["rms_db"],
             "max_abs_db": (
                 before_metrics["max_abs_db"] - after_metrics["max_abs_db"]

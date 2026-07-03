@@ -17,6 +17,8 @@ small.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 
@@ -144,12 +146,16 @@ def deviation_metrics(
     f_low: float = 50.0,
     f_high: float = 350.0,
 ) -> dict[str, float]:
-    """Summary stats for the verify pass.
+    """Absolute deviation-from-target stats over a single band.
 
-    Returns RMS deviation, max deviation, and number of points above
-    threshold across the modal band. The browser overlays these on
-    the post-correction chart so the user can read the improvement
-    at a glance.
+    Returns RMS deviation, max deviation, and the number of grid
+    points in the band. This is an ABSOLUTE readout of one curve vs
+    the target — it says nothing about before/after improvement on
+    its own. The verify path calls this on both the pre-correction
+    measured curve and the post-correction verify curve *over the
+    same band* and takes the difference to get an honest measured
+    delta (see `before_after_delta`); the browser renders that
+    server-computed delta rather than deriving improvement itself.
 
     f_low default 50 Hz (not 20 Hz): the iPhone built-in mic has a
     steep ~24 dB/octave high-pass filter starting around 250 Hz
@@ -172,6 +178,136 @@ def deviation_metrics(
         "rms_db": rms,
         "max_db": max_dev,
         "n_points": int(band.sum()),
+    }
+
+
+def before_after_fill_segments(
+    freqs: np.ndarray,
+    before_db: np.ndarray,
+    after_db: np.ndarray,
+    target_db: np.ndarray,
+    *,
+    f_low: float = 50.0,
+    f_high: float = 350.0,
+) -> list[dict[str, Any]]:
+    """Tag each contiguous in-band segment as improved or regressed.
+
+    For the before/after visualization the browser fills the area
+    between the pre-correction measured curve and the post-correction
+    verify curve, coloured by whether the correction moved that region
+    *toward* the target (improved) or *away* from it (regressed). This
+    function computes that classification on the Pi so the browser
+    only renders server-computed data.
+
+    "Improved" means the post-correction curve is closer to the target
+    than the pre-correction curve at that grid point:
+    ``|after − target| < |before − target|``. Anything not strictly
+    improved (moved further from target, or held at the same distance)
+    is "regressed" — we do not claim improvement without evidence.
+
+    Only the same `[f_low, f_high]` band `deviation_metrics` uses is
+    tagged; the returned segments carry inclusive grid index ranges
+    (`i_lo`/`i_hi`) plus their frequency bounds so the caller can slice
+    the exact before/after arrays it already holds. Contiguous runs of
+    the same tone are merged into one segment.
+
+    All three curves must share the same frequency grid (they do in the
+    verify path — every capture resamples onto the same log grid).
+
+    Coupling note: tones are computed here from the RAW curves on the
+    480-point log grid, but the browser draws the fill between its
+    DISPLAY curves, which may be chart-smoothed. That is safe today
+    because the chart's default smoothing is 'none' and its smoothing
+    option preserves the grid (same length, same frequencies), so the
+    `i_lo`/`i_hi` indices still address the right points. A future
+    client-side change that RESAMPLES the display curves onto a
+    different grid would silently break this index alignment — keep
+    display transforms grid-preserving or re-map the indices.
+    """
+    if not (len(freqs) == len(before_db) == len(after_db) == len(target_db)):
+        raise ValueError(
+            "freqs/before/after/target length mismatch: "
+            f"{len(freqs)}/{len(before_db)}/{len(after_db)}/{len(target_db)}"
+        )
+    band = (freqs >= f_low) & (freqs <= f_high)
+    band_idx = np.nonzero(band)[0]
+    if band_idx.size == 0:
+        return []
+
+    before_err = np.abs(before_db - target_db)
+    after_err = np.abs(after_db - target_db)
+    # Strict improvement only: ties and regressions both read "regressed".
+    improved = after_err < before_err
+
+    segments: list[dict[str, Any]] = []
+    run_start = int(band_idx[0])
+    prev = int(band_idx[0])
+    run_tone = bool(improved[run_start])
+
+    def _emit(i_lo: int, i_hi: int, is_improved: bool) -> None:
+        segments.append({
+            "tone": "improved" if is_improved else "regressed",
+            "i_lo": i_lo,
+            "i_hi": i_hi,
+            "f_lo_hz": float(freqs[i_lo]),
+            "f_hi_hz": float(freqs[i_hi]),
+        })
+
+    for raw in band_idx[1:]:
+        idx = int(raw)
+        tone_here = bool(improved[idx])
+        # A gap in the band index (shouldn't happen for a contiguous
+        # mask, but be robust) or a tone flip closes the current run.
+        if idx != prev + 1 or tone_here != run_tone:
+            _emit(run_start, prev, run_tone)
+            run_start = idx
+            run_tone = tone_here
+        prev = idx
+    _emit(run_start, prev, run_tone)
+    return segments
+
+
+def before_after_delta(
+    freqs: np.ndarray,
+    before_db: np.ndarray,
+    after_db: np.ndarray,
+    target_db: np.ndarray,
+    *,
+    f_low: float = 50.0,
+    f_high: float = 350.0,
+) -> dict[str, Any]:
+    """Honest MEASURED before/after readout over one consistent band.
+
+    Both `before_metrics` and `after_metrics` are computed by
+    `deviation_metrics` over the SAME `[f_low, f_high]` band, so the
+    delta compares like with like — this is the single guard against
+    the band-mismatch trap (verify used 50–350 Hz while the design's
+    predicted "before" was over the strategy band, so a naive delta
+    would subtract different bands). `delta.rms_db` / `delta.max_db`
+    are positive when the correction reduced deviation.
+
+    Returns the two metric dicts, the delta, and `fill_segments` for
+    the before/after visualization — everything the browser needs to
+    render, computed on the Pi.
+    """
+    before = deviation_metrics(
+        before_db, target_db, freqs, f_low=f_low, f_high=f_high,
+    )
+    after = deviation_metrics(
+        after_db, target_db, freqs, f_low=f_low, f_high=f_high,
+    )
+    return {
+        "band_hz": [float(f_low), float(f_high)],
+        "before": before,
+        "after": after,
+        "delta": {
+            "rms_db": before["rms_db"] - after["rms_db"],
+            "max_db": before["max_db"] - after["max_db"],
+        },
+        "fill_segments": before_after_fill_segments(
+            freqs, before_db, after_db, target_db,
+            f_low=f_low, f_high=f_high,
+        ),
     }
 
 
