@@ -626,16 +626,60 @@ a 4 s baseline + 6 s step window) and measures the fill-slope response; a
 response under half the commanded step demotes straight to `L2_FALLBACK`
 (neutral pitch) without ever entering `L0_LOCKED`.
 
+**The probe does NOT baseline at the session edge — it waits for the lane to
+leave its warmup ramp first.** A session begins the instant audio starts
+flowing, but at that instant the lane is still filling: the fan-in resampler's
+held target ramps from empty (0 → held target) and the gadget ring primes.
+Baselining THEN measures that one-time warmup fill ramp as if it were the
+host's natural rate slope — hardware-diagnosed on jts.local 2026-07-03, where
+the 4 s baseline read `baseline_slope_ppm=1460.6` (the ramp, not clock drift),
+the step then read `step_slope_ppm=-1397.6`, `response_ratio=-9.5` ⇒
+`probe_fail` ⇒ `l2_fallback` for the whole stream. Prior "passes" (ratios 0.78,
+2.97) were the same contamination landing luckily inside the pass band. So the
+probe now opens in an **await-lock** wait, commanding neutral, and does not
+begin the baseline until the lane reports LOCKED AND that lock has held
+continuously for a 2 s settle. The two daemons map LOCKED differently by
+construction:
+- **fan-in (combo)**: resampler `locked_state`. The fan-in warmup ramp is a
+  genuine 0 → held-target fill climb that must complete before baselining, so a
+  live lock signal is the right gate.
+- **usbsink solo**: simply `playing` (settle-only). usbsink's only
+  start-of-session contaminant is the sub-second gadget-ring prime + one-time
+  capture-backlog slurp, which the 2 s settle covers. It is deliberately **NOT**
+  a live `fill >= target` gate: nothing steers the ring toward target while the
+  probe holds neutral (the DLL servo that pins fill only runs post-probe in L0),
+  so a host slower than our DAC keeps the ring at its underflow floor for the
+  whole session — a fill-level gate would leave the probe stuck in await-lock
+  forever and the feature silently inert. `fill_frames` is still published for
+  telemetry/the slope falsifier; it just does not gate the probe.
+
+If the lane un-locks mid-baseline (or mid-step), the in-flight measurement is
+discarded and the wait restarts — a warmup re-entry is not a compliance
+failure, so this does not demote to L2.
+`/state.…​.host_clock.probe.waiting_for_lock` is `true` only while a LIVE
+session's probe is holding in await-lock (it is `false` between sessions — the
+ladder rests in `probing`/await-lock while idle, but `session_active` gates the
+flag so an enabled-but-idle box does not read as an active-session claim). The
+journal marks the wait with `event=<prefix>.host_clock_probe_wait
+reason=await_lock|lock_lost` and the actual baseline start with
+`event=<prefix>.host_clock_probe_start`. A session that ends while still in
+await-lock (never baselined) logs `event=<prefix>.host_clock_probe_result
+result=await_lock_ended` — distinct from `result=aborted`, which is reserved
+for a real baseline/step measurement cut short.
+
 ### Ladder states
 
-`DISABLED -> PROBING (armed -> baseline -> step) -> L0_LOCKED <-> L1_WARN`,
+`DISABLED -> PROBING (await-lock -> baseline -> step) -> L0_LOCKED <-> L1_WARN`,
 with any state falling to `L2_FALLBACK` on non-compliance evidence (probe
 failure, or a sustained saturated-command + adverse-slope condition
-mid-stream). `L2_FALLBACK` only re-attempts `PROBING` at the next idle
-boundary (stream stop / host disconnect) — it does not free-run a
-demonstrably non-compliant host mid-session. `L1_WARN` is a locked-but-watch
-state (unusually high sustained commanded ppm) with no functional
-difference from `L0_LOCKED` beyond the doctor/telemetry surfacing.
+mid-stream). The **await-lock** sub-phase holds neutral from the session rising
+edge until the lane leaves its warmup ramp (locked for the 2 s settle), so the
+baseline measures clock drift rather than the fill ramp; lock loss in any later
+sub-phase returns to await-lock (no demotion). `L2_FALLBACK` only re-attempts
+`PROBING` at the next idle boundary (stream stop / host disconnect) — it does
+not free-run a demonstrably non-compliant host mid-session. `L1_WARN` is a
+locked-but-watch state (unusually high sustained commanded ppm) with no
+functional difference from `L0_LOCKED` beyond the doctor/telemetry surfacing.
 
 ### Pitch neutrality — the safety invariant
 
@@ -672,9 +716,11 @@ Tunables (each documented in `.env.example` with the full range/rationale):
 `JASPER_USBSINK_HOST_CLOCK_TARGET_FILL_FRAMES` (default 384 ≈ 8 ms),
 `JASPER_USBSINK_HOST_CLOCK_PROBE_PPM` (default 300),
 `JASPER_USBSINK_HOST_CLOCK_PROBE_SECONDS` (default 6, step phase; a fixed 4 s
-baseline phase always runs first). The servo clamp (±1000 ppm), write
-epsilon/cadence (10 ppm / <=1 Hz), and tick interval (1 Hz) are fixed Rust
-constants, not env-tunable — see `host_clock.rs`'s pinned-constants block.
+baseline phase always runs first, itself gated behind a fixed 2 s lock-settle
+wait — see "The probe does NOT baseline at the session edge" above). The servo
+clamp (±1000 ppm), write epsilon/cadence (10 ppm / <=1 Hz), tick interval
+(1 Hz), and the 2 s lock-settle are fixed Rust constants, not env-tunable —
+see `host_clock.rs`'s pinned-constants block.
 
 ### What evidence `/state` gives
 
@@ -693,7 +739,7 @@ null on a pre-Stage-1 build or unreadable state file; otherwise:
   "fill_slope_ppm": 1.2,
   "fill_variance": 4.0,
   "dll": {"err_frames": -4.0, "locked": true},
-  "probe": {"last_result": "pass", "response_ratio": 0.91},
+  "probe": {"last_result": "pass", "response_ratio": 0.91, "waiting_for_lock": false},
   "demotions": 0,
   "transitions": 2,
   "last_transition_reason": "probe_pass"

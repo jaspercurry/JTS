@@ -158,6 +158,13 @@ pub fn build_obs(signals: &HostClockSignals) -> Obs {
         host_connected: signals.present.load(Ordering::Relaxed),
         // Resampler locked ⇒ real DAC-paced audio is flowing.
         playing: signals.locked.load(Ordering::Relaxed),
+        // Resampler LOCKED is the steady-regime gate for the probe's baseline:
+        // while the resampler is still acquiring, its held target is filling from
+        // empty (warmup ramp) — baselining then would measure that ramp, not the
+        // host's clock drift. Same atomic as `playing` here because for fan-in
+        // the resampler lock IS both "audio flowing" and "warmup done"; the
+        // ladder reads `locked` distinctly so the two roles stay explicit.
+        locked: signals.locked.load(Ordering::Relaxed),
         // Cursor-relative fill (frame-granular) — the DLL's error signal.
         fill_frames: signals.fill_frames.load(Ordering::Relaxed) as f64,
         // RAW cumulative input — NOT trim-compensated. A `trim_ring` only moves
@@ -471,6 +478,7 @@ mod tests {
         let obs = build_obs(&s);
         assert!(!obs.host_connected);
         assert!(!obs.playing);
+        assert!(!obs.locked, "resampler unlocked ⇒ Obs.locked false");
         assert!(!obs.preempted, "fan-in never sees a preempt on this lane");
 
         s.present.store(true, Ordering::Relaxed);
@@ -478,6 +486,10 @@ mod tests {
         let obs = build_obs(&s);
         assert!(obs.host_connected, "present ⇒ host_connected");
         assert!(obs.playing, "locked ⇒ playing");
+        assert!(
+            obs.locked,
+            "resampler locked ⇒ Obs.locked — the probe's steady-regime gate"
+        );
     }
 
     #[test]

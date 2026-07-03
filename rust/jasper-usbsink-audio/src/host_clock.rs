@@ -147,13 +147,46 @@ where
 
 /// Snapshot an [`Obs`] from the daemon's shared atomics. Used by the real
 /// publisher; the shared crate's tests build `Obs` directly with fake values.
+///
+/// `Obs::locked` is usbsink solo's steady-regime gate for the probe baseline.
+/// usbsink has no resampler lock atomic to read, so its steady signal is simply
+/// `playing` (the RMS gate): audio is flowing. It is deliberately NOT a live
+/// ring-fill level test.
+///
+/// Why settle-only, not a live `fill >= target` check: the probe's `AwaitLock`
+/// phase already holds neutral pitch for `PROBE_SETTLE_SECS` of continuous lock
+/// before baselining, and in solo mode the only start-of-session contaminant is
+/// the sub-second gadget-ring prime + one-time capture-backlog slurp — the 2 s
+/// settle covers it. A live `fill >= target` gate is actively WRONG here:
+/// nothing steers the ring toward target while the probe holds neutral (the DLL
+/// servo that pins fill≈target only runs post-probe, in L0). Under neutral
+/// pitch the ring rides its attractor — the underflow floor for a host slower
+/// than our DAC (`run_audio_loop` pops one period per playback write and only
+/// tops up from a non-blocking capture that starves), or the overflow ceiling
+/// for a faster host. A slow host's ring never reaches target, so a level gate
+/// would leave `locked` false forever → `AwaitLock` forever → the probe never
+/// runs and the feature goes silently inert for the whole session (the exact
+/// deadlock this settle-only mapping avoids). `fill_frames` is still published
+/// for telemetry / the slope falsifier, just not consulted for the gate.
+///
+/// `period_frames` scales the ring fill into frames for the published
+/// `fill_frames`. The host-clock setpoint is intentionally NOT a parameter: the
+/// gate no longer depends on it (see above), and the ladder already owns the
+/// setpoint via `HostClockConfig::target_fill_frames`.
 pub fn obs_from_shared(state: &SharedState, period_frames: u32) -> Obs {
     let fill_periods = state.ring_fill_periods.load(Ordering::Relaxed);
+    let fill_frames = (fill_periods as f64) * (period_frames as f64);
+    let playing = state.playing.load(Ordering::Relaxed);
     Obs {
-        playing: state.playing.load(Ordering::Relaxed),
+        playing,
         host_connected: state.host_connected.load(Ordering::Relaxed),
         preempted: state.preempted.load(Ordering::Relaxed),
-        fill_frames: (fill_periods as f64) * (period_frames as f64),
+        // Steady regime is settle-only: audio flowing. No live fill-level gate —
+        // the AwaitLock settle covers the sub-second prime transient, and a level
+        // test would deadlock the probe on a slow-host ring that never reaches
+        // target (see the doc comment above).
+        locked: playing,
+        fill_frames,
         capture_frames: state.capture_frames.load(Ordering::Relaxed),
         playback_frames: state.playback_frames.load(Ordering::Relaxed),
     }

@@ -123,7 +123,7 @@ _PINNED_HOST_CLOCK_FRAGMENT = (
     '{"enabled":false,"ladder":"disabled","pitch_ppm_commanded":0.0,'
     '"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,'
     '"dll":{"err_frames":0.00,"locked":false},'
-    '"probe":{"last_result":"none","response_ratio":null},'
+    '"probe":{"last_result":"none","response_ratio":null,"waiting_for_lock":false},'
     '"demotions":0,"transitions":0,"last_transition_reason":"startup"}'
 )
 
@@ -139,7 +139,11 @@ def test_pinned_host_clock_fragment_is_valid_json_with_contract_shape():
         "fill_slope_ppm": 0.0,
         "fill_variance": 0.0,
         "dll": {"err_frames": 0.0, "locked": False},
-        "probe": {"last_result": "none", "response_ratio": None},
+        "probe": {
+            "last_result": "none",
+            "response_ratio": None,
+            "waiting_for_lock": False,
+        },
         "demotions": 0,
         "transitions": 0,
         "last_transition_reason": "startup",
