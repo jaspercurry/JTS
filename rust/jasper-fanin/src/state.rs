@@ -737,10 +737,17 @@ impl StateServer {
                 buf.push(',');
                 // Negotiated gadget geometry (lever 2). 256/768 by default;
                 // JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES overrides the period and
-                // resolve_direct_buffer_frames derives the deep buffer.
+                // resolve_direct_buffer_frames derives the requested deep buffer.
+                // buffer_frames is the ACTUALLY-negotiated hwp.get_buffer_size()
+                // (the kernel may round the near-request up), read live so STATUS
+                // matches the running PCM rather than the request.
                 push_kv_u64(&mut buf, "period_frames", d.period_frames as u64);
                 buf.push(',');
-                push_kv_u64(&mut buf, "buffer_frames", d.buffer_frames as u64);
+                push_kv_u64(
+                    &mut buf,
+                    "buffer_frames",
+                    d.buffer_frames.load(Ordering::Relaxed),
+                );
                 buf.push(',');
                 // drain_avail{} — since-boot drain-ENTRY avail dwell stats
                 // (lever 2). `mean`/`max` in frames; `hist` is a fixed 6-bucket
@@ -1226,7 +1233,7 @@ mod tests {
                     direct: Some(DirectObservability {
                         device: "hw:UAC2Gadget".to_string(),
                         period_frames: 256,
-                        buffer_frames: 768,
+                        buffer_frames: Arc::new(AtomicU64::new(768)),
                         present: Arc::new(AtomicBool::new(true)),
                         opens: Arc::new(AtomicU64::new(1)),
                         retries: Arc::new(AtomicU64::new(0)),

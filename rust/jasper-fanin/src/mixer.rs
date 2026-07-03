@@ -148,6 +148,14 @@ const DIRECT_PERIOD_FRAMES: u32 = 256;
 /// proven 768-frame floor. At the default period 256 this reproduces the old
 /// fixed 768-frame envelope exactly (3×256 = 768). `resolve_direct_buffer_frames`
 /// is the single owner of this rule (pure, scratch-crate tested).
+///
+/// Identity caveat (lever 2): the direct lane's ACCEPTANCE floor is this
+/// `max(3×period, 768)`, tightened from the earlier validator's `2×period`. The
+/// open REQUEST is byte-identical when the period knob is unset, but a
+/// hypothetical negotiation to 512..767 frames that the old floor would have
+/// accepted (with a `buffer_near` warn) now fails validation and sends the lane
+/// Absent. Deliberate — fail-loud beats running the refuted shallow class — and
+/// inert in practice (u_audio negotiates exactly 768 at period 256).
 const DIRECT_BUFFER_MIN_PERIODS: u32 = 3;
 const DIRECT_BUFFER_MIN_FRAMES: u32 = 768;
 
@@ -196,8 +204,14 @@ fn drain_avail_bucket(avail: i64) -> usize {
 
 /// Emit the rate-limited drain-stats INFO line every this many drains. Gated by
 /// the drain counter itself (no wall clock, no extra state) so the log cadence
-/// is O(1) and self-throttling on the hot path.
-const DRAIN_STATS_LOG_EVERY: u64 = 2048;
+/// is O(1) and self-throttling on the hot path. `2^15` ≈ one line per ~3 min at
+/// the default 256-frame render period (5.33 ms/cycle) — deliberately coarse:
+/// one drain is recorded every render cycle the gadget PCM is open, INCLUDING
+/// while the host is attached but idle, so a tighter cadence would spam the
+/// persistent journal 24/7 on a direct-enabled box (this is a permanent surface,
+/// not a debug trace). The since-boot STATUS block is the fine-grained read; this
+/// line is just a periodic journal breadcrumb.
+const DRAIN_STATS_LOG_EVERY: u64 = 1 << 15;
 
 /// Length of the S16 narrowing scratch the direct drain uses per chunk read.
 ///
@@ -621,9 +635,15 @@ pub struct DirectObservability {
     /// `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES` overrides it — surfaced in STATUS
     /// so an operator can confirm which geometry the H1 experiment is running.
     pub period_frames: u32,
-    /// The gadget capture buffer this lane negotiated (frames) — the deep-buffer
-    /// floor applied over `period_frames` (see `resolve_direct_buffer_frames`).
-    pub buffer_frames: u32,
+    /// The gadget capture buffer this lane ACTUALLY negotiated (frames) — the
+    /// live `hwp.get_buffer_size()` from the open, not the requested
+    /// `resolve_direct_buffer_frames(period)`. The kernel may round the
+    /// `set_buffer_size_near` request up (still period-aligned + ≥ floor, so the
+    /// open is accepted with a `buffer_near` warn), and this field reports what
+    /// the PCM is really running so the STATUS geometry can't overclaim. Atomic
+    /// (not a plain `u32`) so a reopen after unplug can re-store the freshly
+    /// negotiated size, mirroring the `opens`/`retries`/`present` idiom.
+    pub buffer_frames: Arc<AtomicU64>,
     /// Whether the gadget capture is currently open (`Present`) — the live
     /// "is the USB host attached and captured" gauge.
     pub present: Arc<AtomicBool>,
@@ -1673,17 +1693,25 @@ fn open_direct_input(
 ) -> Input {
     let device = config.usb_direct_device.clone();
     let open_period = config.usb_direct_period_frames;
-    let buffer_frames = resolve_direct_buffer_frames(open_period);
+    // The buffer the lane ACTUALLY negotiated at open; the request is
+    // `resolve_direct_buffer_frames(open_period)`, but the kernel may round
+    // `set_buffer_size_near` up, so seed from the request and overwrite with the
+    // negotiated size on a successful open. Absent-at-startup keeps the request
+    // as a best-effort placeholder (present=false makes the number advisory).
+    let buffer_frames = Arc::new(AtomicU64::new(
+        resolve_direct_buffer_frames(open_period) as u64
+    ));
     let present = Arc::new(AtomicBool::new(false));
     let opens = Arc::new(AtomicU64::new(0));
     let retries = Arc::new(AtomicU64::new(0));
     let direct = match open_direct_capture(&device, open_period) {
-        Ok(pcm) => {
+        Ok((pcm, negotiated_buffer)) => {
             present.store(true, Ordering::Relaxed);
             opens.fetch_add(1, Ordering::Relaxed);
+            buffer_frames.store(negotiated_buffer as u64, Ordering::Relaxed);
             info!(
                 "event=fanin.usb_direct.present device={} period_frames={} buffer_frames={} (initial open) opens=1 retries=0",
-                device, open_period, buffer_frames,
+                device, open_period, negotiated_buffer,
             );
             DirectCapture::Present(pcm)
         }
@@ -1738,11 +1766,18 @@ fn open_direct_input(
 /// (byte-identical to today) or the `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`
 /// override (lever 2 H1 knob). Non-blocking (the direct lane rides the resampler
 /// read slot like the aloop lane) and `start()`ed so reads return data / EAGAIN.
-/// Returns the open PCM or an `alsa::Error` the caller maps to the `Absent`
-/// state.
-fn open_direct_capture(device: &str, open_period: u32) -> std::result::Result<PCM, alsa::Error> {
+/// Returns `(open PCM, negotiated buffer frames)` — the second element is the
+/// live `hwp.get_buffer_size()`, which the caller stores into
+/// `DirectObservability.buffer_frames` and logs so STATUS reports the buffer the
+/// PCM is really running rather than the requested size. On failure returns an
+/// `alsa::Error` the caller maps to the `Absent` state.
+fn open_direct_capture(
+    device: &str,
+    open_period: u32,
+) -> std::result::Result<(PCM, u32), alsa::Error> {
     let want_buffer = resolve_direct_buffer_frames(open_period);
     let pcm = PCM::new(device, Direction::Capture, true)?;
+    let negotiated_buffer;
     {
         let hwp = HwParams::any(&pcm)?;
         hwp.set_channels(CHANNELS)?;
@@ -1775,9 +1810,10 @@ fn open_direct_capture(device: &str, open_period: u32) -> std::result::Result<PC
                 device, want_buffer, buffer,
             );
         }
+        negotiated_buffer = buffer;
     }
     pcm.start()?;
-    Ok(pcm)
+    Ok((pcm, negotiated_buffer))
 }
 
 /// Pure post-negotiation validation of the direct capture geometry (C1),
@@ -2487,16 +2523,22 @@ fn maybe_reopen_direct(direct: DirectCapture, input: &mut Input) -> DirectCaptur
         obs.retries.fetch_add(1, Ordering::Relaxed);
     }
     match open_direct_capture(&device, open_period) {
-        Ok(pcm) => {
+        Ok((pcm, negotiated_buffer)) => {
             if let Some(r) = input.resampler.as_mut() {
                 r.reset();
             }
             if let Some(obs) = &input.direct_obs {
                 obs.present.store(true, Ordering::Relaxed);
+                // Re-store the freshly negotiated buffer: a device re-enumeration
+                // could in principle land a different (still valid) geometry, so
+                // STATUS tracks the live PCM, not the initial open's number.
+                obs.buffer_frames
+                    .store(negotiated_buffer as u64, Ordering::Relaxed);
                 let opens = obs.opens.fetch_add(1, Ordering::Relaxed) + 1;
                 info!(
-                    "event=fanin.usb_direct.present device={} opens={} retries={} (reopened)",
+                    "event=fanin.usb_direct.present device={} buffer_frames={} opens={} retries={} (reopened)",
                     obs.device,
+                    negotiated_buffer,
                     opens,
                     obs.retries.load(Ordering::Relaxed),
                 );
