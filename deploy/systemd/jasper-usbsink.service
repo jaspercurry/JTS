@@ -63,15 +63,29 @@ ExecStart=/opt/jasper/bin/jasper-usbsink-audio
 # invariant. The daemon itself resets the gadget's "Capture Pitch 1000000" ctl
 # to neutral on every normal exit path, but SIGKILL / OOM-kill / watchdog abort
 # skip that in-process cleanup — a host must never stay slaved to a command
-# from a daemon that is no longer running. Runs unconditionally (even when the
-# feature is disabled) because a stale non-neutral value could only exist if
-# the feature was enabled and the daemon died uncleanly. `-` ignores failure
-# when the card is absent (disabled bridge, gadget torn down, or a different
-# capture device). The card is ${JASPER_USBSINK_MIXER_CARD} (default
-# UAC2Gadget, set above) — systemd expands it from the packaged default or an
-# operator EnvironmentFile override, so this stop line always targets the same
-# card the operator configured, with no hardcoded drift.
-ExecStopPost=-/usr/bin/amixer -c ${JASPER_USBSINK_MIXER_CARD} cset iface=PCM,name='Capture Pitch 1000000' 1000000
+# from a daemon that is no longer running. `-` ignores failure when the card is
+# absent (disabled bridge, gadget torn down, or a different capture device).
+#
+# The `$JASPER_USBSINK_AUDIO_STANDBY != 1` gate is LOAD-BEARING (review F2, the
+# reverse of fan-in's own gate). In combo mode (JASPER_FANIN_USB_DIRECT=enabled)
+# this bridge runs in STANDBY (JASPER_USBSINK_AUDIO_STANDBY=1) and does NOT own
+# the pitch ctl — fan-in's `fanin-host-clock` thread does, and it actively
+# commands non-neutral pitch. An UNCONDITIONAL neutralize here would fire on
+# every stop of THIS unit (deploy try-restart on binary change, operator
+# restart) and stomp fan-in's live L0 command with 1000000 behind fan-in's
+# back — desyncing fan-in's write-suppression epsilon gate (it believes its
+# last written value is still live and won't rewrite until >10 ppm drift → the
+# host free-runs un-slaved for minutes). So the belt fires ONLY when this bridge
+# is NOT in standby, i.e. when it is the daemon that actually owns the ctl.
+# (Solo/aloop mode has STANDBY unset, so the belt still runs there — the
+# original "died uncleanly with a stale non-neutral value" case it was written
+# for. Mirrors jasper-fanin.service's combo-gated belt: only the owner writes.)
+#
+# The card is $JASPER_USBSINK_MIXER_CARD (default UAC2Gadget, set above) —
+# expanded by the shell from the packaged default or an operator EnvironmentFile
+# override, so this stop line always targets the same card the operator
+# configured, with no hardcoded drift.
+ExecStopPost=-/bin/sh -c '[ "$JASPER_USBSINK_AUDIO_STANDBY" != "1" ] || exit 0; exec /usr/bin/amixer -c "$JASPER_USBSINK_MIXER_CARD" cset iface=PCM,name="Capture Pitch 1000000" 1000000'
 Restart=on-failure
 RestartSec=2s
 Nice=-10

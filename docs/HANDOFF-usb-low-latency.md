@@ -38,10 +38,10 @@ Best values to keep for the current Apple USB-C DAC fallback:
 JASPER_USBSINK_BLOCK_FRAMES=256
 JASPER_USBSINK_RING_PERIODS=3
 JASPER_FANIN_INPUT_BUFFER_FRAMES=4096
-JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512
-JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1536
-JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES=4096
-JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM=500
+JASPER_FANIN_USB_RESAMPLER_TARGET_FRAMES=512
+JASPER_FANIN_USB_RESAMPLER_WARMUP_CUSHION_FRAMES=1536
+JASPER_FANIN_USB_RESAMPLER_RING_FRAMES=4096
+JASPER_FANIN_USB_RESAMPLER_MAX_ADJUST_PPM=500
 JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024
 JASPER_CAMILLA_CHUNKSIZE=256
 JASPER_CAMILLA_TARGET_LEVEL=1536
@@ -177,53 +177,206 @@ window) and states whether the declaration *would* be justified — it never
 asserts `--route-health-ok` on the operator's behalf; read the printed
 deltas and decide.
 
-## Measured results — first real artifacts (2026-07-02, jts.local, Apple dongle)
+## USB DIRECT (combo mode) — delete the bridge hop + aloop cable (DEFAULT-OFF PoC)
 
-All runs: 240-impulse quick preset, electrical capture-back (tcpdump of the
-:9891 post-Camilla reference; this box's amp is unplugged, so acoustic capture
-was impossible — add outputd's measured DAC delay, ~10 ms, for end-to-end).
-Source pinned via mux manual select for every window (see prerequisites below).
+`JASPER_FANIN_USB_DIRECT=enabled` + `JASPER_USBSINK_AUDIO_STANDBY=1` removes the
+usbsink **bridge hop + the snd-aloop cable** (~25 ms measured) from the USB path:
+fan-in captures `hw:UAC2Gadget` **directly** and narrows S32→S16 itself, feeding
+the SAME per-input `LaneResampler` the aloop path used. The bridge drops to
+state/HTTP-only standby (opens NO PCM, leaving the gadget free), so nothing else
+in the chain changes.
 
-| Run | p50 / p95 / p99 (ms) | Match | Config delta vs shipped floor |
+```
+UAC2 gadget capture
+  → jasper-fanin DIRECT capture (hw:UAC2Gadget, S32_LE→S16 high-word truncation, period 256/buffer 768)
+  → jasper-fanin USB input resampler (same target/cushion/ring)  ← bridge hop + aloop cable GONE
+  → fan-in output → CamillaDSP → outputd  (unchanged)
+```
+
+Both halves are DEFAULT-OFF and fail-safe (only the exact literals arm them:
+`JASPER_FANIN_USB_DIRECT=enabled`, `JASPER_USBSINK_AUDIO_STANDBY=1`).
+
+### Flag matrix (C6)
+
+| `FANIN_USB_DIRECT` | `USBSINK_STANDBY` | Result |
+|---|---|---|
+| off (default) | off (default) | **Today's lane** — byte-identical. Bridge bridges gadget→aloop; fan-in reads aloop. |
+| `enabled` | `1` | **PoC target.** Fan-in captures the gadget directly; bridge is state/HTTP-only. The bridge hop + aloop cable (~25 ms) are gone. |
+| `enabled` | off | Misconfig, **safe**: the bridge holds `hw:UAC2Gadget`, so fan-in's direct open fails → the lane goes silent-idle with a 2 s reopen retry (`/state` fan-in `usbsink.direct.present=false`, `retries` grows, one transition log). USB source is SILENT (the direct lane never opens its aloop PCM). Recover by fixing the flags — no crash. |
+| off | `1` | Misconfig, **safe**: the bridge doesn't bridge; fan-in reads an unfed aloop substream → silence via EAGAIN. Observable: bridge `standby:true` while fan-in lane `source:"lane"`. |
+
+### Host-slaved USB clock in combo mode (fan-in owns the ctl)
+
+The Stage 1 host-slaved USB clock (steer the gadget's `Capture Pitch 1000000`
+ctl so the host tracks the DAC clock, closing the standing rate offset at its
+source) has **one home per mode**, decided by the invariant *the daemon that
+owns the gadget capture owns the pitch ctl*:
+
+- **solo (aloop) mode** — the usbsink bridge owns `hw:UAC2Gadget`, so it drives
+  the ladder: `JASPER_USBSINK_HOST_CLOCK=enabled` (see "Host-slaved USB clock
+  (Stage 1)" below).
+- **combo (USB DIRECT) mode** — fan-in owns the capture, so a dedicated
+  `fanin-host-clock` thread drives it: `JASPER_FANIN_HOST_CLOCK=enabled`.
+
+Both run the **same** shared ladder/probe/servo (`rust/jasper-host-clock`,
+byte-identical semantics; the only per-daemon difference is the `event=` log
+prefix — `usbsink_audio` vs `fanin` — and which `JASPER_*` keys each parses).
+Combo mode pins the DIRECT lane's resampler fill at target, removing the
+standby-mode drift wander (the ~9 ms "standby gap" measured below). The
+setpoint is the resampler's HELD target
+(`JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES +
+JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`) — one setpoint shared with
+the inner rate controller, so the outer loop never fights the inner integrator
+(the ≥10× bandwidth separation of the cascade is derived in the
+`jasper-host-clock` module docstring).
+
+#### `HOST_CLOCK × USB_DIRECT` flag matrix (fan-in)
+
+| `FANIN_HOST_CLOCK` | `FANIN_USB_DIRECT` | Result |
+|---|---|---|
+| off (default) | any | **Inert.** No `fanin-host-clock` thread; `/state` fan-in `host_clock.enabled=false`. In solo mode usbsink owns the clock (its own flag). |
+| `enabled` | `enabled` | **Combo target.** fan-in owns the gadget capture and steers `Capture Pitch`; per-session probe → L0 pins the DIRECT lane fill at target. `/state.audio_graph.fanin.host_clock` carries the ladder/DLL/probe block. |
+| `enabled` | off | **Inert, warned.** One `event=fanin.host_clock.noop reason=usb_direct_off`; zero ctl writes ever — in aloop mode the usbsink bridge owns the clock. No thread spawned. |
+| `enabled` | `enabled`, but no direct-lane resampler | **Inert, warned.** One `event=fanin.host_clock.noop reason=no_direct_resampler` (resampler construction fell back to none — fail-soft). No thread. |
+
+**Double-enable misconfig (R5):** `JASPER_FANIN_HOST_CLOCK=enabled` +
+`JASPER_FANIN_USB_DIRECT=enabled` while the usbsink bridge is NOT in standby
+(both own-the-clock daemons armed at once). fan-in's direct open fails (the
+bridge holds `hw:UAC2Gadget`), so no session ever starts and the ladder holds
+neutral — but fan-in's **one** startup neutralize can stomp an active usbsink L0
+command once. usbsink self-recovers via its own probe / L2 machinery, and audio
+is unaffected either way. Fix by putting the bridge in standby
+(`JASPER_USBSINK_AUDIO_STANDBY=1`) — the intended combo posture.
+
+**Neutrality belt-and-braces — BOTH belts are owner-gated (the epsilon-desync
+class is symmetric).** Each USB-clock owner carries a `ExecStopPost` that resets
+the pitch to `1000000` on SIGKILL / OOM / watchdog abort, and **each gates on
+being the current owner** so it never stomps the *other* daemon's live command
+(which would desync that daemon's >10 ppm write-suppression epsilon — it believes
+its last written value is still live and won't rewrite until real drift crosses
+the gate, leaving the host un-slaved for minutes):
+
+| Unit | Belt gate | Fires when… | Would-desync-if-unconditional |
 |---|---|---|---|
-| Baseline (shipped floor) | 173.6 / 181.5 / 183.5 | 240/240 | none |
-| Cushion shrink, unslaved | 139.5 / 156.5 / — | 225/240 ⚠ | resampler held 2048→512 |
-| Cushion shrink + pilot | 136.8 / 156.4 / 158.9 | 234/239 | + pilot tone holding the session |
-| **Certified stage floor** | **139.3 / 156.7 / 157.6** | **240/240, 0 xruns** | + 15 s lock lead-in |
-| Fan-in output 512 (rejected) | 205.6 / 218.4 / — | 204/240 ✗ | 27,221 output xruns — reverted |
+| `jasper-fanin.service` | `$JASPER_FANIN_HOST_CLOCK = enabled` | fan-in owns the ctl (combo mode) | a **solo-mode** usbsink L0 command (fan-in restarts every deploy) |
+| `jasper-usbsink.service` | `$JASPER_USBSINK_AUDIO_STANDBY != 1` | usbsink owns the ctl (solo/aloop mode) | a **combo-mode** fan-in L0 command while usbsink stands by (deploy try-restarts usbsink on binary change; operators restart it) |
 
-What the data established:
+Both gates are load-bearing and mirror each other: the owner is exactly the
+daemon holding `hw:UAC2Gadget`, and only the owner writes the ctl. Both target
+the same element by (iface, name), never numid. Before F2 only fan-in's belt was
+gated; usbsink's unconditional belt was the reverse leak — it stomped fan-in's
+live combo command on every usbsink stop.
 
-- **The docs' old ~90–110 ms estimate was optimistic ~2×.** The measured
-  baseline is ~175 ms electrical with a tight 10 ms p50→p99 spread — stable
-  queue depth, not jitter, i.e. removable by architecture, not tuning.
-- **The resampler cushion cut delivers exactly its frame math** (−34 ms p50
-  for 2048→512 held) and holds 100 % match with zero xruns — but only under
-  an L0-locked host or with continuous content. Unslaved sparse content at a
-  tight cushion loses ~6 % of audio to re-lock episodes: **tight cushions are
-  L0-conditional floors**, which is the Stage 1 ladder's reason to exist.
-- **The fan-in output queue cannot be tuned below ~1024 on the aloop
-  transport** — 512 produced an xrun storm and *worse* latency (re-prime
-  refill). The boundary itself is the floor; removing it is the ring
-  transport's job, not a knob's.
-- Lock acquisition eats the first impulses after a stream start: measurement
-  windows need a ~15 s lead-in (or continuous content) before the first click.
+Combo host-clock telemetry:
 
-### Harness prerequisites (learned on hardware)
+```sh
+curl -s http://jts.local:8780/state | jq .audio_graph.fanin.host_clock
+```
 
-- **Pin the source for the window** (`POST /source/select {"source":"usbsink"}`,
-  restore `auto` after): sparse clicks do not trip usbsink's RMS `playing`
-  bit (threshold −60 dBFS RMS), so in auto mode the mux never routes the lane
-  and the clicks die at the fan-in gate. Alternative: mix a pilot tone at or
-  above ~−50 dBFS RMS under the click track.
-- **On amp-less lab boxes** use the electrical mode: capture the :9891
-  reference with tcpdump (it is consumed by the AEC bridge on mic-ful boxes —
-  packet capture reads alongside without binding) and convert per-impulse
-  packet timestamps to CLOCK_MONOTONIC with a sampled realtime↔monotonic
-  offset. Document the mode in `--measurement-id`.
-- macOS note: the Mac's volume slider does NOT drive this gadget (macOS
-  treats it as fixed-volume; `PCM Capture Volume` never moves) — set the
-  speaker's listening level via `POST /volume/set` instead.
+### Observability
+
+- Fan-in STATUS (`/run/jasper-fanin/control.sock` `STATUS`, surfaced on `/state`):
+  every input gains `"source":"lane"|"direct"`; the direct lane also gains
+  `"direct":{"device","present","opens","retries"}`. The lane's frames/xruns
+  ride the existing `frames_read`/`xrun_count`; its rate-lock rides the existing
+  `resampler{}` block.
+- Bridge STATUS/state.json gains additive `"standby":true|false` (schema_version
+  stays 1); in standby `playing:false`, `rms_dbfs:-120`, ring/counters zero, and
+  `host_connected` is best-effort from sysfs (`/sys/class/udc/*/state ==
+  "configured"`). A misdirected harness run is diagnosable from `standby:true`.
+- Transition logs: `event=fanin.usb_direct.present` / `.absent` (one line per
+  presence change, device + errno + cumulative retries), `event=fanin.usb_direct.armed`
+  at config load, `event=usbsink_audio.standby active=true` at bridge start.
+
+### Impulse tap moves to fan-in (C4)
+
+In direct mode the certified route's ingress is fan-in's `hw:UAC2Gadget`
+capture, so the impulse tap is **relocated into fan-in** (ported verbatim from
+`jasper-usbsink-audio`: same JSONL schema, same detector, same arm validation).
+It runs inline in the direct read over the converted S16 slice, before the
+resampler. **The bridge's own tap is DEAD in direct mode** (the bridge is in
+standby and opens no capture), so the fan-in JSONL is the ONLY ingress evidence.
+
+- Path: `/run/jasper-fanin/impulse-tap.jsonl` (the JSONL schema is unchanged:
+  `{"monotonic_ns","frame_index","ring_fill_frames","peak"}`).
+- Arm/disarm are **control-socket verbs** (not HTTP): `TAP_ARM {json}` /
+  `TAP_DISARM` on `/run/jasper-fanin/control.sock`. STATUS gains a top-level
+  `"tap":{armed,events_written,events_dropped,threshold,refractory_ms,max_events,auto_disarm_at_epoch_ms,path}`.
+
+**Director commands (PoC).** The route-latency harness's `analyze --tap-events`
+already reads any JSONL path, so no HTTP port is needed — arm via the socket
+verb, point `--tap-events` at the fan-in JSONL:
+
+```sh
+# 1. Arm (disarm with TAP_DISARM):
+printf 'TAP_ARM {"threshold":0.2,"refractory_ms":250}\n' \
+  | socat - UNIX-CONNECT:/run/jasper-fanin/control.sock
+printf 'TAP_DISARM\n' | socat - UNIX-CONNECT:/run/jasper-fanin/control.sock
+
+# 2. Analyze against the fan-in JSONL (mic-wav / other args as today):
+python -m jasper.cli.route_latency_harness analyze \
+  --tap-events /run/jasper-fanin/impulse-tap.jsonl \
+  --mic-detections <capture>.jsonl <other args as today>
+```
+
+### Status (PoC bar)
+
+Correct + observable + flag-gated default-off; **hardware-validated on
+jts.local 2026-07-02** (Apple dongle, electrical `:9891` reference mode).
+Conversion parity with the bridge is by construction (both consume
+`jasper_resampler::s32_high_word_to_s16`, pinned by an identical sign-boundary
+vector in all three crates). The direct open uses the bridge's proven envelope
+(S32LE/2ch/48k, period 256, buffer-near 768). Gadget absence/unplug is
+silent-idle with a bounded ~2 s reopen retry (period-counted, never a daemon
+error). Hardening (deploy wiring, doctor surface, wizard toggle) comes next.
+
+### Measured results — 2026-07-02 descent campaign (jts.local, Apple dongle)
+
+Full ring graph (fan-in → Ring A → CamillaDSP → Ring B → outputd) + USB DIRECT
+combo mode + queuelimit 1 + both rings at 2 slots + DAC 128/256. Click impulses
+via the Mac gadget lane; span = fan-in ingress tap → outputd `:9891` reference
+tap; ALL-IN adds probe-measured gadget dwell (+3.9 ms, mean avail ~186 f) and
+DAC delay (+9.9 ms, mean ~477 f = 256-frame ring + USB URB queue).
+
+| config | measured p50/p95 (ms) | end-to-end p50/p95 (ms) |
+|---|---|---|
+| pre-campaign baseline (aloop chain) | 173.6 / 181.5 | ~187 / ~195 |
+| host-slaved + cushion (certified) | 139.3 / 156.7 | ~153 / ~170 |
+| full ring graph, chunk 128, 4-slot | 70.1 / 73.5 | 83.7 / 87.1 |
+| + USB DIRECT (bridge deleted from path) | 45.1 / 46.8 | 58.7 / 60.5 |
+| **+ both rings 2-slot (floor, 1-min)** | **35.4 / 36.7** | **≈49 / ≈50** |
+| **floor, 5-min confirmation (159 impulses)** | **34.8 / 36.8 / p99 37.1** | **≈48.6 / ≈50.6** |
+| floor + fan-in host-clock DLL live (1-min) | 34.6 / 36.8 | ≈48.4 / ≈50.6 |
+| **floor + DLL, 5-min closing run (160/160, 100 %)** | **35.0 / 36.6 / p99 37.2** | **≈48.8 / ≈50.4** |
+
+First 5-min confirmation: 99.4 % match, zero xruns, zero problem journal
+lines, resampler locked throughout with the gadget **free-running** (bridge
+standby had the DLL off — the gap that motivated the fan-in relocation below).
+Closing 5-min run (DLL relocated into fan-in, `JASPER_FANIN_HOST_CLOCK=enabled`):
+100 % match; probe passed and the ladder ran `l0_locked` with fill pinned near
+setpoint, then **demoted to `l2_fallback` at a stream-restart transient and the
+floor held anyway** — the fail-safe posture works, and at cushion 256 the lane
+resampler's ±500 ppm authority alone carries 5-minute stability. Cushion 128
+*under* the DLL locks (85 unlocks vs 15,513 free-run) but regresses latency
+(+1.9 ms p50): lock churn re-primes fill above setpoint. **The config floor is
+final at cushion 256**; shrinking the resampler pool needs post-lock
+cushion-decay product work in `lane_resampler`, with the DLL holding the
+decayed target.
+
+Refuted knobs (each a clean 1-min negative): resampler cushion 128/128 (lock
+never holds — the 256 floor is lock-hold hysteresis, not aloop burstiness);
+CamillaDSP `target_level` 384→256 (no effect under queuelimit 1); chunk-64 slot
+geometry as config (`RING_SLOT_FRAMES = 128` is a compile-time constant).
+
+The remaining ~9 ms to a 40 ms end-to-end target is located, all product code:
+
+1. **Host-clock DLL relocation into fan-in** (the standby gap): nobody drives
+   `Capture Pitch` in direct mode, so resampler fill wanders (~500 f observed
+   at 5 min vs the 256 target — drift + stream-restart head-starts). Pinning
+   fill at target is worth ~5 ms *and* removes the drift wander.
+2. Gadget drain cadence: standing avail ~186 f → ~64 f (~2.6 ms).
+3. DAC URB queue: `delay` ~477 f against a 256-frame ring (~2–3 ms in
+   snd-usb-audio queueing).
 
 ## Host-slaved USB clock (Stage 1)
 
@@ -231,12 +384,10 @@ Default-**OFF** mechanism + telemetry + evidence, landed alongside the Stage 0
 click/capture harness above. It commands the HOST's USB audio clock instead of
 only reconciling the offset in software on our side — a structurally different
 lever from the fan-in USB input resampler, which absorbs the same standing
-rate offset in the digital domain. Source: the shared
-[`rust/jasper-host-clock/src/lib.rs`](../rust/jasper-host-clock/src/lib.rs)
-crate (its module docstring is the authoritative derivation; this section is
-the operational summary), consumed through the thin
+rate offset in the digital domain. Source:
 [`rust/jasper-usbsink-audio/src/host_clock.rs`](../rust/jasper-usbsink-audio/src/host_clock.rs)
-shim.
+(the module docstring there is the authoritative derivation; this section is
+the operational summary).
 
 ### Mechanism
 
@@ -374,8 +525,7 @@ Tunables (each documented in `.env.example` with the full range/rationale):
 `JASPER_USBSINK_HOST_CLOCK_PROBE_SECONDS` (default 6, step phase; a fixed 4 s
 baseline phase always runs first). The servo clamp (±1000 ppm), write
 epsilon/cadence (10 ppm / <=1 Hz), and tick interval (1 Hz) are fixed Rust
-constants, not env-tunable — see the pinned-constants block in the shared
-`jasper-host-clock` crate (`rust/jasper-host-clock/src/lib.rs`).
+constants, not env-tunable — see `host_clock.rs`'s pinned-constants block.
 
 ### What evidence `/state` gives
 
