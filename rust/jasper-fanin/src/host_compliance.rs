@@ -234,7 +234,11 @@ pub enum RevokeReason {
     ProbeFail,
     /// The DLL ladder demoted to L2 (probe fail OR mid-stream demotion evidence).
     DllDemotion,
-    /// An underfill unlock inside the early-session revalidation window.
+    /// A CONFIRMED churn cycle: an early-window underfill unlock FOLLOWED BY a
+    /// relock within the confirmation horizon — proof the host is still delivering
+    /// yet the floor prime cannot hold (unlock→relock cycling). A bare terminal
+    /// unlock (a stream that simply ended, no relock) is NOT this — it expires the
+    /// pending strike harmlessly. See [`RevalidationTracker`].
     EarlyUnlock,
 }
 
@@ -249,8 +253,13 @@ impl RevokeReason {
     }
 }
 
-/// The per-tick revalidation inputs for a floor-primed session, sampled by the
-/// mixer from the servo reverse signals and the resampler's unlock counter.
+/// The per-tick IMMEDIATE-trigger inputs for a floor-primed session, sampled by
+/// the mixer from the servo reverse signals. These are the triggers that revoke on
+/// the CURRENT lock the period the evidence appears: a LIVE probe FAIL and a live
+/// L2 demotion. The third trigger — the early-window underfill unlock — is NOT
+/// here: it is a two-phase discriminator (arm on the unlock, confirm on a relock)
+/// owned by [`RevalidationTracker`]'s state machine, because a bare terminal
+/// unlock (a stream that just ended) must NOT be a strike.
 #[derive(Debug, Clone, Copy)]
 pub struct RevalidationSignals {
     /// The servo's last probe verdict as a code (`2` == FAIL; see
@@ -270,21 +279,16 @@ pub struct RevalidationSignals {
     pub probe_verdict_is_live: bool,
     /// The DLL ladder demoted to L2 (probe-fail-into-L2 OR a mid-stream demotion).
     pub ladder_l2: bool,
-    /// True while inside the early-revalidation window since the last lock (the
-    /// underfill-unlock trigger only fires here — the acquisition-adjacent phase).
-    pub within_early_window: bool,
-    /// The resampler's unlock count advanced since the lock baseline (churn — the
-    /// floor prime did not hold on this host).
-    pub unlock_advanced: bool,
 }
 
-/// Decide whether a floor-primed session's revalidation FAILS this period, and if
-/// so, why. Ordering is by directness of evidence: a fresh (LIVE) probe FAIL first,
-/// then a live L2 demotion, then an early-window underfill unlock. Returns `None`
-/// when the session is still healthy. PURE — the mixer enacts the returned reason
-/// (snap-back + revoke); this only decides. `probe_fail` is the exact
-/// `host_clock::probe_result_code` FAIL value (2), kept a plain literal here so
-/// the pure module needs no dependency on the host_clock adapter.
+/// Decide whether a floor-primed session's IMMEDIATE revalidation triggers FAIL
+/// this period, and if so, why. Ordering is by directness of evidence: a fresh
+/// (LIVE) probe FAIL first, then a live L2 demotion. Returns `None` when neither
+/// immediate trigger fires (the early-unlock churn discriminator is decided
+/// separately in [`RevalidationTracker::step`]). PURE — the mixer enacts the
+/// returned reason (snap-back + revoke); this only decides. `probe_fail` is the
+/// exact `host_clock::probe_result_code` FAIL value (2), kept a plain literal here
+/// so the pure module needs no dependency on the host_clock adapter.
 ///
 /// The probe-FAIL trigger is gated on `probe_verdict_is_live` so a STALE FAIL left
 /// on the reverse signal from a prior session's non-compliant host cannot revoke a
@@ -295,8 +299,6 @@ pub fn compute_revoke_reason(s: RevalidationSignals) -> Option<RevokeReason> {
         Some(RevokeReason::ProbeFail)
     } else if s.ladder_l2 {
         Some(RevokeReason::DllDemotion)
-    } else if s.within_early_window && s.unlock_advanced {
-        Some(RevokeReason::EarlyUnlock)
     } else {
         None
     }
@@ -305,24 +307,57 @@ pub fn compute_revoke_reason(s: RevalidationSignals) -> Option<RevokeReason> {
 /// The PURE lock-edge + revalidation tracker for a floor-primed session — the
 /// wiring the mixer runs once per render period around [`compute_revoke_reason`].
 /// Extracted from the mixer so the lock-edge bookkeeping (which is where the
-/// early-unlock trigger's reachability lives) is testable WITHOUT ALSA: a test can
+/// early-unlock churn discriminator lives) is testable WITHOUT ALSA: a test can
 /// drive it with a real [`crate::lane_resampler::LaneResampler`]'s
-/// `is_locked()` / `unlock_count()` sequence and confirm a simulated underfill
-/// actually revokes.
+/// `is_locked()` / `unlock_count()` sequence and confirm a simulated churn cycle
+/// actually revokes while a terminal stream-end does not.
 ///
-/// The load-bearing ordering it encodes (the fix for the "early-unlock is dead
-/// code" defect):
-///  1. Read the rising (idle→lock) and falling (lock→underfill-unlock) edges from
-///     `was_locked` BEFORE mutating it.
-///  2. Run the revalidation against the PRE-reset baseline, treating the falling
-///     edge as inside the early window — because `unlock_for_underfill` sets
+/// ## The EarlyUnlock churn discriminator (the fix for spurious terminal-unlock
+/// strikes)
+///
+/// A floor-primed session that simply ENDS — the host stops streaming, so
+/// deliveries stop, the fill drains below `minimum_safe_fill` within ~ms, and
+/// `unlock_for_underfill` fires — is NOT evidence the floor prime failed. On
+/// macOS, CoreAudio stops the device stream seconds after the last client, so
+/// notification dings / previews present as sub-60 s sessions that always end this
+/// way. The prior "any early-window underfill unlock revokes on the falling edge"
+/// rule burned the proof on EVERY such short session (hardware-diagnosed on
+/// jts.local 2026-07-03). The discriminator distinguishes CHURN (the host is
+/// STILL delivering and the floor cannot hold → the lane unlocks *and relocks*)
+/// from a terminal stream-end (the host stopped → the lane unlocks and never
+/// relocks):
+///
+///  - An early-window underfill unlock **ARMS a pending strike** (records that a
+///    strike is awaiting confirmation, and resets the tick-clock `periods_since_arm`).
+///  - The strike **CONFIRMS** (revoke `EarlyUnlock`) only if a **RELOCK** (rising
+///    edge) arrives within `confirm_horizon_periods` — a short tick-clock horizon.
+///    Unlock→relock cycling proves the host is present and the floor is failing.
+///  - If no relock arrives within the horizon, the pending strike **EXPIRES
+///    harmlessly** (the stream died — no churn). It never survives a session; a
+///    fresh lock is armed clean.
+///
+/// A churn STORM (many unlock/relock cycles) revokes on the FIRST confirmed cycle:
+/// the confirming relock clears `flag_present` (via the mixer's `on_revoked`) and
+/// this tracker latches `floor_primed = floor_primed_now && revoke.is_none()`, so
+/// the relocked session is no longer floor-primed and does not revalidate again —
+/// exactly one revoke. `ProbeFail` / `DllDemotion` are UNCHANGED — they are direct
+/// host-non-compliance evidence and still revoke immediately on the current lock.
+///
+/// ## The load-bearing ordering it encodes
+///  1. Read the rising (idle→lock, the confirming relock) and falling
+///     (lock→underfill-unlock, the arming unlock) edges from `was_locked` BEFORE
+///     mutating it.
+///  2. Run the revalidation against the PRE-reset baseline. The arming unlock is
+///     seen on the falling edge — because `unlock_for_underfill` sets
 ///     `locked=false` in the same render period it bumps `unlock_count`, so the
 ///     ONLY period that carries the churn evidence is the one where `locked` is
-///     already false. Gating `within_early_window` on `locked` alone (the original
-///     bug) made that period invisible and the trigger unreachable.
+///     already false. Gating `within_early_window` on `locked` alone would make
+///     the arm unreachable.
 ///  3. THEN apply the lock-edge bookkeeping: a fresh lock re-arms the window,
 ///     unlock baseline, and clears the per-lock revoke latch (so a re-proven
 ///     session can revoke again — the latch is per-lock, not per-daemon-lifetime).
+///     On a rising edge that CONFIRMED a revoke, `floor_primed` latches false (the
+///     proof is dead) so the relocked lock cannot run a redundant second strike.
 #[derive(Debug, Clone)]
 pub struct RevalidationTracker {
     /// Whether the CURRENT lock was primed at the floor from a valid, unrevoked
@@ -337,7 +372,8 @@ pub struct RevalidationTracker {
     /// Revoked already since the most recent lock (revoke-at-most-once-per-lock).
     /// Cleared on every fresh lock so a re-proven session can strike again.
     revoked_this_lock: bool,
-    /// The early-revalidation window in render periods.
+    /// The early-revalidation window in render periods (the arming window — an
+    /// underfill unlock only ARMS a pending strike while inside this).
     early_window_periods: u64,
     /// Render periods since the most recent lock, capped at the early window + 1.
     periods_since_lock: u64,
@@ -345,6 +381,20 @@ pub struct RevalidationTracker {
     unlock_baseline_at_lock: u64,
     /// The resampler `locked` state observed last period (lock-edge detection).
     was_locked: bool,
+    /// The EarlyUnlock CONFIRMATION horizon in render periods (tick clock, NOT wall
+    /// time): a relock must arrive within this many periods of the arming underfill
+    /// unlock for the pending strike to confirm. Short (≤ a few seconds of periods)
+    /// so a terminal stream-end's pending strike expires well inside a fresh
+    /// stream's restart gap.
+    confirm_horizon_periods: u64,
+    /// Whether an early-window underfill unlock is currently AWAITING relock
+    /// confirmation. Set on the arming unlock, cleared on confirm / expiry / a fresh
+    /// lock. Never survives a session (the terminal-unlock case expires it).
+    pending_strike_armed: bool,
+    /// Render periods since the pending strike was armed — the confirmation clock.
+    /// Advances every period while armed regardless of lock state (the arm→relock
+    /// gap is spent unlocked/priming); compared against `confirm_horizon_periods`.
+    periods_since_arm: u64,
 }
 
 /// The tracker's decision for one render period: the revocation outcome plus the
@@ -365,8 +415,14 @@ impl RevalidationTracker {
     /// build-time load primed the lane at the floor); it is re-sampled from the
     /// live `flag_present` at each rising edge in [`step`](Self::step), so this
     /// only seeds the value the first lock uses before any rising edge is observed.
-    /// `early_window_periods` is the derived early-revalidation budget.
-    pub fn new(floor_primed: bool, early_window_periods: u64) -> Self {
+    /// `early_window_periods` is the derived early-revalidation (arming) budget and
+    /// `confirm_horizon_periods` the derived churn-confirmation horizon (both in
+    /// render periods — the tracker never reads a wall clock).
+    pub fn new(
+        floor_primed: bool,
+        early_window_periods: u64,
+        confirm_horizon_periods: u64,
+    ) -> Self {
         Self {
             floor_primed,
             revoked_this_lock: false,
@@ -374,6 +430,9 @@ impl RevalidationTracker {
             periods_since_lock: 0,
             unlock_baseline_at_lock: 0,
             was_locked: false,
+            confirm_horizon_periods,
+            pending_strike_armed: false,
+            periods_since_arm: 0,
         }
     }
 
@@ -386,12 +445,33 @@ impl RevalidationTracker {
         self.revoked_this_lock
     }
 
+    /// True iff an early-window underfill unlock is currently awaiting relock
+    /// confirmation. Test-only: the mixer never reads this — a pending strike is an
+    /// internal, self-clearing state (confirm / expire / fresh lock). Gated
+    /// `#[cfg(test)]` to stay out of the `-D warnings` binary build.
+    #[cfg(test)]
+    pub fn pending_strike_armed(&self) -> bool {
+        self.pending_strike_armed
+    }
+
     /// Advance one render period. Reads the live resampler lock/unlock state plus
     /// the servo reverse signals, decides whether to revoke, and updates the
     /// lock-edge bookkeeping. Returns the revoke decision plus the observed edges so
     /// the mixer can drive the proof machine's per-lock reset off the same edges.
     /// The mixer enacts a returned `revoke` (snap-back + file delete +
     /// observability). Pure: no I/O, no clock.
+    ///
+    /// Three revoke triggers, two shapes:
+    ///  - IMMEDIATE (`ProbeFail`, `DllDemotion`): direct host-non-compliance
+    ///    evidence via [`compute_revoke_reason`] — revoke on the current lock the
+    ///    period the evidence appears.
+    ///  - TWO-PHASE (`EarlyUnlock`): the churn discriminator. An early-window
+    ///    underfill unlock ARMS a pending strike; a RELOCK within
+    ///    `confirm_horizon_periods` CONFIRMS it (revoke). A pending strike whose
+    ///    horizon elapses with no relock EXPIRES harmlessly (a terminal stream-end
+    ///    — the host stopped, not floor churn). This is the fix for spurious
+    ///    strikes on the short sessions macOS produces (notification dings /
+    ///    previews).
     ///
     /// `floor_primed_now` is the LIVE proof-present signal (the same `flag_present`
     /// the snap-back honours and the revoke path clears). It is latched into
@@ -412,41 +492,81 @@ impl RevalidationTracker {
 
         let mut revoke = None;
         if self.floor_primed && !self.revoked_this_lock {
-            // The early window spans the primed lock's first `early_window_periods`
-            // render periods AND its immediate lock-loss period (the falling edge),
-            // where the underfill unlock that ended the lock lands.
-            let within_early_window =
-                (locked || falling_edge) && self.periods_since_lock <= self.early_window_periods;
+            // (1) IMMEDIATE triggers (probe FAIL / L2 demotion) — unchanged. A LIVE
+            // probe FAIL always coincides with the ladder at L2; a stale carryover
+            // FAIL sits in Probing (`ladder_l2 == false`) and is ignored so a fresh
+            // lock on a new compliant host is not revoked on a previous host's
+            // verdict.
             revoke = compute_revoke_reason(RevalidationSignals {
                 probe_result_code,
-                // A LIVE probe FAIL always coincides with the ladder at L2; a stale
-                // carryover FAIL sits in Probing (`ladder_l2 == false`) and is
-                // ignored so a fresh lock on a new compliant host is not revoked on
-                // a previous host's verdict.
                 probe_verdict_is_live: ladder_l2,
                 ladder_l2,
-                within_early_window,
-                unlock_advanced: unlock_count > self.unlock_baseline_at_lock,
             });
+
+            // (2) EarlyUnlock CHURN discriminator. The arming window spans the
+            // primed lock's first `early_window_periods` render periods AND its
+            // immediate lock-loss period (the falling edge), where the underfill
+            // unlock that ended the lock lands.
+            let within_early_window =
+                (locked || falling_edge) && self.periods_since_lock <= self.early_window_periods;
+            let unlock_advanced = unlock_count > self.unlock_baseline_at_lock;
+
+            // CONFIRM first: a relock (rising edge) while a strike is armed within
+            // the horizon proves the host is still delivering yet the floor failed —
+            // unlock→relock churn. `compute_revoke_reason` never returns EarlyUnlock,
+            // so an immediate trigger above wins the reason only if it also fired.
+            if revoke.is_none()
+                && rising_edge
+                && self.pending_strike_armed
+                && self.periods_since_arm <= self.confirm_horizon_periods
+            {
+                revoke = Some(RevokeReason::EarlyUnlock);
+            }
+            // ARM: a fresh early-window underfill unlock. On the falling edge, so it
+            // never collides with the rising-edge CONFIRM above. Idempotent while
+            // already armed (a strike stays anchored to its first unlock's clock).
+            if within_early_window && unlock_advanced && !self.pending_strike_armed {
+                self.pending_strike_armed = true;
+                self.periods_since_arm = 0;
+            }
+
             if revoke.is_some() {
                 self.revoked_this_lock = true;
+                // Consume any pending strike: a revoke fired (this cycle or an
+                // immediate trigger), so nothing is left awaiting confirmation.
+                self.pending_strike_armed = false;
+            }
+        }
+
+        // Expire a pending strike whose confirmation horizon elapsed with no relock:
+        // the terminal stream-end case (the host stopped streaming; no churn). The
+        // clock advances every period while armed regardless of lock state — the
+        // arm→relock gap is spent unlocked/priming. Runs after the confirm read so a
+        // relock exactly at the horizon still counts.
+        if self.pending_strike_armed {
+            self.periods_since_arm = self.periods_since_arm.saturating_add(1);
+            if self.periods_since_arm > self.confirm_horizon_periods {
+                self.pending_strike_armed = false;
             }
         }
 
         // Lock-edge bookkeeping AFTER the revalidation read. Latch the per-lock
-        // prime state from the LIVE signal HERE (not before the read): the read
-        // above intentionally runs against the PRE-reset baseline to catch the
-        // falling-edge underfill, so re-sampling `floor_primed` before it would arm
-        // the freshly-latched value against the PRIOR lock's stale unlock baseline
-        // and spuriously revoke on the rising-edge period. A rising edge carries no
-        // same-lock underfill (the lane just locked) and no fresh probe verdict yet,
-        // so deferring the arm to here costs nothing — session B's early window runs
-        // from its second period onward, which is where any real evidence lands.
+        // prime state HERE (not before the read): the read above intentionally runs
+        // against the PRE-reset baseline to catch the falling-edge underfill, so
+        // re-sampling `floor_primed` before it would arm the freshly-latched value
+        // against the PRIOR lock's stale unlock baseline. On a rising edge that
+        // CONFIRMED a revoke, latch `floor_primed=false`: the mixer clears
+        // `flag_present` right after `step` returns (the revoke's `on_revoked`), so
+        // the relocked lock is NOT floor-primed and must not run a redundant second
+        // strike — this is the same SSOT #1154 uses (a revoke ⇒ next snap lands at
+        // the ceiling ⇒ not floor-primed). It also pins the revoke-before-relock
+        // ordering: the floor consideration for the relocked lock resolves to
+        // "ceiling," matching the flag the mixer is about to clear.
         if rising_edge {
             self.periods_since_lock = 0;
             self.unlock_baseline_at_lock = unlock_count;
             self.revoked_this_lock = false;
-            self.floor_primed = floor_primed_now;
+            self.floor_primed = floor_primed_now && revoke.is_none();
         }
         self.was_locked = locked;
         if locked {
@@ -899,21 +1019,39 @@ mod tests {
             probe_result_code: 1, // pass
             probe_verdict_is_live: true,
             ladder_l2: false,
-            within_early_window: true,
-            unlock_advanced: false,
         }
     }
 
     #[test]
     fn compute_revoke_reason_healthy_session_never_revokes() {
+        // Neither immediate trigger fires on a passing probe / non-L2 ladder.
         assert_eq!(compute_revoke_reason(healthy()), None);
-        // Outside the early window, an unlock alone is not a revoke either.
-        let late = RevalidationSignals {
-            within_early_window: false,
-            unlock_advanced: true,
-            ..healthy()
-        };
-        assert_eq!(compute_revoke_reason(late), None);
+    }
+
+    #[test]
+    fn compute_revoke_reason_never_returns_early_unlock() {
+        // The EarlyUnlock churn discriminator is owned by RevalidationTracker::step
+        // (arm on unlock + confirm on relock), NEVER by this immediate decider — so
+        // no combination of the immediate inputs can produce EarlyUnlock here. This
+        // is a mutation guard: a refactor that folded the old unlock branch back in
+        // would resurrect the terminal-unlock false-revoke.
+        for probe in [0u64, 1, 2, 3] {
+            for live in [false, true] {
+                for l2 in [false, true] {
+                    let r = compute_revoke_reason(RevalidationSignals {
+                        probe_result_code: probe,
+                        probe_verdict_is_live: live,
+                        ladder_l2: l2,
+                    });
+                    assert_ne!(
+                        r,
+                        Some(RevokeReason::EarlyUnlock),
+                        "compute_revoke_reason must never decide EarlyUnlock \
+                         (probe={probe} live={live} l2={l2})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -924,7 +1062,6 @@ mod tests {
             probe_result_code: 2,
             probe_verdict_is_live: true,
             ladder_l2: true,
-            ..healthy()
         };
         assert_eq!(compute_revoke_reason(s), Some(RevokeReason::ProbeFail));
     }
@@ -940,19 +1077,8 @@ mod tests {
             probe_result_code: 2,
             probe_verdict_is_live: false,
             ladder_l2: false,
-            within_early_window: true,
-            unlock_advanced: false,
         };
         assert_eq!(compute_revoke_reason(stale), None);
-        // The SAME stale FAIL code, still not corroborated by L2, does not revoke
-        // even inside the early window with no unlock — nothing else fires.
-        assert_eq!(
-            compute_revoke_reason(RevalidationSignals {
-                unlock_advanced: false,
-                ..stale
-            }),
-            None
-        );
     }
 
     #[test]
@@ -960,32 +1086,10 @@ mod tests {
         // No fresh probe fail, but the DLL demoted mid-stream → DllDemotion.
         let s = RevalidationSignals {
             probe_result_code: 1,
+            probe_verdict_is_live: false,
             ladder_l2: true,
-            ..healthy()
         };
         assert_eq!(compute_revoke_reason(s), Some(RevokeReason::DllDemotion));
-    }
-
-    #[test]
-    fn compute_revoke_reason_early_unlock_only_inside_window() {
-        // An unlock inside the early window revokes as EarlyUnlock.
-        let inside = RevalidationSignals {
-            within_early_window: true,
-            unlock_advanced: true,
-            ..healthy()
-        };
-        assert_eq!(
-            compute_revoke_reason(inside),
-            Some(RevokeReason::EarlyUnlock)
-        );
-        // The SAME unlock outside the window does NOT revoke (the probe already
-        // ran and passed; a much-later unlock is ordinary transient churn).
-        let outside = RevalidationSignals {
-            within_early_window: false,
-            unlock_advanced: true,
-            ..healthy()
-        };
-        assert_eq!(compute_revoke_reason(outside), None);
     }
 
     #[test]
@@ -1025,9 +1129,14 @@ mod tests {
         assert!(matches!(p.tick(floor_l0(0)), ProofOutcome::Write { .. }));
     }
 
-    // ---- RevalidationTracker (lock-edge + one-strike wiring) ---------------
+    // ---- RevalidationTracker (churn discriminator + one-strike wiring) -----
 
     const EARLY_WINDOW: u64 = 20;
+    // The churn-confirmation horizon for the pure tests (render periods). Deliberately
+    // smaller than EARLY_WINDOW so a relock can land inside the arming window yet
+    // OUTSIDE the confirm horizon (the boundary test). A real build derives this from
+    // `HOST_COMPLIANCE_CHURN_CONFIRM_SECS` via `ms_to_periods`.
+    const CONFIRM: u64 = 8;
 
     /// A locked healthy tick (probe passed, ladder L0, no churn). Returns the four
     /// resampler/servo args; the fifth `step` arg (`floor_primed_now`) is passed
@@ -1037,107 +1146,227 @@ mod tests {
         (true, unlock_count, 1, false)
     }
 
-    #[test]
-    fn tracker_cold_session_never_revokes() {
-        // A NOT-floor-primed session has no persisted authority to distrust — even
-        // an underfill unlock inside the early window just re-earns the proof.
-        // `floor_primed_now=false` (no live proof) is the live signal for a cold lane.
-        let mut t = RevalidationTracker::new(false, EARLY_WINDOW);
-        let (l, u, p, l2) = ok_lock(0);
-        assert_eq!(t.step(l, u, p, l2, false).revoke, None);
-        // Underfill unlock (falling edge, count advances): still no revoke — cold.
-        assert_eq!(t.step(false, 1, 1, false, false).revoke, None);
+    /// Build a floor-primed tracker with the test window + horizon.
+    fn primed_tracker() -> RevalidationTracker {
+        RevalidationTracker::new(true, EARLY_WINDOW, CONFIRM)
     }
 
     #[test]
-    fn tracker_early_underfill_unlock_revokes_on_the_falling_edge() {
-        // THE BLOCKER FIX: a floor-primed session that locks, then underfill-unlocks
-        // inside the early window, revokes as EarlyUnlock — even though the unlock is
-        // observed on the SAME period `locked` flips to false (the falling edge).
-        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
-        // Lock cleanly for a few periods (baseline unlock_count = 0). The live proof
-        // is present, so `floor_primed_now=true` every period.
+    fn tracker_cold_session_never_revokes() {
+        // A NOT-floor-primed session has no persisted authority to distrust — even
+        // an underfill unlock inside the early window (then a relock) just re-earns
+        // the proof. `floor_primed_now=false` (no live proof) is the cold signal.
+        let mut t = RevalidationTracker::new(false, EARLY_WINDOW, CONFIRM);
+        let (l, u, p, l2) = ok_lock(0);
+        assert_eq!(t.step(l, u, p, l2, false).revoke, None);
+        // Underfill unlock (falling edge, count advances): no arm (cold) → no revoke.
+        assert_eq!(t.step(false, 1, 1, false, false).revoke, None);
+        assert!(
+            !t.pending_strike_armed(),
+            "a cold session never arms a strike"
+        );
+        // Even a fast relock does not confirm anything on a cold lane.
+        assert_eq!(t.step(true, 1, 1, false, false).revoke, None);
+    }
+
+    #[test]
+    fn tracker_terminal_stream_end_unlock_does_not_revoke() {
+        // THE HARDWARE FIX (jts.local 2026-07-03): a floor-primed session that locks,
+        // then underfill-unlocks inside the early window because the STREAM ENDED
+        // (the host stopped; NO relock follows) must NOT revoke. The unlock ARMS a
+        // pending strike; with no relock, the strike EXPIRES harmlessly once the
+        // confirmation horizon elapses. The proof survives — the next real stream
+        // still primes at the floor.
+        let mut t = primed_tracker();
+        // A ~2 s stream: lock cleanly for a few periods (baseline unlock_count = 0).
         for _ in 0..3 {
             let (l, u, p, l2) = ok_lock(0);
             assert_eq!(t.step(l, u, p, l2, true).revoke, None);
         }
-        // Underfill: the resampler set locked=false AND bumped unlock_count in the
-        // same render period. The tracker must catch this falling-edge unlock.
-        let step = t.step(false, 1, 1, false, true);
+        // Stream ends → underfill unlock on the falling edge. This ARMS a strike but
+        // does NOT revoke (no relock yet).
+        let end = t.step(false, 1, 1, false, true);
         assert_eq!(
-            step.revoke,
-            Some(RevokeReason::EarlyUnlock),
-            "a floor-primed early underfill unlock must revoke on the falling edge"
+            end.revoke, None,
+            "a terminal stream-end unlock must NOT revoke — it only arms a pending strike"
         );
-        assert!(step.falling_edge);
-        assert!(t.revoked_this_lock());
+        assert!(end.falling_edge);
+        assert!(
+            t.pending_strike_armed(),
+            "the early-window underfill armed a pending strike awaiting relock"
+        );
+        assert!(!t.revoked_this_lock());
+        // The host stays stopped (no relock). Tick out the whole confirmation horizon:
+        // the strike must expire, still no revoke.
+        for _ in 0..CONFIRM {
+            assert_eq!(
+                t.step(false, 1, 1, false, true).revoke,
+                None,
+                "no relock → the pending strike never confirms"
+            );
+        }
+        assert!(
+            !t.pending_strike_armed(),
+            "the pending strike expires after the confirmation horizon with no relock"
+        );
     }
 
     #[test]
-    fn tracker_underfill_after_early_window_does_not_revoke() {
+    fn tracker_churn_unlock_then_relock_revokes_exactly_once() {
+        // CHURN: a floor-primed session locks, underfill-unlocks inside the early
+        // window (arm), then RELOCKS within the confirmation horizon (the host is
+        // still delivering yet the floor cannot hold) → revoke EarlyUnlock, exactly
+        // once, on the confirming relock.
+        let mut t = primed_tracker();
+        for _ in 0..3 {
+            let (l, u, p, l2) = ok_lock(0);
+            assert_eq!(t.step(l, u, p, l2, true).revoke, None);
+        }
+        // Underfill unlock → arm (no revoke yet).
+        assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        assert!(t.pending_strike_armed());
+        // A couple of priming periods still unlocked, inside the horizon.
+        assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        // RELOCK within the horizon → confirm. `floor_primed_now` is still true (the
+        // mixer clears flag_present only AFTER step returns).
+        let relock = t.step(true, 1, 1, false, true);
+        assert_eq!(
+            relock.revoke,
+            Some(RevokeReason::EarlyUnlock),
+            "an unlock+relock churn cycle within the horizon must revoke on the relock"
+        );
+        assert!(relock.rising_edge);
+        assert!(
+            !t.pending_strike_armed(),
+            "the strike is consumed on confirm"
+        );
+    }
+
+    #[test]
+    fn tracker_relock_just_outside_horizon_does_not_revoke() {
+        // BOUNDARY: an underfill unlock arms a strike, but the relock arrives just
+        // AFTER the confirmation horizon — the strike has already expired, so the
+        // relock does not confirm. No revoke; the proof survives.
+        let mut t = primed_tracker();
+        for _ in 0..3 {
+            let (l, u, p, l2) = ok_lock(0);
+            assert_eq!(t.step(l, u, p, l2, true).revoke, None);
+        }
+        // Arm on the underfill (periods_since_arm resets to 0, then increments to 1
+        // at the bottom of this same period).
+        assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        assert!(t.pending_strike_armed());
+        // Stay unlocked for exactly CONFIRM more periods → periods_since_arm exceeds
+        // the horizon and the strike expires WITHOUT a relock.
+        for _ in 0..CONFIRM {
+            assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        }
+        assert!(
+            !t.pending_strike_armed(),
+            "the strike expired one period past the horizon"
+        );
+        // The (late) relock now finds no armed strike → no confirm, no revoke.
+        let relock = t.step(true, 1, 1, false, true);
+        assert_eq!(
+            relock.revoke, None,
+            "a relock just outside the confirmation horizon must not revoke"
+        );
+        assert!(relock.rising_edge);
+    }
+
+    #[test]
+    fn tracker_churn_storm_revokes_once_total() {
+        // STORM: many unlock/relock cycles. The FIRST confirmed cycle revokes; the
+        // mixer then clears flag_present (on_revoked), so every subsequent lock is
+        // NOT floor-primed (floor_primed_now=false) and cannot revoke again. Exactly
+        // one revoke across the whole storm.
+        let mut t = primed_tracker();
+        for _ in 0..3 {
+            let (l, u, p, l2) = ok_lock(0);
+            assert_eq!(t.step(l, u, p, l2, true).revoke, None);
+        }
+        // Cycle 1: unlock (arm) → relock (confirm → revoke #1). flag_present still
+        // true across this relock (the mixer clears it AFTER step returns).
+        assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        assert_eq!(
+            t.step(true, 1, 1, false, true).revoke,
+            Some(RevokeReason::EarlyUnlock),
+            "the first confirmed churn cycle revokes"
+        );
+        // From here the mixer has cleared flag_present → floor_primed_now=false for
+        // every subsequent period. Drive several more unlock/relock cycles; NONE of
+        // them may revoke again (the lane is no longer floor-primed).
+        let mut extra_revokes = 0u32;
+        let mut uc = 2u64;
+        for _cycle in 0..5 {
+            // Underfill unlock (count advances), proof now absent.
+            if t.step(false, uc, 1, false, false).revoke.is_some() {
+                extra_revokes += 1;
+            }
+            uc += 1;
+            // Relock, proof still absent.
+            if t.step(true, uc, 1, false, false).revoke.is_some() {
+                extra_revokes += 1;
+            }
+            uc += 1;
+        }
+        assert_eq!(
+            extra_revokes, 0,
+            "a storm revokes exactly once — later cycles run on a non-primed lane"
+        );
+    }
+
+    #[test]
+    fn tracker_underfill_after_early_window_never_arms() {
         // Past the early window, a single underfill unlock is ordinary transient
-        // churn (the probe already ran and passed) — not a revoke.
-        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
+        // churn (the probe already ran and passed) — it does not even ARM a strike,
+        // so a following relock cannot confirm one.
+        let mut t = primed_tracker();
         // Hold lock past the early window (live proof present every period).
         for _ in 0..(EARLY_WINDOW + 5) {
             let (l, u, p, l2) = ok_lock(0);
             assert_eq!(t.step(l, u, p, l2, true).revoke, None);
         }
-        // Now underfill: outside the window, EarlyUnlock does not fire.
+        // Underfill outside the window: no arm, no revoke.
         assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
-    }
-
-    #[test]
-    fn tracker_relock_after_in_window_revoke_does_not_double_revoke() {
-        // The revalidation runs BEFORE the rising-edge re-baseline, so a relock must
-        // not see the just-revoked lock's advanced unlock count against the OLD
-        // baseline and fire a second EarlyUnlock. The per-lock latch (set by the
-        // falling-edge revoke, still true on the relock's rising-edge period, cleared
-        // only after that period's revalidation read) is what prevents it.
-        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
-        // Lock, then an in-window underfill → revoke #1 on the falling edge. The
-        // proof is still live on the relock (the mixer clears it via `on_revoked`
-        // only AFTER `step` returns the revoke), so `floor_primed_now=true` here;
-        // the per-lock latch — not the prime flag — is what blocks the double-revoke.
-        for _ in 0..3 {
-            assert_eq!(t.step(true, 0, 1, false, true).revoke, None);
-        }
-        assert_eq!(
-            t.step(false, 1, 1, false, true).revoke,
-            Some(RevokeReason::EarlyUnlock)
+        assert!(
+            !t.pending_strike_armed(),
+            "an out-of-window underfill must not arm a strike"
         );
-        assert!(t.revoked_this_lock());
-        // Re-prime + relock (rising edge) with unlock_count STILL advanced past the
-        // old baseline. The rising-edge period must NOT double-revoke; the latch
-        // clears only after this period's (skipped) revalidation.
-        let relock = t.step(true, 1, 1, false, true);
-        assert_eq!(
-            relock.revoke, None,
-            "the relock rising edge must not double-revoke off the old unlock baseline"
-        );
-        assert!(relock.rising_edge);
-        assert!(!t.revoked_this_lock(), "the latch clears on the fresh lock");
-        // A clean re-proven session then runs quietly (baseline re-armed to 1).
+        // Even a fast relock does not confirm (nothing was armed).
         assert_eq!(t.step(true, 1, 1, false, true).revoke, None);
     }
 
     #[test]
     fn tracker_live_probe_fail_revokes() {
-        // A LIVE probe FAIL (code 2 corroborated by ladder L2) revokes as ProbeFail.
-        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
+        // A LIVE probe FAIL (code 2 corroborated by ladder L2) revokes as ProbeFail,
+        // immediately on the current lock — the two-phase EarlyUnlock path does not
+        // gate the direct host-non-compliance triggers.
+        let mut t = primed_tracker();
         assert_eq!(t.step(true, 0, 1, false, true).revoke, None);
         let step = t.step(true, 0, 2, true, true);
         assert_eq!(step.revoke, Some(RevokeReason::ProbeFail));
     }
 
     #[test]
+    fn tracker_dll_demotion_revokes_immediately() {
+        // A mid-stream L2 demotion (no fresh probe fail) revokes as DllDemotion,
+        // immediately while locked — unchanged by the churn discriminator.
+        let mut t = primed_tracker();
+        assert_eq!(t.step(true, 0, 1, false, true).revoke, None);
+        assert_eq!(
+            t.step(true, 0, 1, true, true).revoke,
+            Some(RevokeReason::DllDemotion)
+        );
+    }
+
+    #[test]
     fn tracker_ignores_stale_probe_fail_on_fresh_lock() {
-        // The Finding-2 stale-verdict trap: a fresh lock on a new compliant host
-        // must NOT revoke on a previous session's carried-over FAIL. The servo
-        // leaves `probe_result=Fail` across a session boundary but the ladder is
-        // back in Probing (`ladder_l2=false`), so the FAIL is not live and no revoke
-        // fires.
-        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
+        // The stale-verdict trap: a fresh lock on a new compliant host must NOT
+        // revoke on a previous session's carried-over FAIL. The servo leaves
+        // `probe_result=Fail` across a session boundary but the ladder is back in
+        // Probing (`ladder_l2=false`), so the FAIL is not live and no revoke fires.
+        let mut t = primed_tracker();
         // Fresh lock: probe_code is a STALE 2 but ladder_l2 is false (re-probing).
         for _ in 0..5 {
             assert_eq!(
@@ -1152,13 +1381,11 @@ mod tests {
 
     #[test]
     fn tracker_revoke_latch_resets_on_relock() {
-        // Finding 2: the per-lock revoke latch must reset on a fresh lock so a
-        // re-proven session can strike again if the host later misbehaves — it is
-        // NOT a daemon-lifetime latch.
-        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
-        // Lock, then a live probe fail → revoke #1. Proof stays live across the
-        // relock here (this test exercises the latch, not the proof lifecycle), so
-        // `floor_primed_now=true` throughout.
+        // The per-lock revoke latch must reset on a fresh lock so a re-proven session
+        // can strike again if the host later misbehaves — it is NOT a daemon-lifetime
+        // latch. (Uses probe fail, which stays live across the relock here because the
+        // test keeps floor_primed_now=true to exercise the latch, not the lifecycle.)
+        let mut t = primed_tracker();
         assert_eq!(t.step(true, 0, 1, false, true).revoke, None);
         assert_eq!(
             t.step(true, 0, 2, true, true).revoke,
@@ -1186,36 +1413,40 @@ mod tests {
         // PER-SESSION: `floor_primed` is re-sampled from the LIVE proof signal at
         // each rising edge, NOT fixed for the daemon lifetime. So:
         //  - session A (cold, no proof yet) does NOT run the one-strike revalidation
-        //    — an early underfill just re-earns the proof;
+        //    — an early churn cycle just re-earns the proof;
         //  - session B (floor-primed off A's fresh proof) DOES revalidate — the same
-        //    early underfill revokes.
+        //    churn cycle revokes.
         // The tracker is constructed `floor_primed=false` (no boot proof); the live
         // value is what each rising edge latches.
-        let mut t = RevalidationTracker::new(false, EARLY_WINDOW);
+        let mut t = RevalidationTracker::new(false, EARLY_WINDOW, CONFIRM);
 
         // Session A: lock with the live proof STILL ABSENT (floor_primed_now=false).
         for _ in 0..3 {
             assert_eq!(t.step(true, 0, 1, false, false).revoke, None);
         }
-        // An early underfill on the cold session must NOT revoke — nothing to
-        // distrust; the session is proving from scratch.
+        // An early churn cycle on the cold session must NOT revoke — nothing to
+        // distrust; the session is proving from scratch. It arms nothing (cold) and
+        // ends UNLOCKED so session B below begins with a fresh rising edge.
+        assert_eq!(t.step(false, 1, 1, false, false).revoke, None); // unlock (no arm — cold)
         assert_eq!(
-            t.step(false, 1, 1, false, false).revoke,
+            t.step(true, 1, 1, false, false).revoke,
             None,
-            "a cold (not floor-primed) session end never revokes"
+            "a cold (not floor-primed) relock never revokes"
         );
+        assert_eq!(t.step(false, 2, 1, false, false).revoke, None); // session A ends (unlocked)
 
-        // Session A wrote its proof; session B locks with the proof now LIVE
-        // (floor_primed_now=true). The rising edge latches floor_primed=true (armed
-        // from the second locked period onward); these clean periods do not revoke.
+        // Session A wrote its proof; session B LOCKS FRESH (rising edge) with the
+        // proof now LIVE (floor_primed_now=true). The rising edge latches
+        // floor_primed=true; these clean periods do not revoke.
         for _ in 0..3 {
-            assert_eq!(t.step(true, 1, 1, false, true).revoke, None);
+            assert_eq!(t.step(true, 2, 1, false, true).revoke, None);
         }
-        // The SAME early underfill now revokes — session B was floor-primed.
+        // The SAME early churn cycle now revokes — session B was floor-primed.
+        assert_eq!(t.step(false, 3, 1, false, true).revoke, None, "arm");
         assert_eq!(
-            t.step(false, 2, 1, false, true).revoke,
+            t.step(true, 3, 1, false, true).revoke,
             Some(RevokeReason::EarlyUnlock),
-            "a floor-primed session B (proof live at its rising edge) revalidates and revokes"
+            "a floor-primed session B (proof live at its rising edge) revalidates + revokes"
         );
     }
 
@@ -1224,7 +1455,7 @@ mod tests {
         // After a revoke clears the proof, the NEXT session locks with the live
         // signal false, so its rising edge latches floor_primed=false and it runs
         // NO one-strike revalidation — it descends + re-proves like any cold lane.
-        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
+        let mut t = primed_tracker();
         // Floor-primed session: a live probe fail revokes.
         assert_eq!(t.step(true, 0, 1, false, true).revoke, None);
         assert_eq!(
@@ -1237,27 +1468,51 @@ mod tests {
         for _ in 0..3 {
             assert_eq!(t.step(true, 0, 1, false, false).revoke, None);
         }
-        // An early underfill on this re-proving session does NOT revoke.
+        // An early churn cycle on this re-proving session does NOT revoke.
+        assert_eq!(t.step(false, 1, 1, false, false).revoke, None);
         assert_eq!(
-            t.step(false, 1, 1, false, false).revoke,
+            t.step(true, 1, 1, false, false).revoke,
             None,
             "the session after a revoke is not floor-primed, so it never revokes"
         );
     }
 
-    // ---- Faithful wiring test: a REAL resampler underfill drives a revoke -----
-
     #[test]
-    fn real_resampler_underfill_drives_early_unlock_revoke() {
-        // The wiring-level regression the BLOCKER demands: build a REAL
-        // `LaneResampler`, lock it, feed the RevalidationTracker the resampler's OWN
-        // `is_locked()` / `unlock_count()` each period exactly as the mixer does, then
-        // starve the input so the resampler underfill-unlocks — and assert the
-        // tracker actually revokes. This proves the input combination the pure tests
-        // use (`falling_edge` + `unlock_advanced`) is one the wiring PRODUCES, not a
-        // synthetic one the plumbing can never reach.
-        use crate::lane_resampler::{DecayParams, LaneResampler};
+    fn tracker_confirmed_relock_latches_floor_primed_false_for_lock_b() {
+        // THE ORDERING PIN (interaction with #1154's snap-destination SSOT): on the
+        // relock that CONFIRMS a churn strike, `step` latches `floor_primed=false`
+        // even though `floor_primed_now` is still true (the mixer clears flag_present
+        // only after step returns). This is what makes the revoke "win" the relocked
+        // lock's floor consideration: lock B is NOT floor-primed, so it does not run a
+        // second (redundant) strike, and the very next session-boundary snap lands at
+        // the ceiling — matching the flag the mixer is about to clear.
+        let mut t = primed_tracker();
+        for _ in 0..3 {
+            assert_eq!(t.step(true, 0, 1, false, true).revoke, None);
+        }
+        assert_eq!(t.step(false, 1, 1, false, true).revoke, None, "arm");
+        assert_eq!(
+            t.step(true, 1, 1, false, true).revoke,
+            Some(RevokeReason::EarlyUnlock),
+            "confirm on the relock"
+        );
+        // Lock B continues with the proof now cleared (floor_primed_now=false). A
+        // fresh underfill+relock on lock B must NOT revoke again — lock B latched
+        // floor_primed=false on the confirming edge, so it never revalidates.
+        assert_eq!(t.step(false, 2, 1, false, false).revoke, None);
+        assert_eq!(
+            t.step(true, 2, 1, false, false).revoke,
+            None,
+            "lock B is not floor-primed after the confirmed revoke — no second strike"
+        );
+    }
 
+    // ---- Faithful wiring tests: a REAL resampler drives the discriminator -----
+
+    /// Shared REAL-resampler harness geometry + tone. Returns a locked resampler and
+    /// a matching output buffer, exactly as the mixer would have after acquisition.
+    fn build_locked_real_resampler() -> (crate::lane_resampler::LaneResampler, Vec<i16>) {
+        use crate::lane_resampler::{DecayParams, LaneResampler};
         const RATE: u32 = 48_000;
         const PERIOD: u32 = 256;
         const TARGET: usize = 512;
@@ -1276,45 +1531,54 @@ mod tests {
             DecayParams::disabled(),
         )
         .expect("resampler builds");
-        // Simulate a floor-primed session's tracker (the mixer sets floor_primed from
-        // a valid persisted proof; here we assert the tracker treats this lane as
-        // primed so the one-strike revalidation is armed).
-        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
-
-        // Deterministic stereo tone.
-        let tone = |frames: usize| -> Vec<i16> {
-            let mut v = Vec::with_capacity(frames * 2);
-            for n in 0..frames {
-                let x = ((n as f64) * 0.02).sin();
-                let s = (x * 8000.0) as i16;
-                v.push(s);
-                v.push(s);
-            }
-            v
-        };
         let mut out = vec![0i16; PERIOD as usize * 2];
-
-        // Prefill deep enough to lock, then render one period → the lane locks.
         let deep = TARGET + CUSHION + 8 + 1;
-        r.push_input(&tone(deep + 64));
+        r.push_input(&real_tone(deep + 64));
         assert_eq!(
             r.render_period(&mut out),
             PERIOD as usize,
             "locks + renders"
         );
         assert!(r.is_locked(), "the lane is locked after the deep prefill");
+        (r, out)
+    }
+
+    fn real_tone(frames: usize) -> Vec<i16> {
+        let mut v = Vec::with_capacity(frames * 2);
+        for n in 0..frames {
+            let x = ((n as f64) * 0.02).sin();
+            let s = (x * 8000.0) as i16;
+            v.push(s);
+            v.push(s);
+        }
+        v
+    }
+
+    #[test]
+    fn real_resampler_churn_relock_drives_early_unlock_revoke() {
+        // The wiring-level regression: build a REAL `LaneResampler`, lock it, feed the
+        // RevalidationTracker the resampler's OWN `is_locked()` / `unlock_count()` each
+        // period exactly as the mixer does, STARVE it so it underfill-unlocks (arm),
+        // then RE-FEED it so it RE-LOCKS within the confirmation horizon — and assert
+        // the tracker revokes on the relock. This proves the churn combination the
+        // pure tests use (falling edge → arm, rising edge within horizon → confirm) is
+        // one the live wiring PRODUCES, not a synthetic one the plumbing cannot reach.
+        const PERIOD: usize = 256;
+        let (mut r, mut out) = build_locked_real_resampler();
+        let mut t = primed_tracker();
+
         let baseline_unlocks = r.unlock_count();
 
-        // The mixer's exact per-period call: read the resampler's live state, then
-        // step the tracker. `floor_primed_now=true` — this session primed at the
-        // floor (the live proof is present). A healthy locked period → no revoke.
-        let step = t.step(r.is_locked(), r.unlock_count(), 1, false, true);
-        assert_eq!(step.revoke, None, "a healthy locked period does not revoke");
-
-        // Feed one more sub-period of input, render a few clean periods (still
-        // locked, still inside the early window), tracker stays quiet.
+        // A healthy locked period → no revoke.
+        assert_eq!(
+            t.step(r.is_locked(), r.unlock_count(), 1, false, true)
+                .revoke,
+            None,
+            "a healthy locked period does not revoke"
+        );
+        // A few clean periods (still locked, inside the early window).
         for _ in 0..3 {
-            r.push_input(&tone(PERIOD as usize));
+            r.push_input(&real_tone(PERIOD));
             r.render_period(&mut out);
             assert!(r.is_locked());
             assert_eq!(
@@ -1324,30 +1588,104 @@ mod tests {
             );
         }
 
-        // Now STARVE the lane: render with no fresh input until the cursor outruns
-        // the buffered frames → `render_period` calls `unlock_for_underfill`, which
-        // sets locked=false AND bumps unlock_count IN THE SAME period. This is the
-        // exact falling-edge the BLOCKER showed the old wiring could not catch.
-        let mut revoked = None;
+        // STARVE → the resampler underfill-unlocks (arm the pending strike). No
+        // revoke on this falling edge.
+        let mut armed = false;
         for _ in 0..64 {
             r.render_period(&mut out);
             let s = t.step(r.is_locked(), r.unlock_count(), 1, false, true);
-            if let Some(reason) = s.revoke {
-                revoked = Some(reason);
-                // The revoke must land on the period the resampler unlocked.
-                assert!(!r.is_locked(), "revoke coincides with the unlock");
+            assert_eq!(s.revoke, None, "the arming underfill must not revoke");
+            if !r.is_locked() {
                 assert!(
                     r.unlock_count() > baseline_unlocks,
                     "the underfill actually advanced the unlock count"
                 );
+                assert!(
+                    t.pending_strike_armed(),
+                    "the underfill armed a pending strike"
+                );
+                armed = true;
+                break;
+            }
+        }
+        assert!(
+            armed,
+            "the lane underfill-unlocked within the starve budget"
+        );
+
+        // RE-FEED → the resampler re-primes and RE-LOCKS within the confirm horizon.
+        // The confirming rising edge revokes EarlyUnlock through the live wiring.
+        let mut revoked = None;
+        for _ in 0..64 {
+            r.push_input(&real_tone(PERIOD * 4));
+            r.render_period(&mut out);
+            let s = t.step(r.is_locked(), r.unlock_count(), 1, false, true);
+            if let Some(reason) = s.revoke {
+                revoked = Some(reason);
+                assert!(
+                    s.rising_edge,
+                    "the revoke lands on the relock (rising edge)"
+                );
+                assert!(r.is_locked(), "the revoke coincides with the relock");
                 break;
             }
         }
         assert_eq!(
             revoked,
             Some(RevokeReason::EarlyUnlock),
-            "a real resampler underfill inside the early window must revoke via the \
-             tracker — the EarlyUnlock trigger is reachable through the live wiring"
+            "a real resampler unlock→relock churn cycle inside the horizon must revoke \
+             via the tracker — the churn discriminator is reachable through the wiring"
+        );
+    }
+
+    #[test]
+    fn real_resampler_terminal_unlock_does_not_revoke() {
+        // The complement of the churn test AND the hardware scenario: a REAL resampler
+        // that underfill-unlocks and is NEVER re-fed (the stream ended — the host
+        // stopped) must NOT revoke. The tracker keeps ticking on the (still-running,
+        // DAC-paced) mixer loop with the lane unlocked; the pending strike expires
+        // after the confirmation horizon and the proof is never revoked.
+        let (mut r, mut out) = build_locked_real_resampler();
+        let mut t = primed_tracker();
+
+        // A healthy locked period, then starve to the underfill unlock (arm).
+        assert_eq!(
+            t.step(r.is_locked(), r.unlock_count(), 1, false, true)
+                .revoke,
+            None
+        );
+        let mut armed = false;
+        for _ in 0..64 {
+            r.render_period(&mut out);
+            let s = t.step(r.is_locked(), r.unlock_count(), 1, false, true);
+            assert_eq!(s.revoke, None, "the arming underfill must not revoke");
+            if !r.is_locked() {
+                armed = true;
+                break;
+            }
+        }
+        assert!(armed, "the lane underfill-unlocked");
+        assert!(
+            t.pending_strike_armed(),
+            "the underfill armed a pending strike"
+        );
+
+        // The host is gone — NO re-feed. Keep rendering silence (the mixer loop runs
+        // regardless of the input lane) well past the confirmation horizon. The lane
+        // stays unlocked, the strike expires, and NO revoke ever fires.
+        for _ in 0..(CONFIRM as usize + 8) {
+            r.render_period(&mut out);
+            assert!(!r.is_locked(), "no input → the lane stays unlocked");
+            assert_eq!(
+                t.step(r.is_locked(), r.unlock_count(), 1, false, true)
+                    .revoke,
+                None,
+                "a terminal stream-end (no relock) never revokes through the wiring"
+            );
+        }
+        assert!(
+            !t.pending_strike_armed(),
+            "the pending strike expired with no relock — the proof survives"
         );
     }
 }
