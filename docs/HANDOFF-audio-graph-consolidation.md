@@ -182,35 +182,48 @@ Verified missing on main (2026-07-03):
    `/etc/alsa/conf.d/`, 0644), plus the `/dev/shm/jts-ring` directory via
    `deploy/tmpfiles/jts-ring.conf` (mode 2775 `root:jasper`). Both INERT —
    nothing opens the PCMs / no ring file is created until P2 arms a coupling.
-3. **Config emission**: no product emitter can produce a ring CamillaDSP
-   config — `jasper/sound/camilla_yaml.py`, `camilla_config_contract.py`,
-   and `output_topology.py` contain zero ring references; today's ring yml
-   is `make-camilla-ring-config.sh`'s hand copy applied via live websocket
-   `set_config_file_path`, reverted by ANY camilla restart because
-   `jasper-camilla.service`'s ExecStartPre re-seeds the statefile from the
-   output-topology contract.
-4. **Ordered-transition ownership**: `jasper-fanin-coupling-reconcile`
-   accepts only `loopback|transport_pipe`; `shm_ring` has no ordered
-   arm/disarm, no activation gate, no fail-safe-to-loopback.
-5. **Topology-contract citizenship**: `jasper/output_topology.py` and the
-   camilla statefile seeding know nothing of ring mode.
-6. **Doctor**: ~~no ring asset/drift checks;~~ existing loopback checks would
-   false-fail a ring box at E's list. **Ring-asset check CLOSED by P1**:
-   `check_ring_platform_assets` (`jasper/cli/doctor/audio.py`, order 51.8)
-   verifies the `.so` + conf.d + `/dev/shm/jts-ring` are present and open-
-   probes both PCMs (a `warn` when an asset is missing since loopback still
-   carries audio in the inert phase; a `fail` when the `.so` is installed but
-   a PCM cannot open — the `-DPIC` registration class). The loopback-check
-   rewrites for E's list remain a later-phase (P7/P9) task.
-7. **/state observability**: fan-in STATUS has ring blocks
-   (`RingObservability`) but `/state.audio_graph` needs the resolved
-   transport surfaced fleet-wide; doctor + dashboards read loopback truth.
-8. **Certification**: the route-latency artifact binder REFUSES `shm_ring`
-   topologies for `usb_low_latency_48k` (deliberate lab quarantine) — must
-   learn the ring before default flip or the shipped low-latency claim
-   regresses to permanently-failing.
+3. **Config emission**: ~~no product emitter can produce a ring CamillaDSP
+   config.~~ **CLOSED by P2**: `capture_kwargs_for_coupling("shm_ring")`
+   (`jasper/fanin_coupling.py`) now returns the FULL end-to-end ring topology —
+   capture `jts_ring_capture` AND playback `jts_ring_playback`, both S16_LE — so
+   `emit_sound_config` emits a coherent ring config through the product carrier;
+   `emit_flat_ring_config` (`jasper/sound/camilla_yaml.py`) is the ring sibling of
+   the flat cutover config. The statefile seeder (`safe_graph_for_current_topology`
+   `coupling="shm_ring"`) re-seeds `outputd-cutover-ring.yml` on a ring-armed box,
+   so a camilla restart / deploy keeps the ring instead of reverting to loopback
+   (finding 5 dies here). install.sh renders BOTH flat configs and passes
+   `--coupling`/`--ring-flat-config` to the seeder.
+4. **Ordered-transition ownership**: ~~`shm_ring` has no ordered arm/disarm.~~
+   **CLOSED by P2**: `jasper-fanin-coupling-reconcile shm_ring` is a first-class
+   mode. `_arm_ring` PREFLIGHTs P1 ring assets (`ring_assets_ready`), then flips
+   BOTH ends coherently (`_outputd_actions` is the single writer of the
+   `JASPER_FANIN_CAMILLA_COUPLING=shm_ring` + `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`
+   pair), ordered outputd→fanin→camilla, and fail-safes to loopback+direct on any
+   failure or a partial flip.
+5. **Topology-contract citizenship**: ~~know nothing of ring mode.~~ **CLOSED by
+   P2**: `topology_supports_shm_ring` (`jasper/active_speaker/runtime_contract.py`)
+   is the ring-eligibility predicate — solo-stereo/unconfigured only, NOT roleful /
+   composite (P8's ring-v2 problem); the statefile seeder + multiroom prechecks
+   consult it. `transport_topology_for_coupling` names the resolved ring topology.
+6. **Doctor**: ~~no ring asset/drift checks;~~ **Ring-asset check CLOSED by P1**
+   (`check_ring_platform_assets`), **made ARMED-AWARE + a coherence check added by
+   P2**: armed boxes skip the open-probe (EBUSY is not a defect) and a missing
+   asset is a hard `fail`; `check_fanin_coupling` now verifies the coherent ring
+   pair (capture/playback devices + the outputd bridge) and warns on a partial flip
+   or a finding-5 revert; `check_fanin_service` recognizes the `shm_ring` transport.
+   The E-list loopback-check rewrites remain a later-phase (P7/P9) task.
+7. **/state observability**: ~~`/state.audio_graph` needs the resolved transport.~~
+   **CLOSED by P2**: `/state.audio_graph.coupling` surfaces the persisted coupling,
+   the outputd content bridge, whether the pair is coherent, and the live fan-in
+   transport (`_coupling_state` in `jasper/control/state_aggregate.py`).
+8. **Certification**: ~~the route-latency artifact binder REFUSES `shm_ring`.~~
+   **CLOSED by P2**: `_route_policy_errors` (`jasper/audio_runtime_plan.py`) accepts
+   the COHERENT ring pair (coupling=shm_ring AND bridge=shm_ring) for
+   `usb_low_latency_48k`, still rejecting a partial flip / `transport_pipe` /
+   `rate_match`. So a ring-armed box's shipped low-latency claim no longer goes red.
 9. **Rollback env**: defaults still `loopback`/`direct`; the default flip
-   needs one documented rollback key pair until burn-in ends.
+   needs one documented rollback key pair until burn-in ends. (P2 keeps the default
+   loopback; the P4 flip owns the documented rollback pair.)
 
 ## Phase map
 
