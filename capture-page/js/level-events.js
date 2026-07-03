@@ -14,15 +14,24 @@
 // richer payload in the same slot.
 //
 // The batch is a SUPERSET envelope: it carries the phone's own `agc_frozen`,
-// `armed`, and `aborted` state on every post, so a Pi ramp-control host event
-// that gets clobbered by an interleaving phone post (the read-modify-write race)
-// never strands the flow — the phone's state is always visible in its own event.
+// `armed`, `aborted`, and `run_token` state on every post, so a Pi ramp-control
+// host event clobbered by an interleaving phone post (the read-modify-write
+// race) never strands the flow — the phone's state is always visible in its own
+// event, and the Pi's feed can scope events to THIS run via the token (a stale
+// previous-run slot must never cancel or feed a retry).
 //
-// Pure and testable: inject `now`, `postEvent`, and (for tests) drive `addFrame`
-// directly with Float32 chunks. dBFS is computed exactly like the Pi's
-// `quality._dbfs` via the shared `rmsToDbfs`.
+// Posts are SERIALIZED through a single-flight chain: the relay slot is
+// last-write-wins, so an abort posted while a level batch is still in flight
+// must land strictly AFTER it — otherwise the stale batch's aborted:false
+// overwrites the abort and the Pi blind-waits. abort() additionally RE-POSTS
+// the aborted superset a bounded number of times (the Pi may also be racing its
+// own host events into the same slot).
+//
+// Pure and testable: inject `now`, `postEvent`, `delay`, and (for tests) drive
+// `addFrame` directly with Float32 chunks. dBFS is computed exactly like the
+// Pi's `quality._dbfs` via the shared `rmsToDbfs`.
 
-import { rmsToDbfs } from "./measurement-audio.js?v=20260630-1";
+import { rmsToDbfs, delayMs } from "./measurement-audio.js?v=20260630-1";
 
 // Level-event schema version — MUST match
 // jasper.audio_measurement.ramp.LEVEL_EVENT_SCHEMA_VERSION. Bump both together.
@@ -31,6 +40,10 @@ export const LEVEL_EVENT_SCHEMA_VERSION = 1;
 // A sample is at digital full scale when |x| reaches this — matches the Pi's
 // QualityModel.clip_abs_threshold so clip detection agrees on both ends.
 export const CLIP_ABS_THRESHOLD = 0.999;
+
+// How many extra times abort() re-posts the aborted superset (spaced by
+// postIntervalMs) after the first post. Bounded — no timers leak past abort().
+export const ABORT_REPOSTS = 4;
 
 // Compute one {rms_dbfs, peak_dbfs, clip} verdict for a block of mono samples.
 // Exported for direct unit testing.
@@ -60,6 +73,10 @@ export class LevelStreamer {
   // opts:
   //   postEvent(event)  — async; posts the batch over the relay `event` slot.
   //   now()             — ms clock (defaults to Date.now); injected in tests.
+  //   delay(ms)         — async delay (defaults to the shared delayMs); tests
+  //                       inject an instant resolver.
+  //   runToken          — the per-run nonce from the spec's `run_token`; echoed
+  //                       on every batch so the Pi scopes events to this run.
   //   blockMs           — mic-block granularity per emitted sample (default 200).
   //   postIntervalMs    — min gap between relay posts (default 500 → <=2 Hz).
   //   windowMs          — rolling window kept in each batch (default 3000).
@@ -68,6 +85,8 @@ export class LevelStreamer {
   constructor(opts = {}) {
     this._postEvent = opts.postEvent || (async () => {});
     this._now = opts.now || (() => Date.now());
+    this._delay = opts.delay || delayMs;
+    this._runToken = String(opts.runToken || "");
     this._blockMs = opts.blockMs || 200;
     this._postIntervalMs = opts.postIntervalMs || 500;
     this._windowMs = opts.windowMs || 3000;
@@ -87,6 +106,9 @@ export class LevelStreamer {
     this._aborted = false;
     this._abortReason = "";
     this._closed = false;
+    // Single-flight post chain: every relay write is appended here so an abort
+    // is strictly ordered after any in-flight batch post.
+    this._postChain = Promise.resolve();
   }
 
   setArmed(armed) {
@@ -151,6 +173,7 @@ export class LevelStreamer {
     return {
       level_batch: {
         schema: LEVEL_EVENT_SCHEMA_VERSION,
+        run_token: this._runToken,
         samples: this._window.slice(),
         agc_frozen: this._agcFrozen,
         armed: this._armed,
@@ -160,34 +183,54 @@ export class LevelStreamer {
     };
   }
 
+  // Append one relay write to the single-flight chain. The chain never rejects
+  // (a dropped post is not fatal — the superset on the NEXT post is the
+  // backstop), so ordering is preserved even across failed posts.
+  _enqueuePost() {
+    const payload = this._batchPayload();
+    this._postChain = this._postChain.then(async () => {
+      try {
+        await this._postEvent(payload);
+      } catch (err) {
+        // Swallow — never break the capture leg on a dropped relay post.
+      }
+    });
+    return this._postChain;
+  }
+
   async _maybePost(force = false) {
     if (this._closed && !force) return;
     const t = this._now();
     if (!force && t - this._lastPostMs < this._postIntervalMs) return;
     if (!force && this._window.length === 0) return;
     this._lastPostMs = t;
-    try {
-      await this._postEvent(this._batchPayload());
-    } catch (err) {
-      // The phone superset on the NEXT post is the backstop; a dropped post is
-      // not fatal to the ramp. Swallow — never break the capture leg on it.
-    }
+    await this._enqueuePost();
   }
 
   // Post the phone's abort state as a superset so a lost one-shot abort event
-  // never strands the Pi. Idempotent; safe to call once on teardown.
+  // never strands the Pi. Serialized after any in-flight batch post (an
+  // interleaved pre-abort batch must not be the last write), then RE-POSTED a
+  // bounded number of times spaced by postIntervalMs — the Pi's own host-event
+  // writes race the same read-modify-write slot. Safe to call once on teardown;
+  // idempotent.
   async abort(reason = "phone_aborted") {
+    if (this._aborted) return;
     this._aborted = true;
     this._abortReason = String(reason || "phone_aborted");
-    await this._maybePost(true);
-    this._closed = true;
+    this._closed = true; // no further level batches; abort posts only
+    await this._enqueuePost();
+    for (let i = 0; i < ABORT_REPOSTS; i++) {
+      await this._delay(this._postIntervalMs);
+      await this._enqueuePost();
+    }
   }
 
   // Final flush (e.g. when the Pi posts a terminal ramp state). Sends whatever is
   // in the window immediately, then stops.
   async close() {
-    await this._maybePost(true);
+    if (this._closed) return;
     this._closed = true;
+    await this._enqueuePost();
   }
 }
 

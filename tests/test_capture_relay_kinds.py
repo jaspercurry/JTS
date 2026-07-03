@@ -96,6 +96,38 @@ def test_server_driven_copy_names_the_driver():
     assert headings and "woofer" in headings[0]["text"]
 
 
+def test_level_ramp_run_token_rides_the_spec():
+    # The per-run nonce is an ADDITIVE spec field (schema pin): it round-trips
+    # through to_dict/from_dict, defaults empty for every other kind, and is
+    # validated to a bounded URL-safe shape.
+    from jasper.capture_relay.spec import (
+        CaptureSpecError,
+        build_level_ramp_spec,
+        build_room_sweep_spec,
+    )
+
+    ramp = build_level_ramp_spec(run_token="run_ab12-CD")
+    assert ramp.run_token == "run_ab12-CD"
+    round_tripped = CaptureSpec.from_dict(ramp.to_dict())
+    assert round_tripped.run_token == "run_ab12-CD"
+    assert build_room_sweep_spec().run_token == ""
+    with pytest.raises(CaptureSpecError, match="run_token"):
+        build_level_ramp_spec(run_token="bad token!")
+    with pytest.raises(CaptureSpecError, match="run_token"):
+        build_level_ramp_spec(run_token="x" * 65)
+
+
+def test_level_ramp_phone_timeout_exceeds_pi_safety_timeout():
+    # The phone-side hard recording timeout must stay ABOVE the Pi's derived
+    # safety timeout so the Pi's stop is always the real one (the review: the
+    # old 45 s spec timeout raced a ramp whose own worst case exceeded it).
+    from jasper.audio_measurement.ramp import MeasurementRamp
+    from jasper.capture_relay.spec import build_level_ramp_spec
+
+    ramp = build_level_ramp_spec()
+    assert ramp.duration_ms / 1000.0 > MeasurementRamp().safety_timeout + 5.0
+
+
 def test_builders_registry_is_complete():
     assert set(BUILDERS) == set(SHIPPED_KINDS)
     assert all(callable(b) for b in BUILDERS.values())

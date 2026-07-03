@@ -2170,6 +2170,9 @@ class MeasurementSession:
         noise_floor_dbfs: float | None = None,
         clock: Callable[[], float] | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        run_token: str = "",
+        wait_for_armed: bool = True,
+        armed_timeout_s: float | None = None,
     ) -> LevelMatchOutcome:
         """Relay-closed, settle-based level match for one mic geometry (§3.1).
 
@@ -2181,12 +2184,16 @@ class MeasurementSession:
         :class:`MeasurementLevelLock` in ``level_lock_store``.
 
         ``read_status`` is the relay status reader (the batched-event transport);
-        the host injects it so this method never imports the relay client. When no
-        relay/phone session exists, the caller uses the existing ``run_autolevel``
-        local path instead — this method is additive, not a replacement.
-        ``clock`` / ``sleep`` default to the real asyncio clock; tests inject fakes.
+        the host injects it so this method never imports the relay client — and
+        at production it must be a CACHED background-poller snapshot, never a
+        blocking per-call HTTP GET (see level_match.py's P3b wiring notes). When
+        no relay/phone session exists, the caller uses the existing
+        ``run_autolevel`` local path instead — this method is additive, not a
+        replacement. ``run_token`` is the per-run nonce minted into this run's
+        ``build_level_ramp_spec``. ``clock`` / ``sleep`` default to the real
+        asyncio clock; tests inject fakes.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         session = LevelMatchSession(
             session_id=self.session_id,
             store=self.level_lock_store,
@@ -2202,6 +2209,9 @@ class MeasurementSession:
             noise_floor_dbfs=noise_floor_dbfs,
             clock=clock if clock is not None else loop.time,
             sleep=sleep if sleep is not None else asyncio.sleep,
+            run_token=run_token,
+            wait_for_armed=wait_for_armed,
+            armed_timeout_s=armed_timeout_s,
         )
         self._last_level_match = outcome
         return outcome

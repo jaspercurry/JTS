@@ -338,7 +338,11 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
 - **P2 — Level-match ramp (§3.1)** logic: `RampController` + the relay's
   batched level-event schema + settle-based two-point mapping + SNR-window
   stop + per-geometry lock + drift (on raw magnitudes), all under synthetic
-  tests.
+  tests. *(Status: implemented hardware-free on `claude/p2-ramp-controller`,
+  adversarial-panel remediation applied — buffered settle read with hold
+  extension, run-token-scoped feed, armed gate, evidence-gated MAXED_OUT,
+  derived safety timeout; H1 on-device tuning pending. Operational summary
+  in [HANDOFF-correction.md](HANDOFF-correction.md) §Status.)*
 - **P4 — Verify-acceptance loop.** `AcceptanceEvaluator` (store predicted curve
   at apply → after verify compute error-to-target reduction + a "did any band
   get worse" guard → accept / surface / auto-revert on clear regression),
@@ -447,16 +451,18 @@ Follows the JTS orchestrator pattern (memory: `orchestrator-pattern-default`).
   safety-critical work (L0 gate, kernel extraction, ramp math, verify-loop, graph
   safety); Sonnet-5 (effort max) for well-specified mechanical work (JSON
   envelope wiring, docstring/doc fixes, the canvas fill, test scaffolding).
-- **Reviewers = separate Fable (max effort) subagents for ALL adversarial
-  reviews** (always isolated from the implementer), running **Jasper's
-  canonical staff-maintainer adversarial review prompt** (memory:
+- **Reviewers = separate reviewer subagents, always isolated from the
+  implementer; the review model is tiered by consequence at Fable's
+  judgment — Fable-max (panel for safety-critical) for consequential/subtle
+  PRs; Opus-max for low-risk/mechanical PRs; Opus/Sonnet never review
+  safety-critical work.** Reviews run **Jasper's canonical staff-maintainer
+  adversarial review prompt** (memory:
   `reference_adversarial_review_prompt`), verbatim, scope-adapted per PR, with
   structured output `{blockers, should_fix, nits, findings[], report_md}`.
   Safety-critical PRs — anything touching audio/hearing safety, the
   CamillaDSP graph, DSP math, or secrets — get a **perspective-diverse panel
   of Fable-max reviewers** (correctness + hearing-safety + resilience
-  lenses), not one reviewer. **Opus/Sonnet are implementation-only and never
-  review.**
+  lenses), not one reviewer.
 - **Per-PR loop:** plan → implement (Opus/Sonnet) → self-verify (`scripts/test-fast`
   then `scripts/test-merge`; ruff; mypy; shell/rust lanes as relevant) →
   adversarial review → fix to **zero Blocker + zero Should-fix** → Fable verifies

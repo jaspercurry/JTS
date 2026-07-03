@@ -6,9 +6,17 @@
 
 The kernel ramp math is tested in ``test_audio_measurement_ramp.py``; here we
 test the correction glue with a fake relay (a status dict the feed reads) and a
-fake clock — no network, no CamillaDSP.
+fake clock — no network, no CamillaDSP. The protocol-honesty items the review
+demanded are pinned here: run-token scoping (a previous run's persisted slot
+never cancels or feeds a retry), seq-regression as a new stream (phone page
+reload), the armed gate (no tone until the phone armed), the latched
+journal-spam warnings, and the terminal host event re-posted until the relay
+echoes it back.
 """
 from __future__ import annotations
+
+import asyncio
+import logging
 
 import pytest
 
@@ -27,7 +35,10 @@ from jasper.correction.level_match import (
     check_level_drift,
     parse_level_batch,
     phone_reported_abort,
+    phone_reported_armed,
 )
+
+FAST = dict(settle_hold_s=0.5, max_loop_latency_s=0.5, settle_min_samples=2)
 
 
 # --- level-batch parsing ------------------------------------------------------
@@ -58,7 +69,9 @@ def test_parse_level_batch_reads_samples():
 def test_parse_level_batch_schema_mismatch_yields_empty():
     event = _batch([{"seq": 1, "rms_dbfs": -30.0}])
     event["level_batch"]["schema"] = 999
-    assert parse_level_batch(event) == []
+    seen: list = []
+    assert parse_level_batch(event, on_schema_mismatch=seen.append) == []
+    assert seen == [999]
 
 
 def test_parse_level_batch_tolerates_garbage():
@@ -71,12 +84,33 @@ def test_parse_level_batch_tolerates_garbage():
     assert [s.seq for s in got] == [2]
 
 
-def test_parse_level_batch_applies_batch_agc_flag():
+def test_parse_level_batch_drops_non_finite_samples():
+    # A hand-crafted '"rms_dbfs": "NaN"' JSON string parses through float() —
+    # the parse boundary must drop it (the NaN-pierce fix).
     event = _batch(
-        [{"seq": 1, "rms_dbfs": -30.0}], agc_frozen=False
+        [
+            {"seq": 1, "rms_dbfs": "NaN"},
+            {"seq": 2, "rms_dbfs": "Infinity"},
+            {"seq": 3, "rms_dbfs": -20.0},
+        ]
     )
     got = parse_level_batch(event)
+    assert [s.seq for s in got] == [3]
+
+
+def test_parse_level_batch_applies_batch_agc_flag():
+    event = _batch([{"seq": 1, "rms_dbfs": -30.0}], agc_frozen=False)
+    got = parse_level_batch(event)
     assert got[0].agc_frozen is False  # batch-level superset applies
+
+
+def test_parse_level_batch_token_scoping():
+    event = _batch([{"seq": 1, "rms_dbfs": -30.0}], run_token="run-A")
+    assert parse_level_batch(event, run_token="run-A") != []
+    assert parse_level_batch(event, run_token="run-B") == []  # another run's slot
+    # A tokenless batch is not consumable by a tokened feed.
+    tokenless = _batch([{"seq": 1, "rms_dbfs": -30.0}])
+    assert parse_level_batch(tokenless, run_token="run-B") == []
 
 
 def test_phone_reported_abort_from_superset_and_toplevel():
@@ -87,37 +121,153 @@ def test_phone_reported_abort_from_superset_and_toplevel():
     assert phone_reported_abort({}) is None
 
 
-# --- relay feed dedupes by seq ------------------------------------------------
+def test_phone_reported_abort_token_scoping():
+    stale = _batch([], aborted=True, abort_reason="old-run", run_token="run-A")
+    # A previous run's persisted abort must not cancel this run.
+    assert phone_reported_abort(stale, run_token="run-B") is None
+    assert phone_reported_abort(stale, run_token="run-A") == "old-run"
+    # A tokened feed ignores the unscopeable legacy top-level abort.
+    assert phone_reported_abort({"aborted": True}, run_token="run-B") is None
+
+
+def test_phone_reported_armed_token_scoping():
+    armed = _batch([], armed=True, run_token="run-A")
+    assert phone_reported_armed(armed, run_token="run-A") is True
+    assert phone_reported_armed(armed, run_token="run-B") is False
+    assert phone_reported_armed({"armed": True}) is True  # legacy, tokenless only
+    assert phone_reported_armed({"armed": True}, run_token="run-B") is False
+
+
+# --- relay feed: dedup, regression, abort, rate limit, latched warnings -------
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def now(self):
+        return self.t
+
+    async def sleep(self, s):
+        # Advance fake time AND yield so sibling tasks (tone, lock_now) run.
+        self.t += max(s, 0.01)
+        await asyncio.sleep(0)
+
+
+def _feed(status_ref, clock, **kw):
+    kw.setdefault("min_read_interval_s", 0.0)
+    return RelayLevelFeed(
+        read_status=lambda: status_ref["status"],
+        monotonic=clock.now,
+        **kw,
+    )
 
 
 @pytest.mark.asyncio
 async def test_relay_feed_dedupes_and_detects_abort():
-    status = {"event": _batch([{"seq": 1, "rms_dbfs": -30.0}])}
-    posted: list[dict] = []
-    feed = RelayLevelFeed(
-        read_status=lambda: status, post_host_event=lambda e: posted.append(e)
-    )
+    clock = Clock()
+    ref = {"status": {"event": _batch([{"seq": 1, "rms_dbfs": -30.0}])}}
+    feed = _feed(ref, clock)
     first = await feed.next_samples()
     assert [s.seq for s in first] == [1]
     # Same slot re-read (last-write-wins) → nothing new.
-    again = await feed.next_samples()
-    assert again == []
-    # New batch arrives.
-    status["event"] = _batch([{"seq": 2, "rms_dbfs": -25.0}])
+    assert await feed.next_samples() == []
+    ref["status"] = {"event": _batch([{"seq": 2, "rms_dbfs": -25.0}])}
     assert [s.seq for s in await feed.next_samples()] == [2]
-    # Abort superset stops the feed.
-    status["event"] = _batch([], aborted=True, abort_reason="backgrounded")
+    ref["status"] = {"event": _batch([], aborted=True, abort_reason="backgrounded")}
     assert await feed.next_samples() == []
     assert feed.aborted_reason == "backgrounded"
 
 
 @pytest.mark.asyncio
-async def test_relay_feed_survives_a_failing_status_read():
-    def boom():
+async def test_relay_feed_seq_regression_is_a_new_stream():
+    # A phone page reload mid-ramp resets its counter; the feed must consume
+    # the new stream rather than dropping every sample as stale (the review's
+    # permanent-starvation case).
+    clock = Clock()
+    ref = {"status": {"event": _batch([{"seq": 50, "rms_dbfs": -30.0}])}}
+    feed = _feed(ref, clock)
+    assert [s.seq for s in await feed.next_samples()] == [50]
+    ref["status"] = {"event": _batch([{"seq": 1, "rms_dbfs": -28.0}])}
+    got = await feed.next_samples()
+    assert [s.seq for s in got] == [1]  # consumed, not starved
+    # And dedup continues within the new stream.
+    assert await feed.next_samples() == []
+
+
+@pytest.mark.asyncio
+async def test_relay_feed_ignores_stale_previous_run_slot():
+    # The previous run's final event (abort superset + samples, another token)
+    # persists in the slot: a fresh tokened feed must ignore it completely —
+    # no insta-cancel, no stale samples.
+    clock = Clock()
+    stale = _batch(
+        [{"seq": 9, "rms_dbfs": -14.0}],
+        aborted=True,
+        abort_reason="backgrounded",
+        run_token="run-OLD",
+    )
+    ref = {"status": {"event": stale}}
+    feed = _feed(ref, clock, run_token="run-NEW")
+    assert await feed.next_samples() == []
+    assert feed.aborted_reason is None
+    # The new run's first batch arrives and is consumed normally.
+    ref["status"] = {
+        "event": _batch([{"seq": 1, "rms_dbfs": -30.0}], run_token="run-NEW")
+    }
+    assert [s.seq for s in await feed.next_samples()] == [1]
+
+
+@pytest.mark.asyncio
+async def test_relay_feed_rate_limits_reads():
+    clock = Clock()
+    calls = {"n": 0}
+
+    def read_status():
+        calls["n"] += 1
+        return {"event": {}}
+
+    feed = RelayLevelFeed(
+        read_status=read_status, monotonic=clock.now, min_read_interval_s=0.25
+    )
+    # 100 calls over 1 s of fake time → at most ~5 HTTP reads.
+    for _ in range(100):
+        await feed.next_samples()
+        clock.t += 0.01
+    assert calls["n"] <= 5
+
+
+@pytest.mark.asyncio
+async def test_relay_feed_latches_read_failure_warning(caplog):
+    clock = Clock()
+    calls = {"n": 0}
+
+    def read_status():
+        calls["n"] += 1
         raise RuntimeError("relay down")
 
-    feed = RelayLevelFeed(read_status=boom)
-    assert await feed.next_samples() == []  # transient read failure ≠ crash
+    feed = RelayLevelFeed(
+        read_status=read_status, monotonic=clock.now, min_read_interval_s=0.0
+    )
+    with caplog.at_level(logging.WARNING, logger="jasper.correction.level_match"):
+        for _ in range(50):
+            assert await feed.next_samples() == []
+    warnings = [r for r in caplog.records if "status read failed" in r.message]
+    assert len(warnings) == 1  # latched, not per tick
+
+
+@pytest.mark.asyncio
+async def test_relay_feed_latches_schema_mismatch_warning(caplog):
+    clock = Clock()
+    bad = _batch([{"seq": 1, "rms_dbfs": -30.0}])
+    bad["level_batch"]["schema"] = 999
+    ref = {"status": {"event": bad}}
+    feed = _feed(ref, clock)
+    with caplog.at_level(logging.WARNING, logger="jasper.correction.level_match"):
+        for _ in range(50):
+            assert await feed.next_samples() == []
+    warnings = [r for r in caplog.records if "schema mismatch" in r.message]
+    assert len(warnings) == 1  # a stale mismatched slot warns once, not per tick
 
 
 # --- geometry lock store ------------------------------------------------------
@@ -176,6 +326,17 @@ def test_drift_non_uniform_is_acoustic():
     assert r.verdict == DriftVerdict.ACOUSTIC
 
 
+def test_drift_large_shift_with_scatter_is_suspected_not_ok():
+    # The review's classifier hole: a genuine 6+ dB amp move measured with
+    # >2 dB band scatter matched neither AMP_MOVED nor ACOUSTIC and fell
+    # through to "level is consistent". That quadrant must be non-OK.
+    ref = [70.0, 70.0, 70.0, 70.0]
+    cur = [64.0, 64.0, 64.0, 58.5]  # mean -7.4, max_dev 4.1
+    r = check_level_drift(ref, cur, same_geometry=True)
+    assert r.verdict == DriftVerdict.LEVEL_SHIFT_SUSPECTED
+    assert "re-level" in r.message
+
+
 def test_drift_small_change_is_ok():
     ref = [70.0, 72.0, 68.0]
     cur = [70.5, 71.5, 68.2]
@@ -208,28 +369,21 @@ def test_drift_env_knobs_override_thresholds(monkeypatch):
 # --- LevelMatchSession end-to-end with a fake relay ---------------------------
 
 
-class FakeClock:
-    def __init__(self):
-        self.t = 0.0
-
-    def now(self):
-        return self.t
-
-    async def sleep(self, s):
-        self.t += max(s, 0.01)
-
-
 class FakeChain:
     """Fake speaker+relay: the mic level tracks commanded volume + gain, streamed
-    back through a mutable relay status dict as level batches."""
+    back through a mutable relay status dict as armed level batches. The Pi's
+    host events land in the same status dict (host_event echo works)."""
 
-    def __init__(self, *, gain_db, start_vol, nf=-80.0):
+    def __init__(self, *, gain_db, start_vol, nf=-80.0, run_token=""):
         self.gain_db = gain_db
         self.nf = nf
+        self.run_token = run_token
         self._vol = start_vol
         self.commanded = []
         self._seq = 0
         self.status = {"event": {}}
+        self.host_events: list[dict] = []
+        self._tone = asyncio.Event()
 
     async def get_vol(self):
         return self._vol
@@ -239,10 +393,17 @@ class FakeChain:
         self.commanded.append(db)
 
     async def tone(self):
-        pass
+        try:
+            await asyncio.wait_for(self._tone.wait(), timeout=20.0)
+        except asyncio.TimeoutError:
+            pass
 
     def cancel_tone(self):
-        pass
+        self._tone.set()
+
+    def post_host_event(self, event):
+        self.host_events.append(event)
+        self.status["host_event"] = event  # the echo path (worker getStatus)
 
     def read_status(self):
         # Report the mic level at the CURRENT commanded volume as a fresh batch.
@@ -251,6 +412,9 @@ class FakeChain:
         self.status["event"] = {
             "level_batch": {
                 "schema": LEVEL_EVENT_SCHEMA_VERSION,
+                "run_token": self.run_token,
+                "armed": True,
+                "aborted": False,
                 "samples": [
                     {
                         "seq": self._seq,
@@ -266,116 +430,191 @@ class FakeChain:
         return self.status
 
 
-@pytest.mark.asyncio
-async def test_level_match_session_locks_and_stores_geometry_lock():
-    store = LevelLockStore()
-    cfg = MeasurementRamp(settle_hold_s=0.5, max_loop_latency_s=0.5)
-    sess = LevelMatchSession(session_id="s", store=store, config=cfg)
-    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
-    clock = FakeClock()
+def _session(store=None, **cfg_kw):
+    cfg = MeasurementRamp(**{**FAST, **cfg_kw})
+    return LevelMatchSession(session_id="s", store=store or LevelLockStore(), config=cfg)
 
-    outcome = await sess.run_for_geometry(
-        MicGeometry.LISTENING_POSITION.value,
+
+async def _run_geometry(sess, chain, geometry, *, clock=None, **kw):
+    clock = clock or Clock()
+    return await sess.run_for_geometry(
+        geometry,
         get_main_volume_db=chain.get_vol,
         set_main_volume_db=chain.set_vol,
         play_continuous_tone=chain.tone,
         cancel_tone=chain.cancel_tone,
-        read_status=chain.read_status,
-        post_host_event=None,
+        read_status=kw.pop("read_status", chain.read_status),
+        post_host_event=kw.pop("post_host_event", chain.post_host_event),
         noise_floor_dbfs=chain.nf,
         clock=clock.now,
         sleep=clock.sleep,
+        **kw,
     )
+
+
+@pytest.mark.asyncio
+async def test_level_match_session_locks_and_stores_geometry_lock():
+    store = LevelLockStore()
+    sess = _session(store)
+    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+    outcome = await _run_geometry(sess, chain, MicGeometry.LISTENING_POSITION.value)
     assert outcome.ramp.state == RampState.LOCKED
     assert outcome.locked
     lock = store.get(MicGeometry.LISTENING_POSITION.value)
     assert lock is not None
     assert lock.main_volume_db == pytest.approx(outcome.ramp.locked_main_volume_db)
-    # Cap never exceeded even through the adapter.
-    cap = cfg.dynamic_cap(-30.0)
-    for v in chain.commanded:
-        assert v <= cap + 1e-9
+    cap = sess.config.dynamic_cap(-30.0)
+    # Ramp commands respect the cap (the exact-restore final is exempt but a
+    # LOCKED run's final is the lock value, itself <= cap).
+    for vol in chain.commanded:
+        assert vol <= cap + 1e-9
+
+
+@pytest.mark.asyncio
+async def test_level_match_terminal_state_reposted_until_echoed():
+    # The relay event slot is a read-modify-write race: the terminal state is
+    # re-posted until /status echoes it back. FakeChain echoes on the first
+    # post, so the loop stops early — and at least one post carries the state.
+    sess = _session()
+    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+    outcome = await _run_geometry(sess, chain, MicGeometry.LISTENING_POSITION.value)
+    assert outcome.ramp.state == RampState.LOCKED
+    terminal_posts = [
+        e for e in chain.host_events if e.get("ramp", {}).get("state") == "locked"
+    ]
+    assert terminal_posts, "terminal ramp state was never posted"
+    # Echo detected on the first verify → no full 5-attempt blast.
+    assert len(terminal_posts) <= 2
+
+
+@pytest.mark.asyncio
+async def test_level_match_terminal_state_reposts_without_echo():
+    # If the echo never appears (a phone post keeps clobbering host_event),
+    # the post is re-attempted the full bounded budget — never exactly once.
+    sess = _session()
+    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+
+    def post_no_echo(event):
+        chain.host_events.append(event)  # swallowed: never lands in status
+
+    outcome = await _run_geometry(
+        sess,
+        chain,
+        MicGeometry.LISTENING_POSITION.value,
+        post_host_event=post_no_echo,
+    )
+    assert outcome.ramp.state == RampState.LOCKED
+    terminal_posts = [
+        e for e in chain.host_events if e.get("ramp", {}).get("state") == "locked"
+    ]
+    assert len(terminal_posts) == LevelMatchSession.TERMINAL_POST_ATTEMPTS
 
 
 @pytest.mark.asyncio
 async def test_level_match_session_honors_phone_abort():
     store = LevelLockStore()
-    cfg = MeasurementRamp(settle_hold_s=5.0, max_loop_latency_s=2.0)
-    sess = LevelMatchSession(session_id="s", store=store, config=cfg)
+    sess = _session(store)
     chain = FakeChain(gain_db=2.0, start_vol=-30.0)
-    clock = FakeClock()
 
-    # After a few reads, the phone posts an abort superset.
     reads = {"n": 0}
     base = chain.read_status
 
     def read_status():
         reads["n"] += 1
-        if reads["n"] >= 3:
+        if reads["n"] >= 5:
             return {"event": {"aborted": True, "abort_reason": "backgrounded"}}
         return base()
 
-    outcome = await sess.run_for_geometry(
-        MicGeometry.LISTENING_POSITION.value,
-        get_main_volume_db=chain.get_vol,
-        set_main_volume_db=chain.set_vol,
-        play_continuous_tone=chain.tone,
-        cancel_tone=chain.cancel_tone,
-        read_status=read_status,
-        post_host_event=None,
-        noise_floor_dbfs=chain.nf,
-        clock=clock.now,
-        sleep=clock.sleep,
+    outcome = await _run_geometry(
+        sess, chain, MicGeometry.LISTENING_POSITION.value, read_status=read_status
     )
     assert outcome.ramp.state == RampState.CANCELLED
     assert outcome.aborted_reason == "backgrounded"
-    # No lock stored on an aborted geometry.
     assert store.get(MicGeometry.LISTENING_POSITION.value) is None
-    # Restored to the original level.
-    assert chain.commanded[-1] == pytest.approx(-30.0)
+    assert chain.commanded[-1] == pytest.approx(-30.0)  # restored
 
 
 @pytest.mark.asyncio
-async def test_level_match_manual_lock():
-    store = LevelLockStore()
-    cfg = MeasurementRamp(settle_hold_s=5.0, max_loop_latency_s=2.0)
-    sess = LevelMatchSession(session_id="s", store=store, config=cfg)
+async def test_level_match_waits_for_armed_and_times_out():
+    # No armed superset ever appears: the run must end without touching the
+    # volume or the tone (a premature call must not burn a tone climb).
+    sess = _session()
     chain = FakeChain(gain_db=2.0, start_vol=-30.0)
-    clock = FakeClock()
+    outcome = await _run_geometry(
+        sess,
+        chain,
+        MicGeometry.LISTENING_POSITION.value,
+        read_status=lambda: {"event": {}},
+        armed_timeout_s=3.0,
+    )
+    assert outcome.ramp.state == RampState.ERROR
+    assert outcome.ramp.error == "phone never armed"
+    assert chain.commanded == []  # volume untouched
+    assert not chain._tone.is_set()  # tone never started/cancelled
+    assert outcome.lock is None
+
+
+@pytest.mark.asyncio
+async def test_level_match_token_scoped_retry_ignores_stale_abort():
+    # Run 2 of the same relay session: the slot still holds run 1's abort
+    # superset. The tokened feed must ignore it and complete run 2 normally.
+    sess = _session()
+    chain = FakeChain(gain_db=2.0, start_vol=-30.0, run_token="run-2")
+    stale_abort = {
+        "event": {
+            "level_batch": {
+                "schema": LEVEL_EVENT_SCHEMA_VERSION,
+                "run_token": "run-1",
+                "armed": True,
+                "aborted": True,
+                "abort_reason": "backgrounded",
+                "samples": [],
+            }
+        }
+    }
+    reads = {"n": 0}
+    base = chain.read_status
+
+    def read_status():
+        reads["n"] += 1
+        if reads["n"] <= 3:
+            return stale_abort  # run 1's persisted slot
+        return base()  # then the phone posts run-2 batches
+
+    outcome = await _run_geometry(
+        sess,
+        chain,
+        MicGeometry.LISTENING_POSITION.value,
+        read_status=read_status,
+        run_token="run-2",
+    )
+    assert outcome.ramp.state == RampState.LOCKED  # not insta-cancelled
+    assert outcome.aborted_reason is None
+
+
+@pytest.mark.asyncio
+async def test_level_match_manual_lock_via_public_seam():
+    store = LevelLockStore()
+    sess = _session(store, settle_hold_s=5.0, max_loop_latency_s=2.0)
+    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
 
     reads = {"n": 0}
     base = chain.read_status
 
     def read_status():
         reads["n"] += 1
+        if reads["n"] == 6:
+            # Manual lock through the PUBLIC seam (the review: don't poke
+            # private controller attributes).
+            asyncio.get_running_loop().create_task(sess.lock_now())
         return base()
 
-    # Lock after a couple of ticks via a side task is awkward with the sync feed;
-    # instead trigger the manual lock by wrapping read_status.
-    async def run():
-        return await sess.run_for_geometry(
-            MicGeometry.NEAR_FIELD_DRIVER.value,
-            get_main_volume_db=chain.get_vol,
-            set_main_volume_db=chain.set_vol,
-            play_continuous_tone=chain.tone,
-            cancel_tone=chain.cancel_tone,
-            read_status=lambda: (
-                _maybe_lock(sess, reads, base)
-            ),
-            post_host_event=None,
-            noise_floor_dbfs=chain.nf,
-            clock=clock.now,
-            sleep=clock.sleep,
-        )
-
-    def _maybe_lock(session, counter, base_read):
-        counter["n"] += 1
-        if counter["n"] == 3:
-            # Manual lock request (fire-and-forget into the running loop).
-            session._controller._lock_requested = True
-        return base_read()
-
-    outcome = await run()
+    outcome = await _run_geometry(
+        sess,
+        chain,
+        MicGeometry.NEAR_FIELD_DRIVER.value,
+        read_status=read_status,
+    )
     assert outcome.ramp.state == RampState.LOCKED
     assert store.get(MicGeometry.NEAR_FIELD_DRIVER.value) is not None
 
@@ -402,7 +641,7 @@ def _make_session(tmp_path):
 async def test_session_run_level_match_stores_geometry_lock(tmp_path):
     sess = _make_session(tmp_path)
     chain = FakeChain(gain_db=2.0, start_vol=-30.0)
-    clock = FakeClock()
+    clock = Clock()
 
     outcome = await sess.run_level_match(
         MicGeometry.LISTENING_POSITION.value,
@@ -411,7 +650,7 @@ async def test_session_run_level_match_stores_geometry_lock(tmp_path):
         play_continuous_tone=chain.tone,
         cancel_tone=chain.cancel_tone,
         read_status=chain.read_status,
-        post_host_event=None,
+        post_host_event=chain.post_host_event,
         noise_floor_dbfs=chain.nf,
         clock=clock.now,
         sleep=clock.sleep,

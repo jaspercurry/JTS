@@ -11,12 +11,23 @@ that the kernel deliberately does not know about, per
 
   * :class:`RelayLevelFeed` — the ``next_samples`` source the kernel awaits each
     tick, reading the phone's **batched, client-timestamped** level samples out
-    of the relay ``status`` event, and posting the Pi's ramp-control signals back
-    as **latched, idempotent** host events (the read-modify-write race note: a Pi
-    host-event post and a phone level post interleave over the same last-write-
-    wins ``event`` slot, so a stop/hold signal is re-posted until the phone echoes
-    it, and every phone level batch carries the phone's own abort/armed state so a
-    lost round trip never strands the flow).
+    of the relay ``status`` event. The relay ``event`` slot is last-write-wins
+    and the phone streams into it continuously, so ramp control is robust by
+    construction, not by one-shot posts: the phone's every level batch carries
+    its own ``armed`` / ``aborted`` / ``agc_frozen`` state as a SUPERSET
+    envelope (a clobbered one-shot host event never strands the flow), Pi-side
+    abort acks re-post each tick while the ramp exits, and the terminal ramp
+    state is re-posted until the relay's ``/status`` echoes it back (the Pi's
+    pull-token status includes ``host_event``, so the read-modify-write revert
+    race is *observable*, not assumed away). The feed also rate-limits its
+    status reads — the kernel tick is ~100 Hz, the HTTP cadence must not be.
+  * A **run token** scopes the feed to one ramp run: the token rides the
+    ``level_ramp`` capture spec, the phone echoes it in every batch, and the
+    feed ignores events carrying another run's token — a *previous* run's
+    persisted slot (its final abort superset, its stale samples) can no longer
+    insta-cancel or mis-feed a retry. A same-token ``seq`` *regression* (the
+    phone page reloaded mid-ramp and restarted its counter) is treated as a new
+    stream rather than dropped as stale.
   * :class:`MeasurementLevelLock` + :class:`LevelLockStore` — the lock is scoped
     **per mic-geometry step, not blanket per-session** (near-field baffle vs
     listening position differ ~15–25 dB at the mic for the same played level, so
@@ -27,16 +38,30 @@ that the kernel deliberately does not know about, per
     exactly the uniform shift the check exists to catch, and split by cause: a
     *uniform* per-band dB shift at the same geometry means the amp/volume moved
     (offer re-level); a geometry *change* expects a shift and must not fire that
-    message; a *non-uniform* change at the same geometry is acoustic.
+    message; a *non-uniform* change at the same geometry is acoustic; a large
+    mean shift with real band scatter is a suspected level shift (never
+    reported as "consistent").
 
 Everything here is host-mediated (docs/extensibility.md §1) and hardware-free:
-inject a fake relay client + fake clock and the whole path is synthetically
+inject a fake relay reader + fake clock and the whole path is synthetically
 testable. The on-device settle-cadence and iOS/Android AGC-freeze tuning are H1.
+
+P3b wiring notes (deliberate, so they are not forgotten):
+  * ``read_status`` at production must be a CACHED background poller snapshot —
+    never a blocking ``RelayClient.status()`` per call (the feed rate-limits to
+    ``min_read_interval_s``, but a sync 15 s-timeout HTTP call inside the
+    kernel's event loop is still the wrong shape; poll on a thread, share a
+    dict). Same for ``post_host_event``.
+  * MAXED_OUT UI copy must branch on ``ramp.agc_frozen`` (exposed in the
+    snapshot): with ``agc_frozen=False`` the level evidence is AGC-compressed
+    and "raise your analog amp" may be wrong — surface the degrade nudge
+    instead.
 """
 from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -53,6 +78,11 @@ from jasper.audio_measurement.ramp import (
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
+
+# Failures a relay/status reader can realistically raise. RelayError subclasses
+# RuntimeError; json decode errors are ValueError; a buggy injected reader adds
+# Type/Attribute/LookupError. Named (not blind) per the lint contract.
+_FEED_ERRORS = (OSError, RuntimeError, ValueError, TypeError, AttributeError, LookupError)
 
 
 def _env_float(name: str, default: float, *, lo: float, hi: float) -> float:
@@ -130,9 +160,7 @@ class MeasurementLevelLock:
         }
 
     @classmethod
-    def from_ramp(
-        cls, geometry: str, data: RampData
-    ) -> MeasurementLevelLock:
+    def from_ramp(cls, geometry: str, data: RampData) -> MeasurementLevelLock:
         """Build a lock from a terminal (LOCKED / MAXED_OUT) ramp result."""
         volume = (
             data.locked_main_volume_db
@@ -186,9 +214,13 @@ class LevelLockStore:
 class DriftVerdict(str, Enum):
     OK = "ok"
     AMP_MOVED = "amp_moved"  # uniform shift at same geometry → offer re-level
+    # Large mean shift WITH real band scatter: probably a level change layered
+    # on an acoustic one — never reported as "consistent" (the review's
+    # fall-through-to-OK hole), but phrased more cautiously than AMP_MOVED.
+    LEVEL_SHIFT_SUSPECTED = "level_shift_suspected"
     ACOUSTIC = "acoustic"  # non-uniform change at same geometry (not a level drift)
     GEOMETRY_CHANGED = "geometry_changed"  # expected shift; do NOT flag as drift
-    UNKNOWN = "unknown"  # can't decide (missing / mismatched bands)
+    UNKNOWN = "unknown"  # can't decide (missing / mismatched bands / AGC ref)
 
 
 @dataclass(frozen=True)
@@ -237,13 +269,17 @@ def check_level_drift(
         listening position differ 15–25 dB); return ``GEOMETRY_CHANGED`` and never
         flag it as an amp move.
       * ``agc_frozen`` False → the reference came from the degraded manual-lock
-        path; the drift rule is disabled (``UNKNOWN``), never trust an
+        path; the drift rule is disabled (``UNKNOWN``) — never trust an
         AGC-compressed level as a reference map.
       * same geometry, |mean Δ| > ``uniform_shift_db`` AND every band within
         ``band_tolerance_db`` of the mean → the whole response moved uniformly →
         ``AMP_MOVED`` (offer re-level).
-      * same geometry, a large but NON-uniform change → ``ACOUSTIC`` (a room /
-        placement change, not a level drift).
+      * same geometry, |mean Δ| > ``uniform_shift_db`` with band scatter beyond
+        the tolerance → ``LEVEL_SHIFT_SUSPECTED``: real re-measures carry ≥2 dB
+        scatter, so a genuine amp move rarely reads perfectly uniform — this
+        quadrant must never fall through to an "everything is consistent" OK.
+      * same geometry, a large but non-uniform change with a small mean →
+        ``ACOUSTIC`` (a room / placement change, not a level drift).
       * otherwise ``OK``.
 
     Thresholds default to the deploy-time knobs (H1 supplies real numbers).
@@ -293,19 +329,31 @@ def check_level_drift(
             ),
         )
 
-    if abs(mean_shift) > uniform_shift_db and max_dev <= band_tolerance_db:
+    uniform = max_dev <= band_tolerance_db
+    if abs(mean_shift) > uniform_shift_db:
+        if uniform:
+            return DriftResult(
+                verdict=DriftVerdict.AMP_MOVED,
+                mean_shift_db=mean_shift,
+                max_band_deviation_db=max_dev,
+                message=(
+                    f"the whole response shifted {mean_shift:+.1f} dB uniformly "
+                    "— the amplifier or volume likely moved; re-level before "
+                    "trusting this measurement"
+                ),
+            )
         return DriftResult(
-            verdict=DriftVerdict.AMP_MOVED,
+            verdict=DriftVerdict.LEVEL_SHIFT_SUSPECTED,
             mean_shift_db=mean_shift,
             max_band_deviation_db=max_dev,
             message=(
-                f"the whole response shifted {mean_shift:+.1f} dB uniformly — the "
-                "amplifier or volume likely moved; re-level before trusting this "
-                "measurement"
+                f"the response moved {mean_shift:+.1f} dB overall but not "
+                "uniformly — likely a level change combined with an acoustic "
+                "change; consider re-leveling before trusting comparisons"
             ),
         )
 
-    if max_dev > band_tolerance_db and abs(mean_shift) <= uniform_shift_db:
+    if not uniform:
         return DriftResult(
             verdict=DriftVerdict.ACOUSTIC,
             mean_shift_db=mean_shift,
@@ -325,43 +373,49 @@ def check_level_drift(
 
 
 # --- relay feed: batched level samples in, latched ramp control out ----------
-#
-# The relay ``event`` slot is last-write-wins and the phone streams level batches
-# into it continuously, so a single Pi host-event post is routinely reverted by
-# the next phone post. Two mechanisms make ramp control robust against that race:
-# (1) the Pi RE-POSTS its ramp-control signal on each tick (RelayLevelFeed.
-#     post_ramp_signal is idempotent — re-posting the same field is harmless), and
-# (2) the phone's every level batch carries its own abort/armed state as a
-#     SUPERSET envelope (parse via phone_reported_abort), so a clobbered one-shot
-#     host event never strands the flow.
 
 StatusReader = Callable[[], dict[str, Any]]
 HostEventPoster = Callable[[dict[str, Any]], Any]
 
 
-def parse_level_batch(event: dict[str, Any]) -> list[LevelSample]:
+def parse_level_batch(
+    event: dict[str, Any],
+    *,
+    run_token: str = "",
+    on_schema_mismatch: Callable[[Any], None] | None = None,
+) -> list[LevelSample]:
     """Extract the phone's batched level samples from a relay ``status`` event.
 
-    The phone posts ``{"level_batch": {"schema": N, "samples": [ {...}, ... ],
-    "agc_frozen": bool, "aborted": bool, "armed": bool}}`` over the existing
-    ``event`` envelope. Unknown / malformed payloads yield an empty list (the
-    kernel treats a tick with no samples as "nothing new"), never an exception —
-    the transport crosses the untrusted relay.
+    The phone posts ``{"level_batch": {"schema": N, "run_token": "...",
+    "samples": [ {...}, ... ], "agc_frozen": bool, "armed": bool,
+    "aborted": bool}}`` over the existing ``event`` envelope. Unknown /
+    malformed payloads yield an empty list (the kernel treats a tick with no
+    samples as "nothing new"), never an exception — the transport crosses the
+    untrusted relay. A non-empty ``run_token`` scopes parsing to one ramp run:
+    batches carrying a different (or no) token are another run's stale slot and
+    are ignored entirely. A schema mismatch is reported through
+    ``on_schema_mismatch`` when given (the feed latches its warning — a stale
+    slot re-read every poll must not re-warn every tick), else logged at DEBUG.
     """
     batch = event.get("level_batch")
     if not isinstance(batch, dict):
         return []
+    if run_token and str(batch.get("run_token") or "") != run_token:
+        return []  # another run's slot — not ours
     raw_samples = batch.get("samples")
     if not isinstance(raw_samples, list):
         return []
     schema = batch.get("schema")
     if schema is not None and schema != LEVEL_EVENT_SCHEMA_VERSION:
-        # A phone on a newer/older schema: refuse to misread it. Empty this tick.
-        logger.warning(
-            "level_batch schema mismatch: got %r expected %d",
-            schema,
-            LEVEL_EVENT_SCHEMA_VERSION,
-        )
+        # A phone on a newer/older schema: refuse to misread it.
+        if on_schema_mismatch is not None:
+            on_schema_mismatch(schema)
+        else:
+            logger.debug(
+                "level_batch schema mismatch: got %r expected %d",
+                schema,
+                LEVEL_EVENT_SCHEMA_VERSION,
+            )
         return []
     out: list[LevelSample] = []
     # The phone's per-event agc_frozen/abort envelope is a superset that survives
@@ -388,29 +442,53 @@ def parse_level_batch(event: dict[str, Any]) -> list[LevelSample]:
     return out
 
 
-def phone_reported_abort(event: dict[str, Any]) -> str | None:
+def phone_reported_abort(
+    event: dict[str, Any], *, run_token: str = ""
+) -> str | None:
     """Return the phone's abort reason if its event superset carries one.
 
     The phone's level batch carries its own abort state (the race-note superset),
-    so a lost one-shot abort host-event doesn't strand the Pi. Also honors the
-    top-level ``aborted`` the existing capture page posts.
+    so a lost one-shot abort host-event doesn't strand the Pi. With a
+    ``run_token`` set, ONLY a matching-token batch abort counts — a previous
+    run's persisted abort superset must not insta-cancel a retry. The legacy
+    top-level ``aborted`` (the classic capture page's form) is honored only when
+    no token is in play, because it cannot be scoped to a run.
     """
     batch = event.get("level_batch")
-    if isinstance(batch, dict) and batch.get("aborted"):
-        return str(batch.get("abort_reason") or "phone_aborted")
-    if event.get("aborted"):
+    if isinstance(batch, dict):
+        token_ok = not run_token or str(batch.get("run_token") or "") == run_token
+        if token_ok and batch.get("aborted"):
+            return str(batch.get("abort_reason") or "phone_aborted")
+    if not run_token and event.get("aborted"):
         return str(event.get("abort_reason") or event.get("reason") or "phone_aborted")
     return None
+
+
+def phone_reported_armed(event: dict[str, Any], *, run_token: str = "") -> bool:
+    """True when the phone's superset (or the classic armed event) says armed.
+
+    Token-scoped like the abort: with a run token set, only a matching batch's
+    ``armed`` counts, so a previous run's stale slot cannot arm a new ramp.
+    """
+    batch = event.get("level_batch")
+    if isinstance(batch, dict):
+        token_ok = not run_token or str(batch.get("run_token") or "") == run_token
+        if token_ok and batch.get("armed"):
+            return True
+    return bool(not run_token and event.get("armed"))
 
 
 class RelayLevelFeed:
     """Turns relay polling into the kernel's ``next_samples`` source.
 
     Each ``next_samples()`` reads the freshest relay status (via the injected
-    ``read_status``), dedupes samples by ``seq`` (the last-write-wins slot re-
-    delivers the same batch until the phone posts a newer one), watches for a
-    phone-reported abort, and returns only the new :class:`LevelSample` s. Ramp
-    control host events are posted latched/idempotent via ``post_host_event``.
+    ``read_status``, rate-limited to ``min_read_interval_s`` so the kernel's
+    ~100 Hz tick never becomes an HTTP cadence), dedupes samples by ``seq``
+    (the last-write-wins slot re-delivers the same batch until the phone posts
+    a newer one), treats a same-token seq *regression* as a fresh stream (page
+    reload), watches for a phone-reported abort, and returns only the new
+    :class:`LevelSample` s. Warnings are latched — a down relay or a stale
+    mismatched-schema slot logs once per state change, not per tick.
     """
 
     def __init__(
@@ -418,41 +496,132 @@ class RelayLevelFeed:
         *,
         read_status: StatusReader,
         post_host_event: HostEventPoster | None = None,
+        run_token: str = "",
+        monotonic: Callable[[], float] = time.monotonic,
+        min_read_interval_s: float = 0.25,
     ) -> None:
         self._read_status = read_status
         self._post_host_event = post_host_event
+        self.run_token = run_token
+        self._monotonic = monotonic
+        self._min_read_interval_s = min_read_interval_s
+        self._last_read_time: float | None = None
         self._last_seq = -1
+        self._read_failing = False
+        self._warned_schema: Any = None
         self.aborted_reason: str | None = None
+
+    def _on_schema_mismatch(self, schema: Any) -> None:
+        if schema != self._warned_schema:
+            self._warned_schema = schema
+            logger.warning(
+                "level_batch schema mismatch: got %r expected %d (latched — "
+                "further identical mismatches are silent)",
+                schema,
+                LEVEL_EVENT_SCHEMA_VERSION,
+            )
 
     def _event(self) -> dict[str, Any]:
         try:
             status = self._read_status() or {}
-        except Exception:  # noqa: BLE001 — a transient relay read must not crash
-            logger.warning("relay status read failed during ramp", exc_info=True)
+        except _FEED_ERRORS:
+            if not self._read_failing:
+                self._read_failing = True
+                logger.warning(
+                    "relay status read failed during ramp (latched — further "
+                    "failures are silent until recovery)",
+                    exc_info=True,
+                )
             return {}
+        if self._read_failing:
+            self._read_failing = False
+            logger.info("relay status read recovered")
         event = status.get("event") if isinstance(status, dict) else None
         return event if isinstance(event, dict) else {}
 
+    def check_armed(self) -> bool:
+        """Read the slot once (rate-limited) and report the phone's armed state.
+
+        Used by the adapter's pre-ramp gate; does not consume samples (seq dedup
+        starts with the first ``next_samples`` call)."""
+        if not self._may_read():
+            return False
+        return phone_reported_armed(self._event(), run_token=self.run_token)
+
+    def _may_read(self) -> bool:
+        now = self._monotonic()
+        if (
+            self._last_read_time is not None
+            and now - self._last_read_time < self._min_read_interval_s
+        ):
+            return False
+        self._last_read_time = now
+        return True
+
     async def next_samples(self) -> list[LevelSample]:
+        if not self._may_read():
+            return []
         event = self._event()
-        abort = phone_reported_abort(event)
+        abort = phone_reported_abort(event, run_token=self.run_token)
         if abort:
             self.aborted_reason = abort
             return []
-        samples = parse_level_batch(event)
+        samples = parse_level_batch(
+            event,
+            run_token=self.run_token,
+            on_schema_mismatch=self._on_schema_mismatch,
+        )
+        if samples:
+            newest = max(s.seq for s in samples)
+            if newest < self._last_seq:
+                # Same-token seq regression: the phone page reloaded and
+                # restarted its counter — a new stream, not stale data.
+                log_event(
+                    logger,
+                    "level_feed_stream_reset",
+                    newest_seq=newest,
+                    last_seq=self._last_seq,
+                )
+                self._last_seq = -1
         fresh = [s for s in samples if s.seq > self._last_seq]
         if fresh:
             self._last_seq = max(s.seq for s in fresh)
         return fresh
 
     def post_ramp_signal(self, key: str, value: Any) -> None:
-        """Post a latched, idempotent ramp-control host event (best-effort)."""
+        """Post a latched, idempotent ramp-control host event (best-effort).
+
+        Callers re-invoke this per tick / per re-post attempt; posting the same
+        field repeatedly is harmless by design (the whole point — a one-shot
+        into the read-modify-write slot can be silently reverted)."""
         if self._post_host_event is None:
             return
         try:
-            self._post_host_event({"ramp": {key: value}})
-        except Exception:  # noqa: BLE001 — the phone superset is the backstop
+            self._post_host_event(
+                {"ramp": {key: value, "run_token": self.run_token}}
+            )
+        except _FEED_ERRORS:
             logger.warning("ramp host-event post failed (%s)", key, exc_info=True)
+
+    def read_back_ramp_state(self) -> str:
+        """The ramp state currently echoed in the relay's host_event, if any.
+
+        The Pi's pull-token ``/status`` includes ``host_event`` (worker.js
+        ``getStatus``), so a terminal post that a phone putMeta race reverted is
+        detectable: re-post until this reads back the expected value."""
+        try:
+            status = self._read_status() or {}
+        except _FEED_ERRORS:
+            return ""
+        host_event = status.get("host_event") if isinstance(status, dict) else None
+        if not isinstance(host_event, dict):
+            return ""
+        ramp = host_event.get("ramp")
+        if not isinstance(ramp, dict):
+            return ""
+        if self.run_token and str(ramp.get("run_token") or "") != self.run_token:
+            return ""
+        return str(ramp.get("state") or "")
 
 
 # --- the session adapter ------------------------------------------------------
@@ -489,6 +658,15 @@ class LevelMatchSession:
     imports the correction daemon or touches CamillaDSP directly.
     """
 
+    # Pre-ramp armed gate: how long the phone gets to tap Start before the run
+    # is abandoned without ever touching volume or tone.
+    DEFAULT_ARMED_TIMEOUT_S = 90.0
+    ARMED_POLL_S = 0.25
+    # Terminal host-event re-posting: attempts × spacing bound the "phone still
+    # metering with a hot mic" window after a putMeta revert race.
+    TERMINAL_POST_ATTEMPTS = 5
+    TERMINAL_POST_SPACING_S = 0.75
+
     def __init__(
         self,
         *,
@@ -514,20 +692,59 @@ class LevelMatchSession:
         noise_floor_dbfs: float | None,
         clock: Callable[[], float],
         sleep: Callable[[float], Awaitable[None]],
+        run_token: str = "",
+        wait_for_armed: bool = True,
+        armed_timeout_s: float | None = None,
     ) -> LevelMatchOutcome:
         """Ramp + lock the measurement level for ``geometry``.
 
-        A terminal LOCKED / MAXED_OUT stores a :class:`MeasurementLevelLock` under
-        the geometry key; ABORTED / CANCELLED / ERROR store nothing (the original
-        listening level is restored by the kernel). A phone-reported abort seen in
-        the feed cancels the ramp cleanly.
+        Waits (bounded) for the phone's ``armed`` superset before any volume or
+        tone change — a premature call must not burn a full tone climb against a
+        phone nobody tapped Start on. A terminal LOCKED / MAXED_OUT stores a
+        :class:`MeasurementLevelLock` under the geometry key; ABORTED /
+        CANCELLED / ERROR store nothing (the original listening level is
+        restored by the kernel). A phone-reported abort seen in the feed cancels
+        the ramp cleanly. ``run_token`` must match the token minted into this
+        run's ``build_level_ramp_spec`` so the feed is scoped to this run.
         """
         feed = RelayLevelFeed(
-            read_status=read_status, post_host_event=post_host_event
+            read_status=read_status,
+            post_host_event=post_host_event,
+            run_token=run_token,
+            monotonic=clock,
         )
         controller = self._controller = RampController(
             session_id=self.session_id, config=self.config
         )
+
+        if wait_for_armed:
+            timeout = (
+                self.DEFAULT_ARMED_TIMEOUT_S
+                if armed_timeout_s is None
+                else armed_timeout_s
+            )
+            armed_deadline = clock() + timeout
+            while not feed.check_armed():
+                if clock() >= armed_deadline:
+                    outcome = LevelMatchOutcome(
+                        geometry=geometry,
+                        ramp=RampData(
+                            state=RampState.ERROR,
+                            error="phone never armed",
+                        ),
+                        lock=None,
+                    )
+                    log_event(
+                        logger,
+                        "level_match_done",
+                        level=logging.WARNING,
+                        session=self.session_id,
+                        geometry=geometry,
+                        state=RampState.ERROR.value,
+                        reason="phone_never_armed",
+                    )
+                    return outcome
+                await sleep(self.ARMED_POLL_S)
 
         async def next_samples() -> list[LevelSample]:
             samples = await feed.next_samples()
@@ -550,10 +767,22 @@ class LevelMatchSession:
 
         lock: MeasurementLevelLock | None = None
         if data.state in (RampState.LOCKED, RampState.MAXED_OUT):
+            # P3b UI note: for MAXED_OUT with data.agc_frozen=False the "raise
+            # your analog amp" copy is unreliable — branch on the snapshot's
+            # agc_frozen and show the degrade nudge instead.
             lock = MeasurementLevelLock.from_ramp(geometry, data)
             self.store.put(lock)
-            # Latched terminal host event so the phone can stop the meter.
+
+        # Terminal ramp state → phone. The event slot is a read-modify-write
+        # race (§3.1), so the post is latched: re-post until the relay status
+        # echoes it back in host_event, bounded by TERMINAL_POST_ATTEMPTS.
+        # All terminal states are posted — a Pi-side CANCELLED/ERROR must also
+        # stop the phone's metering, not just LOCKED/MAXED_OUT.
+        for _attempt in range(self.TERMINAL_POST_ATTEMPTS):
             feed.post_ramp_signal("state", data.state.value)
+            await sleep(self.TERMINAL_POST_SPACING_S)
+            if feed.read_back_ramp_state() == data.state.value:
+                break
 
         outcome = LevelMatchOutcome(
             geometry=geometry,

@@ -26,7 +26,8 @@ const modulePath = resolve(here, "../../capture-page/js/level-events.js");
 const raw = readFileSync(modulePath, "utf8");
 const rewritten = raw.replace(
   /^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*measurement-audio\.js[^"']*["'];\s*/m,
-  "const rmsToDbfs = (rms) => { const v = Number(rms); return v > 0 ? 20 * Math.log10(v) : -120; };\n",
+  "const rmsToDbfs = (rms) => { const v = Number(rms); return v > 0 ? 20 * Math.log10(v) : -120; };\n" +
+    "const delayMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));\n",
 );
 if (/^import\s/m.test(rewritten)) {
   throw new Error("unhandled import in level-events.js — add a strip rule");
@@ -34,8 +35,13 @@ if (/^import\s/m.test(rewritten)) {
 
 const dataUrl =
   "data:text/javascript;base64," + Buffer.from(rewritten, "utf8").toString("base64");
-const { LevelStreamer, blockLevel, LEVEL_EVENT_SCHEMA_VERSION, CLIP_ABS_THRESHOLD } =
-  await import(dataUrl);
+const {
+  LevelStreamer,
+  blockLevel,
+  LEVEL_EVENT_SCHEMA_VERSION,
+  CLIP_ABS_THRESHOLD,
+  ABORT_REPOSTS,
+} = await import(dataUrl);
 
 let passed = 0;
 function ok() {
@@ -164,7 +170,7 @@ function makeClock() {
   ok();
 }
 
-// --- abort posts a superset immediately -------------------------------------
+// --- run token rides every batch ---------------------------------------------
 
 {
   const clock = makeClock();
@@ -173,18 +179,91 @@ function makeClock() {
     now: clock.now,
     postEvent: async (e) => posts.push(e),
     blockMs: 100,
+    postIntervalMs: 100,
+    runToken: "run-42",
+  });
+  const blockSamples = Math.round((100 / 1000) * 48000);
+  await streamer.addFrame(new Float32Array(blockSamples).fill(0.1));
+  clock.advance(200);
+  await streamer.addFrame(new Float32Array(blockSamples).fill(0.1));
+  assert.ok(posts.length >= 1);
+  for (const p of posts) assert.equal(p.level_batch.run_token, "run-42");
+  ok();
+}
+
+// --- abort posts a superset and RE-POSTS it (bounded) ------------------------
+
+{
+  const clock = makeClock();
+  const posts = [];
+  const delays = [];
+  const streamer = new LevelStreamer({
+    now: clock.now,
+    postEvent: async (e) => posts.push(JSON.parse(JSON.stringify(e))),
+    delay: async (ms) => {
+      delays.push(ms);
+      clock.advance(ms);
+    },
+    blockMs: 100,
     postIntervalMs: 5000, // large: normal posts wouldn't fire
   });
   await streamer.abort("backgrounded");
-  const b = posts[posts.length - 1].level_batch;
-  assert.equal(b.aborted, true);
-  assert.equal(b.abort_reason, "backgrounded");
+  // 1 immediate + ABORT_REPOSTS re-posts, all carrying the aborted superset —
+  // a single one-shot can be clobbered by an in-flight pre-abort batch or a Pi
+  // host-event write into the same read-modify-write slot.
+  assert.equal(posts.length, 1 + ABORT_REPOSTS);
+  for (const p of posts) {
+    assert.equal(p.level_batch.aborted, true);
+    assert.equal(p.level_batch.abort_reason, "backgrounded");
+  }
+  assert.equal(delays.length, ABORT_REPOSTS);
   ok();
 
   // After abort the streamer is closed: further frames don't post.
   const before = posts.length;
   await streamer.addFrame(new Float32Array(4800).fill(0.1));
   assert.equal(posts.length, before);
+  ok();
+
+  // abort() is idempotent — a second call adds nothing.
+  await streamer.abort("again");
+  assert.equal(posts.length, before);
+  ok();
+}
+
+// --- abort is serialized strictly AFTER an in-flight batch post ---------------
+
+{
+  const clock = makeClock();
+  const resolved = [];
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  let postCount = 0;
+  const streamer = new LevelStreamer({
+    now: clock.now,
+    postEvent: async (e) => {
+      postCount += 1;
+      if (postCount === 1) await firstGate; // the in-flight pre-abort batch
+      resolved.push(JSON.parse(JSON.stringify(e)));
+    },
+    delay: async () => {},
+    blockMs: 100,
+    postIntervalMs: 100,
+  });
+  const blockSamples = Math.round((100 / 1000) * 48000);
+  // Kick off a batch post that hangs in flight (don't await it yet).
+  const framePromise = streamer.addFrame(new Float32Array(blockSamples).fill(0.1));
+  // Abort while the batch is in flight; the chain must order it AFTER.
+  const abortPromise = streamer.abort("backgrounded");
+  releaseFirst();
+  await framePromise;
+  await abortPromise;
+  assert.ok(resolved.length >= 2);
+  assert.equal(resolved[0].level_batch.aborted, false); // the pre-abort batch
+  const last = resolved[resolved.length - 1].level_batch;
+  assert.equal(last.aborted, true); // the abort is the strictly-last write
   ok();
 }
 

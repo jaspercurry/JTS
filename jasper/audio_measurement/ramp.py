@@ -18,41 +18,72 @@ by a single unknown constant gain ``G`` because the whole chain is LTI and
     mic_dbfs(v) = v + G          (G = amp + room + mic path gain, unknown)
 
 So one *trusted, settled* reading fixes ``G`` (the line's slope is a known ``1``),
-and the target volume that lands the mic in the window is exact:
+and the volume that puts the mic anywhere in the window is exact. An earlier
+draft reused ``capture_relay.alignment.cross_correlation_alignment`` to recover
+the transport delay ``τ``; that estimator is waveform-domain and structurally
+near-degenerate on a monotonic ramp envelope. The replacement never estimates
+``τ`` — it *waits out* the modeled worst-case loop latency after every volume
+change and reads only samples that postdate it.
 
-    G          = settled_mic_dbfs - v_held
-    target_v   = window_target_dbfs - G
+How the settle read works under the real transport (the adversarial-panel fix —
+the phone posts batched samples at ≤2 Hz behind a ~0.75 s relay poll, so most
+kernel ticks deliver nothing):
 
-An earlier draft reused ``capture_relay.alignment.cross_correlation_alignment`` to
-recover the transport delay ``τ``; that estimator is waveform-domain and
-structurally near-degenerate on a monotonic ramp envelope (a ramp correlated with
-a ramp is a broad unimodal plateau; confidence reads ≈0 on perfect data). The
-replacement never estimates ``τ`` at all — it *holds* longer than the modeled
-loop latency so the transport delay has already elapsed before it reads the
-settled level.
+  * every volume change stamps ``blank_until = now + max_loop_latency_s``;
+    samples arriving before that reflect a stale (pre-change) level and are
+    excluded from settle/confirm decisions (clip detection is NEVER blanked);
+  * SETTLING accumulates post-blank trusted samples into a hold buffer and
+    completes only when the hold has elapsed AND the buffer holds at least
+    ``settle_min_samples`` — a momentarily-empty tick *extends* the hold; the
+    machine never bounces back to CLIMBING (the review-reproduced bounce
+    re-stepped the staircase past the window top);
+  * the settled level is the **median of that buffered tail**; the jump aims at
+    the **window midpoint** (symmetric ±half-window tolerance for gain-map
+    noise — the *staircase* still stops-ahead below the window bottom via
+    ``pre_window``); CONFIRMING then requires ``confirm_k`` consecutive
+    post-blank in-window samples before locking;
+  * if CONFIRMING instead sees ``confirm_k`` consecutive out-of-window samples
+    all on one side, it recomputes the gain map from their median and takes a
+    bounded corrective jump (total jumps ≤ ``max_jumps``).
 
-Safety is the whole point. Every commanded volume is provably ``<=`` the dynamic
-cap (``original + bump`` clamped to ``[-20, -6] dBFS`` ``main_volume`` — the
-operative ceiling, tighter than the 0 dB hard clamp in
-``camilla.py::_coerce_main_volume_db``) **and** ``<= 0 dB``. The coarse staircase
-stops at a *pre-window* threshold set below the window bottom by the worst-case
-in-flight overshoot, so the staircase never climbs into the window; the only
-approach into the window is a single computed jump after the settle. A
-``clip=true`` sample is an immediate abort; a reading below
-``noise_floor + trust_margin`` is discarded as ambient-dominated; a safety
-timeout always fires; and the ramp fades down before the tone is killed.
+Safety is the whole point. Every ramp-commanded volume passes the
+``_safe_target`` choke point: ``<=`` the dynamic cap (``original + bump``
+clamped to ``[-20, -6] dBFS`` ``main_volume`` — the operative ceiling) AND
+``<= 0 dB``, and a non-finite target raises instead of propagating (a hostile
+relay post can never become ``set_main_volume_db(nan)``). The coarse staircase
+stops at a pre-window set below the window bottom by the worst-case in-flight
+overshoot — ``step_db + ramp_rate × max_loop_latency_s``, the step-quantization
+term included. A ``clip=true`` sample is an immediate abort; readings that are
+non-finite, AGC-compressed, or below ``noise_floor + trust_margin`` are never
+trusted; a feed that goes silent aborts (a vanished phone also has no clip
+protection); ``MAXED_OUT`` requires at least one trusted sample ever (a phone
+that never produced a usable sample is an ERROR that restores, not a "raise
+your amp" verdict); the safety timeout is derived from the config's own
+worst-case walk so a quiet amp reaches ``MAXED_OUT`` before it; and every stop
+fades down before the tone is killed. Restoring the user's own pre-ramp volume
+is exempt from the dynamic cap (it is not a ramp command) and honors only the
+0 dB hard ceiling.
 
-The controller is **pure and synthetically testable**: inject a fake clock, a
-fake volume setter, and a fake mic-sample source (:class:`LevelSample` batches).
-No CamillaDSP, no ``aplay``, no relay.
+Tone contract: ``play_continuous_tone`` must play until ``cancel_tone()`` is
+called (the ``correction.playback.TonePlayer.play`` shape). The kernel runs it
+as a task; if it finishes while the ramp is still working (WAV too short,
+player crash) the ramp ends in ERROR and restores — a silent tone must never
+blind-climb.
+
+The controller stays **pure and synthetically testable**: inject a fake clock,
+a fake volume setter, and a fake mic-sample source (:class:`LevelSample`
+batches on any schedule, including the relay's real sparse cadence). No
+CamillaDSP, no ``aplay``, no relay.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 import os
 import statistics
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -62,7 +93,8 @@ logger = logging.getLogger(__name__)
 
 # Level-event schema version. Bump when :class:`LevelSample`'s shape changes so a
 # stale phone payload is detectable rather than silently misread. Pinned by
-# tests/test_audio_measurement_ramp.py.
+# tests/test_audio_measurement_ramp.py and mirrored by
+# capture-page/js/level-events.js.
 LEVEL_EVENT_SCHEMA_VERSION = 1
 
 # The digital-full-scale hard ceiling: main_volume must never exceed this,
@@ -70,6 +102,28 @@ LEVEL_EVENT_SCHEMA_VERSION = 1
 # duplicated here as defense-in-depth so the kernel is safe even if a caller
 # forgets to clamp. Do not raise.
 HARD_CEILING_DBFS = 0.0
+
+# Worst-case expected gap between consecutive phone samples reaching the kernel
+# (≤2 Hz phone batches behind the relay's ~0.75 s poll). Used only to budget the
+# derived safety timeout — not a gate.
+SAMPLE_BUDGET_S = 1.5
+
+# The exception set the ramp treats as recoverable-by-restore. Deliberately a
+# broad-but-named tuple rather than a blind ``except Exception`` (lint contract:
+# no new BLE001 suppressions): it covers every realistic failure of the injected
+# callables (network/OS/timeout errors, protocol value errors, buggy-feed
+# type/attribute/lookup errors, math-domain errors) while letting
+# CancelledError / SystemExit / MemoryError propagate — the caller's
+# restore-listening-volume hook is the backstop for those.
+RECOVERABLE_ERRORS = (
+    OSError,
+    RuntimeError,
+    ValueError,
+    TypeError,
+    AttributeError,
+    LookupError,
+    ArithmeticError,
+)
 
 
 # --- env-knob helpers ---------------------------------------------------------
@@ -79,7 +133,10 @@ HARD_CEILING_DBFS = 0.0
 # placeholders, NOT empirically derived), mirroring the
 # JASPER_CAPTURE_ALIGNMENT_THRESHOLD pattern in capture_relay/alignment.py. Set
 # them in jasper.env once measured; no rebuild required. Out-of-range or
-# unparseable values fall back to the documented default.
+# unparseable values fall back to the documented default; a *combination* of
+# individually-valid values that fails cross-field validation also falls back
+# as a whole (see :meth:`MeasurementRamp.from_env`) — a jasper.env edit can
+# never brick the ramp at construction time.
 
 
 def _env_float(name: str, default: float, *, lo: float, hi: float) -> float:
@@ -111,10 +168,10 @@ class RampState(Enum):
 
     The happy path is ``IDLE → CLIMBING → SETTLING → CONFIRMING → LOCKED``.
     ``CLIMBING`` is the quiet-start coarse staircase up to the pre-window; once a
-    trusted reading crosses the pre-window the volume freezes and the transport
-    delay is waited out in ``SETTLING``; a single computed jump lands the target;
-    ``CONFIRMING`` requires ``confirm_k`` consecutive in-window samples before the
-    lock is trusted.
+    trusted reading crosses the pre-window the volume freezes and ``SETTLING``
+    buffers post-latency samples until the settled read is trustworthy; a
+    computed jump lands the window midpoint; ``CONFIRMING`` requires
+    ``confirm_k`` consecutive in-window samples before the lock is trusted.
     """
 
     IDLE = "idle"
@@ -162,13 +219,22 @@ class LevelSample:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LevelSample:
-        """Parse one sample from an untrusted phone payload. Lenient on missing
-        optional flags, strict on the numeric fields it needs."""
+        """Parse one sample from an untrusted phone payload.
+
+        Strict on the numeric fields: a non-finite ``rms_dbfs`` / ``peak_dbfs``
+        (JSON ``"NaN"`` / ``"Infinity"`` strings parse fine through ``float()``)
+        raises ``ValueError`` so a hostile relay post can never smuggle NaN into
+        the gain map — callers treat a raising sample as malformed and drop it.
+        """
+        rms = float(data["rms_dbfs"])
+        peak = float(data.get("peak_dbfs", rms))
+        if not (math.isfinite(rms) and math.isfinite(peak)):
+            raise ValueError(f"non-finite level sample: rms={rms!r} peak={peak!r}")
         return cls(
             seq=int(data.get("seq", 0)),
             t_client_ms=int(data.get("t_client_ms", 0)),
-            rms_dbfs=float(data["rms_dbfs"]),
-            peak_dbfs=float(data.get("peak_dbfs", data["rms_dbfs"])),
+            rms_dbfs=rms,
+            peak_dbfs=peak,
             clip=bool(data.get("clip", False)),
             agc_frozen=bool(data.get("agc_frozen", True)),
         )
@@ -180,22 +246,27 @@ class MeasurementRamp:
 
     Constructing an instance whose overshoot invariant would be violated raises
     ``ValueError``, so a config that *could* drive the mic past the window can
-    never be built (the panel will probe this). All bounds are dBFS
-    ``main_volume``; all durations seconds.
+    never be built. All bounds are dBFS ``main_volume``; all durations seconds.
 
-    Overshoot invariant (validated in ``__post_init__``):
+    Overshoot invariant (validated in ``__post_init__``), including the
+    step-quantization term — the first trusted crossing can already sit a full
+    step above the pre-window before any transport latency is added:
 
-        ramp_rate * max_loop_latency < 0.5 * window_width
+        step_db + ramp_rate * max_loop_latency < 0.5 * window_width
 
     with ``ramp_rate = step_db / step_interval_s``. Because the coarse staircase
-    stops at ``pre_window_db`` (set below ``window_low_dbfs`` by at least the
+    stops at ``pre_window`` (set below ``window_low_dbfs`` by at least that
     worst-case in-flight overshoot), the staircase never climbs into the window;
-    the sole approach into the window is a single computed jump after the settle.
+    the sole approach into the window is a computed jump from a settled read.
     """
 
-    # Target window (aim at the BOTTOM, not the centre — with loop latency the
-    # played level runs ahead of the newest report; aiming centre would eat half
-    # the window). §3.1 (d).
+    # Target window. The coarse staircase stops-ahead BELOW the bottom (the
+    # pre_window); the settled JUMP aims at the window MIDPOINT — a deliberate
+    # refinement of §3.1(d)'s "aim at the bottom": aim-bottom exists to keep a
+    # *moving* ramp from eating the window under loop latency, which does not
+    # apply to a one-shot jump computed from a frozen-volume settled read.
+    # Mid-window gives the jump symmetric ±half-window tolerance to gain-map
+    # noise instead of parking half the noise distribution below the window.
     window_low_dbfs: float = -20.0
     window_high_dbfs: float = -12.0
 
@@ -208,20 +279,38 @@ class MeasurementRamp:
     # as trustworthy → lock (§3.1 settle-based mapping, k >= 3).
     confirm_k: int = 3
 
-    # Coarse staircase.
+    # Coarse staircase. step/interval chosen so the overshoot invariant holds
+    # with margin at the default 2 s loop latency: 0.75 + 1.5*2.0 = 3.75 < 4.0.
     start_db: float = -50.0
-    step_db: float = 1.0
-    step_interval_s: float = 0.6  # 1.667 dB/s → invariant holds with margin
+    step_db: float = 0.75
+    step_interval_s: float = 0.5
 
-    # Hold >= the max loop latency after crossing the pre-window so the transport
-    # delay has elapsed before the settled level is read (§3.1 settle-based
-    # mapping). settle_hold_s should be >= max_loop_latency_s.
+    # Hold at least this long after the pre-window crossing before the settled
+    # read may complete; the read additionally requires settle_min_samples
+    # post-latency samples, extending the hold on a sparse feed (never bouncing
+    # back to CLIMBING).
     settle_hold_s: float = 2.0
     max_loop_latency_s: float = 2.0
+    # Minimum post-latency samples in the settle buffer before the median is
+    # trusted (one sample is too noise-prone to aim a jump with).
+    settle_min_samples: int = 3
 
-    # Safety timeout + graceful fade-before-tone-kill (preserved from
-    # AutolevelController).
-    safety_timeout_s: float = 25.0
+    # Total jump budget: the initial settle jump plus at most one corrective
+    # re-jump from CONFIRMING evidence.
+    max_jumps: int = 2
+
+    # Feed liveness: if NO samples at all (trusted or not) arrive for this long
+    # after the tone starts, the phone is gone — abort and restore (a vanished
+    # phone also has no clip protection).
+    feed_timeout_s: float = 8.0
+
+    # Safety timeout. None (the default) derives it from the config's own
+    # worst-case walk — see the `safety_timeout` property — so a quiet amp
+    # reaches MAXED_OUT before the timeout instead of dying as a generic
+    # CANCELLED. An explicit value is honored verbatim (tests).
+    safety_timeout_s: float | None = None
+
+    # Graceful fade-before-tone-kill (preserved from AutolevelController).
     fade_down_to_db: float = -50.0
     fade_step_db: float = 2.0
     fade_step_s: float = 0.03
@@ -234,8 +323,8 @@ class MeasurementRamp:
     cap_ceil_db: float = -6.0
 
     # Derived pre-window: the coarse staircase stops here. Defaulted from the
-    # window bottom minus the worst-case in-flight overshoot in __post_init__ when
-    # left as None so the staircase provably never climbs into the window.
+    # window bottom minus the worst-case in-flight overshoot in __post_init__
+    # when left as None so the staircase provably never climbs into the window.
     pre_window_db: float | None = None
 
     def __post_init__(self) -> None:
@@ -260,14 +349,22 @@ class MeasurementRamp:
             )
         if self.confirm_k < 1:
             raise ValueError("confirm_k must be >= 1")
+        if self.settle_min_samples < 1:
+            raise ValueError("settle_min_samples must be >= 1")
+        if self.max_jumps < 1:
+            raise ValueError("max_jumps must be >= 1")
+        if self.feed_timeout_s <= 0:
+            raise ValueError("feed_timeout_s must be positive")
+        if self.safety_timeout_s is not None and self.safety_timeout_s <= 0:
+            raise ValueError("safety_timeout_s must be positive when explicit")
         window_width = self.window_high_dbfs - self.window_low_dbfs
-        overshoot = self.ramp_rate * self.max_loop_latency_s
+        overshoot = self.step_db + self.ramp_rate * self.max_loop_latency_s
         if not overshoot < 0.5 * window_width:
             raise ValueError(
-                f"overshoot guard violated: ramp_rate*max_loop_latency="
+                "overshoot guard violated: step_db + ramp_rate*max_loop_latency="
                 f"{overshoot:.3f} dB must be < half the window width "
-                f"{0.5 * window_width:.3f} dB (slow the ramp, shorten latency, "
-                "or widen the window)"
+                f"{0.5 * window_width:.3f} dB (slow the ramp, shrink the step, "
+                "shorten latency, or widen the window)"
             )
         # Fill the derived pre-window so the coarse staircase stops below the
         # window by at least the worst-case in-flight overshoot.
@@ -296,6 +393,33 @@ class MeasurementRamp:
         assert self.pre_window_db is not None  # set in __post_init__
         return self.pre_window_db
 
+    @property
+    def window_target(self) -> float:
+        """Where the settled jump aims: the window midpoint (see field notes)."""
+        return 0.5 * (self.window_low_dbfs + self.window_high_dbfs)
+
+    @property
+    def safety_timeout(self) -> float:
+        """The effective safety timeout.
+
+        Explicit ``safety_timeout_s`` wins. Otherwise derived from the config's
+        own worst-case walk — the full climb to the loosest cap, one settle
+        (hold + latency + min-samples at the worst sample cadence), the jump
+        budget's confirm phases, and a fixed margin — so the timeout is a true
+        backstop rather than a bound the staircase itself exceeds (the review's
+        quiet-amp CANCELLED-instead-of-MAXED_OUT failure at the old fixed 25 s).
+        """
+        if self.safety_timeout_s is not None:
+            return self.safety_timeout_s
+        climb = (self.cap_ceil_db - self.start_db) / self.ramp_rate
+        settle = (
+            self.settle_hold_s
+            + self.max_loop_latency_s
+            + self.settle_min_samples * SAMPLE_BUDGET_S
+        )
+        confirm = self.max_loop_latency_s + self.confirm_k * SAMPLE_BUDGET_S
+        return climb + settle + self.max_jumps * confirm + 5.0
+
     def dynamic_cap(self, original_db: float) -> float:
         """The operative end-of-ramp cap: original + bump, clamped to bounds.
 
@@ -313,7 +437,12 @@ class MeasurementRamp:
         Explicit ``overrides`` win over env (tests pass exact values); anything
         not overridden and not in the env falls back to the documented default.
         Mirrors ``alignment._env_threshold``: out-of-range / unparseable env
-        values are ignored, never raised.
+        values are ignored. Additionally, when individually-valid env values
+        fail *cross-field* validation (a window-low knob raised above the
+        default window-high, a settle hold below the loop latency, a latency
+        that breaks the overshoot invariant), the env set is dropped as a whole
+        with a warning and the defaults (plus any explicit overrides) are used
+        — a jasper.env edit can never brick the ramp at construction time.
         """
         env_values: dict[str, Any] = {
             "window_low_dbfs": _env_float(
@@ -334,12 +463,33 @@ class MeasurementRamp:
                 lo=0.0,
                 hi=30.0,
             ),
-            "confirm_k": _env_int(
-                "JASPER_RAMP_CONFIRM_K", cls.confirm_k, lo=1, hi=20
+            # Env floor is 2, not 1: the spec pins k >= 3 as the default; a
+            # deploy knob may trade one confirmation for speed, but a single
+            # sample is never "consecutive confirmation" (owned weakening,
+            # documented in .env.example).
+            "confirm_k": _env_int("JASPER_RAMP_CONFIRM_K", cls.confirm_k, lo=2, hi=20),
+            "settle_min_samples": _env_int(
+                "JASPER_RAMP_SETTLE_MIN_SAMPLES",
+                cls.settle_min_samples,
+                lo=1,
+                hi=10,
+            ),
+            "feed_timeout_s": _env_float(
+                "JASPER_RAMP_FEED_TIMEOUT_S", cls.feed_timeout_s, lo=2.0, hi=60.0
             ),
         }
-        env_values.update(overrides)
-        return cls(**env_values)
+        merged = {**env_values, **overrides}
+        try:
+            return cls(**merged)
+        except ValueError as exc:
+            log_event(
+                logger,
+                "ramp_env_config_invalid",
+                level=logging.WARNING,
+                error=str(exc),
+                action="falling back to defaults for env-provided knobs",
+            )
+            return cls(**overrides)
 
 
 @dataclass
@@ -357,6 +507,10 @@ class RampData:
     settled_mic_dbfs: float | None = None
     noise_floor_dbfs: float | None = None
     agc_frozen: bool = True
+    # Count of trusted samples ever accepted — MAXED_OUT is only a legitimate
+    # "raise your amp" verdict when this is nonzero (a phone that never produced
+    # a usable sample is an ERROR, not an amp diagnosis).
+    trusted_sample_count: int = 0
     error: str | None = None
     # Idempotency guard for terminal-state listening-level restore.
     restored: bool = False
@@ -375,13 +529,15 @@ class RampData:
             "settled_mic_dbfs": r(self.settled_mic_dbfs),
             "noise_floor_dbfs": r(self.noise_floor_dbfs),
             "agc_frozen": self.agc_frozen,
+            "trusted_sample_count": self.trusted_sample_count,
             "error": self.error,
         }
 
 
 # A source of the next batch of phone-reported samples. Injected so the loop is
-# testable with a synthetic feed; the real feed polls the relay. Returning an
-# empty list means "no new samples this tick" (the loop keeps its clock running).
+# testable with a synthetic feed; the real feed polls the relay (rate-limited
+# feed-side — the kernel tick is NOT the HTTP cadence). Returning an empty list
+# means "no new samples this tick" (the loop keeps its clock running).
 SampleSource = Callable[[], Awaitable[list[LevelSample]]]
 
 # Injected monotonic clock (seconds) + async sleep, so tests drive time directly.
@@ -392,6 +548,22 @@ VolumeSetter = Callable[[float], Awaitable[Any]]
 VolumeGetter = Callable[[], Awaitable[float]]
 
 
+@dataclass
+class _LoopVars:
+    """Mutable per-run loop state, grouped so the tick handler stays readable."""
+
+    start_time: float = 0.0
+    last_step_time: float = 0.0
+    last_feed_time: float = 0.0
+    # Samples arriving before this reflect a pre-change level (transport lag).
+    blank_until: float = 0.0
+    settle_start: float | None = None
+    settle_buf: list[float] = field(default_factory=list)
+    confirm_in_streak: int = 0
+    confirm_out_buf: list[float] = field(default_factory=list)
+    jumps_used: int = 0
+
+
 class RampController:
     """Owns the settle-based ramp loop, its state, and volume restoration.
 
@@ -399,7 +571,8 @@ class RampController:
     ``cancel`` / ``restore_listening_volume_if_ramped``) so the correction
     session's adapter can swap the engine without changing its callers. The
     engine is what changed: blind browser-locked ramp → Pi-side settle-based
-    two-point map with a stop-ahead window and clip/trust/timeout safety.
+    two-point map with a stop-ahead window and clip/trust/liveness/timeout
+    safety.
     """
 
     def __init__(
@@ -431,7 +604,7 @@ class RampController:
         The ramp leaves main_volume at the measurement level (LOCKED / MAXED_OUT)
         for the whole measurement; failed / verify-ended measurements skip the web
         apply/reset handlers, so this best-effort hook restores the user's level
-        there. Idempotent; swallows errors. Mirrors
+        there. Idempotent; swallows recoverable errors. Mirrors
         ``AutolevelController.restore_listening_volume_if_ramped``.
         """
         d = self.data
@@ -451,7 +624,7 @@ class RampController:
                 to_db=f"{d.original_main_volume_db:.1f}",
                 trigger="measurement_ended",
             )
-        except Exception:  # noqa: BLE001
+        except RECOVERABLE_ERRORS:
             logger.exception(
                 "ramp volume restore on measurement end failed (session=%s) — "
                 "speaker may remain at the measurement level until /reset",
@@ -473,18 +646,30 @@ class RampController:
         self._cancel_requested = True
         return True
 
-    # -- the ramp loop --
+    # -- volume choke points --
+
+    def _cap_value(self) -> float:
+        """The effective ramp ceiling: min(dynamic cap, hard 0 dB ceiling)."""
+        cap = self.data.cap_db
+        return HARD_CEILING_DBFS if cap is None else min(cap, HARD_CEILING_DBFS)
 
     def _safe_target(self, desired_db: float) -> float:
-        """Clamp a desired volume to the operative cap AND the hard ceiling.
+        """Clamp a desired ramp volume to the operative cap AND the hard ceiling.
 
-        The single choke point every commanded volume passes through, so the
-        cap-safety invariant is one line, not scattered. Never returns a value
-        above ``min(dynamic_cap, HARD_CEILING_DBFS)``.
+        The single choke point every ramp-commanded volume passes through, so
+        the cap-safety invariant is one line, not scattered. Never returns a
+        value above ``min(dynamic_cap, HARD_CEILING_DBFS)`` — and never returns
+        a non-finite value: NaN would tunnel through ``min()``, so it raises
+        instead (the run loop's recoverable-error path fades and restores).
         """
-        cap = self.data.cap_db
-        ceil = HARD_CEILING_DBFS if cap is None else min(cap, HARD_CEILING_DBFS)
-        return min(desired_db, ceil)
+        if not math.isfinite(desired_db):
+            raise ValueError(f"non-finite ramp volume target: {desired_db!r}")
+        return min(desired_db, self._cap_value())
+
+    def _at_cap(self) -> bool:
+        return self.data.current_main_volume_db >= self._cap_value() - 1e-9
+
+    # -- the ramp loop --
 
     async def run(
         self,
@@ -503,13 +688,27 @@ class RampController:
         Injected dependencies keep the loop pure/testable:
           - ``get/set_main_volume_db``: read the pre-ramp level, drive the ramp.
           - ``play_continuous_tone`` / ``cancel_tone``: the band-limited tone the
-            phone measures (started AFTER the quiet start volume is set, killed
-            AFTER the fade-down — audio-safety order).
+            phone measures. Contract: the coroutine plays until ``cancel_tone()``
+            is called (the ``TonePlayer.play`` shape); the kernel runs it as a
+            task and treats an early finish as an error (a silent tone must not
+            blind-climb). Started AFTER the quiet start volume is set; killed
+            AFTER the fade-down (audio-safety order).
           - ``next_samples``: awaited each tick for the phone's newest batch.
-          - ``noise_floor_dbfs``: the phone's pre-sweep noise floor (trust gate).
+          - ``noise_floor_dbfs``: the phone's pre-ramp noise floor (trust gate).
+            A non-finite value is treated as unknown (no trust floor) with a
+            warning, never as a gate that silently passes everything.
           - ``clock`` / ``sleep``: injected monotonic time so tests drive cadence.
         """
         cfg = self.config
+        if noise_floor_dbfs is not None and not math.isfinite(noise_floor_dbfs):
+            log_event(
+                logger,
+                "ramp_noise_floor_invalid",
+                level=logging.WARNING,
+                session=self.session_id,
+                value=repr(noise_floor_dbfs),
+            )
+            noise_floor_dbfs = None
         self.data = d = RampData(
             current_main_volume_db=cfg.start_db,
             noise_floor_dbfs=noise_floor_dbfs,
@@ -517,19 +716,26 @@ class RampController:
         self._main_volume_setter = set_main_volume_db
         self._lock_requested = False
         self._cancel_requested = False
-        tone_started = False
+        tone_task: asyncio.Future[Any] | None = None
+        v = _LoopVars()
 
         async def _set(db: float) -> None:
             safe = self._safe_target(db)
             await set_main_volume_db(safe)
             d.current_main_volume_db = safe
+            # Reports arriving within the loop latency reflect the OLD level.
+            v.blank_until = clock() + cfg.max_loop_latency_s
 
         async def _graceful_stop(final_db: float | None) -> None:
             """Fade down before killing the tone, then set the final volume.
 
             Preserves AutolevelController's click-free stop: never kill the tone
-            at a loud level. ``final_db`` is passed through ``_safe_target`` so
-            even the terminal set can't exceed the caps.
+            at a loud level. ``final_db`` is clamped only to the 0 dB HARD
+            ceiling — NOT the dynamic cap — because the finals that arrive here
+            are either a lock value already emitted through ``_set`` (≤ cap by
+            construction) or the user's own pre-ramp volume, and "restoring" a
+            −5 dB listener to the −6 dB measurement cap would be a regression,
+            not safety (panel: cap-clamped restore).
             """
             try:
                 cur = d.current_main_volume_db
@@ -538,239 +744,349 @@ class RampController:
                     try:
                         await set_main_volume_db(cur)
                         d.current_main_volume_db = cur
-                    except Exception:  # noqa: BLE001
+                    except RECOVERABLE_ERRORS:
                         break
                     await sleep(cfg.fade_step_s)
             finally:
-                if tone_started:
-                    cancel_tone()
-                if final_db is not None:
+                cancel_tone()
+                if tone_task is not None:
                     try:
-                        await _set(final_db)
-                    except Exception:  # noqa: BLE001
+                        await asyncio.wait_for(tone_task, timeout=2.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
                         pass
+                    except RECOVERABLE_ERRORS:
+                        logger.exception("tone task ended with an error")
+                if final_db is not None and math.isfinite(final_db):
+                    final = min(final_db, HARD_CEILING_DBFS)
+                    try:
+                        await set_main_volume_db(final)
+                        d.current_main_volume_db = final
+                    except RECOVERABLE_ERRORS:
+                        logger.exception(
+                            "ramp final volume set failed (session=%s)",
+                            self.session_id,
+                        )
+
+        async def _terminal(
+            state: RampState,
+            *,
+            final_db: float | None,
+            error: str | None = None,
+            event: str | None = None,
+            level: int = logging.INFO,
+            **event_fields: Any,
+        ) -> RampData:
+            d.state = state
+            if error is not None:
+                d.error = error
+            if event is not None:
+                log_event(
+                    logger,
+                    event,
+                    level=level,
+                    session=self.session_id,
+                    at_db=f"{d.current_main_volume_db:.1f}",
+                    **event_fields,
+                )
+            await _graceful_stop(final_db)
+            return d
 
         try:
-            d.original_main_volume_db = float(await get_main_volume_db())
-            d.cap_db = cfg.dynamic_cap(d.original_main_volume_db)
+            original = float(await get_main_volume_db())
+            if not math.isfinite(original):
+                # No volume was changed yet — fail before touching anything.
+                d.state = RampState.ERROR
+                d.error = f"non-finite pre-ramp main_volume: {original!r}"
+                log_event(
+                    logger,
+                    "ramp_error",
+                    level=logging.WARNING,
+                    session=self.session_id,
+                    error=d.error,
+                    reason="non_finite_original",
+                )
+                return d
+            d.original_main_volume_db = original
+            d.cap_db = cfg.dynamic_cap(original)
             d.state = RampState.CLIMBING
             log_event(
                 logger,
                 "ramp_start",
                 session=self.session_id,
-                original_db=f"{d.original_main_volume_db:.1f}",
+                original_db=f"{original:.1f}",
                 cap_db=f"{d.cap_db:.1f}",
                 window=f"[{cfg.window_low_dbfs:.0f},{cfg.window_high_dbfs:.0f}]",
                 rate_db_s=f"{cfg.ramp_rate:.2f}",
+                safety_timeout_s=f"{cfg.safety_timeout:.0f}",
             )
 
-            # Audio-safety order: quiet start BEFORE the tone.
+            # Audio-safety order: quiet start BEFORE the tone. ensure_future
+            # (not create_task) so any Awaitable-shaped tone callable works.
             await _set(cfg.start_db)
             await sleep(0.1)
-            await play_continuous_tone()
-            tone_started = True
+            tone_task = asyncio.ensure_future(play_continuous_tone())
 
-            start_time = clock()
-            last_step_time = clock()
-            settle_start: float | None = None
-            confirm_count = 0
-            jumped = False
+            v.start_time = v.last_step_time = v.last_feed_time = clock()
 
             while True:
+                now = clock()
                 # --- terminal signals checked every tick ---
                 if self._cancel_requested:
-                    d.state = RampState.CANCELLED
-                    log_event(
-                        logger,
-                        "ramp_cancelled",
-                        session=self.session_id,
-                        at_db=f"{d.current_main_volume_db:.1f}",
+                    return await _terminal(
+                        RampState.CANCELLED,
+                        final_db=d.original_main_volume_db,
+                        event="ramp_cancelled",
                     )
-                    await _graceful_stop(d.original_main_volume_db)
-                    return d
                 if self._lock_requested:
                     # Manual lock: trust the user, lock where we are.
-                    d.state = RampState.LOCKED
                     d.locked_main_volume_db = d.current_main_volume_db
-                    log_event(
-                        logger,
-                        "ramp_locked",
-                        session=self.session_id,
-                        at_db=f"{d.current_main_volume_db:.1f}",
+                    return await _terminal(
+                        RampState.LOCKED,
+                        final_db=d.current_main_volume_db,
+                        event="ramp_locked",
                         trigger="manual",
                     )
-                    await _graceful_stop(d.current_main_volume_db)
-                    return d
-                if clock() - start_time > cfg.safety_timeout_s:
-                    d.state = RampState.CANCELLED
-                    d.error = f"safety timeout after {cfg.safety_timeout_s}s"
-                    log_event(
-                        logger,
-                        "ramp_safety_timeout",
+                if now - v.start_time > cfg.safety_timeout:
+                    return await _terminal(
+                        RampState.CANCELLED,
+                        final_db=d.original_main_volume_db,
+                        error=f"safety timeout after {cfg.safety_timeout:.0f}s",
+                        event="ramp_safety_timeout",
                         level=logging.WARNING,
-                        session=self.session_id,
-                        at_db=f"{d.current_main_volume_db:.1f}",
                     )
-                    await _graceful_stop(d.original_main_volume_db)
-                    return d
+                if tone_task.done():
+                    # The tone must outlive the ramp (contract in the docstring):
+                    # a silent speaker with a live mic feed would blind-climb.
+                    return await _terminal(
+                        RampState.ERROR,
+                        final_db=d.original_main_volume_db,
+                        error="tone ended before the ramp completed",
+                        event="ramp_error",
+                        level=logging.WARNING,
+                        reason="tone_ended_early",
+                    )
 
                 batch = await next_samples()
+                if batch:
+                    v.last_feed_time = now
+                elif now - v.last_feed_time > cfg.feed_timeout_s:
+                    # A vanished phone has no clip protection — never blind-climb.
+                    return await _terminal(
+                        RampState.ABORTED,
+                        final_db=d.original_main_volume_db,
+                        error=(
+                            "phone feed lost (no samples for "
+                            f"{cfg.feed_timeout_s:.0f}s)"
+                        ),
+                        event="ramp_feed_lost",
+                        level=logging.WARNING,
+                    )
                 trusted = self._process_batch(d, batch)
                 if d.state == RampState.ABORTED:
                     # A clip in the batch aborted immediately.
                     await _graceful_stop(d.original_main_volume_db)
                     return d
+                d.trusted_sample_count += len(trusted)
+                # Samples arriving before blank_until reflect a pre-change
+                # level; exclude them from settle/confirm decisions. (Clip
+                # detection already ran on the FULL batch above.)
+                settled_stream = (
+                    [s.rms_dbfs for s in trusted] if now >= v.blank_until else []
+                )
 
-                now = clock()
-
-                if d.state == RampState.CLIMBING:
-                    # Freeze + settle the moment a trusted reading crosses the
-                    # pre-window (the coarse staircase never climbs into the
-                    # window itself).
-                    if trusted and trusted[-1].rms_dbfs >= cfg.pre_window:
-                        d.state = RampState.SETTLING
-                        settle_start = now
-                        log_event(
-                            logger,
-                            "ramp_pre_window",
-                            session=self.session_id,
-                            at_db=f"{d.current_main_volume_db:.1f}",
-                            mic_dbfs=f"{trusted[-1].rms_dbfs:.1f}",
-                        )
-                    elif now - last_step_time >= cfg.step_interval_s:
-                        last_step_time = now
-                        # Reached the cap without ever crossing the pre-window →
-                        # the amp is too quiet.
-                        if d.current_main_volume_db >= self._safe_target(1e9) - 1e-9:
-                            d.state = RampState.MAXED_OUT
-                            d.locked_main_volume_db = d.current_main_volume_db
-                            log_event(
-                                logger,
-                                "ramp_maxed_out",
-                                level=logging.WARNING,
-                                session=self.session_id,
-                                at_db=f"{d.current_main_volume_db:.1f}",
-                                reason="cap_reached_below_pre_window",
-                            )
-                            await _graceful_stop(d.current_main_volume_db)
-                            return d
-                        await _set(d.current_main_volume_db + cfg.step_db)
-
-                elif d.state == RampState.SETTLING:
-                    assert settle_start is not None
-                    if now - settle_start < cfg.settle_hold_s:
-                        pass  # keep waiting out the transport delay
-                    else:
-                        settled = self._settled_level(d, trusted)
-                        if settled is None:
-                            # No trusted samples during the hold — extend by
-                            # dropping back to CLIMBING to gather more.
-                            d.state = RampState.CLIMBING
-                            last_step_time = now
-                            continue
-                        d.settled_mic_dbfs = settled
-                        d.gain_map_db = settled - d.current_main_volume_db
-                        if cfg.window_low_dbfs <= settled <= cfg.window_high_dbfs:
-                            d.state = RampState.CONFIRMING
-                            confirm_count = 0
-                        elif not jumped:
-                            # One computed jump so the mic lands at the window
-                            # BOTTOM. The gain map's slope is 1, so this target is
-                            # exact; the jump can be up (amp quiet) or DOWN (amp
-                            # loud — the mic is already above the window even here).
-                            # Going down is always cap-safe; going up is clamped by
-                            # `_set`. If the up-target clamps to the cap and the mic
-                            # is still below the window, the CONFIRMING branch ends
-                            # it as MAXED_OUT.
-                            target = cfg.window_low_dbfs - d.gain_map_db
-                            safe = self._safe_target(target)
-                            log_event(
-                                logger,
-                                "ramp_settle_jump",
-                                session=self.session_id,
-                                settled_mic_dbfs=f"{settled:.1f}",
-                                gain_map_db=f"{d.gain_map_db:.1f}",
-                                target_db=f"{target:.1f}",
-                                applied_db=f"{safe:.1f}",
-                            )
-                            if abs(safe - d.current_main_volume_db) <= 1e-9:
-                                # Nowhere to move (already clamped there) but still
-                                # out of window → confirm; a persistent below/above
-                                # window resolves in CONFIRMING.
-                                d.state = RampState.CONFIRMING
-                                confirm_count = 0
-                            else:
-                                await _set(target)
-                                settle_start = now  # re-hold after the jump
-                                jumped = True
-                        else:
-                            # Jumped once, still out of window after a full settle:
-                            # clamped at the cap (too quiet) or the map moved.
-                            # CONFIRMING resolves it (below-cap window → lock;
-                            # pinned-at-cap below window → MAXED_OUT).
-                            d.state = RampState.CONFIRMING
-                            confirm_count = 0
-
-                elif d.state == RampState.CONFIRMING:
-                    for s in trusted:
-                        if cfg.window_low_dbfs <= s.rms_dbfs <= cfg.window_high_dbfs:
-                            confirm_count += 1
-                        else:
-                            confirm_count = 0
-                    if confirm_count >= cfg.confirm_k:
-                        d.state = RampState.LOCKED
-                        d.locked_main_volume_db = d.current_main_volume_db
-                        log_event(
-                            logger,
-                            "ramp_locked",
-                            session=self.session_id,
-                            at_db=f"{d.current_main_volume_db:.1f}",
-                            settled_mic_dbfs=(
-                                f"{d.settled_mic_dbfs:.1f}"
-                                if d.settled_mic_dbfs is not None
-                                else ""
-                            ),
-                            trigger="window",
-                        )
-                        await _graceful_stop(d.current_main_volume_db)
-                        return d
-                    # If we are pinned at the cap and the last trusted reading is
-                    # below the window, we cannot reach it without exceeding the
-                    # cap → maxed out.
-                    at_cap = (
-                        d.current_main_volume_db >= self._safe_target(1e9) - 1e-9
-                    )
-                    if (
-                        at_cap
-                        and trusted
-                        and trusted[-1].rms_dbfs < cfg.window_low_dbfs
-                    ):
-                        d.state = RampState.MAXED_OUT
-                        d.locked_main_volume_db = d.current_main_volume_db
-                        log_event(
-                            logger,
-                            "ramp_maxed_out",
-                            level=logging.WARNING,
-                            session=self.session_id,
-                            at_db=f"{d.current_main_volume_db:.1f}",
-                            reason="cap_reached_below_window",
-                        )
-                        await _graceful_stop(d.current_main_volume_db)
-                        return d
+                outcome = await self._tick_state(
+                    d, v, cfg, now, trusted, settled_stream, _set, _terminal
+                )
+                if outcome is not None:
+                    return outcome
 
                 await sleep(0.01)
-        except Exception as e:  # noqa: BLE001
+        except RECOVERABLE_ERRORS as e:
             d.state = RampState.ERROR
             d.error = str(e)
             logger.exception("ramp failed (session=%s)", self.session_id)
             try:
                 if d.original_main_volume_db is not None:
                     await _graceful_stop(d.original_main_volume_db)
-                elif tone_started:
+                elif tone_task is not None:
                     cancel_tone()
-            except Exception:  # noqa: BLE001
-                pass
+            except RECOVERABLE_ERRORS:
+                logger.exception("ramp error-path cleanup failed")
             return d
+
+    async def _tick_state(
+        self,
+        d: RampData,
+        v: _LoopVars,
+        cfg: MeasurementRamp,
+        now: float,
+        trusted: list[LevelSample],
+        settled_stream: list[float],
+        _set: Callable[[float], Awaitable[None]],
+        _terminal: Callable[..., Awaitable[RampData]],
+    ) -> RampData | None:
+        """One state-machine step. Returns terminal RampData, or None to continue."""
+        if d.state == RampState.CLIMBING:
+            # Freeze the moment ANY trusted reading crosses the pre-window —
+            # max over the batch, not the newest sample, so a mid-batch
+            # crossing whose newest sample dipped doesn't delay the freeze.
+            # Stale (pre-blank) samples are deliberately included here: a stale
+            # crossing means the true level is even higher, so freezing is MORE
+            # urgent — the conservative direction.
+            if trusted and max(s.rms_dbfs for s in trusted) >= cfg.pre_window:
+                d.state = RampState.SETTLING
+                v.settle_start = now
+                v.settle_buf = []
+                log_event(
+                    logger,
+                    "ramp_pre_window",
+                    session=self.session_id,
+                    at_db=f"{d.current_main_volume_db:.1f}",
+                    mic_dbfs=f"{max(s.rms_dbfs for s in trusted):.1f}",
+                )
+            elif now - v.last_step_time >= cfg.step_interval_s:
+                v.last_step_time = now
+                if self._at_cap():
+                    # Reached the cap without ever crossing the pre-window.
+                    if d.trusted_sample_count > 0:
+                        # Amp genuinely too quiet — hold the cap for the
+                        # measurement; the flow tells the user to raise the amp.
+                        d.locked_main_volume_db = d.current_main_volume_db
+                        return await _terminal(
+                            RampState.MAXED_OUT,
+                            final_db=d.current_main_volume_db,
+                            event="ramp_maxed_out",
+                            level=logging.WARNING,
+                            reason="cap_reached_below_pre_window",
+                        )
+                    # Zero usable evidence the mic ever heard the speaker:
+                    # NOT an amp diagnosis — error out and restore.
+                    return await _terminal(
+                        RampState.ERROR,
+                        final_db=d.original_main_volume_db,
+                        error="no usable phone samples",
+                        event="ramp_error",
+                        level=logging.WARNING,
+                        reason="no_usable_samples",
+                    )
+                await _set(d.current_main_volume_db + cfg.step_db)
+
+        elif d.state == RampState.SETTLING:
+            assert v.settle_start is not None
+            v.settle_buf.extend(settled_stream)
+            hold_elapsed = now - v.settle_start >= cfg.settle_hold_s
+            if hold_elapsed and len(v.settle_buf) >= cfg.settle_min_samples:
+                settled = float(statistics.median(v.settle_buf))
+                d.settled_mic_dbfs = settled
+                d.gain_map_db = settled - d.current_main_volume_db
+                log_event(
+                    logger,
+                    "ramp_settled",
+                    session=self.session_id,
+                    at_db=f"{d.current_main_volume_db:.1f}",
+                    settled_mic_dbfs=f"{settled:.1f}",
+                    gain_map_db=f"{d.gain_map_db:.1f}",
+                    samples=len(v.settle_buf),
+                )
+                if cfg.window_low_dbfs <= settled <= cfg.window_high_dbfs:
+                    self._enter_confirming(v)
+                    d.state = RampState.CONFIRMING
+                else:
+                    await self._apply_jump(d, v, cfg, settled, _set)
+                    d.state = RampState.CONFIRMING
+            # else: keep holding — a momentarily-empty feed EXTENDS the hold;
+            # the machine never bounces back to CLIMBING (the review-reproduced
+            # bounce ratcheted the staircase past the window top).
+
+        elif d.state == RampState.CONFIRMING:
+            for value in settled_stream:
+                if cfg.window_low_dbfs <= value <= cfg.window_high_dbfs:
+                    v.confirm_in_streak += 1
+                    v.confirm_out_buf = []
+                else:
+                    v.confirm_out_buf.append(value)
+                    v.confirm_in_streak = 0
+            if v.confirm_in_streak >= cfg.confirm_k:
+                d.locked_main_volume_db = d.current_main_volume_db
+                return await _terminal(
+                    RampState.LOCKED,
+                    final_db=d.current_main_volume_db,
+                    event="ramp_locked",
+                    trigger="window",
+                    settled_mic_dbfs=(
+                        f"{d.settled_mic_dbfs:.1f}"
+                        if d.settled_mic_dbfs is not None
+                        else ""
+                    ),
+                )
+            if len(v.confirm_out_buf) >= cfg.confirm_k:
+                below = all(x < cfg.window_low_dbfs for x in v.confirm_out_buf)
+                above = all(x > cfg.window_high_dbfs for x in v.confirm_out_buf)
+                if not (below or above):
+                    # Straddling the window edges — boundary noise; reset and
+                    # keep collecting (the safety timeout is the backstop).
+                    v.confirm_out_buf = []
+                    return None
+                evidence = float(statistics.median(v.confirm_out_buf))
+                d.settled_mic_dbfs = evidence
+                d.gain_map_db = evidence - d.current_main_volume_db
+                if below and self._at_cap():
+                    # Consistently below the window while pinned at the cap:
+                    # the amp is too quiet — with real trusted evidence.
+                    d.locked_main_volume_db = d.current_main_volume_db
+                    return await _terminal(
+                        RampState.MAXED_OUT,
+                        final_db=d.current_main_volume_db,
+                        event="ramp_maxed_out",
+                        level=logging.WARNING,
+                        reason="cap_reached_below_window",
+                    )
+                if v.jumps_used < cfg.max_jumps:
+                    await self._apply_jump(d, v, cfg, evidence, _set)
+                    return None
+                # Jump budget exhausted and still out of window — keep
+                # confirming until the timeout restores (fail-safe), rather
+                # than oscillating.
+                v.confirm_out_buf = []
+        return None
+
+    def _enter_confirming(self, v: _LoopVars) -> None:
+        v.confirm_in_streak = 0
+        v.confirm_out_buf = []
+
+    async def _apply_jump(
+        self,
+        d: RampData,
+        v: _LoopVars,
+        cfg: MeasurementRamp,
+        observed_mic_dbfs: float,
+        _set: Callable[[float], Awaitable[None]],
+    ) -> None:
+        """One computed jump so the mic lands at the window midpoint.
+
+        The gain map's slope is 1, so the target is exact up to reading noise;
+        the jump can be up (amp quiet) or DOWN (amp loud — the mic is already
+        above the window even at the quiet floor). Going down is always
+        cap-safe; going up is clamped by ``_set``. ``blank_until`` (stamped by
+        ``_set``) excludes post-jump stale reports from the confirm stream.
+        """
+        gain = observed_mic_dbfs - d.current_main_volume_db
+        target = cfg.window_target - gain
+        safe = self._safe_target(target)
+        v.jumps_used += 1
+        log_event(
+            logger,
+            "ramp_settle_jump",
+            session=self.session_id,
+            jump=v.jumps_used,
+            observed_mic_dbfs=f"{observed_mic_dbfs:.1f}",
+            gain_map_db=f"{gain:.1f}",
+            target_db=f"{target:.1f}",
+            applied_db=f"{safe:.1f}",
+        )
+        if abs(safe - d.current_main_volume_db) > 1e-9:
+            await _set(target)
+        self._enter_confirming(v)
 
     def _process_batch(
         self, d: RampData, batch: list[LevelSample]
@@ -778,11 +1094,14 @@ class RampController:
         """Fold a phone batch into ramp state; return the *trusted* samples.
 
         A ``clip=true`` sample flips the state to ABORTED immediately (the caller
-        stops). A sample below ``noise_floor + trust_margin`` is dropped as
+        stops) — clip is checked on EVERY sample before any other gate, so clip
+        protection holds even for AGC-compressed or ambient-dominated readings.
+        A non-finite level is dropped (never trusted — the NaN-pierce fix). A
+        sample below ``noise_floor + trust_margin`` is dropped as
         ambient-dominated. ``agc_frozen=false`` on any sample is recorded so the
-        adapter can degrade + disable drift (§3.1 (c)) — the ramp still runs, but
-        the level must not become a trusted gain-map reference, so an
-        AGC-compressed sample is treated as untrusted here.
+        adapter can degrade + disable drift (§3.1 (c)) — the ramp still runs (the
+        user may manually lock; that is the degrade path), but an AGC-compressed
+        level is never a trusted gain-map reference.
         """
         cfg = self.config
         trusted: list[LevelSample] = []
@@ -800,6 +1119,8 @@ class RampController:
                     peak_dbfs=f"{s.peak_dbfs:.1f}",
                 )
                 return trusted
+            if not (math.isfinite(s.rms_dbfs) and math.isfinite(s.peak_dbfs)):
+                continue  # hostile/broken payload; liveness only, never trusted
             if not s.agc_frozen:
                 d.agc_frozen = False
                 # AGC-compressed: usable as a liveness signal but never as a
@@ -809,15 +1130,3 @@ class RampController:
                 continue  # ambient-dominated; not trustable
             trusted.append(s)
         return trusted
-
-    def _settled_level(
-        self, d: RampData, trusted: list[LevelSample]
-    ) -> float | None:
-        """The settled mic level = median of the trusted samples in the tail.
-
-        Median (not mean) so one noisy sample can't skew the gain map. Returns
-        None when no trusted samples arrived during the hold.
-        """
-        if not trusted:
-            return None
-        return float(statistics.median(s.rms_dbfs for s in trusted))

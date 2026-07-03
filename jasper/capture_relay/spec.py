@@ -249,6 +249,11 @@ class CaptureSpec:
     output_format: str = "wav"
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
     return_url: str = ""
+    # Optional per-run nonce (additive, empty for kinds that don't use it). The
+    # level_ramp flow mints one per ramp run; the phone echoes it in every
+    # level_batch so the Pi's feed can distinguish THIS run's events from a
+    # previous run's persisted relay slot (see level_match.RelayLevelFeed).
+    run_token: str = ""
     schema_version: int = SCHEMA_VERSION
 
     # -- serialization --
@@ -257,7 +262,7 @@ class CaptureSpec:
         """The opaque JSON the relay stores and the page fetches.
 
         Shape mirrors `docs/phone-mic-relay-plan.md` §6, plus additive
-        `schema_version` and `validity` fields.
+        `schema_version`, `validity`, and `run_token` fields.
         """
         return {
             "schema_version": self.schema_version,
@@ -283,6 +288,7 @@ class CaptureSpec:
                 "screen": [dict(component) for component in self.screen],
             },
             "return_url": self.return_url,
+            "run_token": self.run_token,
             "output": {"format": self.output_format},
             "max_upload_bytes": self.max_upload_bytes,
         }
@@ -340,6 +346,7 @@ class CaptureSpec:
                 data, "max_upload_bytes", default=DEFAULT_MAX_UPLOAD_BYTES
             ),
             return_url=str(data.get("return_url") or ""),
+            run_token=str(data.get("run_token") or ""),
             schema_version=_as_int(data, "schema_version", default=SCHEMA_VERSION),
         )
         # Guard against a screen entry that was not a Mapping (dropped above).
@@ -408,6 +415,7 @@ class CaptureSpec:
         _validate_theme(self.theme)
         _validate_screen(self.screen)
         _validate_return_url(self.return_url)
+        _validate_run_token(self.run_token)
         return self
 
     def with_screen(self, *components: Mapping[str, Any]) -> CaptureSpec:
@@ -527,6 +535,19 @@ def _validate_screen(screen: Sequence[Mapping[str, Any]]) -> None:
                     f"ui.screen[{index}].action must be one of {UI_BUTTON_ACTIONS}, "
                     f"got {component.get('action')!r}"
                 )
+
+
+def _validate_run_token(run_token: str) -> None:
+    if not isinstance(run_token, str):
+        raise CaptureSpecError("run_token must be a string")
+    if not run_token:
+        return
+    if len(run_token) > 64 or not all(
+        ch.isalnum() or ch in "-_" for ch in run_token
+    ):
+        raise CaptureSpecError(
+            "run_token must be <= 64 URL-safe characters (alnum, '-', '_')"
+        )
 
 
 def _validate_return_url(return_url: str) -> None:
@@ -814,12 +835,13 @@ def build_crossover_sweep_spec(
 def build_level_ramp_spec(
     *,
     geometry_label: str = "listening position",
-    hard_timeout_ms: int = 45000,
+    hard_timeout_ms: int = 75000,
     pre_roll_ms: int = 400,
     post_roll_ms: int = 400,
     accent: str = "sage",
     font: str = "figtree",
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+    run_token: str = "",
 ) -> CaptureSpec:
     """`kind="level_ramp"` — the relay-closed level-match ramp (§3.1, P2).
 
@@ -827,9 +849,17 @@ def build_level_ramp_spec(
     plays a quiet-start staircase of band-limited noise while the phone streams
     **batched, client-timestamped mic-level samples** over the relay ``event``
     channel, and the Pi's :class:`~jasper.audio_measurement.ramp.RampController`
-    settles into the safe window and locks. ``duration_ms`` is therefore a
-    generous hard *timeout* (the Pi's safety timeout is the real stop), and the
-    phone stops streaming when the Pi posts a terminal ``ramp`` host event.
+    settles into the safe window and locks. ``duration_ms`` is therefore a hard
+    phone-side *timeout* sized ABOVE the Pi's own derived safety timeout
+    (``MeasurementRamp.safety_timeout``, ≈56 s at defaults) so the Pi's stop is
+    always the real one; the phone otherwise stops streaming when the Pi posts a
+    terminal ``ramp`` host event (re-posted until the relay echoes it back —
+    the ``event`` slot is a read-modify-write race).
+
+    ``run_token`` is the per-run nonce (mint one per ramp run; pass the same
+    value to ``LevelMatchSession.run_for_geometry``): the phone echoes it in
+    every level batch so a previous run's persisted relay slot can never
+    insta-cancel or mis-feed a retry.
 
     Clean capture is mandatory — auto-gain would flatten the very level the ramp
     maps (``clean_capture="refuse"``, ``allow_capability_fallback=True`` so a
@@ -849,6 +879,7 @@ def build_level_ramp_spec(
         stimulus=CaptureStimulus(
             played_by="pi", label="band-limited level-match noise"
         ),
+        run_token=run_token,
         validity=CaptureValidity(
             clean_capture="refuse",
             allow_capability_fallback=True,
