@@ -547,8 +547,57 @@ def test_no_apply_writes_both_envs_only(tmp_path):
     )
 
     assert res.ok and res.changed and calls == []
+    assert res.direction == "arm"  # transport_pipe is an arm
     assert read_persisted_coupling(fanin_env) == COUPLING_TRANSPORT_PIPE
     assert _outputd_value(outputd_env) == DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
+
+
+def test_no_apply_shm_ring_is_arm_direction(tmp_path):
+    # NIT 7: a --no-apply shm_ring write is an ARM (was mislabeled "disarm" because
+    # the check only compared against transport_pipe).
+    fanin_env = tmp_path / "fanin.env"
+    outputd_env = tmp_path / "outputd.env"
+    calls, ro, rf, rc = _recorder()
+
+    res = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        apply=False,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert res.ok and res.changed and calls == []
+    assert res.direction == "arm"
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+
+
+def test_no_apply_loopback_is_disarm_direction(tmp_path):
+    # The complement: a --no-apply loopback write is a disarm.
+    fanin_env = _write(
+        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_TRANSPORT_PIPE}\n"
+    )
+    outputd_env = _write(
+        tmp_path / "outputd.env",
+        f"{OUTPUTD_PIPE_PATH_ENV_VAR}={DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE}\n",
+    )
+    calls, ro, rf, rc = _recorder()
+
+    res = _reconcile(
+        COUPLING_LOOPBACK,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        apply=False,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+    )
+
+    assert res.ok and res.changed and calls == []
+    assert res.direction == "disarm"
 
 
 def test_arm_preserves_coexisting_keys_and_custom_outputd_pipe(tmp_path):
@@ -1002,6 +1051,64 @@ def test_arm_shm_ring_camilla_failure_recovers_to_loopback(
     assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
     # The recovery re-reconciled camilla to loopback.
     assert calls.count("camilla:loopback") >= 1
+
+
+def test_arm_shm_ring_outputd_restart_failure_recovers_to_loopback(
+    tmp_path, _ring_assets_present
+):
+    # NIT 8: the ring-arm outputd-restart-failure rollback branch (the transport_pipe
+    # twin is tested; the ring twin was not). outputd fails to restart -> the arm
+    # never reaches fan-in/camilla; the env is rolled BACK to loopback + the ring
+    # keys cleared, so a later manual restart lands clean. (recovered is False here
+    # because the recovery's OWN outputd restart also fails — the daemon is down —
+    # but the persisted env is safely loopback, which is the load-bearing invariant.)
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
+    calls, ro, rf, rc = _recorder(outputd_ok=False)
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is False
+    assert result.restarted_outputd is False  # outputd never came up
+    assert "camilla:shm_ring" not in calls  # never reached the camilla arm
+    assert "camilla:loopback" in calls  # recovery reconciled camilla back
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
+
+
+def test_arm_shm_ring_fanin_restart_failure_recovers_to_loopback(
+    tmp_path, _ring_assets_present
+):
+    # NIT 8: the ring-arm fanin-restart-failure rollback branch — outputd came up,
+    # fan-in failed. The env is rolled back to loopback + ring keys cleared.
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
+    calls, ro, rf, rc = _recorder(fanin_ok=False)
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is False
+    assert result.restarted_outputd is True  # outputd (Ring B reader) came up first
+    assert "camilla:shm_ring" not in calls  # never reached the camilla arm
+    assert "camilla:loopback" in calls  # recovery reconciled camilla back
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
 
 
 def test_arm_shm_ring_refused_on_geometry_mismatch_recovers(tmp_path, monkeypatch):

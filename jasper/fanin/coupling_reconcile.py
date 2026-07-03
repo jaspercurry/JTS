@@ -330,9 +330,13 @@ def reconcile_coupling(
             logger, "fanin.coupling_reconcile", result="written",
             desired=desired, changed=changed, reason=reason,
         )
+        # ANY non-loopback coupling (transport_pipe OR shm_ring) is an ARM
+        # direction; only loopback is a disarm. The prior check compared against
+        # transport_pipe alone and mislabeled a `--no-apply` shm_ring write as
+        # "disarm".
         return CouplingResult(
             ok=True, desired=desired, changed=changed,
-            direction="arm" if desired == COUPLING_TRANSPORT_PIPE else "disarm",
+            direction="disarm" if desired == COUPLING_LOOPBACK else "arm",
         )
 
     if not changed:
