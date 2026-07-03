@@ -111,11 +111,43 @@ DEFAULT_FANIN_RING_SLOTS = 8
 # Ring A capture device + wire format. fan-in is S16 native and the SHM ring
 # carries S16LE with NO widening (unlike ``transport_pipe``'s S32 FIFO-page
 # floor, an SHM ring has none). CamillaDSP captures it as an ALSA device named
-# by the ioplug conf.d block. Pinned here so the hand generator
+# by the ioplug conf.d block (``deploy/alsa/conf.d/60-jts-ring.conf``, shipped
+# inert by P1). Pinned here so the hand generator
 # (``make-camilla-ring-config.sh`` capture-swap mode) and the Rust writer stay
-# one SSOT — no product emitter path consumes these.
+# one SSOT.
 RING_CAPTURE_DEVICE = "jts_ring_capture"
 RING_WIRE_FORMAT = "S16_LE"
+
+# ---------------------------------------------------------------------------
+# Ring B (camilla -> outputd playback bridge). The OTHER half of the ``shm_ring``
+# coupling. The ``shm_ring`` coupling is END-TO-END: fan-in writes Ring A
+# (program.ring), CamillaDSP captures it, and CamillaDSP writes its post-DSP
+# stereo program to Ring B (content.ring) via the ``jts_ring_playback`` ioplug,
+# which jasper-outputd reads one slot per DAC period. Both rings flip together or
+# not at all (the coupling reconciler is the single writer of the pair; a partial
+# flip is fail-closed to loopback/direct). This mirrors ``transport_pipe``, which
+# is likewise a dual-boundary coupling (RawFile capture pipe + File playback pipe).
+#
+# The env keys below are read by the Rust ``jasper-outputd`` daemon
+# (``rust/jasper-outputd/src/config.rs``): ``JASPER_OUTPUTD_CONTENT_BRIDGE`` +
+# ``JASPER_OUTPUTD_SHM_RING_PATH`` / ``_SLOTS``. Pinned here so the Python control
+# plane (emitters + coupling reconciler) names the same bridge the daemon reads.
+# The n_slots defaults DIFFER between the two rings on purpose: Ring A holds
+# ``DEFAULT_FANIN_RING_SLOTS`` (8), Ring B holds ``DEFAULT_OUTPUTD_RING_SLOTS``
+# (2, ping-pong) — they are SEPARATE ring files, so their depths are independent.
+OUTPUTD_CONTENT_BRIDGE_ENV_VAR = "JASPER_OUTPUTD_CONTENT_BRIDGE"
+OUTPUTD_CONTENT_BRIDGE_DIRECT = "direct"
+OUTPUTD_CONTENT_BRIDGE_SHM_RING = "shm_ring"
+OUTPUTD_RING_PATH_ENV_VAR = "JASPER_OUTPUTD_SHM_RING_PATH"
+DEFAULT_OUTPUTD_RING_PATH = "/dev/shm/jts-ring/content.ring"
+OUTPUTD_RING_SLOTS_ENV_VAR = "JASPER_OUTPUTD_SHM_RING_SLOTS"
+DEFAULT_OUTPUTD_RING_SLOTS = 2
+
+# Ring B playback device. CamillaDSP writes its post-DSP stereo program to this
+# ALSA ioplug device (the WRITE direction of the same ``jts_ring`` plugin whose
+# CAPTURE direction is ``jts_ring_capture``). S16_LE — the SHM ring's pinned wire
+# format, no widening (fan-in and outputd are both S16 native at the DAC write).
+RING_PLAYBACK_DEVICE = "jts_ring_playback"
 
 
 def resolve_coupling(raw: str | None) -> str:
@@ -199,6 +231,108 @@ def resolve_ring_slots(raw_slots: str | None) -> int:
     )
 
 
+def resolve_outputd_content_bridge(raw: str | None) -> str:
+    """Normalize a raw ``JASPER_OUTPUTD_CONTENT_BRIDGE`` value.
+
+    Fail-SAFE to ``direct`` (the byte-identical-to-today outputd content source)
+    on unset, empty, or any unrecognized value — the Rust daemon
+    (``config.rs``) additionally accepts ``rate_match``, but the coupling control
+    plane only knows the two bridges the ``loopback``/``shm_ring`` couplings pair
+    with: ``direct`` (loopback's partner) and ``shm_ring`` (Ring B). ``rate_match``
+    is a separate deferred lab bridge, not part of any coupling. Case-insensitive;
+    surrounding whitespace ignored.
+    """
+    if raw is None:
+        return OUTPUTD_CONTENT_BRIDGE_DIRECT
+    value = raw.strip().lower()
+    if value in (OUTPUTD_CONTENT_BRIDGE_DIRECT, OUTPUTD_CONTENT_BRIDGE_SHM_RING):
+        return value
+    return OUTPUTD_CONTENT_BRIDGE_DIRECT
+
+
+def outputd_content_bridge_for_coupling(raw: str | None) -> str:
+    """The outputd content bridge that COHERENTLY pairs with a fan-in coupling.
+
+    ``shm_ring`` -> ``shm_ring`` (Ring B), everything else -> ``direct``. This is
+    the pairing the coupling reconciler enforces so the two ends never split:
+    fan-in on Ring A implies outputd on Ring B. The transport_pipe coupling owns a
+    DIFFERENT outputd key (``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE``), so it maps to
+    ``direct`` here — its content source is the local pipe, not the content bridge.
+    """
+    return (
+        OUTPUTD_CONTENT_BRIDGE_SHM_RING
+        if resolve_coupling(raw) == COUPLING_SHM_RING
+        else OUTPUTD_CONTENT_BRIDGE_DIRECT
+    )
+
+
+def resolve_outputd_ring_path(raw_path: str | None) -> str:
+    """Resolve the Ring B (content) SHM ring file path from a raw env value.
+
+    Empty / unset -> :data:`DEFAULT_OUTPUTD_RING_PATH`. Trims whitespace. The Rust
+    outputd daemon resolves ``JASPER_OUTPUTD_SHM_RING_PATH`` the same way.
+    """
+    if raw_path is None:
+        return DEFAULT_OUTPUTD_RING_PATH
+    value = raw_path.strip()
+    return value or DEFAULT_OUTPUTD_RING_PATH
+
+
+OUTPUTD_RING_SLOTS_MIN = 2
+OUTPUTD_RING_SLOTS_MAX = 16
+
+
+def resolve_outputd_ring_slots(raw_slots: str | None) -> int:
+    """Resolve the Ring B n_slots from a raw env value.
+
+    Empty / unset -> :data:`DEFAULT_OUTPUTD_RING_SLOTS` (2, ping-pong). A
+    present-but-out-of-range or unparseable value FAILS LOUD (:class:`ValueError`)
+    rather than silently clamping — the ioplug/daemon geometry must never shear.
+    Range :data:`OUTPUTD_RING_SLOTS_MIN`..=:data:`OUTPUTD_RING_SLOTS_MAX` mirrors
+    the Rust ``MIN_SHM_RING_SLOTS`` / ``MAX_SHM_RING_SLOTS`` (config.rs).
+    """
+    if raw_slots is None:
+        return DEFAULT_OUTPUTD_RING_SLOTS
+    stripped = raw_slots.strip()
+    if not stripped:
+        return DEFAULT_OUTPUTD_RING_SLOTS
+    try:
+        value = int(stripped)
+    except ValueError as exc:
+        raise ValueError(
+            f"{OUTPUTD_RING_SLOTS_ENV_VAR}={raw_slots!r} is not an integer; the "
+            "outputd SHM ring slot count must be a whole number"
+        ) from exc
+    if OUTPUTD_RING_SLOTS_MIN <= value <= OUTPUTD_RING_SLOTS_MAX:
+        return value
+    raise ValueError(
+        f"{OUTPUTD_RING_SLOTS_ENV_VAR}={raw_slots!r} out of range "
+        f"{OUTPUTD_RING_SLOTS_MIN}..={OUTPUTD_RING_SLOTS_MAX} — a shear-prone "
+        "outputd SHM ring geometry must fail loud, not silently clamp"
+    )
+
+
+def ring_pair_is_coherent(
+    coupling_raw: str | None,
+    content_bridge_raw: str | None,
+) -> bool:
+    """True iff the fan-in coupling and outputd content bridge are a coherent pair.
+
+    The two must flip together: both ring (``shm_ring`` + ``shm_ring``) or neither
+    (``loopback``/``transport_pipe`` + ``direct``). A PARTIAL flip — one end on the
+    ring and the other on ALSA/direct — is fail-closed everywhere (the reconciler,
+    the artifact binder, the doctor) because it strands one ring end (a silent
+    audio outage: outputd reads a ring nobody writes, or CamillaDSP writes a ring
+    nobody reads). Returns True for the two coherent states, False for a partial.
+    """
+    coupling = resolve_coupling(coupling_raw)
+    bridge = resolve_outputd_content_bridge(content_bridge_raw)
+    if coupling == COUPLING_SHM_RING:
+        return bridge == OUTPUTD_CONTENT_BRIDGE_SHM_RING
+    # loopback / transport_pipe never pair with the Ring B bridge.
+    return bridge == OUTPUTD_CONTENT_BRIDGE_DIRECT
+
+
 def capture_kwargs_for_coupling(
     raw: str | None,
     *,
@@ -217,23 +351,27 @@ def capture_kwargs_for_coupling(
       outputd File playback, ``enable_rate_adjust=False``, and
       ``transport_paced_pipe=True``. No Camilla async resampler is emitted.
 
-    - ``shm_ring`` (Ring A, prototype): returns the ALSA capture-device kwargs —
-      ``capture_device=jts_ring_capture`` (the ioplug conf.d name) and
-      ``capture_format=S16_LE`` (fan-in is S16 native; the SHM ring carries S16LE
-      with no widening). This is the SSOT the hand generator
-      (``make-camilla-ring-config.sh`` capture-swap mode) reads so Python and the
-      Rust writer agree on the capture side. Like ``transport_pipe``, these kwargs
-      DO flow through :func:`coupling_capture_kwargs_from_env` into the product
-      emitters (``/sound/``, ``/correction/``,
-      ``audio_runtime_plan.apply_capture_precedence``) — but only when the lab
-      flag :data:`COUPLING_ENV_VAR`\\ =``shm_ring`` is set in the env. This is
-      deliberate coherence-when-armed: on an armed lab box a household
-      ``/sound/`` save emits a CamillaDSP config whose capture device is
-      ``jts_ring_capture``, so the emitted config and the running daemon name the
-      SAME ring. The capture device only RESOLVES once the arm script has
-      installed the ioplug ``jts_ring_capture`` conf.d block; until then the flag
-      must stay unset (env unset -> ``loopback`` -> ``{}``, byte-identical to
-      today). It is inert in every product path while the flag is unset.
+    - ``shm_ring`` (Ring A + Ring B): returns the FULL end-to-end ring topology
+      kwargs — the CamillaDSP capture device ``jts_ring_capture`` (Ring A, fan-in
+      writes it) AND the playback device ``jts_ring_playback`` (Ring B, outputd
+      reads it), both S16_LE (the SHM ring's pinned wire format; fan-in and
+      outputd are S16 native, no widening). The two rings are ONE coupling: an
+      armed box's ``/sound/`` save must emit a config whose capture is the ring
+      AND whose playback is the ring — a half-ring config (ring capture + ALSA
+      loopback playback, or vice versa) would strand one end. Like
+      ``transport_pipe`` (which likewise sets BOTH boundaries), these kwargs flow
+      through :func:`coupling_capture_kwargs_from_env` into the product emitters
+      (``/sound/``, ``/correction/``,
+      ``audio_runtime_plan.apply_capture_precedence``) — but only when
+      :data:`COUPLING_ENV_VAR`\\ =``shm_ring`` is set in the env, so this is
+      deliberate coherence-when-armed. The ring devices only RESOLVE once P1's
+      ioplug conf.d block (``60-jts-ring.conf``) is installed and the coupling
+      reconciler has armed both rings; until then the flag stays unset (env unset
+      -> ``loopback`` -> ``{}``, byte-identical to today). Inert in every product
+      path while the flag is unset. ``rate_adjust`` is deliberately LEFT ON (the
+      caller's default) under ring: CamillaDSP's own rate controller trades Ring B
+      fill — it is CamillaDSP's single pacing input, the one-rate-matcher-per-
+      foreign-clock the campaign end-state keeps (see the audit's Clock inventory).
 
     ``pipe_path`` overrides the capture pipe path (the env override is resolved by
     :func:`resolve_pipe_path`; pass its result here so the emitted config and the
@@ -244,6 +382,8 @@ def capture_kwargs_for_coupling(
         return {
             "capture_device": RING_CAPTURE_DEVICE,
             "capture_format": RING_WIRE_FORMAT,
+            "playback_device": RING_PLAYBACK_DEVICE,
+            "playback_format": RING_WIRE_FORMAT,
         }
     if resolved != COUPLING_TRANSPORT_PIPE:
         return {}
