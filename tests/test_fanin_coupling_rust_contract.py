@@ -343,22 +343,30 @@ def test_host_compliance_status_block_and_wiring():
     """The DEFAULT-OFF host-compliance persistence surfaces `resampler.compliance`
     and rides the cushion-decay flag (no new top-level feature gate).
 
-    The prime-at-floor + one-strike-revalidation feature persists a proof to a
+    The prime-at-floor + revalidation feature persists a proof to a
     fan-in-owned JSON file, primes the decay at its floor when a valid proof
     exists, and revokes on the per-session probe fail / DLL demotion / early
-    unlock. STATUS must additively expose the three fields the operator watches
-    (`flag_present` / `proved_at` / `revoked_reason_last`); the mixer must service
-    it once per period; and the persistence must be gated behind
-    `input_resampler_cushion_decay_enabled`, not a separate flag.
+    unlock (a probe fail is TWO-strike; DLL demotion / confirmed churn are one).
+    STATUS must additively expose the four fields the operator watches
+    (`flag_present` / `proved_at` / `revoked_reason_last` /
+    `consecutive_failures`); the mixer must service it once per period; and the
+    persistence must be gated behind `input_resampler_cushion_decay_enabled`, not
+    a separate flag.
     """
     config_text = _config_rs_text()
     mixer_text = _mixer_rs_text()
     state_text = _state_rs_text()
     resampler_text = _lane_resampler_rs_text()
 
-    # 1. STATUS surfaces the three additive compliance fields under resampler.
+    # 1. STATUS surfaces the additive compliance fields under resampler, including
+    #    the two-strike probe-fail counter.
     assert '"compliance":{' in state_text
-    for field in ('"flag_present"', '"proved_at"', '"revoked_reason_last"'):
+    for field in (
+        '"flag_present"',
+        '"proved_at"',
+        '"revoked_reason_last"',
+        '"consecutive_failures"',
+    ):
         assert field in state_text, f"STATUS resampler.compliance must carry {field}"
 
     # 2. The mixer services the compliance state once per period.
@@ -387,13 +395,41 @@ def test_host_compliance_status_block_and_wiring():
         "fan-in state dir (the already-owned ReadWritePaths=/var/lib/jasper posture)"
     )
 
-    # 6. The write/revoke journal events are present (observability contract).
+    # 6. The write/revoke/strike journal events are present (observability
+    #    contract). The two-strike probe-fail RETAIN and the probe-PASS reset are
+    #    their own events so an operator can tell a retained strike (proof kept)
+    #    from a delete-revoke and a counter reset.
     for event in (
         "event=fanin.host_compliance.written",
         "event=fanin.host_compliance.revoked",
         "event=fanin.host_compliance.prime_at_floor",
+        "event=fanin.host_compliance.strike_retained",
+        "event=fanin.host_compliance.pass_reset",
     ):
         assert event in mixer_text, f"mixer must emit {event}"
+
+    # 7. The two-strike probe-fail policy is a pure, testable classifier that the
+    #    mixer consults: a probe FAIL retains the proof the first time (a
+    #    measurement), a DLL demotion / confirmed churn revoke on one strike, and
+    #    the proof is deleted only at the strike limit. The mixer keeps
+    #    `flag_present` TRUE on a retained strike (so the next session still
+    #    primes) — the SSOT interaction with #1154 (a counter=1 session's snap
+    #    still lands at the floor).
+    host_compliance_text = _host_compliance_rs_text()
+    assert "pub fn classify_strike(" in host_compliance_text, (
+        "the two-strike policy must be a pure classifier"
+    )
+    assert "pub const PROBE_FAIL_STRIKE_LIMIT: u32 = 2;" in host_compliance_text, (
+        "a probe fail must be two-strike (retain once, delete on the second)"
+    )
+    assert "RetainWithStrike" in host_compliance_text
+    assert "classify_strike(reason, current_failures)" in mixer_text, (
+        "the mixer must decide keep-vs-delete via the pure classifier"
+    )
+    assert "on_strike_retained(" in mixer_text, (
+        "a retained probe-fail strike must persist the bumped counter and KEEP "
+        "flag_present true (the next session still primes at the floor)"
+    )
 
 
 def test_host_compliance_prime_is_per_session_not_construction_only():

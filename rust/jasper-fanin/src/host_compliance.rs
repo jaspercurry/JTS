@@ -27,18 +27,33 @@
 //!   for a settle window AND zero unlock delta over the descent → write once) and
 //!   the one-strike revocation predicate. No clock, no I/O, no atomics.
 //!
-//! ## Why one strike, not a failure count
+//! ## Strike policy — one strike for evidence, two for a measurement
 //!
-//! A floor-primed session that misbehaves is evidence the host on THIS port is no
-//! longer (or was never) the compliant host the proof was written for — a replug
-//! to a different machine, a different USB port, an OS that stopped honouring the
-//! ctl. The safe response is to distrust the proof immediately: delete it, snap
-//! back to the ceiling, and let the normal descent re-prove from scratch. A
-//! multi-strike tolerance would keep priming at the floor across a genuine host
-//! change for N sessions, each paying an audible acquisition churn. The record
-//! still carries a `consecutive_failures` counter (incremented before the delete)
-//! so a post-mortem can see a strike happened; it is written and then the file is
-//! removed, so on disk it never exceeds 0 in the steady state.
+//! A floor-primed session that misbehaves is *usually* evidence the host on THIS
+//! port is no longer (or was never) the compliant host the proof was written for
+//! — a replug to a different machine, a different USB port, an OS that stopped
+//! honouring the ctl. For DIRECT floor-failure evidence — a DLL demotion
+//! (saturated wrong-way slope) or a CONFIRMED unlock→relock churn cycle — the
+//! safe response is to distrust the proof immediately (ONE strike): delete it,
+//! snap back to the ceiling, and let the normal descent re-prove from scratch.
+//!
+//! A probe FAIL is different: it is a MEASUREMENT, and the lock-gated probe can
+//! spuriously fail if it runs during a railed acquisition (the hardware-diagnosed
+//! jts.local 2026-07-03 false-fail — a shallow-seated floor prime railing at
+//! −500 ppm while the fill built, so the probe read baseline ≈ step ≈ −500 →
+//! response_ratio ≈ 0 → FAIL). Costing the household the ~2.5-min descent on ONE
+//! ambiguous read is the wrong trade. So a probe fail is TWO-strike (see
+//! [`classify_strike`] / [`PROBE_FAIL_STRIKE_LIMIT`]): the first fail RETAINS the
+//! proof but persists an incremented `consecutive_failures` (and `flag_present`
+//! stays true, so the NEXT session still primes at the floor); only the SECOND
+//! consecutive probe fail — two independent sessions disagreeing with the proof,
+//! which IS a host change worth distrusting — deletes it. A probe PASS resets the
+//! counter to 0. The current session ALWAYS snaps back to the ceiling and
+//! re-descends on any strike (retained or not), so the audible behaviour of the
+//! session that took the strike is identical either way; only the on-disk proof
+//! and the next session's prime differ. In the steady state the on-disk counter
+//! is 0 (a healthy proof) or the file is absent (revoked); it transiently reads 1
+//! between a first spurious probe fail and the next session's pass/second-fail.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -86,7 +101,8 @@ pub struct HostCompliance {
 
 impl HostCompliance {
     /// Build a fresh proof record at the current geometry. `now_epoch_s` is the
-    /// caller's wall clock (kept a parameter so this is pure/testable).
+    /// caller's wall clock (kept a parameter so this is pure/testable). A freshly
+    /// written proof always has `consecutive_failures == 0` — a clean proof.
     pub fn new(proved_at_epoch_s: u64, probe_response_ratio: f64, floor_frames: u64) -> Self {
         Self {
             schema: SCHEMA_VERSION,
@@ -94,6 +110,18 @@ impl HostCompliance {
             probe_response_ratio,
             floor_frames,
             consecutive_failures: 0,
+        }
+    }
+
+    /// Clone this record with `consecutive_failures` set to `count` — the
+    /// two-strike RETAIN write ([`StrikeAction::RetainWithStrike`]). Preserves the
+    /// original proof evidence (`proved_at_epoch_s`, `probe_response_ratio`,
+    /// `floor_frames`) so the retained proof still primes the next session at the
+    /// same floor; only the strike counter advances. Pure.
+    pub fn with_consecutive_failures(&self, count: u32) -> Self {
+        Self {
+            consecutive_failures: count,
+            ..self.clone()
         }
     }
 
@@ -250,6 +278,68 @@ impl RevokeReason {
             RevokeReason::DllDemotion => "dll_demotion",
             RevokeReason::EarlyUnlock => "early_unlock",
         }
+    }
+}
+
+/// The consecutive-probe-FAIL count at which a floor-primed proof is DELETED
+/// (the two-strike limit). A single probe FAIL is a MEASUREMENT, not proof the
+/// host changed — the lock-gated probe can spuriously fail if it runs during a
+/// railed acquisition (the hardware-diagnosed jts.local 2026-07-03 false-fail
+/// that motivated the floor-prime-seating + unrailed-settle fixes). Costing the
+/// household the ~2.5-min descent on ONE bad measurement is the wrong trade, so
+/// a probe fail RETAINS the proof (bumping this counter) the first time and only
+/// deletes on the SECOND consecutive fail — by then two independent sessions
+/// disagreed with the proof, which IS a host change worth distrusting. Value 2:
+/// one retained strike, delete on the next.
+///
+/// This tolerance is SPECIFIC to `ProbeFail` (a measurement). `DllDemotion` and a
+/// CONFIRMED `EarlyUnlock` churn cycle stay ONE-strike — they are direct
+/// positive evidence the floor itself is failing on this host (a saturated
+/// wrong-way slope / unlock→relock cycling), not an ambiguous probe read.
+pub const PROBE_FAIL_STRIKE_LIMIT: u32 = 2;
+
+/// What the mixer should DO on a floor-primed revalidation failure, decided
+/// purely from the [`RevokeReason`] and the proof's current `consecutive_failures`
+/// count. Keeps the two-strike policy in one testable place; the mixer performs
+/// the I/O (delete vs re-persist) the variant asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrikeAction {
+    /// DELETE the proof and clear `flag_present` — the one-strike revoke. Used
+    /// for `DllDemotion`, a confirmed `EarlyUnlock`, and the SECOND consecutive
+    /// `ProbeFail`. The next session descends from the ceiling and re-proves.
+    Revoke,
+    /// RETAIN the proof but PERSIST an incremented `consecutive_failures` — the
+    /// first `ProbeFail` strike. `flag_present` STAYS true, so the NEXT session
+    /// still primes at the floor (one bad measurement must not cost the floor).
+    /// The CURRENT session still snaps its held target back to the ceiling and
+    /// runs the normal descent — identical user-visible behaviour to a revoke for
+    /// this session; only the on-disk proof (and the next session's prime)
+    /// differs. Carries the new count to write.
+    RetainWithStrike { consecutive_failures: u32 },
+}
+
+/// Decide the two-strike outcome for a floor-primed revalidation failure. PURE —
+/// the mixer enacts the returned action. `current_failures` is the proof's
+/// on-disk `consecutive_failures` before this strike.
+///
+/// - `ProbeFail`: a measurement. First fail → [`StrikeAction::RetainWithStrike`]
+///   (count → `current_failures + 1`); reaching [`PROBE_FAIL_STRIKE_LIMIT`] →
+///   [`StrikeAction::Revoke`].
+/// - `DllDemotion` / `EarlyUnlock`: positive floor-failure evidence → always
+///   [`StrikeAction::Revoke`] (one strike), regardless of the counter.
+pub fn classify_strike(reason: RevokeReason, current_failures: u32) -> StrikeAction {
+    match reason {
+        RevokeReason::ProbeFail => {
+            let next = current_failures.saturating_add(1);
+            if next >= PROBE_FAIL_STRIKE_LIMIT {
+                StrikeAction::Revoke
+            } else {
+                StrikeAction::RetainWithStrike {
+                    consecutive_failures: next,
+                }
+            }
+        }
+        RevokeReason::DllDemotion | RevokeReason::EarlyUnlock => StrikeAction::Revoke,
     }
 }
 
@@ -610,19 +700,30 @@ pub struct HostComplianceObservability {
     /// The last revoke reason as a stable code (`0` none, else
     /// [`RevokeReason`]'s discriminant + 1: 1 probe_fail, 2 dll_demotion, 3
     /// early_unlock). Sticky for the daemon lifetime — the last strike stays
-    /// visible for a post-mortem even after a re-prove.
+    /// visible for a post-mortem even after a re-prove. Set on a REVOKE (delete)
+    /// AND on a RETAINED probe-fail strike (so a single spurious fail that only
+    /// bumped the counter is still visible in STATUS).
     pub revoked_reason_last_code: Arc<AtomicU64>,
+    /// The proof's current `consecutive_failures` — the two-strike counter, live
+    /// in STATUS (`compliance.consecutive_failures`). `0` for a clean proof (or
+    /// no proof); `1` after a first spurious probe fail whose proof was retained;
+    /// reset to `0` on the next clean write or an explicit probe-pass reset.
+    /// Reaching [`PROBE_FAIL_STRIKE_LIMIT`] deletes the proof (so it never sits at
+    /// `≥ 2` on disk in the steady state).
+    pub consecutive_failures: Arc<AtomicU64>,
 }
 
 impl HostComplianceObservability {
     /// A fresh observable seeded from the boot-time load: `flag_present` reflects
-    /// whether a valid proof was loaded, `proved_at` its timestamp, and no revoke
-    /// has happened yet.
-    pub fn new(flag_present: bool, proved_at_epoch_s: u64) -> Self {
+    /// whether a valid proof was loaded, `proved_at` its timestamp, the strike
+    /// counter its recorded `consecutive_failures`, and no revoke has happened
+    /// yet.
+    pub fn new(flag_present: bool, proved_at_epoch_s: u64, consecutive_failures: u32) -> Self {
         Self {
             flag_present: Arc::new(AtomicBool::new(flag_present)),
             proved_at_epoch_s: Arc::new(AtomicU64::new(proved_at_epoch_s)),
             revoked_reason_last_code: Arc::new(AtomicU64::new(0)),
+            consecutive_failures: Arc::new(AtomicU64::new(consecutive_failures as u64)),
         }
     }
 
@@ -632,21 +733,46 @@ impl HostComplianceObservability {
             flag_present: Arc::clone(&self.flag_present),
             proved_at_epoch_s: Arc::clone(&self.proved_at_epoch_s),
             revoked_reason_last_code: Arc::clone(&self.revoked_reason_last_code),
+            consecutive_failures: Arc::clone(&self.consecutive_failures),
         }
     }
 
-    /// Record a successful proof write.
+    /// Record a successful proof write — a clean proof, so the strike counter
+    /// resets to 0.
     pub fn on_written(&self, proved_at_epoch_s: u64) {
         self.proved_at_epoch_s
             .store(proved_at_epoch_s, Ordering::Relaxed);
         self.flag_present.store(true, Ordering::Relaxed);
+        self.consecutive_failures.store(0, Ordering::Relaxed);
     }
 
-    /// Record a revocation (flag cleared, reason recorded).
+    /// Record a revocation (flag cleared, reason recorded, counter reset — the
+    /// proof is gone, so its strike count is moot).
     pub fn on_revoked(&self, reason: RevokeReason) {
         self.flag_present.store(false, Ordering::Relaxed);
         self.revoked_reason_last_code
             .store(revoke_reason_code(reason), Ordering::Relaxed);
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+    }
+
+    /// Record a RETAINED probe-fail strike ([`StrikeAction::RetainWithStrike`]):
+    /// the proof stays present (`flag_present` UNCHANGED — still true), the strike
+    /// reason is recorded for STATUS/post-mortem, and the counter advances to the
+    /// retained value. The next session still primes at the floor off the retained
+    /// proof.
+    pub fn on_strike_retained(&self, reason: RevokeReason, consecutive_failures: u32) {
+        self.revoked_reason_last_code
+            .store(revoke_reason_code(reason), Ordering::Relaxed);
+        self.consecutive_failures
+            .store(consecutive_failures as u64, Ordering::Relaxed);
+    }
+
+    /// Record a probe-PASS reset of the strike counter on a floor-primed session:
+    /// the proof stays present, and the counter clears to 0 (a healthy pass
+    /// forgives an earlier spurious fail). Does NOT touch `flag_present` or the
+    /// last-revoke reason (a pass is not a revoke).
+    pub fn on_pass_reset(&self) {
+        self.consecutive_failures.store(0, Ordering::Relaxed);
     }
 }
 
@@ -839,6 +965,176 @@ mod tests {
         let mut bad = rec.clone();
         bad.schema = 2;
         assert!(!bad.valid_for(576));
+    }
+
+    #[test]
+    fn with_consecutive_failures_preserves_evidence() {
+        let rec = HostCompliance::new(1_700_000_000, 1.312, 576);
+        assert_eq!(rec.consecutive_failures, 0);
+        let struck = rec.with_consecutive_failures(1);
+        assert_eq!(struck.consecutive_failures, 1);
+        // The proof evidence is preserved so the retained proof still primes the
+        // next session at the same floor with the same ratio/timestamp.
+        assert_eq!(struck.proved_at_epoch_s, rec.proved_at_epoch_s);
+        assert_eq!(struck.probe_response_ratio, rec.probe_response_ratio);
+        assert_eq!(struck.floor_frames, rec.floor_frames);
+        assert_eq!(struck.schema, rec.schema);
+        // Still a valid prime authority for the same floor.
+        assert!(struck.valid_for(576));
+    }
+
+    // ---- Two-strike probe-fail policy (classify_strike) --------------------
+
+    #[test]
+    fn probe_fail_is_two_strike_retain_then_revoke() {
+        // First probe fail (counter 0 → 1): RETAIN, bump the counter. One bad
+        // measurement must not cost the floor.
+        assert_eq!(
+            classify_strike(RevokeReason::ProbeFail, 0),
+            StrikeAction::RetainWithStrike {
+                consecutive_failures: 1
+            },
+        );
+        // Second consecutive probe fail (counter 1 → 2 == limit): REVOKE. Two
+        // independent sessions disagreeing with the proof IS a host change.
+        assert_eq!(
+            classify_strike(RevokeReason::ProbeFail, 1),
+            StrikeAction::Revoke,
+        );
+        // Defensive: a somehow-higher stored counter still revokes.
+        assert_eq!(
+            classify_strike(RevokeReason::ProbeFail, 5),
+            StrikeAction::Revoke,
+        );
+    }
+
+    #[test]
+    fn dll_demotion_and_early_unlock_are_one_strike() {
+        // Direct floor-failure evidence revokes on the FIRST strike regardless of
+        // the counter — the two-strike tolerance is probe-fail-specific.
+        for count in [0u32, 1, 2, 9] {
+            assert_eq!(
+                classify_strike(RevokeReason::DllDemotion, count),
+                StrikeAction::Revoke,
+                "DLL demotion is always one-strike (count={count})",
+            );
+            assert_eq!(
+                classify_strike(RevokeReason::EarlyUnlock, count),
+                StrikeAction::Revoke,
+                "confirmed churn is always one-strike (count={count})",
+            );
+        }
+    }
+
+    #[test]
+    fn strike_limit_is_two() {
+        // The limit is load-bearing: at 2, a first fail retains and a second
+        // deletes. Pin it so a change to the const is a deliberate, reviewed edit.
+        assert_eq!(PROBE_FAIL_STRIKE_LIMIT, 2);
+    }
+
+    /// The full ON-DISK two-strike lifecycle, composing `classify_strike` +
+    /// `with_consecutive_failures` + `store`/`load`/`revoke` EXACTLY as
+    /// `mixer::service_host_compliance` wires them — the faithful end-to-end proof
+    /// without the (macOS-uncompilable) mixer. Two sequences:
+    ///   (a) fail → RETAIN (proof kept, counter 1) → pass → reset (counter 0);
+    ///   (b) fail → RETAIN → fail → REVOKE (file deleted).
+    /// Mutation guard both directions: making a probe fail one-strike breaks (a)'s
+    /// "proof kept"; making it never delete breaks (b)'s "file gone".
+    #[test]
+    fn two_strike_on_disk_lifecycle() {
+        let dir = std::env::temp_dir().join(format!("jts-compl-2strike-{}", std::process::id()));
+        let path = dir.join("host_compliance.json");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // A clean proof is written (session A proved + settled at the floor).
+        let proof = HostCompliance::new(1_700_000_000, 1.312, 576);
+        proof.store(&path).expect("store clean proof");
+        assert_eq!(HostCompliance::load(&path).unwrap().consecutive_failures, 0);
+
+        // --- (a) First probe fail → RETAIN. The mixer keeps the proof, persists a
+        // bumped counter, and leaves flag_present true. ---
+        let loaded = HostCompliance::load(&path).unwrap();
+        match classify_strike(RevokeReason::ProbeFail, loaded.consecutive_failures) {
+            StrikeAction::RetainWithStrike {
+                consecutive_failures,
+            } => {
+                assert_eq!(consecutive_failures, 1);
+                loaded
+                    .with_consecutive_failures(consecutive_failures)
+                    .store(&path)
+                    .expect("persist retained strike");
+            }
+            StrikeAction::Revoke => panic!("first probe fail must RETAIN, not revoke"),
+        }
+        // The proof is STILL on disk (the next session still primes at the floor),
+        // now carrying the strike, and still a valid prime authority.
+        let after_strike = HostCompliance::load(&path).expect("proof retained after first fail");
+        assert_eq!(after_strike.consecutive_failures, 1);
+        assert!(
+            after_strike.valid_for(576),
+            "a retained proof still primes the next session at the same floor"
+        );
+
+        // --- A probe PASS on the next floor-primed session resets the counter. ---
+        let cleared = after_strike.with_consecutive_failures(0);
+        cleared.store(&path).expect("persist pass reset");
+        assert_eq!(HostCompliance::load(&path).unwrap().consecutive_failures, 0);
+
+        // --- (b) Now fail twice in a row from the clean counter. ---
+        // First fail → retain (counter 0 → 1).
+        let l0 = HostCompliance::load(&path).unwrap();
+        let StrikeAction::RetainWithStrike {
+            consecutive_failures: c1,
+        } = classify_strike(RevokeReason::ProbeFail, l0.consecutive_failures)
+        else {
+            panic!("first fail retains");
+        };
+        l0.with_consecutive_failures(c1)
+            .store(&path)
+            .expect("persist strike 1");
+        assert!(
+            HostCompliance::load(&path).is_some(),
+            "still present after 1"
+        );
+
+        // Second consecutive fail → REVOKE (counter 1 → limit): the mixer deletes.
+        let l1 = HostCompliance::load(&path).unwrap();
+        assert_eq!(l1.consecutive_failures, 1);
+        match classify_strike(RevokeReason::ProbeFail, l1.consecutive_failures) {
+            StrikeAction::Revoke => {
+                HostCompliance::revoke(&path).expect("delete on the second fail");
+            }
+            StrikeAction::RetainWithStrike { .. } => {
+                panic!("the SECOND consecutive probe fail must REVOKE (delete)")
+            }
+        }
+        assert!(
+            HostCompliance::load(&path).is_none(),
+            "the proof is deleted on the second consecutive probe fail"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A DLL demotion on a floor-primed session with a clean counter deletes the
+    /// proof on the FIRST strike — the one-strike path is unchanged for direct
+    /// floor-failure evidence (contrast the two-strike probe-fail lifecycle).
+    #[test]
+    fn dll_demotion_deletes_on_first_strike_on_disk() {
+        let dir = std::env::temp_dir().join(format!("jts-compl-dll-{}", std::process::id()));
+        let path = dir.join("host_compliance.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        HostCompliance::new(1, 1.0, 576).store(&path).unwrap();
+        match classify_strike(RevokeReason::DllDemotion, 0) {
+            StrikeAction::Revoke => HostCompliance::revoke(&path).unwrap(),
+            StrikeAction::RetainWithStrike { .. } => panic!("DLL demotion is one-strike"),
+        }
+        assert!(
+            HostCompliance::load(&path).is_none(),
+            "a DLL demotion deletes on the first strike"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1115,7 +1411,7 @@ mod tests {
 
     #[test]
     fn observability_tracks_write_and_revoke() {
-        let obs = HostComplianceObservability::new(false, 0);
+        let obs = HostComplianceObservability::new(false, 0, 0);
         assert!(!obs.flag_present.load(Ordering::Relaxed));
         obs.on_written(1_700_000_000);
         assert!(obs.flag_present.load(Ordering::Relaxed));
@@ -1126,6 +1422,44 @@ mod tests {
             obs.revoked_reason_last_code.load(Ordering::Relaxed),
             revoke_reason_code(RevokeReason::EarlyUnlock)
         );
+    }
+
+    #[test]
+    fn observability_tracks_strike_counter() {
+        // Seeded from a loaded proof with a retained strike (counter 1).
+        let obs = HostComplianceObservability::new(true, 1_700_000_000, 1);
+        assert!(obs.flag_present.load(Ordering::Relaxed));
+        assert_eq!(obs.consecutive_failures.load(Ordering::Relaxed), 1);
+
+        // A RETAINED probe-fail strike keeps the flag TRUE, records the reason,
+        // and bumps the counter — the "one bad measurement keeps the floor" path.
+        obs.on_strike_retained(RevokeReason::ProbeFail, 1);
+        assert!(
+            obs.flag_present.load(Ordering::Relaxed),
+            "a retained strike must NOT clear flag_present"
+        );
+        assert_eq!(obs.consecutive_failures.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            obs.revoked_reason_last_code.load(Ordering::Relaxed),
+            revoke_reason_code(RevokeReason::ProbeFail)
+        );
+
+        // A probe PASS reset clears the counter but leaves the flag/reason alone.
+        obs.on_pass_reset();
+        assert!(obs.flag_present.load(Ordering::Relaxed));
+        assert_eq!(obs.consecutive_failures.load(Ordering::Relaxed), 0);
+
+        // A clean write resets the counter to 0 as well.
+        obs.on_strike_retained(RevokeReason::ProbeFail, 1);
+        assert_eq!(obs.consecutive_failures.load(Ordering::Relaxed), 1);
+        obs.on_written(1_700_000_100);
+        assert_eq!(obs.consecutive_failures.load(Ordering::Relaxed), 0);
+
+        // A revoke (delete) clears the counter (proof gone) and the flag.
+        obs.on_strike_retained(RevokeReason::ProbeFail, 1);
+        obs.on_revoked(RevokeReason::ProbeFail);
+        assert!(!obs.flag_present.load(Ordering::Relaxed));
+        assert_eq!(obs.consecutive_failures.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -1692,6 +2026,104 @@ mod tests {
         assert!(
             !t.pending_strike_armed(),
             "the pending strike expired with no relock — the proof survives"
+        );
+    }
+
+    /// Build a REAL, decay-ARMED, FLOOR-PRIMED resampler locked AT the floor via
+    /// the Part 1 floor-prime seating (jts.local 2026-07-03) — the deeper seating
+    /// the fix produces. The lock seats at the floor depth (not the shallow
+    /// bounded-prime fall-through), so this exercises the interaction between the
+    /// deeper seat and the #1156 churn discriminator.
+    fn build_floor_primed_locked_resampler() -> (crate::lane_resampler::LaneResampler, Vec<i16>) {
+        use crate::lane_resampler::{DecayParams, LaneResampler};
+        const PERIOD: u32 = 256;
+        const TARGET: usize = 512;
+        const CUSHION: usize = 256;
+        const FLOOR: u64 = (TARGET + 32) as u64;
+        const RING: usize = 8192;
+        let params = DecayParams {
+            enabled: true,
+            floor_frames: FLOOR,
+            step_frames: 16,
+            interval_ms: 1,
+            stability_ms: 1,
+            cascade_guard_ppm: 400.0,
+        };
+        let mut r =
+            LaneResampler::new(2, PERIOD, 48_000, TARGET, CUSHION, 500.0, RING, params).unwrap();
+        // Prime at the floor as a valid proof would, so `try_lock` seats at the
+        // floor depth (the Part 1 path), not shallow.
+        r.prime_decay_at_floor();
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        // Feed exactly the floor prefill (+ slack). Under the fix the lane seats at
+        // the floor from this depth.
+        r.push_input(&real_tone(FLOOR as usize + 8 + 1 + 64));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize, "locks at floor");
+        assert!(r.is_locked());
+        // The lock seated at the floor depth (the Part 1 fix): the cursor-relative
+        // fill is near the floor, not the fat ceiling. `hold_fill_frames` is
+        // private to lane_resampler; the seat depth itself is asserted directly in
+        // `lane_resampler::tests::floor_primed_lock_does_not_seat_shallow_via_fallthrough`.
+        // Here the public `fill_frames_gauge` confirms the seated fill is shallow
+        // (near the floor), not the ceiling.
+        assert!(
+            r.fill_frames_gauge() <= FLOOR + 32,
+            "the floor-primed lock seated near the floor (Part 1), not the ceiling"
+        );
+        (r, out)
+    }
+
+    /// Part 1 × #1156 interaction: a FLOOR-SEATED lock (deeper seating from the
+    /// floor-prime fix) that underfill-unlocks and RELOCKS within the horizon must
+    /// STILL confirm churn and revoke. The deeper seat does not weaken the churn
+    /// discriminator — it operates on lock/unlock edges + the unlock count, which
+    /// are independent of seat depth.
+    #[test]
+    fn floor_seated_lock_still_confirms_churn_on_relock() {
+        const PERIOD: usize = 256;
+        let (mut r, mut out) = build_floor_primed_locked_resampler();
+        let mut t = primed_tracker();
+        let baseline_unlocks = r.unlock_count();
+
+        // Healthy locked period → no revoke.
+        assert_eq!(
+            t.step(r.is_locked(), r.unlock_count(), 1, false, true)
+                .revoke,
+            None
+        );
+
+        // STARVE → underfill unlock (arm), no revoke on the falling edge.
+        let mut armed = false;
+        for _ in 0..64 {
+            r.render_period(&mut out);
+            let s = t.step(r.is_locked(), r.unlock_count(), 1, false, true);
+            assert_eq!(s.revoke, None, "the arming underfill must not revoke");
+            if !r.is_locked() {
+                assert!(r.unlock_count() > baseline_unlocks);
+                assert!(t.pending_strike_armed(), "the underfill armed a strike");
+                armed = true;
+                break;
+            }
+        }
+        assert!(armed, "the floor-seated lane underfill-unlocked");
+
+        // RE-FEED → relock within the horizon → CONFIRM churn (revoke).
+        let mut revoked = None;
+        for _ in 0..64 {
+            r.push_input(&real_tone(PERIOD * 4));
+            r.render_period(&mut out);
+            let s = t.step(r.is_locked(), r.unlock_count(), 1, false, true);
+            if let Some(reason) = s.revoke {
+                revoked = Some(reason);
+                assert!(s.rising_edge, "the revoke lands on the relock");
+                break;
+            }
+        }
+        assert_eq!(
+            revoked,
+            Some(RevokeReason::EarlyUnlock),
+            "a floor-SEATED lock's unlock→relock churn inside the horizon must still \
+             confirm (Part 1's deeper seating does not weaken the #1156 discriminator)"
         );
     }
 }

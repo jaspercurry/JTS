@@ -735,6 +735,29 @@ const PROBE_BASELINE_SECS: u64 = 4;
 /// (contract §2 fixed-constant discipline); a `const` so a test can pin it.
 pub const PROBE_SETTLE_SECS: u64 = 2;
 
+/// CORRECTION-mode UNRAILED-SETTLE rail-guard threshold, in ppm. The pre-probe
+/// [`ProbePhase::AwaitLock`] settle window requires the resampler's smoothed
+/// correction ppm to be BELOW this magnitude for the whole settle duration
+/// before it will baseline — a defense-in-depth companion to the fan-in
+/// floor-prime-seating fix (jts.local 2026-07-03).
+///
+/// Why: the compliance probe is lock-gated, so [`Obs::locked`] alone was the
+/// only gate on leaving AwaitLock. A lock can seat while the lane is still
+/// RAILING its ±500 ppm correction authority — e.g. a shallow-seated floor
+/// prime building the fill up to the floor target, where the correction sits at
+/// −500 ppm for ~13 s. Baselining THEN read the railed value (baseline ≈ step ≈
+/// −500 → response_ratio ≈ 0 → a spurious FAIL). A railed correction means the
+/// lane is NOT in its steady regime regardless of lock state, so the settle
+/// window must not accrue while |correction| is at the rail — hold in AwaitLock,
+/// commanding neutral, until the inner loop has pulled the correction well off
+/// the rail. 450 sits just below the ±500 inner authority so a genuinely
+/// steady, near-rail-but-not-railed host (its natural crystal drive can sit at a
+/// few hundred ppm of correction) is not blocked, while a hard rail (±500) is.
+/// [`ObsMode::Fill`] (usbsink solo) is UNAFFECTED — it has no resampler stage,
+/// so `Obs::correction_ppm` is always 0, well under this threshold, and the
+/// guard is a no-op there. Fixed `const` (contract §2), not env-tunable.
+pub const CORRECTION_SETTLE_RAIL_GUARD_PPM: f64 = 450.0;
+
 impl HostClock {
     /// Build the ladder from validated config. The DLL is created with adaptive
     /// retune DISABLED and the resync/slew clamps OFF so its bandwidth — and
@@ -1005,6 +1028,30 @@ impl HostClock {
         }
     }
 
+    /// Whether the lane is in a SETTLE-ELIGIBLE regime this tick — the gate for
+    /// the pre-probe [`ProbePhase::AwaitLock`] settle window to accrue. Requires
+    /// [`Obs::locked`] always, and in [`ObsMode::Correction`] ADDITIONALLY that
+    /// the resampler's smoothed correction ppm is UNRAILED (magnitude below
+    /// [`CORRECTION_SETTLE_RAIL_GUARD_PPM`]). A railed correction (e.g. a
+    /// shallow-seated floor prime driving the fill up to target at −500 ppm) means
+    /// the lane is not in its steady regime even though it is locked, so the
+    /// baseline must not start against it (jts.local 2026-07-03). Reads the
+    /// smoothed mean the probe itself will baseline against
+    /// ([`SlopeEstimator::correction_mean_ppm`], updated at the top of every
+    /// `tick`), so the gate and the observable agree. In FILL mode the correction
+    /// is always 0, so this reduces to `obs.locked` — usbsink solo is unchanged.
+    fn settle_regime_ok(&self, obs: Obs) -> bool {
+        if !obs.locked {
+            return false;
+        }
+        match self.cfg.obs_mode {
+            ObsMode::Fill => true,
+            ObsMode::Correction => {
+                self.slope.correction_mean_ppm().abs() < CORRECTION_SETTLE_RAIL_GUARD_PPM
+            }
+        }
+    }
+
     fn tick_probe(&mut self, obs: Obs, now_ms: u64, actions: &mut Vec<Action>) {
         // Lock loss AFTER the wait (during baseline or step) means the lane fell
         // back into its warmup regime — the measurement in flight is now
@@ -1029,10 +1076,12 @@ impl HostClock {
 
         match self.probe_phase {
             ProbePhase::AwaitLock => {
-                if obs.locked {
-                    // Track when lock first became continuously true; once it has
-                    // held for the settle window, begin the baseline. The timer is
-                    // on the tick clock (`now_ms`), never wall time.
+                if self.settle_regime_ok(obs) {
+                    // Track when the settle-eligible regime (locked AND, in
+                    // CORRECTION mode, an UNRAILED correction) first became
+                    // continuously true; once it has held for the settle window,
+                    // begin the baseline. The timer is on the tick clock
+                    // (`now_ms`), never wall time.
                     let since = *self.lock_since_ms.get_or_insert(now_ms);
                     if now_ms.saturating_sub(since) >= PROBE_SETTLE_SECS * 1000 {
                         // Seat the baseline window fresh from HERE and re-anchor the
@@ -1050,8 +1099,13 @@ impl HostClock {
                         );
                     }
                 } else {
-                    // Not locked (yet, or lost before settling): reset the timer so
-                    // the settle window requires CONTINUOUS lock.
+                    // Not in the settle regime (not locked yet / lock lost, OR the
+                    // correction is still railed while the fill builds): reset the
+                    // timer so the settle window requires CONTINUOUS lock AND an
+                    // unrailed correction. Holding here keeps commanding neutral
+                    // until the inner loop pulls the correction off the rail, so
+                    // the baseline never reads a railed value (the probe
+                    // false-fail, jts.local 2026-07-03).
                     self.lock_since_ms = None;
                 }
             }
@@ -2541,6 +2595,125 @@ mod tests {
             "at the settle boundary the baseline starts"
         );
         assert_eq!(hc.ladder(), Ladder::Probing, "baselining is still Probing");
+    }
+
+    /// A CORRECTION-mode [`Obs`] with the lane LOCKED and a specified live
+    /// correction ppm — the observable the rail-guard reads. `cap`/`play` are
+    /// irrelevant to the CORRECTION observable (the probe uses the correction
+    /// mean, not the fill slope) but supplied so the Obs is well-formed.
+    fn obs_corr(correction_ppm: f64, cap: u64, play: u64) -> Obs {
+        Obs {
+            playing: true,
+            host_connected: true,
+            preempted: false,
+            locked: true,
+            fill_frames: 400.0,
+            capture_frames: cap,
+            playback_frames: play,
+            correction_ppm,
+        }
+    }
+
+    /// UNRAILED-SETTLE guard (jts.local 2026-07-03): in CORRECTION mode the
+    /// AwaitLock settle window must NOT accrue while the resampler's correction is
+    /// RAILED, even though the lane is LOCKED. A shallow-seated floor prime holds
+    /// the correction at −500 ppm for the ~13 s it takes to build the fill up to
+    /// the floor; baselining THEN reads the railed value (baseline ≈ step ≈ −500
+    /// → response_ratio ≈ 0 → a spurious FAIL). The guard holds the probe in
+    /// AwaitLock (commanding neutral) until the correction comes off the rail,
+    /// then the settle window runs against the quiescent baseline and passes.
+    #[test]
+    fn correction_probe_does_not_settle_while_railed() {
+        let mut hc = HostClock::new(correction_cfg());
+        hc.startup_neutralize();
+        let mut cap: u64 = 1_000_000_000;
+        let mut play: u64 = cap;
+        let mut t = 0u64;
+        // RAILED for well over the settle window: locked, but the correction sits
+        // at −500 ppm (the shallow-seat fill-build). Without the rail guard the
+        // 2 s settle would elapse and the baseline would start against −500 —
+        // exactly the false-fail. WITH the guard the probe stays in AwaitLock,
+        // commanding only neutral pitch, for the whole railed stretch.
+        for _ in 0..10 {
+            t += 1;
+            cap += 48000;
+            play += 48000;
+            let actions = hc.tick(obs_corr(-500.0, cap, play), t * 1000);
+            assert!(
+                hc.probe_waiting_for_lock(),
+                "railed correction ⇒ still waiting for the settle regime"
+            );
+            assert_eq!(hc.ladder(), Ladder::Probing, "railed ⇒ still probing");
+            if let Some(Action::WritePitch { ppm, .. }) = actions.last() {
+                assert_eq!(*ppm, 0.0, "await-lock commands only neutral while railed");
+            }
+        }
+        assert_eq!(
+            hc.probe_result(),
+            ProbeResult::None,
+            "no verdict is reached while the correction is railed"
+        );
+        // The inner loop pulls the correction OFF the rail (the fill reached the
+        // floor). From here the settle window can accrue. Give it the settle +
+        // baseline + step window against an unrailed, near-zero correction that
+        // follows the commanded step (a compliant host). The probe now runs
+        // cleanly and PASSES.
+        let base = -20.0;
+        for _ in 0..(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + CORRECTION_PROBE_STEP_SECS + 3) {
+            t += 1;
+            cap += 48000;
+            play += 48000;
+            // A compliant host: its correction tracks the commanded step (the
+            // resampler's correction moves with the host rate the ladder drives).
+            let corr = base + hc.commanded_ppm();
+            hc.tick(obs_corr(corr, cap, play), t * 1000);
+        }
+        assert_eq!(
+            hc.probe_result(),
+            ProbeResult::Pass,
+            "once unrailed, the settle+baseline+step run clean and pass"
+        );
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        assert!(
+            !hc.probe_waiting_for_lock(),
+            "unrailed + settled ⇒ no longer waiting"
+        );
+    }
+
+    /// The rail guard is a CORRECTION-mode concern only: FILL mode (usbsink solo)
+    /// has no resampler, so `correction_ppm` is always 0 and the guard reduces to
+    /// `obs.locked`. Drive a FILL-mode probe with a correction_ppm that WOULD trip
+    /// the guard if it applied, and confirm the settle still completes exactly as
+    /// before (the guard never fires in FILL mode).
+    #[test]
+    fn fill_mode_settle_ignores_correction_rail_guard() {
+        let mut hc = HostClock::new(enabled_cfg()); // ObsMode::Fill
+        hc.startup_neutralize();
+        let mut cap: u64 = 1_000_000_000;
+        let mut play: u64 = cap;
+        let mut t = 10u64;
+        // Locked, on-rate FILL data, but carry a bogus railed correction_ppm.
+        // `settle_regime_ok` gates the rail check on `obs_mode == Correction`, so
+        // in FILL mode the correction value is never consulted and the settle
+        // proceeds after the normal 2 s (real usbsink Obs carries correction 0
+        // anyway; this feeds −500 to prove the mode gate, not the value, is what
+        // suppresses the guard). If the guard were (wrongly) live in FILL mode
+        // this would hang in AwaitLock forever.
+        for _ in 0..(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + 6 + 3) {
+            t += 1;
+            let host_ppm = 100.0 + hc.commanded_ppm();
+            cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
+            play += 48000;
+            let mut ob = obs(true, true, 400.0, cap, play);
+            ob.correction_ppm = -500.0; // ignored in FILL mode
+            hc.tick(ob, t * 1000);
+        }
+        assert_eq!(
+            hc.probe_result(),
+            ProbeResult::Pass,
+            "FILL mode ignores the correction rail guard and settles normally"
+        );
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
     }
 
     /// Lock loss DURING the baseline restarts the wait: the in-flight measurement
