@@ -617,7 +617,7 @@ def build_room_sweep_spec(
         heading_text = "Room measurement"
     seconds = round(stimulus_duration_ms / 1000)
     if calibration_models is None:
-        from jasper.correction.calibration import supported_model_options
+        from jasper.audio_measurement.calibration import supported_model_options
 
         calibration_models = supported_model_options()
 

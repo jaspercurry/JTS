@@ -19,9 +19,15 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from jasper.audio_measurement.quality_model import ROOM as _ROOM_QUALITY
+
 SCHEMA_VERSION = 1
-SNR_OK_DB = 25.0
-SNR_WARN_DB = 20.0
+# SNR trust thresholds now live on the shared ROOM QualityModel profile so the
+# room, driver, and level-ramp layers differ by data rather than forked
+# constants; values are unchanged (25.0 / 20.0). Kept as module-level aliases so
+# existing references still resolve.
+SNR_OK_DB = _ROOM_QUALITY.snr_ok_db
+SNR_WARN_DB = _ROOM_QUALITY.snr_warn_db
 
 
 def _round(value: Any, digits: int = 2) -> float | None:

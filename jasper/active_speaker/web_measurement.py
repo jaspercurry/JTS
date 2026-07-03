@@ -235,7 +235,7 @@ def capture_sweep_meta(raw: Mapping[str, Any]) -> dict[str, Any]:
     sweep_meta = raw.get("sweep_meta") or capture.get("sweep_meta")
     if not isinstance(sweep_meta, Mapping):
         from jasper.active_speaker import driver_acoustics as acoustic
-        from jasper.correction import sweep as sweep_mod
+        from jasper.audio_measurement import sweep as sweep_mod
 
         _signal, meta = sweep_mod.synchronized_swept_sine(
             f1=acoustic.DEFAULT_F1_HZ,
@@ -295,7 +295,7 @@ def capture_calibration(
     curve = None
     resolved_id: str | None = None
     if calibration_id:
-        from jasper.correction.calibration import load_calibration_record
+        from jasper.audio_measurement.calibration import load_calibration_record
 
         try:
             record = load_calibration_record(calibration_id)

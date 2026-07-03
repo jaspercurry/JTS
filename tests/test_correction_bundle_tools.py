@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper.correction import bundle_tools, bundles, interop, sweep
+from jasper.audio_measurement import sweep
+from jasper.correction import bundle_tools, bundles, interop
 from jasper.correction.session import MeasurementSession, SessionConfig, SessionState
 
 

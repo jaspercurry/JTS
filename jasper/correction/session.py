@@ -48,17 +48,22 @@ from typing import Any, Awaitable, Callable
 
 import numpy as np
 
-from . import (
-    acoustic_quality,
+from jasper.audio_measurement import (
     analysis,
-    browser_audio,
     calibration,
-    confidence,
     deconv,
     quality,
+    sweep,
+)
+from jasper.audio_measurement.calibration import CalibrationRecord
+from jasper.audio_measurement.quality_model import ROOM as ROOM_QUALITY
+
+from . import (
+    acoustic_quality,
+    browser_audio,
+    confidence,
     runtime_integrity,
     strategy,
-    sweep,
 )
 from .artifacts import ANALYSIS_NORMALIZE_BAND_HZ, SessionArtifacts
 from .autolevel import (
@@ -67,7 +72,6 @@ from .autolevel import (
     AutolevelStatus as AutolevelStatus,
     compute_autolevel_cap as compute_autolevel_cap,
 )
-from .calibration import CalibrationRecord
 from .peq import PEQ
 from .state_guard import SessionStateGuard
 from .status import (
@@ -965,6 +969,7 @@ class MeasurementSession:
             has_mic_calibration=self.mic_calibration is not None,
             input_device=self.input_device,
             truncated_from_samples=raw_capture_samples,
+            quality_model=ROOM_QUALITY,
         )
         for issue in capture_quality.issues:
             logger.warning(

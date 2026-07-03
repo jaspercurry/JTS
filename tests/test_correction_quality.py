@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from jasper.correction import quality
+from jasper.audio_measurement import quality
 
 
 def test_capture_quality_warns_without_calibration():

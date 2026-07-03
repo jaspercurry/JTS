@@ -1026,7 +1026,7 @@ Things that are still worth tracking after the Phase 0a substrate:
    access.
 2. **Vendor endpoint drift.** Phase 0a ships Dayton + miniDSP serial
    lookup plus manual upload fallback. Keep the provider boundary in
-   [`jasper/correction/calibration.py`](../jasper/correction/calibration.py)
+   [`jasper/audio_measurement/calibration.py`](../jasper/audio_measurement/calibration.py)
    narrow so future serial schemes do not touch measurement math. If a
    vendor blocks or changes lookup, the correct UX is a clear lookup
    error plus manual upload, not a hidden fallback to uncalibrated

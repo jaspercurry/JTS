@@ -270,7 +270,7 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
     """The extracted serializer owns payload shape; the session/artifact
     wrappers should keep exposing the same status and bundle dictionaries."""
     from jasper.correction.session import CurveJSON, PEQJSON
-    from jasper.correction.sweep import SweepMeta
+    from jasper.audio_measurement.sweep import SweepMeta
 
     sess = _make_session(
         tmp_path,
@@ -654,7 +654,7 @@ async def test_design_writes_result_json(tmp_path: Path):
     measured / target / predicted curves so a copied-off bundle is
     re-renderable without re-running the deconvolution."""
     import numpy as np
-    from jasper.correction import sweep
+    from jasper.audio_measurement import sweep
 
     sess = _make_session(tmp_path)
     sess.input_device = {

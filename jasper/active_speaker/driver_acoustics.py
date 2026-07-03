@@ -12,11 +12,11 @@ mic sweep capture into a real per-driver verdict (is this driver producing
 sound, and in its expected band?) and a summed-crossover verdict (does the
 crossover region sum without a cancellation null?).
 
-It reuses the room-correction sweep / deconvolution / analysis primitives in
-[`jasper.correction`](../correction/__init__.py) rather than reinventing the
-DSP — the only thing correction can't do is target one physical output, so
-``write_driver_sweep_wav`` builds a channel-targeted multichannel WAV (sweep on
-one channel, silence elsewhere). numpy/scipy and the correction modules are
+It reuses the shared sweep / deconvolution / analysis primitives in
+[`jasper.audio_measurement`](../audio_measurement/__init__.py) rather than
+reinventing the DSP — the only thing that kernel can't do is target one physical
+output, so ``write_driver_sweep_wav`` builds a channel-targeted multichannel WAV
+(sweep on one channel, silence elsewhere). numpy/scipy and the kernel modules are
 imported lazily inside functions so the socket-activated ``/sound/`` wizard
 stays light until a measurement actually runs (mirrors
 [`jasper/web/correction_setup.py`](../web/correction_setup.py)).
@@ -42,8 +42,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+# quality_model holds only pure-data threshold profiles (no numpy/scipy), so it
+# is safe to import at module top even though the rest of the measurement kernel
+# stays lazily imported to keep the socket-activated /sound/ wizard light.
+from jasper.audio_measurement.quality_model import DRIVER
+
 if TYPE_CHECKING:
-    from jasper.correction.calibration import CalibrationCurve
+    from jasper.audio_measurement.calibration import CalibrationCurve
 
 # Default swept-sine parameters. Shorter than room correction's 10 s — a single
 # driver needs far less SNR than a multi-position room average — but the same
@@ -63,11 +68,13 @@ ANALYSIS_HI_HZ = 18000.0
 DEFAULT_SMOOTHING_FRACTION = 24
 
 # Verdict thresholds (all differential, so the unknown absolute calibration of
-# the deconvolved magnitude cancels out).
-SILENT_PEAK_DBFS = -45.0  # at/below this the capture is effectively silent
+# the deconvolved magnitude cancels out). The driver-specific ones are aliased
+# from the shared DRIVER QualityModel profile so the forked constant lives in
+# data (jasper.audio_measurement.quality_model); values are unchanged.
+SILENT_PEAK_DBFS = DRIVER.silent_peak_dbfs  # at/below this the capture is silent
 PRESENT_MIN_SEPARATION_DB = 0.0  # in-band must be at least as strong as out
 OUT_OF_BAND_SEPARATION_DB = -3.0  # clearly more energy outside the band
-DEFAULT_NULL_THRESHOLD_DB = 6.0  # a crossover null this deep is "present"
+DEFAULT_NULL_THRESHOLD_DB = DRIVER.null_threshold_db  # deep crossover null = "present"
 
 # Surfaced frequency-response curve (per-driver + summed), so the maintainer can
 # eyeball Fc/slope by hand. Downsampled log-spaced so the JSON stays small. This
@@ -87,8 +94,9 @@ FR_CURVE_MAX_POINTS = 72
 OVERLAP_BAND_RATIO = 2.0 ** 0.5  # half-octave each side → one octave total
 # A band needs at least this many FFT bins for a stable mean. Below this (a very
 # low Fc on a short sweep) the overlap reading is marked unusable and the trim
-# math fails closed to the datasheet sensitivity trim.
-OVERLAP_MIN_BINS = 4
+# math fails closed to the datasheet sensitivity trim. Aliased from the shared
+# DRIVER profile (value unchanged).
+OVERLAP_MIN_BINS = DRIVER.overlap_min_bins
 
 DRIVER_ACOUSTIC_KIND = "jts_active_speaker_driver_acoustics"
 SUMMED_ACOUSTIC_KIND = "jts_active_speaker_summed_acoustics"
@@ -229,7 +237,7 @@ def write_driver_sweep_wav(
 ) -> DriverSweep:
     """Write a multichannel sweep WAV with the ESS on one channel, silence else.
 
-    ``jasper.correction.sweep.write_sweep_wav`` only emits mono; an active
+    ``jasper.audio_measurement.sweep.write_sweep_wav`` only emits mono; an active
     speaker needs the sweep routed to exactly one physical output so a single
     driver is excited. The returned ``DriverSweep.sweep_meta`` carries the exact
     synchronization parameters the analysis side must regenerate the reference
@@ -247,7 +255,7 @@ def write_driver_sweep_wav(
     import numpy as np
     from scipy.io import wavfile
 
-    from jasper.correction import sweep as sweep_mod
+    from jasper.audio_measurement import sweep as sweep_mod
 
     mono, meta = sweep_mod.synchronized_swept_sine(
         f1=f1_hz,
@@ -284,15 +292,15 @@ def _capture_to_magnitude(
 
     When ``calibration`` is supplied (an L2 calibrated measurement mic), the
     mic-correction curve is applied to the magnitude via the SAME
-    ``correction.calibration.apply_calibration_curve`` the room-correction path
+    ``jasper.audio_measurement.calibration.apply_calibration_curve`` the room-correction path
     uses, so the surfaced FR is calibrated and the null-depth shoulders (taken at
     different frequencies) are corrected rather than relying on the additive cal
     cancelling.
     """
     import numpy as np
 
-    from jasper.correction import analysis, calibration as calibration_mod, deconv, quality
-    from jasper.correction import sweep as sweep_mod
+    from jasper.audio_measurement import analysis, calibration as calibration_mod, deconv, quality
+    from jasper.audio_measurement import sweep as sweep_mod
 
     has_cal = has_mic_calibration or calibration is not None
     sample_rate = int(sweep_meta["sample_rate"])
@@ -313,6 +321,7 @@ def _capture_to_magnitude(
         sweep_n_samples=n_samples,
         has_mic_calibration=has_cal,
         truncated_from_samples=raw_capture_samples,
+        quality_model=DRIVER,
     )
     if report.failed:
         return report, None, None

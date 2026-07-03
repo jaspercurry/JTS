@@ -28,7 +28,7 @@ import numpy as np
 import pytest
 from scipy.signal import fftconvolve
 
-from jasper.correction import deconv, sweep
+from jasper.audio_measurement import deconv, sweep
 
 
 # ---------- sweep generation ------------------------------------------------
@@ -233,7 +233,7 @@ def test_cap_capture_length_truncates_floors_and_disables(caplog):
     ) is within
 
     overlong = np.zeros(int(10 * sr), dtype=np.float64)  # 80000 samples
-    with caplog.at_level(logging.WARNING, logger="jasper.correction.deconv"):
+    with caplog.at_level(logging.WARNING, logger="jasper.audio_measurement.deconv"):
         capped = deconv.cap_capture_length(
             overlong, sweep_len=sweep_len, sample_rate=sr, max_capture_seconds=2.0,
         )
@@ -273,7 +273,7 @@ def test_deconv_caps_overlong_capture(caplog):
     overlong = np.concatenate([base, np.zeros(20 * sr, dtype=np.float64)])
     assert len(overlong) > cap_samples
 
-    with caplog.at_level(logging.WARNING, logger="jasper.correction.deconv"):
+    with caplog.at_level(logging.WARNING, logger="jasper.audio_measurement.deconv"):
         ir_capped = deconv.deconvolve(
             overlong, sig.astype(np.float64),
             sample_rate=sr, max_capture_seconds=cap_s,
@@ -304,7 +304,7 @@ def test_deconv_default_cap_leaves_normal_capture_untouched(caplog):
     captured = _convolve_with_ir(sig, ir_truth).astype(np.float64)
     assert len(captured) < int(deconv.DEFAULT_MAX_CAPTURE_SECONDS * sr)
 
-    with caplog.at_level(logging.WARNING, logger="jasper.correction.deconv"):
+    with caplog.at_level(logging.WARNING, logger="jasper.audio_measurement.deconv"):
         ir_default = deconv.deconvolve(
             captured, sig.astype(np.float64), sample_rate=sr,
         )

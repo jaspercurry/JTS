@@ -27,7 +27,7 @@ refinement, mirroring the correction confidence model's staging):
 
   - The correlation is computed by **FFT** (`scipy.signal.correlate(method="fft")`,
     O(N log N)) — the repo's standard for capture-length signals (cf. the
-    FFT-based `jasper/correction/deconv.py` and its 1 GB-Pi size cap). A naive
+    FFT-based `jasper/audio_measurement/deconv.py` and its 1 GB-Pi size cap). A naive
     time-domain `np.correlate` here was O(N·M) ≈ tens of seconds per position on
     the Pi for a 10 s sweep.
   - The metric is a peak-to-second-peak **margin**, not an SNR or peak-to-RMS

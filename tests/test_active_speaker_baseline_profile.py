@@ -1429,7 +1429,7 @@ def _driver_capture_wav(
     from scipy.signal import fftconvolve, firwin
 
     from jasper.active_speaker import driver_acoustics as da
-    from jasper.correction import sweep as sweep_mod
+    from jasper.audio_measurement import sweep as sweep_mod
 
     sig, meta = sweep_mod.synchronized_swept_sine(
         f1=da.DEFAULT_F1_HZ,

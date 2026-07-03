@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from . import deconv, sweep
+from jasper.audio_measurement import deconv, sweep
 
 
 class InteropError(ValueError):

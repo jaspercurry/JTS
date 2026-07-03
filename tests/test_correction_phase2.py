@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 from scipy.signal import fftconvolve
 
-from jasper.correction import analysis, sweep
+from jasper.audio_measurement import analysis, sweep
 from jasper.correction.session import (
     MeasurementSession,
     SessionConfig,

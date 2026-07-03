@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.correction.calibration import SUPPORTED_MODELS
+from jasper.audio_measurement.calibration import SUPPORTED_MODELS
 
 _JS_DIR = Path(__file__).resolve().parent / "js"
 _NODE = shutil.which("node")

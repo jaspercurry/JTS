@@ -16,7 +16,9 @@ from typing import Any
 
 import numpy as np
 
-from . import analysis, bundles, calibration, deconv, fir_runtime, interop
+from jasper.audio_measurement import analysis, calibration, deconv
+
+from . import bundles, fir_runtime, interop
 
 
 class BundleToolError(RuntimeError):

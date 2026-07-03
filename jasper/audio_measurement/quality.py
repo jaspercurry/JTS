@@ -2,13 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Measurement quality checks for correction captures.
+"""Measurement quality checks for sweep captures.
 
 The DSP math can produce a curve for almost any WAV, including a
 clipped, silent, or browser-processed recording. This module turns the
 raw capture into explicit quality facts before deconvolution so the UI,
 debug bundles, doctor, and future calibration agent all reason from the
 same evidence.
+
+The thresholds are supplied by a :class:`~jasper.audio_measurement.quality_model.QualityModel`
+profile so the room, driver, and level-ramp layers can differ by data rather
+than by forked constants; :func:`assess_capture` defaults to the ``ROOM``
+profile, which carries the pre-extraction values verbatim. The module-level
+constants below are preserved as aliases of the ``ROOM`` profile for callers
+that referenced them directly.
 """
 from __future__ import annotations
 
@@ -18,13 +25,18 @@ from typing import Any, Literal
 
 import numpy as np
 
+from jasper.audio_measurement.quality_model import ROOM, QualityModel
+
 Severity = Literal["warn", "fail"]
 
-DBFS_FLOOR = -120.0
-CLIP_ABS_THRESHOLD = 0.999
-CLIP_FRACTION_FAIL = 1e-4
-PEAK_TOO_LOW_DBFS = -45.0
-RMS_TOO_LOW_DBFS = -65.0
+# Backward-compatible aliases of the ROOM profile's values. Kept so existing
+# references to `quality.PEAK_TOO_LOW_DBFS` etc. still resolve; the source of
+# truth for a layer's thresholds is its QualityModel profile.
+DBFS_FLOOR = ROOM.dbfs_floor
+CLIP_ABS_THRESHOLD = ROOM.clip_abs_threshold
+CLIP_FRACTION_FAIL = ROOM.clip_fraction_fail
+PEAK_TOO_LOW_DBFS = ROOM.peak_too_low_dbfs
+RMS_TOO_LOW_DBFS = ROOM.rms_too_low_dbfs
 
 
 @dataclass(frozen=True)
@@ -92,10 +104,10 @@ class CaptureQualityError(ValueError):
         )
 
 
-def _dbfs(value: float) -> float:
+def _dbfs(value: float, floor: float = DBFS_FLOOR) -> float:
     if value <= 0 or not math.isfinite(value):
-        return DBFS_FLOOR
-    return max(DBFS_FLOOR, 20.0 * math.log10(value))
+        return floor
+    return max(floor, 20.0 * math.log10(value))
 
 
 def _optional_bool(value: Any) -> bool | None:
@@ -111,8 +123,9 @@ def assess_capture(
     has_mic_calibration: bool,
     input_device: dict[str, Any] | None = None,
     truncated_from_samples: int | None = None,
+    quality_model: QualityModel = ROOM,
 ) -> CaptureQuality:
-    """Assess a browser-uploaded correction capture.
+    """Assess a browser-uploaded sweep capture.
 
     Failures are conditions that make deconvolution unsafe or known-bad.
     Warnings are conditions where the run can continue, but downstream
@@ -123,6 +136,10 @@ def assess_capture(
     exceeds the assessed length, a `capture_truncated` warning is
     emitted so the truncation is visible at /status / bundle / doctor,
     not just in the journal.
+
+    quality_model selects the layer's threshold profile (clip, dBFS floor,
+    peak/RMS gates). Defaults to ROOM, whose values equal the pre-extraction
+    constants, so existing callers are unaffected.
     """
     if captured.ndim != 1:
         raise ValueError(f"captured must be mono 1-D, got {captured.shape}")
@@ -131,12 +148,12 @@ def assess_capture(
     peak = float(np.max(abs_capture)) if len(abs_capture) else 0.0
     rms = float(np.sqrt(np.mean(abs_capture ** 2))) if len(abs_capture) else 0.0
     clipped = (
-        float(np.mean(abs_capture >= CLIP_ABS_THRESHOLD))
+        float(np.mean(abs_capture >= quality_model.clip_abs_threshold))
         if len(abs_capture)
         else 0.0
     )
-    peak_dbfs = _dbfs(peak)
-    rms_dbfs = _dbfs(rms)
+    peak_dbfs = _dbfs(peak, quality_model.dbfs_floor)
+    rms_dbfs = _dbfs(rms, quality_model.dbfs_floor)
     duration_s = float(len(captured) / sample_rate) if sample_rate > 0 else 0.0
 
     issues: list[QualityIssue] = []
@@ -180,7 +197,7 @@ def assess_capture(
                 "analyzed_seconds": round(duration_s, 1),
             },
         ))
-    if clipped >= CLIP_FRACTION_FAIL:
+    if clipped >= quality_model.clip_fraction_fail:
         issues.append(QualityIssue(
             code="capture_clipped",
             severity="fail",
@@ -194,19 +211,25 @@ def assess_capture(
             message="capture has samples at digital full scale",
             details={"clipped_fraction": clipped},
         ))
-    if peak_dbfs < PEAK_TOO_LOW_DBFS:
+    if peak_dbfs < quality_model.peak_too_low_dbfs:
         issues.append(QualityIssue(
             code="capture_peak_low",
             severity="warn",
             message="capture peak is very low; result may have poor SNR",
-            details={"peak_dbfs": peak_dbfs, "threshold_dbfs": PEAK_TOO_LOW_DBFS},
+            details={
+                "peak_dbfs": peak_dbfs,
+                "threshold_dbfs": quality_model.peak_too_low_dbfs,
+            },
         ))
-    if rms_dbfs < RMS_TOO_LOW_DBFS:
+    if rms_dbfs < quality_model.rms_too_low_dbfs:
         issues.append(QualityIssue(
             code="capture_rms_low",
             severity="warn",
             message="capture RMS is very low; room response may be noise-dominated",
-            details={"rms_dbfs": rms_dbfs, "threshold_dbfs": RMS_TOO_LOW_DBFS},
+            details={
+                "rms_dbfs": rms_dbfs,
+                "threshold_dbfs": quality_model.rms_too_low_dbfs,
+            },
         ))
     if not has_mic_calibration:
         issues.append(QualityIssue(

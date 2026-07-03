@@ -159,7 +159,7 @@
 - ✅ **Phase 2.4 — observability and quality floor.**
   Implemented 2026-05-25. Adds shared bundle helpers
   (`jasper.correction.bundles`), capture-quality assessment before
-  deconvolution (`jasper.correction.quality`), explicit browser /
+  deconvolution (`jasper.audio_measurement.quality`), explicit browser /
   clipping / low-level / uncalibrated-mic warnings in the UI and
   bundle, atomic `info.json` writes on failed analysis paths, and
   `jasper-doctor` correction checks for the socket, state dirs,
@@ -944,7 +944,7 @@ brief).
 ### Decision 6 — Sweep generation: in-house synchronized swept-sine
 
 **Decision:** Use the in-house NumPy/SciPy synchronized swept-sine
-generator in `jasper.correction.sweep` (Novak 2015), not vanilla
+generator in `jasper.audio_measurement.sweep` (Novak 2015), not vanilla
 Farina ESS. 10 s sweep, 20 Hz - 20 kHz, -12 dBFS. The deconvolution
 path performs FFT-based regularized inversion at IR-extract time; no
 precomputed inverse filter is shipped.
@@ -1185,14 +1185,15 @@ Concrete changes:
   WakeLoop's main loop awaits `not self._measurement_active.is_set()`
   before pulling each audio chunk. Outputd's content meter is paused
   via the TTS control socket, and `Ducker.duck()` is a no-op when set.
-- `jasper/correction/sweep.py`: in-house NumPy/SciPy synchronized
+- `jasper/audio_measurement/sweep.py`: in-house NumPy/SciPy synchronized
   swept-sine, 10 s, 20 Hz - 20 kHz, -12 dBFS, S16_LE WAV output.
-  Cache on disk — it's deterministic.
+  Cache on disk — it's deterministic. (Moved out of `jasper/correction/`
+  into the shared measurement kernel in P1b; all three tuning layers reuse it.)
 - `jasper/correction/playback.py`: shell out to
   `aplay -D correction_substream sweep.wav`. Wait for completion.
-- `jasper/correction/deconv.py`: take phone-uploaded WAV + sweep
+- `jasper/audio_measurement/deconv.py`: take phone-uploaded WAV + sweep
   metadata, perform regularized FFT inversion → mono float32 IR.
-- `jasper/correction/analysis.py`: 1/48-octave magnitude smoothing
+- `jasper/audio_measurement/analysis.py`: 1/48-octave magnitude smoothing
   → JSON-serializable curve (frequency, dB).
 - `jasper/correction/peq.py`: greedy peak-fit on 20-350 Hz residual
   vs target. ≤5 PEQ filters. Cuts only. Q ∈ [1.0, 8.0]. Max -10 dB.

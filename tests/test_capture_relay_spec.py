@@ -31,7 +31,7 @@ from jasper.capture_relay.spec import (
     ui_level_meter,
     ui_steps,
 )
-from jasper.correction.calibration import SUPPORTED_MODELS, supported_model_options
+from jasper.audio_measurement.calibration import SUPPORTED_MODELS, supported_model_options
 
 
 # --- room_sweep builder -------------------------------------------------------

@@ -28,8 +28,8 @@ from scipy.io import wavfile
 from scipy.signal import firwin, firwin2, fftconvolve
 
 from jasper.active_speaker import driver_acoustics as da
-from jasper.correction import deconv
-from jasper.correction import sweep as sweep_mod
+from jasper.audio_measurement import deconv
+from jasper.audio_measurement import sweep as sweep_mod
 
 SR = 48000
 

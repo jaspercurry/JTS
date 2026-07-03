@@ -296,6 +296,10 @@ module = [
     "jasper.aec_sweep",
     "jasper.assistant_loudness",
     "jasper.audio_io",
+    # Moved verbatim from jasper.correction.calibration in P1b (measurement
+    # kernel extraction); keeps the pre-existing latent type debt on the mypy
+    # baseline rather than fixing it in a behavior-preserving refactor.
+    "jasper.audio_measurement.calibration",
     "jasper.audio_validation",
     "jasper.bluetooth.scan",
     "jasper.camilla",
@@ -320,7 +324,6 @@ module = [
     "jasper.correction.acoustic_quality",
     "jasper.correction.autolevel",
     "jasper.correction.bundle_tools",
-    "jasper.correction.calibration",
     "jasper.correction.peq",
     "jasper.correction.runtime_integrity",
     "jasper.correction.session",

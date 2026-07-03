@@ -43,7 +43,7 @@ ends on its own even if every control path dies.
 
 Everything here is numpy-pure and deterministic (seeded noise);
 scipy is imported lazily and only for WAV I/O, mirroring
-jasper/correction/sweep.py. The wizard-layer trim write composition
+jasper/audio_measurement/sweep.py. The wizard-layer trim write composition
 (:func:`recommend_trims`) is unchanged from v1.
 """
 
