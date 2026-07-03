@@ -1,0 +1,372 @@
+# Handoff: audio-graph consolidation campaign
+
+> **Status: active campaign plan (2026-07-03).** This is the canonical
+> architecture + sequencing document for consolidating JTS's audio graph
+> onto one transport primitive (SHM slot rings + the `jts_ring` ioplug)
+> and one clock discipline (DAC-paced graph, each foreign clock
+> reconciled exactly once at its ingress), then deleting every duplicate
+> and legacy path — including snd-aloop itself. Grounded in a file-level
+> audit of `main` at commit `c287ee13` (2026-07-03). Companion docs:
+> [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) (measured
+> ring evidence, USB DIRECT, host clock),
+> [HANDOFF-audio-latency-foundation.md](HANDOFF-audio-latency-foundation.md)
+> (clock-domain archaeology), [audio-paths.md](audio-paths.md) (today's
+> lane map — rewritten at campaign end).
+
+## End state
+
+- **One transport primitive.** SHM slot rings (`rust/jasper-ring` +
+  `c/jts-ring-ioplug`) carry every intra-graph hop: renderer → fan-in,
+  fan-in → CamillaDSP (Ring A), CamillaDSP → outputd (Ring B).
+- **One clock discipline.** outputd's blocking DAC write paces the graph.
+  Each foreign clock is reconciled exactly once at its ingress: USB gadget =
+  host-clock servo (`rust/jasper-host-clock`) + `LaneResampler`; each network
+  renderer = its per-lane `LaneResampler` at fan-in ring-read; TTS = clockless
+  socket (`/run/jasper-fanin/tts.sock` — already the end state, no change);
+  bonded followers = snapclient sample-stuffing (stays).
+- **snd-aloop GONE**: module load, `deploy/modprobe.d/snd-aloop.conf`,
+  `deploy/modules-load.d/snd-aloop.conf`, all `/etc/asound.conf` loopback
+  lanes, aloop-specific catch-up/park workarounds, cable-wedge lore.
+- **Deleted**: Python usbsink audio pump, usbsink solo aloop lane,
+  fan-in→Camilla loopback coupling, outputd aloop content bridge,
+  `rate_match`, `transport_pipe`, lean-FIFO lane, adaptive-buffer shrink,
+  legacy cushion recipes. Docs coherent, no orphan env keys,
+  `.env.example` honest.
+
+## No-dupes audit (main @ c287ee13, 2026-07-03)
+
+Every duplicate/legacy path, what replaces it, which phase deletes it, and
+what must move first. "Lane N" = snd-aloop substream pair N per
+[`deploy/alsa/asoundrc.jasper`](../deploy/alsa/asoundrc.jasper).
+
+### A. USB ingress — three generations coexist
+
+| Path | Lives in | Replaced by | Deleted in |
+|---|---|---|---|
+| **A1. Python/PortAudio pump** (lab-gated) | [`jasper/usbsink/audio_bridge.py`](../jasper/usbsink/audio_bridge.py), `daemon.py`, `preempt_listener.py`, `state_publisher.py`, `jasper/cli/usbsink_main.py` (`jasper-usbsink-python-lab`, refuses without `JASPER_USBSINK_PYTHON_LAB_ALLOW=1`) | Rust `jasper-usbsink-audio` (production since the low-latency train) | P5a |
+| **A2. Rust solo/aloop mode** (today's default) | `rust/jasper-usbsink-audio/src/main.rs` bridging `hw:UAC2Gadget` → `usbsink_substream` (lane 3), incl. the aloop catch-up (`CATCHUP_HIGH_WATER_PERIODS` sawtooth) and the solo `Fill`-mode host clock | fan-in **USB DIRECT** combo (`JASPER_FANIN_USB_DIRECT=enabled` + `JASPER_USBSINK_AUDIO_STANDBY=1`; usbsink keeps state/preempt/HTTP + gadget scripts) | P5a (audio loop only; standby daemon stays) |
+| **A3. Lean-FIFO lane** (default-off) | `Mux._enter_lean`/`_leave_lean` in [`jasper/mux.py`](../jasper/mux.py), [`jasper/usbsink/output_mode_reconcile.py`](../jasper/usbsink/output_mode_reconcile.py), `stage_lean_capture_config`/`apply_lean_capture_config` in [`jasper/sound/runtime.py`](../jasper/sound/runtime.py), `DEFAULT_LEAN_CAPTURE_FIFO` in [`jasper/camilla_config_contract.py`](../jasper/camilla_config_contract.py), `jasper-camilla-pipe-guard` lean-strand repair, `JASPER_LEAN_LANE` / `JASPER_USBSINK_OUTPUT_MODE` / `JASPER_USBSINK_LEAN_FIFO_PATH` env | USB DIRECT + rings (shared path, protection kept) | P5a |
+
+**Load-bearing finding (2026-07-03): the lean lane is unarmable on a
+production box.** `output_mode="fifo"` is implemented ONLY in the Python
+lab bridge (`audio_bridge.py` `fifo_*` counters); the production Rust
+daemon that `jasper-usbsink.service` actually runs has **no** FIFO mode
+(zero `OUTPUT_MODE` reads in `rust/jasper-usbsink-audio`). If mux ever
+armed lean today, it would write `JASPER_USBSINK_OUTPUT_MODE=fifo`,
+restart the Rust daemon (which ignores it), and load a RawFile CamillaDSP
+config on a pipe **nobody writes** — silence. A naive cleanup that
+deletes "the Python pump" but keeps the lean consumers preserves this
+trap; A1 and A3 must be deleted together.
+
+### B. fan-in → CamillaDSP — three couplings (`JASPER_FANIN_CAMILLA_COUPLING`)
+
+| Coupling | Lives in | Status |
+|---|---|---|
+| `loopback` (default) | fan-in writes lane 7; CamillaDSP dsnoop-captures `plug:jasper_capture` | Replaced by Ring A; deleted P7/P9 |
+| `transport_pipe` | `FifoWriter` in [`rust/jasper-fanin/src/fifo.rs`](../rust/jasper-fanin/src/fifo.rs), `local_content_pipe.rs` (outputd side), [`jasper/fanin/coupling_reconcile.py`](../jasper/fanin/coupling_reconcile.py) ordered arm/disarm, `JASPER_FANIN_CAMILLA_PIPE_BYTES`, active-leader precheck | Hardware-demoted 2026-07-01 (16 KiB Pi-5 page floor); deleted P5b |
+| `shm_ring` (Ring A, lab) | `RingOutput` transport in [`rust/jasper-fanin/src/mixer.rs`](../rust/jasper-fanin/src/mixer.rs), [`jasper/fanin_coupling.py`](../jasper/fanin_coupling.py) (`RING_CAPTURE_DEVICE = "jts_ring_capture"`), `JASPER_FANIN_RING_PATH`/`_SLOTS` | Becomes the only coupling (P2→P4) |
+
+**Load-bearing finding: fan-in's `RingOutput` keeps a lossy aloop MIRROR
+on lane 7** (`mixer.rs` — the ring writer plus `mirror: Option<PCM>` on
+`hw:Loopback,0,7`, non-blocking, never the pacer). Under ring coupling
+the `jasper_capture`/`jasper_ref` dsnoop consumers therefore keep
+working — which is why dsnoop re-pointing (P7) can safely come *after*
+rings-default (P4) but MUST come before snd-aloop removal (P9). The
+mirror itself is a hidden aloop dependency that dies in P7.
+
+### C. CamillaDSP → outputd — three content bridges (`JASPER_OUTPUTD_CONTENT_BRIDGE`)
+
+| Mode | Lives in | Status |
+|---|---|---|
+| `direct` (default) | outputd reads `outputd_content_capture` (lane 6) / `outputd_active_content_capture` (lane 5, N-ch) via `alsa_backend.rs`/`dac_content.rs` | Stereo path replaced by Ring B; active N-ch path is the P8 problem (below) |
+| `rate_match` | [`rust/jasper-outputd/src/content_bridge.rs`](../rust/jasper-outputd/src/content_bridge.rs) + `JASPER_OUTPUTD_CONTENT_BRIDGE_{RING,TARGET,MAX_ADJUST}_*` env | Rejected in tuning (content xruns/EAGAIN); a second rate matcher inside an already DAC-paced domain — exactly the duplicate-clock class the end state forbids. Deleted P5c |
+| `shm_ring` (Ring B) | `shm_ring_source.rs`, `JASPER_OUTPUTD_SHM_RING_PATH`/`_SLOTS`; CamillaDSP writes via the `jts_ring_playback` ioplug device | Becomes the only bridge for stereo topologies (P2→P4) |
+
+`config.rs` already hard-fails `usb_low_latency_48k` claims combined with
+`transport_pipe`/`rate_match`, and requires **full-range stereo** for
+`shm_ring` — see the P8 constraint.
+
+### D. Renderer ingress — five aloop playback lanes (Tier 2)
+
+| Lane | Writer | Config surface |
+|---|---|---|
+| 0 | librespot | `--device librespot_substream` in [`deploy/systemd/librespot.service`](../deploy/systemd/librespot.service) |
+| 1 | shairport-sync | `output_device = "__RENDERER_DEVICE__"` in [`deploy/shairport-sync.conf.template`](../deploy/shairport-sync.conf.template), rendered by `deploy/lib/install/renderers.sh` (which also renders `__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__` from the active CamillaDSP config) |
+| 2 | bluealsa-aplay | `--pcm=bluealsa_substream` in [`deploy/systemd/bluealsa-aplay.service.d/jts-output.conf`](../deploy/systemd/bluealsa-aplay.service.d/jts-output.conf) |
+| 3 | jasper-usbsink (solo mode) | `JASPER_USBSINK_PLAYBACK_DEVICE=usbsink_substream` in `jasper-usbsink.service` — dies with A2 (P5a), NOT part of Tier 2 |
+| 4 | correction/test sweeps | `correction_substream` ([`jasper/correction/playback.py`](../jasper/correction/playback.py)) |
+
+All five are `plug:` wrappers (44.1→48 via libsamplerate — the
+`defaults.pcm.rate_converter` AEC HF-loss history). Replacement: per-lane
+`jts_ring` ioplug ingress (design section below). Migrated one at a time
+in P6, shairport LAST.
+
+### E. snd-aloop platform + its workaround ecosystem
+
+- Module: `deploy/modprobe.d/snd-aloop.conf` (`pcm_substreams=8`,
+  `pcm_notify=0`, index=6 pinning) + `deploy/modules-load.d/snd-aloop.conf`.
+- `/etc/asound.conf` lanes: rendered from `deploy/alsa/asoundrc.jasper` —
+  all `*_substream` PCMs, `outputd_content_*`, `outputd_active_content_*`,
+  `jasper_capture` dsnoop, `jasper_ref`, plus the legacy `jasper_out` dmix
+  rollback block (`__DONGLE_CARD__`).
+- Cable-wedge handling: the LoopbackAEC card was already deleted
+  (2026-05-11, UDP replacement) — surviving artifacts are lore/comments in
+  [`jasper/audio_io.py`](../jasper/audio_io.py) `UdpMicCapture`,
+  `jasper/cli/doctor/aec.py`, and the modprobe comment block.
+- Restart choreography: `park_audio_clients_for_core_graph_restart` /
+  `reset_failed_core_graph_restart_targets` in
+  [`deploy/lib/install/systemd-units.sh`](../deploy/lib/install/systemd-units.sh)
+  exist because aloop pairs param-lock to their first opener across the
+  core-graph restart; rings (self-describing header, attach-any-order,
+  stale-ring guard shipped in the #1137–#1142 train) shrink this.
+- Doctor pins: `check_loopback` (aplay -L CARD=Loopback),
+  `check_fanin_asound_wiring` (lane-7 dsnoop shape),
+  `check_shairport_sync_loopback_plughw`, `check_renderer_device_resolvable`
+  — all in `jasper/cli/doctor/{audio,renderers}.py`; each goes stale at its
+  migration phase and is rewritten, not deleted.
+
+### F. dsnoop lane-7 consumers (re-point before snd-aloop removal)
+
+1. **aec_tune**: `arecord -D jasper_capture` in
+   [`jasper/cli/aec_tune.py`](../jasper/cli/aec_tune.py) → re-point at
+   outputd's `:9891` reference (already the production AEC reference) or a
+   fan-in ring tap.
+2. **jasper_ref rollback**: `REF_DEVICE = "jasper_ref"` in
+   [`jasper/cli/aec_bridge.py`](../jasper/cli/aec_bridge.py) — the
+   explicit ALSA-fallback reference for the AEC bridge. Retire or re-point;
+   its loss under `transport_pipe` was already accepted as
+   diagnostic-only.
+3. **Doctor topology checks**: `check_fanin_asound_wiring` +
+   `check_aec_asound` (`jasper/cli/doctor/aec.py`).
+4. `jasper/correction/playback.py` docstring topology.
+
+### G. Clock/rate-matcher inventory (target: one per foreign clock)
+
+Already consolidated (keep): `jasper_clock::Dll` (one impl, used by
+fan-in lane resamplers, outputd reference/AEC clocks, host-clock crate);
+`jasper-resampler` (`RateController`, S32→S16, `minimum_safe_fill_frames`
+— single source, pinned by cross-crate vectors); `rust/jasper-host-clock`
+(one servo core, `Fill`/`Correction` modes). Duplicates to delete:
+`rate_match` (C), CamillaDSP `enable_rate_adjust`+AsyncSinc in lean
+configs (A3), the usbsink aloop catch-up sawtooth (A2). Stays: CamillaDSP's
+own rate controller trading Ring B fill (it is camilla's single pacing
+input), snapclient sample-stuffing on bonded chains.
+
+### H. Legacy cushion recipes
+
+The lab resampler geometry `TARGET_FRAMES=256 + WARMUP_CUSHION_FRAMES=256`
+(held 512) is **below** the fail-loud floor shipped in #1145
+(`STATIC_CUSHION_JITTER_MARGIN_FRAMES`: held ≥ 562 at period 256 / ±500 ppm)
+and now **reboot-loops** a box that still carries it (fanin
+`StartLimitAction=reboot`). jts.local's live env is the known carrier —
+its cushion must be ≥ 306 before any deploy. P5c deletes the stale recipe
+prose from docs/env comments; the shipped production defaults (held 2560)
+are immune.
+
+### I. What the ring path still lacks for default status (the P1–P2 gap list)
+
+Verified missing on main (2026-07-03):
+
+1. **ioplug build/ship**: `install.sh` builds the three Rust daemons but
+   has zero `ioplug`/`jts_ring` references; the `.so` is built only by
+   `scripts/ring-proto/build-on-pi.sh` into
+   `/usr/lib/aarch64-linux-gnu/alsa-lib/`.
+2. **conf.d shipping**: `pcm.jts_ring_playback` / `pcm.jts_ring_capture`
+   exist only as lab drop-ins (`/etc/alsa/conf.d/98-jts-ring*-proto.conf`,
+   written by `scripts/ring-proto/arm*.sh`).
+3. **Config emission**: no product emitter can produce a ring CamillaDSP
+   config — `jasper/sound/camilla_yaml.py`, `camilla_config_contract.py`,
+   and `output_topology.py` contain zero ring references; today's ring yml
+   is `make-camilla-ring-config.sh`'s hand copy applied via live websocket
+   `set_config_file_path`, reverted by ANY camilla restart because
+   `jasper-camilla.service`'s ExecStartPre re-seeds the statefile from the
+   output-topology contract.
+4. **Ordered-transition ownership**: `jasper-fanin-coupling-reconcile`
+   accepts only `loopback|transport_pipe`; `shm_ring` has no ordered
+   arm/disarm, no activation gate, no fail-safe-to-loopback.
+5. **Topology-contract citizenship**: `jasper/output_topology.py` and the
+   camilla statefile seeding know nothing of ring mode.
+6. **Doctor**: no ring asset/drift checks; existing loopback checks would
+   false-fail a ring box at E's list.
+7. **/state observability**: fan-in STATUS has ring blocks
+   (`RingObservability`) but `/state.audio_graph` needs the resolved
+   transport surfaced fleet-wide; doctor + dashboards read loopback truth.
+8. **Certification**: the route-latency artifact binder REFUSES `shm_ring`
+   topologies for `usb_low_latency_48k` (deliberate lab quarantine) — must
+   learn the ring before default flip or the shipped low-latency claim
+   regresses to permanently-failing.
+9. **Rollback env**: defaults still `loopback`/`direct`; the default flip
+   needs one documented rollback key pair until burn-in ends.
+
+## Phase map
+
+Each phase = one PR-able unit. Constraint order per the campaign
+directive: rings default BEFORE loopback deletion; renderer migrations one
+at a time, AirPlay LAST; dsnoop consumers re-pointed before snd-aloop
+removal; USB default-on gated on the in-flight compliance-persistence PR +
+user burn-in. Full profile = jts, jts3, jts5; streambox = jts4 (runs the
+FULL renderer/DSP graph — fanin, camilla, outputd, mux, all renderers —
+only voice/AEC parked, per `park_streambox_brain_units`; every phase below
+touches it EXCEPT the USB phases, gadget-dependent).
+
+| # | Phase (one PR each) | Scope (files) | Validation gate | Rollback lever | Boxes |
+|---|---|---|---|---|---|
+| P0 | **(in flight)** compliance persistence | fanin compliance state module | its own PR gates | env off | jts.local |
+| P1 | Ring platform ship (inert) | `install.sh` + `deploy/lib/install/`: build `c/jts-ring-ioplug` (needs `libasound2-dev`), install `.so` + conf.d for both ring devices + `/dev/shm/jts-ring` tmpfiles/perms; doctor `ring assets` check | deploy jts3: assets present, default-off byte-identical (doctor clean, AirPlay pass) | none needed (inert) | all 4 |
+| P2 | Ring citizenship | emitters (`sound/camilla_yaml.py` + carrier) emit ring capture/playback; `coupling_reconcile` learns `shm_ring` (ordered arm/disarm + activation gate); topology-contract + statefile seeding; artifact binder + `audio_runtime_plan` accept ring for `usb_low_latency_48k`; `/state` + doctor drift checks; multiroom prechecks extended to `shm_ring` (risk 6) | jts3 arm→disarm round-trip via reconciler + AirPlay clicks; jts.local quick route artifact under ring | ordered disarm → loopback | full first |
+| P3 | USB combo default-on where gadget present | flags direct+standby+servo+decay+persistence; honest standby arbitration signal (mux/Source-UI gap) | user smoke-test approval; quick artifact; soak | env flags off (solo aloop still present until P5a) | jts.local |
+| P4 | **Rings default** (solo-stereo topologies) | reconciler flips default coupling+content-bridge to ring where topology is solo-stereo; rollback env documented in `.env.example` | per-box deploy + AirPlay/Spotify/BT pass + 24 h burn-in each; doctor green | `JASPER_FANIN_CAMILLA_COUPLING=loopback` + `JASPER_OUTPUTD_CONTENT_BRIDGE=direct` | jts, jts3, jts4; **jts5/active EXCLUDED** (P8) |
+| P5a | Delete: Python pump + lean lane + solo aloop mode | A1+A3 files, `usbsink_substream` lane, Rust solo bridging + catch-up (daemon → standby-only), env keys, pipe-guard lean branch; guard test: route refuses deleted knobs | fleet deploy; USB DIRECT regression on jts.local | revert PR | all (USB bits jts.local) |
+| P5b | Delete: transport_pipe | `fifo.rs`, `local_content_pipe.rs`, coupling branch + reconciler branch + prechecks, env keys | fleet deploy + doctor | revert PR | all |
+| P5c | Delete: rate_match + adaptive-buffer + cushion recipes | `content_bridge.rs` rate-matcher, `fanin/buffer_reconcile.py`, mux `_settle_adaptive_buffer`, stale env/doc recipes | fleet deploy + doctor | revert PR | all |
+| P6a | librespot → ring ingress | fanin per-lane ring-reader `Input` variant; librespot conf.d lane; unit `--device` | Spotify router start/transfer on jts.local + jts3 | per-lane env: lane back to aloop (until P9) | all |
+| P6b | bluealsa → ring ingress | drop-in `--pcm` | BT pairing + playback via Mac | same | all |
+| P6c | correction sweeps → ring ingress | `correction/playback.py` lane | one sweep capture on jts3 | same | full |
+| P6d | **shairport LAST** → ring ingress | conf template device + offset re-derivation | Music.app local-track loop + resync-log watch + bonded A/V spot-check | same | all |
+| P7 | Re-point dsnoop consumers; drop fan-in mirror | F-list: aec_tune → `:9891`, jasper_ref retire, doctor rewrites, `mixer.rs` mirror removal | AEC bridge regression (wake-rate spot check) on jts.local | revert PR | full |
+| P8 | Ring v2: N-channel + bonded round-trip | ioplug channel negotiation (header already self-describing — `OFF_RATE`/`OFF_CHANNELS` in `layout.rs`; the C plugin pins 2ch), outputd active-content ring, snapclient follower round-trip ingress; extend or explicitly re-scope | jts5 dual-DAC regression + S0-sync bench on a bonded pair | active boxes stay on aloop lanes 5/6 | jts5 + bonded |
+| P9 | snd-aloop removal | modprobe.d, modules-load.d, asound lanes, `check_loopback`, cable lore, park choreography simplification | full-fleet deploy + doctor + every-source pass; reboot test per box | revert PR + reboot | all |
+| P10 | Polish sweep | dead code, env pruning, `audio-paths.md` rewrite, supersessions, atlas/doc-map, memory | docs gates + `test_env_vars_codified` | n/a | — |
+
+Deletions are separate PRs by repo guardrail. P4 starts the burn-in clock
+that P5+ waits on. P8 may land before or parallel to P6 — it gates only P9.
+
+## Renderer ingress design (Tier 2 core)
+
+**Delay honesty — the shairport question.** The ioplug playback direction
+reports an honest, occupancy-derived position: `jts_ring_pointer` /
+`jts_ring_pointer_report` (four adversarial rounds fixed the
+dishonest-pointer and mod-buffer-alias classes), and the `.delay`
+callback (`jts_ring_delay` in
+[`c/jts-ring-ioplug/pcm_jts_ring.c`](../c/jts-ring-ioplug/pcm_jts_ring.c))
+returns `published-unread slots × period + staged frames`. So a sync
+engine reading `snd_pcm_delay` sees truth — the OPPOSITE failure mode of
+the aloop history, where `snd_pcm_delay` returned loopback ring FILL, not
+DAC latency, and caused the ~60 s resync glitch storm until
+`resync_threshold_in_seconds = 0.2` (PR #83; comments in the conf
+template). Two consequences: (1) shairport's compensation value
+`audio_backend_latency_offset_in_seconds` (rendered by `renderers.sh`
+from the configured downstream buffers) MUST be re-derived for the ring
+graph — the ring holds frames the offset math previously attributed to
+the aloop ring; (2) with an honest small delay, `resync_threshold=0.2`
+may be revisitable, but only AFTER measurement — keep 0.2 through the
+migration. This is why AirPlay migrates last.
+
+**Per-lane clock reconciliation stays at fan-in ring-read.** Renderer
+lanes keep their `LaneResampler` (fan-in side) exactly as on aloop — the
+transport changes, the one-rate-matcher-per-foreign-clock placement does
+not. The ioplug is a dumb frame carrier.
+
+**ALSA conf shape per renderer.** The ioplug pins 48 kHz/S16/2ch
+(`JTS_RING_RATE`/`JTS_RING_CHANNELS` in `pcm_jts_ring.c`), but renderers
+emit native rates (AirPlay 44.1k, BT variable), so each lane keeps its
+`plug:` wrapper layered over a ring device:
+`pcm.shairport_substream { type plug; slave { pcm "jts_ring_lane_airplay"; rate 48000; ... } }`
+— preserving `defaults.pcm.rate_converter` (libsamplerate; the AEC
+HF-loss history) and keeping renderer configs name-stable (unit files
+don't change at migration, only the conf.d definition behind the name —
+each lane's flip is one conf edit + renderer restart). Definitions ship
+system-wide 0644 (conf.d), and each migration PR MUST re-run the PR #214
+probe: `sudo -u <runtime-user> aplay -D <device> ...`
+(`check_renderer_device_resolvable` codifies it). **Permissions design
+point**: the ioplug WRITER creates the ring file, and renderer users
+(`shairport-sync`, `pi`) must create/write under `/dev/shm/jts-ring/` —
+P1 ships the directory via tmpfiles.d with group-write (`root:audio`,
+2775 or equivalent) and the header's owner/perm contract documented.
+
+**Teardown/hotplug semantics.** aloop pairs persist param-locked across
+renderer restarts (`pcm_notify=0`); rings are more forgiving: reader on
+an empty/absent-writer ring emits silence (`JTS_RING_SLOT_EMPTY`
+zero-fill), writer free-runs (drop-oldest) if the reader dies, heartbeat +
+stale-ring guards shipped in the train. fan-in's per-lane reader mirrors
+the USB DIRECT precedent: `Input.pcm: Option<PCM>` is already `None` on
+the direct lane (`mixer.rs`), so Tier 2 adds a third lane source
+(ring-reader) beside `lane`/`direct` with the same silent-idle +
+bounded-retry presence model and `/state` `source:"ring"` labeling.
+
+## Risk register
+
+1. **AirPlay sync regression** (highest): honest ioplug delay changes the
+   number shairport compensates; offset mis-derivation reintroduces the
+   resync-storm class. Mitigate: migrate LAST (P6d), A/B Music.app
+   local-track loop + resync-log watch, re-derive offset in the same PR,
+   keep threshold 0.2, per-lane rollback to the aloop conf until P9.
+   Bonded: the #919/#931 latency-fit observability may need re-fitting —
+   re-run the bonded A/V spot-check.
+2. **Active/composite + bonded aloop dependencies survive naive deletion**:
+   ring is stereo-pinned; outputd requires full-range stereo for
+   `shm_ring`; active N-ch content rides lane 5; bonded ACTIVE followers'
+   snapclient writes `hw:Loopback,0,6` (`snapclient_argv` in
+   [`jasper/multiroom/reconcile.py`](../jasper/multiroom/reconcile.py)).
+   P9 is HARD-GATED on P8. jts5 and any bonded-active pair are excluded
+   from P4's default flip by topology check, not by hostname.
+3. **Half-armed multiroom graphs**: `precheck_active_leader` +
+   `reconcile_coupling` block `transport_pipe` on active leaders but know
+   nothing of `shm_ring` — extend both in P2 BEFORE any default flip, or
+   a bond formed on a ring box splits camilla#1's graph across topologies.
+4. **Fleet box wedged mid-migration**: coupling transitions are owned by
+   the ordered reconciler with fail-safe-to-loopback; camilla ExecStartPre
+   statefile re-seed means any camilla restart reverts to the contract
+   config (fail-safe = silence, not noise); fanin `StartLimitAction=reboot`
+   interacts with stale-ring races (fixed in-train — keep the crash-loop
+   regression tests green). Every phase's rollback is env-only until P5.
+5. **install.sh on-Pi C compile**: new build dep (`libasound2-dev`),
+   ~seconds of cc. Follow `rust-daemons.sh` patterns: sha256-compare to
+   skip rebuilds, low-RAM guard, and a build failure must degrade to
+   "ring unavailable + doctor warn," never a failed install (loopback
+   remains the fallback until P9 — after P9 the ioplug is load-bearing
+   and its absence must fail the install instead).
+6. **CamillaDSP config drift**: ring configs MUST come from the carrier/
+   emitters (P2), never hand YML; `camilladsp --check` + `volume_limit
+   0.0` ceiling stay enforced (the lab generator already models this);
+   conventions tests pin one emitter.
+7. **Certification regression**: flip P4 only after the artifact binder
+   accepts ring topologies (P2), else `usb_low_latency_48k` claims
+   permanently fail and doctor goes red fleet-wide.
+8. **Streambox divergence**: jts4 runs the full renderer graph — include
+   it in P1/P4/P6 validation explicitly (it is the box most likely to be
+   forgotten; it has no mic/voice to notice breakage audibly).
+9. **USB default-on containment gap**: combo standby publishes
+   `playing:false` — mux arbitration + Source UI blind to USB. The honest
+   arbitration signal is IN P3's scope, not a follow-up.
+
+## Done criteria
+
+- **Code**: no `snd-aloop`/`Loopback` references outside historical docs;
+  A1/A3/`transport_pipe`/`rate_match`/adaptive-buffer/cushion-recipe code
+  deleted; guard tests assert the production route refuses every deleted
+  env knob (the Legacy Cleanup rule).
+- **Config**: modprobe.d + modules-load.d gone; `/etc/asound.conf` carries
+  only DAC + ring-lane definitions; `.env.example` documents exactly the
+  surviving keys (rollback keys removed after burn-in).
+- **Clock discipline**: one rate matcher per foreign ingress, each visible
+  in `/state` (fill/target/lock/ppm/xruns).
+- **Fleet**: jts, jts3, jts4, jts5 on rings ≥ 7-day burn-in each, zero
+  sustained resampler unlocks / ring rails / xruns; jts.local re-certified
+  (quick + promotion route artifacts under the ring identity); per-box
+  AirPlay/Spotify/BT/USB passes; bonded pair S0-sync bench if bonded.
+- **Docs**: `audio-paths.md` rewritten to the ring lane map;
+  `HANDOFF-usbsink.md`, `HANDOFF-speaker-output-reference.md`,
+  `HANDOFF-fan-in-daemon.md` updated; foundation doc supersession banner
+  finalized; README atlas + doc-map routing current; memory updated.
+- **Evidence**: each phase's gate artifact linked from this doc's
+  changelog appendix as phases land.
+
+---
+
+## Appendix: audit provenance
+
+Audited on `main` @ `c287ee13` (2026-07-03) by direct file inspection:
+`deploy/alsa/asoundrc.jasper`, `deploy/modprobe.d/` + `modules-load.d/`,
+renderer units + `renderers.sh`, `rust/jasper-{fanin,outputd,usbsink-audio,
+ring,host-clock,resampler,clock}`, `c/jts-ring-ioplug/`,
+`scripts/ring-proto/`, `jasper/{fanin_coupling,audio_runtime_plan,
+output_topology,camilla_config_contract}.py`, `jasper/fanin/`,
+`jasper/usbsink/`, `jasper/sound/`, `jasper/multiroom/{reconcile,
+follower_config,active_leader_config}.py`, `jasper/cli/doctor/{audio,
+renderers,aec}.py`, `jasper/cli/{aec_tune,aec_bridge}.py`,
+`deploy/lib/install/systemd-units.sh`, `.env.example`. Ring evidence and
+measured floors: [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md)
+"Final state — 2026-07-03".
+
+Last verified: 2026-07-03
