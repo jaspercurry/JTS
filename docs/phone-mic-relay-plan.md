@@ -28,15 +28,36 @@
 > publishes `sweep_complete` so the phone stops from real sweep progress rather
 > than a fixed timer.
 >
-> **Deferred (seam-ready, documented):** the **crossover** relay kind — when it
-> lands it MUST add its OWN calibration guard at
-> `web_measurement.capture_calibration` (it loads by `calibration_id`, NOT
-> `session.mic_calibration`, so the room/sync gate won't cover it — same silent
-> mis-calibration class on a different path); **balance burst** — needs new
+> **Crossover relay kind — LANDED (P7, 2026-07-03):** `POST
+> /correction/crossover/relay-capture` (the third `RelayCaptureKind` caller)
+> plays the driver/summed capture sweep on `armed` — reading the play payload's
+> REAL shape (top-level `status` + nested `playback.audio_emitted`, top-level
+> `test_level_dbfs`/`sweep_meta`, the same read as the same-origin JS) — and
+> feeds the verified WAV into the same `record_*_capture` analysis, gated +
+> default-off like the room/sync relay. Measurement mutual-exclusion is
+> server-computed twice (refused at POST while room/balance/sync is active,
+> re-checked at armed time); the `crossover_sweep` spec floors the phone's hard
+> recording deadline at 30 s (`hard_timeout_ms`, the `room_sweep` contract) so
+> the Pi's armed-poll → config-load → playback → `sweep_complete` round trip
+> never races the deadline. It deliberately passes **no `calibration_id`** (the
+> phone's mic is analyzed uncalibrated — nothing to mis-apply), so the
+> built-in-vs-USB calibration guard is not wired yet; the code documents that
+> if a *calibrated* crossover relay capture is ever added it MUST add its OWN
+> guard against `result.device` at record time, because it loads by
+> `calibration_id`, NOT `session.mic_calibration`, so the room/sync gate won't
+> cover it (same silent mis-calibration class on a different path). The
+> acoustic proof (real-driver sweep + phone `getUserMedia`/CSP) is parked as
+> H2. **Sync relay fixed in the same pass (pre-existing):**
+> `sync_flow.relay_run_and_consume` never posted `sweep_complete` and
+> `build_sync_marker_spec`'s bare 3.4 s window doubled as the phone's hard
+> deadline — together they deadline-killed every sync relay capture; the sync
+> path now publishes `sweep_started`/`sweep_complete` (after marker playback
+> truly ends) and carries the same 30 s deadline floor. **Deferred (seam-ready,
+> documented):** **balance burst** — needs new
 > non-interactive L/R level analysis (no existing consumer; the live balance flow
 > is interactive); the **room-correction page's forked capture helper** — AGENTS
 > forbids migrating it onto the shared module without an on-device browser pass.
-> The **sync relay** currently requires the sync session to be started first from a
+> The **sync relay** still requires the sync session to be started first from a
 > device that can reach the Pi (the cert-blocked phone can't press Start) — a
 > 2-device flow; a phone-only bootstrap (like the room relay's auto-create) is a
 > follow-up.

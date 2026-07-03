@@ -27,12 +27,25 @@ def status_payload() -> dict[str, Any]:
 
     payload = web_measurement.status_payload()
     payload["commission"] = web_commissioning.commission_status_payload()
+    # Layer-A gate: only active (`active_2_way` / `active_3_way`) speakers have
+    # driver/summed targets; a `full_range_passive` speaker has none, so
+    # `active=False` is the honest "this speaker has no crossover to tune" flag
+    # FOR the envelope-driven page to consume when it lands (revision plan §1 —
+    # today `/crossover/envelope` gates on the same derivation; the shipped
+    # tab/JS do not read it yet). Derived from the already-computed targets —
+    # no extra topology read. Pinned by tests/test_web_correction_crossover_flow.py.
+    targets_raw = payload.get("targets")
+    targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
+    driver_count = len(targets.get("drivers") or [])
+    summed_count = len(targets.get("summed") or [])
+    payload["active"] = bool(driver_count or summed_count)
     log_event(
         logger,
         "correction.crossover_status",
         status=payload.get("measurements", {}).get("status"),
-        driver_targets=len(payload.get("targets", {}).get("drivers") or []),
-        summed_targets=len(payload.get("targets", {}).get("summed") or []),
+        driver_targets=driver_count,
+        summed_targets=summed_count,
+        active=payload["active"],
     )
     return payload
 

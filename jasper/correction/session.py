@@ -358,6 +358,16 @@ class MeasurementSession:
         # drives it; the store's drift reference is checked on later sweeps.
         self.level_lock_store = LevelLockStore()
         self._last_level_match: LevelMatchOutcome | None = None
+        # Single-flight slot for the CURRENT run's LevelMatchSession, so a
+        # manual Lock / Cancel from the flow can reach the running
+        # RampController through `lock_level_match` / `cancel_level_match`. A
+        # bare local (the prior shape) discarded the controller the instant
+        # `run_level_match` awaited, so neither seam could ever fire. NOTE this
+        # is a per-run SLOT, unlike `_autolevel_controller` (a permanent
+        # controller object): `run_level_match` refuses to start while it is
+        # occupied and clears it identity-guarded, so an overlapping run can
+        # never orphan a live ramp from its Cancel seam.
+        self._level_match_session: LevelMatchSession | None = None
 
         # Single-slot guard that abandons stranded browser-capture states and
         # refuses reset while a fire-and-forget sweep/analysis task is active.
@@ -2194,27 +2204,65 @@ class MeasurementSession:
         asyncio clock; tests inject fakes.
         """
         loop = asyncio.get_running_loop()
+        # Single-flight: one level match at a time per measurement session
+        # (mirrors the /autolevel/start handler's "already in progress" guard —
+        # AutolevelController is a PERMANENT controller so it needs no slot,
+        # but this retained per-run session does). Without this, a second
+        # overlapping run would stomp the retained slot and the first's clear
+        # would then orphan the second's live ramp from its Lock/Cancel seam —
+        # the one state where a dead Cancel matters (a live volume ramp).
+        if self._level_match_session is not None:
+            raise RuntimeError("level match already in progress")
+        # Retain the run's session so a Lock/Cancel from the flow can reach the
+        # running RampController while the ramp is in flight. The clear is
+        # identity-guarded (belt and braces under the single-flight refusal):
+        # only the run that owns the slot may empty it.
         session = LevelMatchSession(
             session_id=self.session_id,
             store=self.level_lock_store,
         )
-        outcome = await session.run_for_geometry(
-            geometry,
-            get_main_volume_db=get_main_volume_db,
-            set_main_volume_db=set_main_volume_db,
-            play_continuous_tone=play_continuous_tone,
-            cancel_tone=cancel_tone,
-            read_status=read_status,
-            post_host_event=post_host_event,
-            noise_floor_dbfs=noise_floor_dbfs,
-            clock=clock if clock is not None else loop.time,
-            sleep=sleep if sleep is not None else asyncio.sleep,
-            run_token=run_token,
-            wait_for_armed=wait_for_armed,
-            armed_timeout_s=armed_timeout_s,
-        )
+        self._level_match_session = session
+        try:
+            outcome = await session.run_for_geometry(
+                geometry,
+                get_main_volume_db=get_main_volume_db,
+                set_main_volume_db=set_main_volume_db,
+                play_continuous_tone=play_continuous_tone,
+                cancel_tone=cancel_tone,
+                read_status=read_status,
+                post_host_event=post_host_event,
+                noise_floor_dbfs=noise_floor_dbfs,
+                clock=clock if clock is not None else loop.time,
+                sleep=sleep if sleep is not None else asyncio.sleep,
+                run_token=run_token,
+                wait_for_armed=wait_for_armed,
+                armed_timeout_s=armed_timeout_s,
+            )
+        finally:
+            if self._level_match_session is session:
+                self._level_match_session = None
         self._last_level_match = outcome
         return outcome
+
+    async def lock_level_match(self) -> bool:
+        """Manual lock (the user tapped Lock during a level match) — freezes the
+        running ramp at its current level and trusts the user. Returns True when
+        a level match was in flight to lock, mirroring ``lock_autolevel``. A
+        no-op returning False when no ramp is running."""
+        session = self._level_match_session
+        if session is None:
+            return False
+        return await session.lock_now()
+
+    async def cancel_level_match(self) -> bool:
+        """Signal a running level match to abort and restore the pre-ramp
+        volume (the kernel owns the restore). Returns True when a level match
+        was in flight, mirroring ``cancel_autolevel``. A no-op returning False
+        when no ramp is running."""
+        session = self._level_match_session
+        if session is None:
+            return False
+        return await session.cancel()
 
     def level_match_snapshot(self) -> dict[str, Any]:
         """The current per-geometry locks + last level-match outcome (for

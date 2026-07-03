@@ -96,6 +96,41 @@ def test_server_driven_copy_names_the_driver():
     assert headings and "woofer" in headings[0]["text"]
 
 
+def test_crossover_sweep_stimulus_single_sourced_from_the_kernel():
+    # CRITICAL CORRECTNESS (P7): the crossover_sweep spec must advertise the SAME
+    # sweep length the active-crossover flow actually plays — there must be ONE
+    # sweep definition, not a forked second constant. The Pi plays / deconvolves
+    # from driver_acoustics.DEFAULT_DURATION_S; the phone's copy is sized from
+    # the spec's stimulus_duration_ms, so a mismatch would mislabel the phone's
+    # "stay quiet for N seconds" step.
+    from jasper.active_speaker.driver_acoustics import DEFAULT_DURATION_S
+
+    s = build_crossover_sweep_spec()
+    seconds = round(DEFAULT_DURATION_S)
+    steps = [c for c in s.screen if c["type"] == "steps"]
+    assert steps and any(f"{seconds} seconds" in item for item in steps[0]["items"])
+
+
+def test_crossover_and_sync_recording_deadlines_are_floored():
+    # duration_ms is the phone's HARD recording deadline and its clock starts at
+    # `armed` — the Pi's whole round trip (armed-poll, config load, WAV gen,
+    # playback, fan-in release, rollback, relay posts) must fit inside it. A
+    # bare pre+stimulus+post window (7.5 s crossover / 3.4 s sync) left ~1.5 s
+    # for everything but the audio and structurally timed out every capture; the
+    # room kind's hard_timeout_ms floor (30 s) is the shared contract — the
+    # normal stop is the Pi's sweep_complete event, the deadline is only the
+    # backstop.
+    from jasper.capture_relay.spec import build_sync_marker_spec
+
+    xover = build_crossover_sweep_spec()
+    assert xover.duration_ms >= 30000
+    sync = build_sync_marker_spec()
+    assert sync.duration_ms >= 30000
+    # An acoustic window LONGER than the floor still wins (never truncate).
+    long = build_crossover_sweep_spec(stimulus_duration_ms=40000)
+    assert long.duration_ms == long.pre_roll_ms + 40000 + long.post_roll_ms
+
+
 def test_level_ramp_run_token_rides_the_spec():
     # The per-run nonce is an ADDITIVE spec field (schema pin): it round-trips
     # through to_dict/from_dict, defaults empty for every other kind, and is

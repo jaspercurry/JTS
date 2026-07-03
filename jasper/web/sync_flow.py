@@ -13,6 +13,7 @@ or an operator script.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import tempfile
 import threading
@@ -361,7 +362,10 @@ def relay_precheck() -> str | None:
 async def relay_run_and_consume(client: Any, pi_session: Any) -> None:
     """Run a phone-relay sync capture and consume the verified WAV exactly as
     handle_analyze does. On `armed` (phone recording), play the markers through
-    the held session window; then analyze and release the window on success."""
+    the held session window, publish ``sweep_complete`` once playback truly
+    ends (the capture page records until it sees that event — without it the
+    phone dies on its hard recording deadline having uploaded nothing), then
+    analyze and release the window on success."""
     from jasper.capture_relay.session import purge, run_capture
     from jasper.multiroom.sync_measure import (
         analyze_wav_bytes,
@@ -370,13 +374,47 @@ async def relay_run_and_consume(client: Any, pi_session: Any) -> None:
 
     loop = asyncio.get_running_loop()
 
+    async def _play_and_wait() -> None:
+        # _play_marker_once only spawns aplay (a watcher task reaps it); the
+        # sweep_complete contract needs the marker to have FINISHED, so wait
+        # for the process too. Multiple wait()ers on one asyncio subprocess
+        # are supported, so this coexists with _watch_playback.
+        await _play_marker_once(_marker_wav_path())
+        with _lock:
+            playback = _state.get("playback") or {}
+        proc = playback.get("proc")
+        if proc is not None:
+            await proc.wait()
+
     def _on_armed() -> None:
-        # Called from run_capture's poll thread; play the markers on the loop and
-        # wait only for the spawn (not for the ~2 s playback to finish).
-        fut = asyncio.run_coroutine_threadsafe(
-            _play_marker_once(_marker_wav_path()), loop
+        # Called from run_capture's poll thread (never the loop): the marker
+        # plays on the loop; this thread blocks until playback finishes, then
+        # posts the progress events over sync HTTP. sweep_started /
+        # sweep_complete post failures PROPAGATE — the phone is deadline-
+        # waiting on sweep_complete, so a swallowed post is a dead capture
+        # with no breadcrumb (mirrors the room + crossover relay paths);
+        # the terminal sweep_failed is best-effort.
+        client.post_host_event(
+            pi_session.session_id, pi_session.pull_token, {"phase": "sweep_started"}
         )
-        fut.result(timeout=10.0)
+        try:
+            fut = asyncio.run_coroutine_threadsafe(_play_and_wait(), loop)
+            fut.result(timeout=15.0)
+        except (concurrent.futures.TimeoutError, RuntimeError, OSError, ValueError) as exc:
+            try:
+                client.post_host_event(
+                    pi_session.session_id,
+                    pi_session.pull_token,
+                    {"phase": "sweep_failed", "error": str(exc)},
+                )
+            except (RuntimeError, OSError, ValueError):
+                logger.warning(
+                    "sync relay sweep_failed host-event post failed", exc_info=True
+                )
+            raise
+        client.post_host_event(
+            pi_session.session_id, pi_session.pull_token, {"phase": "sweep_complete"}
+        )
 
     # run_capture returns a CaptureResult (WAV + phone device); sync compares
     # arrival timing within one recording, so the device/calibration is irrelevant.

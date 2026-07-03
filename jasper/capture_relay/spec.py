@@ -737,6 +737,7 @@ def build_sync_marker_spec(
     stimulus_duration_ms: int = 2000,
     pre_roll_ms: int = 800,
     post_roll_ms: int = 600,
+    hard_timeout_ms: int = 30000,
     accent: str = "sage",
     font: str = "figtree",
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
@@ -749,8 +750,20 @@ def build_sync_marker_spec(
     capture, never across separate captures. Arrival alignment is the signal, so
     `require_alignment=True`. The window must contain both markers (the Pi plays
     them at ~0.5 s and ~1.5 s); `stimulus_duration_ms` spans that.
+
+    ``duration_ms`` is the phone's HARD recording deadline whose clock starts at
+    ``armed`` (its ``waitForSweepComplete`` throws when it expires), so — like
+    ``room_sweep`` and ``crossover_sweep`` — the acoustic window is floored by
+    ``hard_timeout_ms``. The pre-floor value (3 400 ms) left ~1.4 s for the Pi's
+    entire armed-poll → playback → ``sweep_complete``-post round trip, which
+    killed every sync relay capture; the normal stop is the Pi's
+    ``sweep_complete`` relay event (published by ``sync_flow.
+    relay_run_and_consume``), the deadline is only the backstop.
     """
-    duration_ms = pre_roll_ms + stimulus_duration_ms + post_roll_ms
+    duration_ms = max(
+        pre_roll_ms + stimulus_duration_ms + post_roll_ms,
+        int(hard_timeout_ms),
+    )
     return CaptureSpec(
         kind="sync_marker",
         duration_ms=duration_ms,
@@ -785,9 +798,10 @@ def build_sync_marker_spec(
 def build_crossover_sweep_spec(
     *,
     driver_label: str = "driver",
-    stimulus_duration_ms: int = 10000,
+    stimulus_duration_ms: int | None = None,
     pre_roll_ms: int = 800,
     post_roll_ms: int = 700,
+    hard_timeout_ms: int = 30000,
     accent: str = "sage",
     font: str = "figtree",
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
@@ -796,8 +810,37 @@ def build_crossover_sweep_spec(
     crossover work. Same acoustic shape as `room_sweep` (a clean log sweep,
     magnitude FR, drift-insensitive), but the copy names the driver under test
     (server-driven UI), so the household measures each driver in turn.
+
+    ``stimulus_duration_ms`` defaults to the **kernel-side** sweep length the
+    active-crossover flow actually plays — ``driver_acoustics.DEFAULT_DURATION_S``
+    — rather than a second, forked sweep constant. The Pi's driver/summed capture
+    sweep is written and deconvolved from that one length
+    (``web_measurement.capture_sweep_meta`` / ``write_driver_sweep_wav``), and the
+    deconvolution reference is regenerated from the played ``sweep_meta``, so the
+    spec must not advertise a different duration to the phone (its recording copy
+    is sized from this). Sourcing it here keeps ONE sweep definition; a mismatch
+    would only mis-size the phone's copy, never the deconvolution basis.
+
+    ``duration_ms`` is the phone's HARD recording deadline and its clock starts
+    at ``armed`` — before ``sweep_complete`` can arrive the Pi must see ``armed``
+    on its ~0.75 s status poll, load the commissioning config, generate the
+    sweep WAV, play the full sweep, release the fan-in lane, roll the transient
+    graph back, and post through the relay. So, exactly like ``room_sweep``, the
+    acoustic window is **floored by ``hard_timeout_ms``**: the normal stop is
+    the Pi's ``sweep_complete`` relay event and the deadline is only the
+    backstop — never the working margin. Pinned by
+    ``tests/test_capture_relay_kinds.py``.
     """
-    duration_ms = pre_roll_ms + stimulus_duration_ms + post_roll_ms
+    if stimulus_duration_ms is None:
+        # Lazy import: the kernel module pulls numpy/scipy, and the socket-
+        # activated wizard builds specs on a light process.
+        from jasper.active_speaker.driver_acoustics import DEFAULT_DURATION_S
+
+        stimulus_duration_ms = int(round(DEFAULT_DURATION_S * 1000))
+    duration_ms = max(
+        pre_roll_ms + stimulus_duration_ms + post_roll_ms,
+        int(hard_timeout_ms),
+    )
     seconds = round(stimulus_duration_ms / 1000)
     return CaptureSpec(
         kind="crossover_sweep",

@@ -145,7 +145,30 @@
 > + `/summed-capture` mic routes were a verbatim duplicate of the
 > `web_measurement` capture path that nothing reached after the move to
 > `/correction/`; they were deleted — Codex-week review C4a-1. `/sound/` is plain
-> HTTP and cannot `getUserMedia`.) Driver evidence is bound to the current
+> HTTP and cannot `getUserMedia`.) As of P7 (2026-07-03) those same driver/summed
+> captures can also ride the **phone-mic relay transport**:
+> `POST /correction/crossover/relay-capture` (the third `RelayCaptureKind`
+> caller) plays the same capture sweep on `armed` and feeds the verified WAV into
+> the same `record_*_capture` analysis — gated + default-off, byte-identical
+> same-origin `postWav` when `JASPER_CAPTURE_RELAY_BASE` is unset; it reads the
+> play payload's real shape (`status` + nested `playback.audio_emitted`,
+> top-level `test_level_dbfs`/`sweep_meta`) and refuses while room/balance/sync
+> is active (server-computed at POST, re-checked when the phone arms). The
+> `crossover_sweep` capture spec's stimulus length derives from
+> `driver_acoustics.DEFAULT_DURATION_S` (one sweep definition; the deconv
+> reference is always regenerated from the played `sweep_meta`, so the phone is a
+> pure recorder), with the phone's hard recording deadline floored at 30 s (the
+> `room_sweep` `hard_timeout_ms` contract — the Pi's `sweep_complete` event is
+> the normal stop). `GET /correction/crossover/envelope`
+> (`active_speaker/crossover_envelope.py`) is a parallel screen envelope that
+> composes `commissioning_coordinator`'s step model into the room flow's
+> `{screen, verdict_text, nudges, next_action, progress}` shape through the
+> shared `commissioning_coordinator.load_commissioning_view` loader (the same
+> full input set `/sound/`'s commissioning card feeds the coordinator — a
+> partial input set silently reports a stuck flow); passive
+> (`full_range_passive`) speakers get `active=False` (no driver/summed targets),
+> so Layer A stays hidden. The acoustic proof (real-driver sweep + phone
+> `getUserMedia`/CSP path) is parked as H2. Driver evidence is bound to the current
 > saved physical target fingerprint: topology id, detected hardware, active
 > speaker group/mode, driver role, assigned DAC output, and current identity
 > confirmation. The mic-capture path accepts a bounded browser WAV upload (or a
