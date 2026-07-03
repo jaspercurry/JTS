@@ -1047,3 +1047,116 @@ def test_shm_ring_cli_choices_accept_ring(tmp_path, monkeypatch, _ring_assets_pr
     rc = cr.main(["shm_ring", "--no-apply"])
     assert rc == 0
     assert captured["coupling"] == "shm_ring"
+
+
+# --- Blocker 2: shm_ring refused while the box is bonded/grouping-enabled ------
+
+
+def test_arm_shm_ring_refused_for_active_leader_keeps_loopback(tmp_path):
+    # BLOCKER 2: arming shm_ring on a bonded box must be REFUSED before any daemon
+    # op (the ring is solo-stereo-only until ring v2 / P8). Never touch the rings;
+    # keep loopback. Reports the real desired coupling, not a hardcoded one.
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: True,
+    )
+
+    assert result.ok is False
+    assert result.direction == "blocked"
+    assert result.desired == COUPLING_SHM_RING
+    assert result.changed is False
+    assert calls == []  # no arm, no recovery ops needed (was already loopback)
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
+
+
+def test_arm_shm_ring_refused_for_active_follower(tmp_path, monkeypatch):
+    # The block covers a FOLLOWER too (not just leader) — grouping-enabled is the
+    # gate. Drive the route mode through the real grouping-config reader.
+    import jasper.audio_runtime_plan as arp
+
+    class _Cfg:
+        enabled = True
+        error = None
+        role = "follower"
+
+    monkeypatch.setattr(arp, "route_mode_from_grouping_config", lambda cfg: "active_follower")
+    monkeypatch.setattr(
+        "jasper.multiroom.config.load_config", lambda *a, **k: _Cfg(), raising=False
+    )
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        # active_leader_check omitted -> falls through to the grouping-config reader.
+    )
+
+    assert result.ok is False
+    assert result.direction == "blocked"
+    assert result.desired == COUPLING_SHM_RING
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+
+
+def test_ring_armed_box_that_becomes_grouped_recovers_to_loopback(
+    tmp_path, _ring_assets_present
+):
+    # A box armed to shm_ring while solo, then grouping is enabled: a re-reconcile
+    # of shm_ring must REVERT to loopback + direct (clearing Ring B keys), not
+    # leave the leader stranded on a ring outputd can't feed coherently.
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_SINK=dual_apple\n")
+    calls, ro, rf, rc = _recorder()
+
+    # 1) Arm shm_ring while solo (succeeds).
+    _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) == "shm_ring"
+
+    # 2) Now bonded: the next shm_ring reconcile is refused and recovers.
+    calls.clear()
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: True,
+    )
+
+    assert result.ok is False
+    assert result.direction == "blocked"
+    assert result.recovered is True
+    assert result.desired == COUPLING_SHM_RING
+    # Recovery ran the loopback disarm spine and cleared the ring bridge keys.
+    assert "camilla:loopback" in calls
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    outputd_text = outputd_env.read_text()
+    assert read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
+    assert "JASPER_OUTPUTD_SHM_RING" not in outputd_text
+    # The operator's own outputd line survives the recovery.
+    assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_text

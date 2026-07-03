@@ -190,6 +190,30 @@ _ACTIVE_LEADER_TRANSPORT_PIPE_DETAIL = (
     "transport-pipe topology is designed."
 )
 
+# The route modes that mean "grouping is enabled" (leader/follower = enabled +
+# valid + role; invalid_grouping = enabled + config error). ``shm_ring`` is
+# solo-stereo-only until P8's ring-v2 (N-channel + bonded round-trip), so arming
+# it on ANY of these would split camilla#1's graph across topologies (the bonded
+# leader-pipe / round-trip lanes assume the loopback/aloop content path, not the
+# SHM ring) and silence the leader's own local output. This is the SYMMETRIC half
+# of jasper.multiroom.reconcile's "ring-armed box cannot bond" gate (which blocks
+# the OTHER direction — forming a bond while already ring-armed); together they
+# make ring ⟂ grouping a fail-closed invariant from both entry points. ``solo`` /
+# ``unknown`` are NOT blocked: solo = grouping off, unknown = indeterminate (a
+# transient grouping-config read failure must not refuse a legitimate solo arm).
+_GROUPING_ENABLED_ROUTE_MODES = frozenset(
+    {"active_leader", "active_follower", "invalid_grouping"}
+)
+_GROUPED_SHM_RING_REASON = "fanin_shm_ring_coupling_unsupported_while_grouped"
+_GROUPED_SHM_RING_DETAIL = (
+    "JASPER_FANIN_CAMILLA_COUPLING=shm_ring is not supported while this box has "
+    "multiroom grouping enabled; the SHM ring is solo-stereo-only until ring v2 "
+    "(P8), and arming it on a bonded box would strand the leader's local output "
+    "(outputd reads Ring B while camilla#1 still bakes the aloop/loopback grouped "
+    "program). Disarm the ring (jasper-fanin-coupling-reconcile loopback) or "
+    "ungroup this speaker; keeping the coupling on loopback."
+)
+
 
 class EmitSoundConfigKwargs(TypedDict, total=False):
     """Subset of ``emit_sound_config`` kwargs owned by runtime routing."""
@@ -511,9 +535,20 @@ class AudioRuntimePlan:
 def coupling_supported_for_route(coupling: str, route_mode: RouteMode) -> CouplingSupport:
     """Return whether ``coupling`` is supported for ``route_mode``.
 
-    Today the only blocked combination is active-leader + ``transport_pipe``.
-    Keeping that in a route-policy function makes grouped transport-pipe support
-    a deliberate support-matrix change instead of another scattered conditional.
+    Two blocked combinations, both because a non-loopback coupling assumes a
+    solo-speaker content path that a grouped camilla#1 graph does not have:
+
+    - ``transport_pipe`` + ``active_leader`` (the grouped leader still bakes the
+      ALSA fan-in loopback).
+    - ``shm_ring`` + any grouping-enabled mode (leader/follower/invalid) — the ring
+      is solo-stereo-only until ring v2 (P8); arming it on a bonded box would
+      strand the leader's local output. This is the symmetric half of the
+      multiroom reconciler's "ring-armed box cannot bond" gate.
+
+    Keeping these in a route-policy function makes grouped coupling support a
+    deliberate support-matrix change instead of another scattered conditional.
+    ``solo`` / ``unknown`` never block: solo = grouping off, unknown = a transient
+    indeterminate read that must not refuse a legitimate solo arm.
     """
 
     normalized = resolve_coupling(coupling)
@@ -525,6 +560,14 @@ def coupling_supported_for_route(coupling: str, route_mode: RouteMode) -> Coupli
             supported=False,
             reason=_ACTIVE_LEADER_TRANSPORT_PIPE_REASON,
             detail=_ACTIVE_LEADER_TRANSPORT_PIPE_DETAIL,
+        )
+    if normalized == COUPLING_SHM_RING and mode in _GROUPING_ENABLED_ROUTE_MODES:
+        return CouplingSupport(
+            coupling=normalized,
+            route_mode=mode,  # type: ignore[arg-type]
+            supported=False,
+            reason=_GROUPED_SHM_RING_REASON,
+            detail=_GROUPED_SHM_RING_DETAIL,
         )
     return CouplingSupport(
         coupling=normalized,

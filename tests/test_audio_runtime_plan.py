@@ -642,6 +642,43 @@ def test_transport_pipe_route_policy_blocks_active_leader_but_allows_solo():
     assert solo.supported is True
 
 
+def test_shm_ring_route_policy_blocks_every_grouping_enabled_mode():
+    # BLOCKER 2: shm_ring is solo-stereo-only until ring v2 (P8). Arming it on a
+    # box with grouping ENABLED (leader/follower/invalid) would strand the leader's
+    # local output. The symmetric half of multiroom.reconcile's ring-armed-bond
+    # gate — together they make ring ⟂ grouping fail-closed from both directions.
+    for mode in ("active_leader", "active_follower", "invalid_grouping"):
+        support = coupling_supported_for_route(COUPLING_SHM_RING, mode)
+        assert support.supported is False, mode
+        assert support.reason == "fanin_shm_ring_coupling_unsupported_while_grouped"
+        assert support.detail  # a non-empty operator-facing reason
+        assert support.coupling == COUPLING_SHM_RING
+
+
+def test_shm_ring_route_policy_allows_solo_and_unknown():
+    # solo = grouping off; unknown = a transient indeterminate grouping-config read
+    # that must NOT refuse a legitimate solo arm (fail-safe direction).
+    for mode in ("solo", "unknown"):
+        support = coupling_supported_for_route(COUPLING_SHM_RING, mode)
+        assert support.supported is True, mode
+
+
+def test_transport_pipe_still_allowed_for_follower_and_invalid_grouping():
+    # The shm_ring block must NOT accidentally widen the transport_pipe block:
+    # transport_pipe is only refused for active_leader (its documented gap), so a
+    # follower/invalid box keeps the existing transport_pipe support verdict.
+    for mode in ("active_follower", "invalid_grouping", "solo", "unknown"):
+        assert coupling_supported_for_route(COUPLING_TRANSPORT_PIPE, mode).supported
+
+
+def test_fanin_coupling_action_blocks_shm_ring_for_grouped_route():
+    action, support = fanin_coupling_action(COUPLING_SHM_RING, "active_follower")
+
+    assert action is None
+    assert support.supported is False
+    assert support.reason == "fanin_shm_ring_coupling_unsupported_while_grouped"
+
+
 def test_fanin_coupling_action_sets_supported_coupling():
     action, support = fanin_coupling_action(COUPLING_TRANSPORT_PIPE, "solo")
 

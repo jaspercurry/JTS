@@ -274,7 +274,7 @@ def reconcile_coupling(
     action, support = fanin_coupling_action(desired_raw, route_mode)
     desired = support.coupling
     if not support.supported:
-        return _block_transport_for_active_leader(
+        return _block_unsupported_coupling(
             do_restart,
             do_restart_outputd,
             do_reconcile,
@@ -282,7 +282,9 @@ def reconcile_coupling(
             outputd_snapshot,
             current,
             reason,
+            desired=desired,
             block_detail=support.detail,
+            block_result=support.reason or ACTIVE_LEADER_TRANSPORT_BLOCK_REASON,
             apply=apply,
         )
 
@@ -437,7 +439,7 @@ def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
         return "unknown"
 
 
-def _block_transport_for_active_leader(
+def _block_unsupported_coupling(
     do_restart,
     do_restart_outputd,
     do_reconcile,
@@ -446,13 +448,26 @@ def _block_transport_for_active_leader(
     current: str,
     reason: str,
     *,
+    desired: str,
     block_detail: str | None = None,
+    block_result: str = ACTIVE_LEADER_TRANSPORT_BLOCK_REASON,
     apply: bool,
 ) -> CouplingResult:
+    """Refuse an unsupported coupling for this route and fail-closed to loopback.
+
+    Covers BOTH blocked combinations from ``coupling_supported_for_route``:
+    ``transport_pipe`` on an active leader, and ``shm_ring`` on any grouping-
+    enabled box. Forces fan-in loopback + clears every reconciler-owned outputd
+    content-source key (pipe AND Ring B), so a previously-armed box (transport_pipe
+    OR shm_ring) recovers rather than stranding one transport end. ``desired`` is
+    the coupling the operator asked for — reported back verbatim so ``/state`` /
+    logs name the real request, not a hardcoded one. ``block_result`` is the stable
+    ``event=`` result token (the route-policy ``support.reason``) so a ring block
+    and a transport-pipe block stay distinguishable in the journal.
+    """
     detail = block_detail or (
-        "JASPER_FANIN_CAMILLA_COUPLING=transport_pipe is not supported while this box is "
-        "an active multiroom leader; keep the fan-in coupling on loopback until "
-        "the grouped active-leader transport-pipe topology exists"
+        f"{COUPLING_ENV_VAR}={desired} is not supported for this route; the "
+        "fan-in coupling was kept on / reverted to loopback"
     )
     fanin_action = RuntimeEnvAction("set", COUPLING_ENV_VAR, COUPLING_LOOPBACK)
     fanin_new_text, fanin_changed = _apply_action(fanin_snapshot.text, fanin_action)
@@ -462,8 +477,10 @@ def _block_transport_for_active_leader(
     outputd_new_text, outputd_changed = _apply_actions(
         outputd_snapshot.text, _outputd_actions(COUPLING_LOOPBACK, outputd_snapshot.text)
     )
-    stale_transport = current == COUPLING_TRANSPORT_PIPE or outputd_changed
-    if stale_transport:
+    # A previously-armed box (transport_pipe OR shm_ring) must be recovered, even
+    # if its outputd keys happen to already be clear.
+    stale_non_loopback = current != COUPLING_LOOPBACK or outputd_changed
+    if stale_non_loopback:
         try:
             if fanin_changed:
                 _write_env_text(fanin_snapshot.path, fanin_new_text)
@@ -475,7 +492,7 @@ def _block_transport_for_active_leader(
             log_event(
                 logger,
                 "fanin.coupling_reconcile",
-                result=ACTIVE_LEADER_TRANSPORT_BLOCK_REASON,
+                result=block_result,
                 action="loopback_write_failed",
                 reason=reason,
                 detail=e,
@@ -483,7 +500,7 @@ def _block_transport_for_active_leader(
             )
             return CouplingResult(
                 ok=False,
-                desired=COUPLING_TRANSPORT_PIPE,
+                desired=desired,
                 changed=False,
                 direction="blocked",
                 detail=f"{detail}; failed to write loopback fallback: {e}",
@@ -500,7 +517,7 @@ def _block_transport_for_active_leader(
             log_event(
                 logger,
                 "fanin.coupling_reconcile",
-                result=ACTIVE_LEADER_TRANSPORT_BLOCK_REASON,
+                result=block_result,
                 action="recovered_to_loopback",
                 reason=reason,
                 recovered=disarm.ok,
@@ -509,7 +526,7 @@ def _block_transport_for_active_leader(
             )
             return CouplingResult(
                 ok=False,
-                desired=COUPLING_TRANSPORT_PIPE,
+                desired=desired,
                 changed=True,
                 direction="blocked",
                 restarted_fanin=disarm.restarted_fanin,
@@ -521,14 +538,14 @@ def _block_transport_for_active_leader(
         log_event(
             logger,
             "fanin.coupling_reconcile",
-            result=ACTIVE_LEADER_TRANSPORT_BLOCK_REASON,
+            result=block_result,
             action="wrote_loopback_no_apply",
             reason=reason,
             level=logging.WARNING,
         )
         return CouplingResult(
             ok=False,
-            desired=COUPLING_TRANSPORT_PIPE,
+            desired=desired,
             changed=True,
             direction="blocked",
             detail=detail,
@@ -537,14 +554,14 @@ def _block_transport_for_active_leader(
     log_event(
         logger,
         "fanin.coupling_reconcile",
-        result=ACTIVE_LEADER_TRANSPORT_BLOCK_REASON,
+        result=block_result,
         action="kept_loopback",
         reason=reason,
         level=logging.WARNING,
     )
     return CouplingResult(
         ok=False,
-        desired=COUPLING_TRANSPORT_PIPE,
+        desired=desired,
         changed=False,
         direction="blocked",
         detail=detail,
