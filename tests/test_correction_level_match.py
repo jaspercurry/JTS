@@ -669,3 +669,143 @@ def test_session_level_match_snapshot_empty_before_run(tmp_path):
     snap = sess.level_match_snapshot()
     assert snap["locks"] == {}
     assert snap["last"] is None
+
+
+@pytest.mark.asyncio
+async def test_session_lock_cancel_level_match_are_noops_when_idle(tmp_path):
+    # The P2 nit: the seams exist and are safe no-ops when no ramp is running
+    # (mirrors lock_autolevel/cancel_autolevel returning False when idle).
+    sess = _make_session(tmp_path)
+    assert await sess.lock_level_match() is False
+    assert await sess.cancel_level_match() is False
+
+
+@pytest.mark.asyncio
+async def test_session_run_level_match_clears_retained_session(tmp_path):
+    # The retained LevelMatchSession is cleared after the run so a stale
+    # controller can't be locked/cancelled once the ramp has settled.
+    sess = _make_session(tmp_path)
+    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+    clock = Clock()
+    outcome = await sess.run_level_match(
+        MicGeometry.NEAR_FIELD_DRIVER.value,
+        get_main_volume_db=chain.get_vol,
+        set_main_volume_db=chain.set_vol,
+        play_continuous_tone=chain.tone,
+        cancel_tone=chain.cancel_tone,
+        read_status=chain.read_status,
+        post_host_event=chain.post_host_event,
+        noise_floor_dbfs=chain.nf,
+        clock=clock.now,
+        sleep=clock.sleep,
+    )
+    assert outcome.ramp.state == RampState.LOCKED
+    # Retained session is torn down; the seams are inert again.
+    assert sess._level_match_session is None
+    assert await sess.lock_level_match() is False
+    assert await sess.cancel_level_match() is False
+
+
+@pytest.mark.asyncio
+async def test_session_lock_level_match_reaches_running_ramp(tmp_path):
+    # The whole point of retaining the session (the P2 nit): a Lock issued
+    # through the SESSION seam while the ramp is in flight actually reaches the
+    # running RampController and locks it. Without retention this was impossible
+    # (the LevelMatchSession local was discarded the instant run awaited).
+    sess = _make_session(tmp_path)
+    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+    clock = Clock()
+
+    locked = {"fired": False}
+    reads = {"n": 0}
+    base = chain.read_status
+
+    def read_status():
+        reads["n"] += 1
+        # While the ramp runs, the session must be retained and lockable.
+        assert sess._level_match_session is not None
+        if reads["n"] == 4 and not locked["fired"]:
+            locked["fired"] = True
+            # Lock EARLY (the ramp is still climbing from -50 dB, nowhere near
+            # the auto-lock window) through the retained SESSION seam — so the
+            # lock is provably the manual one, not the auto-settle path.
+            asyncio.get_running_loop().create_task(sess.lock_level_match())
+        return base()
+
+    outcome = await sess.run_level_match(
+        MicGeometry.NEAR_FIELD_DRIVER.value,
+        get_main_volume_db=chain.get_vol,
+        set_main_volume_db=chain.set_vol,
+        play_continuous_tone=chain.tone,
+        cancel_tone=chain.cancel_tone,
+        read_status=read_status,
+        post_host_event=chain.post_host_event,
+        noise_floor_dbfs=chain.nf,
+        clock=clock.now,
+        sleep=clock.sleep,
+    )
+    assert locked["fired"]
+    assert outcome.ramp.state == RampState.LOCKED
+    # A manual lock freezes the ramp well below the auto-lock window: the settled
+    # mic level is far under the safe window's top, proving it wasn't auto-lock.
+    assert sess._level_match_session is None
+
+
+@pytest.mark.asyncio
+async def test_session_run_level_match_is_single_flight(tmp_path):
+    # Should-fix (review): the retained slot is per-run, so overlapping runs
+    # must be REFUSED (mirrors /autolevel/start's "already in progress" guard)
+    # — otherwise a second run would stomp the slot and the first's clear would
+    # orphan the second's LIVE ramp from its Cancel seam. While the first run is
+    # in flight: a second run raises, the seam still reaches the FIRST ramp, and
+    # the identity-guarded clear leaves the slot reusable afterwards.
+    sess = _make_session(tmp_path)
+    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+    clock = Clock()
+
+    task = asyncio.get_running_loop().create_task(
+        sess.run_level_match(
+            MicGeometry.NEAR_FIELD_DRIVER.value,
+            get_main_volume_db=chain.get_vol,
+            set_main_volume_db=chain.set_vol,
+            play_continuous_tone=chain.tone,
+            cancel_tone=chain.cancel_tone,
+            read_status=chain.read_status,
+            post_host_event=chain.post_host_event,
+            noise_floor_dbfs=chain.nf,
+            clock=clock.now,
+            sleep=clock.sleep,
+        )
+    )
+    # Let the first run start and claim the slot (the ramp climbs from -50 dB,
+    # so it is still mid-flight after a few scheduler turns).
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if sess._level_match_session is not None:
+            break
+    assert sess._level_match_session is not None
+    first_session = sess._level_match_session
+
+    with pytest.raises(RuntimeError, match="already in progress"):
+        await sess.run_level_match(
+            MicGeometry.LISTENING_POSITION.value,
+            get_main_volume_db=chain.get_vol,
+            set_main_volume_db=chain.set_vol,
+            play_continuous_tone=chain.tone,
+            cancel_tone=chain.cancel_tone,
+            read_status=chain.read_status,
+            post_host_event=chain.post_host_event,
+            noise_floor_dbfs=chain.nf,
+            clock=clock.now,
+            sleep=clock.sleep,
+        )
+    # The refused second run did not stomp the first's slot.
+    assert sess._level_match_session is first_session
+
+    # The Cancel seam reaches the FIRST (still-running) ramp...
+    assert await sess.cancel_level_match() is True
+    outcome = await task
+    assert outcome.ramp.state == RampState.CANCELLED
+    # ...and the identity-guarded clear released the slot for the next run.
+    assert sess._level_match_session is None
+    assert await sess.cancel_level_match() is False

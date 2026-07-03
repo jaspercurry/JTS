@@ -3622,45 +3622,24 @@ async def _active_speaker_commissioning_view_payload(
     *,
     camilla_factory: Callable[[], Any],
 ) -> dict[str, Any]:
-    """Return the backend-owned active-speaker setup view model."""
+    """Return the backend-owned active-speaker setup view model.
 
-    from jasper.active_speaker.baseline_profile import (
-        build_baseline_profile_candidate,
-    )
+    The state-loading + composition lives in the shared
+    ``commissioning_coordinator.load_commissioning_view`` (the single source of
+    truth for "the commissioning view of this speaker" — the crossover envelope
+    consumes the same loader). Only the ``commission`` runtime relay is built
+    here, because its full payload needs the async CamillaDSP runtime probe
+    this caller owns.
+    """
+
     from jasper.active_speaker.commissioning_coordinator import (
-        build_commissioning_view,
+        load_commissioning_view,
     )
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.calibration_level import load_calibration_level_state
-    from jasper.active_speaker.measurement import load_measurement_state
-    from jasper.active_speaker.startup_load import load_startup_load_state
 
-    topology = load_output_topology()
-    design_draft = load_design_draft()
-    preview = load_crossover_preview(current_design_draft=design_draft)
-    measurements = load_measurement_state(topology)
-    calibration_level = load_calibration_level_state()
     commission = await _active_speaker_commission_state_payload(
         camilla_factory=camilla_factory,
     )
-    baseline = build_baseline_profile_candidate(
-        topology,
-        design_draft=design_draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        write=False,
-    )
-    view = build_commissioning_view(
-        topology,
-        design_draft=design_draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        commission=commission,
-        startup_load={"state": load_startup_load_state()},
-        baseline_profile=baseline,
-        calibration_level=calibration_level,
-    )
+    view = load_commissioning_view(commission=commission)
     logger.info(
         "event=sound.active_speaker_commissioning_view status=%s next_action=%s",
         view.get("status"),

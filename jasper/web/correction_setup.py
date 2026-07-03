@@ -169,6 +169,7 @@ _POST_ROUTES = frozenset({
     "/crossover/summed-capture-sweep",
     "/crossover/driver-capture",
     "/crossover/summed-capture",
+    "/crossover/relay-capture",
     "/balance/start",
     "/balance/ramp",
     "/balance/meter",
@@ -2206,6 +2207,91 @@ def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any
     }
 
 
+def _handle_crossover_relay_capture(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /crossover/relay-capture: capture one active-crossover driver/summed
+    sweep via the cloud relay (the phone runs the capture page on jasper.tech)
+    instead of a same-origin `postWav`.
+
+    GATED + DEFAULT-OFF, like /relay/capture and /sync/relay-capture. The third
+    real caller of the RelayCaptureKind seam — a new kind is a descriptor, not a
+    new orchestrator. The `crossover_sweep` spec + `correction_crossover_flow`'s
+    relay run-and-consume own the stimulus + analysis; this bridges the relay
+    transport through the shared orchestrator. Body: `{kind: "driver"|"summed",
+    speaker_group_id, role (driver only)}`. ON-DEVICE: the acoustic capture is
+    not exercised hardware-free (same status as the room/sync relay — H2).
+
+    Measurement mutual-exclusion is SERVER-computed twice, never client-supplied:
+    refused here at POST time while room correction / balance / sync is active
+    (mirrors sync's `relay_precheck`), and re-checked at armed time inside the
+    run-and-consume (the phone can arm minutes later — a sweep played over
+    another measurement silently corrupts both captures)."""
+    from jasper.capture_relay import correction_adapter
+    from jasper.capture_relay.spec import build_crossover_sweep_spec
+
+    from . import correction_crossover_flow
+
+    relay_base = _require_relay_base()  # gated off until configured; inert otherwise
+    blocking = _crossover_blocking_phase()
+    if blocking is not None:
+        raise ValueError(
+            f"another measurement is in progress ({blocking}) — finish it "
+            "before starting a crossover relay capture"
+        )
+    raw = _read_json_body(handler)
+    kind_id = correction_crossover_flow.relay_kind_from_raw(raw)
+    driver_label = correction_crossover_flow.relay_driver_label(raw)
+
+    def _open(
+        client: RelayClient,
+        base: str,
+        capture_origin: str,
+        return_url: str,
+    ) -> RelayCapture:
+        return correction_adapter.open_capture(
+            client,
+            build_crossover_sweep_spec(driver_label=driver_label),
+            relay_base=base,
+            capture_origin=capture_origin,
+            return_url=return_url,
+        )
+
+    def _post_host_event(session_id: str, pull_token: str, payload: dict[str, Any]):
+        # Bind the relay client fresh per post so the closure needs no client
+        # capture; the orchestrator's client is the register client, reused here.
+        from jasper.capture_relay.client import RelayClient
+        from jasper.capture_relay.health import relay_registration_token_from_env
+
+        client = RelayClient(
+            relay_base,
+            timeout=_RELAY_REGISTER_TIMEOUT_S,
+            registration_token=relay_registration_token_from_env(),
+        )
+        return client.post_host_event(session_id, pull_token, payload)
+
+    run_and_consume = correction_crossover_flow.build_crossover_relay_run_and_consume(
+        raw,
+        _run_async,
+        _camilla,
+        post_host_event=_post_host_event,
+        # Server-side probe, re-evaluated fresh when the phone actually arms.
+        blocking_phase=_crossover_blocking_phase,
+    )
+    kind = RelayCaptureKind(
+        label=f"crossover_sweep:{kind_id}",
+        open=_open,
+        run_and_consume=run_and_consume,
+    )
+    return {
+        "relay": _run_relay_capture(
+            kind,
+            relay_base,
+            return_url=_request_local_return_url(handler, "/correction/crossover"),
+        )
+    }
+
+
 def _maybe_restore_main_volume(sess, cam) -> None:
     """If autolevel ran and locked a measurement-friendly level,
     restore main_volume to the pre-autolevel value after the
@@ -2592,6 +2678,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(payload, status=int(status))
                     return
 
+                if path == "/crossover/relay-capture":
+                    # The relay handler reads its own JSON body (mirrors the room
+                    # /relay/capture and /sync/relay-capture handlers).
+                    self._send_json(_handle_crossover_relay_capture(self))
+                    return
+
                 raw = _read_json_body(self)
                 if path == "/crossover/driver-test":
                     payload, status = correction_crossover_flow.handle_driver_test(
@@ -2662,6 +2754,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/calibration/models",
                 "/crossover",
                 "/crossover/status",
+                "/crossover/envelope",
                 "/bass",
                 "/balance",
                 "/balance/status",
@@ -2700,6 +2793,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(payload, status=int(status))
                 except (OSError, RuntimeError, TypeError, ValueError) as e:
                     logger.exception("/crossover/status failed")
+                    self._send_json({"error": str(e)}, status=500)
+                return
+            if path == "/crossover/envelope":
+                from . import correction_crossover_flow
+                try:
+                    payload, status = correction_crossover_flow.handle_envelope()
+                    self._send_json(payload, status=int(status))
+                except (OSError, RuntimeError, TypeError, ValueError) as e:
+                    logger.exception("/crossover/envelope failed")
                     self._send_json({"error": str(e)}, status=500)
                 return
             if path == "/bass":

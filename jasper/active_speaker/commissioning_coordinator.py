@@ -22,6 +22,19 @@ from .measurement import active_summed_targets
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
 
+# The ordered commissioning step ids `build_commissioning_view` emits, exported
+# so envelope/progress consumers derive from ONE tuple instead of re-typing the
+# literals (a rename here without updating the view construction below is
+# caught by the real-coordinator drift test in
+# tests/test_web_correction_crossover_flow.py).
+COMMISSIONING_STEP_IDS: tuple[str, ...] = (
+    "layout",
+    "research",
+    "map",
+    "safety",
+    "profile",
+)
+
 
 def issue_codes(issues: Any) -> set[str]:
     if not isinstance(issues, list):
@@ -548,3 +561,65 @@ def build_commissioning_view(
             "startup_load": dict(startup_load or {}),
         },
     }
+
+
+def load_commissioning_view(
+    topology: OutputTopology | None = None,
+    *,
+    commission: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """THE commissioning view of this speaker — load state, then compose.
+
+    ``build_commissioning_view`` above is a pure composer: it never loads state
+    itself, so any caller that omits an input silently degrades the view (a
+    missing ``design_draft`` pins ``current_step`` to "research" forever; a
+    missing ``baseline_profile`` makes "applied" unreachable). This loader is
+    the single source of truth for feeding it — it loads every durable state
+    input exactly the way the ``/sound/`` commissioning card always has
+    (design draft → preview derived FROM that draft → measurements →
+    calibration level → the write-free baseline-profile candidate →
+    startup-load state) and composes the view. Both the ``/sound/`` payload and
+    the ``/correction/crossover/envelope`` builder call this; neither hand-rolls
+    the input set.
+
+    ``commission`` is the one caller-supplied input: it is a runtime-only relay
+    (surfaced verbatim under ``runtime.commission``, never consulted for
+    steps/status/next_action) and the full payload needs an async CamillaDSP
+    runtime probe that only the ``/sound/`` caller owns. Callers without a live
+    probe pass ``None`` — the composed steps are identical.
+
+    Lazy imports keep this module light for pure-composition callers/tests.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        build_baseline_profile_candidate,
+    )
+    from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measurement import load_measurement_state
+    from jasper.active_speaker.startup_load import load_startup_load_state
+    from jasper.output_topology import load_output_topology
+
+    if topology is None:
+        topology = load_output_topology()
+    design_draft = load_design_draft()
+    preview = load_crossover_preview(current_design_draft=design_draft)
+    measurements = load_measurement_state(topology)
+    calibration_level = load_calibration_level_state()
+    baseline = build_baseline_profile_candidate(
+        topology,
+        design_draft=design_draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
+    )
+    return build_commissioning_view(
+        topology,
+        design_draft=design_draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        commission=commission,
+        startup_load={"state": load_startup_load_state()},
+        baseline_profile=baseline,
+        calibration_level=calibration_level,
+    )

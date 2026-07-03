@@ -113,3 +113,91 @@ def test_relay_run_and_consume_failure_releases_window(monkeypatch):
     assert released == [True]  # held window released on failure
     assert sync_flow._state["phase"] == "idle"  # reset, not stuck "measuring"
     assert "failed" in sync_flow._state["error"]  # visible on /sync/status
+
+
+def test_relay_run_and_consume_publishes_sweep_complete(monkeypatch):
+    """Should-fix (P7 review, pre-existing bug): the capture page records until
+    it sees `sweep_complete` (or its hard `duration_ms` deadline) — the sync
+    relay path never published it, so every sync relay capture died on the
+    deadline having uploaded nothing. Pins: sweep_started before the marker,
+    sweep_complete only AFTER the playback process exits, both posted to the
+    relay client with the pi_session's identifiers, and the analysis still runs
+    on the phone's (real-shape WAV) bytes."""
+    import asyncio
+    import io
+    import wave
+    from types import SimpleNamespace
+
+    import jasper.capture_relay.session as relay_session
+    from jasper.web import sync_flow
+
+    # A real mono 48 kHz WAV (silence): analyze_wav_bytes runs for REAL and
+    # returns ok=False (no markers) without raising — the event contract under
+    # test is transport-side, not the acoustics.
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(b"\x00\x00" * 48000 * 3)
+    wav_bytes = buf.getvalue()
+
+    with sync_flow._lock:
+        sync_flow._state.update({
+            "phase": "measuring", "error": "", "members": None, "result": None,
+            "recommendation": None, "playback": None, "release_window": None,
+        })
+
+    class FakeProc:
+        """Stands in for the aplay asyncio subprocess: wait() resolves and
+        records that playback had to FINISH before sweep_complete. terminate()
+        exists for the teardown handle_stop() → _reset_locked() path."""
+
+        def __init__(self):
+            self.waited = False
+            self.returncode = 0
+
+        async def wait(self):
+            self.waited = True
+            return 0
+
+        def terminate(self):
+            return None
+
+    proc = FakeProc()
+
+    async def fake_play_marker_once(wav_path):
+        with sync_flow._lock:
+            sync_flow._state["playback"] = {"proc": proc}
+
+    monkeypatch.setattr(sync_flow, "_play_marker_once", fake_play_marker_once)
+    monkeypatch.setattr(sync_flow, "_marker_wav_path", lambda: "/tmp/fake-marker.wav")
+
+    def fake_run_capture(client, pi_session, *, on_armed, **kw):
+        on_armed()
+        return SimpleNamespace(wav=wav_bytes, device=None)
+
+    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "purge", lambda c, s: None)
+
+    events: list[dict] = []
+
+    class FakeClient:
+        def post_host_event(self, session_id, pull_token, payload):
+            events.append({
+                "session_id": session_id,
+                "pull_token": pull_token,
+                **payload,
+            })
+
+    pi_session = SimpleNamespace(session_id="sid-1", pull_token="tok-1")
+    try:
+        asyncio.run(sync_flow.relay_run_and_consume(FakeClient(), pi_session))
+    finally:
+        sync_flow.handle_stop()
+
+    phases = [e["phase"] for e in events]
+    assert phases == ["sweep_started", "sweep_complete"]
+    assert proc.waited is True  # complete only after playback truly ended
+    assert all(e["session_id"] == "sid-1" and e["pull_token"] == "tok-1"
+               for e in events)

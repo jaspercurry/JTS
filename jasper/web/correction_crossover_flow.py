@@ -7,15 +7,26 @@
 from __future__ import annotations
 
 import html
+import logging
 from http import HTTPStatus
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
+from ..log_event import log_event
 from ._common import canonical_header, canonical_page
 from .correction_hub import section_tabs
 
+logger = logging.getLogger(__name__)
+
 AsyncRunner = Callable[..., Any]
 CamillaFactory = Callable[[], Any]
+
+# Relay-capture kinds this flow bridges. Both ride the shared `crossover_sweep`
+# capture spec + the single relay transport (`correction_adapter`) — the same
+# seam the room and sync flows use — so a phone can carry a driver or summed
+# crossover sweep in place of a same-origin `postWav`. Kind-specific behaviour is
+# only which play/record pair runs; the transport is identical.
+CROSSOVER_RELAY_KINDS = ("driver", "summed")
 
 
 def render_page(hostname: str, csrf_token: str = "") -> bytes:
@@ -123,6 +134,19 @@ def handle_status() -> tuple[dict[str, Any], HTTPStatus]:
     from . import correction_crossover_backend as backend
 
     return backend.status_payload(), HTTPStatus.OK
+
+
+def handle_envelope() -> tuple[dict[str, Any], HTTPStatus]:
+    """GET /crossover/envelope: the server-computed commissioning screen envelope
+    the dumb frontend renders each step from (revision plan §3.2), aligned with
+    the room flow's envelope-driven pattern. Additive alongside /crossover/status;
+    passive speakers get ``active=False`` (Layer A hidden)."""
+    from jasper.active_speaker.crossover_envelope import (
+        build_crossover_envelope_logged,
+    )
+
+    status, _ = handle_status()
+    return build_crossover_envelope_logged(status), HTTPStatus.OK
 
 
 def handle_driver_test(
@@ -258,3 +282,245 @@ def handle_summed_capture(
 
     payload = backend.record_summed_capture(_request_payload(handler), wav_body)
     return payload, HTTPStatus.OK
+
+
+# ----------------------------------------------------------------------
+# Phone-mic relay transport (P7). Same one transport + one upload seam the
+# room and sync flows ride: the phone runs the trusted capture page and the Pi
+# pulls the E2E-verified WAV back through the stateless relay, feeding the SAME
+# `record_driver_capture` / `record_summed_capture` analysis a same-origin
+# `postWav` reaches. GATED + default-off (mirrors /relay/capture): with no
+# `JASPER_CAPTURE_RELAY_BASE` the flow keeps the same-origin `postWav` path
+# byte-identical and the relay endpoint returns a clear "not configured" error.
+# On-device: the acoustic capture is not exercised hardware-free — its H2
+# sanity-check line rides the P7 checklist, exactly like the room/sync relay.
+# ----------------------------------------------------------------------
+
+
+def relay_kind_from_raw(raw: dict[str, Any]) -> str:
+    """The crossover relay capture kind (``driver`` | ``summed``), validated.
+
+    Kept small + strict at the boundary (extensibility doctrine): an unknown
+    kind fails loud rather than silently defaulting to one of the two paths."""
+    kind = str((raw or {}).get("kind") or "").strip().lower()
+    if kind not in CROSSOVER_RELAY_KINDS:
+        raise ValueError(
+            f"crossover relay kind must be one of {CROSSOVER_RELAY_KINDS}, "
+            f"got {kind!r}"
+        )
+    return kind
+
+
+def relay_driver_label(raw: dict[str, Any]) -> str:
+    """Server-driven capture-page copy naming the driver/speaker under test.
+
+    The `crossover_sweep` spec's screen copy comes from the Pi (no web deploy to
+    relabel a driver), so this composes the label the phone shows from the
+    request's role/group — mirroring the same-origin ``roleLabel`` in the JS."""
+    role = str((raw or {}).get("role") or "").strip()
+    if role:
+        return f"{role[:1].upper()}{role[1:]} driver"
+    return "summed crossover"
+
+
+def playback_issue_text(payload: Any, fallback: str) -> str:
+    """The one operator-facing reason a capture-sweep payload failed.
+
+    Mirrors the same-origin JS ``issueMessage`` (crossover/main.js) — the
+    canonical reader of these payloads: first ``issues[].message/label/code``,
+    then the nested ``playback.issues``, then ``next_step``, then ``reason``,
+    else the fallback. So a refusal ("Finish the other measurement…") or a
+    rollback failure surfaces its real reason instead of a generic "did not
+    play"."""
+    if not isinstance(payload, dict):
+        return fallback
+    for source in (payload, payload.get("playback")):
+        if not isinstance(source, dict):
+            continue
+        for issue in source.get("issues") or []:
+            if not isinstance(issue, dict):
+                continue
+            text = issue.get("message") or issue.get("label") or issue.get("code")
+            if text:
+                return str(text)
+    for key in ("next_step", "reason"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return fallback
+
+
+def capture_sweep_played(payload: Any) -> bool:
+    """Whether a driver/summed capture-sweep payload reports real audio.
+
+    The REAL play payloads nest ``audio_emitted`` under ``playback`` (top level
+    is ``{status, playback, playback_id, [summed_test_id], test_level_dbfs,
+    sweep_meta, commission}``); only refused/blocked payloads carry a top-level
+    ``audio_emitted: False``. This mirrors the same-origin JS's canonical read
+    (``assertCapturePlayback``: ``payload.status === 'completed' &&
+    playback.audio_emitted``) so the relay and browser paths agree on what
+    "the sweep played" means. Pinned against the REAL play function's return in
+    tests/test_web_correction_crossover_flow.py.
+    """
+    if not isinstance(payload, dict):
+        return False
+    playback = payload.get("playback")
+    playback = playback if isinstance(playback, dict) else {}
+    return payload.get("status") == "completed" and bool(
+        playback.get("audio_emitted")
+    )
+
+
+def build_crossover_relay_run_and_consume(
+    raw: dict[str, Any],
+    run_async: AsyncRunner,
+    camilla_factory: CamillaFactory,
+    *,
+    post_host_event: Callable[[str, str, dict[str, Any]], Any] | None = None,
+    blocking_phase: Callable[[], str | None] | None = None,
+) -> Callable[[Any, Any], Any]:
+    """Return the relay ``run_and_consume(client, pi_session)`` coroutine.
+
+    On ``armed`` (phone recording), plays the driver/summed **capture sweep**
+    through the existing safe commissioning playback path — the SAME
+    ``play_driver_capture_sweep`` / ``play_summed_capture_sweep`` a same-origin
+    capture triggers, so the loud-output safety + fan-in gating still apply — and
+    publishes ``sweep_complete`` so the phone stops recording (the room-flow
+    contract). After the verified WAV arrives, feeds it (with the played
+    ``sweep_meta`` / ``playback_id`` / ``test_level_dbfs``) into the SAME
+    ``record_driver_capture`` / ``record_summed_capture`` analysis. The deconv
+    reference is regenerated from the played ``sweep_meta`` (not the phone WAV),
+    so the phone is a pure recorder.
+
+    ``blocking_phase`` is the SERVER-computed measurement mutual-exclusion probe
+    (`correction_setup._crossover_blocking_phase`), evaluated **fresh at armed
+    time** — the phone can arm up to ~2 minutes after the POST, exactly when a
+    room/balance/sync measurement may have started; a stale (or, worse,
+    client-supplied) value would let this sweep play over another measurement
+    and silently corrupt both captures. Never taken from the request body.
+    """
+    from . import correction_crossover_backend as backend
+
+    kind = relay_kind_from_raw(raw)
+    group_id = str((raw or {}).get("speaker_group_id") or "").strip()
+    role = str((raw or {}).get("role") or "").strip().lower()
+    # Stash the play response between on_armed (poll thread) and the post-capture
+    # record so the record carries the exact sweep the Pi played.
+    played: dict[str, Any] = {}
+
+    async def _play() -> dict[str, Any]:
+        # Re-evaluate the mutual-exclusion probe NOW (at play time, not POST
+        # time) — the play functions refuse with reason=measurement_in_progress
+        # when another measurement holds the speaker.
+        phase = blocking_phase() if blocking_phase is not None else None
+        if kind == "driver":
+            return await backend.play_driver_capture_sweep(
+                {"speaker_group_id": group_id, "role": role},
+                camilla_factory=camilla_factory,
+                blocking_phase=phase,
+            )
+        return await backend.play_summed_capture_sweep(
+            {"speaker_group_id": group_id},
+            camilla_factory=camilla_factory,
+            blocking_phase=phase,
+        )
+
+    def _post_phase(session_id: str, pull_token: str, phase: str, **extra: Any) -> None:
+        """Post a REQUIRED progress event; failures propagate.
+
+        The phone deadline-waits on ``sweep_complete`` — a swallowed post
+        failure would leave it recording to its hard timeout with no
+        breadcrumb. Mirrors the room path (`_run_relay_measurement_sweep`),
+        where a failed ``sweep_started``/``sweep_complete`` post fails the
+        capture."""
+        if post_host_event is None:
+            return
+        post_host_event(session_id, pull_token, {"phase": phase, **extra})
+
+    def _post_failed(session_id: str, pull_token: str, error: str) -> None:
+        """Post the terminal ``sweep_failed`` best-effort — we are already on
+        the failure path, so a post failure is logged at WARNING, not raised."""
+        if post_host_event is None:
+            return
+        try:
+            post_host_event(
+                session_id, pull_token, {"phase": "sweep_failed", "error": error}
+            )
+        except (RuntimeError, OSError, ValueError):
+            logger.warning(
+                "crossover relay sweep_failed host-event post failed",
+                exc_info=True,
+            )
+
+    async def _run_and_consume(client: Any, pi_session: Any) -> None:
+        import asyncio
+
+        from jasper.capture_relay.session import purge, run_capture
+
+        def _on_armed(_state: Any = None) -> None:
+            # Called from run_capture's poll thread. `run_async` posts the play
+            # coroutine back to the correction event loop (run_coroutine_threadsafe)
+            # and blocks THIS thread — never the loop — until the sweep finishes.
+            _post_phase(pi_session.session_id, pi_session.pull_token, "sweep_started")
+            payload = run_async(_play(), timeout=45.0)
+            if not capture_sweep_played(payload):
+                reason = playback_issue_text(
+                    payload,
+                    "the crossover capture sweep did not play — "
+                    "confirm the driver first",
+                )
+                _post_failed(pi_session.session_id, pi_session.pull_token, reason)
+                raise ValueError(reason)
+            played.clear()
+            played.update(payload)
+            _post_phase(pi_session.session_id, pi_session.pull_token, "sweep_complete")
+
+        # run_capture blocks until the phone finishes recording, so it MUST run
+        # off the correction event loop (mirrors the room flow's
+        # `await asyncio.to_thread(run_and_store, ...)`) — otherwise the whole
+        # capture window would freeze the loop the play coroutine schedules onto.
+        result = await asyncio.to_thread(
+            run_capture, client, pi_session, on_armed=_on_armed
+        )
+        purge(client, pi_session)
+
+        # DELIBERATE SCOPE (phone-mic-relay-plan §"Deferred crossover relay
+        # kind"): this path passes NO `calibration_id`, so `capture_calibration`
+        # resolves no curve and the phone's mic is analyzed uncalibrated — there
+        # is nothing to mis-apply, so the room/sync flow's built-in-vs-USB mic
+        # calibration guard (`_relay_device_calibration_block`, which gates a
+        # LOADED vendor curve against the phone's reported device) is not needed
+        # here. If a calibrated crossover relay capture is ever added, it MUST
+        # add that device guard against `result.device` BEFORE recording — the
+        # crossover path loads calibration by `calibration_id`, not
+        # `session.mic_calibration`, so the room gate would not cover it (the
+        # same silent mis-calibration class on a different path). That is an
+        # on-device (H2) concern.
+        # All of these ride the play payload's TOP level (the wrapper hoists
+        # them out of the nested `playback`): sweep_meta, playback_id,
+        # test_level_dbfs, summed_test_id — the same fields the same-origin JS
+        # reads off its POST response (`playbackPayload.test_level_dbfs`, …).
+        record_raw: dict[str, Any] = {
+            "speaker_group_id": group_id,
+            "sweep_meta": played.get("sweep_meta"),
+            "playback_id": played.get("playback_id"),
+        }
+        if kind == "driver":
+            record_raw["role"] = role
+            record_raw["test_level_dbfs"] = played.get("test_level_dbfs")
+            record_payload = backend.record_driver_capture(record_raw, result.wav)
+        else:
+            record_raw["summed_test_id"] = played.get("summed_test_id") or played.get(
+                "playback_id"
+            )
+            record_payload = backend.record_summed_capture(record_raw, result.wav)
+        log_event(
+            logger,
+            "correction.crossover_relay_recorded",
+            kind=kind,
+            group_id=group_id,
+            role=role or None,
+            recorded=bool(record_payload.get("recorded")),
+        )
+
+    return _run_and_consume

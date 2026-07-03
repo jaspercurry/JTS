@@ -372,15 +372,57 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   with a nudge when no OpenAI key is configured); surface the interpreter in
   the flow; the confirm-gated proposer with simulate-before-apply. (Paid-call
   cost discipline per AGENTS.md — never in CI.)
-- **P7 — Active-crossover measurement flow (hardware-free shaping).** The Layer-A
-  commissioning *flow* is fair game now — only its acoustic proof is parked
-  (H2). Wire the relay `crossover_sweep` spec into `correction_crossover_flow` so
-  all layers ride one transport + one upload seam; align the commissioning
-  sequence with **P3b's** screen envelope (P3b defines it, P7 consumes it —
-  see the ordering note below for why P7 sits after P3b and P2); ride the
-  shared kernel, **P2's `RampController`**, and the L0 gate; tidy
-  `commissioning_coordinator`. Every acoustic assumption gets an on-device
-  sanity-check line for H2, not a claim.
+- **P7 — Active-crossover measurement flow (hardware-free shaping).** *(Status:
+  implemented hardware-free on `claude/p7-crossover-flow`, adversarial-review
+  remediation applied — real-payload-shape consume guard, `hard_timeout_ms`
+  recording-deadline floor, shared `load_commissioning_view` loader feeding
+  the envelope the full coordinator input set, server-computed measurement
+  exclusion at POST **and** armed time.)* The Layer-A commissioning *flow* is
+  fair game now — only its acoustic proof is parked (H2). Shipped: (1) the
+  relay `crossover_sweep` transport wired into `correction_crossover_flow`
+  (`POST /crossover/relay-capture`, the third `RelayCaptureKind` caller) so
+  driver/summed captures ride the **same** relay transport +
+  `record_*_capture` upload seam the room/sync flows use — gated +
+  default-off, fail-soft when the relay base is unset, reading the play
+  payload's REAL shape (`status` + nested `playback.audio_emitted`, top-level
+  `test_level_dbfs`/`sweep_meta` — the same canonical read as the same-origin
+  JS) and refusing while room/balance/sync measurements are active
+  (server-computed at POST, re-checked when the phone arms); (2) the
+  stimulus-params alignment — `build_crossover_sweep_spec`'s
+  `stimulus_duration_ms` derives from the kernel-side
+  `driver_acoustics.DEFAULT_DURATION_S` (the sweep the Pi actually plays +
+  deconvolves), so there is **one** sweep definition, not a forked second one,
+  and its `duration_ms` — the phone's HARD recording deadline — is floored by
+  `hard_timeout_ms=30 s` exactly like `room_sweep` (a bare
+  pre+stimulus+post window left ~1.5 s for the Pi's entire armed-poll →
+  config-load → playback → relay-post round trip); the same floor + the
+  missing `sweep_complete` publication were fixed for the **sync** relay kind
+  in the same pass (pre-existing bug: the capture page deadline-kills any
+  relay capture whose Pi never posts `sweep_complete`); (3) the **P2 nit** —
+  `MeasurementSession.run_level_match` now RETAINS the run's
+  `LevelMatchSession` in a single-flight, identity-guard-cleared slot and
+  exposes `lock_level_match` / `cancel_level_match`, so a manual Lock/Cancel
+  reaches the running `RampController`. The `near_field_driver` geometry key +
+  these seams are the substrate for the flow's future level-match offer
+  before near-field captures; **no shipped surface makes that offer yet** (it
+  needs the level-match HTTP wiring — a P3b/P7 follow-up, kept out of this
+  pass rather than shipping a dead-end nudge with no endpoint behind it); (4)
+  a **parallel minimal** commissioning screen envelope
+  (`active_speaker/crossover_envelope.py`, `GET /crossover/envelope`) aligned
+  with the room flow's envelope-driven pattern — it composes the
+  coordinator's **already-built** step model into the shared `{screen,
+  verdict_text, nudges, next_action, progress}` shape via the shared
+  `commissioning_coordinator.load_commissioning_view` loader (the same
+  load-everything-then-compose the `/sound/` card uses; the coordinator is a
+  pure composer, so partial inputs silently report a stuck flow — and the
+  coordinator's state machine stays untouched, the smaller honest change than
+  coupling two disjoint state machines onto the room `SessionState`
+  envelope); (5) passive-gating — `active=False` on `/crossover/status` + the
+  envelope for a `full_range_passive` speaker (no active driver/summed
+  targets), pinned by a test, so passive users never see Layer A (§1). The L0
+  gate + graph safety + commission ramp Stop-gates were untouched (safety
+  floor). Every acoustic assumption gets an on-device sanity-check line for
+  **H2**, not a claim.
 
 **Cross-cutting, every phase:** ships `event=` structured logs for its new
 state transitions, a schema-version bump plus a pinning test for any

@@ -26,11 +26,64 @@
   `capture-page/js/level-events.js` (`kind="level_ramp"` spec). The
   browser-locked `AutolevelController` remains the no-relay local
   fallback (`run_autolevel` unchanged; `MeasurementSession.
-  run_level_match` is the additive relay seam). All synthetic — H1
-  (on-device settle cadence + iOS/Android AGC-freeze confirmation)
-  supplies the real threshold values; the `JASPER_RAMP_*` env knobs in
-  `.env.example` are documented placeholders until then. Design of
-  record: [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §3.1.
+  run_level_match` is the additive relay seam). It now RETAINS the
+  running `LevelMatchSession` in a **single-flight**, identity-guard-
+  cleared slot (unlike `_autolevel_controller`, a permanent controller,
+  this is per-run — an overlapping run is refused, never a stomped
+  slot) and exposes `lock_level_match` / `cancel_level_match`, so a
+  manual Lock/Cancel reaches the in-flight `RampController` (P7). All
+  synthetic — H1 (on-device settle cadence + iOS/Android AGC-freeze
+  confirmation) supplies the real threshold values; the `JASPER_RAMP_*`
+  env knobs in `.env.example` are documented placeholders until then.
+  Design of record:
+  [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §3.1.
+- 🧪 **P7 — active-crossover measurement flow (hardware-free complete,
+  on-device pending H2).** The Layer-A commissioning *flow* now rides
+  the shared substrate: `POST /crossover/relay-capture` (the third
+  `RelayCaptureKind` caller) carries a driver/summed sweep over the
+  **same** phone-mic relay transport + `record_*_capture` upload seam
+  the room/sync flows use — gated + default-off, byte-identical
+  same-origin `postWav` when the relay base is unset. The consume path
+  reads the play payload's REAL shape (top-level `status` + nested
+  `playback.audio_emitted`, top-level `test_level_dbfs`/`sweep_meta`/
+  `playback_id` — the same canonical read as the same-origin JS's
+  `assertCapturePlayback`), and measurement mutual-exclusion is
+  server-computed twice: refused at POST while room/balance/sync is
+  active, re-checked when the phone arms (never client-supplied). The
+  `crossover_sweep` capture spec's stimulus length derives from the
+  kernel-side `driver_acoustics.DEFAULT_DURATION_S` (one sweep
+  definition — the phone copy matches the sweep the Pi plays; the
+  deconv reference always regenerated from the played `sweep_meta`, so
+  the phone is a pure recorder), and its `duration_ms` — the phone's
+  hard recording deadline — is floored at 30 s like `room_sweep`'s
+  `hard_timeout_ms` (the normal stop is the Pi's `sweep_complete` relay
+  event; the deadline is only the backstop). The same pass fixed the
+  pre-existing **sync** relay bugs of that class: `sync_flow.
+  relay_run_and_consume` now publishes `sweep_started`/`sweep_complete`
+  (after the marker playback truly ends) and `build_sync_marker_spec`
+  gained the same 30 s deadline floor — without both, the capture page
+  deadline-killed every sync relay capture. `GET /crossover/envelope`
+  ([`jasper/active_speaker/crossover_envelope.py`](../jasper/active_speaker/crossover_envelope.py))
+  is a **parallel minimal** screen envelope aligned with the room flow's
+  envelope-driven pattern — it composes the commissioning coordinator's
+  already-built step model into the shared `{screen, verdict_text,
+  nudges, next_action, progress}` shape through the shared
+  `commissioning_coordinator.load_commissioning_view` loader (the same
+  full input set the `/sound/` card feeds the coordinator — the
+  coordinator is a pure composer, so partial inputs silently report a
+  stuck flow; its state machine is untouched). Passive
+  (`full_range_passive`) speakers get `active=False` on
+  `/crossover/status` + the envelope (no driver/summed targets) so
+  Layer A stays hidden (revision plan §1). The L0 emit gate + graph
+  safety + commission ramp Stop-gates were untouched. Known follow-up:
+  `/crossover/status` does not yet carry the shared relay slot
+  (`tap_link`/progress land on the ROOM `/status.relay` + `event=`
+  logs) — carry it on `/crossover/status` when the envelope-driven page
+  lands (P3b/P7 follow-up). **H2** is the acoustic proof only — the
+  phone-mic `getUserMedia`/CSP path + the driver/summed sweep playback
+  on real drivers are not exercised hardware-free (same status as the
+  room/sync relay). Design of record:
+  [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §4 P7.
 - 🧪 **Phone-mic capture relay path (fresh-install default,
   on-device-pending).** As of 2026-07-02 fresh installs default to an
   alternative capture transport that moves the room capture setup/recording page
@@ -825,6 +878,11 @@ GET  /                       room page render (stdlib HTML + room JS module)
 GET  /room                   same room-correction page as /
 GET  /crossover              active-crossover mic measurement page
 GET  /crossover/status       active-speaker targets + measurement evidence
+                             ({..., active: bool — false for a
+                             full_range_passive speaker, Layer A hidden})
+GET  /crossover/envelope     commissioning screen envelope (dumb frontend):
+                             {schema_version, screen, active, steps,
+                             verdict_text, nudges, next_action, progress}
 GET  /bass                   bass/subwoofer tuning placeholder page
 GET  /healthz                liveness — "ok"
 GET  /status                 session + currently-loaded correction snapshot
@@ -861,6 +919,14 @@ POST /crossover/driver-capture body = WAV (audio/wav); analyze + record
                              active-speaker per-driver acoustic evidence
 POST /crossover/summed-capture body = WAV (audio/wav); analyze + record
                              active-speaker summed-crossover evidence
+POST /crossover/relay-capture body: {kind: driver|summed, speaker_group_id,
+                             role?}; phone-mic relay transport for one
+                             crossover sweep (gated + default-off; same
+                             record_*_capture analysis as the same-origin
+                             POSTs above; refuses while room/balance/sync
+                             is active — server-computed at POST and
+                             re-checked when the phone arms). ON-DEVICE:
+                             not exercised hardware-free — H2.
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 
@@ -1073,6 +1139,9 @@ mid-sweep would attenuate the sweep itself.
 ```
 jasper/
 ├── active_speaker/
+│   ├── crossover_envelope.py            commissioning screen envelope (aligned
+│   │                                    with the room envelope pattern; passive
+│   │                                    gate) — composes commissioning_coordinator
 │   ├── web_commissioning.py             secure crossover playback orchestration
 │   │                                    through active-speaker safety state
 │   └── web_measurement.py               browser WAV storage + acoustic evidence
@@ -1934,10 +2003,17 @@ Internal:
 
 ---
 
-Last verified: 2026-06-26 (`/correction/` hub routing, HTTP preflight
-`?next=/correction/...` allowlist + JS direct HTTPS handoff with fresh
-`jts_cb` tokens, `/correction/proceed` temporary strongly non-cacheable
-fallback redirects, and HTTPS asset serving rechecked
+Last verified: 2026-07-03 (P7: crossover relay transport
+`/crossover/relay-capture`, `crossover_sweep` stimulus-length alignment to
+`driver_acoustics.DEFAULT_DURATION_S`, `run_level_match` lock/cancel
+retention seam, `/crossover/envelope` + passive `active` gate — all
+hardware-free, H2 pending; verified against
+`jasper/web/correction_crossover_flow.py`,
+`jasper/active_speaker/crossover_envelope.py`, and
+`jasper/capture_relay/spec.py`). Prior 2026-06-26 (`/correction/` hub
+routing, HTTP preflight `?next=/correction/...` allowlist + JS direct HTTPS
+handoff with fresh `jts_cb` tokens, `/correction/proceed` temporary strongly
+non-cacheable fallback redirects, and HTTPS asset serving rechecked
 against `deploy/correction-preflight.html`, `deploy/nginx-jasper.conf`,
 `deploy/nginx-jasper-streambox.conf`, and `tests/test_landing_page_html.py`;
 prior 2026-06-24 pass covered
