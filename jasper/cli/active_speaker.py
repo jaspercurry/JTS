@@ -26,6 +26,7 @@ from jasper.active_speaker.calibration_level import load_calibration_level_state
 from jasper.active_speaker.environment import probe_active_speaker_environment
 from jasper.active_speaker.runtime_contract import (
     DEFAULT_FLAT_OUTPUTD_CONFIG,
+    DEFAULT_RING_FLAT_OUTPUTD_CONFIG,
     apply_safe_graph_decision_to_statefile,
     safe_graph_for_current_topology,
 )
@@ -308,12 +309,24 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
         if args.no_applied_baseline
         else _applied_baseline_config_path(args.applied_baseline_state)
     )
+    # The persisted fan-in coupling decides the flat fallback: a ring-armed box
+    # (shm_ring) re-seeds the ring flat config, not the loopback one (finding 5).
+    # --coupling lets install.sh pass the live value explicitly; when omitted we
+    # read the persisted intent from fanin.env (fail-safe to loopback), so a bare
+    # operator run still seeds the right graph.
+    coupling = args.coupling
+    if coupling is None:
+        from jasper.fanin.coupling_reconcile import read_persisted_coupling
+
+        coupling = read_persisted_coupling()
     decision = safe_graph_for_current_topology(
         load_output_topology_strict(args.topology),
         statefile_path=args.statefile,
         current_config_path=args.current_config,
         preferred_config_path=preferred_config_path,
         flat_config_path=args.flat_config,
+        ring_flat_config_path=args.ring_flat_config,
+        coupling=coupling,
         staged_config=load_staged_startup_config(metadata_path=args.staged_metadata),
     )
     wrote = False
@@ -806,6 +819,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--flat-config",
         default=str(DEFAULT_FLAT_OUTPUTD_CONFIG),
         help="normal full-range outputd config path",
+    )
+    runtime.add_argument(
+        "--ring-flat-config",
+        default=str(DEFAULT_RING_FLAT_OUTPUTD_CONFIG),
+        help=(
+            "ring (shm_ring) full-range outputd config path; selected instead of "
+            "--flat-config when the box is ring-armed (finding 5 re-seed)"
+        ),
+    )
+    runtime.add_argument(
+        "--coupling",
+        default=None,
+        help=(
+            "persisted fan-in coupling (loopback|transport_pipe|shm_ring); when "
+            "omitted, read from fanin.env. Ring-armed selects --ring-flat-config."
+        ),
     )
     runtime.add_argument(
         "--applied-baseline-state",

@@ -1167,13 +1167,23 @@ render_outputd_cutover_config() {
     # production outputd graph, with the active DAC profile's Camilla floor, not
     # a bypass or a hand-edited static YAML. The active-speaker runtime contract
     # below still decides whether flat is legal for the saved topology.
+    #
+    # Also renders the RING flat startup config (outputd-cutover-ring.yml), the
+    # shm_ring sibling. It is INERT until a coupling arms the rings (default
+    # loopback selects the plain cutover), but it MUST exist on disk so a
+    # ring-armed box's statefile seeding can re-seed a ring graph instead of
+    # reverting to loopback (audit finding 5). Rendering it every deploy keeps its
+    # DAC latency floor current alongside the loopback config.
     local output
-    echo "  Rendering outputd flat startup config with active DAC latency floor"
+    echo "  Rendering outputd flat startup configs (loopback + ring) with active DAC latency floor"
     if ! output="$(/opt/jasper/.venv/bin/python - <<'PY' 2>&1
 from pathlib import Path
 
 from jasper.camilla_config_contract import parse_camilla_devices_config
-from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+from jasper.sound.camilla_yaml import (
+    emit_flat_outputd_cutover_config,
+    emit_flat_ring_config,
+)
 
 path = Path("/etc/camilladsp/outputd-cutover.yml")
 yaml = emit_flat_outputd_cutover_config(out_path=path)
@@ -1184,6 +1194,17 @@ print(
     f"path={path} "
     f"chunksize={devices.get('chunksize')} "
     f"target_level={devices.get('target_level')}"
+)
+
+ring_path = Path("/etc/camilladsp/outputd-cutover-ring.yml")
+ring_yaml = emit_flat_ring_config(out_path=ring_path)
+ring_path.chmod(0o644)
+ring_devices = parse_camilla_devices_config(ring_yaml)
+print(
+    "rendered outputd-cutover-ring.yml "
+    f"path={ring_path} "
+    f"chunksize={ring_devices.get('chunksize')} "
+    f"target_level={ring_devices.get('target_level')} (inert until shm_ring armed)"
 )
 PY
     )"; then
@@ -1200,9 +1221,14 @@ ensure_outputd_camilla_statefile() {
     # tweeter/protected role.
     local output
     echo "  Checking outputd Camilla statefile against active-speaker runtime contract"
+    # --ring-flat-config names the shm_ring sibling; runtime-safe-graph reads the
+    # persisted coupling from fanin.env (no --coupling passed) and selects the ring
+    # config only when the box is ring-armed. Default (loopback) stays on the plain
+    # cutover config, byte-for-byte as before.
     if ! output="$(/opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
         --statefile /var/lib/camilladsp/outputd-statefile.yml \
         --flat-config "${CAMILLA_CONF}/outputd-cutover.yml" \
+        --ring-flat-config "${CAMILLA_CONF}/outputd-cutover-ring.yml" \
         --write-statefile 2>&1)"; then
         printf '%s\n' "${output}"
         return 1

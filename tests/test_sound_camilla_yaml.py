@@ -761,3 +761,44 @@ def test_file_capture_keeps_zero_db_ceiling_guard():
             resampler_type="AsyncSinc",
             volume_limit_db=1.0,
         )
+
+
+# --- ring flat config emitter (shm_ring statefile seed, P2) -------------------
+
+
+def test_emit_flat_ring_config_names_both_ring_devices_s16le():
+    from jasper.sound.camilla_yaml import emit_flat_ring_config
+
+    yaml = emit_flat_ring_config()
+    # Capture = Ring A (jts_ring_capture), playback = Ring B (jts_ring_playback),
+    # both S16_LE ALSA devices — the end-to-end ring topology.
+    capture = yaml.split("  capture:\n", 1)[1].split("\n  playback:\n", 1)[0]
+    playback = yaml.split("\n  playback:\n", 1)[1].split("\nfilters:\n", 1)[0]
+    assert 'device: "jts_ring_capture"' in capture
+    assert "format: S16_LE" in capture
+    assert "type: Alsa" in capture
+    assert 'device: "jts_ring_playback"' in playback
+    assert "format: S16_LE" in playback
+    assert "type: Alsa" in playback
+    # CamillaDSP rate_adjust stays ON — it trades Ring B fill (its pacing input).
+    assert "enable_rate_adjust: true" in yaml
+    # It is the disabled (flat) profile — no preference EQ filters.
+    assert "volume_limit: 0.0" in yaml
+
+
+def test_emit_flat_ring_config_differs_from_loopback_only_in_devices():
+    from jasper.sound.camilla_yaml import (
+        emit_flat_outputd_cutover_config,
+        emit_flat_ring_config,
+    )
+
+    ring = emit_flat_ring_config()
+    loop = emit_flat_outputd_cutover_config()
+    # The loopback flat config has NO ring devices.
+    assert "jts_ring" not in loop
+    # The ring config replaces exactly the two device lines; the chunksize /
+    # target_level / volume_limit floor is the same (same generator).
+    for key in ("samplerate:", "chunksize:", "target_level:", "volume_limit:"):
+        ring_line = [ln for ln in ring.splitlines() if ln.strip().startswith(key)]
+        loop_line = [ln for ln in loop.splitlines() if ln.strip().startswith(key)]
+        assert ring_line == loop_line, f"{key} drifted between ring and loopback flat"

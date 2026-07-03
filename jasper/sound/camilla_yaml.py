@@ -427,6 +427,46 @@ def emit_flat_outputd_cutover_config(*, out_path: str | Path | None = None) -> s
     return emit_sound_config(SoundProfile(enabled=False), out_path=out_path)
 
 
+# The ring flat startup graph — the ``shm_ring`` sibling of
+# ``outputd-cutover.yml``. A ring-armed box's statefile seeding
+# (``jasper.active_speaker.runtime_contract.safe_graph_for_current_topology``)
+# must re-seed a RING config on a camilla restart/deploy, not revert to
+# ``outputd-cutover.yml`` (loopback/direct) — that revert is audit finding 5's
+# "built-in revert" (a hand-placed ring config that dies on any camilla restart).
+# This emitter is the product path that produces the ring flat config so seeding
+# has a legal ring graph to select. Named alongside the loopback flat config; the
+# statefile seeder picks between them by the persisted coupling.
+RING_FLAT_CONFIG_NAME = "outputd-cutover-ring.yml"
+
+
+def emit_flat_ring_config(*, out_path: str | Path | None = None) -> str:
+    """Emit the flat outputd startup graph coupled to the SHM rings (shm_ring).
+
+    Identical to :func:`emit_flat_outputd_cutover_config` except the CamillaDSP
+    capture device is ``jts_ring_capture`` (Ring A) and the playback device is
+    ``jts_ring_playback`` (Ring B), both S16_LE — the end-to-end ring topology the
+    ``shm_ring`` coupling arms. ``enable_rate_adjust`` stays on (the default):
+    CamillaDSP's rate controller trades Ring B fill, its single pacing input. This
+    is the config the statefile seeder re-seeds on a ring-armed box so a deploy /
+    camilla restart keeps the rings instead of reverting to loopback.
+    """
+
+    from jasper.fanin_coupling import (
+        RING_CAPTURE_DEVICE,
+        RING_PLAYBACK_DEVICE,
+        RING_WIRE_FORMAT,
+    )
+
+    return emit_sound_config(
+        SoundProfile(enabled=False),
+        capture_device=RING_CAPTURE_DEVICE,
+        capture_format=RING_WIRE_FORMAT,
+        playback_device=RING_PLAYBACK_DEVICE,
+        playback_format=RING_WIRE_FORMAT,
+        out_path=out_path,
+    )
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     # Sound configs (including the bonded-leader pipe config grouping_leader.yml)
     # are read off-disk by the non-root jasper-control /state leader-pipe health
