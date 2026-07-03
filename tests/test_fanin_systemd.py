@@ -226,13 +226,16 @@ def test_combo_gated_pitch_neutralize_exec_stop_post():
     """The combo-mode host-clock belt-and-braces (C6): on SIGKILL / OOM /
     watchdog abort — which skip the daemon's in-process pitch neutralize — the
     unit must reset the gadget's "Capture Pitch 1000000" ctl to neutral, but
-    ONLY when THIS daemon is the configured clock owner
-    (`$JASPER_FANIN_HOST_CLOCK = enabled`).
+    ONLY when THIS daemon is the configured clock owner — which requires BOTH
+    `$JASPER_FANIN_HOST_CLOCK = enabled` AND `$JASPER_FANIN_USB_DIRECT = enabled`
+    (review F2: the daemon resolves ownership as `host_clock_enabled &&
+    !usb_direct_off` and writes zero non-neutral pitch otherwise).
 
     The gate is LOAD-BEARING, not cosmetic: fan-in restarts on every deploy, and
-    an unconditional neutralize would overwrite an active solo-mode usbsink L0
-    command with 1000000 behind usbsink's back — desyncing its write-suppression
-    epsilon gate. If someone drops the gate to "simplify" the line, this fails.
+    an unconditional (or HOST_CLOCK-only) neutralize would overwrite an active
+    solo-mode usbsink L0 command with 1000000 behind usbsink's back — desyncing
+    its write-suppression epsilon gate. If someone drops either half of the gate
+    to "simplify" the line, this fails.
     """
     unit = _read_unit()
     val = _value_for(unit, "ExecStopPost")
@@ -251,6 +254,19 @@ def test_combo_gated_pitch_neutralize_exec_stop_post():
         "the ExecStopPost MUST gate on JASPER_FANIN_HOST_CLOCK = enabled — an "
         "unconditional neutralize would desync a solo-mode usbsink L0 command. "
         f"Got {val!r}"
+    )
+    # Review F2: the belt must ALSO gate on JASPER_FANIN_USB_DIRECT = enabled,
+    # because fan-in owns the ctl only when BOTH flags are set. Gating on
+    # HOST_CLOCK alone fires on a part-rolled-back combo box (USB_DIRECT unset,
+    # HOST_CLOCK left enabled) where solo usbsink's DLL is the live writer,
+    # neutralizing its command on every fan-in stop. Pin the exact
+    # `"$JASPER_FANIN_USB_DIRECT"` reference (with the closing quote) so the
+    # substring in JASPER_FANIN_USB_DIRECT_DEVICE can't satisfy this assertion.
+    assert '"$JASPER_FANIN_USB_DIRECT"' in val, (
+        "the ExecStopPost MUST also gate on JASPER_FANIN_USB_DIRECT = enabled — "
+        "fan-in owns the pitch ctl only when BOTH flags are set (review F2). "
+        "HOST_CLOCK-only fires the belt on a part-rolled-back combo box and "
+        f"desyncs a live solo-mode usbsink command. Got {val!r}"
     )
     # Review F3: the gate must be CASE-INSENSITIVE (lowercase the value before
     # the compare), because the config parser arms on eq_ignore_ascii_case and

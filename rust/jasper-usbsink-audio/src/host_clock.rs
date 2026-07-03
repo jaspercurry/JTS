@@ -121,10 +121,13 @@ where
 
 /// A hard-disabled usbsink config (C5 standby). In standby the audio loop that
 /// feeds the DLL never runs, so there is no fill source; the feature is forced
-/// off regardless of env (fan-in's lane resampler owns all rate matching). The
-/// startup + exit pitch neutralize still run against this config (both are
-/// unconditional in the publisher and never leave the host slaved), so a
-/// crashed predecessor is still healed. Never fails (no env parse).
+/// off regardless of env (fan-in's lane resampler owns all rate matching). In
+/// standby the publisher ALSO skips opening the pitch ctl and skips the
+/// startup/exit neutralize entirely — fan-in owns the ctl in this combo posture,
+/// so a neutralize here would reset its live pitch command behind its back on
+/// every clean stop/start cycle. (Healing a crashed predecessor's stale pitch is
+/// fan-in's job when it owns the ctl; usbsink standby stays hands-off.) Never
+/// fails (no env parse).
 pub fn disabled_config() -> HostClockConfig {
     HostClockConfig::disabled(LOG_PREFIX)
 }

@@ -16,8 +16,13 @@
 //!
 //! This crate owns the READER and the *shared* header/seq/geometry logic. The
 //! golden-layout test ([`layout::tests`]) pins every header offset against the
-//! constants the C header (`jts_ring_shm.h`) `_Static_assert`s — the
-//! cross-language drift guard.
+//! constants the C header (`c/jts-ring-ioplug/jts_ring_shm.h`) `_Static_assert`s
+//! — the cross-language drift guard. The golden test asserts numeric offsets
+//! directly, so it runs standalone: this crate compiles and passes with no
+//! dependency on the C side being present. The C writer half + that header live
+//! in the `c/jts-ring-ioplug/` ring-consumers change stacked alongside this
+//! crate; the `c/jts-ring-ioplug/*` cross-references throughout this crate point
+//! at it (and this crate is inert until a ring lab flag is armed regardless).
 //!
 //! **This is a prototype and flag-gated everywhere.** Nothing here runs in a
 //! product path unless a lab flag is set: `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`

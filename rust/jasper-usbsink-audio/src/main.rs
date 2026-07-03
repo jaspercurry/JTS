@@ -153,6 +153,19 @@ impl Config {
     fn period_samples(&self) -> usize {
         (self.period_frames as usize) * (self.channels as usize)
     }
+
+    /// Whether THIS daemon owns the gadget pitch ctl and may write it (open it,
+    /// run the startup/exit neutralize, apply ladder actions).
+    ///
+    /// True in solo/normal mode — even when the host-clock feature is disabled,
+    /// because usbsink still runs the one-shot startup neutralize to heal a
+    /// crashed predecessor that left the host slaved. False in STANDBY (combo):
+    /// jasper-fanin owns `hw:UAC2Gadget` and its pitch ctl, so usbsink must stay
+    /// entirely hands-off — even a neutralize here would reset fan-in's live
+    /// command behind its back on every clean stop/start cycle (P2-F1).
+    fn owns_host_clock_ctl(&self) -> bool {
+        !self.audio_standby
+    }
 }
 
 fn validate_audio_config(
@@ -1409,11 +1422,16 @@ fn run_state_publisher(
     // publisher (a UAC2 gadget can come and go).
     let mut host_clock = HostClock::new(config.host_clock);
     let mut pitch = HostClockActuator::open(&config);
-    // Startup neutralize runs unconditionally (even when the feature is
-    // disabled) so a crashed predecessor that left the host slaved is healed.
-    if let Some(action) = host_clock.startup_neutralize() {
-        pitch.apply(action);
-        log::info!("event=usbsink_audio.host_clock_pitch_reset reason=startup");
+    // Startup neutralize runs (even when the feature is merely disabled) so a
+    // crashed predecessor that left the host slaved is healed — EXCEPT in
+    // standby, where jasper-fanin owns the ctl and a neutralize here would stomp
+    // its live command. The actuator is already inert in standby (ctl=None), so
+    // this gate is belt-and-braces; it also keeps the log line honest.
+    if config.owns_host_clock_ctl() {
+        if let Some(action) = host_clock.startup_neutralize() {
+            pitch.apply(action);
+            log::info!("event=usbsink_audio.host_clock_pitch_reset reason=startup");
+        }
     }
     publish_host_clock_fragment(&host_clock_fragment, host_clock.status_fragment());
 
@@ -1473,8 +1491,13 @@ fn run_state_publisher(
     // This runs on clean exit AND on SIGTERM/SIGINT (the shared shutdown flag)
     // AND on audio-thread error (main sets shutdown before joining). SIGKILL /
     // watchdog / OOM is covered by the unit's ExecStopPost belt-and-braces.
-    pitch.apply(host_clock.neutralize_for_exit("shutdown"));
-    log::info!("event=usbsink_audio.host_clock_pitch_reset reason=shutdown");
+    // EXCEPT in standby: fan-in owns the ctl, so a neutralize here would reset
+    // its live pitch command on the way down (the actuator is already inert, so
+    // this gate is belt-and-braces + keeps the log honest).
+    if config.owns_host_clock_ctl() {
+        pitch.apply(host_clock.neutralize_for_exit("shutdown"));
+        log::info!("event=usbsink_audio.host_clock_pitch_reset reason=shutdown");
+    }
     // Final drain + state write on shutdown.
     publisher.poll(&tap_receiver, &tap, &tap_config, monotonic_millis());
     let fragment = host_clock.status_fragment();
@@ -1497,6 +1520,22 @@ struct HostClockActuator {
 #[cfg(feature = "alsa-runtime")]
 impl HostClockActuator {
     fn open(config: &Config) -> Self {
+        // Standby (combo): jasper-fanin owns the gadget AND the pitch ctl in
+        // this posture. The usbsink daemon must NOT open the ctl at all — even
+        // the one-shot startup/exit neutralize would reset it to 1000000 behind
+        // fan-in's back on every clean stop/start cycle (a deploy try-restart or
+        // an operator restart), desyncing fan-in's >10 ppm write-suppression
+        // epsilon and letting the host free-run un-slaved. So return an inert
+        // actuator here; the neutralize calls below are also gated on
+        // `owns_host_clock_ctl()` as belt-and-braces. The NOT-standby
+        // ExecStopPost belt in jasper-usbsink.service covers the SIGKILL path.
+        if !config.owns_host_clock_ctl() {
+            info!("event=usbsink_audio.host_clock_ctl_skipped reason=standby_fanin_owns_ctl");
+            return Self {
+                ctl: None,
+                last_error_ms: None,
+            };
+        }
         let card = host_clock::ctl_card_from_capture(&config.capture_device);
         match host_clock::AlsaPitchCtl::open(&card) {
             Ok(ctl) => {
@@ -1542,6 +1581,14 @@ impl HostClockActuator {
                 warn!("event=usbsink_audio.host_clock_ctl_error detail={e}");
             }
         }
+    }
+
+    /// True when this actuator holds no ctl handle (standby, or a failed open).
+    /// A ctl-less actuator's `apply` is a no-op, so no pitch write can leave the
+    /// process. Test-only accessor pinning the standby hands-off invariant.
+    #[cfg(test)]
+    fn is_inert(&self) -> bool {
+        self.ctl.is_none()
     }
 }
 
@@ -2332,6 +2379,43 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&fragment).unwrap();
         assert_eq!(parsed["enabled"].as_bool(), Some(false));
         assert_eq!(parsed["ladder"].as_str(), Some("disabled"));
+    }
+
+    #[test]
+    fn standby_never_owns_host_clock_ctl_solo_always_does() {
+        // P2-F1: `owns_host_clock_ctl()` is the single decision that gates the
+        // actuator open AND both the startup/exit neutralize. In standby (combo)
+        // fan-in owns the gadget pitch ctl, so usbsink must return false and stay
+        // hands-off — even a neutralize would reset fan-in's live command to
+        // 1000000 behind its back on every clean stop/start cycle (deploy
+        // try-restart / operator restart), desyncing fan-in's >10 ppm
+        // write-suppression epsilon. In solo/normal mode usbsink owns it and
+        // returns true EVEN when the host-clock feature is disabled (it still
+        // runs the startup neutralize to heal a crashed predecessor). This pure
+        // predicate is card-independent, so it pins the decision in CI where no
+        // gadget is present. Ownership is independent of `host_clock.enabled`.
+        assert!(
+            !standby_config(true).owns_host_clock_ctl(),
+            "standby must NOT own the ctl (fan-in owns it in combo)"
+        );
+        assert!(
+            standby_config(false).owns_host_clock_ctl(),
+            "solo mode owns the ctl even with host-clock disabled"
+        );
+    }
+
+    #[cfg(feature = "alsa-runtime")]
+    #[test]
+    fn standby_actuator_is_inert_never_opens_the_ctl() {
+        // The actuator honors `owns_host_clock_ctl()`: the standby short-circuit
+        // in `HostClockActuator::open` fires BEFORE any ALSA call, so it returns
+        // an inert (ctl=None) actuator whose `apply` is a no-op — no pitch write
+        // can leave the process. Runs in CI with no gadget card present.
+        let pitch = HostClockActuator::open(&standby_config(true));
+        assert!(
+            pitch.is_inert(),
+            "standby actuator must hold no ctl (fan-in owns it)"
+        );
     }
 
     #[test]

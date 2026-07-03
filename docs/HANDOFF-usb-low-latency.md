@@ -183,8 +183,10 @@ deltas and decide.
 usbsink **bridge hop + the snd-aloop cable** (~25 ms measured) from the USB path:
 fan-in captures `hw:UAC2Gadget` **directly** and narrows S32→S16 itself, feeding
 the SAME per-input `LaneResampler` the aloop path used. The bridge drops to
-state/HTTP-only standby (opens NO PCM, leaving the gadget free), so nothing else
-in the chain changes.
+state/HTTP-only standby (opens NO PCM, leaving the gadget free), so the DSP /
+crossover / correction / protection chain downstream of fan-in is unchanged. The
+one deliberate exception is source arbitration + renderer-state truth — see the
+arbitration caveat below the flag matrix.
 
 ```
 UAC2 gadget capture
@@ -204,6 +206,23 @@ Both halves are DEFAULT-OFF and fail-safe (only the exact literals arm them:
 | `enabled` | `1` | **PoC target.** Fan-in captures the gadget directly; bridge is state/HTTP-only. The bridge hop + aloop cable (~25 ms) are gone. |
 | `enabled` | off | Misconfig, **safe**: the bridge holds `hw:UAC2Gadget`, so fan-in's direct open fails → the lane goes silent-idle with a 2 s reopen retry (`/state` fan-in `usbsink.direct.present=false`, `retries` grows, one transition log). USB source is SILENT (the direct lane never opens its aloop PCM). Recover by fixing the flags — no crash. |
 | off | `1` | Misconfig, **safe**: the bridge doesn't bridge; fan-in reads an unfed aloop substream → silence via EAGAIN. Observable: bridge `standby:true` while fan-in lane `source:"lane"`. |
+
+**Arbitration caveat (combo opts out of source arbitration + renderer-state
+truth).** In standby the bridge always writes `playing:false` (no audio loop;
+pinned by `test_usbsink_state.py`), so from the rest of the system USB appears
+idle even while fan-in is audibly mixing its direct lane:
+
+- **Mux never sees USB playing**, so latest-source-wins auto preemption doesn't
+  fire on a USB start, and mux's preempt POST to the bridge silences nothing on
+  the audio path (fan-in reports `Obs.preempted = false` by design). Another
+  source can layer on top instead of preempting.
+- **The landing-page Source UI shows USB idle** while it's mixing, because the
+  renderer state it reads is the bridge's `playing:false`.
+
+This is acceptable for the lab arming (combo is DEFAULT-OFF and hand-armed for
+measurement, not a household posture), but it is a real containment gap, not
+"nothing else changes." Wiring standby to publish an honest playing/arbitration
+signal is the follow-up before combo could ship on by default.
 
 ### Host-slaved USB clock in combo mode (fan-in owns the ctl)
 
@@ -258,14 +277,28 @@ the gate, leaving the host un-slaved for minutes):
 
 | Unit | Belt gate | Fires when… | Would-desync-if-unconditional |
 |---|---|---|---|
-| `jasper-fanin.service` | `$JASPER_FANIN_HOST_CLOCK = enabled` | fan-in owns the ctl (combo mode) | a **solo-mode** usbsink L0 command (fan-in restarts every deploy) |
+| `jasper-fanin.service` | `$JASPER_FANIN_HOST_CLOCK = enabled` **AND** `$JASPER_FANIN_USB_DIRECT = enabled` | fan-in owns the ctl (combo mode) | a **solo-mode** usbsink L0 command (fan-in restarts every deploy) |
 | `jasper-usbsink.service` | `$JASPER_USBSINK_AUDIO_STANDBY != 1` | usbsink owns the ctl (solo/aloop mode) | a **combo-mode** fan-in L0 command while usbsink stands by (deploy try-restarts usbsink on binary change; operators restart it) |
 
 Both gates are load-bearing and mirror each other: the owner is exactly the
-daemon holding `hw:UAC2Gadget`, and only the owner writes the ctl. Both target
-the same element by (iface, name), never numid. Before F2 only fan-in's belt was
-gated; usbsink's unconditional belt was the reverse leak — it stomped fan-in's
-live combo command on every usbsink stop.
+daemon holding `hw:UAC2Gadget`, and only the owner ever writes the ctl. Both
+target the same element by (iface, name), never numid.
+
+- **fan-in's belt requires BOTH flags** (F2): fan-in owns the ctl only when
+  `HOST_CLOCK` **and** `USB_DIRECT` are enabled (it resolves
+  `host_clock_enabled && !usb_direct_off` and issues zero ctl writes with only
+  `HOST_CLOCK` set — `noop reason=usb_direct_off`). Gating on `HOST_CLOCK` alone
+  would fire the belt on a part-rolled-back combo box (unset `USB_DIRECT`, left
+  `HOST_CLOCK=enabled`) while solo usbsink's DLL is the live writer — the same
+  every-deploy desync the gate exists to prevent.
+- **usbsink stays fully hands-off in standby** (F1): in standby usbsink opens
+  no ctl and skips even its one-shot startup/exit neutralize (`owns_host_clock_ctl()`
+  = `!audio_standby`). A clean stop/start cycle of the standby daemon — a deploy
+  try-restart on binary change, or an operator restart — therefore never resets
+  fan-in's live combo command. The `SIGKILL != 1` ExecStopPost belt is the
+  belt-and-braces for the un-clean paths only. Before F1, standby's neutralizes
+  still stomped fan-in's command on every clean cycle; before F2 only fan-in's
+  belt was gated (usbsink's unconditional belt was the reverse leak on SIGKILL).
 
 Combo host-clock telemetry:
 
@@ -449,7 +482,9 @@ difference from `L0_LOCKED` beyond the doctor/telemetry surfacing.
 ### Pitch neutrality — the safety invariant
 
 A host must never be left slaved to a stale command by a crashed or stopped
-daemon. Enforced in four layers: (1) an unconditional startup neutralize
+daemon. Enforced in four layers, all gated on usbsink OWNING the ctl
+(`owns_host_clock_ctl()` = `!audio_standby` — in combo standby fan-in owns it,
+and usbsink stays fully hands-off; F1): (1) a startup neutralize
 write when the ctl opens, even with the feature disabled — heals a crashed
 predecessor; (2) the state-publisher's exit path resets to neutral on clean
 exit, SIGTERM/SIGINT, and audio-thread error (main sets the shared shutdown
@@ -460,9 +495,13 @@ iface=PCM,name='Capture Pitch 1000000' 1000000` in
 [`deploy/systemd/jasper-usbsink.service`](../deploy/systemd/jasper-usbsink.service)
 covers SIGKILL / OOM-kill / watchdog abort, which layer (2) structurally
 cannot reach (the card is expanded from `JASPER_USBSINK_MIXER_CARD`, packaged
-default `UAC2Gadget`, so an operator card override redirects this line too). All four apply regardless of `JASPER_USBSINK_HOST_CLOCK` —
-a stale non-neutral value could only exist if the feature had been enabled
-and the daemon then died uncleanly.
+default `UAC2Gadget`, so an operator card override redirects this line too; the
+belt itself is gated on `STANDBY != 1` so it doesn't stomp fan-in's combo
+command either). In SOLO mode all four apply regardless of
+`JASPER_USBSINK_HOST_CLOCK` — a stale non-neutral value could only exist if the
+feature had been enabled and the daemon then died uncleanly. In combo standby
+usbsink writes the ctl at NO layer: fan-in is the sole owner, so usbsink
+neutralizing at all would reset fan-in's live command behind its back.
 
 ### Enabling on a lab box
 
