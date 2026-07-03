@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Render harness for /correction/ rendering (C4a-2 + P3a).
+// Render harness for /correction/ rendering (C4a-2 + P3a + P3b).
 //
 // Exercises renderCurrentCorrection (deploy/assets/correction/js/main.js,
 // ~line 726) with representative backend payloads and asserts the correct
@@ -15,6 +15,17 @@
 //     per-segment polygon vertex counts, improved→green / regressed→amber
 //     fill colours, and that server-classified tones are consumed
 //     verbatim (the client never re-derives improvement from the curves).
+// And the P3b stepped-wizard router (envelope-driven dumb frontend):
+//   - screen render per envelope fixture, nudge severity (info|warn, never
+//     a block), next_action liveness with warn nudges present, the step
+//     indicator, and single-sourcing the chart visibility from envelope
+//     curves;
+//   - the poll discipline (envelope fetched once per state change on static
+//     screens, via a probe fetch counter);
+//   - the single-primary-action contract: legacy Apply/Verify subordination
+//     when the wizard shows exactly that action, the envelope-down legacy
+//     fallback, mid-flow-outage stale-action retirement, and the one
+//     bounded retry.
 //
 // The functions are IIFE-local; the harness injects a probe hook
 // (`globalThis.__testProbe`) just before the IIFE closes so the test can
@@ -54,7 +65,7 @@ function makeEl(id) {
   const el = {
     id,
     textContent: "",
-    innerHTML: "",
+    _innerHTML: "",
     className: "",
     value: "",
     checked: false,
@@ -65,6 +76,10 @@ function makeEl(id) {
     classList: makeClassList(),
     options: [],
     selectedIndex: 0,
+    // Child tracking — the P3b router builds step/nudge rows via
+    // document.createElement + appendChild, and clears via innerHTML=''.
+    children: [],
+    appendChild(child) { this.children.push(child); return child; },
     addEventListener(ev, fn) {
       (this._listeners[ev] = this._listeners[ev] || []).push(fn);
     },
@@ -103,6 +118,19 @@ function makeEl(id) {
     submit() {},
   };
   el.classList = makeClassList();
+  // innerHTML accessor: setting it to '' (the router's clear-before-rebuild
+  // idiom) also drops tracked children, so child counts reflect the latest
+  // render. A non-empty assignment (legacy innerHTML string builders) is
+  // stored verbatim and does not populate `children`.
+  Object.defineProperty(el, "innerHTML", {
+    get() { return this._innerHTML; },
+    set(v) {
+      this._innerHTML = String(v == null ? "" : v);
+      if (this._innerHTML === "") this.children = [];
+    },
+    enumerable: true,
+    configurable: true,
+  });
   return el;
 }
 
@@ -114,12 +142,38 @@ function getOrMake(id) {
 }
 
 // ---- Minimal globals the IIFE needs ----
-const globalFetch = (_url) => Promise.resolve({
-  ok: true,
-  status: 200,
-  async json() { return {}; },
-  async text() { return ""; },
-});
+// Programmable fetch: tests can set the JSON returned per-endpoint substring
+// and read a per-endpoint call count. Defaults to an empty 200 so boot's
+// fire-and-forget network calls (status/envelope/current-correction) resolve
+// harmlessly. The router's fetch-once discipline test drives /status and
+// /envelope through this and asserts the /envelope call count.
+const fetchRoutes = new Map();       // substring -> () => bodyObject
+const fetchCounts = new Map();       // substring -> integer
+function setFetchRoute(substr, bodyFn) { fetchRoutes.set(substr, bodyFn); }
+function fetchCountFor(substr) { return fetchCounts.get(substr) || 0; }
+function resetFetchCounts() { fetchCounts.clear(); }
+const globalFetch = (url) => {
+  const u = String(url || "");
+  let body = {};
+  let ok = true;
+  let status = 200;
+  for (const [substr, bodyFn] of fetchRoutes) {
+    if (u.indexOf(substr) !== -1) {
+      fetchCounts.set(substr, (fetchCounts.get(substr) || 0) + 1);
+      // A bodyFn that throws simulates a DOWN endpoint: the response comes
+      // back non-ok so the caller's `if (!resp.ok) throw` fail-soft path
+      // runs (mirrors a 5xx / network stall on the Pi).
+      try { body = bodyFn(); } catch (_e) { ok = false; status = 503; body = {}; }
+      break;
+    }
+  }
+  return Promise.resolve({
+    ok,
+    status,
+    async json() { return body; },
+    async text() { return ""; },
+  });
+};
 
 // AudioContext stub (mic capture path — not exercised by render tests)
 class FakeAudioContext {
@@ -162,6 +216,24 @@ source = source.replace(
     // lastVerify is IIFE-local state read by drawChart's before/after
     // fill; expose a setter that shares the closure binding.
     setLastVerify: function (v) { lastVerify = v; },
+    // P3b stepped-wizard router surfaces (all IIFE-local).
+    renderEnvelope,
+    renderNudges,
+    renderPrimaryAction,
+    renderProgress,
+    showScreenSections,
+    pollState,
+    // Client step-label lexicon, pinned against the server progress spine.
+    wizardStepLabels: WIZARD_STEP_LABELS,
+    // Probe seams for the fetch-once poll-discipline test.
+    getEnvelopeFetchCount: function () { return envelopeFetchCount; },
+    resetEnvelopeBookkeeping: function () {
+      envelopeFetchCount = 0;
+      lastEnvelopeState = null;
+      lastAutolevelStatus = null;
+      envelopeRetryArmed = false;
+      if (envelopeTimer) { clearTimeout(envelopeTimer); envelopeTimer = null; }
+    },
   };
 })();`,
 );
@@ -222,6 +294,17 @@ const safeConsole = {
   info() {},
 };
 
+// Default fetch routes so boot's fire-and-forget /status, /envelope, and
+// /sessions calls resolve to a benign idle payload (tests override below).
+setFetchRoute("/status", () => ({ state: "idle" }));
+setFetchRoute("/envelope", () => ({
+  schema_version: 1, screen: "idle", state: "idle",
+  curves: {}, fill_segments: [], headline: null,
+  verdict_text: "Ready to measure your room.", nudges: [],
+  next_action: { label: "Start measuring", endpoint: "/start" },
+  progress: { position: 1, total: 6 },
+}));
+
 runner(
   fakeDocument,
   fakeWindow,
@@ -242,6 +325,15 @@ const {
   verifyHeadlineHtml,
   drawChart,
   setLastVerify,
+  renderEnvelope,
+  renderNudges,
+  renderPrimaryAction,
+  renderProgress,
+  showScreenSections,
+  pollState,
+  wizardStepLabels,
+  getEnvelopeFetchCount,
+  resetEnvelopeBookkeeping,
 } = globalThis.__testProbe;
 delete globalThis.__testProbe;
 
@@ -259,6 +351,16 @@ function assert(cond, msg, context) {
 function banner() { return elements.get("current-correction"); }
 function label() { return elements.get("current-correction-label"); }
 function resetBtn() { return elements.get("current-correction-reset"); }
+
+// Wizard-chrome accessors (getOrMake so they exist even before the router runs).
+function wizChrome() { return getOrMake("wizard-chrome"); }
+function wizVerdict() { return getOrMake("wizard-verdict"); }
+function wizNudges() { return getOrMake("wizard-nudges"); }
+function wizNext() { return getOrMake("wizard-next"); }
+function wizSteps() { return getOrMake("wizard-steps"); }
+function measureSectionEl() { return getOrMake("measure-section"); }
+function resultSectionEl() { return getOrMake("result-section"); }
+function canvasEl() { return getOrMake("chart"); }
 
 // ---- Tests ----
 
@@ -642,8 +744,355 @@ function curveOf(fn) {
   setLastVerify(null);
 }
 
+// ---- P3b: stepped-wizard router (envelope-driven) --------------------------
+//
+// The router renders one server screen envelope verbatim: step indicator,
+// verdict sentence, homeowner nudges (severity, never a block), and a single
+// primary action that stays live regardless of nudges. These pins assert the
+// dumb-frontend contract: the browser draws what the server says.
+
+// A complete envelope with sensible defaults; override per test.
+function makeEnvelope(over) {
+  return Object.assign({
+    schema_version: 1,
+    screen: "idle",
+    state: "idle",
+    curves: {},
+    fill_segments: [],
+    headline: null,
+    verdict_text: "Ready to measure your room.",
+    nudges: [],
+    next_action: { label: "Start measuring", endpoint: "/start" },
+    progress: { position: 1, total: 6 },
+  }, over || {});
+}
+
+function nudgeRows() {
+  return wizNudges().children.filter(
+    (c) => c.className && c.className.indexOf("wizard-nudge") === 0,
+  );
+}
+
+// 19. renderEnvelope paints the verdict sentence + reveals the chrome.
+{
+  renderEnvelope(makeEnvelope({
+    screen: "sweep", state: "sweeping",
+    verdict_text: "Playing a test sweep. Keep the room quiet.",
+    next_action: null,
+    progress: { position: 2, total: 6 },
+  }));
+  assert(wizVerdict().textContent === "Playing a test sweep. Keep the room quiet.",
+    "verdict_text is rendered verbatim", { got: wizVerdict().textContent });
+  assert(!wizChrome().classList.contains("hidden"),
+    "wizard chrome is revealed once an envelope renders");
+}
+
+// 20. Step indicator: one row per progress.total, current step marked.
+{
+  renderEnvelope(makeEnvelope({
+    screen: "review", state: "ready",
+    progress: { position: 3, total: 6 },
+    next_action: { label: "Apply correction", endpoint: "/apply" },
+  }));
+  const steps = wizSteps().children;
+  assert(steps.length === 6, "one step per progress.total", { got: steps.length });
+  assert(steps[2].className.indexOf("current") !== -1,
+    "progress.position marks the current step (3rd)", { got: steps[2].className });
+  assert(steps[0].className.indexOf("done") !== -1,
+    "earlier steps are marked done", { got: steps[0].className });
+  assert(steps[4].className.indexOf("current") === -1 &&
+    steps[4].className.indexOf("done") === -1,
+    "later steps are neither current nor done", { got: steps[4].className });
+  assert(wizSteps().getAttribute("aria-label") === "Step 3 of 6",
+    "step indicator exposes an aria-label", { got: wizSteps().getAttribute("aria-label") });
+}
+
+// 21. Nudge severity rendering: info -> info class, warn -> warn class,
+//     text rendered as a sentence (verbatim, via textContent).
+{
+  renderNudges([
+    { code: "uncalibrated_mic", severity: "info",
+      text: "Results will be approximate without a calibrated mic — you can continue." },
+    { code: "high_position_variance", severity: "warn",
+      text: "Your measured spots differ a lot — re-measuring can help, but you can continue." },
+  ]);
+  const rows = nudgeRows();
+  assert(rows.length === 2, "one row per nudge", { got: rows.length });
+  assert(rows[0].className.indexOf("info") !== -1,
+    "info nudge gets the info tone class", { got: rows[0].className });
+  assert(rows[1].className.indexOf("warn") !== -1,
+    "warn nudge gets the warn tone class", { got: rows[1].className });
+  // The sentence lives in the __text child, set via textContent (inert).
+  const t0 = rows[0].children.find((c) => c.className === "wizard-nudge__text");
+  assert(t0 && t0.textContent.indexOf("approximate") !== -1,
+    "nudge text is rendered as a sentence", { got: t0 && t0.textContent });
+  assert(!wizNudges().classList.contains("hidden"),
+    "nudge container is visible when nudges exist");
+}
+
+// 22. No nudges -> container hidden, no rows.
+{
+  renderNudges([]);
+  assert(wizNudges().classList.contains("hidden"),
+    "empty nudges hide the container");
+  assert(nudgeRows().length === 0, "no nudge rows when empty");
+}
+
+// 23. Unknown/blank severity clamps to info (never an unstyled or block row).
+{
+  renderNudges([{ code: "x", severity: "danger", text: "some future nudge" }]);
+  const rows = nudgeRows();
+  assert(rows.length === 1 && rows[0].className.indexOf("info") !== -1,
+    "a non-info/non-warn severity renders as info, never a block tone",
+    { got: rows[0] && rows[0].className });
+}
+
+// 24. Primary action: label + endpoint from the server, button live + shown.
+{
+  renderPrimaryAction({ label: "Apply correction", endpoint: "/apply" });
+  assert(wizNext().textContent === "Apply correction",
+    "primary action label comes from the server", { got: wizNext().textContent });
+  assert(wizNext().getAttribute("data-endpoint") === "/apply",
+    "endpoint is stashed on a data-* attribute (no inline handler interp)",
+    { got: wizNext().getAttribute("data-endpoint") });
+  assert(wizNext().disabled === false, "primary action is live");
+  assert(!wizNext().classList.contains("hidden"), "primary action is shown");
+}
+
+// 25. next_action === null -> button hidden (browser-driven / terminal step).
+{
+  renderPrimaryAction(null);
+  assert(wizNext().classList.contains("hidden"),
+    "null next_action hides the primary action");
+  assert(wizNext().getAttribute("data-endpoint") === null,
+    "null next_action clears the stashed endpoint");
+}
+
+// 26. LIVENESS: a warn nudge present does NOT disable the primary action —
+//     measurement-quality nudges inform, they never gate. This is the core
+//     "nothing disabled" contract, exercised through the full renderEnvelope.
+{
+  renderEnvelope(makeEnvelope({
+    screen: "review", state: "ready",
+    next_action: { label: "Apply correction", endpoint: "/apply" },
+    nudges: [
+      { code: "high_position_variance", severity: "warn",
+        text: "Your measured spots differ a lot — you can continue." },
+      { code: "capture_snr_low", severity: "warn",
+        text: "The room was a little noisy — you can still continue." },
+    ],
+  }));
+  assert(wizNext().disabled === false,
+    "primary action stays LIVE even with warn nudges present (never gated)");
+  assert(!wizNext().classList.contains("hidden"),
+    "primary action stays visible with warn nudges present");
+  assert(nudgeRows().length === 2,
+    "both warn nudges are shown alongside the live action", { got: nudgeRows().length });
+  assert(nudgeRows().every((r) => r.className.indexOf("warn") !== -1),
+    "warn nudges render with the warn tone, not a block tone");
+}
+
+// 27. showScreenSections: idle hides the measure workflow; a sweep screen
+//     shows it. The review/result chart visibility is SINGLE-SOURCED from
+//     the envelope's own curves (never client state like lastResult, which
+//     is empty after a mid-flow page reload): no measured curve in the
+//     envelope -> chart hidden; envelope measured curve -> chart shown.
+{
+  showScreenSections("idle", {});
+  assert(measureSectionEl().classList.contains("hidden"),
+    "idle screen hides the measure workflow");
+  showScreenSections("sweep", {});
+  assert(!measureSectionEl().classList.contains("hidden"),
+    "sweep screen shows the measure workflow");
+  // review screen but the envelope carries no curves -> chart stays hidden.
+  showScreenSections("review", {});
+  assert(resultSectionEl().classList.contains("hidden"),
+    "review with no envelope curves keeps the chart hidden (no blank frame)");
+  // review with an envelope measured curve -> chart shown (works even when
+  // client-side lastResult is empty, e.g. after a mid-flow page reload).
+  showScreenSections("review", {
+    measured: { freqs_hz: [20, 200], magnitude_db: [0, 0] },
+  });
+  assert(!resultSectionEl().classList.contains("hidden"),
+    "review with an envelope measured curve shows the chart");
+  showScreenSections("idle", {});
+}
+
+// 28. FETCH-ONCE DISCIPLINE (P3b-1 reviewer advisory): on a STATIC screen the
+//     envelope is fetched once per state CHANGE, not on every /status tick.
+//     Drive pollState repeatedly with the SAME static state and assert only
+//     one envelope fetch fires; then flip the state and assert exactly one more.
+await (async () => {
+  resetEnvelopeBookkeeping();
+  resetFetchCounts();
+  // Static 'ready' screen. /status returns 'ready' (no reschedule in
+  // pollState for ready), /envelope returns the review screen.
+  setFetchRoute("/status", () => ({ state: "ready", autolevel: { status: "idle" } }));
+  setFetchRoute("/envelope", () => makeEnvelope({ screen: "review", state: "ready" }));
+
+  await pollState();          // first observation of 'ready' -> one env fetch
+  await pollState();          // same state -> NO new env fetch
+  await pollState();          // same state -> NO new env fetch
+  const afterStatic = getEnvelopeFetchCount();
+  assert(afterStatic === 1,
+    "static screen fetches the envelope ONCE per state change, not per tick",
+    { got: afterStatic });
+
+  // Now transition to 'applied' -> exactly one more envelope fetch.
+  setFetchRoute("/status", () => ({ state: "applied", autolevel: { status: "idle" } }));
+  setFetchRoute("/envelope", () => makeEnvelope({ screen: "apply", state: "applied" }));
+  await pollState();
+  const afterTransition = getEnvelopeFetchCount();
+  assert(afterTransition === 2,
+    "a state transition triggers exactly one more envelope fetch",
+    { got: afterTransition });
+
+  // Restore benign defaults for any trailing async boot work.
+  setFetchRoute("/status", () => ({ state: "idle" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
+// Drain fire-and-forget async chains (pollState launches refreshEnvelope
+// without awaiting: fetch -> json -> render). A few macrotask ticks settle it.
+async function settle() {
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+}
+
+// 29a. SINGLE PRIMARY ACTION: when the wizard is up and owns the forward
+//      action, the duplicate legacy in-section Apply button is subordinated
+//      (hidden) while non-duplicated controls (Reset) stay. Drive the full
+//      pollState -> applyButtonPolicy -> envelope-render path for 'ready'.
+await (async () => {
+  resetEnvelopeBookkeeping();
+  resetFetchCounts();
+  const applyCorrectionBtn = getOrMake("apply-correction");
+  const resetCorrectionBtn = getOrMake("reset-correction");
+  applyCorrectionBtn.classList.remove("hidden");   // pretend a stale showing
+
+  setFetchRoute("/status", () => ({ state: "ready", autolevel: { status: "idle" } }));
+  setFetchRoute("/envelope", () => makeEnvelope({
+    screen: "review", state: "ready",
+    next_action: { label: "Apply correction", endpoint: "/apply" },
+  }));
+  await pollState();
+  await settle();   // let the fire-and-forget envelope render + reconcile run
+
+  assert(wizNext().getAttribute("data-endpoint") === "/apply",
+    "wizard primary action owns Apply on the review screen",
+    { got: wizNext().getAttribute("data-endpoint") });
+  assert(applyCorrectionBtn.classList.contains("hidden"),
+    "the duplicate legacy Apply button is subordinated to the wizard action");
+  assert(!resetCorrectionBtn.classList.contains("hidden"),
+    "Reset (no wizard equivalent) stays available in the section");
+})();
+
+// 29b. RESILIENCE: if the envelope path is DOWN (chrome hidden, /envelope
+//      failing), the legacy Apply button remains the fallback so the user is
+//      never stranded without a way to apply. Fully settle 29a first so no
+//      stale success-render can un-hide the chrome mid-assert.
+await (async () => {
+  await settle();
+  const applyCorrectionBtn = getOrMake("apply-correction");
+  resetEnvelopeBookkeeping();
+  resetFetchCounts();
+  setFetchRoute("/status", () => ({ state: "ready", autolevel: { status: "idle" } }));
+  setFetchRoute("/envelope", () => { throw new Error("envelope down"); });
+  wizChrome().classList.add("hidden");
+  applyCorrectionBtn.classList.remove("hidden");
+  await pollState();
+  await settle();
+  assert(wizChrome().classList.contains("hidden"),
+    "a failing /envelope leaves the chrome hidden (fail-soft)");
+  assert(!applyCorrectionBtn.classList.contains("hidden"),
+    "with the envelope path down, the legacy Apply button stays as fallback");
+
+  setFetchRoute("/status", () => ({ state: "idle" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+  await settle();
+})();
+
+// 30. MID-FLOW ENVELOPE-ONLY OUTAGE (the review's SHOULD-FIX cell): the
+//     envelope was healthy at ready (wizard shows Apply), the session then
+//     advances to applied, and the envelope fetch FAILS. The stale Apply
+//     action must be retired (it points at the wrong endpoint for the new
+//     state) and the legacy Verify button must be live — the single visible
+//     action is always correct. Then the one bounded retry credit recovers
+//     the chrome once the envelope endpoint comes back.
+await (async () => {
+  resetEnvelopeBookkeeping();
+  resetFetchCounts();
+  const applyCorrectionBtn = getOrMake("apply-correction");
+  const verifyCorrectionBtn = getOrMake("verify-correction");
+
+  // Phase 1: healthy at ready — wizard owns Apply, legacy Apply subordinated.
+  setFetchRoute("/status", () => ({ state: "ready", autolevel: { status: "idle" } }));
+  setFetchRoute("/envelope", () => makeEnvelope({
+    screen: "review", state: "ready",
+    next_action: { label: "Apply correction", endpoint: "/apply" },
+  }));
+  await pollState();
+  await settle();
+  assert(wizNext().getAttribute("data-endpoint") === "/apply",
+    "phase 1: wizard shows Apply at ready",
+    { got: wizNext().getAttribute("data-endpoint") });
+  assert(applyCorrectionBtn.classList.contains("hidden"),
+    "phase 1: legacy Apply subordinated while the wizard owns it");
+
+  // Phase 2: the session advances to applied; the envelope endpoint is DOWN.
+  setFetchRoute("/status", () => ({ state: "applied", autolevel: { status: "idle" } }));
+  setFetchRoute("/envelope", () => { throw new Error("envelope down"); });
+  await pollState();
+  await settle();
+  assert(wizNext().classList.contains("hidden"),
+    "phase 2: the stale Apply action is retired on the failed refresh " +
+    "(it no longer matches the applied state)");
+  assert(!verifyCorrectionBtn.classList.contains("hidden"),
+    "phase 2: the legacy Verify button is live as the single correct action");
+  assert(applyCorrectionBtn.classList.contains("hidden"),
+    "phase 2: the legacy Apply button stays hidden (wrong for applied)");
+
+  // Phase 3: the endpoint recovers; the one bounded retry credit (scheduled
+  // by the phase-2 failure) re-fetches and restores the wizard action.
+  setFetchRoute("/envelope", () => makeEnvelope({
+    screen: "apply", state: "applied",
+    next_action: { label: "Verify the result", endpoint: "/verify" },
+  }));
+  let recovered = false;
+  for (let i = 0; i < 30 && !recovered; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    recovered = wizNext().getAttribute("data-endpoint") === "/verify" &&
+      !wizNext().classList.contains("hidden");
+  }
+  assert(recovered,
+    "phase 3: the one bounded retry recovers the wizard action after a " +
+    "transient envelope blip");
+  assert(verifyCorrectionBtn.classList.contains("hidden"),
+    "phase 3: the recovered wizard action re-subordinates the legacy Verify");
+
+  setFetchRoute("/status", () => ({ state: "idle" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();   // clears any pending retry timer
+  await settle();
+})();
+
+// 31. WIZARD_STEP_LABELS stays in lockstep with the server's progress spine:
+//     envelope._PROGRESS_SPINE (jasper/correction/envelope.py) has exactly 6
+//     entries (idle, sweep, review, apply, verify, result) and progress.total
+//     comes from its length. If the server spine grows/shrinks, this fails
+//     loudly instead of the indicator silently degrading to "Step N" labels.
+{
+  assert(wizardStepLabels.length === 6,
+    "WIZARD_STEP_LABELS must match envelope._PROGRESS_SPINE's 6 entries — " +
+    "update the client lexicon with the server spine",
+    { got: wizardStepLabels.length });
+  assert(wizardStepLabels.every((l) => typeof l === "string" && l.trim()),
+    "every wizard step label is non-empty homeowner copy");
+}
+
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 18 }));
+console.log(JSON.stringify({ ok: true, tests: 31 }));

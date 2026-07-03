@@ -107,6 +107,127 @@
 }
 #current-correction .label { font-weight: 600; }
 
+/* ---- Stepped-wizard chrome (P3b) -------------------------------------- */
+/* Envelope-driven: the step indicator, the one plain-language verdict, the
+   homeowner nudges (a sentence + a severity, never a block), and the single
+   primary action. Token-driven so it re-skins with the design system. */
+.wizard-chrome {
+  border-radius: var(--radius-md);
+  padding: 1rem 1.1rem;
+  background: color-mix(in oklab, var(--secondary) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+/* Step indicator — a numbered spine of dots + labels. The current step is
+   filled and emphasised; done steps read muted-filled; upcoming steps are
+   hollow. Presentation only — the server owns which step is current. */
+.wizard-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  counter-reset: wizard-step;
+}
+.wizard-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  counter-increment: wizard-step;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.wizard-step__dot {
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--border-strong);
+  background: var(--surface);
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.wizard-step__dot::before { content: counter(wizard-step); }
+.wizard-step.done { color: var(--text); }
+.wizard-step.done .wizard-step__dot {
+  border-color: transparent;
+  background: color-mix(in oklab, var(--status-ok) 24%, transparent);
+  color: var(--text);
+}
+.wizard-step.current { color: var(--text); font-weight: 600; }
+.wizard-step.current .wizard-step__dot {
+  border-color: transparent;
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.wizard-step__label { white-space: nowrap; }
+
+/* The one plain-language verdict sentence for the current step. */
+.wizard-verdict {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+/* Homeowner nudges — a sentence + a severity. Info reads calm (a checkmark,
+   "you can continue"); warn reads attention (a caret) but the copy still
+   says continue is fine. NEVER a block — there is no "danger" nudge tone. */
+.wizard-nudges { display: flex; flex-direction: column; gap: 0.45rem; }
+.wizard-nudge {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+.wizard-nudge.info {
+  background: color-mix(in oklab, var(--status-ok) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-ok) 30%, transparent);
+}
+.wizard-nudge.warn {
+  background: color-mix(in oklab, var(--status-warn) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 38%, transparent);
+}
+.wizard-nudge__icon {
+  flex: 0 0 auto;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  margin-top: 0.05rem;
+}
+.wizard-nudge.info .wizard-nudge__icon {
+  background: color-mix(in oklab, var(--status-ok) 24%, transparent);
+  color: var(--status-ok);
+}
+.wizard-nudge.warn .wizard-nudge__icon {
+  background: color-mix(in oklab, var(--status-warn) 26%, transparent);
+  color: var(--status-warn);
+}
+.wizard-nudge__text { flex: 1 1 auto; color: var(--text); }
+
+/* The single primary action. Full-width on narrow screens; the server owns
+   its label + whether it appears (nudges never disable it). */
+#wizard-next { align-self: flex-start; }
+@media (max-width: 30rem) {
+  #wizard-next { align-self: stretch; }
+  .wizard-step__label { display: none; }
+}
+
 /* ---- Microphone panel + calibration rows ------------------------------ */
 .mic-panel {
   background: color-mix(in oklab, var(--secondary) 50%, transparent);
