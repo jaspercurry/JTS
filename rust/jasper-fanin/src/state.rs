@@ -1697,26 +1697,36 @@ mod tests {
 
     #[test]
     fn trim_command_labeled_arms_only_the_target_and_reports_delta() {
-        // Simulate the mixer work loop from another thread: once the target's
-        // pending flag is armed, clear it and bump its trimmed_frames counter.
+        // Run trim_command on a background thread and service the mixer work
+        // loop from THIS (main) thread. Inverting the roles removes the
+        // scheduler race a background servicer had against trim_command's
+        // TRIM_WAIT_TIMEOUT: under heavy CI parallelism a freshly-spawned
+        // servicer could be starved past the 200 ms wall-clock bound (the flag
+        // was serviced correctly but too late), a real starvation race, not a
+        // logic bug. The test thread is already running, so it services the
+        // armed flag the instant trim_command sets it and the reply always
+        // lands. The trimmed_frames write happens-before the pending release,
+        // so trim_command's Acquire load of the cleared flag sees the counter.
         let server = std::sync::Arc::new(make_test_server());
-        let worker = std::sync::Arc::clone(&server);
-        std::thread::spawn(move || {
-            // airplay is index 1.
-            let airplay = &worker.inputs[1];
-            for _ in 0..2000 {
-                if airplay.trim.pending.load(Ordering::Acquire) {
-                    airplay
-                        .trim
-                        .trimmed_frames
-                        .fetch_add(1024, Ordering::Relaxed);
-                    airplay.trim.pending.store(false, Ordering::Release);
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_micros(200));
+        let caller = std::sync::Arc::clone(&server);
+        let handle = std::thread::spawn(move || caller.trim_command(Some("airplay")));
+        // airplay is index 1. Service its flag as soon as trim_command arms it.
+        let airplay = &server.inputs[1];
+        loop {
+            if airplay.trim.pending.load(Ordering::Acquire) {
+                airplay
+                    .trim
+                    .trimmed_frames
+                    .fetch_add(1024, Ordering::Relaxed);
+                airplay.trim.pending.store(false, Ordering::Release);
+                break;
             }
-        });
-        let resp = server.trim_command(Some("airplay"));
+            if handle.is_finished() {
+                break;
+            }
+            std::hint::spin_loop();
+        }
+        let resp = handle.join().unwrap();
         assert_eq!(resp, "OK trimmed=1024", "got: {resp}");
         // spotify (index 0) was never armed.
         assert!(!server.inputs[0].trim.pending.load(Ordering::Acquire));
@@ -1724,29 +1734,36 @@ mod tests {
 
     #[test]
     fn trim_command_all_arms_every_lane_and_sums_delta() {
+        // See the sibling labeled test: trim_command runs on a background thread
+        // and the main (test) thread services EVERY lane's armed flag inline, so
+        // the servicing can never be starved past trim_command's 200 ms
+        // TRIM_WAIT_TIMEOUT on a contended CI runner. `trim_command(None)` arms
+        // every lane, so this must service all of them — `done` is sized to the
+        // real lane count (3: spotify/airplay/usbsink), not a hardcoded 2. Each
+        // lane gets a distinct amount (512 >> i) so the summed delta is
+        // unambiguous: 512 + 256 + 128 = 896.
         let server = std::sync::Arc::new(make_test_server());
-        let worker = std::sync::Arc::clone(&server);
-        std::thread::spawn(move || {
-            let mut done = [false; 2];
-            for _ in 0..4000 {
-                for (i, inp) in worker.inputs.iter().enumerate() {
-                    if !done[i] && inp.trim.pending.load(Ordering::Acquire) {
-                        // Distinct amounts per lane so the sum is unambiguous.
-                        inp.trim
-                            .trimmed_frames
-                            .fetch_add(if i == 0 { 512 } else { 256 }, Ordering::Relaxed);
-                        inp.trim.pending.store(false, Ordering::Release);
-                        done[i] = true;
-                    }
+        let caller = std::sync::Arc::clone(&server);
+        let handle = std::thread::spawn(move || caller.trim_command(None));
+        let mut done = vec![false; server.inputs.len()];
+        let mut expected: u64 = 0;
+        loop {
+            for (i, inp) in server.inputs.iter().enumerate() {
+                if !done[i] && inp.trim.pending.load(Ordering::Acquire) {
+                    let amount = 512u64 >> i;
+                    inp.trim.trimmed_frames.fetch_add(amount, Ordering::Relaxed);
+                    inp.trim.pending.store(false, Ordering::Release);
+                    done[i] = true;
+                    expected += amount;
                 }
-                if done.iter().all(|d| *d) {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_micros(200));
             }
-        });
-        let resp = server.trim_command(None);
-        assert_eq!(resp, "OK trimmed=768", "got: {resp}");
+            if done.iter().all(|d| *d) || handle.is_finished() {
+                break;
+            }
+            std::hint::spin_loop();
+        }
+        let resp = handle.join().unwrap();
+        assert_eq!(resp, format!("OK trimmed={expected}"), "got: {resp}");
     }
 
     #[test]
