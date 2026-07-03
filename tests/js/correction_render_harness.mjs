@@ -2,15 +2,23 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Render harness for /correction/ banner rendering (C4a-2).
+// Render harness for /correction/ rendering (C4a-2 + P3a).
 //
 // Exercises renderCurrentCorrection (deploy/assets/correction/js/main.js,
 // ~line 726) with representative backend payloads and asserts the correct
 // CSS class, reset-button visibility, and label copy for each correction kind.
+// Also pins the P3a honest measured before/after surfaces:
+//   - verifyHeadlineHtml: verb/colour choice from the server delta, the
+//     ±0.1 dB display deadband, the neutral bucket, band text from the
+//     server payload, and ''-on-missing-fields.
+//   - drawBeforeAfterFill (via drawChart + a recording canvas context):
+//     per-segment polygon vertex counts, improved→green / regressed→amber
+//     fill colours, and that server-classified tones are consumed
+//     verbatim (the client never re-derives improvement from the curves).
 //
-// The function is an IIFE-local var; the harness injects a probe hook
-// (`globalThis.__probe`) just before the IIFE runs so the test can call the
-// function directly.  DOM elements are lightweight stubs — no browser, no
+// The functions are IIFE-local; the harness injects a probe hook
+// (`globalThis.__testProbe`) just before the IIFE closes so the test can
+// call them directly.  DOM elements are lightweight stubs — no browser, no
 // JSDOM needed.
 //
 //   node tests/js/correction_render_harness.mjs deploy/assets/correction/js/main.js
@@ -19,7 +27,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const modulePath = process.argv[2] || join(root, "deploy/assets/correction/js/main.js");
 let rawSource = readFileSync(modulePath, "utf8");
 
@@ -71,6 +79,11 @@ function makeEl(id) {
     focus() {},
     click() {
       for (const fn of this._listeners.click || []) fn({ preventDefault() {}, target: this });
+    },
+    // Layout stub — drawChart bails on a 0×0 canvas, so report real
+    // dimensions for the chart-rendering tests.
+    getBoundingClientRect() {
+      return { width: 600, height: 200, top: 0, left: 0, right: 600, bottom: 200 };
     },
     // canvas stub (used by the chart functions)
     getContext() {
@@ -141,7 +154,15 @@ let source = rawSource
 // inside the IIFE closure so it shares the DOM-variable bindings.
 source = source.replace(
   /\}\)\(\);\s*$/,
-  `  globalThis.__testProbe = { renderCurrentCorrection, correctionBannerClass };
+  `  globalThis.__testProbe = {
+    renderCurrentCorrection,
+    correctionBannerClass,
+    verifyHeadlineHtml,
+    drawChart,
+    // lastVerify is IIFE-local state read by drawChart's before/after
+    // fill; expose a setter that shares the closure binding.
+    setLastVerify: function (v) { lastVerify = v; },
+  };
 })();`,
 );
 
@@ -215,7 +236,13 @@ runner(
   { createObjectURL() { return "blob:fake"; } },
 );
 
-const { renderCurrentCorrection, correctionBannerClass } = globalThis.__testProbe;
+const {
+  renderCurrentCorrection,
+  correctionBannerClass,
+  verifyHeadlineHtml,
+  drawChart,
+  setLastVerify,
+} = globalThis.__testProbe;
 delete globalThis.__testProbe;
 
 // ---- Test helpers ----
@@ -372,8 +399,251 @@ function resetBtn() { return elements.get("current-correction-reset"); }
   assert(correctionBannerClass("") === "flat",           "empty → 'flat'");
 }
 
+// ---- P3a: honest measured before/after pins --------------------------------
+
+// Helper: a complete server-shaped verify_before_after payload.
+function makeBA(deltaRms, extra) {
+  return Object.assign({
+    band_hz: [50, 350],
+    before: { rms_db: 6.2, max_db: 11.0, n_points: 120 },
+    after: { rms_db: 2.1, max_db: 4.0, n_points: 120 },
+    delta: { rms_db: deltaRms, max_db: 7.0 },
+    fill_segments: [],
+  }, extra || {});
+}
+
+// 12. verifyHeadlineHtml: honest "better" verb + measured numbers + band
+//     text derived from the SERVER payload's band_hz (never hard-coded).
+{
+  const html = verifyHeadlineHtml(makeBA(4.1));
+  assert(html.includes('verify-headline improved'),
+    "positive measured delta must use the improved tone class", { got: html });
+  assert(html.includes('Bass evened out'),
+    "positive measured delta must use the 'evened out' verb", { got: html });
+  assert(html.includes('±6.2 dB → ±2.1 dB'),
+    "headline must show the server before → after RMS values", { got: html });
+  assert(html.includes('50–350 Hz'),
+    "band text must come from the payload band_hz", { got: html });
+
+  const wideBand = verifyHeadlineHtml(makeBA(4.1, { band_hz: [50, 500] }));
+  assert(wideBand.includes('50–500 Hz'),
+    "a non-default server band_hz must flow into the band text",
+    { got: wideBand });
+}
+
+// 13. verifyHeadlineHtml: honest "worse" verb — a regression is named,
+//     never dressed up as improvement.
+{
+  const html = verifyHeadlineHtml(makeBA(-3.0));
+  assert(html.includes('verify-headline regressed'),
+    "negative measured delta must use the regressed tone class", { got: html });
+  assert(html.includes('Bass deviation grew'),
+    "negative measured delta must use the 'deviation grew' verb", { got: html });
+  assert(!html.includes('evened out'),
+    "a regression must not claim the bass evened out", { got: html });
+}
+
+// 14. verifyHeadlineHtml: ±0.1 dB display deadband, both directions.
+//     |delta| <= 0.1 reads neutral ("held about the same"); just past the
+//     deadband flips to the directional verb. Strict comparison: exactly
+//     ±0.1 is still neutral.
+{
+  for (const delta of [0.0, 0.1, -0.1, 0.05, -0.05]) {
+    const html = verifyHeadlineHtml(makeBA(delta));
+    assert(html.includes('verify-headline neutral'),
+      `delta ${delta} is inside the ±0.1 dB deadband → neutral class`,
+      { got: html });
+    assert(html.includes('Bass held about the same'),
+      `delta ${delta} must use the neutral verb`, { got: html });
+  }
+  const justBetter = verifyHeadlineHtml(makeBA(0.11));
+  assert(justBetter.includes('verify-headline improved'),
+    "delta just above +0.1 dB must read improved", { got: justBetter });
+  const justWorse = verifyHeadlineHtml(makeBA(-0.11));
+  assert(justWorse.includes('verify-headline regressed'),
+    "delta just below -0.1 dB must read regressed", { got: justWorse });
+}
+
+// 15. verifyHeadlineHtml: missing/partial server payloads render nothing —
+//     no headline without a real measured before/after.
+{
+  assert(verifyHeadlineHtml(null) === '', "null payload → ''");
+  assert(verifyHeadlineHtml(undefined) === '', "undefined payload → ''");
+  assert(verifyHeadlineHtml({}) === '', "empty payload → ''");
+  assert(verifyHeadlineHtml({ before: {}, after: {} }) === '',
+    "payload without delta → ''");
+  assert(verifyHeadlineHtml(makeBA(undefined)) === '',
+    "non-numeric delta.rms_db → ''");
+  const noBeforeRms = makeBA(4.1);
+  delete noBeforeRms.before.rms_db;
+  assert(verifyHeadlineHtml(noBeforeRms) === '',
+    "missing before.rms_db → ''");
+}
+
+// ---- drawBeforeAfterFill (via drawChart + recording canvas context) --------
+
+const FILL_GREEN = 'rgba(29, 185, 84, 0.22)';
+const FILL_AMBER = 'rgba(214, 130, 0, 0.22)';
+
+function makeRecordingContext() {
+  const ops = [];
+  const ctx = {
+    ops,
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    font: '',
+    scale() {}, clearRect() {}, fillRect() {},
+    beginPath() { ops.push({ op: 'beginPath' }); },
+    moveTo() { ops.push({ op: 'moveTo' }); },
+    lineTo() { ops.push({ op: 'lineTo' }); },
+    closePath() { ops.push({ op: 'closePath' }); },
+    fill() { ops.push({ op: 'fill', fillStyle: ctx.fillStyle }); },
+    stroke() {}, fillText() {}, setLineDash() {},
+    measureText() { return { width: 0 }; },
+    save() {}, restore() {},
+  };
+  return ctx;
+}
+
+// Drive drawChart with a recording context on the chart canvas stub and
+// return the recorded ops. drawChart reads IIFE-local `lastVerify` for the
+// verify overlay + fill, so callers set it via the probe first.
+function recordDrawChart(measured, target, predicted, payload) {
+  const ctx = makeRecordingContext();
+  getOrMake('chart').getContext = () => ctx;
+  drawChart(measured, target, predicted, payload);
+  return ctx.ops;
+}
+
+function beforeAfterFills(ops) {
+  return ops
+    .map((o, i) => ({ op: o.op, fillStyle: o.fillStyle, i }))
+    .filter((o) => o.op === 'fill' &&
+      (o.fillStyle === FILL_GREEN || o.fillStyle === FILL_AMBER));
+}
+
+// Count moveTo/lineTo/closePath between a fill and its beginPath.
+function polygonShape(ops, fillIndex) {
+  let moveTo = 0, lineTo = 0, closePath = 0;
+  for (let i = fillIndex - 1; i >= 0; i--) {
+    const op = ops[i].op;
+    if (op === 'beginPath') break;
+    if (op === 'moveTo') moveTo += 1;
+    else if (op === 'lineTo') lineTo += 1;
+    else if (op === 'closePath') closePath += 1;
+  }
+  return { moveTo, lineTo, closePath };
+}
+
+const N_GRID = 480;
+const gridFreqs = Array.from(
+  { length: N_GRID },
+  (_, i) => 20 * Math.pow(20000 / 20, i / (N_GRID - 1)),
+);
+function curveOf(fn) {
+  return {
+    freqs_hz: gridFreqs.slice(),
+    magnitude_db: gridFreqs.map(fn),
+  };
+}
+
+// 16. drawBeforeAfterFill: tone→colour mapping + per-segment polygon
+//     vertex counts. A segment spanning n grid points draws 1 moveTo +
+//     (2n − 1) lineTo (forward along `after`, back along `before`) and
+//     closes the path — mirroring drawSpread's polygon technique.
+{
+  // Physically consistent data: 100..150 improved (6→0 dB), 151..200
+  // regressed (0→5 dB) — but the client must take the TONE from the
+  // server segment, not from the data (pinned separately in 17).
+  const measured = curveOf((_, ) => 0);
+  measured.magnitude_db = measured.magnitude_db.map((v, i) =>
+    (i >= 100 && i <= 150) ? 6.0 : 0.0);
+  const verify = curveOf(() => 0);
+  verify.magnitude_db = verify.magnitude_db.map((v, i) =>
+    (i >= 151 && i <= 200) ? 5.0 : 0.0);
+  setLastVerify(verify);
+  const payload = {
+    verify_before_after: {
+      band_hz: [50, 350],
+      fill_segments: [
+        { tone: 'improved', i_lo: 100, i_hi: 150, f_lo_hz: gridFreqs[100], f_hi_hz: gridFreqs[150] },
+        { tone: 'regressed', i_lo: 151, i_hi: 200, f_lo_hz: gridFreqs[151], f_hi_hz: gridFreqs[200] },
+      ],
+    },
+  };
+  const ops = recordDrawChart(measured, null, null, payload);
+  const fills = beforeAfterFills(ops);
+  assert(fills.length === 2,
+    "one fill per server segment", { got: fills.length });
+  assert(fills[0] && fills[0].fillStyle === FILL_GREEN,
+    "improved tone must fill green", { got: fills[0] && fills[0].fillStyle });
+  assert(fills[1] && fills[1].fillStyle === FILL_AMBER,
+    "regressed tone must fill amber", { got: fills[1] && fills[1].fillStyle });
+
+  // Segment 1 spans 51 points → 1 moveTo + 101 lineTo; segment 2 spans
+  // 50 points → 1 moveTo + 99 lineTo. Each closes its polygon.
+  const shape1 = polygonShape(ops, fills[0].i);
+  assert(shape1.moveTo === 1 && shape1.lineTo === 101 && shape1.closePath === 1,
+    "improved segment polygon must walk its index span forward and back",
+    shape1);
+  const shape2 = polygonShape(ops, fills[1].i);
+  assert(shape2.moveTo === 1 && shape2.lineTo === 99 && shape2.closePath === 1,
+    "regressed segment polygon must walk its index span forward and back",
+    shape2);
+}
+
+// 17. Server-classified tones are consumed VERBATIM. Curve data that
+//     visibly regressed (after moved away from target) but is tagged
+//     'improved' by the server must still fill green — the client never
+//     re-derives improvement from the curves. (The server is the single
+//     honest classifier; a client re-derivation could disagree with the
+//     Pi's raw-grid verdict once display smoothing is on.)
+{
+  const measured = curveOf(() => 0);
+  const verify = curveOf(() => 0);
+  verify.magnitude_db = verify.magnitude_db.map((v, i) =>
+    (i >= 100 && i <= 120) ? 6.0 : 0.0);  // clearly worse than before
+  setLastVerify(verify);
+  const payload = {
+    verify_before_after: {
+      fill_segments: [
+        { tone: 'improved', i_lo: 100, i_hi: 120 },  // server says improved
+      ],
+    },
+  };
+  const ops = recordDrawChart(measured, null, null, payload);
+  const fills = beforeAfterFills(ops);
+  assert(fills.length === 1, "segment must render", { got: fills.length });
+  assert(fills[0] && fills[0].fillStyle === FILL_GREEN,
+    "client must trust the server tone verbatim, not re-derive from curves",
+    { got: fills[0] && fills[0].fillStyle });
+}
+
+// 18. No before/after fill without a verify measurement or without the
+//     server payload — the chart never invents a before/after story.
+{
+  const measured = curveOf(() => 0);
+  const payload = {
+    verify_before_after: {
+      fill_segments: [{ tone: 'improved', i_lo: 100, i_hi: 120 }],
+    },
+  };
+  setLastVerify(null);
+  let ops = recordDrawChart(measured, null, null, payload);
+  assert(beforeAfterFills(ops).length === 0,
+    "no verify measurement → no before/after fill");
+
+  const verify = curveOf(() => 0);
+  setLastVerify(verify);
+  ops = recordDrawChart(measured, null, null, {});
+  assert(beforeAfterFills(ops).length === 0,
+    "no verify_before_after payload → no before/after fill");
+  setLastVerify(null);
+}
+
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 11 }));
+console.log(JSON.stringify({ ok: true, tests: 18 }));

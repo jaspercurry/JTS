@@ -171,8 +171,14 @@
   correction strategies (`safe`, `balanced`, `assertive`), persists
   `strategy_choice`, `correction_strategy`, `target_profile`, and
   `design_report` into `info.json` / `result.json`, and renders a
-  compact design audit explaining the selected band, predicted RMS
-  improvement, warnings, and per-filter rationale. The read-only
+  compact design audit explaining the selected band, the *predicted*
+  RMS change (a model estimate under `design_report.predicted` — never
+  labelled "improvement", since it is not re-measured), warnings, and
+  per-filter rationale. The honest *measured* before/after only appears
+  once a verify sweep lands (`verify_before_after`, computed on the Pi
+  over the same 50–350 Hz band as `verify_metrics`; the browser fills
+  the before→after gap green/amber and headlines the measured delta).
+  The read-only
   calibration-agent intake tool surfaces the same report so a future
   LLM can explain and recommend bounded strategy changes without
   reverse-engineering the filters.

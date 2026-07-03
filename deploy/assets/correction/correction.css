@@ -370,6 +370,12 @@
 .band-pill.medium { background: color-mix(in oklab, var(--status-warn) 18%, transparent); color: var(--text); }
 .band-pill.low { background: color-mix(in oklab, var(--status-danger) 14%, transparent); color: var(--text); }
 
+/* Measured before/after headline in the verify summary. */
+.verify-headline { font-size: 1.02rem; }
+.verify-headline.improved { color: var(--status-ok); }
+.verify-headline.regressed { color: var(--status-danger); }
+.verify-headline.neutral { color: var(--muted); }
+
 /* ---- Frequency-response chart ----------------------------------------- */
 .chart-controls {
   display: flex;

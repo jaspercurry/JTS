@@ -929,7 +929,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
     var before = report.before || {};
     var after = report.after || {};
-    var improvement = report.improvement || {};
+    // PREDICTED (model estimate), not a measured improvement. The
+    // server renames this key from the old "improvement" so the UI
+    // cannot claim the room got better without a verify measurement.
+    var predicted = report.predicted || {};
     var warnings = report.warnings || [];
     var filterAudits = report.filters || [];
     var warningHtml = '';
@@ -957,8 +960,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       '<p class="hint">Predicted modal-band RMS error: ' +
       (before.rms_db || 0).toFixed(1) + ' dB -> ' +
       (after.rms_db || 0).toFixed(1) + ' dB' +
-      ' (' + (improvement.rms_db || 0).toFixed(1) +
-      ' dB improvement).</p>' +
+      ' (' + (predicted.rms_db || 0).toFixed(1) +
+      ' dB predicted change — model estimate, not yet measured). ' +
+      'Apply, then Verify to measure the real before/after.</p>' +
       warningHtml + filterHtml;
   }
 
@@ -1077,6 +1081,33 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   function formatMaybeDb(value) {
     var n = numberOrNull(value);
     return n === null ? '—' : n.toFixed(1) + ' dB';
+  }
+
+  // Honest MEASURED before/after headline. All numbers are computed
+  // on the Pi (session.verify_before_after) and are authoritative;
+  // the client applies only a small ±0.1 dB display deadband to the
+  // server delta when choosing the verb/colour, so a sub-noise delta
+  // reads "held about the same" instead of over-claiming a change.
+  function verifyHeadlineHtml(ba) {
+    if (!ba || !ba.before || !ba.after || !ba.delta) return '';
+    var band = ba.band_hz || [50, 350];
+    var beforeRms = numberOrNull(ba.before.rms_db);
+    var afterRms = numberOrNull(ba.after.rms_db);
+    var deltaRms = numberOrNull(ba.delta.rms_db);
+    if (beforeRms === null || afterRms === null || deltaRms === null) return '';
+    // delta.rms_db > 0 means the measured deviation shrank.
+    var better = deltaRms > 0.1;
+    var worse = deltaRms < -0.1;
+    var verb = better
+      ? 'Bass evened out'
+      : (worse ? 'Bass deviation grew' : 'Bass held about the same');
+    return '<strong class="verify-headline ' +
+      (better ? 'improved' : (worse ? 'regressed' : 'neutral')) + '">' +
+      escapeText(verb) + ': ±' + beforeRms.toFixed(1) + ' dB → ±' +
+      afterRms.toFixed(1) + ' dB</strong> ' +
+      '<span class="hint">(measured RMS deviation from target over ' +
+      Math.round(Number(band[0])) + '–' + Math.round(Number(band[1])) +
+      ' Hz, before vs after correction).</span>';
   }
 
   function formatBytes(bytes) {
@@ -1353,7 +1384,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     var p = chartPayload(payload);
     var confidence = p.confidence || {};
     var design = p.design || {};
-    var improvement = design.improvement || {};
+    // PREDICTED model estimate (renamed from "improvement" server-side).
+    var predicted = design.predicted || {};
     var strategy = design.correction_strategy || {};
     var position = p.position || {};
     var bands = (position.bands || []).filter(function (band) {
@@ -1399,7 +1431,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         '<span class="value">' + escapeText((p.runtime && p.runtime.level) || '—') +
         '</span></div>' +
         '<div class="metric"><span class="label">Predicted RMS change</span>' +
-        '<span class="value">' + formatDb(improvement.rms_db) + '</span></div>' +
+        '<span class="value">' + formatDb(predicted.rms_db) + '</span></div>' +
       '</div>' +
       (bandRows
         ? '<table class="band-table"><thead><tr><th>Band</th><th>Range</th>' +
@@ -1567,11 +1599,69 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       c.setLineDash([]);
     }
 
+    // Honest before/after fill: shade the area between the
+    // pre-correction measured curve and the post-correction verify
+    // curve, green where the correction moved toward the target
+    // (improved), amber where it moved away (regressed). The segment
+    // classification + grid indices come from the Pi
+    // (verify_before_after.fill_segments); this only renders them,
+    // mirroring drawSpread's polygon technique. Callers pass the
+    // display curves — smoothing preserves the grid, so the server's
+    // i_lo/i_hi still address the right frequency points.
+    function drawBeforeAfterFill(segments, beforeCurve, afterCurve) {
+      if (
+        !segments || !segments.length ||
+        !beforeCurve || !beforeCurve.freqs_hz || !beforeCurve.magnitude_db ||
+        !afterCurve || !afterCurve.magnitude_db ||
+        beforeCurve.freqs_hz.length !== beforeCurve.magnitude_db.length ||
+        beforeCurve.freqs_hz.length !== afterCurve.magnitude_db.length
+      ) return;
+      var freqs = beforeCurve.freqs_hz;
+      var beforeDb = beforeCurve.magnitude_db;
+      var afterDb = afterCurve.magnitude_db;
+      var n = freqs.length;
+      segments.forEach(function (seg) {
+        var lo = Number(seg.i_lo);
+        var hi = Number(seg.i_hi);
+        if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi < lo) return;
+        lo = Math.max(0, lo);
+        hi = Math.min(n - 1, hi);
+        c.fillStyle = seg.tone === 'improved'
+          ? 'rgba(29, 185, 84, 0.22)'   // green — moved toward target
+          : 'rgba(214, 130, 0, 0.22)';  // amber — moved away
+        c.beginPath();
+        var first = true;
+        for (var i = lo; i <= hi; i++) {
+          var x = fx(freqs[i]);
+          var y = fy(afterDb[i]);
+          if (first) { c.moveTo(x, y); first = false; }
+          else c.lineTo(x, y);
+        }
+        for (var j = hi; j >= lo; j--) {
+          c.lineTo(fx(freqs[j]), fy(beforeDb[j]));
+        }
+        c.closePath();
+        c.fill();
+      });
+    }
+
     if (
       chartShowSpread && chartShowSpread.checked &&
       p.position && p.position.chart
     ) {
       drawSpread(p.position.chart);
+    }
+
+    // Measured before/after fill (green=improved, amber=regressed),
+    // under the curves so both edges stay visible. The improved/
+    // regressed verdict + grid indices are Pi-computed; we only fill
+    // between the displayed (smoothed) before/after curves within each
+    // server-classified segment. Render only when a verify exists.
+    var beforeAfter = payload && payload.verify_before_after;
+    if (lastVerify && beforeAfter && beforeAfter.fill_segments) {
+      drawBeforeAfterFill(
+        beforeAfter.fill_segments, displayMeasured, smoothCurve(lastVerify),
+      );
     }
 
     drawCurve(displayTarget, '#888', true, 2);
@@ -2216,8 +2306,16 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         return;  // upload-capture handler resumes polling
       }
       if (s.state === 'verified' && s.verify_metrics) {
+        var headline = verifyHeadlineHtml(s.verify_before_after);
+        // Band text comes from the server payload (verify_before_after
+        // shares verify_metrics' band); 50–350 is only the fallback for
+        // sessions verified before the before/after payload existed.
+        var vband = (s.verify_before_after && s.verify_before_after.band_hz) ||
+          [50, 350];
         verifySummary.innerHTML =
-          '<strong>Post-correction (50–350 Hz):</strong> RMS deviation ' +
+          (headline ? headline + '<br>' : '') +
+          '<strong>Post-correction (' + Math.round(Number(vband[0])) + '–' +
+          Math.round(Number(vband[1])) + ' Hz):</strong> RMS deviation ' +
           s.verify_metrics.rms_db.toFixed(1) + ' dB, max ' +
           s.verify_metrics.max_db.toFixed(1) + ' dB.<br>' +
           '<span class="hint">' +

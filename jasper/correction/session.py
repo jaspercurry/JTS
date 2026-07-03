@@ -318,6 +318,13 @@ class MeasurementSession:
         self.predicted_curve: CurveJSON | None = None
         self.verify_curve: CurveJSON | None = None
         self.verify_metrics: dict[str, float] | None = None
+        # Honest MEASURED before/after readout, populated by the verify
+        # path: pre-correction measured deviation, post-correction
+        # verify deviation (both over the SAME band as verify_metrics),
+        # the measured delta, and fill_segments for the browser. None
+        # until a verify measurement lands — the predicted design figure
+        # is never promoted into "improvement" without this.
+        self.verify_before_after: dict[str, Any] | None = None
         self.design_report: dict[str, Any] | None = None
 
         self.peqs: list[PEQJSON] = []
@@ -1091,6 +1098,47 @@ class MeasurementSession:
         """Resolve target_choice → dB target curve on `freqs`."""
         return strategy.resolve_target_profile(self.target_choice).curve_db(freqs)
 
+    def _compute_verify_before_after(
+        self,
+        verify_freqs: np.ndarray,
+        verify_mag_db: np.ndarray,
+        target_db: np.ndarray,
+    ) -> dict[str, Any] | None:
+        """Honest MEASURED before/after over the verify band.
+
+        The "before" is the pre-correction spatial-averaged measured
+        curve (`self.measured_curve`); the "after" is the just-captured
+        verify curve. Both deviations are taken over the SAME band as
+        `verify_metrics` (`[50, self.cfg.peq_f_high]` — see the comment
+        at the verify_metrics call for why 50 Hz, not the 20 Hz PEQ
+        band), which is the guard against the band-mismatch trap: we
+        deliberately do NOT reuse the design report's predicted "before"
+        (computed over the 20–350/20–500 strategy band) as the measured
+        baseline.
+
+        Every capture resamples onto the same log grid, so the design
+        measured curve and the verify curve share `verify_freqs`. We
+        still interpolate onto `verify_freqs` defensively so a future
+        grid change can't silently misalign the two arrays. Returns None
+        if the pre-correction measured curve is unavailable.
+        """
+        if self.measured_curve is None:
+            return None
+        pre_freqs = np.asarray(self.measured_curve.freqs_hz, dtype=np.float64)
+        pre_mag = np.asarray(self.measured_curve.magnitude_db, dtype=np.float64)
+        if pre_freqs.size == 0 or pre_mag.size != pre_freqs.size:
+            return None
+        # Align the pre-correction curve to the verify grid. np.interp is
+        # a no-op when the grids already match (the normal case).
+        before_on_grid = np.interp(verify_freqs, pre_freqs, pre_mag)
+        return analysis.before_after_delta(
+            verify_freqs,
+            before_on_grid,
+            verify_mag_db,
+            target_db,
+            f_high=self.cfg.peq_f_high,
+        )
+
     def _build_confidence_report(self) -> dict[str, Any]:
         return confidence.build_confidence_report(
             total_positions=self.total_positions,
@@ -1807,8 +1855,11 @@ class MeasurementSession:
         ) = None,
     ) -> None:
         """One-position re-measurement after Apply. The result lands
-        in self.verify_curve / self.verify_metrics — overlaid on the
-        chart so the user can see the correction's actual effect."""
+        in self.verify_curve / self.verify_metrics, plus the honest
+        MEASURED before/after readout in self.verify_before_after (the
+        pre-correction measured curve vs this verify curve over the same
+        band) — overlaid on the chart so the user can see the
+        correction's actual, measured effect, not just the prediction."""
         async with self._lock:
             if self.state != SessionState.APPLIED and self.state != SessionState.VERIFIED:
                 raise RuntimeError(
@@ -1866,8 +1917,9 @@ class MeasurementSession:
         self, captured_wav_path: Path,
     ) -> None:
         """Verify capture arrived. Deconv + smooth, store as
-        verify_curve, compute deviation metrics. Transition to
-        VERIFIED."""
+        verify_curve, compute absolute deviation metrics AND the
+        honest measured before/after delta (verify_before_after).
+        Transition to VERIFIED."""
         async with self._lock:
             if self.state != SessionState.AWAITING_VERIFY_CAPTURE:
                 raise RuntimeError(
@@ -1941,6 +1993,9 @@ class MeasurementSession:
             magnitude_db=log_mag.tolist(),
         )
         self.verify_metrics = metrics
+        self.verify_before_after = self._compute_verify_before_after(
+            log_freqs, log_mag, target_db,
+        )
         self.verify_quality = self._quality_report_dict(
             capture_quality,
             capture_kind="verify",
