@@ -872,11 +872,13 @@ period by `mixer::step`.
 is on disk whose `floor_frames` equals the live decay floor (a floor retune between
 sessions invalidates it — descend normally); and (2) at every **session boundary**
 within the daemon lifetime, via `snap_decay_back_honoring_proof` — the primitive
-`reset()` (idle/host-pause/device-loss) and `unlock_for_underfill()` (starvation =
-the natural session end, e.g. the Mac stops streaming) both call. In both cases the
-held target starts at the floor and a `floor_prime_pending` latch holds it there
-across the not-yet-locked prime periods so `try_lock` seats the cursor shallow. The
-ceiling is unchanged, so a REVOKE still snaps all the way back to it.
+`reset()` (idle/host-pause/device-loss/xrun-recovery — the aloop and usb-direct
+xrun-recovery paths `recover_resampler_input_xrun` / `recover_direct_xrun` call it
+too) and `unlock_for_underfill()` (starvation = the natural session end, e.g. the
+Mac stops streaming) both call. In both cases the held target starts at the floor
+and a `floor_prime_pending` latch holds it there across the not-yet-locked prime
+periods so `try_lock` seats the cursor shallow. The ceiling is unchanged, so a
+REVOKE still snaps all the way back to it.
 
 **Session-boundary snap destination (the single source of truth).** At a session
 boundary the snap goes to the FLOOR iff a live, unrevoked proof is present, else the
@@ -899,9 +901,23 @@ probe FAIL, a DLL demotion to L2, or an underfill unlock within the first
 `HOST_COMPLIANCE_EARLY_REVALIDATION_SECS` (60 s). The revalidation runs in the pure
 `RevalidationTracker` (`host_compliance.rs`), driven each render period by
 `mixer::service_host_compliance` from the resampler's live `is_locked()` /
-`unlock_count()`. Two correctness details the tracker encodes: (1) the underfill
-trigger is evaluated on the lock-LOSS edge as well as while locked, because
-`unlock_for_underfill` sets `locked=false` in the SAME render period it bumps
+`unlock_count()`. **The underfill trigger is window-bounded, so it does NOT
+self-revoke a slow periodic-stall host.** A host that delivers a mid-stream stall
+deep enough to underflow the floor's headroom but shallower than the ceiling's
+(floor-fatal, ceiling-survivable), spaced **>60 s apart**, never trips this
+trigger: each stall lands after the 60 s window has re-armed (post-window churn is
+"ordinary," not revocation evidence), and each subsequent session end re-primes at
+the floor — so the lane runs shallow indefinitely, one dropout per stall, with the
+proof NEVER revoking on that profile (only a live probe FAIL or an L2 demotion
+reverts it). Exposure is small — the pre-per-session steady state already sat at the
+floor most of the time, and stalls spaced <60 s apart are bounded to two incidents by
+the re-armed window — but if you are debugging *periodic* USB dropouts on an
+otherwise-locked host, know that the compliance proof will not self-heal this
+pattern; force a descent by demoting the ladder (a probe FAIL / L2) or deleting
+`host_compliance.json` + restarting fan-in. Two correctness details the tracker
+encodes: (1) the underfill trigger is evaluated on the lock-LOSS edge as well as
+while locked, because `unlock_for_underfill` sets `locked=false` in the SAME render
+period it bumps
 `unlock_count` — so the period that carries the churn evidence is the one where
 `locked` is already false (a `locked`-only window gate would make this trigger
 unreachable, the class of probe-passing-but-can't-hold-the-floor host this promise

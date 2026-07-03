@@ -656,7 +656,11 @@ impl LaneResampler {
         // zero churn), else at the ceiling (a fresh cold start acquires deep).
         // Self-healing if the floor is later unsustainable: the re-lock re-arms the
         // early-revalidation window, so an immediate re-underfill revokes the proof
-        // and reverts to the ceiling. Without a snap here, a re-lock after decay
+        // and reverts to the ceiling. NOTE the "immediate": the window is bounded
+        // (`HOST_COMPLIANCE_EARLY_REVALIDATION_SECS`), so a host that stalls
+        // floor-fatally but >60 s apart never trips this — the proof does not
+        // self-revoke that periodic-dropout profile (see HANDOFF-usb-low-latency.md
+        // revalidation section). Without a snap here, a re-lock after decay
         // would seat at the shallow decayed depth and re-thrash lock.
         self.snap_decay_back_honoring_proof(DecayFrozenReason::Unlocked);
         self.publish_fill(if acquisition_underfill {
