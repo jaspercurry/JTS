@@ -52,6 +52,35 @@ impl BackendMode {
 pub enum ContentBridgeMode {
     Direct,
     RateMatch,
+    /// PROTOTYPE (latency/ring-proto-shm, flag `shm_ring`): read the post-DSP
+    /// stereo program from a 2-slot SHM ping-pong ring the CamillaDSP-playback
+    /// ALSA ioplug writes, instead of the snd-aloop content hop. Default is
+    /// `Direct`; this variant only arms when
+    /// `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring` is set. See `jasper_ring` and
+    /// `shm_ring_source.rs`.
+    ShmRing,
+}
+
+/// SHM ring reader settings (PROTOTYPE — only meaningful when
+/// `content_bridge_mode == ShmRing`). Slot frames are NOT a separate env: the
+/// ring's `period_frames` is always outputd's `period_frames`, one less drift
+/// axis. `n_slots` defaults to 2 (ping-pong); 3 is the documented degraded
+/// widening, 4..=16 is negotiation headroom. The ceiling was raised 4 -> 16 on
+/// 2026-07-02 because CamillaDSP's playback BufferManager needs an ALSA buffer
+/// (== `n_slots * period_frames`) that clears both its negotiated size
+/// (next_pow2(3*chunksize)) and its `target_level`; at 4 slots the 512-frame
+/// buffer was below both and the rate controller wound up into stall flapping.
+/// Kept in lockstep with `MAX_N_SLOTS` (rust/jasper-ring/src/layout.rs) and
+/// `JTS_RING_MAX_SLOTS` (c/jts-ring-ioplug/jts_ring_shm.h).
+pub const DEFAULT_SHM_RING_PATH: &str = "/dev/shm/jts-ring/content.ring";
+pub const DEFAULT_SHM_RING_SLOTS: u32 = 2;
+pub const MIN_SHM_RING_SLOTS: u32 = 2;
+pub const MAX_SHM_RING_SLOTS: u32 = 16;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShmRingConfig {
+    pub path: String,
+    pub n_slots: u32,
 }
 
 /// Final-output transport SHAPE — clock-domain shape, not DAC id. The
@@ -89,6 +118,7 @@ impl ContentBridgeMode {
         match self {
             Self::Direct => "direct",
             Self::RateMatch => "rate_match",
+            Self::ShmRing => "shm_ring",
         }
     }
 }
@@ -117,6 +147,10 @@ pub struct Config {
     pub dac_buffer_frames: u32,
     pub content_bridge_mode: ContentBridgeMode,
     pub content_bridge: ContentBridgeConfig,
+    /// PROTOTYPE SHM ring reader settings. `Some` iff
+    /// `content_bridge_mode == ShmRing`; `None` (the default) is byte-identical
+    /// to today. See `ShmRingConfig`.
+    pub shm_ring: Option<ShmRingConfig>,
     /// OPTIONAL local low-latency content pipe. When set, outputd reads
     /// CamillaDSP's post-DSP S32_LE stereo program from this FIFO at the DAC
     /// cadence instead of reading `content_pcm` from snd-aloop. This is the
@@ -250,15 +284,22 @@ impl Config {
             "rate_match" | "ratematch" | "rate-matched" | "rate_matched" => {
                 ContentBridgeMode::RateMatch
             }
+            // PROTOTYPE flag (latency/ring-proto-shm).
+            "shm_ring" | "shmring" | "ring" => ContentBridgeMode::ShmRing,
             other => {
                 anyhow::bail!(
-                    "JASPER_OUTPUTD_CONTENT_BRIDGE must be one of direct, rate_match; got {:?}",
+                    "JASPER_OUTPUTD_CONTENT_BRIDGE must be one of direct, rate_match, shm_ring; got {:?}",
                     other
                 )
             }
         };
+        // The rate-match bridge's ring/target/ppm knobs are only meaningful for
+        // RateMatch; shm_ring and Direct both use the safe default so validate
+        // does not run against them.
         let content_bridge = match content_bridge_mode {
-            ContentBridgeMode::Direct => default_content_bridge_config(),
+            ContentBridgeMode::Direct | ContentBridgeMode::ShmRing => {
+                default_content_bridge_config()
+            }
             ContentBridgeMode::RateMatch => {
                 let bridge = ContentBridgeConfig {
                     ring_frames: env_u32(
@@ -500,11 +541,12 @@ impl Config {
 
         if content_bridge_mode != ContentBridgeMode::Direct && !is_full_range_stereo_lr_sink {
             anyhow::bail!(
-                "JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match requires a full-range stereo \
+                "JASPER_OUTPUTD_CONTENT_BRIDGE={} requires a full-range stereo \
                  L/R sink: JASPER_OUTPUTD_SINK=single_alsa, JASPER_OUTPUTD_ACTIVE_CHANNELS=2, \
-                 and JASPER_OUTPUTD_ACTIVE_LANE unset (the rate-match bridge is a stereo-only \
-                 path; on an active-crossover lane it would rate-match full-range audio that \
-                 is then split to the tweeter)"
+                 and JASPER_OUTPUTD_ACTIVE_LANE unset (a content-bridge lane is a stereo-only \
+                 path; on an active-crossover lane it would feed full-range audio that \
+                 is then split to the tweeter)",
+                content_bridge_mode.as_str()
             );
         }
         if tts_socket_path.is_some() && !is_full_range_stereo_lr_sink {
@@ -581,6 +623,32 @@ impl Config {
             );
         }
 
+        // PROTOTYPE SHM ring reader (latency/ring-proto-shm). Some iff the flag
+        // selects it; the full-range-stereo predicate above already rejected
+        // ShmRing on a non-stereo/active/composite sink, and the local-pipe /
+        // dac-content guards (which require Direct) already made shm_ring
+        // mutually exclusive with those content sources. The remaining
+        // shm-ring-only validation is the slot count.
+        let shm_ring = match content_bridge_mode {
+            ContentBridgeMode::ShmRing => {
+                let n_slots = env_u32("JASPER_OUTPUTD_SHM_RING_SLOTS", DEFAULT_SHM_RING_SLOTS)?;
+                if !(MIN_SHM_RING_SLOTS..=MAX_SHM_RING_SLOTS).contains(&n_slots) {
+                    anyhow::bail!(
+                        "JASPER_OUTPUTD_SHM_RING_SLOTS={} must be between {} and {} \
+                         (2 = ping-pong prototype, 3 = degraded widening, 4 = headroom)",
+                        n_slots,
+                        MIN_SHM_RING_SLOTS,
+                        MAX_SHM_RING_SLOTS
+                    );
+                }
+                Some(ShmRingConfig {
+                    path: env_str("JASPER_OUTPUTD_SHM_RING_PATH", DEFAULT_SHM_RING_PATH),
+                    n_slots,
+                })
+            }
+            ContentBridgeMode::Direct | ContentBridgeMode::RateMatch => None,
+        };
+
         Ok(Self {
             backend,
             sink_mode,
@@ -597,6 +665,7 @@ impl Config {
             dac_buffer_frames,
             content_bridge_mode,
             content_bridge,
+            shm_ring,
             local_content_pipe,
             local_content_pipe_bytes,
             chip_ref_pcm: env_optional("JASPER_OUTPUTD_CHIP_REF_PCM"),
@@ -1742,6 +1811,173 @@ mod tests {
             || {
                 let err = Config::from_env().unwrap_err();
                 assert!(err.to_string().contains("must divide"));
+            },
+        );
+    }
+
+    // ----- PROTOTYPE shm_ring (latency/ring-proto-shm) -----
+
+    #[test]
+    fn shm_ring_is_off_by_default() {
+        // Default-off proof: an unset content bridge is Direct AND leaves NO
+        // shm-ring fields set. `defaults_are_safe_for_developer_once_runs`
+        // covers the broad default set; this pins the shm-ring half explicitly.
+        with_env(&[], || {
+            let cfg = Config::from_env().unwrap();
+            assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
+            assert!(cfg.shm_ring.is_none());
+        });
+        // The two established modes still parse unchanged, and neither sets
+        // shm_ring — the new variant did not perturb them.
+        with_env(&[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct"))], || {
+            let cfg = Config::from_env().unwrap();
+            assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
+            assert!(cfg.shm_ring.is_none());
+        });
+        with_env(
+            &[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match"))],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::RateMatch);
+                assert!(cfg.shm_ring.is_none());
+            },
+        );
+    }
+
+    #[test]
+    fn parses_shm_ring_with_defaults_and_overrides() {
+        with_env(
+            &[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring"))],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::ShmRing);
+                let ring = cfg.shm_ring.expect("shm_ring config present");
+                assert_eq!(ring.path, DEFAULT_SHM_RING_PATH);
+                assert_eq!(ring.n_slots, DEFAULT_SHM_RING_SLOTS);
+                // The rate-match knobs stay at their safe default (unused here).
+                assert_eq!(cfg.content_bridge, default_content_bridge_config());
+            },
+        );
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+                (
+                    "JASPER_OUTPUTD_SHM_RING_PATH",
+                    Some("/dev/shm/jts-ring/content.ring"),
+                ),
+                ("JASPER_OUTPUTD_SHM_RING_SLOTS", Some("3")),
+            ],
+            || {
+                let ring = Config::from_env().unwrap().shm_ring.unwrap();
+                assert_eq!(ring.path, "/dev/shm/jts-ring/content.ring");
+                assert_eq!(ring.n_slots, 3);
+            },
+        );
+    }
+
+    #[test]
+    fn shm_ring_accepts_aliases() {
+        for alias in ["shm_ring", "shmring", "ring"] {
+            with_env(&[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some(alias))], || {
+                assert_eq!(
+                    Config::from_env().unwrap().content_bridge_mode,
+                    ContentBridgeMode::ShmRing,
+                    "alias {alias}"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn shm_ring_rejects_out_of_range_slots() {
+        // 17 is one past the ceiling (raised 4 -> 16 on 2026-07-02 so the ALSA
+        // playback buffer clears CamillaDSP's target_level); 1 is below the
+        // floor; 0 trips the generic env_u32 > 0 guard.
+        for slots in ["1", "17", "0"] {
+            with_env(
+                &[
+                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+                    ("JASPER_OUTPUTD_SHM_RING_SLOTS", Some(slots)),
+                ],
+                || {
+                    let err = Config::from_env().unwrap_err().to_string();
+                    // "0" trips the generic env_u32 > 0 guard; 1 and 17 trip the
+                    // slot-range guard. Either way it must fail loud.
+                    assert!(
+                        err.contains("SHM_RING_SLOTS") || err.contains("must be > 0"),
+                        "slots={slots}: {err}"
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn shm_ring_accepts_deep_buffer_slot_counts() {
+        // Regression for the 4 -> 16 ceiling bump: the counts that give
+        // camilla's playback buffer real depth (>= target_level) must parse.
+        for slots in ["4", "8", "12", "16"] {
+            with_env(
+                &[
+                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+                    ("JASPER_OUTPUTD_SHM_RING_SLOTS", Some(slots)),
+                ],
+                || {
+                    let ring = Config::from_env()
+                        .unwrap_or_else(|e| panic!("slots={slots} should parse: {e}"))
+                        .shm_ring
+                        .expect("shm_ring config present");
+                    assert_eq!(ring.n_slots, slots.parse::<u32>().unwrap(), "slots={slots}");
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn shm_ring_requires_full_range_stereo_sink() {
+        // On an active-crossover 2-channel lane the shared stereo-only predicate
+        // must reject shm_ring by NAMING the required mode (allowlist phrasing),
+        // exactly like the rate-match bridge — feeding the ring to a lane that
+        // is split to the tweeter is unsafe.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("shm_ring"), "{err}");
+                assert!(err.contains("single_alsa"), "{err}");
+            },
+        );
+    }
+
+    #[test]
+    fn shm_ring_is_mutually_exclusive_with_other_content_sources() {
+        // local_content_pipe requires CONTENT_BRIDGE=direct, so pairing it with
+        // shm_ring fails loud (naming the required Direct mode).
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+                (
+                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE",
+                    Some("/run/jasper-outputd/content.pipe"),
+                ),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("CONTENT_BRIDGE=direct"), "{err}");
+            },
+        );
+        // dac_content_fifo likewise requires direct.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("CONTENT_BRIDGE=direct"), "{err}");
             },
         );
     }

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT,
@@ -14,15 +16,23 @@ from jasper.camilla_config_contract import (
 )
 from jasper.fanin_coupling import (
     COUPLING_LOOPBACK,
+    COUPLING_SHM_RING,
     COUPLING_TRANSPORT_PIPE,
     DEFAULT_FANIN_CAMILLA_PIPE,
+    DEFAULT_FANIN_RING_PATH,
+    DEFAULT_FANIN_RING_SLOTS,
     PIPE_WIRE_FORMAT,
     OUTPUTD_PIPE_PATH_ENV_VAR,
+    RING_CAPTURE_DEVICE,
+    RING_WIRE_FORMAT,
     capture_kwargs_for_coupling,
+    is_shm_ring_coupling,
     is_transport_pipe_coupling,
     resolve_coupling,
     resolve_pipe_path,
     resolve_outputd_pipe_path,
+    resolve_ring_path,
+    resolve_ring_slots,
 )
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
@@ -38,6 +48,91 @@ def test_resolve_coupling_accepts_explicit_transports_case_insensitive():
     assert resolve_coupling("loopback") == COUPLING_LOOPBACK
     assert resolve_coupling(" TRANSPORT_PIPE ") == COUPLING_TRANSPORT_PIPE
     assert resolve_coupling("Transport_Pipe") == COUPLING_TRANSPORT_PIPE
+    assert resolve_coupling(" SHM_RING ") == COUPLING_SHM_RING
+    assert resolve_coupling("Shm_Ring") == COUPLING_SHM_RING
+
+
+def test_is_shm_ring_coupling_predicate():
+    assert is_shm_ring_coupling("shm_ring") is True
+    assert is_shm_ring_coupling("loopback") is False
+    assert is_shm_ring_coupling("transport_pipe") is False
+    assert is_shm_ring_coupling(None) is False
+    # A typo must never flip on the ring capture.
+    assert is_shm_ring_coupling("ring") is False
+
+
+def test_shm_ring_capture_kwargs_are_alsa_device_s16le():
+    kwargs = capture_kwargs_for_coupling("shm_ring")
+    assert kwargs == {
+        "capture_device": RING_CAPTURE_DEVICE,
+        "capture_format": RING_WIRE_FORMAT,
+    }
+    # S16LE, NOT the transport_pipe S32 widening — an SHM ring has no page floor.
+    assert RING_WIRE_FORMAT == "S16_LE"
+    assert RING_CAPTURE_DEVICE == "jts_ring_capture"
+
+
+def test_shm_ring_ring_path_and_slots_resolve_with_fail_safe_defaults():
+    assert resolve_ring_path(None) == DEFAULT_FANIN_RING_PATH
+    assert resolve_ring_path("") == DEFAULT_FANIN_RING_PATH
+    assert resolve_ring_path("   ") == DEFAULT_FANIN_RING_PATH
+    assert resolve_ring_path("  /dev/shm/jts-ring/lab.ring ") == "/dev/shm/jts-ring/lab.ring"
+    assert DEFAULT_FANIN_RING_PATH == "/dev/shm/jts-ring/program.ring"
+
+    # Unset / empty / whitespace-only -> the validated default (matches Rust
+    # env_u32's empty-is-default handling).
+    assert resolve_ring_slots(None) == DEFAULT_FANIN_RING_SLOTS
+    assert resolve_ring_slots("") == DEFAULT_FANIN_RING_SLOTS
+    assert resolve_ring_slots("   ") == DEFAULT_FANIN_RING_SLOTS
+    assert resolve_ring_slots("  16 ") == 16
+    assert resolve_ring_slots("2") == 2
+    assert DEFAULT_FANIN_RING_SLOTS == 8
+    # A present-but-out-of-range or unparseable value FAILS LOUD (never a
+    # silent clamp) — repo doctrine, and it must agree with the Rust daemon,
+    # which anyhow::bail!s on the same range.
+    for bad in ("1", "0", "17", "100", "-1", "garbage", "8.5"):
+        with pytest.raises(ValueError):
+            resolve_ring_slots(bad)
+
+
+def test_coupling_capture_kwargs_from_env_shm_ring_returns_alsa_kwargs():
+    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
+
+    kwargs = coupling_capture_kwargs_from_env(
+        {"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"}
+    )
+    assert kwargs == {
+        "capture_device": RING_CAPTURE_DEVICE,
+        "capture_format": RING_WIRE_FORMAT,
+    }
+
+
+def test_shm_ring_armed_env_emits_ring_capture_device_s16le():
+    # SF-2: the shm_ring capture kwargs DO flow through
+    # coupling_capture_kwargs_from_env into the product emitters (transport_pipe
+    # precedent) — this is deliberate coherence-when-armed. When the lab flag is
+    # set in the env, a household /sound/ save emits a CamillaDSP config whose
+    # ALSA capture device is jts_ring_capture + S16_LE, so the emitted config and
+    # the running fan-in daemon name the SAME ring. (That device only RESOLVES
+    # once the arm script has installed the ioplug conf.d block; until then the
+    # flag stays unset, which is byte-identical to today — see
+    # test_coupling_capture_kwargs_from_env_default_is_empty.)
+    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
+
+    armed_kwargs = coupling_capture_kwargs_from_env(
+        {"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"}
+    )
+    cfg = emit_sound_config(SoundProfile(), profile_id="x", **armed_kwargs)
+
+    capture_block = cfg.split("  capture:\n", 1)[1].split("\n  playback:\n", 1)[0]
+    assert "type: Alsa" in capture_block
+    assert f'device: "{RING_CAPTURE_DEVICE}"' in capture_block
+    assert f"format: {RING_WIRE_FORMAT}" in capture_block
+    # It is NOT the transport_pipe RawFile/pipe shape, and NOT the dsnoop default.
+    assert "type: RawFile" not in capture_block
+    assert 'device: "plug:jasper_capture"' not in capture_block
+    # S16_LE native — no S32 widening (an SHM ring has no FIFO page floor).
+    assert RING_WIRE_FORMAT == "S16_LE"
 
 
 def test_resolve_coupling_unknown_and_old_fifo_fail_safe_to_loopback():

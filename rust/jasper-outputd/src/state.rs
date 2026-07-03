@@ -28,6 +28,7 @@ use crate::dac_content::DacContentMetrics;
 use crate::local_content_pipe::{LocalContentPipeMetrics, LOCAL_CONTENT_PIPE_FORMAT};
 use crate::tts::TtsMetrics;
 use jasper_clock::DllSnapshot;
+use jasper_ring::RingMetrics;
 use std::sync::OnceLock;
 
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
@@ -110,6 +111,24 @@ pub struct OutputdState {
     local_content_pipe_stale_drop_events: AtomicU64,
     local_content_pipe_stale_drop_bytes: AtomicU64,
     local_content_pipe_stale_drop_frames: AtomicU64,
+    // PROTOTYPE (latency/ring-proto-shm): SHM ping-pong ring reader health.
+    // `shm_ring_path` is Some iff JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring; the
+    // block is enabled:false with no further fields otherwise (default-off,
+    // zero noise). Counters mirror jasper_ring::RingMetrics.
+    shm_ring_path: Option<String>,
+    shm_ring_slots: AtomicU64,
+    shm_ring_slot_frames: AtomicU64,
+    shm_ring_attached: AtomicBool,
+    shm_ring_occupancy: AtomicU64,
+    shm_ring_frames_read: AtomicU64,
+    shm_ring_startup_empty_reads: AtomicU64,
+    shm_ring_empty_reads: AtomicU64,
+    shm_ring_epoch_resets: AtomicU64,
+    shm_ring_reader_resyncs: AtomicU64,
+    shm_ring_attach_resyncs: AtomicU64,
+    shm_ring_writer_pid: AtomicU64,
+    shm_ring_writer_heartbeat_age_ms: AtomicU64,
+    shm_ring_writer_alive: AtomicBool,
     dac_content_fifo: Option<String>,
     dac_content_channel: String,
     dac_content_highpass_hz: Option<f64>,
@@ -283,6 +302,33 @@ impl OutputdState {
             local_content_pipe_stale_drop_events: AtomicU64::new(0),
             local_content_pipe_stale_drop_bytes: AtomicU64::new(0),
             local_content_pipe_stale_drop_frames: AtomicU64::new(0),
+            // PROTOTYPE SHM ring reader health.
+            shm_ring_path: config.shm_ring.as_ref().map(|r| r.path.clone()),
+            shm_ring_slots: AtomicU64::new(
+                config
+                    .shm_ring
+                    .as_ref()
+                    .map(|r| r.n_slots as u64)
+                    .unwrap_or(0),
+            ),
+            shm_ring_slot_frames: AtomicU64::new(
+                config
+                    .shm_ring
+                    .as_ref()
+                    .map(|_| config.period_frames as u64)
+                    .unwrap_or(0),
+            ),
+            shm_ring_attached: AtomicBool::new(false),
+            shm_ring_occupancy: AtomicU64::new(0),
+            shm_ring_frames_read: AtomicU64::new(0),
+            shm_ring_startup_empty_reads: AtomicU64::new(0),
+            shm_ring_empty_reads: AtomicU64::new(0),
+            shm_ring_epoch_resets: AtomicU64::new(0),
+            shm_ring_reader_resyncs: AtomicU64::new(0),
+            shm_ring_attach_resyncs: AtomicU64::new(0),
+            shm_ring_writer_pid: AtomicU64::new(0),
+            shm_ring_writer_heartbeat_age_ms: AtomicU64::new(0),
+            shm_ring_writer_alive: AtomicBool::new(false),
             dac_content_fifo: config.dac_content_fifo.clone(),
             dac_content_channel: config.dac_content_channel.as_str().to_string(),
             dac_content_highpass_hz: config.dac_content_highpass_hz,
@@ -642,6 +688,42 @@ impl OutputdState {
             .store(metrics.stale_drop_frames, Ordering::Relaxed);
     }
 
+    /// PROTOTYPE (latency/ring-proto-shm): publish the SHM ring reader's
+    /// per-period metrics for `/state.shm_ring`. No-op cost when the ring is
+    /// unconfigured (the caller only calls this in the ShmRing arm).
+    pub fn mark_shm_ring(&self, metrics: RingMetrics) {
+        self.shm_ring_attached
+            .store(metrics.attached, Ordering::Relaxed);
+        self.shm_ring_occupancy
+            .store(metrics.occupancy, Ordering::Relaxed);
+        self.shm_ring_frames_read
+            .store(metrics.frames_read, Ordering::Relaxed);
+        self.shm_ring_startup_empty_reads
+            .store(metrics.startup_empty_reads, Ordering::Relaxed);
+        self.shm_ring_empty_reads
+            .store(metrics.empty_reads, Ordering::Relaxed);
+        self.shm_ring_epoch_resets
+            .store(metrics.epoch_resets, Ordering::Relaxed);
+        self.shm_ring_reader_resyncs
+            .store(metrics.reader_resyncs, Ordering::Relaxed);
+        self.shm_ring_attach_resyncs
+            .store(metrics.attach_resyncs, Ordering::Relaxed);
+        self.shm_ring_writer_pid
+            .store(metrics.writer_pid, Ordering::Relaxed);
+        self.shm_ring_writer_heartbeat_age_ms
+            .store(metrics.writer_heartbeat_age_ms, Ordering::Relaxed);
+        self.shm_ring_writer_alive
+            .store(metrics.writer_alive, Ordering::Relaxed);
+        if metrics.slot_frames != 0 {
+            self.shm_ring_slot_frames
+                .store(metrics.slot_frames as u64, Ordering::Relaxed);
+        }
+        if metrics.n_slots != 0 {
+            self.shm_ring_slots
+                .store(metrics.n_slots as u64, Ordering::Relaxed);
+        }
+    }
+
     pub fn mark_content_bridge(&self, metrics: ContentBridgeMetrics) {
         self.content_bridge_locked
             .store(metrics.locked, Ordering::Relaxed);
@@ -707,6 +789,8 @@ impl OutputdState {
             "source",
             if self.local_content_pipe.is_some() {
                 "local_pipe"
+            } else if self.shm_ring_path.is_some() {
+                "shm_ring"
             } else {
                 "alsa"
             },
@@ -1004,6 +1088,104 @@ impl OutputdState {
             .map(|s| *s)
             .unwrap_or_else(|_| DllSnapshot::idle());
         push_dll_rate_diff(&mut buf, "rate_diff", &cb_rate_diff);
+        buf.push('}');
+        buf.push(',');
+
+        // PROTOTYPE (latency/ring-proto-shm): SHM ping-pong ring reader health.
+        // enabled:false with no further fields when unconfigured (default-off,
+        // zero noise), full metrics when the flag armed it. `occupancy` is the
+        // live W-R depth; empty_reads split startup vs steady like the local
+        // pipe; writer_alive/pid/heartbeat_age surface the cross-process writer.
+        buf.push_str(r#""shm_ring":{"#);
+        match self.shm_ring_path.as_deref() {
+            Some(path) => {
+                push_kv_bool(&mut buf, "enabled", true);
+                buf.push(',');
+                push_kv_str(&mut buf, "path", path);
+                buf.push(',');
+                push_kv_bool(
+                    &mut buf,
+                    "attached",
+                    self.shm_ring_attached.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "slots",
+                    self.shm_ring_slots.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "slot_frames",
+                    self.shm_ring_slot_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "occupancy",
+                    self.shm_ring_occupancy.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "frames_read",
+                    self.shm_ring_frames_read.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "startup_empty_reads",
+                    self.shm_ring_startup_empty_reads.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "empty_reads",
+                    self.shm_ring_empty_reads.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "epoch_resets",
+                    self.shm_ring_epoch_resets.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "reader_resyncs",
+                    self.shm_ring_reader_resyncs.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "attach_resyncs",
+                    self.shm_ring_attach_resyncs.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_bool(
+                    &mut buf,
+                    "writer_alive",
+                    self.shm_ring_writer_alive.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "writer_pid",
+                    self.shm_ring_writer_pid.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "writer_heartbeat_age_ms",
+                    self.shm_ring_writer_heartbeat_age_ms
+                        .load(Ordering::Relaxed),
+                );
+            }
+            None => {
+                push_kv_bool(&mut buf, "enabled", false);
+            }
+        }
         buf.push('}');
         buf.push(',');
 
@@ -1867,6 +2049,7 @@ mod tests {
                 target_fill_frames: DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
                 max_adjust_ppm: DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
             },
+            shm_ring: None,
             local_content_pipe: None,
             local_content_pipe_bytes: 8192,
             chip_ref_pcm: None,
@@ -2113,6 +2296,92 @@ mod tests {
             r#""overflow_dropped_periods":1"#,
             r#""open_failures":4"#,
             r#""read_failures":5"#,
+        ] {
+            assert!(j.contains(needle), "missing {needle} in {j}");
+        }
+    }
+
+    #[test]
+    fn snapshot_json_shm_ring_disabled_is_quiet_and_enabled_is_full() {
+        // Default-off proof: no shm_ring config -> just enabled:false, zero
+        // noise, and the content source stays "alsa".
+        let state = OutputdState::new(&test_config());
+        let j = state.snapshot_json();
+        assert!(
+            j.contains(r#""shm_ring":{"enabled":false}"#),
+            "missing quiet disabled shm_ring block in {j}"
+        );
+        assert!(j.contains(r#""content":{"source":"alsa""#), "{j}");
+
+        // Enabled (flag armed): full daemon-truth block, content source flips.
+        let cfg = Config {
+            content_bridge_mode: ContentBridgeMode::ShmRing,
+            shm_ring: Some(crate::config::ShmRingConfig {
+                path: "/dev/shm/jts-ring/content.ring".to_string(),
+                n_slots: 2,
+            }),
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        // Empty-read (startup) period: silence path increments startup_empty.
+        state.mark_shm_ring(RingMetrics {
+            attached: true,
+            occupancy: 0,
+            frames_read: 0,
+            startup_empty_reads: 4,
+            empty_reads: 0,
+            epoch_resets: 0,
+            reader_resyncs: 0,
+            attach_resyncs: 1,
+            writer_pid: 0,
+            writer_heartbeat_age_ms: u64::MAX,
+            writer_alive: false,
+            n_slots: 2,
+            slot_frames: 1024,
+            ..RingMetrics::default()
+        });
+        let j = state.snapshot_json();
+        for needle in [
+            r#""content":{"source":"shm_ring""#,
+            r#""shm_ring":{"enabled":true"#,
+            r#""path":"/dev/shm/jts-ring/content.ring""#,
+            r#""attached":true"#,
+            r#""slots":2"#,
+            r#""slot_frames":1024"#,
+            r#""occupancy":0"#,
+            r#""startup_empty_reads":4"#,
+            r#""attach_resyncs":1"#,
+            r#""writer_alive":false"#,
+        ] {
+            assert!(j.contains(needle), "missing {needle} in {j}");
+        }
+
+        // A filled period with a live writer: occupancy + frames + liveness.
+        state.mark_shm_ring(RingMetrics {
+            attached: true,
+            occupancy: 1,
+            frames_read: 2048,
+            startup_empty_reads: 4,
+            empty_reads: 3,
+            epoch_resets: 1,
+            reader_resyncs: 0,
+            attach_resyncs: 1,
+            writer_pid: 4242,
+            writer_heartbeat_age_ms: 12,
+            writer_alive: true,
+            n_slots: 2,
+            slot_frames: 1024,
+            ..RingMetrics::default()
+        });
+        let j = state.snapshot_json();
+        for needle in [
+            r#""occupancy":1"#,
+            r#""frames_read":2048"#,
+            r#""empty_reads":3"#,
+            r#""epoch_resets":1"#,
+            r#""writer_pid":4242"#,
+            r#""writer_heartbeat_age_ms":12"#,
+            r#""writer_alive":true"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }

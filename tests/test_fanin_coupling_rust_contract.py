@@ -18,10 +18,18 @@ import pytest
 from jasper.camilla_config_contract import DEFAULT_CAPTURE_FORMAT
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
+    COUPLING_SHM_RING,
     COUPLING_TRANSPORT_PIPE,
     DEFAULT_FANIN_CAMILLA_PIPE,
+    DEFAULT_FANIN_RING_PATH,
+    DEFAULT_FANIN_RING_SLOTS,
     PIPE_PATH_ENV_VAR,
     PIPE_WIRE_FORMAT,
+    RING_PATH_ENV_VAR,
+    RING_SLOTS_ENV_VAR,
+    RING_SLOTS_MAX,
+    RING_SLOTS_MIN,
+    resolve_ring_slots,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -94,6 +102,112 @@ def test_coupling_transport_pipe_token_agrees():
         f"Rust coupling parse must accept the {COUPLING_TRANSPORT_PIPE!r} token"
     )
     assert 'Some("fifo") => Coupling::Fifo' not in text
+
+
+def test_coupling_shm_ring_token_agrees():
+    # Ring A: the Rust normalizer MUST accept the same shm_ring token Python's
+    # resolve_coupling accepts, or the daemon and the emitted/armed config
+    # disagree on the transport of the SHARED realtime capture.
+    text = _config_rs_text()
+    assert f'Some("{COUPLING_SHM_RING}") => Coupling::ShmRing' in text, (
+        f"Rust coupling parse must map the {COUPLING_SHM_RING!r} token to "
+        "Coupling::ShmRing"
+    )
+
+
+def test_shm_ring_env_var_names_and_defaults_agree():
+    # The Rust daemon resolves the ring path + slot count from the SAME env var
+    # names, with the SAME defaults, that Python fanin_coupling exposes — the
+    # n_slots <-> JASPER_FANIN_RING_SLOTS pairing is the drift axis.
+    text = _config_rs_text()
+    assert f'"{RING_PATH_ENV_VAR}"' in text, (
+        f"Rust must read the ring path from {RING_PATH_ENV_VAR}"
+    )
+    assert f'"{RING_SLOTS_ENV_VAR}"' in text, (
+        f"Rust must read the ring slots from {RING_SLOTS_ENV_VAR}"
+    )
+    assert f'"{DEFAULT_FANIN_RING_PATH}"' in text, (
+        f"Rust must default the ring path to {DEFAULT_FANIN_RING_PATH}"
+    )
+    # The default slot count is a bare integer literal in the env_u32 fallback.
+    assert f'"{RING_SLOTS_ENV_VAR}", {DEFAULT_FANIN_RING_SLOTS}' in text, (
+        f"Rust must default JASPER_FANIN_RING_SLOTS to {DEFAULT_FANIN_RING_SLOTS}"
+    )
+
+
+def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
+    # SF-1: the JASPER_FANIN_RING_SLOTS normalizer is a declared must-agree axis.
+    # BOTH sides fail loud on a present out-of-range value — no silent clamp,
+    # per repo doctrine. Otherwise a future arm script that resolved slots via the
+    # Python resolver could write an N-slot ioplug conf.d geometry while the
+    # daemon refuses to start on the same env (split-brain, fail-closed but
+    # maximally confusing on-Pi). This pins the exact agreed behavior:
+    #   unset      -> the same default (8) on both sides
+    #   2 and 16   -> accepted on both sides
+    #   17 (and other out-of-range) -> rejected on both sides
+
+    # Python side (runs live).
+    assert resolve_ring_slots(None) == DEFAULT_FANIN_RING_SLOTS
+    assert resolve_ring_slots(str(RING_SLOTS_MIN)) == RING_SLOTS_MIN
+    assert resolve_ring_slots(str(RING_SLOTS_MAX)) == RING_SLOTS_MAX
+    for bad in (RING_SLOTS_MAX + 1, RING_SLOTS_MIN - 1, 0, 100):
+        with pytest.raises(ValueError):
+            resolve_ring_slots(str(bad))
+
+    # Rust side (source pin — the crate does not build on macOS). The daemon
+    # bails on the same range with the same bound constants, and its from_env
+    # fail-loud is exercised by the Rust unit test in the CI rust job.
+    text = _config_rs_text()
+    assert f"pub const RING_SLOTS_MIN: u32 = {RING_SLOTS_MIN};" in text, (
+        "Rust RING_SLOTS_MIN must match the Python RING_SLOTS_MIN bound"
+    )
+    assert f"pub const RING_SLOTS_MAX: u32 = {RING_SLOTS_MAX};" in text, (
+        "Rust RING_SLOTS_MAX must match the Python RING_SLOTS_MAX bound"
+    )
+    # The out-of-range guard bails (anyhow::bail!), it does NOT clamp.
+    assert "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {" in text, (
+        "Rust must range-check JASPER_FANIN_RING_SLOTS against the shared bounds"
+    )
+    guard = text.split(
+        "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {", 1
+    )[1].split("}", 1)[0]
+    assert "anyhow::bail!" in guard, (
+        "Rust out-of-range ring slots must FAIL LOUD (anyhow::bail!), not clamp"
+    )
+    assert "clamp" not in guard.lower(), "Rust must not silently clamp ring slots"
+
+
+def test_shm_ring_status_block_emitted_by_rust_state():
+    # The Rust STATUS snapshot emits the ring counter block under shm_ring —
+    # the /state.transport + ring:{...} contract the doctor/dashboard read.
+    text = _state_rs_text()
+    assert '"shm_ring"' in text, "Rust STATUS must echo transport shm_ring"
+    assert '"ring":{' in text, "Rust STATUS must emit a ring block"
+    for field in (
+        "path",
+        "slots",
+        "occupancy",
+        "published",
+        "full_waits",
+        "drops",
+        "mirror_frames",
+        "mirror_drops",
+    ):
+        assert f'"{field}"' in text, f"ring block missing {field!r} key"
+
+
+def test_shm_ring_mixer_publishes_slots_and_keeps_mirror():
+    # The mixer's Output::Ring arm publishes period_frames/128 slots and keeps
+    # the lossy aloop mirror (write_music_only-shaped, never the pacer).
+    text = _mixer_rs_text()
+    assert "Output::Ring" in text
+    assert "RingWriter" in text
+    assert ".publish(" in text
+    # The mirror uses the same write_music_only side-tap shape as the multiroom
+    # tap, so it can never back-pressure the loop.
+    assert "write_music_only(" in text
+    # The 128-frame slot is pinned via the shared RING_SLOT_FRAMES constant.
+    assert "RING_SLOT_FRAMES" in text
 
 
 def test_wire_format_is_s32le_on_both_sides():

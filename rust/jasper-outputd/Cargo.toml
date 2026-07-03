@@ -19,6 +19,10 @@ jasper-clock = { path = "../jasper-clock" }
 # the usbsink C++ binding and this daemon share one algorithm). Pure, no ALSA;
 # itself depends on jasper-clock for the control law.
 jasper-resampler = { path = "../jasper-resampler" }
+# PROTOTYPE (latency/ring-proto-shm): the SPSC SHM ping-pong ring reader for the
+# JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring content source. Pure (mmap via libc, no
+# ALSA), default-off — the reader is only constructed when the flag selects it.
+jasper-ring = { path = "../jasper-ring" }
 # Same ALSA wrapper used by jasper-fanin. outputd's ALSA backend reads
 # Camilla's post-DSP loopback lane and writes the final DAC directly.
 alsa = "0.11"

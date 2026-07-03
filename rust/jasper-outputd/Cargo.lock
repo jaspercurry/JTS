@@ -64,6 +64,7 @@ dependencies = [
  "anyhow",
  "jasper-clock",
  "jasper-resampler",
+ "jasper-ring",
  "jasper-tts-protocol",
  "libc",
  "signal-hook",
@@ -74,6 +75,13 @@ name = "jasper-resampler"
 version = "0.1.0"
 dependencies = [
  "jasper-clock",
+]
+
+[[package]]
+name = "jasper-ring"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

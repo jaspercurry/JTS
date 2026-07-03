@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build artifacts from the Makefile (host `make test`/`bench`, Pi `make plugin`).
+# The prototype's .so is a leaf artifact installed by scripts/ring-proto/
+# build-on-pi.sh straight to the ALSA plugin dir; nothing here is committed.
+test_ring_core
+ring_writer_bench
+ring_reader_bench
+*.so
+*.o
