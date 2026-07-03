@@ -29,7 +29,7 @@
 //!
 //! - **Hand-rolled JSON on the STATUS emit side, no `serde`.** Same
 //!   reasoning as `xrun_log.rs`: the response shape is small and
-//!   stable, so `status_body` builds it by hand. (`serde_json` IS a
+//!   stable, so `snapshot_json` builds it by hand. (`serde_json` IS a
 //!   crate dependency now — `impulse_tap.rs`'s `TapConfig::from_arm_body`
 //!   needs the value model to PARSE an untrusted arm-body object — but
 //!   this STATUS response deliberately does not use it: hand-rolling one

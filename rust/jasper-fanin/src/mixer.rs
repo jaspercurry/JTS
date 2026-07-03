@@ -2245,10 +2245,8 @@ fn recover_direct_xrun(
         frames: period_frames as u32,
         count,
     });
-    if pcm.try_recover(error, true).is_ok() {
-        if pcm.state() != State::Running {
-            let _ = pcm.start();
-        }
+    if pcm.try_recover(error, true).is_ok() && pcm.state() != State::Running {
+        let _ = pcm.start();
     }
     if let Some(r) = input.resampler.as_mut() {
         r.reset();

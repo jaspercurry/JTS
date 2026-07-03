@@ -488,17 +488,8 @@ impl TapState {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// Render the tap status as a JSON object body (compact, trailing newline),
-    /// for `GET /tap`. `cfg` supplies the non-atomic params (path, refractory
-    /// ms, max_events); the live counters/threshold/deadline come from `self`.
-    /// Rendered by a non-audio thread (listener/publisher), so reading `cfg`
-    /// under its Mutex there is fine.
-    pub fn status_body(&self, cfg: &TapConfig) -> String {
-        format!("{}\n", self.status_fragment(cfg))
-    }
-
     /// Render just the tap object (no outer key, no trailing newline) for
-    /// embedding in the daemon's `/status` and `state.json` under `"tap"`.
+    /// embedding in the control-socket `STATUS` reply under `"tap"`.
     pub fn status_fragment(&self, cfg: &TapConfig) -> String {
         format!(
             concat!(
@@ -673,14 +664,6 @@ pub fn detection_monotonic_ns(
     let remaining = (frames_in_period.saturating_sub(sample_offset_frames)) as i128;
     let back_ns = remaining * NANOS_PER_SEC / (sample_rate as i128);
     period_read_ns - back_ns
-}
-
-/// Convert a ring fill measured in periods into frames, for the JSONL
-/// `ring_fill_frames` field. The live state tracks fill in periods; the tap
-/// records frames = periods × period_frames.
-#[inline]
-pub fn ring_fill_frames(fill_periods: usize, period_frames: u32) -> u64 {
-    (fill_periods as u64) * (period_frames as u64)
 }
 
 /// What the publisher should do with a drained [`TapEvent`], decided by
@@ -1031,13 +1014,6 @@ mod tests {
     }
 
     #[test]
-    fn ring_fill_frames_multiplies_periods_by_frames() {
-        assert_eq!(ring_fill_frames(2, 256), 512);
-        assert_eq!(ring_fill_frames(0, 256), 0);
-        assert_eq!(ring_fill_frames(3, 128), 384);
-    }
-
-    #[test]
     fn tap_event_jsonl_shape_is_stable() {
         let ev = TapEvent {
             monotonic_ns: 123_456_789_012,
@@ -1274,11 +1250,11 @@ mod tests {
     }
 
     #[test]
-    fn status_body_reflects_armed_state_and_config() {
+    fn status_fragment_reflects_armed_state_and_config() {
         let state = TapState::default();
         // Disarmed default.
         let cfg = TapConfig::default();
-        let disarmed: Value = serde_json::from_str(&state.status_body(&cfg)).unwrap();
+        let disarmed: Value = serde_json::from_str(&state.status_fragment(&cfg)).unwrap();
         assert_eq!(disarmed["armed"].as_bool(), Some(false));
         assert_eq!(disarmed["events_written"].as_u64(), Some(0));
         assert_eq!(disarmed["auto_disarm_at_epoch_ms"].as_u64(), Some(0));
@@ -1295,7 +1271,7 @@ mod tests {
         };
         state.arm(&cfg, 48_000, 5_000);
         state.note_written();
-        let armed: Value = serde_json::from_str(&state.status_body(&cfg)).unwrap();
+        let armed: Value = serde_json::from_str(&state.status_fragment(&cfg)).unwrap();
         assert_eq!(armed["armed"].as_bool(), Some(true));
         assert_eq!(armed["events_written"].as_u64(), Some(1));
         assert!((armed["threshold"].as_f64().unwrap() - 0.4).abs() < 1e-3);
