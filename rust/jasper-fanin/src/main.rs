@@ -28,6 +28,7 @@
 mod config;
 mod fifo;
 mod host_clock;
+mod host_compliance;
 mod impulse_tap;
 mod lane_resampler;
 mod loudness;

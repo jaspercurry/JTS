@@ -40,6 +40,9 @@ _FANIN_LANE_RESAMPLER_RS = (
 )
 _FANIN_MIXER_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer.rs"
 _FANIN_STATE_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "state.rs"
+_FANIN_HOST_COMPLIANCE_RS = (
+    _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_compliance.rs"
+)
 
 
 def _config_rs_text() -> str:
@@ -70,6 +73,12 @@ def _state_rs_text() -> str:
     if not _FANIN_STATE_RS.exists():
         pytest.skip(f"rust source not present: {_FANIN_STATE_RS}")
     return _FANIN_STATE_RS.read_text(encoding="utf-8")
+
+
+def _host_compliance_rs_text() -> str:
+    if not _FANIN_HOST_COMPLIANCE_RS.exists():
+        pytest.skip(f"rust source not present: {_FANIN_HOST_COMPLIANCE_RS}")
+    return _FANIN_HOST_COMPLIANCE_RS.read_text(encoding="utf-8")
 
 
 def test_default_pipe_path_agrees_between_rust_and_python():
@@ -298,22 +307,83 @@ def test_cushion_decay_snaps_back_to_ceiling_on_lock_loss():
     )
 
 
+def test_host_compliance_status_block_and_wiring():
+    """The DEFAULT-OFF host-compliance persistence surfaces `resampler.compliance`
+    and rides the cushion-decay flag (no new top-level feature gate).
+
+    The prime-at-floor + one-strike-revalidation feature persists a proof to a
+    fan-in-owned JSON file, primes the decay at its floor when a valid proof
+    exists, and revokes on the per-session probe fail / DLL demotion / early
+    unlock. STATUS must additively expose the three fields the operator watches
+    (`flag_present` / `proved_at` / `revoked_reason_last`); the mixer must service
+    it once per period; and the persistence must be gated behind
+    `input_resampler_cushion_decay_enabled`, not a separate flag.
+    """
+    config_text = _config_rs_text()
+    mixer_text = _mixer_rs_text()
+    state_text = _state_rs_text()
+    resampler_text = _lane_resampler_rs_text()
+
+    # 1. STATUS surfaces the three additive compliance fields under resampler.
+    assert '"compliance":{' in state_text
+    for field in ('"flag_present"', '"proved_at"', '"revoked_reason_last"'):
+        assert field in state_text, f"STATUS resampler.compliance must carry {field}"
+
+    # 2. The mixer services the compliance state once per period.
+    assert "fn service_host_compliance(" in mixer_text
+    assert "self.service_host_compliance(" in mixer_text, (
+        "the mixer step must call service_host_compliance once per render period"
+    )
+
+    # 3. Persistence rides the cushion-decay flag — NO separate top-level gate.
+    assert "config.input_resampler_cushion_decay_enabled" in mixer_text, (
+        "prime-at-floor / persistence must be gated behind the cushion-decay flag"
+    )
+
+    # 4. The prime-at-floor primitive exists on the resampler and is invoked only
+    #    from the gated build helper.
+    assert "pub fn prime_decay_at_floor(" in resampler_text
+    assert "resampler.prime_decay_at_floor()" in mixer_text, (
+        "the gated build helper must prime the decay at the floor for a valid proof"
+    )
+
+    # 5. The persistence path is a config knob defaulting under the fan-in state
+    #    dir (already-owned write path — no new StateDirectory / privilege grant).
+    assert "JASPER_FANIN_HOST_COMPLIANCE_PATH" in config_text
+    assert "/var/lib/jasper/fanin/host_compliance.json" in _host_compliance_rs_text(), (
+        "the default compliance path must be a sibling of the xrun log under the "
+        "fan-in state dir (the already-owned ReadWritePaths=/var/lib/jasper posture)"
+    )
+
+    # 6. The write/revoke journal events are present (observability contract).
+    for event in (
+        "event=fanin.host_compliance.written",
+        "event=fanin.host_compliance.revoked",
+        "event=fanin.host_compliance.prime_at_floor",
+    ):
+        assert event in mixer_text, f"mixer must emit {event}"
+
+
 def test_servo_thread_exit_clears_reverse_signals():
     """A stopped `fanin-host-clock` servo thread must clear its REVERSE signals.
 
     The exit path (graceful shutdown OR caught panic) neutralizes the pitch ctl so
     the host free-runs. It must ALSO clear the outer-loop signals the mixer's decay
-    tick reads (`ladder_l0`, `commanded_milli_ppm`) — otherwise a dead thread
-    leaves `ladder_l0=true` frozen, and the decay engine keeps stepping the held
-    target toward the floor with no live DLL pinning the fill, driving the
-    thin-cushion free-run churn loop until a daemon restart. Both stores sit AFTER
-    the `catch_unwind` block so they run on both exit paths.
+    tick + compliance revalidation read (`ladder_l0`, `commanded_milli_ppm`, and —
+    since the host-compliance persistence landed — `ladder_l2`, `probe_result_code`,
+    `probe_response_ratio_milli`). Otherwise a dead thread leaves `ladder_l0=true`
+    frozen (driving the thin-cushion free-run churn loop) OR a stale `ladder_l2=true`
+    / probe FAIL that would make the compliance revalidation spuriously REVOKE a
+    proof for a session whose ladder was fine when the daemon was told to stop —
+    revocation must be driven only by a LIVE L2/probe-fail signal, not by the servo
+    shutting down. All stores sit AFTER the `catch_unwind` block so they run on both
+    exit paths.
     """
     host_clock_text = (
         _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_clock.rs"
     ).read_text(encoding="utf-8")
-    # The exit-neutralize block ends the thread body; both reverse-signal clears
-    # follow the actuator neutralize (so they run on graceful + caught-panic exit).
+    # The exit-neutralize block ends the thread body; every reverse-signal clear
+    # follows the actuator neutralize (so they run on graceful + caught-panic exit).
     exit_start = host_clock_text.index('neutralize_for_exit("shutdown")')
     exit_tail = host_clock_text[exit_start:]
     assert "signals.ladder_l0.store(false, Ordering::Relaxed)" in exit_tail, (
@@ -322,6 +392,22 @@ def test_servo_thread_exit_clears_reverse_signals():
     )
     assert "signals.commanded_milli_ppm.store(0, Ordering::Relaxed)" in exit_tail, (
         "servo-thread exit must clear commanded_milli_ppm"
+    )
+    # The three compliance-revalidation reverse signals must clear on exit too, so a
+    # stopped servo cannot leave a stale L2 / probe FAIL that revokes a good proof.
+    assert "signals.ladder_l2.store(false, Ordering::Relaxed)" in exit_tail, (
+        "servo-thread exit must clear ladder_l2 so a dead thread cannot leave the "
+        "compliance revalidation reading a stale l2=true (→ spurious revoke)"
+    )
+    assert "signals.probe_result_code.store(" in exit_tail, (
+        "servo-thread exit must clear probe_result_code (→ ProbeResult::None) so a "
+        "dead thread cannot leave a stale probe FAIL that revokes a good proof"
+    )
+    assert "ProbeResult::None" in exit_tail, (
+        "the probe_result_code clear must store the None verdict, not a stale value"
+    )
+    assert "signals.probe_response_ratio_milli.store(" in exit_tail, (
+        "servo-thread exit must clear probe_response_ratio_milli alongside the verdict"
     )
 
 

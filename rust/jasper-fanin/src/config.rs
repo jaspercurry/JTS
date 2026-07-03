@@ -266,14 +266,25 @@ pub struct Config {
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES`.
     pub input_resampler_cushion_decay_floor_frames: u32,
     /// Frames dropped from the held target per decay step. Fail-loud range
-    /// `1..=64`; default 16 (a gentle ~0.33 ms step, well inside the DLL's
-    /// ±adjust authority so a step never forces a trim glitch). Env:
+    /// `1..=64`; default 18 (~0.375 ms / ~375 ppm demand — 25 ppm inside the
+    /// ±400 ppm cascade guard, so a step never perturbs the DLL cascade; a touch
+    /// faster than the old 16 to shorten the descent, well short of the
+    /// hardware-refuted 64 that rails the ±500 ppm inner authority). Env:
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES`.
     pub input_resampler_cushion_decay_step_frames: u32,
     /// Wall interval between decay steps, in ms (converted to render periods by
     /// the lane). Fail-loud range `250..=10000`; default 1000. Env:
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS`.
     pub input_resampler_cushion_decay_interval_ms: u32,
+
+    /// Path to the host-compliance persistence record (the prime-at-floor
+    /// authority). A sibling of the xrun log under the fan-in state dir, which the
+    /// daemon already owns and writes (root, `ReadWritePaths=/var/lib/jasper`) —
+    /// no new privilege grant. Only CONSULTED when the cushion decay is armed
+    /// (persistence rides that flag; there is no separate top-level gate). Env:
+    /// `JASPER_FANIN_HOST_COMPLIANCE_PATH`. Default
+    /// `/var/lib/jasper/fanin/host_compliance.json`.
+    pub host_compliance_path: String,
 
     /// DEFAULT-OFF one-shot AUTO-TRIM (PoC standing-fill trim). When `true`, the
     /// mixer schedules ONE `TRIM` per armed resampler lane a couple seconds
@@ -596,13 +607,22 @@ impl Config {
                 cushion_decay_ceiling,
             );
         }
+        // Default 18 (not 16): the descent is paced by step / interval, so a
+        // slightly larger step shortens the ~2.5-min floor descent proportionally
+        // (18 vs 16 ≈ 12 % faster). 18 frames per 1000 ms ≈ 375 ppm of demanded
+        // rate — 25 ppm INSIDE the ±400 ppm cascade-stability guard, so the decay
+        // still pauses before it can perturb the DLL cascade. The hardware pass
+        // (jts.local 2026-07-03) REFUTED 64 (rails the ±500 ppm inner authority);
+        // 18 is the measured sweet spot that speeds the descent without touching
+        // the inner loop. Range floor stays 1 (a gentle single-frame step);
+        // ceiling stays 64 so a lab operator can still push it (at their own risk).
         let input_resampler_cushion_decay_step_frames =
-            env_u32("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES", 16)?;
+            env_u32("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES", 18)?;
         if !(1..=64).contains(&input_resampler_cushion_decay_step_frames) {
             anyhow::bail!(
                 "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES={} out of range 1..=64 \
-                 (a gentle per-step frame drop; 16 ≈ 0.33 ms stays inside the DLL's \
-                 ±adjust authority so a step never forces a trim glitch)",
+                 (a gentle per-step frame drop; 18 ≈ 0.375 ms / ~375 ppm demand stays \
+                 25 ppm inside the ±400 ppm cascade guard so a step never perturbs the DLL)",
                 input_resampler_cushion_decay_step_frames,
             );
         }
@@ -615,6 +635,14 @@ impl Config {
                 input_resampler_cushion_decay_interval_ms,
             );
         }
+        // The host-compliance persistence record path (prime-at-floor authority).
+        // No range/validation: a bad path simply fails the atomic write/read
+        // best-effort (logged, never fatal), degrading to today's always-descend
+        // behaviour.
+        let host_compliance_path = env_str(
+            "JASPER_FANIN_HOST_COMPLIANCE_PATH",
+            crate::host_compliance::DEFAULT_COMPLIANCE_PATH,
+        );
 
         // DEFAULT-OFF one-shot AUTO-TRIM (PoC standing-fill trim). Fail-safe:
         // only the exact literal `enabled` (case-insensitive) arms it; unset /
@@ -836,6 +864,7 @@ impl Config {
             input_resampler_cushion_decay_floor_frames,
             input_resampler_cushion_decay_step_frames,
             input_resampler_cushion_decay_interval_ms,
+            host_compliance_path,
             auto_trim_enabled,
             usb_direct_enabled,
             usb_direct_device,
@@ -1062,7 +1091,7 @@ mod tests {
                 assert_eq!(cfg.input_resampler_ring_frames, 0);
                 // Post-lock cushion DECAY is DEFAULT-OFF (latency lever 1); its
                 // knobs default to the tightest-safe floor (target + 32-frame DLL
-                // margin), a 16-frame gentle step, and a 1 s interval.
+                // margin), an 18-frame gentle step, and a 1 s interval.
                 assert!(
                     !cfg.input_resampler_cushion_decay_enabled,
                     "cushion decay must default OFF"
@@ -1071,8 +1100,36 @@ mod tests {
                     cfg.input_resampler_cushion_decay_floor_frames,
                     512 + CUSHION_DECAY_FLOOR_MARGIN_FRAMES
                 );
-                assert_eq!(cfg.input_resampler_cushion_decay_step_frames, 16);
+                assert_eq!(cfg.input_resampler_cushion_decay_step_frames, 18);
                 assert_eq!(cfg.input_resampler_cushion_decay_interval_ms, 1000);
+                // Cascade-margin invariant (pins the 375-vs-400 ppm claim documented
+                // in config.rs, .env.example, and the HANDOFF): the default decay
+                // step's demanded rate (step_frames dropped over interval_ms, as a
+                // fraction of the frames that pass in that interval) must sit INSIDE
+                // the DLL cascade-stability guard, or a settled decay step could
+                // perturb the inner loop. 18 frames / 1000 ms @ 48 kHz = 375 ppm,
+                // 25 ppm inside the 400 ppm guard. A future default-step bump or
+                // guard lowering that inverts this margin fails here.
+                let step_demand_ppm = (cfg.input_resampler_cushion_decay_step_frames as f64)
+                    / ((cfg.input_resampler_cushion_decay_interval_ms as f64 / 1000.0)
+                        * cfg.sample_rate as f64)
+                    * 1_000_000.0;
+                assert!(
+                    (step_demand_ppm - 375.0).abs() < 1.0,
+                    "default step demand is ~375 ppm, got {step_demand_ppm}"
+                );
+                assert!(
+                    step_demand_ppm < crate::mixer::CUSHION_DECAY_CASCADE_GUARD_PPM,
+                    "default decay step demand {step_demand_ppm} ppm must stay inside the \
+                     {} ppm cascade guard",
+                    crate::mixer::CUSHION_DECAY_CASCADE_GUARD_PPM
+                );
+                // Host-compliance persistence path defaults under the fan-in state
+                // dir (sibling of the xrun log, already-owned write path).
+                assert_eq!(
+                    cfg.host_compliance_path,
+                    "/var/lib/jasper/fanin/host_compliance.json"
+                );
                 // One-shot AUTO-TRIM is DEFAULT-OFF (manual TRIM is the PoC
                 // path; auto is the opt-in convenience).
                 assert!(!cfg.auto_trim_enabled, "auto-trim must default OFF");

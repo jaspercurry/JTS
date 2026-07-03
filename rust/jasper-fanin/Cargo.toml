@@ -63,6 +63,16 @@ anyhow = "1"
 # and Slice=jts-audio.slice MemorySwapMax=0).
 libc = "0.2"
 
+# Derive macros for the host-compliance persistence record
+# (src/host_compliance.rs `HostCompliance`). serde + serde_derive are ALREADY in
+# Cargo.lock transitively via serde_json below; the `derive` feature only
+# activates the existing serde_derive proc-macro, so `cargo build --locked` needs
+# no lock churn. The compliance file is a correctness-critical persisted record
+# (the prime-at-floor authority), so it uses serde (de)serialization rather than a
+# hand-rolled parser — same reasoning the impulse-tap arm-body parse uses
+# serde_json below.
+serde = { version = "1", features = ["derive"] }
+
 # JSON parsing for the relocated impulse-tap arm-body endpoint
 # (src/impulse_tap.rs `TapConfig::from_arm_body`). NOTE: state.rs's STATUS
 # response is still hand-rolled JSON with NO serde — the "no serde_json" note

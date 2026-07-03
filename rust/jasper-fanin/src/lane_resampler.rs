@@ -137,6 +137,10 @@ pub struct LaneResamplerObservability {
     pub decay_active: Arc<AtomicBool>,
     pub decay_floor_frames: u64,
     pub decay_frozen_reason: Arc<AtomicU64>,
+    /// DEFAULT-OFF host-compliance persistence observability (STATUS
+    /// `resampler.compliance`). `Some` only when the feature is armed on this
+    /// lane; `None` (no block) otherwise — byte-identical to today.
+    pub compliance: Option<crate::host_compliance::HostComplianceObservability>,
 }
 
 /// A per-input windowed-sinc resampler that turns a free-running (host-clocked)
@@ -216,6 +220,12 @@ pub struct LaneResampler {
     /// Decay observability atomics, republished on every decay tick.
     decay_active: Arc<AtomicBool>,
     decay_frozen_reason: Arc<AtomicU64>,
+    /// DEFAULT-OFF host-compliance persistence observability (STATUS
+    /// `resampler.compliance`). `Some` only when the mixer armed the feature on
+    /// this lane and injected the shared handles via
+    /// [`set_compliance_observability`](Self::set_compliance_observability); the
+    /// mixer is the sole writer, this only carries the handles for STATUS.
+    compliance: Option<crate::host_compliance::HostComplianceObservability>,
 }
 
 impl LaneResampler {
@@ -327,7 +337,18 @@ impl LaneResampler {
             held_target_frames: Arc::new(AtomicU64::new(ceiling)),
             decay_active: Arc::new(AtomicBool::new(false)),
             decay_frozen_reason: Arc::new(AtomicU64::new(DecayFrozenReason::NONE_CODE)),
+            compliance: None,
         })
+    }
+
+    /// Inject the shared host-compliance observability handles so STATUS can
+    /// render `resampler.compliance`. Called once by the mixer after it seeds the
+    /// persistence state. Idempotent-ish: a later call replaces the handles.
+    pub fn set_compliance_observability(
+        &mut self,
+        obs: crate::host_compliance::HostComplianceObservability,
+    ) {
+        self.compliance = Some(obs);
     }
 
     /// The current published ring fill in frames — the same value STATUS shows,
@@ -360,6 +381,7 @@ impl LaneResampler {
             decay_active: Arc::clone(&self.decay_active),
             decay_floor_frames: self.decay.floor(),
             decay_frozen_reason: Arc::clone(&self.decay_frozen_reason),
+            compliance: self.compliance.as_ref().map(|c| c.clone_handles()),
         }
     }
 
@@ -653,6 +675,67 @@ impl LaneResampler {
         );
     }
 
+    /// Prime the post-lock cushion decay directly at its floor (the persisted
+    /// host-compliance prime-at-floor entry). Called at lane build time, BEFORE
+    /// the first render period, when the mixer has a VALID persisted proof whose
+    /// recorded floor matches this lane's live floor. Seeds the held target at the
+    /// floor so the first `try_lock` seats the cursor shallow (skipping the
+    /// ~2.5-min descent) and re-publishes the held-target + decay atomics so
+    /// STATUS and the outer DLL setpoint read the floor from period one. A
+    /// no-op-cheap when decay is disabled (the held target stays at the ceiling).
+    pub fn prime_decay_at_floor(&mut self) {
+        self.decay.prime_at_floor();
+        self.held_target_frames
+            .store(self.decay.held(), Ordering::Relaxed);
+        self.decay_active
+            .store(self.decay.active(), Ordering::Relaxed);
+        self.decay_frozen_reason.store(
+            DecayFrozenReason::code(self.decay.frozen_reason()),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// The configured decay floor (total frames) — the geometry a persisted
+    /// compliance proof records and is validated against. Reads the same value
+    /// STATUS shows as `decay.floor_frames`.
+    pub fn decay_floor_frames(&self) -> u64 {
+        self.decay.floor()
+    }
+
+    /// Whether the decay is at (or below) its floor as of the last tick — the
+    /// compliance proof's "descent complete" signal. True iff the decay's frozen
+    /// reason is `AtFloor` (which includes the prime-at-floor entry). Always
+    /// `false` when decay is disabled (the machine never reaches AtFloor).
+    pub fn decay_at_floor(&self) -> bool {
+        self.decay.frozen_reason() == Some(DecayFrozenReason::AtFloor)
+    }
+
+    /// The cumulative underfill-unlock count — the compliance proof's churn gauge
+    /// (it watches the DELTA across the settle window) and the mixer's early-
+    /// session revalidation trigger. A single relaxed load (no Arc clone).
+    pub fn unlock_count(&self) -> u64 {
+        self.unlock_count.load(Ordering::Relaxed)
+    }
+
+    /// Whether the lane is currently locked (rendering real DAC-paced audio). The
+    /// mixer's host-compliance service reads this to detect lock edges (a fresh
+    /// lock begins a session; a lock loss ends it) without reaching into the
+    /// resampler's private `locked` field. A plain field read.
+    pub fn is_locked(&self) -> bool {
+        self.locked
+    }
+
+    /// Snap the decayed held target back to the acquisition ceiling NOW — the
+    /// host-compliance REVALIDATION escape. When a floor-primed session fails
+    /// revalidation (probe fail / DLL demotion / early underfill unlock) the mixer
+    /// calls this to abandon the (evidently wrong) floor prime and re-seat deep,
+    /// exactly the existing snap-back primitive the lock-loss paths use. Raising a
+    /// setpoint needs no drop (the fill refills from input); this only lifts the
+    /// held target + republishes the gauges. No-op-cheap when decay is off.
+    pub fn snap_decay_to_ceiling(&mut self) {
+        self.snap_decay_back(DecayFrozenReason::Unlocked);
+    }
+
     fn render_silence(&mut self, out: &mut [i16]) {
         out.fill(0);
         self.silence_frames
@@ -944,6 +1027,15 @@ mod decay {
         periods_since_step: u64,
         /// Last computed reason; `None` while actively decaying.
         frozen_reason: Option<DecayFrozenReason>,
+        /// PRIME-AT-FLOOR latch: `true` between [`prime_at_floor`] and the first
+        /// period this machine sees the lane LOCKED. While set, the not-yet-locked
+        /// prime periods keep the held target at the FLOOR instead of snapping it
+        /// up to the ceiling — so the imminent `try_lock` seats the cursor at the
+        /// floor depth (the whole point of persisted compliance). Cleared the first
+        /// time `tick` observes `locked`; after that, any lock LOSS snaps back to
+        /// the ceiling normally (a real re-acquisition must start deep). Always
+        /// `false` on a machine that was never primed.
+        floor_prime_pending: bool,
     }
 
     impl CushionDecay {
@@ -975,6 +1067,7 @@ mod decay {
                 } else {
                     None
                 },
+                floor_prime_pending: false,
             }
         }
 
@@ -1006,9 +1099,42 @@ mod decay {
             self.held = self.ceiling;
             self.stable_periods = 0;
             self.periods_since_step = 0;
+            // A snap-back is a hard discontinuity: whatever prime-at-floor state we
+            // were in is abandoned. Clear the latch so the raised ceiling actually
+            // takes effect (the whole point of a snap-back is to re-acquire deep).
+            self.floor_prime_pending = false;
             if self.enabled {
                 self.frozen_reason = Some(reason);
             }
+        }
+
+        /// Prime the machine directly at the floor — the persisted-host-compliance
+        /// prime-at-floor entry (the proof from a prior session says this host was
+        /// compliant, so skip the ~2.5-min descent and start where decay would have
+        /// landed). Seeds `held == floor` and the `AtFloor` frozen reason so the
+        /// imminent `try_lock` seats the cursor at the FLOOR depth; the ceiling is
+        /// unchanged, so ANY discontinuity after lock still snaps all the way back
+        /// to it (the snap-back primitive is the revalidation-failure escape,
+        /// untouched).
+        ///
+        /// Sets the [`floor_prime_pending`](Self::floor_prime_pending) latch so the
+        /// not-yet-locked prime periods do NOT snap the held target up to the
+        /// ceiling (the `!locked` branch of `tick` would otherwise undo the prime
+        /// before the first lock ever seats). The latch clears the first period
+        /// `tick` sees the lane locked.
+        ///
+        /// A no-op-cheap on a disabled machine (nothing to prime). Called at lane
+        /// build time BEFORE the first tick; the mixer gates it on a VALID
+        /// persisted proof whose recorded floor matches the live floor.
+        pub fn prime_at_floor(&mut self) {
+            if !self.enabled {
+                return;
+            }
+            self.held = self.floor;
+            self.stable_periods = 0;
+            self.periods_since_step = 0;
+            self.frozen_reason = Some(DecayFrozenReason::AtFloor);
+            self.floor_prime_pending = true;
         }
 
         /// Advance one render period, returning the (possibly-lowered) held
@@ -1017,12 +1143,28 @@ mod decay {
             if !self.enabled {
                 return self.held;
             }
+            // Prime-at-floor latch: while the lane has not yet locked since a
+            // prime-at-floor, HOLD the floor across the pre-lock prime periods
+            // instead of snapping up to the ceiling. Without this, the `!locked`
+            // branch below would raise the held target to the ceiling on the very
+            // first tick and `try_lock` would then seat deep — defeating the
+            // persisted-compliance prime. The latch clears the instant the lane
+            // locks (below), so a subsequent lock LOSS snaps back normally.
+            if self.floor_prime_pending && !s.locked {
+                self.stable_periods = 0;
+                self.periods_since_step = 0;
+                self.frozen_reason = Some(DecayFrozenReason::AtFloor);
+                return self.held;
+            }
             // Hard boundaries first: any loss of lock or DLL steady-state snaps
             // the held target back to the ceiling in one tick.
             if !s.locked {
                 self.snap_back(DecayFrozenReason::Unlocked);
                 return self.held;
             }
+            // The lane is locked. Clear the prime-at-floor latch: from here on, a
+            // lock LOSS is a real discontinuity that snaps back to the ceiling.
+            self.floor_prime_pending = false;
             if !s.dll_l0_locked {
                 self.snap_back(DecayFrozenReason::NotL0);
                 return self.held;
@@ -1361,6 +1503,98 @@ mod decay {
             assert_eq!(DecayParams::ms_to_periods(10_000, 256, 48_000), 1875);
             // Tiny ms still yields >= 1 period.
             assert_eq!(DecayParams::ms_to_periods(1, 256, 48_000), 1);
+        }
+
+        #[test]
+        fn prime_at_floor_seeds_the_floor_and_holds_it_across_pre_lock_periods() {
+            // The persisted-compliance prime: seed at the floor, and the
+            // not-yet-locked prime periods must HOLD the floor rather than snap up
+            // to the ceiling (a bare snap-back would defeat the prime before the
+            // first lock).
+            let mut d = build();
+            d.prime_at_floor();
+            assert_eq!(d.held(), FLOOR, "primed directly at the floor");
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::AtFloor));
+            // Ticks while STILL unlocked keep the floor (the whole point — try_lock
+            // then seats shallow).
+            for _ in 0..500 {
+                assert_eq!(
+                    d.tick(DecaySignals {
+                        locked: false,
+                        dll_l0_locked: false,
+                        commanded_ppm_abs: 0.0,
+                    }),
+                    FLOOR,
+                    "pre-lock prime periods hold the floor, do not snap to ceiling"
+                );
+            }
+            // Once locked, the held target STAYS at the floor throughout (the
+            // latency win — it never rises). The reason passes through Warmup while
+            // the post-lock stability window re-confirms l0, then settles at
+            // AtFloor. The load-bearing invariant is `held == FLOOR` the whole way.
+            for _ in 0..STABILITY + 10 {
+                assert_eq!(
+                    d.tick(locked_l0(0.0)),
+                    FLOOR,
+                    "primed-at-floor held target never rises after lock"
+                );
+            }
+            assert_eq!(
+                d.frozen_reason(),
+                Some(DecayFrozenReason::AtFloor),
+                "past the post-lock stability window it re-confirms AtFloor"
+            );
+            assert!(!d.active());
+        }
+
+        #[test]
+        fn prime_at_floor_then_post_lock_unlock_snaps_back_to_ceiling() {
+            // After the primed lane has LOCKED, a subsequent unlock is a real
+            // discontinuity: the prime latch is spent, so it snaps back to the
+            // ceiling (a re-acquisition must start deep, not at the floor).
+            let mut d = build();
+            d.prime_at_floor();
+            // Lock at the floor.
+            assert_eq!(d.tick(locked_l0(0.0)), FLOOR);
+            // Now lose lock: snaps to the ceiling (NOT held at the floor).
+            let h = d.tick(DecaySignals {
+                locked: false,
+                dll_l0_locked: true,
+                commanded_ppm_abs: 0.0,
+            });
+            assert_eq!(h, CEIL, "post-lock unlock snaps back to ceiling");
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::Unlocked));
+        }
+
+        #[test]
+        fn prime_at_floor_is_a_noop_when_decay_disabled() {
+            // A disabled machine pins the ceiling; priming must not lower it.
+            let mut d = CushionDecay::new(false, CEIL, FLOOR, STEP, INTERVAL, STABILITY, 400.0);
+            d.prime_at_floor();
+            assert_eq!(d.held(), CEIL, "disabled decay never leaves the ceiling");
+            for _ in 0..1000 {
+                assert_eq!(d.tick(locked_l0(0.0)), CEIL);
+            }
+        }
+
+        #[test]
+        fn prime_at_floor_underfill_before_lock_snaps_to_ceiling_via_snap_back() {
+            // If the prime attempt underfill-unlocks before ever locking, the
+            // resampler calls snap_back directly (not via tick's !locked branch),
+            // which clears the prime latch → re-acquire deep. Emulate that here.
+            let mut d = build();
+            d.prime_at_floor();
+            assert_eq!(d.held(), FLOOR);
+            // A snap_back (what unlock_for_underfill calls) clears the prime.
+            d.snap_back(DecayFrozenReason::Unlocked);
+            assert_eq!(d.held(), CEIL);
+            // A following unlocked tick must NOT re-seat the floor (latch cleared).
+            let h = d.tick(DecaySignals {
+                locked: false,
+                dll_l0_locked: false,
+                commanded_ppm_abs: 0.0,
+            });
+            assert_eq!(h, CEIL, "after snap_back the prime latch is spent");
         }
     }
 }

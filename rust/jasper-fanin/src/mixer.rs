@@ -44,6 +44,7 @@
 //! contract documented in `src/watchdog.rs`.
 
 use std::mem::MaybeUninit;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -265,7 +266,28 @@ const CUSHION_DECAY_STABILITY_MS: u64 = 10_000;
 /// two-controller oscillation class the cascade design avoids. 400 ppm is well
 /// inside the ±1000 ppm servo authority: it flags "actively correcting" without
 /// tripping on the small steady-state trims a settled loop makes.
-const CUSHION_DECAY_CASCADE_GUARD_PPM: f64 = 400.0;
+///
+/// `pub(crate)` so the config test can pin the derived-margin invariant: the
+/// default decay step demand (step_frames / interval → ppm) must sit inside this
+/// guard, or a settled decay step could perturb the DLL cascade.
+pub(crate) const CUSHION_DECAY_CASCADE_GUARD_PPM: f64 = 400.0;
+
+/// The host-compliance proof's settle window — how long the decay must hold at
+/// the floor with the DLL `l0_locked` and zero unlock churn before the proof is
+/// persisted. REUSES the same [`CUSHION_DECAY_STABILITY_MS`] window the decay's
+/// own warm-up uses: "stable long enough to trust" is one number across the
+/// feature. Converted to render periods at the live lane geometry.
+const HOST_COMPLIANCE_SETTLE_MS: u64 = CUSHION_DECAY_STABILITY_MS;
+
+/// The host-compliance EARLY-REVALIDATION window — a floor-primed session runs
+/// the aggressive one-strike unlock revocation only for this long after it locks.
+/// The per-session probe (which revalidates on EVERY session, floor-primed or
+/// not) is the primary revalidation; this window narrows the *underfill-unlock*
+/// trigger to the acquisition-adjacent phase where a floor prime against a
+/// now-incompatible host would first thrash. 60 s comfortably covers the probe
+/// (≤14 s) plus the first steady-state minute. Probe-fail / L2 demotion revoke
+/// regardless of this window (they are direct host-non-compliance evidence).
+const HOST_COMPLIANCE_EARLY_REVALIDATION_SECS: u64 = 60;
 
 /// Per-lane TRIM control + counters, shared (`Arc`) between the mixer work
 /// thread (which owns the `LaneResampler` and performs the actual ring trim)
@@ -502,6 +524,53 @@ pub struct Mixer {
     /// DLL, which is correct.
     host_clock_ladder_l0: Arc<AtomicBool>,
     host_clock_commanded_milli_ppm: Arc<AtomicI64>,
+    /// REVERSE host-clock signals for host-compliance REVALIDATION (servo thread →
+    /// mixer). `ladder_l2` = the DLL demoted to L2 (probe fail or mid-stream
+    /// demotion); `probe_result_code` = the servo's last probe verdict (0 none / 1
+    /// pass / 2 fail / 3 aborted). The mixer's per-period compliance tick reads
+    /// these to decide a one-strike revocation of a floor-primed proof. Stay at
+    /// their init (`false` / 0) when the servo is not running, so revalidation
+    /// never fires without a live DLL — same dependency as the decay tick.
+    host_clock_ladder_l2: Arc<AtomicBool>,
+    host_clock_probe_result_code: Arc<AtomicU64>,
+    /// REVERSE host-clock signal: the servo's last probe RESPONSE RATIO ×1000
+    /// (i64-bits-in-u64, `PROBE_RATIO_NONE` sentinel = no verdict). The mixer
+    /// records it into a persisted proof as evidence of host compliance.
+    host_clock_probe_response_ratio_milli: Arc<AtomicU64>,
+    /// DEFAULT-OFF (gated behind the cushion-decay flag) host-compliance
+    /// persistence state, `Some` only when decay is armed on a resampler lane.
+    /// Owns the per-session proof machine, the early-revalidation window, the
+    /// on-disk path, the "this session was floor-primed" flag, and the last revoke
+    /// reason (for STATUS). `None` (inert, zero work) when the feature is off.
+    host_compliance: Option<HostComplianceState>,
+}
+
+/// The mixer-thread bookkeeping for host-compliance persistence — the impure
+/// shell around the pure [`host_compliance::ComplianceProof`]. `Some` on the
+/// mixer only when the cushion-decay feature is armed on a resampler lane
+/// (persistence rides that flag; no separate top-level gate). All the actual
+/// gate/revoke DECISIONS live in the pure state machine; this struct only holds
+/// the wiring the mixer needs to enact them: the path, the per-session proof
+/// machine, the floor-primed flag, the early-window budget, and the last revoke
+/// reason for STATUS.
+struct HostComplianceState {
+    /// The on-disk persistence path (`JASPER_FANIN_HOST_COMPLIANCE_PATH` or the
+    /// default under the fan-in state dir).
+    path: PathBuf,
+    /// The pure per-session proof machine. Reset on every lock edge so a fresh
+    /// session re-earns the proof.
+    proof: crate::host_compliance::ComplianceProof,
+    /// The pure lock-edge + one-strike revalidation tracker. Owns the session
+    /// bookkeeping (lock edges, early window, unlock baseline, per-lock revoke
+    /// latch) and decides — via `step()` — whether a floor-primed session revokes
+    /// this period. Extracted so the early-unlock reachability is testable without
+    /// ALSA (driven by a real resampler's lock/unlock sequence).
+    revalidation: crate::host_compliance::RevalidationTracker,
+    /// The shared STATUS observability handles (`resampler.compliance`). The mixer
+    /// is the sole writer; the resampler holds a clone for STATUS rendering. This is
+    /// the ONLY place the surfaced state (flag_present / proved_at /
+    /// revoked_reason_last) lives — updated via `on_written` / `on_revoked`.
+    obs: crate::host_compliance::HostComplianceObservability,
 }
 
 /// Per-lane AUTO-TRIM bookkeeping. Tracks the cumulative `frames_read` value
@@ -753,6 +822,11 @@ impl Mixer {
     pub fn new(config: &Config, xrun_tx: Sender<XrunEvent>, tts: Option<TtsInput>) -> Result<Self> {
         let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
 
+        // DEFAULT-OFF host-compliance persistence state, seeded when the cushion
+        // decay is armed on the resampler lane (persistence rides that flag). Only
+        // one lane ever owns a resampler, so this is set at most once.
+        let mut host_compliance: Option<HostComplianceState> = None;
+
         let mut inputs = Vec::with_capacity(config.input_pcms.len());
         for (label, pcm_name) in config.input_renderers.iter().zip(&config.input_pcms) {
             // DEFAULT-OFF: build a per-input resampler on the configured
@@ -762,11 +836,23 @@ impl Mixer {
             // other lane (and every lane when both flags are off) gets `None` —
             // the byte-identical-to-today path. A construction failure degrades
             // to `None` with a warning rather than failing the daemon.
-            let resampler = if config.lane_wants_resampler(label) {
+            let mut resampler = if config.lane_wants_resampler(label) {
                 build_lane_resampler(label, config)
             } else {
                 None
             };
+            // DEFAULT-OFF host-compliance PRIME-AT-FLOOR: when the cushion decay is
+            // armed on this resampler lane, seed the per-session compliance state
+            // and — if a VALID persisted proof is on disk whose recorded floor
+            // matches this lane's live floor — prime the resampler AT the decay
+            // floor so it skips the ~2.5-min descent this session. The per-session
+            // servo probe revalidates the prime (a mismatch/regression revokes it).
+            if let Some(r) = resampler.as_mut() {
+                if config.input_resampler_cushion_decay_enabled {
+                    host_compliance = Some(build_host_compliance_state(label, config, r));
+                }
+            }
+            let resampler = resampler;
             // USB DIRECT: this lane reads hw:UAC2Gadget directly instead of its
             // aloop substream (DEFAULT-OFF; only the resampler lane label). The
             // open is best-effort — a gadget-absent lane starts Absent and
@@ -1043,6 +1129,17 @@ impl Mixer {
             // ceiling until the servo thread actually reports `l0_locked`.
             host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
             host_clock_commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
+            // Reverse host-clock signals for host-compliance REVALIDATION. Init to
+            // the inert state (not-l2, no probe verdict) so a floor-primed session
+            // only revokes on a LIVE demotion/probe-fail from the servo.
+            host_clock_ladder_l2: Arc::new(AtomicBool::new(false)),
+            host_clock_probe_result_code: Arc::new(AtomicU64::new(0)),
+            // Init to the None sentinel (no probe verdict) so a pre-servo period
+            // records `None` rather than a stale zero ratio.
+            host_clock_probe_response_ratio_milli: Arc::new(AtomicU64::new(
+                crate::host_clock::PROBE_RATIO_NONE as u64,
+            )),
+            host_compliance,
         })
     }
 
@@ -1096,6 +1193,11 @@ impl Mixer {
             // the same atomics; the servo thread only ever WRITES these two.
             ladder_l0: Arc::clone(&self.host_clock_ladder_l0),
             commanded_milli_ppm: Arc::clone(&self.host_clock_commanded_milli_ppm),
+            // The revalidation reverse signals — written by the servo, read by the
+            // mixer's per-period compliance tick.
+            ladder_l2: Arc::clone(&self.host_clock_ladder_l2),
+            probe_result_code: Arc::clone(&self.host_clock_probe_result_code),
+            probe_response_ratio_milli: Arc::clone(&self.host_clock_probe_response_ratio_milli),
         })
     }
 
@@ -1207,6 +1309,17 @@ impl Mixer {
         let decay_l0 = self.host_clock_ladder_l0.load(Ordering::Relaxed);
         let decay_commanded_ppm_abs =
             (self.host_clock_commanded_milli_ppm.load(Ordering::Relaxed) as f64 / 1000.0).abs();
+        // 2d. Snapshot the REVERSE host-clock revalidation signals ONCE per period
+        // for the host-compliance service below (same self-borrow avoidance as the
+        // decay signals). `ladder_l2` = probe-fail / mid-stream demotion;
+        // `probe_result_code` distinguishes a fresh probe FAIL from a later L2.
+        // Inert (false / 0) when the servo is not running.
+        let compliance_ladder_l2 = self.host_clock_ladder_l2.load(Ordering::Relaxed);
+        let compliance_probe_code = self.host_clock_probe_result_code.load(Ordering::Relaxed);
+        let compliance_probe_ratio = crate::host_clock::decode_response_ratio_milli(
+            self.host_clock_probe_response_ratio_milli
+                .load(Ordering::Relaxed) as i64,
+        );
 
         // 3. Read from each input, accumulate into sum_buf.
         let selected_input = self.selected_input_index.load(Ordering::Relaxed);
@@ -1263,6 +1376,17 @@ impl Mixer {
             let active = frames * (CHANNELS as usize);
             mix_into(&mut self.sum_buf[..active], &input.read_buf[..active]);
         }
+        // 3c. Service the DEFAULT-OFF host-compliance persistence — write the proof
+        // once the descent settles clean at the floor, and run the one-strike
+        // revalidation on a floor-primed session. No-op (a single `Option::is_none`
+        // check) when the feature is off. Done after the decay tick so it sees this
+        // period's fresh held-target / lock state.
+        self.service_host_compliance(
+            decay_l0,
+            compliance_ladder_l2,
+            compliance_probe_code,
+            compliance_probe_ratio,
+        );
         if let Some(tts) = self.tts.as_mut() {
             saturate_to_i16(&self.sum_buf, &mut self.content_meter_buf);
             tts.observe_content_period(&self.content_meter_buf);
@@ -1357,6 +1481,130 @@ impl Mixer {
     ///     after a lane goes active, guarded by `TrimControl::auto_fired` so it
     ///     fires at most once per idle→active session.
     ///
+    /// Service the DEFAULT-OFF host-compliance persistence once per render period.
+    /// No-op (a single `Option::is_none`) when the feature is off. When armed:
+    ///
+    /// 1. Drive the pure `RevalidationTracker`: it runs the one-strike revalidation
+    ///    of a floor-primed session against the pre-reset lock baseline (a LIVE
+    ///    probe FAIL, a DLL demotion to L2, or an underfill unlock inside the early
+    ///    window — INCLUDING the lock-loss period the unlock lands on — revoke), then
+    ///    applies the lock-edge bookkeeping and returns the decision + the edges. On
+    ///    a returned revoke, snap the held target back to the ceiling and delete the
+    ///    persisted proof. Reset the pure proof machine on either lock edge.
+    /// 2. TICK the pure proof machine; on its `Write` outcome, persist a fresh
+    ///    record (atomic tempfile+rename). Written at most once per session.
+    ///
+    /// Uses `Option::take` on `self.host_compliance` so it can freely borrow
+    /// `self.inputs` (the resampler lane) without a double-mutable-borrow; the
+    /// state is put back before returning. All the gate DECISIONS are in the pure
+    /// `ComplianceProof` / `RevalidationTracker` / `HostCompliance`; this method is
+    /// only the wiring.
+    fn service_host_compliance(
+        &mut self,
+        dll_l0: bool,
+        ladder_l2: bool,
+        probe_code: u64,
+        probe_response_ratio: Option<f64>,
+    ) {
+        use crate::host_compliance::{HostCompliance, ProofOutcome, ProofSignals};
+        let Some(mut hc) = self.host_compliance.take() else {
+            return;
+        };
+        // The resampler lane is the single lane that owns a resampler.
+        let Some(resampler) = self
+            .inputs
+            .iter_mut()
+            .find_map(|inp| inp.resampler.as_mut())
+        else {
+            // Resampler gone (should not happen once seeded); park the state.
+            self.host_compliance = Some(hc);
+            return;
+        };
+
+        let locked = resampler.is_locked();
+        let unlock_count = resampler.unlock_count();
+        let decay_at_floor = resampler.decay_at_floor();
+
+        // 1. Lock-edge bookkeeping + one-strike revalidation, in the pure tracker.
+        // `step` runs the revalidation against the PRE-reset baseline (so the
+        // falling-edge underfill unlock is caught — the ONLY period where an
+        // underfill unlock presents, since `unlock_for_underfill` sets `locked=false`
+        // in the same render period it bumps `unlock_count`), then applies the
+        // lock-edge bookkeeping. It returns the revoke decision plus the observed
+        // edges so the proof machine's reset stays in lock-step with the tracker.
+        let step = hc
+            .revalidation
+            .step(locked, unlock_count, probe_code, ladder_l2);
+        if let Some(reason) = step.revoke {
+            // One strike: snap the held target back to the full ceiling and delete
+            // the persisted proof so the next session descends + re-proves.
+            resampler.snap_decay_to_ceiling();
+            match HostCompliance::revoke(&hc.path) {
+                Ok(()) => {}
+                Err(e) => warn!(
+                    "event=fanin.host_compliance.revoke_io_failed reason={} path={} detail={}",
+                    reason.as_str(),
+                    hc.path.display(),
+                    e,
+                ),
+            }
+            hc.obs.on_revoked(reason);
+            warn!(
+                "event=fanin.host_compliance.revoked reason={} path={} — snapped held target \
+                 back to the ceiling; the normal descent will re-prove",
+                reason.as_str(),
+                hc.path.display(),
+            );
+        }
+        // Reset the pure proof machine on either lock edge so a fresh session
+        // re-earns the proof (rising: a new session begins; falling: the current
+        // session ended).
+        if step.rising_edge || step.falling_edge {
+            hc.proof.reset();
+        }
+
+        // 2. Proof tick + persist. A just-revoked lane still ticks (it is
+        // back at the ceiling, so the proof stays Pending until the normal descent
+        // lands it at the floor again — the re-prove path).
+        let outcome = hc.proof.tick(ProofSignals {
+            decay_at_floor,
+            dll_l0_locked: dll_l0,
+            unlock_count,
+            probe_response_ratio,
+        });
+        if let ProofOutcome::Write {
+            probe_response_ratio,
+        } = outcome
+        {
+            let floor = resampler.decay_floor_frames();
+            let now_epoch_s = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let rec = HostCompliance::new(now_epoch_s, probe_response_ratio, floor);
+            match rec.store(&hc.path) {
+                Ok(()) => {
+                    hc.obs.on_written(now_epoch_s);
+                    info!(
+                        "event=fanin.host_compliance.written path={} floor_frames={} \
+                         probe_response_ratio={:.3} — future sessions prime at the floor",
+                        hc.path.display(),
+                        floor,
+                        probe_response_ratio,
+                    );
+                }
+                Err(e) => warn!(
+                    "event=fanin.host_compliance.write_io_failed path={} detail={} — proof not \
+                     persisted this session (audio unaffected; descent already ran)",
+                    hc.path.display(),
+                    e,
+                ),
+            }
+        }
+
+        self.host_compliance = Some(hc);
+    }
+
     /// The common no-request period is one `pending` load per lane (plus, when
     /// auto-trim is enabled, one pure latch update) and nothing else.
     fn maybe_trim(&mut self) {
@@ -1735,6 +1983,95 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
             );
             None
         }
+    }
+}
+
+/// Convert a wall-time `ms` to a render-period count at the lane geometry, `>= 1`
+/// so a small value still ticks. Mirrors `decay::DecayParams::ms_to_periods` — the
+/// compliance settle/early-window clocks are render periods, same as the decay's.
+/// Pure over primitives (unit-testable on any host).
+fn ms_to_periods(ms: u64, period_frames: u32, sample_rate: u32) -> u64 {
+    let period_frames = period_frames.max(1) as u64;
+    let sample_rate = sample_rate.max(1) as u64;
+    ((ms.saturating_mul(sample_rate)) / (1000 * period_frames)).max(1)
+}
+
+/// Seed the host-compliance persistence state for the resampler lane and, when a
+/// VALID persisted proof is on disk, PRIME the resampler at the decay floor. The
+/// proof is valid iff its schema matches AND its recorded floor equals this lane's
+/// live decay floor (an operator floor retune between sessions invalidates the old
+/// geometry — descend normally). A missing / corrupt / stale file leaves the lane
+/// descending from the ceiling as today (fail toward safety). Only the write/read
+/// I/O touches disk; all gate DECISIONS live in the pure `ComplianceProof`.
+fn build_host_compliance_state(
+    label: &str,
+    config: &Config,
+    resampler: &mut LaneResampler,
+) -> HostComplianceState {
+    use crate::host_compliance::HostCompliance;
+    let path = PathBuf::from(&config.host_compliance_path);
+    let live_floor = resampler.decay_floor_frames();
+    // Load the persisted proof (None on missing/corrupt/schema-mismatch — safe).
+    let loaded = HostCompliance::load(&path);
+    let (floor_primed, proved_at_epoch_s) = match &loaded {
+        Some(rec) if rec.valid_for(live_floor) => {
+            resampler.prime_decay_at_floor();
+            info!(
+                "event=fanin.host_compliance.prime_at_floor lane={} floor_frames={} \
+                 proved_at={} probe_response_ratio={:.3} — skipping the cushion descent \
+                 (per-session probe revalidates)",
+                label, live_floor, rec.proved_at_epoch_s, rec.probe_response_ratio,
+            );
+            (true, rec.proved_at_epoch_s)
+        }
+        Some(rec) => {
+            // Present but stale geometry: descend normally, do NOT prime. STATUS
+            // reads this as absent — `flag_present=false` AND `proved_at=0` — so it
+            // matches the "proved_at is 0 when the flag is absent" contract in
+            // `state.rs` and does not read to an operator like a REVOKED proof (a
+            // present-but-stale file is not a live prime authority). The recorded
+            // timestamp is still logged above for the retune diagnostic.
+            info!(
+                "event=fanin.host_compliance.stale lane={} recorded_floor={} live_floor={} — \
+                 descending from ceiling (floor retuned since the proof)",
+                label, rec.floor_frames, live_floor,
+            );
+            (false, 0)
+        }
+        None => {
+            info!(
+                "event=fanin.host_compliance.no_flag lane={} — descending from ceiling \
+                 (no persisted proof; will prove + persist this session)",
+                label,
+            );
+            (false, 0)
+        }
+    };
+    let settle_periods = ms_to_periods(
+        HOST_COMPLIANCE_SETTLE_MS,
+        config.period_frames,
+        config.sample_rate,
+    );
+    let early_window_periods = ms_to_periods(
+        HOST_COMPLIANCE_EARLY_REVALIDATION_SECS.saturating_mul(1000),
+        config.period_frames,
+        config.sample_rate,
+    );
+    // STATUS observability: `flag_present` reflects whether a VALID proof primed
+    // this session (a present-but-stale file is not an authority, so it reads as
+    // absent for STATUS purposes). Inject a clone into the resampler so
+    // `resampler.compliance` renders.
+    let obs =
+        crate::host_compliance::HostComplianceObservability::new(floor_primed, proved_at_epoch_s);
+    resampler.set_compliance_observability(obs.clone_handles());
+    HostComplianceState {
+        path,
+        proof: crate::host_compliance::ComplianceProof::new(settle_periods),
+        revalidation: crate::host_compliance::RevalidationTracker::new(
+            floor_primed,
+            early_window_periods,
+        ),
+        obs,
     }
 }
 
