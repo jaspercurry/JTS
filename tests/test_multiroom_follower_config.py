@@ -218,6 +218,45 @@ def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
     assert cam.loaded == []
 
 
+def test_apply_emit_gate_refusal_surfaces_as_follower_error(
+    monkeypatch, tmp_path
+) -> None:
+    """L0 emit-gate seam: if the driver-domain emit REFUSES an unprotected tweeter,
+    the gate's ActiveSpeakerConfigError (a ValueError) is converted to
+    ActiveFollowerError (a RuntimeError) so the reconciler's `except RuntimeError`
+    fail-safe-to-solo path catches it (test_main_active_follower_precheck_failure_
+    falls_back_to_solo) instead of the oneshot crashing. CamillaDSP is never
+    loaded."""
+    import jasper.active_speaker.camilla_yaml as camilla_yaml
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    # Provoke the L0 gate: strip the tweeter high-pass from the baseline chain the
+    # driver-domain emitter uses, so the emitted graph is an unprotected tweeter.
+    original = camilla_yaml._driver_baseline_filter_chain
+
+    def _hp_stripped(preset, role):
+        names = original(preset, role)
+        return [n for n in names if not n.endswith("_hp")] if role == "tweeter" else names
+
+    monkeypatch.setattr(camilla_yaml, "_driver_baseline_filter_chain", _hp_stripped)
+
+    cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
+    with pytest.raises(fc.ActiveFollowerError) as exc:
+        asyncio.run(
+            fc.apply_active_follower_config(
+                _cfg("left"), camilla_factory=lambda: cam, validate=_valid_config,
+            )
+        )
+    assert exc.value.reason == "driver_domain_emit_refused"
+    assert isinstance(exc.value, RuntimeError)  # the type the reconciler catches
+    assert cam.loaded == []  # no unprotected-tweeter emit reached CamillaDSP
+
+
 def _patch_restore_reproof(monkeypatch, *, allowed: bool):
     """Stub the topology load + the graph re-proof for restore tests."""
     monkeypatch.setattr(

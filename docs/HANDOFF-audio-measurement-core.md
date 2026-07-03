@@ -240,8 +240,10 @@ have the second instance, so a thin shared kernel is justified.)
   (`output_hard_muted_and_wired`, `output_unmuted_and_wired`,
   `tweeter_guard_present`, `startup_headroom_ok`, …), fail-closed. The ≈4
   callers keep their parser choice but call the shared predicates — killing
-  the duplicated *logic* without changing behavior. Wire the predicates at
-  the `camilla_yaml` emit gate too, so an unsafe graph can't reach disk.
+  the duplicated *logic* without changing behavior. **DELIVERED (2026-07-02):**
+  the shared predicates are also wired at the `camilla_yaml` active-speaker emit
+  gate — see "Active-emitter L0 gate landed" below — so an unsafe graph can't
+  reach disk.
 
 **Consumer-specific (stays in adapters):** room target curves +
 multi-position averaging + PEQ design; active-speaker role assignment,
@@ -258,7 +260,7 @@ the decision points below.
 
 | Tier | Audience | What it does | Reuses | New |
 |---|---|---|---|---|
-| **L0** | everyone (implicit) | Designed crossover + protective HP **applied, fail-closed**; flat-graph-with-tweeter-role is illegal | `GraphValidator`, outputd graph | wire the validator at the emit gate; make commission cut-over actually apply |
+| **L0** | everyone (implicit) | Designed crossover + protective HP **applied, fail-closed**; flat-graph-with-tweeter-role is illegal | `GraphValidator`, outputd graph | ~~wire the validator at the emit gate~~ **DONE (2026-07-02)** — flat-program lane + active-emitter gate both landed; make commission cut-over actually apply |
 | **L1** | anyone, phone only | Per-driver level match: play band-limited tone/sweep per driver through the production graph, capture phone mic, compute overlap-band dB delta → fixed trim, propose + confirm + apply; `measurement_mode=magnitude_only` so it can never authorize a phase/delay decision | sweep/deconv/analysis/quality, `measurement_window`, browser-mic | trim algorithm; Stage-6 endpoint+UI; sensitivity-fallback when skipped |
 | **L1.5** | optional | Loudness compensation (ISO 226) as a *separate* volume-dependent EQ layer | — | separate feature, default off; **not** part of commissioning |
 | **L2** | enthusiasts w/ calibrated mic | calibrated FR + null-depth; measured **polarity** proposal + delay *status* (the delay value + per-driver EQ stay OUT) — **landed 2026-06-21, corrected 2026-06-21, see below** | `calibration.py` upload, full deconv pipeline, `phase_aware` mode | reverse-vs-in-phase null margin; polarity proposal gated on `phase_aware` |
@@ -525,6 +527,39 @@ induced on a wired compression tweeter, since that is the hazard the gate
 prevents; confirm opportunistically when jts3 is transiently flat under the
 tweeter topology (e.g. right after a fresh topology assignment, before the
 active graph is staged), and that un-bonding still succeeds.
+
+**Active-emitter L0 gate landed (2026-07-03):** the complement to the flat-
+program gate above. That gate stops a *flat* (`emit_sound_config`) program graph
+reaching a tweeter output; this one makes the four active-speaker emitters
+(`emit_active_speaker_{startup,commissioning,baseline,driver_domain}_config`)
+enforce their own tweeter-protection invariant at the emit boundary, rather than
+relying only on the downstream `classify_camilla_graph` re-prove. Each emitter
+now runs a fail-closed gate (`camilla_yaml._assert_tweeter_outputs_protected`)
+just before the YAML is returned or written: it re-parses the emitted text
+(`graph_safety.view_from_emitted_text`) and, for every physical output the preset
+assigns a `tweeter` role, proves a `LinkwitzRileyHighpass` `BiquadCombo` is wired
+**within the tweeter-role output channel set** (a subset check that rejects a
+pre-split program-bus HP the Mixer-less `GraphView` would otherwise let "cover"
+the output) with a corner **at or above a 400 Hz absolute floor**
+(`graph_safety.TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ` — well below the shipped
+1600 Hz crossover, so it never over-blocks a real preset, but it catches a
+tweeter HP left at 30/80/100 Hz). The predicates are the shared
+`graph_safety.output_highpass_protected` / `unprotected_tweeter_outputs`
+(normalize-then-predicate, the same GraphView the ≈4 verifiers use). The
+File-sink program bake is *not* gated (no DAC, no driver to over-drive). Scope:
+L0 proves HP-presence + a safe corner FLOOR only — validating that a preset's
+*designed* Fc suits its specific driver is preset-validation's job (follow-up).
+**New failure mode callers handle:** an emit now raises
+`ActiveSpeakerConfigError` (a `ValueError`) with `event=active_speaker.emit_gate`
+logged first (never silent) if a graph would ship an unprotected tweeter — the
+active emitters wire that protection by construction, so this only fires on a
+regression, but it is now ENFORCED rather than assumed. The bond prechecks
+(`precheck_active_{leader,follower}`) convert that refusal to
+`ActiveLeaderError` / `ActiveFollowerError` (reason `driver_domain_emit_refused`)
+so the grouping reconciler's `except RuntimeError` still fail-safes to solo
+instead of crashing the oneshot. Hardware-free (code + tests); on-device H2
+acoustic sanity on jts5 still owed (confirm a real DE250 2-way commissions
+through the gate and is audibly band-limited).
 
 **Next slice (Phase 2 — kernel extraction):** move pure `sweep`/`deconv`/
 `analysis`/`quality` into `jasper/audio_measurement/` behind characterization

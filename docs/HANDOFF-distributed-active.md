@@ -699,7 +699,12 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
   this box (camilla owns the pick + split), and runs a readiness GATE before
   tearing down the solo path — a follower that can't be made safe **fails safe
   to solo active** (it never bonds an unprovable graph; invariant 5 +
-  self-recovery). The outputd fence
+  self-recovery). This includes the L0 emit-gate refusal (2026-07-03): if
+  `emit_active_speaker_driver_domain_config` refuses an unprotected-tweeter graph
+  (`ActiveSpeakerConfigError`, a `ValueError`), the precheck converts it to
+  `ActiveFollowerError` / `ActiveLeaderError` (reason `driver_domain_emit_refused`)
+  so the reconciler's `except RuntimeError` fail-safe-to-solo catches it rather
+  than the oneshot crashing. The outputd fence
   ([config.rs](../rust/jasper-outputd/src/config.rs)) is "lifted" in the real
   sense: Option B routes the active sink around the `dac_content` lane, so the
   `dac_content_lane_rejects_non_single_alsa_sink` guard (kept — it still guards
