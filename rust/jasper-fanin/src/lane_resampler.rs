@@ -826,6 +826,11 @@ mod decay {
 
     impl DecayParams {
         /// A hard-disabled params (current behaviour: held pinned at ceiling).
+        /// Test-only: the daemon always builds `DecayParams` from the parsed env
+        /// config (see `mixer::build_lane_resampler`), so this convenience is only
+        /// used by the resampler unit tests. Gated `#[cfg(test)]` so it is not
+        /// dead code in the `jasper-fanin` binary build (`-D warnings`).
+        #[cfg(test)]
         pub fn disabled() -> Self {
             Self {
                 enabled: false,
