@@ -234,6 +234,38 @@ def test_precheck_refuses_unprovable_crossover_graph(monkeypatch, tmp_path) -> N
     assert exc.value.reason == "crossover_graph_unprovable"
 
 
+def test_precheck_emit_gate_refusal_surfaces_as_leader_error(
+    monkeypatch, tmp_path
+) -> None:
+    """L0 emit-gate seam: if camilla#2's driver-domain emit REFUSES an unprotected
+    tweeter, the gate's ActiveSpeakerConfigError (a ValueError) is converted to
+    ActiveLeaderError (a RuntimeError) so the reconciler's `except RuntimeError`
+    fail-safe-to-solo path catches it (test_main_active_leader_precheck_failure_
+    falls_back_to_solo) instead of the oneshot crashing."""
+    import jasper.active_speaker.camilla_yaml as camilla_yaml
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    # Provoke the L0 gate: strip the tweeter high-pass from the baseline chain the
+    # driver-domain emitter uses, so the emitted graph is an unprotected tweeter.
+    original = camilla_yaml._driver_baseline_filter_chain
+
+    def _hp_stripped(preset, role):
+        names = original(preset, role)
+        return [n for n in names if not n.endswith("_hp")] if role == "tweeter" else names
+
+    monkeypatch.setattr(camilla_yaml, "_driver_baseline_filter_chain", _hp_stripped)
+
+    with pytest.raises(alc.ActiveLeaderError) as exc:
+        asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
+    assert exc.value.reason == "driver_domain_emit_refused"
+    # It is a RuntimeError subclass — the type the reconciler fail-safe catches.
+    assert isinstance(exc.value, RuntimeError)
+
+
 def test_precheck_refuses_unprovable_bake_graph(monkeypatch, tmp_path) -> None:
     """The crossover re-proves, but camilla#1's program bake does NOT — refuse to
     bond. Selective re-proof keyed on the config path."""

@@ -151,6 +151,7 @@ async def precheck_active_follower(
     :func:`apply_prebuilt_follower_config` does the actual CamillaDSP swap once
     snapclient is feeding the loopback.
     """
+    from jasper.active_speaker import ActiveSpeakerConfigError
     from jasper.active_speaker.baseline_profile import (
         build_baseline_profile_candidate,
     )
@@ -194,21 +195,34 @@ async def precheck_active_follower(
     # ``validate`` is a test seam (mirrors apply_baseline_profile); production
     # leaves it None so build uses the real CamillaDSP --check.
     build_kwargs = {} if validate is None else {"validate": validate}
-    candidate = build_baseline_profile_candidate(
-        topology,
-        design_draft=design_draft,
-        crossover_preview=crossover_preview,
-        measurements=measurements,
-        write=True,
-        state_path=FOLLOWER_STATE_PATH,
-        config_path=FOLLOWER_CONFIG_PATH,
-        capture_device=GROUPING_LOOPBACK_CAPTURE,
-        capture_format=GROUPING_LOOPBACK_CAPTURE_FORMAT,
-        driver_domain=True,
-        program_channel=program_channel,
-        driver_domain_pair_trim_db=max(0.0, -float(cfg.trim_db)),
-        **build_kwargs,
-    )
+    # The L0 emit gate inside emit_active_speaker_driver_domain_config raises
+    # ActiveSpeakerConfigError (a ValueError) if the driver-domain graph would
+    # ship an unprotected tweeter. Convert it to ActiveFollowerError (a
+    # RuntimeError) so the reconciler's `except RuntimeError` fail-safe-to-solo
+    # path catches it — a refused graph must fall back to solo, never crash the
+    # reconciler oneshot. Mirrors the graph_unprovable re-prove refusal below.
+    try:
+        candidate = build_baseline_profile_candidate(
+            topology,
+            design_draft=design_draft,
+            crossover_preview=crossover_preview,
+            measurements=measurements,
+            write=True,
+            state_path=FOLLOWER_STATE_PATH,
+            config_path=FOLLOWER_CONFIG_PATH,
+            capture_device=GROUPING_LOOPBACK_CAPTURE,
+            capture_format=GROUPING_LOOPBACK_CAPTURE_FORMAT,
+            driver_domain=True,
+            program_channel=program_channel,
+            driver_domain_pair_trim_db=max(0.0, -float(cfg.trim_db)),
+            **build_kwargs,
+        )
+    except ActiveSpeakerConfigError as exc:
+        raise ActiveFollowerError(
+            "driver_domain_emit_refused",
+            "active follower driver-domain graph refused at the emit gate "
+            f"(no full-range emit to a tweeter): {exc}",
+        ) from exc
     if not candidate.get("permissions", {}).get("may_apply"):
         codes = [
             i.get("code") for i in candidate.get("issues", [])

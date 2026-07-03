@@ -432,32 +432,68 @@ def pipeline_contains_chain(
     return False
 
 
+# Absolute lower bound (Hz) on a tweeter-role protective high-pass corner. A
+# compression driver is ~25 dB more sensitive than the woofer, so the L0 gate
+# proves not just that a high-pass EXISTS on the tweeter output but that its
+# corner is high enough to keep the low-frequency excursion hazard band (roughly
+# 100 Hz–1 kHz) off the driver. 400 Hz is deliberately conservative: it sits far
+# BELOW any realistic tweeter/compression crossover (the shipped presets cross at
+# 1600 Hz; real compression crossovers are typically >=~800 Hz), so it can never
+# over-block a genuine preset — while still catching the egregious cases (a
+# tweeter "high-pass" left at 30 / 80 / 100 Hz that leaves full-range energy on a
+# hot driver). Precedent: :func:`sub_audible_guard_present` grew a corner CEILING
+# for the mirror-image "loose corner in the unprotective direction" reason.
+#
+# SCOPE: L0 proves high-pass PRESENCE + a safe corner FLOOR only. It does NOT
+# validate that a preset's *designed* crossover Fc is appropriate for its
+# specific driver (a DE250 vs a soft-dome tweeter want different corners) — that
+# is preset-validation's job and a deliberate follow-up, not built here.
+TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ = 400.0
+
+
 def output_highpass_protected(
     view: GraphView,
     *,
     channel: int,
+    allowed_channels: set[int] | frozenset[int],
+    min_corner_hz: float = TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
 ) -> bool:
     """True iff ``channel`` is high-pass protected in the pipeline (fail-closed).
 
     The L0 emit-gate primitive: a compression-driver / tweeter output MUST carry
     a protective high-pass (its crossover high-pass and/or a dedicated protective
     high-pass) so full-range program can never reach a ~25 dB-hotter driver. True
-    iff SOME pipeline ``Filter`` step covering ``channel`` lists a ``BiquadCombo``
-    filter of ``type: LinkwitzRileyHighpass`` with a positive ``freq``.
+    iff SOME pipeline ``Filter`` step whose channel set is a **subset of
+    ``allowed_channels`` and contains ``channel``** lists a ``BiquadCombo`` filter
+    of ``type: LinkwitzRileyHighpass`` with a ``freq`` at or above
+    ``min_corner_hz``.
 
-    "Covering" is membership, not an exact set match: the emitter folds a role's
-    chain into one Filter step that may target every output of that role at once
-    (e.g. both stereo tweeters ``[1, 3]``), so a per-output check must accept a
-    step whose channel set *contains* ``channel``. Any positive-corner LR
-    high-pass counts — the 2-way woofer/tweeter crossover high-pass is exactly the
-    band-limit that protects the driver; this is deliberately looser than
-    :func:`tweeter_guard_present` (which additionally pins a named protective HP +
-    limiter for the commissioning re-prove). Fails closed: a missing filter, a
-    non-``BiquadCombo`` type, the wrong LR variant (e.g. a low-pass), or a
-    non-positive ``freq`` all yield ``False``.
+    Two guards, both load-bearing and both fail-closed:
+
+    * **Channel-set boundary (subset-of-role).** ``GraphView`` drops ``Mixer``
+      steps, so a pre-split high-pass on the stereo *program* bus ``[0, 1]`` could
+      numerically "cover" a post-split tweeter output and false-PASS it. Requiring
+      the covering step's channels to be a **subset of the tweeter-role output
+      set** accepts the emitter's folded per-role step (e.g. both stereo tweeters
+      ``[1, 3]``) and per-output splits (``[1]``), but rejects the ``[0, 1]``
+      program bus and any cross-role fold. This is not reachable with today's
+      emitter (preference EQ emits a plain ``Biquad``, not ``BiquadCombo``), but
+      it is exactly the drift class this gate exists to catch.
+    * **Corner floor.** A tweeter high-pass at a too-low corner (30 / 80 / 100 Hz)
+      leaves the excursion hazard band on the driver, so the corner must be
+      ``>= min_corner_hz`` (see :data:`TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ`).
+
+    Any qualifying LR high-pass counts — the 2-way woofer/tweeter crossover
+    high-pass at 1600 Hz is exactly the band-limit that protects the driver; this
+    is deliberately looser than :func:`tweeter_guard_present` (which additionally
+    pins a named protective HP + limiter for the commissioning re-prove). Fails
+    closed: a missing filter, a non-``BiquadCombo`` type, the wrong LR variant
+    (a low-pass), a below-floor / non-positive ``freq``, or a covering step that
+    reaches outside the tweeter-role channel set all yield ``False``.
     """
+    allowed = frozenset(int(c) for c in allowed_channels)
     for step in view.pipeline_steps:
-        if channel not in step.channels:
+        if channel not in step.channels or not step.channels <= allowed:
             continue
         for name in step.names:
             fdef = view.filters.get(name)
@@ -466,7 +502,7 @@ def output_highpass_protected(
             if str(fdef.params.get("type") or "") != "LinkwitzRileyHighpass":
                 continue
             freq = float_value(fdef.params.get("freq"))
-            if freq is not None and freq > 0.0:
+            if freq is not None and freq >= min_corner_hz:
                 return True
     return False
 
@@ -475,6 +511,7 @@ def unprotected_tweeter_outputs(
     view: GraphView,
     *,
     tweeter_channels: set[int] | frozenset[int],
+    min_corner_hz: float = TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
 ) -> tuple[int, ...]:
     """The tweeter output channels that are NOT high-pass protected (fail-closed).
 
@@ -485,16 +522,28 @@ def unprotected_tweeter_outputs(
     is protected. A non-empty result is the fail-closed block signal: such a graph
     would send full-range program to a compression driver.
 
+    ``tweeter_channels`` doubles as the ``allowed_channels`` boundary passed to
+    :func:`output_highpass_protected`, so a high-pass only counts when it is wired
+    within the tweeter-role output set (rejecting a pre-split program-bus HP that
+    would otherwise false-PASS a tweeter output — see that function's channel-set
+    guard).
+
     Fail-closed by construction: an empty ``tweeter_channels`` returns ``()`` (no
     tweeter role → nothing to protect → not over-blocked, so passive full-range
-    graphs pass), while every listed channel must PROVE its high-pass or it lands
-    in the returned tuple.
+    graphs pass), while every listed channel must PROVE its in-band, above-floor
+    high-pass or it lands in the returned tuple.
     """
+    channels = {int(c) for c in tweeter_channels}
     return tuple(
         sorted(
             channel
-            for channel in {int(c) for c in tweeter_channels}
-            if not output_highpass_protected(view, channel=channel)
+            for channel in channels
+            if not output_highpass_protected(
+                view,
+                channel=channel,
+                allowed_channels=channels,
+                min_corner_hz=min_corner_hz,
+            )
         )
     )
 
