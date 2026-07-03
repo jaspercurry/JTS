@@ -401,12 +401,19 @@ never holds — the 256 floor is lock-hold hysteresis, not aloop burstiness);
 CamillaDSP `target_level` 384→256 (no effect under queuelimit 1); chunk-64 slot
 geometry as config (`RING_SLOT_FRAMES = 128` is a compile-time constant).
 
-The remaining ~9 ms to a 40 ms end-to-end target is located, all product code:
+The remaining latency to a 40 ms end-to-end target is located, all product code.
+Note the host-clock DLL relocation into fan-in is **already shipped** (it landed
+with the fan-in platform / combo change, not remaining work): the "floor + DLL"
+rows in the table above measured ≈0 ms delta versus the free-running floor — the
+DLL's win is removing the standby drift *wander* (fill no longer walks ~500 f off
+the 256 target across a 5-min window), not a step reduction in the steady-state
+floor. The real remaining levers are:
 
-1. **Host-clock DLL relocation into fan-in** (the standby gap): nobody drives
-   `Capture Pitch` in direct mode, so resampler fill wanders (~500 f observed
-   at 5 min vs the 256 target — drift + stream-restart head-starts). Pinning
-   fill at target is worth ~5 ms *and* removes the drift wander.
+1. **Resampler post-lock cushion decay** (`lane_resampler`): shrink the resampler
+   pool below the cushion-256 lock-hold floor by decaying the held target *after*
+   the DLL locks, with the DLL holding the decayed target so lock churn does not
+   re-prime fill above setpoint (the cushion-128-under-DLL run locked but
+   regressed +1.9 ms p50 without decay). Est. −2.7..5.3 ms.
 2. Gadget drain cadence: standing avail ~186 f → ~64 f (~2.6 ms).
 3. DAC URB queue: `delay` ~477 f against a 256-frame ring (~2–3 ms in
    snd-usb-audio queueing).

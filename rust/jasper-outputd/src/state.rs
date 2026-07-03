@@ -1175,11 +1175,18 @@ impl OutputdState {
                     self.shm_ring_writer_pid.load(Ordering::Relaxed),
                 );
                 buf.push(',');
-                push_kv_u64(
+                // u64::MAX = "writer never heartbeated" (see jasper_ring's
+                // RingMetrics). Serialize the sentinel as JSON null rather than
+                // 18446744073709551615, which exceeds JS Number.MAX_SAFE_INTEGER
+                // and would deserialize lossily in the /state dashboard. Uses the
+                // same OPTIONAL_U64_NONE convention as the pcm_delay fields.
+                push_kv_u64_opt(
                     &mut buf,
                     "writer_heartbeat_age_ms",
-                    self.shm_ring_writer_heartbeat_age_ms
-                        .load(Ordering::Relaxed),
+                    unpack_optional_u64(
+                        self.shm_ring_writer_heartbeat_age_ms
+                            .load(Ordering::Relaxed),
+                    ),
                 );
             }
             None => {
@@ -2352,9 +2359,17 @@ mod tests {
             r#""startup_empty_reads":4"#,
             r#""attach_resyncs":1"#,
             r#""writer_alive":false"#,
+            // Nit 4: the u64::MAX "never heartbeated" sentinel serializes as
+            // JSON null, not 18446744073709551615 (which exceeds JS safe-integer
+            // range and would deserialize lossily in the /state dashboard).
+            r#""writer_heartbeat_age_ms":null"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
+        assert!(
+            !j.contains("18446744073709551615"),
+            "raw u64::MAX sentinel must never leak into /state JSON: {j}"
+        );
 
         // A filled period with a live writer: occupancy + frames + liveness.
         state.mark_shm_ring(RingMetrics {

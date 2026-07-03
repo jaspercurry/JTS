@@ -1,8 +1,11 @@
 # Ring B prototype — CamillaDSP → outputd via a SHM ping-pong ring
 
-**Branch:** `latency/ring-proto-shm`. **Status: prototype.** This is not a
-product feature. It replaces one hop (outputd's content snd-aloop lane,
-~32 ms) with a bounded 2-slot SHM ring on a **lab Pi only**
+**Status: EXPERIMENTAL lab tooling** (shipped default-off with the ring
+consumers change — the `jts-ring-ioplug` C plugin + the outputd SHM reader;
+canonical operational truth lives in
+[`docs/HANDOFF-usb-low-latency.md`](../../docs/HANDOFF-usb-low-latency.md)).
+This is not a product feature. It replaces one hop (outputd's content snd-aloop
+lane, ~32 ms) with a bounded 2-slot SHM ring on a **lab Pi only**
 (`jts3.local`, `jts5.local`, or a spare `jts.local`-shaped box — never a
 household's production speaker). Everything it touches is reversible with
 `disarm.sh`, and nothing here ships to `install.sh` or any product path.
@@ -24,10 +27,22 @@ riskiest slice of that hypothesis end-to-end: **CamillaDSP playback →
 outputd content**, via a custom ALSA ioplug writing into a shared-memory
 ring that outputd reads one slot per DAC period.
 
-**Falsifiable target:** content hop today is an observed ~1536-frame
-queue (~32 ms); the ring bounds it to `n_slots × period_frames` (2×128 =
-256 frames ≈ 5.3 ms at 48 kHz). Expected post-prototype p95 is **~155–162
-ms**. This is falsified by any of:
+**Falsifiable target (as first written, pre-descent):** content hop was an
+observed ~1536-frame queue (~32 ms); the ring bounds it to
+`n_slots × period_frames` (2×128 = 256 frames ≈ 5.3 ms at 48 kHz). The
+first-cut expectation was p95 **~155–162 ms** — the isolated Ring-B win off the
+173.6 ms aloop baseline.
+
+> **Superseded — direction validated and far exceeded.** The full ring graph
+> (both rings 2-slot + USB DIRECT bridge deletion) descended the whole USB route
+> to p50/p95 ≈ 35/37 ms (≈48–50 ms end-to-end), not ~155–162 ms — this hop's
+> ~27 ms saving was one contribution to a much larger stack. The current numbers
+> and the measured-results ladder live in
+> [`docs/HANDOFF-usb-low-latency.md`](../../docs/HANDOFF-usb-low-latency.md); the
+> `~155–162 ms` figure below is the original single-hop projection, kept for the
+> falsification logic, not a current target.
+
+The original prototype was falsified by any of:
 - measured p95 > 170 ms after arming,
 - `empty_reads` growing faster than the predicted clock-drift slip rate
   (roughly one slot per 1–2 minutes at 50–100 ppm — the SAME average slip
