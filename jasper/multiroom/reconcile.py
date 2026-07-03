@@ -1465,6 +1465,45 @@ def main(argv: list[str] | None = None) -> int:
     endpoint_block_reason = ""
     active_leader_arm_blocked = False
 
+    # Ring-armed box: REFUSE to form ANY bond (active or passive) while the fan-in
+    # coupling is shm_ring (audio-graph consolidation P2, audit finding 3). Ring is
+    # solo-stereo-only until P8's ring-v2 (N-channel + bonded round-trip): a bond
+    # formed on a ring box would split camilla#1's graph across topologies (the
+    # bonded leader-pipe/round-trip lanes assume the loopback/aloop content path,
+    # not the SHM ring). Fail-SAFE to solo — the box keeps playing its own content
+    # (self-recovery, AGENTS.md resilience) rather than half-parking silent — and
+    # surface a clear operator reason (disarm the ring to bond). Placed BEFORE the
+    # snapcast provision / any bond wiring so nothing bond-forming runs. The bond
+    # request stays in the wizard config; the operator disarms the ring (or waits
+    # for P8) and the next reconcile forms the bond.
+    if active:
+        from jasper.fanin.coupling_reconcile import read_persisted_coupling
+        from jasper.fanin_coupling import COUPLING_SHM_RING
+
+        if read_persisted_coupling() == COUPLING_SHM_RING:
+            endpoint_block_reason = "ring_armed_box_cannot_bond"
+            log_event(
+                logger,
+                "multiroom.reconcile.ring_armed_bond_blocked",
+                reason=args.reason,
+                detail=(
+                    "JASPER_FANIN_CAMILLA_COUPLING=shm_ring — a ring-armed box "
+                    "cannot join a bond until ring v2 (P8); disarm the ring "
+                    "(jasper-fanin-coupling-reconcile loopback) to group this "
+                    "speaker. Staying solo."
+                ),
+                level=logging.WARNING,
+            )
+            cfg = replace(cfg, enabled=False)
+            decision = plan(cfg)
+            active = False
+            active_leader = False
+            active_follower = False
+            active_speaker_leader = False
+            passive_leader = False
+            active_endpoint = False
+            rc = 1
+
     # Grouping prerequisite: ensure the snapcast binaries are installed — the
     # "grouping opt-in's job" install.sh ships the units for but never installs
     # (jasper.multiroom.provision). Runs BEFORE the active-endpoint gate so the

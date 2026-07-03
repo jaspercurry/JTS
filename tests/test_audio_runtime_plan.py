@@ -943,3 +943,63 @@ def _env_int(text: str, key: str) -> int:
     match = re.search(rf'Environment="{re.escape(key)}=(\d+)"', text)
     assert match is not None, key
     return int(match.group(1))
+
+
+# --- shm_ring route policy + transport topology (P2) -------------------------
+
+
+def test_usb_low_latency_accepts_coherent_shm_ring_pair():
+    # The coherent ring pair (Ring A + Ring B) must NOT error the plan — else a
+    # ring-armed box's shipped low-latency claim goes permanently red (gap 8).
+    plan = build_audio_runtime_plan(
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        route_mode="solo",
+    )
+    assert plan.route_policy_errors == ()
+
+
+def test_usb_low_latency_rejects_partial_ring_flip_fanin_only():
+    # shm_ring fan-in + direct outputd = partial flip -> rejected.
+    plan = build_audio_runtime_plan(
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "direct"},
+        route_mode="solo",
+    )
+    assert plan.route_policy_errors
+    assert any("partial flip" in e or "shm_ring" in e for e in plan.route_policy_errors)
+
+
+def test_usb_low_latency_rejects_partial_ring_flip_outputd_only():
+    # loopback fan-in + shm_ring outputd = partial flip -> rejected.
+    plan = build_audio_runtime_plan(
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        fanin_env={COUPLING_ENV_VAR: COUPLING_LOOPBACK},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        route_mode="solo",
+    )
+    assert plan.route_policy_errors
+
+
+def test_usb_low_latency_still_accepts_default_loopback_direct():
+    plan = build_audio_runtime_plan(
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        route_mode="solo",
+    )
+    assert plan.route_policy_errors == ()
+
+
+def test_transport_topology_for_shm_ring_names_both_ring_devices():
+    topo = transport_topology_for_coupling(
+        COUPLING_SHM_RING, fanin_env={}, outputd_env={}
+    ).to_dict()
+    assert topo["name"] == COUPLING_SHM_RING
+    assert topo["fanin_to_camilla"]["transport"] == "shm_ring"
+    assert topo["fanin_to_camilla"]["camilla_capture_device"] == "jts_ring_capture"
+    assert topo["camilla_to_outputd"]["transport"] == "shm_ring"
+    assert topo["camilla_to_outputd"]["camilla_playback_device"] == "jts_ring_playback"
+    # rate_adjust stays ON for the ring (CamillaDSP paces against Ring B fill).
+    assert topo["camilla"]["enable_rate_adjust"] is True
+    assert topo["outputd_content_source"] == "shm_ring"

@@ -1982,3 +1982,46 @@ def test_restart_unit_reports_real_restart_failure(monkeypatch):
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
     assert reconcile_mod._restart_unit("jasper-outputd.service") is False
+
+
+# --- ring-armed box refuses to bond (audit finding 3, P2) --------------------
+
+
+def _arm_ring_for_reconcile(monkeypatch):
+    """Make main()'s read_persisted_coupling report shm_ring (ring-armed box)."""
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+
+
+def test_ring_armed_leader_refuses_bond_falls_back_to_solo(tmp_path, monkeypatch):
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    _arm_ring_for_reconcile(monkeypatch)
+    rc = main([])
+    # Refused: non-zero exit (the oneshot shows failed) so the operator notices.
+    assert rc == 1
+    # Fell back to solo: no bonded camilla apply, no snapcast server start.
+    assert "camilla_bonded" not in order
+    # The args file is written as the DISABLED (solo) shape.
+    text = target.read_text()
+    assert text == f"{SERVER_KEY}=\n{CLIENT_KEY}=\n"
+    # The follower status file records the ring block reason for /state + doctor.
+    import json
+
+    status = json.loads(
+        (tmp_path / "grouping-follower-status.json").read_text()
+    )
+    assert status.get("blocked_reason") == "ring_armed_box_cannot_bond"
+
+
+def test_loopback_box_still_bonds_normally(tmp_path, monkeypatch):
+    # Control: a non-ring (loopback) box bonds as before — the gate is ring-only.
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "loopback",
+    )
+    rc = main([])
+    assert rc == 0
+    assert "camilla_bonded" in order
