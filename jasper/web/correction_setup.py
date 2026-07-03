@@ -2409,6 +2409,20 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
+        def _serve_json_route(
+            self, label: str, handler_fn: Callable[[BaseHTTPRequestHandler], dict[str, Any]],
+        ) -> None:
+            """Shared JSON GET-route wrapper: any handler failure surfaces
+            as a 500 JSON error instead of a stack-trace page or a dead
+            request thread — the poll posture /status, /envelope, and
+            /sessions share (one wrapper so the blanket net isn't
+            re-declared per route)."""
+            try:
+                self._send_json(handler_fn(self))
+            except Exception as e:  # noqa: BLE001 — route-level 500 net
+                logger.exception("%s failed", label)
+                self._send_json({"error": str(e)}, status=500)
+
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
             send_html_response(self, body, status=status)
 
@@ -2720,25 +2734,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 self.wfile.write(body)
                 return
             if path == "/status":
-                try:
-                    self._send_json(_handle_status(self))
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("/status failed")
-                    self._send_json({"error": str(e)}, status=500)
+                self._serve_json_route("/status", _handle_status)
                 return
             if path == "/envelope":
-                try:
-                    self._send_json(_handle_envelope(self))
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("/envelope failed")
-                    self._send_json({"error": str(e)}, status=500)
+                self._serve_json_route("/envelope", _handle_envelope)
                 return
             if path == "/sessions":
-                try:
-                    self._send_json(_handle_sessions(self))
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("/sessions failed")
-                    self._send_json({"error": str(e)}, status=500)
+                self._serve_json_route("/sessions", _handle_sessions)
                 return
             if path == "/session-report":
                 try:

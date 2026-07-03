@@ -162,7 +162,10 @@ def _autolevel_snapshot(session: Any) -> dict[str, Any]:
         return {}
     try:
         snap = al.snapshot()
-    except Exception:  # noqa: BLE001 — never let a bad sub-snapshot break the envelope
+    except (AttributeError, RuntimeError, TypeError):
+        # Never let a bad sub-snapshot break the envelope: a duck-typed
+        # session may lack snapshot(), and a mid-teardown controller can
+        # raise — the envelope just omits the level fold.
         return {}
     return snap if isinstance(snap, dict) else {}
 
