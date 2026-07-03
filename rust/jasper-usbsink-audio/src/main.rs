@@ -111,7 +111,7 @@ impl Config {
             )),
             preempt_host: env_string("JASPER_USBSINK_PREEMPT_HOST", DEFAULT_PREEMPT_HOST),
             preempt_port: env_u16("JASPER_USBSINK_PREEMPT_PORT", DEFAULT_PREEMPT_PORT)?,
-            host_clock: HostClockConfig::from_env(|key| env::var(key).ok(), period_frames)
+            host_clock: HostClockConfig::from_env(|key| env::var(key).ok())
                 .map_err(anyhow::Error::msg)?,
         };
         cfg.validate()?;
@@ -1775,7 +1775,7 @@ mod tests {
     /// The host-clock ladder itself is tested exhaustively in `host_clock.rs`;
     /// these tests only assert the daemon folds the block in.
     fn test_host_clock_config() -> HostClockConfig {
-        HostClockConfig::from_env(|_| None, DEFAULT_PERIOD_FRAMES).unwrap()
+        HostClockConfig::from_env(|_| None).unwrap()
     }
 
     /// The disabled host-clock fragment, for status_json fold-in tests.

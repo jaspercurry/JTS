@@ -254,9 +254,6 @@ pub struct HostClockConfig {
     /// baseline phase runs first, so the whole probe is `4 + probe_step_secs`
     /// seconds — 10 s at the default, up to 14 s at the max (probe_step_secs 10).
     pub probe_step_secs: u64,
-    /// The gadget ring period size in frames (for fill_frames scaling). Threaded
-    /// from the daemon [`crate::Config`] so this module stays self-contained.
-    pub period_frames: u32,
 }
 
 impl HostClockConfig {
@@ -268,7 +265,7 @@ impl HostClockConfig {
     ///
     /// `getenv` is injected so the parse is unit-testable without touching the
     /// process environment.
-    pub fn from_env<F>(getenv: F, period_frames: u32) -> Result<Self, String>
+    pub fn from_env<F>(getenv: F) -> Result<Self, String>
     where
         F: Fn(&str) -> Option<String>,
     {
@@ -329,7 +326,6 @@ impl HostClockConfig {
             target_fill_frames: target_fill_frames as f64,
             probe_ppm: probe_ppm as f64,
             probe_step_secs,
-            period_frames: period_frames.max(1),
         })
     }
 }
@@ -584,17 +580,11 @@ impl HostClock {
 
     // ---- Accessors for telemetry --------------------------------------------
 
-    pub fn enabled(&self) -> bool {
-        self.cfg.enabled
-    }
     pub fn ladder(&self) -> Ladder {
         self.ladder
     }
     pub fn commanded_ppm(&self) -> f64 {
         self.commanded_ppm
-    }
-    pub fn fill_slope_ppm(&self) -> f64 {
-        self.slope.slope_ppm()
     }
     pub fn fill_variance(&self) -> f64 {
         self.slope.fill_variance()
@@ -620,9 +610,6 @@ impl HostClock {
     /// Lifetime count of outer-DLL anti-windup resets (diagnostic).
     pub fn anti_windup_events(&self) -> u64 {
         self.anti_windup_events
-    }
-    pub fn last_transition_reason(&self) -> &'static str {
-        self.last_transition_reason
     }
 
     /// The one-time startup neutralize action. Emitted ONCE, unconditionally
@@ -1181,7 +1168,6 @@ mod tests {
             target_fill_frames: 384.0,
             probe_ppm: 300.0,
             probe_step_secs: 6,
-            period_frames: 256,
         }
     }
 
@@ -1200,7 +1186,7 @@ mod tests {
 
     #[test]
     fn config_disabled_by_default_and_inert() {
-        let cfg = HostClockConfig::from_env(|_| None, 256).unwrap();
+        let cfg = HostClockConfig::from_env(|_| None).unwrap();
         assert!(!cfg.enabled);
     }
 
@@ -1213,7 +1199,7 @@ mod tests {
                 None
             }
         };
-        assert!(HostClockConfig::from_env(get, 256).unwrap().enabled);
+        assert!(HostClockConfig::from_env(get).unwrap().enabled);
         // Any other value: warned no-op, stays disabled.
         let get_other = |k: &str| {
             if k == "JASPER_USBSINK_HOST_CLOCK" {
@@ -1222,7 +1208,7 @@ mod tests {
                 None
             }
         };
-        assert!(!HostClockConfig::from_env(get_other, 256).unwrap().enabled);
+        assert!(!HostClockConfig::from_env(get_other).unwrap().enabled);
     }
 
     #[test]
@@ -1236,52 +1222,44 @@ mod tests {
                 }
             }
         };
-        assert!(HostClockConfig::from_env(
-            with("JASPER_USBSINK_HOST_CLOCK_TARGET_FILL_FRAMES", "64"),
-            256
-        )
+        assert!(HostClockConfig::from_env(with(
+            "JASPER_USBSINK_HOST_CLOCK_TARGET_FILL_FRAMES",
+            "64"
+        ))
         .is_err());
         assert!(
-            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "50"), 256)
-                .is_err()
+            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "50")).is_err()
         );
         // Below/at the ~163 ppm Windows deadband is rejected (S4): a probe
         // there would falsely fail every session on a compliant host.
         assert!(
-            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "100"), 256)
-                .is_err(),
+            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "100")).is_err(),
             "PROBE_PPM=100 (<= ~163 ppm deadband) must be rejected"
         );
         assert!(
-            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "199"), 256)
-                .is_err()
+            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "199")).is_err()
         );
         // The floor itself (200, just above the deadband) is accepted.
         assert!(
-            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "200"), 256)
-                .is_ok(),
+            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "200")).is_ok(),
             "PROBE_PPM=200 (above the deadband) must be accepted"
         );
-        assert!(HostClockConfig::from_env(
-            with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "1200"),
-            256
-        )
-        .is_err());
-        assert!(HostClockConfig::from_env(
-            with("JASPER_USBSINK_HOST_CLOCK_PROBE_SECONDS", "3"),
-            256
-        )
-        .is_err());
-        assert!(HostClockConfig::from_env(
-            with("JASPER_USBSINK_HOST_CLOCK_PROBE_SECONDS", "20"),
-            256
-        )
-        .is_err());
+        assert!(
+            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_PPM", "1200")).is_err()
+        );
+        assert!(
+            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_SECONDS", "3"))
+                .is_err()
+        );
+        assert!(
+            HostClockConfig::from_env(with("JASPER_USBSINK_HOST_CLOCK_PROBE_SECONDS", "20"))
+                .is_err()
+        );
     }
 
     #[test]
     fn config_defaults_match_contract() {
-        let cfg = HostClockConfig::from_env(|_| None, 256).unwrap();
+        let cfg = HostClockConfig::from_env(|_| None).unwrap();
         assert_eq!(cfg.target_fill_frames, 384.0);
         assert_eq!(cfg.probe_ppm, 300.0);
         assert_eq!(cfg.probe_step_secs, 6);
