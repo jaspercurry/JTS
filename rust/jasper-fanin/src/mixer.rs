@@ -306,9 +306,17 @@ const HOST_COMPLIANCE_EARLY_REVALIDATION_SECS: u64 = 60;
 ///
 /// 5 s comfortably covers a real re-acquisition after a floor-fatal underfill (the
 /// lane re-primes and relocks in well under a second) while expiring a terminal
-/// stream-end's pending strike far inside the gap before a genuinely-new stream
-/// (seconds-to-minutes later on macOS) would relock — so a new session's first lock
-/// never confirms a dead prior session's strike.
+/// stream-end's pending strike well before the usual gap to the next macOS stream
+/// (seconds-to-minutes later). The honest bound, NOT an absolute "never": a strike
+/// survives only into a relock arriving ≤ `HOST_COMPLIANCE_CHURN_CONFIRM_SECS` after
+/// the arming unlock. The tracker has NO signal to tell a genuinely-new stream's
+/// first lock (a fresh clip started ≤ 5 s after the prior stopped) apart from a churn
+/// relock — both are "armed strike + rising edge inside the horizon" — so such a
+/// restart WILL confirm the dead session's strike: one spurious revoke, self-healing
+/// via re-prove on that session's ~2.5-min descent. That residual is accepted (the
+/// horizon cannot shrink below ~2× the bounded-prime fall-through without missing
+/// genuine bursty-host churn); see the revalidation section of
+/// docs/HANDOFF-usb-low-latency.md.
 const HOST_COMPLIANCE_CHURN_CONFIRM_SECS: u64 = 5;
 
 /// Per-lane TRIM control + counters, shared (`Arc`) between the mixer work

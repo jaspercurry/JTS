@@ -333,8 +333,14 @@ pub fn compute_revoke_reason(s: RevalidationSignals) -> Option<RevokeReason> {
 ///    edge) arrives within `confirm_horizon_periods` — a short tick-clock horizon.
 ///    Unlock→relock cycling proves the host is present and the floor is failing.
 ///  - If no relock arrives within the horizon, the pending strike **EXPIRES
-///    harmlessly** (the stream died — no churn). It never survives a session; a
-///    fresh lock is armed clean.
+///    harmlessly** (the stream died — no churn); the next lock is armed clean. The
+///    honest bound is NOT an absolute "never survives a session": a strike survives
+///    only into a relock arriving ≤ `confirm_horizon_periods` after the arming
+///    unlock. The tracker cannot distinguish a genuinely-new stream's first relock
+///    (a fresh clip starting just after the prior one stopped) from a churn relock —
+///    both are "armed strike + rising edge inside the horizon" — so a restart inside
+///    that window WILL confirm the prior session's strike (one spurious revoke,
+///    self-healing via re-prove on that session's descent). Accepted residual.
 ///
 /// A churn STORM (many unlock/relock cycles) revokes on the FIRST confirmed cycle:
 /// the confirming relock clears `flag_present` (via the mixer's `on_revoked`) and

@@ -924,7 +924,8 @@ the lane unlocks and never relocks):
   and compared purely in ticks — never a wall clock). Unlock→relock cycling is the
   evidence: the host is present and the floor is genuinely failing.
 - If no relock arrives within the horizon, the pending strike **EXPIRES harmlessly**
-  (the stream died — no churn). It never survives a session; a fresh lock is armed clean.
+  (the stream died — no churn); the next lock is armed clean. This is a bound, NOT an
+  absolute "never survives a session" — see the accepted-residual note below.
 
 A churn STORM (many unlock/relock cycles) revokes on the FIRST confirmed cycle: the
 confirming relock clears `flag_present` (via `on_revoked`), and the tracker latches
@@ -938,10 +939,33 @@ with one dropout per stall and the proof never self-revoked. Under the discrimin
 periodic stall on a host that *keeps streaming* — stall → underfill unlock (arm) → the
 host recovers and delivers again → relock within a second or two (well inside the 5 s
 horizon) → CONFIRM — now **does** revoke and revert to the ceiling. That is correct: a
-present-but-stalling host IS churn worth revoking. The one profile that never revokes on
-the underfill path is the one this fix is FOR: a session that simply ended (the host
-stopped; no relock). A live probe FAIL or an L2 demotion still revert the proof
-regardless, as before.
+present-but-stalling host IS churn worth revoking. Two profiles still never revoke on the
+underfill path: (1) the one this fix is FOR — a session that simply ended (the host
+stopped; no relock at all); and (2) a host that stalls **longer than the 5 s horizon** and
+then resumes — the strike expires before the resume-relock arrives, so that relock finds no
+armed strike. (2) is acceptable, not a gap: a >5 s delivery stall underruns at ANY fill
+depth (the deepest cushion buys only tens of ms), so revoking would not have prevented the
+dropout — the proof gains nothing from tripping. Persistent non-compliance on such a host
+is still caught by the per-session live probe FAIL and mid-stream `saturated_slope`
+DllDemotion, which revert the proof regardless, as before.
+
+**Accepted residual: a quick restart inside the horizon is indistinguishable from
+churn.** The strike "expires harmlessly" only when nothing relocks within the horizon.
+It is NOT an absolute "never survives a session": a strike survives into any relock that
+arrives ≤ `HOST_COMPLIANCE_CHURN_CONFIRM_SECS` (~5 s) after the arming unlock, and the
+tracker has no signal to tell a genuinely-new stream's first lock apart from a churn
+relock — both present as "an armed strike, then a rising edge inside the horizon." So the
+ordinary human timeline *ding at t=0 → CoreAudio stops the device stream at t≈2 s (arm)
+→ start music at t≈4–6 s → gadget stream restarts and the lane relocks* CONFIRMS the
+prior (compliant) session's strike: **one spurious revoke**, self-healing — that session
+runs from the ceiling and re-proves over the ~2.5-min descent, and the next session primes
+at the floor again. This is the accepted cost of the horizon, not a bug: the horizon can't
+shrink much below ~2× the bounded-prime fall-through (`max_prime_periods` ≈ 1 s) without
+missing genuine bursty-host churn, and the tracker cannot distinguish a Δ≤5 s restart from
+churn. Anyone debugging a `revoked reason=early_unlock` line that fired shortly after a
+quick stop-then-play should read it as this residual, not a discriminator bug. (It is
+mechanically the same as the churn test — a new stream starting inside the window IS a
+confirmed cycle from the tracker's point of view.)
 
 **Three correctness details the tracker encodes.** (1) The arming underfill is evaluated
 on the lock-LOSS edge, because `unlock_for_underfill` sets `locked=false` in the SAME
