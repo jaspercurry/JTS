@@ -231,10 +231,12 @@ Default-**OFF** mechanism + telemetry + evidence, landed alongside the Stage 0
 click/capture harness above. It commands the HOST's USB audio clock instead of
 only reconciling the offset in software on our side — a structurally different
 lever from the fan-in USB input resampler, which absorbs the same standing
-rate offset in the digital domain. Source:
+rate offset in the digital domain. Source: the shared
+[`rust/jasper-host-clock/src/lib.rs`](../rust/jasper-host-clock/src/lib.rs)
+crate (its module docstring is the authoritative derivation; this section is
+the operational summary), consumed through the thin
 [`rust/jasper-usbsink-audio/src/host_clock.rs`](../rust/jasper-usbsink-audio/src/host_clock.rs)
-(the module docstring there is the authoritative derivation; this section is
-the operational summary).
+shim.
 
 ### Mechanism
 
@@ -372,7 +374,8 @@ Tunables (each documented in `.env.example` with the full range/rationale):
 `JASPER_USBSINK_HOST_CLOCK_PROBE_SECONDS` (default 6, step phase; a fixed 4 s
 baseline phase always runs first). The servo clamp (±1000 ppm), write
 epsilon/cadence (10 ppm / <=1 Hz), and tick interval (1 Hz) are fixed Rust
-constants, not env-tunable — see `host_clock.rs`'s pinned-constants block.
+constants, not env-tunable — see the pinned-constants block in the shared
+`jasper-host-clock` crate (`rust/jasper-host-clock/src/lib.rs`).
 
 ### What evidence `/state` gives
 

@@ -16,7 +16,7 @@ rust-version = "1.75"
 # The pure, allocation-free clock-tracking DLL (a PipeWire spa_dll port). The
 # outer pitch loop composes `jasper_clock::Dll` directly, exactly as
 # jasper-outputd / jasper-resampler already do. No ALSA, so the ladder/servo
-# logic and its 30 tests build on a macOS host with a bare `cargo test`.
+# logic and its tests build on a macOS host with a bare `cargo test`.
 jasper-clock = { path = "../jasper-clock" }
 log = "0.4"
 # The real ALSA pitch actuator (`AlsaPitchCtl`) is behind an off-by-default

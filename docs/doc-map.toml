@@ -586,6 +586,7 @@ code = [
   "jasper/cli/route_latency_harness.py",
   "jasper/route_latency/**",
   "rust/jasper-usbsink-audio/**",
+  "rust/jasper-host-clock/**",
 ]
 docs = [
   "docs/HANDOFF-audio-latency-foundation.md",

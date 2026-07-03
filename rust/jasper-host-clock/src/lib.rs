@@ -17,11 +17,13 @@
 //!
 //! This crate holds the pure, I/O-free ladder/servo ([`HostClock`]) plus the
 //! feature-gated ALSA actuator ([`AlsaPitchCtl`], behind `feature = "alsa"`).
-//! It is consumed by BOTH USB clock owners:
+//! It is the shared home for BOTH USB clock owners:
 //! - **solo (aloop) mode**: `jasper-usbsink-audio` owns the gadget capture and
-//!   drives this from its state publisher (`JASPER_USBSINK_HOST_CLOCK`).
-//! - **combo (USB DIRECT) mode**: `jasper-fanin` owns the gadget capture and
-//!   drives this from a dedicated thread (`JASPER_FANIN_HOST_CLOCK`).
+//!   drives this from its state publisher (`JASPER_USBSINK_HOST_CLOCK`). This is
+//!   the only consumer at this stack level.
+//! - **combo (USB DIRECT) mode**: once that mode lands, `jasper-fanin` will own
+//!   the gadget capture and drive this from a dedicated thread
+//!   (`JASPER_FANIN_HOST_CLOCK`).
 //!
 //! The invariant pinned across both: **the daemon that owns the gadget capture
 //! owns the pitch ctl.** Only one drives it at a time. Each daemon parses its
@@ -524,17 +526,11 @@ impl HostClock {
 
     // ---- Accessors for telemetry --------------------------------------------
 
-    pub fn enabled(&self) -> bool {
-        self.cfg.enabled
-    }
     pub fn ladder(&self) -> Ladder {
         self.ladder
     }
     pub fn commanded_ppm(&self) -> f64 {
         self.commanded_ppm
-    }
-    pub fn fill_slope_ppm(&self) -> f64 {
-        self.slope.slope_ppm()
     }
     pub fn fill_variance(&self) -> f64 {
         self.slope.fill_variance()
@@ -560,9 +556,6 @@ impl HostClock {
     /// Lifetime count of outer-DLL anti-windup resets (diagnostic).
     pub fn anti_windup_events(&self) -> u64 {
         self.anti_windup_events
-    }
-    pub fn last_transition_reason(&self) -> &'static str {
-        self.last_transition_reason
     }
 
     /// The one-time startup neutralize action. Emitted ONCE, unconditionally
@@ -937,8 +930,8 @@ impl HostClock {
 
     /// Render the `host_clock` block for `state.json` (contract §1). Byte-exact
     /// shape pinned by [`tests::host_clock_fragment_shape_is_stable`] and its
-    /// Python twins (`tests/test_usbsink_host_clock_contract.py`,
-    /// `tests/test_fanin_host_clock_contract.py`).
+    /// Python twin (`tests/test_usbsink_host_clock_contract.py`; a
+    /// `tests/test_fanin_host_clock_contract.py` twin arrives with combo mode).
     pub fn status_fragment(&self) -> String {
         let ratio = match self.response_ratio {
             Some(r) => format!("{r:.4}"),
@@ -1817,9 +1810,10 @@ mod tests {
     // ---- state.json fragment (byte-exact twin fixture) ---------------------
 
     /// BYTE-EXACT contract pin. The disabled default fragment must match this
-    /// string verbatim. Its Python twins
-    /// (`tests/test_usbsink_host_clock_contract.py`,
-    /// `tests/test_fanin_host_clock_contract.py`) grep this identical literal
+    /// string verbatim. Its Python twin
+    /// (`tests/test_usbsink_host_clock_contract.py`; a
+    /// `tests/test_fanin_host_clock_contract.py` twin arrives with combo mode)
+    /// greps this identical literal
     /// out of this source, so the expected value is a RAW string literal
     /// (`r#"..."#`) — the bare (unescaped) `"` bytes appear contiguously in the
     /// source, exactly matching the Python side's bare-quote fixture. Same
