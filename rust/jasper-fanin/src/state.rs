@@ -749,6 +749,36 @@ impl StateServer {
                     "unlock_count",
                     r.unlock_count.load(Ordering::Relaxed),
                 );
+                // OPTIONAL host-compliance persistence block (prime-at-floor).
+                // Rendered only when the DEFAULT-OFF feature is armed on this lane;
+                // absent otherwise (byte-identical STATUS shape). flag_present =
+                // a persisted proof is believed present; proved_at = its epoch-s
+                // timestamp (0 when absent); revoked_reason_last = the last
+                // one-strike revoke reason ("" until one happens).
+                if let Some(c) = &r.compliance {
+                    buf.push(',');
+                    buf.push_str(r#""compliance":{"#);
+                    push_kv_bool(
+                        &mut buf,
+                        "flag_present",
+                        c.flag_present.load(Ordering::Relaxed),
+                    );
+                    buf.push(',');
+                    push_kv_u64(
+                        &mut buf,
+                        "proved_at",
+                        c.proved_at_epoch_s.load(Ordering::Relaxed),
+                    );
+                    buf.push(',');
+                    push_kv_str(
+                        &mut buf,
+                        "revoked_reason_last",
+                        crate::host_compliance::revoke_reason_code_str(
+                            c.revoked_reason_last_code.load(Ordering::Relaxed),
+                        ),
+                    );
+                    buf.push('}');
+                }
                 buf.push('}');
             }
             // OPTIONAL USB DIRECT block (C7). Rendered only on the direct lane
@@ -1255,6 +1285,9 @@ mod tests {
                         decay_active: Arc::new(AtomicBool::new(false)),
                         decay_floor_frames: 0,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
+                        // No compliance persistence on this (non-direct) fixture
+                        // lane — the block is absent, matching a decay-off lane.
+                        compliance: None,
                     }),
                     // A lane that HAS been trimmed (fixture): 3 trims, 4608 frames
                     // dropped total, no request currently pending.
@@ -1311,6 +1344,13 @@ mod tests {
                         decay_active: Arc::new(AtomicBool::new(true)),
                         decay_floor_frames: 544,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
+                        // Host-compliance persistence ARMED fixture: a proof is
+                        // present (proved_at set, no revoke yet), exercising the
+                        // STATUS `compliance` block's populated path.
+                        compliance: Some(crate::host_compliance::HostComplianceObservability::new(
+                            true,
+                            1_700_000_000,
+                        )),
                     }),
                     trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
                 },

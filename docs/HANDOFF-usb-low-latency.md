@@ -831,6 +831,87 @@ post-lock warm-up window elapses. (Under the pre-fix DLL law this paragraph was
 false: the composite loop railed `commanded_ppm` ±350 ppm on a ~21 s period, so
 the freeze guard flapped twice per cycle and decay never advanced.)
 
+### Host-compliance persistence — prime at floor (DEFAULT-OFF, rides the decay flag)
+
+The cushion decay's ~2.5-min descent (held-target ceiling → floor) is otherwise
+paid at EVERY session start, because priming always begins at the full ceiling.
+Host-compliance persistence removes that recurring cost: once a session **proves**
+the host and the decay has **landed at the floor cleanly**, the proof is written to
+`/var/lib/jasper/fanin/host_compliance.json`, and the NEXT session primes the
+resampler AT the decay floor — the descent is skipped. There is **no new top-level
+flag**: this extends `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` (it is inert on a
+decay-off box). Path override: `JASPER_FANIN_HOST_COMPLIANCE_PATH`.
+
+Schema (v1, atomic tempfile+rename, world-readable 0644):
+`{schema, proved_at_epoch_s, probe_response_ratio, floor_frames, consecutive_failures}`.
+
+**Write condition (the FULL proof, not just a probe pass).** Written once per
+session, when ALL hold together for a settle window (the same
+`CUSHION_DECAY_STABILITY_MS` the decay warm-up uses): the decay has reached
+`at_floor` (descent complete) AND the DLL has held `l0_locked` AND the resampler's
+unlock count has NOT advanced across the window (zero churn). Any disqualifier
+re-arms the window. Owned by the pure `ComplianceProof` state machine in
+`jasper/jasper-fanin/src/host_compliance.rs` (`rust/…`), ticked once per render
+period by `mixer::step`.
+
+**Prime-at-floor.** At lane build time, if a valid proof is on disk whose
+`floor_frames` equals the live decay floor (a floor retune between sessions
+invalidates it — descend normally), the resampler is seeded at the floor
+(`CushionDecay::prime_at_floor`): the held target starts at the floor and a
+`floor_prime_pending` latch holds it there across the not-yet-locked prime periods
+so `try_lock` seats the cursor shallow. The ceiling is unchanged, so ANY
+discontinuity after lock still snaps all the way back to it.
+
+**Immediate revalidation (one strike → revoke).** The servo's per-session probe
+(the #1142 post-lock `AwaitLock` gate) runs on EVERY session start — that IS the
+revalidation. For a floor-primed session, three triggers revoke the proof: a probe
+FAIL, a DLL demotion to L2, or an underfill unlock within the first
+`HOST_COMPLIANCE_EARLY_REVALIDATION_SECS` (60 s). On any of them the mixer snaps the
+held target back to the full ceiling (the existing snap-back primitive), deletes the
+file, and logs `event=fanin.host_compliance.revoked reason=…`. The normal descent
+then re-proves and re-writes. **USB re-enumeration / a new host / a new port need NO
+special handling** — a new session simply re-probes, and the probe verdict
+revalidates; that is the new-machine/new-port answer. A missing/corrupt/stale file
+means "no proof" (descend as today) — fail toward today's behaviour, never a crash.
+
+**Session-start is content-agnostic — calibration runs on pure silence.** macOS
+holds the UAC2 output stream open and always-streaming even with no audio playing
+(silent frames). Every gate this feature depends on is **fill/rate-based, never
+RMS-gated**: the resampler's lock is `ring.fill_frames() >= prefill` (a byte-count,
+`lane_resampler::try_lock`); the servo probe/L0 run on the fill slope
+(solo) or the resampler's correction ppm (combo), not amplitude; and the write
+condition reads `decay_at_floor` / `dll_l0_locked` / `unlock_count`. The usbsink
+`rms_dbfs` gauge feeds ONLY the STATUS `playing` flag / metering, never audio flow
+or the lock/probe. So the whole prove→persist→prime→revalidate cycle exercises on a
+silent-but-streaming host; the on-device validation run proves it on hardware.
+
+**Cold-start validation protocol (jts.local, Apple dongle, decay armed).**
+1. Arm decay (`JASPER_FANIN_RESAMPLER_CUSHION_DECAY=enabled`) + combo host-clock,
+   delete any existing `host_compliance.json`, restart fan-in.
+2. Start the Mac USB output (music OR just an open silent stream — the
+   silence-fact means either works). Watch
+   `curl -s http://jts.local:8780/state | jq '.audio_graph.fanin.inputs[]|select(.resampler).resampler.compliance'`
+   and `journalctl -u jasper-fanin | grep host_compliance`.
+3. Confirm the descent runs (~2.5 min, `decay.frozen_reason` walks
+   `warmup→""(decaying)→at_floor`), then `event=fanin.host_compliance.written` and
+   `compliance.flag_present=true`, `proved_at` set.
+4. **Cold-start win:** stop + restart the Mac stream (new session). Confirm
+   `event=fanin.host_compliance.prime_at_floor`, the held target sits at the floor
+   from the first lock (no 2.5-min descent), the probe passes, and no revoke fires.
+   Measure e2e latency — expect the settled floor number (~46.1), not the ceiling.
+5. **Silence check:** repeat step 4 with the Mac output OPEN but PLAYING NOTHING
+   (pure silence). The lane must still lock, the probe still run, and the prime
+   still hold — proving the calibration is content-agnostic.
+6. **Revocation check:** with a proof present, force a probe FAIL (e.g. a
+   non-compliant host / a `PROBE_PPM` under the Windows deadband on a Windows box,
+   or unplug-replug to a different machine) and confirm one
+   `event=fanin.host_compliance.revoked`, the file deleted, and the held target
+   snapped back to the ceiling.
+
+State machine + I/O: `rust/jasper-fanin/src/host_compliance.rs`; mixer wiring:
+`mixer::service_host_compliance`; STATUS: `resampler.compliance
+{flag_present, proved_at, revoked_reason_last}`.
+
 ### Cross-platform conditions
 
 - **macOS**: honors asynchronous feedback well — the gold path for this

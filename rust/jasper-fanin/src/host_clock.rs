@@ -133,6 +133,63 @@ pub struct HostClockSignals {
     /// i64 into an `AtomicU64`). The decay tick reads its magnitude for the
     /// cascade-stability guard.
     pub commanded_milli_ppm: Arc<AtomicI64>,
+    /// REVERSE signal (servo thread → mixer): 1 iff the DLL ladder is
+    /// `l2_fallback` — the probe FAILED or the host stopped honouring the command
+    /// (mid-stream demotion). The mixer's host-compliance revalidation reads this:
+    /// a floor-primed session whose ladder demotes to L2 is one strike →
+    /// snap-back + revoke the persisted proof.
+    pub ladder_l2: Arc<AtomicBool>,
+    /// REVERSE signal (servo thread → mixer): the servo's last probe verdict, as a
+    /// stable code — `0` none/pending, `1` pass, `2` fail, `3` aborted (see
+    /// [`probe_result_code`]). Lets the revalidation distinguish a fresh probe
+    /// FAIL (`2`) from a mid-stream L2 demotion after a prior pass, so the revoke
+    /// reason is honest (`probe_fail` vs `dll_demotion`).
+    pub probe_result_code: Arc<AtomicU64>,
+    /// REVERSE signal (servo thread → mixer): the servo's last probe RESPONSE
+    /// RATIO ×1000, as an i64 bit-packed in this `AtomicU64` (same encoding as
+    /// `correction_milli_ppm`), or the sentinel [`PROBE_RATIO_NONE`] when the probe
+    /// has no verdict yet. The compliance proof records this as evidence of HOW
+    /// compliant the host was on the proving session. Decoded exactly as the
+    /// STATUS layer decodes a signed milli value.
+    pub probe_response_ratio_milli: Arc<AtomicU64>,
+}
+
+/// Sentinel for "no probe verdict yet" in the `probe_response_ratio_milli` reverse
+/// signal (an i64 that a real ×1000 ratio can never take: `i64::MIN`). The mixer
+/// maps it to `None` before handing the ratio to the proof.
+pub const PROBE_RATIO_NONE: i64 = i64::MIN;
+
+/// Encode a `response_ratio` (`Option<f64>`) into the milli reverse-signal wire
+/// value: `ratio × 1000` rounded, or [`PROBE_RATIO_NONE`] for `None`. Pure.
+pub fn encode_response_ratio_milli(ratio: Option<f64>) -> i64 {
+    match ratio {
+        Some(r) => (r * 1000.0).round() as i64,
+        None => PROBE_RATIO_NONE,
+    }
+}
+
+/// Decode a milli reverse-signal wire value back to `Option<f64>`, inverting
+/// [`encode_response_ratio_milli`]. Pure.
+pub fn decode_response_ratio_milli(milli: i64) -> Option<f64> {
+    if milli == PROBE_RATIO_NONE {
+        None
+    } else {
+        Some(milli as f64 / 1000.0)
+    }
+}
+
+/// Stable wire code for a [`ProbeResult`], mirroring the ladder-state codes. The
+/// revalidation logic reads these off the reverse signal; a decoder lives beside
+/// the encoder here so they cannot drift. `0` none, `1` pass, `2` fail, `3`
+/// aborted — append, never renumber.
+pub fn probe_result_code(r: jasper_host_clock::ProbeResult) -> u64 {
+    use jasper_host_clock::ProbeResult;
+    match r {
+        ProbeResult::None => 0,
+        ProbeResult::Pass => 1,
+        ProbeResult::Fail => 2,
+        ProbeResult::Aborted => 3,
+    }
 }
 
 /// Build the validated shared [`HostClockConfig`] for the fan-in ladder from the
@@ -394,6 +451,16 @@ pub fn run_host_clock_thread(
                 signals
                     .ladder_l0
                     .store(hc.ladder() == Ladder::L0Locked, Ordering::Relaxed);
+                signals
+                    .ladder_l2
+                    .store(hc.ladder() == Ladder::L2Fallback, Ordering::Relaxed);
+                signals
+                    .probe_result_code
+                    .store(probe_result_code(hc.probe_result()), Ordering::Relaxed);
+                signals.probe_response_ratio_milli.store(
+                    encode_response_ratio_milli(hc.response_ratio()) as u64,
+                    Ordering::Relaxed,
+                );
                 signals.commanded_milli_ppm.store(
                     (hc.commanded_ppm() * 1000.0).round() as i64,
                     Ordering::Relaxed,
@@ -428,7 +495,22 @@ pub fn run_host_clock_thread(
     // → relock → warmup → re-decay) until a daemon restart. Publishing
     // `l0=false` / `commanded=0` makes the very next decay tick snap the cushion
     // back to the ceiling (`DecayFrozenReason::NotL0`) and hold it there.
+    //
+    // Clear the L2 / probe-result reverse signals too: a stopped servo must not
+    // leave a stale `ladder_l2=true` that would make the mixer's compliance
+    // revalidation spuriously revoke a proof for a session whose ladder was fine
+    // when the daemon was told to stop. `not_l0` (from the l0=false above) already
+    // snaps the cushion back; revocation must be driven only by a LIVE L2/probe-
+    // fail signal, not by the servo shutting down.
     signals.ladder_l0.store(false, Ordering::Relaxed);
+    signals.ladder_l2.store(false, Ordering::Relaxed);
+    signals.probe_result_code.store(
+        probe_result_code(jasper_host_clock::ProbeResult::None),
+        Ordering::Relaxed,
+    );
+    signals
+        .probe_response_ratio_milli
+        .store(encode_response_ratio_milli(None) as u64, Ordering::Relaxed);
     signals.commanded_milli_ppm.store(0, Ordering::Relaxed);
 }
 
@@ -467,6 +549,9 @@ mod tests {
             held_target_frames: Arc::new(AtomicU64::new(2048)),
             ladder_l0: Arc::new(AtomicBool::new(false)),
             commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
+            ladder_l2: Arc::new(AtomicBool::new(false)),
+            probe_result_code: Arc::new(AtomicU64::new(0)),
+            probe_response_ratio_milli: Arc::new(AtomicU64::new(PROBE_RATIO_NONE as u64)),
         }
     }
 
@@ -643,5 +728,39 @@ mod tests {
         // stays None (writes keep no-op'ing — safe degrade, no spurious probe).
         assert!(!a.reopen_if_closed());
         assert!(!a.is_open());
+    }
+
+    // ---- Compliance-revalidation reverse-signal encoders -------------------
+
+    #[test]
+    fn probe_result_codes_are_stable() {
+        use jasper_host_clock::ProbeResult;
+        assert_eq!(probe_result_code(ProbeResult::None), 0);
+        assert_eq!(probe_result_code(ProbeResult::Pass), 1);
+        assert_eq!(probe_result_code(ProbeResult::Fail), 2);
+        assert_eq!(probe_result_code(ProbeResult::Aborted), 3);
+    }
+
+    #[test]
+    fn response_ratio_milli_roundtrips_including_the_none_sentinel() {
+        // A real ratio survives the ×1000 round-trip; None maps to the sentinel
+        // and back. The mixer reads this off the reverse signal to record the
+        // proof's evidence, so the sign + None must be faithful.
+        assert_eq!(
+            decode_response_ratio_milli(encode_response_ratio_milli(None)),
+            None
+        );
+        assert_eq!(
+            decode_response_ratio_milli(encode_response_ratio_milli(Some(1.66))),
+            Some(1.66)
+        );
+        // Negative ratio (a non-compliant host) keeps its sign.
+        assert_eq!(
+            decode_response_ratio_milli(encode_response_ratio_milli(Some(-0.88))),
+            Some(-0.88)
+        );
+        // The sentinel is distinct from any plausible ratio.
+        assert_eq!(encode_response_ratio_milli(None), PROBE_RATIO_NONE);
+        assert_ne!(encode_response_ratio_milli(Some(0.0)), PROBE_RATIO_NONE);
     }
 }

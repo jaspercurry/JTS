@@ -40,6 +40,9 @@ _FANIN_LANE_RESAMPLER_RS = (
 )
 _FANIN_MIXER_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer.rs"
 _FANIN_STATE_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "state.rs"
+_FANIN_HOST_COMPLIANCE_RS = (
+    _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_compliance.rs"
+)
 
 
 def _config_rs_text() -> str:
@@ -70,6 +73,12 @@ def _state_rs_text() -> str:
     if not _FANIN_STATE_RS.exists():
         pytest.skip(f"rust source not present: {_FANIN_STATE_RS}")
     return _FANIN_STATE_RS.read_text(encoding="utf-8")
+
+
+def _host_compliance_rs_text() -> str:
+    if not _FANIN_HOST_COMPLIANCE_RS.exists():
+        pytest.skip(f"rust source not present: {_FANIN_HOST_COMPLIANCE_RS}")
+    return _FANIN_HOST_COMPLIANCE_RS.read_text(encoding="utf-8")
 
 
 def test_default_pipe_path_agrees_between_rust_and_python():
@@ -296,6 +305,63 @@ def test_cushion_decay_snaps_back_to_ceiling_on_lock_loss():
     assert "snap_decay_back" in resampler_text[unlock_start:unlock_end], (
         "unlock_for_underfill() must snap the decayed held target back to the ceiling"
     )
+
+
+def test_host_compliance_status_block_and_wiring():
+    """The DEFAULT-OFF host-compliance persistence surfaces `resampler.compliance`
+    and rides the cushion-decay flag (no new top-level feature gate).
+
+    The prime-at-floor + one-strike-revalidation feature persists a proof to a
+    fan-in-owned JSON file, primes the decay at its floor when a valid proof
+    exists, and revokes on the per-session probe fail / DLL demotion / early
+    unlock. STATUS must additively expose the three fields the operator watches
+    (`flag_present` / `proved_at` / `revoked_reason_last`); the mixer must service
+    it once per period; and the persistence must be gated behind
+    `input_resampler_cushion_decay_enabled`, not a separate flag.
+    """
+    config_text = _config_rs_text()
+    mixer_text = _mixer_rs_text()
+    state_text = _state_rs_text()
+    resampler_text = _lane_resampler_rs_text()
+
+    # 1. STATUS surfaces the three additive compliance fields under resampler.
+    assert '"compliance":{' in state_text
+    for field in ('"flag_present"', '"proved_at"', '"revoked_reason_last"'):
+        assert field in state_text, f"STATUS resampler.compliance must carry {field}"
+
+    # 2. The mixer services the compliance state once per period.
+    assert "fn service_host_compliance(" in mixer_text
+    assert "self.service_host_compliance(" in mixer_text, (
+        "the mixer step must call service_host_compliance once per render period"
+    )
+
+    # 3. Persistence rides the cushion-decay flag — NO separate top-level gate.
+    assert "config.input_resampler_cushion_decay_enabled" in mixer_text, (
+        "prime-at-floor / persistence must be gated behind the cushion-decay flag"
+    )
+
+    # 4. The prime-at-floor primitive exists on the resampler and is invoked only
+    #    from the gated build helper.
+    assert "pub fn prime_decay_at_floor(" in resampler_text
+    assert "resampler.prime_decay_at_floor()" in mixer_text, (
+        "the gated build helper must prime the decay at the floor for a valid proof"
+    )
+
+    # 5. The persistence path is a config knob defaulting under the fan-in state
+    #    dir (already-owned write path — no new StateDirectory / privilege grant).
+    assert "JASPER_FANIN_HOST_COMPLIANCE_PATH" in config_text
+    assert "/var/lib/jasper/fanin/host_compliance.json" in _host_compliance_rs_text(), (
+        "the default compliance path must be a sibling of the xrun log under the "
+        "fan-in state dir (the already-owned ReadWritePaths=/var/lib/jasper posture)"
+    )
+
+    # 6. The write/revoke journal events are present (observability contract).
+    for event in (
+        "event=fanin.host_compliance.written",
+        "event=fanin.host_compliance.revoked",
+        "event=fanin.host_compliance.prime_at_floor",
+    ):
+        assert event in mixer_text, f"mixer must emit {event}"
 
 
 def test_servo_thread_exit_clears_reverse_signals():

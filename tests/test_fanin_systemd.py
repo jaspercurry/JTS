@@ -371,7 +371,19 @@ def test_hardening_directives_present():
 def test_read_write_paths_include_jasper_state_dirs():
     """ReadWritePaths grants write access to the paths the daemon
     needs even with ProtectSystem=full. /var/lib/jasper for the
-    xrun_log ring, /run/jasper-fanin for the UDS socket."""
+    xrun_log ring AND the host-compliance persistence record
+    (host_compliance.json — same already-owned dir), /run/jasper-fanin
+    for the UDS socket.
+
+    Host-compliance persistence deliberately reuses this existing
+    posture rather than adding a new StateDirectory=jasper-fanin: fan-in
+    runs as root (WS1 note — it stays root on the final-output path) and
+    already create_dir_all's + writes /var/lib/jasper/fanin/ for the xrun
+    log. Adding StateDirectory would (a) point at a DIFFERENT path
+    (/var/lib/jasper-fanin/, not /var/lib/jasper/fanin/) and (b)
+    chown-manage a new dir — neither is needed, and reusing the xrun-log
+    dir grants fan-in no write it does not already hold (the WS1 "no new
+    broad /var/lib/jasper write" bar)."""
     unit = _read_unit()
     rwp_lines = [
         line.strip().split("=", 1)[1]
@@ -382,12 +394,29 @@ def test_read_write_paths_include_jasper_state_dirs():
     rwp_combined = " ".join(rwp_lines)
     assert "/var/lib/jasper" in rwp_combined, (
         "ReadWritePaths must include /var/lib/jasper "
-        "(for xrun_history.jsonl writes)"
+        "(for xrun_history.jsonl + host_compliance.json writes)"
     )
     assert "/run/jasper-fanin" in rwp_combined, (
         "ReadWritePaths must include /run/jasper-fanin "
         "(for the UDS socket; redundant with RuntimeDirectory "
         "but explicit for ProtectSystem=full)"
+    )
+
+
+def test_no_state_directory_needed_for_host_compliance():
+    """Host-compliance persistence must NOT introduce a StateDirectory.
+
+    The compliance record lives under the fan-in state dir alongside the
+    xrun log (already written via ReadWritePaths=/var/lib/jasper). A
+    StateDirectory=jasper-fanin would create/chown a SEPARATE path
+    (/var/lib/jasper-fanin/) and is not the posture this feature uses; if
+    a future edit adds one, revisit whether the compliance path moved."""
+    unit = _read_unit()
+    assert _value_for(unit, "StateDirectory") is None, (
+        "jasper-fanin.service intentionally has NO StateDirectory — the "
+        "host-compliance record reuses the already-owned "
+        "/var/lib/jasper/fanin/ dir (see the module docstring in "
+        "rust/jasper-fanin/src/host_compliance.rs)."
     )
 
 
