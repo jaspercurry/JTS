@@ -38,10 +38,10 @@ Best values to keep for the current Apple USB-C DAC fallback:
 JASPER_USBSINK_BLOCK_FRAMES=256
 JASPER_USBSINK_RING_PERIODS=3
 JASPER_FANIN_INPUT_BUFFER_FRAMES=4096
-JASPER_FANIN_USB_RESAMPLER_TARGET_FRAMES=512
-JASPER_FANIN_USB_RESAMPLER_WARMUP_CUSHION_FRAMES=1536
-JASPER_FANIN_USB_RESAMPLER_RING_FRAMES=4096
-JASPER_FANIN_USB_RESAMPLER_MAX_ADJUST_PPM=500
+JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512
+JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1536
+JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES=4096
+JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM=500
 JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024
 JASPER_CAMILLA_CHUNKSIZE=256
 JASPER_CAMILLA_TARGET_LEVEL=1536
@@ -176,6 +176,244 @@ nonzero usbsink/fan-in/outputd counter change across the measurement
 window) and states whether the declaration *would* be justified — it never
 asserts `--route-health-ok` on the operator's behalf; read the printed
 deltas and decide.
+
+## Measured results — first real artifacts (2026-07-02, jts.local, Apple dongle)
+
+All runs: 240-impulse quick preset, electrical capture-back (tcpdump of the
+:9891 post-Camilla reference; this box's amp is unplugged, so acoustic capture
+was impossible — add outputd's measured DAC delay, ~10 ms, for end-to-end).
+Source pinned via mux manual select for every window (see prerequisites below).
+
+| Run | p50 / p95 / p99 (ms) | Match | Config delta vs shipped floor |
+|---|---|---|---|
+| Baseline (shipped floor) | 173.6 / 181.5 / 183.5 | 240/240 | none |
+| Cushion shrink, unslaved | 139.5 / 156.5 / — | 225/240 ⚠ | resampler held 2048→512 |
+| Cushion shrink + pilot | 136.8 / 156.4 / 158.9 | 234/239 | + pilot tone holding the session |
+| **Certified stage floor** | **139.3 / 156.7 / 157.6** | **240/240, 0 xruns** | + 15 s lock lead-in |
+| Fan-in output 512 (rejected) | 205.6 / 218.4 / — | 204/240 ✗ | 27,221 output xruns — reverted |
+
+What the data established:
+
+- **The docs' old ~90–110 ms estimate was optimistic ~2×.** The measured
+  baseline is ~175 ms electrical with a tight 10 ms p50→p99 spread — stable
+  queue depth, not jitter, i.e. removable by architecture, not tuning.
+- **The resampler cushion cut delivers exactly its frame math** (−34 ms p50
+  for 2048→512 held) and holds 100 % match with zero xruns — but only under
+  an L0-locked host or with continuous content. Unslaved sparse content at a
+  tight cushion loses ~6 % of audio to re-lock episodes: **tight cushions are
+  L0-conditional floors**, which is the Stage 1 ladder's reason to exist.
+- **The fan-in output queue cannot be tuned below ~1024 on the aloop
+  transport** — 512 produced an xrun storm and *worse* latency (re-prime
+  refill). The boundary itself is the floor; removing it is the ring
+  transport's job, not a knob's.
+- Lock acquisition eats the first impulses after a stream start: measurement
+  windows need a ~15 s lead-in (or continuous content) before the first click.
+
+### Harness prerequisites (learned on hardware)
+
+- **Pin the source for the window** (`POST /source/select {"source":"usbsink"}`,
+  restore `auto` after): sparse clicks do not trip usbsink's RMS `playing`
+  bit (threshold −60 dBFS RMS), so in auto mode the mux never routes the lane
+  and the clicks die at the fan-in gate. Alternative: mix a pilot tone at or
+  above ~−50 dBFS RMS under the click track.
+- **On amp-less lab boxes** use the electrical mode: capture the :9891
+  reference with tcpdump (it is consumed by the AEC bridge on mic-ful boxes —
+  packet capture reads alongside without binding) and convert per-impulse
+  packet timestamps to CLOCK_MONOTONIC with a sampled realtime↔monotonic
+  offset. Document the mode in `--measurement-id`.
+- macOS note: the Mac's volume slider does NOT drive this gadget (macOS
+  treats it as fixed-volume; `PCM Capture Volume` never moves) — set the
+  speaker's listening level via `POST /volume/set` instead.
+
+## Host-slaved USB clock (Stage 1)
+
+Default-**OFF** mechanism + telemetry + evidence, landed alongside the Stage 0
+click/capture harness above. It commands the HOST's USB audio clock instead of
+only reconciling the offset in software on our side — a structurally different
+lever from the fan-in USB input resampler, which absorbs the same standing
+rate offset in the digital domain. Source:
+[`rust/jasper-usbsink-audio/src/host_clock.rs`](../rust/jasper-usbsink-audio/src/host_clock.rs)
+(the module docstring there is the authoritative derivation; this section is
+the operational summary).
+
+### Mechanism
+
+The Pi's UAC2 gadget already exposes a writable ALSA control on the capture
+device — `"Capture Pitch 1000000"`, iface=PCM, numid=1 — that both macOS and
+Windows honor dynamically as an asynchronous-feedback pitch command (verified
+live on jts.local, kernel 6.12.75: range `750000..1005000`, `fb_max=5`,
+`c_sync=async`, `req_number=2`). Writing a value above/below `1000000`
+(identity) tells the host to run its USB audio clock faster/slower.
+
+Stage 1 closes a delay-locked loop over that control:
+
+- **Error signal**: gadget capture ring fill (frames) minus a target,
+  computed from the *existing* `SharedState` atomics — the audio thread is
+  untouched, no new capture/playback code path.
+- **Control loop**: `jasper_clock::Dll` (the same PipeWire-`spa_dll` port
+  `jasper-fanin`'s lane resampler and `jasper-outputd`'s reference clock use),
+  ticked at a fixed 1 Hz on the state-publisher thread (not the audio thread).
+- **Actuator**: an ALSA ctl write to `"Capture Pitch 1000000"`, rate-limited
+  to <=1 Hz and only when the commanded change is >=10 ppm (no ctl spam), and
+  clamped to <sup>±</sup>1000 ppm total (feed-forward + DLL trim combined) —
+  independent of the wider hardware range above. The ctl handle lives ONLY on
+  the state-publisher thread: single writer by construction, the audio thread
+  and the preempt listener never touch it. The element is resolved by its
+  `(iface=PCM, name)` tuple, **never by numid** — numid 1 is a `u_audio.c`
+  registration-order artifact, not ABI, so pinning it could silently retarget
+  a future kernel's write (e.g. onto `PCM Capture Volume`); matching by name
+  keeps the daemon path aligned with the unit's name-based `ExecStopPost`.
+
+### Two controllers in cascade — the defense
+
+With the feature enabled, the fan-in `lane_resampler` (fast inner loop,
+`rust/jasper-fanin/src/lane_resampler.rs`) and this pitch DLL (slow outer
+loop) both discipline the same chain. JTS has a documented oscillation
+failure class when two rate controllers fight (the CamillaDSP `rate_adjust` +
+`AsyncSinc` incident, above). This is a legitimate CASCADE instead — a fast
+inner loop absorbing residual + jitter, a slow outer loop removing the
+standing offset at its source (the host) — defended by bandwidth separation
+derived from the actual inner-loop constant, not asserted:
+
+- **Inner loop**: `RateController::with_max_resync` → `DllConfig::for_rate(256,
+  48000)` (`JASPER_FANIN_PERIOD_FRAMES` defaults to 256), updated once per
+  rendered period (≈5.33 ms). Adaptive bandwidth clamped to
+  `[BW_MIN, BW_MAX] = [0.016, 0.128] Hz` (`jasper-clock`). Locked floor
+  **0.016 Hz**, acquiring maximum **0.128 Hz**.
+- **Outer loop** (this module): `DllConfig{period:4800, rate:48000,
+  initial_bw:BW_MIN, bw_retune_period:0}` ticked at exactly 1 Hz, adaptive
+  retune disabled so the number is fixed and testable. Effective bandwidth =
+  `0.016 × (4800/48000) / 1s = 0.0016 Hz`.
+- **Separation**: 10x below the inner loop's locked floor, 80x below its
+  acquiring maximum — >=10x in every inner-loop state.
+
+The slow settle is deliberate: PipeWire's docs warn UAC2 pitch control
+oscillates at a normal DLL bandwidth, and at 0.0016 Hz alone the DLL would
+take ~100 s to correct a standing offset — long enough to rail the tiny
+3×256-frame gadget ring. The per-session probe's neutral baseline phase
+measures the raw host offset and seeds the commanded bias with
+`-baseline_slope` on entering `L0_LOCKED` (feed-forward), so coarse
+correction is immediate and the slow DLL only trims the residual.
+
+**The falsifier**: `fill_variance` (EW variance of the gadget fill) and
+`fill_slope_ppm` are published on every enabled tick precisely so a soak can
+detect a cascade limit-cycle — a two-controller oscillation shows up as
+periodic fill variance the counters make visible. Watch both across a soak
+before trusting L0 lock long-term; if either shows periodicity, the answer is
+to widen the bandwidth separation further or leave the feature off.
+
+### Cross-platform conditions
+
+- **macOS**: honors asynchronous feedback well — the gold path for this
+  feature.
+- **Windows** (`usbaudio2.sys`): honors feedback dynamically but with a
+  ~163 ppm reaction deadband, and IGNORES commanded values outside roughly
+  nominal ±1 sample/interval — hence the ±1000 ppm servo clamp above sits
+  inside that validity window with margin, not at the wider hardware range.
+  That same deadband floors `JASPER_USBSINK_HOST_CLOCK_PROBE_PPM` at 200
+  (config-rejected below that): a probe at or under ~163 ppm would measure
+  near-zero response on a compliant Windows host and falsely fail every
+  session. Even the default 300 leaves modest margin against a full-deadband
+  subtraction ((300−163)/300 ≈ 0.46 vs the 0.5 pass ratio), so a Windows lab
+  box that demotes spuriously should raise `PROBE_PPM` toward 500–600. Windows
+  validation is deferred (macOS is the shipping-gold target); this is the
+  caveat to keep in mind when it happens.
+- Both react slowly, which is why the outer loop's bandwidth must stay this
+  low rather than matching the inner loop's.
+
+**Per-session probe rationale**: the host OS or the playing application can
+change between sessions (a Mac unplugged and a Windows box plugged in later;
+an app that opens the endpoint in a mode that pins the rate). Compliance is
+therefore re-measured on every `(host_connected && playing)` edge rather than
+trusted once at boot — a probe commands a bounded step (default +300 ppm for
+a 4 s baseline + 6 s step window) and measures the fill-slope response; a
+response under half the commanded step demotes straight to `L2_FALLBACK`
+(neutral pitch) without ever entering `L0_LOCKED`.
+
+### Ladder states
+
+`DISABLED -> PROBING (armed -> baseline -> step) -> L0_LOCKED <-> L1_WARN`,
+with any state falling to `L2_FALLBACK` on non-compliance evidence (probe
+failure, or a sustained saturated-command + adverse-slope condition
+mid-stream). `L2_FALLBACK` only re-attempts `PROBING` at the next idle
+boundary (stream stop / host disconnect) — it does not free-run a
+demonstrably non-compliant host mid-session. `L1_WARN` is a locked-but-watch
+state (unusually high sustained commanded ppm) with no functional
+difference from `L0_LOCKED` beyond the doctor/telemetry surfacing.
+
+### Pitch neutrality — the safety invariant
+
+A host must never be left slaved to a stale command by a crashed or stopped
+daemon. Enforced in four layers: (1) an unconditional startup neutralize
+write when the ctl opens, even with the feature disabled — heals a crashed
+predecessor; (2) the state-publisher's exit path resets to neutral on clean
+exit, SIGTERM/SIGINT, and audio-thread error (main sets the shared shutdown
+flag before joining); (3) every ladder transition into `L2_FALLBACK` or an
+idle boundary force-writes neutral; (4) belt-and-braces
+`ExecStopPost=-/usr/bin/amixer -c ${JASPER_USBSINK_MIXER_CARD} cset
+iface=PCM,name='Capture Pitch 1000000' 1000000` in
+[`deploy/systemd/jasper-usbsink.service`](../deploy/systemd/jasper-usbsink.service)
+covers SIGKILL / OOM-kill / watchdog abort, which layer (2) structurally
+cannot reach (the card is expanded from `JASPER_USBSINK_MIXER_CARD`, packaged
+default `UAC2Gadget`, so an operator card override redirects this line too). All four apply regardless of `JASPER_USBSINK_HOST_CLOCK` —
+a stale non-neutral value could only exist if the feature had been enabled
+and the daemon then died uncleanly.
+
+### Enabling on a lab box
+
+```sh
+printf 'JASPER_USBSINK_HOST_CLOCK=enabled\n' | sudo tee -a /etc/jasper/jasper.env
+sudo systemctl restart jasper-usbsink
+```
+
+Tunables (each documented in `.env.example` with the full range/rationale):
+`JASPER_USBSINK_HOST_CLOCK_TARGET_FILL_FRAMES` (default 384 ≈ 8 ms),
+`JASPER_USBSINK_HOST_CLOCK_PROBE_PPM` (default 300),
+`JASPER_USBSINK_HOST_CLOCK_PROBE_SECONDS` (default 6, step phase; a fixed 4 s
+baseline phase always runs first). The servo clamp (±1000 ppm), write
+epsilon/cadence (10 ppm / <=1 Hz), and tick interval (1 Hz) are fixed Rust
+constants, not env-tunable — see `host_clock.rs`'s pinned-constants block.
+
+### What evidence `/state` gives
+
+```sh
+curl -s http://jts.local:8780/state | jq .audio_graph.rust_bridge.host_clock
+```
+
+null on a pre-Stage-1 build or unreadable state file; otherwise:
+
+```json
+{
+  "enabled": true,
+  "ladder": "l0_locked",
+  "pitch_ppm_commanded": -42.5,
+  "fill_frames": 380,
+  "fill_slope_ppm": 1.2,
+  "fill_variance": 4.0,
+  "dll": {"err_frames": -4.0, "locked": true},
+  "probe": {"last_result": "pass", "response_ratio": 0.91},
+  "demotions": 0,
+  "transitions": 2,
+  "last_transition_reason": "probe_pass"
+}
+```
+
+`dll.locked` is diagnostic only (expected `false` under the 256-frame fill
+quantization at this tick rate) — the ladder (`ladder` field) is the lock
+authority a consumer should read. `jasper-doctor`'s `check_usbsink_host_clock`
+skips when the feature is disabled or the block is absent, warns on
+`l2_fallback` (with `last_transition_reason` + lifetime `demotions`) and
+`l1_warn`, and otherwise reports the live `ladder`/`pitch_ppm`/`fill` numbers.
+`event=usbsink_audio.host_clock_*` journal lines (probe start/result, every
+ladder transition, pitch resets, saturation) give the per-event trace; there
+is no per-tick log spam.
+
+### Explicit non-goals for this stage
+
+Does not shrink the `lane_resampler` warm-up cushion, does not bypass or
+modify `lane_resampler`, does not touch fan-in / outputd / CamillaDSP.
+Cushion shrink is a separate, measurement-gated follow-up once L0 lock has
+been soaked and evidenced on hardware.
 
 ## Productization Plan
 
@@ -392,4 +630,10 @@ hardware-free pytest including a clock-drift injection test) and
 `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact` binds its output to
 the live route identity. Neither has yet produced a real on-device artifact
 from an actual click-track playback against jts.local's XVF3800, so doctor
-correctly continues to fail the low-latency claim until that run happens.)
+correctly continues to fail the low-latency claim until that run happens.
+The Stage 1 host-slaved USB clock mechanism/ladder/telemetry
+(`rust/jasper-usbsink-audio/src/host_clock.rs`, default-OFF via
+`JASPER_USBSINK_HOST_CLOCK`) landed the same day with hardware-free
+pytest/cargo coverage on both sides of the state.json contract; on-device
+compliance-probe validation against jts.local's Apple dongle host is a
+separate, not-yet-run task.)

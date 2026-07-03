@@ -79,11 +79,16 @@ def test_audio_graph_state_aggregates_route_artifact_bridge_fanin_and_outputd(
     assert graph["route"]["claim_status"] == "warn"
     assert graph["route"]["route_config_hash"] == plan.route_config_hash
     assert graph["artifact"] == artifact
+    # host_clock is absent from this fixture (pre-Stage-1 usbsink_raw shape);
+    # the aggregator must surface that as None, not KeyError or a guessed
+    # default. The present-pass-through case is covered by
+    # tests/test_usbsink_host_clock_contract.py.
     assert graph["rust_bridge"] == {
         "implementation": "rust",
         "period_frames": 256,
         "ring": {"fill_periods": 1, "capacity_periods": 3},
         "counters": {"playback_xruns": 0, "underflow_periods": 0},
+        "host_clock": None,
     }
     assert graph["fanin"]["resampler"]["locked"] is True
     assert graph["fanin"]["resampler"]["target_fill_frames"] == 2048
