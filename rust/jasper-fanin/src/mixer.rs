@@ -1082,6 +1082,12 @@ impl Mixer {
             output_frames: Arc::clone(&resampler.output_frames),
             locked: Arc::clone(&resampler.locked),
             present: Arc::clone(&direct_obs.present),
+            // The resampler's LIVE correction ppm gauge (its `ratio_milli_ppm`,
+            // milli-ppm i64-bits-in-u64) — the COMBO-mode probe/servo observable.
+            // Owned/written by the resampler on the mixer thread; the servo thread
+            // only ever READS it (single source of truth, no new hot-path work —
+            // just clones the existing Arc).
+            correction_milli_ppm: Arc::clone(&resampler.ratio_milli_ppm),
             // The LIVE held-target gauge — the single source of truth the servo
             // thread re-pins its setpoint to each tick (tracks the cushion decay).
             held_target_frames: Arc::clone(&resampler.held_target_frames),

@@ -43,12 +43,17 @@ _SHARED_HOST_CLOCK_RS = _REPO / "rust" / "jasper-host-clock" / "src" / "lib.rs"
 _FANIN_UNIT = _REPO / "deploy" / "systemd" / "jasper-fanin.service"
 _ENV_EXAMPLE = _REPO / ".env.example"
 
-# The pinned disabled-block fragment — the SAME wire contract as the usbsink
-# twin, because both daemons render it from the shared crate. Combo boxes get
-# this identical shape under /state.audio_graph.fanin.host_clock.
+# The pinned disabled-block fragment for the combo (fan-in) daemon. It shares the
+# shared-crate wire SHAPE with the usbsink twin, but the ONE field that differs by
+# daemon is `obs_mode`: fan-in ALWAYS builds its config with `ObsMode::Correction`
+# (a lane resampler sits between the gadget ring and the mix, so the fill slope is
+# dead weight and the probe/servo run on the resampler's own correction ppm),
+# whereas usbsink solo is `ObsMode::Fill`. `correction_ppm` is the additive
+# CORRECTION-mode observable (0 while disabled). Combo boxes get exactly this shape
+# under /state.audio_graph.fanin.host_clock.
 _PINNED_HOST_CLOCK_FRAGMENT = (
-    '{"enabled":false,"ladder":"disabled","pitch_ppm_commanded":0.0,'
-    '"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,'
+    '{"enabled":false,"ladder":"disabled","obs_mode":"correction","pitch_ppm_commanded":0.0,'
+    '"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,'
     '"dll":{"err_frames":0.00,"locked":false},'
     '"probe":{"last_result":"none","response_ratio":null,"waiting_for_lock":false},'
     '"demotions":0,"transitions":0,"last_transition_reason":"startup"}'
@@ -150,6 +155,30 @@ def test_no_fanin_host_clock_target_env_key():
     assert "target_fill_frames" in host_clock, (
         "the fan-in host-clock adapter must derive its setpoint from the "
         "resampler's target_fill_frames (the held target)."
+    )
+
+
+def test_fanin_host_clock_runs_the_correction_observable_mode():
+    # Combo mode must select `ObsMode::Correction` in build_config — the whole
+    # point of this redesign. With a lane resampler between the gadget ring and
+    # the mix, the fill slope is dead (the resampler flattens it), so the probe /
+    # L0 servo run on the resampler's own correction ppm. usbsink solo stays FILL.
+    text = _fanin_host_clock_text()
+    assert "ObsMode::Correction" in text, (
+        "fan-in build_config must pass ObsMode::Correction — the combo-mode "
+        "probe/servo observable is the resampler correction ppm, not the fill "
+        "slope (the resampler absorbs the host clock and flattens the fill)."
+    )
+    # And the correction observable is threaded from the resampler's live gauge.
+    assert "correction_milli_ppm" in text, (
+        "fan-in build_obs must decode the resampler's correction gauge "
+        "(ratio_milli_ppm) into Obs.correction_ppm — the combo-mode observable."
+    )
+    # The shared crate must define the typed observable-mode enum both sides use.
+    shared = _SHARED_HOST_CLOCK_RS.read_text(encoding="utf-8")
+    assert "pub enum ObsMode" in shared, (
+        "the shared jasper-host-clock crate must define the typed ObsMode enum "
+        "(Fill / Correction) — the observable mode is explicit, not inferred."
     )
 
 

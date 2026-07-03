@@ -238,16 +238,57 @@ owns the gadget capture owns the pitch ctl*:
   `fanin-host-clock` thread drives it: `JASPER_FANIN_HOST_CLOCK=enabled`.
 
 Both run the **same** shared ladder/probe/servo (`rust/jasper-host-clock`,
-byte-identical semantics; the only per-daemon difference is the `event=` log
-prefix — `usbsink_audio` vs `fanin` — and which `JASPER_*` keys each parses).
-Combo mode pins the DIRECT lane's resampler fill at target, removing the
-standby-mode drift wander (the ~9 ms "standby gap" measured below). The
-setpoint is the resampler's HELD target
+one servo core; the per-daemon differences are the `event=` log prefix —
+`usbsink_audio` vs `fanin` — which `JASPER_*` keys each parses, and the
+**observable mode** below). Combo mode pins the DIRECT lane's resampler fill at
+target, removing the standby-mode drift wander (the ~9 ms "standby gap" measured
+below). The setpoint is the resampler's HELD target
 (`JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES +
 JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`) — one setpoint shared with
 the inner rate controller, so the outer loop never fights the inner integrator
 (the ≥10× bandwidth separation of the cascade is derived in the
 `jasper-host-clock` module docstring).
+
+#### Observable mode — fill slope (solo) vs resampler correction (combo)
+
+The one servo core runs on **two different observables**, chosen by a TYPED
+`ObsMode` on the shared `HostClockConfig` (never inferred): usbsink solo passes
+`ObsMode::Fill`, fan-in combo passes `ObsMode::Correction`. This is the fix for
+the hardware-diagnosed combo-mode defect (jts.local 2026-07-03).
+
+- **`Fill` (usbsink solo, aloop).** No rate-matching stage sits between the
+  gadget ring and playback, so the gadget FILL slope is a faithful readout of the
+  host-vs-DAC rate error. The probe reads the fill-slope response to the pitch
+  step; the L0 servo drives `fill − target → 0`. **Unchanged** from the original
+  servo.
+- **`Correction` (fan-in combo, USB DIRECT).** The lane resampler (±500 ppm
+  authority) sits between the gadget ring and the mix and ABSORBS host-clock
+  drift to hold its fill at the held target — so the fill observable is
+  structurally dead: the resampler flattens the slope the probe wants to measure
+  and pins the fill by its OWN action, not by the pitch commands. On jts.local
+  the fill-based post-lock probe reliably failed (`response_ratio=-0.88`) and the
+  ladder parked in `l2_fallback`; even a prior `l0_locked` had a dead fill-error
+  signal (fill sat ~500 pinned BY THE RESAMPLER). In combo mode the honest
+  observable is the resampler's OWN live correction ppm (its `ratio_milli_ppm`
+  gauge, the same atomic STATUS reads — single source of truth, owned by the
+  resampler on the mixer thread, threaded into `Obs.correction_ppm`). The probe
+  reads how far the resampler's mean correction MOVES between the neutral baseline
+  window and the +probe_ppm step window; the L0 servo drives
+  `correction_ppm → 0`. When the correction is ~0 sustained the host is truly
+  slaved to the DAC, the resampler is idle, and the fill rides the resampler's
+  held target for free.
+
+Both observables share the same sign property, so the probe verdict math and the
+feed-forward seed are byte-identical across modes: a compliant host commanded
+`+probe_ppm` moves the observable `+probe_ppm` (fill climbs in `Fill`; the
+resampler must consume faster to hold fill, so its correction ppm rises in
+`Correction`), giving `response_ratio ≈ +1`; a host that ignores the step moves
+it ~0, giving `≈ 0` (same `>= 0.5` pass band, same demotion). The neutral
+baseline value is the host's natural excess rate, cancelled by the
+`-baseline_obs` feed-forward. STATUS surfaces the mode as
+`host_clock.obs_mode` (`"fill"`/`"correction"`) and the live correction as
+`host_clock.correction_ppm` (additive; 0 in `Fill` mode), so the combo L0
+end-state (`correction_ppm → ~0` at `l0_locked`) is directly observable.
 
 #### `HOST_CLOCK × USB_DIRECT` flag matrix (fan-in)
 
@@ -428,17 +469,25 @@ End-to-end = measured span + 1.2 ms gadget dwell (delta-windowed drain-entry evi
   FULL-SPEED device (192-byte/1 ms packets) with `lowlatency=Y` already active — the
   ~4.6 ms URB queue is FS transport physics. I2S/HAT outputs never pay this term
   (equivalent graph there ≈ −4.6 ms).
-- *Cushion decay (the ~5 ms lever)*: built, reviewed, merged default-off (#1141) — but
-  **engagement is blocked by a diagnosed ladder design gap**: with the lane resampler
-  locked, its inner controller absorbs the probe's pitch step, so the post-lock probe
-  (#1142) reliably fails (ratio −0.88) and the ladder never reaches l0. The combo-mode
-  probe must observe the resampler's correction ppm, not fill slope (follow-up filed).
-  A second follow-up observation — arming decay (even frozen) *appeared* to raise
-  unlock churn (16/115 vs 0-5 baseline) — was **diagnosed as NOT an armed-path bug**
-  (2026-07). A cross-mode sim (drain→render→tick_decay, faithful to `mixer::step`)
-  proves an ARMED+frozen(`not_l0`) decay is BIT-IDENTICAL to disabled over the same
-  delivery trace (unlocks/locks/held/silence/output **and a per-period FNV checksum
-  of the rendered PCM** all equal), and the code path confirms it: `tick_decay` with
+- *Cushion decay (the ~5 ms lever)*: built, reviewed, merged default-off (#1141). Its
+  engagement was blocked by a diagnosed ladder design gap: with the lane resampler
+  locked, its inner controller absorbs the probe's pitch step, so the fill-based
+  post-lock probe (#1142) reliably failed (ratio −0.88) and the ladder never reached l0.
+  **Fixed by the combo-mode observable redesign** (#1144): combo mode now runs
+  `ObsMode::Correction` — the probe and L0 servo observe the resampler's OWN correction
+  ppm (its `ratio_milli_ppm` gauge threaded into `Obs.correction_ppm`), not the dead
+  fill slope; the L0 outer law is a pure slow integrator (the Fill-mode DLL gains
+  limit-cycled against the real inner controller — caught in review by composing the
+  real crates). Servo-sim tests pin correction-mode probe pass/fail and
+  L0-convergence-without-oscillation against the real `RateController`; on-hardware
+  validation (STATUS `host_clock.obs_mode=correction`, `correction_ppm → ~0` at
+  `l0_locked`, no periodicity) is owed before decay is re-armed and re-measured.
+  A second observation — arming decay (even frozen) *appeared* to raise unlock churn
+  (16/115 vs 0-5 baseline) — was **diagnosed as NOT an armed-path bug** (2026-07).
+  A cross-mode sim (drain→render→tick_decay, faithful to `mixer::step`) proves an
+  ARMED+frozen(`not_l0`) decay is BIT-IDENTICAL to disabled over the same delivery
+  trace (unlocks/locks/held/silence/output **and a per-period FNV checksum of the
+  rendered PCM** all equal), and the code path confirms it: `tick_decay` with
   `dll_l0=false` snaps the held target back to the ceiling every tick, so the
   setpoint never differs from the disabled path — mechanically inert. The 16-vs-115
   spread is the same environmental USB-coalescing variance that moves the
@@ -454,10 +503,12 @@ End-to-end = measured span + 1.2 ms gadget dwell (delta-windowed drain-entry evi
   a divergence the churn window alone can NOT catch (every unlock resets
   `stable_periods`, so decay could never step there regardless). The churn itself is
   the static-cushion geometry issue guarded above, not the decay code.
-- *Why host-clock is OFF in final settings*: until the probe redesign, the DLL cannot
-  pass its own probe in combo mode; its probe steps perturb each session start for zero
-  benefit. The resampler alone (±500 ppm) carries stability — proven across 5-min and
-  20-min runs free-running.
+- *Why host-clock is OFF in final settings*: the fill-based probe could not pass in
+  combo mode, so its probe steps perturbed each session start for zero benefit; the
+  resampler alone (±500 ppm) carries stability, proven across 5-min and 20-min runs
+  free-running. The correction-observable redesign (#1144) removes the "cannot pass
+  its own probe" blocker; host-clock stays OFF by default pending the on-hardware
+  validation and decay re-measurement above.
 
 **Fleet validation (2026-07-03):** AirPlay PASS on jts3 (HiFiBerry), jts4 (Pi Zero 2 W
 streambox), jts5 (post-deploy; pre-deploy receiver was wedged — reset cleared it), and
@@ -702,9 +753,24 @@ correction is immediate and the slow DLL only trims the residual.
 **The falsifier**: `fill_variance` (EW variance of the gadget fill) and
 `fill_slope_ppm` are published on every enabled tick precisely so a soak can
 detect a cascade limit-cycle — a two-controller oscillation shows up as
-periodic fill variance the counters make visible. Watch both across a soak
-before trusting L0 lock long-term; if either shows periodicity, the answer is
-to widen the bandwidth separation further or leave the feature off.
+periodic fill variance the counters make visible. In combo (`Correction`) mode
+`correction_ppm` is the additional limit-cycle tell: a fighting cascade shows
+periodic correction ppm even though the servo's L0 target is `correction → 0`.
+Watch all three across a soak before trusting L0 lock long-term; if any shows
+periodicity, the answer is to widen the bandwidth separation further or leave the
+feature off.
+
+**Cascade interaction with cushion decay (unchanged in shape).** The DEFAULT-OFF
+post-lock cushion decay gates on the servo's REVERSE signals — `ladder_l0` (decay
+only steps while `l0_locked`) and `commanded_milli_ppm` (the `|commanded_ppm| >
+400` cascade-stability freeze guard). Both signals keep their exact meaning under
+the correction-observable servo: `commanded_ppm` is still the pitch command (same
+units, same ±1000 clamp), so the 400-ppm cascade guard still freezes decay while
+the servo is working hard, and the stability gate still reads `l0` exactly as
+before. Driving `correction → 0` does not change either — a correction-mode L0 at
+steady state sits at a small `commanded_ppm` (the feed-forward that cancels the
+crystal offset) with the correction relaxed to ~0, well inside the guard, so decay
+proceeds normally once the post-lock warm-up window elapses.
 
 ### Cross-platform conditions
 
@@ -730,9 +796,10 @@ change between sessions (a Mac unplugged and a Windows box plugged in later;
 an app that opens the endpoint in a mode that pins the rate). Compliance is
 therefore re-measured on every `(host_connected && playing)` edge rather than
 trusted once at boot — a probe commands a bounded step (default +300 ppm for
-a 4 s baseline + 6 s step window) and measures the fill-slope response; a
-response under half the commanded step demotes straight to `L2_FALLBACK`
-(neutral pitch) without ever entering `L0_LOCKED`.
+a 4 s baseline + 6 s step window) and measures the observable's response (the
+fill-slope in `Fill` mode, the resampler-correction mean in `Correction` mode —
+see "Observable mode" above); a response under half the commanded step demotes
+straight to `L2_FALLBACK` (neutral pitch) without ever entering `L0_LOCKED`.
 
 **The probe does NOT baseline at the session edge — it waits for the lane to
 leave its warmup ramp first.** A session begins the instant audio starts
@@ -1078,6 +1145,10 @@ peak) — trading latency for drops on every source. The lean-fifo gets low late
 
 Last verified: 2026-07-03 (20-minute final run at the merged floor: 640/640
 impulses, e2e p50 45.8 / p95 47.3 / p99 48.1 ms; fleet AirPlay/Spotify pass).
+Ladder "Observable mode" section re-verified 2026-07-03 against the
+correction-observable redesign (`ObsMode::Fill`/`Correction`,
+`Obs.correction_ppm`, `host_clock.obs_mode`/`correction_ppm` STATUS) on branch
+`latency/combo-servo-correction`; combo on-hardware validation still owed.
 2048, CamillaDSP 256/1536, outputd 128/256, outputd content buffer 1536, and
 direct ALSA loopback coupling. `jasper-route-latency-harness` — the
 click-in/capture-back producer this doc previously described as missing — now

@@ -29,8 +29,8 @@ use std::sync::atomic::Ordering;
 // of the shared crate is enabled under usbsink's `alsa-runtime` (see Cargo.toml)
 // so `AlsaPitchCtl` is available in the production build.
 pub use jasper_host_clock::{
-    ctl_card_from_capture, ppm_to_ctl_value, Action, HostClock, HostClockConfig, Obs, PitchCtl,
-    TICK_INTERVAL_MS,
+    ctl_card_from_capture, ppm_to_ctl_value, Action, HostClock, HostClockConfig, Obs, ObsMode,
+    PitchCtl, TICK_INTERVAL_MS,
 };
 
 #[cfg(feature = "alsa-runtime")]
@@ -115,6 +115,11 @@ where
         target_fill_frames: target_fill_frames as f64,
         probe_ppm: probe_ppm as f64,
         probe_step_secs,
+        // Solo (aloop) mode runs the FILL observable: usbsink owns the gadget
+        // capture with NO lane resampler between the ring and playback, so the
+        // gadget fill slope directly reads the host-vs-DAC rate error. (fan-in
+        // combo mode is the one that runs ObsMode::Correction.)
+        obs_mode: ObsMode::Fill,
         log_prefix: LOG_PREFIX,
     })
 }
@@ -189,6 +194,9 @@ pub fn obs_from_shared(state: &SharedState, period_frames: u32) -> Obs {
         fill_frames,
         capture_frames: state.capture_frames.load(Ordering::Relaxed),
         playback_frames: state.playback_frames.load(Ordering::Relaxed),
+        // Solo (aloop) mode has no lane resampler, so there is no correction ppm
+        // observable — the ladder runs ObsMode::Fill and never reads this. 0.0.
+        correction_ppm: 0.0,
     }
 }
 

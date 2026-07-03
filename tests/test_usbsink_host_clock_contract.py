@@ -120,8 +120,8 @@ def _decode_rust_string_continuations(raw_source_slice: str) -> str:
 # --------------------------------------------------------------------------
 
 _PINNED_HOST_CLOCK_FRAGMENT = (
-    '{"enabled":false,"ladder":"disabled","pitch_ppm_commanded":0.0,'
-    '"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,'
+    '{"enabled":false,"ladder":"disabled","obs_mode":"fill","pitch_ppm_commanded":0.0,'
+    '"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,'
     '"dll":{"err_frames":0.00,"locked":false},'
     '"probe":{"last_result":"none","response_ratio":null,"waiting_for_lock":false},'
     '"demotions":0,"transitions":0,"last_transition_reason":"startup"}'
@@ -134,10 +134,15 @@ def test_pinned_host_clock_fragment_is_valid_json_with_contract_shape():
     assert obj == {
         "enabled": False,
         "ladder": "disabled",
+        # usbsink solo runs the FILL observable (no lane resampler between the
+        # gadget ring and playback); the combo-mode fan-in twin pins "correction".
+        "obs_mode": "fill",
         "pitch_ppm_commanded": 0.0,
         "fill_frames": 0,
         "fill_slope_ppm": 0.0,
         "fill_variance": 0.0,
+        # The CORRECTION-mode observable; always 0 in FILL mode / while disabled.
+        "correction_ppm": 0.0,
         "dll": {"err_frames": 0.0, "locked": False},
         "probe": {
             "last_result": "none",
