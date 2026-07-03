@@ -269,6 +269,16 @@ What exists:
   path. The sinc table is precomputed at startup; steady state should
   be multiply/add work only, but Pi 5 CPU and xrun behavior still need
   hardware soak before enabling it outside the lab.
+  A third `CONTENT_BRIDGE` value, `shm_ring`, is a lab-only latency
+  prototype (Ring B: CamillaDSP writes the post-DSP program into a 2-slot
+  SHM ping-pong ring via a lab-only ALSA ioplug, and outputd reads one slot
+  per DAC period). It is default-off and arms nothing in a product install
+  — no product ALSA config, reconciler, or installer references it; it is
+  wired only by the lab scripts under `scripts/ring-proto/`. Its canonical
+  operational home is
+  [`scripts/ring-proto/README.md`](../scripts/ring-proto/README.md), not this
+  doc. Do not treat it as shipped output-owner behavior until it is
+  productized (a reconciler-owned device replacing the lab arm scripts).
 - Multi-room round-trip content lane (OFF by default, inert until a
   grouping bond activates it in Increment 5): when
   `JASPER_OUTPUTD_DAC_CONTENT_FIFO` is set, a grouping leader feeds its

@@ -50,6 +50,7 @@ from jasper.fanin_coupling import (
     COUPLING_TRANSPORT_PIPE,
     PIPE_PATH_ENV_VAR,
     OUTPUTD_PIPE_PATH_ENV_VAR,
+    VALID_COUPLINGS,
     capture_kwargs_for_coupling,
     coupling_capture_kwargs_from_env,
     member_kwargs_are_pipe_sink,
@@ -163,7 +164,12 @@ _VALID_ROUTE_MODES = {
     "unknown",
 }
 
-_VALID_COUPLINGS = {COUPLING_LOOPBACK, COUPLING_TRANSPORT_PIPE}
+# Reuse fanin_coupling's SSOT so the plan recognizes every coupling the resolver
+# does — including the Ring A ``shm_ring`` lab flag. Before this the plan kept an
+# independent {loopback, transport_pipe} set and false-warned "not recognized;
+# resolved to loopback" whenever the lab flag was set, even though
+# ``resolve_coupling`` correctly returned ``shm_ring``.
+_VALID_COUPLINGS = VALID_COUPLINGS
 _VALID_USBSINK_OUTPUT_MODES = {
     USBSINK_OUTPUT_MODE_ALOOP,
     USBSINK_OUTPUT_MODE_FIFO,

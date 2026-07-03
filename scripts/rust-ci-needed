@@ -44,7 +44,8 @@ if [[ "${event_name}" == "pull_request" ]]; then
 
   while IFS= read -r path; do
     case "${path}" in
-      rust/*|deploy/install.sh|deploy/systemd/jasper-fanin.service|\
+      rust/*|c/jts-ring-ioplug/*|deploy/install.sh|\
+      deploy/systemd/jasper-fanin.service|\
       deploy/systemd/jasper-outputd.service|.github/workflows/tests.yml|\
       scripts/rust-ci-needed)
         run="true"

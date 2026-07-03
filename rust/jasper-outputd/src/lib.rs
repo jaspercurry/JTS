@@ -32,6 +32,10 @@ pub mod local_content_pipe;
 pub mod loudness;
 pub mod mixer;
 pub mod reference;
+// PROTOTYPE (latency/ring-proto-shm): the SHM ping-pong ring content-source
+// reader, active only under JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring. Default-off;
+// nothing in the DAC loop touches it unless the flag selects it.
+pub mod shm_ring_source;
 // Observe-only software-AEC reference clock drift estimator (research-doc
 // increment 2): composes the shared jasper-clock DLL to measure :9891-reference
 // vs DAC-playout drift in ppm. Never warps audio.

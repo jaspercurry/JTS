@@ -5,7 +5,8 @@
 """fan-in → CamillaDSP coupling selector (``JASPER_FANIN_CAMILLA_COUPLING``).
 
 The single source of truth for HOW the fan-in mixer's summed program reaches
-CamillaDSP's capture. Two transports:
+CamillaDSP's capture. Three transports (``loopback`` default; ``transport_pipe``
+and ``shm_ring`` are LAB flags, inert in every product path):
 
 - ``loopback`` (the **default**) — fan-in writes the ALSA snd-aloop substream
   (``hw:Loopback,0,7``); CamillaDSP captures ``plug:jasper_capture`` (a dsnoop
@@ -62,7 +63,23 @@ COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
 # byte-identical-to-today path.
 COUPLING_LOOPBACK = "loopback"
 COUPLING_TRANSPORT_PIPE = "transport_pipe"
-_VALID_COUPLINGS = frozenset({COUPLING_LOOPBACK, COUPLING_TRANSPORT_PIPE})
+# Ring A (prototype): fan-in writes an SPSC ping-pong SHM ring
+# (``jasper_ring::RingWriter``) that CamillaDSP reads via a CAPTURE direction of
+# the ``jts_ring`` ioplug. Same SHM contract v1 as Ring B; roles flipped. Like
+# ``transport_pipe`` this is a LAB flag — inert in every product path (env unset
+# resolves to ``loopback``), armed only by ``scripts/ring-proto/`` for the soak.
+# The Rust ``Coupling::ShmRing`` normalizer MUST agree with this token.
+COUPLING_SHM_RING = "shm_ring"
+# The recognized coupling tokens. Public so other planners (e.g.
+# ``jasper.audio_runtime_plan``) can reuse this SSOT instead of re-listing the
+# tokens and drifting when a new lab coupling lands (Ring A's ``shm_ring`` was
+# exactly that drift: the plan kept an independent {loopback, transport_pipe}
+# set and false-warned on the new flag). ``_VALID_COUPLINGS`` stays as the
+# backward-compatible private alias.
+VALID_COUPLINGS = frozenset(
+    {COUPLING_LOOPBACK, COUPLING_TRANSPORT_PIPE, COUPLING_SHM_RING}
+)
+_VALID_COUPLINGS = VALID_COUPLINGS
 
 # The shared-capture named pipe written by fan-in under ``transport_pipe`` and
 # RawFile-read by CamillaDSP. DISTINCT from the lean lane's FIFO
@@ -80,6 +97,26 @@ OUTPUTD_PIPE_PATH_ENV_VAR = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
 # consumer can never drift.
 PIPE_WIRE_FORMAT = "S32_LE"
 
+# Ring A (``shm_ring``) SHM ring file + slot-count env vars. fan-in creates the
+# ring at ``JASPER_FANIN_RING_PATH`` with ``JASPER_FANIN_RING_SLOTS`` slots; the
+# Rust daemon resolves both with the SAME defaults (see ``config.rs``). The
+# n_slots <-> JASPER_FANIN_RING_SLOTS pairing is the drift axis with the ioplug
+# conf.d geometry; the ring header's own validation is the runtime fail-loud
+# backstop.
+RING_PATH_ENV_VAR = "JASPER_FANIN_RING_PATH"
+DEFAULT_FANIN_RING_PATH = "/dev/shm/jts-ring/program.ring"
+RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
+DEFAULT_FANIN_RING_SLOTS = 8
+
+# Ring A capture device + wire format. fan-in is S16 native and the SHM ring
+# carries S16LE with NO widening (unlike ``transport_pipe``'s S32 FIFO-page
+# floor, an SHM ring has none). CamillaDSP captures it as an ALSA device named
+# by the ioplug conf.d block. Pinned here so the hand generator
+# (``make-camilla-ring-config.sh`` capture-swap mode) and the Rust writer stay
+# one SSOT — no product emitter path consumes these.
+RING_CAPTURE_DEVICE = "jts_ring_capture"
+RING_WIRE_FORMAT = "S16_LE"
+
 
 def resolve_coupling(raw: str | None) -> str:
     """Normalize a raw ``JASPER_FANIN_CAMILLA_COUPLING`` value to a transport.
@@ -87,15 +124,9 @@ def resolve_coupling(raw: str | None) -> str:
     Fail-SAFE to ``loopback`` (the byte-identical-to-today path) on unset, empty,
     or any unrecognized value — a typo in the env file must never silently flip
     the shared realtime capture to a transport the operator did not intend, nor
-    crash a config emit. The Rust daemon applies the same normalization for the
-    tokens both sides recognize. Case-insensitive; surrounding whitespace ignored.
-
-    Stacked-train note: on THIS branch the Rust mixer already recognizes the
-    experimental ``shm_ring`` token while Python does not — an operator setting
-    the (undocumented, ring-consumer-only) value here on a fan-in-platform-only
-    build fails safe to ``loopback`` rather than matching Rust. The ring
-    consumers PR adds ``shm_ring`` to :data:`_VALID_COUPLINGS`, at which point
-    both sides agree on every token again.
+    crash a config emit. The Rust daemon applies the same normalization so both
+    sides agree on every recognized token (``loopback`` / ``transport_pipe`` /
+    ``shm_ring``). Case-insensitive; surrounding whitespace ignored.
     """
     if raw is None:
         return COUPLING_LOOPBACK
@@ -108,6 +139,64 @@ def resolve_coupling(raw: str | None) -> str:
 def is_transport_pipe_coupling(raw: str | None) -> bool:
     """True iff the resolved coupling is ``transport_pipe``."""
     return resolve_coupling(raw) == COUPLING_TRANSPORT_PIPE
+
+
+def is_shm_ring_coupling(raw: str | None) -> bool:
+    """True iff the resolved coupling is ``shm_ring`` (Ring A)."""
+    return resolve_coupling(raw) == COUPLING_SHM_RING
+
+
+def resolve_ring_path(raw_path: str | None) -> str:
+    """Resolve the Ring A SHM ring file path from a raw env value.
+
+    Empty / unset → :data:`DEFAULT_FANIN_RING_PATH`. Trims whitespace. The Rust
+    daemon resolves ``JASPER_FANIN_RING_PATH`` the same way so the writer and the
+    ioplug conf.d block name the same ring file.
+    """
+    if raw_path is None:
+        return DEFAULT_FANIN_RING_PATH
+    value = raw_path.strip()
+    return value or DEFAULT_FANIN_RING_PATH
+
+
+RING_SLOTS_MIN = 2
+RING_SLOTS_MAX = 16
+
+
+def resolve_ring_slots(raw_slots: str | None) -> int:
+    """Resolve the Ring A n_slots from a raw env value.
+
+    Empty / unset → :data:`DEFAULT_FANIN_RING_SLOTS`. A present-but-out-of-range
+    or unparseable value FAILS LOUD (:class:`ValueError`) rather than silently
+    clamping — a shear-prone geometry (the ioplug conf.d block and the daemon
+    would disagree on the ring depth) must never ship, and repo doctrine is
+    fail-loud on a bad operator value. This MUST agree with the Rust daemon,
+    which ``anyhow::bail!``s on the same ``JASPER_FANIN_RING_SLOTS`` range: the
+    n_slots <-> JASPER_FANIN_RING_SLOTS pairing is the drift axis the ring header
+    also validates at attach. The range :data:`RING_SLOTS_MIN`..=
+    :data:`RING_SLOTS_MAX` mirrors the ring header's ``MIN_N_SLOTS`` /
+    ``MAX_N_SLOTS`` and ``config.rs``'s ``RING_SLOTS_MIN`` / ``RING_SLOTS_MAX``.
+    """
+    if raw_slots is None:
+        return DEFAULT_FANIN_RING_SLOTS
+    stripped = raw_slots.strip()
+    if not stripped:
+        return DEFAULT_FANIN_RING_SLOTS
+    try:
+        value = int(stripped)
+    except ValueError as exc:
+        raise ValueError(
+            f"{RING_SLOTS_ENV_VAR}={raw_slots!r} is not an integer; the SHM ring "
+            "slot count must be a whole number"
+        ) from exc
+    if RING_SLOTS_MIN <= value <= RING_SLOTS_MAX:
+        return value
+    raise ValueError(
+        f"{RING_SLOTS_ENV_VAR}={raw_slots!r} out of range "
+        f"{RING_SLOTS_MIN}..={RING_SLOTS_MAX} — a shear-prone SHM ring geometry "
+        "must fail loud, not silently clamp (the ioplug conf.d block and the "
+        "daemon would disagree on the ring depth)"
+    )
 
 
 def capture_kwargs_for_coupling(
@@ -128,11 +217,35 @@ def capture_kwargs_for_coupling(
       outputd File playback, ``enable_rate_adjust=False``, and
       ``transport_paced_pipe=True``. No Camilla async resampler is emitted.
 
+    - ``shm_ring`` (Ring A, prototype): returns the ALSA capture-device kwargs —
+      ``capture_device=jts_ring_capture`` (the ioplug conf.d name) and
+      ``capture_format=S16_LE`` (fan-in is S16 native; the SHM ring carries S16LE
+      with no widening). This is the SSOT the hand generator
+      (``make-camilla-ring-config.sh`` capture-swap mode) reads so Python and the
+      Rust writer agree on the capture side. Like ``transport_pipe``, these kwargs
+      DO flow through :func:`coupling_capture_kwargs_from_env` into the product
+      emitters (``/sound/``, ``/correction/``,
+      ``audio_runtime_plan.apply_capture_precedence``) — but only when the lab
+      flag :data:`COUPLING_ENV_VAR`\\ =``shm_ring`` is set in the env. This is
+      deliberate coherence-when-armed: on an armed lab box a household
+      ``/sound/`` save emits a CamillaDSP config whose capture device is
+      ``jts_ring_capture``, so the emitted config and the running daemon name the
+      SAME ring. The capture device only RESOLVES once the arm script has
+      installed the ioplug ``jts_ring_capture`` conf.d block; until then the flag
+      must stay unset (env unset -> ``loopback`` -> ``{}``, byte-identical to
+      today). It is inert in every product path while the flag is unset.
+
     ``pipe_path`` overrides the capture pipe path (the env override is resolved by
     :func:`resolve_pipe_path`; pass its result here so the emitted config and the
     daemon point at the same pipe).
     """
-    if resolve_coupling(raw) != COUPLING_TRANSPORT_PIPE:
+    resolved = resolve_coupling(raw)
+    if resolved == COUPLING_SHM_RING:
+        return {
+            "capture_device": RING_CAPTURE_DEVICE,
+            "capture_format": RING_WIRE_FORMAT,
+        }
+    if resolved != COUPLING_TRANSPORT_PIPE:
         return {}
     return {
         "capture_pipe_path": pipe_path or DEFAULT_FANIN_CAMILLA_PIPE,

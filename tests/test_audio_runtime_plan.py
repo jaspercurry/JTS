@@ -51,8 +51,10 @@ from jasper.env_load import EnvFileState
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
+    COUPLING_SHM_RING,
     COUPLING_TRANSPORT_PIPE,
     OUTPUTD_PIPE_PATH_ENV_VAR,
+    VALID_COUPLINGS,
 )
 
 
@@ -598,6 +600,37 @@ def test_fanin_coupling_is_transition_owned_not_lab_overrideable():
         and "jasper-fanin-coupling-reconcile" in warning
         for warning in plan.warnings
     )
+
+
+def test_plan_recognizes_shm_ring_lab_coupling_without_false_warning():
+    # The Ring A lab flag: the plan reuses fanin_coupling's SSOT
+    # (VALID_COUPLINGS), so setting JASPER_FANIN_CAMILLA_COUPLING=shm_ring
+    # surfaces value=shm_ring and does NOT emit the spurious
+    # "is not recognized; resolved to loopback" warning it used to when the plan
+    # kept an independent {loopback, transport_pipe} set. This is the drift the
+    # Ring A Rust half flagged: resolve_coupling recognized shm_ring while the
+    # plan warned it did not.
+    plan = build_audio_runtime_plan(
+        route_mode="solo",
+        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
+    )
+
+    setting = plan.setting(COUPLING_ENV_VAR)
+    assert setting.value == COUPLING_SHM_RING
+    assert not any(
+        "is not recognized" in warning for warning in plan.warnings
+    ), plan.warnings
+
+
+def test_plan_valid_couplings_is_fanin_coupling_ssot():
+    # SSOT identity: the plan does not keep an independent set that can drift
+    # from the resolver's recognized tokens. Both include shm_ring.
+    from jasper import audio_runtime_plan
+
+    assert audio_runtime_plan._VALID_COUPLINGS is VALID_COUPLINGS
+    assert COUPLING_SHM_RING in VALID_COUPLINGS
+    assert COUPLING_TRANSPORT_PIPE in VALID_COUPLINGS
+    assert COUPLING_LOOPBACK in VALID_COUPLINGS
 
 
 def test_transport_pipe_route_policy_blocks_active_leader_but_allows_solo():
