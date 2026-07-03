@@ -45,9 +45,14 @@ from jasper.camilla_emit import (
     mono_sum_sources,
 )
 from jasper.camilla_stereo_prefix import emit_filter_spec
+from jasper.log_event import log_event
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
+from .graph_safety import (
+    unprotected_tweeter_outputs,
+    view_from_emitted_text,
+)
 from .profile import (
     ADJACENT_PAIRS_BY_WAY,
     SUB_CROSSOVER_ORDER,
@@ -207,6 +212,51 @@ def _channels_for_role(preset: ActiveSpeakerPreset, role: str) -> list[int]:
         output.index
         for output in preset.channel_map.outputs
         if output.driver_role == role
+    )
+
+
+def _assert_tweeter_outputs_protected(yaml_text: str, preset: ActiveSpeakerPreset) -> None:
+    """Fail-closed L0 emit gate: refuse a graph with an unprotected tweeter output.
+
+    Runs on every active-speaker graph THIS module emits, right before it is
+    returned or written, so an unprotected-tweeter graph can never leave the
+    emitter (let alone be loaded). It re-proves — against the emitted text, not
+    the emitter's own construction — that every physical output the preset
+    assigns a ``tweeter`` (compression-driver) role carries a protective
+    high-pass: its crossover high-pass and/or a dedicated protective high-pass.
+
+    This closes the L0 hearing-safety hole (docs/HANDOFF-audio-measurement-core.md):
+    a compression driver is ~25 dB more sensitive than the woofer, so a graph
+    that routes full-range program to a tweeter output with no high-pass is a
+    shrill / hot-tweeter hazard. The active emitters wire that protection by
+    construction; this gate makes the guarantee ENFORCED (a future refactor that
+    dropped the tweeter high-pass would fail loudly here rather than ship a
+    dangerous graph). A preset with no tweeter role (a passive full-range or
+    woofer-only shape) has nothing to protect, so the gate is a no-op — it never
+    over-blocks. Observability: a block emits ``event=active_speaker.emit_gate``
+    before raising, so the refusal is never silent.
+    """
+    tweeter_channels = _channels_for_role(preset, "tweeter")
+    if not tweeter_channels:
+        return
+    view = view_from_emitted_text(yaml_text)
+    unprotected = unprotected_tweeter_outputs(
+        view, tweeter_channels=set(tweeter_channels)
+    )
+    if not unprotected:
+        return
+    log_event(
+        logger,
+        "active_speaker.emit_gate",
+        level=logging.ERROR,
+        result="blocked_unprotected_tweeter",
+        preset_id=preset.preset_id,
+        outputs=",".join(str(index + 1) for index in unprotected),
+    )
+    raise ActiveSpeakerConfigError(
+        "refusing to emit an active-speaker graph that sends full-range program "
+        "to a tweeter/compression-driver output without a protective high-pass on "
+        "DAC output(s) " + ", ".join(str(index + 1) for index in unprotected)
     )
 
 
@@ -992,6 +1042,11 @@ pipeline:
 {pipeline_yaml}
 """
 
+    # L0 emit gate (fail-closed): a startup graph still wires the crossover /
+    # protective high-pass on the tweeter channel even though it starts muted, so
+    # re-prove that protection before the config can leave the emitter.
+    _assert_tweeter_outputs_protected(yaml, preset)
+
     if out_path is not None:
         out_path = Path(out_path)
         if not out_path.parent.exists():
@@ -1298,6 +1353,12 @@ pipeline:
 {pipeline_yaml}
 """
 
+    # L0 emit gate (fail-closed): every tweeter output keeps its crossover /
+    # protective high-pass even while the per-output commission mask mutes it, so
+    # a graph that could later be unmuted onto a bare compression driver is
+    # refused here rather than shipped.
+    _assert_tweeter_outputs_protected(yaml, preset)
+
     if out_path is not None:
         out_path = Path(out_path)
         if not out_path.parent.exists():
@@ -1532,6 +1593,12 @@ pipeline:
 {pipeline_yaml}
 """
 
+    # L0 emit gate (fail-closed): the durable (unmuted) baseline is the graph a
+    # household actually plays through, so re-prove every tweeter output carries
+    # its crossover / protective high-pass before it can leave the emitter — a
+    # flat/unprotected tweeter baseline is the shrill hot-tweeter hazard.
+    _assert_tweeter_outputs_protected(yaml, preset)
+
     if out_path is not None:
         out_path = Path(out_path)
         if not out_path.parent.exists():
@@ -1732,6 +1799,12 @@ mixers:
 pipeline:
 {pipeline_yaml}
 """
+
+    # L0 emit gate (fail-closed): the follower runs Layer A (the split + per-driver
+    # crossover chain) on the leader's corrected program, so its tweeter output
+    # must still carry the crossover / protective high-pass — re-prove it before
+    # the graph leaves the emitter.
+    _assert_tweeter_outputs_protected(yaml, preset)
 
     if out_path is not None:
         out_path = Path(out_path)

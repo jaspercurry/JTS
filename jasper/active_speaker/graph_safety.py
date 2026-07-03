@@ -432,6 +432,73 @@ def pipeline_contains_chain(
     return False
 
 
+def output_highpass_protected(
+    view: GraphView,
+    *,
+    channel: int,
+) -> bool:
+    """True iff ``channel`` is high-pass protected in the pipeline (fail-closed).
+
+    The L0 emit-gate primitive: a compression-driver / tweeter output MUST carry
+    a protective high-pass (its crossover high-pass and/or a dedicated protective
+    high-pass) so full-range program can never reach a ~25 dB-hotter driver. True
+    iff SOME pipeline ``Filter`` step covering ``channel`` lists a ``BiquadCombo``
+    filter of ``type: LinkwitzRileyHighpass`` with a positive ``freq``.
+
+    "Covering" is membership, not an exact set match: the emitter folds a role's
+    chain into one Filter step that may target every output of that role at once
+    (e.g. both stereo tweeters ``[1, 3]``), so a per-output check must accept a
+    step whose channel set *contains* ``channel``. Any positive-corner LR
+    high-pass counts — the 2-way woofer/tweeter crossover high-pass is exactly the
+    band-limit that protects the driver; this is deliberately looser than
+    :func:`tweeter_guard_present` (which additionally pins a named protective HP +
+    limiter for the commissioning re-prove). Fails closed: a missing filter, a
+    non-``BiquadCombo`` type, the wrong LR variant (e.g. a low-pass), or a
+    non-positive ``freq`` all yield ``False``.
+    """
+    for step in view.pipeline_steps:
+        if channel not in step.channels:
+            continue
+        for name in step.names:
+            fdef = view.filters.get(name)
+            if fdef is None or fdef.type != "BiquadCombo":
+                continue
+            if str(fdef.params.get("type") or "") != "LinkwitzRileyHighpass":
+                continue
+            freq = float_value(fdef.params.get("freq"))
+            if freq is not None and freq > 0.0:
+                return True
+    return False
+
+
+def unprotected_tweeter_outputs(
+    view: GraphView,
+    *,
+    tweeter_channels: set[int] | frozenset[int],
+) -> tuple[int, ...]:
+    """The tweeter output channels that are NOT high-pass protected (fail-closed).
+
+    The reusable L0 gate over a normalised view: given the set of physical output
+    channels the topology/preset assigns a tweeter (compression-driver) role,
+    return the sorted subset lacking a protective high-pass per
+    :func:`output_highpass_protected`. An empty result means every tweeter output
+    is protected. A non-empty result is the fail-closed block signal: such a graph
+    would send full-range program to a compression driver.
+
+    Fail-closed by construction: an empty ``tweeter_channels`` returns ``()`` (no
+    tweeter role → nothing to protect → not over-blocked, so passive full-range
+    graphs pass), while every listed channel must PROVE its high-pass or it lands
+    in the returned tuple.
+    """
+    return tuple(
+        sorted(
+            channel
+            for channel in {int(c) for c in tweeter_channels}
+            if not output_highpass_protected(view, channel=channel)
+        )
+    )
+
+
 def output_hard_muted_and_wired(
     view: GraphView,
     index: int,
