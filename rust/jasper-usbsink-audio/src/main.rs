@@ -502,9 +502,9 @@ fn publish_host_clock_fragment(fragment: &Mutex<String>, rendered: String) {
 
 // S32→S16 UAC2 narrowing is owned by the pure `jasper-resampler` crate so this
 // bridge and jasper-fanin's direct capture narrow bit-identically by
-// construction (C2). Re-exported locally to keep the call sites + the pinned
-// sign-boundary test terse.
-use jasper_resampler::s32_high_word_to_s16;
+// construction (C2). The runtime path calls `jasper_resampler::convert_s32_to_s16`
+// directly; the scalar `s32_high_word_to_s16` is imported only where the pinned
+// sign-boundary test uses it (in the test module below).
 
 fn stage_capture_period(ring: &mut PeriodRing, period: &[i16], state: &SharedState) -> Result<()> {
     if state.preempted.load(Ordering::Relaxed) {
@@ -952,13 +952,12 @@ fn run_audio_loop(
 /// The STANDBY liveness loop (C5). Runs in place of `run_audio_loop` when
 /// `JASPER_USBSINK_AUDIO_STANDBY=1`. It opens NO PCM (fan-in owns the gadget),
 /// but MUST satisfy the same `Type=notify` + `WatchdogSec=15s` liveness contract
-/// the audio loop does:
-///   - send `READY=1` once (systemd blocks unit start until this arrives), and
-///   - drive `state.mark_progress()` on a cadence < the watchdog interval so the
-///     `start_watchdog` thread keeps patting `WATCHDOG=1` (it only pats when the
-///     progress sentinel is fresh). Without this the unit would kill-loop.
-/// The state publisher, preempt listener, and watchdog threads run unchanged;
-/// they publish `standby:true` and answer HTTP normally.
+/// the audio loop does: it sends `READY=1` once (systemd blocks unit start until
+/// this arrives), and drives `state.mark_progress()` on a cadence < the watchdog
+/// interval so the `start_watchdog` thread keeps patting `WATCHDOG=1` (it only
+/// pats when the progress sentinel is fresh) — without this the unit would
+/// kill-loop. The state publisher, preempt listener, and watchdog threads run
+/// unchanged; they publish `standby:true` and answer HTTP normally.
 #[cfg(feature = "alsa-runtime")]
 fn run_standby_loop(state: &Arc<SharedState>, shutdown: &Arc<AtomicBool>) -> Result<()> {
     info!("event=usbsink_audio.standby active=true (fan-in owns hw:UAC2Gadget; no PCM opened)");
@@ -1864,6 +1863,10 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The scalar narrowing lives in `jasper-resampler`; the runtime path calls
+    // `convert_s32_to_s16` (fully qualified above), so the scalar is imported
+    // only here for the pinned sign-boundary vector.
+    use jasper_resampler::s32_high_word_to_s16;
 
     /// A disabled host-clock config for the daemon-level status_json tests.
     /// The host-clock ladder itself is tested exhaustively in the shared
