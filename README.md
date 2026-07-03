@@ -872,6 +872,11 @@ reference. Currently:
   L2 calibrated-mic FR-phase), the multi-volume verdict, and a strangler-fig
   refactor roadmap (kernel extraction + single GraphValidator). The
   output/measurement-side sibling of `HANDOFF-audio-capability-platform.md`.
+- [`HANDOFF-correction-revision-plan.md`](docs/HANDOFF-correction-revision-plan.md) —
+  execution plan of record for the layered correction/tuning revision
+  (speaker → room → preference pipeline, shared measurement kernel,
+  level-match ramp, verify-acceptance loop, tuning LLM; hardware-free
+  vs hardware-gated roadmap).
 - [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — HTTPS
   correction measurement hub at `/correction/`: room correction,
   active-crossover mic measurement, and bass/subwoofer tuning surfaces;
