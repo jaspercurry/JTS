@@ -263,3 +263,36 @@ def test_ring_warns_when_loaded_graph_reverted_to_loopback(monkeypatch, tmp_path
     )
     assert res.status == "warn"
     assert "ring config" in res.detail or "jts_ring" in res.detail
+
+
+def test_loopback_warns_on_stale_ring_graph_with_clean_env(monkeypatch, tmp_path):
+    # SF5 (the disarm-direction mirror of finding-5): a disarm's camilla step
+    # FAILED, so the env pair reads clean (loopback intent, bridge=direct — the
+    # earlier stale-bridge check does NOT fire) but the LOADED graph still names the
+    # ring ioplug devices. CamillaDSP then captures a writer-dead Ring A (zero-fill
+    # silence) while the box reads doctor-GREEN on a type-only capture==Alsa check.
+    # The device-name check must catch this.
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_RING_CFG,  # stale ring devices, but capture.type is Alsa
+        tmp_path=tmp_path,
+        outputd_env_text="",  # bridge=direct -> env pair coherent with loopback
+    )
+    assert res.status == "warn"
+    assert "ring ioplug device" in res.detail
+    assert "jts_ring_capture" in res.detail
+    assert "jasper-fanin-coupling-reconcile loopback" in res.detail
+
+
+def test_loopback_ok_when_loaded_graph_is_plain_alsa(monkeypatch, tmp_path):
+    # The guard must not false-positive: a clean loopback box (plug:jasper_capture,
+    # snapfifo playback) stays OK.
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_ALSA_CFG,
+        tmp_path=tmp_path,
+        outputd_env_text="",
+    )
+    assert res.status == "ok"

@@ -1873,6 +1873,30 @@ def check_fanin_coupling() -> CheckResult:
             "jasper-fanin-coupling-reconcile shm_ring",
         )
 
+    # Non-ring intent (loopback / anything not transport_pipe|shm_ring). The env
+    # pair may be coherent (loopback/direct) yet the LOADED graph still name the
+    # ring ioplug devices — a disarm whose camilla step failed leaves a stale ring
+    # config that captures a writer-dead Ring A (zero-fill silence) while the env
+    # reads clean. A type-only "capture==Alsa" check reads GREEN through that
+    # permanent-silence state (the mirror of the shm_ring finding-5 branch above,
+    # for the disarm direction). So inspect the device names too.
+    capture_device = _loaded_device_field(config_path, "capture", "device")
+    playback_device = _loaded_device_field(config_path, "playback", "device")
+    stale_ring_devices = [
+        f"{lane}={dev}"
+        for lane, dev in (("capture", capture_device), ("playback", playback_device))
+        if dev in (RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE)
+    ]
+    if stale_ring_devices:
+        return CheckResult(
+            label,
+            "warn",
+            f"intent={coupling} but the loaded graph still names ring ioplug "
+            f"device(s): {'; '.join(stale_ring_devices)}; a disarm's camilla step "
+            "likely failed — CamillaDSP captures a writer-dead ring (silence) while "
+            "the env reads clean. Run: sudo /opt/jasper/.venv/bin/"
+            "jasper-fanin-coupling-reconcile loopback",
+        )
     expected = "Alsa"
     if capture == expected:
         playback = _loaded_playback_type(config_path)
