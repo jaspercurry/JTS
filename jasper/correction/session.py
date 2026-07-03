@@ -72,6 +72,12 @@ from .autolevel import (
     AutolevelStatus as AutolevelStatus,
     compute_autolevel_cap as compute_autolevel_cap,
 )
+from .level_match import (
+    LevelLockStore,
+    LevelMatchOutcome,
+    LevelMatchSession,
+    MicGeometry as MicGeometry,
+)
 from .peq import PEQ
 from .state_guard import SessionStateGuard
 from .status import (
@@ -343,6 +349,15 @@ class MeasurementSession:
         self._autolevel_controller = AutolevelController(
             session_id=self.session_id,
         )
+
+        # P2 relay-closed level match. The settle-based RampController (shared
+        # kernel) is the generalization of AutolevelController; the browser-locked
+        # AutolevelController above stays as the no-relay/local fallback. The lock
+        # store is per-geometry (near-field baffle vs listening position), so a
+        # near-field lock and a listening-position lock coexist. `run_level_match`
+        # drives it; the store's drift reference is checked on later sweeps.
+        self.level_lock_store = LevelLockStore()
+        self._last_level_match: LevelMatchOutcome | None = None
 
         # Single-slot guard that abandons stranded browser-capture states and
         # refuses reset while a fire-and-forget sweep/analysis task is active.
@@ -2137,6 +2152,71 @@ class MeasurementSession:
         """Signal the running autolevel task to abort and restore
         the original main_volume."""
         return await self._autolevel_controller.cancel()
+
+    # ------------------------------------------------------------------
+    # Level match (P2, relay-closed settle-based ramp).
+    # ------------------------------------------------------------------
+
+    async def run_level_match(
+        self,
+        geometry: str,
+        *,
+        get_main_volume_db: Callable[[], Awaitable[float]],
+        set_main_volume_db: Callable[[float], Awaitable[Any]],
+        play_continuous_tone: Callable[[], Awaitable[Any]],
+        cancel_tone: Callable[[], None],
+        read_status: Callable[[], dict[str, Any]],
+        post_host_event: Callable[[dict[str, Any]], Any] | None = None,
+        noise_floor_dbfs: float | None = None,
+        clock: Callable[[], float] | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> LevelMatchOutcome:
+        """Relay-closed, settle-based level match for one mic geometry (§3.1).
+
+        The generalization of ``run_autolevel``: instead of the browser deciding
+        the lock blind, the Pi's :class:`RampController` reads the phone's batched
+        mic-level samples (via ``read_status``), recovers the chain gain, stops
+        ahead into the safe window, and locks — never blasting up to find it. A
+        terminal LOCKED / MAXED_OUT stores a per-geometry
+        :class:`MeasurementLevelLock` in ``level_lock_store``.
+
+        ``read_status`` is the relay status reader (the batched-event transport);
+        the host injects it so this method never imports the relay client. When no
+        relay/phone session exists, the caller uses the existing ``run_autolevel``
+        local path instead — this method is additive, not a replacement.
+        ``clock`` / ``sleep`` default to the real asyncio clock; tests inject fakes.
+        """
+        loop = asyncio.get_event_loop()
+        session = LevelMatchSession(
+            session_id=self.session_id,
+            store=self.level_lock_store,
+        )
+        outcome = await session.run_for_geometry(
+            geometry,
+            get_main_volume_db=get_main_volume_db,
+            set_main_volume_db=set_main_volume_db,
+            play_continuous_tone=play_continuous_tone,
+            cancel_tone=cancel_tone,
+            read_status=read_status,
+            post_host_event=post_host_event,
+            noise_floor_dbfs=noise_floor_dbfs,
+            clock=clock if clock is not None else loop.time,
+            sleep=sleep if sleep is not None else asyncio.sleep,
+        )
+        self._last_level_match = outcome
+        return outcome
+
+    def level_match_snapshot(self) -> dict[str, Any]:
+        """The current per-geometry locks + last level-match outcome (for
+        ``/status`` surfacing). Empty until the first level match runs."""
+        return {
+            "locks": self.level_lock_store.snapshot(),
+            "last": (
+                self._last_level_match.snapshot()
+                if self._last_level_match is not None
+                else None
+            ),
+        }
 
     # ------------------------------------------------------------------
     # Snapshot.

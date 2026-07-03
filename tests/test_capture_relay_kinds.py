@@ -74,6 +74,20 @@ def test_per_kind_validity_policy_is_the_differentiation():
     assert xover.validity.clock_drift == "ignore"
     assert xover.validity.require_alignment is True
 
+    # Level ramp is a pure level comparison (no WAV to align): AGC would flatten
+    # the very level it maps (refuse), but it is not an alignment measurement and
+    # drift is irrelevant. The Pi's RampController is the stop; duration is a
+    # generous hard timeout.
+    from jasper.capture_relay.spec import build_level_ramp_spec
+
+    ramp = build_level_ramp_spec(geometry_label="speaker baffle")
+    assert ramp.validity.clean_capture == "refuse"
+    assert ramp.validity.allow_capability_fallback is True
+    assert ramp.validity.require_alignment is False
+    assert ramp.validity.clock_drift == "ignore"
+    headings = [c for c in ramp.screen if c["type"] == "heading"]
+    assert headings and "speaker baffle" in headings[0]["text"]
+
 
 def test_server_driven_copy_names_the_driver():
     # The crossover UI copy comes from the Pi (no web deploy to relabel a driver).

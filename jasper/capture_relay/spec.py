@@ -811,6 +811,68 @@ def build_crossover_sweep_spec(
     ).validate()
 
 
+def build_level_ramp_spec(
+    *,
+    geometry_label: str = "listening position",
+    hard_timeout_ms: int = 45000,
+    pre_roll_ms: int = 400,
+    post_roll_ms: int = 400,
+    accent: str = "sage",
+    font: str = "figtree",
+    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+) -> CaptureSpec:
+    """`kind="level_ramp"` — the relay-closed level-match ramp (§3.1, P2).
+
+    Unlike the sweep kinds this capture does NOT upload a WAV to analyze: the Pi
+    plays a quiet-start staircase of band-limited noise while the phone streams
+    **batched, client-timestamped mic-level samples** over the relay ``event``
+    channel, and the Pi's :class:`~jasper.audio_measurement.ramp.RampController`
+    settles into the safe window and locks. ``duration_ms`` is therefore a
+    generous hard *timeout* (the Pi's safety timeout is the real stop), and the
+    phone stops streaming when the Pi posts a terminal ``ramp`` host event.
+
+    Clean capture is mandatory — auto-gain would flatten the very level the ramp
+    maps (``clean_capture="refuse"``, ``allow_capability_fallback=True`` so a
+    strict iPhone degrades to the manual-lock UX rather than dead-ending). It is a
+    level comparison, not a timing one, so alignment is not required and clock
+    drift is irrelevant (``require_alignment=False``, ``clock_drift="ignore"``).
+    ``geometry_label`` tailors the copy for the near-field (baffle) vs
+    listening-position step.
+    """
+    duration_ms = max(pre_roll_ms + post_roll_ms + 1000, int(hard_timeout_ms))
+    return CaptureSpec(
+        kind="level_ramp",
+        duration_ms=duration_ms,
+        pre_roll_ms=pre_roll_ms,
+        post_roll_ms=post_roll_ms,
+        constraints=CaptureConstraints(),  # all false → measurement-clean
+        stimulus=CaptureStimulus(
+            played_by="pi", label="band-limited level-match noise"
+        ),
+        validity=CaptureValidity(
+            clean_capture="refuse",
+            allow_capability_fallback=True,
+            require_alignment=False,
+            clock_drift="ignore",
+        ),
+        theme=build_theme(accent=accent, font=font),
+        screen=(
+            ui_heading(f"Level match — {geometry_label}"),
+            ui_steps(
+                [
+                    f"Hold the phone at the {geometry_label}",
+                    "Tap Start — the speaker rises slowly from quiet",
+                    "Stay still; it locks the level automatically",
+                ]
+            ),
+            ui_level_meter("mic"),
+            ui_button("Start", action="begin_capture"),
+            ui_note("Keep the screen on — leaving this page stops the level match."),
+        ),
+        max_upload_bytes=max_upload_bytes,
+    ).validate()
+
+
 # The kinds JTS ships a builder for today. The relay never sees this list — it is
 # Pi-side only. Adding a kind appends one builder above; the relay and page need
 # no change.
@@ -819,6 +881,7 @@ SHIPPED_KINDS = (
     "balance_burst",
     "sync_marker",
     "crossover_sweep",
+    "level_ramp",
 )
 
 BUILDERS = {
@@ -826,4 +889,5 @@ BUILDERS = {
     "balance_burst": build_balance_burst_spec,
     "sync_marker": build_sync_marker_spec,
     "crossover_sweep": build_crossover_sweep_spec,
+    "level_ramp": build_level_ramp_spec,
 }

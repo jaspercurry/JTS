@@ -39,6 +39,7 @@ _HARNESSES = [
     "capture_constraints_test.mjs",
     "capture_wakelock_test.mjs",
     "capture_return_url_test.mjs",
+    "capture_level_events_test.mjs",
 ]
 
 
