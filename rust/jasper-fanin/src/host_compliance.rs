@@ -292,7 +292,11 @@ pub fn compute_revoke_reason(s: RevalidationSignals) -> Option<RevokeReason> {
 /// (reader), mirroring the resampler's other observability atomics. `Some` on the
 /// resampler observability only when the feature is armed; `None` (no block) when
 /// it is off — byte-identical to today's STATUS.
-#[derive(Debug)]
+///
+/// `Clone` clones the `Arc` handles (cheap, shared state — same semantics as
+/// [`clone_handles`](Self::clone_handles)). Required because the enclosing
+/// `LaneResamplerObservability` derives `Clone` for the STATUS snapshot.
+#[derive(Debug, Clone)]
 pub struct HostComplianceObservability {
     /// Whether a persisted proof is currently believed present on disk: `true`
     /// after a successful write (or a valid load at build), `false` after a
