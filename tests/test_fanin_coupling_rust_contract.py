@@ -130,5 +130,9 @@ def test_input_resampler_recovery_restarts_capture_pcm():
     recovery_body = text[recovery_start:recovery_end]
 
     assert ".try_recover(error, true)" in recovery_body
-    assert "input.pcm.state() != State::Running" in recovery_body
+    # `input.pcm` is now `Option<PCM>` (None only on the USB DIRECT lane, which
+    # uses recover_direct_xrun instead); the aloop resampler lane binds it and
+    # still restarts the capture PCM if a post-recover try_recover left it
+    # PREPARED. Assert the state-check + restart on the bound handle.
+    assert "pcm.state() != State::Running" in recovery_body
     assert ".start()" in recovery_body
