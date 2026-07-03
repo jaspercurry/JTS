@@ -432,9 +432,9 @@
 > **Update, 2026-06-16:** `jasper.active_speaker.driver_acoustics` adds the
 > mic-backed analysis half of the Consumer Wizard Triad below. It is a pure,
 > stateless module that reuses the room-correction sweep/deconvolution/analysis
-> primitives (`jasper.correction.{sweep,deconv,analysis,quality}`, imported
+> primitives (`jasper.audio_measurement.{sweep,deconv,analysis,quality}`, imported
 > lazily so the wizard import stays numpy-free): `write_driver_sweep_wav` emits a
-> channel-targeted multichannel sweep (the one thing `jasper.correction.sweep`
+> channel-targeted multichannel sweep (the one thing `jasper.audio_measurement.sweep`
 > can't do — it is mono only), `analyze_driver_capture` returns a per-driver
 > `present`/`out_of_band`/`silent`/`unusable_capture` verdict plus a real
 > `observed_mic_dbfs` from the capture RMS (the value `measurement.record_driver_

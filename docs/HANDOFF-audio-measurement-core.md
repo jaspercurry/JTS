@@ -25,7 +25,7 @@ thin adapters — not three parallel stacks. The good news from the
 2026-06-19 audit: **this is mostly consolidation + wiring, not a
 ground-up build.** The room-correction measurement pipeline is
 production-grade and *already* reused by the others (active-speaker's
-`driver_acoustics.py` imports `jasper.correction.{sweep,deconv,analysis,quality}`;
+`driver_acoustics.py` imports `jasper.audio_measurement.{sweep,deconv,analysis,quality}`;
 `balance_flow.py`/`sync_flow.py` import `correction/coordinator.py`'s
 `measurement_window`). The work is to (1) formalize that shared core,
 (2) kill the duplicated graph-safety parsing, (3) close the
@@ -51,13 +51,15 @@ The product is three tiers:
 ## Current state (verified against the worktree & `origin/main`, 2026-06-19)
 
 ### What exists and is production-grade
-- **Room-correction measurement kernel** (`jasper/correction/`): `sweep.py`
-  (Novak ESS), `deconv.py` (FFT/Tikhonov IR), `analysis.py` (octave
-  smoothing, log resample, band normalize), `quality.py`/`acoustic_quality.py`
-  (SNR/clipping gates), `confidence.py`, `calibration.py` (Dayton/miniDSP/UMIK
-  lookup + upload), `coordinator.py` (`measurement_window`: pauses renderers
-  + voice, serializes), `session.py` (`MeasurementSession` state machine),
-  `bundles.py` (schema-versioned durable evidence). Shipped, tested.
+- **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
+  since P1b; the correction-specific rest stays in `jasper/correction/`):
+  `sweep.py` (Novak ESS), `deconv.py` (FFT/Tikhonov IR), `analysis.py` (octave
+  smoothing, log resample, band normalize), `quality.py` (+ correction's
+  `acoustic_quality.py`) (SNR/clipping gates), `calibration.py` (Dayton/miniDSP/
+  UMIK lookup + upload) — all under `jasper/audio_measurement/`; plus, staying in
+  `jasper/correction/`: `confidence.py`, `coordinator.py` (`measurement_window`:
+  pauses renderers + voice, serializes), `session.py` (`MeasurementSession` state
+  machine), `bundles.py` (schema-versioned durable evidence). Shipped, tested.
 - **Shared browser-mic capture**: `deploy/assets/shared/js/measurement-audio.js`
   (mono 48 kHz, AGC/EC/NS hard-coded off) + `correction/browser_audio.py`.
 - **Active-speaker subsystem** (`jasper/active_speaker/`, 32 files on
@@ -66,10 +68,15 @@ The product is three tiers:
   research/preset, `camilla_yaml.py` per-driver Gain/Crossover emit,
   `driver_protection.py`, `safe_playback.py`, runtime contract & staging.
 
-### What is already shared (the core is partly emergent)
-- `active_speaker/driver_acoustics.py` **imports** `correction.sweep`,
-  `correction.deconv`, `correction.analysis`, `correction.quality`
-  (lines ~196, ~232–233) — it reuses the room-correction DSP verbatim.
+### What is already shared (the core is now an explicit package)
+- The pure primitives live in `jasper/audio_measurement/` (P1b extraction):
+  `sweep`, `deconv`, `analysis`, `calibration`, `quality`, plus a parameterized
+  `quality_model.QualityModel` (`ROOM` / `DRIVER` / `RAMP` profiles) that
+  replaced the previously-forked capture-quality constants. Moved verbatim from
+  `jasper/correction/`, which now *consumes* the kernel.
+- `active_speaker/driver_acoustics.py` **imports**
+  `jasper.audio_measurement.{sweep, deconv, analysis, quality}` and the `DRIVER`
+  quality profile — it reuses the shared DSP verbatim.
 - `web/balance_flow.py` + `web/sync_flow.py` **import** `measurement_window`
   and gate on `_reserve_start_slot` mutual exclusion.
 - `jasper/measurement/` now holds the first small shared primitives outside
@@ -320,11 +327,11 @@ calibrated FR curves) on top of L1's level match. Gated so an uncalibrated phone
 can never authorize a phase decision:
 
 1. **Calibrated capture.** The driver / summed capture endpoints accept a
-   `calibration_id` — the SAME `correction.calibration` store the `/correction/`
+   `calibration_id` — the SAME `jasper.audio_measurement.calibration` store the `/correction/`
    wizard fills (Dayton iMM-6/UMM-6, miniDSP UMIK, uploaded REW curve). The handler
    loads the record and threads `record.curve` into `driver_acoustics`;
    `_capture_to_magnitude` applies it via the shared
-   `correction.calibration.apply_calibration_curve`, so the surfaced FR is
+   `jasper.audio_measurement.calibration.apply_calibration_curve`, so the surfaced FR is
    calibrated and the null-depth shoulders (different frequencies) are corrected
    rather than relying on an additive cal cancelling.
 2. **The phase_aware gate.** `crossover_alignment.resolve_measurement_mode` is

@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper.correction import calibration
+from jasper.audio_measurement import calibration
 
 
 SAMPLE_CAL = """# freq correction phase

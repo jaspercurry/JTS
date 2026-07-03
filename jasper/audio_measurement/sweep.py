@@ -17,7 +17,7 @@ The sweep is generated on the Pi at the playback sample rate
 disk because the sweep is deterministic per (f1, f2, duration,
 sample_rate) tuple — no point regenerating on every measurement.
 
-The deconvolution path (jasper.correction.deconv) does NOT require a
+The deconvolution path (jasper.audio_measurement.deconv) does NOT require a
 separately-generated inverse filter. We do FFT-based regularized
 inversion of the sweep at IR-extract time, which is more
 numerically stable than a precomputed inverse and avoids the

@@ -657,7 +657,8 @@ def test_test_tone_wav_audio_correctness(tmp_path):
       - peak amplitude near the requested dBFS (within fade-edge dip)
     """
     import numpy as np
-    from jasper.correction import playback, sweep
+    from jasper.audio_measurement import sweep
+    from jasper.correction import playback
 
     wav_path = playback._ensure_tone_wav(
         freq_hz=1000, duration_s=1.0, dbfs=-12.0,
@@ -850,7 +851,7 @@ def test_e2e_invalid_json_returns_400():
 
 
 def test_e2e_calibration_fetch_upstream_failure_returns_502(monkeypatch):
-    from jasper.correction import calibration
+    from jasper.audio_measurement import calibration
 
     def fake_fetch_vendor_calibration(**kwargs):
         raise calibration.CalibrationUpstreamError("miniDSP unavailable")
@@ -927,7 +928,7 @@ def test_relay_setup_does_not_reduce_total_below_current_position():
 
 
 def test_e2e_upload_quality_failure_returns_422(tmp_path, monkeypatch):
-    from jasper.correction import quality
+    from jasper.audio_measurement import quality
     from jasper.correction.session import SessionState
 
     report = quality.CaptureQuality(

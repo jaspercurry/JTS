@@ -782,7 +782,7 @@ def _render_follower_page(hostname: str, csrf_token: str = "") -> bytes:
 def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
     if bonded_follower_active():
         return _render_follower_page(hostname, csrf_token)
-    from jasper.correction.calibration import (
+    from jasper.audio_measurement.calibration import (
         SUPPORTED_MODELS,
         model_label_aliases,
     )
@@ -1091,7 +1091,7 @@ def _calibration_device_mismatch(
     # set from the registry so a new vendor only has to be added in one place.
     # mic_calibration is non-None here, so calibration (numpy) is already
     # imported — this lazy import keeps the idle module import numpy-free.
-    from jasper.correction.calibration import SUPPORTED_MODELS
+    from jasper.audio_measurement.calibration import SUPPORTED_MODELS
     external_providers = {
         spec["provider"] for spec in SUPPORTED_MODELS.values()
     }
@@ -1201,7 +1201,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
         mic_calibration = None
         if calibration_id:
-            from jasper.correction.calibration import load_calibration_record
+            from jasper.audio_measurement.calibration import load_calibration_record
             mic_calibration = load_calibration_record(
                 calibration_id,
                 root=_calibration_root(),
@@ -1602,7 +1602,7 @@ def _handle_test_tone(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
 
 def _calibration_payload(record) -> dict[str, Any]:
-    from jasper.correction import calibration
+    from jasper.audio_measurement import calibration
     return {
         "calibration": record.public_metadata(),
         "preview": calibration.preview_curve(record.curve),
@@ -1610,7 +1610,7 @@ def _calibration_payload(record) -> dict[str, Any]:
 
 
 def _handle_calibration_models(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    from jasper.correction.calibration import SUPPORTED_MODELS
+    from jasper.audio_measurement.calibration import SUPPORTED_MODELS
     return {
         "models": [
             {"key": key, **value}
@@ -1622,7 +1622,7 @@ def _handle_calibration_models(handler: BaseHTTPRequestHandler) -> dict[str, Any
 def _handle_calibration_fetch(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    from jasper.correction.calibration import fetch_vendor_calibration
+    from jasper.audio_measurement.calibration import fetch_vendor_calibration
 
     body = _read_json_body(handler)
     model = str(body.get("model") or "").strip()
@@ -1640,7 +1640,7 @@ def _handle_calibration_fetch(
 def _handle_calibration_upload(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    from jasper.correction.calibration import store_calibration
+    from jasper.audio_measurement.calibration import store_calibration
 
     body = _read_json_body(
         handler,
@@ -1683,7 +1683,7 @@ def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
     if mode in ("", "none"):
         return None
     if mode == "serial":
-        from jasper.correction.calibration import fetch_vendor_calibration
+        from jasper.audio_measurement.calibration import fetch_vendor_calibration
 
         return fetch_vendor_calibration(
             model_key=str(calibration.get("model") or "").strip(),
@@ -1693,7 +1693,7 @@ def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
             root=_calibration_root(),
         )
     if mode == "upload":
-        from jasper.correction.calibration import store_calibration
+        from jasper.audio_measurement.calibration import store_calibration
 
         filename = str(calibration.get("filename") or "uploaded-calibration.txt")
         return store_calibration(
@@ -2812,7 +2812,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(_handle_autolevel_cancel(self))
                     return
                 if path == "/upload-capture":
-                    from jasper.correction import quality
+                    from jasper.audio_measurement import quality
 
                     try:
                         self._send_json(_handle_upload_capture(self))
@@ -2852,7 +2852,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     except ValueError as e:
                         self._send_client_error(str(e))
                     except Exception as e:  # noqa: BLE001
-                        from jasper.correction.calibration import (
+                        from jasper.audio_measurement.calibration import (
                             CalibrationNotFoundError,
                             CalibrationUpstreamError,
                         )

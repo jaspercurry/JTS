@@ -18,11 +18,12 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement import deconv
+
 from . import (
     acoustic_quality,
     bundles,
     confidence,
-    deconv,
     replay_artifacts,
     runtime_integrity,
     spatial,

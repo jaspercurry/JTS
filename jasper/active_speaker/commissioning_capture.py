@@ -61,7 +61,7 @@ from .measurement import record_driver_measurement, record_summed_validation
 from .profile import ActiveSpeakerPreset, crossover_edges_for_role
 
 if TYPE_CHECKING:
-    from jasper.correction.calibration import CalibrationCurve
+    from jasper.audio_measurement.calibration import CalibrationCurve
 
 
 def driver_crossover_fcs(preset: ActiveSpeakerPreset, role: str) -> tuple[float, ...]:

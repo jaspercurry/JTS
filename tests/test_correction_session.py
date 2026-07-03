@@ -23,8 +23,9 @@ import numpy as np
 import pytest
 from scipy.signal import fftconvolve
 
-from jasper.correction import bundles, deconv, quality, runtime_integrity, sweep
-from jasper.correction.calibration import store_calibration
+from jasper.audio_measurement import deconv, quality, sweep
+from jasper.audio_measurement.calibration import store_calibration
+from jasper.correction import bundles, runtime_integrity
 from jasper.correction.session import (
     AutolevelData,
     AutolevelStatus,
@@ -110,7 +111,7 @@ async def test_session_applies_mic_calibration_during_capture(
     sess.mic_calibration = record
     called = {"value": False}
 
-    from jasper.correction import calibration as cal_mod
+    from jasper.audio_measurement import calibration as cal_mod
 
     real_apply = cal_mod.apply_calibration_curve
 
@@ -315,7 +316,7 @@ def test_band_levels_dbfs_bounds_oversized_input(monkeypatch, caplog):
     sr = 8000
     t = np.arange(5 * sr) / sr  # 5 s, well past the 1 s cap
     tone = (0.5 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float64)
-    with caplog.at_level(logging.WARNING, logger="jasper.correction.deconv"):
+    with caplog.at_level(logging.WARNING, logger="jasper.audio_measurement.deconv"):
         bands = _band_levels_dbfs(tone, sr)
     # Identical to feeding the pre-truncated 1 s slice → the cap was applied.
     assert bands == _band_levels_dbfs(tone[:sr], sr)

@@ -5,7 +5,7 @@ These pin the things the L2 increment must get right and that no other test cove
 
   - **Cal-curve application**: a calibrated mic's correction curve is actually
     applied to the measured magnitude (provable via the null-depth shift), reusing
-    ``correction.calibration.apply_calibration_curve`` — not just a quality-gate bool.
+    ``jasper.audio_measurement.calibration.apply_calibration_curve`` — not just a quality-gate bool.
   - **The phase_aware gate**: a polarity decision is granted ONLY with a calibrated
     mic. ``resolve_measurement_mode`` is downgrade-only, an uncalibrated capture
     yields an unauthorized proposal, and the data-layer gate in
@@ -34,8 +34,8 @@ from jasper.active_speaker.commissioning_capture import (
     build_crossover_alignment_proposal,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.correction import sweep as sweep_mod
-from jasper.correction.calibration import CalibrationCurve
+from jasper.audio_measurement import sweep as sweep_mod
+from jasper.audio_measurement.calibration import CalibrationCurve
 
 from tests.test_active_speaker_profile import _two_way_preset
 

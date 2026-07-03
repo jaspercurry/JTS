@@ -2,15 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Room correction v2 — sweep generation, deconvolution, PEQ design,
-and CamillaDSP YAML rewrite.
+"""Room correction v2 — PEQ design, measurement flow, and CamillaDSP YAML rewrite.
+
+The pure measurement primitives (sweep generation, deconvolution, FR analysis,
+mic calibration, capture-quality assessment) now live in the shared kernel
+[`jasper.audio_measurement`](../audio_measurement/__init__.py); this package
+consumes them and adds the correction-specific target/strategy/PEQ logic and the
+web flow. See docs/HANDOFF-correction.md for the architecture and phase plan.
 
 Public surface (everything else is implementation detail):
-  - sweep.synchronized_swept_sine(f1, f2, duration, sample_rate) → (sweep, meta)
-  - sweep.write_sweep_wav(path, sweep, sample_rate)
+  - jasper.audio_measurement.sweep.synchronized_swept_sine(...) → (sweep, meta)
+  - jasper.audio_measurement.sweep.write_sweep_wav(path, sweep, sample_rate)
   - playback.play_sweep(wav_path, alsa_device) → completion
-  - deconv.deconvolve(captured_signal, sweep, sample_rate) → impulse response
-  - analysis.smooth_fractional_octave(magnitude_db, freqs, fraction) → smoothed
+  - jasper.audio_measurement.deconv.deconvolve(captured, sweep, sr) → IR
+  - jasper.audio_measurement.analysis.smooth_fractional_octave(...) → smoothed
   - target.flat_target(freqs) / target.harman_target(freqs)
   - strategy.design_correction(...) → bounded PEQ design + audit report
   - confidence.build_confidence_report(...) → measurement confidence summary
@@ -22,6 +27,4 @@ Public surface (everything else is implementation detail):
     actually emits before reloading CamillaDSP.
   - coordinator.measurement_window() — async context manager
   - session.MeasurementSession — state machine for the multi-step flow
-
-See docs/HANDOFF-correction.md for the architecture and phase plan.
 """

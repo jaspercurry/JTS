@@ -372,7 +372,7 @@ def _measurement_sweep_wav_path() -> tuple[Path, dict[str, Any]]:
     """Return the cached swept-sine WAV + metadata used by acoustic capture."""
 
     from jasper.active_speaker import driver_acoustics as acoustic
-    from jasper.correction import sweep as sweep_mod
+    from jasper.audio_measurement import sweep as sweep_mod
 
     cache_dir = Path(
         os.environ.get(MEASUREMENT_SWEEP_DIR_ENV) or DEFAULT_MEASUREMENT_SWEEP_DIR
