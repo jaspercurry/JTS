@@ -432,7 +432,11 @@ impl ComplianceProof {
     }
 
     /// True iff the proof has already been written this session (no more writes
-    /// until reset). Exposed for STATUS / tests.
+    /// until reset). Test-only: the mixer relies on the `ProofOutcome::Write`
+    /// return to know a write happened, never this accessor, so gating it
+    /// `#[cfg(test)]` keeps it out of the `-D warnings` binary build (mirrors
+    /// `lane_resampler::decay::DecayParams::disabled`).
+    #[cfg(test)]
     pub fn written_this_session(&self) -> bool {
         self.written_this_session
     }
