@@ -328,8 +328,14 @@ pub struct Obs {
     /// 2026-07-03: `baseline_slope_ppm=1460.6` measured the ramp, not clock
     /// drift). So the ladder holds a pre-probe wait, commanding neutral, until
     /// this signal is true (plus a settle delay). Each daemon maps its own steady
-    /// indicator: fan-in → resampler LOCKED; usbsink solo → its playing/steady
-    /// signal AND the gadget ring primed to target fill.
+    /// indicator: fan-in → resampler LOCKED (its warmup ramp is a genuine 0→held
+    /// -target fill climb that must complete before baselining); usbsink solo →
+    /// simply `playing`. usbsink's only start-of-session contaminant is the
+    /// sub-second gadget-ring prime + capture-backlog slurp, which the settle
+    /// delay covers — a live ring-fill gate would DEADLOCK the probe there,
+    /// because nothing steers the ring toward target while the probe holds
+    /// neutral, so a host slower than our DAC keeps the ring at its underflow
+    /// floor forever (see `obs_from_shared` in the usbsink shim).
     pub locked: bool,
     /// Gadget PeriodRing fill in frames (ring_fill_periods × period_frames).
     pub fill_frames: f64,
@@ -600,13 +606,23 @@ impl HostClock {
     pub fn probe_result(&self) -> ProbeResult {
         self.probe_result
     }
-    /// True iff the ladder is in the pre-probe wait — `Probing` and holding
-    /// neutral in [`ProbePhase::AwaitLock`] until the lane leaves its warmup ramp
-    /// (locked for the settle window). Distinguishes "probing but waiting for the
-    /// lane to settle" from "probing and actively measuring", which the bare
-    /// `ladder=probing` token cannot. Surfaced in the status fragment.
+    /// True iff a LIVE session's probe is in the pre-probe wait — `session_active`
+    /// AND `Probing` AND holding neutral in [`ProbePhase::AwaitLock`] until the
+    /// lane leaves its warmup ramp (locked for the settle window). Distinguishes
+    /// "probing but waiting for the lane to settle" from "probing and actively
+    /// measuring", which the bare `ladder=probing` token cannot. Surfaced in the
+    /// status fragment.
+    ///
+    /// The `session_active` guard matters between sessions: `end_session` parks
+    /// the ladder in `Probing`/`AwaitLock` (that is the armed-for-next-session
+    /// resting state), so WITHOUT this guard an enabled-but-idle box would
+    /// publish `waiting_for_lock:true` forever with nothing playing — reading as
+    /// an active-session claim when no session is in flight. It is `false` while
+    /// idle; it goes `true` only once a session's rising edge re-enters the wait.
     pub fn probe_waiting_for_lock(&self) -> bool {
-        self.ladder == Ladder::Probing && self.probe_phase == ProbePhase::AwaitLock
+        self.session_active
+            && self.ladder == Ladder::Probing
+            && self.probe_phase == ProbePhase::AwaitLock
     }
     pub fn response_ratio(&self) -> Option<f64> {
         self.response_ratio
@@ -961,13 +977,29 @@ impl HostClock {
     // ---- Session boundary ---------------------------------------------------
 
     fn end_session(&mut self, reason: &'static str, actions: &mut Vec<Action>) {
-        // If a probe was in flight, it is aborted (last_result="aborted").
+        // Distinguish a probe that was actively MEASURING (Baseline/Step — a real
+        // measurement in flight, now aborted) from one that never left the
+        // pre-probe AwaitLock wait (no baseline was ever taken — nothing to
+        // abort). Logging "result=aborted" for the latter reads as measurement
+        // churn in the journal and hides the "never started" shape (e.g. a box
+        // stuck in AwaitLock). Emit a distinct token and leave `probe_result`
+        // untouched in the await-lock case, since no verdict was produced.
         if self.ladder == Ladder::Probing {
-            self.probe_result = ProbeResult::Aborted;
-            log::info!(
-                "event={}.host_clock_probe_result result=aborted response_ratio=null baseline_slope_ppm=null step_slope_ppm=null",
-                self.cfg.log_prefix
-            );
+            match self.probe_phase {
+                ProbePhase::AwaitLock => {
+                    log::info!(
+                        "event={}.host_clock_probe_result result=await_lock_ended response_ratio=null baseline_slope_ppm=null step_slope_ppm=null",
+                        self.cfg.log_prefix
+                    );
+                }
+                ProbePhase::Baseline | ProbePhase::Step => {
+                    self.probe_result = ProbeResult::Aborted;
+                    log::info!(
+                        "event={}.host_clock_probe_result result=aborted response_ratio=null baseline_slope_ppm=null step_slope_ppm=null",
+                        self.cfg.log_prefix
+                    );
+                }
+            }
         }
         self.feed_forward_ppm = 0.0;
         self.l1_high_ticks = 0;
@@ -981,8 +1013,9 @@ impl HostClock {
         self.slope.rearm();
         self.command(0.0, true, actions);
         // The rising edge on the next (session) tick will begin_probe again.
-        // Until then we sit Probing/Armed with neutral pitch; session_active is
-        // false so tick() short-circuits to idle.
+        // Until then we sit Probing/AwaitLock with neutral pitch; session_active
+        // is false so tick() short-circuits to idle (and probe_waiting_for_lock()
+        // reads false while idle — it is session_active-gated).
         log::info!(
             "event={}.host_clock_pitch_reset reason=idle",
             self.cfg.log_prefix
@@ -1503,22 +1536,63 @@ mod tests {
         assert!(hc.transitions() >= t1, "a new session re-probes");
     }
 
-    /// Preempt (or mid-probe stop) aborts the probe: last_result="aborted",
-    /// pitch neutral, back to armed.
+    /// Preempt while ACTIVELY MEASURING (past AwaitLock, into the baseline)
+    /// aborts the probe: last_result="aborted", pitch neutral, back to armed.
     #[test]
-    fn preempt_mid_probe_aborts() {
+    fn preempt_mid_measurement_aborts() {
         let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
-        hc.tick(obs(true, true, 400.0, 48000, 48000), 1000);
+        let mut cap: u64 = 48000;
+        let mut play: u64 = 48000;
+        let mut t = 0u64;
+        // Lock + settle + one baseline tick so we are genuinely measuring.
+        for _ in 0..(PROBE_SETTLE_SECS + 1) {
+            t += 1;
+            cap += 48000;
+            play += 48000;
+            hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
+        }
         assert_eq!(hc.ladder(), Ladder::Probing);
-        // Preempt: session ends → probe aborted.
-        let mut ob = obs(true, true, 400.0, 96000, 96000);
+        assert!(!hc.probe_waiting_for_lock(), "baseline is in flight");
+        // Preempt mid-baseline: session ends → probe aborted (a measurement WAS
+        // in flight).
+        t += 1;
+        let mut ob = obs(true, true, 400.0, cap + 48000, play + 48000);
         ob.preempted = true;
-        let actions = hc.tick(ob, 2000);
+        let actions = hc.tick(ob, t * 1000);
         assert_eq!(hc.probe_result(), ProbeResult::Aborted);
         assert!(
             matches!(actions.last(), Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0),
             "abort forces neutral pitch"
+        );
+    }
+
+    /// Ending the session while the probe never left AwaitLock is NOT an abort —
+    /// no baseline was ever taken, so there is nothing to abort. `probe_result`
+    /// stays as it was (None on a first session), and the neutral pitch write
+    /// still fires. This pins the review's Nit 3: the journal must not read
+    /// "result=aborted" for a probe that never started measuring.
+    #[test]
+    fn end_session_in_await_lock_does_not_mark_aborted() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        // One tick of an unlocked (warmup) session: enters Probing/AwaitLock and
+        // stays there (never locks ⇒ never baselines).
+        hc.tick(obs_unlocked(true, true, 400.0, 48000, 48000), 1000);
+        assert!(hc.probe_waiting_for_lock(), "still in AwaitLock");
+        assert_eq!(hc.probe_result(), ProbeResult::None);
+        // Preempt while still in AwaitLock: session ends, but no abort verdict.
+        let mut ob = obs_unlocked(true, true, 400.0, 96000, 96000);
+        ob.preempted = true;
+        let actions = hc.tick(ob, 2000);
+        assert_eq!(
+            hc.probe_result(),
+            ProbeResult::None,
+            "await-lock end is not an abort (no measurement was in flight)"
+        );
+        assert!(
+            matches!(actions.last(), Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0),
+            "session end still forces neutral pitch"
         );
     }
 
@@ -1695,42 +1769,46 @@ mod tests {
         );
     }
 
-    /// usbsink solo maps `Obs::locked` from playing AND ring-primed-to-target.
-    /// A ring below the target while playing is NOT the steady regime, so the
-    /// probe waits; once the ring reaches target it clears (after settle). This
-    /// pins the daemon-side steady mapping used by `obs_from_shared`.
+    /// usbsink solo maps `Obs::locked` settle-only (`= playing`), NOT gated on a
+    /// live ring-fill level. This pins the invariant the ladder relies on: with a
+    /// slow host whose gadget ring never reaches the fill target (rides the
+    /// underflow floor under neutral pitch), the probe must still leave AwaitLock
+    /// after the settle and reach a verdict — a fill-level gate here would
+    /// deadlock it forever (review finding 1). We drive `fill_frames` pinned BELOW
+    /// target the whole time and confirm the probe baselines and passes anyway.
     #[test]
-    fn usbsink_style_ring_below_target_is_not_locked() {
-        // Emulate the usbsink mapping: locked = playing && fill >= target.
-        let target = 384.0;
+    fn usbsink_style_settle_only_lock_probes_despite_low_ring() {
         let mut hc = HostClock::new(enabled_cfg());
         hc.startup_neutralize();
         let mut cap: u64 = 1_000_000_000;
         let mut play: u64 = cap;
         let mut t = 0u64;
-        let ob = |fill: f64, cap: u64, play: u64| -> Obs {
-            let mut o = obs(true, true, fill, cap, play);
-            o.locked = fill >= target; // playing is already true
+        // usbsink mapping: locked = playing (fill is irrelevant to the gate). We
+        // model a slow-host ring stuck at 1 period (256 frames), well below the
+        // 384-frame target, for the ENTIRE session.
+        let ob = |cap: u64, play: u64| -> Obs {
+            let mut o = obs(true, true, 256.0, cap, play);
+            o.locked = true; // == playing; the low fill does NOT unset it
             o
         };
-        // 6 s with the ring priming BELOW target: not locked ⇒ waits.
-        for _ in 0..6 {
+        // A modest, compliant host at +100 ppm that follows the commanded step.
+        let offset = 100.0;
+        for _ in 0..(PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + 6 + 3) {
             t += 1;
-            cap += (48000.0 * (1.0 + 800.0 / 1.0e6)) as u64;
+            let host_ppm = offset + hc.commanded_ppm();
+            cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
             play += 48000;
-            hc.tick(ob(256.0, cap, play), t * 1000);
-            assert!(hc.probe_waiting_for_lock(), "ring below target ⇒ waiting");
+            hc.tick(ob(cap, play), t * 1000);
         }
-        // Ring reaches target; after the settle the baseline begins.
-        for _ in 0..(PROBE_SETTLE_SECS + 1) {
-            t += 1;
-            cap += 48000;
-            play += 48000;
-            hc.tick(ob(384.0, cap, play), t * 1000);
-        }
+        assert_eq!(
+            hc.probe_result(),
+            ProbeResult::Pass,
+            "settle-only lock probes and passes even with the ring below target"
+        );
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
         assert!(
             !hc.probe_waiting_for_lock(),
-            "ring at target for the settle window ⇒ baseline starts"
+            "settle-only ⇒ not stuck in AwaitLock on a low ring"
         );
     }
 
@@ -1745,6 +1823,42 @@ mod tests {
             "Disabled ladder is not waiting for lock"
         );
         assert!(hc.status_fragment().contains("\"waiting_for_lock\":false"));
+    }
+
+    /// `waiting_for_lock` is gated on a LIVE session (review Nit 4): `end_session`
+    /// parks the ladder in Probing/AwaitLock as its armed-for-next-session resting
+    /// state, but with no session flowing the flag must read `false` — otherwise
+    /// an enabled-but-idle box publishes `waiting_for_lock:true` forever, reading
+    /// as an active-session claim. It flips to `true` only once a session's rising
+    /// edge re-enters the wait.
+    #[test]
+    fn waiting_for_lock_is_false_while_idle_between_sessions() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        // Bring a session up (locked lane) then stop it → end_session parks the
+        // ladder in Probing/AwaitLock, but session_active is now false.
+        hc.tick(obs(true, true, 400.0, 48000, 48000), 1000);
+        assert!(
+            hc.probe_waiting_for_lock(),
+            "live session ⇒ waiting is true"
+        );
+        // Session stops (not playing): idle boundary.
+        hc.tick(obs(false, true, 400.0, 96000, 96000), 2000);
+        assert_eq!(hc.ladder(), Ladder::Probing, "parked in Probing while idle");
+        assert!(
+            !hc.probe_waiting_for_lock(),
+            "idle box is NOT waiting for lock (no live session)"
+        );
+        assert!(
+            hc.status_fragment().contains("\"waiting_for_lock\":false"),
+            "idle fragment carries waiting_for_lock:false"
+        );
+        // A fresh session re-enters the wait ⇒ true again.
+        hc.tick(obs(true, true, 400.0, 144000, 144000), 3000);
+        assert!(
+            hc.probe_waiting_for_lock(),
+            "next session's rising edge re-enters the wait"
+        );
     }
 
     // ---- Closed-loop servo -------------------------------------------------

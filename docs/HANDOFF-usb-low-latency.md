@@ -637,15 +637,35 @@ the step then read `step_slope_ppm=-1397.6`, `response_ratio=-9.5` ⇒
 `probe_fail` ⇒ `l2_fallback` for the whole stream. Prior "passes" (ratios 0.78,
 2.97) were the same contamination landing luckily inside the pass band. So the
 probe now opens in an **await-lock** wait, commanding neutral, and does not
-begin the baseline until the lane reports LOCKED (fan-in: resampler locked;
-usbsink solo: playing AND the gadget ring primed to its target fill) AND that
-lock has held continuously for a 2 s settle. If the lane un-locks mid-baseline
-(or mid-step), the in-flight measurement is discarded and the wait restarts —
-a warmup re-entry is not a compliance failure, so this does not demote to L2.
-`/state.…​.host_clock.probe.waiting_for_lock` is `true` while the ladder is
-`probing` but still holding for the lane to settle; the journal marks the
-wait with `event=<prefix>.host_clock_probe_wait reason=await_lock|lock_lost`
-and the actual baseline start with `event=<prefix>.host_clock_probe_start`.
+begin the baseline until the lane reports LOCKED AND that lock has held
+continuously for a 2 s settle. The two daemons map LOCKED differently by
+construction:
+- **fan-in (combo)**: resampler `locked_state`. The fan-in warmup ramp is a
+  genuine 0 → held-target fill climb that must complete before baselining, so a
+  live lock signal is the right gate.
+- **usbsink solo**: simply `playing` (settle-only). usbsink's only
+  start-of-session contaminant is the sub-second gadget-ring prime + one-time
+  capture-backlog slurp, which the 2 s settle covers. It is deliberately **NOT**
+  a live `fill >= target` gate: nothing steers the ring toward target while the
+  probe holds neutral (the DLL servo that pins fill only runs post-probe in L0),
+  so a host slower than our DAC keeps the ring at its underflow floor for the
+  whole session — a fill-level gate would leave the probe stuck in await-lock
+  forever and the feature silently inert. `fill_frames` is still published for
+  telemetry/the slope falsifier; it just does not gate the probe.
+
+If the lane un-locks mid-baseline (or mid-step), the in-flight measurement is
+discarded and the wait restarts — a warmup re-entry is not a compliance
+failure, so this does not demote to L2.
+`/state.…​.host_clock.probe.waiting_for_lock` is `true` only while a LIVE
+session's probe is holding in await-lock (it is `false` between sessions — the
+ladder rests in `probing`/await-lock while idle, but `session_active` gates the
+flag so an enabled-but-idle box does not read as an active-session claim). The
+journal marks the wait with `event=<prefix>.host_clock_probe_wait
+reason=await_lock|lock_lost` and the actual baseline start with
+`event=<prefix>.host_clock_probe_start`. A session that ends while still in
+await-lock (never baselined) logs `event=<prefix>.host_clock_probe_result
+result=await_lock_ended` — distinct from `result=aborted`, which is reserved
+for a real baseline/step measurement cut short.
 
 ### Ladder states
 

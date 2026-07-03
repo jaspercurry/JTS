@@ -1450,11 +1450,7 @@ fn run_state_publisher(
     while !shutdown.load(Ordering::Relaxed) {
         publisher.poll(&tap_receiver, &tap, &tap_config, monotonic_millis());
         if last_hc_tick.elapsed() >= Duration::from_millis(host_clock::TICK_INTERVAL_MS) {
-            let obs = host_clock::obs_from_shared(
-                &state,
-                config.period_frames,
-                config.host_clock.target_fill_frames,
-            );
+            let obs = host_clock::obs_from_shared(&state, config.period_frames);
             for action in host_clock.tick(obs, monotonic_millis() as u64) {
                 pitch.apply(action);
             }
@@ -2406,6 +2402,41 @@ mod tests {
             standby_config(false).owns_host_clock_ctl(),
             "solo mode owns the ctl even with host-clock disabled"
         );
+    }
+
+    #[test]
+    fn obs_from_shared_locked_is_settle_only_playing_not_ring_level() {
+        // The shipped usbsink solo mapping: Obs.locked == playing, independent of
+        // the ring fill level. This pins the fix for review finding 1 at the REAL
+        // function (not a crate-side emulation): a slow-host session whose gadget
+        // ring rides the underflow floor (fill well below target) must still
+        // report locked once audio is flowing, so the probe leaves AwaitLock and
+        // runs. A live `fill >= target` gate would deadlock the probe there.
+        let state = SharedState::new(DEFAULT_RING_PERIODS);
+        let period_frames = DEFAULT_PERIOD_FRAMES; // 256
+        let target = 384.0; // > 1 period; a low ring never reaches it
+
+        // Playing, but the ring is stuck at 1 period (256 frames < 384 target).
+        state.playing.store(true, Ordering::Relaxed);
+        state.ring_fill_periods.store(1, Ordering::Relaxed);
+        let obs = host_clock::obs_from_shared(&state, period_frames);
+        assert!(
+            obs.locked,
+            "playing ⇒ locked even with the ring below target (settle-only gate)"
+        );
+        assert!(obs.fill_frames < target, "precondition: ring below target");
+
+        // Ring empty (0 periods), still playing: locked stays true — the gate does
+        // not consult fill at all.
+        state.ring_fill_periods.store(0, Ordering::Relaxed);
+        let obs = host_clock::obs_from_shared(&state, period_frames);
+        assert!(obs.locked, "empty ring while playing is still locked");
+
+        // Not playing: not locked (a session isn't flowing).
+        state.playing.store(false, Ordering::Relaxed);
+        state.ring_fill_periods.store(2, Ordering::Relaxed); // even a full-ish ring
+        let obs = host_clock::obs_from_shared(&state, period_frames);
+        assert!(!obs.locked, "not playing ⇒ not locked regardless of fill");
     }
 
     #[cfg(feature = "alsa-runtime")]
