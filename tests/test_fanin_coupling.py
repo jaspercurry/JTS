@@ -24,6 +24,7 @@ from jasper.fanin_coupling import (
     PIPE_WIRE_FORMAT,
     OUTPUTD_PIPE_PATH_ENV_VAR,
     RING_CAPTURE_DEVICE,
+    RING_PLAYBACK_DEVICE,
     RING_WIRE_FORMAT,
     capture_kwargs_for_coupling,
     is_shm_ring_coupling,
@@ -61,15 +62,22 @@ def test_is_shm_ring_coupling_predicate():
     assert is_shm_ring_coupling("ring") is False
 
 
-def test_shm_ring_capture_kwargs_are_alsa_device_s16le():
+def test_shm_ring_kwargs_are_full_ring_topology_capture_and_playback():
+    # P2: shm_ring is the END-TO-END ring topology — Ring A capture
+    # (jts_ring_capture) AND Ring B playback (jts_ring_playback), both S16_LE. The
+    # two ends flip together; a half-ring config (ring capture + ALSA loopback
+    # playback) would strand one end, so the emit kwargs MUST carry both devices.
     kwargs = capture_kwargs_for_coupling("shm_ring")
     assert kwargs == {
         "capture_device": RING_CAPTURE_DEVICE,
         "capture_format": RING_WIRE_FORMAT,
+        "playback_device": RING_PLAYBACK_DEVICE,
+        "playback_format": RING_WIRE_FORMAT,
     }
     # S16LE, NOT the transport_pipe S32 widening — an SHM ring has no page floor.
     assert RING_WIRE_FORMAT == "S16_LE"
     assert RING_CAPTURE_DEVICE == "jts_ring_capture"
+    assert RING_PLAYBACK_DEVICE == "jts_ring_playback"
 
 
 def test_shm_ring_ring_path_and_slots_resolve_with_fail_safe_defaults():
@@ -95,7 +103,7 @@ def test_shm_ring_ring_path_and_slots_resolve_with_fail_safe_defaults():
             resolve_ring_slots(bad)
 
 
-def test_coupling_capture_kwargs_from_env_shm_ring_returns_alsa_kwargs():
+def test_coupling_capture_kwargs_from_env_shm_ring_returns_full_ring_kwargs():
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 
     kwargs = coupling_capture_kwargs_from_env(
@@ -104,6 +112,8 @@ def test_coupling_capture_kwargs_from_env_shm_ring_returns_alsa_kwargs():
     assert kwargs == {
         "capture_device": RING_CAPTURE_DEVICE,
         "capture_format": RING_WIRE_FORMAT,
+        "playback_device": RING_PLAYBACK_DEVICE,
+        "playback_format": RING_WIRE_FORMAT,
     }
 
 
@@ -131,8 +141,84 @@ def test_shm_ring_armed_env_emits_ring_capture_device_s16le():
     # It is NOT the transport_pipe RawFile/pipe shape, and NOT the dsnoop default.
     assert "type: RawFile" not in capture_block
     assert 'device: "plug:jasper_capture"' not in capture_block
+    # P2: the Ring B playback end flips together with capture — the emit names the
+    # ring PLAYBACK device too, so the config is coherent end-to-end (not a
+    # half-ring capture-only config that strands outputd).
+    playback_block = cfg.split("\n  playback:\n", 1)[1].split("\nfilters:\n", 1)[0]
+    assert "type: Alsa" in playback_block
+    assert f'device: "{RING_PLAYBACK_DEVICE}"' in playback_block
+    assert f"format: {RING_WIRE_FORMAT}" in playback_block
+    assert 'device: "outputd_content_playback"' not in playback_block
     # S16_LE native — no S32 widening (an SHM ring has no FIFO page floor).
     assert RING_WIRE_FORMAT == "S16_LE"
+
+
+def test_live_env_path_reads_coupling_file_fresh_not_os_environ(monkeypatch):
+    # BLOCKER 1: the wizard processes (jasper-web /sound/, jasper-correction-web
+    # /correction/) do NOT EnvironmentFile= fanin.env, so os.environ lacks
+    # JASPER_FANIN_CAMILLA_COUPLING even on an armed box. Reading the token from
+    # os.environ would emit a LOOPBACK capture/playback config and silently revert
+    # CamillaDSP off the rings. The live-env path (env=None) must resolve the
+    # coupling FILE-FRESH from the persisted fanin.env — the same SSOT the daemons
+    # and reconciler read — so an armed box's /sound/ save emits the full ring
+    # topology. Mirrors the os.environ-stale fix pattern for the voice provider.
+    from jasper import fanin_coupling
+
+    # Armed persisted file; os.environ carries NOTHING (the wizard's real shape).
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+    monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
+
+    kwargs = fanin_coupling.coupling_capture_kwargs_from_env()
+
+    assert kwargs == {
+        "capture_device": RING_CAPTURE_DEVICE,
+        "capture_format": RING_WIRE_FORMAT,
+        "playback_device": RING_PLAYBACK_DEVICE,
+        "playback_format": RING_WIRE_FORMAT,
+    }
+
+
+def test_live_env_path_loopback_when_file_disarmed_is_byte_identical(monkeypatch):
+    # The file-fresh fallback stays fail-SAFE: a disarmed box (loopback fanin.env,
+    # or the read fail-safing to loopback) resolves to {} on the live path, byte-
+    # identical to today. This is the guard that the Blocker-1 fix does not turn a
+    # non-armed box's ordinary /sound/ save into a ring config.
+    from jasper import fanin_coupling
+
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "loopback",
+    )
+    monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
+
+    assert fanin_coupling.coupling_capture_kwargs_from_env() == {}
+
+
+def test_explicit_env_mapping_stays_authoritative_ignores_file(monkeypatch):
+    # An EXPLICIT env mapping (the plan/binder path passes dict(os.environ) right
+    # after the reconciler pre-synced it; unit tests pass a controlled env) must
+    # NOT read the file — the caller's env wins. Prove a shm_ring fanin.env on disk
+    # does not leak into an explicit loopback env. (Also fails loudly if the file
+    # reader is consulted at all: it raises here.)
+    from jasper import fanin_coupling
+
+    def _boom(*a, **k):
+        raise AssertionError("explicit-env path must not read the persisted file")
+
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling", _boom
+    )
+
+    assert fanin_coupling.coupling_capture_kwargs_from_env({}) == {}
+    assert (
+        fanin_coupling.coupling_capture_kwargs_from_env(
+            {"JASPER_FANIN_CAMILLA_COUPLING": "loopback"}
+        )
+        == {}
+    )
 
 
 def test_resolve_coupling_unknown_and_old_fifo_fail_safe_to_loopback():
@@ -305,3 +391,79 @@ def test_member_kwargs_are_pipe_sink_detects_grouped_sink():
         is True
     )
     assert member_kwargs_are_pipe_sink({"enable_rate_adjust": False}) is True
+
+
+# --- Ring B (outputd content bridge) vocabulary + coherence (P2) -------------
+
+
+def test_resolve_outputd_content_bridge_fail_safe_and_tokens():
+    from jasper.fanin_coupling import (
+        OUTPUTD_CONTENT_BRIDGE_DIRECT,
+        OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+        resolve_outputd_content_bridge,
+    )
+
+    assert resolve_outputd_content_bridge(None) == OUTPUTD_CONTENT_BRIDGE_DIRECT
+    assert resolve_outputd_content_bridge("") == OUTPUTD_CONTENT_BRIDGE_DIRECT
+    assert resolve_outputd_content_bridge(" DIRECT ") == OUTPUTD_CONTENT_BRIDGE_DIRECT
+    assert resolve_outputd_content_bridge("Shm_Ring") == OUTPUTD_CONTENT_BRIDGE_SHM_RING
+    # rate_match is a separate deferred lab bridge the coupling plane does not
+    # own — it fail-safes to direct here (the raw string is what the route policy
+    # rejects, see the audio_runtime_plan tests).
+    assert resolve_outputd_content_bridge("rate_match") == OUTPUTD_CONTENT_BRIDGE_DIRECT
+    assert resolve_outputd_content_bridge("garbage") == OUTPUTD_CONTENT_BRIDGE_DIRECT
+
+
+def test_outputd_content_bridge_for_coupling_pairs_ring_with_ring():
+    from jasper.fanin_coupling import (
+        OUTPUTD_CONTENT_BRIDGE_DIRECT,
+        OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+        outputd_content_bridge_for_coupling,
+    )
+
+    assert outputd_content_bridge_for_coupling("shm_ring") == OUTPUTD_CONTENT_BRIDGE_SHM_RING
+    assert outputd_content_bridge_for_coupling("loopback") == OUTPUTD_CONTENT_BRIDGE_DIRECT
+    # transport_pipe owns a DIFFERENT outputd key (the local content pipe), so it
+    # maps to direct on the content-bridge axis.
+    assert outputd_content_bridge_for_coupling("transport_pipe") == OUTPUTD_CONTENT_BRIDGE_DIRECT
+    assert outputd_content_bridge_for_coupling(None) == OUTPUTD_CONTENT_BRIDGE_DIRECT
+
+
+def test_resolve_outputd_ring_path_and_slots_fail_safe():
+    from jasper.fanin_coupling import (
+        DEFAULT_OUTPUTD_RING_PATH,
+        DEFAULT_OUTPUTD_RING_SLOTS,
+        resolve_outputd_ring_path,
+        resolve_outputd_ring_slots,
+    )
+
+    assert resolve_outputd_ring_path(None) == DEFAULT_OUTPUTD_RING_PATH
+    assert resolve_outputd_ring_path("  ") == DEFAULT_OUTPUTD_RING_PATH
+    assert resolve_outputd_ring_path(" /dev/shm/x.ring ") == "/dev/shm/x.ring"
+    assert DEFAULT_OUTPUTD_RING_PATH == "/dev/shm/jts-ring/content.ring"
+
+    assert resolve_outputd_ring_slots(None) == DEFAULT_OUTPUTD_RING_SLOTS
+    assert resolve_outputd_ring_slots("") == DEFAULT_OUTPUTD_RING_SLOTS
+    assert resolve_outputd_ring_slots("2") == 2
+    assert resolve_outputd_ring_slots(" 16 ") == 16
+    assert DEFAULT_OUTPUTD_RING_SLOTS == 2
+    # Out-of-range / unparseable fail loud (mirror the Rust MIN/MAX; no clamp).
+    for bad in ("1", "0", "17", "-1", "garbage", "2.5"):
+        with pytest.raises(ValueError):
+            resolve_outputd_ring_slots(bad)
+
+
+def test_ring_pair_is_coherent_only_for_matched_ends():
+    from jasper.fanin_coupling import ring_pair_is_coherent
+
+    # Coherent: both ring, or neither.
+    assert ring_pair_is_coherent("shm_ring", "shm_ring") is True
+    assert ring_pair_is_coherent("loopback", "direct") is True
+    assert ring_pair_is_coherent("transport_pipe", "direct") is True
+    # PARTIAL flips (strand one ring end) are NOT coherent.
+    assert ring_pair_is_coherent("shm_ring", "direct") is False
+    assert ring_pair_is_coherent("loopback", "shm_ring") is False
+    assert ring_pair_is_coherent("transport_pipe", "shm_ring") is False
+    # A None coupling resolves to loopback -> pairs with direct only.
+    assert ring_pair_is_coherent(None, "direct") is True
+    assert ring_pair_is_coherent(None, "shm_ring") is False

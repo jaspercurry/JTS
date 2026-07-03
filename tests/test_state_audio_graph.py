@@ -97,3 +97,80 @@ def test_audio_graph_state_aggregates_route_artifact_bridge_fanin_and_outputd(
     assert graph["outputd"]["route_latency_components"] == {
         "dac_presentation_ms": 10.333
     }
+
+
+# --- /state.audio_graph.coupling (P2) ----------------------------------------
+
+
+def test_coupling_state_loopback_default_is_coherent(monkeypatch):
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "loopback",
+    )
+    # No outputd.env -> content_bridge defaults to direct.
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
+        "/nonexistent/outputd.env",
+    )
+    block = state_aggregate._coupling_state(
+        fanin_status={"output": {"transport": "loopback"}}
+    )
+    assert block["persisted"] == "loopback"
+    assert block["content_bridge"] == "direct"
+    assert block["coherent"] is True
+    assert block["live_transport"] == "loopback"
+
+
+def test_coupling_state_ring_armed_reports_coherent_pair(monkeypatch, tmp_path):
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
+    )
+    block = state_aggregate._coupling_state(
+        fanin_status={"output": {"transport": "shm_ring", "ring": {}}}
+    )
+    assert block["persisted"] == "shm_ring"
+    assert block["content_bridge"] == "shm_ring"
+    assert block["coherent"] is True
+    assert block["live_transport"] == "shm_ring"
+
+
+def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
+    # shm_ring fan-in but direct outputd = partial flip -> coherent False.
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text("")  # bridge defaults to direct
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
+    )
+    block = state_aggregate._coupling_state(fanin_status=None)
+    assert block["persisted"] == "shm_ring"
+    assert block["content_bridge"] == "direct"
+    assert block["coherent"] is False
+
+
+def test_coupling_state_fail_soft_on_read_error(monkeypatch):
+    # A read failure degrades to the loopback default, never raises. OSError is a
+    # realistic failure (an unreadable env file); the fail-soft catch is a
+    # concrete exception set, not a blind except.
+    def _boom(*a, **k):
+        raise OSError("boom")
+
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling", _boom
+    )
+    block = state_aggregate._coupling_state(fanin_status=None)
+    assert block == {
+        "persisted": "loopback",
+        "content_bridge": "direct",
+        "coherent": True,
+        "live_transport": None,
+    }

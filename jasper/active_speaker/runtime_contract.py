@@ -83,6 +83,15 @@ from .path_safety import (
 from .staging import load_staged_startup_config
 
 DEFAULT_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp/outputd-cutover.yml")
+# The ``shm_ring`` sibling of the flat outputd cutover config. A ring-armed box
+# (JASPER_FANIN_CAMILLA_COUPLING=shm_ring) MUST re-seed its statefile to this ring
+# config on a camilla restart/deploy, not to the loopback flat config above — that
+# revert is audit finding 5's "built-in revert" (a hand-placed ring config that any
+# camilla restart silently reverts to loopback). Emitted by
+# jasper.sound.camilla_yaml.emit_flat_ring_config; installed by install.sh next to
+# outputd-cutover.yml. The graph selector picks between the two by the persisted
+# coupling (see ``safe_graph_for_current_topology``'s ``coupling`` argument).
+DEFAULT_RING_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp/outputd-cutover-ring.yml")
 DEFAULT_LEGACY_FLAT_CONFIG = Path("/etc/camilladsp/v1.yml")
 DEFAULT_CAMILLA2_STATEFILE = Path("/var/lib/camilladsp/crossover-statefile.yml")
 
@@ -412,6 +421,43 @@ def classify_output_contract(topology: OutputTopology) -> OutputContract:
 
 def active_topology_requires_roleful_graph(topology: OutputTopology) -> bool:
     return classify_output_contract(topology).requires_roleful_graph
+
+
+def topology_supports_shm_ring(topology: OutputTopology) -> bool:
+    """True iff the saved topology can be driven by the ``shm_ring`` coupling.
+
+    The topology-contract citizenship for rings (audio-graph consolidation P2):
+    Ring A/Ring B carry a full-range **stereo** program on a single coherent ALSA
+    sink. So ring is legal ONLY for the plain stereo full-range contract, and
+    NOT for:
+
+    - roleful / protected / subwoofer topologies (``requires_roleful_graph`` — the
+      ring is stereo-pinned and cannot carry a per-driver crossover; the Rust
+      outputd config.rs likewise requires a full-range stereo L/R sink for
+      ``shm_ring``, and the statefile seeder sends these to the driver-domain graph,
+      never the ring flat config);
+    - composite sinks (dual-Apple — ``hardware.child_devices`` present): the ring
+      ioplug is a single coherent 2-ch device, not the 4-ch composite the two
+      child DACs need. That is P8's ring-v2 (N-channel) problem.
+
+    An UNCONFIGURED topology (no speaker groups — the common fresh-install shape)
+    IS ring-eligible: it uses the flat stereo graph, exactly the shape ring
+    replaces. This predicate is what the multiroom bond-formation prechecks and the
+    reconciler consult; the DEFAULT coupling stays loopback regardless (arming is
+    explicit until P4)."""
+    contract = classify_output_contract(topology)
+    if contract.requires_roleful_graph:
+        return False
+    # Composite (dual-Apple) is excluded even when it is nominally stereo: a
+    # dual-child sink is not the single coherent L/R sink the ring drives.
+    if topology.hardware.child_devices:
+        return False
+    # Stereo full-range OR unconfigured (flat stereo fallback) are the ring-legal
+    # shapes; an explicit mono full-range cannot be driven by a stereo ring.
+    return contract.classification in (
+        CONTRACT_NORMAL_STEREO_FULL_RANGE,
+        CONTRACT_UNCONFIGURED,
+    )
 
 
 def _protected_tweeter_outputs(contract: OutputContract) -> set[int]:
@@ -1708,9 +1754,21 @@ def safe_graph_for_current_topology(
     current_config_path: str | Path | None = None,
     preferred_config_path: str | Path | None = None,
     flat_config_path: str | Path = DEFAULT_FLAT_OUTPUTD_CONFIG,
+    ring_flat_config_path: str | Path = DEFAULT_RING_FLAT_OUTPUTD_CONFIG,
+    coupling: str | None = None,
     staged_config: dict[str, Any] | None = None,
 ) -> SafeGraphDecision:
-    """Select the only safe persisted CamillaDSP graph for this topology."""
+    """Select the only safe persisted CamillaDSP graph for this topology.
+
+    ``coupling`` is the persisted fan-in -> CamillaDSP coupling
+    (``JASPER_FANIN_CAMILLA_COUPLING``). When it resolves to ``shm_ring`` AND the
+    topology takes the non-roleful flat fallback, the selected flat graph is the
+    RING flat config (``ring_flat_config_path``) instead of the loopback
+    ``flat_config_path`` — so a ring-armed box's deploy / camilla restart re-seeds
+    a ring config instead of reverting to loopback (audit finding 5). A ``None``
+    or non-ring coupling preserves the loopback flat selection byte-for-byte. Only
+    the flat (stereo/passive) branch is ring-aware; roleful/active topologies are
+    P8's ring-v2 concern and always take the driver-domain path here."""
 
     topology = topology or load_output_topology_strict()
     contract = classify_output_contract(topology)
@@ -1791,6 +1849,45 @@ def safe_graph_for_current_topology(
         )
 
     if not contract.requires_roleful_graph:
+        # Ring-armed box: re-seed the RING flat config, not the loopback one, so a
+        # camilla restart/deploy keeps the rings (audit finding 5). Fail-SAFE: the
+        # loopback flat config below is the fallback whenever the ring path is not
+        # taken — it does NOT restore audio on an armed box (outputd still reads
+        # Ring B), but it prevents a camilla crash-loop and keeps the box
+        # doctor-visible so the operator can disarm; the coupling reconciler's own
+        # activation gate is where a truly unarm-able ring is caught. A non-ring
+        # coupling skips the ring path entirely (loopback flat, byte-for-byte).
+        #
+        # Gate the ring path on the FULL topology-ring-eligibility predicate
+        # (topology_supports_shm_ring), not just `not requires_roleful_graph`: the
+        # predicate additionally excludes composite (dual-Apple child_devices) and
+        # explicit-mono topologies, which are NOT ring-legal (a stereo ring cannot
+        # drive a 4-ch composite sink — that is P8's ring-v2). Without this, a
+        # composite box carrying a stale coupling=shm_ring would seed a stereo-ring
+        # flat config it cannot play. This is the promised "seeder consults the
+        # predicate" consultation.
+        from jasper.fanin_coupling import COUPLING_SHM_RING, resolve_coupling
+
+        if resolve_coupling(coupling) == COUPLING_SHM_RING and (
+            topology_supports_shm_ring(topology)
+        ):
+            ring_fallback = classify_camilla_graph(
+                ring_flat_config_path, topology, staged_config=staged_config
+            )
+            if ring_fallback.allowed:
+                return SafeGraphDecision(
+                    status="select_flat",
+                    selected_config_path=str(ring_flat_config_path),
+                    reason=(
+                        "saved topology has no roleful/protected outputs and is "
+                        "ring-eligible (stereo/unconfigured); box is ring-armed "
+                        "(coupling=shm_ring)"
+                    ),
+                    topology_contract=contract,
+                    current_graph=current_graph,
+                    preferred_graph=preferred_graph,
+                    fallback_graph=ring_fallback,
+                )
         fallback = classify_camilla_graph(flat_config_path, topology, staged_config=staged_config)
         if fallback.allowed:
             return SafeGraphDecision(

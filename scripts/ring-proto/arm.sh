@@ -7,6 +7,25 @@
 # arm.sh — wire Ring B (CamillaDSP -> outputd content, via SHM ping-pong
 # ring) into the live audio chain on a lab Pi.
 #
+# ============================================================================
+# SUPERSEDED FOR THE END-TO-END RING BY P2 (audio-graph consolidation).
+# The PRODUCT path to arm BOTH rings (Ring A fan-in->Camilla AND Ring B
+# Camilla->outputd) coherently is now:
+#
+#     sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring
+#     sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile loopback   # disarm
+#
+# That reconciler is the single writer of the coherent env pair
+# (JASPER_FANIN_CAMILLA_COUPLING=shm_ring + JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring),
+# emits the ring CamillaDSP config through the product emitters (no hand YML),
+# re-seeds a ring config on camilla restart (no built-in revert), validates ring
+# assets present, and fail-safes to loopback on any failure. Prefer it for the
+# real end-to-end ring. This script remains useful ONLY for the isolated Ring-B-
+# only lab experiment (arming outputd's ring bridge WITHOUT fan-in's Ring A — e.g.
+# bench-writer measurement of the Camilla->outputd hop in isolation), which the
+# product reconciler intentionally does not do (it flips both ends together).
+# ============================================================================
+#
 # THIS IS A PROTOTYPE, LAB-ONLY PROCEDURE. It never touches product
 # Camilla emitters, reconcilers, /sound wizard, multiroom, or install.sh
 # — everything it writes is a marked block this script can find and

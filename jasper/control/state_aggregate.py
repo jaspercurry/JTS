@@ -210,6 +210,7 @@ def _audio_graph_state(
             if isinstance(artifact, dict) and artifact.get("status")
             else "fail"
         )
+    coupling_block = _coupling_state(fanin_status=fanin_status)
     return {
         "route": {
             "id": plan.route_profile.route_id,
@@ -283,7 +284,65 @@ def _audio_graph_state(
             "final_reference_health": outputd_aec_clock,
             "route_latency_components": outputd_latency,
         },
+        "coupling": coupling_block,
     }
+
+
+def _coupling_state(*, fanin_status: dict[str, Any] | None) -> dict[str, Any]:
+    """The resolved fan-in -> CamillaDSP coupling (audio-graph consolidation P2).
+
+    Surfaces the persisted intent (``JASPER_FANIN_CAMILLA_COUPLING``, fail-safe to
+    loopback), the outputd content bridge it pairs with, whether the two are a
+    COHERENT pair (both ring, or neither — a partial flip is fail-closed), and the
+    live fan-in STATUS transport for a fleet-wide "which transport is this box on"
+    view. Read fresh from the env files (never os.environ — jasper-control isn't
+    restarted on a coupling change). Fail-soft: any read error degrades to the
+    loopback default rather than erroring the whole /state call."""
+    try:
+        from pathlib import Path
+
+        from ..fanin.coupling_reconcile import (
+            OUTPUTD_ENV_PATH,
+            read_persisted_coupling,
+        )
+        from ..fanin_coupling import (
+            OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
+            resolve_outputd_content_bridge,
+            ring_pair_is_coherent,
+        )
+        from ..env_file import read_value
+
+        coupling = read_persisted_coupling()
+        try:
+            outputd_text = Path(OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
+        except OSError:
+            outputd_text = ""
+        content_bridge = resolve_outputd_content_bridge(
+            read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
+        )
+        live_transport = None
+        if isinstance(fanin_status, dict):
+            output = fanin_status.get("output")
+            if isinstance(output, dict):
+                live_transport = output.get("transport")
+        return {
+            "persisted": coupling,
+            "content_bridge": content_bridge,
+            "coherent": ring_pair_is_coherent(coupling, content_bridge),
+            "live_transport": live_transport,
+        }
+    except (ImportError, OSError, ValueError, TypeError, AttributeError) as e:
+        # Fail-soft: any read/resolve error degrades to the loopback default so a
+        # transient issue never breaks the whole /state call. Concrete exception
+        # set (no blind except) — an import miss, an unreadable env file, or a
+        # malformed value are the only ways this fails.
+        logger.debug("coupling state read failed: %s", e)
+        return {
+            "persisted": "loopback",
+            "content_bridge": "direct",
+            "coherent": True,
+            "live_transport": None,
+        }
 
 
 def _conversation_history_state() -> dict[str, Any] | None:

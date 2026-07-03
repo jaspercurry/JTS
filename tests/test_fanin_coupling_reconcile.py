@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from jasper.camilla_config_contract import DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
 from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
@@ -19,8 +21,12 @@ from jasper.fanin.coupling_reconcile import (
 )
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
+    COUPLING_LOOPBACK,
+    COUPLING_SHM_RING,
     COUPLING_TRANSPORT_PIPE,
+    OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_PIPE_PATH_ENV_VAR,
+    OUTPUTD_RING_SLOTS_ENV_VAR,
 )
 
 
@@ -541,8 +547,57 @@ def test_no_apply_writes_both_envs_only(tmp_path):
     )
 
     assert res.ok and res.changed and calls == []
+    assert res.direction == "arm"  # transport_pipe is an arm
     assert read_persisted_coupling(fanin_env) == COUPLING_TRANSPORT_PIPE
     assert _outputd_value(outputd_env) == DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
+
+
+def test_no_apply_shm_ring_is_arm_direction(tmp_path):
+    # NIT 7: a --no-apply shm_ring write is an ARM (was mislabeled "disarm" because
+    # the check only compared against transport_pipe).
+    fanin_env = tmp_path / "fanin.env"
+    outputd_env = tmp_path / "outputd.env"
+    calls, ro, rf, rc = _recorder()
+
+    res = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        apply=False,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert res.ok and res.changed and calls == []
+    assert res.direction == "arm"
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+
+
+def test_no_apply_loopback_is_disarm_direction(tmp_path):
+    # The complement: a --no-apply loopback write is a disarm.
+    fanin_env = _write(
+        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_TRANSPORT_PIPE}\n"
+    )
+    outputd_env = _write(
+        tmp_path / "outputd.env",
+        f"{OUTPUTD_PIPE_PATH_ENV_VAR}={DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE}\n",
+    )
+    calls, ro, rf, rc = _recorder()
+
+    res = _reconcile(
+        COUPLING_LOOPBACK,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        apply=False,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+    )
+
+    assert res.ok and res.changed and calls == []
+    assert res.direction == "disarm"
 
 
 def test_arm_preserves_coexisting_keys_and_custom_outputd_pipe(tmp_path):
@@ -886,3 +941,491 @@ def test_transport_pipe_status_gate_allows_idle_usb_unlocked_resampler():
 
     assert ok is True
     assert "activation gate ok" in detail
+
+
+# --- shm_ring coupling (Ring A + Ring B, P2) ---------------------------------
+
+
+@pytest.fixture
+def _ring_assets_present(monkeypatch):
+    """Force the shm_ring activation gates (asset presence + slot geometry) to pass.
+
+    Both PREFLIGHTs must pass for an arm to proceed: assets present AND the conf.d
+    ring period matching outputd's resolved period. Tests about the ARM SPINE (order,
+    camilla-failure rollback, disarm) stub both so they exercise the daemon path;
+    the geometry-mismatch behaviour has its own dedicated tests below.
+    """
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra,
+        "ring_asset_presence",
+        lambda **kw: ra.RingAssetPresence(True, True, True),
+    )
+    monkeypatch.setattr(
+        ra,
+        "ring_geometry_matches_outputd",
+        lambda outputd_period_frames, **kw: ra.RingGeometryMatch(
+            ok=True,
+            conf_period_frames=outputd_period_frames,
+            outputd_period_frames=outputd_period_frames,
+        ),
+    )
+
+
+def test_arm_shm_ring_writes_coherent_pair_in_order(tmp_path, _ring_assets_present):
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert result.ok
+    assert result.direction == "arm"
+    # Ordered spine: outputd (Ring B reader) -> fanin (Ring A writer) -> camilla.
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    outputd_text = outputd_env.read_text()
+    assert read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR) == "shm_ring"
+    assert read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR) == "2"
+
+
+def test_arm_shm_ring_refused_when_assets_missing_recovers_to_loopback(
+    tmp_path, monkeypatch
+):
+    import jasper.ring_assets as ra
+
+    # ioplug .so missing -> the activation gate refuses the arm.
+    monkeypatch.setattr(
+        ra,
+        "ring_asset_presence",
+        lambda **kw: ra.RingAssetPresence(
+            so_present=False, conf_present=True, shm_dir_present=True
+        ),
+    )
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert not result.ok
+    assert result.recovered
+    assert "assets" in result.detail.lower()
+    # Fail-safe: persisted coupling is back to loopback, not shm_ring.
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    # No fanin restart happened before the assets gate (only the recovery ops).
+    assert "camilla:loopback" in calls
+
+
+def test_arm_shm_ring_camilla_failure_recovers_to_loopback(
+    tmp_path, _ring_assets_present
+):
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    # camilla reconcile fails for shm_ring specifically -> full rollback.
+    calls, ro, rf, rc = _recorder(camilla_fail_for=COUPLING_SHM_RING)
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert not result.ok
+    assert result.recovered
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    # The recovery re-reconciled camilla to loopback.
+    assert calls.count("camilla:loopback") >= 1
+
+
+def test_arm_shm_ring_outputd_restart_failure_recovers_to_loopback(
+    tmp_path, _ring_assets_present
+):
+    # NIT 8: the ring-arm outputd-restart-failure rollback branch (the transport_pipe
+    # twin is tested; the ring twin was not). outputd fails to restart -> the arm
+    # never reaches fan-in/camilla; the env is rolled BACK to loopback + the ring
+    # keys cleared, so a later manual restart lands clean. (recovered is False here
+    # because the recovery's OWN outputd restart also fails — the daemon is down —
+    # but the persisted env is safely loopback, which is the load-bearing invariant.)
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
+    calls, ro, rf, rc = _recorder(outputd_ok=False)
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is False
+    assert result.restarted_outputd is False  # outputd never came up
+    assert "camilla:shm_ring" not in calls  # never reached the camilla arm
+    assert "camilla:loopback" in calls  # recovery reconciled camilla back
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
+
+
+def test_arm_shm_ring_fanin_restart_failure_recovers_to_loopback(
+    tmp_path, _ring_assets_present
+):
+    # NIT 8: the ring-arm fanin-restart-failure rollback branch — outputd came up,
+    # fan-in failed. The env is rolled back to loopback + ring keys cleared.
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
+    calls, ro, rf, rc = _recorder(fanin_ok=False)
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is False
+    assert result.restarted_outputd is True  # outputd (Ring B reader) came up first
+    assert "camilla:shm_ring" not in calls  # never reached the camilla arm
+    assert "camilla:loopback" in calls  # recovery reconciled camilla back
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
+
+
+def test_arm_shm_ring_refused_on_geometry_mismatch_recovers(tmp_path, monkeypatch):
+    # SF3: assets present, but the conf.d ring period (128) != outputd's resolved
+    # period (1024 default). Arming would fail CamillaDSP's ring open() with a
+    # confusing rollback; the preflight refuses UP FRONT with a crisp reason and
+    # recovers to loopback — BEFORE bouncing any daemon.
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(
+        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 8\n}\n"
+        "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(conf))
+
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    # outputd.env carries no period -> resolves to the packaged default 1024.
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is False
+    assert result.recovered is True
+    assert result.desired == COUPLING_SHM_RING
+    # Crisp reason names both periods; not a bare "arm failed".
+    assert "128" in result.detail and "1024" in result.detail
+    # The ring was NEVER armed — camilla was only reconciled to loopback (the
+    # recovery), never to shm_ring. (The recovery itself does restart fanin/outputd.)
+    assert "camilla:shm_ring" not in calls
+    assert "camilla:loopback" in calls
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+
+
+def test_arm_shm_ring_succeeds_when_geometry_matches(tmp_path, monkeypatch):
+    # The mirror: when the conf.d period equals outputd's resolved period (128 on
+    # the Apple-dongle floor), the geometry gate passes and the arm proceeds.
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(
+        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 8\n}\n"
+        "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(conf))
+
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(
+        tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
+    )
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is True
+    assert result.direction == "arm"
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+
+
+def test_arm_shm_ring_refused_on_ineligible_topology_recovers(
+    tmp_path, monkeypatch, _ring_assets_present
+):
+    # SF4: a non-ring-eligible saved topology (composite/roleful/mono) must be
+    # refused UP FRONT via the topology_supports_shm_ring predicate — a crisp reason
+    # instead of failing later at outputd's Rust full-range-stereo rejection.
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_contract.topology_supports_shm_ring",
+        lambda topology: False,
+    )
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is False
+    assert result.recovered is True
+    assert result.desired == COUPLING_SHM_RING
+    assert "ring-eligible" in result.detail
+    assert "camilla:shm_ring" not in calls  # never armed
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+
+
+def test_arm_shm_ring_topology_unreadable_is_failsafe_not_blocking(
+    tmp_path, monkeypatch, _ring_assets_present
+):
+    # Fail-safe: an UNREADABLE topology (transient) must NOT refuse a legitimate
+    # arm — outputd's own guard is the backstop. The gate returns eligible.
+    from jasper.output_topology import OutputTopologyError
+
+    def _boom(*a, **k):
+        raise OutputTopologyError("corrupt topology")
+
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict", _boom
+    )
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is True
+    assert result.direction == "arm"
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+
+
+def test_disarm_shm_ring_clears_ring_bridge_keys(tmp_path, _ring_assets_present):
+    # Pre-arm to shm_ring, then disarm to loopback.
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(
+        tmp_path / "outputd.env", "JASPER_OUTPUTD_SINK=dual_apple\n"
+    )
+    calls, ro, rf, rc = _recorder()
+    _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) == "shm_ring"
+
+    calls.clear()
+    result = _reconcile(
+        COUPLING_LOOPBACK,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert result.ok
+    assert result.direction == "disarm"
+    # Disarm order: camilla off ring first, then fanin, then outputd.
+    assert calls == ["camilla:loopback", "fanin", "outputd"]
+    outputd_text = outputd_env.read_text()
+    # Ring B keys cleared; the operator's own line survives.
+    assert read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
+    assert "JASPER_OUTPUTD_SHM_RING" not in outputd_text
+    assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_text
+
+
+def test_shm_ring_cli_choices_accept_ring(tmp_path, monkeypatch, _ring_assets_present):
+    # The CLI must accept shm_ring as a valid coupling argument.
+    import jasper.fanin.coupling_reconcile as cr
+
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    captured = {}
+
+    def fake_reconcile(coupling, **kw):
+        captured["coupling"] = coupling
+        from jasper.fanin.coupling_reconcile import CouplingResult
+
+        return CouplingResult(
+            ok=True, desired=coupling, changed=True, direction="arm"
+        )
+
+    monkeypatch.setattr(cr, "reconcile_coupling", fake_reconcile)
+    rc = cr.main(["shm_ring", "--no-apply"])
+    assert rc == 0
+    assert captured["coupling"] == "shm_ring"
+
+
+# --- Blocker 2: shm_ring refused while the box is bonded/grouping-enabled ------
+
+
+def test_arm_shm_ring_refused_for_active_leader_keeps_loopback(tmp_path):
+    # BLOCKER 2: arming shm_ring on a bonded box must be REFUSED before any daemon
+    # op (the ring is solo-stereo-only until ring v2 / P8). Never touch the rings;
+    # keep loopback. Reports the real desired coupling, not a hardcoded one.
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: True,
+    )
+
+    assert result.ok is False
+    assert result.direction == "blocked"
+    assert result.desired == COUPLING_SHM_RING
+    assert result.changed is False
+    assert calls == []  # no arm, no recovery ops needed (was already loopback)
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
+
+
+def test_arm_shm_ring_refused_for_active_follower(tmp_path, monkeypatch):
+    # The block covers a FOLLOWER too (not just leader) — grouping-enabled is the
+    # gate. Drive the route mode through the real grouping-config reader.
+    import jasper.audio_runtime_plan as arp
+
+    class _Cfg:
+        enabled = True
+        error = None
+        role = "follower"
+
+    monkeypatch.setattr(arp, "route_mode_from_grouping_config", lambda cfg: "active_follower")
+    monkeypatch.setattr(
+        "jasper.multiroom.config.load_config", lambda *a, **k: _Cfg(), raising=False
+    )
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        # active_leader_check omitted -> falls through to the grouping-config reader.
+    )
+
+    assert result.ok is False
+    assert result.direction == "blocked"
+    assert result.desired == COUPLING_SHM_RING
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+
+
+def test_ring_armed_box_that_becomes_grouped_recovers_to_loopback(
+    tmp_path, _ring_assets_present
+):
+    # A box armed to shm_ring while solo, then grouping is enabled: a re-reconcile
+    # of shm_ring must REVERT to loopback + direct (clearing Ring B keys), not
+    # leave the leader stranded on a ring outputd can't feed coherently.
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_SINK=dual_apple\n")
+    calls, ro, rf, rc = _recorder()
+
+    # 1) Arm shm_ring while solo (succeeds).
+    _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) == "shm_ring"
+
+    # 2) Now bonded: the next shm_ring reconcile is refused and recovers.
+    calls.clear()
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: True,
+    )
+
+    assert result.ok is False
+    assert result.direction == "blocked"
+    assert result.recovered is True
+    assert result.desired == COUPLING_SHM_RING
+    # Recovery ran the loopback disarm spine and cleared the ring bridge keys.
+    assert "camilla:loopback" in calls
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    outputd_text = outputd_env.read_text()
+    assert read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
+    assert "JASPER_OUTPUTD_SHM_RING" not in outputd_text
+    # The operator's own outputd line survives the recovery.
+    assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_text

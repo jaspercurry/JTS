@@ -7,6 +7,17 @@
 # arm-ring-a.sh — wire Ring A (jasper-fanin -> CamillaDSP capture, via SHM
 # ping-pong ring) into the live audio chain on a lab Pi.
 #
+# ============================================================================
+# SUPERSEDED FOR THE END-TO-END RING BY P2 (audio-graph consolidation).
+# The PRODUCT path to arm BOTH rings (Ring A + Ring B) coherently is:
+#
+#     sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring
+#
+# See arm.sh's banner for the full rationale. This script remains useful ONLY for
+# the isolated Ring-A-only lab experiment (fan-in's Ring A capture WITHOUT
+# outputd's Ring B); for the real end-to-end ring, use the reconciler above.
+# ============================================================================
+#
 # THIS IS A PROTOTYPE, LAB-ONLY PROCEDURE, the CAPTURE mirror of arm.sh
 # (Ring B). It never touches product Camilla emitters, reconcilers,
 # /sound wizard, multiroom, or install.sh — everything it writes is a

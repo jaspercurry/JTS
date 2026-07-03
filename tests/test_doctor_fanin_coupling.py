@@ -190,3 +190,109 @@ def test_check_ok_when_no_loaded_capture(monkeypatch, tmp_path):
         monkeypatch, coupling="loopback", cfg_text="filters:\n", tmp_path=tmp_path
     )
     assert res.status == "ok"
+
+
+# --- shm_ring coherence (Ring A + Ring B, P2) --------------------------------
+
+_RING_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: Alsa
+    channels: 2
+    device: "jts_ring_capture"
+    format: S16_LE
+  playback:
+    type: Alsa
+    channels: 2
+    device: "jts_ring_playback"
+    format: S16_LE
+filters:
+"""
+
+_RING_BRIDGE_ENV = "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
+
+
+def test_ring_ok_when_both_ends_ring_and_bridge_matches(monkeypatch, tmp_path):
+    res = _run_check(
+        monkeypatch,
+        coupling="shm_ring",
+        cfg_text=_RING_CFG,
+        tmp_path=tmp_path,
+        outputd_env_text=_RING_BRIDGE_ENV,
+    )
+    assert res.status == "ok"
+    assert "jts_ring_capture" in res.detail and "jts_ring_playback" in res.detail
+
+
+def test_ring_warns_on_partial_flip_bridge_missing(monkeypatch, tmp_path):
+    # shm_ring intent but outputd bridge is direct -> partial flip warning.
+    res = _run_check(
+        monkeypatch,
+        coupling="shm_ring",
+        cfg_text=_RING_CFG,
+        tmp_path=tmp_path,
+        outputd_env_text="",  # bridge defaults to direct
+    )
+    assert res.status == "warn"
+    assert "PARTIAL" in res.detail or "shm_ring" in res.detail
+
+
+def test_loopback_warns_on_stale_ring_bridge(monkeypatch, tmp_path):
+    # loopback intent but a stale shm_ring bridge remains -> partial flip warning.
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_ALSA_CFG,
+        tmp_path=tmp_path,
+        outputd_env_text=_RING_BRIDGE_ENV,
+    )
+    assert res.status == "warn"
+    assert "stale" in res.detail.lower() and "shm_ring" in res.detail
+
+
+def test_ring_warns_when_loaded_graph_reverted_to_loopback(monkeypatch, tmp_path):
+    # THE finding-5 revert: env pair is coherent but the loaded config is the
+    # loopback graph (a camilla restart re-seeded it) -> warn to re-arm.
+    res = _run_check(
+        monkeypatch,
+        coupling="shm_ring",
+        cfg_text=_ALSA_CFG,  # loopback capture device, NOT jts_ring_capture
+        tmp_path=tmp_path,
+        outputd_env_text=_RING_BRIDGE_ENV,
+    )
+    assert res.status == "warn"
+    assert "ring config" in res.detail or "jts_ring" in res.detail
+
+
+def test_loopback_warns_on_stale_ring_graph_with_clean_env(monkeypatch, tmp_path):
+    # SF5 (the disarm-direction mirror of finding-5): a disarm's camilla step
+    # FAILED, so the env pair reads clean (loopback intent, bridge=direct — the
+    # earlier stale-bridge check does NOT fire) but the LOADED graph still names the
+    # ring ioplug devices. CamillaDSP then captures a writer-dead Ring A (zero-fill
+    # silence) while the box reads doctor-GREEN on a type-only capture==Alsa check.
+    # The device-name check must catch this.
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_RING_CFG,  # stale ring devices, but capture.type is Alsa
+        tmp_path=tmp_path,
+        outputd_env_text="",  # bridge=direct -> env pair coherent with loopback
+    )
+    assert res.status == "warn"
+    assert "ring ioplug device" in res.detail
+    assert "jts_ring_capture" in res.detail
+    assert "jasper-fanin-coupling-reconcile loopback" in res.detail
+
+
+def test_loopback_ok_when_loaded_graph_is_plain_alsa(monkeypatch, tmp_path):
+    # The guard must not false-positive: a clean loopback box (plug:jasper_capture,
+    # snapfifo playback) stays OK.
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_ALSA_CFG,
+        tmp_path=tmp_path,
+        outputd_env_text="",
+    )
+    assert res.status == "ok"

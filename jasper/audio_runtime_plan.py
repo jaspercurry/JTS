@@ -47,6 +47,7 @@ from jasper.env_load import read_env_file_state
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
+    COUPLING_SHM_RING,
     COUPLING_TRANSPORT_PIPE,
     PIPE_PATH_ENV_VAR,
     OUTPUTD_PIPE_PATH_ENV_VAR,
@@ -57,6 +58,7 @@ from jasper.fanin_coupling import (
     resolve_coupling,
     resolve_pipe_path,
     resolve_outputd_pipe_path,
+    ring_pair_is_coherent,
 )
 
 
@@ -188,6 +190,30 @@ _ACTIVE_LEADER_TRANSPORT_PIPE_DETAIL = (
     "transport-pipe topology is designed."
 )
 
+# The route modes that mean "grouping is enabled" (leader/follower = enabled +
+# valid + role; invalid_grouping = enabled + config error). ``shm_ring`` is
+# solo-stereo-only until P8's ring-v2 (N-channel + bonded round-trip), so arming
+# it on ANY of these would split camilla#1's graph across topologies (the bonded
+# leader-pipe / round-trip lanes assume the loopback/aloop content path, not the
+# SHM ring) and silence the leader's own local output. This is the SYMMETRIC half
+# of jasper.multiroom.reconcile's "ring-armed box cannot bond" gate (which blocks
+# the OTHER direction — forming a bond while already ring-armed); together they
+# make ring ⟂ grouping a fail-closed invariant from both entry points. ``solo`` /
+# ``unknown`` are NOT blocked: solo = grouping off, unknown = indeterminate (a
+# transient grouping-config read failure must not refuse a legitimate solo arm).
+_GROUPING_ENABLED_ROUTE_MODES = frozenset(
+    {"active_leader", "active_follower", "invalid_grouping"}
+)
+_GROUPED_SHM_RING_REASON = "fanin_shm_ring_coupling_unsupported_while_grouped"
+_GROUPED_SHM_RING_DETAIL = (
+    "JASPER_FANIN_CAMILLA_COUPLING=shm_ring is not supported while this box has "
+    "multiroom grouping enabled; the SHM ring is solo-stereo-only until ring v2 "
+    "(P8), and arming it on a bonded box would strand the leader's local output "
+    "(outputd reads Ring B while camilla#1 still bakes the aloop/loopback grouped "
+    "program). Disarm the ring (jasper-fanin-coupling-reconcile loopback) or "
+    "ungroup this speaker; keeping the coupling on loopback."
+)
+
 
 class EmitSoundConfigKwargs(TypedDict, total=False):
     """Subset of ``emit_sound_config`` kwargs owned by runtime routing."""
@@ -201,6 +227,13 @@ class EmitSoundConfigKwargs(TypedDict, total=False):
     resampler_profile: str | None
     enable_rate_adjust: bool
     transport_paced_pipe: bool
+    # Ring (shm_ring) coupling names its CamillaDSP capture/playback devices via
+    # ALSA ioplug devices (jts_ring_capture / jts_ring_playback), so BOTH device
+    # and format ride the coupling kwargs — unlike transport_pipe (pipe paths).
+    capture_device: str
+    capture_format: str
+    playback_device: str
+    playback_format: str
 
 
 @dataclass(frozen=True)
@@ -502,9 +535,20 @@ class AudioRuntimePlan:
 def coupling_supported_for_route(coupling: str, route_mode: RouteMode) -> CouplingSupport:
     """Return whether ``coupling`` is supported for ``route_mode``.
 
-    Today the only blocked combination is active-leader + ``transport_pipe``.
-    Keeping that in a route-policy function makes grouped transport-pipe support
-    a deliberate support-matrix change instead of another scattered conditional.
+    Two blocked combinations, both because a non-loopback coupling assumes a
+    solo-speaker content path that a grouped camilla#1 graph does not have:
+
+    - ``transport_pipe`` + ``active_leader`` (the grouped leader still bakes the
+      ALSA fan-in loopback).
+    - ``shm_ring`` + any grouping-enabled mode (leader/follower/invalid) — the ring
+      is solo-stereo-only until ring v2 (P8); arming it on a bonded box would
+      strand the leader's local output. This is the symmetric half of the
+      multiroom reconciler's "ring-armed box cannot bond" gate.
+
+    Keeping these in a route-policy function makes grouped coupling support a
+    deliberate support-matrix change instead of another scattered conditional.
+    ``solo`` / ``unknown`` never block: solo = grouping off, unknown = a transient
+    indeterminate read that must not refuse a legitimate solo arm.
     """
 
     normalized = resolve_coupling(coupling)
@@ -516,6 +560,14 @@ def coupling_supported_for_route(coupling: str, route_mode: RouteMode) -> Coupli
             supported=False,
             reason=_ACTIVE_LEADER_TRANSPORT_PIPE_REASON,
             detail=_ACTIVE_LEADER_TRANSPORT_PIPE_DETAIL,
+        )
+    if normalized == COUPLING_SHM_RING and mode in _GROUPING_ENABLED_ROUTE_MODES:
+        return CouplingSupport(
+            coupling=normalized,
+            route_mode=mode,  # type: ignore[arg-type]
+            supported=False,
+            reason=_GROUPED_SHM_RING_REASON,
+            detail=_GROUPED_SHM_RING_DETAIL,
         )
     return CouplingSupport(
         coupling=normalized,
@@ -895,22 +947,39 @@ def _route_policy_errors(
 
     errors: list[str] = []
     normalized_coupling = resolve_coupling(coupling)
-    if normalized_coupling != COUPLING_LOOPBACK:
-        errors.append(
-            f"{ROUTE_USB_LOW_LATENCY_48K} requires {COUPLING_ENV_VAR}=loopback; "
-            f"{normalized_coupling} is a lab/deferred transport and cannot carry "
-            "the production low-latency claim"
-        )
-
-    content_bridge = str(
+    # RAW bridge value (lowercased) — NOT resolve_outputd_content_bridge, which
+    # fail-safes an unknown bridge (e.g. the deferred lab `rate_match`) to
+    # `direct` and would hide it here. The route policy must reject `rate_match`
+    # explicitly, so it compares the operator's literal value.
+    raw_bridge = str(
         outputd_env.get(OUTPUTD_CONTENT_BRIDGE_KEY, OUTPUTD_CONTENT_BRIDGE_DIRECT)
         or OUTPUTD_CONTENT_BRIDGE_DIRECT
     ).strip().lower()
-    if content_bridge != OUTPUTD_CONTENT_BRIDGE_DIRECT:
+
+    # usb_low_latency_48k is certifiable on EITHER of the two COHERENT transports:
+    # loopback + direct (the shipped default), OR the shm_ring pair (Ring A + Ring
+    # B, P2). The ring pair was measured to reduce route latency (the
+    # ring-proto train), so the artifact binder must accept it — the earlier
+    # blanket "requires loopback + direct" would turn a ring-armed box's shipped
+    # low-latency claim permanently red (gap 8). transport_pipe / rate_match stay
+    # rejected (deferred lab transports that failed the 2026-07-02 USB tuning).
+    if normalized_coupling == COUPLING_SHM_RING and ring_pair_is_coherent(
+        normalized_coupling, raw_bridge
+    ):
+        return ()
+
+    if normalized_coupling != COUPLING_LOOPBACK:
+        errors.append(
+            f"{ROUTE_USB_LOW_LATENCY_48K} requires {COUPLING_ENV_VAR}=loopback or a "
+            f"coherent shm_ring pair; {normalized_coupling} is a lab/deferred "
+            "transport and cannot carry the production low-latency claim"
+        )
+    if raw_bridge != OUTPUTD_CONTENT_BRIDGE_DIRECT:
         errors.append(
             f"{ROUTE_USB_LOW_LATENCY_48K} requires "
-            f"{OUTPUTD_CONTENT_BRIDGE_KEY}={OUTPUTD_CONTENT_BRIDGE_DIRECT}; "
-            f"{content_bridge} is lab-only and failed the 2026-07-02 USB tuning"
+            f"{OUTPUTD_CONTENT_BRIDGE_KEY}={OUTPUTD_CONTENT_BRIDGE_DIRECT} (or the "
+            f"coherent shm_ring pair); {raw_bridge} without a matching "
+            f"{COUPLING_ENV_VAR}=shm_ring is a partial flip / lab-only bridge"
         )
     return tuple(errors)
 
@@ -1162,6 +1231,54 @@ def transport_topology_for_coupling(
     fanin_values = dict(fanin_env or {})
     outputd_values = dict(outputd_env or {})
     normalized = resolve_coupling(coupling)
+    if normalized == COUPLING_SHM_RING:
+        # Ring A (fan-in -> CamillaDSP, jts_ring_capture) + Ring B (CamillaDSP ->
+        # outputd, jts_ring_playback). Both S16_LE ALSA ioplug devices; CamillaDSP
+        # rate_adjust stays ON (its rate controller trades Ring B fill). The
+        # concrete ring paths live in the daemons' env (fan-in RING_PATH, outputd
+        # SHM_RING_PATH), surfaced here so /state names the resolved transport.
+        from jasper.fanin_coupling import (
+            OUTPUTD_RING_PATH_ENV_VAR,
+            RING_CAPTURE_DEVICE,
+            RING_PATH_ENV_VAR,
+            RING_PLAYBACK_DEVICE,
+            RING_WIRE_FORMAT,
+            resolve_outputd_ring_path,
+            resolve_ring_path,
+        )
+
+        capture_ring = resolve_ring_path(fanin_values.get(RING_PATH_ENV_VAR))
+        content_ring = resolve_outputd_ring_path(
+            outputd_values.get(OUTPUTD_RING_PATH_ENV_VAR)
+        )
+        return TransportTopology(
+            name=COUPLING_SHM_RING,
+            fanin_to_camilla={
+                "transport": "shm_ring",
+                "path": capture_ring,
+                "writer": "jasper-fanin",
+                "camilla_capture_device": RING_CAPTURE_DEVICE,
+                "format": RING_WIRE_FORMAT,
+                "channels": 2,
+                "sample_rate": DEFAULT_SAMPLE_RATE,
+            },
+            camilla_to_outputd={
+                "transport": "shm_ring",
+                "path": content_ring,
+                "camilla_playback_device": RING_PLAYBACK_DEVICE,
+                "reader": "jasper-outputd",
+                "format": RING_WIRE_FORMAT,
+                "channels": 2,
+                "sample_rate": DEFAULT_SAMPLE_RATE,
+            },
+            camilla={
+                # CamillaDSP's rate controller trades Ring B fill — its single
+                # pacing input — so rate_adjust stays on (unlike transport_pipe).
+                "enable_rate_adjust": True,
+                "capture_resampler": None,
+            },
+            outputd_content_source="shm_ring",
+        )
     if normalized == COUPLING_TRANSPORT_PIPE:
         capture_pipe = resolve_pipe_path(fanin_values.get(PIPE_PATH_ENV_VAR))
         output_pipe = resolve_outputd_pipe_path(

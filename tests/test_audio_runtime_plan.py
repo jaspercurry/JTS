@@ -642,6 +642,43 @@ def test_transport_pipe_route_policy_blocks_active_leader_but_allows_solo():
     assert solo.supported is True
 
 
+def test_shm_ring_route_policy_blocks_every_grouping_enabled_mode():
+    # BLOCKER 2: shm_ring is solo-stereo-only until ring v2 (P8). Arming it on a
+    # box with grouping ENABLED (leader/follower/invalid) would strand the leader's
+    # local output. The symmetric half of multiroom.reconcile's ring-armed-bond
+    # gate — together they make ring ⟂ grouping fail-closed from both directions.
+    for mode in ("active_leader", "active_follower", "invalid_grouping"):
+        support = coupling_supported_for_route(COUPLING_SHM_RING, mode)
+        assert support.supported is False, mode
+        assert support.reason == "fanin_shm_ring_coupling_unsupported_while_grouped"
+        assert support.detail  # a non-empty operator-facing reason
+        assert support.coupling == COUPLING_SHM_RING
+
+
+def test_shm_ring_route_policy_allows_solo_and_unknown():
+    # solo = grouping off; unknown = a transient indeterminate grouping-config read
+    # that must NOT refuse a legitimate solo arm (fail-safe direction).
+    for mode in ("solo", "unknown"):
+        support = coupling_supported_for_route(COUPLING_SHM_RING, mode)
+        assert support.supported is True, mode
+
+
+def test_transport_pipe_still_allowed_for_follower_and_invalid_grouping():
+    # The shm_ring block must NOT accidentally widen the transport_pipe block:
+    # transport_pipe is only refused for active_leader (its documented gap), so a
+    # follower/invalid box keeps the existing transport_pipe support verdict.
+    for mode in ("active_follower", "invalid_grouping", "solo", "unknown"):
+        assert coupling_supported_for_route(COUPLING_TRANSPORT_PIPE, mode).supported
+
+
+def test_fanin_coupling_action_blocks_shm_ring_for_grouped_route():
+    action, support = fanin_coupling_action(COUPLING_SHM_RING, "active_follower")
+
+    assert action is None
+    assert support.supported is False
+    assert support.reason == "fanin_shm_ring_coupling_unsupported_while_grouped"
+
+
 def test_fanin_coupling_action_sets_supported_coupling():
     action, support = fanin_coupling_action(COUPLING_TRANSPORT_PIPE, "solo")
 
@@ -943,3 +980,63 @@ def _env_int(text: str, key: str) -> int:
     match = re.search(rf'Environment="{re.escape(key)}=(\d+)"', text)
     assert match is not None, key
     return int(match.group(1))
+
+
+# --- shm_ring route policy + transport topology (P2) -------------------------
+
+
+def test_usb_low_latency_accepts_coherent_shm_ring_pair():
+    # The coherent ring pair (Ring A + Ring B) must NOT error the plan — else a
+    # ring-armed box's shipped low-latency claim goes permanently red (gap 8).
+    plan = build_audio_runtime_plan(
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        route_mode="solo",
+    )
+    assert plan.route_policy_errors == ()
+
+
+def test_usb_low_latency_rejects_partial_ring_flip_fanin_only():
+    # shm_ring fan-in + direct outputd = partial flip -> rejected.
+    plan = build_audio_runtime_plan(
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "direct"},
+        route_mode="solo",
+    )
+    assert plan.route_policy_errors
+    assert any("partial flip" in e or "shm_ring" in e for e in plan.route_policy_errors)
+
+
+def test_usb_low_latency_rejects_partial_ring_flip_outputd_only():
+    # loopback fan-in + shm_ring outputd = partial flip -> rejected.
+    plan = build_audio_runtime_plan(
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        fanin_env={COUPLING_ENV_VAR: COUPLING_LOOPBACK},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        route_mode="solo",
+    )
+    assert plan.route_policy_errors
+
+
+def test_usb_low_latency_still_accepts_default_loopback_direct():
+    plan = build_audio_runtime_plan(
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        route_mode="solo",
+    )
+    assert plan.route_policy_errors == ()
+
+
+def test_transport_topology_for_shm_ring_names_both_ring_devices():
+    topo = transport_topology_for_coupling(
+        COUPLING_SHM_RING, fanin_env={}, outputd_env={}
+    ).to_dict()
+    assert topo["name"] == COUPLING_SHM_RING
+    assert topo["fanin_to_camilla"]["transport"] == "shm_ring"
+    assert topo["fanin_to_camilla"]["camilla_capture_device"] == "jts_ring_capture"
+    assert topo["camilla_to_outputd"]["transport"] == "shm_ring"
+    assert topo["camilla_to_outputd"]["camilla_playback_device"] == "jts_ring_playback"
+    # rate_adjust stays ON for the ring (CamillaDSP paces against Ring B fill).
+    assert topo["camilla"]["enable_rate_adjust"] is True
+    assert topo["outputd_content_source"] == "shm_ring"

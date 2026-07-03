@@ -1,19 +1,41 @@
 # Ring B prototype — CamillaDSP → outputd via a SHM ping-pong ring
 
-**Status: EXPERIMENTAL lab tooling** (shipped default-off with the ring
-consumers change — the `jts-ring-ioplug` C plugin + the outputd SHM reader;
-canonical operational truth lives in
+> **P2 UPDATE (audio-graph consolidation): the end-to-end ring is now a PRODUCT
+> path.** The `shm_ring` coupling is a first-class reconciler mode — arm/disarm
+> BOTH rings coherently with
+> `sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring`
+> (and `… loopback` to revert). It emits the ring CamillaDSP config through the
+> product emitters (no hand YML), re-seeds a ring config on camilla restart (the
+> built-in-revert is gone), ships a reconciler-owned ALSA conf.d device
+> (`60-jts-ring.conf`, P1) instead of the hand-written `98-jts-ring-proto.conf`,
+> and wires `/state.audio_graph.coupling` + the `ring platform` / `fan-in
+> coupling` doctor checks. **The DEFAULT remains loopback** (explicit arming
+> until P4). These `arm*.sh`/`disarm.sh` scripts are retained ONLY for the
+> isolated single-ring lab experiments (Ring A OR Ring B alone), which the
+> product reconciler intentionally does not do. Canonical operational truth:
+> [`docs/HANDOFF-audio-graph-consolidation.md`](../../docs/HANDOFF-audio-graph-consolidation.md).
+>
+> **jts.local migration (REQUIRED):** a box already lab-armed via these scripts
+> collides with the P1/P2 product ring assets (the `98-jts-ring*-proto.conf`
+> drop-ins duplicate the shipped `60-jts-ring.conf` PCM names; the marked env
+> blocks live in the same reconciler-owned `fanin.env`/`outputd.env`). Before the
+> first P2 deploy, `disarm.sh` **both** rings (`disarm.sh` + `disarm.sh --ring-a`),
+> then deploy and re-arm with the product reconciler. Full steps: section **H.1**
+> of the canonical handoff above.
+
+**Status: EXPERIMENTAL lab tooling** for the ISOLATED single-ring experiments
+(shipped default-off with the ring consumers change — the `jts-ring-ioplug` C
+plugin + the outputd SHM reader; canonical operational truth lives in
 [`docs/HANDOFF-usb-low-latency.md`](../../docs/HANDOFF-usb-low-latency.md)).
-This is not a product feature. It replaces one hop (outputd's content snd-aloop
-lane, ~32 ms) with a bounded 2-slot SHM ring on a **lab Pi only**
+For the end-to-end ring use the P2 reconciler above, not these scripts. Each
+script replaces one hop with a bounded SHM ring on a **lab Pi only**
 (`jts3.local`, `jts5.local`, or a spare `jts.local`-shaped box — never a
 household's production speaker). Everything it touches is reversible with
-`disarm.sh`, and nothing here ships to `install.sh` or any product path.
+`disarm.sh`.
 
-If the direction is validated here, productizing it (futex wait instead
-of poll, a reconciler-owned ALSA device instead of a hand-written
-`/etc/alsa/conf.d/*.conf`, `/state.shm_ring` wired into the doctor) is a
-separate, deliberate follow-on — not something this branch does.
+The remaining ring productization work (futex wait instead of poll; snd-aloop
+removal so the ring is the ONLY transport) rides later campaign phases (P4→P9),
+not this lab tooling.
 
 ## What this proves
 
