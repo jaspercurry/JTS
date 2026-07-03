@@ -362,9 +362,12 @@ def capture_kwargs_for_coupling(
       ``transport_pipe`` (which likewise sets BOTH boundaries), these kwargs flow
       through :func:`coupling_capture_kwargs_from_env` into the product emitters
       (``/sound/``, ``/correction/``,
-      ``audio_runtime_plan.apply_capture_precedence``) — but only when
-      :data:`COUPLING_ENV_VAR`\\ =``shm_ring`` is set in the env, so this is
-      deliberate coherence-when-armed. The ring devices only RESOLVE once P1's
+      ``audio_runtime_plan.apply_capture_precedence``) — but only when the
+      persisted coupling (``fanin.env``'s :data:`COUPLING_ENV_VAR`, read
+      file-fresh by :func:`coupling_capture_kwargs_from_env` on the live-env path
+      because the socket-activated wizards do NOT ``EnvironmentFile=`` it) resolves
+      to ``shm_ring``, so this is deliberate coherence-when-armed. The ring devices
+      only RESOLVE once P1's
       ioplug conf.d block (``60-jts-ring.conf``) is installed and the coupling
       reconciler has armed both rings; until then the flag stays unset (env unset
       -> ``loopback`` -> ``{}``, byte-identical to today). Inert in every product
@@ -429,18 +432,53 @@ def coupling_capture_kwargs_from_env(
     :data:`PIPE_PATH_ENV_VAR` together so the emitted RawFile-capture config names
     the SAME pipe the Rust ``FifoWriter`` writes (the path env is resolved by
     :func:`resolve_pipe_path` on BOTH sides). Returns ``{}`` for the default
-    ``loopback`` coupling (byte-identical to today). Read at emit time — a
-    systemd ``EnvironmentFile`` flip takes effect on the next config regeneration
-    without a code edit, exactly like the CamillaDSP latency knobs.
+    ``loopback`` coupling (byte-identical to today).
+
+    **Coupling token is resolved FILE-FRESH on the live-env path** (``env`` is
+    ``None``). The wizard processes that call this — jasper-web (``/sound/``) and
+    jasper-correction-web (``/correction/``) — do NOT load ``fanin.env`` /
+    ``outputd.env`` via ``EnvironmentFile=`` (they carry only ``jasper.env`` +
+    their own wizard files), and a socket-activated daemon stays alive across a
+    coupling flip, so ``os.environ`` is a STALE reader of the coupling — exactly
+    the ``os.environ``-stale class AGENTS.md canonizes for the voice provider
+    (fix: read the SSOT file fresh, ``jasper.voice.provider_state``). Without this
+    an armed box's ``/sound/`` or ``/correction/`` save would emit a *loopback*
+    capture/playback config and silently revert CamillaDSP off the rings (a silent
+    audio outage: outputd reads Ring B while CamillaDSP writes the loopback lane).
+    So on the live path we consult the persisted ``fanin.env`` for the coupling
+    token — the same SSOT the daemons and the reconciler read — while the pipe /
+    ring path OVERRIDES still come from the live env (an explicit
+    ``JASPER_FANIN_CAMILLA_PIPE`` set in the process env keeps winning). An
+    EnvironmentFile flip still takes effect on the next regeneration without a code
+    edit; the persisted file is just the authoritative source for WHICH coupling.
+
+    An EXPLICIT ``env`` mapping is treated as authoritative (no file fallback):
+    ``jasper.audio_runtime_plan`` passes ``dict(os.environ)`` right after the
+    reconciler rewrote the files (and pre-synced ``os.environ``), and unit tests
+    pass a controlled env — both want the env they hand in, not a disk read.
     """
     import os
 
-    source = os.environ if env is None else env
+    if env is None:
+        # Live-env path: file-fresh coupling token (SSOT), live-env path overrides.
+        # Lazy import — jasper.fanin.coupling_reconcile imports THIS module, so a
+        # top-level import would be circular (mirrors every other in-tree caller).
+        from jasper.fanin.coupling_reconcile import read_persisted_coupling
+
+        source = os.environ
+        return capture_kwargs_for_coupling(
+            read_persisted_coupling(),
+            pipe_path=resolve_pipe_path(source.get(PIPE_PATH_ENV_VAR)),
+            outputd_pipe_path=resolve_outputd_pipe_path(
+                source.get(OUTPUTD_PIPE_PATH_ENV_VAR)
+            ),
+        )
+
     return capture_kwargs_for_coupling(
-        source.get(COUPLING_ENV_VAR),
-        pipe_path=resolve_pipe_path(source.get(PIPE_PATH_ENV_VAR)),
+        env.get(COUPLING_ENV_VAR),
+        pipe_path=resolve_pipe_path(env.get(PIPE_PATH_ENV_VAR)),
         outputd_pipe_path=resolve_outputd_pipe_path(
-            source.get(OUTPUTD_PIPE_PATH_ENV_VAR)
+            env.get(OUTPUTD_PIPE_PATH_ENV_VAR)
         ),
     )
 

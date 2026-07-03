@@ -153,6 +153,74 @@ def test_shm_ring_armed_env_emits_ring_capture_device_s16le():
     assert RING_WIRE_FORMAT == "S16_LE"
 
 
+def test_live_env_path_reads_coupling_file_fresh_not_os_environ(monkeypatch):
+    # BLOCKER 1: the wizard processes (jasper-web /sound/, jasper-correction-web
+    # /correction/) do NOT EnvironmentFile= fanin.env, so os.environ lacks
+    # JASPER_FANIN_CAMILLA_COUPLING even on an armed box. Reading the token from
+    # os.environ would emit a LOOPBACK capture/playback config and silently revert
+    # CamillaDSP off the rings. The live-env path (env=None) must resolve the
+    # coupling FILE-FRESH from the persisted fanin.env — the same SSOT the daemons
+    # and reconciler read — so an armed box's /sound/ save emits the full ring
+    # topology. Mirrors the os.environ-stale fix pattern for the voice provider.
+    from jasper import fanin_coupling
+
+    # Armed persisted file; os.environ carries NOTHING (the wizard's real shape).
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+    monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
+
+    kwargs = fanin_coupling.coupling_capture_kwargs_from_env()
+
+    assert kwargs == {
+        "capture_device": RING_CAPTURE_DEVICE,
+        "capture_format": RING_WIRE_FORMAT,
+        "playback_device": RING_PLAYBACK_DEVICE,
+        "playback_format": RING_WIRE_FORMAT,
+    }
+
+
+def test_live_env_path_loopback_when_file_disarmed_is_byte_identical(monkeypatch):
+    # The file-fresh fallback stays fail-SAFE: a disarmed box (loopback fanin.env,
+    # or the read fail-safing to loopback) resolves to {} on the live path, byte-
+    # identical to today. This is the guard that the Blocker-1 fix does not turn a
+    # non-armed box's ordinary /sound/ save into a ring config.
+    from jasper import fanin_coupling
+
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "loopback",
+    )
+    monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
+
+    assert fanin_coupling.coupling_capture_kwargs_from_env() == {}
+
+
+def test_explicit_env_mapping_stays_authoritative_ignores_file(monkeypatch):
+    # An EXPLICIT env mapping (the plan/binder path passes dict(os.environ) right
+    # after the reconciler pre-synced it; unit tests pass a controlled env) must
+    # NOT read the file — the caller's env wins. Prove a shm_ring fanin.env on disk
+    # does not leak into an explicit loopback env. (Also fails loudly if the file
+    # reader is consulted at all: it raises here.)
+    from jasper import fanin_coupling
+
+    def _boom(*a, **k):
+        raise AssertionError("explicit-env path must not read the persisted file")
+
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling", _boom
+    )
+
+    assert fanin_coupling.coupling_capture_kwargs_from_env({}) == {}
+    assert (
+        fanin_coupling.coupling_capture_kwargs_from_env(
+            {"JASPER_FANIN_CAMILLA_COUPLING": "loopback"}
+        )
+        == {}
+    )
+
+
 def test_resolve_coupling_unknown_and_old_fifo_fail_safe_to_loopback():
     assert resolve_coupling("fifo") == COUPLING_LOOPBACK
     assert resolve_coupling("pipe") == COUPLING_LOOPBACK
