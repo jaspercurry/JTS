@@ -410,10 +410,72 @@ the 256 target across a 5-min window), not a step reduction in the steady-state
 floor. The real remaining levers are:
 
 1. **Resampler post-lock cushion decay** (`lane_resampler`): shrink the resampler
-   pool below the cushion-256 lock-hold floor by decaying the held target *after*
-   the DLL locks, with the DLL holding the decayed target so lock churn does not
+   pool below the cushion lock-hold floor by decaying the held target *after* the
+   DLL locks, with the DLL holding the decayed target so lock churn does not
    re-prime fill above setpoint (the cushion-128-under-DLL run locked but
-   regressed +1.9 ms p50 without decay). Est. −2.7..5.3 ms.
+   regressed +1.9 ms p50 without decay). Est. −2.7..5.3 ms. **Shipped
+   (DEFAULT-OFF, still lab-only, awaiting the hardware dial-in below):**
+   `CushionDecay` (a pure, render-period-clocked state machine in
+   [`lane_resampler.rs`](../rust/jasper-fanin/src/lane_resampler.rs)) lowers the
+   held target from the acquisition ceiling (`target + warmup cushion`) toward a
+   floor, ONE `_DECAY_STEP_FRAMES` step every `_DECAY_INTERVAL_MS`, but ONLY while
+   the lane is locked AND the host-clock DLL ladder is `l0_locked` AND a 10 s
+   stability window has passed AND `|commanded_ppm| ≤ 400` (the cascade guard). It
+   SNAPS BACK to the ceiling in one tick on any unlock / DLL demotion / stream
+   stop (a raised setpoint refills naturally — no glitch). The DLL setpoint tracks
+   the resampler's LIVE held target via a single shared `held_target_frames`
+   gauge (single source of truth — the servo thread re-pins `set_target_fill_frames`
+   from it each tick, so the two controllers can never disagree). Env (all
+   default-off / current-behaviour): `JASPER_FANIN_RESAMPLER_CUSHION_DECAY=enabled`
+   plus `_DECAY_FLOOR_FRAMES` (default and min = `max(target, minimum_safe_fill) +
+   32`, max the ceiling), `_DECAY_STEP_FRAMES` (16, range 1..=64),
+   `_DECAY_INTERVAL_MS` (1000, range 250..=10000), all fail-loud-validated when
+   armed. STATUS surfaces `inputs[].resampler.held_target_frames` (live) and
+   `inputs[].resampler.decay{active,floor_frames,frozen_reason}`. Requires the
+   host-clock DLL armed (decay gates on `l0_locked`), so it only engages in USB
+   DIRECT combo mode.
+
+   **The floor cannot descend onto the physical unlock threshold.** The lane
+   underfill-unlocks the instant the cursor-relative fill drops below
+   `minimum_safe_fill_frames = ceil(period × max_ratio) + kernel_radius + 1` (=
+   274 at period 256 / ±500 ppm) — the same threshold the render loop's underfill
+   gate uses (shared `jasper_resampler::minimum_safe_fill_frames`). A held target
+   at/below that value is churn-by-construction: ordinary per-period fill jitter
+   crosses it and the lane thrashes (audible gap → snap-back → relock → 10 s
+   warm-up → re-descend, on repeat). So the floor's lower bound is
+   `max(target, minimum_safe_fill) + 32`, not the bare `target + 32` — for a small
+   base target `target + 32` alone can land below the physical floor. Config
+   validation rejects a churny floor fail-loud when armed; `DecayParams::build`
+   also clamps defensively as belt-and-braces.
+
+   **Hardware dial-in protocol (owed):** with the DLL locked (`l0_locked` in
+   `/state`), arm decay with defaults and run 1-min playback windows watching
+   `held_target_frames` descend from the ceiling toward ~`target+32` and the
+   route-latency harness confirming the fill/latency drop (expect ~−3.5 ms at the
+   default floor). Then try a lower/tighter floor ONLY if unlock_count stays 0
+   during the steady window. Finish with a 5-min run on the best floor: WAV-loop
+   restarts are natural stream stops (fill must re-prime at the ceiling and
+   re-decay each loop with no lock churn); if loop restarts thrash the decay,
+   raise `CUSHION_DECAY_STABILITY_MS`. Failure mode = revert the env flag (the
+   default path is byte-identical to today).
+
+   **Two cascade-guard observations to expect during dial-in** (both honest /
+   conservative — no code change owed, but watch for them via
+   `decay.frozen_reason="cascade"` in STATUS):
+   - The cascade guard only *pauses* decay; it never escalates. A sustained
+     `|commanded_ppm| > 400` excursion that stays L0 (not railed, so no L2
+     demotion / snap-back) holds the *current* held target indefinitely — the only
+     escalation below the guard is the audible underfill unlock. If a run parks at
+     `frozen_reason="cascade"` and the latency win stalls, the DLL is steering hard
+     at that setpoint; investigate the host clock offset rather than lowering the
+     floor.
+   - `commanded_ppm` includes the probe's feed-forward seed, so a host whose
+     natural clock offset exceeds ~400 ppm (still legal — the DLL's L1 warn is
+     2500 ppm) sits *permanently* above the cascade guard and decay never engages
+     there (`frozen_reason="cascade"` from the first stable tick). That is the
+     correct conservative behaviour (a large steady bias means the fill is not
+     truly calm), but it means the decay win is host-clock-dependent: verify the
+     observed host sits well inside ±400 ppm before concluding decay is broken.
 2. Gadget drain cadence: standing avail ~186 f → ~64 f (~2.6 ms). **Lever-2
    instrumentation + knob shipped (default-preserving, still lab-only):**
    `drain_direct_capture` now records the drain-ENTRY `avail` into a since-boot

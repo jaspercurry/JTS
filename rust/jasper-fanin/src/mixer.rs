@@ -44,7 +44,7 @@
 //! contract documented in `src/watchdog.rs`.
 
 use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
@@ -248,6 +248,24 @@ const DIRECT_REOPEN_RETRY_PERIODS: u64 = 375;
 /// stable across period geometries. Only consulted when
 /// `JASPER_FANIN_AUTO_TRIM=enabled`.
 const AUTO_TRIM_DELAY_SECONDS: u64 = 2;
+
+/// Post-lock cushion-decay warm-up window (latency lever 1): the continuous
+/// locked + DLL-`l0_locked` + calm duration required before the FIRST decay
+/// step. 10 s gives the outer host-clock DLL time to finish its per-session
+/// probe (up to 14 s worst case, but the fill is pinned well before that) and
+/// prove the steady regime before latency is reclaimed. Not an env knob — the
+/// three tunable decay knobs (floor/step/interval) are the operator surface;
+/// this is the internal "is it stable yet" gate. Converted to render periods by
+/// the lane from the live sample rate.
+const CUSHION_DECAY_STABILITY_MS: u64 = 10_000;
+
+/// Cascade-stability guard (latency lever 1): decay pauses while the outer DLL's
+/// |commanded_ppm| exceeds this. Above it the DLL is working hard and the fill
+/// is in transient, so lowering the setpoint would fight the loop — the exact
+/// two-controller oscillation class the cascade design avoids. 400 ppm is well
+/// inside the ±1000 ppm servo authority: it flags "actively correcting" without
+/// tripping on the small steady-state trims a settled loop makes.
+const CUSHION_DECAY_CASCADE_GUARD_PPM: f64 = 400.0;
 
 /// Per-lane TRIM control + counters, shared (`Arc`) between the mixer work
 /// thread (which owns the `LaneResampler` and performs the actual ring trim)
@@ -473,6 +491,17 @@ pub struct Mixer {
     /// `fanin-tap-writer` thread (the single JSONL writer). `None` after
     /// `take_direct_tap_receiver`.
     direct_tap_receiver: Option<std::sync::mpsc::Receiver<TapEvent>>,
+    /// REVERSE host-clock signals (servo thread → mixer) for the DEFAULT-OFF
+    /// post-lock cushion decay. The `fanin-host-clock` thread WRITES these every
+    /// servo tick (via the `Arc` clones it takes in `host_clock_signals`); the
+    /// mixer's per-period decay tick READS them. `ladder_l0` = the DLL is
+    /// `l0_locked` (decay's steady-state gate); `commanded_milli_ppm` = the DLL's
+    /// last commanded bias (× 1000) for the cascade guard. When the servo thread
+    /// is not running (host-clock off / no direct lane), these stay at their
+    /// init (`false` / 0), so decay never leaves the ceiling — decay REQUIRES the
+    /// DLL, which is correct.
+    host_clock_ladder_l0: Arc<AtomicBool>,
+    host_clock_commanded_milli_ppm: Arc<AtomicI64>,
 }
 
 /// Per-lane AUTO-TRIM bookkeeping. Tracks the cumulative `frames_read` value
@@ -1009,6 +1038,11 @@ impl Mixer {
             auto_trim_lane_state: vec![AutoTrimLaneState::default(); input_count],
             direct_tap,
             direct_tap_receiver: Some(tap_receiver),
+            // Reverse host-clock signals for the DEFAULT-OFF cushion decay. Init
+            // to the inert state (not-l0, 0 ppm) so decay never leaves the
+            // ceiling until the servo thread actually reports `l0_locked`.
+            host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
+            host_clock_commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
         })
     }
 
@@ -1048,7 +1082,14 @@ impl Mixer {
             output_frames: Arc::clone(&resampler.output_frames),
             locked: Arc::clone(&resampler.locked),
             present: Arc::clone(&direct_obs.present),
-            target_fill_frames: resampler.target_fill_frames,
+            // The LIVE held-target gauge — the single source of truth the servo
+            // thread re-pins its setpoint to each tick (tracks the cushion decay).
+            held_target_frames: Arc::clone(&resampler.held_target_frames),
+            // The REVERSE signals the servo thread writes and the mixer's decay
+            // tick reads. Owned here (created with the mixer) so both sides share
+            // the same atomics; the servo thread only ever WRITES these two.
+            ladder_l0: Arc::clone(&self.host_clock_ladder_l0),
+            commanded_milli_ppm: Arc::clone(&self.host_clock_commanded_milli_ppm),
         })
     }
 
@@ -1151,6 +1192,16 @@ impl Mixer {
         let period_frames = self.period_frames as usize;
         self.maybe_trim();
 
+        // 2c. Snapshot the REVERSE host-clock signals ONCE per period for the
+        // DEFAULT-OFF cushion-decay tick below (avoids a self-borrow inside the
+        // per-input loop). `l0` gates decay to the DLL's steady state;
+        // `commanded_ppm_abs` drives the cascade guard. Both are inert (false / 0)
+        // when the servo thread is not running, so decay never leaves the ceiling
+        // without the DLL — the correct dependency.
+        let decay_l0 = self.host_clock_ladder_l0.load(Ordering::Relaxed);
+        let decay_commanded_ppm_abs =
+            (self.host_clock_commanded_milli_ppm.load(Ordering::Relaxed) as f64 / 1000.0).abs();
+
         // 3. Read from each input, accumulate into sum_buf.
         let selected_input = self.selected_input_index.load(Ordering::Relaxed);
         for (idx, input) in self.inputs.iter_mut().enumerate() {
@@ -1185,6 +1236,16 @@ impl Mixer {
                 drain_input_excess(input, period_frames);
                 read_input(input, period_frames, &self.xrun_tx)?
             };
+            // 3b. Advance the DEFAULT-OFF post-lock cushion decay one render
+            // period on this lane's resampler (if armed). Done AFTER the render
+            // so the tick sees this period's fresh lock state, and independent of
+            // the selection gate below (a de-selected but locked lane must keep
+            // decaying — the held target is a property of the lane's clock
+            // reconciliation, not of which source is passed to the sum). No-op
+            // when no resampler / decay disabled.
+            if let Some(r) = input.resampler.as_mut() {
+                r.tick_decay(decay_l0, decay_commanded_ppm_abs);
+            }
             if !input_selected(selected_input, idx, &input.label) {
                 continue;
             }
@@ -1605,6 +1666,17 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
     );
     let cushion = config.input_resampler_warmup_cushion_frames as usize;
     let target = config.input_resampler_target_frames as usize;
+    // DEFAULT-OFF post-lock cushion decay (latency lever 1). The knobs are
+    // validated fail-loud in Config::from_env; the lane derives the ceiling
+    // (target + cushion) and the render-period intervals itself.
+    let decay_params = crate::lane_resampler::DecayParams {
+        enabled: config.input_resampler_cushion_decay_enabled,
+        floor_frames: config.input_resampler_cushion_decay_floor_frames as u64,
+        step_frames: config.input_resampler_cushion_decay_step_frames as u64,
+        interval_ms: config.input_resampler_cushion_decay_interval_ms as u64,
+        stability_ms: CUSHION_DECAY_STABILITY_MS,
+        cascade_guard_ppm: CUSHION_DECAY_CASCADE_GUARD_PPM,
+    };
     match LaneResampler::new(
         CHANNELS as usize,
         config.period_frames,
@@ -1613,6 +1685,7 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
         cushion,
         config.input_resampler_max_adjust_ppm as f64,
         ring_frames,
+        decay_params,
     ) {
         Ok(r) => {
             // Canonical arming line the operator greps for to confirm the
@@ -1621,9 +1694,22 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
             // jasper-trace / doc point at them. warmup_cushion + ring_frames
             // are extra diagnostic detail.
             let held_target = target + cushion;
+            // Post-lock cushion decay breadcrumb (DEFAULT-OFF): when armed, the
+            // held target above is the acquisition CEILING it decays FROM toward
+            // the floor once locked + DLL-l0 + stable. `off` when disabled.
+            let decay_note = if config.input_resampler_cushion_decay_enabled {
+                format!(
+                    "decay=on floor={} step={} interval_ms={}",
+                    config.input_resampler_cushion_decay_floor_frames,
+                    config.input_resampler_cushion_decay_step_frames,
+                    config.input_resampler_cushion_decay_interval_ms,
+                )
+            } else {
+                "decay=off".to_string()
+            };
             info!(
                 "event=fanin.resampler.armed lane={} target_frames={} held_target_frames={} \
-                 warmup_cushion_frames={} max_adjust_ppm={} ring_frames={} \
+                 warmup_cushion_frames={} max_adjust_ppm={} ring_frames={} {} \
                  (DLL-steered to DAC clock; catch-up drain bypassed on this lane)",
                 label,
                 target,
@@ -1631,6 +1717,7 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
                 cushion,
                 config.input_resampler_max_adjust_ppm,
                 ring_frames,
+                decay_note,
             );
             Some(r)
         }

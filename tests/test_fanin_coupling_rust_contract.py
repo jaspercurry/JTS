@@ -237,6 +237,94 @@ def test_input_resampler_status_exports_live_lock_state():
     assert "r.locked.load(Ordering::Relaxed)" in state_text
 
 
+def test_cushion_decay_held_target_is_single_source_of_truth():
+    """The DEFAULT-OFF post-lock cushion decay's held target must be ONE value.
+
+    The resampler owns the live held-target gauge; `hold_fill_frames` reads it (so
+    render/trim discipline toward it); the outer host-clock DLL re-pins its
+    setpoint from the SAME gauge each tick (never a duplicated config value); and
+    STATUS surfaces both the live held target and the decay block. If any of these
+    wires drifts, the two controllers can disagree about where the fill sits — the
+    documented two-controller oscillation class this design avoids.
+    """
+    resampler_text = _lane_resampler_rs_text()
+    host_clock_text = (
+        _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_clock.rs"
+    ).read_text(encoding="utf-8")
+    mixer_text = _mixer_rs_text()
+    state_text = _state_rs_text()
+
+    # 1. The resampler OWNS the live held-target gauge, and hold_fill_frames reads
+    #    it (the setpoint render_period / trim_ring discipline toward).
+    assert "held_target_frames: Arc<AtomicU64>" in resampler_text
+    assert "self.held_target_frames.load(Ordering::Relaxed) as usize" in resampler_text, (
+        "hold_fill_frames must read the live held-target gauge, not a static field"
+    )
+    # 2. The decay is a render-PERIOD-clocked pure state machine ticked by the mixer.
+    assert "pub fn tick_decay(" in resampler_text
+    assert "r.tick_decay(decay_l0, decay_commanded_ppm_abs)" in mixer_text, (
+        "the mixer must tick the decay once per render period with the DLL signals"
+    )
+    # 3. The outer DLL re-pins its setpoint from the SAME live gauge each tick.
+    assert "pub held_target_frames: Arc<AtomicU64>" in host_clock_text
+    assert "hc.set_target_fill_frames(signals.held_target_frames.load(Ordering::Relaxed)" in (
+        host_clock_text
+    ), "the servo thread must re-pin its setpoint from the live held-target gauge"
+    # 4. STATUS surfaces the live held target AND the decay block (additive).
+    assert '"held_target_frames"' in state_text
+    assert '"decay":{' in state_text
+    assert '"frozen_reason"' in state_text
+
+
+def test_cushion_decay_snaps_back_to_ceiling_on_lock_loss():
+    """Lock-loss paths must snap the decayed held target back to the ceiling.
+
+    A re-acquisition must seat at the full cushion, not the shallow decayed depth,
+    or the lane would relock-thrash. `reset` (idle/host-pause) and
+    `unlock_for_underfill` (starvation) both call `snap_decay_back`.
+    """
+    resampler_text = _lane_resampler_rs_text()
+    assert "fn snap_decay_back(" in resampler_text
+    # Both lock-loss paths snap the decay back before the next lock seats.
+    reset_start = resampler_text.index("pub fn reset(")
+    reset_end = resampler_text.index("fn ", reset_start + 10)
+    assert "snap_decay_back" in resampler_text[reset_start:reset_end], (
+        "reset() must snap the decayed held target back to the ceiling"
+    )
+    unlock_start = resampler_text.index("fn unlock_for_underfill(")
+    unlock_end = resampler_text.index("fn render_silence(", unlock_start)
+    assert "snap_decay_back" in resampler_text[unlock_start:unlock_end], (
+        "unlock_for_underfill() must snap the decayed held target back to the ceiling"
+    )
+
+
+def test_servo_thread_exit_clears_reverse_signals():
+    """A stopped `fanin-host-clock` servo thread must clear its REVERSE signals.
+
+    The exit path (graceful shutdown OR caught panic) neutralizes the pitch ctl so
+    the host free-runs. It must ALSO clear the outer-loop signals the mixer's decay
+    tick reads (`ladder_l0`, `commanded_milli_ppm`) — otherwise a dead thread
+    leaves `ladder_l0=true` frozen, and the decay engine keeps stepping the held
+    target toward the floor with no live DLL pinning the fill, driving the
+    thin-cushion free-run churn loop until a daemon restart. Both stores sit AFTER
+    the `catch_unwind` block so they run on both exit paths.
+    """
+    host_clock_text = (
+        _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_clock.rs"
+    ).read_text(encoding="utf-8")
+    # The exit-neutralize block ends the thread body; both reverse-signal clears
+    # follow the actuator neutralize (so they run on graceful + caught-panic exit).
+    exit_start = host_clock_text.index('neutralize_for_exit("shutdown")')
+    exit_tail = host_clock_text[exit_start:]
+    assert "signals.ladder_l0.store(false, Ordering::Relaxed)" in exit_tail, (
+        "servo-thread exit must clear ladder_l0 so a dead thread cannot leave the "
+        "decay tick reading a stale l0=true"
+    )
+    assert "signals.commanded_milli_ppm.store(0, Ordering::Relaxed)" in exit_tail, (
+        "servo-thread exit must clear commanded_milli_ppm"
+    )
+
+
 def test_input_resampler_recovery_restarts_capture_pcm():
     text = _mixer_rs_text()
     recovery_start = text.index("fn recover_resampler_input_xrun(")

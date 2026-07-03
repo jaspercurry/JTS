@@ -34,6 +34,14 @@ pub const RING_SLOT_FRAMES: u32 = 128;
 pub const RING_SLOTS_MIN: u32 = 2;
 pub const RING_SLOTS_MAX: u32 = 16;
 
+/// The frames the post-lock cushion decay floor keeps ABOVE the base resampler
+/// target — a small working cushion the outer DLL always has to steer within.
+/// The decay never descends below `input_resampler_target_frames + this`, and it
+/// is the default floor. 32 frames ≈ 0.67 ms at 48 kHz: enough for the DLL's
+/// ±adjust authority to hold the fill without underrunning, but the tightest
+/// safe reclaim of the standing cushion.
+pub const CUSHION_DECAY_FLOOR_MARGIN_FRAMES: u32 = 32;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// ALSA PCM name (or `hw:Card,Dev,Sub`) for the summed output.
@@ -223,6 +231,35 @@ pub struct Config {
     /// steady latency setpoint.
     /// Env: `JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES`.
     pub input_resampler_ring_frames: u32,
+
+    /// DEFAULT-OFF post-lock cushion DECAY. When `true`, once the armed
+    /// resampler lane is locked AND its outer host-clock DLL is `l0_locked` AND
+    /// stable, the held target decays from the acquisition ceiling
+    /// (`target + warmup cushion`) toward `input_resampler_cushion_decay_floor_frames`
+    /// — reclaiming the standing resampler fill (~10 ms) that only the cold-start
+    /// burst needs. Snaps back to the ceiling on any unlock / DLL demotion /
+    /// stream stop. Fail-safe: only the exact literal `enabled` (case-insensitive)
+    /// arms it. Env: `JASPER_FANIN_RESAMPLER_CUSHION_DECAY`. Meaningful only with
+    /// the host-clock DLL armed (decay requires `l0_locked`).
+    pub input_resampler_cushion_decay_enabled: bool,
+    /// The total held-target floor (frames) the decay descends to. Must be at
+    /// least `input_resampler_target_frames + 32` (a 32-frame margin the DLL
+    /// always keeps above the base target) and at most the acquisition ceiling
+    /// (`target + warmup cushion`); config validates both fail-loud. Default:
+    /// `input_resampler_target_frames + 32` (the tightest safe floor, ~0.7 ms of
+    /// cushion above the base target). Env:
+    /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES`.
+    pub input_resampler_cushion_decay_floor_frames: u32,
+    /// Frames dropped from the held target per decay step. Fail-loud range
+    /// `1..=64`; default 16 (a gentle ~0.33 ms step, well inside the DLL's
+    /// ±adjust authority so a step never forces a trim glitch). Env:
+    /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES`.
+    pub input_resampler_cushion_decay_step_frames: u32,
+    /// Wall interval between decay steps, in ms (converted to render periods by
+    /// the lane). Fail-loud range `250..=10000`; default 1000. Env:
+    /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS`.
+    pub input_resampler_cushion_decay_interval_ms: u32,
+
     /// DEFAULT-OFF one-shot AUTO-TRIM (PoC standing-fill trim). When `true`, the
     /// mixer schedules ONE `TRIM` per armed resampler lane a couple seconds
     /// after that lane goes active, dropping the accumulated standing head-start
@@ -480,6 +517,90 @@ impl Config {
         // non-zero value pins an explicit capacity.
         let input_resampler_ring_frames = env_u32("JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES", 0)?;
 
+        // DEFAULT-OFF post-lock cushion DECAY (latency lever 1). Fail-safe: only
+        // the exact literal `enabled` (case-insensitive) arms it; unset / empty /
+        // anything else stays OFF (held target pinned at the acquisition ceiling,
+        // byte-identical to today). Meaningful only with the host-clock DLL armed.
+        let input_resampler_cushion_decay_enabled = matches!(
+            std::env::var("JASPER_FANIN_RESAMPLER_CUSHION_DECAY")
+                .ok()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("enabled")
+        );
+        // The tightest safe floor is the LARGER of two constraints, both a DLL
+        // working margin above their anchor:
+        //   1. `target + DLL margin` — keep a working cushion above the base
+        //      target the DLL always has to steer within.
+        //   2. `minimum_safe_fill_frames + DLL margin` — the PHYSICAL floor. The
+        //      resampler underfill-unlocks the moment the cursor-relative fill
+        //      drops below `minimum_safe_fill_frames` (= ceil(period × max_ratio)
+        //      + kernel radius + 1). A held target at/below that value sits on the
+        //      unlock threshold — churn-by-construction (audible gap → snap-back →
+        //      relock → warm-up → re-descend, on repeat). Constraint 1 alone does
+        //      NOT imply constraint 2: for a small base target (below ~period)
+        //      `target + margin` can land below the physical floor.
+        // Default the floor to that bound so the out-of-box decay reclaims the
+        // maximum SAFE cushion; an operator can raise it. `min_safe` is derived
+        // from the same shared `jasper_resampler` helper the lane's underfill gate
+        // uses, so the two can never disagree about the physical threshold.
+        let cushion_decay_min_safe_fill = jasper_resampler::minimum_safe_fill_frames(
+            period_frames,
+            input_resampler_max_adjust_ppm as f64,
+        ) as u32;
+        let cushion_decay_floor_min = (input_resampler_target_frames
+            + CUSHION_DECAY_FLOOR_MARGIN_FRAMES)
+            .max(cushion_decay_min_safe_fill + CUSHION_DECAY_FLOOR_MARGIN_FRAMES);
+        let cushion_decay_floor_default = cushion_decay_floor_min;
+        let input_resampler_cushion_decay_floor_frames = env_u32(
+            "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
+            cushion_decay_floor_default,
+        )?;
+        // The acquisition ceiling the decay descends FROM. The floor must sit in
+        // [floor_min, ceiling]: above the ceiling there is nothing to decay.
+        // Validate fail-loud (the `validate_audio_config` idiom) — but only when
+        // the feature is armed, so a stale floor on a decay-off box never blocks
+        // boot.
+        let cushion_decay_ceiling =
+            input_resampler_target_frames + input_resampler_warmup_cushion_frames;
+        if input_resampler_cushion_decay_enabled
+            && !(cushion_decay_floor_min..=cushion_decay_ceiling)
+                .contains(&input_resampler_cushion_decay_floor_frames)
+        {
+            anyhow::bail!(
+                "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES={} out of range {}..={} \
+                 (>= max(target {} , minimum_safe_fill {}) + {}-frame DLL margin — a floor \
+                 at/below minimum_safe_fill would underfill-unlock every period; \
+                 <= the acquisition ceiling target+cushion {})",
+                input_resampler_cushion_decay_floor_frames,
+                cushion_decay_floor_min,
+                cushion_decay_ceiling,
+                input_resampler_target_frames,
+                cushion_decay_min_safe_fill,
+                CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
+                cushion_decay_ceiling,
+            );
+        }
+        let input_resampler_cushion_decay_step_frames =
+            env_u32("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES", 16)?;
+        if !(1..=64).contains(&input_resampler_cushion_decay_step_frames) {
+            anyhow::bail!(
+                "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES={} out of range 1..=64 \
+                 (a gentle per-step frame drop; 16 ≈ 0.33 ms stays inside the DLL's \
+                 ±adjust authority so a step never forces a trim glitch)",
+                input_resampler_cushion_decay_step_frames,
+            );
+        }
+        let input_resampler_cushion_decay_interval_ms =
+            env_u32("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS", 1000)?;
+        if !(250..=10_000).contains(&input_resampler_cushion_decay_interval_ms) {
+            anyhow::bail!(
+                "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS={} out of range 250..=10000 \
+                 (wall interval between decay steps; 1000 ms is the default)",
+                input_resampler_cushion_decay_interval_ms,
+            );
+        }
+
         // DEFAULT-OFF one-shot AUTO-TRIM (PoC standing-fill trim). Fail-safe:
         // only the exact literal `enabled` (case-insensitive) arms it; unset /
         // empty / anything else stays OFF (byte-identical to today).
@@ -633,6 +754,10 @@ impl Config {
             input_resampler_max_adjust_ppm,
             input_resampler_warmup_cushion_frames,
             input_resampler_ring_frames,
+            input_resampler_cushion_decay_enabled,
+            input_resampler_cushion_decay_floor_frames,
+            input_resampler_cushion_decay_step_frames,
+            input_resampler_cushion_decay_interval_ms,
             auto_trim_enabled,
             usb_direct_enabled,
             usb_direct_device,
@@ -857,6 +982,19 @@ mod tests {
                 // buffer) unless pinned.
                 assert_eq!(cfg.input_resampler_warmup_cushion_frames, 2048);
                 assert_eq!(cfg.input_resampler_ring_frames, 0);
+                // Post-lock cushion DECAY is DEFAULT-OFF (latency lever 1); its
+                // knobs default to the tightest-safe floor (target + 32-frame DLL
+                // margin), a 16-frame gentle step, and a 1 s interval.
+                assert!(
+                    !cfg.input_resampler_cushion_decay_enabled,
+                    "cushion decay must default OFF"
+                );
+                assert_eq!(
+                    cfg.input_resampler_cushion_decay_floor_frames,
+                    512 + CUSHION_DECAY_FLOOR_MARGIN_FRAMES
+                );
+                assert_eq!(cfg.input_resampler_cushion_decay_step_frames, 16);
+                assert_eq!(cfg.input_resampler_cushion_decay_interval_ms, 1000);
                 // One-shot AUTO-TRIM is DEFAULT-OFF (manual TRIM is the PoC
                 // path; auto is the opt-in convenience).
                 assert!(!cfg.auto_trim_enabled, "auto-trim must default OFF");
@@ -1378,6 +1516,219 @@ mod tests {
                     assert!(
                         msg.contains("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES"),
                         "expected direct-period range error, got: {msg}",
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn cushion_decay_arms_only_on_literal_enabled() {
+        // Fail-safe: unset / empty / non-`enabled` stays OFF; only the literal
+        // `enabled` (case-insensitive) arms it.
+        for (raw, want) in [
+            (None, false),
+            (Some(""), false),
+            (Some("on"), false),
+            (Some("1"), false),
+            (Some("true"), false),
+            (Some("enabled"), true),
+            (Some("Enabled"), true),
+            (Some(" ENABLED "), true),
+        ] {
+            with_env(&[("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", raw)], || {
+                let cfg = Config::from_env().expect("decay flag must parse");
+                assert_eq!(
+                    cfg.input_resampler_cushion_decay_enabled, want,
+                    "raw={raw:?} should arm={want}"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn cushion_decay_floor_defaults_to_target_plus_margin() {
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", None),
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
+            ],
+            || {
+                let cfg = Config::from_env().expect("defaults must parse");
+                assert_eq!(
+                    cfg.input_resampler_cushion_decay_floor_frames,
+                    cfg.input_resampler_target_frames + CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn cushion_decay_floor_fails_loud_below_margin_when_armed() {
+        // Armed + a floor below target+margin must error. target 512 + 32 = 544;
+        // 543 is one under the minimum.
+        with_env(
+            &[
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("512")),
+                (
+                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
+                    Some("543"),
+                ),
+            ],
+            || {
+                let err = Config::from_env().expect_err("floor below margin must error");
+                let msg = format!("{:#}", err);
+                assert!(
+                    msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES"),
+                    "expected decay-floor range error, got: {msg}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn cushion_decay_floor_fails_loud_above_ceiling_when_armed() {
+        // Armed + a floor above the acquisition ceiling (target+cushion) must
+        // error: there is nothing to decay above the ceiling.
+        with_env(
+            &[
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("512")),
+                (
+                    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
+                    Some("2048"),
+                ),
+                (
+                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
+                    Some("2561"), // ceiling is 512+2048=2560
+                ),
+            ],
+            || {
+                let err = Config::from_env().expect_err("floor above ceiling must error");
+                let msg = format!("{:#}", err);
+                assert!(
+                    msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES"),
+                    "expected decay-floor ceiling error, got: {msg}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn cushion_decay_floor_fails_loud_below_minimum_safe_fill_when_armed() {
+        // A small base target makes `target + margin` land BELOW the physical
+        // minimum-safe-fill floor — a floor there is churn-by-construction (it
+        // sits on the underfill-unlock threshold). The validation must reject it
+        // fail-loud even though it is above `target + margin`.
+        //
+        // target 200, period 256, max_ppm 500 → min_safe = ceil(256*1.0005)+16+1
+        // = 274. floor_min = max(200+32, 274+32) = 306. A floor of 240 is above
+        // target+margin (232) but below floor_min (306) → must error.
+        with_env(
+            &[
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("200")),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
+                (
+                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
+                    Some("240"),
+                ),
+            ],
+            || {
+                let err = Config::from_env().expect_err(
+                    "floor below minimum-safe-fill must error even above target+margin",
+                );
+                let msg = format!("{:#}", err);
+                assert!(
+                    msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES")
+                        && msg.contains("minimum_safe_fill"),
+                    "expected minimum-safe-fill floor error, got: {msg}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn cushion_decay_floor_default_respects_minimum_safe_fill() {
+        // For a small base target the DEFAULT floor must be lifted to
+        // `minimum_safe_fill + margin`, not `target + margin` — the default must
+        // never itself be churn-by-construction. target 200 / period 256 /
+        // max_ppm 500 → min_safe 274 → default floor 306 (not 232).
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("200")),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
+            ],
+            || {
+                let cfg = Config::from_env().expect("defaults must parse");
+                let min_safe = jasper_resampler::minimum_safe_fill_frames(256, 500.0) as u32;
+                assert_eq!(
+                    cfg.input_resampler_cushion_decay_floor_frames,
+                    min_safe + CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
+                    "default floor for a small target must respect the physical floor"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn cushion_decay_floor_out_of_range_ignored_when_disabled() {
+        // A stale/bad floor on a decay-OFF box must NOT block boot — the range
+        // check is gated on the feature being armed.
+        with_env(
+            &[
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", None),
+                (
+                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
+                    Some("1"),
+                ),
+            ],
+            || {
+                let cfg = Config::from_env().expect("disabled decay must ignore a bad floor");
+                assert!(!cfg.input_resampler_cushion_decay_enabled);
+                assert_eq!(cfg.input_resampler_cushion_decay_floor_frames, 1);
+            },
+        );
+    }
+
+    #[test]
+    fn cushion_decay_step_fails_loud_out_of_range() {
+        for bad in ["0", "65", "1000"] {
+            with_env(
+                &[(
+                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES",
+                    Some(bad),
+                )],
+                || {
+                    let err = Config::from_env().expect_err("out-of-range step must error");
+                    let msg = format!("{:#}", err);
+                    assert!(
+                        msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES"),
+                        "expected decay-step range error, got: {msg}"
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn cushion_decay_interval_fails_loud_out_of_range() {
+        for bad in ["249", "10001", "0"] {
+            with_env(
+                &[(
+                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS",
+                    Some(bad),
+                )],
+                || {
+                    let err = Config::from_env().expect_err("out-of-range interval must error");
+                    let msg = format!("{:#}", err);
+                    assert!(
+                        msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS"),
+                        "expected decay-interval range error, got: {msg}"
                     );
                 },
             );

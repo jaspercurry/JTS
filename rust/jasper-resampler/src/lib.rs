@@ -75,6 +75,20 @@ pub const RADIUS_FRAMES: i64 = 16;
 pub const TAPS: usize = (RADIUS_FRAMES as usize) * 2 + 1;
 /// Number of precomputed sub-sample phases (interpolation resolution).
 pub const PHASES: usize = 2048;
+
+/// Minimum buffered frames to safely render one period at the worst-case
+/// (max-ppm) ratio with kernel headroom, given a lane's period size and
+/// max-adjust authority. This is the physical lock floor: a locked lane whose
+/// cursor-relative fill drops below this cannot interpolate one more period
+/// without reading past the newest written frame, so it must unlock into
+/// silence. Any held-target setpoint at or below this value is churn-by-
+/// construction (it sits on the underfill-unlock threshold). Pure — the single
+/// source of truth for the formula, shared by the resampler's own underfill
+/// gate and by config-time floor validation.
+pub fn minimum_safe_fill_frames(period_frames: u32, max_adjust_ppm: f64) -> usize {
+    let max_ratio = 1.0 + max_adjust_ppm / 1_000_000.0;
+    (period_frames as f64 * max_ratio).ceil() as usize + RADIUS_FRAMES as usize + 1
+}
 /// Sinc cutoff as a fraction of Nyquist — slightly below 1.0 to tame the
 /// passband edge of the windowed kernel.
 const CUTOFF: f64 = 0.97;
@@ -1158,6 +1172,27 @@ mod tests {
         assert_eq!(AudioRing::new(0, 2).unwrap_err(), RingError::ZeroCapacity);
         assert_eq!(AudioRing::new(16, 0).unwrap_err(), RingError::ZeroChannels);
         assert!(AudioRing::new(16, 2).is_ok());
+    }
+
+    #[test]
+    fn minimum_safe_fill_is_period_scaled_ratio_plus_kernel_headroom() {
+        // = ceil(period × (1 + max_ppm/1e6)) + RADIUS_FRAMES + 1. This is the
+        // physical underfill-unlock floor shared by the fan-in lane's render gate
+        // and the cushion-decay floor validation, so pin the exact arithmetic.
+        // period 256 / +500 ppm: ceil(256 * 1.0005) = ceil(256.128) = 257; + 16
+        // radius + 1 = 274.
+        assert_eq!(minimum_safe_fill_frames(256, 500.0), 274);
+        // period 480 / +500 ppm: ceil(480 * 1.0005) = ceil(480.24) = 481; + 17 =
+        // 498.
+        assert_eq!(minimum_safe_fill_frames(480, 500.0), 498);
+        // Zero max-ppm: unity ratio, so exactly period + radius + 1.
+        assert_eq!(
+            minimum_safe_fill_frames(256, 0.0),
+            256 + RADIUS_FRAMES as usize + 1
+        );
+        // Monotone in both arguments.
+        assert!(minimum_safe_fill_frames(256, 1000.0) >= minimum_safe_fill_frames(256, 500.0));
+        assert!(minimum_safe_fill_frames(512, 500.0) > minimum_safe_fill_frames(256, 500.0));
     }
 
     /// The pinned S32→S16 sign-boundary vector (C2). This is the SINGLE
