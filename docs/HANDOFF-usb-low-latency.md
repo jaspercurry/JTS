@@ -897,51 +897,84 @@ revalidation gate can never disagree.
 **Immediate revalidation (one strike → revoke).** The servo's per-session probe
 (the #1142 post-lock `AwaitLock` gate) runs on EVERY session start — that IS the
 revalidation. For a floor-primed session, three triggers revoke the proof: a LIVE
-probe FAIL, a DLL demotion to L2, or an underfill unlock within the first
-`HOST_COMPLIANCE_EARLY_REVALIDATION_SECS` (60 s). The revalidation runs in the pure
-`RevalidationTracker` (`host_compliance.rs`), driven each render period by
-`mixer::service_host_compliance` from the resampler's live `is_locked()` /
-`unlock_count()`. **The underfill trigger is window-bounded, so it does NOT
-self-revoke a slow periodic-stall host.** A host that delivers a mid-stream stall
-deep enough to underflow the floor's headroom but shallower than the ceiling's
-(floor-fatal, ceiling-survivable), spaced **>60 s apart**, never trips this
-trigger: each stall lands after the 60 s window has re-armed (post-window churn is
-"ordinary," not revocation evidence), and each subsequent session end re-primes at
-the floor — so the lane runs shallow indefinitely, one dropout per stall, with the
-proof NEVER revoking on that profile (only a live probe FAIL or an L2 demotion
-reverts it). Exposure is small — the pre-per-session steady state already sat at the
-floor most of the time, and stalls spaced <60 s apart are bounded to two incidents by
-the re-armed window — but if you are debugging *periodic* USB dropouts on an
-otherwise-locked host, know that the compliance proof will not self-heal this
-pattern; force a descent by demoting the ladder (a probe FAIL / L2) or deleting
-`host_compliance.json` + restarting fan-in. Two correctness details the tracker
-encodes: (1) the underfill trigger is evaluated on the lock-LOSS edge as well as
-while locked, because `unlock_for_underfill` sets `locked=false` in the SAME render
-period it bumps
-`unlock_count` — so the period that carries the churn evidence is the one where
-`locked` is already false (a `locked`-only window gate would make this trigger
-unreachable, the class of probe-passing-but-can't-hold-the-floor host this promise
-exists to catch); (2) a probe FAIL only revokes when it is LIVE — the servo leaves
-`probe_result=Fail` across a session boundary, so a fresh lock on a new compliant
-host reads the stale FAIL until its own probe runs; the tracker gates on the ladder
-sitting at L2 (which always accompanies a live fail) so a stale carryover FAIL
-(ladder back in `Probing`, `ladder_l2=false`) is ignored. Because the prime is
-per-session, `floor_primed` is **re-sampled per lock** from the live `flag_present`
-at each rising edge (the mixer passes it into `RevalidationTracker::step`): a
-session B that primed at the floor off session A's fresh proof runs the one-strike
-revalidation exactly as a construction-time prime would; the session after a revoke
-(proof cleared) is NOT floor-primed and descends + re-proves without it. The
-per-lock revoke latch likewise resets on every fresh lock, so a re-proven session
-can strike again if the host later misbehaves — both are per-lock, not
-per-daemon-lifetime. On any trigger the mixer snaps the held target back to the full
-ceiling via the **unconditional** escape (`snap_decay_to_ceiling`, distinct from the
-proof-honouring session-boundary snap), clears `flag_present`, deletes the file, and
-logs `event=fanin.host_compliance.revoked reason=…`. The normal descent then
-re-proves and re-writes. **USB re-enumeration / a new host / a new port need NO
-special handling** — a new session simply re-probes, and the probe verdict
-revalidates; that is the new-machine/new-port answer. A missing/corrupt/stale
-file means "no proof" (descend as today) — fail toward today's behaviour, never a
-crash.
+probe FAIL, a DLL demotion to L2, and a CONFIRMED early-window CHURN cycle (below).
+The revalidation runs in the pure `RevalidationTracker` (`host_compliance.rs`),
+driven each render period by `mixer::service_host_compliance` from the resampler's
+live `is_locked()` / `unlock_count()`.
+
+**The EarlyUnlock churn discriminator — a relock is required (#1156, hardware-diagnosed
+on jts.local 2026-07-03).** The underfill-unlock trigger is TWO-PHASE, not a bare
+falling-edge revoke. This is the fix for a false-revocation that #1154 shipped: EVERY
+session end presents as an underfill unlock — when the host stops streaming, deliveries
+stop and the cursor-relative fill drains below `minimum_safe_fill` within *milliseconds*,
+long before any idle classification. So the earlier "any early-window underfill unlock
+revokes on the falling edge" rule burned the proof on EVERY session shorter than the
+60 s window. macOS makes that the COMMON case: CoreAudio stops the UAC2 device stream
+seconds after the last client, so a notification ding / a preview / a short clip is a
+sub-60 s session that always ends this way — the proof would be revoked forever and the
+next session would always re-descend from the ceiling, defeating the whole feature. The
+discriminator distinguishes **churn** (the host is STILL delivering yet the floor cannot
+hold — the lane unlocks *and relocks*) from a **terminal stream-end** (the host stopped —
+the lane unlocks and never relocks):
+
+- An early-window underfill unlock **ARMS a pending strike** (records the strike and
+  resets the tick-clock `periods_since_arm`) — it does NOT revoke.
+- The strike **CONFIRMS** (revoke `EarlyUnlock`) only if a **RELOCK** (rising edge)
+  arrives within `HOST_COMPLIANCE_CHURN_CONFIRM_SECS` (5 s, converted to render periods
+  and compared purely in ticks — never a wall clock). Unlock→relock cycling is the
+  evidence: the host is present and the floor is genuinely failing.
+- If no relock arrives within the horizon, the pending strike **EXPIRES harmlessly**
+  (the stream died — no churn). It never survives a session; a fresh lock is armed clean.
+
+A churn STORM (many unlock/relock cycles) revokes on the FIRST confirmed cycle: the
+confirming relock clears `flag_present` (via `on_revoked`), and the tracker latches
+`floor_primed = floor_primed_now && revoke.is_none()`, so the relocked session is no
+longer floor-primed and does not revalidate again — exactly one revoke.
+
+**This INVERTS the old "won't self-heal a periodic-stall host" caveat.** The earlier
+version of this doc noted that a floor-fatal-but-ceiling-survivable stall spaced >60 s
+apart would never trip the (window-bounded) underfill trigger, so the lane ran shallow
+with one dropout per stall and the proof never self-revoked. Under the discriminator a
+periodic stall on a host that *keeps streaming* — stall → underfill unlock (arm) → the
+host recovers and delivers again → relock within a second or two (well inside the 5 s
+horizon) → CONFIRM — now **does** revoke and revert to the ceiling. That is correct: a
+present-but-stalling host IS churn worth revoking. The one profile that never revokes on
+the underfill path is the one this fix is FOR: a session that simply ended (the host
+stopped; no relock). A live probe FAIL or an L2 demotion still revert the proof
+regardless, as before.
+
+**Three correctness details the tracker encodes.** (1) The arming underfill is evaluated
+on the lock-LOSS edge, because `unlock_for_underfill` sets `locked=false` in the SAME
+render period it bumps `unlock_count` — so the period that carries the churn evidence is
+the one where `locked` is already false (a `locked`-only window gate would make the arm
+unreachable). Arming is gated on the unlock count actually ADVANCING, so an idle `reset()`
+(host pause — `unlock_count` unchanged) does not arm, and a subsequent resume-relock is a
+clean new session, not a confirmed churn. (2) A probe FAIL only revokes when it is LIVE —
+the servo leaves `probe_result=Fail` across a session boundary, so a fresh lock on a new
+compliant host reads the stale FAIL until its own probe runs; the tracker gates on the
+ladder sitting at L2 (which always accompanies a live fail) so a stale carryover FAIL
+(ladder back in `Probing`, `ladder_l2=false`) is ignored. (3) The revoke-before-relock
+ORDERING is pinned (interaction with #1154's snap-destination SSOT): on the relock that
+CONFIRMS a churn strike, `step` latches `floor_primed=false` even though `floor_primed_now`
+is still true, because the mixer clears `flag_present` right after `step` returns. This
+makes the revoke "win" the relocked lock's floor consideration — lock B is not
+floor-primed, so it does not run a redundant second strike, and the very next
+session-boundary snap lands at the ceiling, matching the flag the mixer is about to clear.
+
+Because the prime is per-session, `floor_primed` is **re-sampled per lock** from the live
+`flag_present` at each rising edge (the mixer passes it into `RevalidationTracker::step`):
+a session B that primed at the floor off session A's fresh proof runs the one-strike
+revalidation exactly as a construction-time prime would; the session after a revoke (proof
+cleared) is NOT floor-primed and descends + re-proves without it. The per-lock revoke
+latch likewise resets on every fresh lock, so a re-proven session can strike again if the
+host later misbehaves — both are per-lock, not per-daemon-lifetime. On any trigger the
+mixer snaps the held target back to the full ceiling via the **unconditional** escape
+(`snap_decay_to_ceiling`, distinct from the proof-honouring session-boundary snap), clears
+`flag_present`, deletes the file, and logs `event=fanin.host_compliance.revoked reason=…`.
+The normal descent then re-proves and re-writes. **USB re-enumeration / a new host / a new
+port need NO special handling** — a new session simply re-probes, and the probe verdict
+revalidates; that is the new-machine/new-port answer. A missing/corrupt/stale file means
+"no proof" (descend as today) — fail toward today's behaviour, never a crash.
 
 **Session-start is content-agnostic — calibration runs on pure silence.** macOS
 holds the UAC2 output stream open and always-streaming even with no audio playing
