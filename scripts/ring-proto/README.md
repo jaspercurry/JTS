@@ -14,6 +14,14 @@
 > isolated single-ring lab experiments (Ring A OR Ring B alone), which the
 > product reconciler intentionally does not do. Canonical operational truth:
 > [`docs/HANDOFF-audio-graph-consolidation.md`](../../docs/HANDOFF-audio-graph-consolidation.md).
+>
+> **jts.local migration (REQUIRED):** a box already lab-armed via these scripts
+> collides with the P1/P2 product ring assets (the `98-jts-ring*-proto.conf`
+> drop-ins duplicate the shipped `60-jts-ring.conf` PCM names; the marked env
+> blocks live in the same reconciler-owned `fanin.env`/`outputd.env`). Before the
+> first P2 deploy, `disarm.sh` **both** rings (`disarm.sh` + `disarm.sh --ring-a`),
+> then deploy and re-arm with the product reconciler. Full steps: section **H.1**
+> of the canonical handoff above.
 
 **Status: EXPERIMENTAL lab tooling** for the ISOLATED single-ring experiments
 (shipped default-off with the ring consumers change — the `jts-ring-ioplug` C

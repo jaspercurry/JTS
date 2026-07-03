@@ -163,6 +163,47 @@ its cushion must be ≥ 306 before any deploy. P5c deletes the stale recipe
 prose from docs/env comments; the shipped production defaults (held 2560)
 are immune.
 
+### H.1 jts.local lab→product ring migration (REQUIRED before the first P2 deploy)
+
+**Only jts.local needs this. jts3 / jts5 / jts4 are NOT lab-armed and need
+nothing.** jts.local is currently ring-armed via the *lab* `ring-proto` tooling,
+which collides with the P1/P2 product ring assets:
+
+- The lab `arm-ring-a.sh` / `arm-ring-proto.sh` wrote **marked env blocks** into
+  the SAME `/var/lib/jasper/fanin.env` and `/var/lib/jasper/outputd.env` the
+  coupling reconciler now owns (`JASPER_FANIN_CAMILLA_COUPLING=shm_ring`,
+  `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`).
+- They dropped hand `98-jts-ring-a-proto.conf` / `98-jts-ring-proto.conf`
+  conf.d files defining the **same PCM names** (`pcm.jts_ring_capture` /
+  `pcm.jts_ring_playback`) that P1's shipped `60-jts-ring.conf` now defines —
+  duplicate ALSA definitions.
+- The lab used **16 slots**; the reconciler-canonical Ring B is **2**. And a
+  hand CamillaDSP YAML, not the product emitter's config.
+
+On the first P2 deploy, `ensure_outputd_camilla_statefile` would read the
+lab-written `shm_ring` and seed `outputd-cutover-ring.yml` against that mixed
+(lab-conf.d + lab-env + hand-YAML) state.
+
+**Migration — run on jts.local BEFORE deploying this branch:**
+
+```sh
+# 1) Tear down BOTH lab rings (removes the 98-*-proto.conf drop-ins, strips the
+#    marked env blocks, restores the pre-lab CamillaDSP config):
+bash scripts/ring-proto/disarm.sh          # Ring B proto
+bash scripts/ring-proto/disarm.sh --ring-a # Ring A proto  (see the script's flags)
+
+# 2) Deploy this branch normally (installs 60-jts-ring.conf + the product path):
+bash scripts/deploy-to-pi.sh
+
+# 3) Re-arm via the PRODUCT reconciler (coherent BOTH-ring flip, 2 slots):
+ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring'
+sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E "ring platform|fan-in coupling"
+```
+
+Verify the migration landed: no `98-jts-ring*-proto.conf` remains under
+`/etc/alsa/conf.d/`, `fanin.env`/`outputd.env` carry only the reconciler-written
+`shm_ring` keys (no lab marker comments), and the two doctor checks report `ok`.
+
 ### I. What the ring path still lacks for default status (the P1–P2 gap list)
 
 Verified missing on main (2026-07-03):
