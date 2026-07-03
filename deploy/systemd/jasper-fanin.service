@@ -154,5 +154,49 @@ EnvironmentFile=-/var/lib/jasper/fanin.env
 
 ExecStart=/opt/jasper/bin/jasper-fanin
 
+# Combo-mode host-slaved USB clock (C6) — belt-and-braces for the
+# pitch-neutrality safety invariant. In combo mode
+# (JASPER_FANIN_USB_DIRECT=enabled + JASPER_FANIN_HOST_CLOCK=enabled) the
+# `fanin-host-clock` thread owns the gadget's "Capture Pitch 1000000" ctl and
+# resets it to neutral on every clean exit path — but SIGKILL / OOM-kill /
+# watchdog abort skip that in-process cleanup, and a host must never stay
+# slaved to a command from a daemon that is no longer running.
+#
+# The owner gate is LOAD-BEARING, not cosmetic: fan-in restarts on every deploy,
+# and an UNCONDITIONAL neutralize here would, on a solo-mode box (usbsink owns the
+# clock in aloop mode), overwrite an active usbsink L0 command with 1000000 behind
+# usbsink's back — desyncing its write-suppression epsilon gate (it believes the
+# last written value is its own command and won't rewrite until >10 ppm drift).
+# So the belt fires ONLY when THIS daemon is the configured clock owner.
+#
+# Ownership requires BOTH flags, exactly matching the daemon: fan-in resolves
+# `host_clock_enabled_effective = host_clock_enabled && !usb_direct_off` and
+# never writes a non-neutral pitch unless BOTH JASPER_FANIN_HOST_CLOCK and
+# JASPER_FANIN_USB_DIRECT are set (with only HOST_CLOCK set it logs
+# `noop reason=usb_direct_off` and issues ZERO ctl writes — review F2). Gating on
+# HOST_CLOCK alone fires the belt on a box that part-rolled-back combo (unset
+# USB_DIRECT, left HOST_CLOCK=enabled) while solo usbsink's own DLL is the live
+# ctl writer — neutralizing usbsink's command on every fan-in stop, i.e. every
+# deploy. Requiring USB_DIRECT too loses zero coverage: fan-in owns the ctl only
+# when both flags were set in the same env snapshot ExecStopPost sees.
+#
+# Both checks are CASE-INSENSITIVE to match the config parser, which arms each
+# flag on `eq_ignore_ascii_case("enabled")` (jasper_fanin::config, mirroring
+# usbsink's literal idiom), and the `.env.example` prose that advertises
+# "case-insensitive" (review F3). An exact-match `= "enabled"` here would leave a
+# box armed with e.g. `JASPER_FANIN_HOST_CLOCK=Enabled` running the servo with a
+# DEAD belt — the precise non-neutral-after-SIGKILL scenario C6 exists to cover.
+# `tr` lowercases each value before the compare.
+#
+# The card is derived from JASPER_FANIN_USB_DIRECT_DEVICE (default hw:UAC2Gadget)
+# so a device override redirects the belt to the right card (review N6 — no
+# hardcoded card drift; the in-daemon actuator derives the same card via
+# `ctl_card_from_capture`). Strip a `plughw:`/`hw:` prefix and any `,dev,subdev`
+# tail down to the bare card token (e.g. `UAC2Gadget`), which is what `amixer -c`
+# takes. `-` ignores failure when the card is absent (combo off, gadget torn
+# down). Mirrors jasper-usbsink.service's owner-gated ExecStopPost so both
+# writers target the same element the same way.
+ExecStopPost=-/bin/sh -c '[ "$(printf %s "$JASPER_FANIN_HOST_CLOCK" | tr "[:upper:]" "[:lower:]")" = "enabled" ] || exit 0; [ "$(printf %s "$JASPER_FANIN_USB_DIRECT" | tr "[:upper:]" "[:lower:]")" = "enabled" ] || exit 0; dev="${JASPER_FANIN_USB_DIRECT_DEVICE:-hw:UAC2Gadget}"; card="${dev#plughw:}"; card="${card#hw:}"; card="${card%%,*}"; exec /usr/bin/amixer -c "$card" cset iface=PCM,name="Capture Pitch 1000000" 1000000'
+
 [Install]
 WantedBy=multi-user.target

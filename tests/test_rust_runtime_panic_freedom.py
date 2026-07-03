@@ -80,6 +80,32 @@ ALLOWED_EXPECTS: dict[tuple[str, str], str] = {
         "Caller dispatches on the '@' prefix before calling "
         "notify_systemd_abstract, so the strip_prefix cannot miss."
     ),
+    (
+        "jasper-fanin/src/mixer.rs",
+        "aloop resampler lane always has Some(pcm)",
+    ): (
+        "Routing invariant: read_into_resampler_and_render is reached only for "
+        "an aloop resampler lane (input.direct.is_none()), which always opens "
+        "Some(pcm); the USB DIRECT lane (pcm None) routes to "
+        "read_direct_and_render instead. The function's own is_none() early "
+        "return guards the top; the message states the invariant."
+    ),
+    (
+        "jasper-fanin/src/mixer.rs",
+        "read_direct_and_render only called on a direct lane",
+    ): (
+        "Routing invariant: step() calls read_direct_and_render only when "
+        "input.direct.is_some(), so the take() cannot yield None. The message "
+        "states the invariant."
+    ),
+    (
+        "jasper-fanin/src/main.rs",
+        "tap receiver taken exactly once",
+    ): (
+        "Startup-time construction invariant: the tap channel receiver is "
+        "taken exactly once, immediately after Mixer::new, before READY=1. "
+        "Fail-fast at boot is correct — systemd restarts the unit."
+    ),
 }
 
 _PANIC_PAT = re.compile(r"\.unwrap\(\)|\.expect\(|panic!")

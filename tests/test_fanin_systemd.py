@@ -222,6 +222,83 @@ def test_exec_start_points_at_installed_binary():
     )
 
 
+def test_combo_gated_pitch_neutralize_exec_stop_post():
+    """The combo-mode host-clock belt-and-braces (C6): on SIGKILL / OOM /
+    watchdog abort — which skip the daemon's in-process pitch neutralize — the
+    unit must reset the gadget's "Capture Pitch 1000000" ctl to neutral, but
+    ONLY when THIS daemon is the configured clock owner — which requires BOTH
+    `$JASPER_FANIN_HOST_CLOCK = enabled` AND `$JASPER_FANIN_USB_DIRECT = enabled`
+    (review F2: the daemon resolves ownership as `host_clock_enabled &&
+    !usb_direct_off` and writes zero non-neutral pitch otherwise).
+
+    The gate is LOAD-BEARING, not cosmetic: fan-in restarts on every deploy, and
+    an unconditional (or HOST_CLOCK-only) neutralize would overwrite an active
+    solo-mode usbsink L0 command with 1000000 behind usbsink's back — desyncing
+    its write-suppression epsilon gate. If someone drops either half of the gate
+    to "simplify" the line, this fails.
+    """
+    unit = _read_unit()
+    val = _value_for(unit, "ExecStopPost")
+    assert val is not None, (
+        "jasper-fanin.service must carry an ExecStopPost pitch-neutralize belt "
+        "for the combo-mode host-clock (C6)."
+    )
+    # Best-effort (leading `-`): a missing card / combo-off must not fail stop.
+    assert val.startswith("-"), (
+        "the ExecStopPost must be best-effort (leading `-`) so a missing gadget "
+        f"card can't fail the unit stop. Got {val!r}"
+    )
+    # The load-bearing gate: fires only when fan-in is the configured owner.
+    # It reads JASPER_FANIN_HOST_CLOCK and compares against the "enabled" literal.
+    assert "JASPER_FANIN_HOST_CLOCK" in val and "enabled" in val, (
+        "the ExecStopPost MUST gate on JASPER_FANIN_HOST_CLOCK = enabled — an "
+        "unconditional neutralize would desync a solo-mode usbsink L0 command. "
+        f"Got {val!r}"
+    )
+    # Review F2: the belt must ALSO gate on JASPER_FANIN_USB_DIRECT = enabled,
+    # because fan-in owns the ctl only when BOTH flags are set. Gating on
+    # HOST_CLOCK alone fires on a part-rolled-back combo box (USB_DIRECT unset,
+    # HOST_CLOCK left enabled) where solo usbsink's DLL is the live writer,
+    # neutralizing its command on every fan-in stop. Pin the exact
+    # `"$JASPER_FANIN_USB_DIRECT"` reference (with the closing quote) so the
+    # substring in JASPER_FANIN_USB_DIRECT_DEVICE can't satisfy this assertion.
+    assert '"$JASPER_FANIN_USB_DIRECT"' in val, (
+        "the ExecStopPost MUST also gate on JASPER_FANIN_USB_DIRECT = enabled — "
+        "fan-in owns the pitch ctl only when BOTH flags are set (review F2). "
+        "HOST_CLOCK-only fires the belt on a part-rolled-back combo box and "
+        f"desyncs a live solo-mode usbsink command. Got {val!r}"
+    )
+    # Review F3: the gate must be CASE-INSENSITIVE (lowercase the value before
+    # the compare), because the config parser arms on eq_ignore_ascii_case and
+    # .env.example advertises "case-insensitive". An exact-match `= "enabled"`
+    # here would leave a box armed with e.g. `Enabled` running the servo with a
+    # DEAD belt. The unit lowercases via `tr "[:upper:]" "[:lower:]"`.
+    assert 'tr "[:upper:]" "[:lower:]"' in val, (
+        "the ExecStopPost gate must be case-insensitive (tr-lowercase the flag "
+        "value) to match the config parser's eq_ignore_ascii_case arming and the "
+        f".env.example 'case-insensitive' prose (review F3). Got {val!r}"
+    )
+    # Review N6: the card must be DERIVED from JASPER_FANIN_USB_DIRECT_DEVICE the
+    # same way the daemon's actuator derives it — NOT hardcoded — so a device
+    # override redirects the belt to the right card (no drift). usbsink's belt
+    # already expands its own card var; fan-in must too.
+    assert "JASPER_FANIN_USB_DIRECT_DEVICE" in val, (
+        "the ExecStopPost must derive the card from JASPER_FANIN_USB_DIRECT_DEVICE "
+        "(matches the in-daemon actuator), not hardcode UAC2Gadget — otherwise a "
+        f"device override + SIGKILL neutralizes the wrong card (review N6). Got {val!r}"
+    )
+    # Resets to the identity value on the correct element, by name (not numid).
+    assert 'name="Capture Pitch 1000000"' in val, (
+        "the ExecStopPost must target the pitch ctl by name (matches the "
+        f"in-daemon actuator + usbsink's ExecStopPost). Got {val!r}"
+    )
+    # The cset command's last argument is the neutral value 1000000 (the sh
+    # wrapper closes with a trailing quote, so match the value + close-quote).
+    assert "1000000'" in val or val.rstrip().endswith("1000000"), (
+        f"the ExecStopPost must reset the pitch to neutral (1000000). Got {val!r}"
+    )
+
+
 def test_input_buffer_frames_sized_for_wifi_burst_absorption():
     """Per-input ALSA ring buffer must be >= 4096 frames so it
     absorbs the worst-case 802.11 A-MPDU inter-burst gap (~40 ms

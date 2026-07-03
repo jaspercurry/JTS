@@ -27,11 +27,14 @@
 //!   code) and avoids long-lived connections eating file descriptors
 //!   if a client misbehaves.
 //!
-//! - **Hand-rolled JSON, no `serde`.** Same reasoning as
-//!   `xrun_log.rs`: the shape is small and stable. Adding `serde`
-//!   for one response shape would bring `serde_json` into the
-//!   dependency graph, ~200 KB of compiled code, for marginal
-//!   benefit.
+//! - **Hand-rolled JSON on the STATUS emit side, no `serde`.** Same
+//!   reasoning as `xrun_log.rs`: the response shape is small and
+//!   stable, so `snapshot_json` builds it by hand. (`serde_json` IS a
+//!   crate dependency now — `impulse_tap.rs`'s `TapConfig::from_arm_body`
+//!   needs the value model to PARSE an untrusted arm-body object — but
+//!   this STATUS response deliberately does not use it: hand-rolling one
+//!   fixed emit shape stays trivial and keeps the response path
+//!   allocation-light.)
 //!
 //! - **Shared atomic counters.** The mixer's `frames_written`,
 //!   per-input `frames_read`, `xrun_count` are already
@@ -55,14 +58,17 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use log::{info, warn};
 
+use crate::impulse_tap::{TapConfig, TapState};
 use crate::lane_resampler::LaneResamplerObservability;
-use crate::mixer::{CouplingObservability, Mixer, OUTPUT_DELAY_UNAVAILABLE};
+use crate::mixer::{
+    CouplingObservability, DirectObservability, Mixer, TrimControl, OUTPUT_DELAY_UNAVAILABLE,
+};
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
 
@@ -74,6 +80,20 @@ const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// Poll interval for the accept loop, used to honor shutdown without
 /// blocking indefinitely in `accept()`.
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Bound on how long a `TRIM` command waits for the mixer work loop to consume
+/// the armed `pending` flag and publish the dropped-frame delta. The work loop
+/// clears the flag at its next period boundary (~2.7–5.3 ms per period at
+/// 128–256 frames, 48 kHz), so 200 ms is dozens of periods of slack — enough to
+/// ride out a scheduling stall — while staying well under the connection read
+/// timeout (2 s) so a stuck reply can never pin the server thread. On timeout
+/// the reply is an honest `ERR` naming how much was dropped so far.
+const TRIM_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Poll granularity while waiting for the work loop to service a `TRIM`. Short
+/// enough to return promptly once the flag clears (a trim usually completes in
+/// one period), long enough that the poll loop is not a busy-spin.
+const TRIM_WAIT_POLL: Duration = Duration::from_millis(1);
 
 pub struct StateServer {
     /// Process start instant — for uptime in the snapshot.
@@ -105,11 +125,35 @@ pub struct StateServer {
     input_buffer_frames: u32,
     output_buffer_frames: u32,
     tts_metrics: Option<TtsMetrics>,
+    /// Shared impulse-tap state (armed + counters + knobs), cloned from the
+    /// mixer's `DirectTapHook` (C4). Served on `TAP_ARM`/`TAP_DISARM`/STATUS.
+    tap: Arc<TapState>,
+    /// Last-armed tap config, published on `TAP_ARM` for the writer thread and
+    /// read on STATUS (C4).
+    tap_config: Arc<Mutex<TapConfig>>,
+    /// The tap's fixed sample rate (48 kHz) — passed to `TapState::arm` to
+    /// resolve the refractory window into frames. Distinct from `sample_rate`
+    /// (the fan-in mix rate); the direct gadget capture is a fixed 48 kHz
+    /// endpoint.
+    tap_sample_rate: u32,
+    /// The combo-mode host-clock STATUS fragment (C7). Rendered once per tick by
+    /// the `fanin-host-clock` thread into this shared string, embedded verbatim
+    /// in `snapshot_json`. Always present (initialized to the disabled block by
+    /// `main`), so the top-level `host_clock` key is stable whether the feature
+    /// is armed or off. The state-server thread only READS it (single writer is
+    /// the host-clock thread).
+    host_clock_fragment: Arc<Mutex<String>>,
 }
 
 pub struct InputSnapshotSource {
     pub label: String,
     pub pcm_name: String,
+    /// `true` on the USB DIRECT lane (STATUS `source:"direct"`); every other
+    /// lane is `source:"lane"` (C7).
+    pub is_direct: bool,
+    /// USB DIRECT observability for the STATUS `direct{}` block (C7). `Some`
+    /// only on the direct lane; `None` (and absent from STATUS) otherwise.
+    pub direct: Option<DirectObservability>,
     pub frames_read: Arc<AtomicU64>,
     pub xrun_count: Arc<AtomicU64>,
     /// Cumulative frames discarded by the bounded catch-up resync on this
@@ -122,6 +166,10 @@ pub struct InputSnapshotSource {
     /// configured clock-crossing lane when the DEFAULT-OFF input resampler is
     /// armed; `None` (and absent from STATUS) for every lane otherwise.
     pub resampler: Option<LaneResamplerObservability>,
+    /// Per-lane TRIM control + counters, shared with the mixer work thread. The
+    /// `TRIM` command sets `pending` here; the work loop performs the drain and
+    /// bumps `trims` / `trimmed_frames`, which STATUS surfaces.
+    pub trim: Arc<TrimControl>,
 }
 
 pub struct StateServerConfig {
@@ -133,6 +181,11 @@ pub struct StateServerConfig {
     pub output_pcm: String,
     pub music_output_pcm: Option<String>,
     pub tts_metrics: Option<TtsMetrics>,
+    /// The combo-mode host-clock STATUS fragment (C7), created and initialized
+    /// (to the disabled block) by `main` and updated by the `fanin-host-clock`
+    /// thread. Always present so STATUS carries a definite top-level
+    /// `host_clock` key.
+    pub host_clock_fragment: Arc<Mutex<String>>,
 }
 
 impl StateServer {
@@ -146,6 +199,7 @@ impl StateServer {
             output_pcm,
             music_output_pcm,
             tts_metrics,
+            host_clock_fragment,
         } = config;
         let inputs = mixer
             .inputs()
@@ -153,11 +207,14 @@ impl StateServer {
             .map(|inp| InputSnapshotSource {
                 label: inp.label.clone(),
                 pcm_name: inp.pcm_name.clone(),
+                is_direct: inp.is_direct(),
+                direct: inp.direct_observability(),
                 frames_read: Arc::clone(&inp.frames_read),
                 xrun_count: Arc::clone(&inp.xrun_count),
                 catchup_resync_frames: Arc::clone(&inp.catchup_resync_frames),
                 catchup_events: Arc::clone(&inp.catchup_events),
                 resampler: inp.resampler_observability(),
+                trim: inp.trim_control(),
             })
             .collect();
         Self {
@@ -179,6 +236,12 @@ impl StateServer {
             input_buffer_frames,
             output_buffer_frames,
             tts_metrics,
+            tap: mixer.direct_tap_state(),
+            tap_config: mixer.direct_tap_config(),
+            // The direct gadget capture is a fixed 48 kHz endpoint; the tap's
+            // refractory window resolves against that, not the mix rate.
+            tap_sample_rate: 48_000,
+            host_clock_fragment,
         }
     }
 
@@ -266,6 +329,17 @@ impl StateServer {
                 let label = cmd.trim_start_matches("SELECT ").trim();
                 self.select_input_json(label)
             }
+            "TRIM" => self.trim_command(None),
+            cmd if cmd.starts_with("TRIM ") => {
+                let label = cmd.trim_start_matches("TRIM ").trim();
+                self.trim_command(Some(label))
+            }
+            "TAP_DISARM" => self.tap_disarm_command(),
+            cmd if cmd.starts_with("TAP_ARM ") => {
+                // Everything after the verb is the arm JSON body (rest of line).
+                let body = cmd.trim_start_matches("TAP_ARM ").trim();
+                self.tap_arm_command(body)
+            }
             other => format!(
                 r#"{{"error":"unknown command","received":"{}"}}"#,
                 escape_json(other),
@@ -302,6 +376,161 @@ impl StateServer {
                 escape_json(label),
             )
         }
+    }
+
+    /// Handle a `TRIM` / `TRIM <label>` control command.
+    ///
+    /// `TRIM` (label `None`) requests a trim on EVERY lane; `TRIM <label>`
+    /// targets one. Because the state-server thread cannot touch the `!Sync`
+    /// capture `PCM` or the mixer-owned `LaneResampler` (both live on the mixer
+    /// work thread), this sets each target lane's `pending` flag with a
+    /// `Release` store and then briefly polls the lane's `trimmed_frames`
+    /// counter for the work loop to consume the flag and publish the delta —
+    /// reporting the frames ACTUALLY dropped from the resampler ring, not just
+    /// "the request was queued." Mirrors the SELECT/AUTO/NONE split (control
+    /// sets a shared atomic; the work loop does the state-owning work).
+    ///
+    /// Reply is a plain-text line: `OK trimmed=<frames_dropped>` (summed across
+    /// targeted lanes) or `ERR <reason>`. Distinct from SELECT's JSON snapshot
+    /// because a trim is a fire-and-report action, not a state query — the
+    /// operator wants the one number back on the socket immediately. A lane
+    /// with no armed resampler (the reservoir lives only in the resampler ring)
+    /// clears its flag and reports 0 dropped — a documented no-op, not an error.
+    fn trim_command(&self, label: Option<&str>) -> String {
+        // Resolve the target lane set. An empty explicit label is an error;
+        // `None` (bare `TRIM`) means all lanes.
+        let targets: Vec<&InputSnapshotSource> = match label {
+            Some("") => return "ERR missing input label".to_string(),
+            Some(l) => match self.inputs.iter().find(|inp| inp.label == l) {
+                Some(inp) => vec![inp],
+                None => return format!("ERR unknown input label {}", l),
+            },
+            None => self.inputs.iter().collect(),
+        };
+
+        // Snapshot each target's cumulative trimmed_frames, arm the pending
+        // flag, then wait (bounded) for the work loop to advance the counter.
+        // The delta across all targets is the frames actually dropped.
+        let before: Vec<u64> = targets
+            .iter()
+            .map(|inp| {
+                let prev = inp.trim.trimmed_frames.load(Ordering::Relaxed);
+                // Release so the work loop's Acquire swap observes the request.
+                inp.trim.pending.store(true, Ordering::Release);
+                prev
+            })
+            .collect();
+
+        // Poll for the work loop to consume every armed flag. A trim that drops
+        // 0 frames (lane already at target, or unarmed) still clears its pending
+        // flag, so we wait on the flags clearing, not on the counter moving — a
+        // legitimate 0-frame trim must not spin out the whole timeout.
+        let deadline = Instant::now() + TRIM_WAIT_TIMEOUT;
+        loop {
+            let all_consumed = targets
+                .iter()
+                .all(|inp| !inp.trim.pending.load(Ordering::Acquire));
+            if all_consumed || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(TRIM_WAIT_POLL);
+        }
+
+        let dropped: u64 = targets
+            .iter()
+            .zip(&before)
+            .map(|(inp, &prev)| {
+                inp.trim
+                    .trimmed_frames
+                    .load(Ordering::Relaxed)
+                    .saturating_sub(prev)
+            })
+            .sum();
+
+        // If a flag never cleared, the work loop didn't run within the window
+        // (daemon paused / no periods). Report honestly rather than claim 0.
+        let stuck = targets
+            .iter()
+            .any(|inp| inp.trim.pending.load(Ordering::Acquire));
+        if stuck {
+            info!(
+                "event=fanin.trim.request result=timeout label={} dropped_so_far={}",
+                label.unwrap_or("all"),
+                dropped,
+            );
+            return format!(
+                "ERR trim not serviced within {}ms (mixer loop idle?) dropped_so_far={}",
+                TRIM_WAIT_TIMEOUT.as_millis(),
+                dropped,
+            );
+        }
+
+        info!(
+            "event=fanin.trim.request result=ok label={} lanes={} dropped_frames={}",
+            label.unwrap_or("all"),
+            targets.len(),
+            dropped,
+        );
+        format!("OK trimmed={}", dropped)
+    }
+
+    /// Handle `TAP_ARM {json}` (C4). Parses the remainder of the line with the
+    /// bridge's `TapConfig::from_arm_body` (same keys, same validation/ceilings,
+    /// same `/run/jasper-fanin/` path constraint), truncates the JSONL file
+    /// synchronously so the reply only claims success once the file is a clean
+    /// slate, publishes the config for the writer thread, then flips armed via
+    /// `TapState::arm` (armed-before-generation ordering preserved). Reply is a
+    /// plaintext line like `TRIM` — `OK armed path=<path>` or `ERR <reason>`.
+    ///
+    /// The state-server thread touches only shared atomics/the config mutex here
+    /// (never the mixer-owned detector), mirroring the TRIM plumbing shape.
+    fn tap_arm_command(&self, body: &str) -> String {
+        let Some(cfg) = TapConfig::from_arm_body(body) else {
+            return "ERR bad arm params".to_string();
+        };
+        // Truncate the JSONL synchronously so a fresh arm always starts clean.
+        if let Err(e) = truncate_tap_file(&cfg.path) {
+            warn!(
+                "event=fanin.tap_arm_error detail={} path={}",
+                e,
+                cfg.path.display()
+            );
+            return format!("ERR cannot open path {}", cfg.path.display());
+        }
+        // Publish config for the writer thread first, then flip armed.
+        {
+            let mut guard = self
+                .tap_config
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = cfg.clone();
+        }
+        self.tap.arm(&cfg, self.tap_sample_rate, epoch_millis());
+        info!(
+            "event=fanin.tap_armed threshold={:.3} hysteresis={:.3} refractory_ms={} max_events={} auto_disarm_min={} path={}",
+            cfg.threshold,
+            cfg.hysteresis,
+            cfg.refractory_ms,
+            cfg.max_events,
+            cfg.auto_disarm_min,
+            cfg.path.display(),
+        );
+        format!("OK armed path={}", cfg.path.display())
+    }
+
+    /// Handle `TAP_DISARM` (C4). Idempotent; reply names the per-arm counters.
+    fn tap_disarm_command(&self) -> String {
+        self.tap.disarm();
+        let written = self.tap.events_written();
+        let dropped = self.tap.events_dropped();
+        info!(
+            "event=fanin.tap_disarmed events_written={} events_dropped={}",
+            written, dropped,
+        );
+        format!(
+            "OK disarmed events_written={} events_dropped={}",
+            written, dropped,
+        )
     }
 
     /// Build the JSON snapshot. Reads each atomic with Relaxed
@@ -372,6 +601,15 @@ impl StateServer {
             buf.push(',');
             push_kv_str(&mut buf, "pcm", &input.pcm_name);
             buf.push(',');
+            // source: "direct" on the USB DIRECT lane (reads hw:UAC2Gadget
+            // directly), "lane" on every aloop-reading lane. Always present,
+            // additive (the TRIM-block precedent) — C7.
+            push_kv_str(
+                &mut buf,
+                "source",
+                if input.is_direct { "direct" } else { "lane" },
+            );
+            buf.push(',');
             push_kv_u64(
                 &mut buf,
                 "frames_read",
@@ -399,6 +637,30 @@ impl StateServer {
                 "catchup_events",
                 input.catchup_events.load(Ordering::Relaxed),
             );
+            buf.push(',');
+            // TRIM counters (the standing-fill one-shot drop). `trims` is how
+            // many TRIMs actually dropped ≥1 frame on this lane; `trimmed_frames`
+            // is the cumulative total dropped from the resampler ring; `pending`
+            // shows an armed but not-yet-serviced request. All 0/false on a lane
+            // never trimmed (including every unarmed lane), so the shape is
+            // stable for the common case. Always present (unlike the optional
+            // resampler block) — a flat, greppable pair like the catch-up
+            // counters above.
+            buf.push_str(r#""trim":{"#);
+            push_kv_u64(&mut buf, "trims", input.trim.trims.load(Ordering::Relaxed));
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "trimmed_frames",
+                input.trim.trimmed_frames.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_bool(
+                &mut buf,
+                "pending",
+                input.trim.pending.load(Ordering::Relaxed),
+            );
+            buf.push('}');
             // OPTIONAL per-input adaptive resampler (DEFAULT-OFF). Rendered as a
             // nested object only when armed on this lane — absent for every lane
             // when the feature is off, so the default STATUS shape is unchanged.
@@ -456,6 +718,22 @@ impl StateServer {
                     "unlock_count",
                     r.unlock_count.load(Ordering::Relaxed),
                 );
+                buf.push('}');
+            }
+            // OPTIONAL USB DIRECT block (C7). Rendered only on the direct lane
+            // (mirrors the optional `resampler` block): device, live presence,
+            // cumulative opens/retries. Absent for every aloop lane, so the
+            // default STATUS shape is unchanged.
+            if let Some(d) = &input.direct {
+                buf.push(',');
+                buf.push_str(r#""direct":{"#);
+                push_kv_str(&mut buf, "device", &d.device);
+                buf.push(',');
+                push_kv_bool(&mut buf, "present", d.present.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(&mut buf, "opens", d.opens.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(&mut buf, "retries", d.retries.load(Ordering::Relaxed));
                 buf.push('}');
             }
             buf.push('}');
@@ -535,6 +813,54 @@ impl StateServer {
                 &mut buf,
                 "dropped_periods",
                 pipe.dropped_periods.load(Ordering::Relaxed),
+            );
+            buf.push('}');
+        }
+        // Ring A (shm_ring): the SPSC SHM ring counter block. `occupancy` is the
+        // live write_seq-read_seq depth; `published` slots reached a live reader;
+        // `full_waits` is the bounded live-reader back-pressure count; `drops`
+        // folds no-reader + stuck-reader drops; `mirror_frames` / `mirror_drops`
+        // are the lossy aloop side-tap's written-frame and drop counts (never
+        // load-bearing; parity with music_output's frames_written/drops). Only
+        // present under shm_ring — byte-identical observability to today under
+        // loopback.
+        if let Some(ring) = &self.coupling.ring {
+            buf.push(',');
+            buf.push_str(r#""ring":{"#);
+            push_kv_str(&mut buf, "path", &ring.path);
+            buf.push(',');
+            push_kv_u64(&mut buf, "slots", ring.slots as u64);
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "occupancy",
+                ring.occupancy.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "published",
+                ring.published.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "full_waits",
+                ring.full_waits.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(&mut buf, "drops", ring.drops.load(Ordering::Relaxed));
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "mirror_frames",
+                ring.mirror_frames.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "mirror_drops",
+                ring.mirror_drops.load(Ordering::Relaxed),
             );
             buf.push('}');
         }
@@ -654,6 +980,39 @@ impl StateServer {
         buf.push('}');
         buf.push(',');
 
+        // tap object (C4) — always present. The impulse tap over the USB DIRECT
+        // ingress: armed state, per-arm counters, the live threshold/refractory,
+        // the JSONL path. `armed:false` (the default) is the byte-stable shape
+        // for the common case. Rendered from the bridge's `status_fragment`
+        // verbatim so the two surfaces agree.
+        let tap_cfg = {
+            let guard = self
+                .tap_config
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.clone()
+        };
+        buf.push_str(r#""tap":"#);
+        buf.push_str(&self.tap.status_fragment(&tap_cfg));
+        buf.push(',');
+
+        // host_clock object (C7) — always present, additive. In combo mode
+        // (JASPER_FANIN_USB_DIRECT + JASPER_FANIN_HOST_CLOCK) fan-in owns the
+        // gadget capture and drives the host-slaved USB clock, so this is the
+        // combo-box analogue of usbsink's state.json host_clock block (solo
+        // mode). Rendered verbatim from the fragment the `fanin-host-clock`
+        // thread publishes each tick; the disabled block (enabled:false) when
+        // the feature is off, so the top-level key is byte-stable either way.
+        buf.push_str(r#""host_clock":"#);
+        {
+            let guard = self
+                .host_clock_fragment
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            buf.push_str(&guard);
+        }
+        buf.push(',');
+
         // watchdog object
         buf.push_str(r#""watchdog":{"#);
         push_kv_u64(&mut buf, "pings_sent", self.heartbeat.pings_sent());
@@ -669,6 +1028,28 @@ impl StateServer {
 
         buf.push('}');
         buf
+    }
+}
+
+// ---- tap helpers -----------------------------------------------------
+
+/// Truncate (or create) the tap JSONL artifact under its tmpfs dir on arm, so
+/// the reply reflects a clean slate. The writer thread holds the append handle
+/// after this; here we only create the parent + zero the file. Mirrors the
+/// bridge's `truncate_tap_file`.
+fn truncate_tap_file(path: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, b"")
+}
+
+/// Wall-clock ms since the epoch — used only for the tap's observability-only
+/// `auto_disarm_at_epoch_ms` (enforcement uses the writer's monotonic clock).
+fn epoch_millis() -> u64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_millis() as u64,
+        Err(_) => 0,
     }
 }
 
@@ -753,16 +1134,23 @@ mod tests {
                 InputSnapshotSource {
                     label: "spotify".to_string(),
                     pcm_name: "hw:Loopback,1,0".to_string(),
+                    // Ordinary aloop lane → source:"lane", no direct block.
+                    is_direct: false,
+                    direct: None,
                     frames_read: Arc::new(AtomicU64::new(12345)),
                     xrun_count: Arc::new(AtomicU64::new(0)),
                     catchup_resync_frames: Arc::new(AtomicU64::new(0)),
                     catchup_events: Arc::new(AtomicU64::new(0)),
                     // No resampler armed on this lane (the default).
                     resampler: None,
+                    // Never-trimmed lane: all counters 0, no pending request.
+                    trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
                 },
                 InputSnapshotSource {
                     label: "airplay".to_string(),
                     pcm_name: "hw:Loopback,1,1".to_string(),
+                    is_direct: false,
+                    direct: None,
                     frames_read: Arc::new(AtomicU64::new(0)),
                     xrun_count: Arc::new(AtomicU64::new(2)),
                     catchup_resync_frames: Arc::new(AtomicU64::new(1536)),
@@ -785,6 +1173,42 @@ mod tests {
                         fill_frames: Arc::new(AtomicU64::new(520)),
                         target_fill_frames: 512,
                     }),
+                    // A lane that HAS been trimmed (fixture): 3 trims, 4608 frames
+                    // dropped total, no request currently pending.
+                    trim: Arc::new(TrimControl::test_fixture(3, 4608, false)),
+                },
+                InputSnapshotSource {
+                    // A USB DIRECT lane fixture (source:"direct" + a direct{}
+                    // block). Its audio comes from hw:UAC2Gadget, not an aloop
+                    // substream (pcm name kept for parity with the label).
+                    label: "usbsink".to_string(),
+                    pcm_name: "hw:Loopback,1,3".to_string(),
+                    is_direct: true,
+                    direct: Some(DirectObservability {
+                        device: "hw:UAC2Gadget".to_string(),
+                        present: Arc::new(AtomicBool::new(true)),
+                        opens: Arc::new(AtomicU64::new(1)),
+                        retries: Arc::new(AtomicU64::new(0)),
+                    }),
+                    frames_read: Arc::new(AtomicU64::new(96000)),
+                    xrun_count: Arc::new(AtomicU64::new(0)),
+                    catchup_resync_frames: Arc::new(AtomicU64::new(0)),
+                    catchup_events: Arc::new(AtomicU64::new(0)),
+                    // Direct lanes always own a resampler; a minimal armed fixture.
+                    resampler: Some(LaneResamplerObservability {
+                        armed: true,
+                        locked: Arc::new(AtomicBool::new(true)),
+                        input_frames: Arc::new(AtomicU64::new(96000)),
+                        output_frames: Arc::new(AtomicU64::new(95900)),
+                        silence_frames: Arc::new(AtomicU64::new(0)),
+                        overrun_frames: Arc::new(AtomicU64::new(0)),
+                        ratio_milli_ppm: Arc::new(AtomicU64::new(0)),
+                        lock_count: Arc::new(AtomicU64::new(1)),
+                        unlock_count: Arc::new(AtomicU64::new(0)),
+                        fill_frames: Arc::new(AtomicU64::new(2048)),
+                        target_fill_frames: 2048,
+                    }),
+                    trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
                 },
             ],
             output_pcm: "hw:Loopback,0,7".to_string(),
@@ -794,6 +1218,7 @@ mod tests {
             coupling: CouplingObservability {
                 transport: "loopback",
                 pipe: None,
+                ring: None,
             },
             music_output_pcm: Some("hw:Loopback,0,6".to_string()),
             music_frames_written: Arc::new(AtomicU64::new(54321)),
@@ -805,6 +1230,15 @@ mod tests {
             input_buffer_frames: 4096,
             output_buffer_frames: 2048,
             tts_metrics: Some(TtsMetrics::new(96_000)),
+            tap: Arc::new(TapState::default()),
+            tap_config: Arc::new(Mutex::new(TapConfig::default())),
+            tap_sample_rate: 48_000,
+            // The disabled host-clock fragment — the common (feature-off) shape
+            // STATUS always carries. `crate::host_clock::initial_fragment` on a
+            // disabled config renders exactly this.
+            host_clock_fragment: Arc::new(Mutex::new(crate::host_clock::initial_fragment(
+                crate::host_clock::build_config(false, 300, 6, 2048),
+            ))),
         }
     }
 
@@ -819,6 +1253,27 @@ mod tests {
                 reopen_count: Arc::new(AtomicU64::new(2)),
                 dropped_periods: Arc::new(AtomicU64::new(7)),
                 actual_pipe_bytes: Arc::new(AtomicU64::new(8192)),
+            }),
+            ring: None,
+        };
+        server
+    }
+
+    fn make_ring_test_server() -> StateServer {
+        use crate::mixer::RingObservability;
+        let mut server = make_test_server();
+        server.coupling = CouplingObservability {
+            transport: "shm_ring",
+            pipe: None,
+            ring: Some(RingObservability {
+                path: "/dev/shm/jts-ring/program.ring".to_string(),
+                slots: 8,
+                occupancy: Arc::new(AtomicU64::new(6)),
+                published: Arc::new(AtomicU64::new(12345)),
+                full_waits: Arc::new(AtomicU64::new(9)),
+                drops: Arc::new(AtomicU64::new(4)),
+                mirror_frames: Arc::new(AtomicU64::new(7654)),
+                mirror_drops: Arc::new(AtomicU64::new(2)),
             }),
         };
         server
@@ -845,6 +1300,50 @@ mod tests {
                 j,
             );
         }
+    }
+
+    #[test]
+    fn snapshot_json_always_carries_host_clock_block() {
+        // C7: the combo-mode host-clock block is a top-level, always-present
+        // sibling of `tap` — the disabled block when the feature is off, so the
+        // key is byte-stable. It must parse as valid JSON (the fragment is
+        // rendered by the shared crate; here we prove the fold-in is well-formed
+        // and the disabled default shows through).
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        assert!(
+            j.contains(r#""host_clock":{"#),
+            "STATUS must always carry a top-level host_clock block: {j}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
+        let hc = &parsed["host_clock"];
+        assert_eq!(
+            hc["enabled"].as_bool(),
+            Some(false),
+            "disabled fixture ⇒ enabled:false"
+        );
+        assert_eq!(hc["ladder"].as_str(), Some("disabled"));
+        assert!(hc["probe"]["response_ratio"].is_null());
+        // Sibling of tap, not nested inside it.
+        assert!(parsed["tap"].is_object());
+    }
+
+    #[test]
+    fn snapshot_json_embeds_an_enabled_host_clock_fragment_verbatim() {
+        // When the host-clock thread publishes an armed fragment, STATUS embeds
+        // it verbatim (the state-server only READS the shared string). Simulate
+        // by swapping the fragment for an armed-config render.
+        let mut server = make_test_server();
+        server.host_clock_fragment = Arc::new(Mutex::new(crate::host_clock::initial_fragment(
+            crate::host_clock::build_config(true, 300, 6, 2048),
+        )));
+        let j = server.snapshot_json();
+        let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
+        assert_eq!(
+            parsed["host_clock"]["enabled"].as_bool(),
+            Some(true),
+            "an armed fragment shows through verbatim: {j}"
+        );
     }
 
     #[test]
@@ -906,12 +1405,13 @@ mod tests {
             j.contains(r#""lock_count":1"#),
             "missing resampler lock_count: {j}"
         );
-        // EXACTLY one resampler block — the spotify lane (None) must NOT render
-        // one, keeping the default STATUS shape unchanged for unarmed lanes.
+        // TWO resampler blocks — the airplay fixture and the direct usbsink
+        // lane both carry one; the spotify lane (None) must NOT, keeping the
+        // default STATUS shape unchanged for unarmed lanes.
         assert_eq!(
             j.matches(r#""resampler":{"#).count(),
-            1,
-            "only the armed lane may render a resampler block: {j}"
+            2,
+            "only the armed lanes may render a resampler block: {j}"
         );
     }
 
@@ -971,6 +1471,56 @@ mod tests {
         assert!(
             j.contains(r#""dropped_periods":7"#),
             "missing dropped_periods: {j}"
+        );
+        // transport_pipe carries NO ring block.
+        assert!(
+            !j.contains(r#""ring":{"#),
+            "transport_pipe must emit no ring block: {j}"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_shm_ring_reports_ring_observability() {
+        // shm_ring: transport + the shared ring counter block.
+        let server = make_ring_test_server();
+        let j = server.snapshot_json();
+        assert!(
+            j.contains(r#""transport":"shm_ring""#),
+            "missing transport: {j}"
+        );
+        assert!(j.contains(r#""ring":{"#), "missing ring block: {j}");
+        assert!(
+            j.contains(r#""path":"/dev/shm/jts-ring/program.ring""#),
+            "missing ring path: {j}"
+        );
+        assert!(j.contains(r#""slots":8"#), "missing slots: {j}");
+        assert!(j.contains(r#""occupancy":6"#), "missing occupancy: {j}");
+        assert!(j.contains(r#""published":12345"#), "missing published: {j}");
+        assert!(j.contains(r#""full_waits":9"#), "missing full_waits: {j}");
+        assert!(j.contains(r#""drops":4"#), "missing drops: {j}");
+        assert!(
+            j.contains(r#""mirror_frames":7654"#),
+            "missing mirror_frames: {j}"
+        );
+        assert!(
+            j.contains(r#""mirror_drops":2"#),
+            "missing mirror_drops: {j}"
+        );
+        // shm_ring carries NO pipe block.
+        assert!(
+            !j.contains(r#""pipe":{"#),
+            "shm_ring must emit no pipe block: {j}"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_loopback_has_no_ring_block() {
+        // Default coupling emits neither pipe nor ring — byte-identical to today.
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        assert!(
+            !j.contains(r#""ring":{"#),
+            "loopback must emit no ring block: {j}"
         );
     }
 
@@ -1098,5 +1648,317 @@ mod tests {
         assert_eq!(escape_json("plain"), "plain");
         assert_eq!(escape_json(r#"a"b"#), r#"a\"b"#);
         assert_eq!(escape_json("a\nb"), "a\\nb");
+    }
+
+    // ---- TRIM STATUS shape ------------------------------------------------
+
+    #[test]
+    fn snapshot_json_per_input_trim_block() {
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        // Every lane renders a flat trim block (like the catch-up counters):
+        // spotify, airplay, and the direct usbsink lane → three.
+        assert_eq!(
+            j.matches(r#""trim":{"#).count(),
+            3,
+            "each lane must render exactly one trim block: {j}"
+        );
+        // spotify fixture: never trimmed.
+        assert!(
+            j.contains(r#""trim":{"trims":0,"trimmed_frames":0,"pending":false}"#),
+            "spotify trim block (never trimmed): {j}"
+        );
+        // airplay fixture: 3 trims, 4608 frames dropped.
+        assert!(
+            j.contains(r#""trim":{"trims":3,"trimmed_frames":4608,"pending":false}"#),
+            "airplay trim block (fixture): {j}"
+        );
+    }
+
+    // ---- TRIM command parse + dispatch ------------------------------------
+
+    #[test]
+    fn trim_command_rejects_empty_label() {
+        let server = make_test_server();
+        let resp = server.trim_command(Some(""));
+        assert_eq!(resp, "ERR missing input label");
+    }
+
+    #[test]
+    fn trim_command_rejects_unknown_label() {
+        let server = make_test_server();
+        let resp = server.trim_command(Some("bluetooth"));
+        assert_eq!(resp, "ERR unknown input label bluetooth");
+        // No flag armed on any lane.
+        for inp in &server.inputs {
+            assert!(!inp.trim.pending.load(Ordering::Acquire));
+        }
+    }
+
+    #[test]
+    fn trim_command_labeled_arms_only_the_target_and_reports_delta() {
+        // Run trim_command on a background thread and service the mixer work
+        // loop from THIS (main) thread. Inverting the roles removes the
+        // scheduler race a background servicer had against trim_command's
+        // TRIM_WAIT_TIMEOUT: under heavy CI parallelism a freshly-spawned
+        // servicer could be starved past the 200 ms wall-clock bound (the flag
+        // was serviced correctly but too late), a real starvation race, not a
+        // logic bug. The test thread is already running, so it services the
+        // armed flag the instant trim_command sets it and the reply always
+        // lands. The trimmed_frames write happens-before the pending release,
+        // so trim_command's Acquire load of the cleared flag sees the counter.
+        let server = std::sync::Arc::new(make_test_server());
+        let caller = std::sync::Arc::clone(&server);
+        let handle = std::thread::spawn(move || caller.trim_command(Some("airplay")));
+        // airplay is index 1. Service its flag as soon as trim_command arms it.
+        let airplay = &server.inputs[1];
+        loop {
+            if airplay.trim.pending.load(Ordering::Acquire) {
+                airplay
+                    .trim
+                    .trimmed_frames
+                    .fetch_add(1024, Ordering::Relaxed);
+                airplay.trim.pending.store(false, Ordering::Release);
+                break;
+            }
+            if handle.is_finished() {
+                break;
+            }
+            std::hint::spin_loop();
+        }
+        let resp = handle.join().unwrap();
+        assert_eq!(resp, "OK trimmed=1024", "got: {resp}");
+        // spotify (index 0) was never armed.
+        assert!(!server.inputs[0].trim.pending.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn trim_command_all_arms_every_lane_and_sums_delta() {
+        // See the sibling labeled test: trim_command runs on a background thread
+        // and the main (test) thread services EVERY lane's armed flag inline, so
+        // the servicing can never be starved past trim_command's 200 ms
+        // TRIM_WAIT_TIMEOUT on a contended CI runner. `trim_command(None)` arms
+        // every lane, so this must service all of them — `done` is sized to the
+        // real lane count (3: spotify/airplay/usbsink), not a hardcoded 2. Each
+        // lane gets a distinct amount (512 >> i) so the summed delta is
+        // unambiguous: 512 + 256 + 128 = 896.
+        let server = std::sync::Arc::new(make_test_server());
+        let caller = std::sync::Arc::clone(&server);
+        let handle = std::thread::spawn(move || caller.trim_command(None));
+        let mut done = vec![false; server.inputs.len()];
+        let mut expected: u64 = 0;
+        loop {
+            for (i, inp) in server.inputs.iter().enumerate() {
+                if !done[i] && inp.trim.pending.load(Ordering::Acquire) {
+                    let amount = 512u64 >> i;
+                    inp.trim.trimmed_frames.fetch_add(amount, Ordering::Relaxed);
+                    inp.trim.pending.store(false, Ordering::Release);
+                    done[i] = true;
+                    expected += amount;
+                }
+            }
+            if done.iter().all(|d| *d) || handle.is_finished() {
+                break;
+            }
+            std::hint::spin_loop();
+        }
+        let resp = handle.join().unwrap();
+        assert_eq!(resp, format!("OK trimmed={expected}"), "got: {resp}");
+    }
+
+    #[test]
+    fn trim_command_times_out_when_loop_never_services() {
+        // No work loop consumes the flag: bounded wait elapses, honest ERR.
+        let server = make_test_server();
+        let resp = server.trim_command(Some("spotify"));
+        assert!(
+            resp.starts_with("ERR trim not serviced within"),
+            "got: {resp}"
+        );
+        assert!(resp.contains("dropped_so_far=0"), "got: {resp}");
+    }
+
+    #[test]
+    fn trim_command_via_handle_connection_replies_plaintext() {
+        // Exercise the full socket dispatch for `TRIM <label>`: the reply is the
+        // plain-text OK/ERR line, not a JSON snapshot.
+        use std::io::{Read, Write};
+        use std::net::Shutdown;
+        use std::os::unix::net::UnixStream;
+
+        let server = make_test_server();
+        let (mut client, server_stream) = UnixStream::pair().unwrap();
+        client.write_all(b"TRIM spotify\n").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        // No work loop here, so spotify's flag never clears -> timeout ERR.
+        server.handle_connection(server_stream).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(
+            response.starts_with("ERR trim not serviced within"),
+            "got: {response}"
+        );
+    }
+
+    // ---- C7: source + direct{} STATUS shape --------------------------------
+
+    #[test]
+    fn snapshot_json_source_field_on_every_input() {
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        // Every lane carries a source; exactly one is "direct" (the usbsink
+        // fixture), the other two are "lane".
+        assert_eq!(
+            j.matches(r#""source":"lane""#).count(),
+            2,
+            "spotify + airplay must be source:lane: {j}"
+        );
+        assert_eq!(
+            j.matches(r#""source":"direct""#).count(),
+            1,
+            "only the usbsink lane is source:direct: {j}"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_direct_block_present_only_on_the_direct_lane() {
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        assert_eq!(
+            j.matches(r#""direct":{"#).count(),
+            1,
+            "only the direct lane renders a direct block: {j}"
+        );
+        assert!(
+            j.contains(r#""device":"hw:UAC2Gadget""#),
+            "direct block must name the gadget device: {j}"
+        );
+        assert!(j.contains(r#""present":true"#), "direct present flag: {j}");
+        assert!(j.contains(r#""opens":1"#), "direct opens counter: {j}");
+        assert!(j.contains(r#""retries":0"#), "direct retries counter: {j}");
+        // The whole document still parses.
+        let parsed: serde_json::Value = serde_json::from_str(&j).unwrap();
+        let inputs = parsed["inputs"].as_array().unwrap();
+        let direct = inputs.iter().find(|i| i["label"] == "usbsink").unwrap();
+        assert_eq!(direct["source"].as_str(), Some("direct"));
+        assert_eq!(direct["direct"]["present"].as_bool(), Some(true));
+        // A non-direct lane has no direct block.
+        let spotify = inputs.iter().find(|i| i["label"] == "spotify").unwrap();
+        assert!(spotify.get("direct").is_none());
+        assert_eq!(spotify["source"].as_str(), Some("lane"));
+    }
+
+    // ---- C4: top-level tap{} fragment + TAP_ARM / TAP_DISARM ---------------
+
+    #[test]
+    fn snapshot_json_tap_fragment_always_present_and_disarmed_by_default() {
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        assert!(
+            j.contains(r#""tap":{"#),
+            "tap fragment must be present: {j}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&j).unwrap();
+        assert_eq!(parsed["tap"]["armed"].as_bool(), Some(false));
+        assert_eq!(parsed["tap"]["events_written"].as_u64(), Some(0));
+        assert_eq!(
+            parsed["tap"]["path"].as_str(),
+            Some("/run/jasper-fanin/impulse-tap.jsonl")
+        );
+    }
+
+    #[test]
+    fn tap_arm_command_arms_and_reports_path() {
+        let server = make_test_server();
+        // Use a tmp path inside a real dir so the synchronous truncate succeeds
+        // in the test sandbox (the arm-body path constraint is /run/jasper-fanin
+        // only, which the test env may not have — so we assert the OK/ERR shape
+        // via the default path when the dir exists, else the ERR path).
+        let resp = server.tap_arm_command(r#"{"threshold":0.2,"refractory_ms":250}"#);
+        // Either the file truncated (OK armed) or the dir was absent (ERR cannot
+        // open path) — both are valid plaintext replies; assert the shape.
+        assert!(
+            resp.starts_with("OK armed path=") || resp.starts_with("ERR cannot open path"),
+            "unexpected arm reply: {resp}"
+        );
+        if resp.starts_with("OK armed") {
+            // On success the tap is armed and STATUS reflects it.
+            assert!(server.tap.armed());
+            let parsed: serde_json::Value = serde_json::from_str(&server.snapshot_json()).unwrap();
+            assert_eq!(parsed["tap"]["armed"].as_bool(), Some(true));
+            assert!((parsed["tap"]["threshold"].as_f64().unwrap() - 0.2).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn tap_arm_command_rejects_bad_params() {
+        let server = make_test_server();
+        // A zero threshold is rejected by from_arm_body -> ERR, never arms.
+        let resp = server.tap_arm_command(r#"{"threshold":0}"#);
+        assert_eq!(resp, "ERR bad arm params");
+        assert!(!server.tap.armed());
+        // A path outside /run/jasper-fanin is rejected too.
+        let resp = server.tap_arm_command(r#"{"path":"/etc/passwd"}"#);
+        assert_eq!(resp, "ERR bad arm params");
+        assert!(!server.tap.armed());
+    }
+
+    #[test]
+    fn tap_disarm_command_reports_counters_and_is_idempotent() {
+        let server = make_test_server();
+        // Arm directly (bypassing the file truncate) then disarm.
+        server
+            .tap
+            .arm(&TapConfig::default(), server.tap_sample_rate, 0);
+        server.tap.note_written();
+        server.tap.note_written();
+        server.tap.note_dropped();
+        let resp = server.tap_disarm_command();
+        assert_eq!(resp, "OK disarmed events_written=2 events_dropped=1");
+        assert!(!server.tap.armed());
+        // Idempotent — a second disarm still replies OK with the counters intact.
+        let resp = server.tap_disarm_command();
+        assert_eq!(resp, "OK disarmed events_written=2 events_dropped=1");
+    }
+
+    #[test]
+    fn tap_verbs_via_handle_connection_reply_plaintext() {
+        use std::io::{Read, Write};
+        use std::net::Shutdown;
+        use std::os::unix::net::UnixStream;
+
+        let server = make_test_server();
+        // TAP_DISARM over the socket → plaintext OK line (not a JSON snapshot).
+        let (mut client, server_stream) = UnixStream::pair().unwrap();
+        client.write_all(b"TAP_DISARM\n").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        server.handle_connection(server_stream).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("OK disarmed"), "got: {response}");
+    }
+
+    /// Pin the fan-in reserved tap basenames against the config defaults they
+    /// mirror: control.sock / tts.sock / camilla.pipe all live under
+    /// /run/jasper-fanin, and a TAP_ARM must be rejected at each. If a config
+    /// default's basename ever changes, this fails loudly (the same
+    /// cross-constant discipline the usbsink crate uses for its own files).
+    #[test]
+    fn reserved_tap_basenames_match_fanin_socket_defaults() {
+        use crate::impulse_tap::{path_is_allowed, RESERVED_TAP_DIR_BASENAMES, TAP_PATH_DIR};
+        // The config defaults (control_socket_path / tts_socket_path /
+        // camilla_pipe_path) all resolve under TAP_PATH_DIR with these basenames.
+        for basename in ["control.sock", "tts.sock", "camilla.pipe"] {
+            let path = std::path::Path::new(TAP_PATH_DIR).join(basename);
+            assert!(
+                RESERVED_TAP_DIR_BASENAMES.contains(&basename),
+                "{basename} must be reserved"
+            );
+            assert!(
+                !path_is_allowed(&path),
+                "TAP_ARM must reject fan-in's own file {}",
+                path.display()
+            );
+        }
     }
 }

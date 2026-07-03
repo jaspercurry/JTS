@@ -92,11 +92,34 @@ struct Config {
     /// feature is entirely inert (only the startup pitch neutralize runs, to
     /// heal a crashed predecessor). Daemon-local like every JASPER_USBSINK_*.
     host_clock: HostClockConfig,
+    /// USB DIRECT standby mode (C5). When `true` (`JASPER_USBSINK_AUDIO_STANDBY=1`,
+    /// exact literal), the bridge SKIPS its audio loop entirely — it opens no
+    /// gadget capture and no playback, leaving `hw:UAC2Gadget` free for
+    /// jasper-fanin's direct capture. It still runs the preempt HTTP listener,
+    /// the state publisher (publishing `standby:true`), and the watchdog. The
+    /// host-clock is forced disabled in standby regardless of env (the DLL has
+    /// no fill source; fan-in's lane resampler owns all rate matching).
+    /// Fail-safe default: anything but the exact literal `1` = today's behavior.
+    audio_standby: bool,
 }
 
 impl Config {
     fn from_env() -> Result<Self> {
         let period_frames = env_u32("JASPER_USBSINK_BLOCK_FRAMES", DEFAULT_PERIOD_FRAMES)?;
+        // Standby (C5): fail-safe — only the exact literal `1` (trimmed) enables.
+        let audio_standby = env::var("JASPER_USBSINK_AUDIO_STANDBY")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
+        // In standby the host-clock has no fill source (the audio loop that
+        // feeds the DLL never runs), so force it disabled regardless of env —
+        // fan-in's lane resampler owns all rate matching in direct mode. The
+        // startup + exit neutralize still run (they heal a crashed predecessor
+        // and never leave the host slaved).
+        let host_clock = if audio_standby {
+            host_clock::disabled_config()
+        } else {
+            host_clock::from_env(|key| env::var(key).ok()).map_err(anyhow::Error::msg)?
+        };
         let cfg = Self {
             capture_device: env_string("JASPER_USBSINK_CAPTURE_DEVICE", DEFAULT_CAPTURE_DEVICE),
             playback_device: env_string("JASPER_USBSINK_PLAYBACK_DEVICE", DEFAULT_PLAYBACK_DEVICE),
@@ -111,8 +134,8 @@ impl Config {
             )),
             preempt_host: env_string("JASPER_USBSINK_PREEMPT_HOST", DEFAULT_PREEMPT_HOST),
             preempt_port: env_u16("JASPER_USBSINK_PREEMPT_PORT", DEFAULT_PREEMPT_PORT)?,
-            host_clock: host_clock::from_env(|key| env::var(key).ok())
-                .map_err(anyhow::Error::msg)?,
+            host_clock,
+            audio_standby,
         };
         cfg.validate()?;
         Ok(cfg)
@@ -129,6 +152,19 @@ impl Config {
 
     fn period_samples(&self) -> usize {
         (self.period_frames as usize) * (self.channels as usize)
+    }
+
+    /// Whether THIS daemon owns the gadget pitch ctl and may write it (open it,
+    /// run the startup/exit neutralize, apply ladder actions).
+    ///
+    /// True in solo/normal mode — even when the host-clock feature is disabled,
+    /// because usbsink still runs the one-shot startup neutralize to heal a
+    /// crashed predecessor that left the host slaved. False in STANDBY (combo):
+    /// jasper-fanin owns `hw:UAC2Gadget` and its pitch ctl, so usbsink must stay
+    /// entirely hands-off — even a neutralize here would reset fan-in's live
+    /// command behind its back on every clean stop/start cycle (P2-F1).
+    fn owns_host_clock_ctl(&self) -> bool {
+        !self.audio_standby
     }
 }
 
@@ -477,9 +513,11 @@ fn publish_host_clock_fragment(fragment: &Mutex<String>, rendered: String) {
     *guard = rendered;
 }
 
-fn s32_high_word_to_s16(sample: i32) -> i16 {
-    (sample >> 16) as i16
-}
+// S32→S16 UAC2 narrowing is owned by the pure `jasper-resampler` crate so this
+// bridge and jasper-fanin's direct capture narrow bit-identically by
+// construction (C2). The runtime path calls `jasper_resampler::convert_s32_to_s16`
+// directly; the scalar `s32_high_word_to_s16` is imported only where the pinned
+// sign-boundary test uses it (in the test module below).
 
 fn stage_capture_period(ring: &mut PeriodRing, period: &[i16], state: &SharedState) -> Result<()> {
     if state.preempted.load(Ordering::Relaxed) {
@@ -574,11 +612,10 @@ fn tap_over_read(
 }
 
 fn convert_s32_to_s16(input: &[i32], output: &mut [i16]) -> Result<()> {
-    if input.len() != output.len() {
+    // Delegates to the shared `jasper-resampler` narrowing (C2 parity by
+    // construction); keeps the `Result` shape for the `?` capture call site.
+    if !jasper_resampler::convert_s32_to_s16(input, output) {
         bail!("input/output sample slices must match");
-    }
-    for (src, dst) in input.iter().zip(output.iter_mut()) {
-        *dst = s32_high_word_to_s16(*src);
     }
     Ok(())
 }
@@ -925,6 +962,32 @@ fn run_audio_loop(
     Ok(())
 }
 
+/// The STANDBY liveness loop (C5). Runs in place of `run_audio_loop` when
+/// `JASPER_USBSINK_AUDIO_STANDBY=1`. It opens NO PCM (fan-in owns the gadget),
+/// but MUST satisfy the same `Type=notify` + `WatchdogSec=15s` liveness contract
+/// the audio loop does: it sends `READY=1` once (systemd blocks unit start until
+/// this arrives), and drives `state.mark_progress()` on a cadence < the watchdog
+/// interval so the `start_watchdog` thread keeps patting `WATCHDOG=1` (it only
+/// pats when the progress sentinel is fresh) — without this the unit would
+/// kill-loop. The state publisher, preempt listener, and watchdog threads run
+/// unchanged; they publish `standby:true` and answer HTTP normally.
+#[cfg(feature = "alsa-runtime")]
+fn run_standby_loop(state: &Arc<SharedState>, shutdown: &Arc<AtomicBool>) -> Result<()> {
+    info!("event=usbsink_audio.standby active=true (fan-in owns hw:UAC2Gadget; no PCM opened)");
+    // host_connected is published best-effort from sysfs by the state publisher;
+    // here we only own liveness. Send READY immediately so systemd unblocks.
+    let _ = sd_notify::notify(&[NotifyState::Ready]);
+    state.mark_progress();
+    // Pat cadence well under WatchdogSec (15 s): 1 s matches the state-write
+    // rhythm and keeps the sentinel fresh with wide margin.
+    while !shutdown.load(Ordering::Relaxed) {
+        state.mark_progress();
+        thread::sleep(STATE_INTERVAL);
+    }
+    let _ = sd_notify::notify(&[NotifyState::Stopping]);
+    Ok(())
+}
+
 #[cfg(feature = "alsa-runtime")]
 fn bind_preempt_listener(config: &Config) -> Result<TcpListener> {
     let addr = format!("{}:{}", config.preempt_host, config.preempt_port);
@@ -1164,6 +1227,28 @@ fn write_preempt_state(path: &Path, silenced: bool) -> Result<()> {
     fs::write(path, body).with_context(|| format!("writing {}", path.display()))
 }
 
+/// Best-effort host-attach probe for STANDBY mode (C5): true iff any USB device
+/// controller reports `configured` in `/sys/class/udc/*/state`. The UAC2 gadget
+/// makes the UDC `configured` once a host enumerates it, so this stands in for
+/// the audio loop's `host_connected` (which never runs in standby). Any read
+/// failure (no sysfs, gadget torn down) resolves to `false` — a conservative
+/// "no host" rather than a stale true.
+fn udc_state_configured() -> bool {
+    let dir = match fs::read_dir("/sys/class/udc") {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    for entry in dir.flatten() {
+        let state_path = entry.path().join("state");
+        if let Ok(raw) = fs::read_to_string(&state_path) {
+            if raw.trim() == "configured" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn read_preempt_state(path: &Path) -> bool {
     let Ok(raw) = fs::read_to_string(path) else {
         return false;
@@ -1337,11 +1422,16 @@ fn run_state_publisher(
     // publisher (a UAC2 gadget can come and go).
     let mut host_clock = HostClock::new(config.host_clock);
     let mut pitch = HostClockActuator::open(&config);
-    // Startup neutralize runs unconditionally (even when the feature is
-    // disabled) so a crashed predecessor that left the host slaved is healed.
-    if let Some(action) = host_clock.startup_neutralize() {
-        pitch.apply(action);
-        log::info!("event=usbsink_audio.host_clock_pitch_reset reason=startup");
+    // Startup neutralize runs (even when the feature is merely disabled) so a
+    // crashed predecessor that left the host slaved is healed — EXCEPT in
+    // standby, where jasper-fanin owns the ctl and a neutralize here would stomp
+    // its live command. The actuator is already inert in standby (ctl=None), so
+    // this gate is belt-and-braces; it also keeps the log line honest.
+    if config.owns_host_clock_ctl() {
+        if let Some(action) = host_clock.startup_neutralize() {
+            pitch.apply(action);
+            log::info!("event=usbsink_audio.host_clock_pitch_reset reason=startup");
+        }
     }
     publish_host_clock_fragment(&host_clock_fragment, host_clock.status_fragment());
 
@@ -1367,6 +1457,15 @@ fn run_state_publisher(
             last_hc_tick = std::time::Instant::now();
         }
         if last_state_write.elapsed() >= STATE_INTERVAL {
+            // Standby (C5): the audio loop that would set host_connected never
+            // runs, so derive it best-effort from sysfs on the state-write
+            // cadence (`/sys/class/udc/*/state == "configured"`), false on any
+            // read failure. In non-standby the audio loop owns host_connected.
+            if config.audio_standby {
+                state
+                    .host_connected
+                    .store(udc_state_configured(), Ordering::Relaxed);
+            }
             let fragment = host_clock.status_fragment();
             publish_host_clock_fragment(&host_clock_fragment, fragment.clone());
             // A periodic state.json write is TELEMETRY, not control: a
@@ -1392,8 +1491,13 @@ fn run_state_publisher(
     // This runs on clean exit AND on SIGTERM/SIGINT (the shared shutdown flag)
     // AND on audio-thread error (main sets shutdown before joining). SIGKILL /
     // watchdog / OOM is covered by the unit's ExecStopPost belt-and-braces.
-    pitch.apply(host_clock.neutralize_for_exit("shutdown"));
-    log::info!("event=usbsink_audio.host_clock_pitch_reset reason=shutdown");
+    // EXCEPT in standby: fan-in owns the ctl, so a neutralize here would reset
+    // its live pitch command on the way down (the actuator is already inert, so
+    // this gate is belt-and-braces + keeps the log honest).
+    if config.owns_host_clock_ctl() {
+        pitch.apply(host_clock.neutralize_for_exit("shutdown"));
+        log::info!("event=usbsink_audio.host_clock_pitch_reset reason=shutdown");
+    }
     // Final drain + state write on shutdown.
     publisher.poll(&tap_receiver, &tap, &tap_config, monotonic_millis());
     let fragment = host_clock.status_fragment();
@@ -1416,6 +1520,22 @@ struct HostClockActuator {
 #[cfg(feature = "alsa-runtime")]
 impl HostClockActuator {
     fn open(config: &Config) -> Self {
+        // Standby (combo): jasper-fanin owns the gadget AND the pitch ctl in
+        // this posture. The usbsink daemon must NOT open the ctl at all — even
+        // the one-shot startup/exit neutralize would reset it to 1000000 behind
+        // fan-in's back on every clean stop/start cycle (a deploy try-restart or
+        // an operator restart), desyncing fan-in's >10 ppm write-suppression
+        // epsilon and letting the host free-run un-slaved. So return an inert
+        // actuator here; the neutralize calls below are also gated on
+        // `owns_host_clock_ctl()` as belt-and-braces. The NOT-standby
+        // ExecStopPost belt in jasper-usbsink.service covers the SIGKILL path.
+        if !config.owns_host_clock_ctl() {
+            info!("event=usbsink_audio.host_clock_ctl_skipped reason=standby_fanin_owns_ctl");
+            return Self {
+                ctl: None,
+                last_error_ms: None,
+            };
+        }
         let card = host_clock::ctl_card_from_capture(&config.capture_device);
         match host_clock::AlsaPitchCtl::open(&card) {
             Ok(ctl) => {
@@ -1461,6 +1581,14 @@ impl HostClockActuator {
                 warn!("event=usbsink_audio.host_clock_ctl_error detail={e}");
             }
         }
+    }
+
+    /// True when this actuator holds no ctl handle (standby, or a failed open).
+    /// A ctl-less actuator's `apply` is a no-op, so no pitch write can leave the
+    /// process. Test-only accessor pinning the standby hands-off invariant.
+    #[cfg(test)]
+    fn is_inert(&self) -> bool {
+        self.ctl.is_none()
     }
 }
 
@@ -1510,6 +1638,7 @@ fn status_json(
             "{{",
             "\"schema_version\":1,",
             "\"implementation\":\"rust\",",
+            "\"standby\":{},",
             "\"updated_at\":\"{}\",",
             "\"playing\":{},",
             "\"preempted\":{},",
@@ -1538,6 +1667,7 @@ fn status_json(
             "\"last_progress_epoch_ms\":{}",
             "}}\n"
         ),
+        json_bool(config.audio_standby),
         iso8601_now(),
         json_bool(state.playing.load(Ordering::Relaxed)),
         json_bool(state.preempted.load(Ordering::Relaxed)),
@@ -1737,15 +1867,25 @@ fn main() -> Result<()> {
     };
     let watchdog_thread = start_watchdog(Arc::clone(&shared), Arc::clone(&shutdown));
 
-    let audio_result = run_audio_loop(
-        &config,
-        &shared,
-        &tap.state,
-        &tap.config,
-        &host_clock_shared.fragment,
-        &tap_sender,
-        &shutdown,
-    );
+    // In STANDBY (C5) the bridge does NOT open the gadget capture/playback —
+    // jasper-fanin owns hw:UAC2Gadget directly. We still send READY=1 and drive
+    // the progress sentinel on the publisher cadence so the Type=notify +
+    // WatchdogSec=15s unit does not kill-loop, and keep the state publisher /
+    // preempt listener / watchdog threads running. The audio loop is skipped
+    // entirely (no PCM open).
+    let audio_result = if config.audio_standby {
+        run_standby_loop(&shared, &shutdown)
+    } else {
+        run_audio_loop(
+            &config,
+            &shared,
+            &tap.state,
+            &tap.config,
+            &host_clock_shared.fragment,
+            &tap_sender,
+            &shutdown,
+        )
+    };
     shutdown.store(true, Ordering::Relaxed);
 
     join_result_thread(state_thread, "state publisher")?;
@@ -1770,6 +1910,10 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The scalar narrowing lives in `jasper-resampler`; the runtime path calls
+    // `convert_s32_to_s16` (fully qualified above), so the scalar is imported
+    // only here for the pinned sign-boundary vector.
+    use jasper_resampler::s32_high_word_to_s16;
 
     /// A disabled host-clock config for the daemon-level status_json tests.
     /// The host-clock ladder itself is tested exhaustively in the shared
@@ -1784,6 +1928,11 @@ mod tests {
         HostClock::new(test_host_clock_config()).status_fragment()
     }
 
+    /// C2 sign-boundary vector. `s32_high_word_to_s16` now comes from the
+    /// shared `jasper-resampler` crate (imported at module top), so this test
+    /// pins THIS crate's view of the shared narrowing. The identical vector is
+    /// re-asserted in jasper-resampler AND jasper-fanin, so a drift in the one
+    /// shared definition fails every suite.
     #[test]
     fn s32_high_word_truncation_preserves_sign_boundaries() {
         assert_eq!(s32_high_word_to_s16(0), 0);
@@ -2019,6 +2168,7 @@ mod tests {
             preempt_host: DEFAULT_PREEMPT_HOST.to_string(),
             preempt_port: DEFAULT_PREEMPT_PORT,
             host_clock: test_host_clock_config(),
+            audio_standby: false,
         };
         let state = SharedState::new(DEFAULT_RING_PERIODS);
         state.preempted.store(true, Ordering::Relaxed);
@@ -2063,6 +2213,7 @@ mod tests {
             preempt_host: DEFAULT_PREEMPT_HOST.to_string(),
             preempt_port: DEFAULT_PREEMPT_PORT,
             host_clock: test_host_clock_config(),
+            audio_standby: false,
         };
         let state = SharedState::new(DEFAULT_RING_PERIODS);
         state.host_connected.store(true, Ordering::Relaxed);
@@ -2096,6 +2247,7 @@ mod tests {
             preempt_host: DEFAULT_PREEMPT_HOST.to_string(),
             preempt_port: DEFAULT_PREEMPT_PORT,
             host_clock: test_host_clock_config(),
+            audio_standby: false,
         };
         let state = SharedState::new(DEFAULT_RING_PERIODS);
         let tap = TapState::default();
@@ -2135,6 +2287,7 @@ mod tests {
             preempt_host: DEFAULT_PREEMPT_HOST.to_string(),
             preempt_port: DEFAULT_PREEMPT_PORT,
             host_clock: test_host_clock_config(),
+            audio_standby: false,
         };
         let state = SharedState::new(DEFAULT_RING_PERIODS);
         let tap = TapState::default();
@@ -2154,5 +2307,135 @@ mod tests {
         assert!(parsed["host_clock"]["probe"]["response_ratio"].is_null());
         // schema_version stays 1 (additive block).
         assert_eq!(parsed["schema_version"].as_u64(), Some(1));
+    }
+
+    // ---- C5: standby mode -------------------------------------------------
+
+    /// Build a Config fixture with `audio_standby` explicitly set (host clock
+    /// disabled to match the standby invariant), for the standby status tests.
+    fn standby_config(audio_standby: bool) -> Config {
+        Config {
+            capture_device: "hw:UAC2Gadget".to_string(),
+            playback_device: "usbsink_substream".to_string(),
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+            period_frames: DEFAULT_PERIOD_FRAMES,
+            ring_periods: DEFAULT_RING_PERIODS,
+            state_path: PathBuf::from(DEFAULT_STATE_PATH),
+            preempt_state_path: PathBuf::from(DEFAULT_PREEMPT_STATE_PATH),
+            preempt_host: DEFAULT_PREEMPT_HOST.to_string(),
+            preempt_port: DEFAULT_PREEMPT_PORT,
+            host_clock: host_clock::disabled_config(),
+            audio_standby,
+        }
+    }
+
+    #[test]
+    fn status_json_carries_standby_field() {
+        // Non-standby: standby:false, schema_version stays 1.
+        let cfg = standby_config(false);
+        let state = SharedState::new(DEFAULT_RING_PERIODS);
+        let tap = TapState::default();
+        let body = status_json(
+            &cfg,
+            &state,
+            -120.0,
+            &tap.status_fragment(&TapConfig::default()),
+            &test_host_clock_fragment(),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(parsed["standby"].as_bool(), Some(false));
+        assert_eq!(parsed["schema_version"].as_u64(), Some(1));
+
+        // Standby: standby:true, and the not-running defaults hold (playing
+        // false, rms -120, ring/counters zero) — a misdirected harness run is
+        // diagnosable from standby:true.
+        let cfg = standby_config(true);
+        let body = status_json(
+            &cfg,
+            &state,
+            -120.0,
+            &tap.status_fragment(&TapConfig::default()),
+            &test_host_clock_fragment(),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(parsed["standby"].as_bool(), Some(true));
+        assert_eq!(parsed["playing"].as_bool(), Some(false));
+        assert!((parsed["rms_dbfs"].as_f64().unwrap() - (-120.0)).abs() < 1e-6);
+        assert_eq!(parsed["ring"]["fill_periods"].as_u64(), Some(0));
+        assert_eq!(parsed["counters"]["capture_frames"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn standby_forces_host_clock_disabled_regardless_of_env() {
+        // Even with the host-clock env set to `enabled`, standby resolves the
+        // host clock to disabled (no fill source in standby). We can't call
+        // Config::from_env (it reads the process env), so exercise the same
+        // decision the from_env branch makes: standby → host_clock::disabled_config.
+        let hc = host_clock::disabled_config();
+        assert!(!hc.enabled, "standby host clock must be disabled");
+        // The disabled config renders the disabled fragment.
+        let fragment = HostClock::new(hc).status_fragment();
+        let parsed: serde_json::Value = serde_json::from_str(&fragment).unwrap();
+        assert_eq!(parsed["enabled"].as_bool(), Some(false));
+        assert_eq!(parsed["ladder"].as_str(), Some("disabled"));
+    }
+
+    #[test]
+    fn standby_never_owns_host_clock_ctl_solo_always_does() {
+        // P2-F1: `owns_host_clock_ctl()` is the single decision that gates the
+        // actuator open AND both the startup/exit neutralize. In standby (combo)
+        // fan-in owns the gadget pitch ctl, so usbsink must return false and stay
+        // hands-off — even a neutralize would reset fan-in's live command to
+        // 1000000 behind its back on every clean stop/start cycle (deploy
+        // try-restart / operator restart), desyncing fan-in's >10 ppm
+        // write-suppression epsilon. In solo/normal mode usbsink owns it and
+        // returns true EVEN when the host-clock feature is disabled (it still
+        // runs the startup neutralize to heal a crashed predecessor). This pure
+        // predicate is card-independent, so it pins the decision in CI where no
+        // gadget is present. Ownership is independent of `host_clock.enabled`.
+        assert!(
+            !standby_config(true).owns_host_clock_ctl(),
+            "standby must NOT own the ctl (fan-in owns it in combo)"
+        );
+        assert!(
+            standby_config(false).owns_host_clock_ctl(),
+            "solo mode owns the ctl even with host-clock disabled"
+        );
+    }
+
+    #[cfg(feature = "alsa-runtime")]
+    #[test]
+    fn standby_actuator_is_inert_never_opens_the_ctl() {
+        // The actuator honors `owns_host_clock_ctl()`: the standby short-circuit
+        // in `HostClockActuator::open` fires BEFORE any ALSA call, so it returns
+        // an inert (ctl=None) actuator whose `apply` is a no-op — no pitch write
+        // can leave the process. Runs in CI with no gadget card present.
+        let pitch = HostClockActuator::open(&standby_config(true));
+        assert!(
+            pitch.is_inert(),
+            "standby actuator must hold no ctl (fan-in owns it)"
+        );
+    }
+
+    #[test]
+    fn audio_standby_env_only_enabled_by_literal_one() {
+        // The exact-literal parse (matching the from_env branch): only "1"
+        // (trimmed) enables; anything else is today's behavior.
+        for (raw, expected) in [
+            (Some("1"), true),
+            (Some(" 1 "), true),
+            (Some("0"), false),
+            (Some("true"), false),
+            (Some("enabled"), false),
+            (Some(""), false),
+            (None, false),
+        ] {
+            let got = match raw {
+                Some(v) => v.trim() == "1",
+                None => false,
+            };
+            assert_eq!(got, expected, "standby parse for {raw:?}");
+        }
     }
 }

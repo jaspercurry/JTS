@@ -255,6 +255,19 @@ def _audio_graph_state(
                 if isinstance(fanin_usbsink, dict)
                 else None
             ),
+            # Combo-mode host-slaved USB clock (fan-in owns the gadget capture
+            # under JASPER_FANIN_USB_DIRECT + JASPER_FANIN_HOST_CLOCK). fan-in
+            # STATUS carries a top-level `host_clock` block byte-identical to
+            # usbsink's solo-mode block, so combo boxes get the same /state
+            # ladder/DLL/probe telemetry solo boxes get from usbsink. `None` when
+            # the fan-in STATUS is unavailable or has no host_clock key (pre-combo
+            # build) — a definite "no evidence" rather than a guessed default.
+            # See docs/HANDOFF-usb-low-latency.md "USB DIRECT (combo mode)".
+            "host_clock": (
+                fanin_status.get("host_clock")
+                if isinstance(fanin_status, dict)
+                else None
+            ),
         },
         "outputd": {
             "dac_delay_ms": (

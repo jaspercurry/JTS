@@ -19,11 +19,16 @@ anyhow = "1"
 # (feature-gated) ALSA pitch actuator. The pure ladder/servo compiles under
 # `--no-default-features` (no ALSA); the real `AlsaPitchCtl` is behind the
 # crate's `alsa` feature, enabled here only under this crate's `alsa-runtime`
-# (see [features]). The crate owns the `jasper-clock` DLL primitive now, so this
-# daemon no longer depends on `jasper-clock` directly. fan-in consumes the SAME
-# crate for combo mode, so the two daemons share byte-identical servo semantics
-# by construction.
+# (see [features]). fan-in consumes the SAME crate for combo mode, so the two
+# daemons share byte-identical servo semantics by construction.
 jasper-host-clock = { path = "../jasper-host-clock" }
+# The ONE shared S32→S16 UAC2 narrowing (this crate also holds the windowed-sinc
+# resampler jasper-fanin uses for the direct lane). Pure, no ALSA — compiles
+# under `--no-default-features` on a macOS host. Consuming
+# `s32_high_word_to_s16` / `convert_s32_to_s16` from here (rather than a local
+# copy) makes the bridge's narrowing bit-identical to jasper-fanin's
+# direct-capture narrowing by construction (C2).
+jasper-resampler = { path = "../jasper-resampler" }
 libc = "0.2"
 log = "0.4"
 env_logger = "0.11"

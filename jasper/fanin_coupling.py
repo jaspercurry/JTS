@@ -87,8 +87,15 @@ def resolve_coupling(raw: str | None) -> str:
     Fail-SAFE to ``loopback`` (the byte-identical-to-today path) on unset, empty,
     or any unrecognized value — a typo in the env file must never silently flip
     the shared realtime capture to a transport the operator did not intend, nor
-    crash a config emit. The Rust daemon applies the same normalization so both
-    sides agree. Case-insensitive; surrounding whitespace ignored.
+    crash a config emit. The Rust daemon applies the same normalization for the
+    tokens both sides recognize. Case-insensitive; surrounding whitespace ignored.
+
+    Stacked-train note: on THIS branch the Rust mixer already recognizes the
+    experimental ``shm_ring`` token while Python does not — an operator setting
+    the (undocumented, ring-consumer-only) value here on a fan-in-platform-only
+    build fails safe to ``loopback`` rather than matching Rust. The ring
+    consumers PR adds ``shm_ring`` to :data:`_VALID_COUPLINGS`, at which point
+    both sides agree on every token again.
     """
     if raw is None:
         return COUPLING_LOOPBACK

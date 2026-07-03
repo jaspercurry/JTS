@@ -60,6 +60,30 @@ async def test_usbsink_playing_reads_false_explicit(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_usbsink_playing_tolerates_additive_standby_field(tmp_path):
+    """C5: the Rust bridge in standby mode writes an additive top-level
+    `standby: true` field (schema_version stays 1). The consumer must ignore
+    the extra key and still read `playing` — in standby the bridge always writes
+    playing:false (no audio loop), so the source reads not-playing."""
+    p = tmp_path / "state.json"
+    p.write_text(json.dumps({
+        "schema_version": 1,
+        "standby": True,
+        "playing": False,
+        "preempted": False,
+        "host_connected": True,   # sysfs-derived in standby
+        "rms_dbfs": -120.0,
+        "updated_at": "2026-07-02T00:00:00+00:00",
+    }))
+    assert await usbsink_playing(str(p)) is False
+    # A non-standby state with the field present-and-false parses identically.
+    p.write_text(json.dumps({
+        "schema_version": 1, "standby": False, "playing": True,
+    }))
+    assert await usbsink_playing(str(p)) is True
+
+
+@pytest.mark.asyncio
 async def test_usbsink_playing_malformed_json_returns_false(tmp_path):
     """Partial write or corruption — return False (fail-soft)."""
     p = tmp_path / "state.json"

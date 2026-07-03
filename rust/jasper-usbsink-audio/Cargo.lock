@@ -204,6 +204,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "jasper-resampler"
+version = "0.1.0"
+dependencies = [
+ "jasper-clock",
+]
+
+[[package]]
 name = "jasper-usbsink-audio"
 version = "0.1.0"
 dependencies = [
@@ -211,6 +218,7 @@ dependencies = [
  "anyhow",
  "env_logger",
  "jasper-host-clock",
+ "jasper-resampler",
  "libc",
  "log",
  "sd-notify",

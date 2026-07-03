@@ -18,6 +18,22 @@ use anyhow::{Context, Result};
 
 use crate::loudness::AssistantLoudnessConfig;
 
+/// The SHM ring's pinned slot size in frames (Ring A). Matches the outputd
+/// DAC-period contract and the ring header geometry; fan-in publishes
+/// `period_frames / RING_SLOT_FRAMES` slots per mixer step. Kept in lockstep by
+/// value (not import) with the ring's 128-frame slots — the `period_frames %
+/// RING_SLOT_FRAMES == 0` config guard is the drift catch.
+pub const RING_SLOT_FRAMES: u32 = 128;
+
+/// The ring's `n_slots` bounds (Ring A). Mirrors `jasper_ring::MIN_N_SLOTS` /
+/// `MAX_N_SLOTS`; the ring header validates the same range at attach. A present
+/// out-of-range value FAILS LOUD here (`Config::from_env` bails) — Python's
+/// `fanin_coupling.resolve_ring_slots` raises on the same range, so the two
+/// normalizers agree on the drift axis (unset => default 8; out-of-range =>
+/// error on BOTH sides, never a silent clamp).
+pub const RING_SLOTS_MIN: u32 = 2;
+pub const RING_SLOTS_MAX: u32 = 16;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// ALSA PCM name (or `hw:Card,Dev,Sub`) for the summed output.
@@ -114,10 +130,13 @@ pub struct Config {
     /// CamillaDSP dsnoop-captures it — byte-identical to the pre-coupling
     /// daemon. `TransportPipe` writes a bounded named pipe
     /// (`camilla_pipe_path`) instead, which CamillaDSP RawFile-captures as the
-    /// first half of the end-to-end DAC-paced pipe topology. The Python config
+    /// first half of the end-to-end DAC-paced pipe topology. `ShmRing` (Ring A,
+    /// PROTOTYPE) publishes an SPSC ping-pong SHM ring (`ring_path`, `ring_slots`)
+    /// that CamillaDSP reads via a capture-direction ioplug. The Python config
     /// generator (`jasper.fanin_coupling`) is the cross-language source of truth;
     /// this normalization MUST agree with `resolve_coupling` there.
-    /// Env: `JASPER_FANIN_CAMILLA_COUPLING` (`loopback` | `transport_pipe`).
+    /// Env: `JASPER_FANIN_CAMILLA_COUPLING` (`loopback` | `transport_pipe` |
+    /// `shm_ring`).
     pub camilla_coupling: Coupling,
 
     /// The shared-capture named pipe written under `Coupling::TransportPipe`.
@@ -131,6 +150,26 @@ pub struct Config {
     /// it is the named-pipe equivalent of the snd-aloop output ring depth.
     /// Env: `JASPER_FANIN_CAMILLA_PIPE_BYTES`. Swept during the soak.
     pub camilla_pipe_bytes: u32,
+
+    /// The SPSC SHM ring file written under `Coupling::ShmRing` (Ring A). Unused
+    /// for `Loopback`/`TransportPipe`. Default `/dev/shm/jts-ring/program.ring`
+    /// (the owned tmpfs root, so a magic-invalid file is reclaimable). Env:
+    /// `JASPER_FANIN_RING_PATH`. Python `fanin_coupling.resolve_ring_path` uses
+    /// the same default.
+    pub ring_path: String,
+
+    /// The ring's slot count under `Coupling::ShmRing`. Buffer depth is
+    /// `ring_slots * 128` frames — the ONLY latency axis with slot_frames pinned
+    /// at 128 (the outputd DAC-period contract). Default 8 (1024 frames ≈
+    /// 21.3 ms, clearing camilla's negotiated capture buffer at chunksize 256);
+    /// a present value outside 2..=16 (the ring header's MIN/MAX) FAILS LOUD in
+    /// `Config::from_env` — NOT clamped. Env: `JASPER_FANIN_RING_SLOTS`. Python
+    /// `fanin_coupling.resolve_ring_slots` uses the same default and likewise
+    /// raises on the same range, so both normalizers agree on the drift axis. The
+    /// n_slots <-> JASPER_FANIN_RING_SLOTS pairing is the drift axis with the
+    /// ioplug conf.d geometry; the ring header's own validation is the runtime
+    /// fail-loud backstop.
+    pub ring_slots: u32,
 
     /// DEFAULT-OFF: arm the per-input adaptive resampler on the clock-crossing
     /// (USB) lane (`src/lane_resampler.rs`). When `false` (the default — env
@@ -184,17 +223,91 @@ pub struct Config {
     /// steady latency setpoint.
     /// Env: `JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES`.
     pub input_resampler_ring_frames: u32,
+    /// DEFAULT-OFF one-shot AUTO-TRIM (PoC standing-fill trim). When `true`, the
+    /// mixer schedules ONE `TRIM` per armed resampler lane a couple seconds
+    /// after that lane goes active, dropping the accumulated standing head-start
+    /// (the cursor-relative fill excess above the held target). Fail-safe: only
+    /// the exact literal `enabled` (case-insensitive) arms it. Env:
+    /// `JASPER_FANIN_AUTO_TRIM`. Manual `TRIM` over the control socket works
+    /// regardless of this flag.
+    pub auto_trim_enabled: bool,
+
+    /// DEFAULT-OFF USB DIRECT capture (PoC). When `true`, the lane labelled
+    /// `input_resampler_lane_label` (the usbsink lane) does NOT read its
+    /// snd-aloop substream; instead the mixer opens `usb_direct_device`
+    /// (`hw:UAC2Gadget`) as an S32_LE capture, narrows to S16, and feeds the
+    /// SAME `LaneResampler` — deleting the usbsink bridge hop + the aloop cable
+    /// (~25 ms measured) from the USB path. Direct mode IMPLIES a resampler on
+    /// that lane regardless of `input_resampler_enabled` (see
+    /// [`Config::lane_wants_resampler`]). Fail-safe: only the exact literal
+    /// `enabled` (case-insensitive) arms it; unset / empty / anything else stays
+    /// OFF (byte-identical to today's aloop-reading lane). HIGH-RISK real-time
+    /// path — keep OFF until validated on-device. Env:
+    /// `JASPER_FANIN_USB_DIRECT` (`enabled` to arm).
+    pub usb_direct_enabled: bool,
+
+    /// The ALSA capture device the USB DIRECT lane opens when `usb_direct_enabled`.
+    /// Default `hw:UAC2Gadget` (the UAC2 gadget card the usbsink bridge captures
+    /// today). Unused when direct is off. Env: `JASPER_FANIN_USB_DIRECT_DEVICE`.
+    pub usb_direct_device: String,
+
+    /// DEFAULT-OFF combo-mode host-slaved USB clock (`JASPER_FANIN_HOST_CLOCK`).
+    /// When `true` AND `usb_direct_enabled`, a dedicated `fanin-host-clock`
+    /// thread steers the gadget's `Capture Pitch 1000000` ctl so the host tracks
+    /// the DAC clock (the shared [`jasper_host_clock`] ladder, same servo the
+    /// usbsink bridge runs in solo mode). Fail-safe: only the exact literal
+    /// `enabled` (case-insensitive) arms it; any other non-empty value warns
+    /// once (`event=fanin.host_clock_config_ignored`) and stays OFF. Meaningful
+    /// ONLY with `usb_direct_enabled`: fan-in must own the gadget capture to own
+    /// the pitch ctl. `enabled` + direct-off resolves to a fully-inert warn (no
+    /// ctl writes ever) — in aloop mode the usbsink bridge owns the clock. Env:
+    /// `JASPER_FANIN_HOST_CLOCK` (`enabled` to arm).
+    pub host_clock_enabled: bool,
+
+    /// The commanded pitch step (in ppm) for the host-clock per-session
+    /// compliance probe. Default 300; fail-fast range 200..=800 — the floor
+    /// clears the ~163 ppm Windows usbaudio2.sys reaction deadband (a probe at
+    /// or below it would falsely fail every session), the ceiling keeps the
+    /// probe inside the ±1000 ppm validity window. Identical to usbsink's
+    /// `JASPER_USBSINK_HOST_CLOCK_PROBE_PPM`. Env:
+    /// `JASPER_FANIN_HOST_CLOCK_PROBE_PPM`. Unused when host-clock is off.
+    pub host_clock_probe_ppm: u32,
+
+    /// The host-clock probe's step-phase duration in seconds. Default 6;
+    /// fail-fast range 5..=10. A fixed 4 s neutral baseline runs first, so the
+    /// whole probe is `4 + this` seconds. Identical to usbsink's
+    /// `JASPER_USBSINK_HOST_CLOCK_PROBE_SECONDS`. Env:
+    /// `JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS`. Unused when host-clock is off.
+    pub host_clock_probe_secs: u64,
+}
+
+impl Config {
+    /// Whether the lane labelled `label` should be constructed with a
+    /// `LaneResampler`. True when EITHER the DEFAULT-OFF input resampler is
+    /// enabled OR USB direct capture is enabled — both steer the same lane
+    /// (`input_resampler_lane_label`) to the DAC clock, and direct capture has
+    /// no aloop catch-up fallback to reconcile the host↔DAC rate gap, so it
+    /// MUST own a resampler (C6). A label that doesn't match the resampler lane
+    /// never gets one.
+    pub fn lane_wants_resampler(&self, label: &str) -> bool {
+        (self.input_resampler_enabled || self.usb_direct_enabled)
+            && label == self.input_resampler_lane_label
+    }
 }
 
 /// fan-in → CamillaDSP coupling transport. Mirrors `jasper.fanin_coupling`'s
-/// `loopback` / `transport_pipe` selector. Fail-SAFE: an unset/unrecognized env value
-/// resolves to `Loopback` (the byte-identical-to-today path).
+/// `loopback` / `transport_pipe` / `shm_ring` selector. Fail-SAFE: an
+/// unset/unrecognized env value resolves to `Loopback` (the
+/// byte-identical-to-today path).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Coupling {
     /// ALSA snd-aloop substream output; CamillaDSP dsnoop-captures it. Default.
     Loopback,
     /// Bounded named-pipe output; CamillaDSP RawFile-captures it.
     TransportPipe,
+    /// SPSC ping-pong SHM ring output (Ring A, PROTOTYPE); CamillaDSP reads it
+    /// via a capture-direction ioplug.
+    ShmRing,
 }
 
 impl Coupling {
@@ -204,6 +317,7 @@ impl Coupling {
     fn from_env_value(raw: Option<&str>) -> Self {
         match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
             Some("transport_pipe") => Coupling::TransportPipe,
+            Some("shm_ring") => Coupling::ShmRing,
             _ => Coupling::Loopback,
         }
     }
@@ -294,6 +408,40 @@ impl Config {
         );
         let camilla_pipe_bytes = env_u32("JASPER_FANIN_CAMILLA_PIPE_BYTES", 8192)?;
 
+        // Ring A (shm_ring) knobs. Parsed unconditionally (sane defaults) but
+        // only USED under Coupling::ShmRing. Path default matches Python's
+        // resolve_ring_path; slots default 8, clamped to the ring header's
+        // 2..=16 range (RING_SLOTS_MIN/MAX) — a fail-loud out-of-range value is
+        // a config error, not a silent clamp, so a typo can't ship a geometry
+        // the ring header would reject at attach.
+        let ring_path = env_str("JASPER_FANIN_RING_PATH", "/dev/shm/jts-ring/program.ring");
+        let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 8)?;
+        if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {
+            anyhow::bail!(
+                "JASPER_FANIN_RING_SLOTS={} out of range {}..={} — the SHM ring \
+                 header validates this at attach; a shear-prone geometry must \
+                 fail loud at config, not at runtime",
+                ring_slots,
+                RING_SLOTS_MIN,
+                RING_SLOTS_MAX,
+            );
+        }
+        // The ring's slot is pinned at RING_SLOT_FRAMES (128, the outputd
+        // DAC-period contract): fan-in publishes period_frames/128 slots per
+        // step, so period_frames MUST be a whole multiple of 128 or a step would
+        // shear a slot. Fail LOUD at config (only when shm_ring is actually
+        // selected — an odd period under loopback/pipe is fine).
+        if camilla_coupling == Coupling::ShmRing && period_frames % RING_SLOT_FRAMES != 0 {
+            anyhow::bail!(
+                "JASPER_FANIN_PERIOD_FRAMES={} must be a whole multiple of the \
+                 pinned SHM ring slot size ({} frames) under \
+                 JASPER_FANIN_CAMILLA_COUPLING=shm_ring — a fractional slot count \
+                 would shear the ring",
+                period_frames,
+                RING_SLOT_FRAMES,
+            );
+        }
+
         // DEFAULT-OFF per-input adaptive resampler (clock-crossing/USB lane).
         // Fail-safe: only the exact literal `enabled` (case-insensitive) arms
         // it; unset / empty / anything else stays OFF (byte-identical to today).
@@ -319,6 +467,74 @@ impl Config {
         // 0 = derive a 2x burst ring from the lane's ALSA input buffer; a
         // non-zero value pins an explicit capacity.
         let input_resampler_ring_frames = env_u32("JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES", 0)?;
+
+        // DEFAULT-OFF one-shot AUTO-TRIM (PoC standing-fill trim). Fail-safe:
+        // only the exact literal `enabled` (case-insensitive) arms it; unset /
+        // empty / anything else stays OFF (byte-identical to today).
+        let auto_trim_enabled = matches!(
+            std::env::var("JASPER_FANIN_AUTO_TRIM")
+                .ok()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("enabled")
+        );
+
+        // DEFAULT-OFF USB DIRECT capture (PoC). Fail-safe: only the exact
+        // literal `enabled` (case-insensitive) arms it — same idiom as the
+        // resampler / auto-trim flags. Direct mode implies a resampler on the
+        // usbsink lane (see Config::lane_wants_resampler).
+        let usb_direct_enabled = matches!(
+            std::env::var("JASPER_FANIN_USB_DIRECT")
+                .ok()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("enabled")
+        );
+        let usb_direct_device = env_str("JASPER_FANIN_USB_DIRECT_DEVICE", "hw:UAC2Gadget");
+
+        // DEFAULT-OFF combo-mode host-slaved USB clock. Fail-safe: only the
+        // exact literal `enabled` (case-insensitive) arms it. Unlike the sibling
+        // flags above (which silently stay off on any other value), this one
+        // WARNS on a non-empty non-`enabled` value — mirroring the usbsink
+        // literal idiom (`JASPER_USBSINK_HOST_CLOCK`) so a typo like `on`/`1`
+        // leaves a breadcrumb rather than silently disabling a safety feature.
+        let host_clock_enabled = match std::env::var("JASPER_FANIN_HOST_CLOCK") {
+            Ok(raw) => {
+                let v = raw.trim();
+                if v.is_empty() {
+                    false
+                } else if v.eq_ignore_ascii_case("enabled") {
+                    true
+                } else {
+                    log::warn!(
+                        "event=fanin.host_clock_config_ignored key=JASPER_FANIN_HOST_CLOCK value={v:?} reason=not_literal_enabled"
+                    );
+                    false
+                }
+            }
+            Err(_) => false,
+        };
+        // Probe knobs — identical ranges/defaults to usbsink's so the two
+        // daemons share one servo contract. Fail-fast on out-of-range (the
+        // daemon's `validate_audio_config` idiom): a probe below the ~163 ppm
+        // Windows deadband would falsely fail every session.
+        let host_clock_probe_ppm = env_u32("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", 300)?;
+        if !(200..=800).contains(&host_clock_probe_ppm) {
+            anyhow::bail!(
+                "JASPER_FANIN_HOST_CLOCK_PROBE_PPM={} out of range 200..=800 (a probe \
+                 at/below the ~163 ppm Windows usbaudio2.sys deadband would falsely \
+                 fail every session; the ceiling keeps it inside the ±1000 ppm \
+                 validity window)",
+                host_clock_probe_ppm,
+            );
+        }
+        let host_clock_probe_secs = u64::from(env_u32("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS", 6)?);
+        if !(5..=10).contains(&host_clock_probe_secs) {
+            anyhow::bail!(
+                "JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS={} out of range 5..=10",
+                host_clock_probe_secs,
+            );
+        }
 
         let tts_program_duck_db =
             env_f32_fallback("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", "JASPER_DUCK_DB", -25.0)?;
@@ -382,12 +598,20 @@ impl Config {
             camilla_coupling,
             camilla_pipe_path,
             camilla_pipe_bytes,
+            ring_path,
+            ring_slots,
             input_resampler_enabled,
             input_resampler_lane_label,
             input_resampler_target_frames,
             input_resampler_max_adjust_ppm,
             input_resampler_warmup_cushion_frames,
             input_resampler_ring_frames,
+            auto_trim_enabled,
+            usb_direct_enabled,
+            usb_direct_device,
+            host_clock_enabled,
+            host_clock_probe_ppm,
+            host_clock_probe_secs,
         })
     }
 }
@@ -605,8 +829,36 @@ mod tests {
                 // buffer) unless pinned.
                 assert_eq!(cfg.input_resampler_warmup_cushion_frames, 2048);
                 assert_eq!(cfg.input_resampler_ring_frames, 0);
+                // One-shot AUTO-TRIM is DEFAULT-OFF (manual TRIM is the PoC
+                // path; auto is the opt-in convenience).
+                assert!(!cfg.auto_trim_enabled, "auto-trim must default OFF");
+                // USB DIRECT capture is DEFAULT-OFF; device defaults to the
+                // UAC2 gadget card.
+                assert!(!cfg.usb_direct_enabled, "usb-direct must default OFF");
+                assert_eq!(cfg.usb_direct_device, "hw:UAC2Gadget");
             },
         );
+    }
+
+    #[test]
+    fn auto_trim_only_armed_by_exact_enabled_literal() {
+        // Fail-safe: ONLY the literal `enabled` (case-insensitive) arms it.
+        for raw in ["enabled", "ENABLED", " Enabled "] {
+            with_env(&[("JASPER_FANIN_AUTO_TRIM", Some(raw))], || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(cfg.auto_trim_enabled, "{raw:?} should arm auto-trim");
+            });
+        }
+        // Anything else (including truthy-looking values) stays OFF.
+        for raw in ["", "1", "true", "on", "yes", "disabled", "garbage"] {
+            with_env(&[("JASPER_FANIN_AUTO_TRIM", Some(raw))], || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(
+                    !cfg.auto_trim_enabled,
+                    "{raw:?} must NOT arm auto-trim (only `enabled` does)"
+                );
+            });
+        }
     }
 
     #[test]
@@ -631,6 +883,110 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[test]
+    fn usb_direct_only_armed_by_exact_enabled_literal() {
+        // Fail-safe: ONLY the literal `enabled` (case-insensitive) arms it.
+        for raw in ["enabled", "ENABLED", " Enabled "] {
+            with_env(&[("JASPER_FANIN_USB_DIRECT", Some(raw))], || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(cfg.usb_direct_enabled, "{raw:?} should arm USB direct");
+            });
+        }
+        // Anything else (including truthy-looking values) stays OFF.
+        for raw in ["", "1", "true", "on", "yes", "disabled", "garbage"] {
+            with_env(&[("JASPER_FANIN_USB_DIRECT", Some(raw))], || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(
+                    !cfg.usb_direct_enabled,
+                    "{raw:?} must NOT arm USB direct (only `enabled` does)"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn usb_direct_device_default_and_override() {
+        // Default device is the UAC2 gadget card.
+        with_env(&[("JASPER_FANIN_USB_DIRECT_DEVICE", None)], || {
+            assert_eq!(
+                Config::from_env().unwrap().usb_direct_device,
+                "hw:UAC2Gadget"
+            );
+        });
+        with_env(
+            &[("JASPER_FANIN_USB_DIRECT_DEVICE", Some("hw:UAC2Gadget,0,0"))],
+            || {
+                assert_eq!(
+                    Config::from_env().unwrap().usb_direct_device,
+                    "hw:UAC2Gadget,0,0"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn usb_direct_default_off_is_inert() {
+        // Unset direct + unset resampler: neither is on, and the usbsink lane
+        // does NOT want a resampler (byte-identical to today).
+        with_env(
+            &[
+                ("JASPER_FANIN_USB_DIRECT", None),
+                ("JASPER_FANIN_INPUT_RESAMPLER", None),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert!(!cfg.usb_direct_enabled);
+                assert!(!cfg.input_resampler_enabled);
+                assert!(
+                    !cfg.lane_wants_resampler("usbsink"),
+                    "no resampler on any lane when both flags are off"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn usb_direct_implies_resampler_on_the_usbsink_lane() {
+        // Direct ON but the plain resampler flag OFF: the usbsink lane STILL
+        // wants a resampler (direct capture has no aloop catch-up fallback), and
+        // only that lane does.
+        with_env(
+            &[
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER", None),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert!(cfg.usb_direct_enabled);
+                assert!(!cfg.input_resampler_enabled);
+                assert!(
+                    cfg.lane_wants_resampler("usbsink"),
+                    "direct mode must imply a resampler on the usbsink lane"
+                );
+                assert!(
+                    !cfg.lane_wants_resampler("airplay"),
+                    "only the resampler lane label gets one"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn input_resampler_alone_still_wants_resampler_on_its_lane() {
+        // The pre-existing path: resampler flag on, direct off — the lane still
+        // wants a resampler (unchanged behavior).
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_USB_DIRECT", None),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert!(cfg.lane_wants_resampler("usbsink"));
+            },
+        );
     }
 
     #[test]
@@ -665,6 +1021,113 @@ mod tests {
             let cfg = Config::from_env().expect("disabled TTS socket must parse");
             assert_eq!(cfg.tts_socket_path, None);
         });
+    }
+
+    // ---- combo-mode host-slaved USB clock (C3) ----------------------------
+
+    #[test]
+    fn host_clock_only_armed_by_exact_enabled_literal() {
+        // Fail-safe: ONLY the literal `enabled` (case-insensitive) arms it.
+        for raw in ["enabled", "ENABLED", " Enabled "] {
+            with_env(&[("JASPER_FANIN_HOST_CLOCK", Some(raw))], || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(cfg.host_clock_enabled, "{raw:?} should arm host-clock");
+            });
+        }
+        // Anything else (including truthy-looking values) stays OFF, warned.
+        for raw in ["", "1", "true", "on", "yes", "disabled", "garbage"] {
+            with_env(&[("JASPER_FANIN_HOST_CLOCK", Some(raw))], || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(
+                    !cfg.host_clock_enabled,
+                    "{raw:?} must NOT arm host-clock (only `enabled` does)"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn host_clock_default_off_and_probe_defaults() {
+        with_env(
+            &[
+                ("JASPER_FANIN_HOST_CLOCK", None),
+                ("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", None),
+                ("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS", None),
+            ],
+            || {
+                let cfg = Config::from_env().expect("defaults must parse");
+                assert!(!cfg.host_clock_enabled, "host-clock defaults OFF");
+                // Identical defaults to usbsink's so the two servos share a
+                // contract.
+                assert_eq!(cfg.host_clock_probe_ppm, 300);
+                assert_eq!(cfg.host_clock_probe_secs, 6);
+            },
+        );
+    }
+
+    #[test]
+    fn host_clock_probe_ppm_range_fails_fast() {
+        // Below the 200 floor (the ~163 ppm Windows deadband) is rejected.
+        for bad in ["50", "100", "199", "801", "1200"] {
+            with_env(&[("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", Some(bad))], || {
+                let err = Config::from_env().expect_err("out-of-range probe ppm must error");
+                let msg = format!("{:#}", err);
+                assert!(
+                    msg.contains("JASPER_FANIN_HOST_CLOCK_PROBE_PPM"),
+                    "expected probe-ppm range error, got: {msg}"
+                );
+            });
+        }
+        // The floor (200) and ceiling (800) are accepted.
+        for ok in ["200", "300", "800"] {
+            with_env(&[("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", Some(ok))], || {
+                assert!(Config::from_env().is_ok(), "{ok} must be accepted");
+            });
+        }
+    }
+
+    #[test]
+    fn host_clock_probe_secs_range_fails_fast() {
+        for bad in ["3", "4", "11", "20"] {
+            with_env(
+                &[("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS", Some(bad))],
+                || {
+                    let err = Config::from_env().expect_err("out-of-range probe secs must error");
+                    let msg = format!("{:#}", err);
+                    assert!(
+                        msg.contains("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS"),
+                        "expected probe-secs range error, got: {msg}"
+                    );
+                },
+            );
+        }
+        for ok in ["5", "6", "10"] {
+            with_env(
+                &[("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS", Some(ok))],
+                || {
+                    assert!(Config::from_env().is_ok(), "{ok} must be accepted");
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn host_clock_enabled_without_direct_still_parses_the_intent() {
+        // The direct-off gate is a RUNTIME resolution in main (it warns
+        // `event=fanin.host_clock.noop reason=usb_direct_off` and never opens the
+        // ctl). Config only records the raw intent, so an enabled host-clock with
+        // direct off parses fine here — the inert resolution is main's job.
+        with_env(
+            &[
+                ("JASPER_FANIN_HOST_CLOCK", Some("enabled")),
+                ("JASPER_FANIN_USB_DIRECT", None),
+            ],
+            || {
+                let cfg = Config::from_env().expect("parses");
+                assert!(cfg.host_clock_enabled);
+                assert!(!cfg.usb_direct_enabled);
+            },
+        );
     }
 
     #[test]
@@ -954,6 +1417,122 @@ mod tests {
         assert_eq!(
             Coupling::from_env_value(Some("garbage")),
             Coupling::Loopback
+        );
+        // Ring A (shm_ring) token — must agree with Python's resolve_coupling.
+        assert_eq!(
+            Coupling::from_env_value(Some("shm_ring")),
+            Coupling::ShmRing
+        );
+        assert_eq!(
+            Coupling::from_env_value(Some(" SHM_RING ")),
+            Coupling::ShmRing
+        );
+        // A near-miss typo fails safe to loopback, never the shared ring.
+        assert_eq!(Coupling::from_env_value(Some("ring")), Coupling::Loopback);
+        assert_eq!(
+            Coupling::from_env_value(Some("shm-ring")),
+            Coupling::Loopback
+        );
+    }
+
+    #[test]
+    fn shm_ring_coupling_parses_with_ring_defaults() {
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                ("JASPER_FANIN_RING_PATH", None),
+                ("JASPER_FANIN_RING_SLOTS", None),
+            ],
+            || {
+                let cfg = Config::from_env().expect("shm_ring defaults must parse");
+                assert_eq!(cfg.camilla_coupling, Coupling::ShmRing);
+                assert_eq!(cfg.ring_path, "/dev/shm/jts-ring/program.ring");
+                assert_eq!(cfg.ring_slots, 8);
+                // Default period (256) is a multiple of the 128-frame slot.
+                assert_eq!(cfg.period_frames, 256);
+            },
+        );
+    }
+
+    #[test]
+    fn shm_ring_ring_path_and_slots_override() {
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                ("JASPER_FANIN_RING_PATH", Some("/dev/shm/jts-ring/lab.ring")),
+                ("JASPER_FANIN_RING_SLOTS", Some("16")),
+            ],
+            || {
+                let cfg = Config::from_env().expect("shm_ring overrides must parse");
+                assert_eq!(cfg.ring_path, "/dev/shm/jts-ring/lab.ring");
+                assert_eq!(cfg.ring_slots, 16);
+            },
+        );
+    }
+
+    #[test]
+    fn shm_ring_slots_out_of_range_fails_loud() {
+        for bad in ["1", "17", "0", "100"] {
+            with_env(
+                &[
+                    ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                    ("JASPER_FANIN_RING_SLOTS", Some(bad)),
+                ],
+                || {
+                    let err = Config::from_env().expect_err("out-of-range ring slots must error");
+                    let msg = format!("{:#}", err);
+                    assert!(
+                        msg.contains("JASPER_FANIN_RING_SLOTS"),
+                        "expected ring-slots range error, got: {}",
+                        msg,
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn shm_ring_period_must_be_multiple_of_slot_frames() {
+        // 200 is not a multiple of 128 -> shear -> fail loud, but ONLY under
+        // shm_ring (loopback/pipe tolerate any period).
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("200")),
+                // 200*2 = 400 >= 2*200 buffer floor, so the buffer guard passes
+                // and the slot-shear guard is what fires.
+                ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("4096")),
+                ("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", Some("1024")),
+            ],
+            || {
+                let err = Config::from_env()
+                    .expect_err("non-128-multiple period under shm_ring must error");
+                let msg = format!("{:#}", err);
+                assert!(
+                    msg.contains("multiple") && msg.contains("slot"),
+                    "expected slot-shear error, got: {}",
+                    msg,
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn non_shm_ring_tolerates_odd_period() {
+        // The 128-multiple guard is scoped to shm_ring: loopback with a
+        // non-128-multiple period must still parse (byte-identical to today).
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("loopback")),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("200")),
+                ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("4096")),
+                ("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", Some("1024")),
+            ],
+            || {
+                let cfg = Config::from_env().expect("loopback tolerates odd period");
+                assert_eq!(cfg.period_frames, 200);
+                assert_eq!(cfg.camilla_coupling, Coupling::Loopback);
+            },
         );
     }
 

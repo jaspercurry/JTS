@@ -142,11 +142,21 @@ build_install_rust_daemon() {
             "$(dirname "${cache_dir}")/jasper-resampler/"
         chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-resampler"
     fi
+    # Same for the shared SHM ring crate (jasper-ring) so jasper-fanin's
+    # `path = "../jasper-ring"` dep (the default-off SHM ring writer) resolves.
+    # Guarded by existence so a branch predating the crate still builds.
+    if [[ -d "${REPO_DIR}/rust/jasper-ring" ]]; then
+        rsync -a --delete \
+            --exclude='target/' \
+            "${REPO_DIR}/rust/jasper-ring/" \
+            "$(dirname "${cache_dir}")/jasper-ring/"
+        chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-ring"
+    fi
     # Same for the shared host-clock crate (jasper-host-clock) so the
-    # `path = "../jasper-host-clock"` dep of jasper-usbsink-audio (the Capture
-    # Pitch DLL extracted from the bridge) resolves. jasper-host-clock itself
-    # depends on `path = "../jasper-clock"`, staged above. Guarded by existence
-    # so a branch predating the crate still builds.
+    # `path = "../jasper-host-clock"` deps of jasper-usbsink-audio and
+    # jasper-fanin (the Capture Pitch DLL extracted from the bridge)
+    # resolve. Guarded by existence so a branch predating the crate still
+    # builds.
     if [[ -d "${REPO_DIR}/rust/jasper-host-clock" ]]; then
         rsync -a --delete \
             --exclude='target/' \
