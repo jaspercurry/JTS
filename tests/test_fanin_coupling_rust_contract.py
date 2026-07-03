@@ -369,17 +369,21 @@ def test_servo_thread_exit_clears_reverse_signals():
 
     The exit path (graceful shutdown OR caught panic) neutralizes the pitch ctl so
     the host free-runs. It must ALSO clear the outer-loop signals the mixer's decay
-    tick reads (`ladder_l0`, `commanded_milli_ppm`) — otherwise a dead thread
-    leaves `ladder_l0=true` frozen, and the decay engine keeps stepping the held
-    target toward the floor with no live DLL pinning the fill, driving the
-    thin-cushion free-run churn loop until a daemon restart. Both stores sit AFTER
-    the `catch_unwind` block so they run on both exit paths.
+    tick + compliance revalidation read (`ladder_l0`, `commanded_milli_ppm`, and —
+    since the host-compliance persistence landed — `ladder_l2`, `probe_result_code`,
+    `probe_response_ratio_milli`). Otherwise a dead thread leaves `ladder_l0=true`
+    frozen (driving the thin-cushion free-run churn loop) OR a stale `ladder_l2=true`
+    / probe FAIL that would make the compliance revalidation spuriously REVOKE a
+    proof for a session whose ladder was fine when the daemon was told to stop —
+    revocation must be driven only by a LIVE L2/probe-fail signal, not by the servo
+    shutting down. All stores sit AFTER the `catch_unwind` block so they run on both
+    exit paths.
     """
     host_clock_text = (
         _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_clock.rs"
     ).read_text(encoding="utf-8")
-    # The exit-neutralize block ends the thread body; both reverse-signal clears
-    # follow the actuator neutralize (so they run on graceful + caught-panic exit).
+    # The exit-neutralize block ends the thread body; every reverse-signal clear
+    # follows the actuator neutralize (so they run on graceful + caught-panic exit).
     exit_start = host_clock_text.index('neutralize_for_exit("shutdown")')
     exit_tail = host_clock_text[exit_start:]
     assert "signals.ladder_l0.store(false, Ordering::Relaxed)" in exit_tail, (
@@ -388,6 +392,22 @@ def test_servo_thread_exit_clears_reverse_signals():
     )
     assert "signals.commanded_milli_ppm.store(0, Ordering::Relaxed)" in exit_tail, (
         "servo-thread exit must clear commanded_milli_ppm"
+    )
+    # The three compliance-revalidation reverse signals must clear on exit too, so a
+    # stopped servo cannot leave a stale L2 / probe FAIL that revokes a good proof.
+    assert "signals.ladder_l2.store(false, Ordering::Relaxed)" in exit_tail, (
+        "servo-thread exit must clear ladder_l2 so a dead thread cannot leave the "
+        "compliance revalidation reading a stale l2=true (→ spurious revoke)"
+    )
+    assert "signals.probe_result_code.store(" in exit_tail, (
+        "servo-thread exit must clear probe_result_code (→ ProbeResult::None) so a "
+        "dead thread cannot leave a stale probe FAIL that revokes a good proof"
+    )
+    assert "ProbeResult::None" in exit_tail, (
+        "the probe_result_code clear must store the None verdict, not a stale value"
+    )
+    assert "signals.probe_response_ratio_milli.store(" in exit_tail, (
+        "servo-thread exit must clear probe_response_ratio_milli alongside the verdict"
     )
 
 

@@ -257,6 +257,17 @@ pub struct RevalidationSignals {
     /// `host_clock::probe_result_code`). A fresh probe FAIL is the strongest
     /// evidence the host is not honouring the pitch command.
     pub probe_result_code: u64,
+    /// Whether the `probe_result_code` was produced by a probe that ran DURING the
+    /// current lock (i.e. it is a LIVE verdict, not one carried over from a prior
+    /// session). The servo deliberately leaves `probe_result = Fail` across a
+    /// session boundary (`jasper_host_clock::end_session` only overwrites a verdict
+    /// that was actively measuring), so a fresh lock on a NEW, compliant host would
+    /// otherwise read the previous host's stale FAIL and spuriously revoke. A live
+    /// probe FAIL always coincides with the ladder sitting at L2 (the fail
+    /// transitions to `L2Fallback` and holds there until the idle boundary
+    /// re-promotes to `Probing`), so the mixer sets this from `ladder_l2`; a stale
+    /// FAIL sits in `Probing` with `ladder_l2 == false` and is ignored.
+    pub probe_verdict_is_live: bool,
     /// The DLL ladder demoted to L2 (probe-fail-into-L2 OR a mid-stream demotion).
     pub ladder_l2: bool,
     /// True while inside the early-revalidation window since the last lock (the
@@ -268,15 +279,19 @@ pub struct RevalidationSignals {
 }
 
 /// Decide whether a floor-primed session's revalidation FAILS this period, and if
-/// so, why. Ordering is by directness of evidence: a fresh probe FAIL first, then
-/// a live L2 demotion, then an early-window underfill unlock. Returns `None` when
-/// the session is still healthy. PURE — the mixer enacts the returned reason
+/// so, why. Ordering is by directness of evidence: a fresh (LIVE) probe FAIL first,
+/// then a live L2 demotion, then an early-window underfill unlock. Returns `None`
+/// when the session is still healthy. PURE — the mixer enacts the returned reason
 /// (snap-back + revoke); this only decides. `probe_fail` is the exact
 /// `host_clock::probe_result_code` FAIL value (2), kept a plain literal here so
 /// the pure module needs no dependency on the host_clock adapter.
+///
+/// The probe-FAIL trigger is gated on `probe_verdict_is_live` so a STALE FAIL left
+/// on the reverse signal from a prior session's non-compliant host cannot revoke a
+/// fresh lock on a new, compliant host before its own probe completes.
 pub fn compute_revoke_reason(s: RevalidationSignals) -> Option<RevokeReason> {
     const PROBE_RESULT_FAIL: u64 = 2;
-    if s.probe_result_code == PROBE_RESULT_FAIL {
+    if s.probe_result_code == PROBE_RESULT_FAIL && s.probe_verdict_is_live {
         Some(RevokeReason::ProbeFail)
     } else if s.ladder_l2 {
         Some(RevokeReason::DllDemotion)
@@ -284,6 +299,142 @@ pub fn compute_revoke_reason(s: RevalidationSignals) -> Option<RevokeReason> {
         Some(RevokeReason::EarlyUnlock)
     } else {
         None
+    }
+}
+
+/// The PURE lock-edge + revalidation tracker for a floor-primed session — the
+/// wiring the mixer runs once per render period around [`compute_revoke_reason`].
+/// Extracted from the mixer so the lock-edge bookkeeping (which is where the
+/// early-unlock trigger's reachability lives) is testable WITHOUT ALSA: a test can
+/// drive it with a real [`crate::lane_resampler::LaneResampler`]'s
+/// `is_locked()` / `unlock_count()` sequence and confirm a simulated underfill
+/// actually revokes.
+///
+/// The load-bearing ordering it encodes (the fix for the "early-unlock is dead
+/// code" defect):
+///  1. Read the rising (idle→lock) and falling (lock→underfill-unlock) edges from
+///     `was_locked` BEFORE mutating it.
+///  2. Run the revalidation against the PRE-reset baseline, treating the falling
+///     edge as inside the early window — because `unlock_for_underfill` sets
+///     `locked=false` in the same render period it bumps `unlock_count`, so the
+///     ONLY period that carries the churn evidence is the one where `locked` is
+///     already false. Gating `within_early_window` on `locked` alone (the original
+///     bug) made that period invisible and the trigger unreachable.
+///  3. THEN apply the lock-edge bookkeeping: a fresh lock re-arms the window,
+///     unlock baseline, and clears the per-lock revoke latch (so a re-proven
+///     session can revoke again — the latch is per-lock, not per-daemon-lifetime).
+#[derive(Debug, Clone)]
+pub struct RevalidationTracker {
+    /// This session's lane was primed at the floor from a valid persisted proof.
+    /// Only a floor-primed session runs the aggressive one-strike revalidation.
+    floor_primed: bool,
+    /// Revoked already since the most recent lock (revoke-at-most-once-per-lock).
+    /// Cleared on every fresh lock so a re-proven session can strike again.
+    revoked_this_lock: bool,
+    /// The early-revalidation window in render periods.
+    early_window_periods: u64,
+    /// Render periods since the most recent lock, capped at the early window + 1.
+    periods_since_lock: u64,
+    /// The resampler `unlock_count` at the most recent lock — the churn baseline.
+    unlock_baseline_at_lock: u64,
+    /// The resampler `locked` state observed last period (lock-edge detection).
+    was_locked: bool,
+}
+
+/// The tracker's decision for one render period: the revocation outcome plus the
+/// lock edges it observed, so the mixer can drive the pure proof machine's per-lock
+/// reset off the SAME edge detection (no duplicate `was_locked` bookkeeping).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RevalidationStep {
+    /// Revoke the persisted proof now (snap back + delete + observability), or not.
+    pub revoke: Option<RevokeReason>,
+    /// This period was the idle→lock rising edge (a fresh session begins).
+    pub rising_edge: bool,
+    /// This period was the lock→unlock falling edge (the session ends).
+    pub falling_edge: bool,
+}
+
+impl RevalidationTracker {
+    /// Build a tracker for a session. `floor_primed` reflects whether this lane
+    /// primed at the floor from a valid proof; `early_window_periods` is the
+    /// derived early-revalidation budget.
+    pub fn new(floor_primed: bool, early_window_periods: u64) -> Self {
+        Self {
+            floor_primed,
+            revoked_this_lock: false,
+            early_window_periods,
+            periods_since_lock: 0,
+            unlock_baseline_at_lock: 0,
+            was_locked: false,
+        }
+    }
+
+    /// True iff a revocation has already fired since the most recent lock. The
+    /// mixer relies on the `RevalidationStep::revoke` return to enact a revoke,
+    /// never this accessor, so it is gated `#[cfg(test)]` to stay out of the
+    /// `-D warnings` binary build (mirrors `ComplianceProof::written_this_session`).
+    #[cfg(test)]
+    pub fn revoked_this_lock(&self) -> bool {
+        self.revoked_this_lock
+    }
+
+    /// Advance one render period. Reads the live resampler lock/unlock state plus
+    /// the servo reverse signals, decides whether to revoke, and updates the
+    /// lock-edge bookkeeping. Returns the revoke decision plus the observed edges so
+    /// the mixer can drive the proof machine's per-lock reset off the same edges.
+    /// The mixer enacts a returned `revoke` (snap-back + file delete +
+    /// observability). Pure: no I/O, no clock.
+    pub fn step(
+        &mut self,
+        locked: bool,
+        unlock_count: u64,
+        probe_result_code: u64,
+        ladder_l2: bool,
+    ) -> RevalidationStep {
+        let rising_edge = locked && !self.was_locked;
+        let falling_edge = !locked && self.was_locked;
+
+        let mut revoke = None;
+        if self.floor_primed && !self.revoked_this_lock {
+            // The early window spans the primed lock's first `early_window_periods`
+            // render periods AND its immediate lock-loss period (the falling edge),
+            // where the underfill unlock that ended the lock lands.
+            let within_early_window =
+                (locked || falling_edge) && self.periods_since_lock <= self.early_window_periods;
+            revoke = compute_revoke_reason(RevalidationSignals {
+                probe_result_code,
+                // A LIVE probe FAIL always coincides with the ladder at L2; a stale
+                // carryover FAIL sits in Probing (`ladder_l2 == false`) and is
+                // ignored so a fresh lock on a new compliant host is not revoked on
+                // a previous host's verdict.
+                probe_verdict_is_live: ladder_l2,
+                ladder_l2,
+                within_early_window,
+                unlock_advanced: unlock_count > self.unlock_baseline_at_lock,
+            });
+            if revoke.is_some() {
+                self.revoked_this_lock = true;
+            }
+        }
+
+        // Lock-edge bookkeeping AFTER the revalidation read.
+        if rising_edge {
+            self.periods_since_lock = 0;
+            self.unlock_baseline_at_lock = unlock_count;
+            self.revoked_this_lock = false;
+        }
+        self.was_locked = locked;
+        if locked {
+            self.periods_since_lock = self
+                .periods_since_lock
+                .saturating_add(1)
+                .min(self.early_window_periods.saturating_add(1));
+        }
+        RevalidationStep {
+            revoke,
+            rising_edge,
+            falling_edge,
+        }
     }
 }
 
@@ -721,6 +872,7 @@ mod tests {
     fn healthy() -> RevalidationSignals {
         RevalidationSignals {
             probe_result_code: 1, // pass
+            probe_verdict_is_live: true,
             ladder_l2: false,
             within_early_window: true,
             unlock_advanced: false,
@@ -741,13 +893,41 @@ mod tests {
 
     #[test]
     fn compute_revoke_reason_probe_fail_takes_precedence() {
-        // A fresh probe FAIL (code 2) revokes as ProbeFail even if L2 is also set.
+        // A fresh (LIVE) probe FAIL (code 2) revokes as ProbeFail even if L2 is also
+        // set. A live probe fail always coincides with L2, so both are set here.
         let s = RevalidationSignals {
             probe_result_code: 2,
+            probe_verdict_is_live: true,
             ladder_l2: true,
             ..healthy()
         };
         assert_eq!(compute_revoke_reason(s), Some(RevokeReason::ProbeFail));
+    }
+
+    #[test]
+    fn compute_revoke_reason_ignores_stale_probe_fail() {
+        // A STALE probe FAIL (code 2) that was NOT produced during the current lock
+        // must not revoke: the servo leaves `probe_result=Fail` across a session
+        // boundary, and a fresh lock on a NEW compliant host would otherwise read
+        // that carryover and revoke before its own probe runs. `probe_verdict_is_live`
+        // is false (the ladder is back in Probing, `ladder_l2=false`), so no revoke.
+        let stale = RevalidationSignals {
+            probe_result_code: 2,
+            probe_verdict_is_live: false,
+            ladder_l2: false,
+            within_early_window: true,
+            unlock_advanced: false,
+        };
+        assert_eq!(compute_revoke_reason(stale), None);
+        // The SAME stale FAIL code, still not corroborated by L2, does not revoke
+        // even inside the early window with no unlock — nothing else fires.
+        assert_eq!(
+            compute_revoke_reason(RevalidationSignals {
+                unlock_advanced: false,
+                ..stale
+            }),
+            None
+        );
     }
 
     #[test]
@@ -818,5 +998,225 @@ mod tests {
         let mut p = ComplianceProof::new(0);
         // One clean period at floor writes immediately (clamp floor is 1).
         assert!(matches!(p.tick(floor_l0(0)), ProofOutcome::Write { .. }));
+    }
+
+    // ---- RevalidationTracker (lock-edge + one-strike wiring) ---------------
+
+    const EARLY_WINDOW: u64 = 20;
+
+    /// A locked healthy tick (probe passed, ladder L0, no churn).
+    fn ok_lock(unlock_count: u64) -> (bool, u64, u64, bool) {
+        // (locked, unlock_count, probe_code=pass, ladder_l2=false)
+        (true, unlock_count, 1, false)
+    }
+
+    #[test]
+    fn tracker_cold_session_never_revokes() {
+        // A NOT-floor-primed session has no persisted authority to distrust — even
+        // an underfill unlock inside the early window just re-earns the proof.
+        let mut t = RevalidationTracker::new(false, EARLY_WINDOW);
+        let (l, u, p, l2) = ok_lock(0);
+        assert_eq!(t.step(l, u, p, l2).revoke, None);
+        // Underfill unlock (falling edge, count advances): still no revoke — cold.
+        assert_eq!(t.step(false, 1, 1, false).revoke, None);
+    }
+
+    #[test]
+    fn tracker_early_underfill_unlock_revokes_on_the_falling_edge() {
+        // THE BLOCKER FIX: a floor-primed session that locks, then underfill-unlocks
+        // inside the early window, revokes as EarlyUnlock — even though the unlock is
+        // observed on the SAME period `locked` flips to false (the falling edge).
+        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
+        // Lock cleanly for a few periods (baseline unlock_count = 0).
+        for _ in 0..3 {
+            let (l, u, p, l2) = ok_lock(0);
+            assert_eq!(t.step(l, u, p, l2).revoke, None);
+        }
+        // Underfill: the resampler set locked=false AND bumped unlock_count in the
+        // same render period. The tracker must catch this falling-edge unlock.
+        let step = t.step(false, 1, 1, false);
+        assert_eq!(
+            step.revoke,
+            Some(RevokeReason::EarlyUnlock),
+            "a floor-primed early underfill unlock must revoke on the falling edge"
+        );
+        assert!(step.falling_edge);
+        assert!(t.revoked_this_lock());
+    }
+
+    #[test]
+    fn tracker_underfill_after_early_window_does_not_revoke() {
+        // Past the early window, a single underfill unlock is ordinary transient
+        // churn (the probe already ran and passed) — not a revoke.
+        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
+        // Hold lock past the early window.
+        for _ in 0..(EARLY_WINDOW + 5) {
+            let (l, u, p, l2) = ok_lock(0);
+            assert_eq!(t.step(l, u, p, l2).revoke, None);
+        }
+        // Now underfill: outside the window, EarlyUnlock does not fire.
+        assert_eq!(t.step(false, 1, 1, false).revoke, None);
+    }
+
+    #[test]
+    fn tracker_live_probe_fail_revokes() {
+        // A LIVE probe FAIL (code 2 corroborated by ladder L2) revokes as ProbeFail.
+        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
+        assert_eq!(t.step(true, 0, 1, false).revoke, None);
+        let step = t.step(true, 0, 2, true);
+        assert_eq!(step.revoke, Some(RevokeReason::ProbeFail));
+    }
+
+    #[test]
+    fn tracker_ignores_stale_probe_fail_on_fresh_lock() {
+        // The Finding-2 stale-verdict trap: a fresh lock on a new compliant host
+        // must NOT revoke on a previous session's carried-over FAIL. The servo
+        // leaves `probe_result=Fail` across a session boundary but the ladder is
+        // back in Probing (`ladder_l2=false`), so the FAIL is not live and no revoke
+        // fires.
+        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
+        // Fresh lock: probe_code is a STALE 2 but ladder_l2 is false (re-probing).
+        for _ in 0..5 {
+            assert_eq!(
+                t.step(true, 0, 2, false).revoke,
+                None,
+                "a stale (not-L2-corroborated) probe FAIL must not revoke a fresh lock"
+            );
+        }
+        // When the new probe finishes and passes, all clear — still no revoke.
+        assert_eq!(t.step(true, 0, 1, false).revoke, None);
+    }
+
+    #[test]
+    fn tracker_revoke_latch_resets_on_relock() {
+        // Finding 2: the per-lock revoke latch must reset on a fresh lock so a
+        // re-proven session can strike again if the host later misbehaves — it is
+        // NOT a daemon-lifetime latch.
+        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
+        // Lock, then a live probe fail → revoke #1.
+        assert_eq!(t.step(true, 0, 1, false).revoke, None);
+        assert_eq!(
+            t.step(true, 0, 2, true).revoke,
+            Some(RevokeReason::ProbeFail)
+        );
+        assert!(t.revoked_this_lock());
+        // Lose lock (session ends), then re-lock (rising edge) — latch clears.
+        let _ = t.step(false, 0, 1, false);
+        let relock = t.step(true, 0, 1, false);
+        assert!(relock.rising_edge);
+        assert!(
+            !t.revoked_this_lock(),
+            "the revoke latch resets on a fresh lock"
+        );
+        // A new live probe fail on the RE-locked session revokes again.
+        assert_eq!(
+            t.step(true, 0, 2, true).revoke,
+            Some(RevokeReason::ProbeFail),
+            "a re-proven session can strike again — the latch is per-lock"
+        );
+    }
+
+    // ---- Faithful wiring test: a REAL resampler underfill drives a revoke -----
+
+    #[test]
+    fn real_resampler_underfill_drives_early_unlock_revoke() {
+        // The wiring-level regression the BLOCKER demands: build a REAL
+        // `LaneResampler`, lock it, feed the RevalidationTracker the resampler's OWN
+        // `is_locked()` / `unlock_count()` each period exactly as the mixer does, then
+        // starve the input so the resampler underfill-unlocks — and assert the
+        // tracker actually revokes. This proves the input combination the pure tests
+        // use (`falling_edge` + `unlock_advanced`) is one the wiring PRODUCES, not a
+        // synthetic one the plumbing can never reach.
+        use crate::lane_resampler::{DecayParams, LaneResampler};
+
+        const RATE: u32 = 48_000;
+        const PERIOD: u32 = 256;
+        const TARGET: usize = 512;
+        const CUSHION: usize = PERIOD as usize;
+        const MAX_PPM: f64 = 500.0;
+        const RING: usize = 8192;
+
+        let mut r = LaneResampler::new(
+            2,
+            PERIOD,
+            RATE,
+            TARGET,
+            CUSHION,
+            MAX_PPM,
+            RING,
+            DecayParams::disabled(),
+        )
+        .expect("resampler builds");
+        // Simulate a floor-primed session's tracker (the mixer sets floor_primed from
+        // a valid persisted proof; here we assert the tracker treats this lane as
+        // primed so the one-strike revalidation is armed).
+        let mut t = RevalidationTracker::new(true, EARLY_WINDOW);
+
+        // Deterministic stereo tone.
+        let tone = |frames: usize| -> Vec<i16> {
+            let mut v = Vec::with_capacity(frames * 2);
+            for n in 0..frames {
+                let x = ((n as f64) * 0.02).sin();
+                let s = (x * 8000.0) as i16;
+                v.push(s);
+                v.push(s);
+            }
+            v
+        };
+        let mut out = vec![0i16; PERIOD as usize * 2];
+
+        // Prefill deep enough to lock, then render one period → the lane locks.
+        let deep = TARGET + CUSHION + 8 + 1;
+        r.push_input(&tone(deep + 64));
+        assert_eq!(
+            r.render_period(&mut out),
+            PERIOD as usize,
+            "locks + renders"
+        );
+        assert!(r.is_locked(), "the lane is locked after the deep prefill");
+        let baseline_unlocks = r.unlock_count();
+
+        // The mixer's exact per-period call: read the resampler's live state, then
+        // step the tracker. A healthy locked period → no revoke.
+        let step = t.step(r.is_locked(), r.unlock_count(), 1, false);
+        assert_eq!(step.revoke, None, "a healthy locked period does not revoke");
+
+        // Feed one more sub-period of input, render a few clean periods (still
+        // locked, still inside the early window), tracker stays quiet.
+        for _ in 0..3 {
+            r.push_input(&tone(PERIOD as usize));
+            r.render_period(&mut out);
+            assert!(r.is_locked());
+            assert_eq!(
+                t.step(r.is_locked(), r.unlock_count(), 1, false).revoke,
+                None
+            );
+        }
+
+        // Now STARVE the lane: render with no fresh input until the cursor outruns
+        // the buffered frames → `render_period` calls `unlock_for_underfill`, which
+        // sets locked=false AND bumps unlock_count IN THE SAME period. This is the
+        // exact falling-edge the BLOCKER showed the old wiring could not catch.
+        let mut revoked = None;
+        for _ in 0..64 {
+            r.render_period(&mut out);
+            let s = t.step(r.is_locked(), r.unlock_count(), 1, false);
+            if let Some(reason) = s.revoke {
+                revoked = Some(reason);
+                // The revoke must land on the period the resampler unlocked.
+                assert!(!r.is_locked(), "revoke coincides with the unlock");
+                assert!(
+                    r.unlock_count() > baseline_unlocks,
+                    "the underfill actually advanced the unlock count"
+                );
+                break;
+            }
+        }
+        assert_eq!(
+            revoked,
+            Some(RevokeReason::EarlyUnlock),
+            "a real resampler underfill inside the early window must revoke via the \
+             tracker — the EarlyUnlock trigger is reachable through the live wiring"
+        );
     }
 }

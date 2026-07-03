@@ -266,7 +266,11 @@ const CUSHION_DECAY_STABILITY_MS: u64 = 10_000;
 /// two-controller oscillation class the cascade design avoids. 400 ppm is well
 /// inside the ±1000 ppm servo authority: it flags "actively correcting" without
 /// tripping on the small steady-state trims a settled loop makes.
-const CUSHION_DECAY_CASCADE_GUARD_PPM: f64 = 400.0;
+///
+/// `pub(crate)` so the config test can pin the derived-margin invariant: the
+/// default decay step demand (step_frames / interval → ppm) must sit inside this
+/// guard, or a settled decay step could perturb the DLL cascade.
+pub(crate) const CUSHION_DECAY_CASCADE_GUARD_PPM: f64 = 400.0;
 
 /// The host-compliance proof's settle window — how long the decay must hold at
 /// the floor with the DLL `l0_locked` and zero unlock churn before the proof is
@@ -553,32 +557,15 @@ struct HostComplianceState {
     /// The on-disk persistence path (`JASPER_FANIN_HOST_COMPLIANCE_PATH` or the
     /// default under the fan-in state dir).
     path: PathBuf,
-    /// The pure per-session proof machine. Reset on every lock loss so a fresh
+    /// The pure per-session proof machine. Reset on every lock edge so a fresh
     /// session re-earns the proof.
     proof: crate::host_compliance::ComplianceProof,
-    /// True iff THIS session's lane was primed at the floor from a valid persisted
-    /// proof. Only a floor-primed session is subject to the aggressive one-strike
-    /// early revalidation — a cold session that descends normally re-proves without
-    /// a persisted authority to revoke.
-    floor_primed: bool,
-    /// Whether the proof was already revoked this session (revoke-at-most-once
-    /// latch, so a sustained L2 does not spam the delete/log every period).
-    revoked_this_session: bool,
-    /// Render periods since the resampler most recently locked, capped at the
-    /// early-revalidation window. Only a floor-primed session's FIRST
-    /// `early_window_periods` periods run the aggressive early-unlock revocation;
-    /// after that, only probe-fail / L2 demotion revoke.
-    periods_since_lock: u64,
-    /// The early-revalidation window in render periods (derived from
-    /// `HOST_COMPLIANCE_EARLY_REVALIDATION_SECS` at the lane geometry).
-    early_window_periods: u64,
-    /// The resampler `unlock_count` observed at the most recent lock — the
-    /// baseline the early-unlock revalidation differences against.
-    unlock_baseline_at_lock: u64,
-    /// The resampler `locked` state observed last period, to detect the lock
-    /// rising edge (reset the early window + unlock baseline) without reaching into
-    /// the resampler's private state.
-    was_locked: bool,
+    /// The pure lock-edge + one-strike revalidation tracker. Owns the session
+    /// bookkeeping (lock edges, early window, unlock baseline, per-lock revoke
+    /// latch) and decides — via `step()` — whether a floor-primed session revokes
+    /// this period. Extracted so the early-unlock reachability is testable without
+    /// ALSA (driven by a real resampler's lock/unlock sequence).
+    revalidation: crate::host_compliance::RevalidationTracker,
     /// The shared STATUS observability handles (`resampler.compliance`). The mixer
     /// is the sole writer; the resampler holds a clone for STATUS rendering. This is
     /// the ONLY place the surfaced state (flag_present / proved_at /
@@ -1497,20 +1484,21 @@ impl Mixer {
     /// Service the DEFAULT-OFF host-compliance persistence once per render period.
     /// No-op (a single `Option::is_none`) when the feature is off. When armed:
     ///
-    /// 1. Track the resampler lane's lock edges: a fresh lock resets the pure
-    ///    proof machine + re-arms the early-revalidation window and unlock
-    ///    baseline; a lock loss resets the proof so the next session re-earns it.
-    /// 2. REVALIDATE a floor-primed session (one strike → snap-back + revoke):
-    ///    a live probe FAIL, a DLL demotion to L2, or an underfill unlock inside
-    ///    the early window all revoke the persisted proof and snap the held target
-    ///    back to the ceiling (the normal descent then re-proves).
-    /// 3. TICK the pure proof machine; on its `Write` outcome, persist a fresh
+    /// 1. Drive the pure `RevalidationTracker`: it runs the one-strike revalidation
+    ///    of a floor-primed session against the pre-reset lock baseline (a LIVE
+    ///    probe FAIL, a DLL demotion to L2, or an underfill unlock inside the early
+    ///    window — INCLUDING the lock-loss period the unlock lands on — revoke), then
+    ///    applies the lock-edge bookkeeping and returns the decision + the edges. On
+    ///    a returned revoke, snap the held target back to the ceiling and delete the
+    ///    persisted proof. Reset the pure proof machine on either lock edge.
+    /// 2. TICK the pure proof machine; on its `Write` outcome, persist a fresh
     ///    record (atomic tempfile+rename). Written at most once per session.
     ///
     /// Uses `Option::take` on `self.host_compliance` so it can freely borrow
     /// `self.inputs` (the resampler lane) without a double-mutable-borrow; the
     /// state is put back before returning. All the gate DECISIONS are in the pure
-    /// `ComplianceProof` / `HostCompliance`; this method is only the wiring.
+    /// `ComplianceProof` / `RevalidationTracker` / `HostCompliance`; this method is
+    /// only the wiring.
     fn service_host_compliance(
         &mut self,
         dll_l0: bool,
@@ -1518,9 +1506,7 @@ impl Mixer {
         probe_code: u64,
         probe_response_ratio: Option<f64>,
     ) {
-        use crate::host_compliance::{
-            HostCompliance, ProofOutcome, ProofSignals, RevalidationSignals,
-        };
+        use crate::host_compliance::{HostCompliance, ProofOutcome, ProofSignals};
         let Some(mut hc) = self.host_compliance.take() else {
             return;
         };
@@ -1539,62 +1525,45 @@ impl Mixer {
         let unlock_count = resampler.unlock_count();
         let decay_at_floor = resampler.decay_at_floor();
 
-        // 1. Lock-edge bookkeeping.
-        if locked && !hc.was_locked {
-            // Fresh lock: a new session begins. Re-earn the proof from scratch and
-            // arm the early-revalidation window + unlock baseline.
-            hc.proof.reset();
-            hc.periods_since_lock = 0;
-            hc.unlock_baseline_at_lock = unlock_count;
-        } else if !locked && hc.was_locked {
-            // Lock loss: reset the proof so the next session re-earns it.
-            hc.proof.reset();
-        }
-        hc.was_locked = locked;
-        if locked {
-            hc.periods_since_lock = hc
-                .periods_since_lock
-                .saturating_add(1)
-                .min(hc.early_window_periods.saturating_add(1));
-        }
-
-        // 2. Revalidation — only for a floor-primed session that hasn't already
-        // revoked. A cold (descend-from-ceiling) session has no persisted authority
-        // to distrust, so it never revokes; it just proves normally.
-        if hc.floor_primed && !hc.revoked_this_session {
-            let within_early_window = locked && hc.periods_since_lock <= hc.early_window_periods;
-            let revoke_reason =
-                crate::host_compliance::compute_revoke_reason(RevalidationSignals {
-                    probe_result_code: probe_code,
-                    ladder_l2,
-                    within_early_window,
-                    unlock_advanced: unlock_count > hc.unlock_baseline_at_lock,
-                });
-            if let Some(reason) = revoke_reason {
-                // One strike: snap the held target back to the full ceiling and
-                // delete the persisted proof so the next session descends + re-proves.
-                resampler.snap_decay_to_ceiling();
-                match HostCompliance::revoke(&hc.path) {
-                    Ok(()) => {}
-                    Err(e) => warn!(
-                        "event=fanin.host_compliance.revoke_io_failed reason={} path={} detail={}",
-                        reason.as_str(),
-                        hc.path.display(),
-                        e,
-                    ),
-                }
-                hc.revoked_this_session = true;
-                hc.obs.on_revoked(reason);
-                warn!(
-                    "event=fanin.host_compliance.revoked reason={} path={} — snapped held target \
-                     back to the ceiling; the normal descent will re-prove",
+        // 1. Lock-edge bookkeeping + one-strike revalidation, in the pure tracker.
+        // `step` runs the revalidation against the PRE-reset baseline (so the
+        // falling-edge underfill unlock is caught — the ONLY period where an
+        // underfill unlock presents, since `unlock_for_underfill` sets `locked=false`
+        // in the same render period it bumps `unlock_count`), then applies the
+        // lock-edge bookkeeping. It returns the revoke decision plus the observed
+        // edges so the proof machine's reset stays in lock-step with the tracker.
+        let step = hc
+            .revalidation
+            .step(locked, unlock_count, probe_code, ladder_l2);
+        if let Some(reason) = step.revoke {
+            // One strike: snap the held target back to the full ceiling and delete
+            // the persisted proof so the next session descends + re-proves.
+            resampler.snap_decay_to_ceiling();
+            match HostCompliance::revoke(&hc.path) {
+                Ok(()) => {}
+                Err(e) => warn!(
+                    "event=fanin.host_compliance.revoke_io_failed reason={} path={} detail={}",
                     reason.as_str(),
                     hc.path.display(),
-                );
+                    e,
+                ),
             }
+            hc.obs.on_revoked(reason);
+            warn!(
+                "event=fanin.host_compliance.revoked reason={} path={} — snapped held target \
+                 back to the ceiling; the normal descent will re-prove",
+                reason.as_str(),
+                hc.path.display(),
+            );
+        }
+        // Reset the pure proof machine on either lock edge so a fresh session
+        // re-earns the proof (rising: a new session begins; falling: the current
+        // session ended).
+        if step.rising_edge || step.falling_edge {
+            hc.proof.reset();
         }
 
-        // 3. Proof tick + persist. A revoked-this-session lane still ticks (it is
+        // 2. Proof tick + persist. A just-revoked lane still ticks (it is
         // back at the ceiling, so the proof stays Pending until the normal descent
         // lands it at the floor again — the re-prove path).
         let outcome = hc.proof.tick(ProofSignals {
@@ -2056,13 +2025,18 @@ fn build_host_compliance_state(
             (true, rec.proved_at_epoch_s)
         }
         Some(rec) => {
-            // Present but stale geometry: descend normally, do NOT prime.
+            // Present but stale geometry: descend normally, do NOT prime. STATUS
+            // reads this as absent — `flag_present=false` AND `proved_at=0` — so it
+            // matches the "proved_at is 0 when the flag is absent" contract in
+            // `state.rs` and does not read to an operator like a REVOKED proof (a
+            // present-but-stale file is not a live prime authority). The recorded
+            // timestamp is still logged above for the retune diagnostic.
             info!(
                 "event=fanin.host_compliance.stale lane={} recorded_floor={} live_floor={} — \
                  descending from ceiling (floor retuned since the proof)",
                 label, rec.floor_frames, live_floor,
             );
-            (false, rec.proved_at_epoch_s)
+            (false, 0)
         }
         None => {
             info!(
@@ -2093,12 +2067,10 @@ fn build_host_compliance_state(
     HostComplianceState {
         path,
         proof: crate::host_compliance::ComplianceProof::new(settle_periods),
-        floor_primed,
-        revoked_this_session: false,
-        periods_since_lock: 0,
-        early_window_periods,
-        unlock_baseline_at_lock: 0,
-        was_locked: false,
+        revalidation: crate::host_compliance::RevalidationTracker::new(
+            floor_primed,
+            early_window_periods,
+        ),
         obs,
     }
 }

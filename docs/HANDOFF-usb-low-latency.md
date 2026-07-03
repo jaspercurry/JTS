@@ -851,7 +851,7 @@ session, when ALL hold together for a settle window (the same
 `at_floor` (descent complete) AND the DLL has held `l0_locked` AND the resampler's
 unlock count has NOT advanced across the window (zero churn). Any disqualifier
 re-arms the window. Owned by the pure `ComplianceProof` state machine in
-`jasper/jasper-fanin/src/host_compliance.rs` (`rust/…`), ticked once per render
+`rust/jasper-fanin/src/host_compliance.rs`, ticked once per render
 period by `mixer::step`.
 
 **Prime-at-floor.** At lane build time, if a valid proof is on disk whose
@@ -864,15 +864,31 @@ discontinuity after lock still snaps all the way back to it.
 
 **Immediate revalidation (one strike → revoke).** The servo's per-session probe
 (the #1142 post-lock `AwaitLock` gate) runs on EVERY session start — that IS the
-revalidation. For a floor-primed session, three triggers revoke the proof: a probe
-FAIL, a DLL demotion to L2, or an underfill unlock within the first
-`HOST_COMPLIANCE_EARLY_REVALIDATION_SECS` (60 s). On any of them the mixer snaps the
-held target back to the full ceiling (the existing snap-back primitive), deletes the
-file, and logs `event=fanin.host_compliance.revoked reason=…`. The normal descent
-then re-proves and re-writes. **USB re-enumeration / a new host / a new port need NO
-special handling** — a new session simply re-probes, and the probe verdict
-revalidates; that is the new-machine/new-port answer. A missing/corrupt/stale file
-means "no proof" (descend as today) — fail toward today's behaviour, never a crash.
+revalidation. For a floor-primed session, three triggers revoke the proof: a LIVE
+probe FAIL, a DLL demotion to L2, or an underfill unlock within the first
+`HOST_COMPLIANCE_EARLY_REVALIDATION_SECS` (60 s). The revalidation runs in the pure
+`RevalidationTracker` (`host_compliance.rs`), driven each render period by
+`mixer::service_host_compliance` from the resampler's live `is_locked()` /
+`unlock_count()`. Two correctness details the tracker encodes: (1) the underfill
+trigger is evaluated on the lock-LOSS edge as well as while locked, because
+`unlock_for_underfill` sets `locked=false` in the SAME render period it bumps
+`unlock_count` — so the period that carries the churn evidence is the one where
+`locked` is already false (a `locked`-only window gate would make this trigger
+unreachable, the class of probe-passing-but-can't-hold-the-floor host this promise
+exists to catch); (2) a probe FAIL only revokes when it is LIVE — the servo leaves
+`probe_result=Fail` across a session boundary, so a fresh lock on a new compliant
+host reads the stale FAIL until its own probe runs; the tracker gates on the ladder
+sitting at L2 (which always accompanies a live fail) so a stale carryover FAIL
+(ladder back in `Probing`, `ladder_l2=false`) is ignored. The per-lock revoke latch
+resets on every fresh lock, so a re-proven session can strike again if the host
+later misbehaves — it is per-lock, not per-daemon-lifetime. On any trigger the mixer
+snaps the held target back to the full ceiling (the existing snap-back primitive),
+deletes the file, and logs `event=fanin.host_compliance.revoked reason=…`. The
+normal descent then re-proves and re-writes. **USB re-enumeration / a new host / a
+new port need NO special handling** — a new session simply re-probes, and the probe
+verdict revalidates; that is the new-machine/new-port answer. A missing/corrupt/stale
+file means "no proof" (descend as today) — fail toward today's behaviour, never a
+crash.
 
 **Session-start is content-agnostic — calibration runs on pure silence.** macOS
 holds the UAC2 output stream open and always-streaming even with no audio playing

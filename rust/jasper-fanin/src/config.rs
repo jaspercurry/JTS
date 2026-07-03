@@ -1091,7 +1091,7 @@ mod tests {
                 assert_eq!(cfg.input_resampler_ring_frames, 0);
                 // Post-lock cushion DECAY is DEFAULT-OFF (latency lever 1); its
                 // knobs default to the tightest-safe floor (target + 32-frame DLL
-                // margin), a 16-frame gentle step, and a 1 s interval.
+                // margin), an 18-frame gentle step, and a 1 s interval.
                 assert!(
                     !cfg.input_resampler_cushion_decay_enabled,
                     "cushion decay must default OFF"
@@ -1102,6 +1102,28 @@ mod tests {
                 );
                 assert_eq!(cfg.input_resampler_cushion_decay_step_frames, 18);
                 assert_eq!(cfg.input_resampler_cushion_decay_interval_ms, 1000);
+                // Cascade-margin invariant (pins the 375-vs-400 ppm claim documented
+                // in config.rs, .env.example, and the HANDOFF): the default decay
+                // step's demanded rate (step_frames dropped over interval_ms, as a
+                // fraction of the frames that pass in that interval) must sit INSIDE
+                // the DLL cascade-stability guard, or a settled decay step could
+                // perturb the inner loop. 18 frames / 1000 ms @ 48 kHz = 375 ppm,
+                // 25 ppm inside the 400 ppm guard. A future default-step bump or
+                // guard lowering that inverts this margin fails here.
+                let step_demand_ppm = (cfg.input_resampler_cushion_decay_step_frames as f64)
+                    / ((cfg.input_resampler_cushion_decay_interval_ms as f64 / 1000.0)
+                        * cfg.sample_rate as f64)
+                    * 1_000_000.0;
+                assert!(
+                    (step_demand_ppm - 375.0).abs() < 1.0,
+                    "default step demand is ~375 ppm, got {step_demand_ppm}"
+                );
+                assert!(
+                    step_demand_ppm < crate::mixer::CUSHION_DECAY_CASCADE_GUARD_PPM,
+                    "default decay step demand {step_demand_ppm} ppm must stay inside the \
+                     {} ppm cascade guard",
+                    crate::mixer::CUSHION_DECAY_CASCADE_GUARD_PPM
+                );
                 // Host-compliance persistence path defaults under the fan-in state
                 // dir (sibling of the xrun log, already-owned write path).
                 assert_eq!(
