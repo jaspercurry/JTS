@@ -9,6 +9,28 @@
 
 ## Status
 
+- 🧪 **P2 — relay-closed level-match ramp (hardware-free complete,
+  on-device pending).** The settle-based `RampController` /
+  `MeasurementRamp` kernel lives in
+  [`jasper/audio_measurement/ramp.py`](../jasper/audio_measurement/ramp.py)
+  (quiet-start staircase → pre-window freeze → buffered settle read →
+  mid-window jump → k-confirm lock; dynamic cap `original+6` clamped to
+  `[-20,-6]` dBFS + 0 dB hard ceiling; clip/trust/feed-liveness/derived
+  safety timeout; exact — never cap-clamped — restore of the user's
+  pre-ramp volume). The correction adapter
+  ([`jasper/correction/level_match.py`](../jasper/correction/level_match.py))
+  adds the per-geometry `MeasurementLevelLock` store, the raw-band
+  uniform-shift drift check, the armed gate, the run-token-scoped
+  `RelayLevelFeed`, and terminal host events re-posted until the relay
+  echoes them; the phone streams batched level samples from
+  `capture-page/js/level-events.js` (`kind="level_ramp"` spec). The
+  browser-locked `AutolevelController` remains the no-relay local
+  fallback (`run_autolevel` unchanged; `MeasurementSession.
+  run_level_match` is the additive relay seam). All synthetic — H1
+  (on-device settle cadence + iOS/Android AGC-freeze confirmation)
+  supplies the real threshold values; the `JASPER_RAMP_*` env knobs in
+  `.env.example` are documented placeholders until then. Design of
+  record: [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §3.1.
 - 🧪 **Phone-mic capture relay path (fresh-install default,
   on-device-pending).** As of 2026-07-02 fresh installs default to an
   alternative capture transport that moves the room capture setup/recording page

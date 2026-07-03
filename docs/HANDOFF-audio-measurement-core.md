@@ -73,7 +73,12 @@ The product is three tiers:
   `sweep`, `deconv`, `analysis`, `calibration`, `quality`, plus a parameterized
   `quality_model.QualityModel` (`ROOM` / `DRIVER` / `RAMP` profiles) that
   replaced the previously-forked capture-quality constants. Moved verbatim from
-  `jasper/correction/`, which now *consumes* the kernel.
+  `jasper/correction/`, which now *consumes* the kernel. P2 added `ramp` —
+  the settle-based level-match `RampController` / `MeasurementRamp` (the
+  generalization of `correction/autolevel.py`; that browser-locked controller
+  remains the no-relay local fallback). The ramp's control-loop tuning lives on
+  `MeasurementRamp` (validated, env-overridable), not on the `RAMP` quality
+  profile.
 - `active_speaker/driver_acoustics.py` **imports**
   `jasper.audio_measurement.{sweep, deconv, analysis, quality}` and the `DRIVER`
   quality profile — it reuses the shared DSP verbatim.
