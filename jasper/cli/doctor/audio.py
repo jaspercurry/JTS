@@ -29,6 +29,7 @@ from ...camilla_config_contract import (
 )
 from ...config import Config
 from ...env_load import parse_env_file
+from ... import ring_assets
 from ...mics import xvf3800
 from ...output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -68,12 +69,16 @@ _OBSERVED_OUTPUT_HARDWARE_CLOCK_ISSUE_CODES = frozenset({
 # overridden for another arch, this constant would need to move with it
 # (deriving both from `dpkg-architecture -qDEB_HOST_MULTIARCH` would remove
 # the assumption).
-_JTS_RING_ALSA_PLUGIN_DIR = "/usr/lib/aarch64-linux-gnu/alsa-lib"
-_JTS_RING_IOPLUG_SO = "libasound_module_pcm_jts_ring.so"
-_JTS_RING_CONF_D = "/etc/alsa/conf.d/60-jts-ring.conf"
+# Asset paths live in the shared jasper.ring_assets SSOT so the doctor probe and
+# the coupling reconciler's activation gate name the same files. Re-exported here
+# under the historical private names so the rest of this module (and its tests)
+# stay stable.
+_JTS_RING_ALSA_PLUGIN_DIR = ring_assets.RING_ALSA_PLUGIN_DIR
+_JTS_RING_IOPLUG_SO = ring_assets.RING_IOPLUG_SO
+_JTS_RING_CONF_D = ring_assets.RING_CONF_D
 # The tmpfs directory the ring files live in (shipped by
 # deploy/tmpfiles/jts-ring.conf). Module constant so tests can repoint it.
-_JTS_RING_SHM_DIR = "/dev/shm/jts-ring"
+_JTS_RING_SHM_DIR = ring_assets.RING_SHM_DIR
 # The two inert PCM names the conf.d defines, each paired with (probe tool,
 # ring-file basename). The open probe against these both resolves the name
 # AND forces ALSA to dlopen the ioplug .so; with no ring present it exercises
@@ -1264,15 +1269,24 @@ def check_fanin_service() -> CheckResult:
         )
     from jasper.fanin.coupling_reconcile import FANIN_ENV_PATH, read_persisted_coupling
     from jasper.fanin_coupling import (
+        COUPLING_SHM_RING,
         COUPLING_TRANSPORT_PIPE,
         PIPE_PATH_ENV_VAR,
         resolve_pipe_path,
     )
 
     coupling = read_persisted_coupling()
-    expected_transport = (
-        "transport_pipe" if coupling == COUPLING_TRANSPORT_PIPE else "loopback"
-    )
+    # The fan-in STATUS echoes its live coupling transport (state.rs
+    # push_kv_str("transport", ...)): "loopback" (default), "transport_pipe", or
+    # "shm_ring" (Ring A — with a "ring" observability block). Expect the STATUS to
+    # match the persisted intent so a coupling that failed to restart onto the box
+    # is caught. shm_ring keeps a lossy aloop MIRROR on lane 7, so output.pcm still
+    # reports hw:Loopback,0,7 (checked below, unchanged); only the transport string
+    # and the ring block differ from loopback.
+    expected_transport = {
+        COUPLING_TRANSPORT_PIPE: "transport_pipe",
+        COUPLING_SHM_RING: "shm_ring",
+    }.get(coupling, "loopback")
     actual_transport = output.get("transport")
     if actual_transport != expected_transport:
         return CheckResult(
@@ -1301,6 +1315,16 @@ def check_fanin_service() -> CheckResult:
                 f"active but output.pipe.path={pipe.get('path')!r}; "
                 f"expected {expected_pipe!r} from {FANIN_ENV_PATH}",
             )
+    elif coupling == COUPLING_SHM_RING:
+        ring = output.get("ring")
+        if not isinstance(ring, dict):
+            return CheckResult(
+                "jasper-fanin service",
+                "fail",
+                "active but shm_ring STATUS is missing output.ring metrics — "
+                "fan-in is not actually writing Ring A. Run "
+                "jasper-fanin-coupling-reconcile shm_ring.",
+            )
     elif "pipe" in output:
         return CheckResult(
             "jasper-fanin service",
@@ -1309,6 +1333,8 @@ def check_fanin_service() -> CheckResult:
         )
 
     output_pcm = output.get("pcm")
+    # shm_ring keeps the lossy aloop mirror on lane 7, so its output.pcm is the
+    # same hw:Loopback,0,7 as loopback — only transport_pipe legitimately omits it.
     if coupling != COUPLING_TRANSPORT_PIPE and output_pcm != _FANIN_EXPECTED_OUTPUT_PCM:
         return CheckResult(
             "jasper-fanin service",
@@ -1700,13 +1726,23 @@ def check_fanin_coupling() -> CheckResult:
     pipe no writer feeds and crash-loops on its statefile config (the jts5
     2026-06-27 failure mode). Under ``transport_pipe`` both boundaries are
     load-bearing: RawFile capture from fan-in and File playback into outputd's
-    local content pipe. The fix is to re-run the ordered reconciler:
-    ``jasper-fanin-coupling-reconcile <intent>``.
+    local content pipe. Under ``shm_ring`` (P2) both ends are ALSA ioplug
+    devices — capture ``jts_ring_capture`` (Ring A) + playback
+    ``jts_ring_playback`` (Ring B) — AND ``JASPER_OUTPUTD_CONTENT_BRIDGE`` must be
+    ``shm_ring``: this check catches the PARTIAL flip (one end ring, the other
+    ALSA/direct) that strands a ring. The fix is to re-run the ordered
+    reconciler: ``jasper-fanin-coupling-reconcile <intent>``.
     """
     from jasper.fanin.coupling_reconcile import read_persisted_coupling
     from jasper.fanin_coupling import (
+        COUPLING_SHM_RING,
         COUPLING_TRANSPORT_PIPE,
+        OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
+        OUTPUTD_CONTENT_BRIDGE_SHM_RING,
         OUTPUTD_PIPE_PATH_ENV_VAR,
+        RING_CAPTURE_DEVICE,
+        RING_PLAYBACK_DEVICE,
+        resolve_outputd_content_bridge,
         resolve_outputd_pipe_path,
     )
     from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
@@ -1728,6 +1764,9 @@ def check_fanin_coupling() -> CheckResult:
     outputd_pipe_raw = (
         read_value(outputd_env, OUTPUTD_PIPE_PATH_ENV_VAR) or ""
     ).strip()
+    outputd_bridge = resolve_outputd_content_bridge(
+        read_value(outputd_env, OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
+    )
     if coupling == COUPLING_TRANSPORT_PIPE and not outputd_pipe_raw:
         return CheckResult(
             label,
@@ -1745,6 +1784,27 @@ def check_fanin_coupling() -> CheckResult:
             f"{outputd_pipe_raw} remains in {DEFAULT_OUTPUTD_ENV_PATH}; "
             "outputd may listen to a pipe Camilla is no longer feeding — run: "
             "sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile loopback",
+        )
+    # Ring B env coherence: shm_ring REQUIRES the outputd bridge to match, and any
+    # NON-ring coupling must NOT carry a stale shm_ring bridge (a partial flip that
+    # points outputd at a ring nobody writes).
+    if coupling == COUPLING_SHM_RING and outputd_bridge != OUTPUTD_CONTENT_BRIDGE_SHM_RING:
+        return CheckResult(
+            label,
+            "warn",
+            f"intent={coupling} but {OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={outputd_bridge} "
+            f"in {DEFAULT_OUTPUTD_ENV_PATH} (expected shm_ring); PARTIAL flip — "
+            "outputd reads snd-aloop while fan-in writes Ring A. Run: sudo "
+            "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring",
+        )
+    if coupling != COUPLING_SHM_RING and outputd_bridge == OUTPUTD_CONTENT_BRIDGE_SHM_RING:
+        return CheckResult(
+            label,
+            "warn",
+            f"intent={coupling} but stale {OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring "
+            f"remains in {DEFAULT_OUTPUTD_ENV_PATH}; outputd waits on Ring B that "
+            "CamillaDSP no longer writes — run: sudo /opt/jasper/.venv/bin/"
+            "jasper-fanin-coupling-reconcile loopback",
         )
     capture = _loaded_capture_type(config_path)
     if capture is None:
@@ -1777,6 +1837,40 @@ def check_fanin_coupling() -> CheckResult:
             f"intent={coupling} but loaded graph mismatch: "
             f"{'; '.join(mismatches)}; half-applied transition — run: "
             f"sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile {coupling}",
+        )
+
+    if coupling == COUPLING_SHM_RING:
+        # Ring A capture + Ring B playback are BOTH ALSA ioplug devices — the
+        # loaded graph must name jts_ring_capture AND jts_ring_playback, or the
+        # coherent env pair above landed but the loaded config is stale/half-ring
+        # (the built-in-revert class: a camilla restart re-seeded loopback).
+        capture_device = _loaded_device_field(config_path, "capture", "device")
+        playback_device = _loaded_device_field(config_path, "playback", "device")
+        ring_mismatches: list[str] = []
+        if capture != "Alsa" or capture_device != RING_CAPTURE_DEVICE:
+            ring_mismatches.append(
+                f"capture={capture}/{capture_device or '(missing)'} "
+                f"(expected Alsa/{RING_CAPTURE_DEVICE})"
+            )
+        if playback_device != RING_PLAYBACK_DEVICE:
+            ring_mismatches.append(
+                f"playback_device={playback_device or '(missing)'} "
+                f"(expected {RING_PLAYBACK_DEVICE})"
+            )
+        if not ring_mismatches:
+            return CheckResult(
+                label,
+                "ok",
+                f"{coupling} (capture={RING_CAPTURE_DEVICE}, "
+                f"playback={RING_PLAYBACK_DEVICE}, bridge={outputd_bridge})",
+            )
+        return CheckResult(
+            label,
+            "warn",
+            f"intent={coupling} but loaded graph is not the ring config: "
+            f"{'; '.join(ring_mismatches)}; a camilla restart may have re-seeded "
+            "loopback (finding-5 revert) — run: sudo /opt/jasper/.venv/bin/"
+            "jasper-fanin-coupling-reconcile shm_ring",
         )
 
     expected = "Alsa"
@@ -1904,30 +1998,46 @@ def check_ring_platform_assets() -> CheckResult:
     unlinks only what it created, so P1's "no ring file until P2 arms"
     invariant holds after every deploy.
 
-    Armed-state caveat (revisit at P2): this check assumes the INERT phase.
-    On a lab-armed box (the ring-proto experiment live) — or once P2 arms a
-    coupling for real — the ring has a live reader/writer and the ioplug's
-    SPSC guard EBUSYs the probe. The probe never touches that live ring (it
-    pre-exists, so the residue cleanup leaves it alone), but the open failing
-    with EBUSY is reported as fail with an "in use, not a defect" remediation
-    rather than a registration error. Making this check first-class
-    armed-aware (report ok/skip when a coupling is armed) is P2's job.
+    Armed-state aware (P2): when a coupling is ARMED (the persisted
+    JASPER_FANIN_CAMILLA_COUPLING is shm_ring) the ring has a live reader/writer,
+    so the ioplug's SPSC guard EBUSYs the open-probe — which is NOT a defect. In
+    that state this check does NOT open-probe (the live ring must not be
+    disturbed); it verifies asset PRESENCE only and defers the "is the armed ring
+    coherent + alive" verdict to check_ring_coupling_coherent. The open-probe path
+    below runs only in the INERT phase (loopback default), where an EBUSY genuinely
+    would indicate a stray lab arm or a stuck ring.
     """
     label = "ring platform"
-    so_path = f"{_JTS_RING_ALSA_PLUGIN_DIR}/{_JTS_RING_IOPLUG_SO}"
-    so_present = os.path.exists(so_path)
-    conf_present = os.path.exists(_JTS_RING_CONF_D)
-    shm_dir_present = os.path.isdir(_JTS_RING_SHM_DIR)
+    # Pass the module-level constants (which tests monkeypatch, and which alias the
+    # ring_assets SSOT) so the presence snapshot honors a repointed path.
+    presence = ring_assets.ring_asset_presence(
+        plugin_dir=_JTS_RING_ALSA_PLUGIN_DIR,
+        conf_d=_JTS_RING_CONF_D,
+        shm_dir=_JTS_RING_SHM_DIR,
+    )
+    missing = list(presence.missing())
 
-    missing: list[str] = []
-    if not so_present:
-        missing.append(f"ioplug .so absent ({so_path})")
-    if not conf_present:
-        missing.append(f"conf.d absent ({_JTS_RING_CONF_D})")
-    if not shm_dir_present:
-        missing.append(f"{_JTS_RING_SHM_DIR} absent")
+    # Is a ring coupling armed? Read the persisted intent (fail-safe to loopback).
+    try:
+        from jasper.fanin.coupling_reconcile import read_persisted_coupling
+        from jasper.fanin_coupling import COUPLING_SHM_RING
+
+        ring_armed = read_persisted_coupling() == COUPLING_SHM_RING
+    except (ImportError, OSError):
+        ring_armed = False
 
     if missing:
+        if ring_armed:
+            # ARMED but an asset is gone: the ring is load-bearing now, so this is
+            # a genuine failure (the ioplug/conf.d must exist for the armed graph).
+            return CheckResult(
+                label,
+                "fail",
+                "shm_ring is ARMED but a ring-platform asset is missing: "
+                + "; ".join(missing)
+                + " — the armed graph cannot resolve its ring devices; "
+                "disarm (jasper-fanin-coupling-reconcile loopback) or redeploy.",
+            )
         # Inert phase: a missing asset means the ring platform is
         # unavailable, but loopback still carries audio — degraded, not
         # a hard failure. Redeploy to rebuild/replace.
@@ -1939,8 +2049,19 @@ def check_ring_platform_assets() -> CheckResult:
             + " — redeploy (bash scripts/deploy-to-pi.sh) to rebuild",
         )
 
-    # All assets present — the .so being installed means it MUST dlopen and
-    # register; a failure to open is a genuine defect.
+    if ring_armed:
+        # Assets present AND armed: do NOT open-probe (the live ring EBUSYs the
+        # SPSC guard — expected, not a defect). Report ok here; the coherence
+        # + liveness verdict is check_ring_coupling_coherent's job.
+        return CheckResult(
+            label,
+            "ok",
+            "ioplug + conf.d + /dev/shm/jts-ring present; shm_ring ARMED "
+            "(open-probe skipped — live ring; see 'ring coupling' check)",
+        )
+
+    # All assets present AND inert — the .so being installed means it MUST dlopen
+    # and register; a failure to open is a genuine defect.
     probe_failures: list[str] = []
     for pcm, tool, _ring_basename in _JTS_RING_PCMS:
         ok, detail = _jts_ring_pcm_resolves(pcm, tool)

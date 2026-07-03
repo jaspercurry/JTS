@@ -306,3 +306,51 @@ def test_non_busy_probe_failure_still_advises_rebuild(monkeypatch, tmp_path):
     assert res.status == "fail"
     assert "-DPIC" in res.detail
     assert "in use" not in res.detail
+
+
+# --- P2: armed-state aware ---------------------------------------------------
+
+
+def _arm_ring(monkeypatch):
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+
+
+def test_armed_ring_with_assets_present_is_ok_and_skips_probe(monkeypatch, tmp_path):
+    # ARMED (shm_ring persisted) + assets present: do NOT open-probe (the live
+    # ring EBUSYs the SPSC guard); report ok and defer coherence to the coupling
+    # check. The probe hook is set to fail loudly so the test proves it is NOT run.
+    _stage_assets(monkeypatch, tmp_path)
+    _arm_ring(monkeypatch)
+
+    def _must_not_be_called(pcm, tool):
+        raise AssertionError("armed ring must not open-probe the live ring")
+
+    monkeypatch.setattr(audio, "_jts_ring_pcm_resolves", _must_not_be_called)
+    res = audio.check_ring_platform_assets()
+    assert res.status == "ok"
+    assert "ARMED" in res.detail
+    assert "skipped" in res.detail
+
+
+def test_armed_ring_with_missing_asset_is_fail_not_warn(monkeypatch, tmp_path):
+    # ARMED but an asset is gone: the ring is load-bearing, so this is a hard
+    # failure (unlike the inert-phase warn).
+    _stage_assets(monkeypatch, tmp_path, so=False)
+    _arm_ring(monkeypatch)
+    res = audio.check_ring_platform_assets()
+    assert res.status == "fail"
+    assert "ARMED" in res.detail
+    assert "missing" in res.detail.lower()
+
+
+def test_inert_missing_asset_stays_warn(monkeypatch, tmp_path):
+    # Default (loopback) + a missing asset stays a warn — loopback still carries
+    # audio, so P1's inert-phase contract holds.
+    _stage_assets(monkeypatch, tmp_path, so=False)
+    # No _arm_ring: read_persisted_coupling returns loopback on the test box.
+    res = audio.check_ring_platform_assets()
+    assert res.status == "warn"
+    assert "inert" in res.detail
