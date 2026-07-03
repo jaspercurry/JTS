@@ -2233,6 +2233,110 @@ mod tests {
         assert!(!r.decay_active.load(Ordering::Relaxed));
     }
 
+    /// PR #1141's inertness claim, pinned: an ARMED cushion decay that is FROZEN
+    /// by `dll_l0=false` (the evidence-(a) condition — `frozen_reason=not_l0`,
+    /// held pinned at the ceiling) must behave BIT-IDENTICALLY to decay disabled
+    /// over the SAME delivery trace. This is the mechanical proof that the
+    /// armed-but-frozen decay path in the observed 16/115-vs-0-5 hardware run did
+    /// not amplify (or cause) the unlock churn — the churn is a property of the
+    /// static held target and the delivery pattern, not the decay code. The test
+    /// deliberately drives a coalescing-stall pattern that DOES produce unlocks,
+    /// so a real divergence (a decay path that touched lock/silence accounting)
+    /// would surface as differing counters, not just an unexercised no-op.
+    #[test]
+    fn armed_frozen_decay_is_bit_identical_to_disabled_over_the_same_trace() {
+        // The exact churny LAB geometry (base target 256 + one-period cushion =
+        // 512 held), NOT the module TARGET (512). Period 256, min_safe 274: the
+        // DLL holds the pre-render fill at 512, so a single fully-withheld
+        // delivery period drops it to 512 - 256 = 256 (below min_safe 274) →
+        // underfill-unlock → immediate re-lock next period. This is the observed
+        // churn cycle. (The production default held=2560 could never dip that far
+        // on one stall — that is why it is immune.)
+        const CHURNY_TARGET: usize = 256;
+        fn run(decay_enabled: bool) -> (u64, u64, u64, u64, u64) {
+            let params = DecayParams {
+                enabled: decay_enabled,
+                floor_frames: 306,
+                step_frames: 16,
+                interval_ms: 1000,
+                stability_ms: 10_000,
+                cascade_guard_ppm: 400.0,
+            };
+            let mut r = LaneResampler::new(
+                2,
+                PERIOD,
+                RATE,
+                CHURNY_TARGET,
+                PERIOD as usize,
+                MAX_PPM,
+                RING,
+                params,
+            )
+            .expect("lane builds");
+            let mut out = vec![0i16; PERIOD as usize * 2];
+            let period = PERIOD as usize;
+            // Faithful delivery model (the mixer's per-period order + the gadget's
+            // coalescing shape): the host produces one period of frames every
+            // render period, but delivery to the ring is GATED during a stall
+            // window — frames accumulate and flush in one burst when the stall
+            // ends (the max_avail≈2×period signature). The render still consumes a
+            // period each step, so during a stall the cursor-relative fill drops.
+            // A stall long enough to drop the post-render fill below min_safe (274)
+            // unlocks; the immediate re-lock the next period is the churn cycle.
+            // Deterministic (no RNG / clock) so both runs replay byte-identically.
+            let mut phase = 0usize;
+            let mut pending = 0usize; // host-produced but not yet delivered
+                                      // First fully prefill + lock on a clean burst, then run the churn
+                                      // regime. Deliver the deep prefill up front so both runs lock once.
+            r.push_input(&tone_at(phase, CHURNY_TARGET + PERIOD as usize + 64));
+            phase += CHURNY_TARGET + PERIOD as usize + 64;
+            r.render_period(&mut out);
+            r.tick_decay(false, 0.0);
+            // Churn regime: the host produces exactly one period per interval and
+            // it is delivered ON TIME (fill held tight at the setpoint) EXCEPT on
+            // an isolated stall period, where delivery is withheld (fill dips one
+            // period below the setpoint → below min_safe → unlock) and flushed the
+            // next period (immediate re-lock). Every 8th period stalls; the 7
+            // between keep the fill tight so each stall reliably dips it. This is
+            // the isolated-coalescing shape, not a sustained gap.
+            for i in 0..6000usize {
+                pending += period; // host produced one period this interval
+                if i % 8 == 7 {
+                    // Stall: withhold this interval's delivery (fill will dip).
+                } else {
+                    r.push_input(&tone_at(phase, pending));
+                    phase += pending;
+                    pending = 0;
+                }
+                r.render_period(&mut out);
+                // The frozen condition from evidence (a): dll_l0 = false, so an
+                // armed decay snaps back to the ceiling every tick (never lowers).
+                r.tick_decay(false, 0.0);
+            }
+            let o = r.observability();
+            (
+                o.unlock_count.load(Ordering::Relaxed),
+                o.lock_count.load(Ordering::Relaxed),
+                o.held_target_frames.load(Ordering::Relaxed),
+                o.silence_frames.load(Ordering::Relaxed),
+                o.output_frames.load(Ordering::Relaxed),
+            )
+        }
+        let disabled = run(false);
+        let armed_frozen = run(true);
+        assert_eq!(
+            armed_frozen, disabled,
+            "ARMED+frozen(not_l0) decay must be bit-identical to disabled \
+             (unlocks, locks, held, silence, output) — any divergence means the \
+             decay path is NOT mechanically inert when frozen (PR #1141 regression)"
+        );
+        // Sanity: the trace really did churn (else the identity is vacuous).
+        assert!(
+            disabled.0 > 0,
+            "the coalescing trace must produce unlocks, or the identity proves nothing"
+        );
+    }
+
     #[test]
     fn decay_snaps_back_to_ceiling_on_reset() {
         let mut r = build_with_decay();

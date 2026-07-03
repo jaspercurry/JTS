@@ -378,8 +378,19 @@ review with zero unresolved Blockers/Should-fixes before merge. All features are
 final settings = USB DIRECT + rings 2-slot + camilla chunk 128/queuelimit 1/target 128 +
 resampler 256+256, host-clock and decay OFF — see "why" below). A diagnostic
 unlock-counter burst (~295 in one 2-min window) occurred mid-20-min-run with zero
-measured effect (all impulses in the window matched; percentiles tight) — filed as a
-follow-up with the armed-path churn evidence:
+measured effect (all impulses in the window matched; percentiles tight). **Now
+diagnosed and guarded (2026-07):** the burst is an HONEST count of real
+lock→silence→relock cycles caused by the *lab* resampler geometry — held target
+256+256 = 512 sits only `512 − 256(period) − 274(minimum_safe_fill) = −18` frames
+of headroom below the underfill-unlock threshold after each render, so ordinary USB
+delivery coalescing (the `max_avail≈516`, 2-period drain-entry signature) unlocks
+the lane every burst; relock is ~1 period, so it is diagnostic-visible but
+measurably harmless. The counter is not double-counting (one increment per genuine
+unlock event). The production defaults (held 2560) have ~2030 frames of margin and
+are immune. A fail-loud config guard now rejects a churny `target+cushion` geometry
+when the resampler is armed (`STATIC_CUSHION_JITTER_MARGIN_FRAMES` in
+`rust/jasper-fanin/src/config.rs` — the static-cushion sibling of the decay-floor
+guard), so this knob-set cannot ship silently again.
 
 | run | measured p50/p95/p99 | end-to-end p50/p95/p99 |
 |---|---|---|
@@ -404,8 +415,19 @@ End-to-end = measured span + 1.2 ms gadget dwell (delta-windowed drain-entry evi
   locked, its inner controller absorbs the probe's pitch step, so the post-lock probe
   (#1142) reliably fails (ratio −0.88) and the ladder never reaches l0. The combo-mode
   probe must observe the resampler's correction ppm, not fill slope (follow-up filed).
-  A second follow-up: arming decay (even frozen) raised unlock churn (16/115 vs 0-5
-  baseline) — armed-path divergence bug; default path verified clean (unlocks 1).
+  A second follow-up observation — arming decay (even frozen) *appeared* to raise
+  unlock churn (16/115 vs 0-5 baseline) — was **diagnosed as NOT an armed-path bug**
+  (2026-07). A cross-mode sim (drain→render→tick_decay, faithful to `mixer::step`)
+  proves an ARMED+frozen(`not_l0`) decay is BIT-IDENTICAL to disabled over the same
+  delivery trace (unlocks/locks/held/silence all equal), and the code path confirms
+  it: `tick_decay` with `dll_l0=false` snaps the held target back to the ceiling
+  every tick, so the setpoint never differs from the disabled path — mechanically
+  inert. The 16-vs-115 spread is the same environmental USB-coalescing variance that
+  moves the default-path counter (1 ↔ ~295); correlating it with the decay env was
+  coincidental at n=2. Pinned by
+  `armed_frozen_decay_is_bit_identical_to_disabled_over_the_same_trace` in
+  `rust/jasper-fanin/src/lane_resampler.rs`. The churn itself is the static-cushion
+  geometry issue guarded above, not the decay code.
 - *Why host-clock is OFF in final settings*: until the probe redesign, the DLL cannot
   pass its own probe in combo mode; its probe steps perturb each session start for zero
   benefit. The resampler alone (±500 ppm) carries stability — proven across 5-min and

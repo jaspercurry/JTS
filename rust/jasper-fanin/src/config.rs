@@ -42,6 +42,21 @@ pub const RING_SLOTS_MAX: u32 = 16;
 /// safe reclaim of the standing cushion.
 pub const CUSHION_DECAY_FLOOR_MARGIN_FRAMES: u32 = 32;
 
+/// The jitter headroom the STATIC held target (`target + warm-up cushion`) must
+/// keep above the post-render underfill-unlock threshold. Same 32-frame DLL
+/// working margin the decay floor uses (they guard the same physical floor from
+/// two directions — decay from above at steady state, this from the static knobs
+/// at config time), so an operator has ONE number for "the safe headroom above
+/// the physical floor." See `Config::from_env`'s static-cushion validation for
+/// why: after rendering one period the cursor-relative fill drops by ~`period`
+/// frames, so the held target must sit at least `period + this` above
+/// `minimum_safe_fill_frames` or ordinary USB delivery coalescing (arrivals
+/// clustering below the deficit in one render interval) underfill-unlocks the
+/// lane every burst — churn-by-construction (PR #1141's decay-floor guard, but
+/// entered here through the static cushion knobs, which had no equivalent
+/// `min_safe`-relative check).
+pub const STATIC_CUSHION_JITTER_MARGIN_FRAMES: u32 = 32;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// ALSA PCM name (or `hw:Card,Dev,Sub`) for the summed output.
@@ -638,6 +653,69 @@ impl Config {
                  open period; 256 is the bridge-proven default, 64 is the lever-2 H1 test knob)",
                 usb_direct_period_frames,
             );
+        }
+
+        // STATIC held-target churn guard (the symmetric sibling of the decay-floor
+        // validation above). When a resampler is armed on the clock-crossing lane
+        // — either via JASPER_FANIN_INPUT_RESAMPLER=enabled OR implied by
+        // JASPER_FANIN_USB_DIRECT=enabled (see `lane_wants_resampler`; the direct
+        // lane has no aloop catch-up fallback, so it always builds one) — the lane
+        // holds the ring at `target + cushion` (the acquisition ceiling) and
+        // renders ONE render period (`period_frames`) each step. So the
+        // steady-state POST-render cursor-relative fill sits at `held - period`.
+        // The lane underfill-unlocks the instant that fill drops below
+        // `minimum_safe_fill_frames` (= ceil(period × max_ratio) + radius + 1). The
+        // held target must therefore sit at least `period + jitter margin` above
+        // minimum_safe_fill, or ordinary USB delivery coalescing (arrivals
+        // clustering below the per-render deficit — the max_avail≈2×period gadget
+        // signature the drain-stats histogram shows) trips lock→silence→relock
+        // every burst: churn-by-construction. This is the SAME failure class the
+        // decay-floor guard above rejects, but entered through the STATIC cushion
+        // knobs, which had no equivalent min_safe-relative check (the fan-in
+        // unlock-churn diagnosis, 2026-07). Fail LOUD whenever a resampler is armed
+        // so a churny knob-set can't ship a lane that diagnostic-visibly thrashes;
+        // gated on the lane actually arming so a stale cushion on a resampler-OFF
+        // box never blocks boot (mirrors the decay-floor guard's arm-gating). The
+        // production defaults (512 + 2048 = 2560 held) clear this by ~2030 frames;
+        // only a hand-tuned lab geometry (e.g. the 256+256=512 held that produced
+        // the observed churn) can trip it.
+        let resampler_armed_on_a_lane = input_resampler_enabled || usb_direct_enabled;
+        if resampler_armed_on_a_lane {
+            let min_safe = jasper_resampler::minimum_safe_fill_frames(
+                period_frames,
+                input_resampler_max_adjust_ppm as f64,
+            ) as u32;
+            let held_target = input_resampler_target_frames + input_resampler_warmup_cushion_frames;
+            let required_held = min_safe + period_frames + STATIC_CUSHION_JITTER_MARGIN_FRAMES;
+            if held_target < required_held {
+                // The steady post-render cursor fill (`held - period`) vs the
+                // underfill-unlock threshold (`min_safe`) — reported as an i64 so a
+                // fill already AT/BELOW the threshold shows a negative headroom
+                // rather than a misleading clamped 0.
+                let post_render_headroom =
+                    held_target as i64 - period_frames as i64 - min_safe as i64;
+                anyhow::bail!(
+                    "JASPER_FANIN_INPUT_RESAMPLER held target (target {} + warm-up cushion {} \
+                     = {}) is too shallow for the armed clock-crossing lane: it must be >= \
+                     minimum_safe_fill {} + one render period {} + {}-frame jitter margin = {}. \
+                     The steady post-render cursor fill would sit only {} frames above the \
+                     underfill-unlock threshold (negative = already at/below it), so ordinary \
+                     USB delivery coalescing thrashes lock->silence->relock \
+                     (churn-by-construction). Raise \
+                     JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES (or _TARGET_FRAMES) so \
+                     target+cushion >= {}, or lower JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM \
+                     / JASPER_FANIN_PERIOD_FRAMES.",
+                    input_resampler_target_frames,
+                    input_resampler_warmup_cushion_frames,
+                    held_target,
+                    min_safe,
+                    period_frames,
+                    STATIC_CUSHION_JITTER_MARGIN_FRAMES,
+                    required_held,
+                    post_render_headroom,
+                    required_held,
+                );
+            }
         }
 
         // DEFAULT-OFF combo-mode host-slaved USB clock. Fail-safe: only the
@@ -1733,6 +1811,161 @@ mod tests {
                 },
             );
         }
+    }
+
+    // ---- static held-target churn guard (the unlock-churn diagnosis fix) ----
+
+    #[test]
+    fn static_cushion_fails_loud_on_churny_lab_geometry_when_resampler_armed() {
+        // The exact deployed lab geometry that produced the observed unlock
+        // churn: target 256 + cushion 256 = 512 held, period 256, max_ppm 500.
+        // min_safe = 274, required = 274 + 256 + 32 = 562 > 512 → must fail loud
+        // so a churn-by-construction knob-set cannot ship silently.
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("256")),
+                (
+                    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
+                    Some("256"),
+                ),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
+            ],
+            || {
+                let err = Config::from_env()
+                    .expect_err("a held target below min_safe+period+margin must error");
+                let msg = format!("{:#}", err);
+                assert!(
+                    msg.contains("held target") && msg.contains("churn-by-construction"),
+                    "expected static-cushion churn error, got: {msg}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn static_cushion_churn_guard_also_fires_in_usb_direct_mode() {
+        // The live churn was observed in USB DIRECT mode, which arms a resampler
+        // on the usbsink lane WITHOUT JASPER_FANIN_INPUT_RESAMPLER (see
+        // lane_wants_resampler). The guard must fire for the direct-armed path
+        // too — gating on input_resampler_enabled alone would miss exactly the
+        // configuration that produced the evidence.
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_RESAMPLER", None),
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("256")),
+                (
+                    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
+                    Some("256"),
+                ),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
+            ],
+            || {
+                let err = Config::from_env()
+                    .expect_err("USB DIRECT with a churny held target must error");
+                let msg = format!("{:#}", err);
+                assert!(
+                    msg.contains("held target") && msg.contains("churn-by-construction"),
+                    "expected static-cushion churn error in direct mode, got: {msg}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn static_cushion_production_default_passes_the_churn_guard() {
+        // The production default held target (512 + 2048 = 2560) clears the guard
+        // by a wide margin — the fix must not perturb the shipping geometry.
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", None),
+                ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
+                ("JASPER_FANIN_PERIOD_FRAMES", None),
+                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", None),
+            ],
+            || {
+                let cfg = Config::from_env().expect("production defaults must pass the guard");
+                assert_eq!(
+                    cfg.input_resampler_target_frames + cfg.input_resampler_warmup_cushion_frames,
+                    2560,
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn static_cushion_boundary_is_exact() {
+        // The guard is `held >= min_safe + period + margin`. At period 256 /
+        // max_ppm 500, min_safe = 274, so required held = 274 + 256 + 32 = 562.
+        // target 306 + cushion 256 = 562 (exactly required) must PASS; one under
+        // (cushion 255 → 561) must FAIL. Pins the strict boundary.
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("306")),
+                (
+                    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
+                    Some("256"),
+                ),
+            ],
+            || {
+                let cfg = Config::from_env().expect("held == required must pass (>= boundary)");
+                assert_eq!(
+                    cfg.input_resampler_target_frames + cfg.input_resampler_warmup_cushion_frames,
+                    562,
+                );
+            },
+        );
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("306")),
+                (
+                    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
+                    Some("255"),
+                ),
+            ],
+            || {
+                let err = Config::from_env().expect_err("held one under required must error");
+                let msg = format!("{:#}", err);
+                assert!(
+                    msg.contains("held target"),
+                    "expected churn error, got: {msg}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn static_cushion_churn_guard_ignored_when_resampler_off() {
+        // A churny cushion on a resampler-OFF box (neither flag armed) must NOT
+        // block boot — the guard is gated on the lane actually arming, mirroring
+        // the decay-floor guard. No resampler is built, so no churn is possible.
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_RESAMPLER", None),
+                ("JASPER_FANIN_USB_DIRECT", None),
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("256")),
+                (
+                    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
+                    Some("256"),
+                ),
+            ],
+            || {
+                let cfg =
+                    Config::from_env().expect("resampler-off box must ignore a churny cushion");
+                assert!(!cfg.input_resampler_enabled);
+                assert!(!cfg.usb_direct_enabled);
+            },
+        );
     }
 
     #[test]
