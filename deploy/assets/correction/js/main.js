@@ -64,6 +64,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var currentCorrectionBanner = document.getElementById('current-correction');
   var currentCorrectionLabel = document.getElementById('current-correction-label');
   var currentCorrectionResetBtn = document.getElementById('current-correction-reset');
+  // Stepped-wizard chrome (P3b) — driven by GET /envelope.
+  var wizardChrome = document.getElementById('wizard-chrome');
+  var wizardSteps = document.getElementById('wizard-steps');
+  var wizardVerdict = document.getElementById('wizard-verdict');
+  var wizardNudges = document.getElementById('wizard-nudges');
+  var wizardNextBtn = document.getElementById('wizard-next');
   var constraintsBlock = document.getElementById('constraints');
   var rowsTbody = document.getElementById('constraint-rows');
   var errBanner = document.getElementById('err-banner');
@@ -134,6 +140,58 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var selectedCalibrationMeta = null;
   var selectedInputDevice = null;
   var wakeLockSentinel = null;
+
+  // Stepped-wizard (P3b) envelope-poll bookkeeping. The /status poll stays
+  // the capture/upload/autolevel mechanism layer; the ENVELOPE drives the
+  // user-facing wizard chrome (step, verdict, nudges, primary action). To
+  // honour the P3b-1 reviewer's poll discipline — hot-poll only during
+  // active capture, fetch once per state change on static screens — we
+  // track the last screen/state the envelope reported and refresh it on a
+  // transition, plus a low-frequency tick while a capture screen is live.
+  var lastEnvelopeState = null;
+  var envelopeTimer = null;
+  // One bounded retry credit per failure streak: each successful envelope
+  // fetch (and each fresh trigger — state change, wizard click, landing)
+  // re-arms it; a failure consumes it to schedule exactly one retry. Two
+  // consecutive failures stop until the next external trigger, so a
+  // persistent outage never turns into a retry loop on a static screen.
+  var envelopeRetryArmed = false;
+  // Probe-visible fetch counter (harness reads this to prove fetch-once
+  // discipline: it must increment once per state change, not per poll tick).
+  var envelopeFetchCount = 0;
+
+  // Logical screens whose data is live-updating (capture in flight or a
+  // short server-side transient) — the only screens the envelope is
+  // re-fetched on a timer. Static screens (idle/review/apply/result) are
+  // edge-triggered off a state change, never hot-polled.
+  var ACTIVE_ENVELOPE_SCREENS = {
+    mic: true, level: true, sweep: true, verify: true,
+  };
+
+  // Ordered wizard spine + homeowner labels for the step indicator. Mirrors
+  // envelope._PROGRESS_SPINE (idle, sweep, review, apply, verify, result) so
+  // progress.position indexes the same six steps the server counts.
+  var WIZARD_STEP_LABELS = [
+    'Set up', 'Measure', 'Review', 'Apply', 'Verify', 'Done',
+  ];
+
+  // Screen -> which existing workflow sections are visible. The router owns
+  // top-level phase visibility; applyButtonPolicy still governs the
+  // fine-grained mechanism buttons inside measure-section. Sections not
+  // listed for a screen are hidden by the router. `measure` is the big
+  // workflow block (mic-level, options, action buttons, result); it stays
+  // visible from the mic step through result so the capture UI the browser
+  // drives is reachable. `result` shows the frequency-response review.
+  var SCREEN_SECTIONS = {
+    idle:   { measure: false, result: false },
+    mic:    { measure: true,  result: false },
+    level:  { measure: true,  result: false },
+    sweep:  { measure: true,  result: false },
+    review: { measure: true,  result: true },
+    apply:  { measure: true,  result: true },
+    verify: { measure: true,  result: true },
+    result: { measure: true,  result: true },
+  };
 
   // For the three audio-processing flags (echoCancellation,
   // noiseSuppression, autoGainControl), iOS Safari often returns
@@ -903,6 +961,322 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
     await refreshCurrentCorrection();
     currentCorrectionResetBtn.disabled = false;
+  }
+
+  // ==========================================================================
+  // Stepped-wizard router (P3b) — dumb frontend over GET /envelope.
+  //
+  // The server hands one JSON screen envelope per step (jasper/correction/
+  // envelope.py): {screen, verdict_text, nudges[], next_action, progress,
+  // curves (server-smoothed), fill_segments, headline}. The browser renders
+  // it verbatim — no client DSP, no client thresholds, no re-deriving the
+  // step. Nudges are homeowner sentences with a severity (info|warn) and
+  // NEVER gate: the primary action stays live even under a warn nudge. This
+  // is the presentation contract; the /status poll below still owns the
+  // capture/upload/autolevel/relay mechanics the envelope can't express.
+  // ==========================================================================
+
+  // Render the step indicator from envelope.progress ({position, total}).
+  // Homeowner labels come from WIZARD_STEP_LABELS; the server owns which
+  // position is current, so the browser never re-counts the flow.
+  function renderProgress(progress) {
+    if (!wizardSteps) return;
+    var total = Number(progress && progress.total) || WIZARD_STEP_LABELS.length;
+    var position = Number(progress && progress.position) || 1;
+    wizardSteps.innerHTML = '';
+    for (var i = 1; i <= total; i++) {
+      var li = document.createElement('li');
+      li.className = 'wizard-step' +
+        (i === position ? ' current' : (i < position ? ' done' : ''));
+      var dot = document.createElement('span');
+      dot.className = 'wizard-step__dot';
+      dot.setAttribute('aria-hidden', 'true');
+      var label = document.createElement('span');
+      label.className = 'wizard-step__label';
+      // Labels are a fixed client-owned lexicon (not untrusted); still use
+      // textContent so no markup path exists.
+      label.textContent = WIZARD_STEP_LABELS[i - 1] || ('Step ' + i);
+      li.appendChild(dot);
+      li.appendChild(label);
+      wizardSteps.appendChild(li);
+    }
+    wizardSteps.setAttribute(
+      'aria-label', 'Step ' + position + ' of ' + total,
+    );
+  }
+
+  // Render the homeowner nudges (a sentence + a severity). Each nudge text
+  // is server-authored plain English; escapeText keeps it inert if a future
+  // nudge ever carries an interpolated device/room string. Severity drives
+  // the tone class only — a nudge NEVER disables anything (the "measurement
+  // quality nudges, never blocks" rule).
+  function renderNudges(nudges) {
+    if (!wizardNudges) return;
+    wizardNudges.innerHTML = '';
+    if (!nudges || !nudges.length) {
+      wizardNudges.classList.add('hidden');
+      return;
+    }
+    wizardNudges.classList.remove('hidden');
+    nudges.forEach(function (nudge) {
+      if (!nudge || !nudge.text) return;
+      var sev = nudge.severity === 'warn' ? 'warn' : 'info';
+      var row = document.createElement('div');
+      row.className = 'wizard-nudge ' + sev;
+      var icon = document.createElement('span');
+      icon.className = 'wizard-nudge__icon';
+      icon.setAttribute('aria-hidden', 'true');
+      // A checkmark for info ("you can continue"), a caret for warn — both
+      // are advisory; the copy itself always says continue is fine.
+      icon.textContent = sev === 'warn' ? '!' : '✓';
+      var text = document.createElement('span');
+      text.className = 'wizard-nudge__text';
+      text.textContent = String(nudge.text);
+      row.appendChild(icon);
+      row.appendChild(text);
+      wizardNudges.appendChild(row);
+    });
+  }
+
+  // Render the single primary action from envelope.next_action
+  // ({label, endpoint}) or null. The button is ALWAYS live when present —
+  // nudges never disable it. Clicking POSTs the server-named endpoint and
+  // then refreshes both the mechanism (/status) and the chrome (/envelope).
+  // next_action === null means a browser-driven or terminal step: no button.
+  function renderPrimaryAction(nextAction) {
+    if (!wizardNextBtn) return;
+    if (!nextAction || !nextAction.endpoint) {
+      wizardNextBtn.classList.add('hidden');
+      wizardNextBtn.textContent = '';
+      wizardNextBtn.removeAttribute('data-endpoint');
+      return;
+    }
+    wizardNextBtn.textContent = String(nextAction.label || 'Continue');
+    wizardNextBtn.setAttribute('data-endpoint', String(nextAction.endpoint));
+    wizardNextBtn.disabled = false;   // nudges never gate the action
+    wizardNextBtn.classList.remove('hidden');
+  }
+
+  // The forward endpoint the wizard's next_action carries for each session
+  // state — a client mirror of envelope._NEXT_ACTION keyed by state (idle,
+  // verified, and failed all forward to /start: "Start measuring" /
+  // "Measure again"). Two consumers: (a) wizardProvidesForwardAction below
+  // (legacy-button subordination), (b) retireStaleWizardAction (staleness
+  // detection when an envelope refresh fails mid-flow). States absent from
+  // this map (capture screens, transients like analyzing) expect NO wizard
+  // forward action, so a displayed one is treated as stale on an outage.
+  var WIZARD_FORWARD_ACTION_BY_STATE = {
+    idle: '/start',
+    ready: '/apply',
+    applied: '/verify',
+    verified: '/start',
+    failed: '/start',
+  };
+
+  // True iff the wizard is CURRENTLY showing exactly this forward action:
+  // chrome visible, button visible, the displayed data-endpoint matches,
+  // and the static map agrees it belongs to the current state (so a stale
+  // button left over from the previous state never counts).
+  // applyButtonPolicy uses this to subordinate the legacy in-section
+  // Apply/Verify buttons — requiring the *displayed* endpoint to match
+  // makes the suppression correct-by-construction: if the envelope path is
+  // down, cold-load failed, or the shown action is stale after a state
+  // advance, this returns false and the legacy button stays as the fallback
+  // (never strand the user). Ordering note: on a transition the /status
+  // policy pass runs before the async envelope render lands, so the legacy
+  // button may show for one fetch (~50 ms) and is then retired by
+  // reconcileLegacyPrimaryButtons — a brief correct-action overlap, never a
+  // wrong single action.
+  function wizardProvidesForwardAction(endpoint) {
+    if (!wizardChrome || wizardChrome.classList.contains('hidden')) return false;
+    if (!wizardNextBtn || wizardNextBtn.classList.contains('hidden')) return false;
+    if (wizardNextBtn.getAttribute('data-endpoint') !== endpoint) return false;
+    return WIZARD_FORWARD_ACTION_BY_STATE[currentState] === endpoint;
+  }
+
+  // Mid-flow envelope-only outage repair: the session advanced but the
+  // envelope refresh failed, so the chrome may still display the PREVIOUS
+  // state's action (e.g. "Apply" after the session already reached
+  // applied). A stale action pointing at the wrong endpoint is worse than
+  // no wizard action — hide it, so the legacy in-section button (already
+  // re-surfaced by applyButtonPolicy this cycle, since
+  // wizardProvidesForwardAction saw the mismatch) is the single, correct
+  // action. A displayed action that still matches the current state is
+  // left alone (e.g. /start is right for idle, verified, and failed).
+  function retireStaleWizardAction() {
+    if (!wizardNextBtn || wizardNextBtn.classList.contains('hidden')) return;
+    var displayed = wizardNextBtn.getAttribute('data-endpoint');
+    var expected = WIZARD_FORWARD_ACTION_BY_STATE[currentState] || null;
+    if (displayed !== expected) {
+      renderPrimaryAction(null);
+    }
+  }
+
+  // Hide the legacy in-section Apply/Verify buttons when the wizard's single
+  // primary action now owns them. Called after an envelope render so the
+  // suppression reflects the freshly-shown chrome regardless of the
+  // applyButtonPolicy-vs-async-render order within a poll cycle. Only hides
+  // (never shows) — applyButtonPolicy is still the authority on when a
+  // button may appear; this just removes the duplicate once the wizard is up.
+  function reconcileLegacyPrimaryButtons() {
+    if (applyBtn && wizardProvidesForwardAction('/apply')) {
+      applyBtn.classList.add('hidden');
+    }
+    if (verifyBtn && wizardProvidesForwardAction('/verify')) {
+      verifyBtn.classList.add('hidden');
+    }
+  }
+
+  // Delegated click for the wizard primary action. Reads the endpoint from
+  // the data-* attribute the router set (no interpolated inline handler).
+  async function onWizardNextClick() {
+    var ep = wizardNextBtn.getAttribute('data-endpoint');
+    if (!ep) return;
+    wizardNextBtn.disabled = true;
+    try {
+      await postJson(ep.replace(/^\/+/, ''), {});
+    } catch (e) {
+      setStateBadge('failed', e.message);
+    } finally {
+      wizardNextBtn.disabled = false;
+    }
+    pollState();
+    envelopeRetryArmed = true;   // a fresh trigger grants one retry credit
+    refreshEnvelope();
+    // Apply/reset also move the current-correction banner.
+    refreshCurrentCorrection();
+  }
+
+  // Show/hide the top-level workflow sections for the current screen. The
+  // router owns phase visibility; applyButtonPolicy still governs the
+  // mechanism buttons inside measure-section. Unknown screens fall back to
+  // showing the measure section (never strand the user with nothing).
+  // `curves` is the envelope's own curves object — the SINGLE source for the
+  // review/result chart visibility (never client-side state like lastResult,
+  // which is empty after a mid-flow page reload even though the server has a
+  // measured curve): no measured curve -> no chart frame; envelope measured
+  // curve -> chart shown before drawEnvelopeCurves draws into it.
+  function showScreenSections(screen, curves) {
+    var spec = SCREEN_SECTIONS[screen] || { measure: true, result: false };
+    hideEl(measureSection, !spec.measure);
+    var haveResult = !!(curves && curves.measured);
+    hideEl(resultSection, !(spec.result && haveResult));
+  }
+
+  // The envelope router. Renders the full wizard chrome from one envelope
+  // and, on review/result, draws the server-smoothed curves + headline into
+  // the SAME canvas the /status path uses (the browser renders server data
+  // verbatim — no client smoothing on this path).
+  function renderEnvelope(env) {
+    if (!env || !wizardChrome) return;
+    wizardChrome.classList.remove('hidden');
+    if (wizardVerdict) wizardVerdict.textContent = String(env.verdict_text || '');
+    renderNudges(env.nudges);
+    renderPrimaryAction(env.next_action);
+    renderProgress(env.progress);
+    showScreenSections(env.screen, env.curves || {});
+    // The chrome is now visible with its primary action, so retire any
+    // duplicate legacy in-section Apply/Verify button the earlier
+    // applyButtonPolicy pass may have shown before this async render landed
+    // (the envelope render can arrive after applyButtonPolicy in a poll
+    // cycle). Idempotent; keeps the single-primary-action contract.
+    reconcileLegacyPrimaryButtons();
+    // On the review/result screens the envelope carries the honest,
+    // server-smoothed curves + Pi-classified two-tone fill. Draw them into
+    // the shared canvas via drawEnvelopeCurves so the "what your room is
+    // doing" view is the server's numbers, not a client recomputation.
+    if (env.screen === 'review' || env.screen === 'result') {
+      drawEnvelopeCurves(env);
+    }
+  }
+
+  // Draw the envelope's server-smoothed curves + two-tone fill + headline.
+  // Bridges the envelope shape onto the existing drawChart contract: the
+  // envelope's `verify` curve becomes drawChart's lastVerify overlay, and
+  // fill_segments ride in on a synthesized `verify_before_after` payload so
+  // drawBeforeAfterFill consumes them exactly as it does on the /status
+  // path (server tones verbatim — pinned by the render harness). Curves are
+  // already 1/N-oct smoothed on the Pi, so smoothCurve (client display
+  // smoothing) is a near no-op here; the honest server data is what draws.
+  function drawEnvelopeCurves(env) {
+    var curves = env.curves || {};
+    if (!curves.measured) return;   // nothing to draw before the first sweep
+    if (curves.verify) {
+      lastVerify = curves.verify;   // drawChart reads this for the overlay
+    }
+    // The one-number headline (env.headline) is already folded into
+    // verdict_text by the server for the result screen, so it needs no
+    // separate render here — the verdict line carries it.
+    var payload = {};
+    if (env.fill_segments && env.fill_segments.length && curves.verify) {
+      payload.verify_before_after = { fill_segments: env.fill_segments };
+    }
+    // result-section visibility is owned by showScreenSections (gated on
+    // these same envelope curves), which renderEnvelope ran just before
+    // this — the canvas is already laid out; no second un-hide here.
+    void canvas.offsetWidth;   // force layout so getBoundingClientRect is real
+    drawChart(curves.measured, curves.target || null, curves.predicted || null, payload);
+  }
+
+  // Fetch the screen envelope once and render it. Increments a probe-visible
+  // counter so the harness can prove the fetch-once-per-state-change
+  // discipline. Fail-soft: an envelope fetch error never disturbs the
+  // /status mechanism path (the chrome just keeps its last render).
+  async function refreshEnvelope() {
+    envelopeFetchCount += 1;
+    try {
+      var resp = await fetch(endpoint('envelope'), { cache: 'no-store' });
+      if (!resp.ok) throw new Error('envelope ' + resp.status);
+      var env = await resp.json();
+      lastEnvelopeState = env.state;
+      envelopeRetryArmed = true;   // success re-arms one retry credit
+      renderEnvelope(env);
+      scheduleEnvelopePoll(env.screen);
+    } catch (e) {
+      // Chrome degrades to its last good render; mechanism path is
+      // unaffected. Two repairs: (1) if the displayed primary action no
+      // longer matches the session state (mid-flow envelope-only outage),
+      // retire it so the legacy fallback is the single correct action;
+      // (2) spend the one retry credit so a transient blip (a 503 during a
+      // deploy restart) self-heals without hot-polling a static screen.
+      console.warn('envelope refresh failed', e);
+      retireStaleWizardAction();
+      if (envelopeRetryArmed) {
+        envelopeRetryArmed = false;
+        if (envelopeTimer) clearTimeout(envelopeTimer);
+        envelopeTimer = setTimeout(refreshEnvelope, 1500);
+      }
+    }
+  }
+
+  // Poll discipline (P3b-1 reviewer advisory): re-fetch the envelope on a
+  // timer ONLY while an active-capture screen is live. Static screens
+  // (idle/review/apply/result) are edge-triggered off a /status state
+  // change (see maybeRefreshEnvelopeOnStateChange) and are never hot-polled
+  // — server-smoothed curves ride those envelopes at ~25–50 ms/GET on a Pi,
+  // too costly to spin on.
+  function scheduleEnvelopePoll(screen) {
+    if (envelopeTimer) { clearTimeout(envelopeTimer); envelopeTimer = null; }
+    if (ACTIVE_ENVELOPE_SCREENS[screen]) {
+      envelopeTimer = setTimeout(refreshEnvelope, 900);
+    }
+  }
+
+  // Edge-trigger: called from pollState. A /status state transition is the
+  // one moment a static screen's envelope can change, so refresh exactly
+  // then — not on every 500 ms /status tick. The one exception is the
+  // "level" screen, which the server derives from the autolevel sub-state
+  // while the session stays IDLE; so also refresh when the autolevel status
+  // changes under an unchanged state. `autolevelStatus` may be undefined
+  // (no ramp) — treated as a stable value so it only fires on real changes.
+  var lastAutolevelStatus = null;
+  function maybeRefreshEnvelopeOnStateChange(state, autolevelStatus) {
+    var al = autolevelStatus || 'idle';
+    if (state !== lastEnvelopeState || al !== lastAutolevelStatus) {
+      lastAutolevelStatus = al;
+      envelopeRetryArmed = true;   // a fresh trigger grants one retry credit
+      refreshEnvelope();
+    }
   }
 
   function renderPEQs(peqs) {
@@ -2233,10 +2607,19 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       runBtn.disabled = true;
       autolevelBtn.disabled = true;
     } else if (state === 'ready') {
-      applyBtn.classList.remove('hidden');
+      // The stepped-wizard primary action (GET /envelope's next_action) now
+      // owns "Apply correction". Only fall back to the legacy in-section
+      // Apply button when the wizard isn't providing it (envelope path down
+      // / cold-load fetch failure) — so the user is never stranded without
+      // an apply path. Reset has no wizard equivalent, so it always shows.
+      if (!wizardProvidesForwardAction('/apply')) {
+        applyBtn.classList.remove('hidden');
+      }
       resetBtn.classList.remove('hidden');
     } else if (state === 'applied' || state === 'verified') {
-      if (!relayMode) verifyBtn.classList.remove('hidden');
+      // Same subordination for "Verify" — the wizard owns it; the legacy
+      // button is the fallback when the wizard isn't showing it.
+      if (!relayMode && !wizardProvidesForwardAction('/verify')) verifyBtn.classList.remove('hidden');
       resetBtn.classList.remove('hidden');
     }
   }
@@ -2284,6 +2667,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       renderConfidence(s);
       renderRuntimeIntegrity(s);
       applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');
+      // Edge-trigger the envelope-driven wizard chrome on a real transition
+      // (state change, or autolevel sub-state change that flips the "level"
+      // screen). Static screens are refreshed exactly here — never on every
+      // /status tick — honouring the P3b-1 poll discipline.
+      maybeRefreshEnvelopeOnStateChange(
+        s.state, s.autolevel ? s.autolevel.status : 'idle',
+      );
 
       if (s.state === 'needs_next_position') {
         positionCurrent.textContent = (s.current_position + 1);
@@ -2550,6 +2940,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   autolevelBtn.addEventListener('click', function () { startAutolevel(); });
   autolevelCancelBtn.addEventListener('click', function () { cancelAutolevel(); });
   currentCorrectionResetBtn.addEventListener('click', function () { resetFromBanner(); });
+  if (wizardNextBtn) {
+    wizardNextBtn.addEventListener('click', function () { onWizardNextClick(); });
+  }
   loadSessionsBtn.addEventListener('click', function () { loadSessionReports(); });
   sessionHistory.addEventListener('click', function (ev) {
     var target = ev.target && ev.target.closest
@@ -2580,6 +2973,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
   updateMicCalibrationRows();
   refreshCurrentCorrection();
+  // Initial paint of the stepped-wizard chrome from the server envelope.
+  // (Both landing paths reach here; the plain-HTTP deep-link fallback above
+  // returns before this, so it never fires there.)
+  envelopeRetryArmed = true;   // landing grants one retry credit
+  refreshEnvelope();
 
   // Redraw chart on resize / orientation change — without this, the
   // canvas's drawing surface stays at the dimensions it had on the

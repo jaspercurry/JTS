@@ -531,6 +531,19 @@ __TABS__
   <button id="current-correction-reset" type="button" class="btn btn--danger hidden">Reset correction</button>
 </div>
 
+<!-- Stepped-wizard chrome (P3b). Server-computed screen envelope (GET
+     /envelope) drives everything here: which step you're on, the one
+     plain-language verdict, homeowner nudges (a sentence + severity, never
+     a block), the single primary action (always live — nudges never
+     disable it), and the step indicator. The workflow sections below stay;
+     the router shows the ones the current step needs. -->
+<section id="wizard-chrome" class="wizard-chrome hidden" aria-live="polite">
+  <ol id="wizard-steps" class="wizard-steps" aria-label="Room correction steps"></ol>
+  <p id="wizard-verdict" class="wizard-verdict"></p>
+  <div id="wizard-nudges" class="wizard-nudges"></div>
+  <button id="wizard-next" type="button" class="btn btn--primary hidden"></button>
+</section>
+
 <section id="relay-panel" class="relay-panel hidden" aria-live="polite">
   <h2 style="margin-top:0">Room measurement</h2>
   <p class="hint">JTS will open a guided capture page on <code>capture.jasper.tech</code>. The phone records first; the speaker plays only after that page is ready.</p>
