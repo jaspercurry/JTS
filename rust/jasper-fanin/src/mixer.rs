@@ -1524,17 +1524,29 @@ impl Mixer {
         let locked = resampler.is_locked();
         let unlock_count = resampler.unlock_count();
         let decay_at_floor = resampler.decay_at_floor();
+        // The LIVE proof-present signal — the SAME `flag_present` atomic the
+        // resampler's session-boundary snap-back reads to pick floor-vs-ceiling.
+        // Passing it into the tracker makes the per-lock `floor_primed`
+        // revalidation gate and the snap destination share one source of truth: a
+        // lock that primed at the floor (proof live) is revalidated; a lock after a
+        // revoke (proof cleared) is not.
+        let floor_primed_now = hc.obs.flag_present.load(Ordering::Relaxed);
 
         // 1. Lock-edge bookkeeping + one-strike revalidation, in the pure tracker.
         // `step` runs the revalidation against the PRE-reset baseline (so the
         // falling-edge underfill unlock is caught — the ONLY period where an
         // underfill unlock presents, since `unlock_for_underfill` sets `locked=false`
         // in the same render period it bumps `unlock_count`), then applies the
-        // lock-edge bookkeeping. It returns the revoke decision plus the observed
-        // edges so the proof machine's reset stays in lock-step with the tracker.
-        let step = hc
-            .revalidation
-            .step(locked, unlock_count, probe_code, ladder_l2);
+        // lock-edge bookkeeping. It re-samples `floor_primed` from the live proof at
+        // the rising edge and returns the revoke decision plus the observed edges so
+        // the proof machine's reset stays in lock-step with the tracker.
+        let step = hc.revalidation.step(
+            locked,
+            unlock_count,
+            probe_code,
+            ladder_l2,
+            floor_primed_now,
+        );
         if let Some(reason) = step.revoke {
             // One strike: snap the held target back to the full ceiling and delete
             // the persisted proof so the next session descends + re-proves.

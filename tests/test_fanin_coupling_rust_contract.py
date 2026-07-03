@@ -285,25 +285,57 @@ def test_cushion_decay_held_target_is_single_source_of_truth():
     assert '"frozen_reason"' in state_text
 
 
-def test_cushion_decay_snaps_back_to_ceiling_on_lock_loss():
-    """Lock-loss paths must snap the decayed held target back to the ceiling.
+def test_cushion_decay_session_boundary_snap_honours_the_live_proof():
+    """Session-boundary paths must snap the held target via the proof-honouring
+    primitive, NOT the unconditional ceiling snap.
 
-    A re-acquisition must seat at the full cushion, not the shallow decayed depth,
-    or the lane would relock-thrash. `reset` (idle/host-pause) and
-    `unlock_for_underfill` (starvation) both call `snap_decay_back`.
+    Per-session prime-at-floor (PR #1146 → per-session): `reset` (idle/host-pause /
+    device-loss) and `unlock_for_underfill` (starvation = the natural session end)
+    both call `snap_decay_back_honoring_proof`, which re-primes at the FLOOR when a
+    live valid proof is present (skip the ~2.5-min descent every session) and the
+    CEILING otherwise. The unconditional `snap_decay_back` (ceiling) is reserved for
+    the revocation escape (`snap_decay_to_ceiling`).
     """
     resampler_text = _lane_resampler_rs_text()
     assert "fn snap_decay_back(" in resampler_text
-    # Both lock-loss paths snap the decay back before the next lock seats.
+    assert "fn snap_decay_back_honoring_proof(" in resampler_text, (
+        "the per-session honouring snap primitive must exist"
+    )
+    # Both session-boundary paths route through the honouring snap so a live proof
+    # re-primes at the floor.
     reset_start = resampler_text.index("pub fn reset(")
     reset_end = resampler_text.index("fn ", reset_start + 10)
-    assert "snap_decay_back" in resampler_text[reset_start:reset_end], (
-        "reset() must snap the decayed held target back to the ceiling"
+    assert "snap_decay_back_honoring_proof" in resampler_text[reset_start:reset_end], (
+        "reset() must snap via snap_decay_back_honoring_proof (floor when a proof is live)"
     )
     unlock_start = resampler_text.index("fn unlock_for_underfill(")
     unlock_end = resampler_text.index("fn render_silence(", unlock_start)
-    assert "snap_decay_back" in resampler_text[unlock_start:unlock_end], (
-        "unlock_for_underfill() must snap the decayed held target back to the ceiling"
+    assert (
+        "snap_decay_back_honoring_proof" in resampler_text[unlock_start:unlock_end]
+    ), (
+        "unlock_for_underfill() must snap via snap_decay_back_honoring_proof "
+        "(the natural session end honours the live proof)"
+    )
+
+    # The revocation escape stays the UNCONDITIONAL ceiling snap — a distrusted
+    # proof must always re-acquire deep, never re-prime at the floor.
+    ceiling_start = resampler_text.index("pub fn snap_decay_to_ceiling(")
+    ceiling_end = resampler_text.index("fn ", ceiling_start + 10)
+    ceiling_body = resampler_text[ceiling_start:ceiling_end]
+    assert "self.snap_decay_back(" in ceiling_body, (
+        "snap_decay_to_ceiling must call the UNCONDITIONAL snap_decay_back (ceiling)"
+    )
+    assert "snap_decay_back_honoring_proof" not in ceiling_body, (
+        "the revoke escape must NOT honour the proof — it always snaps to the ceiling"
+    )
+
+    # The proof-validity signal at snap time is the SAME `flag_present` atomic the
+    # revoke path clears — single source of truth (no second copy).
+    assert "fn live_proof_present(" in resampler_text
+    live_start = resampler_text.index("fn live_proof_present(")
+    live_end = resampler_text.index("fn ", live_start + 10)
+    assert "flag_present" in resampler_text[live_start:live_end], (
+        "live_proof_present must read the shared flag_present atomic (the revoke SSOT)"
     )
 
 
@@ -362,6 +394,44 @@ def test_host_compliance_status_block_and_wiring():
         "event=fanin.host_compliance.prime_at_floor",
     ):
         assert event in mixer_text, f"mixer must emit {event}"
+
+
+def test_host_compliance_prime_is_per_session_not_construction_only():
+    """The prime-at-floor is PER-SESSION: the session-boundary snap honours the
+    live proof and the revalidation `floor_primed` is re-sampled per lock.
+
+    Hardware evidence (jts.local 2026-07-03): a second session in ONE fanin daemon
+    lifetime was descending from the full ceiling because the prime happened only at
+    lane construction. The fix routes both session-boundary snaps through the
+    proof-honouring primitive AND feeds the tracker the LIVE `flag_present` at each
+    lock so session B (primed off session A's fresh proof) both seats at the floor
+    and runs the one-strike revalidation.
+    """
+    mixer_text = _mixer_rs_text()
+    resampler_text = _lane_resampler_rs_text()
+    host_compliance_text = _host_compliance_rs_text()
+
+    # The RevalidationTracker.step takes the live per-lock prime signal, and the
+    # mixer feeds it from the SAME flag_present atomic (single source of truth).
+    assert "floor_primed_now: bool" in host_compliance_text, (
+        "RevalidationTracker::step must take the live per-lock floor_primed signal"
+    )
+    assert "self.floor_primed = floor_primed_now" in host_compliance_text, (
+        "the tracker must re-sample floor_primed at the rising edge (per-lock)"
+    )
+    assert "hc.obs.flag_present.load(Ordering::Relaxed)" in mixer_text, (
+        "the mixer must feed step() the live flag_present (the revoke SSOT), so the "
+        "snap destination and the per-lock revalidation gate share one signal"
+    )
+    # The honouring snap re-primes at the floor via the same prime_at_floor the
+    # construction path uses (one floor-prime mechanism, called per session).
+    honor_start = resampler_text.index("fn snap_decay_back_honoring_proof(")
+    honor_end = resampler_text.index("fn live_proof_present(", honor_start)
+    honor_body = resampler_text[honor_start:honor_end]
+    assert "self.decay.prime_at_floor()" in honor_body, (
+        "the honouring snap must re-prime at the floor via prime_at_floor when a "
+        "live proof is present"
+    )
 
 
 def test_servo_thread_exit_clears_reverse_signals():

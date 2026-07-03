@@ -573,11 +573,14 @@ impl LaneResampler {
         self.prime_periods = 0;
         self.startup_ramp_frames_remaining = 0;
         self.real_periods_since_lock = 0;
-        // Snap the decayed held target back to the acquisition ceiling NOW so the
-        // next `try_lock` seats at the full cushion (a re-acquisition must start
-        // deep, not at whatever shallow depth decay had reached). Instant + no
-        // glitch — raising a setpoint just lets the fill refill from input.
-        self.snap_decay_back(DecayFrozenReason::Unlocked);
+        // Session-boundary snap: re-prime the next `try_lock` at the FLOOR when a
+        // live host-compliance proof says this host is compliant (skip the
+        // ~2.5-min descent — per-session, not construction-only), else re-seat at
+        // the full acquisition ceiling (a fresh cold start must acquire deep).
+        // Instant + no glitch — moving a setpoint just lets the fill refill from
+        // input. The proof-validity signal is the same atomic the mixer's revoke
+        // path clears, so a revoked/absent proof lands this at the ceiling.
+        self.snap_decay_back_honoring_proof(DecayFrozenReason::Unlocked);
         self.publish_ratio();
     }
 
@@ -646,11 +649,16 @@ impl LaneResampler {
         self.prime_periods = 0;
         self.startup_ramp_frames_remaining = 0;
         self.real_periods_since_lock = 0;
-        // Snap the decayed held target back to the acquisition ceiling so the
-        // NEXT lock seats deep (`startup_prefill_frames` / `try_lock` read
-        // `hold_fill_frames()` == the live gauge). Without this, a re-lock after
-        // decay would seat at the shallow decayed depth and re-thrash lock.
-        self.snap_decay_back(DecayFrozenReason::Unlocked);
+        // Session-boundary snap: the underfill unlock is where a stopped host
+        // (Mac sleeps / stops streaming) ends the session. Re-prime the NEXT lock
+        // at the FLOOR when a live compliance proof says this host is compliant
+        // (a written proof is EVIDENCE the floor held for the settle window with
+        // zero churn), else at the ceiling (a fresh cold start acquires deep).
+        // Self-healing if the floor is later unsustainable: the re-lock re-arms the
+        // early-revalidation window, so an immediate re-underfill revokes the proof
+        // and reverts to the ceiling. Without a snap here, a re-lock after decay
+        // would seat at the shallow decayed depth and re-thrash lock.
+        self.snap_decay_back_honoring_proof(DecayFrozenReason::Unlocked);
         self.publish_fill(if acquisition_underfill {
             self.ring.fill_frames() as u64
         } else {
@@ -660,11 +668,70 @@ impl LaneResampler {
     }
 
     /// Snap the decay's held target back to the acquisition ceiling and publish
-    /// the raised gauge + decay observability immediately. Called from the lock-
-    /// loss paths (`reset`, `unlock_for_underfill`) so a re-acquisition seats at
-    /// the full cushion. Inert (no-op-cheap) when the decay feature is off.
+    /// the raised gauge + decay observability immediately. The UNCONDITIONAL
+    /// ceiling snap: used by [`snap_decay_to_ceiling`](Self::snap_decay_to_ceiling)
+    /// (the revalidation-failure escape, which must always re-seat deep) and, on a
+    /// lock-loss path with NO live compliance proof, by
+    /// [`snap_decay_back_honoring_proof`](Self::snap_decay_back_honoring_proof).
+    /// Inert (no-op-cheap) when the decay feature is off.
     fn snap_decay_back(&mut self, reason: DecayFrozenReason) {
         self.decay.snap_back(reason);
+        self.publish_decay_gauges();
+    }
+
+    /// Snap the decayed held target back at a session boundary (`reset`,
+    /// `unlock_for_underfill`), choosing the destination by the LIVE persisted
+    /// proof: FLOOR when a valid, unrevoked proof is live on this lane (skip the
+    /// ~2.5-min descent for the next session — the whole point of persisted
+    /// compliance, now PER-SESSION rather than construction-only); the CEILING
+    /// otherwise (unchanged — a fresh session with no proof re-acquires deep).
+    ///
+    /// The proof-validity signal is [`live_proof_present`](Self::live_proof_present),
+    /// which reads the SAME `flag_present` atomic the mixer's revoke/write path
+    /// mutates — the single source of truth that governs revocation. So a revoke
+    /// (which clears `flag_present` before any subsequent snap) makes the very next
+    /// session boundary land at the ceiling, and a clean proof makes it land at the
+    /// floor. On the floor path the machine sets its `floor_prime_pending` latch so
+    /// the not-yet-locked prime periods hold the floor across `try_lock` — identical
+    /// to a construction-time prime. Inert (no-op-cheap) when the decay feature is
+    /// off (`live_proof_present` is `false`, so this is the ceiling `snap_back`,
+    /// itself a no-op at the pinned ceiling).
+    fn snap_decay_back_honoring_proof(&mut self, reason: DecayFrozenReason) {
+        if self.live_proof_present() {
+            // A valid proof is live → re-prime at the floor for the next session.
+            // `prime_at_floor` seeds `held == floor`, the `AtFloor` reason, and the
+            // `floor_prime_pending` latch (holds the floor across the pre-lock prime
+            // periods). No-op on a disabled machine, but `live_proof_present` is only
+            // ever true when the feature is armed.
+            self.decay.prime_at_floor();
+        } else {
+            // No live proof → re-acquire from the ceiling (today's behaviour).
+            self.decay.snap_back(reason);
+        }
+        self.publish_decay_gauges();
+    }
+
+    /// Whether a valid, unrevoked host-compliance proof is live on this lane RIGHT
+    /// NOW, read from the shared `flag_present` atomic the mixer owns (set on a
+    /// valid boot load / successful write, cleared on a revoke). This is the ONE
+    /// authoritative "is the proof valid" signal — the same state the mixer's
+    /// revocation path mutates — so the session-boundary snap destination and the
+    /// mixer's per-lock `floor_primed` revalidation gate can never disagree. `false`
+    /// whenever the feature is off (no `compliance` handle was injected). A single
+    /// relaxed atomic load; no allocation.
+    fn live_proof_present(&self) -> bool {
+        self.compliance
+            .as_ref()
+            .map(|c| c.flag_present.load(Ordering::Relaxed))
+            .unwrap_or(false)
+    }
+
+    /// Republish the held-target gauge + decay observability atomics from the
+    /// current decay state. Shared by every path that mutates the decay's held
+    /// target (`snap_decay_back`, `snap_decay_back_honoring_proof`,
+    /// `prime_decay_at_floor`, `tick_decay`) so STATUS and the outer DLL setpoint
+    /// always read a consistent snapshot. Three relaxed stores; no allocation.
+    fn publish_decay_gauges(&self) {
         self.held_target_frames
             .store(self.decay.held(), Ordering::Relaxed);
         self.decay_active
@@ -683,16 +750,13 @@ impl LaneResampler {
     /// ~2.5-min descent) and re-publishes the held-target + decay atomics so
     /// STATUS and the outer DLL setpoint read the floor from period one. A
     /// no-op-cheap when decay is disabled (the held target stays at the ceiling).
+    ///
+    /// Build time is the FIRST prime; subsequent per-session primes ride
+    /// [`snap_decay_back_honoring_proof`](Self::snap_decay_back_honoring_proof) at
+    /// each session boundary (both call `CushionDecay::prime_at_floor`).
     pub fn prime_decay_at_floor(&mut self) {
         self.decay.prime_at_floor();
-        self.held_target_frames
-            .store(self.decay.held(), Ordering::Relaxed);
-        self.decay_active
-            .store(self.decay.active(), Ordering::Relaxed);
-        self.decay_frozen_reason.store(
-            DecayFrozenReason::code(self.decay.frozen_reason()),
-            Ordering::Relaxed,
-        );
+        self.publish_decay_gauges();
     }
 
     /// The configured decay floor (total frames) — the geometry a persisted
@@ -794,18 +858,12 @@ impl LaneResampler {
     /// The decay clock is render PERIODS — this is called exactly once per
     /// `render_period`, never on a wall clock.
     pub fn tick_decay(&mut self, dll_l0_locked: bool, commanded_ppm_abs: f64) {
-        let held = self.decay.tick(DecaySignals {
+        self.decay.tick(DecaySignals {
             locked: self.locked,
             dll_l0_locked,
             commanded_ppm_abs,
         });
-        self.held_target_frames.store(held, Ordering::Relaxed);
-        self.decay_active
-            .store(self.decay.active(), Ordering::Relaxed);
-        self.decay_frozen_reason.store(
-            DecayFrozenReason::code(self.decay.frozen_reason()),
-            Ordering::Relaxed,
-        );
+        self.publish_decay_gauges();
     }
 
     fn publish_ratio(&self) {
@@ -2699,6 +2757,255 @@ mod tests {
         assert_eq!(
             r.startup_prefill_frames(),
             ceiling as usize + RADIUS_FRAMES as usize + 1
+        );
+    }
+
+    // ---- PER-SESSION prime-at-floor (PR #1146 → per-session): the session-end
+    // snap-back honours the LIVE persisted proof --------------------------------
+
+    const CEIL: u64 = (TARGET + CUSHION) as u64;
+    const FLOOR: u64 = (TARGET + 32) as u64;
+
+    /// Inject a live-proof observability handle (mirrors what the mixer's
+    /// `set_compliance_observability` does with the boot-time load) so
+    /// `live_proof_present()` returns `flag_present`. Returns the shared handle so
+    /// the test can flip `flag_present` mid-lifetime exactly as the mixer's
+    /// `on_written` / `on_revoked` do.
+    fn arm_compliance(
+        r: &mut LaneResampler,
+        flag_present: bool,
+    ) -> crate::host_compliance::HostComplianceObservability {
+        let obs = crate::host_compliance::HostComplianceObservability::new(flag_present, 0);
+        r.set_compliance_observability(obs.clone_handles());
+        obs
+    }
+
+    /// Drive a freshly-built armed-decay resampler through a full session A: lock,
+    /// hold the acquisition grace, then decay all the way to the floor under
+    /// sustained lock + l0 + calm. Leaves the lane LOCKED at the floor. Shared by
+    /// the per-session tests so each starts from the exact "session A settled at the
+    /// floor" state the hardware evidence describes.
+    fn settle_to_floor(r: &mut LaneResampler, out: &mut [i16]) {
+        r.push_input(&tone(deep_prefill() + 64));
+        assert_eq!(r.render_period(out), PERIOD as usize, "session A locks");
+        let block = tone(PERIOD as usize);
+        // Acquisition grace so the underfill path treats later starvation as a real
+        // session boundary, not an acquisition underfill.
+        for _ in 0..r.max_prime_periods {
+            r.push_input(&block);
+            r.render_period(out);
+            r.tick_decay(true, 0.0);
+        }
+        for _ in 0..5000 {
+            r.push_input(&block);
+            r.render_period(out);
+            r.tick_decay(true, 0.0);
+            if r.hold_fill_frames() as u64 == FLOOR {
+                break;
+            }
+        }
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            FLOOR,
+            "session A must reach the floor before the session ends"
+        );
+    }
+
+    /// Starve the lane until it underfill-unlocks — the natural session end when
+    /// the host (Mac) stops streaming. Ticks decay each period exactly as the mixer
+    /// does, so the `floor_prime_pending` latch semantics run.
+    fn end_session_by_starving(r: &mut LaneResampler, out: &mut [i16]) {
+        for _ in 0..64 {
+            if !r.is_locked() {
+                break;
+            }
+            r.render_period(out);
+            r.tick_decay(true, 0.0);
+        }
+        assert!(
+            !r.is_locked(),
+            "starving the lane must end the session (unlock)"
+        );
+    }
+
+    #[test]
+    fn per_session_hardware_scenario_session_b_seats_at_floor_in_same_lane() {
+        // THE HARDWARE SCENARIO (jts.local 2026-07-03), reproduced as a state
+        // machine in ONE lane object: session A proves + the proof is written (the
+        // mixer sets flag_present via on_written), the stream stops (underfill
+        // unlock), and session B — a fresh lock in the SAME daemon/lane lifetime —
+        // seats at the FLOOR from its first lock, NOT the 2560 ceiling. This is the
+        // whole fix, and it is ALSO the mutation guard against "snap always goes to
+        // the ceiling" (the pre-fix behaviour) — under that mutation session B would
+        // seat at the ceiling and this asserts it does not.
+        let mut r = build_with_decay();
+        let obs = arm_compliance(&mut r, false); // no proof yet at construction
+        let mut out = vec![0i16; PERIOD as usize * 2];
+
+        // --- Session A: descend to the floor, then "write" the proof. ---
+        settle_to_floor(&mut r, &mut out);
+        obs.on_written(1_700_000_000); // the mixer's ProofOutcome::Write side effect
+
+        // --- Stream stops → session A ends (underfill unlock). ---
+        end_session_by_starving(&mut r, &mut out);
+        // With a live proof, the session-boundary snap re-primes at the FLOOR (the
+        // per-session fix), not the ceiling.
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            FLOOR,
+            "a clean session end with a live proof must re-prime the held target at the FLOOR"
+        );
+        // The prime targets the shallow floor depth, not the ceiling.
+        assert_eq!(
+            r.startup_prefill_frames(),
+            FLOOR as usize + RADIUS_FRAMES as usize + 1,
+            "startup prefill must target the floor, so try_lock seats shallow"
+        );
+
+        // --- Session B: a fresh stream re-locks and seats at the floor. ---
+        // Prime with exactly the floor-depth prefill (+ slack) and render → lock.
+        r.push_input(&tone(FLOOR as usize + RADIUS_FRAMES as usize + 1 + 64));
+        assert_eq!(
+            r.render_period(&mut out),
+            PERIOD as usize,
+            "session B locks"
+        );
+        assert!(r.is_locked());
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            FLOOR,
+            "session B's held target is the floor from its first lock (no re-descent)"
+        );
+        // The seated cursor-relative fill is the floor depth — session B pays the
+        // shallow latency immediately, not the full fat cushion. Allow a small
+        // interpolation-cursor slack.
+        let seated_fill = r.fill_frames_gauge();
+        assert!(
+            seated_fill <= FLOOR + RADIUS_FRAMES as u64,
+            "session B seats shallow (fill {seated_fill} near floor {FLOOR}), not at the ceiling"
+        );
+    }
+
+    #[test]
+    fn per_session_revoked_proof_then_new_session_seats_at_ceiling() {
+        // A revoke mid-life (the mixer clears flag_present via on_revoked) must make
+        // the very NEXT session boundary land at the CEILING: a distrusted proof
+        // means descend + re-prove. Composes the #1146 revocation with the new
+        // per-session snap.
+        let mut r = build_with_decay();
+        let obs = arm_compliance(&mut r, true); // a valid proof is live at construction
+        let mut out = vec![0i16; PERIOD as usize * 2];
+
+        // Session settles at the floor with the live proof.
+        settle_to_floor(&mut r, &mut out);
+        // The mixer revokes (probe fail / L2 / early unlock): snap to ceiling NOW +
+        // clear the flag. `snap_decay_to_ceiling` is the unconditional escape.
+        r.snap_decay_to_ceiling();
+        obs.on_revoked(crate::host_compliance::RevokeReason::ProbeFail);
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            CEIL,
+            "the revoke escape snaps to the ceiling immediately"
+        );
+
+        // A subsequent session end (unlock) with the proof now REVOKED must also
+        // land at the ceiling — not resurrect the floor.
+        // Re-lock first (fresh session), then starve it.
+        r.push_input(&tone(deep_prefill() + 64));
+        assert_eq!(
+            r.render_period(&mut out),
+            PERIOD as usize,
+            "re-lock at ceiling"
+        );
+        end_session_by_starving(&mut r, &mut out);
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            CEIL,
+            "with the proof revoked, the next session boundary re-primes at the CEILING"
+        );
+        assert_eq!(
+            r.startup_prefill_frames(),
+            CEIL as usize + RADIUS_FRAMES as usize + 1,
+            "a revoked lane descends from the full ceiling"
+        );
+    }
+
+    #[test]
+    fn per_session_proof_deleted_mid_lifetime_then_new_session_seats_at_ceiling() {
+        // If the proof is (re)deleted mid-lifetime, the next snap-back must reflect
+        // it. The daemon is the sole writer of the proof lifecycle, so the tracker
+        // state (`flag_present`) mirrors the on-disk truth: clearing it — the in-
+        // daemon effect of a delete — makes the next session boundary land at the
+        // ceiling. (This asserts the snap reads the tracker, per the design.)
+        let mut r = build_with_decay();
+        let obs = arm_compliance(&mut r, true);
+        let mut out = vec![0i16; PERIOD as usize * 2];
+
+        settle_to_floor(&mut r, &mut out);
+        // Proof deleted mid-lifetime → flag_present cleared (the daemon mirrors the
+        // disk state it owns).
+        obs.flag_present.store(false, Ordering::Relaxed);
+
+        end_session_by_starving(&mut r, &mut out);
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            CEIL,
+            "a proof deleted mid-lifetime must make the next session boundary re-prime at the ceiling"
+        );
+    }
+
+    #[test]
+    fn per_session_no_proof_session_end_seats_at_ceiling_mutation_guard() {
+        // MUTATION GUARD against "snap always goes to the FLOOR": with a compliance
+        // handle present but NO live proof (flag_present=false), a clean session end
+        // must re-prime at the CEILING (today's cold-start behaviour). Paired with
+        // the hardware-scenario test (which fails if snap always → ceiling), the two
+        // pin the snap destination to the live-proof signal from both sides.
+        let mut r = build_with_decay();
+        let _obs = arm_compliance(&mut r, false); // handle present, no proof
+        let mut out = vec![0i16; PERIOD as usize * 2];
+
+        settle_to_floor(&mut r, &mut out);
+        end_session_by_starving(&mut r, &mut out);
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            CEIL,
+            "with no live proof the session boundary must re-prime at the CEILING, not the floor"
+        );
+        assert_eq!(
+            r.startup_prefill_frames(),
+            CEIL as usize + RADIUS_FRAMES as usize + 1
+        );
+    }
+
+    #[test]
+    fn per_session_reset_path_also_honours_the_live_proof() {
+        // The explicit `reset()` (mixer idle / device-loss / xrun recovery) is the
+        // other session-boundary path, and it honours the proof the same way as the
+        // underfill unlock: floor with a live proof, ceiling without. Guards that the
+        // fix covers BOTH snap sites, not just the underfill one.
+        let mut r = build_with_decay();
+        let obs = arm_compliance(&mut r, true);
+        let mut out = vec![0i16; PERIOD as usize * 2];
+
+        settle_to_floor(&mut r, &mut out);
+        r.reset();
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            FLOOR,
+            "reset() with a live proof re-primes at the floor"
+        );
+
+        // Flip the proof off and reset again → ceiling.
+        obs.flag_present.store(false, Ordering::Relaxed);
+        // Re-lock then reset so the machine is in a decayed state again.
+        r.push_input(&tone(FLOOR as usize + RADIUS_FRAMES as usize + 1 + 64));
+        assert_eq!(r.render_period(&mut out), PERIOD as usize);
+        r.reset();
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            CEIL,
+            "reset() with no live proof re-primes at the ceiling"
         );
     }
 }
