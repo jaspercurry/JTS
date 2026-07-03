@@ -899,13 +899,28 @@ def test_transport_pipe_status_gate_allows_idle_usb_unlocked_resampler():
 
 @pytest.fixture
 def _ring_assets_present(monkeypatch):
-    """Force the shm_ring activation gate's asset presence to True."""
+    """Force the shm_ring activation gates (asset presence + slot geometry) to pass.
+
+    Both PREFLIGHTs must pass for an arm to proceed: assets present AND the conf.d
+    ring period matching outputd's resolved period. Tests about the ARM SPINE (order,
+    camilla-failure rollback, disarm) stub both so they exercise the daemon path;
+    the geometry-mismatch behaviour has its own dedicated tests below.
+    """
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(
         ra,
         "ring_asset_presence",
         lambda **kw: ra.RingAssetPresence(True, True, True),
+    )
+    monkeypatch.setattr(
+        ra,
+        "ring_geometry_matches_outputd",
+        lambda outputd_period_frames, **kw: ra.RingGeometryMatch(
+            ok=True,
+            conf_period_frames=outputd_period_frames,
+            outputd_period_frames=outputd_period_frames,
+        ),
     )
 
 
@@ -987,6 +1002,89 @@ def test_arm_shm_ring_camilla_failure_recovers_to_loopback(
     assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
     # The recovery re-reconciled camilla to loopback.
     assert calls.count("camilla:loopback") >= 1
+
+
+def test_arm_shm_ring_refused_on_geometry_mismatch_recovers(tmp_path, monkeypatch):
+    # SF3: assets present, but the conf.d ring period (128) != outputd's resolved
+    # period (1024 default). Arming would fail CamillaDSP's ring open() with a
+    # confusing rollback; the preflight refuses UP FRONT with a crisp reason and
+    # recovers to loopback — BEFORE bouncing any daemon.
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(
+        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 8\n}\n"
+        "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(conf))
+
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    # outputd.env carries no period -> resolves to the packaged default 1024.
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is False
+    assert result.recovered is True
+    assert result.desired == COUPLING_SHM_RING
+    # Crisp reason names both periods; not a bare "arm failed".
+    assert "128" in result.detail and "1024" in result.detail
+    # The ring was NEVER armed — camilla was only reconciled to loopback (the
+    # recovery), never to shm_ring. (The recovery itself does restart fanin/outputd.)
+    assert "camilla:shm_ring" not in calls
+    assert "camilla:loopback" in calls
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+
+
+def test_arm_shm_ring_succeeds_when_geometry_matches(tmp_path, monkeypatch):
+    # The mirror: when the conf.d period equals outputd's resolved period (128 on
+    # the Apple-dongle floor), the geometry gate passes and the arm proceeds.
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(
+        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 8\n}\n"
+        "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(conf))
+
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(
+        tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
+    )
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is True
+    assert result.direction == "arm"
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
 
 
 def test_disarm_shm_ring_clears_ring_bridge_keys(tmp_path, _ring_assets_present):

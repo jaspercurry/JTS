@@ -84,3 +84,75 @@ def test_presence_leaves_no_residue(tmp_path):
     )
     assert not conf.exists()
     assert not shm.exists()
+
+
+# --- Ring slot geometry (SF3): conf.d period must match outputd's DAC period ----
+
+_RING_CONF_TEMPLATE = """\
+pcm.jts_ring_capture {{
+    type jts_ring
+    path "/dev/shm/jts-ring/program.ring"
+    period_frames {p}
+    n_slots 8
+}}
+pcm.jts_ring_playback {{
+    type jts_ring
+    path "/dev/shm/jts-ring/content.ring"
+    period_frames {p}
+    n_slots 2
+}}
+"""
+
+
+def test_ring_conf_period_frames_parses_single_geometry(tmp_path):
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(_RING_CONF_TEMPLATE.format(p=128), encoding="utf-8")
+    assert ring_assets.ring_conf_period_frames(str(conf)) == 128
+
+
+def test_ring_conf_period_frames_none_when_absent_or_torn(tmp_path):
+    # Absent file -> None.
+    assert ring_assets.ring_conf_period_frames(str(tmp_path / "missing.conf")) is None
+    # Two PCMs disagreeing (a torn conf.d) -> None, not a silent pick.
+    torn = tmp_path / "torn.conf"
+    torn.write_text(
+        "pcm.jts_ring_capture {\n    period_frames 128\n}\n"
+        "pcm.jts_ring_playback {\n    period_frames 1024\n}\n",
+        encoding="utf-8",
+    )
+    assert ring_assets.ring_conf_period_frames(str(torn)) is None
+    # No period_frames line at all -> None.
+    empty = tmp_path / "noperiod.conf"
+    empty.write_text("pcm.jts_ring_capture { type jts_ring }\n", encoding="utf-8")
+    assert ring_assets.ring_conf_period_frames(str(empty)) is None
+
+
+def test_ring_geometry_matches_when_conf_equals_outputd(tmp_path):
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(_RING_CONF_TEMPLATE.format(p=128), encoding="utf-8")
+    match = ring_assets.ring_geometry_matches_outputd(128, conf_d=str(conf))
+    assert match.ok is True
+    assert match.conf_period_frames == 128
+    assert match.outputd_period_frames == 128
+
+
+def test_ring_geometry_mismatch_gives_crisp_actionable_reason(tmp_path):
+    # SF3: the shipped conf.d pins 128 (placeholder); a box whose outputd period is
+    # the packaged 1024 (e.g. jts3 / HiFiBerry, no Apple-dongle floor) mismatches.
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(_RING_CONF_TEMPLATE.format(p=128), encoding="utf-8")
+    match = ring_assets.ring_geometry_matches_outputd(1024, conf_d=str(conf))
+    assert match.ok is False
+    assert match.conf_period_frames == 128
+    assert match.outputd_period_frames == 1024
+    # Names both numbers and how to fix — not a bare "mismatch".
+    assert "128" in match.detail and "1024" in match.detail
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES" in match.detail
+
+
+def test_ring_geometry_missing_conf_is_failclosed(tmp_path):
+    match = ring_assets.ring_geometry_matches_outputd(
+        1024, conf_d=str(tmp_path / "missing.conf")
+    )
+    assert match.ok is False
+    assert match.conf_period_frames is None

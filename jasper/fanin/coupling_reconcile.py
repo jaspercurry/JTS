@@ -704,6 +704,52 @@ def ring_assets_ready() -> tuple[bool, str]:
     return False, "ring platform assets incomplete: " + "; ".join(presence.missing())
 
 
+def _resolved_outputd_period_frames(outputd_text: str) -> int:
+    """outputd's resolved ``JASPER_OUTPUTD_PERIOD_FRAMES`` (env-file, else default).
+
+    The reconciler-owned ``outputd.env`` carries the DAC-floor-derived period the
+    audio-hardware reconciler writes (e.g. the Apple-dongle floor's 128); when
+    absent, outputd falls back to the packaged default written on its unit
+    (``DEFAULT_OUTPUTD_PERIOD_FRAMES`` = 1024). Reading the env file matches what
+    outputd will resolve on its next start — the SAME source scripts/ring-proto/
+    arm.sh reads (it reads the live process environ; this reads the file that
+    seeds it). A malformed value falls back to the default.
+    """
+    from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
+
+    raw = read_value(outputd_text, "JASPER_OUTPUTD_PERIOD_FRAMES")
+    if raw is None:
+        return DEFAULT_OUTPUTD_PERIOD_FRAMES
+    try:
+        value = int(raw.strip())
+    except (TypeError, ValueError):
+        return DEFAULT_OUTPUTD_PERIOD_FRAMES
+    return value if value > 0 else DEFAULT_OUTPUTD_PERIOD_FRAMES
+
+
+def ring_geometry_ready(outputd_text: str) -> tuple[bool, str]:
+    """The shm_ring PREFLIGHT gate for slot geometry: conf.d period == outputd period.
+
+    Checked BEFORE arming (after asset presence). The ``jts_ring_playback`` ioplug
+    opens Ring B with the conf.d ``period_frames``; outputd's ``ShmRingSource``
+    attaches with its resolved ``JASPER_OUTPUTD_PERIOD_FRAMES`` (one slot per DAC
+    period). A mismatch is a hard ``open()`` error, so CamillaDSP's ring load would
+    fail and the arm would roll back with a confusing daemon-level error. This
+    turns that into a crisp, actionable fail-closed reason. Mirrors
+    ``ring_assets_ready``'s fail-safe shape.
+    """
+    from jasper.ring_assets import ring_geometry_matches_outputd
+
+    match = ring_geometry_matches_outputd(_resolved_outputd_period_frames(outputd_text))
+    if match.ok:
+        return True, (
+            "ring slot geometry matches "
+            f"(conf.d period_frames={match.conf_period_frames} == outputd "
+            f"period_frames={match.outputd_period_frames})"
+        )
+    return False, match.detail
+
+
 def _arm_ring(
     do_restart,
     do_restart_outputd,
@@ -743,6 +789,27 @@ def _arm_ring(
         return CouplingResult(
             ok=False, desired=desired, changed=False, direction="arm",
             detail=assets_detail, recovered=recovered,
+        )
+
+    # Slot-geometry preflight: the conf.d ring period MUST equal outputd's resolved
+    # DAC period (the ring slot IS one outputd period). A mismatch is a hard ioplug
+    # open() error, so CamillaDSP's ring load would fail and this arm would roll
+    # back with a confusing daemon-level error. Refuse UP FRONT with a crisp reason
+    # (fail-safe: recover to loopback), before bouncing any daemon.
+    geom_ok, geom_detail = ring_geometry_ready(outputd_snapshot.text)
+    if not geom_ok:
+        recovered = _recover_to_loopback(
+            do_restart, do_restart_outputd, do_reconcile,
+            fanin_snapshot.path, outputd_snapshot.path, reason,
+        )
+        log_event(
+            logger, "fanin.coupling_reconcile", result="arm_ring_geometry_mismatch",
+            desired=desired, reason=reason, detail=geom_detail,
+            recovered=recovered, level=logging.WARNING,
+        )
+        return CouplingResult(
+            ok=False, desired=desired, changed=False, direction="arm",
+            detail=geom_detail, recovered=recovered,
         )
 
     out_ok, out_detail = do_restart_outputd()
