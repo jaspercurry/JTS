@@ -125,7 +125,7 @@ def test_managed_units_cover_every_routed_client_unit():
         "jasper-voice.service", "jasper-control.service", "jasper-web.service",
         "jasper-mux.service", "jasper-input.service",
         "shairport-sync.service", "nqptp.service", "librespot.service",
-        "jasper-usbsink.service", "jasper-usbsink-init.service",
+        "jasper-usbsink.service", "jasper-usbgadget.service",
         "bluetooth.service", "bluealsa.service", "bluealsa-aplay.service",
         "bt-agent.service",
         "jasper-aec-bridge.service", "jasper-aec-init.service",

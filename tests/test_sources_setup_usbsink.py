@@ -41,7 +41,8 @@ def test_systemd_units_come_from_local_source_lifecycle_registry():
     )
     usbsink = local_source_lifecycle(Source.USBSINK)
     assert sources_setup.USBSINK_UNIT == usbsink.intent_unit
-    assert sources_setup.USBSINK_INIT_UNIT in usbsink.advertise_units
+    assert sources_setup.USBSINK_GADGET_UNIT in usbsink.advertise_units
+    assert sources_setup.USBSINK_GADGET_UNIT == "jasper-usbgadget.service"
 
 
 def test_index_html_uses_shared_toggle_markup_and_csrf_meta():
@@ -175,22 +176,22 @@ def test_gather_state_usbsink_available_when_dtoverlay_set(monkeypatch):
     assert state["usbsink"]["available"] is True
 
 
-def test_gather_state_usbsink_gadget_visible_counts_as_enabled(monkeypatch):
+def test_gather_state_usbsink_uac2_card_counts_as_enabled(monkeypatch):
     """The toggle must reflect host-visible truth, not only a healthy bridge.
 
-    If jasper-usbsink-init is active while the Rust bridge is crash-looping,
+    If the uac2 ALSA card is present while the Rust bridge is crash-looping,
     computers still see the USB audio device. Reporting enabled=False in that
-    state is the split-brain bug this page exists to avoid.
+    state is the split-brain bug this page exists to avoid. The host-visible
+    signal is the UAC2Gadget card, NOT the always-on composite gadget unit.
     """
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
     monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
 
-    def active(unit: str) -> bool:
-        return unit == sources_setup.USBSINK_INIT_UNIT
-
-    monkeypatch.setattr(sources_setup, "_unit_active", active)
+    # Bridge daemon inactive, but the uac2 card is present (function composed).
+    monkeypatch.setattr(sources_setup, "_unit_active", lambda unit: False)
     monkeypatch.setattr(sources_setup, "_unit_starting", lambda unit: False)
+    monkeypatch.setattr(sources_setup, "_uac2_card_present", lambda: True)
 
     async def fake_bt():
         return (False, False, False)
@@ -205,11 +206,11 @@ def test_gather_state_usbsink_gadget_visible_counts_as_enabled(monkeypatch):
     assert "advertised" in state["usbsink"]["degradedReason"]
 
 
-def test_gather_state_usbsink_unavailable_when_init_unit_missing(monkeypatch):
+def test_gather_state_usbsink_unavailable_when_gadget_unit_missing(monkeypatch):
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
 
     def available(unit: str) -> bool:
-        return unit != sources_setup.USBSINK_INIT_UNIT
+        return unit != sources_setup.USBSINK_GADGET_UNIT
 
     monkeypatch.setattr(sources_setup, "_unit_available", available)
     monkeypatch.setattr(
@@ -217,6 +218,7 @@ def test_gather_state_usbsink_unavailable_when_init_unit_missing(monkeypatch):
         "_systemctl",
         lambda *args, **kw: (0, "inactive"),
     )
+    monkeypatch.setattr(sources_setup, "_uac2_card_present", lambda: False)
 
     async def fake_bt():
         return (False, False, False)
@@ -226,7 +228,7 @@ def test_gather_state_usbsink_unavailable_when_init_unit_missing(monkeypatch):
 
     state = sources_setup._gather_state()
     assert state["usbsink"]["available"] is False
-    assert "init unit" in state["usbsink"]["unavailableReason"]
+    assert "composite gadget unit" in state["usbsink"]["unavailableReason"]
 
 
 # ----------------------------------------------------------------------
@@ -234,9 +236,10 @@ def test_gather_state_usbsink_unavailable_when_init_unit_missing(monkeypatch):
 # ----------------------------------------------------------------------
 
 
-def test_apply_usbsink_enable_routes_through_broker(monkeypatch):
-    # WS1 Phase 3: _set_unit routes enable/disable through jasper-control's
-    # restart broker (manage_units), not a direct systemctl.
+def test_apply_usbsink_enable_recomposes_gadget_between_enable_and_start(monkeypatch):
+    # Enable is a three-step ordering: enable the bridge intent (do NOT start
+    # yet), recompose the gadget so it adds the uac2 function (card appears),
+    # then start the bridge (its wait-card now passes). All through the broker.
     calls = []
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
@@ -246,13 +249,18 @@ def test_apply_usbsink_enable_routes_through_broker(monkeypatch):
         lambda *units, **kw: calls.append((units, kw.get("verb"))) or {"ok": True},
     )
     sources_setup._apply("usbsink", True)
-    assert calls
-    # enable+start of the intent unit; init.service follows via Requires=.
-    assert calls[0] == ((sources_setup.USBSINK_UNIT,), "enable-now")
-    assert not any(c[0] == (sources_setup.USBSINK_INIT_UNIT,) for c in calls)
+    assert calls == [
+        ((sources_setup.USBSINK_UNIT,), "enable"),
+        ((sources_setup.USBSINK_GADGET_UNIT,), "restart"),
+        ((sources_setup.USBSINK_UNIT,), "start"),
+    ]
 
 
-def test_apply_usbsink_disable_routes_through_broker(monkeypatch):
+def test_apply_usbsink_disable_recomposes_gadget_keeping_network(monkeypatch):
+    # Disable stops+disables the bridge, then recomposes the gadget so it drops
+    # the uac2 function — the host-visible audio device disappears while the
+    # always-on USB network (ncm) stays up. The gadget is RESTARTED, never
+    # stopped.
     calls = []
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
@@ -262,16 +270,19 @@ def test_apply_usbsink_disable_routes_through_broker(monkeypatch):
         lambda *units, **kw: calls.append((units, kw.get("verb"))) or {"ok": True},
     )
     sources_setup._apply("usbsink", False)
-    assert calls
     assert calls[0] == ((sources_setup.USBSINK_UNIT,), "disable-now")
-    assert calls[1] == ((sources_setup.USBSINK_INIT_UNIT,), "stop")
+    assert calls[1] == ((sources_setup.USBSINK_GADGET_UNIT,), "restart")
+    # The gadget is never stopped — that would drop the always-on USB network.
+    assert not any(
+        c == ((sources_setup.USBSINK_GADGET_UNIT,), "stop") for c in calls
+    )
 
 
-def test_apply_usbsink_rejects_missing_init_unit(monkeypatch):
+def test_apply_usbsink_rejects_missing_gadget_unit(monkeypatch):
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
 
     def available(unit: str) -> bool:
-        return unit != sources_setup.USBSINK_INIT_UNIT
+        return unit != sources_setup.USBSINK_GADGET_UNIT
 
     monkeypatch.setattr(sources_setup, "_unit_available", available)
     monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
@@ -279,6 +290,6 @@ def test_apply_usbsink_rejects_missing_init_unit(monkeypatch):
     try:
         sources_setup._apply("usbsink", True)
     except RuntimeError as e:
-        assert "init unit" in str(e)
+        assert "composite gadget unit" in str(e)
     else:  # pragma: no cover - assertion shape
-        raise AssertionError("missing init unit should reject USB toggle")
+        raise AssertionError("missing gadget unit should reject USB toggle")

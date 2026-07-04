@@ -159,14 +159,23 @@ def test_plan_disabled_stops_snap_units_and_restores_renderers():
     intents (start-only-if-enabled — the un-park after a bond dissolves;
     a no-op on a speaker that was never bonded since the units are
     already running or wizard-disabled)."""
-    from jasper.local_sources import local_source_restore_units
+    from jasper.local_sources import (
+        local_source_restore_restart_units,
+        local_source_restore_units,
+    )
     p = plan(_disabled())
     by_unit = {i.unit: i.desired for i in p.intents}
     assert by_unit[SNAPSERVER_UNIT] == "stop"
     assert by_unit[SNAPCLIENT_UNIT] == "stop"
     for u in local_source_restore_units():
         assert by_unit[u] == "restore"
-    assert len(p.intents) == 2 + len(local_source_restore_units())
+    for u in local_source_restore_restart_units():
+        assert by_unit[u] == "recompose"
+    assert len(p.intents) == (
+        2
+        + len(local_source_restore_units())
+        + len(local_source_restore_restart_units())
+    )
 
 
 # ---------- plan(): enabled + error => stop both (never start a broken bond) ----------
@@ -189,12 +198,14 @@ def test_plan_invalid_starts_nothing():
     """Fail-safe: a broken bond must never produce a START intent for the
     snap units — and it RESTORES parked source resources (a broken bond
     must not keep the household's sources parked on top of not playing).
-    "restore" is start-only-if-enabled, applied at the I/O layer."""
+    Non-snap intents are "restore" (start-only-if-enabled) or "recompose"
+    (try-restart the composite gadget) — never a plain "start"."""
     p = plan(_invalid())
     snap = {SNAPSERVER_UNIT, SNAPCLIENT_UNIT}
     assert all(i.desired == "stop" for i in p.intents if i.unit in snap)
     assert all(
-        i.desired == "restore" for i in p.intents if i.unit not in snap
+        i.desired in ("restore", "recompose")
+        for i in p.intents if i.unit not in snap
     )
     assert not any(i.desired == "start" for i in p.intents)
 
@@ -1120,15 +1131,30 @@ def test_plan_follower_parks_the_local_source_resource_groups():
     assert kinds.index("start") == len(kinds) - 1
 
 
-def test_plan_follower_parks_usbsink_gadget_not_only_bridge():
-    """USB input owns a bridge daemon and a host-visible gadget init unit.
-    Follower parking must stop the gadget owner so a laptop cannot still
-    see the follower as a USB audio device."""
+def test_plan_follower_parks_usbsink_bridge_and_recomposes_gadget():
+    """USB input owns an audio bridge daemon and the composite gadget. Follower
+    parking must STOP the audio bridge units so a laptop cannot still see the
+    follower as a USB audio device, but RECOMPOSE (not stop) the gadget so the
+    always-on USB management network survives — the recompose drops the audio
+    function while keeping ncm."""
     p = plan(_follower())
     by_unit = {i.unit: i.desired for i in p.intents}
-    assert by_unit["jasper-usbsink-init.service"] == "stop"
     assert by_unit["jasper-usbsink.service"] == "stop"
     assert by_unit["jasper-usbsink-volume.service"] == "stop"
+    # The gadget is recomposed (try-restart), never stopped — the network stays.
+    assert by_unit["jasper-usbgadget.service"] == "recompose"
+    # And the recompose is ordered after the audio stops (so it reads "audio
+    # parked") and before the snapclient start.
+    kinds = [i.desired for i in p.intents]
+    gadget_idx = next(
+        i for i, it in enumerate(p.intents)
+        if it.unit == "jasper-usbgadget.service"
+    )
+    bridge_idx = next(
+        i for i, it in enumerate(p.intents)
+        if it.unit == "jasper-usbsink.service"
+    )
+    assert bridge_idx < gadget_idx < kinds.index("start")
 
 
 def test_plan_follower_parks_source_arbiter_infrastructure():
@@ -1142,14 +1168,21 @@ def test_plan_follower_parks_source_arbiter_infrastructure():
 def test_plan_leader_keeps_sources_restored():
     """The leader is the pair's input hub — its renderer stack is never
     parked; the restore intents put a just-demoted ex-follower's sources
-    back per the /sources/ wizard."""
-    from jasper.local_sources import local_source_restore_units
+    back per the /sources/ wizard. The composite gadget is recomposed (not
+    restored) so its audio function comes back iff USB audio is enabled."""
+    from jasper.local_sources import (
+        local_source_restore_restart_units,
+        local_source_restore_units,
+    )
     p = plan(_leader())
     by_unit = {i.unit: i.desired for i in p.intents}
     for u in local_source_restore_units():
         assert by_unit[u] == "restore", u
     assert by_unit["jasper-mux.service"] == "restore"
-    assert "jasper-usbsink-init.service" not in {
+    for u in local_source_restore_restart_units():
+        assert by_unit[u] == "recompose", u
+    # The gadget is never a plain restore (it is always-on).
+    assert "jasper-usbgadget.service" not in {
         i.unit for i in p.intents if i.desired == "restore"
     }
 

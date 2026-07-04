@@ -511,7 +511,6 @@ DEFERRED_PRIVILEGED_SUPPORT_UNITS = {
     "jasper-identity-reconcile": (
         ROOT / "deploy/systemd/jasper-identity-reconcile.service"
     ),
-    "jasper-usbsink-init": ROOT / "deploy/systemd/jasper-usbsink-init.service",
     "jasper-bootloop-guard": ROOT / "deploy/systemd/jasper-bootloop-guard.service",
 }
 

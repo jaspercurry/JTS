@@ -122,6 +122,7 @@ def stub_backends(monkeypatch):
         active=(),
         available_units=None,
         usb_ready=True,
+        usb_card=False,
         bt=(True, True, False),
     ):
         active_set = set(active)
@@ -130,7 +131,11 @@ def stub_backends(monkeypatch):
                 mod.AIRPLAY_UNIT,
                 mod.SPOTIFY_CONNECT_UNIT,
                 mod.USBSINK_UNIT,
-                mod.USBSINK_INIT_UNIT,
+                # The composite gadget owner replaced the old init unit; its
+                # availability is what /sources checks for "the USB stack is
+                # installed". Host-visible AUDIO presence is a separate signal
+                # (the uac2 ALSA card) stubbed via usb_card below.
+                mod.USBSINK_GADGET_UNIT,
             }
         available_set = set(available_units)
         monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
@@ -139,6 +144,10 @@ def stub_backends(monkeypatch):
         )
         monkeypatch.setattr(mod, "_unit_active", lambda unit: unit in active_set)
         monkeypatch.setattr(mod, "_usbsink_available", lambda *a, **k: usb_ready)
+        # The uac2 ALSA card is the host-visible "USB audio device advertised"
+        # signal now that the composite gadget is always-on (it also carries the
+        # USB management network), so gadget-active is no longer that proxy.
+        monkeypatch.setattr(mod, "_uac2_card_present", lambda: usb_card)
 
         async def _bt():
             return bt
@@ -231,6 +240,13 @@ def test_apply_routes_each_source(monkeypatch):
     monkeypatch.setattr(
         mod, "_set_unit", lambda unit, enabled: units.append((unit, enabled))
     )
+    # The USB enable/disable path recomposes the always-on composite gadget via
+    # the restart broker (manage_units), not _set_unit — capture it separately.
+    managed = []
+    monkeypatch.setattr(
+        mod, "manage_units",
+        lambda *u, **kw: managed.append((u, kw.get("verb"))) or {"ok": True},
+    )
     bt_calls = []
 
     async def _set_bt(enabled):
@@ -245,7 +261,13 @@ def test_apply_routes_each_source(monkeypatch):
 
     assert (mod.AIRPLAY_UNIT, True) in units
     assert (mod.SPOTIFY_CONNECT_UNIT, False) in units
-    assert (mod.USBSINK_UNIT, True) in units
+    # USB enable is the three-step ordering (enable intent, recompose the gadget
+    # so the uac2 card appears, then start the bridge) — all through the broker.
+    assert managed == [
+        ((mod.USBSINK_UNIT,), "enable"),
+        ((mod.USBSINK_GADGET_UNIT,), "restart"),
+        ((mod.USBSINK_UNIT,), "start"),
+    ]
     assert bt_calls == [False]
 
 
