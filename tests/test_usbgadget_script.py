@@ -192,6 +192,38 @@ def test_up_unknown_network_value_warns_and_stays_enabled(tmp_path):
     assert _linked(cfg, "ncm.usb0")
 
 
+def test_up_killswitch_literal_matrix(tmp_path):
+    """Pin every branch of the JASPER_USB_NETWORK literal parser in one
+    place: exact-literal `disabled` (any case) is the ONLY way to drop the
+    network function; `enabled` (any case) and empty-string are silent
+    no-warning enables (the empty case matters — a var present-but-empty in
+    an env file is a different shape than unset, and must not warn); any
+    other literal (including whitespace-decorated near-misses) warns but
+    still stays enabled, so a typo can never silently kill the fallback
+    network."""
+    cases = [
+        # (value, expect_network_on, expect_warning)
+        ("disabled", False, False),
+        ("Disabled", False, False),
+        ("DISABLED", False, False),
+        ("enabled", True, False),
+        ("Enabled", True, False),
+        ("", True, False),
+        ("disable", True, True),   # near-miss literal, not the exact word
+        (" disabled", True, True),  # leading whitespace breaks the exact match
+        ("disabled ", True, True),  # trailing whitespace likewise
+        ("0", True, True),
+    ]
+    for i, (value, expect_on, expect_warning) in enumerate(cases):
+        proc, cfg = _run(UP, tmp_path / f"case{i}", network=value, audio_intent=FALSE)
+        assert proc.returncode == 0, (value, proc.stderr)
+        assert f"network={1 if expect_on else 0} audio=0" in proc.stderr, (value, proc.stderr)
+        assert _linked(cfg, "ncm.usb0") is expect_on, (value, proc.stderr)
+        assert ("not 'enabled'/'disabled'; staying enabled" in proc.stderr) is expect_warning, (
+            value, proc.stderr,
+        )
+
+
 # ---------- deterministic serial-derived MACs -------------------------------
 
 
