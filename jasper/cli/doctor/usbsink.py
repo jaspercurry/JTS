@@ -4,10 +4,20 @@
 
 """jasper-doctor checks — usbsink domain.
 
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+Originally re-homed verbatim from the monolithic ``jasper/cli/doctor.py``;
+reworked for the composite-gadget model (docs/HANDOFF-usb-gadget.md). The
+gadget is now ``jasper-usbgadget.service`` — a single ConfigFS owner that
+composes up to two functions onto one UDC: ``ncm.usb0`` (the always-on USB
+management network) and ``uac2.usb0`` (the wizard-toggled USB Audio Input,
+still owned by ``jasper-usbsink.service``). The old invariant "libcomposite
+loaded <=> usbsink active" no longer holds — libcomposite can be loaded for
+the network function alone with the audio daemon fully off. The checks below
+compare observed gadget/function state against the *composed intent*
+(network kill-switch + audio enablement + follower-park gate), mirroring the
+truth table ``jasper-usbgadget-up``/``jasper-usbgadget-wanted`` compute.
+``check_usbsink_low_latency_contract`` is unchanged byte-for-byte — its UAC2
+attribute contract does not depend on which other function is composed
+alongside it."""
 from __future__ import annotations
 
 import json
@@ -22,7 +32,7 @@ from ._registry import doctor_check
 from ._shared import CheckResult, _parked_as_bonded_follower, _run
 
 USBSINK_UNIT = "jasper-usbsink.service"
-USBSINK_INIT_UNIT = "jasper-usbsink-init.service"
+USBGADGET_UNIT = "jasper-usbgadget.service"
 USBSINK_GADGET_PATH = Path("/sys/kernel/config/usb_gadget/jts-usb-audio")
 UAC2_EXPECTED_LOW_LATENCY_ATTRS = UAC2_LOW_LATENCY_EXPECTED_ATTRS
 
@@ -57,6 +67,42 @@ def _module_loaded(name: str) -> bool:
 
 def _uac2_function_path() -> Path:
     return USBSINK_GADGET_PATH / "functions" / "uac2.usb0"
+
+
+def _ncm_function_path() -> Path:
+    return USBSINK_GADGET_PATH / "functions" / "ncm.usb0"
+
+
+def _network_wanted() -> bool:
+    """Mirror ``jasper-usbgadget-up``'s network half of the truth table.
+
+    Network is wanted unless the kill switch is the exact literal
+    ``disabled`` (case-insensitive); any other value is treated as
+    enabled, same as ``JASPER_SHAIRPORT_SUPERVISOR`` /
+    ``JASPER_SYSTEM_SUPERVISOR``. Read from ``os.environ`` (not a fresh
+    file parse) because ``jasper.env_load`` already unions
+    ``/etc/jasper/jasper.env`` into ``os.environ`` at CLI startup —
+    the same convention every other doctor env read in this package
+    uses (e.g. ``check_usbsink_host_clock``'s target-fill env read)."""
+    raw = os.environ.get("JASPER_USB_NETWORK", "enabled")
+    return raw.strip().lower() != "disabled"
+
+
+def _audio_wanted() -> tuple[bool, str]:
+    """Mirror ``jasper-usbgadget-up``'s audio half of the truth table.
+
+    Wanted when the /sources intent unit (``jasper-usbsink.service``) is
+    enabled AND local sources are allowed (a bonded follower parks it).
+    Returns ``(wanted, reason)`` — reason is one of the three the bash
+    script logs (``enabled`` / ``parked_follower`` / ``intent_disabled``)
+    so check details can explain *why* audio isn't composed without a
+    second probe."""
+    enabled = _run(["systemctl", "is-enabled", "--quiet", USBSINK_UNIT]).returncode == 0
+    if not enabled:
+        return False, "intent_disabled"
+    if _parked_as_bonded_follower():
+        return False, "parked_follower"
+    return True, "enabled"
 
 @doctor_check(order=57, group="usbsink")
 def check_usbsink_dtoverlay() -> CheckResult:
@@ -105,73 +151,68 @@ def check_usbsink_state() -> CheckResult:
     written recently (catches a wedged daemon that's somehow still
     showing active to systemd).
 
-    When the service is inactive, verify the host-visible gadget is also
-    inactive. A bound ConfigFS gadget with the bridge down is a split-brain
-    source state: computers still see JTS as USB audio while /sources can
-    otherwise appear off. A leftover module without a gadget is only RAM drift.
-    """
+    When the service is inactive, verify the host-visible *audio* function
+    (uac2.usb0) is also absent. A composed uac2.usb0 with the bridge down is
+    a split-brain source state: computers still see JTS as USB audio while
+    /sources can otherwise appear off. The composite gadget itself
+    (jasper-usbgadget.service / ConfigFS dir) legitimately persists for the
+    always-on management network even when audio is off — that alone is
+    never a drift signal here; check_usbgadget_composition owns the
+    gadget-vs-network-intent story. A leftover libcomposite module with
+    NEITHER function composed is RAM drift (network kill-switched + audio
+    off, but the module never unloaded)."""
     active = _systemd_is_active(USBSINK_UNIT)
-    init_active = _systemd_is_active(USBSINK_INIT_UNIT)
+    uac2_present = _uac2_function_path().exists()
     libcomp = _module_loaded("libcomposite")
 
     if _parked_as_bonded_follower():
-        gadget_visible = init_active or USBSINK_GADGET_PATH.exists()
-        if active or gadget_visible:
+        if active or uac2_present:
             details: list[str] = []
             if active:
                 details.append(f"{USBSINK_UNIT}=active")
-            if init_active:
-                details.append(f"{USBSINK_INIT_UNIT}=active")
-            if USBSINK_GADGET_PATH.exists():
-                details.append("ConfigFS gadget present")
+            if uac2_present:
+                details.append("uac2.usb0 function present")
             return CheckResult(
                 "usbsink state",
                 "fail",
                 "parked (bonded follower) but USB Audio Input is still "
                 f"running/advertised ({', '.join(details)}). Run "
                 "jasper-grouping-reconcile or unpair/re-pair so the "
-                "local-source park plan stops the USB gadget owner.",
-            )
-        if libcomp:
-            return CheckResult(
-                "usbsink state",
-                "warn",
-                "parked (bonded follower); service and gadget are down, "
-                "but libcomposite is still loaded — reboot or run "
-                "`sudo rmmod u_audio libcomposite` to clear RAM drift.",
+                "local-source park plan recomposes the gadget without "
+                "uac2.usb0.",
             )
         return CheckResult(
             "usbsink state",
             "ok",
-            "parked (bonded follower) — bridge and host-visible gadget down",
+            "parked (bonded follower) — bridge and uac2.usb0 function down"
+            + (" (gadget may still carry ncm.usb0 for the management network)"
+               if USBSINK_GADGET_PATH.exists() else ""),
         )
 
     if not active:
-        gadget_visible = init_active or USBSINK_GADGET_PATH.exists()
-        if gadget_visible:
-            inactive_details: list[str] = []
-            if init_active:
-                inactive_details.append(f"{USBSINK_INIT_UNIT}=active")
-            if USBSINK_GADGET_PATH.exists():
-                inactive_details.append("ConfigFS gadget present")
+        if uac2_present:
             return CheckResult(
                 "usbsink state",
                 "fail",
                 "bridge inactive but USB Audio Input is still advertised "
-                f"({', '.join(inactive_details)}). Toggle USB Audio Input off in "
-                "/sources/ or run `sudo systemctl stop jasper-usbsink-init.service` "
-                "so hosts stop seeing the gadget.",
+                "(uac2.usb0 function present in the composite gadget). "
+                "Toggle USB Audio Input off in /sources/ or run "
+                "`sudo systemctl restart jasper-usbgadget.service` so "
+                "hosts stop seeing the audio device.",
             )
-        if libcomp:
+        if libcomp and not USBSINK_GADGET_PATH.exists():
             return CheckResult(
                 "usbsink state", "warn",
-                "service inactive but libcomposite still loaded — "
-                "RAM drift from a failed stop. Reboot or "
-                "`sudo rmmod u_audio libcomposite` to recover.",
+                "service inactive, uac2.usb0 absent, but libcomposite still "
+                "loaded with no gadget directory — RAM drift from a failed "
+                "stop. Reboot or `sudo rmmod u_audio libcomposite` to "
+                "recover.",
             )
         return CheckResult(
             "usbsink state", "ok",
-            "disabled (no RAM cost beyond ~50 KB dwc2 module)",
+            "USB Audio Input disabled (uac2.usb0 not composed; the "
+            "composite gadget/libcomposite may still be resident for the "
+            "always-on USB management network — see check_usbgadget_composition)",
         )
 
     # Service is active. Verify the daemon is publishing state.
@@ -230,8 +271,8 @@ def check_usbsink_state() -> CheckResult:
 @doctor_check(order=59, group="usbsink")
 def check_usbsink_card() -> CheckResult:
     """When jasper-usbsink is enabled, the UAC2Gadget ALSA card MUST
-    be present — otherwise the init.service either didn't run or
-    failed to bind to UDC."""
+    be present — otherwise jasper-usbgadget.service either didn't run
+    or failed to compose/bind the uac2.usb0 function to the UDC."""
     if not _systemd_is_active("jasper-usbsink.service"):
         return CheckResult(
             "usbsink card", "ok",
@@ -245,8 +286,8 @@ def check_usbsink_card() -> CheckResult:
     return CheckResult(
         "usbsink card", "fail",
         "service active but /proc/asound/UAC2Gadget missing — "
-        "init.service didn't bind the UDC. Check "
-        "`systemctl status jasper-usbsink-init` for the failure mode.",
+        f"{USBGADGET_UNIT} didn't compose/bind uac2.usb0. Check "
+        f"`systemctl status {USBGADGET_UNIT}` for the failure mode.",
     )
 
 
@@ -328,7 +369,7 @@ def check_usbsink_low_latency_contract() -> CheckResult:
             detail
             + "; UAC2 attrs mismatched: "
             + ", ".join(mismatched)
-            + "; Restart jasper-usbsink-init so the gadget descriptor is recreated.",
+            + f"; Restart {USBGADGET_UNIT} so the gadget descriptor is recreated.",
         )
     if missing:
         return CheckResult(
@@ -459,8 +500,8 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
         return CheckResult(
             "usbsink name", "warn",
             "no name-patched module override — host shows the default "
-            "'Playback Inactive' label. Restart jasper-usbsink-init "
-            "and check `journalctl -u jasper-usbsink-init | grep "
+            f"'Playback Inactive' label. Restart {USBGADGET_UNIT} "
+            "and check `journalctl -u jasper-usbsink-name-patch | grep "
             "event=usbsink_name` (a kernel rename of the string degrades "
             "here gracefully; audio is unaffected).",
         )
@@ -471,7 +512,7 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
             return CheckResult(
                 "usbsink name", "warn",
                 f"override {override} still contains the stock string — "
-                "patch did not take. Restart jasper-usbsink-init.",
+                f"patch did not take. Restart {USBGADGET_UNIT}.",
             )
     except OSError as exc:
         return CheckResult(
@@ -496,7 +537,7 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
         "usbsink name", "warn",
         f"override present but stale for Speaker Name '{name}' / kernel "
         f"{kver} (marker={fields or 'missing'}). Restart "
-        "jasper-usbsink-init to re-apply.",
+        f"{USBGADGET_UNIT} to re-apply.",
     )
 
 @doctor_check(order=60, group="usbsink")
@@ -504,11 +545,13 @@ def check_usbsink_active_libcomposite() -> CheckResult:
     """The mirror of check_usbsink_state's RAM-drift check: when the
     daemon IS active but libcomposite is NOT loaded, the daemon will
     appear running to systemd but audio won't flow (no gadget = no
-    capture endpoint). This asymmetry can happen if a user manually
-    `rmmod libcomposite` while the daemon is up, or if init.service
-    succeeded its modprobe but a subsequent reload unloaded the
-    module. The init.service ↔ daemon PartOf= chain normally prevents
-    this, but a manual override breaks the invariant."""
+    capture endpoint) regardless of whether the composite gadget also
+    carries the network function. This asymmetry can happen if a user
+    manually `rmmod libcomposite` while the daemon is up, or if
+    jasper-usbgadget.service succeeded its modprobe but a subsequent
+    reload unloaded the module. The jasper-usbgadget ↔ daemon
+    Requires=/After= chain normally prevents this, but a manual
+    override breaks the invariant."""
     if not _systemd_is_active("jasper-usbsink.service"):
         return CheckResult(
             "usbsink active+modules", "ok",
@@ -523,9 +566,93 @@ def check_usbsink_active_libcomposite() -> CheckResult:
         "usbsink active+modules", "fail",
         "service active but libcomposite NOT loaded — audio won't "
         "flow even though the daemon appears healthy to systemd. "
-        "Run `systemctl restart jasper-usbsink-init.service` to "
-        "re-load the kernel module and re-bind the gadget.",
+        f"Run `systemctl restart {USBGADGET_UNIT}` to "
+        "re-load the kernel module and re-compose the gadget.",
     )
+
+@doctor_check(order=60.5, group="usbsink")
+def check_usbgadget_composition() -> CheckResult:
+    """The composed gadget functions must match the composed *intent*.
+
+    jasper-usbgadget-up computes a function truth table once at start (see
+    docs/HANDOFF-usb-gadget.md):
+
+      network intent   audio intent         composed functions
+      --------------   -------------------  --------------------
+      enabled          enabled/allowed      ncm.usb0 + uac2.usb0
+      enabled          off/parked follower  ncm.usb0
+      disabled         enabled/allowed      uac2.usb0 (legacy shape)
+      disabled         off/parked follower  none (unit skips via ExecCondition)
+
+    This check recomputes the same intent in Python (network kill-switch env
+    + `systemctl is-enabled jasper-usbsink` + the follower-park gate — the
+    same predicates the bash truth table reads) and compares it against the
+    observed ConfigFS function directories. It is the composite-era
+    replacement for the old "libcomposite loaded <=> usbsink active"
+    invariant, which stopped holding the moment the network function could
+    be composed alone. check_usbsink_state/check_usbsink_active_libcomposite
+    own the *audio*-function split-brain/RAM-drift stories in more per-daemon
+    detail; this check owns the *composition-as-a-whole* story, including the
+    "gadget present but neither function should exist" and "network intent
+    on but ncm.usb0 missing" cases those per-daemon checks can't see.
+
+    A missing UDC (`/sys/class/udc` empty — pre-reboot fresh install, no
+    dtoverlay applied yet) is reported as ok/skip: check_usbsink_dtoverlay
+    already owns that gap, and jasper-usbgadget-wanted cleanly skips the
+    unit in this state (not a unit failure), so there is nothing to compose
+    yet regardless of intent."""
+    label = "usbgadget composition"
+    udc_dir = Path(os.environ.get("JASPER_UDC_CLASS_DIR", "/sys/class/udc"))
+    try:
+        has_udc = udc_dir.is_dir() and any(udc_dir.iterdir())
+    except OSError:
+        has_udc = False
+    if not has_udc:
+        return CheckResult(
+            label, "ok",
+            "no UDC present (fresh install pre-reboot, or non-gadget-"
+            "capable hardware) — see check_usbsink_dtoverlay",
+        )
+
+    want_network = _network_wanted()
+    want_audio, audio_reason = _audio_wanted()
+    ncm_present = _ncm_function_path().exists()
+    uac2_present = _uac2_function_path().exists()
+    intent = f"network={want_network} audio={want_audio} ({audio_reason})"
+    observed = f"ncm.usb0={ncm_present} uac2.usb0={uac2_present}"
+
+    if not want_network and not want_audio:
+        if ncm_present or uac2_present or USBSINK_GADGET_PATH.exists():
+            return CheckResult(
+                label, "fail",
+                f"gadget present but neither function should exist "
+                f"({intent}; observed {observed}). Run "
+                f"`systemctl restart {USBGADGET_UNIT}` to recompose (or "
+                "tear down) the gadget.",
+            )
+        return CheckResult(
+            label, "ok",
+            f"nothing composed, nothing wanted ({intent}) — zero-RAM "
+            "contract intact",
+        )
+
+    mismatches: list[str] = []
+    if want_network and not ncm_present:
+        mismatches.append("network wanted but ncm.usb0 missing")
+    if not want_network and ncm_present:
+        mismatches.append("network not wanted but ncm.usb0 present")
+    if want_audio and not uac2_present:
+        mismatches.append("audio wanted but uac2.usb0 missing")
+    if not want_audio and uac2_present:
+        mismatches.append("audio not wanted but uac2.usb0 present")
+
+    if mismatches:
+        return CheckResult(
+            label, "fail",
+            f"{'; '.join(mismatches)} ({intent}; observed {observed}). "
+            f"Run `systemctl restart {USBGADGET_UNIT}` to recompose.",
+        )
+    return CheckResult(label, "ok", f"composition matches intent ({intent})")
 
 @doctor_check(order=61, group="usbsink")
 def check_usbsink_preempt_port_reachable() -> CheckResult:

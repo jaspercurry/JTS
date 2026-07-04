@@ -263,6 +263,7 @@ from .usbsink import (
     check_usbsink_host_clock,
     check_usbsink_name,
     check_usbsink_active_libcomposite,
+    check_usbgadget_composition,
     check_usbsink_preempt_port_reachable,
 )
 from . import network as network
@@ -276,6 +277,10 @@ from .network import (
     check_avahi_daemon,
     check_hostname_avahi_consistency,
     check_avahi_jasper_control,
+    check_usbnet_interface,
+    check_usbnet_nm_profile,
+    check_usbnet_dhcp_unit,
+    check_usbnet_management_probe,
 )
 from . import correction as correction
 from .correction import (
@@ -579,6 +584,7 @@ __all__ = [
     "check_usbsink_host_clock",
     "check_usbsink_name",
     "check_usbsink_active_libcomposite",
+    "check_usbgadget_composition",
     "check_usbsink_preempt_port_reachable",
     "_parse_iw_regdom",
     "_format_phy_regdom_detail",
@@ -589,6 +595,10 @@ __all__ = [
     "check_avahi_daemon",
     "check_hostname_avahi_consistency",
     "check_avahi_jasper_control",
+    "check_usbnet_interface",
+    "check_usbnet_nm_profile",
+    "check_usbnet_dhcp_unit",
+    "check_usbnet_management_probe",
     "_correction_root",
     "check_correction_web_service",
     "_probe_https_status",

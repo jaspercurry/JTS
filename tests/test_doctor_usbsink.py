@@ -91,11 +91,11 @@ def test_usbsink_state_disabled_libcomposite_loaded_is_warn(monkeypatch):
 def test_usbsink_state_disabled_with_gadget_is_fail(monkeypatch, tmp_path):
     """Computers seeing USB audio while the bridge is inactive is not RAM drift.
 
-    The gadget itself is advertised, so doctor must hard-fail the split-brain
-    state that made /sources look off while hosts still saw JTS.
+    The uac2.usb0 function is still composed, so doctor must hard-fail the
+    split-brain state that made /sources look off while hosts still saw JTS.
     """
     gadget = tmp_path / "jts-usb-audio"
-    gadget.mkdir()
+    (gadget / "functions" / "uac2.usb0").mkdir(parents=True)
     monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
     _patch_active(monkeypatch, False)
     _patch_libcomp_loaded(monkeypatch, True)
@@ -105,6 +105,22 @@ def test_usbsink_state_disabled_with_gadget_is_fail(monkeypatch, tmp_path):
     assert r.status == "fail"
     assert "advertised" in r.detail.lower()
     assert "bridge inactive" in r.detail.lower()
+
+
+def test_usbsink_state_disabled_gadget_present_ncm_only_is_ok(monkeypatch, tmp_path):
+    """The composite gadget legitimately persists for the always-on USB
+    management network even when USB Audio Input is off — a ConfigFS dir
+    carrying only ncm.usb0 (no uac2.usb0) must NOT be treated as drift."""
+    gadget = tmp_path / "jts-usb-audio"
+    (gadget / "functions" / "ncm.usb0").mkdir(parents=True)
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
+    _patch_active(monkeypatch, False)
+    _patch_libcomp_loaded(monkeypatch, True)
+
+    r = doctor.check_usbsink_state()
+
+    assert r.status == "ok"
+    assert "composite gadget" in r.detail.lower() or "always-on" in r.detail.lower()
 
 
 def test_usbsink_state_parked_clean(monkeypatch, tmp_path):
@@ -117,30 +133,53 @@ def test_usbsink_state_parked_clean(monkeypatch, tmp_path):
 
     assert r.status == "ok"
     assert "parked" in r.detail.lower()
-    assert "gadget down" in r.detail.lower()
+    assert "uac2.usb0 function down" in r.detail.lower()
+
+
+def test_usbsink_state_parked_clean_with_ncm_gadget_notes_network(
+    monkeypatch, tmp_path,
+):
+    """A parked follower's gadget dir may still legitimately carry
+    ncm.usb0 for the always-on management network — the ok detail should
+    say so rather than reading like the gadget vanished entirely."""
+    monkeypatch.setattr(doctor.usbsink, "_parked_as_bonded_follower", lambda: True)
+    gadget = tmp_path / "jts-usb-audio"
+    (gadget / "functions" / "ncm.usb0").mkdir(parents=True)
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
+    monkeypatch.setattr(doctor.usbsink, "_module_loaded", lambda name: True)
+    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: False)
+
+    r = doctor.check_usbsink_state()
+
+    assert r.status == "ok"
+    assert "management network" in r.detail.lower()
 
 
 def test_usbsink_state_parked_with_gadget_is_fail(monkeypatch, tmp_path):
+    """A parked follower with uac2.usb0 still composed is the split-brain
+    state — the local-source park plan should have recomposed the gadget
+    without the audio function."""
     monkeypatch.setattr(doctor.usbsink, "_parked_as_bonded_follower", lambda: True)
     gadget = tmp_path / "jts-usb-audio"
-    gadget.mkdir()
+    (gadget / "functions" / "uac2.usb0").mkdir(parents=True)
     monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
     monkeypatch.setattr(doctor.usbsink, "_module_loaded", lambda name: True)
-
-    def active(unit: str) -> bool:
-        return unit == doctor.usbsink.USBSINK_INIT_UNIT
-
-    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", active)
+    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: False)
 
     r = doctor.check_usbsink_state()
 
     assert r.status == "fail"
     assert "parked" in r.detail.lower()
     assert "advertised" in r.detail.lower()
-    assert doctor.usbsink.USBSINK_INIT_UNIT in r.detail
+    assert "uac2.usb0 function present" in r.detail
 
 
-def test_usbsink_state_parked_module_only_is_warn(monkeypatch, tmp_path):
+def test_usbsink_state_parked_module_only_is_ok(monkeypatch, tmp_path):
+    """Parked + uac2.usb0 absent + libcomposite still loaded is no longer
+    RAM drift by itself in the composite model: libcomposite legitimately
+    stays resident whenever the gadget carries ncm.usb0 for the always-on
+    network. check_usbgadget_composition (not this check) owns genuine
+    RAM-drift detection for the composite gadget as a whole."""
     monkeypatch.setattr(doctor.usbsink, "_parked_as_bonded_follower", lambda: True)
     monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", tmp_path / "missing")
     monkeypatch.setattr(doctor.usbsink, "_module_loaded", lambda name: True)
@@ -148,8 +187,8 @@ def test_usbsink_state_parked_module_only_is_warn(monkeypatch, tmp_path):
 
     r = doctor.check_usbsink_state()
 
-    assert r.status == "warn"
-    assert "libcomposite" in r.detail.lower()
+    assert r.status == "ok"
+    assert "parked" in r.detail.lower()
 
 
 def test_usbsink_state_active_no_state_file(monkeypatch, tmp_path):
@@ -823,3 +862,254 @@ def test_usbsink_name_warns_when_marker_missing(monkeypatch, tmp_path):
     r = doctor.check_usbsink_name(modules_root=str(tmp_path))
     assert r.status == "warn"
     assert "stale" in r.detail.lower()
+
+
+# ----------------------------------------------------------------------
+# check_usbgadget_composition — composed gadget functions vs. composed
+# *intent* (network kill-switch x audio enablement x follower-park gate).
+# This is the composite-era replacement for the old "libcomposite loaded
+# <=> usbsink active" invariant; the matrix below enumerates every cell
+# of the truth table in docs/HANDOFF-usb-gadget.md / jasper-usbgadget-up.
+# ----------------------------------------------------------------------
+
+
+def _gadget_tree(tmp_path, *, ncm: bool = False, uac2: bool = False) -> Path:
+    """Build (or leave absent) a ConfigFS gadget dir under tmp_path with
+    the requested function subdirs. `parents=True` on each mkdir also
+    creates `root` itself, so a caller requesting neither function gets
+    back a path that genuinely doesn't exist on disk."""
+    root = tmp_path / "jts-usb-audio"
+    functions = root / "functions"
+    if ncm:
+        (functions / "ncm.usb0").mkdir(parents=True, exist_ok=True)
+    if uac2:
+        (functions / "uac2.usb0").mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _patch_composition_env(
+    monkeypatch,
+    tmp_path,
+    *,
+    udc_present: bool,
+    network_env: str | None,
+    usbsink_enabled: bool,
+    parked_follower: bool = False,
+    ncm: bool = False,
+    uac2: bool = False,
+):
+    udc_dir = tmp_path / "udc"
+    if udc_present:
+        udc_dir.mkdir(exist_ok=True)
+        (udc_dir / "fe980000.usb").mkdir(exist_ok=True)
+    monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(udc_dir))
+    if network_env is None:
+        monkeypatch.delenv("JASPER_USB_NETWORK", raising=False)
+    else:
+        monkeypatch.setenv("JASPER_USB_NETWORK", network_env)
+
+    # With neither function requested, `gadget` is a path that does not
+    # exist on disk (the "no gadget directory at all" cell); callers that
+    # need to test a present-but-empty gadget dir create it explicitly
+    # after this call (see test_composition_nothing_wanted_but_gadget_present_is_fail).
+    gadget = _gadget_tree(tmp_path, ncm=ncm, uac2=uac2)
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
+
+    def _run_stub(cmd, timeout=5.0):
+        if cmd[:3] == ["systemctl", "is-enabled", "--quiet"]:
+            return type(
+                "P", (), {"returncode": 0 if usbsink_enabled else 1, "stdout": "", "stderr": ""},
+            )()
+        raise AssertionError(f"unexpected _run call in test: {cmd}")
+
+    monkeypatch.setattr(doctor.usbsink, "_run", _run_stub)
+    monkeypatch.setattr(
+        doctor.usbsink, "_parked_as_bonded_follower", lambda: parked_follower,
+    )
+    return gadget
+
+
+def test_composition_no_udc_is_ok_skip(monkeypatch, tmp_path):
+    """Fresh install pre-reboot (no UDC yet) must never fail — the unit
+    itself skips cleanly via jasper-usbgadget-wanted, and
+    check_usbsink_dtoverlay already owns telling the user to reboot."""
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=False, network_env="enabled", usbsink_enabled=True,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "ok"
+    assert "no udc" in r.detail.lower()
+
+
+def test_composition_network_enabled_audio_enabled_matches(monkeypatch, tmp_path):
+    """network=enabled, audio=enabled/allowed -> ncm.usb0 + uac2.usb0."""
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env="enabled", usbsink_enabled=True,
+        ncm=True, uac2=True,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "ok"
+    assert "matches intent" in r.detail
+
+
+def test_composition_network_enabled_audio_disabled_matches(monkeypatch, tmp_path):
+    """network=enabled, audio=intent_disabled -> ncm.usb0 only."""
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env="enabled", usbsink_enabled=False,
+        ncm=True, uac2=False,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "ok"
+    assert "intent_disabled" in r.detail
+    assert "matches intent" in r.detail
+
+
+def test_composition_network_enabled_audio_parked_follower_matches(
+    monkeypatch, tmp_path,
+):
+    """network=enabled, audio=parked_follower -> ncm.usb0 only (audio
+    intent unit enabled, but a bonded follower still parks it)."""
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env="enabled", usbsink_enabled=True,
+        parked_follower=True, ncm=True, uac2=False,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "ok"
+    assert "parked_follower" in r.detail
+    assert "matches intent" in r.detail
+
+
+def test_composition_network_disabled_audio_enabled_legacy_shape_matches(
+    monkeypatch, tmp_path,
+):
+    """network=disabled, audio=enabled -> uac2.usb0 only (legacy shape)."""
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env="disabled", usbsink_enabled=True,
+        ncm=False, uac2=True,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "ok"
+    assert "network=False" in r.detail
+    assert "matches intent" in r.detail
+
+
+def test_composition_network_disabled_audio_disabled_nothing_wanted_ok(
+    monkeypatch, tmp_path,
+):
+    """network=disabled, audio=intent_disabled -> nothing composed, nothing
+    wanted; the unit itself would have skipped via ExecCondition."""
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env="disabled", usbsink_enabled=False,
+        ncm=False, uac2=False,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "ok"
+    assert "zero-ram" in r.detail.lower()
+
+
+def test_composition_disabled_kill_switch_is_case_insensitive_and_exact(
+    monkeypatch, tmp_path,
+):
+    """Only the exact literal 'disabled' (case-insensitive) turns network
+    off; any other value (typo, unrelated string) stays enabled — mirrors
+    JASPER_SHAIRPORT_SUPERVISOR / JASPER_SYSTEM_SUPERVISOR."""
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env="DISABLED", usbsink_enabled=False,
+        ncm=False, uac2=False,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "ok"
+    assert "network=False" in r.detail
+
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env="off", usbsink_enabled=False,
+        ncm=True, uac2=False,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "ok"
+    assert "network=True" in r.detail
+
+
+# --- mismatch cells: composed functions disagree with intent ---------
+
+
+def test_composition_network_wanted_but_ncm_missing_is_fail(monkeypatch, tmp_path):
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env="enabled", usbsink_enabled=True,
+        ncm=False, uac2=True,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "fail"
+    assert "network wanted but ncm.usb0 missing" in r.detail
+
+
+def test_composition_audio_wanted_but_uac2_missing_is_fail(monkeypatch, tmp_path):
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env="enabled", usbsink_enabled=True,
+        ncm=True, uac2=False,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "fail"
+    assert "audio wanted but uac2.usb0 missing" in r.detail
+
+
+def test_composition_network_not_wanted_but_ncm_present_is_fail(monkeypatch, tmp_path):
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env="disabled", usbsink_enabled=True,
+        ncm=True, uac2=True,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "fail"
+    assert "network not wanted but ncm.usb0 present" in r.detail
+
+
+def test_composition_audio_not_wanted_but_uac2_present_is_fail(monkeypatch, tmp_path):
+    """Covers the parked-follower shape at the composition level too:
+    audio intent unit is enabled, but the follower park gate says no —
+    yet uac2.usb0 is still (wrongly) composed."""
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env="enabled", usbsink_enabled=True,
+        parked_follower=True, ncm=True, uac2=True,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "fail"
+    assert "audio not wanted but uac2.usb0 present" in r.detail
+
+
+def test_composition_nothing_wanted_but_gadget_present_is_fail(monkeypatch, tmp_path):
+    """network=disabled + audio=intent_disabled but the ConfigFS gadget
+    directory itself still exists (even with no function subdirs) is
+    drift — nothing should be composed at all in this cell."""
+    gadget = _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env="disabled", usbsink_enabled=False,
+        ncm=False, uac2=False,
+    )
+    gadget.mkdir(parents=True, exist_ok=True)
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "fail"
+    assert "gadget present but neither function should exist" in r.detail
+
+
+def test_composition_udc_dir_read_error_treated_as_no_udc(monkeypatch, tmp_path):
+    """An unreadable /sys/class/udc (OSError on iterdir) must degrade to
+    the same 'no UDC' skip as a genuinely absent one, not crash the
+    check."""
+    udc_dir = tmp_path / "udc-not-a-dir"
+    udc_dir.write_text("not a directory")
+    monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(udc_dir))
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "ok"
+    assert "no udc" in r.detail.lower()
