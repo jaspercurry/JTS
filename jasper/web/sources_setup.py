@@ -242,18 +242,6 @@ def _set_unit(unit: str, enabled: bool) -> None:
         )
 
 
-def _stop_unit(unit: str, *, reason: str) -> None:
-    resp = manage_units(
-        unit, verb="stop", reason=reason, no_block=False, timeout=10.0,
-    )
-    if not resp.get("ok"):
-        logger.warning(
-            "source %s stop failed: %s",
-            unit,
-            resp.get("error") or f"rc={resp.get('rc')}",
-        )
-
-
 def _manage_unit(unit: str, verb: str, *, reason: str) -> None:
     resp = manage_units(
         unit, verb=verb, reason=reason, no_block=False, timeout=15.0,

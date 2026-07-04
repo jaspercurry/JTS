@@ -1038,6 +1038,26 @@ def test_composition_disabled_kill_switch_is_case_insensitive_and_exact(
     assert "network=True" in r.detail
 
 
+def test_composition_killswitch_whitespace_stays_enabled_matching_bash(
+    monkeypatch, tmp_path,
+):
+    """review core-7: a whitespace-decorated ' disabled' must be treated as
+    WANTED (network=True) here, matching jasper-usbgadget-up's raw (untrimmed)
+    comparison. The Python doctor readers dropped .strip() so bash and Python
+    agree byte-for-byte — otherwise check_usbgadget_composition would false-fail
+    when bash composed ncm but Python thought the kill switch was set. The bash
+    side of this parity is pinned by
+    test_usbgadget_script.py::test_up_killswitch_literal_matrix."""
+    _patch_composition_env(
+        monkeypatch, tmp_path,
+        udc_present=True, network_env=" disabled ", usbsink_enabled=False,
+        ncm=True, uac2=False,
+    )
+    r = doctor.check_usbgadget_composition()
+    assert r.status == "ok"
+    assert "network=True" in r.detail
+
+
 # --- mismatch cells: composed functions disagree with intent ---------
 
 

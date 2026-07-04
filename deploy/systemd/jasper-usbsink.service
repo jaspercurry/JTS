@@ -61,6 +61,22 @@ Environment="JASPER_USBSINK_MIXER_CARD=UAC2Gadget"
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/usbsink.env
 ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
+# Second gate: park cleanly (do NOT start) unless the composite gadget has
+# actually composed the uac2 (audio) function. Without it, starting the bridge
+# pre-reboot (dtoverlay set but no UDC yet, so the gadget skipped and composed
+# nothing) would run ExecStartPre=jasper-usbsink-wait-card for the full 30 s,
+# fail, and Restart=on-failure would loop that ~32 s cycle forever — never
+# rate-limited, because each cycle outlasts the StartLimit window (review
+# core-4). An ExecCondition skip (exit >0, <255) is systemd's "condition not
+# met" — the daemon parks instead of looping, the same fail-clean idiom as the
+# local-source gate above and jasper-voice's voice-input-absent park. The path
+# is a hardcoded literal (systemd ConditionPath/ExecCondition can't expand the
+# gadget scripts' JASPER_CONFIGFS_ROOT), matching the gadget dir name
+# jts-usb-audio + functions/uac2.usb0; the literal is pinned by
+# tests/test_usbsink_systemd.py. jasper-doctor's check_usbgadget_composition
+# surfaces "audio intent but no uac2 composed" as a failure so a parked bridge
+# is loud, not silent.
+ExecCondition=/bin/test -d /sys/kernel/config/usb_gadget/jts-usb-audio/functions/uac2.usb0
 # Block until the UAC2Gadget ALSA card is registered before the bridge opens
 # its capture device. jasper-usbgadget composes the descriptor and returns,
 # but the kernel finishes registering the card slightly later (the wait-card

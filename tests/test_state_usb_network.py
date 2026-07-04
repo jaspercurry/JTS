@@ -43,8 +43,11 @@ def test_usb_network_disabled_no_iface(monkeypatch, tmp_path):
 
 
 def test_usb_network_enabled_no_host_plugged_in(monkeypatch, tmp_path):
-    """Kill switch on (default), no host plugged in — the common
-    steady-state. carrier/iface absent is normal, not an error."""
+    """Network enabled (default) but usb0 not yet present — the gadget hasn't
+    bound the NCM function yet (pre-reboot / no UDC). /state reports the
+    kill-switch intent (enabled=True) with iface/carrier absent; this block is
+    intentionally simpler than the doctor's compose/bind failure check, so
+    iface absent here is reported, not judged."""
     monkeypatch.delenv("JASPER_USB_NETWORK", raising=False)
     _patch_sys_class_net(monkeypatch, tmp_path)
 
@@ -104,6 +107,16 @@ def test_usb_network_kill_switch_is_case_insensitive_exact_literal(
     assert state_aggregate._usb_network_snapshot()["enabled"] is True
 
     monkeypatch.setenv("JASPER_USB_NETWORK", "off")
+    assert state_aggregate._usb_network_snapshot()["enabled"] is True
+
+    # Whitespace-decorated near-miss: a stray space breaks the exact-literal
+    # match and STAYS enabled, matching jasper-usbgadget-up's raw (untrimmed)
+    # comparison so bash and Python never disagree (review core-7). The
+    # fail-safe direction: a stray space must not silently drop the fallback
+    # network.
+    monkeypatch.setenv("JASPER_USB_NETWORK", " disabled ")
+    assert state_aggregate._usb_network_snapshot()["enabled"] is True
+    monkeypatch.setenv("JASPER_USB_NETWORK", "disabled ")
     assert state_aggregate._usb_network_snapshot()["enabled"] is True
 
 

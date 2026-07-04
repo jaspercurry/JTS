@@ -66,14 +66,38 @@ def test_usbnet_interface_kill_switched_but_iface_present_is_warn(monkeypatch, t
     assert "disabled" in r.detail.lower()
 
 
-def test_usbnet_interface_no_host_plugged_in_is_ok(monkeypatch, tmp_path):
+def test_usbnet_interface_no_udc_pre_reboot_is_ok(monkeypatch, tmp_path):
+    """usb0 absent AND no UDC (fresh install pre-reboot / non-gadget hardware):
+    the gadget cannot bind, so usb0's absence is expected — ok, not a failure.
+    check_usbsink_dtoverlay owns the reboot prompt."""
     monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
     monkeypatch.setattr(
         doctor_network, "USBNET_SYS_CLASS_NET", tmp_path / "sys-class-net",
     )
+    # Empty UDC dir (exists but no controller) → no UDC present.
+    udc_dir = tmp_path / "udc"
+    udc_dir.mkdir()
+    monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(udc_dir))
     r = doctor.check_usbnet_interface()
     assert r.status == "ok"
-    assert "not present" in r.detail.lower()
+    assert "no udc" in r.detail.lower()
+
+
+def test_usbnet_interface_absent_with_udc_is_fail(monkeypatch, tmp_path):
+    """usb0 absent while a UDC IS present and the network is wanted means the
+    gadget composed+bind FAILED — u_ether registers usb0 at bind time, so a
+    bound NCM gadget always has usb0. This is a real failure (the fallback
+    management network is down), not 'nothing plugged in' (review core-3)."""
+    monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
+    monkeypatch.setattr(
+        doctor_network, "USBNET_SYS_CLASS_NET", tmp_path / "sys-class-net",
+    )
+    udc_dir = tmp_path / "udc"
+    (udc_dir / "3f980000.usb").mkdir(parents=True)
+    monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(udc_dir))
+    r = doctor.check_usbnet_interface()
+    assert r.status == "fail"
+    assert "compose/bind" in r.detail.lower() or "did not compose" in r.detail.lower()
 
 
 def test_usbnet_interface_present_with_address_is_ok(monkeypatch, tmp_path):
@@ -98,8 +122,9 @@ def test_usbnet_interface_present_with_address_is_ok(monkeypatch, tmp_path):
 
 def test_usbnet_interface_present_no_carrier_is_ok(monkeypatch, tmp_path):
     """No carrier (nothing plugged into the composed NCM link at the
-    moment) is normal, not an error — the interface can exist without an
-    active USB link in some transitional states."""
+    moment) is normal, not an error — usb0 exists at gadget-bind time
+    regardless of the cable, so an addressed usb0 with carrier down is the
+    ordinary nothing-plugged-in state."""
     monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
     net_root = tmp_path / "sys-class-net"
     iface = net_root / "usb0"
@@ -295,8 +320,8 @@ def test_usbnet_dhcp_unit_active_with_iface_present_is_ok(monkeypatch, tmp_path)
 
 
 def test_usbnet_dhcp_unit_inactive_with_iface_absent_is_ok(monkeypatch, tmp_path):
-    """Steady-state zero-cost: no host plugged in, usb0 absent, dnsmasq
-    correctly torn down by device deactivation."""
+    """Zero-cost: usb0 absent (the NCM gadget is not composed — kill-switched
+    or no UDC), dnsmasq correctly not started by the device activation."""
     monkeypatch.setattr(
         doctor_network.shutil, "which", lambda name: "/bin/systemctl",
     )

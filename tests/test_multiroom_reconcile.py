@@ -1157,6 +1157,34 @@ def test_plan_follower_parks_usbsink_bridge_and_recomposes_gadget():
     assert bridge_idx < gadget_idx < kinds.index("start")
 
 
+def test_plan_restore_recomposes_gadget_before_restarting_bridge():
+    """Un-park (solo restore) must RECOMPOSE the composite gadget BEFORE it
+    restores (starts) the USB-audio bridge — the mirror image of the park order.
+
+    review core-2: the reverse order (bridge start before recompose) made the
+    bridge's ExecStartPre=jasper-usbsink-wait-card poll the UAC2Gadget card for
+    the full 30 s and fail, because the card only exists after the recompose
+    that would come next — a guaranteed stall + failed-unit transient on every
+    un-park. The recompose must land first so uac2 is composed and the card
+    exists before the bridge waits on it."""
+    p = plan(_disabled())
+    by_unit = {i.unit: i.desired for i in p.intents}
+    assert by_unit["jasper-usbgadget.service"] == "recompose"
+    assert by_unit["jasper-usbsink.service"] == "restore"
+    gadget_idx = next(
+        i for i, it in enumerate(p.intents)
+        if it.unit == "jasper-usbgadget.service"
+    )
+    bridge_idx = next(
+        i for i, it in enumerate(p.intents)
+        if it.unit == "jasper-usbsink.service"
+    )
+    assert gadget_idx < bridge_idx, (
+        "the gadget must recompose (adding uac2) before the bridge is started, "
+        "so wait-card finds the UAC2Gadget card instead of polling 30 s"
+    )
+
+
 def test_plan_follower_parks_source_arbiter_infrastructure():
     """The mux is shared local-source infrastructure. It is not one source's
     daemon, but it must stop while a follower has no local source authority."""

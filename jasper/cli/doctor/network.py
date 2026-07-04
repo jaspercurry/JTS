@@ -596,29 +596,54 @@ def _usb_network_wanted() -> bool:
     coupling for no real de-duplication. Kept byte-identical in
     intent: unless the kill switch is the exact literal ``disabled``
     (case-insensitive), network is wanted — same convention as
-    ``JASPER_SHAIRPORT_SUPERVISOR`` / ``JASPER_SYSTEM_SUPERVISOR``."""
+    ``JASPER_SHAIRPORT_SUPERVISOR`` / ``JASPER_SYSTEM_SUPERVISOR``. NOT
+    stripped, to match ``jasper-usbgadget-up``'s raw (untrimmed) comparison so
+    a whitespace-decorated ``" disabled"`` stays enabled in both (review
+    core-7) — a stray space must never silently drop the fallback network."""
     raw = os.environ.get("JASPER_USB_NETWORK", "enabled")
-    return raw.strip().lower() != "disabled"
+    return raw.lower() != "disabled"
 
 
 def _usbnet_iface_present() -> bool:
     return (USBNET_SYS_CLASS_NET / USBNET_IFACE).is_dir()
 
 
+def _udc_present() -> bool:
+    """True iff a USB Device Controller exists under ``/sys/class/udc``.
+
+    Mirrors ``jasper-usbgadget-up``/``-wanted``'s UDC probe (env-overridable
+    ``JASPER_UDC_CLASS_DIR`` for the same reason the gadget scripts allow it).
+    A missing UDC is the fresh-install-pre-reboot case: the dtoverlay is set
+    but the OTG controller isn't in peripheral mode yet, so the gadget cannot
+    bind and ``usb0`` legitimately does not exist. Once a UDC is present and
+    the network is wanted, the gadget composes ``ncm.usb0`` and binds, and
+    ``u_ether`` registers the ``usb0`` netdev at bind time — regardless of
+    whether a host cable is attached (carrier reflects the cable, existence
+    reflects the bind)."""
+    udc_dir = Path(os.environ.get("JASPER_UDC_CLASS_DIR", "/sys/class/udc"))
+    try:
+        return udc_dir.is_dir() and any(udc_dir.iterdir())
+    except OSError:
+        return False
+
+
 @doctor_check(order=67.6, group="network")
 def check_usbnet_interface() -> CheckResult:
     """The usb0 NCM interface must exist with the fixed management
-    address whenever the network function is composed.
+    address whenever the network function is composed and bound.
 
     ``jasper-usbgadget-up`` composes ``ncm.usb0`` whenever
     ``JASPER_USB_NETWORK`` is not the literal ``disabled``
     (jasper.cli.doctor.usbsink.check_usbgadget_composition already
     verifies the ConfigFS function itself). This check verifies the
-    *network* consequence: once ``usb0`` exists, NetworkManager's
+    *network* consequence: ``u_ether`` registers the ``usb0`` netdev at
+    gadget-BIND time (not host-attach time), so on a bound gadget ``usb0``
+    exists regardless of whether a laptop is plugged in, and NetworkManager's
     ``jts-usb`` profile (see check_usbnet_nm_profile) should have put
-    10.12.194.1/24 on it. No host plugged in yet is normal and reports ok
-    — the interface only appears once a host attaches and the kernel's
-    u_ether creates the netdev; there is nothing to check until then."""
+    10.12.194.1/24 on it. A missing ``usb0`` while the network is wanted AND a
+    UDC exists therefore means the compose/bind FAILED — a real problem, not
+    "nothing plugged in". No carrier on an existing ``usb0`` is the normal
+    nothing-plugged-in state and reports ok."""
     label = "USB management network (usb0)"
     if not _usb_network_wanted():
         if _usbnet_iface_present():
@@ -630,10 +655,27 @@ def check_usbnet_interface() -> CheckResult:
             )
         return CheckResult(label, "ok", "network kill-switched (disabled)")
     if not _usbnet_iface_present():
+        if not _udc_present():
+            # No UDC: fresh install pre-reboot (dtoverlay set but the OTG
+            # controller isn't peripheral yet), or non-gadget hardware. The
+            # gadget cannot bind, so usb0's absence is expected — the dtoverlay
+            # check (jasper.cli.doctor.usbsink.check_usbsink_dtoverlay) owns
+            # that gap.
+            return CheckResult(
+                label, "ok",
+                f"{USBNET_IFACE} absent, no UDC present — fresh install "
+                "pre-reboot or non-gadget hardware (see check_usbsink_dtoverlay)",
+            )
+        # A UDC exists and the network is wanted, so the gadget should have
+        # composed ncm.usb0 and bound → usb0 should exist. Its absence is a
+        # compose/bind failure, not a "nothing plugged in" state.
         return CheckResult(
-            label, "ok",
-            f"{USBNET_IFACE} not present — no host plugged into the USB-C "
-            "port yet (normal; nothing to check until a host attaches)",
+            label, "fail",
+            f"{USBNET_IFACE} missing but a UDC is present and the network is "
+            "wanted — jasper-usbgadget did not compose/bind ncm.usb0. Check "
+            "`systemctl status jasper-usbgadget` and "
+            "check_usbgadget_composition; the fallback management network is "
+            "down until it composes.",
         )
     addr_proc = _run(["ip", "-4", "-o", "addr", "show", "dev", USBNET_IFACE])
     if addr_proc.returncode != 0:
@@ -741,7 +783,7 @@ def check_usbnet_dhcp_unit() -> CheckResult:
         return CheckResult(
             label, "ok",
             f"{USBNET_DHCP_UNIT} {state}, {USBNET_IFACE} absent — no cost "
-            "with no host plugged in",
+            "while the NCM gadget is not composed (kill-switched or no UDC)",
         )
     if iface_present:
         return CheckResult(
@@ -763,10 +805,11 @@ def check_usbnet_management_probe() -> CheckResult:
     """The management UI must answer over the USB fallback address.
 
     Mirrors ``check_management_surface`` (jasper/cli/doctor/web.py) but
-    probes ``http://10.12.194.1/`` with ``Host: <JASPER_HOSTNAME>``
-    instead of nginx's loopback IPv4 — this is the exact request a
-    plugged-in laptop with no WiFi makes when it falls back from
-    ``http://<hostname>.local/`` to the raw fallback IP. Pins both the
+    probes ``http://10.12.194.1/system/data.json`` (the same endpoint the
+    deploy-time management-surface verification hits) with
+    ``Host: <JASPER_HOSTNAME>`` instead of nginx's loopback IPv4 — this is
+    the exact path a plugged-in laptop with no WiFi exercises when it falls
+    back from ``http://<hostname>.local/`` to the raw fallback IP. Pins both the
     guard's acceptance of the 10.12.194.1 Host/source (see
     tests/test_http_security.py) and that nginx is actually listening on
     usb0's address, without needing hardware. Skips when usb0 doesn't

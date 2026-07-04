@@ -5,9 +5,14 @@ Description=Jasper USB management network DHCP (scoped dnsmasq on usb0)
 # server and pushes no router/DNS to the host — see docs/HANDOFF-usb-gadget.md
 # and /etc/jasper/usbnet-dnsmasq.conf.
 #
-# Device-activated: it starts only when usb0 exists (the composite gadget's ncm
-# function created it) and stops when usb0 disappears. Zero cost whenever the
-# gadget/NCM is absent — nothing resident on a speaker with no host plugged in.
+# Device-activated: it starts only when usb0 exists and stops when usb0
+# disappears. u_ether registers usb0 at gadget-BIND time (not host-attach), so
+# on a composed+bound NCM gadget usb0 exists regardless of whether a laptop is
+# plugged in — this dnsmasq is therefore resident whenever the network function
+# is composed (~1 MB, MemoryMax-capped below), waiting to hand a lease the
+# moment a host attaches. It costs nothing only when the gadget is
+# kill-switched (JASPER_USB_NETWORK=disabled) or there is no UDC (pre-reboot),
+# because then usb0 never appears.
 BindsTo=sys-subsystem-net-devices-usb0.device
 After=sys-subsystem-net-devices-usb0.device NetworkManager.service
 ConditionPathExists=/etc/jasper/usbnet-dnsmasq.conf
@@ -27,9 +32,18 @@ MemoryHigh=12M
 MemoryMax=16M
 # Hardening. dnsmasq needs to bind the DHCP socket on usb0 and read the conf;
 # it needs CAP_NET_BIND_SERVICE (port 67) + CAP_NET_ADMIN/CAP_NET_RAW for the
-# raw DHCP socket, and nothing else. ProtectSystem=strict with the runtime dir
-# as its only writable path.
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
+# raw DHCP socket. It also drops privileges to nobody:nogroup at startup (the
+# conf pins user=/group= explicitly — dnsmasq-base ships no `dnsmasq` user), so
+# the BOUNDING set (the ceiling on what caps the process may ever hold) must
+# ALSO allow CAP_SETUID/CAP_SETGID — a root process still needs them to
+# setuid/setgid, and without them dnsmasq treats the failed drop as fatal and
+# dies ('cannot change to user'). CAP_SETUID/CAP_SETGID are deliberately NOT in
+# AmbientCapabilities: ambient caps are what the process KEEPS after the drop,
+# and it must not retain the ability to change identity again once it is
+# nobody. dnsmasq itself re-adds only the three net caps across the drop
+# (PR_SET_KEEPCAPS). ProtectSystem=strict with the runtime dir as its only
+# writable path.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW CAP_SETUID CAP_SETGID
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 NoNewPrivileges=true
 ProtectSystem=strict

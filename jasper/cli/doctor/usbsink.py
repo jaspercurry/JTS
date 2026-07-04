@@ -83,9 +83,18 @@ def _network_wanted() -> bool:
     file parse) because ``jasper.env_load`` already unions
     ``/etc/jasper/jasper.env`` into ``os.environ`` at CLI startup —
     the same convention every other doctor env read in this package
-    uses (e.g. ``check_usbsink_host_clock``'s target-fill env read)."""
+    uses (e.g. ``check_usbsink_host_clock``'s target-fill env read).
+
+    NOT stripped: ``jasper-usbgadget-up`` matches the RAW value (no trim), so
+    a whitespace-decorated ``" disabled"`` is a warned near-miss that STAYS
+    enabled in bash. The Python readers must agree byte-for-byte, or
+    check_usbgadget_composition would false-fail when bash composed ncm but
+    Python thought the kill switch was set (review core-7). The fail-safe
+    direction is deliberate: a stray space must never silently drop the
+    always-on fallback network. Pinned by tests/test_usbgadget_script.py's
+    literal matrix (bash) and test_doctor_usbsink.py (Python)."""
     raw = os.environ.get("JASPER_USB_NETWORK", "enabled")
-    return raw.strip().lower() != "disabled"
+    return raw.lower() != "disabled"
 
 
 def _audio_wanted() -> tuple[bool, str]:

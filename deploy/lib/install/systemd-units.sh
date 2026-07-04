@@ -356,9 +356,32 @@ enable_usbgadget() {
     # and off by default. jasper-usbnet-dhcp is device-activated via its
     # [Install] WantedBy=sys-subsystem-net-devices-usb0.device, so `enable`
     # wires the pull without starting it until usb0 appears.
+    #
+    # `enable --now` on the composite gadget is only a START, and PartOf=
+    # propagation restarts/stops but NEVER starts a dependent. On an upgrade,
+    # migrate_usbsink_init_to_usbgadget already ran `disable --now
+    # jasper-usbsink-init.service` while the OLD in-memory graph still had
+    # jasper-usbsink PartOf=jasper-usbsink-init, so that stop propagated and
+    # left an enabled (possibly playing) USB-audio bridge STOPPED. Bring it back
+    # if the household intent is on — a restore-if-enabled, the same idiom the
+    # reconciler uses. This runs UNCONDITIONALLY, deliberately NOT gated on
+    # SKIP_RESTART: the migration's stop is itself unconditional, so honoring
+    # SKIP_RESTART here would leave the bridge down until reboot — the worse
+    # outcome. `start` (not restart) so a bridge already brought up by the
+    # gadget's Requires= is a no-op rather than a needless bounce.
+    # NOTE the failure branch below only fires on a REAL failure (modprobe
+    # failure, gadget-up exit >=255, masked unit): the ExecCondition
+    # (jasper-usbgadget-wanted) skip is a condition-not-met outcome, which
+    # `systemctl enable --now` reports as a SUCCESSFUL job (rc=0), so the
+    # benign pre-reboot no-UDC case does NOT reach here. Point the operator at
+    # the unit's journal rather than mislabeling every failure as "no UDC yet".
     systemctl enable --now jasper-usbgadget.service >/dev/null 2>&1 || \
-        echo "  (jasper-usbgadget enable/start deferred — likely no UDC yet; reboot to apply the USB dtoverlay)"
+        echo "  WARN: jasper-usbgadget failed to enable/compose — check 'systemctl status jasper-usbgadget' and 'journalctl -u jasper-usbgadget' (pre-reboot no-UDC is a clean skip, not this error)"
     systemctl enable jasper-usbnet-dhcp.service >/dev/null 2>&1 || true
+    if systemctl is-enabled --quiet jasper-usbsink.service 2>/dev/null; then
+        systemctl start jasper-usbsink.service >/dev/null 2>&1 || \
+            echo "  WARN: USB Audio Input is enabled but jasper-usbsink did not restart after the gadget migration; run 'systemctl start jasper-usbsink' or check 'journalctl -u jasper-usbsink'"
+    fi
 }
 
 install_grouping_unit_files() {

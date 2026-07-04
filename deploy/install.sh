@@ -462,8 +462,9 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      http://<hostname>/ works over USB even with Wi-Fi off, plus the
      wizard-toggled USB audio function. NM keyfile owns usb0 and the
      device-activated jasper-usbnet-dhcp.service (dnsmasq-base) serves DHCP.
-     Retire the old jasper-usbsink-init.service. Kill switch:
-     JASPER_USB_NETWORK=disabled.
+     Retire the old jasper-usbsink-init.service; if USB audio was enabled,
+     restart jasper-usbsink after the migration (the init-unit stop
+     propagated to it). Kill switch: JASPER_USB_NETWORK=disabled.
    - Enable socket-activated streambox-safe web surfaces:
      /spotify/, /sources/, /sound/, /speaker/, /wifi/, /rooms/,
      /bluetooth/, /system/, and HTTPS /correction/.
@@ -668,10 +669,12 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      it carries a USB management network (ncm.usb0, 10.12.194.1/24, no
      forwarding) so http://<hostname>/ works over USB even with Wi-Fi off,
      plus the wizard-toggled USB audio function. Retire the old
-     jasper-usbsink-init.service on upgrade. Install the NM keyfile owning
-     usb0 and the scoped, device-activated jasper-usbnet-dhcp.service
-     (dnsmasq-base — no global dnsmasq service). USB audio stays off by
-     default. Skips cleanly pre-reboot when no UDC exists yet. Kill switch:
+     jasper-usbsink-init.service on upgrade; if USB audio was enabled,
+     restart jasper-usbsink after the migration (the init-unit stop
+     propagated to it). Install the NM keyfile owning usb0 and the scoped,
+     device-activated jasper-usbnet-dhcp.service (dnsmasq-base — no global
+     dnsmasq service). USB audio stays off by default. Skips cleanly
+     pre-reboot when no UDC exists yet. Kill switch:
      JASPER_USB_NETWORK=disabled.
    - Require jasper-outputd to be active and answering STATUS before
      voice starts against the final-output path.

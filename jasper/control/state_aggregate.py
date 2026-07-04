@@ -454,9 +454,12 @@ def _usb_network_wanted() -> bool:
     would go stale exactly like the voice-provider bug this convention
     exists to avoid. Unless ``JASPER_USB_NETWORK`` is the exact literal
     ``disabled`` (case-insensitive), network is wanted — same convention
-    as ``JASPER_SHAIRPORT_SUPERVISOR`` / ``JASPER_SYSTEM_SUPERVISOR``."""
+    as ``JASPER_SHAIRPORT_SUPERVISOR`` / ``JASPER_SYSTEM_SUPERVISOR``. NOT
+    stripped, to match ``jasper-usbgadget-up``'s raw comparison so a
+    whitespace-decorated ``" disabled"`` stays enabled in both (review
+    core-7)."""
     raw = os.environ.get("JASPER_USB_NETWORK", "enabled")
-    return raw.strip().lower() != "disabled"
+    return raw.lower() != "disabled"
 
 
 def _usb_network_snapshot() -> dict[str, Any]:

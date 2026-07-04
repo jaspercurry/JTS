@@ -342,15 +342,24 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
       - enabled, valid, follower  => stop snapserver + start snapclient.
     """
     restore_renderers = tuple(
-        UnitIntent(u, "restore", "not a bonded follower — sources per wizard")
-        for u in local_source_restore_units()
-    ) + tuple(
-        # Recompose (try-restart) composite units so a just-un-parked source
-        # rebuilds the part that was torn down on park — the USB gadget adds
-        # its audio function back iff USB audio is enabled, and a kill-switched
-        # gadget stays down. Ordered AFTER the restore starts.
+        # Recompose (try-restart) composite units BEFORE the restore starts, so
+        # a just-un-parked source rebuilds the part that was torn down on park
+        # first — the USB gadget adds its audio function back (iff USB audio is
+        # enabled) and the UAC2Gadget card appears, THEN the restore's
+        # `start jasper-usbsink` finds the card its ExecStartPre=wait-card polls
+        # for. The reverse order (restore start first) makes wait-card poll a
+        # card that only exists after the recompose that would come next — a
+        # guaranteed 30 s stall + failed-unit transient on every un-park (review
+        # core-2). A kill-switched gadget stays down (try-restart is a no-op on
+        # an inactive unit). This is the deliberate mirror-image of the PARK
+        # order below (stop-audio THEN recompose): park recomposes last so the
+        # gadget reads "audio parked" and drops uac2; restore recomposes first
+        # so uac2 is composed before the bridge waits on its card.
         UnitIntent(u, "recompose", "not a bonded follower — recompose gadget")
         for u in local_source_restore_restart_units()
+    ) + tuple(
+        UnitIntent(u, "restore", "not a bonded follower — sources per wizard")
+        for u in local_source_restore_units()
     )
 
     if not cfg.enabled:
