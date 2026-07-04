@@ -2601,20 +2601,36 @@ in `/boot/firmware/config.txt` (added by install.sh's
 `set_usb_gadget_mode`). Without the dtoverlay, the wizard toggle
 greys out and surfaces a "re-run install.sh and reboot" note.
 
-Full design at [`docs/HANDOFF-usbsink.md`](docs/HANDOFF-usbsink.md).
-Operational summary:
+**The ConfigFS gadget is composite and shared with an always-on USB
+management network** (`ncm.usb0` — a laptop plugged into the same
+USB-C port reaches `http://<JASPER_HOSTNAME>/` even with Wi-Fi off).
+Gadget ownership (`jasper-usbgadget.service`), the function truth
+table, and the network design are canonical in
+[`docs/HANDOFF-usb-gadget.md`](docs/HANDOFF-usb-gadget.md) — read
+that first for anything touching gadget composition, ConfigFS, or the
+`jasper-usbsink-init.service` unit (deleted; replaced by
+`jasper-usbgadget.service`). This section stays scoped to the audio
+source itself.
 
-**RAM contract**:
-- Off: ~50 KB (the dwc2 kernel module only — below noise)
-- On: ~22 MB Pss (one Python daemon)
+Full audio-source design at
+[`docs/HANDOFF-usbsink.md`](docs/HANDOFF-usbsink.md). Operational
+summary:
+
+**RAM contract**: see HANDOFF-usb-gadget.md "RAM contract" for the
+gadget's own baseline (paid whenever the network function isn't
+kill-switched) plus HANDOFF-usbsink.md §2 for the audio daemon's
+marginal cost on top of that baseline.
 
 The on/off enforcement is in three places:
-1. install.sh adds the dtoverlay but does NOT enable the service or
-   load libcomposite at boot
-2. `jasper-usbsink-init.service` modprobes libcomposite in
-   `ExecStartPre` and rmmods it in `ExecStopPost`
-3. `jasper-doctor` warns if libcomposite is loaded but the service
-   is inactive (RAM drift catch)
+1. install.sh adds the dtoverlay but does NOT enable the audio
+   function or load libcomposite at boot on its own
+2. `jasper-usbgadget.service` (not `jasper-usbsink-init.service`,
+   which is deleted) modprobes libcomposite in `ExecStartPre` and
+   rmmods it in `ExecStopPost`; it composes `uac2.usb0` only when the
+   `/sources/` toggle is on
+3. `jasper-doctor` warns on gadget-composition drift (RAM/state
+   mismatch between kill-switch/toggle intent and what's actually
+   loaded)
 
 **Volume model**: Mac slider drives JTS canonical `listening_level`
 just like the dial. The host's slider is observed via ALSA mixer
@@ -2660,7 +2676,7 @@ cat /run/jasper-usbsink/state.json | jq
   `f_uac2.c`; music still plays. Don't chase.
 - *No volume response*: check `amixer -c UAC2Gadget controls` —
   the gadget descriptor must expose `PCM Capture Volume` (it does;
-  driven by `c_volume_present=1` in `jasper-usbsink-gadget-up`).
+  driven by `c_volume_present=1` in `jasper-usbgadget-up`).
 - *RAM not returning to baseline after disable*: jasper-doctor's
   `usbsink state` check will flag this. `sudo rmmod u_audio
   libcomposite` or reboot to recover.

@@ -511,7 +511,12 @@ DEFERRED_PRIVILEGED_SUPPORT_UNITS = {
     "jasper-identity-reconcile": (
         ROOT / "deploy/systemd/jasper-identity-reconcile.service"
     ),
-    "jasper-usbsink-init": ROOT / "deploy/systemd/jasper-usbsink-init.service",
+    # The composite ConfigFS gadget owner replaces the retired
+    # jasper-usbsink-init. It is a root oneshot of exactly that class
+    # (modprobe libcomposite, write ConfigFS descriptors, rmmod the gadget
+    # modules on stop) and stays root by design — no User= until a validated
+    # WS1 slice moves it.
+    "jasper-usbgadget": ROOT / "deploy/systemd/jasper-usbgadget.service",
     "jasper-bootloop-guard": ROOT / "deploy/systemd/jasper-bootloop-guard.service",
 }
 
@@ -533,6 +538,62 @@ def test_privileged_support_units_stay_root_until_validated(unit, path):
         f"{unit}: gained User= without updating the WS1 Tier-B plan and "
         "validation guard. Drop these units one vertical slice at a time; see "
         "docs/HANDOFF-privilege-separation.md Remaining WS1 scope."
+    )
+
+
+USBNET_DHCP_UNIT = ROOT / "deploy/systemd/jasper-usbnet-dhcp.service"
+
+
+def test_usbnet_dhcp_unit_is_hardened_scoped_dnsmasq():
+    """The scoped dnsmasq for the USB management network ships the hardening
+    set the brief and HANDOFF-usb-gadget.md promise, and its device-activated
+    lifecycle bounds (BindsTo/After/WantedBy on the usb0 device unit +
+    MemoryMax + RuntimeDirectory).
+
+    review core-5/surfaces-2: neither new root unit was pinned by any hardening
+    test, which is also how the CapabilityBoundingSet privilege-drop kill
+    (core-1) shipped uncaught. This is the guard.
+    """
+    assert USBNET_DHCP_UNIT.is_file()
+    pairs = set(_directives(USBNET_DHCP_UNIT))
+    keys = {k for k, _ in pairs}
+
+    # Core sandbox.
+    assert ("ProtectSystem", "strict") in pairs
+    assert ("NoNewPrivileges", "true") in pairs
+    assert ("ProtectKernelModules", "true") in pairs
+    assert ("ProtectKernelTunables", "true") in pairs
+    assert ("RestrictSUIDSGID", "true") in pairs
+
+    # Capability bounding set: the raw DHCP caps PLUS CAP_SETUID/CAP_SETGID,
+    # which the process needs to drop to nobody:nogroup (a failed drop is fatal
+    # to dnsmasq — core-1). Ambient keeps only the net caps across the drop.
+    boundings = [v for k, v in pairs if k == "CapabilityBoundingSet"]
+    assert boundings, "jasper-usbnet-dhcp must set CapabilityBoundingSet="
+    bounding = boundings[-1].split()
+    for cap in ("CAP_NET_BIND_SERVICE", "CAP_NET_ADMIN", "CAP_NET_RAW",
+                "CAP_SETUID", "CAP_SETGID"):
+        assert cap in bounding, (
+            f"{cap} must be in the CapabilityBoundingSet — without "
+            "CAP_SETUID/CAP_SETGID dnsmasq's privilege drop to nobody fails "
+            "fatally (review core-1)."
+        )
+    ambients = [v for k, v in pairs if k == "AmbientCapabilities"]
+    assert ambients, "jasper-usbnet-dhcp must set AmbientCapabilities="
+    ambient = ambients[-1].split()
+    assert "CAP_SETUID" not in ambient and "CAP_SETGID" not in ambient, (
+        "CAP_SETUID/CAP_SETGID must NOT be ambient — the process must not "
+        "retain the ability to change identity after dropping to nobody."
+    )
+
+    # Bounded + device-activated lifecycle.
+    assert "MemoryMax" in keys, "the DHCP server must be MemoryMax-bounded"
+    assert "RuntimeDirectory" in keys, "lease file lives in a tmpfs RuntimeDirectory"
+    assert ("BindsTo", "sys-subsystem-net-devices-usb0.device") in pairs
+    assert ("WantedBy", "sys-subsystem-net-devices-usb0.device") in pairs
+    after = [v for k, v in pairs if k == "After"]
+    assert any("sys-subsystem-net-devices-usb0.device" in v for v in after), (
+        "the unit must order After= the usb0 device unit"
     )
 
 

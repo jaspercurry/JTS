@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# ExecCondition for jasper-usbgadget.service.
+#
+# Exits 0 (proceed) when the composite gadget has at least one function to
+# compose AND the hardware can carry it. Exits non-zero (systemd SKIPS the
+# unit cleanly — NOT a failure) when either:
+#
+#   1. No UDC under /sys/class/udc. This is the fresh-install pre-reboot case:
+#      install.sh added `dtoverlay=dwc2,dr_mode=peripheral` but the reboot
+#      that puts the OTG controller into peripheral mode hasn't happened yet,
+#      so there is nothing to bind. This MUST be a clean skip, not a unit
+#      failure — the doctor's dtoverlay check tells the user to reboot.
+#
+#   2. No function is wanted: network is kill-switched (JASPER_USB_NETWORK=
+#      disabled) AND audio is not enabled/allowed. This restores the historic
+#      zero-RAM contract — libcomposite never loads, the gadget never exists.
+#
+# A skip (exit 1) is systemd's documented "condition not met" outcome for
+# ExecCondition, distinct from a failure (exit >=255 or 1..254 → failed).
+# systemd treats ExecCondition exit codes 1..254 as "skip"; we use 1.
+#
+# The probes mirror jasper-usbgadget-up so the two never disagree. All are
+# env-overridable (defaults are the real paths/commands) for hermetic tests.
+set -uo pipefail
+
+UDC_CLASS_DIR="${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
+AUDIO_INTENT_CMD="${JASPER_USBGADGET_AUDIO_INTENT_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
+AUDIO_GATE_CMD="${JASPER_USBGADGET_AUDIO_GATE_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed}"
+
+emit() {
+    if [[ -n "${2:-}" ]]; then
+        printf 'event=usb_gadget.%s %s\n' "$1" "$2" >&2
+    else
+        printf 'event=usb_gadget.%s\n' "$1" >&2
+    fi
+}
+
+# No UDC yet (pre-reboot fresh install): skip cleanly.
+udc=$(ls "${UDC_CLASS_DIR}" 2>/dev/null | head -n1 || true)
+if [[ -z "${udc}" ]]; then
+    emit skip "reason=no_udc where=wanted"
+    exit 1
+fi
+
+# Network wanted unless the kill switch is the exact literal `disabled`.
+net_raw="${JASPER_USB_NETWORK:-enabled}"
+# Lowercase via tr (portable across bash 3.2/5.x; ${var,,} is bash 4+ only).
+net_lc="$(printf '%s' "${net_raw}" | tr '[:upper:]' '[:lower:]')"
+want_network=1
+[[ "${net_lc}" == "disabled" ]] && want_network=0
+
+# Audio wanted when the /sources intent unit is enabled AND local sources are
+# allowed (a bonded follower is parked → not wanted).
+want_audio=0
+if ${AUDIO_INTENT_CMD} >/dev/null 2>&1 && ${AUDIO_GATE_CMD} >/dev/null 2>&1; then
+    want_audio=1
+fi
+
+if [[ "${want_network}" == "0" && "${want_audio}" == "0" ]]; then
+    emit skip "reason=no_function_wanted where=wanted"
+    exit 1
+fi
+
+emit wanted "network=${want_network} audio=${want_audio}"
+exit 0

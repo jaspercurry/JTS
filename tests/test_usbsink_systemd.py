@@ -47,8 +47,59 @@ def _line_index(unit_text: str, needle: str) -> int:
     raise AssertionError(f"{needle!r} not found in unit")
 
 
+def _exec_condition_lines(unit_text: str) -> list[str]:
+    return [
+        s.partition("=")[2].strip()
+        for ln in unit_text.splitlines()
+        if not (s := ln.strip()).startswith("#") and s.startswith("ExecCondition=")
+    ]
+
+
 def test_unit_file_exists():
     assert UNIT_PATH.exists(), f"jasper-usbsink.service missing at {UNIT_PATH}"
+
+
+def test_parks_cleanly_without_a_composed_uac2_function():
+    """review core-4: the bridge must ExecCondition-gate on the composed uac2
+    function so a pre-reboot enable (no UDC → gadget composed nothing) parks
+    cleanly instead of restart-looping the 30 s wait-card forever.
+
+    The path is a hardcoded literal (systemd ExecCondition can't expand the
+    gadget scripts' JASPER_CONFIGFS_ROOT); it must match the gadget dir name
+    jts-usb-audio + functions/uac2.usb0, and must be ordered BEFORE the
+    wait-card ExecStartPre so the condition skip happens before any 30 s poll.
+    """
+    body = UNIT_PATH.read_text()
+    conditions = _exec_condition_lines(body)
+    uac2_gate = [
+        c for c in conditions
+        if "/sys/kernel/config/usb_gadget/jts-usb-audio/functions/uac2.usb0" in c
+    ]
+    assert uac2_gate, (
+        "jasper-usbsink.service must ExecCondition on the composed uac2.usb0 "
+        "function dir so a start without a composed audio function parks "
+        "cleanly instead of looping through wait-card + Restart=on-failure."
+    )
+    assert uac2_gate[0].split()[0] == "/bin/test", (
+        f"expected the uac2 gate to use /bin/test -d; got {uac2_gate[0]!r}"
+    )
+    # The existing local-source ExecCondition must remain (belt: both gates).
+    assert any("jasper-local-source-allowed" in c for c in conditions), (
+        "the local-source ExecCondition must remain alongside the uac2 gate."
+    )
+    # Ordering: the condition DIRECTIVE (which skips) must precede the 30 s
+    # wait-card ExecStartPre directive so the skip short-circuits before any
+    # poll. Match on the directive lines, not the surrounding comments.
+    def _directive_index(prefix: str, needle: str) -> int:
+        for idx, ln in enumerate(body.splitlines()):
+            s = ln.strip()
+            if s.startswith(prefix) and needle in s:
+                return idx
+        raise AssertionError(f"no {prefix!r} directive containing {needle!r}")
+
+    assert _directive_index("ExecCondition=", "functions/uac2.usb0") < (
+        _directive_index("ExecStartPre=", "jasper-usbsink-wait-card")
+    ), "the uac2 ExecCondition must be listed before the wait-card ExecStartPre"
 
 
 def test_rides_zram_shielded_audio_slice():

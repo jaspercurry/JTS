@@ -560,6 +560,7 @@ code = [
   "deploy/systemd/bluealsa*.service.d/**",
 ]
 docs = [
+  "docs/HANDOFF-usb-gadget.md",
   "docs/HANDOFF-usbsink.md",
   "docs/audio-paths.md",
   "docs/HANDOFF-fan-in-daemon.md",
@@ -569,9 +570,42 @@ docs = [
 
 requires_docs_when = [
   "Gadget enablement, reboot requirements, USB source state, host volume observation, preemption, or source-lane wiring changes.",
+  "Composite gadget composition (network vs. audio function), the `jasper-usbgadget*` scripts/unit, or the local-source registry's gadget-park/restore behavior changes — see HANDOFF-usb-gadget.md.",
 ]
 verification = [
-  "pytest tests/test_usbsink_daemon.py tests/test_usbsink_audio_bridge.py tests/test_usbsink_volume_bridge.py tests/test_usbsink_state.py tests/test_sources_setup_usbsink.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py",
+  "pytest tests/test_usbsink_daemon.py tests/test_usbsink_audio_bridge.py tests/test_usbsink_volume_bridge.py tests/test_usbsink_state.py tests/test_sources_setup_usbsink.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py tests/test_usbgadget_script.py",
+]
+
+[[subsystem]]
+id = "usb-management-network"
+title = "USB management network (composite gadget)"
+safety = "boot-risk"
+code = [
+  "deploy/usbsink/jasper-usbgadget-*",
+  "deploy/systemd/jasper-usbgadget.service",
+  "deploy/systemd/jasper-usbnet-dhcp.service",
+  "deploy/usb-network/**",
+  "jasper/cli/doctor/usbsink.py",
+  "jasper/cli/doctor/network.py",
+  # NOTE: jasper/control/state_aggregate.py is deliberately NOT routed here.
+  # The composite gadget adds a small additive `usb_network` /state block to
+  # that file, but the file is a multi-block aggregator already owned by
+  # conversation-history (/state.chat), volume-and-sound (/state.audio), and
+  # resilience-and-system-dashboard (/state.resilience). Routing the whole
+  # aggregator here too would spuriously flag HANDOFF-usb-gadget.md on every
+  # unrelated /state change; a real change to the usb_network block co-occurs
+  # with the gadget scripts/units/doctor globs above and still routes here.
+  # Pinned by tests/test_docs_impact.py::test_state_aggregate_routes_to_state_surface_docs.
+]
+docs = [
+  "docs/HANDOFF-usb-gadget.md",
+  "docs/HANDOFF-usbsink.md",
+]
+requires_docs_when = [
+  "The always-on USB NCM network function, its NetworkManager keyfile or dnsmasq conf, the `10.12.194.1/24` address, the kill switch (`JASPER_USB_NETWORK`), the function truth table shared with USB audio, or the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue feature changes.",
+]
+verification = [
+  "pytest tests/test_usbgadget_script.py tests/test_doctor_usbsink.py tests/test_control_server.py tests/test_http_security.py",
 ]
 
 [[subsystem]]

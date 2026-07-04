@@ -12,6 +12,7 @@ import math
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from .. import identity_state
@@ -430,6 +431,67 @@ def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
     except Exception:  # noqa: BLE001
         logger.debug("disk snapshot read failed", exc_info=True)
         return None
+
+
+# Fixed v1 management address for the USB gadget's NCM function (usb0).
+# docs/HANDOFF-usb-gadget.md: deliberately the same address Raspberry Pi
+# OS uses for its first-boot USB rescue gadget; no env override in v1 (the
+# HANDOFF documents how to change it if that ever becomes necessary). Not
+# read from anywhere at runtime — the NM keyfile (deploy/usb-network/
+# jts-usb.nmconnection) and jasper-usbgadget-up both hardcode this same
+# literal, so surfacing the constant here is exactly as fresh as reading
+# it from NetworkManager would be, without a subprocess shell-out on
+# every /state poll.
+USB_NETWORK_IFACE = "usb0"
+USB_NETWORK_ADDRESS = "10.12.194.1"
+
+
+def _usb_network_wanted() -> bool:
+    """Mirror ``jasper-usbgadget-up``'s network kill-switch read.
+
+    Read fresh from ``os.environ`` on every call (never cached) — this
+    daemon is not restarted when the kill switch flips, so a cached read
+    would go stale exactly like the voice-provider bug this convention
+    exists to avoid. Unless ``JASPER_USB_NETWORK`` is the exact literal
+    ``disabled`` (case-insensitive), network is wanted — same convention
+    as ``JASPER_SHAIRPORT_SUPERVISOR`` / ``JASPER_SYSTEM_SUPERVISOR``. NOT
+    stripped, to match ``jasper-usbgadget-up``'s raw comparison so a
+    whitespace-decorated ``" disabled"`` stays enabled in both (review
+    core-7)."""
+    raw = os.environ.get("JASPER_USB_NETWORK", "enabled")
+    return raw.lower() != "disabled"
+
+
+def _usb_network_snapshot() -> dict[str, Any]:
+    """USB management-network summary for /state — fail-soft, uncached.
+
+    ``{enabled, iface_present, carrier, address}``. ``enabled`` reflects
+    the kill-switch intent (not composition — jasper-doctor's
+    check_usbgadget_composition/check_usbnet_* own the actionable
+    composed-vs-intent mismatch story); ``iface_present``/``carrier`` are
+    read fresh from ``/sys/class/net/usb0`` every call, never cached, so
+    plug/unplug shows up on the next poll. ``carrier=False`` (or
+    ``iface_present=False``) is the normal "nothing plugged in" state, not
+    an error — the dashboard should not alarm on it. ``address`` is the
+    fixed v1 management IP (see USB_NETWORK_ADDRESS) when the interface
+    exists, else None; it is a constant, not a live read, because the
+    address has no env override in v1 (docs/HANDOFF-usb-gadget.md)."""
+    enabled = _usb_network_wanted()
+    iface_root = Path("/sys/class/net") / USB_NETWORK_IFACE
+    iface_present = False
+    carrier = False
+    try:
+        iface_present = iface_root.is_dir()
+        if iface_present:
+            carrier = (iface_root / "carrier").read_text().strip() == "1"
+    except OSError:
+        logger.debug("usb_network sysfs read failed", exc_info=True)
+    return {
+        "enabled": enabled,
+        "iface_present": iface_present,
+        "carrier": carrier,
+        "address": USB_NETWORK_ADDRESS if iface_present else None,
+    }
 
 
 def _multiroom_cascade_snapshot() -> dict[str, Any] | None:
@@ -1234,4 +1296,12 @@ async def _get_state(
         # Phone-mic capture relay config snapshot (network-free; the doctor
         # probes reachability on demand). {configured, relay_base}.
         "capture_relay": capture_relay_state,
+        # USB management network (docs/HANDOFF-usb-gadget.md): the always-on
+        # NCM link on usb0 that lets http://<JASPER_HOSTNAME>/ work with WiFi
+        # off. {enabled, iface_present, carrier, address} — read fresh from
+        # /sys/class/net/usb0 and the kill-switch env every call, never
+        # cached; carrier=False/absent is normal (nothing plugged in), never
+        # an error. jasper-doctor's check_usbnet_* own the actionable
+        # composed-vs-intent mismatch story.
+        "usb_network": _usb_network_snapshot(),
     }

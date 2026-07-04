@@ -14,6 +14,7 @@ import os
 import shlex
 import shutil
 import subprocess
+from pathlib import Path
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
@@ -564,3 +565,291 @@ def check_identity_coherence() -> CheckResult:
     if stale_note:
         return CheckResult(label, "warn", names + stale_note)
     return CheckResult(label, "ok", names)
+
+
+# ----------------------------------------------------------------------
+# USB management network (docs/HANDOFF-usb-gadget.md) — the always-on
+# NCM link on usb0 that puts http://<JASPER_HOSTNAME>/ within reach even
+# with no WiFi. jasper/cli/doctor/usbsink.py owns whether the composite
+# gadget's *functions* match intent (ncm.usb0 / uac2.usb0 presence); the
+# checks below own the *network* side of that same intent — the usb0
+# interface, its NetworkManager profile, the device-activated dnsmasq
+# unit, and a loopback probe of the management UI over the fallback IP.
+# ----------------------------------------------------------------------
+
+USBNET_IFACE = "usb0"
+USBNET_ADDRESS = "10.12.194.1"
+USBNET_NM_PROFILE = "jts-usb"
+USBNET_DHCP_UNIT = "jasper-usbnet-dhcp.service"
+USBNET_SYS_CLASS_NET = Path("/sys/class/net")
+USBNET_PROBE_URL = f"http://{USBNET_ADDRESS}/system/data.json"
+
+
+def _usb_network_wanted() -> bool:
+    """Mirror ``jasper-usbgadget-up``'s network kill-switch read.
+
+    Duplicated (rather than imported) from
+    ``jasper.cli.doctor.usbsink._network_wanted`` on purpose — no other
+    pair of domain modules in this package imports checks/helpers from
+    each other (each reads its own env directly), and the predicate is a
+    single two-line string comparison, so a cross-module import would add
+    coupling for no real de-duplication. Kept byte-identical in
+    intent: unless the kill switch is the exact literal ``disabled``
+    (case-insensitive), network is wanted — same convention as
+    ``JASPER_SHAIRPORT_SUPERVISOR`` / ``JASPER_SYSTEM_SUPERVISOR``. NOT
+    stripped, to match ``jasper-usbgadget-up``'s raw (untrimmed) comparison so
+    a whitespace-decorated ``" disabled"`` stays enabled in both (review
+    core-7) — a stray space must never silently drop the fallback network."""
+    raw = os.environ.get("JASPER_USB_NETWORK", "enabled")
+    return raw.lower() != "disabled"
+
+
+def _usbnet_iface_present() -> bool:
+    return (USBNET_SYS_CLASS_NET / USBNET_IFACE).is_dir()
+
+
+def _udc_present() -> bool:
+    """True iff a USB Device Controller exists under ``/sys/class/udc``.
+
+    Mirrors ``jasper-usbgadget-up``/``-wanted``'s UDC probe (env-overridable
+    ``JASPER_UDC_CLASS_DIR`` for the same reason the gadget scripts allow it).
+    A missing UDC is the fresh-install-pre-reboot case: the dtoverlay is set
+    but the OTG controller isn't in peripheral mode yet, so the gadget cannot
+    bind and ``usb0`` legitimately does not exist. Once a UDC is present and
+    the network is wanted, the gadget composes ``ncm.usb0`` and binds, and
+    ``u_ether`` registers the ``usb0`` netdev at bind time — regardless of
+    whether a host cable is attached (carrier reflects the cable, existence
+    reflects the bind)."""
+    udc_dir = Path(os.environ.get("JASPER_UDC_CLASS_DIR", "/sys/class/udc"))
+    try:
+        return udc_dir.is_dir() and any(udc_dir.iterdir())
+    except OSError:
+        return False
+
+
+@doctor_check(order=67.6, group="network")
+def check_usbnet_interface() -> CheckResult:
+    """The usb0 NCM interface must exist with the fixed management
+    address whenever the network function is composed and bound.
+
+    ``jasper-usbgadget-up`` composes ``ncm.usb0`` whenever
+    ``JASPER_USB_NETWORK`` is not the literal ``disabled``
+    (jasper.cli.doctor.usbsink.check_usbgadget_composition already
+    verifies the ConfigFS function itself). This check verifies the
+    *network* consequence: ``u_ether`` registers the ``usb0`` netdev at
+    gadget-BIND time (not host-attach time), so on a bound gadget ``usb0``
+    exists regardless of whether a laptop is plugged in, and NetworkManager's
+    ``jts-usb`` profile (see check_usbnet_nm_profile) should have put
+    10.12.194.1/24 on it. A missing ``usb0`` while the network is wanted AND a
+    UDC exists therefore means the compose/bind FAILED — a real problem, not
+    "nothing plugged in". No carrier on an existing ``usb0`` is the normal
+    nothing-plugged-in state and reports ok."""
+    label = "USB management network (usb0)"
+    if not _usb_network_wanted():
+        if _usbnet_iface_present():
+            return CheckResult(
+                label, "warn",
+                f"{USBNET_IFACE} present but JASPER_USB_NETWORK=disabled — "
+                "restart jasper-usbgadget.service to recompose without the "
+                "network function.",
+            )
+        return CheckResult(label, "ok", "network kill-switched (disabled)")
+    if not _usbnet_iface_present():
+        if not _udc_present():
+            # No UDC: fresh install pre-reboot (dtoverlay set but the OTG
+            # controller isn't peripheral yet), or non-gadget hardware. The
+            # gadget cannot bind, so usb0's absence is expected — the dtoverlay
+            # check (jasper.cli.doctor.usbsink.check_usbsink_dtoverlay) owns
+            # that gap.
+            return CheckResult(
+                label, "ok",
+                f"{USBNET_IFACE} absent, no UDC present — fresh install "
+                "pre-reboot or non-gadget hardware (see check_usbsink_dtoverlay)",
+            )
+        # A UDC exists and the network is wanted, so the gadget should have
+        # composed ncm.usb0 and bound → usb0 should exist. Its absence is a
+        # compose/bind failure, not a "nothing plugged in" state.
+        return CheckResult(
+            label, "fail",
+            f"{USBNET_IFACE} missing but a UDC is present and the network is "
+            "wanted — jasper-usbgadget did not compose/bind ncm.usb0. Check "
+            "`systemctl status jasper-usbgadget` and "
+            "check_usbgadget_composition; the fallback management network is "
+            "down until it composes.",
+        )
+    addr_proc = _run(["ip", "-4", "-o", "addr", "show", "dev", USBNET_IFACE])
+    if addr_proc.returncode != 0:
+        return CheckResult(
+            label, "warn",
+            f"{USBNET_IFACE} present but `ip addr show` failed: "
+            f"{addr_proc.stderr.strip() or 'no output'}",
+        )
+    if f"inet {USBNET_ADDRESS}/" not in addr_proc.stdout:
+        return CheckResult(
+            label, "fail",
+            f"{USBNET_IFACE} present but missing {USBNET_ADDRESS} — "
+            f"observed: {addr_proc.stdout.strip() or '(no address)'}. Check "
+            f"`nmcli connection show {USBNET_NM_PROFILE}` and "
+            "check_usbnet_nm_profile.",
+        )
+    carrier_path = USBNET_SYS_CLASS_NET / USBNET_IFACE / "carrier"
+    try:
+        carrier = carrier_path.read_text().strip() == "1"
+    except OSError:
+        carrier = None
+    return CheckResult(
+        label, "ok",
+        f"{USBNET_IFACE} has {USBNET_ADDRESS}"
+        + (f" (carrier={'up' if carrier else 'down'})" if carrier is not None else ""),
+    )
+
+
+@doctor_check(order=67.7, group="network")
+def check_usbnet_nm_profile() -> CheckResult:
+    """The ``jts-usb`` NetworkManager profile must be the one bound to
+    usb0 — not some other/ad-hoc profile — whenever usb0 exists.
+
+    NetworkManager is the box's single network owner for usb0 (no
+    systemd-networkd, no dispatcher scripts); the profile is shipped
+    in-repo (``deploy/usb-network/jts-usb.nmconnection``) and installed
+    read-only. A different active connection on usb0 means either a
+    manual `nmcli` override or a profile-install regression — either way
+    the fixed 10.12.194.1 address is not guaranteed. Skips (ok) when
+    usb0 doesn't exist yet or nmcli isn't on PATH (dev host)."""
+    label = "USB network NM profile"
+    if not _usbnet_iface_present():
+        return CheckResult(label, "ok", f"{USBNET_IFACE} not present (skipped)")
+    nmcli = shutil.which("nmcli")
+    if nmcli is None:
+        return CheckResult(label, "ok", "skipped — no nmcli on PATH")
+    proc = _run(
+        [nmcli, "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        return CheckResult(
+            label, "warn",
+            f"`nmcli connection show --active` failed: "
+            f"{proc.stderr.strip() or 'no output'}",
+        )
+    active_on_usb0: str | None = None
+    for raw in proc.stdout.splitlines():
+        parts = raw.rsplit(":", 1)
+        if len(parts) == 2 and parts[1] == USBNET_IFACE:
+            active_on_usb0 = _nm_unescape(parts[0])
+            break
+    if active_on_usb0 is None:
+        return CheckResult(
+            label, "fail",
+            f"{USBNET_IFACE} exists but NetworkManager has no active "
+            f"connection on it — expected {USBNET_NM_PROFILE!r}. Check "
+            f"`nmcli connection up {USBNET_NM_PROFILE}`.",
+        )
+    if active_on_usb0 != USBNET_NM_PROFILE:
+        return CheckResult(
+            label, "fail",
+            f"{USBNET_IFACE} is bound to {active_on_usb0!r}, not the "
+            f"shipped {USBNET_NM_PROFILE!r} profile — a manual override or "
+            "install regression. The fixed 10.12.194.1 address is not "
+            "guaranteed under a different profile.",
+        )
+    return CheckResult(label, "ok", f"{USBNET_NM_PROFILE} active on {USBNET_IFACE}")
+
+
+@doctor_check(order=67.8, group="network")
+def check_usbnet_dhcp_unit() -> CheckResult:
+    """jasper-usbnet-dhcp.service's active state must be coherent with
+    whether usb0 exists.
+
+    The unit is device-activated (``BindsTo=sys-subsystem-net-devices-
+    usb0.device``) so it should be active exactly when usb0 is present
+    and inactive otherwise — that's the whole point of the device
+    activation (zero cost when no host is plugged in). A mismatch in
+    either direction means the device-activation binding itself is
+    broken, not just a transient timing gap (bounded by
+    ``BindsTo=``, so this check tolerates a brief window right at
+    plug/unplug by treating a still-starting unit as ok)."""
+    label = "USB network DHCP (jasper-usbnet-dhcp)"
+    if shutil.which("systemctl") is None:
+        return CheckResult(label, "ok", "skipped — no systemctl")
+    proc = _run(["systemctl", "is-active", USBNET_DHCP_UNIT])
+    state = proc.stdout.strip()
+    if state in ("", "not-found") or "could not be found" in (proc.stderr or "").lower():
+        return CheckResult(label, "ok", "skipped — unit not installed")
+    iface_present = _usbnet_iface_present()
+    if iface_present and state in ("active", "activating"):
+        return CheckResult(label, "ok", f"{USBNET_DHCP_UNIT} {state}, {USBNET_IFACE} present")
+    if not iface_present and state in ("inactive", "deactivating"):
+        return CheckResult(
+            label, "ok",
+            f"{USBNET_DHCP_UNIT} {state}, {USBNET_IFACE} absent — no cost "
+            "while the NCM gadget is not composed (kill-switched or no UDC)",
+        )
+    if iface_present:
+        return CheckResult(
+            label, "fail",
+            f"{USBNET_IFACE} is present but {USBNET_DHCP_UNIT} is {state} — "
+            "a plugged-in host won't get a DHCP lease. Check "
+            f"`systemctl status {USBNET_DHCP_UNIT}`.",
+        )
+    return CheckResult(
+        label, "warn",
+        f"{USBNET_IFACE} is absent but {USBNET_DHCP_UNIT} is {state} — "
+        "device-activation binding may not have torn down cleanly "
+        "(RAM drift, not a functional failure since nothing is plugged in).",
+    )
+
+
+@doctor_check(order=67.9, group="network")
+def check_usbnet_management_probe() -> CheckResult:
+    """The management UI must answer over the USB fallback address.
+
+    Mirrors ``check_management_surface`` (jasper/cli/doctor/web.py) but
+    probes ``http://10.12.194.1/system/data.json`` (the same endpoint the
+    deploy-time management-surface verification hits) with
+    ``Host: <JASPER_HOSTNAME>`` instead of nginx's loopback IPv4 — this is
+    the exact path a plugged-in laptop with no WiFi exercises when it falls
+    back from ``http://<hostname>.local/`` to the raw fallback IP. Pins both the
+    guard's acceptance of the 10.12.194.1 Host/source (see
+    tests/test_http_security.py) and that nginx is actually listening on
+    usb0's address, without needing hardware. Skips when usb0 doesn't
+    exist (nothing to probe) or nginx isn't installed (dev host)."""
+    import urllib.error
+    import urllib.request
+
+    from .web import NGINX_SITE
+
+    label = "USB management network probe"
+    if not _usbnet_iface_present():
+        return CheckResult(label, "ok", f"{USBNET_IFACE} not present (skipped)")
+    if not NGINX_SITE.exists():
+        return CheckResult(label, "ok", "nginx site not installed (skipped)")
+    host = (os.environ.get("JASPER_HOSTNAME") or "jts.local").strip()
+    req = urllib.request.Request(USBNET_PROBE_URL, headers={"Host": host})
+    try:
+        with urllib.request.urlopen(req, timeout=6.0) as resp:
+            status = resp.status
+            body = resp.read(512)
+    except urllib.error.HTTPError as e:
+        status = e.code
+        body = e.read(512) if e.fp else b""
+    except (urllib.error.URLError, OSError) as e:
+        return CheckResult(
+            label, "fail",
+            f"no answer from nginx on {USBNET_ADDRESS} for Host: {host} "
+            f"({e}) — is nginx bound to {USBNET_IFACE}?",
+        )
+    if status == 200:
+        return CheckResult(label, "ok", f"200 via {USBNET_ADDRESS} as Host: {host}")
+    detail = body.decode("utf-8", "replace").strip()[:120]
+    if status == 403:
+        hint = (
+            " — the management-host guard rejected the fallback address; "
+            "check tests/test_http_security.py's 10.12.194.1 acceptance "
+            "and `journalctl -u jasper-control | grep event=http.reject`"
+        )
+    elif status == 502:
+        hint = " — nginx answered but jasper-control is unreachable"
+    else:
+        hint = ""
+    return CheckResult(label, "fail", f"HTTP {status} ({detail}){hint}")

@@ -870,7 +870,8 @@ Rules for all Tier-B slices:
 | `jasper-dongle-recover.service` | Apple dongle sound-card udev add | Fixed `systemctl reset-failed` and `start` sequence for Camilla/outputd/audio-hardware/AEC after Card A reappears. | Keep as a root-owned fixed-argv recovery helper unless a later reconciler broker explicitly absorbs it. It is already tiny and exists to preserve hotplug self-healing. |
 | `jasper-grouping-reconcile.service` + `jasper-grouping-reconcile-trailing.service` + `jasper.multiroom.reconcile` | `/rooms/`, install, grouping state changes; `/grouping/set` burst coalescing arms the trailing service | Apply snapserver/snapclient role changes via `systemctl`, write grouping env/FIFO runtime state, and kick `jasper-aec-reconcile` rather than restarting voice directly. The trailing service sleeps for the remaining cooldown, then starts the same reconciler so the last grouping env write applies after a calibration burst. | Candidate for `jasper-recon` policy with a root apply helper for systemctl. It is already broker-routed from Tier-A clients; the trailing service is intentionally a named fixed unit instead of a transient-unit grant. |
 | `jasper-identity-reconcile.service` + timer + [`deploy/bin/jasper-identity-reconcile`](../deploy/bin/jasper-identity-reconcile) | boot and 5-minute timer | Read hostname/Avahi over subprocess/DBus and write non-secret `/var/lib/jasper/identity.env`. | Probably safe to move to `jasper-recon` or another non-root writer after verifying `/var/lib/jasper` write ownership. Low security value compared with hardware recovery paths, so do not use it to claim Tier-B done. |
-| `jasper-usbsink-init.service` + `deploy/usbsink/jasper-usbsink-*` | `/sources/` USB audio input enable/disable | Load/unload kernel modules, patch `usb_f_uac2`, create/remove ConfigFS gadget descriptors under `/sys/kernel/config`. | Root helper by design. Treat separately from the reconciler drop; the privileged operation is kernel/configfs setup. |
+| `jasper-usbgadget.service` + `deploy/usbsink/jasper-usbgadget-*` | boot (always-on USB network), `/sources/` USB audio enable/disable, multiroom follower park/restore, speaker rename | Load/unload kernel modules, patch `usb_f_uac2`, create/remove the composite ConfigFS gadget descriptor (both `ncm.usb0` network + `uac2.usb0` audio) under `/sys/kernel/config`. Replaces the retired `jasper-usbsink-init.service`; now always-on for the management network, no longer only an audio-toggle helper. | Root helper by design. The privileged operation is kernel/configfs setup; treat separately from the reconciler drop. |
+| `jasper-usbnet-dhcp.service` + `deploy/usb-network/usbnet-dnsmasq.conf` | device-activated on `usb0` (the composite gadget's NCM link) | Runs a scoped `dnsmasq` (DHCP only, no DNS, no route/DNS push) so a plugged-in laptop gets an address on the USB link. Root to bind the DHCP socket, then drops to `nobody:nogroup`; `CapabilityBoundingSet` scoped to `CAP_NET_BIND_SERVICE`/`CAP_NET_ADMIN`/`CAP_NET_RAW` (+ `CAP_SETUID`/`CAP_SETGID` for the drop), `ProtectSystem=strict`. | Already tightly caps-bounded and drops privileges; a full non-root run would need the DHCP socket bind delegated. Low RCE value (no shell, tiny scoped conf). |
 | `jasper-bootloop-guard.service` + [`deploy/bin/jasper-bootloop-guard`](../deploy/bin/jasper-bootloop-guard) | early boot | Write runtime systemd drop-ins under `/run/systemd/system` to disarm reboot loops after repeated bad boots. | Keep root. This is part of the T5.1 safety ladder and should not depend on the restart broker or a non-root user. |
 
 Operator CLIs are Tier-B-adjacent, not daemon RCE surface, but they should not be
@@ -1001,7 +1002,11 @@ the goal is closing *known* risk — that is already done by the phases above.
 Either way it is the **last** WS1 phase and **must follow** the doctor
 permissions check.
 
-Last verified: 2026-06-26 (`jasper-wiim-remote-mic` accessory adapter hardening
+Last verified: 2026-07-04 (privileged-root inventory updated for the composite
+USB gadget: retired `jasper-usbsink-init.service`, added `jasper-usbgadget.service`
+and the scoped `jasper-usbnet-dhcp.service` — hardware-free, on-Pi
+`jasper-doctor` run still owed for the two new units. `jasper-wiim-remote-mic`
+accessory adapter hardening
 shape added and measured on jts5.local at 1.4 OK. `jasper-control`
 polkit allowlist rechecked 2026-06-24 for the fixed grouping trailing service:
 named unit only, no broad transient-unit grant;

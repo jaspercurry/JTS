@@ -159,7 +159,7 @@ def test_daemon_config_default_capture_device_is_portaudio_long_name():
 def test_daemon_config_default_mixer_card_is_alsa_short_name():
     """amixer -c <name> and /proc/asound/<name>/ both use the kernel
     "short" name — set by the ConfigFS descriptor in
-    deploy/usbsink/jasper-usbsink-gadget-up, no underscore."""
+    deploy/usbsink/jasper-usbgadget-up, no underscore."""
     cfg = DaemonConfig()
     assert cfg.mixer_card == "UAC2Gadget"
     assert cfg.mixer_card != "UAC2_Gadget"

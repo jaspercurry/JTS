@@ -6,22 +6,40 @@
 **Predecessor project**: [PiCorrect](https://github.com/jaspercurry/PiCorrect) — proves the
 UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 
-> ### Current operational truth (updated 2026-07-02)
+> ### Current operational truth (updated 2026-07-04)
 >
-> USB Audio Input is shipped and off by default. The installer writes
-> the gadget overlay/config and requires reboot for the host-facing
-> UAC2 device to appear; `/sources/` toggles the disabled-by-default
-> USB intent unit (`jasper-usbsink.service`). The host-visible gadget is
-> an implementation subresource owned by `jasper-usbsink-init.service`:
-> starting the intent unit brings it up via `Requires=`, but stopping the
-> intent unit alone is not enough to remove the host-visible device. When
-> this speaker is a bonded multiroom follower, the local-source lifecycle
-> registry (`jasper/local_sources/registry.py`) parks the whole USB source
-> group by stopping the init/gadget unit; unpair restores only the intent
-> unit if it is enabled. The parked units also carry
-> `ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed`, so a boot
-> or manual start while the speaker is a valid bonded follower skips before the
-> host-visible gadget can advertise. At runtime, `jasper-usbsink`
+> USB Audio Input is shipped and off by default. **Gadget ownership moved
+> to a composite model** — the ConfigFS descriptor is now owned by
+> `jasper-usbgadget.service`, which composes an always-on USB management
+> network (`ncm.usb0`) alongside the wizard-toggled audio function
+> (`uac2.usb0`). The old audio-only `jasper-usbsink-init.service` is
+> deleted. Gadget composition, the function truth table, the management
+> network (NM keyfile + scoped dnsmasq), OS support for the network side,
+> and the hardware-validation checklist are now owned by
+> [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) — this doc keeps only the
+> audio-source concerns (volume model, fan-in wiring, low-latency route).
+>
+> The installer writes the gadget overlay/config and requires reboot for
+> the dwc2 controller to enter peripheral mode; `/sources/` toggles the
+> disabled-by-default USB intent unit (`jasper-usbsink.service`). The
+> host-visible audio device is composed by `jasper-usbgadget.service`, not
+> owned by it alone: turning the `/sources/` toggle on/off both changes
+> `jasper-usbsink.service`'s enablement **and** restarts
+> `jasper-usbgadget.service` so it recomposes with or without `uac2.usb0` —
+> stopping the intent unit alone no longer touches the gadget descriptor at
+> all (the old "stopping the intent unit alone does not remove the
+> host-visible device" trap is gone: the `/sources/` handler now explicitly
+> restarts the gadget on both directions). When this speaker is a bonded
+> multiroom follower, the local-source lifecycle registry
+> (`jasper/local_sources/registry.py`) parks USB audio by stopping the
+> audio units and **restarting** (not stopping) the gadget unit, so the
+> host-visible audio device disappears while the always-on management
+> network keeps serving that follower's own management UI; unparking
+> mirrors this. `jasper-usbsink.service` keeps its own
+> `ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed`, so a
+> boot or manual start while the speaker is a parked bonded follower skips
+> before the audio daemon can run — the gadget's network function is
+> unaffected by that gate. At runtime, `jasper-usbsink`
 > is a peer music renderer: the production bridge is the Rust
 > `jasper-usbsink-audio` binary, which captures S32_LE stereo/48 kHz
 > from `hw:UAC2Gadget`, narrows deterministically to S16_LE by signed
@@ -218,10 +236,15 @@ dtoverlay=dwc2,dr_mode=peripheral
 ```
 
 This puts the BCM2712 SoC's DWC2 USB OTG controller into peripheral
-mode permanently. It does NOT load `libcomposite` at boot — that's
-gated behind `jasper-usbsink-init.service`. The DWC2 controller in
-peripheral mode with no gadget descriptor is a no-op from the host's
-perspective.
+mode permanently. The dtoverlay alone is a no-op from the host's
+perspective — it just makes the port gadget-capable. `libcomposite` and the
+ConfigFS descriptor are now owned by `jasper-usbgadget.service` (which
+replaced the retired `jasper-usbsink-init.service`), and because that unit
+carries the always-on USB *management network* it modprobes `libcomposite`
+and composes the descriptor **by default at boot** — the `uac2.usb0` audio
+function is the only part gated behind the `/sources/` toggle. See
+[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) for the composite-gadget
+function truth table; it is canonical for gadget ownership.
 
 **Side effect to document in BRINGUP.md**: the Pi 5 USB-C port is no
 longer available for plugging USB host devices (e.g. flash drives). The
@@ -229,49 +252,38 @@ four USB-A ports remain in host mode unchanged.
 
 ## 2. RAM budget
 
-This is the hard constraint. Numbers are Pss (proportional set size,
-shared libs deduplicated) on a Pi 5 running Raspberry Pi OS Lite Trixie.
-
-### When disabled (default state)
-
-| Component | RAM | Notes |
-|---|---|---|
-| dwc2 kernel module | ~50 KB | Loaded at boot via dtoverlay, always resident — too small to matter |
-| `jasper-usbsink.service` | 0 | Inactive |
-| `jasper-usbsink-init.service` | 0 | Inactive |
-| libcomposite, u_audio, configfs descriptor | 0 | Not loaded |
-| ALSA UAC2Gadget card | 0 | Not registered |
-| **Total new RAM (disabled)** | **~50 KB** | Below measurement noise |
-
-### When enabled
+**The gadget-level RAM contract (kernel modules, ConfigFS descriptor,
+network-vs-audio composition, kill-switch behavior) now lives in
+[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) "RAM contract"** — the
+gadget is composite now, and the old "0 KB whenever USB audio is disabled"
+framing no longer holds by itself, because the USB management network
+defaults to **on** independent of the audio toggle. This section covers
+only the **audio daemon's own** marginal cost on top of whatever the
+gadget itself is already costing.
 
 | Component | RAM (Pss) | Notes |
 |---|---|---|
-| libcomposite + u_audio kernel modules | ~60 KB | Loaded by `jasper-usbsink-init` |
-| ConfigFS gadget descriptor | <1 KB | Just in-kernel state |
-| `jasper-usbsink.service` (Rust bridge) | **~2 MB** | ALSA capture/playback bridge + state/preempt publisher |
-| `jasper-usbsink-volume.service` | non-real-time helper | Host volume observer; separate from the audio data plane |
-| **Total new RAM (enabled)** | **low single-digit MB for data plane** | The audio bridge is no longer a Python/PortAudio process |
+| `jasper-usbsink.service` (Rust bridge) | **~2 MB** | ALSA capture/playback bridge + state/preempt publisher. Runs only when the `/sources/` toggle is on. |
+| `jasper-usbsink-volume.service` | non-real-time helper | Host volume observer; separate from the audio data plane. |
+| **Total new RAM for audio, on top of the gadget's own baseline** | **low single-digit MB** | The audio bridge is no longer a Python/PortAudio process. |
 
 The old Python/PortAudio bridge budget is preserved below as history only.
 It is not the claiming `usb_low_latency_48k` data plane.
 
-### How "zero RAM when disabled" is enforced
+### Enforcement, post-composite-gadget
 
-- Boot path: `modules-load.d/` does **not** auto-load `libcomposite`.
-  `jasper-usbsink-init.service` carries `ExecStartPre=modprobe libcomposite`.
-- Service path: `jasper-usbsink.service` is the disabled-by-default
-  `/sources/` intent unit. `jasper-usbsink-init.service` is not enabled
-  separately; it starts through `Requires=` when the intent unit starts and
-  must be stopped explicitly when USB input is turned off or role-parked.
-- Teardown path: `ExecStopPost` in `jasper-usbsink-init.service`
-  unbinds the gadget from the UDC, removes the ConfigFS descriptor,
-  and rmmods `libcomposite` (best-effort — if rmmod fails because a
-  capture is still open, the descriptor at least is gone, and the next
-  enable cleans it up).
-- Doctor verification: `jasper-doctor` reports RAM-on-disable as a
-  warn if it sees `libcomposite` loaded but no usbsink service active
-  (catches state drift from a botched stop).
+- `jasper-usbgadget.service` (not `jasper-usbsink-init.service`, which is
+  deleted) owns `modprobe libcomposite` and the ConfigFS descriptor for
+  **both** functions. See HANDOFF-usb-gadget.md for the full truth table.
+- `jasper-usbsink.service` remains the disabled-by-default `/sources/`
+  intent unit for the **audio** function specifically. Toggling it now
+  also restarts `jasper-usbgadget.service` so the gadget recomposes with
+  or without `uac2.usb0` — see HANDOFF-usb-gadget.md "Toggling audio from
+  `/sources/`".
+- Doctor verification: `jasper-doctor`'s composite-aware checks (rewritten
+  for the new model — see `jasper/cli/doctor/usbsink.py`) confirm gadget
+  composition matches intent, rather than the old binary
+  "libcomposite loaded ⟺ usbsink active" invariant.
 
 ## 3. Architecture
 
@@ -555,6 +567,16 @@ the daemon silences its own output deterministically.
 ## 4. Component design (file map)
 
 ### 4.1 Boot-time gadget setup
+
+> **Historical — superseded by the composite gadget.** The file names,
+> `jasper-usbsink-init.service` unit listing, and single-function framing
+> below are the pre-composite-gadget design. Current file names are
+> `deploy/usbsink/jasper-usbgadget-{up,down,wanted}` and
+> `deploy/systemd/jasper-usbgadget.service`; the gadget composes an
+> always-on network function alongside this audio function. See
+> [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) for the current unit and
+> script design. Kept here for the PiCorrect-adaptation history and the
+> UAC2 attribute rationale, which are still accurate.
 
 **Files** (installed to `/usr/local/sbin/` by `install.sh`):
 
@@ -975,10 +997,16 @@ via httpx. Add httpx as a dep if not already (it's already used in
 
 ### 4.6 Wizard integration
 
-> **Historical note.** This phase-plan sketch predates the local-source
-> lifecycle registry. Current code treats `jasper-usbsink.service` as the
-> `/sources/` intent unit and `jasper-usbsink-init.service` as the
-> host-visible gadget owner; parking/off must stop the init unit.
+> **Historical note.** This phase-plan sketch predates both the
+> local-source lifecycle registry and the composite gadget. Current code
+> treats `jasper-usbsink.service` as the `/sources/` intent unit for the
+> **audio function only**; the gadget descriptor (both network and audio
+> functions) is owned by `jasper-usbgadget.service`. Enabling/disabling
+> USB Audio Input from `/sources/` toggles `jasper-usbsink.service` **and**
+> restarts `jasper-usbgadget.service` so it recomposes with or without
+> `uac2.usb0` — see [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md)
+> "Toggling audio from `/sources/`". The always-on management network is
+> unaffected by this toggle either way.
 
 **Modified file**: `jasper/web/sources_setup.py`.
 
@@ -1769,7 +1797,11 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-07-02 (current operational truth rechecked against
+Last verified: 2026-07-04 (§1 boot-config paragraph corrected: libcomposite +
+the ConfigFS descriptor are owned by `jasper-usbgadget.service` and composed by
+default at boot for the always-on USB network, not gated behind the retired
+`jasper-usbsink-init.service` — HANDOFF-usb-gadget.md is canonical for gadget
+ownership. Prior recheck 2026-07-02 against
 `deploy/systemd/jasper-usbsink.service`, `rust/jasper-usbsink-audio`,
 `jasper.audio_runtime_plan`, and jts.local hardware tuning: Rust bridge 256/3,
 fan-in USB resampler held target 2048, fan-in output 1024, CamillaDSP 256/1536,

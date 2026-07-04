@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# Bring up the Jasper composite USB gadget descriptor in ConfigFS.
+#
+# The gadget carries up to two functions:
+#   - ncm.usb0  — a USB management NETWORK link (always-on by default): a
+#     laptop plugged into the Pi's USB-C port gets an IP link to the Pi so
+#     http://<hostname>/ works even with Wi-Fi off. See
+#     docs/HANDOFF-usb-gadget.md.
+#   - uac2.usb0 — the USB AUDIO input (wizard-toggled, off by default): the
+#     host sees the speaker as a USB audio output device. This is the
+#     jasper-usbsink source. Its attribute block is byte-identical to the
+#     pre-composite gadget (a low-latency contract — see
+#     docs/HANDOFF-usb-low-latency.md and the doctor's
+#     check_usbsink_low_latency_contract).
+#
+# Runs at jasper-usbgadget.service start (oneshot + RemainAfterExit).
+# libcomposite is modprobed by the systemd unit's ExecStartPre, not here,
+# so this script stays side-effect-free beyond ConfigFS writes.
+#
+# NAMING DEBT: the ConfigFS gadget dir name stays `jts-usb-audio` even
+# though the gadget is no longer audio-only — the doctor's low-latency
+# contract check reads that exact path, and renaming it would break the
+# byte-identical attribute contract. Accepted debt; see the HANDOFF.
+#
+# Idempotent: if the descriptor already exists AND is bound to a UDC, exits
+# 0 without touching it. A partial (unbound) descriptor is torn down and
+# rebuilt. The function truth table is computed once and logged as a
+# structured `event=usb_gadget.compose` line.
+#
+# Testability: the ConfigFS root, UDC class dir, and the audio-intent/gate
+# probe commands are overridable via env (defaults are the real paths), so
+# pytest can drive this hermetically against a temp dir — see
+# tests/test_usbgadget_script.py. Overriding them does NOT change runtime
+# behavior on a real Pi (the defaults are the production values).
+#
+# Reference: Linux Documentation/usb/gadget-testing.txt (UAC2 + NCM).
+set -euo pipefail
+
+CONFIGFS="${JASPER_CONFIGFS_ROOT:-/sys/kernel/config}"
+UDC_CLASS_DIR="${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
+CPUINFO="${JASPER_CPUINFO_FILE:-/proc/cpuinfo}"
+NAME=jts-usb-audio
+GADGET_DIR="${CONFIGFS}/usb_gadget/${NAME}"
+SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
+
+# Injectable probes (default to the real helpers). The reconciler/units set
+# JASPER_USB_NETWORK; audio intent is "is jasper-usbsink.service enabled" AND
+# "local sources allowed" (the follower-park gate). Overridable so tests can
+# drive every row of the truth table without systemd.
+AUDIO_INTENT_CMD="${JASPER_USBGADGET_AUDIO_INTENT_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
+AUDIO_GATE_CMD="${JASPER_USBGADGET_AUDIO_GATE_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed}"
+
+log() {
+    echo "jasper-usbgadget-up: $*"
+}
+
+emit() {
+    # Structured single-line event for journal grep (the wifi-guardian idiom).
+    # `$1` is the outcome suffix on `event=usb_gadget.`; `$2` is the kv tail.
+    if [[ -n "${2:-}" ]]; then
+        printf 'event=usb_gadget.%s %s\n' "$1" "$2" >&2
+    else
+        printf 'event=usb_gadget.%s\n' "$1" >&2
+    fi
+}
+
+if [[ -r "$SPEAKER_NAME_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$SPEAKER_NAME_FILE" 2>/dev/null || true
+fi
+SPEAKER_NAME="${JASPER_SPEAKER_NAME:-JTS}"
+
+write_if_present() {
+    local path="$1"
+    local value="$2"
+    if [[ -e "${path}" ]]; then
+        echo "${value}" > "${path}"
+    fi
+}
+
+# ---- Function truth table (computed once) ----------------------------------
+#
+# network is on unless the kill switch is the exact literal `disabled`
+# (case-insensitive; any other value logs a warning and stays enabled —
+# mirrors JASPER_SHAIRPORT_SUPERVISOR). audio is on when the /sources intent
+# unit is enabled AND local sources are allowed (a bonded follower is parked).
+#
+#   network  audio            functions
+#   -------  ---------------  ----------------------
+#   on       on               ncm.usb0 + uac2.usb0
+#   on       off/parked       ncm.usb0
+#   off      on               uac2.usb0  (legacy shape)
+#   off      off              none  (ExecCondition already skipped the unit)
+
+net_raw="${JASPER_USB_NETWORK:-enabled}"
+# Lowercase via tr (portable across bash 3.2/5.x; ${var,,} is bash 4+ only).
+net_lc="$(printf '%s' "${net_raw}" | tr '[:upper:]' '[:lower:]')"
+WANT_NETWORK=1
+if [[ "${net_lc}" == "disabled" ]]; then
+    WANT_NETWORK=0
+elif [[ "${net_lc}" != "enabled" && -n "${net_lc}" ]]; then
+    log "WARN JASPER_USB_NETWORK=${net_raw} is not 'enabled'/'disabled'; staying enabled" >&2
+fi
+
+WANT_AUDIO=0
+audio_reason="intent_disabled"
+if ${AUDIO_INTENT_CMD} >/dev/null 2>&1; then
+    if ${AUDIO_GATE_CMD} >/dev/null 2>&1; then
+        WANT_AUDIO=1
+        audio_reason="enabled"
+    else
+        audio_reason="parked_follower"
+    fi
+fi
+
+emit compose \
+    "network=${WANT_NETWORK} audio=${WANT_AUDIO} net_intent=${net_lc:-enabled} audio_reason=${audio_reason}"
+
+if [[ "${WANT_NETWORK}" == "0" && "${WANT_AUDIO}" == "0" ]]; then
+    # Nothing to compose. The unit's ExecCondition (jasper-usbgadget-wanted)
+    # normally skips the unit in this state, so reaching here means an operator
+    # started it by hand — tear any stale descriptor down and exit clean so we
+    # never publish an empty gadget.
+    emit skip "reason=no_function_wanted"
+    "$(dirname "$0")/jasper-usbgadget-down" || true
+    exit 0
+fi
+
+# ---- Idempotency: bound descriptor => done ---------------------------------
+
+if [[ -d "${GADGET_DIR}" ]]; then
+    bound_udc=$(cat "${GADGET_DIR}/UDC" 2>/dev/null || true)
+    if [[ -n "${bound_udc}" ]]; then
+        log "${NAME} already configured and bound to ${bound_udc}"
+        emit up "state=already_bound udc=${bound_udc}"
+        exit 0
+    fi
+    log "${NAME} exists but not bound; clearing before re-create"
+    "$(dirname "$0")/jasper-usbgadget-down" || true
+fi
+
+if [[ ! -d "${CONFIGFS}" ]]; then
+    log "${CONFIGFS} not mounted (kernel CONFIG_USB_CONFIGFS missing?)" >&2
+    emit skip "reason=no_configfs"
+    exit 1
+fi
+
+cd "${CONFIGFS}/usb_gadget"
+mkdir "${NAME}"
+cd "${NAME}"
+
+# USB device identifiers. Linux Foundation VID + Multifunction Composite PID
+# is the "no commercial vendor ID needed" convention. bcdDevice bumped
+# 0x0100 -> 0x0200 with the composite change so hosts that cache descriptors
+# by VID:PID:bcdDevice re-read the new function set. HARDWARE-VERIFY: confirm
+# the host re-enumerates on the bump.
+echo 0x1d6b > idVendor    # Linux Foundation
+echo 0x0104 > idProduct   # Multifunction Composite Gadget
+echo 0x0200 > bcdDevice   # JTS firmware revision 2.00 (composite gadget)
+echo 0x0200 > bcdUSB      # USB 2.0
+
+# Device strings (English / 0x409). Serial is the Pi's CPU serial so a host
+# pairing multiple JTS units doesn't see them as the same device — and it is
+# ALSO the seed for the deterministic NCM MACs below. Product string is now
+# just the speaker name (the gadget is no longer audio-only; the host-side
+# audio label is owned by the name-patch, and the NIC label shouldn't say
+# "USB Audio"). HARDWARE-VERIFY: host audio device label unchanged.
+mkdir -p strings/0x409
+SERIAL=$(awk -F': ' '/^Serial/{print $2; exit}' "${CPUINFO}" 2>/dev/null || true)
+SERIAL="${SERIAL:-jts-unknown}"
+echo "${SERIAL}" > strings/0x409/serialnumber
+echo "Jasper Tech Speaker" > strings/0x409/manufacturer
+echo "${SPEAKER_NAME}" > strings/0x409/product
+
+# Configuration descriptor. One configuration "c.1" holding whichever
+# functions are wanted. MaxPower is informational (we draw power via the
+# 8086 splitter).
+mkdir -p configs/c.1/strings/0x409
+echo "${SPEAKER_NAME} Configuration" > configs/c.1/strings/0x409/configuration
+echo 500 > configs/c.1/MaxPower
+
+# ---- NCM network function --------------------------------------------------
+#
+# Deterministic, locally-administered MACs derived from the CPU serial. If the
+# MACs were left at libcomposite's random default, the host would see a
+# brand-new network adapter on every boot (new interface name, dropped
+# routes/leases) — this determinism is load-bearing for "it just works". Two
+# different speakers derive different MACs (different serials -> different
+# hash). host_addr and dev_addr differ in the final byte so the two ends of
+# the link never collide.
+derive_mac() {
+    # $1 = salt (distinguishes host vs dev). Emit a locally-administered
+    # unicast MAC: first octet 0x02 (LAA bit set, multicast bit clear). The
+    # remaining five octets come from a sha256 of serial+salt. Pure-shell
+    # hashing via sha256sum (coreutils, always present on the Pi).
+    local salt="$1" hash
+    hash=$(printf '%s' "${SERIAL}-${salt}" | sha256sum | cut -c1-10)
+    printf '02:%s:%s:%s:%s:%s' \
+        "${hash:0:2}" "${hash:2:2}" "${hash:4:2}" "${hash:6:2}" "${hash:8:2}"
+}
+
+if [[ "${WANT_NETWORK}" == "1" ]]; then
+    mkdir -p functions/ncm.usb0
+    host_mac="$(derive_mac host)"
+    dev_mac="$(derive_mac dev)"
+    # host_addr/dev_addr always exist on an NCM function (unlike the
+    # kernel-version-dependent uac2 low-latency attrs), so write them
+    # unconditionally — the determinism is load-bearing.
+    echo "${host_mac}" > functions/ncm.usb0/host_addr
+    echo "${dev_mac}" > functions/ncm.usb0/dev_addr
+    ln -s functions/ncm.usb0 configs/c.1/
+    log "ncm.usb0 host_addr=${host_mac} dev_addr=${dev_mac}"
+fi
+
+# ---- UAC2 audio function ---------------------------------------------------
+#
+# BYTE-IDENTICAL to the pre-composite gadget (low-latency contract, protection
+# list). JTS is unidirectional: host sends audio TO the Pi (host playback =
+# device capture in UAC2 terms). p_chmask=0 leaves the reverse direction off.
+if [[ "${WANT_AUDIO}" == "1" ]]; then
+    mkdir -p functions/uac2.usb0
+    echo 48000 > functions/uac2.usb0/c_srate
+    echo 4 > functions/uac2.usb0/c_ssize
+    echo 3 > functions/uac2.usb0/c_chmask
+    echo 1 > functions/uac2.usb0/c_volume_present
+    echo 1 > functions/uac2.usb0/c_mute_present
+    echo 0 > functions/uac2.usb0/p_chmask
+    # Low-latency route hints, only where the running kernel exposes them.
+    write_if_present functions/uac2.usb0/c_sync async
+    write_if_present functions/uac2.usb0/req_number 2
+    write_if_present functions/uac2.usb0/c_hs_bint 1
+    echo "JTS Capture Endpoint" > functions/uac2.usb0/function_name
+    echo "JTS Capture Input" > functions/uac2.usb0/c_it_name
+    echo "JTS Capture Output" > functions/uac2.usb0/c_ot_name
+    echo "JTS Volume" > functions/uac2.usb0/c_fu_vol_name
+    ln -s functions/uac2.usb0 configs/c.1/
+    log "uac2.usb0 linked (USB audio input enabled)"
+fi
+
+# ---- Bind to the UDC -------------------------------------------------------
+#
+# One OTG controller on the BCM2712 (dwc2). The ExecCondition already ensured
+# a UDC exists, but re-check for the operator-hand-start path.
+UDC=$(ls "${UDC_CLASS_DIR}" 2>/dev/null | head -n1 || true)
+if [[ -z "${UDC}" ]]; then
+    log "no UDC available under ${UDC_CLASS_DIR} — is dwc2 loaded and the dtoverlay set?" >&2
+    emit skip "reason=no_udc"
+    exit 1
+fi
+echo "${UDC}" > UDC
+
+log "${NAME} bound to UDC ${UDC}"
+emit up "state=bound udc=${UDC} network=${WANT_NETWORK} audio=${WANT_AUDIO}"

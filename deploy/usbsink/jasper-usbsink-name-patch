@@ -11,7 +11,7 @@
 # stock one. See deploy/usbsink/uac2_name_patch.py for the byte transform
 # and docs/HANDOFF-usbsink.md "Device name" for the full design.
 #
-# Runs as jasper-usbsink-init's ExecStartPre (best-effort, leading `-`):
+# Runs as jasper-usbgadget's ExecStartPre (best-effort, leading `-`):
 # a failure here must NEVER block USB audio — it only means the host
 # shows the default "Playback Inactive" label. This single hook covers
 # every path that needs the name re-applied:
@@ -142,7 +142,7 @@ emit "applied" "name=\"${NAME}\" kver=${KVER} ${summary}"
 # We only get here when the marker was stale (enable, rename, or kernel
 # change), so any loaded usb_f_uac2 carries a stale string. Unload it so
 # gadget-up's function-create autoloads the new override. The gadget is
-# down at ExecStartPre time (init's stop ran gadget-down first), so the
+# down at ExecStartPre time (the gadget unit's stop ran gadget-down first), so the
 # module's refcount is 0 and rmmod is safe. Best-effort: if it sticks,
 # the host just shows the old name until the next bring-up — cosmetic.
 if lsmod | awk '{print $1}' | grep -qx 'usb_f_uac2'; then

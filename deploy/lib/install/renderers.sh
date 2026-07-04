@@ -206,10 +206,12 @@ set_usb_gadget_mode() {
     # Pi via an appropriate power/data splitter sees the configured
     # speaker name as a USB audio output device.
     #
-    # We only set the dtoverlay. We do NOT load libcomposite at boot,
-    # auto-create the gadget descriptor, or enable jasper-usbsink. All
-    # of that is gated behind the /sources/ wizard toggle so RAM stays
-    # at baseline (~50 KB dwc2 kernel module) when the feature is off.
+    # We only set the dtoverlay here. libcomposite / the ConfigFS gadget are
+    # composed by jasper-usbgadget.service (enabled by install.sh for the
+    # always-on USB management network). USB *audio* stays gated behind the
+    # /sources/ wizard toggle. When both the network is kill-switched and audio
+    # is off, jasper-usbgadget's ExecCondition skips the unit and libcomposite
+    # never loads, so RAM stays at baseline (~50 KB dwc2 kernel module).
     #
     # Requires a reboot to take effect — the dwc2 module is loaded by
     # the kernel via the dtoverlay at boot. Subsequent runs of
@@ -232,12 +234,14 @@ set_usb_gadget_mode() {
     fi
     cat >> "$cfg" <<'EOF'
 
-# JTS install — required for jasper-usbsink (USB audio gadget source).
-# Puts the board's OTG-capable USB controller into peripheral mode so a
-# connected host can see the speaker as a USB audio output device.
-# libcomposite is NOT loaded at boot; jasper-usbsink-init.service
-# modprobes it on demand, so RAM stays at baseline when the USB sink is
-# disabled. On Zero-class streamboxes this is intentionally allowed for
+# JTS install — required for the composite USB gadget (management network +
+# optional audio). Puts the board's OTG-capable USB controller into peripheral
+# mode so a connected host can reach this speaker over USB and (when USB audio
+# is enabled) see it as a USB audio output device. jasper-usbgadget.service
+# modprobes libcomposite on demand and composes the descriptor; when both the
+# network is kill-switched and audio is off, its ExecCondition skips and
+# libcomposite never loads, so RAM stays at baseline. On Zero-class
+# streamboxes this is intentionally allowed for
 # powered splitter validation, but the same OTG port may be needed for
 # the DAC unless the hardware topology proves both roles can coexist.
 # Reboot required to take effect. See docs/HANDOFF-usbsink.md.

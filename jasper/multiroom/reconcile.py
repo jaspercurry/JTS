@@ -46,7 +46,12 @@ from pathlib import Path
 from .. import atomic_io
 from .. import tts_routing as _tts_routing
 from ..log_event import log_event
-from ..local_sources import local_source_park_units, local_source_restore_units
+from ..local_sources import (
+    local_source_park_restart_units,
+    local_source_park_units,
+    local_source_restore_restart_units,
+    local_source_restore_units,
+)
 from ..fanin_coupling import OUTPUTD_PIPE_PATH_ENV_VAR
 from .config import (
     GroupingConfig,
@@ -294,14 +299,19 @@ SNAP_STREAM_ID = "jts"
 class UnitIntent:
     """A desired terminal state for one systemd unit.
 
-    `desired` is one of {"start", "stop", "restore"}; `reason` is a
-    short human-readable explanation for the log line. "restore" means
+    `desired` is one of {"start", "stop", "restore", "recompose"}; `reason`
+    is a short human-readable explanation for the log line. "restore" means
     start ONLY if the unit is systemd-enabled — the shape that puts a
     parked source resource back exactly per the /sources/ wizard's intent
-    (a wizard-disabled source must stay off after an unbond).
+    (a wizard-disabled source must stay off after an unbond). "recompose"
+    is ``systemctl try-restart`` — restart ONLY if the unit is currently
+    active — the shape a composite unit needs when park/restore should tear
+    down only PART of what it owns (the USB gadget recomposes to drop/add its
+    audio function while keeping the always-on USB network, and a
+    kill-switched gadget is left untouched, never resurrected).
     """
     unit: str
-    desired: str  # "start" | "stop"
+    desired: str  # "start" | "stop" | "restore" | "recompose"
     reason: str
 
 
@@ -332,6 +342,22 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
       - enabled, valid, follower  => stop snapserver + start snapclient.
     """
     restore_renderers = tuple(
+        # Recompose (try-restart) composite units BEFORE the restore starts, so
+        # a just-un-parked source rebuilds the part that was torn down on park
+        # first — the USB gadget adds its audio function back (iff USB audio is
+        # enabled) and the UAC2Gadget card appears, THEN the restore's
+        # `start jasper-usbsink` finds the card its ExecStartPre=wait-card polls
+        # for. The reverse order (restore start first) makes wait-card poll a
+        # card that only exists after the recompose that would come next — a
+        # guaranteed 30 s stall + failed-unit transient on every un-park (review
+        # core-2). A kill-switched gadget stays down (try-restart is a no-op on
+        # an inactive unit). This is the deliberate mirror-image of the PARK
+        # order below (stop-audio THEN recompose): park recomposes last so the
+        # gadget reads "audio parked" and drops uac2; restore recomposes first
+        # so uac2 is composed before the bridge waits on its card.
+        UnitIntent(u, "recompose", "not a bonded follower — recompose gadget")
+        for u in local_source_restore_restart_units()
+    ) + tuple(
         UnitIntent(u, "restore", "not a bonded follower — sources per wizard")
         for u in local_source_restore_units()
     )
@@ -374,10 +400,18 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
         UnitIntent(u, "stop", "parked (bonded follower)")
         for u in local_source_park_units()
     )
+    # Composite units are recomposed (try-restart), not stopped: the USB
+    # gadget drops its audio function (bridge already stopped above) but keeps
+    # the always-on USB network. Ordered after the audio stops so the
+    # recompose reads "audio parked" and after the network stays up.
+    park_recompose = tuple(
+        UnitIntent(u, "recompose", "parked (bonded follower) — drop gadget audio")
+        for u in local_source_park_restart_units()
+    )
     return ReconcilePlan(
         intents=(
             UnitIntent(SNAPSERVER_UNIT, "stop", "follower runs no server"),
-        ) + parked + (
+        ) + parked + park_recompose + (
             UnitIntent(SNAPCLIENT_UNIT, "start", "follower consumes stream"),
         ),
         summary=(
@@ -932,10 +966,13 @@ def _apply(plan_: ReconcilePlan) -> int:
     Intent kinds: `start` / `stop` map to systemctl verbs; `restore`
     is start-only-if-enabled (the un-park shape — /sources/ keeps
     enable/disable as the household's intent, so a parked source resource
-    comes back exactly per the wizard). A failure on one intent is
-    logged and surfaced in the exit code but does not abort the rest of
-    the plan — a half-applied bond is worse than a best-effort one.
-    Units that do not exist on this install tier are clean no-ops.
+    comes back exactly per the wizard); `recompose` is ``try-restart``
+    (restart ONLY if currently active) — the shape a composite unit needs
+    to rebuild the part that park tore down without resurrecting a
+    kill-switched unit. A failure on one intent is logged and surfaced in
+    the exit code but does not abort the rest of the plan — a half-applied
+    bond is worse than a best-effort one. Units that do not exist on this
+    install tier are clean no-ops.
     """
     rc = 0
     for it in plan_.intents:
@@ -952,6 +989,10 @@ def _apply(plan_: ReconcilePlan) -> int:
                 )
                 continue
             verb = "start"
+        elif verb == "recompose":
+            # try-restart: recompose only a currently-active unit (a
+            # kill-switched/parked gadget stays down — never resurrected).
+            verb = "try-restart"
         try:
             subprocess.run(
                 ["systemctl", verb, it.unit],

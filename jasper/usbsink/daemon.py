@@ -81,7 +81,7 @@ CAPTURE_IDLE_LOG_SEC = WATCHDOG_STALE_SEC
 class DaemonConfig:
     """Environment-driven configuration, all overridable via env vars
     that begin with JASPER_USBSINK_*. Sensible defaults align with the
-    UAC2 gadget descriptor in deploy/usbsink/jasper-usbsink-gadget-up.
+    UAC2 gadget descriptor in deploy/usbsink/jasper-usbgadget-up.
 
     The same ALSA card has TWO names that tools disagree about:
 
@@ -97,7 +97,7 @@ class DaemonConfig:
     They differ because the u_audio driver registers itself as
     "UAC2_Gadget" (the underscore is the driver's convention) while
     our ConfigFS descriptor's short-name attribute is "UAC2Gadget"
-    (no underscore, set in deploy/usbsink/jasper-usbsink-gadget-up).
+    (no underscore, set in deploy/usbsink/jasper-usbgadget-up).
     sounddevice/PortAudio doesn't honor the short name when matching
     device strings against the enumerated list, so we have to pass
     it the underscore form. amixer wants the short name.

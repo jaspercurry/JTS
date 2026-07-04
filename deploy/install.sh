@@ -382,7 +382,7 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      python3 python3-venv python3-dev build-essential rustc cargo
      libasound2-dev libasound2 libasound2-plugins portaudio19-dev
      libsndfile1 curl ca-certificates rsync pkg-config nginx-light
-     openssl snapclient snapserver.
+     openssl dnsmasq-base snapclient snapserver.
    - Renderer/Bluetooth/AirPlay packages and build inputs:
      autoconf automake libtool libpopt-dev libconfig-dev
      libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
@@ -457,6 +457,14 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      install), so USB-in never keeps serving a stale daemon; fanin and
      outputd are already covered by the core-graph restarts above.
      SKIP_RESTART=1 skips this conditional restart.
+   - Enable the always-on composite USB gadget (jasper-usbgadget.service):
+     USB management network (usb0 10.12.194.1/24, no forwarding) so
+     http://<hostname>/ works over USB even with Wi-Fi off, plus the
+     wizard-toggled USB audio function. NM keyfile owns usb0 and the
+     device-activated jasper-usbnet-dhcp.service (dnsmasq-base) serves DHCP.
+     Retire the old jasper-usbsink-init.service; if USB audio was enabled,
+     restart jasper-usbsink after the migration (the init-unit stop
+     propagated to it). Kill switch: JASPER_USB_NETWORK=disabled.
    - Enable socket-activated streambox-safe web surfaces:
      /spotify/, /sources/, /sound/, /speaker/, /wifi/, /rooms/,
      /bluetooth/, /system/, and HTTPS /correction/.
@@ -522,7 +530,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      python3 python3-venv python3-dev build-essential libasound2-dev
      libasound2 portaudio19-dev libasound2-plugins libsndfile1 curl
      ca-certificates rsync dfu-util libwebrtc-audio-processing-dev
-     pkg-config meson ninja-build nginx-light openssl rustc cargo.
+     pkg-config meson ninja-build nginx-light openssl dnsmasq-base
+     rustc cargo.
    - Renderer and Bluetooth/AirPlay build packages:
      autoconf automake libtool libpopt-dev libconfig-dev
      libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
@@ -656,6 +665,17 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      install), so USB-in never keeps serving a stale daemon; fanin and
      outputd are already covered by the core-graph restarts above.
      SKIP_RESTART=1 skips this conditional restart.
+   - Enable the always-on composite USB gadget (jasper-usbgadget.service):
+     it carries a USB management network (ncm.usb0, 10.12.194.1/24, no
+     forwarding) so http://<hostname>/ works over USB even with Wi-Fi off,
+     plus the wizard-toggled USB audio function. Retire the old
+     jasper-usbsink-init.service on upgrade; if USB audio was enabled,
+     restart jasper-usbsink after the migration (the init-unit stop
+     propagated to it). Install the NM keyfile owning usb0 and the scoped,
+     device-activated jasper-usbnet-dhcp.service (dnsmasq-base — no global
+     dnsmasq service). USB audio stays off by default. Skips cleanly
+     pre-reboot when no UDC exists yet. Kill switch:
+     JASPER_USB_NETWORK=disabled.
    - Require jasper-outputd to be active and answering STATUS before
      voice starts against the final-output path.
    - Seed or validate the outputd Camilla statefile while preserving
@@ -779,7 +799,12 @@ install_deps() {
         libwebrtc-audio-processing-dev pkg-config \
         meson ninja-build \
         nginx-light openssl \
+        dnsmasq-base \
         rustc cargo
+    # dnsmasq-base is the DHCP server BINARY only — NOT the full `dnsmasq`
+    # package, which would enable a global dnsmasq.service. The scoped,
+    # device-activated jasper-usbnet-dhcp.service runs it against usb0 for the
+    # always-on USB management network. See docs/HANDOFF-usb-gadget.md.
     # rustc + cargo are required to build the Rust audio daemons
     # (rust/jasper-fanin/ and rust/jasper-outputd/). Trixie ships rustc 1.85, comfortably above
     # our crate's rust-version=1.75 floor. See
@@ -824,6 +849,7 @@ install_streambox_deps() {
         libasound2-plugins libsndfile1 \
         curl ca-certificates rsync pkg-config \
         nginx-light openssl \
+        dnsmasq-base \
         snapclient snapserver
 
     apt-get install -y --no-install-recommends \
