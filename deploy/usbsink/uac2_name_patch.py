@@ -7,7 +7,7 @@
 """Rewrite the UAC2 gadget module's AudioStreaming interface strings.
 
 Stdlib-only. NO ``jasper`` imports, NO venv — this runs under the
-system ``/usr/bin/python3`` at early boot (``jasper-usbsink-init``'s
+system ``/usr/bin/python3`` at early boot (``jasper-usbgadget``'s
 ``ExecStartPre``), before ``/opt/jasper/.venv`` is guaranteed usable.
 
 Why this exists

@@ -4,9 +4,11 @@
 # Writing to ConfigFS/UDC returns before the kernel finishes
 # registering the ALSA card — typically <500 ms on a Pi 5, but with
 # enough jitter that jasper-usbsink can race the card's existence and
-# fail to open the capture device. The unit's ExecStartPost runs this
-# script so the init service blocks the main daemon's start until ALSA
-# is genuinely ready.
+# fail to open the capture device. Runs as jasper-usbsink.service's
+# ExecStartPre so the audio bridge blocks until ALSA is genuinely ready.
+# (It moved here from the retired jasper-usbsink-init unit: the composite
+# gadget owner now also carries the always-on USB network and must not
+# block on a card that only exists when the uac2 audio function is composed.)
 #
 # Argument: timeout in seconds (default 30). Returns 0 if the card
 # appears, non-zero on timeout.

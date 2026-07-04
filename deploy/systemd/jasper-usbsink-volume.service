@@ -3,8 +3,15 @@ Description=Jasper USB sink host-volume observer
 # Non-real-time helper for jasper-usbsink.service. The Rust bridge owns the
 # audio data plane and preempt endpoint; this Python process only polls the
 # UAC2 gadget mixer and reports host slider changes to jasper-control.
-After=jasper-usbsink-init.service jasper-control.service
-Requires=jasper-usbsink-init.service
+#
+# It tracks the AUDIO daemon's lifecycle, not the gadget's: the UAC2 mixer it
+# polls only exists while the uac2 function is composed (i.e. while
+# jasper-usbsink is running). The composite gadget now OUTLIVES audio (it also
+# carries the always-on network), so ordering/binding to jasper-usbsink.service
+# — which itself Requires= the gadget — keeps this helper off whenever audio
+# is parked while the network stays up.
+After=jasper-usbsink.service jasper-control.service
+Requires=jasper-usbsink.service
 PartOf=jasper-usbsink.service
 
 [Service]

@@ -1,0 +1,36 @@
+# NetworkManager keyfile for the USB management network on usb0.
+#
+# Installed by install.sh to
+# /etc/NetworkManager/system-connections/jts-usb.nmconnection (0600
+# root:root), then `nmcli connection reload`. NetworkManager stays the box's
+# single network owner — no systemd-networkd, no dispatcher scripts.
+#
+# The Pi holds 10.12.194.1/24 on usb0. That is deliberately the SAME address
+# Raspberry Pi OS uses for its first-boot USB rescue gadget (QUICKSTART.md,
+# scripts/onboard.sh already teach it). Only one gadget can bind the single
+# UDC, so the two mechanisms never serve simultaneously. There is no env
+# override for the IP in v1 — docs/HANDOFF-usb-gadget.md documents how to
+# change it.
+#
+# never-default=true + NO gateway (and dnsmasq pushes no router/DNS option) so
+# plugging JTS in can never hijack the laptop's default route or DNS. ipv6 is
+# link-local so Apple clients resolve <hostname>.local quickly over the link.
+[connection]
+id=jts-usb
+uuid=d996616d-cd6c-4e38-b34b-8d41f0a19d88
+type=ethernet
+interface-name=usb0
+autoconnect=true
+autoconnect-priority=-100
+
+[ethernet]
+
+[ipv4]
+method=manual
+address1=10.12.194.1/24
+never-default=true
+
+[ipv6]
+method=link-local
+
+[proxy]

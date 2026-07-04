@@ -1,26 +1,30 @@
 [Unit]
 Description=Jasper USB sink — audio bridge from UAC2 gadget into the music chain
 # Bridges the host's USB audio output (captured via the ConfigFS UAC2
-# gadget set up by jasper-usbsink-init) into the USB-in private
+# gadget composed by jasper-usbgadget) into the USB-in private
 # snd-aloop lane. jasper-fanin sums it with AirPlay/Spotify/BT before
 # CamillaDSP, so it is just another renderer from the music chain's
 # perspective.
 #
-# Ships DISABLED. The /sources/ wizard toggles this intent unit. Starting
-# it pulls jasper-usbsink-init in via Requires=; stopping this unit alone does
-# not tear down the host-visible gadget, so off/parking paths explicitly stop
-# jasper-usbsink-init too. When both are off, libcomposite isn't loaded and
-# the daemon doesn't run — total resident cost is the ~50 KB dwc2 kernel
-# module from the dtoverlay, nothing in user space.
+# Ships DISABLED. The /sources/ wizard toggles this intent unit. Starting it
+# pulls jasper-usbgadget in via Requires=; the gadget then RECOMPOSES to add
+# the uac2 (audio) function. Stopping this unit records household intent off;
+# the /sources/ off path also RESTARTS jasper-usbgadget so it recomposes
+# WITHOUT the audio function — the host-visible audio device disappears while
+# the always-on USB management network (ncm) persists. When USB audio is off,
+# the gadget still runs to carry the network (~1 MB kernel modules + device-
+# activated dnsmasq); the audio bridge daemon itself costs nothing.
 #
-# See docs/HANDOFF-usbsink.md for the full design.
-After=jasper-usbsink-init.service jasper-fanin.service jasper-camilla.service sound.target
-Requires=jasper-usbsink-init.service
+# See docs/HANDOFF-usb-gadget.md for the composite-gadget design and
+# docs/HANDOFF-usbsink.md for the audio-source design.
+After=jasper-usbgadget.service jasper-fanin.service jasper-camilla.service sound.target
+Requires=jasper-usbgadget.service
 Wants=jasper-fanin.service jasper-usbsink-volume.service
-# PartOf= propagates a stop/restart of the init service to the daemon.
-# If init is stopped (toggle off in /sources/), this stops too. If init
-# crashes and systemd restarts it, the daemon restarts in sync.
-PartOf=jasper-usbsink-init.service
+# PartOf= propagates a stop/restart of the gadget owner to the daemon.
+# If the gadget is stopped (operator `systemctl stop jasper-usbgadget`), this
+# stops too. If the gadget is restarted (a /sources/ recompose), the daemon
+# restarts in sync so it re-opens the freshly-created UAC2Gadget card.
+PartOf=jasper-usbgadget.service
 
 [Service]
 # Tier 1 + 2 of the resilience ladder (see docs/HANDOFF-resilience.md).
@@ -57,6 +61,15 @@ Environment="JASPER_USBSINK_MIXER_CARD=UAC2Gadget"
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/usbsink.env
 ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
+# Block until the UAC2Gadget ALSA card is registered before the bridge opens
+# its capture device. jasper-usbgadget composes the descriptor and returns,
+# but the kernel finishes registering the card slightly later (the wait-card
+# poll used to live on jasper-usbsink-init's ExecStartPost; it moves here now
+# that the gadget owner no longer waits for the audio card — it also carries
+# the network function and must not block on a card that only exists when
+# audio is composed). 30 s ceiling; failure is a clear timeout, not a race
+# into "no such card".
+ExecStartPre=/usr/local/sbin/jasper-usbsink-wait-card 30
 ExecStart=/opt/jasper/bin/jasper-usbsink-audio
 # Stage 1 host-slaved USB clock (default-OFF, see docs/HANDOFF-usb-low-latency.md
 # "Host-slaved USB clock"): belt-and-braces for the pitch-neutrality safety

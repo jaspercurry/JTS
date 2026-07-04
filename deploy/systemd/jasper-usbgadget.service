@@ -1,0 +1,62 @@
+[Unit]
+Description=Jasper composite USB gadget (management network + optional audio)
+# The single owner of the ConfigFS composite gadget. It composes up to two
+# functions onto the one dwc2 UDC:
+#   - ncm.usb0  — always-on USB management network (a laptop plugged into the
+#     USB-C port reaches http://<hostname>/ even with Wi-Fi off);
+#   - uac2.usb0 — the wizard-toggled USB audio input (jasper-usbsink source).
+#
+# This is the FIRST gadget unit install.sh enables (systemctl enable --now),
+# deliberately — it carries the always-on network. jasper-usbsink.service
+# (the audio bridge) orders After= this unit and no longer owns the gadget.
+#
+# There is intentionally NO jasper-local-source-allowed ExecCondition on this
+# unit: the network function must survive multiroom follower parking. The
+# AUDIO-function gate lives inside jasper-usbgadget-up (it composes uac2 only
+# when jasper-usbsink is enabled AND local sources are allowed), and
+# jasper-usbsink.service keeps its own ExecCondition.
+#
+# NAMING DEBT: the ConfigFS gadget dir name stays `jts-usb-audio` (the doctor's
+# low-latency contract reads that exact path). Accepted debt — see
+# docs/HANDOFF-usb-gadget.md.
+After=systemd-modules-load.service sys-kernel-config.mount
+Before=jasper-usbsink.service
+ConditionPathExists=/sys/kernel/config
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/speaker_name.env
+# Skip (NOT fail) when there is no UDC yet (fresh install pre-reboot) or when
+# no function is wanted (network kill-switched AND audio off/parked). The
+# zero-function case restores the historic zero-RAM contract: libcomposite
+# never loads. Exit 1 from an ExecCondition is systemd's "condition not met".
+ExecCondition=/usr/local/sbin/jasper-usbgadget-wanted
+# modprobe libcomposite drags in the gadget framework + u_ether/u_audio deps.
+# A failure means the kernel lacks CONFIG_USB_GADGET / CONFIG_USB_CONFIGFS —
+# surface that as a unit failure rather than a mysterious later error.
+ExecStartPre=/sbin/modprobe libcomposite
+# Make the host-visible audio device name track the Speaker Name by patching
+# the kernel's hardcoded UAC2 AudioStreaming string. Best-effort (leading `-`):
+# a failure only means the host shows the default label — it must never block
+# the gadget. Runs before gadget-up so the patched module autoloads when the
+# uac2 function is created. See docs/HANDOFF-usbsink.md "Device name".
+ExecStartPre=-/usr/local/sbin/jasper-usbsink-name-patch
+ExecStart=/usr/local/sbin/jasper-usbgadget-up
+ExecStop=/usr/local/sbin/jasper-usbgadget-down
+# Best-effort rmmod in dependency order: the network function modules
+# (usb_f_ncm, u_ether) and the audio function modules (usb_f_uac2, u_audio)
+# ahead of libcomposite. Leading `-` ignores non-zero exit — if a module is
+# still in use (stale descriptor, stuck capture) the rmmod fails harmlessly.
+# Either way the gadget descriptor is gone, so the host stops seeing JTS.
+ExecStopPost=-/sbin/rmmod usb_f_ncm
+ExecStopPost=-/sbin/rmmod usb_f_uac2
+ExecStopPost=-/sbin/rmmod u_ether
+ExecStopPost=-/sbin/rmmod u_audio
+ExecStopPost=-/sbin/rmmod libcomposite
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

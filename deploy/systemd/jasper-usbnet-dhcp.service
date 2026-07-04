@@ -1,0 +1,51 @@
+[Unit]
+Description=Jasper USB management network DHCP (scoped dnsmasq on usb0)
+# A scoped dnsmasq instance that hands a plugged-in laptop an address on the
+# USB link so http://<hostname>/ works even with Wi-Fi off. It is NOT a DNS
+# server and pushes no router/DNS to the host — see docs/HANDOFF-usb-gadget.md
+# and /etc/jasper/usbnet-dnsmasq.conf.
+#
+# Device-activated: it starts only when usb0 exists (the composite gadget's ncm
+# function created it) and stops when usb0 disappears. Zero cost whenever the
+# gadget/NCM is absent — nothing resident on a speaker with no host plugged in.
+BindsTo=sys-subsystem-net-devices-usb0.device
+After=sys-subsystem-net-devices-usb0.device NetworkManager.service
+ConditionPathExists=/etc/jasper/usbnet-dnsmasq.conf
+
+[Service]
+Type=simple
+# --keep-in-foreground so systemd supervises the process directly (dnsmasq
+# daemonizes by default). Conf carries interface/range/no-forwarding policy.
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/jasper/usbnet-dnsmasq.conf
+Restart=on-failure
+RestartSec=2s
+# Lease file lives here (tmpfs-backed, cleared on stop).
+RuntimeDirectory=jasper-usbnet
+RuntimeDirectoryMode=0755
+# Bounded: a DHCP server for one /24 with a 10-address pool is tiny.
+MemoryHigh=12M
+MemoryMax=16M
+# Hardening. dnsmasq needs to bind the DHCP socket on usb0 and read the conf;
+# it needs CAP_NET_BIND_SERVICE (port 67) + CAP_NET_ADMIN/CAP_NET_RAW for the
+# raw DHCP socket, and nothing else. ProtectSystem=strict with the runtime dir
+# as its only writable path.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_PACKET AF_UNIX
+
+[Install]
+# Started when usb0 appears, stopped when it disappears — the device-activated
+# lifecycle (WantedBy the .device so systemctl enable wires the pull).
+WantedBy=sys-subsystem-net-devices-usb0.device
