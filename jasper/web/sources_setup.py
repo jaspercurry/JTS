@@ -19,8 +19,11 @@ Playback-source toggles:
     needed only for voice cold-start (see /spotify/). Basic phone-side
     Spotify Connect works without claiming.
   - **USB Audio Input** ↔ `jasper-usbsink.service` for persistent
-    enable/disable intent, plus `jasper-usbsink-init.service` for the
-    host-visible ConfigFS gadget lifecycle.
+    enable/disable intent. The host-visible audio device is the uac2
+    function of the composite `jasper-usbgadget.service`, which the toggle
+    recomposes (restart) to add/drop that function. The gadget itself is
+    always-on (it also carries the USB management network), so toggling USB
+    *audio* off leaves the network up.
 
 AirPlay, Bluetooth, and Spotify Connect default ON. USB Audio Input
 defaults OFF so it has zero resident RAM cost until explicitly enabled.
@@ -94,11 +97,11 @@ def _single_unit(units: tuple[str, ...], label: str) -> str:
 # jasper.local_sources so /sources/ cannot drift from the reconciler.
 AIRPLAY_UNIT = _intent_unit(Source.AIRPLAY)
 SPOTIFY_CONNECT_UNIT = _intent_unit(Source.SPOTIFY)
-# jasper-usbsink.service is the persistent /sources intent unit; the
-# init unit is an implementation subresource that owns the host-visible
-# ConfigFS gadget.
+# jasper-usbsink.service is the persistent /sources intent unit; the composite
+# gadget unit owns the host-visible ConfigFS gadget (always-on USB network +
+# the wizard-toggled uac2 audio function).
 USBSINK_UNIT = _intent_unit(Source.USBSINK)
-USBSINK_INIT_UNIT = _single_unit(
+USBSINK_GADGET_UNIT = _single_unit(
     local_source_lifecycle(Source.USBSINK).advertise_units,
     "USB Audio Input advertise units",
 )
@@ -132,6 +135,22 @@ IDLE_SHUTDOWN_SEC = 600.0
 # shows disabled instead of presenting a broken on/off.
 BOOT_CONFIG_PATH = "/boot/firmware/config.txt"
 USBSINK_DTOVERLAY_LINE = "dtoverlay=dwc2,dr_mode=peripheral"
+
+
+# The ALSA card the composite gadget's uac2 function registers. Its presence
+# is the host-visible "USB audio device is advertised" signal now that the
+# gadget unit is always-on (it also carries the USB network), so gadget-active
+# is no longer a proxy for audio-advertised.
+UAC2_CARD_PATH = "/proc/asound/UAC2Gadget"
+
+
+def _uac2_card_present() -> bool:
+    """True iff the composite gadget's uac2 (audio) function is composed —
+    the host currently sees JTS as a USB audio device. Fail-soft to False."""
+    try:
+        return os.path.isdir(UAC2_CARD_PATH)
+    except OSError:
+        return False
 
 
 def _usbsink_available() -> bool:
@@ -235,6 +254,26 @@ def _stop_unit(unit: str, *, reason: str) -> None:
         )
 
 
+def _manage_unit(unit: str, verb: str, *, reason: str) -> None:
+    resp = manage_units(
+        unit, verb=verb, reason=reason, no_block=False, timeout=15.0,
+    )
+    if not resp.get("ok"):
+        logger.warning(
+            "source %s %s failed: %s",
+            unit, verb,
+            resp.get("error") or f"rc={resp.get('rc')}",
+        )
+
+
+def _recompose_gadget(*, reason: str) -> None:
+    """Restart the composite gadget so it recomposes its function set (adds or
+    drops the uac2 audio function per the current jasper-usbsink intent), while
+    keeping the always-on USB management network. A brief host re-enumerate is
+    expected and documented."""
+    _manage_unit(USBSINK_GADGET_UNIT, "restart", reason=reason)
+
+
 def _source_state(
     *,
     enabled: bool,
@@ -302,11 +341,11 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
     usbsink_main_unit_available = (
         local_sources_allowed and _unit_available(USBSINK_UNIT)
     )
-    usbsink_init_unit_available = (
-        local_sources_allowed and _unit_available(USBSINK_INIT_UNIT)
+    usbsink_gadget_unit_available = (
+        local_sources_allowed and _unit_available(USBSINK_GADGET_UNIT)
     )
     usbsink_units_available = (
-        usbsink_main_unit_available and usbsink_init_unit_available
+        usbsink_main_unit_available and usbsink_gadget_unit_available
     )
     usbsink_dtoverlay_available = (
         _usbsink_available() if usbsink_units_available else False
@@ -314,9 +353,9 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
     usbsink_available = usbsink_units_available and usbsink_dtoverlay_available
     if not usbsink_main_unit_available:
         usbsink_reason = SOURCE_UNAVAILABLE["usbsink"]
-    elif not usbsink_init_unit_available:
+    elif not usbsink_gadget_unit_available:
         usbsink_reason = (
-            "USB Audio Input is missing its gadget init unit. Re-run "
+            "USB Audio Input is missing its composite gadget unit. Re-run "
             "install.sh to repair the local renderer stack."
         )
     elif not usbsink_dtoverlay_available:
@@ -327,13 +366,17 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
     else:
         usbsink_reason = ""
     usbsink_main_active = _unit_active(USBSINK_UNIT)
-    usbsink_init_active = _unit_active(USBSINK_INIT_UNIT)
+    # Host-visible audio device presence is the uac2 ALSA card, NOT gadget-unit
+    # activity: the composite gadget is always-on (it also carries the USB
+    # management network), so its being active no longer implies audio is
+    # advertised. The card exists iff the uac2 function is composed.
+    usbsink_card_present = _uac2_card_present()
     usbsink_starting = _unit_starting(USBSINK_UNIT)
     usbsink_effectively_on = (
-        usbsink_main_active or usbsink_starting or usbsink_init_active
+        usbsink_main_active or usbsink_starting or usbsink_card_present
     )
     usbsink_degraded_reason = ""
-    if usbsink_available and usbsink_init_active and not usbsink_main_active:
+    if usbsink_available and usbsink_card_present and not usbsink_main_active:
         usbsink_degraded_reason = (
             "USB Audio Input is advertised to hosts, but its audio bridge "
             "is not active yet. Toggle it off to hide the USB device, or "
@@ -394,9 +437,9 @@ def _apply(source: str, enabled: bool) -> None:
     elif source == "usbsink":
         if not (_local_sources_allowed() and _unit_available(USBSINK_UNIT)):
             raise RuntimeError(SOURCE_UNAVAILABLE["usbsink"])
-        if not _unit_available(USBSINK_INIT_UNIT):
+        if not _unit_available(USBSINK_GADGET_UNIT):
             raise RuntimeError(
-                "USB Audio Input is missing its gadget init unit. Re-run "
+                "USB Audio Input is missing its composite gadget unit. Re-run "
                 "install.sh to repair the local renderer stack."
             )
         if not _usbsink_available():
@@ -405,15 +448,23 @@ def _apply(source: str, enabled: bool) -> None:
                 "Re-run install.sh and reboot before enabling USB Audio Input."
             )
         if enabled:
-            # Starting the intent unit brings the ConfigFS gadget up through
-            # Requires=. The init unit itself is not user intent.
-            _set_unit(USBSINK_UNIT, True)
+            # Three-step ordering, because the gadget reads the intent
+            # (jasper-usbsink is-enabled) at recompose time and the bridge's
+            # ExecStartPre waits for the uac2 ALSA card:
+            #   1. enable the bridge (record household intent; do NOT start yet
+            #      — starting now would race a card that does not exist);
+            #   2. recompose the gadget (now reads is-enabled=yes → adds uac2,
+            #      the UAC2Gadget card appears);
+            #   3. start the bridge (the card exists → wait-card passes).
+            _manage_unit(USBSINK_UNIT, "enable", reason="USB source toggle on")
+            _recompose_gadget(reason="USB source toggle on")
+            _manage_unit(USBSINK_UNIT, "start", reason="USB source toggle on")
         else:
-            # Disabling the bridge records household intent. Stopping the init
-            # unit tears down the host-visible gadget; its PartOf= stops the
-            # bridge if systemd has not already done so.
+            # Disable the bridge (records household intent off), then recompose
+            # the gadget so it drops the uac2 function — the host-visible audio
+            # device disappears while the always-on USB network stays up.
             _set_unit(USBSINK_UNIT, False)
-            _stop_unit(USBSINK_INIT_UNIT, reason="USB source toggle off")
+            _recompose_gadget(reason="USB source toggle off")
 
 
 # Per-page CSS layered on app.css. Just the source-row layout + notes; the
@@ -504,7 +555,10 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
                 '<div class="source-note" id="usbsink-note">'
                 "Plug a computer into the Pi's USB data/OTG port through a "
                 "compatible power/data splitter or hub. Your computer sees "
-                "the speaker as a USB audio output device.</div>"
+                "the speaker as a USB audio output device. (The USB link also "
+                "provides a management-network path to this speaker's web UI "
+                "even with Wi-Fi off — that stays on regardless of this "
+                "toggle.)</div>"
             ),
             unavailable_html=(
                 '<div class="source-note warn" id="usbsink-unavailable-note" '

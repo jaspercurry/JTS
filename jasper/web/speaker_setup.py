@@ -163,8 +163,12 @@ def _find_conflicts(name: str) -> list[NameConflict]:
 
 def _apply_name(name: str) -> None:
     units = list(RESTART_UNITS)
-    if _unit_active("jasper-usbsink.service") or _unit_active("jasper-usbsink-init.service"):
-        units.append("jasper-usbsink-init.service")
+    # The composite USB gadget owns the host-visible device strings (product =
+    # speaker name; the name-patch reruns as its ExecStartPre). It is always-on
+    # (it carries the USB network), so restart it on any rename so both the NIC
+    # label and — when audio is composed — the audio label track the new name.
+    if _unit_active("jasper-usbgadget.service"):
+        units.append("jasper-usbgadget.service")
 
     _write_bluez_main_conf_name(name)
     try:

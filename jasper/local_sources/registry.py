@@ -16,9 +16,14 @@ Keep two concepts separate:
 * effective runtime permission: whether the current role may run/advertise
   local sources at all.
 
-USB Audio Input is the sharp edge: the bridge process and the host-visible
-ConfigFS gadget are separate units. Parking a follower must park the entire
-source resource group, not just the bridge daemon.
+USB Audio Input is the sharp edge: the audio bridge process and the composite
+ConfigFS gadget are separate units, and the gadget now carries an always-on USB
+management network in ADDITION to the wizard-toggled audio function. So parking
+a follower must STOP the audio bridge units but only RECOMPOSE (restart) the
+gadget owner — the host-visible audio device disappears while the network
+function persists. That distinction is expressed declaratively here
+(``park_restart_units`` / ``restore_restart_units``); the reconciler stays
+source-agnostic and never special-cases usbsink.
 """
 from __future__ import annotations
 
@@ -36,6 +41,14 @@ class LocalSourceLifecycle:
     DBus power, so it has no persistent intent unit here. ``park_units`` are
     stopped while local sources are role-parked. ``restore_units`` are started
     only if enabled when the role un-parks, preserving systemd-backed intent.
+
+    ``park_restart_units`` / ``restore_restart_units`` are units that must be
+    RESTARTED (not stopped/started) on park / restore — the shape a composite
+    unit needs when parking should tear down only *part* of what it owns. The
+    USB gadget is the sole user: on park it recomposes without the audio
+    function (host-visible audio device gone) but keeps the always-on USB
+    network; on restore it recomposes to add the audio function back iff USB
+    audio is enabled. Restart-on-both keeps the reconciler declarative.
     """
 
     source: Source
@@ -45,6 +58,8 @@ class LocalSourceLifecycle:
     restore_units: tuple[str, ...]
     advertise_units: tuple[str, ...] = ()
     audio_refresh_units: tuple[str, ...] = ()
+    park_restart_units: tuple[str, ...] = ()
+    restore_restart_units: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -106,23 +121,29 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
         source=Source.USBSINK,
         intent_unit="jasper-usbsink.service",
         runtime_units=(
-            "jasper-usbsink-init.service",
+            "jasper-usbgadget.service",
             "jasper-usbsink.service",
             "jasper-usbsink-volume.service",
         ),
-        # Stop init first: it owns the host-visible gadget, and its PartOf=
-        # relationship stops the bridge too. The bridge is included as a
-        # belt-and-suspenders stop for systems with partial unit drift.
+        # Park the AUDIO bridge units only. The composite gadget owner is NOT
+        # stopped here — stopping it would also drop the always-on USB
+        # management network. It is recomposed instead (park_restart_units).
         park_units=(
-            "jasper-usbsink-init.service",
             "jasper-usbsink.service",
             "jasper-usbsink-volume.service",
         ),
-        # Restore only the household intent unit. Requires= brings the init
-        # gadget up when USB Audio Input is intentionally enabled.
+        # Restore only the household intent unit. Requires= brings the gadget
+        # up when USB Audio Input is intentionally enabled.
         restore_units=("jasper-usbsink.service",),
-        advertise_units=("jasper-usbsink-init.service",),
+        advertise_units=("jasper-usbgadget.service",),
         audio_refresh_units=("jasper-usbsink.service", "jasper-usbsink-volume.service"),
+        # Recompose the gadget on park: it drops the uac2 (audio) function
+        # because the bridge is now parked, but keeps ncm (network) up — the
+        # host-visible audio device disappears while USB networking persists.
+        park_restart_units=("jasper-usbgadget.service",),
+        # On un-park, recompose again so the audio function comes back iff USB
+        # audio is enabled (gadget-up reads the intent). Mirrors the park side.
+        restore_restart_units=("jasper-usbgadget.service",),
     ),
 )
 
@@ -190,3 +211,17 @@ def local_source_audio_refresh_units() -> tuple[str, ...]:
     dashboard audio restart.
     """
     return _flatten("audio_refresh_units", include_infrastructure=False)
+
+
+def local_source_park_restart_units() -> tuple[str, ...]:
+    """Units RESTARTED (recomposed) rather than stopped when local sources
+    park. Today only the composite USB gadget: parking recomposes it without
+    the audio function while keeping the always-on USB network."""
+    return _flatten("park_restart_units", include_infrastructure=False)
+
+
+def local_source_restore_restart_units() -> tuple[str, ...]:
+    """Units RESTARTED (recomposed) rather than started when local sources
+    un-park. Mirror of :func:`local_source_park_restart_units`; the gadget
+    recomposes to add the audio function back iff USB audio is enabled."""
+    return _flatten("restore_restart_units", include_infrastructure=False)

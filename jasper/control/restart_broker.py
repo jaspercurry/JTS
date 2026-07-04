@@ -123,7 +123,13 @@ MANAGED_UNITS = frozenset({
     "nqptp.service",
     "librespot.service",
     "jasper-usbsink.service",
-    "jasper-usbsink-init.service",
+    # jasper-usbgadget owns the composite ConfigFS gadget (always-on USB
+    # network + wizard-toggled USB audio). /sources/ restarts it to recompose
+    # the audio function on/off; /speaker restarts it so the name-patch reruns;
+    # the grouping reconciler restarts it to park a bonded follower's host-
+    # visible audio device while keeping the network. Replaces the deleted
+    # jasper-usbsink-init.service.
+    "jasper-usbgadget.service",
     # Bluetooth stack (/speaker rename restarts the whole BT chain)
     "bluetooth.service",
     "bluealsa.service",

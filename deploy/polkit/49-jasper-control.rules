@@ -66,7 +66,7 @@ polkit.addRule(function(action, subject) {
         "nqptp.service",
         "librespot.service",
         "jasper-usbsink.service",
-        "jasper-usbsink-init.service",
+        "jasper-usbgadget.service",
         "bluetooth.service",
         "bluealsa.service",
         "bluealsa-aplay.service",
