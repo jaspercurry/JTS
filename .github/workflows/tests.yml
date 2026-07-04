@@ -25,25 +25,43 @@ jobs:
     #     unused-var catches flags that parse but silently do nothing.
     # The 8 warning-level findings present when the error-only gate
     # landed (3×SC2034, 2×SC2155, 2×SC1090, 1×SC2010) were fixed
-    # file-by-file before this tightened to warning. Info/style
-    # severities (~35 findings, several intentional ssh client-side
-    # expansion patterns) remain ungated; tightening further is a
-    # separate triage. Do not loosen below warning.
+    # file-by-file before this tightened to warning. Extending the
+    # selection to the whole deploy tree + capture-page (2026-07)
+    # surfaced 1×SC2164 in the usbsink gadget teardown script (a
+    # failed cd would have run relative-path rm/rmdir as root from
+    # the wrong CWD on a teardown-race path); the composite-gadget
+    # rewrite (#1164) independently shipped the same cd guard, so
+    # the widened gate landed with zero outstanding findings.
+    # Info/style severities (~35 findings, several intentional ssh
+    # client-side expansion patterns) remain ungated; tightening
+    # further is a separate triage. Do not loosen below warning.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: bash -n + shellcheck (warning severity)
-        # deploy/bin mixes bash policy scripts with a python3 librespot
-        # event hook — select tracked shell files by shebang, plus
-        # shebang-less .sh source libraries and scripts/use. shellcheck is
-        # preinstalled on ubuntu-latest runners.
+        # Select tracked shell files across the whole deploy tree (plus
+        # scripts, firmware, and capture-page) by shebang/extension. The
+        # shebang/extension filter is the discriminator: install.sh copies
+        # deploy content onto production speakers, so any shell file added
+        # anywhere under deploy/ should auto-gate — enumerating deploy
+        # subdirs individually is how deploy/usbsink sat uncovered for a
+        # month (2026-07-04 review). The filter skips deploy's python3
+        # entry points (deploy/bin's librespot event hook + jasper-deploy-
+        # health, deploy/usbsink's uac2_name_patch.py) and never matches
+        # shebang-less configs/units/assets; it keeps shebang-less .sh
+        # source libraries and scripts/use; capture-page carries the
+        # Pages-bundle build entry point. shellcheck is preinstalled on
+        # ubuntu-latest runners.
         run: |
           set -euo pipefail
           shell_files=()
           while IFS= read -r f; do
-            first_line="$(head -n 1 "$f" || true)"
+            # head -c + tr strips NULs so binary assets under deploy/
+            # (woff2 fonts) don't trip bash's null-byte warning; 128
+            # bytes is ample for any shebang.
+            first_line="$(head -c 128 "$f" | tr -d '\0' | head -n 1 || true)"
             if [[ "$f" != *.sh && "$f" != scripts/use \
                   && "$first_line" != '#!'*bash* \
                   && "$first_line" != '#!'*sh* ]]; then
@@ -54,13 +72,16 @@ jobs:
             esac
             shell_files+=("$f")
             bash -n "$f"
-          done < <(git ls-files deploy/install.sh deploy/configure-bluez.sh deploy/bin deploy/lib scripts firmware)
-          if (( ${#shell_files[@]} < 60 )); then
-            echo "expected at least 60 tracked shell files, found ${#shell_files[@]}" >&2
+          done < <(git ls-files deploy scripts firmware capture-page)
+          # Floor 95: losing a whole pathspec (scripts ~66 files,
+          # deploy ~37) lands well under it; small-path losses are
+          # what the required pins below catch.
+          if (( ${#shell_files[@]} < 95 )); then
+            echo "expected at least 95 tracked shell files, found ${#shell_files[@]}" >&2
             printf 'selected: %s\n' "${shell_files[@]}" >&2
             exit 1
           fi
-          for required in firmware/dial/build.sh firmware/satellite-amoled/build.sh; do
+          for required in firmware/dial/build.sh firmware/satellite-amoled/build.sh deploy/usbsink/jasper-usbgadget-up capture-page/build.sh; do
             found=false
             for f in "${shell_files[@]}"; do
               if [[ "$f" == "$required" ]]; then

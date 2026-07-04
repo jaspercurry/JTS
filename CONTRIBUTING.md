@@ -158,7 +158,10 @@ Two operational notes:
   surfaces.
 - **Shell entry-point gate** (`bash -n` plus `shellcheck
   --severity=warning`) — CI parses and lints the installer, deploy
-  helpers, and shell operator scripts that can mutate a live speaker.
+  helpers, shell operator scripts that can mutate a live speaker, and
+  maintainer build entry points. It selects the whole `deploy` tree
+  (plus `scripts`, `firmware`, and `capture-page`) by shebang/extension,
+  so a shell script added anywhere under `deploy/` is auto-covered.
 - **Supply-chain provenance** (`python3 scripts/check-provenance.py`) —
   required when touching install/build fetches, firmware dependency
   declarations, wake/DTLN model registries, or Python direct URL
