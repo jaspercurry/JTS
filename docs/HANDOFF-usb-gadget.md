@@ -88,13 +88,21 @@ starts the audio daemon while parked, it only stops recomposing the gadget.
 
 ### Toggling audio from `/sources/`
 
-Enable: restart `jasper-usbgadget.service` (recomposes to add `uac2.usb0`),
-then `systemctl enable --now jasper-usbsink.service`. Disable:
-`systemctl disable --now jasper-usbsink.service`, then restart
-`jasper-usbgadget.service` again (recomposes **without** `uac2.usb0` — the
-network function is untouched). A brief host-visible re-enumeration
-("Playback Inactive" flicker, momentary network blip) is expected on either
-transition and is a hardware-checklist item (#5) — see below.
+Enable is a **three-step** order (`jasper.web.sources_setup._apply`, pinned by
+`tests/test_sources_setup_usbsink.py`): (1) `enable` the bridge — record
+household intent, but do **not** start it yet, or it would race a card that
+does not exist; (2) restart `jasper-usbgadget.service` so it recomposes and
+adds `uac2.usb0` (the gadget reads the now-enabled intent at recompose time and
+the `UAC2Gadget` card appears); (3) `start` the bridge — its
+`ExecStartPre=jasper-usbsink-wait-card` finds the card immediately. The order
+matters: composing first would fail because is-enabled would still be false at
+recompose time, and starting first would 30 s-timeout on the wait-card.
+
+Disable: `disable --now jasper-usbsink.service`, then restart
+`jasper-usbgadget.service` (recomposes **without** `uac2.usb0` — the network
+function is untouched). A brief host-visible re-enumeration ("Playback
+Inactive" flicker, momentary network blip) is expected on either transition and
+is a hardware-checklist item (#5) — see below.
 
 ### Multiroom follower parking
 
@@ -103,8 +111,20 @@ local-source registry, and **restarts** (not stops) the gadget-owning unit
 so it recomposes to drop `uac2.usb0` — the host stops seeing a USB audio
 device from a follower, while the USB management network keeps working (it
 must, since the household may need to reach the follower's management UI
-directly). Restoring a follower mirrors this: restart the gadget, then
-restore the audio unit if intent says it should be enabled.
+directly). The park order is **stop-audio then recompose** so the recompose
+reads "audio parked" and drops `uac2.usb0`.
+
+Restoring a follower is the deliberate **mirror image**: **recompose the
+gadget first** (it re-adds `uac2.usb0` iff USB audio is enabled, and the
+`UAC2Gadget` card reappears), **then** restore the audio unit (its
+`wait-card` ExecStartPre finds the card immediately). The reverse order (start
+the bridge before the recompose) made `wait-card` poll a card that only exists
+after the recompose that would come next — a guaranteed 30 s stall + failed
+`jasper-grouping-reconcile` transient on every un-park. Both orders are pinned
+in `jasper.multiroom.reconcile.plan` by
+`tests/test_multiroom_reconcile.py::test_plan_follower_parks_usbsink_bridge_and_recomposes_gadget`
+(park) and
+`::test_plan_restore_recomposes_gadget_before_restarting_bridge` (restore).
 
 ### Edge cases the truth table preserves
 
@@ -293,17 +313,28 @@ know: bind the composite gadget with both functions and check for
 
 ## RAM contract
 
+The load-bearing fact for this table: **`u_ether` registers the `usb0` netdev
+at gadget-BIND time, not host-attach time.** So on a composed + bound NCM
+gadget, `usb0` exists (and its `sys-subsystem-net-devices-usb0.device` unit is
+active) regardless of whether a laptop is plugged in — which means
+`jasper-usbnet-dhcp` is resident whenever the network function is composed,
+waiting to serve a lease the moment a host attaches. The only truly zero cost
+is when NCM is *not* composed (kill-switched, or no UDC pre-reboot). Carrier —
+not interface existence — reflects the cable.
+
 | State | Cost | Notes |
 |---|---|---|
-| Kill-switched (`JASPER_USB_NETWORK=disabled`) AND audio off | Same as the historical zero-RAM contract (~50 KB, the dwc2 kernel module only) | `jasper-usbgadget-wanted` exits non-zero (nothing wanted), the unit's `ExecCondition` skips, libcomposite never loads. |
-| Network enabled, no host plugged in | ~1 MB | `libcomposite` + `usb_f_ncm`/`u_ether` kernel modules loaded, `ncm.usb0` composed and bound, but `usb0` has no carrier and `jasper-usbnet-dhcp.service` isn't started (device-activated — it only starts when `usb0`'s device unit exists, which it does once composed, so in practice this cost includes the idle dnsmasq instance once a host plugs in and `usb0` gets created; before that, kernel modules only). |
-| Network enabled, host plugged in, audio off | ~1 MB | As above, plus the scoped dnsmasq instance (`MemoryMax=16M`-bounded, typically resident far below that for a one-pool DHCP server). |
+| Kill-switched (`JASPER_USB_NETWORK=disabled`) AND audio off | Same as the historical zero-RAM contract (~50 KB, the dwc2 kernel module only) | `jasper-usbgadget-wanted` exits non-zero (nothing wanted), the unit's `ExecCondition` skips, libcomposite never loads, `usb0` never appears, `jasper-usbnet-dhcp` never starts. |
+| No UDC (fresh install pre-reboot) | ~50 KB (dwc2 module only) | The dtoverlay is set but the OTG controller isn't peripheral yet, so the gadget's `ExecCondition` skips and nothing binds. `jasper-doctor`'s dtoverlay check tells the operator to reboot. |
+| Network composed (bound), no host plugged in | ~1 MB | `libcomposite` + `usb_f_ncm`/`u_ether` kernel modules loaded, `ncm.usb0` composed and bound, `usb0` **exists** (carrier down), and the `MemoryMax=16M`-bounded `jasper-usbnet-dhcp` instance **is resident** (device-activated on `usb0`, which is present from bind). Typically far below the cap for a one-pool DHCP server. |
+| Network composed, host plugged in, audio off | ~1 MB | Same residents as above; `usb0` now has carrier and the DHCP server hands out a lease. No new persistent cost over the no-host row. |
 | Network + audio both on | ~1 MB (network) + the existing usbsink audio-daemon cost | See [HANDOFF-usbsink.md](HANDOFF-usbsink.md) "RAM budget" for the audio side — unchanged by this work. |
 
 This replaces the historical "~50 KB always, 0 when the audio bridge is
 off" framing in HANDOFF-usbsink.md's RAM table with a composite-aware one:
-the network function's baseline cost is now paid whenever
-`JASPER_USB_NETWORK` isn't explicitly disabled, which is the new default.
+the network function's baseline cost (kernel modules **plus the resident
+dnsmasq instance**) is now paid whenever `JASPER_USB_NETWORK` isn't explicitly
+disabled and a UDC is present, which is the new default on a booted speaker.
 
 ## Naming debt
 
@@ -329,6 +360,20 @@ gadget unit `install.sh` enables — deliberate, since it's the one carrying
 the always-on network. The migration is idempotent and safe under
 `install.sh --dry-run`.
 
+**Restore-if-enabled after the migration.** The init-unit stop above runs
+while the *pre-upgrade* graph is still in memory, where `jasper-usbsink` has
+`PartOf=jasper-usbsink-init.service` — so stopping the init unit propagates a
+stop to a running (possibly playing) audio bridge. `enable --now
+jasper-usbgadget.service` is only a *start*, and `PartOf=` never propagates a
+start, so without a fix an enabled USB-audio bridge would be left stopped until
+the next reboot. `enable_usbgadget` (`deploy/lib/install/systemd-units.sh`)
+therefore does a restore-if-enabled: `systemctl is-enabled --quiet
+jasper-usbsink.service && systemctl start jasper-usbsink.service`. This runs
+**unconditionally** (deliberately not gated on `SKIP_RESTART`) because the
+migration's stop is itself unconditional — honoring `SKIP_RESTART` here would
+leave the bridge down until reboot, the worse outcome. Pinned by
+`tests/test_install_usbgadget_migration.py`; hardware-checklist item #10.
+
 ## Guard acceptance
 
 The management-host guard (`jasper.http_security`) accepts `Host:`
@@ -345,10 +390,11 @@ contrast case. See `tests/test_http_security.py`.
   audio ⇒ nothing loaded), that `usb0` exists with `10.12.194.1` when NCM
   is composed, that the `jts-usb` NetworkManager profile is active on
   `usb0`, that `jasper-usbnet-dhcp`'s unit state is coherent with `usb0`'s
-  presence, and a loopback HTTP probe of `http://10.12.194.1/` with
-  `Host: <JASPER_HOSTNAME>` expecting 200 (mirrors
-  `check_management_surface` — this pins nginx bind + guard acceptance of
-  the fallback URL without needing hardware).
+  presence, and a loopback HTTP probe of
+  `http://10.12.194.1/system/data.json` with `Host: <JASPER_HOSTNAME>`
+  expecting 200 (mirrors the deploy-time `/system/data.json` verification
+  and `check_management_surface` — this pins nginx bind + guard acceptance
+  of the fallback URL without needing hardware).
 - `/state` carries a compact `usb_network` block
   (`{enabled, iface_present, carrier, address}`), read fresh from
   `/sys/class/net/usb0/*` and the kill-switch env on every call — never
@@ -373,7 +419,13 @@ writing. Each item names the specific claim above it verifies.
    `http://10.12.194.1/` works as a fallback, DHCP hands out a lease, and
    the host keeps its own default route and internet access (i.e. the
    no-forwarding/no-router-push design actually holds on a real DHCP
-   client, not just in the dnsmasq conf).
+   client, not just in the dnsmasq conf). **Also confirm dnsmasq itself
+   starts and drops privileges cleanly**: `systemctl status
+   jasper-usbnet-dhcp` shows `active (running)` (not a `Restart=on-failure`
+   loop), the process runs as `nobody:nogroup` (`ps -o user= -C dnsmasq`),
+   and the journal shows no "cannot change to user" die — the
+   `CapabilityBoundingSet` must include `CAP_SETUID`/`CAP_SETGID` for the
+   drop to a non-`dnsmasq` user (dnsmasq-base ships no such user) to succeed.
 3. **Audio path unaffected.** With USB audio enabled and playing, hammer
    the web UI over usb0 and confirm no regression in the low-latency
    route's telemetry (bridge xruns, resampler relocks, host-clock ladder
@@ -401,6 +453,21 @@ writing. Each item names the specific claim above it verifies.
 8. **Speaker rename.** Confirm a rename triggers a gadget restart that
    updates both the NIC-facing product string and the (separately owned)
    audio device label consistently.
+9. **`usb0` + dnsmasq resident with nothing plugged in.** This is the
+   load-bearing timing assumption of the RAM contract and the doctor's
+   compose/bind failure check: confirm that on a booted speaker with the
+   network composed but **no host cable attached**, `usb0` already exists
+   (`ip link show usb0` succeeds, carrier down) and `jasper-usbnet-dhcp` is
+   `active` — proving `u_ether` registers the netdev at gadget-bind time,
+   not host-attach time. If instead `usb0` only appears when a host is
+   plugged in, the doctor's "usb0 absent + UDC present = compose/bind
+   failure" check and the "dnsmasq resident whenever composed" RAM row need
+   to be softened back to a host-attach model.
+10. **Live-upgrade over an enabled USB-audio session.** Deploy a new build
+    while USB audio is enabled and a host is playing; confirm audio resumes
+    after the deploy (the migration stops the old init unit, which under
+    the pre-upgrade graph propagates a stop to `jasper-usbsink` —
+    `enable_usbgadget`'s restore-if-enabled must bring the bridge back).
 
 ## Cable caveats
 

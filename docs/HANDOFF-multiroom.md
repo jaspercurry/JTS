@@ -2171,7 +2171,9 @@ hold-to-talk is dead on a follower (volume/transport still forward).)
 Earlier same day (DUMB-FOLLOWER PR-A — local source resource groups park
 while bonded. `plan()` role=follower now stops the registry-owned park
 units from `jasper/local_sources/registry.py`, including advertise-side
-resources such as `jasper-usbsink-init.service`): a follower's local sources are structurally
+resources such as `jasper-usbsink-init.service` (unit since replaced by
+`jasper-usbgadget.service`, which parking now recomposes — not stops — to keep
+the always-on USB network; see HANDOFF-usb-gadget.md)): a follower's local sources are structurally
 unplayable — and a phantom AirPlay/Spotify session into the direct lane
 AUDIBLY LEAKS during outputd's inv-B starvation-fallback periods, so
 parking is correctness, not just UX. STOP, never disable — /sources/

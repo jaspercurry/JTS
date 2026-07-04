@@ -236,10 +236,15 @@ dtoverlay=dwc2,dr_mode=peripheral
 ```
 
 This puts the BCM2712 SoC's DWC2 USB OTG controller into peripheral
-mode permanently. It does NOT load `libcomposite` at boot — that's
-gated behind `jasper-usbsink-init.service`. The DWC2 controller in
-peripheral mode with no gadget descriptor is a no-op from the host's
-perspective.
+mode permanently. The dtoverlay alone is a no-op from the host's
+perspective — it just makes the port gadget-capable. `libcomposite` and the
+ConfigFS descriptor are now owned by `jasper-usbgadget.service` (which
+replaced the retired `jasper-usbsink-init.service`), and because that unit
+carries the always-on USB *management network* it modprobes `libcomposite`
+and composes the descriptor **by default at boot** — the `uac2.usb0` audio
+function is the only part gated behind the `/sources/` toggle. See
+[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) for the composite-gadget
+function truth table; it is canonical for gadget ownership.
 
 **Side effect to document in BRINGUP.md**: the Pi 5 USB-C port is no
 longer available for plugging USB host devices (e.g. flash drives). The
@@ -1792,7 +1797,11 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-07-02 (current operational truth rechecked against
+Last verified: 2026-07-04 (§1 boot-config paragraph corrected: libcomposite +
+the ConfigFS descriptor are owned by `jasper-usbgadget.service` and composed by
+default at boot for the always-on USB network, not gated behind the retired
+`jasper-usbsink-init.service` — HANDOFF-usb-gadget.md is canonical for gadget
+ownership. Prior recheck 2026-07-02 against
 `deploy/systemd/jasper-usbsink.service`, `rust/jasper-usbsink-audio`,
 `jasper.audio_runtime_plan`, and jts.local hardware tuning: Rust bridge 256/3,
 fan-in USB resampler held target 2048, fan-in output 1024, CamillaDSP 256/1536,
