@@ -470,7 +470,8 @@ Plug a computer (Mac, Windows, Linux) into the Pi's USB-C port and
 JTS appears as a USB audio output device on the host. Music plays
 through the speakers, the Mac volume slider drives JTS's volume, the
 mux preempts/restores it just like AirPlay or Spotify. Disabled by
-default; ~22 MB RAM when on, 0 when off.
+default; low single-digit MB RAM when on, on top of the gadget's own
+baseline (see the note below).
 
 Skip this phase if you only ever stream from phones (AirPlay/Spotify
 Connect/Bluetooth cover that). Come back when you want to use JTS as
@@ -478,6 +479,16 @@ the audio output for a laptop.
 
 Full design + RAM analysis + failure-mode matrix:
 [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md).
+
+**Same USB-C port, always-on management network.** Independent of this
+phase, the Pi's USB-C port already carries a USB NCM network link
+(`ncm.usb0`) as soon as `install.sh` has run — plugging a laptop in
+gets you `http://<JASPER_HOSTNAME>/` (or the documented fallback
+`http://10.12.194.1/`) even with the Pi's Wi-Fi off, whether or not you
+ever enable USB Audio Input below. The two functions share one ConfigFS
+gadget; see [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for
+the composite design, the always-on network, and the USB-C side effect
+noted just below.
 
 ### Hardware prerequisite
 
@@ -555,8 +566,9 @@ The Pi should power up normally. SSH still works (Wi-Fi unchanged).
 
 Open `http://jts.local/sources/` on any device on the LAN. Find the
 **USB Audio Input** row, flip the toggle on. Within ~3 s:
-- `jasper-usbsink-init.service` loads `libcomposite` + writes the
-  ConfigFS gadget descriptor
+- `jasper-usbgadget.service` restarts and recomposes the ConfigFS
+  descriptor to add the `uac2.usb0` audio function (the always-on
+  `ncm.usb0` network function was already there)
 - `jasper-usbsink.service` opens the gadget capture endpoint and
   starts the audio bridge
 
@@ -566,7 +578,7 @@ Verify on the Pi:
 ssh pi@jts.local 'ls /proc/asound/UAC2Gadget/'
 # Expect: a directory (the gadget's ALSA card)
 
-ssh pi@jts.local 'systemctl is-active jasper-usbsink jasper-usbsink-init'
+ssh pi@jts.local 'systemctl is-active jasper-usbsink jasper-usbgadget'
 # Expect: active / active
 ```
 
@@ -612,21 +624,34 @@ ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep -i usbsink
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Toggle greyed out, "needs dtoverlay + reboot" note | Phase 2's `install.sh` ran before the source had `set_usb_gadget_mode`, OR you've edited `/boot/firmware/config.txt` since | Re-run `bash scripts/deploy-to-pi.sh` from the laptop, reboot |
-| Host doesn't see the speaker in its audio device picker | Splitter not wired (forgot the USB-A cable to host), or `jasper-usbsink-init` didn't bring up the gadget | `journalctl -u jasper-usbsink-init` for ConfigFS errors |
-| Mac says "Playback Inactive" instead of the Speaker Name | Name patch didn't apply (kernel renamed the string, or override stale). Cosmetic — audio still plays | `journalctl -u jasper-usbsink-init \| grep event=usbsink_name`; `sudo systemctl restart jasper-usbsink-init`; check `jasper-doctor` `usbsink name` |
+| Host doesn't see the speaker in its audio device picker | Splitter not wired (forgot the USB-A cable to host), or `jasper-usbgadget` didn't recompose with the audio function | `journalctl -u jasper-usbgadget` for ConfigFS errors |
+| Mac says "Playback Inactive" instead of the Speaker Name | Name patch didn't apply (kernel renamed the string, or override stale). Cosmetic — audio still plays | `journalctl -u jasper-usbgadget \| grep event=usbsink_name`; `sudo systemctl restart jasper-usbgadget`; check `jasper-doctor` `usbsink name` |
 | Volume slider on Mac doesn't move JTS | `amixer -c UAC2Gadget controls` should show `PCM Capture Volume`; if missing, gadget descriptor wasn't built with `c_volume_present=1` | `journalctl -u jasper-usbsink \| grep volume_bridge` |
 | Toggle off but `lsmod \| grep libcomposite` shows it loaded | RAM-drift from a previous bad stop — jasper-doctor will warn | `sudo rmmod u_audio libcomposite` or reboot |
 
 ### Disable later
 
-Flip the toggle off in `/sources/`. The daemon stops, the init
-service unloads `libcomposite`, the gadget descriptor disappears,
-and the host loses JTS from its audio device list within ~3 s. The
-dtoverlay stays in place (harmless — DWC2 in peripheral mode with
-no gadget descriptor is a no-op from the host's perspective).
+Flip the toggle off in `/sources/`. The daemon stops, and
+`jasper-usbgadget.service` restarts and recomposes **without**
+`uac2.usb0` — the host loses JTS from its audio device list within
+~3 s, but the always-on `ncm.usb0` management network function stays
+up (plugging a laptop in still gets you `http://<JASPER_HOSTNAME>/`).
+See [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for the
+full function truth table. The dtoverlay stays in place either way
+(harmless on its own — DWC2 in peripheral mode with no gadget
+descriptor at all is a no-op from the host's perspective).
+
+To turn off the USB management network as well (kill switch, not a
+dtoverlay rollback):
+
+```sh
+ssh pi@jts.local "echo JASPER_USB_NETWORK=disabled | sudo tee -a /etc/jasper/jasper.env"
+ssh pi@jts.local 'sudo systemctl restart jasper-usbgadget'
+```
 
 To roll back the dtoverlay too (USB-C port becomes a host port
-again):
+again — this also removes the management network, since nothing can
+enter peripheral mode without it):
 
 ```sh
 ssh pi@jts.local 'sudo sed -i "/^dtoverlay=dwc2,dr_mode=peripheral$/d" /boot/firmware/config.txt'

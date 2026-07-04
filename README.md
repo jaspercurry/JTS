@@ -296,6 +296,16 @@ runs automatically only when the configured AEC mic is present with
   single-digit MB when on, plus the non-real-time host-volume helper. See
   [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md) for the full
   design.
+- ✅ **USB management network** — the same USB-C port always carries a
+  USB NCM network link (`ncm.usb0`, on by default, independent of the
+  USB Audio Input toggle above): plug a laptop in and
+  `http://<JASPER_HOSTNAME>/` (or the documented fallback
+  `http://10.12.194.1/`) works even with the Pi's Wi-Fi off. No IP
+  forwarding/NAT — the plugged-in laptop keeps its own default route.
+  Kill switch: `JASPER_USB_NETWORK=disabled`. See
+  [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for the
+  composite-gadget design (both USB functions share one ConfigFS
+  descriptor).
 - ✅ Wi-Fi network wizard at `http://jts.local/wifi/` — current
   network at top, scan + tap-to-connect for nearby networks,
   manual join-by-name fallback for hidden or scan-suppressed networks,
@@ -857,9 +867,17 @@ reference. Currently:
   install-time source archive pins, firmware dependency pins,
   hash-checked model downloads, and accepted gaps for apt, Python,
   and PlatformIO transitive resolution.
+- [`HANDOFF-usb-gadget.md`](docs/HANDOFF-usb-gadget.md) — **Canonical**
+  for the composite USB gadget: the always-on USB management network
+  (`ncm.usb0`, NetworkManager keyfile, scoped dnsmasq, no IP
+  forwarding/NAT), the function truth table shared with USB audio,
+  OS-support verification (Windows/macOS NCM, dwc2 endpoint capacity),
+  the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue
+  feature, and the hardware-validation checklist.
 - [`HANDOFF-usbsink.md`](docs/HANDOFF-usbsink.md) — Optional USB
-  audio-input gadget: ConfigFS setup, host-control preemption,
-  source wizard behavior, and how the USB-in lane feeds fan-in.
+  audio-input gadget: host-control preemption, source wizard behavior,
+  and how the USB-in lane feeds fan-in. Gadget/ConfigFS ownership and
+  the management network now live in HANDOFF-usb-gadget.md above.
 - [`HANDOFF-audible-feedback.md`](docs/HANDOFF-audible-feedback.md) —
   Pre-rendered audio cue subsystem: registry, cache lifecycle, CLI,
   how to add a new reactive or proactive cue. Start here when a
@@ -1093,7 +1111,8 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-wiim-remote-mic` (WiiM Remote 2 BLE mic adapter) | Profile-gated; active only when paired WiiM Remote 2 is present | 0 MB off; ~15 MB on, bounded by MemoryMax=100M | ~0% idle; decode only while the remote mic streams |
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
 | `jasper-usbsink` (USB audio source) | **Disabled by default**; Rust data plane when on | 0 MB off; low single-digit MB for the bridge, plus host-volume helper | low; ALSA-period Rust bridge while host streams |
-| `jasper-usbsink-init` (gadget ConfigFS oneshot) | follows usbsink | one-shot, ~0 | ~0 |
+| `jasper-usbgadget` (composite ConfigFS gadget: always-on USB network + optional audio) | **Active by default** (network function); audio function follows the usbsink toggle above | one-shot, ~0 own footprint; ~1 MB kernel modules once composed — see [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) "RAM contract" | ~0 |
+| `jasper-usbnet-dhcp` (scoped dnsmasq for the USB management network) | **Device-activated** — active only while `usb0` exists | 0 MB when `usb0` absent; bounded ≤16 MB when active | ~0% idle |
 | `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Transit / Home Assistant / Weather / Sound / Wake-Corpus / Speaker / Rooms / Tools wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |
 | `jasper-correction-web` (HTTPS correction measurement hub) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
