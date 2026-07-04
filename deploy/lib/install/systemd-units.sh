@@ -210,9 +210,10 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/nqptp.service"
             "${SYSTEMD_DIR}/bt-agent.service"
             "${SYSTEMD_DIR}/jasper-mux.service"
-            "${SYSTEMD_DIR}/jasper-usbsink-init.service"
+            "${SYSTEMD_DIR}/jasper-usbgadget.service"
             "${SYSTEMD_DIR}/jasper-usbsink.service"
             "${SYSTEMD_DIR}/jasper-usbsink-volume.service"
+            "${SYSTEMD_DIR}/jasper-usbnet-dhcp.service"
             "${SYSTEMD_DIR}/jts-audio.slice"
             "${SYSTEMD_DIR}/jasper-dongle-recover.service"
             "${SYSTEMD_DIR}/jasper-dac-init.service"
@@ -273,20 +274,26 @@ install_resilience_identity_unit_files() {
 
 install_usbsink_unit_files() {
     install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbsink-init.service" \
-        "${SYSTEMD_DIR}/jasper-usbsink-init.service"
+        "${REPO_DIR}/deploy/systemd/jasper-usbgadget.service" \
+        "${SYSTEMD_DIR}/jasper-usbgadget.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbsink.service" \
         "${SYSTEMD_DIR}/jasper-usbsink.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbsink-volume.service" \
         "${SYSTEMD_DIR}/jasper-usbsink-volume.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usbnet-dhcp.service" \
+        "${SYSTEMD_DIR}/jasper-usbnet-dhcp.service"
     install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-gadget-up" \
-        /usr/local/sbin/jasper-usbsink-gadget-up
+        "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-up" \
+        /usr/local/sbin/jasper-usbgadget-up
     install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-gadget-down" \
-        /usr/local/sbin/jasper-usbsink-gadget-down
+        "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-down" \
+        /usr/local/sbin/jasper-usbgadget-down
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-wanted" \
+        /usr/local/sbin/jasper-usbgadget-wanted
     install -m 0755 \
         "${REPO_DIR}/deploy/usbsink/jasper-usbsink-wait-card" \
         /usr/local/sbin/jasper-usbsink-wait-card
@@ -296,6 +303,62 @@ install_usbsink_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/usbsink/uac2_name_patch.py" \
         /usr/local/sbin/uac2_name_patch.py
+    install_usb_network_files
+}
+
+install_usb_network_files() {
+    # NetworkManager keyfile owning usb0 (10.12.194.1/24, no default route) +
+    # the scoped dnsmasq conf the device-activated jasper-usbnet-dhcp.service
+    # reads. NM stays the box's single network owner. See
+    # docs/HANDOFF-usb-gadget.md.
+    install -d -m 0755 /etc/NetworkManager/system-connections
+    install -m 0600 \
+        "${REPO_DIR}/deploy/usb-network/jts-usb.nmconnection" \
+        /etc/NetworkManager/system-connections/jts-usb.nmconnection
+    install -m 0644 \
+        "${REPO_DIR}/deploy/usb-network/usbnet-dnsmasq.conf" \
+        /etc/jasper/usbnet-dnsmasq.conf
+    # Best-effort reload so NM picks up the new/updated keyfile without a
+    # reboot. A failure (nmcli absent on a non-Pi CI box, NM not running) must
+    # not fail the install — the profile is picked up on the next NM start.
+    if command -v nmcli >/dev/null 2>&1; then
+        nmcli connection reload >/dev/null 2>&1 || true
+    fi
+}
+
+migrate_usbsink_init_to_usbgadget() {
+    # The old jasper-usbsink-init.service (oneshot ConfigFS gadget owner, ships
+    # disabled) is replaced by the always-on composite jasper-usbgadget.service.
+    # Disable + stop the old unit on upgrade before enabling the new one, and
+    # remove its stale unit file so systemd-analyze / doctor don't trip on a
+    # deleted-from-repo file that lingers under /etc/systemd/system. Idempotent
+    # and safe on a fresh install (the old unit never existed → no-op).
+    if systemctl list-unit-files jasper-usbsink-init.service >/dev/null 2>&1; then
+        systemctl disable --now jasper-usbsink-init.service >/dev/null 2>&1 || true
+    fi
+    local stale="${SYSTEMD_DIR}/jasper-usbsink-init.service"
+    if [[ -e "${stale}" ]]; then
+        rm -f "${stale}"
+        echo "  removed stale jasper-usbsink-init.service (replaced by jasper-usbgadget.service)"
+    fi
+    # Remove the renamed gadget scripts' old paths so a stale copy can't be
+    # invoked by a lingering unit override.
+    rm -f /usr/local/sbin/jasper-usbsink-gadget-up \
+          /usr/local/sbin/jasper-usbsink-gadget-down 2>/dev/null || true
+}
+
+enable_usbgadget() {
+    # The composite gadget is the FIRST gadget unit we enable — it carries the
+    # always-on USB management network. `enable --now` arms it at boot and
+    # composes it right now (its ExecCondition skips cleanly pre-reboot when no
+    # UDC exists yet, so this never fails on a fresh install before the
+    # dtoverlay reboot). The audio bridge (jasper-usbsink) stays wizard-toggled
+    # and off by default. jasper-usbnet-dhcp is device-activated via its
+    # [Install] WantedBy=sys-subsystem-net-devices-usb0.device, so `enable`
+    # wires the pull without starting it until usb0 appears.
+    systemctl enable --now jasper-usbgadget.service >/dev/null 2>&1 || \
+        echo "  (jasper-usbgadget enable/start deferred — likely no UDC yet; reboot to apply the USB dtoverlay)"
+    systemctl enable jasper-usbnet-dhcp.service >/dev/null 2>&1 || true
 }
 
 install_grouping_unit_files() {
@@ -532,6 +595,9 @@ start_streambox_runtime_units() {
 
     systemctl enable nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service
+    # Always-on USB management network (composite gadget + device-activated
+    # DHCP). Skips cleanly pre-reboot when no UDC exists.
+    enable_usbgadget
     systemctl restart bluealsa-aplay.service 2>/dev/null || true
     systemctl restart nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service \
@@ -563,6 +629,7 @@ install_streambox_systemd_units() {
     install_streambox_audio_slices
     install_audio_output_recovery_unit_files
     park_streambox_brain_units
+    migrate_usbsink_init_to_usbgadget
 
     validate_streambox_systemd_units
     systemctl daemon-reload
@@ -817,44 +884,15 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/bin/jasper-bootloop-guard" \
         /usr/local/sbin/jasper-bootloop-guard
 
-    # jasper-usbsink: fourth music source (USB gadget audio in). The
-    # init unit owns the ConfigFS gadget descriptor lifecycle; the
-    # main service is the Rust daemon that bridges gadget capture into
-    # usbsink_substream. The main unit is the disabled-by-default
-    # /sources intent unit; init is a required implementation subresource
-    # that owns the host-visible gadget and is stopped explicitly on
-    # off/parking paths. The dtoverlay must be set + Pi rebooted first
-    # (handled by set_usb_gadget_mode above).
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbsink-init.service" \
-        "${SYSTEMD_DIR}/jasper-usbsink-init.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbsink.service" \
-        "${SYSTEMD_DIR}/jasper-usbsink.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbsink-volume.service" \
-        "${SYSTEMD_DIR}/jasper-usbsink-volume.service"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-gadget-up" \
-        /usr/local/sbin/jasper-usbsink-gadget-up
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-gadget-down" \
-        /usr/local/sbin/jasper-usbsink-gadget-down
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-wait-card" \
-        /usr/local/sbin/jasper-usbsink-wait-card
-    # Makes the host-visible USB device name track the Speaker Name by
-    # patching the kernel's hardcoded UAC2 AudioStreaming string into a
-    # `updates/` module override (configfs can't set it on 6.12). Pure
-    # bash + stdlib python3 — no kernel headers / dkms. Run as
-    # jasper-usbsink-init's best-effort ExecStartPre. See
-    # docs/HANDOFF-usbsink.md "Device name".
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-name-patch" \
-        /usr/local/sbin/jasper-usbsink-name-patch
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/uac2_name_patch.py" \
-        /usr/local/sbin/uac2_name_patch.py
+    # jasper-usbgadget: composite ConfigFS gadget owner. It carries the
+    # always-on USB management network (ncm) AND the wizard-toggled USB audio
+    # function (uac2). jasper-usbsink is the disabled-by-default /sources audio
+    # intent unit; the Rust daemon bridges gadget capture into usbsink_substream
+    # and orders After= the gadget owner. jasper-usbnet-dhcp is the scoped,
+    # device-activated dnsmasq for the USB network. The dtoverlay must be set +
+    # Pi rebooted first (handled by set_usb_gadget_mode above). See
+    # docs/HANDOFF-usb-gadget.md.
+    install_usbsink_unit_files
 
     # jasper multi-room grouping (snapcast). snapserver is the timing
     # master; snapclient plays a single channel on each speaker. The
@@ -1058,7 +1096,17 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-slice.conf" \
         "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-slice.conf"
 
+    # Retire the old jasper-usbsink-init.service (disable+stop+remove the stale
+    # file) BEFORE the daemon-reload so systemd forgets it, then reload so the
+    # new jasper-usbgadget.service / jasper-usbnet-dhcp.service are known.
+    migrate_usbsink_init_to_usbgadget
+
     systemctl daemon-reload
+
+    # Always-on USB management network: enable the composite gadget (first
+    # gadget unit we enable) and wire the device-activated DHCP. Skips cleanly
+    # pre-reboot (no UDC). See docs/HANDOFF-usb-gadget.md.
+    enable_usbgadget
 
     # Legacy migration cleanup: an old endpoint-tier box (the removed third
     # install tier) served /sources/ from a tiny standalone socket on 8773.
