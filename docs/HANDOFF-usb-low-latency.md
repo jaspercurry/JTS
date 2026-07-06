@@ -1032,13 +1032,20 @@ productization section.)
   `pitch_ppm_commanded` 0.0, no compliance proof written). Lock-only settle is
   correct because the probe steps AWAY from the nearer rail (a railed baseline stays
   measurable — an earlier jts.local session probed `baseline=500 → step=258`,
-  `response_ratio=0.807` PASS) and rail-clipping is fail-biased, never pass-biased
-  (a clipped baseline understates demand, so a truly non-compliant host reads
-  `ratio≈0 → FAIL`; removing the guard cannot manufacture a false PASS). The
+  `response_ratio=0.807` PASS) and a STEADY-STATE clipped rail is fail-biased, never
+  pass-biased (a stationary clipped baseline understates demand, so a truly
+  non-compliant host reads `ratio≈0 → FAIL`; for a stationary rail, removing the
+  guard cannot manufacture a false PASS). A DECAYING transient rail is the one case
+  that can INFLATE the ratio (its observable slews toward the step direction as it
+  decays, mimicking a compliant response) — but that is a latent class the 450 guard
+  never closed either (it only delayed baselining until the smoothed correction fell
+  below 450; a slow decay keeps moving through the step window regardless). The
   transient the guard was built for (the 2026-07-03 `NotL0` snap-back rail, below)
-  was root-fixed by the prime-aware `NotL0` hold, so it no longer exists. The
-  two-strike ProbeFail (#1160) and churn discriminator (#1156) remain the safety net
-  for a genuinely bad host. Pinned by `correction_probe_settle_accrues_at_the_rail`
+  was root-fixed by the prime-aware `NotL0` hold, so it no longer exists. Transient-
+  decay false passes are closed by root-fixing transient causes (#1161) plus the
+  two-strike ProbeFail (#1160) and churn discriminator (#1156) — the standing safety
+  net for a genuinely bad host, NOT the settle gate. Pinned by
+  `correction_probe_settle_accrues_at_the_rail`
   + `beyond_authority_railed_host_probes_pass_then_fail` in the `jasper-host-clock`
   crate.
 
@@ -1682,9 +1689,15 @@ PASS — proving the probe math works from the rail. **Why removal, not bounding
 rail (above) — was ROOT-FIXED by the prime-aware hold (#1161, prime-aware
 `NotL0` snap-back), so it no longer occurs. (2) #1144's step-AWAY-from-the-rail
 already makes a railed baseline measurable (the 0.807 pass is the hardware
-proof). (3) Rail-clipping is fail-biased, never pass-biased: a clipped baseline
-UNDERSTATES demand, so a truly non-compliant host reads `baseline 500 → step 500
-→ ratio 0 → FAIL` — removing the guard cannot create a false PASS. (4) A steady
+proof). (3) A STEADY-STATE clipped rail is fail-biased, never pass-biased: a
+stationary clipped baseline UNDERSTATES demand, so a truly non-compliant host
+reads `baseline 500 → step 500 → ratio 0 → FAIL` — for a stationary rail, removing
+the guard cannot create a false PASS. (The one exception is a DECAYING transient
+rail, whose observable slews toward the step direction as it decays and can INFLATE
+the ratio — but that class the 450 guard never closed either, since a slow decay
+keeps moving through the step window after the smoothed correction drops below 450;
+it is closed by root-fixing transient causes per (1) plus the two-strike/churn
+revocation nets per (4), not by the settle gate.) (4) A steady
 railed correction is indistinguishable from a beyond-authority host, which is
 exactly the host the servo exists to serve; probing is measurement, not
 commitment (fail verdicts stay retained/two-strike per #1160's other parts,

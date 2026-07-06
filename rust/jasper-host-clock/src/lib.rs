@@ -1017,10 +1017,20 @@ impl HostClock {
     ///   visible even when the baseline is clipped at the ±500 ppm rail. (Verified
     ///   on jts.local hardware: a probe from `baseline=500` stepped to `258`,
     ///   `response_ratio=0.807` PASS.)
-    /// - Clipping is fail-biased, never pass-biased: a clipped baseline
-    ///   UNDERSTATES demand, shrinking the response numerator. A noncompliant host
-    ///   reads `baseline=500 → step=500 → ratio≈0 → FAIL`. Removing the guard
-    ///   cannot manufacture a false PASS.
+    /// - A STEADY-STATE clipped rail is fail-biased, never pass-biased: the
+    ///   baseline is pinned at ±500 and stays there, so it UNDERSTATES demand and
+    ///   shrinks the response numerator. A noncompliant host reads
+    ///   `baseline=500 → step=500 → ratio≈0 → FAIL`. For a stationary rail,
+    ///   removing the guard cannot manufacture a false PASS. (A DECAYING transient
+    ///   rail is different: its observable slews toward the step direction as it
+    ///   decays, which can mimic a compliant response and INFLATE the ratio. That
+    ///   is a latent class the 450-ppm guard never closed either — it only delayed
+    ///   baselining until the smoothed correction fell below 450, and a slow decay
+    ///   keeps moving through the step window regardless. Transient-decay false
+    ///   passes are closed by root-fixing the transient causes — the 2026-07-03
+    ///   `NotL0` snap rail is fixed by #1161 — plus the `DllDemotion` / churn
+    ///   one-strike and the two-strike ProbeFail revocation nets, NOT by this
+    ///   settle gate.)
     /// - A rail guard here is a deadlock: a host beyond the ±500 inner authority
     ///   (jts.local's Mac runs ~+600 ppm fast) rails at +500 STEADY-STATE under
     ///   the neutral pitch AwaitLock commands. Coming off the rail needs the
@@ -2581,7 +2591,7 @@ mod tests {
     }
 
     /// A CORRECTION-mode [`Obs`] with the lane LOCKED and a specified live
-    /// correction ppm — the observable the rail-guard reads. `cap`/`play` are
+    /// correction ppm — the CORRECTION-mode probe observable. `cap`/`play` are
     /// irrelevant to the CORRECTION observable (the probe uses the correction
     /// mean, not the fill slope) but supplied so the Obs is well-formed.
     fn obs_corr(correction_ppm: f64, cap: u64, play: u64) -> Obs {
@@ -2651,8 +2661,11 @@ mod tests {
     }
 
     /// The beyond-authority DEADLOCK regression (jts.local 2026-07-05) and its
-    /// fail-bias corollary, in one composition test against the real Dll /
-    /// SlopeEstimator. Model a host whose excess rate is +600 ppm — BEYOND the
+    /// fail-bias corollary, in one composition test against the real
+    /// `HostClock::tick` / `SlopeEstimator` probe pipeline (the CORRECTION-mode
+    /// observable is `SlopeEstimator::correction_mean_ppm`; the `Dll` is `reset`
+    /// but not ticked during probing, so it does not discriminate here). Model a
+    /// host whose excess rate is +600 ppm — BEYOND the
     /// lane resampler's ±500 ppm inner authority — so the observed correction
     /// CLIPS at +500 under neutral pitch (the AwaitLock command). The observed
     /// correction is `excess + applied_pitch` clamped to ±500: at +600 it rails at
@@ -2669,8 +2682,12 @@ mod tests {
     /// only settle: the settle accrues at the rail, the probe runs, and the two
     /// hosts are correctly discriminated — PASS for compliant (proving a railed
     /// baseline is measurable via the away-from-rail step), FAIL for non-compliant
-    /// (proving removing the guard cannot manufacture a false PASS: a clipped
-    /// baseline understates demand, so a non-responsive host reads ratio ≈ 0).
+    /// (proving that for a STEADY-STATE rail, removing the guard cannot manufacture
+    /// a false PASS: a stationary clipped baseline understates demand, so a
+    /// non-responsive host reads ratio ≈ 0). A DECAYING transient rail is out of
+    /// scope for this steady-state composition — it can inflate the ratio and the
+    /// 450 guard never closed it either; that class is covered by root-fixing
+    /// transient causes (#1161) plus the two-strike/churn revocation nets.
     #[test]
     fn beyond_authority_railed_host_probes_pass_then_fail() {
         // A beyond-authority lane: observed correction = (excess + applied pitch)
