@@ -1462,6 +1462,55 @@ def test_reconcile_refuses_invalid_outputd_candidate_and_preserves_prior(
     ).read_text(encoding="utf-8")
 
 
+def test_reconcile_refuses_invalid_dac_buffer_candidate_and_preserves_prior(
+    tmp_path: Path,
+):
+    prior_outputd = (
+        "JASPER_OUTPUTD_BACKEND=alsa\n"
+        "JASPER_OUTPUTD_SINK=single_alsa\n"
+        "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
+        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536\n"
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256\n"
+    )
+    overrides = tmp_path / "audio_runtime_overrides.json"
+    overrides.write_text(
+        json.dumps({
+            "kind": "jts_audio_runtime_overrides",
+            "schema_version": 1,
+            "overrides": {
+                "JASPER_OUTPUTD_PERIOD_FRAMES": {
+                    "value": "1024",
+                    "reason": "test invalid staged dac buffer",
+                },
+                "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES": {
+                    "value": "4096",
+                    "reason": "keep content buffer valid",
+                },
+                "JASPER_OUTPUTD_DAC_BUFFER_FRAMES": {
+                    "value": "256",
+                    "reason": "test invalid staged dac buffer",
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env=prior_outputd,
+        extra_env={"JASPER_AUDIO_RUNTIME_OVERRIDES_PATH": str(overrides)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "outputd.env").read_text(encoding="utf-8") == prior_outputd
+    assert "event=audio_hardware_reconcile.outputd_env_invalid" in result.stderr
+    assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES_256" in result.stderr
+    assert "preserved=1" in result.stderr
+
+
 def test_reconcile_operator_outputd_override_dropped_even_when_pre_seeded(
     tmp_path: Path,
 ):

@@ -90,9 +90,10 @@ blind loopback tuning.
 with a coherent outputd period. During Apple-dongle re-enumeration, if the DAC
 profile floor disappears and period falls back to `1024`, the runtime plan
 suppresses the low-latency content buffer so outputd keeps a valid buffer/period
-pair. The audio-hardware reconciler validates staged `outputd.env` candidates
-before installing them, and the outputd failure helper gives exit 78 one bounded
-re-reconcile + retry instead of permanently wedging on a transient shear.
+pair. The audio-hardware reconciler validates staged `outputd.env` candidates'
+outputd buffer/period pairs (content and DAC buffers) before installing them,
+and the outputd failure helper gives exit 78 one bounded re-reconcile + retry
+instead of permanently wedging on a transient shear.
 
 The route-specific productization and legacy cleanup plan lives in
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md#productization-plan).
@@ -578,7 +579,8 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 Last verified: 2026-07-06 (`outputd.env` config-shear resilience rechecked
 against the runtime plan, staged audio-hardware reconcile writer, and outputd
-failure helper; prior ring checkpoint and jts.local tuning evidence from
+failure helper, including content and DAC buffer/period validation; prior ring
+checkpoint and jts.local tuning evidence from
 2026-07-02 found the stable loopback floor:
 Rust bridge 256/3, fan-in USB resampler held target 2048, fan-in output 1024,
 CamillaDSP 256/1536, outputd 128/256, outputd content buffer 1536. This is not a

@@ -31,6 +31,7 @@ from jasper.audio_runtime_plan import (
     DEFAULT_OUTPUTD_PERIOD_FRAMES,
     DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES,
     OUTPUTD_CONTENT_BUFFER_KEY,
+    OUTPUTD_DAC_BUFFER_KEY,
     OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER,
     OUTPUTD_PERIOD_KEY,
     build_audio_runtime_plan,
@@ -44,7 +45,8 @@ from jasper.audio_runtime_plan import (
     lean_capture_kwargs,
     low_latency_feature_flags,
     outputd_content_buffer_pair_error,
-    outputd_env_content_buffer_pair_error,
+    outputd_dac_buffer_pair_error,
+    outputd_env_buffer_pair_error,
     outputd_latency_floor_actions,
     resolve_audio_route_profile,
     route_owned_env_actions,
@@ -250,13 +252,30 @@ def test_python_outputd_buffer_contract_matches_rust_validator():
         "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536 must be >= "
         "2 x JASPER_OUTPUTD_PERIOD_FRAMES=1024 (minimum ALSA jitter margin)"
     )
-    assert outputd_env_content_buffer_pair_error(
+    assert outputd_dac_buffer_pair_error(
+        period_frames=1024,
+        dac_buffer_frames=1024,
+    ) == (
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=1024 must be >= "
+        "2 x JASPER_OUTPUTD_PERIOD_FRAMES=1024 (minimum ALSA jitter margin)"
+    )
+    assert outputd_env_buffer_pair_error(
         base_env={},
         outputd_env={
             OUTPUTD_CONTENT_BUFFER_KEY: "1536",
         },
     ) == (
         "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536 must be >= "
+        "2 x JASPER_OUTPUTD_PERIOD_FRAMES=1024 (minimum ALSA jitter margin)"
+    )
+    assert outputd_env_buffer_pair_error(
+        base_env={},
+        outputd_env={
+            OUTPUTD_CONTENT_BUFFER_KEY: "4096",
+            OUTPUTD_DAC_BUFFER_KEY: "1024",
+        },
+    ) == (
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=1024 must be >= "
         "2 x JASPER_OUTPUTD_PERIOD_FRAMES=1024 (minimum ALSA jitter margin)"
     )
 

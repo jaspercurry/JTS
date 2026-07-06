@@ -576,15 +576,32 @@ def outputd_content_buffer_pair_error(
     )
 
 
-def outputd_env_content_buffer_pair_error(
+def outputd_dac_buffer_pair_error(
+    *,
+    period_frames: int,
+    dac_buffer_frames: int,
+) -> str | None:
+    """Return the DAC-buffer invariant error that maps to outputd exit 78."""
+
+    return outputd_buffer_pair_error(
+        buffer_name=OUTPUTD_DAC_BUFFER_KEY,
+        buffer_frames=dac_buffer_frames,
+        period_name=OUTPUTD_PERIOD_KEY,
+        period_frames=period_frames,
+    )
+
+
+def outputd_env_buffer_pair_error(
     *,
     base_env: Mapping[str, str] | None = None,
     outputd_env: Mapping[str, str] | None = None,
 ) -> str | None:
-    """Validate the effective outputd content buffer pair for env-file writers.
+    """Validate effective outputd buffer/period pairs for env-file writers.
 
     Precedence mirrors the service contract: packaged defaults, then
     ``/etc/jasper/jasper.env``, then the reconciler-owned ``outputd.env``.
+    The check order mirrors Rust's outputd config validator so logs name the
+    same first failing pair the daemon would reject with EX_CONFIG.
     """
 
     values = [dict(base_env or {}), dict(outputd_env or {})]
@@ -602,9 +619,22 @@ def outputd_env_content_buffer_pair_error(
     )
     if content_error is not None:
         return content_error
-    return outputd_content_buffer_pair_error(
+    detail = outputd_content_buffer_pair_error(
         period_frames=period_frames,
         content_buffer_frames=content_buffer_frames,
+    )
+    if detail is not None:
+        return detail
+    dac_buffer_frames, dac_error = _effective_outputd_positive_int(
+        OUTPUTD_DAC_BUFFER_KEY,
+        default=DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
+        layers=values,
+    )
+    if dac_error is not None:
+        return dac_error
+    return outputd_dac_buffer_pair_error(
+        period_frames=period_frames,
+        dac_buffer_frames=dac_buffer_frames,
     )
 
 
