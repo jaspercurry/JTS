@@ -38,6 +38,7 @@ ENVELOPE_KEYS = {
     "nudges",
     "next_action",
     "progress",
+    "tuning_llm",
 }
 
 LOGICAL_SCREENS = {
@@ -157,12 +158,35 @@ def test_unknown_state_value_falls_back_to_idle_not_crash():
 # ---------- top-level shape ------------------------------------------------
 
 
-def test_schema_version_is_three():
+def test_schema_version_is_four():
     # v2 added the P4 `verdict` block; v3 added the P5 crossover-region
-    # distinction (REVIEW verdict_text + crossover_region_dip_not_boosted nudge).
-    assert envelope.ENVELOPE_SCHEMA_VERSION == 3
+    # distinction (REVIEW verdict_text + crossover_region_dip_not_boosted nudge);
+    # v4 (P6) added the `tuning_llm` affordance block.
+    assert envelope.ENVELOPE_SCHEMA_VERSION == 4
     env = envelope.build_envelope(_FakeSession())
-    assert env["schema_version"] == 3
+    assert env["schema_version"] == 4
+
+
+def test_tuning_llm_block_offered_on_review_shape_pinned():
+    # P6: the affordance block always carries `offered` (measurement-screen
+    # gate) + `available`/`provider`; `nudge` when no OpenAI key is
+    # configured. READY maps to the review screen (a measurement screen).
+    env = envelope.build_envelope(_FakeSession(SessionState.READY))
+    block = env["tuning_llm"]
+    assert block["offered"] is True
+    assert block["provider"] == "openai"
+    assert "available" in block
+    # Availability depends on the runtime key; when absent, a nudge is
+    # present and no model id is leaked.
+    if not block["available"]:
+        assert isinstance(block["nudge"], str) and block["nudge"]
+        assert "model" not in block
+
+
+def test_tuning_llm_not_offered_before_measurement():
+    # Pre-measurement screens (idle/mic/sweep) never offer the affordance.
+    env = envelope.build_envelope(_FakeSession(SessionState.IDLE))
+    assert env["tuning_llm"]["offered"] is False
 
 
 def test_envelope_top_level_shape_is_pinned():
@@ -546,7 +570,7 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
         server.server_close()
 
     assert set(body) == ENVELOPE_KEYS
-    assert body["schema_version"] == 3
+    assert body["schema_version"] == 4
     assert body["screen"] == "review"
     assert body["state"] == "ready"
     assert body["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}

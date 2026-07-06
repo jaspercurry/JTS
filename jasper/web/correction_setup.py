@@ -112,6 +112,12 @@ MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
 MAX_CROSSOVER_WAV_BODY_BYTES = 3 * 1024 * 1024
 MAX_DEVICE_FIELD_CHARS = 160
+# P6 tuning-LLM per-tap call budget. A frontier text model answering the
+# interpret / propose packet is a few seconds; 90 s is a generous ceiling
+# that still bounds a stalled provider connection on the Pi web process.
+TUNING_LLM_TIMEOUT_SEC = float(
+    os.environ.get("JASPER_TUNING_LLM_TIMEOUT_SEC", "90") or "90"
+)
 _FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/balance", "/sync"})
 _RETURN_HOST_RE = re.compile(
     r"^(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$"
@@ -162,6 +168,9 @@ _POST_ROUTES = frozenset({
     "/apply",
     "/reset",
     "/session/delete",
+    "/interpret",
+    "/propose",
+    "/propose/apply",
     "/crossover/driver-test",
     "/crossover/driver-confirm",
     "/crossover/driver-abort",
@@ -2389,6 +2398,170 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     }
 
 
+# --- P6: the tuning LLM surfaced in the flow (per-tap, confirm-gated) ---
+#
+# Each of these makes at most one PAID call, only on an explicit user tap
+# (no polling — the envelope's `tuning_llm` block gates the button, but
+# the paid call happens only here). The surface is hidden with a nudge
+# when no OpenAI key is configured; if a request still arrives without a
+# key, the advisor raises AdvisorModelError which surfaces as a 400.
+
+def _require_tuning_key() -> None:
+    from jasper.calibration_agent.key_provisioning import tuning_llm_available
+
+    if not tuning_llm_available():
+        raise RequestConflict(
+            "the tuning assistant needs an OpenAI key — add one at /voice"
+        )
+
+
+def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """POST /interpret: one paid call. Read-only "explain my room"."""
+    from jasper.calibration_agent import correction_advisor, model_client
+
+    _require_tuning_key()
+    body = _read_json_body(handler)
+    user_message = body.get("message")
+    if user_message is not None and not isinstance(user_message, str):
+        raise BadRequest("message must be a string")
+    sess = _get_or_create_session()
+    try:
+        return correction_advisor.interpret(
+            sess,
+            user_message=user_message,
+            timeout_sec=float(TUNING_LLM_TIMEOUT_SEC),
+        )
+    except model_client.AdvisorModelError as e:
+        raise BadRequest(str(e)) from e
+
+
+def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """POST /propose: one paid call. The confirm-gated proposer.
+
+    Nothing is applied here — proposals are validated + deterministically
+    simulated, and returned with their sim verdict for the UI to surface
+    for user confirmation. Applying happens only via /propose/apply.
+    """
+    from jasper.calibration_agent import correction_advisor, model_client
+
+    _require_tuning_key()
+    body = _read_json_body(handler)
+    user_message = body.get("message")
+    if user_message is not None and not isinstance(user_message, str):
+        raise BadRequest("message must be a string")
+    sess = _get_or_create_session()
+    try:
+        return correction_advisor.propose(
+            sess,
+            user_message=user_message,
+            timeout_sec=float(TUNING_LLM_TIMEOUT_SEC),
+        )
+    except model_client.AdvisorModelError as e:
+        raise BadRequest(str(e)) from e
+
+
+def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """POST /propose/apply: apply a confirmed correction proposal.
+
+    NO paid call. The body carries the proposed ``correction_peqs`` (from
+    a prior /propose response) and an explicit ``confirm: true``. The
+    server RE-VALIDATES the set against the active strategy caps and
+    RE-SIMULATES it (never trusting the client that it was accepted); only
+    if the deterministic gate accepts AND the user confirmed does it
+    populate ``session.peqs`` and route through the EXISTING apply path
+    (the same simulate/headroom/re-clip apply any correction gets).
+    """
+    from jasper.calibration_agent import proposal_sim, response as advisor_response
+    from jasper.correction.session import PEQJSON, SessionState
+
+    body = _read_json_body(handler)
+    if body.get("confirm") is not True:
+        raise BadRequest("apply requires explicit confirm: true")
+    raw_peqs = body.get("correction_peqs")
+    if not isinstance(raw_peqs, list) or not raw_peqs:
+        raise BadRequest("correction_peqs must be a non-empty list")
+
+    sess = _get_or_create_session()
+    if sess.state != SessionState.READY:
+        raise RequestConflict(
+            f"cannot apply a proposal from state {sess.state.value}; "
+            "the correction must be in the review (READY) state"
+        )
+
+    # Re-validate schema + bounds against the ACTIVE strategy caps.
+    from jasper.correction import strategy as _strategy
+    strat = _strategy.resolve_correction_strategy(
+        getattr(sess, "strategy_choice", None)
+        or _strategy.DEFAULT_CORRECTION_STRATEGY_ID
+    )
+    bounds = strat.to_dict()
+    packet = {
+        "advisor_policy": {"allowed_actions": [
+            {"id": "propose_correction_peq_adjustment", "allowed": True, "reasons": []},
+        ]},
+        "correction": {"strategy_bounds": bounds},
+    }
+    validation = advisor_response.validate_advisor_response(
+        {
+            "artifact_schema_version": advisor_response.RESPONSE_SCHEMA_VERSION,
+            "kind": "jts_advisor_response",
+            "action_plan": [{
+                "type": advisor_response.ACTION_PROPOSE_CORRECTION_PEQ,
+                "correction_peqs": raw_peqs,
+                "rationale": "user-confirmed proposal re-check",
+            }],
+        },
+        advisor_context=packet,
+    )
+    if not validation["accepted"]:
+        return {
+            "applied": False,
+            "reason": "proposal failed re-validation against strategy caps",
+            "issues": validation["issues"],
+            "session_id": sess.session_id,
+            "state": sess.state.value,
+        }
+    validated_peqs = validation["validated_action_plan"][0]["correction_peqs"]
+
+    # Re-SIMULATE server-side; a client cannot assert acceptance for us.
+    sim = proposal_sim.simulate_correction_proposal(
+        validated_peqs,
+        measured=getattr(sess, "measured_curve", None),
+        baseline=getattr(sess, "position1_curve", None)
+        or getattr(sess, "measured_curve", None),
+        target=getattr(sess, "target_curve", None),
+        max_total_boost_db=float(bounds.get("max_total_boost_db", 0.0)),
+        f_high_hz=float(bounds.get("f_high_hz", 350.0)),
+    )
+    if not sim.accepted:
+        return {
+            "applied": False,
+            "reason": "proposal rejected by the deterministic simulation gate",
+            "simulation": sim.to_dict(),
+            "session_id": sess.session_id,
+            "state": sess.state.value,
+        }
+
+    # Deterministic gate + explicit confirm both passed: swap in the
+    # proposed filters and route through the SAME apply path any
+    # correction uses (which re-clips headroom at emit).
+    log_event(
+        logger,
+        "correction.tuning_apply",
+        session_id=sess.session_id,
+        filter_count=len(validated_peqs),
+        sim_verdict=(sim.acceptance or {}).get("verdict"),
+    )
+    sess.peqs = [
+        PEQJSON(freq_hz=p["freq_hz"], q=p["q"], gain_db=p["gain_db"])
+        for p in validated_peqs
+    ]
+    result = _handle_apply(handler)
+    result["applied"] = True
+    result["simulation"] = sim.to_dict()
+    return result
+
+
 def _reset_accepts_target_config_path(reset_fn: Any) -> bool:
     try:
         params = inspect.signature(reset_fn).parameters
@@ -3153,6 +3326,39 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         self._send_client_error(str(e), status=404)
                     except RequestConflict as e:
                         self._send_client_error(str(e), status=409)
+                    return
+                if path == "/interpret":
+                    try:
+                        self._send_json(_handle_interpret(self))
+                    except BadRequest as e:
+                        self._send_client_error(str(e))
+                    except RequestConflict as e:
+                        self._send_client_error(str(e), status=409)
+                    return
+                if path == "/propose":
+                    try:
+                        self._send_json(_handle_propose(self))
+                    except BadRequest as e:
+                        self._send_client_error(str(e))
+                    except RequestConflict as e:
+                        self._send_client_error(str(e), status=409)
+                    return
+                if path == "/propose/apply":
+                    from jasper.correction.runtime_safety import (
+                        CorrectionRuntimeSafetyError,
+                    )
+                    from jasper.sound.graph_carrier import CarrierCannotHostEq
+                    try:
+                        self._send_json(_handle_propose_apply(self))
+                    except BadRequest as e:
+                        self._send_client_error(str(e))
+                    except RequestConflict as e:
+                        self._send_client_error(str(e), status=409)
+                    except (CarrierCannotHostEq, CorrectionRuntimeSafetyError) as e:
+                        self._send_client_error(
+                            str(e),
+                            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        )
                     return
             except BadRequest as e:
                 self._send_client_error(str(e))

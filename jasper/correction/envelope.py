@@ -59,7 +59,11 @@ logger = logging.getLogger(__name__)
 # `crossover_region_dip_not_boosted` nudge explain that a dip AT the
 # bass-management corner is the crossover, not a room mode (both derived from
 # strategy.design_correction's `crossover_region` design-report annotation).
-ENVELOPE_SCHEMA_VERSION = 3
+# v4 (P6) adds the `tuning_llm` block: whether the "Ask the tuning assistant"
+# affordance shows on the review/apply/result screens (available when an
+# OpenAI key is configured; hidden-with-nudge otherwise). Availability only,
+# no paid call — the endpoints are per-tap and confirm-gated.
+ENVELOPE_SCHEMA_VERSION = 4
 
 # 1/N-octave smoothing applied to the empirical display curves. 6 =
 # 1/6-octave — visibly smoothed (no raw jaggedness) while preserving
@@ -735,8 +739,32 @@ def build_envelope(session: Any) -> dict[str, Any]:
         "nudges": _nudges(session),
         "next_action": dict(next_action) if next_action is not None else None,
         "progress": _progress(screen),
+        "tuning_llm": _tuning_llm(screen),
     }
     return envelope
+
+
+# Screens where there is a measurement worth explaining, so the "Ask the
+# tuning assistant" affordance may show. Pre-measurement screens never
+# offer it (nothing to interpret yet).
+_TUNING_LLM_SCREENS = frozenset({SCREEN_REVIEW, SCREEN_APPLY, SCREEN_VERIFY, SCREEN_RESULT})
+
+
+def _tuning_llm(screen: str) -> dict[str, Any]:
+    """The P6 tuning-assistant affordance block.
+
+    ``offered`` gates the affordance on a screen with a measurement to
+    explain; ``available`` (+ ``nudge`` when False) is the OpenAI-key
+    availability from :mod:`jasper.calibration_agent.key_provisioning`.
+    The frontend shows the button only when both are true, and shows the
+    nudge when offered-but-unavailable. Availability only — no paid call.
+    """
+    offered = screen in _TUNING_LLM_SCREENS
+    from jasper.calibration_agent.key_provisioning import availability
+
+    block = availability().to_dict()
+    block["offered"] = offered
+    return block
 
 
 def build_envelope_logged(session: Any) -> dict[str, Any]:
