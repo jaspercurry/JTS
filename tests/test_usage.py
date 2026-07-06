@@ -1011,3 +1011,37 @@ def test_tuning_path_without_details_would_be_zero_dollars(tmp_path: Path):
         input_tokens=1000, output_tokens=1000,  # no usage= details
     )
     assert naive == pytest.approx(0.0)
+
+
+def test_read_only_ctor_closes_connection_on_corrupt_file(
+    tmp_path: Path, monkeypatch,
+):
+    """Exception safety in UsageStore.__init__: sqlite3.connect is lazy, so a
+    corrupt member file only raises on the first post-connect probe — the
+    half-built store's connection must be CLOSED before the raise, not left
+    for a GC pass to reclaim (review-proven +1 FD per aggregate read with gc
+    disabled, on the voice daemon's wake-fire cap check)."""
+    db = tmp_path / "corrupt.db"
+    db.write_bytes(b"not a sqlite database at all")
+
+    created: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def spy_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        created.append(conn)
+        return conn
+
+    monkeypatch.setattr("jasper.usage.sqlite3.connect", spy_connect)
+    with pytest.raises(sqlite3.Error):
+        UsageStore(str(db), read_only=True)
+    assert len(created) == 1
+    # Executing on a closed connection raises ProgrammingError — the
+    # deterministic "was closed" probe.
+    with pytest.raises(sqlite3.ProgrammingError, match="[Cc]losed"):
+        created[0].execute("SELECT 1")
+
+    # And the aggregate stays fail-open over the same corrupt member: zero
+    # contribution, no raise (its per-read open now cannot leak the FD).
+    reader = AggregateUsageReader(paths=[str(db)])
+    assert reader.spend_last_24h_usd() == 0.0

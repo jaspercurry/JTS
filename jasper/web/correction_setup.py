@@ -2500,6 +2500,47 @@ def _tuning_paid_call_gate() -> None:
 _tuning_usage_lock = threading.Lock()
 
 
+# Models already warned about as unpriced — once per process per model
+# (mirrors the voice surface's once-per-daemon-start pricing.unpriced posture;
+# this process is socket-activated with a 10-min idle exit, so the warning
+# re-arms regularly without spamming per tap). Mutated under
+# _tuning_usage_lock like the rest of the ledger state.
+_tuning_unpriced_warned: set[str] = set()
+
+
+def _warn_if_tuning_model_unpriced(model: str, overrides: dict[str, dict]) -> None:
+    """WARN (once per process per model) when the tuning model has no rate.
+
+    An operator ``JASPER_TUNING_LLM_MODEL`` override pointing at a model with
+    no row in the bundled pricing (nor the /voice override file) records $0 —
+    silently re-opening the exact hole this ledger closes. Mirror the voice
+    surface's ``pricing.unpriced`` event with ``surface="tuning"`` so the
+    journal carries the same signal. Caller MUST hold ``_tuning_usage_lock``
+    and pass the same ``overrides`` the record itself prices with, so the
+    warning and the recorded cost can never disagree."""
+    from jasper.usage import pricing_for_model
+
+    if not pricing_for_model(model, overrides=overrides).label.startswith(
+        "unpriced:"
+    ):
+        return
+    if model in _tuning_unpriced_warned:
+        return
+    _tuning_unpriced_warned.add(model)
+    log_event(
+        logger,
+        "pricing.unpriced",
+        model=model,
+        surface="tuning",
+        note=(
+            "no rate available for the tuning model; its paid calls record "
+            "$0 and the daily spend cap cannot bound tuning spend until a "
+            "rate is set at /voice"
+        ),
+        level=logging.WARNING,
+    )
+
+
 def _heal_tuning_ledger_mode(tuning_db: str) -> None:
     """Ensure the ledger file is 0644 so the jasper-group readers
     (jasper-voice, jasper-web, doctor) can open it read-only.
@@ -2551,15 +2592,25 @@ def _record_tuning_spend(out: dict[str, Any], usage_db: str) -> None:
         "output_token_details": {"text_tokens": output_tokens},
     }
     model = resolve_tuning_model()
-    from jasper.usage import UsageStore, tuning_usage_db_path
+    from jasper.usage import (
+        UsageStore,
+        load_pricing_overrides,
+        tuning_usage_db_path,
+    )
 
     tuning_db = tuning_usage_db_path(usage_db)
+    # The /voice pricing editor's override file applies to tuning records too
+    # (an operator who priced a custom tuning model there must get that rate),
+    # and the unpriced warning below checks with the SAME overrides so the
+    # warning and the recorded cost can never disagree.
+    overrides = load_pricing_overrides()
     try:
         with _tuning_usage_lock:
+            _warn_if_tuning_model_unpriced(model, overrides)
             # Fresh store per record — sqlite connections are thread-bound
             # (see the lock's comment block) and each handler request runs on
             # its own server thread. Open → record → close, all under the lock.
-            store = UsageStore(tuning_db)
+            store = UsageStore(tuning_db, pricing_overrides=overrides)
             try:
                 _heal_tuning_ledger_mode(tuning_db)
                 cost = store.record_background_usage(

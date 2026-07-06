@@ -474,42 +474,57 @@ class UsageStore:
         else:
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(db_path, isolation_level=None)
-            self._conn.execute(_SESSIONS_TABLE_DDL)
-            # `provider` is recorded per session at open_session() time. We
-            # deliberately do NOT backfill historic NULL rows: the active
-            # provider's source of truth is /var/lib/jasper/voice_provider.env,
-            # not this process's frozen env, and guessing a provider for rows
-            # that predate the column is exactly the kind of legacy-accounting
-            # code this project doesn't carry. Pre-existing rows aggregate as
-            # "unknown".
-            #
-            # Schema self-heal (a wipe, NOT a value-preserving migration): a
-            # usage DB that predates the `provider` column (pre-PR-#85) would
-            # fail open_session()'s INSERT with "no such column: provider" on
-            # every turn. Rather than carry migration code, drop & recreate —
-            # this is disposable cost telemetry, so the household loses nothing
-            # that matters, and the voice loop self-recovers instead of wedging.
-            # One-time: a no-op once the schema has the column (every current
-            # and fresh DB).
-            cols = {row[1] for row in self._conn.execute("PRAGMA table_info(sessions)")}
-            if "provider" not in cols:
-                self._conn.execute("DROP TABLE sessions")
+        # sqlite3.connect is lazy: a corrupt/non-sqlite file only surfaces on
+        # the FIRST real statement, which happens in the post-connect probes /
+        # DDL below. Close the connection before re-raising: leaving it on the
+        # half-built instance traps the FD in the exception→traceback cycle
+        # until a GC pass — on the voice daemon's wake path a permanently
+        # corrupt aggregate member would otherwise hold one FD per cap check
+        # until collection (review-proven with gc disabled).
+        try:
+            if not read_only:
                 self._conn.execute(_SESSIONS_TABLE_DDL)
-            # Billable realtime-activity intervals for time-billed providers
-            # (Grok). The table name is historical; each active turn is a row,
-            # and cost = duration × rate snapshot. Separate from `sessions`
-            # because sessions close with token usage while these rows cover
-            # active realtime duration for flat-rate providers.
-            # NOTE: do NOT clean up dangling intervals here — UsageStore is
-            # also constructed read-only by status surfaces, and closing the
-            # live connection's open interval from a reader would be wrong.
-            # Crash cleanup lives in BillableActivityMeter (daemon startup
-            # only).
-            self._conn.execute(_CONNECTION_INTERVALS_TABLE_DDL)
-            self._ensure_connection_interval_kind_column()
-        self._connection_intervals_have_kind = (
-            self._connection_interval_kind_column_exists()
-        )
+                # `provider` is recorded per session at open_session() time. We
+                # deliberately do NOT backfill historic NULL rows: the active
+                # provider's source of truth is /var/lib/jasper/voice_provider.env,
+                # not this process's frozen env, and guessing a provider for rows
+                # that predate the column is exactly the kind of legacy-accounting
+                # code this project doesn't carry. Pre-existing rows aggregate as
+                # "unknown".
+                #
+                # Schema self-heal (a wipe, NOT a value-preserving migration): a
+                # usage DB that predates the `provider` column (pre-PR-#85) would
+                # fail open_session()'s INSERT with "no such column: provider" on
+                # every turn. Rather than carry migration code, drop & recreate —
+                # this is disposable cost telemetry, so the household loses nothing
+                # that matters, and the voice loop self-recovers instead of wedging.
+                # One-time: a no-op once the schema has the column (every current
+                # and fresh DB).
+                cols = {
+                    row[1]
+                    for row in self._conn.execute("PRAGMA table_info(sessions)")
+                }
+                if "provider" not in cols:
+                    self._conn.execute("DROP TABLE sessions")
+                    self._conn.execute(_SESSIONS_TABLE_DDL)
+                # Billable realtime-activity intervals for time-billed providers
+                # (Grok). The table name is historical; each active turn is a row,
+                # and cost = duration × rate snapshot. Separate from `sessions`
+                # because sessions close with token usage while these rows cover
+                # active realtime duration for flat-rate providers.
+                # NOTE: do NOT clean up dangling intervals here — UsageStore is
+                # also constructed read-only by status surfaces, and closing the
+                # live connection's open interval from a reader would be wrong.
+                # Crash cleanup lives in BillableActivityMeter (daemon startup
+                # only).
+                self._conn.execute(_CONNECTION_INTERVALS_TABLE_DDL)
+                self._ensure_connection_interval_kind_column()
+            self._connection_intervals_have_kind = (
+                self._connection_interval_kind_column_exists()
+            )
+        except sqlite3.Error:
+            self._conn.close()
+            raise
         # Callers that don't pass `pricing=` (the dashboard read path, which
         # never computes cost, and tests) fall back to the cheapest current
         # model's rates. Production always passes the active model's pricing.

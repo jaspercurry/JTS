@@ -48,8 +48,10 @@ def _reset_paid_call_gate(tmp_path, monkeypatch):
     monkeypatch.delenv("JASPER_DAILY_SPEND_CAP_USD", raising=False)
     monkeypatch.delenv("JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER", raising=False)
     correction_setup._tuning_last_paid_call[0] = 0.0
+    correction_setup._tuning_unpriced_warned.clear()
     yield
     correction_setup._tuning_last_paid_call[0] = 0.0
+    correction_setup._tuning_unpriced_warned.clear()
 
 
 def _fake_session(state_value="ready"):
@@ -450,8 +452,13 @@ def test_record_never_opens_main_usage_db_read_write(
     from jasper.usage import tuning_usage_db_path
 
     tuning_db = tuning_usage_db_path(str(usage_db))
-    # No constructor targeted the main usage.db, read-write or otherwise.
-    assert all(path != str(usage_db) for path, _ro in opened), opened
+    # The real invariant: NO read-WRITE open of the main usage.db, ever. (A
+    # read-ONLY open via household_usage_reader is legitimate when the file
+    # exists — the cap gate does exactly that — so don't over-pin "never
+    # constructed at all".)
+    assert all(
+        ro is True for path, ro in opened if path == str(usage_db)
+    ), opened
     # The one write path targeted the tuning sibling.
     assert any(path == tuning_db and ro is False for path, ro in opened), opened
     # And the main DB file was never created on disk by this code path.
@@ -724,3 +731,39 @@ def test_wizard_file_cap_zero_disables_and_call_proceeds(
     )
     out = correction_setup._handle_interpret(_FakeHandler())
     assert out["explanation"] == "ok"
+
+
+# --- SF: unpriced tuning-model override warns instead of silent $0 -----
+
+
+def test_unpriced_tuning_model_records_zero_and_warns_once(
+    monkeypatch, _tuning_ledger_env, caplog
+):
+    """An operator JASPER_TUNING_LLM_MODEL override with no pricing row
+    records $0 (fail-open — the call already happened) but must emit the
+    pricing.unpriced WARN with surface=tuning, once per process per model —
+    the same journal signal the voice surface emits for this exact trap."""
+    usage_db = _tuning_ledger_env
+    monkeypatch.setenv("JASPER_TUNING_LLM_MODEL", "gpt-99-imaginary")
+    monkeypatch.setattr(
+        "jasper.calibration_agent.correction_advisor.interpret",
+        _advisor_returning({"input_tokens": 1000, "output_tokens": 1000}),
+    )
+    with caplog.at_level("WARNING"):
+        correction_setup._handle_interpret(_FakeHandler())
+        correction_setup._tuning_last_paid_call[0] = 0.0  # re-arm min-interval
+        correction_setup._handle_interpret(_FakeHandler())
+
+    from jasper.usage import UsageStore, tuning_usage_db_path
+
+    ro = UsageStore(tuning_usage_db_path(str(usage_db)), read_only=True)
+    rows = list(ro._conn.execute("SELECT cost_usd FROM sessions"))
+    assert len(rows) == 2
+    assert all(cost == 0.0 for (cost,) in rows)  # unpriced → $0, still recorded
+
+    warned = [
+        r for r in caplog.records
+        if "pricing.unpriced" in r.message and "surface=tuning" in r.message
+    ]
+    assert len(warned) == 1, "warn once per process per model, not per tap"
+    assert "gpt-99-imaginary" in warned[0].message
