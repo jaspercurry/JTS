@@ -14,6 +14,7 @@ client-side render half is pinned in tests/js/sound_profile_harness.mjs.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 
 import jasper.web.sound_setup as sound_setup
@@ -274,3 +275,65 @@ def test_snapshot_inactive_for_leaked_stale_session(monkeypatch):
         sound_setup, "_SUMMED_TEST_TONE_SESSION", _prep_session(-10_000.0)
     )
     assert sound_setup._active_summed_test_snapshot() == {"active": False}
+
+
+# --- The start guard actually uses the shared predicate ---------------------
+#
+# The guard in _active_speaker_play_summed_commission_tone is a one-line
+# `if _summed_test_session_active(...)`, but pinning it end-to-end keeps it wired
+# to the shared helper (not silently reverted to the old process-is-None logic)
+# and exercises the reclaim log (N1). We stub the artifact backend to complete
+# and make the stimulus raise, so the request returns right after the guard +
+# session claim with no camilla I/O.
+
+
+def _fake_completed_artifact(*_args, **_kwargs):
+    return {"status": "completed", "playback_id": "pb-x", "tone": {"level_dbfs": -20.0}}
+
+
+def _run_summed_play():
+    return asyncio.run(
+        sound_setup._active_speaker_play_summed_commission_tone(
+            {"tone": {"level_dbfs": -20.0}},
+            safe_session={},
+            topology=None,
+            speaker_group_id="main",
+            startup_gate_calibration_level=None,
+            preset=None,
+            crossover_preview=None,
+            camilla_factory=lambda: None,
+        )
+    )
+
+
+def _issue_codes(result):
+    return {i.get("code") for i in result.get("issues", []) if isinstance(i, dict)}
+
+
+def test_guard_admits_start_over_leaked_stale_session(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "jasper.active_speaker.playback.start_tone_playback", _fake_completed_artifact
+    )
+
+    def _boom():
+        raise RuntimeError("stimulus-stop")
+
+    monkeypatch.setattr(sound_setup, "_combined_speech_stimulus_wav_path", _boom)
+    monkeypatch.setattr(
+        sound_setup, "_SUMMED_TEST_TONE_SESSION", _prep_session(-10_000.0)
+    )
+    with caplog.at_level(logging.INFO):
+        result = _run_summed_play()
+    # Guard admitted the start (did not wedge on the leaked prior session) ...
+    assert "summed_test_already_active" not in _issue_codes(result)
+    # ... and surfaced the reclamation for diagnosis.
+    assert "action=reclaim_prior_session reason=stale" in caplog.text
+
+
+def test_guard_blocks_start_over_live_session(monkeypatch):
+    monkeypatch.setattr(
+        "jasper.active_speaker.playback.start_tone_playback", _fake_completed_artifact
+    )
+    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", _live_session())
+    result = _run_summed_play()
+    assert "summed_test_already_active" in _issue_codes(result)

@@ -2246,8 +2246,19 @@ def _summed_test_session_stop_reason(session: dict[str, Any]) -> str | None:
 # forever with no owner to clear it, and the start guard would then wedge every
 # retry with ``summed_test_already_active`` until jasper-web was restarted (the
 # jts3 2026-07-06 incident). A *running* loop refreshes ``progress_monotonic``
-# each iteration, so a stale heartbeat distinguishes "leaked" from "preparing".
-SUMMED_TEST_SESSION_STALE_SECONDS = 30.0
+# each iteration, so a stale heartbeat distinguishes "leaked" from "still working".
+#
+# The window MUST exceed the longest a genuinely-live session can sit at
+# process=None, which is the prepare phase before the first spawn: a ~15 s
+# jasper-audio-hardware-reconcile wait (startup_load, manage_units timeout=15.0)
+# plus the summed-config camilla WS ops. If the window were shorter than a
+# slow-but-live prepare, a concurrent start would misjudge it leaked and preempt
+# it — racing on the fan-in lane, a second aplay, and the config rollback. 90 s
+# clears that bounded budget with margin; a truly leaked session still
+# auto-recovers within it (and #1181's reload-safe Stop recovers it
+# immediately). A *hung* (not merely slow) camilla is out of scope — the test
+# cannot run then, and both starts block on the same dead WS.
+SUMMED_TEST_SESSION_STALE_SECONDS = 90.0
 
 
 def _summed_test_session_active(
@@ -2821,14 +2832,25 @@ async def _active_speaker_play_summed_commission_tone(
         return artifact_playback
 
     playback_id = str(artifact_playback.get("playback_id") or uuid.uuid4().hex)
+    reclaimed: tuple[str, Any] | None = None
     with _SUMMED_TEST_TONE_LOCK:
-        if _summed_test_session_active(_SUMMED_TEST_TONE_SESSION):
+        prior = _SUMMED_TEST_TONE_SESSION
+        if _summed_test_session_active(prior):
             return _summed_playback_with_issue(
                 artifact_playback,
                 issue=_commission_setup_issue(
                     "summed_test_already_active",
                     "a combined speaker test is already running",
                 ),
+            )
+        if prior is not None:
+            # Overwriting a non-active prior session: either a leaked prepare
+            # (its owner died before the try/finally teardown) or one whose stop
+            # is still settling. A leaked prior is the only way this path is hit
+            # without an explicit stop, so surface it — it flags a prior bug.
+            reclaimed = (
+                "stopped" if prior.get("stop_reason") else "stale",
+                prior.get("playback_id"),
             )
         now_monotonic = time.monotonic()
         session: dict[str, Any] = {
@@ -2841,6 +2863,13 @@ async def _active_speaker_play_summed_commission_tone(
             "stop_reason": None,
         }
         _SUMMED_TEST_TONE_SESSION = session
+    if reclaimed is not None:
+        logger.info(
+            "event=sound.active_speaker_summed_test action=reclaim_prior_session "
+            "reason=%s prior_playback_id=%s",
+            reclaimed[0],
+            reclaimed[1],
+        )
 
     tone = artifact_playback.get("tone") if isinstance(artifact_playback.get("tone"), dict) else {}
     try:
