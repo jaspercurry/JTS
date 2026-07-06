@@ -395,6 +395,43 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   with a nudge when no OpenAI key is configured); surface the interpreter in
   the flow; the confirm-gated proposer with simulate-before-apply. (Paid-call
   cost discipline per AGENTS.md — never in CI.)
+  *(Status: implemented hardware-free on `claude/p6-tuning-llm`.)* Shipped:
+  (1) **key seam** — `jasper/calibration_agent/key_provisioning.py` reads
+  `OPENAI_API_KEY` FRESH from the `jasper-secrets` compartment file
+  (`/var/lib/jasper-secrets/voice_keys.env`); `jasper-correction-web` is NOT a
+  Tier-A non-root daemon — it runs as **root** and its unit sources only
+  `jasper.env`, so the key is read from the file directly (root bypasses the
+  group), not from `os.environ`. Model id via `JASPER_TUNING_LLM_MODEL`
+  (default = the current GPT-class flagship, tracking the research provider).
+  `availability()` drives the **hidden-with-nudge** surface; the provider seam
+  stays OpenAI-only. (2) **vocabulary** (schema v2) — `response.py` gains
+  `propose_correction_peq_adjustment` (bounded alt PEQ set, validated against
+  the ACTIVE strategy caps + boost-stacking headroom) and `propose_target_move`
+  (named target id or house-curve `warmth` in `[-1,2]`); the prohibited-key
+  blocklist / re-clip / preference actions are untouched. (3) **interpreter**
+  — `POST /correction/interpret` narrates the server-computed residual /
+  modes / P4 verdict / P5 crossover annotation / confidence via a redacted
+  packet (`correction_advisor.build_correction_advisor_context`: derived
+  summaries only, downsampled residual, NEVER raw audio/device ids); a
+  **provenance check** flags any user-facing number the model authored that is
+  not in the packet. (4) **confirm-gated proposer** — `POST /correction/propose`
+  validates + deterministically SIMULATES each correction proposal
+  (`proposal_sim`: `peq.predicted_response` + AutoEQ-style ring guard + headroom
+  ceiling + P4 `evaluate_acceptance` on the simulated curve), returning only
+  simulate-accepted proposals as `applicable`; `POST /correction/propose/apply`
+  RE-VALIDATES + RE-SIMULATES server-side, requires explicit `confirm:true`,
+  and routes the set through the EXISTING `session.apply()` path (no new apply,
+  same headroom re-clip). The LLM never emits YAML/FIR/volume; the room's
+  re-measure remains the judge. (5) **UI** — a hidden-with-nudge "Tuning
+  assistant" panel (explanation + provenance note + per-proposal confirm
+  cards; untrusted model text via `textContent` only), envelope schema v4
+  `tuning_llm` block. Fixture-driven tests only (real-shape OpenAI fixtures
+  under `tests/fixtures/`); `scripts/tuning-llm-live-check.py` is the
+  budget-capped (`--yes-spend`, 2-call cap, cost estimate) live-validation +
+  fixture-capture harness. **Spend accounting is observable (per-call
+  `event=` token logs) but not yet ledgered into `jasper/usage.py`** — a
+  follow-up (cross-process SQLite write from root correction-web + a pricing
+  row for the tuning model).
 - **P7 — Active-crossover measurement flow (hardware-free shaping).** *(Status:
   implemented hardware-free on `claude/p7-crossover-flow`, adversarial-review
   remediation applied — real-payload-shape consume guard, `hard_timeout_ms`

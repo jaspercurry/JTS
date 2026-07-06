@@ -20,8 +20,19 @@ the five extension contracts, the decision tree) lives in
 > `jasper-calibration-agent` intake / prompt-package / response-validation
 > CLI modes, an opt-in OpenAI Responses model-call adapter, a reversible
 > `/sound/` audition executor for validated advisor proposals, and an
-> on-demand `/correction/` measurement-report surface. The full
-> conversational LLM/tool loop is still not implemented.
+> on-demand `/correction/` measurement-report surface.
+>
+> **P6 (2026-07-05) landed the tuning LLM surfaced in the `/correction/`
+> flow** — see "The P6 tuning surface" below. It is **OpenAI-shipped,
+> provider-swappable** (the design doc's older "Anthropic-first" mandate
+> is superseded by the revision plan §3.4: OpenAI is the shipped provider;
+> `AdvisorModelSettings.provider` is the swap seam, hard-rejecting non-openai
+> today by design). The advisor is no longer preference-only: it interprets
+> the measurement (read-only narrator, provenance-checked) AND proposes
+> bounded **room-correction** moves that deterministic code simulates +
+> judges before any confirm-gated apply. The full free-form conversational
+> chat loop (Phase C's `POST /chat`) is still not implemented — P6 shipped
+> the two structured surfaces (interpret + propose), not open chat.
 >
 > **What this proposes:** build toward a guided speaker-tuning system
 > on top of the existing `/correction/` wizard. The first layer is
@@ -293,6 +304,83 @@ agent's recommendations are bounded by the measurement quality.
 If the measurement pipeline is silently wrong end-to-end on real
 hardware, the agent will confidently tell you to apply a filter that
 makes the room sound worse.
+
+---
+
+## The P6 tuning surface (shipped 2026-07-05)
+
+The tuning LLM **surfaced in the `/correction/` flow** — two structured,
+per-tap, confirm-gated surfaces on the review/result screens. Not free-form
+chat (that is Phase C, still future); these are the interpreter and the
+proposer from the revision plan §3.4.
+
+**Key provisioning.** OpenAI-only, and it **reuses the existing
+`OPENAI_API_KEY`** the household pasted at `/voice` when their voice
+provider is OpenAI. That key lives in the `jasper-secrets` compartment file
+`/var/lib/jasper-secrets/voice_keys.env` (WS1 Phase 4a).
+`jasper-correction-web` is **not** one of the five Tier-A non-root daemons —
+it runs as **root** and its unit sources only `/etc/jasper/jasper.env`, so
+the key is **not** in this process's `os.environ`. As root it reads the
+compartment file **directly** (root bypasses group perms), fresh on every
+call, via [`jasper/calibration_agent/key_provisioning.py`](../jasper/calibration_agent/key_provisioning.py)
+(`read_openai_key`). So a `/voice` save takes effect on the next tap, no
+restart, no unit change, no second key copy. When no OpenAI key exists
+(household on Gemini/Grok voice), the surface is **hidden with a nudge**
+(`availability()` → the envelope's `tuning_llm` block), never a broken
+button. Model id: `JASPER_TUNING_LLM_MODEL`, default = the current
+GPT-class flagship (tracks `jasper.research.providers.openai_research.DEFAULT_MODEL`).
+
+**The interpreter — `POST /correction/interpret`.** A read-only,
+plain-language "here's what your room is doing." Builds a **redacted,
+server-data-only** packet
+([`correction_advisor.build_correction_advisor_context`](../jasper/calibration_agent/correction_advisor.py)):
+the delta-first target−measured residual (downsampled to ≤9 quantized
+points), detected mode tuples, the P4 acceptance verdict + numbers, the P5
+`crossover_region` annotation, and confidence findings — **NEVER raw audio,
+device identifiers, or absolute paths** (derived summaries only, same
+redaction discipline as `advisor_context.py`). Correction claims cite the
+measured numbers; a **provenance check** (`check_number_provenance`) flags
+any user-facing number the model authored that is not in the packet (the
+plan's "the LLM never authors a number a tool computed").
+
+**The confirm-gated proposer — `POST /correction/propose` +
+`POST /correction/propose/apply`.** `/propose` lets the model propose a
+bounded alternative correction filter set (`propose_correction_peq_adjustment`)
+and/or a target move (`propose_target_move`, a named target or a house-curve
+`warmth` in `[-1, 2]`). **Nothing is applied by `/propose`** — every
+correction proposal is validated against the ACTIVE strategy caps
+([`response.py`](../jasper/calibration_agent/response.py) schema v2) and then
+**deterministically simulated**
+([`proposal_sim.py`](../jasper/calibration_agent/proposal_sim.py)):
+`peq.predicted_response` → an AutoEQ-style steep-positive-gain **ring guard**
+→ the boost-stacking **headroom ceiling** → the **P4 `evaluate_acceptance`**
+verdict on the simulated curve. Only a simulate-accepted proposal comes back
+`applicable`. `/propose/apply` **re-validates + re-simulates server-side**
+(never trusting the client), requires an explicit `confirm: true`, and only
+then routes the set through the **existing** `session.apply()` path (same
+headroom re-clip any correction gets — no new apply path). The re-measure
+remains the true judge (the correction loop closes by re-measure; preference
+suggestions are phrased as questions). The LLM never emits YAML / FIR /
+volume — the `_PROHIBITED_KEYS` blocklist and the `volume_limit: 0.0` ceiling
+are untouched.
+
+**UI.** A hidden-with-nudge "Tuning assistant" panel on the correction page
+(`deploy/assets/correction/js/main.js` `renderTuning` / `renderTuningProposals`):
+the explanation, a provenance note when the model cited an unverified number,
+and per-proposal confirm cards. Untrusted model text reaches the DOM via
+`textContent` only, never `innerHTML`.
+
+**Cost discipline.** The two calls are **per-tap** (no polling). Tests are
+100% fixture-driven (real-shape OpenAI payloads under
+`tests/fixtures/tuning_llm_*_response.json`) — **zero paid calls in CI**.
+[`scripts/tuning-llm-live-check.py`](../scripts/tuning-llm-live-check.py) is
+the one paid harness: budget-capped (2-call hard cap, `--max-output-tokens`,
+a printed cost estimate, refuses to spend without `--yes-spend`), it
+exercises the real request path and can refresh the fixtures from live
+captures. Spend is currently **observable** (per-call `event=` token logs)
+but **not yet ledgered** into [`jasper/usage.py`](../jasper/usage.py) — a
+tracked follow-up (cross-process SQLite write from root correction-web + a
+pricing row for the tuning model).
 
 ---
 
@@ -1188,9 +1276,12 @@ Codebase:
 
 ---
 
-Last verified: 2026-06-18 (topology-safe correction start/reset behavior
-rechecked against `jasper.correction.runtime_safety` and
-`jasper/web/correction_setup.py`; prior 2026-06-17 pass covered DSP pipeline
-table rechecked against the live `jasper.sound.camilla_yaml.emit_sound_config`
-apply path; prior 2026-05-31 pass covered advisor model-call adapter and
+Last verified: 2026-07-05 (P6 tuning surface landed: key seam, vocabulary
+extension, interpreter, confirm-gated proposer with simulate-before-apply,
+verified against `jasper/calibration_agent/{key_provisioning,correction_advisor,proposal_sim,response}.py`,
+`jasper/web/correction_setup.py`, and the jasper-correction-web unit;
+prior 2026-06-18 pass covered topology-safe correction start/reset behavior
+against `jasper.correction.runtime_safety`; prior 2026-06-17 pass covered the
+DSP pipeline table against `jasper.sound.camilla_yaml.emit_sound_config`;
+prior 2026-05-31 pass covered the advisor model-call adapter and
 sound-audition executor.)
