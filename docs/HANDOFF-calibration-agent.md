@@ -387,10 +387,40 @@ picker. Untrusted model text reaches the DOM via `textContent` only, never
 the one paid harness: budget-capped (2-call hard cap, `--max-output-tokens`,
 a printed cost estimate, refuses to spend without `--yes-spend`), it
 exercises the real request path and can refresh the fixtures from live
-captures. Spend is currently **observable** (per-call `event=` token logs)
-but **not yet ledgered** into [`jasper/usage.py`](../jasper/usage.py) — a
-tracked follow-up (cross-process SQLite write from root correction-web + a
-pricing row for the tuning model).
+captures. Spend is **observable AND ledgered** against the household daily
+spend cap. Each paid call:
+
+1. is **gated before** — `_tuning_spend_cap_gate()` builds a `SpendCap` over
+   `household_usage_reader(usage_db)` (the voice ledger + the tuning sibling,
+   summed); if the cap is reached it raises `SpendCapExceeded` → **HTTP 429**
+   with an honest rollover-worded body the panel renders verbatim. Reading the
+   cap is **fail-open** (an unreadable ledger reads as zero spend, never
+   blocks — matching the module direction).
+2. is **recorded after** — `_record_tuning_spend()` writes one priced row into
+   a **separate** SQLite ledger, `usage-tuning.db` (a derived sibling of
+   `JASPER_USAGE_DB`), of which root `jasper-correction-web` is the **sole
+   writer**. It must never open the jasper-voice-owned `usage.db` read-write —
+   a root-created file or `-journal` sidecar wedges the voice ledger (the
+   2026-06-19 "readonly database" class). The write is serialised under a
+   module lock, `chmod 0644` on first create (so the 0077-umask root unit
+   still leaves it readable by the jasper-group readers), and **fail-soft**
+   (an OSError/sqlite error logs `event=tuning_spend.record_failed` and returns
+   the normal response — a ledger problem never blocks the user).
+
+The **$0 pricing trap** is why the recorder synthesizes token *details*: the
+advisor returns only aggregate token counts, and the tuning model (`gpt-5.4`)
+has ONLY text rates in [`model_pricing.json`](../jasper/data/model_pricing.json),
+so pricing the aggregates as-is charges the (absent) audio rate → $0. The
+recorder synthesizes text-modality details (the `jasper/research/scheduler.py`
+idiom, singular `"token"` detail keys) so it prices at the text rate — an
+all-text over-estimate, conservative in the correct direction for a cap.
+
+Every cap/display reader — the voice daemon's `SpendCap`, the `/voice` spend
+card, and `jasper-doctor`'s `check_spend_cap` — sums both files through the one
+seam in [`jasper/usage.py`](../jasper/usage.py) (`household_usage_reader`), so
+"household spend" has exactly one definition and voice sessions refuse once
+tuning spend has exhausted the shared cap. Structured events:
+`tuning_spend.recorded` / `.record_failed` / `.cap_blocked`.
 
 ---
 
@@ -1286,7 +1316,13 @@ Codebase:
 
 ---
 
-Last verified: 2026-07-05 (P6 tuning surface landed: key seam, vocabulary
+Last verified: 2026-07-06 (P6 tuning-spend ledger landed: per-surface
+`usage-tuning.db` written solely by correction-web, gate-before/record-after
+in the two paid handlers, and the `household_usage_reader` aggregation seam
+that the voice cap + `/voice` card + doctor all read — verified against
+`jasper/usage.py`, `jasper/web/correction_setup.py`, `jasper/voice/daemon_main.py`,
+`jasper/web/voice_setup.py`, and `jasper/cli/doctor/voice.py`; prior 2026-07-05
+pass covered the P6 tuning surface landing: key seam, vocabulary
 extension, interpreter, confirm-gated proposer with simulate-before-apply,
 verified against `jasper/calibration_agent/{key_provisioning,correction_advisor,proposal_sim,response}.py`,
 `jasper/web/correction_setup.py`, and the jasper-correction-web unit;
