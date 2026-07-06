@@ -1261,6 +1261,123 @@ def test_arm_shm_ring_topology_unreadable_is_failsafe_not_blocking(
     assert calls == ["outputd", "fanin", "camilla:shm_ring"]
 
 
+# --- DEFECT 2: ring_topology_ready end-to-end over REAL on-disk topologies ----
+# The tests above either exercise the topology_supports_shm_ring predicate in
+# isolation (tests/test_runtime_contract_ring.py) or MOCK the predicate at the
+# reconciler seam. Neither proves the actual arming gate the defect names
+# (arm_ring_topology_ineligible) resolves a REAL shipped-default topology loaded
+# from disk via load_output_topology_strict() to "eligible" — nor that a real
+# stale-subwoofer topology honestly refuses through that same gate. These close
+# that gap: a plain-stereo single-sink box (jts.local's true hardware) must NOT
+# be refused, and the refusal that DID fire on jts.local was the honest verdict
+# on its saved stale-subwoofer artifact, remediated by the reset tool.
+
+
+def test_ring_topology_ready_eligible_for_real_shipped_default_topology(
+    tmp_path, monkeypatch,
+):
+    # The positive end-to-end path: a genuine on-disk shipped-default Apple-dongle
+    # topology (empty speaker_groups, outputs state="unused" — what
+    # new_topology_draft writes on a fresh box) resolves through the reconciler's
+    # ring_topology_ready() gate to a TRUE, non-fail-safe verdict. jts.local must
+    # arm shm_ring once its stale artifacts are cleared.
+    from jasper.fanin.coupling_reconcile import ring_topology_ready
+    from jasper.output_topology import (
+        OUTPUT_TOPOLOGY_KIND,
+        OutputTopology,
+        save_output_topology,
+    )
+
+    topo_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
+    save_output_topology(
+        OutputTopology.from_mapping(
+            {
+                "artifact_schema_version": 1,
+                "kind": OUTPUT_TOPOLOGY_KIND,
+                "topology_id": "default",
+                "name": "Speaker outputs",
+                "status": "draft",
+                "hardware": {
+                    "device_id": "apple_usb_c_dongle",
+                    "device_label": "Apple USB-C audio adapter",
+                    "physical_output_count": 2,
+                    "card_id": "A",
+                    "outputs": [
+                        {"index": 0, "human_label": "Left", "terminal_label": "1",
+                         "state": "unused"},
+                        {"index": 1, "human_label": "Right", "terminal_label": "2",
+                         "state": "unused"},
+                    ],
+                },
+                "speaker_groups": [],
+                "routing": {},
+            }
+        )
+    )
+
+    ok, detail = ring_topology_ready()
+
+    assert ok is True
+    # A genuine eligible verdict, NOT the "topology unreadable ... deferring"
+    # fail-safe (which would also return True but for the wrong reason).
+    assert "ring-eligible" in detail
+    assert "unreadable" not in detail
+
+
+def test_ring_topology_ready_refuses_real_stale_subwoofer_with_reset_hint(
+    tmp_path, monkeypatch,
+):
+    # The negative end-to-end path over a REAL topology (not a mocked predicate):
+    # a plain Apple-dongle box whose SAVED topology still declares a subwoofer role
+    # from the 2026-06 campaign refuses through ring_topology_ready() — a stereo
+    # ring genuinely cannot drive a sub — and the refusal names the actionable
+    # remediation (jasper-output-topology-reset) instead of an opaque "loopback".
+    from jasper.fanin.coupling_reconcile import ring_topology_ready
+    from jasper.output_topology import (
+        OUTPUT_TOPOLOGY_KIND,
+        OutputTopology,
+        save_output_topology,
+    )
+
+    topo_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
+    save_output_topology(
+        OutputTopology.from_mapping(
+            {
+                "artifact_schema_version": 1,
+                "kind": OUTPUT_TOPOLOGY_KIND,
+                "topology_id": "default",
+                "name": "Speaker outputs",
+                "status": "draft",
+                "hardware": {
+                    "device_id": "apple_usb_c_dongle",
+                    "device_label": "Apple USB-C audio adapter",
+                    "physical_output_count": 2,
+                    "card_id": "A",
+                },
+                "speaker_groups": [
+                    {
+                        "id": "sub",
+                        "label": "Subwoofer",
+                        "kind": "subwoofer",
+                        "mode": "subwoofer",
+                        "channels": [
+                            {"role": "subwoofer", "physical_output_index": 0}
+                        ],
+                    }
+                ],
+                "routing": {"subwoofer_group_ids": ["sub"]},
+            }
+        )
+    )
+
+    ok, detail = ring_topology_ready()
+
+    assert ok is False
+    assert "jasper-output-topology-reset" in detail
+
+
 def test_disarm_shm_ring_clears_ring_bridge_keys(tmp_path, _ring_assets_present):
     # Pre-arm to shm_ring, then disarm to loopback.
     fanin_env = _write(tmp_path / "fanin.env", "")

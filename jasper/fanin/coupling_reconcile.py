@@ -1556,11 +1556,15 @@ def _sync_process_env_for_emit(
     """Make the in-process Camilla re-emit see the env we just persisted.
 
     Mirrors :func:`_outputd_actions`: the in-process env must carry the SAME
-    content-source keys the files now carry so the immediate camilla re-emit
-    (``fanin_coupling_capture_kwargs`` reads ``os.environ``) names the right
-    devices. shm_ring's capture/playback devices come from the coupling constant,
-    not the env, so setting the coupling key is enough for the emit; the outputd
-    ring keys below keep the in-process env coherent for any reader.
+    content-source keys the files now carry so the immediate camilla re-emit names
+    the right devices for any reader. Note the coupling TOKEN itself no longer
+    rides ``os.environ`` for the live emit: since the CLI-render-coupling fix,
+    ``fanin_coupling_capture_kwargs(None)`` reads the coupling file-fresh from the
+    persisted ``fanin.env`` (which we wrote BEFORE calling this), while the pipe /
+    ring PATH env vars set here remain the live override source the file-fresh
+    reader consults. shm_ring's capture/playback devices come from the coupling
+    constant, not the env, so the coupling key alone drives the emit; the outputd
+    ring keys below keep the in-process env coherent for any other reader.
     """
     os.environ[COUPLING_ENV_VAR] = coupling
     os.environ[PIPE_PATH_ENV_VAR] = resolve_pipe_path(
