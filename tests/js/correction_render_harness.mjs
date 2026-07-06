@@ -1131,8 +1131,10 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
 
 // 33. A simulate-accepted room-correction proposal renders an applicable
 //     card; a rejected one renders its reason and no Apply button; a
-//     target move renders as a suggestion linking to the flow's Target
-//     curve picker (no apply path exists for target moves).
+//     target move renders as a suggestion with plain-text guidance to the
+//     flow's Target curve picker (no apply path, and no dead #target-select
+//     anchor — that picker is hidden in relay mode, so a link would
+//     silently scroll nowhere).
 {
   renderTuningProposals([
     {
@@ -1158,15 +1160,19 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
   // The rejected card carries the rejection modifier class.
   assert(cards[1].className.indexOf("tuning-proposal--rejected") >= 0,
     "tuning: the ring-rejected proposal card is styled as rejected");
-  // The target-move card carries a link to the flow's target picker —
-  // an honest affordance, not a dead question.
+  // The target-move card's guidance is plain text — an honest affordance,
+  // NOT a dead #target-select link (that anchor no-ops on the review
+  // screen when the picker's container is hidden in relay mode).
   const targetCard = cards[2];
   const question = targetCard.children.find(
     (c) => c.className === "tuning-question");
   assert(question, "tuning: the target-move card renders its question line");
-  const pickerLink = question.children.find((c) => c.href === "#target-select");
-  assert(pickerLink,
-    "tuning: the target-move card links to the flow's Target curve picker");
+  assert(question.textContent.indexOf("Pick it under Target curve") >= 0,
+    "tuning: the target-move card carries the Target curve instruction as text");
+  const pickerLink = (question.children || []).find(
+    (c) => c && c.href === "#target-select");
+  assert(!pickerLink,
+    "tuning: the target-move card has no dead #target-select link");
 
   // Empty proposals clears the container.
   renderTuningProposals([]);
