@@ -85,11 +85,19 @@ from jasper.route_latency.status_socket import (
     read_status_socket_or_none,
 )
 from jasper.route_latency.tap_client import (
+    DEFAULT_TAP_HOST,
     DEFAULT_TAP_PATH,
+    DEFAULT_TAP_PORT,
+    FANIN_CONTROL_SOCKET,
     TapArmParams,
-    TapClient,
     TapClientError,
     read_tap_events,
+)
+from jasper.route_latency.tap_transport import (
+    TAP_TRANSPORT_AUTO,
+    TAP_TRANSPORTS,
+    ResolvedTap,
+    build_resolved_tap,
 )
 
 
@@ -621,15 +629,48 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_tap(args: argparse.Namespace) -> ResolvedTap:
+    """Resolve (and cache on ``args``) which ingress tap to arm for this box.
+
+    ``--tap-transport auto`` (the default) probes fan-in STATUS and picks the
+    fan-in DIRECT-capture tap on a USB combo box, else the usbsink bridge tap —
+    so ``run`` measures the tap that's actually live instead of the dead usbsink
+    :8781 tap on a combo box. Prints and logs the chosen transport + reason once
+    so a run's ingress target is never a mystery. Cached so ``run`` (capture then
+    analyze) resolves exactly once and analyze reads back the same JSONL path.
+    """
+
+    cached = getattr(args, "_resolved_tap", None)
+    if cached is not None:
+        return cached
+    resolved = build_resolved_tap(
+        transport_choice=args.tap_transport,
+        explicit_tap_path=getattr(args, "tap_path", None),
+        tap_host=args.tap_host,
+        tap_port=args.tap_port,
+        fanin_socket=args.tap_socket,
+    )
+    args._resolved_tap = resolved
+    log_event(
+        logger,
+        "route_latency_harness.tap_transport_resolved",
+        transport=resolved.transport,
+        tap_path=resolved.tap_path,
+        reason=resolved.reason,
+    )
+    print(f"tap transport={resolved.transport} path={resolved.tap_path} ({resolved.reason})")
+    return resolved
+
+
 def _cmd_arm(args: argparse.Namespace) -> int:
-    client = TapClient(host=args.tap_host, port=args.tap_port)
+    resolved = _resolve_tap(args)
     try:
-        response = client.arm(
+        response = resolved.client.arm(
             TapArmParams(
                 threshold=args.tap_threshold,
                 hysteresis=args.tap_hysteresis,
                 refractory_ms=args.tap_refractory_ms,
-                path=args.tap_path,
+                path=resolved.tap_path,
             )
         )
     except TapClientError as e:
@@ -640,9 +681,9 @@ def _cmd_arm(args: argparse.Namespace) -> int:
 
 
 def _cmd_disarm(args: argparse.Namespace) -> int:
-    client = TapClient(host=args.tap_host, port=args.tap_port)
+    resolved = _resolve_tap(args)
     try:
-        response = client.disarm()
+        response = resolved.client.disarm()
     except TapClientError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -655,14 +696,15 @@ def _cmd_capture(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    client = TapClient(host=args.tap_host, port=args.tap_port)
+    resolved = _resolve_tap(args)
+    client = resolved.client
     try:
         client.arm(
             TapArmParams(
                 threshold=args.tap_threshold,
                 hysteresis=args.tap_hysteresis,
                 refractory_ms=args.tap_refractory_ms,
-                path=args.tap_path,
+                path=resolved.tap_path,
             )
         )
     except TapClientError as e:
@@ -738,7 +780,7 @@ def _cmd_capture(args: argparse.Namespace) -> int:
 
     print(f"mic detections: {len(detections)} -> {mic_path}")
     print(f"route-health snapshot -> {health_path}")
-    print(f"tap events are written directly by the Rust process to {args.tap_path}")
+    print(f"tap events are written directly by the Rust process to {resolved.tap_path}")
     return 0
 
 
@@ -996,7 +1038,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     rc = _cmd_capture(args)
     if rc != 0:
         return rc
-    args.tap_events = args.tap_path
+    # analyze reads back the SAME JSONL the resolved tap wrote — the fan-in path
+    # on a combo box, not the stale usbsink default. `_cmd_capture` cached the
+    # resolution; re-resolving here is a cached no-op.
+    args.tap_events = _resolve_tap(args).tap_path
     args.mic_detections = str(Path(args.out_dir) / "mic-detections.jsonl")
     args.route_health_snapshot = str(Path(args.out_dir) / "route-health-snapshot.json")
     schedule = click_track.load_schedule_json(Path(args.schedule))
@@ -1015,15 +1060,29 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _add_tap_connection_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--tap-host", default="127.0.0.1", help="Rust tap HTTP host (default: 127.0.0.1).")
-    parser.add_argument("--tap-port", type=int, default=8781, help="Rust tap HTTP port (default: 8781).")
+    parser.add_argument(
+        "--tap-transport",
+        choices=TAP_TRANSPORTS,
+        default=TAP_TRANSPORT_AUTO,
+        help=(
+            "Which ingress tap to arm. 'auto' (default) reads fan-in STATUS and "
+            "picks the fan-in DIRECT-capture tap on a USB combo box "
+            "(JASPER_FANIN_USB_DIRECT=enabled) or the usbsink bridge tap "
+            "otherwise; 'fanin' / 'usbsink' force one. On a combo box the usbsink "
+            "bridge tap is dead (bridge in standby), so 'auto' is what makes `run` "
+            "measure the shipping route."
+        ),
+    )
+    parser.add_argument("--tap-host", default=DEFAULT_TAP_HOST, help=f"usbsink tap HTTP host (usbsink transport only; default: {DEFAULT_TAP_HOST}).")
+    parser.add_argument("--tap-port", type=int, default=DEFAULT_TAP_PORT, help=f"usbsink tap HTTP port (usbsink transport only; default: {DEFAULT_TAP_PORT}).")
+    parser.add_argument("--tap-socket", default=FANIN_CONTROL_SOCKET, help=f"fan-in control socket for the combo tap (fanin transport only; default: {FANIN_CONTROL_SOCKET}).")
 
 
 def _add_tap_arm_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tap-threshold", type=float, default=None, help="Ingress detector threshold (0..1). Rust default 0.2.")
     parser.add_argument("--tap-hysteresis", type=float, default=None, help="Ingress detector hysteresis. Rust default 0.05.")
     parser.add_argument("--tap-refractory-ms", type=float, default=None, help="Ingress refractory window in ms. Rust default 250.")
-    parser.add_argument("--tap-path", default=DEFAULT_TAP_PATH, help=f"Tap JSONL path (default: {DEFAULT_TAP_PATH}).")
+    parser.add_argument("--tap-path", default=None, help="Tap JSONL path. Default: the resolved transport's own path (usbsink /run/jasper-usbsink/impulse-tap.jsonl, fan-in /run/jasper-fanin/impulse-tap.jsonl).")
 
 
 def _add_mic_detector_args(parser: argparse.ArgumentParser) -> None:

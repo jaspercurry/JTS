@@ -637,7 +637,7 @@ requires_docs_when = [
   "The host-slaved USB clock's env keys/defaults, ladder states, state.json `host_clock` block shape, servo constants, or bandwidth-separation derivation change (see HANDOFF-usb-low-latency.md 'Host-slaved USB clock (Stage 1)').",
 ]
 verification = [
-  "pytest tests/test_audio_runtime_plan.py tests/test_mux_lean_lane.py tests/test_sound_camilla_yaml.py tests/test_active_speaker_runtime_contract.py tests/test_route_latency_artifact_cli.py tests/test_route_latency_click_track.py tests/test_route_latency_impulse_detect.py tests/test_route_latency_pairing.py tests/test_route_latency_harness.py tests/test_route_latency_status_socket.py tests/test_usbsink_impulse_tap_contract.py tests/test_usbsink_host_clock_contract.py tests/test_doctor_usbsink.py tests/test_usbsink_systemd.py",
+  "pytest tests/test_audio_runtime_plan.py tests/test_mux_lean_lane.py tests/test_sound_camilla_yaml.py tests/test_active_speaker_runtime_contract.py tests/test_route_latency_artifact_cli.py tests/test_route_latency_click_track.py tests/test_route_latency_impulse_detect.py tests/test_route_latency_pairing.py tests/test_route_latency_harness.py tests/test_route_latency_status_socket.py tests/test_route_latency_tap_transport.py tests/test_usbsink_impulse_tap_contract.py tests/test_usbsink_host_clock_contract.py tests/test_doctor_usbsink.py tests/test_usbsink_systemd.py",
 ]
 
 [[subsystem]]

@@ -122,6 +122,12 @@ sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
   --confirm-route-health-ok
 ```
 
+`run` defaults to `--tap-transport auto`, so on a **USB combo box** it arms the
+fan-in DIRECT-capture tap (the shipping ingress) and on a solo/aloop box the
+usbsink bridge tap — see "Harness support (`--tap-transport`)" under "Impulse tap
+moves to fan-in (C4)" below. It prints the chosen tap first, e.g.
+`tap transport=fanin path=/run/jasper-fanin/impulse-tap.jsonl (...)`.
+
 Or drive `jasper-route-latency-artifact` directly once a samples file already
 exists (equivalent to what `--invoke-artifact` above shells out to, once the
 health deltas justify `--route-health-ok` on THAT CLI):
@@ -507,17 +513,32 @@ standby and opens no capture), so the fan-in JSONL is the ONLY ingress evidence.
   `TAP_DISARM` on `/run/jasper-fanin/control.sock`. STATUS gains a top-level
   `"tap":{armed,events_written,events_dropped,threshold,refractory_ms,max_events,auto_disarm_at_epoch_ms,path}`.
 
-**Director commands (PoC).** The route-latency harness's `analyze --tap-events`
-already reads any JSONL path, so no HTTP port is needed — arm via the socket
-verb, point `--tap-events` at the fan-in JSONL:
+**Harness support (`--tap-transport`).** The harness arms this tap natively —
+`run` / `capture` / `arm` / `disarm` default to `--tap-transport auto`, which
+reads fan-in `STATUS` and picks the fan-in DIRECT-capture tap whenever an input
+lane reports `source:"direct"` (combo mode), else the usbsink bridge tap on
+`:8781`. So the end-to-end `run` walkthrough above measures the shipping route on
+a combo box **with no extra flags** — this closes the earlier gap where `run`
+armed the (standby, never-firing) usbsink tap and recorded zero detections. `run`
+prints the chosen ingress up front
+(`tap transport=fanin path=/run/jasper-fanin/impulse-tap.jsonl (...)`). Force
+either side with `--tap-transport fanin|usbsink` (fan-in socket overridable via
+`--tap-socket`, default `/run/jasper-fanin/control.sock`). The combo-box tap
+target is pinned to the fan-in `DEFAULT_TAP_PATH` by
+`tests/test_route_latency_tap_transport.py`. Selection lives in
+`jasper/route_latency/tap_transport.py`; the fan-in UDS client is
+`FaninTapClient` in `jasper/route_latency/tap_client.py`.
+
+The raw control verbs still work for a manual arm/disarm — the harness's fan-in
+transport speaks exactly these (`analyze --tap-events` reads any JSONL path):
 
 ```sh
-# 1. Arm (disarm with TAP_DISARM):
+# Manual arm/disarm (equivalent to what `--tap-transport fanin` does):
 printf 'TAP_ARM {"threshold":0.2,"refractory_ms":250}\n' \
   | socat - UNIX-CONNECT:/run/jasper-fanin/control.sock
 printf 'TAP_DISARM\n' | socat - UNIX-CONNECT:/run/jasper-fanin/control.sock
 
-# 2. Analyze against the fan-in JSONL (mic-wav / other args as today):
+# Analyze against the fan-in JSONL directly (if you armed by hand):
 python -m jasper.cli.route_latency_harness analyze \
   --tap-events /run/jasper-fanin/impulse-tap.jsonl \
   --mic-detections <capture>.jsonl <other args as today>
