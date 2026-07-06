@@ -30,6 +30,9 @@ from jasper.audio_runtime_plan import (
     DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
     DEFAULT_OUTPUTD_PERIOD_FRAMES,
     DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES,
+    OUTPUTD_CONTENT_BUFFER_KEY,
+    OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER,
+    OUTPUTD_PERIOD_KEY,
     build_audio_runtime_plan,
     coupling_supported_for_route,
     correction_latency_eligibility,
@@ -40,6 +43,8 @@ from jasper.audio_runtime_plan import (
     fanin_output_buffer_action,
     lean_capture_kwargs,
     low_latency_feature_flags,
+    outputd_content_buffer_pair_error,
+    outputd_env_content_buffer_pair_error,
     outputd_latency_floor_actions,
     resolve_audio_route_profile,
     route_owned_env_actions,
@@ -185,6 +190,75 @@ def test_outputd_latency_floor_actions_set_usb_route_content_buffer():
     by_key = {action.key: action for action in actions}
     assert by_key["JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"].action == "set"
     assert by_key["JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"].value == "1536"
+
+
+def test_usb_low_latency_without_dac_floor_keeps_outputd_pair_coherent():
+    plan = build_audio_runtime_plan(
+        profile_id="",
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+    )
+
+    period = plan.setting(OUTPUTD_PERIOD_KEY).value
+    content_buffer = plan.setting(OUTPUTD_CONTENT_BUFFER_KEY).value
+    assert period == DEFAULT_OUTPUTD_PERIOD_FRAMES
+    assert content_buffer == DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
+    assert content_buffer >= OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER * period
+    assert any("suppressing the low-latency route buffer" in w for w in plan.warnings)
+
+    actions = outputd_latency_floor_actions(
+        profile_id="",
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        outputd_env={},
+    )
+    by_key = {action.key: action for action in actions}
+    assert by_key[OUTPUTD_PERIOD_KEY].action == "unset"
+    assert by_key[OUTPUTD_CONTENT_BUFFER_KEY].action == "unset"
+
+
+def test_usb_low_latency_with_dac_floor_keeps_shipped_pair():
+    plan = build_audio_runtime_plan(
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        outputd_env={
+            OUTPUTD_PERIOD_KEY: "128",
+            OUTPUTD_CONTENT_BUFFER_KEY: "1536",
+        },
+    )
+
+    assert plan.setting(OUTPUTD_PERIOD_KEY).value == 128
+    assert (
+        plan.setting(OUTPUTD_CONTENT_BUFFER_KEY).value
+        == DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
+    )
+    assert not any("suppressing the low-latency route buffer" in w for w in plan.warnings)
+
+
+def test_python_outputd_buffer_contract_matches_rust_validator():
+    config_rs = (ROOT / "rust" / "jasper-outputd" / "src" / "config.rs").read_text(
+        encoding="utf-8"
+    )
+
+    assert "fn validate_buffer(" in config_rs
+    assert "period_frames.saturating_mul(2)" in config_rs
+    assert "minimum ALSA jitter margin" in config_rs
+    assert OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER == 2
+    assert outputd_content_buffer_pair_error(
+        period_frames=1024,
+        content_buffer_frames=1536,
+    ) == (
+        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536 must be >= "
+        "2 x JASPER_OUTPUTD_PERIOD_FRAMES=1024 (minimum ALSA jitter margin)"
+    )
+    assert outputd_env_content_buffer_pair_error(
+        base_env={},
+        outputd_env={
+            OUTPUTD_CONTENT_BUFFER_KEY: "1536",
+        },
+    ) == (
+        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536 must be >= "
+        "2 x JASPER_OUTPUTD_PERIOD_FRAMES=1024 (minimum ALSA jitter margin)"
+    )
 
 
 def test_outputd_latency_floor_actions_unset_when_operator_env_owns_key():

@@ -10,14 +10,23 @@
 # disappear while the saved env still names its ALSA PCM; outputd then fails
 # before systemd restarts it. Reconcile here with --no-restart so the next
 # built-in Restart=on-failure attempt reads the current single-DAC/fake env
-# instead of replaying stale dual-DAC config. This helper is deliberately
-# fail-open and always exits 0.
+# instead of replaying stale dual-DAC config.
+#
+# Config exits (78) normally park the unit. One observed hotplug class can be
+# repaired by the same reconcile after the USB DAC settles, so this helper gives
+# exit 78 one bounded reconcile + retry per short window. Persistent bad config
+# still parks instead of crash-looping into StartLimitAction=reboot. This helper
+# is deliberately fail-open and always exits 0.
 
 set -uo pipefail
 
 RESULT="${SERVICE_RESULT:-unknown}"
 STATUS="${EXIT_STATUS:-}"
 RECONCILE="${JASPER_AUDIO_HARDWARE_RECONCILE:-/usr/local/sbin/jasper-audio-hardware-reconcile}"
+SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
+CONFIG_EXIT_STATUS=78
+CONFIG_RETRY_STATE="${JASPER_OUTPUTD_CONFIG_RETRY_STATE:-/run/jasper-outputd/config-retry.stamp}"
+CONFIG_RETRY_WINDOW_SEC="${JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC:-300}"
 
 log() {
     local outcome="$1"
@@ -25,13 +34,51 @@ log() {
     echo "event=outputd.failure_reconcile.${outcome} result=${RESULT} exit_status=${STATUS:-none} ${*}" >&2
 }
 
-if [[ "$RESULT" == "success" || "$RESULT" == "condition" || "$STATUS" == "78" ]]; then
+now_sec() {
+    date +%s
+}
+
+config_retry_recent() {
+    local last now age
+    [[ -f "$CONFIG_RETRY_STATE" ]] || return 1
+    last="$(cat "$CONFIG_RETRY_STATE" 2>/dev/null || true)"
+    [[ "$last" =~ ^[0-9]+$ ]] || return 1
+    now="$(now_sec)"
+    age=$((now - last))
+    [[ "$age" -ge 0 && "$age" -lt "$CONFIG_RETRY_WINDOW_SEC" ]]
+}
+
+mark_config_retry() {
+    local dir
+    dir="$(dirname "$CONFIG_RETRY_STATE")"
+    mkdir -p "$dir" 2>/dev/null || true
+    now_sec > "$CONFIG_RETRY_STATE" 2>/dev/null || true
+}
+
+if [[ "$RESULT" == "success" || "$RESULT" == "condition" ]]; then
     log skip reason=non_retrying_stop
     exit 0
 fi
 
 if [[ ! -x "$RECONCILE" ]]; then
     log skip reason=reconciler_unavailable path="$RECONCILE"
+    exit 0
+fi
+
+if [[ "$STATUS" == "$CONFIG_EXIT_STATUS" ]]; then
+    if config_retry_recent; then
+        log skip reason=config_retry_already_attempted state="$CONFIG_RETRY_STATE"
+        exit 0
+    fi
+    mark_config_retry
+    if "$RECONCILE" --reason outputd-config-failure --no-restart; then
+        "$SYSTEMCTL" reset-failed jasper-outputd.service >/dev/null 2>&1 || true
+        "$SYSTEMCTL" --no-block restart jasper-outputd.service >/dev/null 2>&1 || true
+        log retry reason=config_reconciled state="$CONFIG_RETRY_STATE"
+    else
+        rc=$?
+        log failed reason=config_reconciler_nonzero rc="$rc" state="$CONFIG_RETRY_STATE"
+    fi
     exit 0
 fi
 

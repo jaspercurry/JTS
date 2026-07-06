@@ -18,6 +18,7 @@ from jasper.audio_runtime_plan import (
     OUTPUTD_LATENCY_KEYS,
     build_audio_runtime_plan,
     build_audio_runtime_plan_from_system,
+    outputd_env_content_buffer_pair_error,
     outputd_latency_floor_actions,
     route_owned_env_actions,
     resolve_audio_route_profile,
@@ -100,6 +101,20 @@ def _cmd_outputd_floor_actions(args: argparse.Namespace) -> int:
             print(f"set {action.key} {action.value}")
         else:
             print(f"unset {action.key}")
+    return 0
+
+
+def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
+    base = read_env_file_state(args.base_env)
+    outputd = read_env_file_state(args.outputd_env)
+    detail = outputd_env_content_buffer_pair_error(
+        base_env=base.values,
+        outputd_env=outputd.values,
+    )
+    if detail is not None:
+        print(detail)
+        return 1
+    print("ok")
     return 0
 
 
@@ -191,6 +206,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=runtime_overrides_path(),
     )
     outputd_floor.set_defaults(func=_cmd_outputd_floor_actions)
+
+    validate_outputd = sub.add_parser(
+        "validate-outputd-env",
+        help="validate reconciler-owned outputd.env before installing it",
+    )
+    validate_outputd.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
+    validate_outputd.add_argument("--outputd-env", default=DEFAULT_OUTPUTD_ENV_PATH)
+    validate_outputd.set_defaults(func=_cmd_validate_outputd_env)
 
     route_actions = sub.add_parser(
         "route-actions",

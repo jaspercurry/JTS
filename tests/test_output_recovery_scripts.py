@@ -81,7 +81,66 @@ def test_outputd_failure_reconcile_refreshes_env_for_retry(tmp_path: Path) -> No
     assert "event=outputd.failure_reconcile.ok" in result.stderr
 
 
-def test_outputd_failure_reconcile_skips_non_retrying_stops(tmp_path: Path) -> None:
+def test_outputd_failure_reconcile_retries_config_exit_once(tmp_path: Path) -> None:
+    log = tmp_path / "reconcile.log"
+    systemctl_log = tmp_path / "systemctl.log"
+    fake_reconcile = _write_executable(
+        tmp_path / "jasper-audio-hardware-reconcile",
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$JASPER_TEST_LOG\"\n",
+    )
+    fake_systemctl = _write_executable(
+        tmp_path / "systemctl",
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n",
+    )
+
+    env = os.environ.copy()
+    env.update({
+        "JASPER_AUDIO_HARDWARE_RECONCILE": str(fake_reconcile),
+        "JASPER_SYSTEMCTL": str(fake_systemctl),
+        "JASPER_TEST_LOG": str(log),
+        "JASPER_SYSTEMCTL_LOG": str(systemctl_log),
+        "JASPER_OUTPUTD_CONFIG_RETRY_STATE": str(tmp_path / "config-retry.stamp"),
+        "SERVICE_RESULT": "exit-code",
+        "EXIT_STATUS": "78",
+    })
+
+    result = subprocess.run(
+        [str(REPO / "deploy" / "bin" / "jasper-outputd-failure-reconcile")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert log.read_text(encoding="utf-8").strip() == (
+        "--reason outputd-config-failure --no-restart"
+    )
+    assert systemctl_log.read_text(encoding="utf-8").splitlines() == [
+        "reset-failed jasper-outputd.service",
+        "--no-block restart jasper-outputd.service",
+    ]
+    assert "event=outputd.failure_reconcile.retry" in result.stderr
+    assert "reason=config_reconciled" in result.stderr
+
+    log.write_text("", encoding="utf-8")
+    systemctl_log.write_text("", encoding="utf-8")
+    second = subprocess.run(
+        [str(REPO / "deploy" / "bin" / "jasper-outputd-failure-reconcile")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert log.read_text(encoding="utf-8") == ""
+    assert systemctl_log.read_text(encoding="utf-8") == ""
+    assert "event=outputd.failure_reconcile.skip" in second.stderr
+    assert "reason=config_retry_already_attempted" in second.stderr
+
+
+def test_outputd_failure_reconcile_skips_normal_stops(tmp_path: Path) -> None:
     log = tmp_path / "reconcile.log"
     fake_reconcile = _write_executable(
         tmp_path / "jasper-audio-hardware-reconcile",
@@ -93,8 +152,8 @@ def test_outputd_failure_reconcile_skips_non_retrying_stops(tmp_path: Path) -> N
     env.update({
         "JASPER_AUDIO_HARDWARE_RECONCILE": str(fake_reconcile),
         "JASPER_TEST_LOG": str(log),
-        "SERVICE_RESULT": "exit-code",
-        "EXIT_STATUS": "78",
+        "SERVICE_RESULT": "success",
+        "EXIT_STATUS": "0",
     })
 
     result = subprocess.run(

@@ -40,7 +40,7 @@ For every hot-pluggable component, all four must hold:
 
 | Component | Owner | Unplug | Plug-in | Notes |
 |---|---|---|---|---|
-| **Output DAC / Apple dongle** | `jasper-outputd` + `jasper-audio-hardware-reconcile` + `jasper-dongle-recover` | clean park / failure-triggered reconcile | udev → reconcile/recover restart | **Fixed 2026-06-22.** ALSA control events plus Apple USB remove helper wake reconcile; outputd refreshes env before retry |
+| **Output DAC / Apple dongle** | `jasper-outputd` + `jasper-audio-hardware-reconcile` + `jasper-dongle-recover` | clean park / failure-triggered reconcile | udev → reconcile/recover restart | **Fixed 2026-06-22; tightened 2026-07-06.** ALSA control events plus Apple USB remove helper wake reconcile; outputd refreshes env before retry, and config exits get one bounded reconcile/retry before parking |
 | **Microphone (XVF3800 / USB)** | `jasper-voice` + `jasper-aec-reconcile` | clean park | udev → reconcile restart | **Fixed 2026-06-21.** Was the original gap: crash-loop → reboot |
 | **Satellites (dial / AMOLED)** | `jasper-control` (network peers) | reported offline | re-probe online | **Already resilient** — Wi-Fi/HTTP clients, no device-bound unit |
 | **HID accessories** | `jasper-input` | in-process udev | in-process udev | **Already resilient** — pyudev monitor, no per-device unit |
@@ -221,12 +221,17 @@ The repaired output ladder is:
    activate `SYSTEMD_WANTS`.
 3. **outputd failure** runs
    [`jasper-outputd-failure-reconcile`](../deploy/bin/jasper-outputd-failure-reconcile)
-   from `ExecStopPost`. It skips normal stops, `ExecCondition` parks, and
-   `EX_CONFIG=78`; for retryable failures it invokes
-   `jasper-audio-hardware-reconcile --reason outputd-failure --no-restart`.
-   The next built-in `Restart=on-failure` attempt then reads fresh
+   from `ExecStopPost`. It skips normal stops and `ExecCondition` parks.
+   For ordinary retryable failures it invokes
+   `jasper-audio-hardware-reconcile --reason outputd-failure --no-restart`;
+   the next built-in `Restart=on-failure` attempt then reads fresh
    `outputd.env` (single-Apple `single_alsa` when one DAC remains, or
-   `fake` when none remain).
+   `fake` when none remain). For `EX_CONFIG=78`, where
+   `RestartPreventExitStatus=78` would normally park immediately, the
+   helper gives the system one short-window reconcile plus explicit
+   `systemctl --no-block restart jasper-outputd.service`. A second config
+   exit inside that window skips retry and leaves the unit parked instead
+   of restart-looping into `StartLimitAction=reboot`.
 
 `/sound/` also keeps the saved speaker topology separate from the current
 observed hardware. A saved dual-Apple active topology is not silently
@@ -289,8 +294,8 @@ it directly; that daemon should adopt the same profile/reconciler gate.
 - `main()` exits `66` on `InputDeviceUnavailable`; the doctor reports
   expected-idle when the marker is present.
 - Output hardware hotplug and outputd-failure helpers request reconcile
-  without blocking udev/systemd, skip non-retrying stops, and preserve
-  the outputd `EX_CONFIG=78` park
+  without blocking udev/systemd, skip non-retrying stops, and give outputd
+  `EX_CONFIG=78` one bounded reconcile/retry before preserving the park
   ([`tests/test_output_recovery_scripts.py`](../tests/test_output_recovery_scripts.py),
   [`tests/test_outputd_wiring.py`](../tests/test_outputd_wiring.py),
   [`tests/test_outputd_systemd.py`](../tests/test_outputd_systemd.py)).
@@ -348,4 +353,4 @@ session):**
 - [`deploy/systemd/jasper-accessory-reconcile.service`](../deploy/systemd/jasper-accessory-reconcile.service) — optional accessory mic profile gate
 - [`deploy/systemd/jasper-wiim-remote-mic.service`](../deploy/systemd/jasper-wiim-remote-mic.service) — optional BLE remote mic adapter
 
-Last verified: 2026-06-26
+Last verified: 2026-07-06

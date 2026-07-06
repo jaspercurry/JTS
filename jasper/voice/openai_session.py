@@ -833,7 +833,10 @@ class OpenAIRealtimeTurn:
     def _on_user_text_done(self, text: str) -> None:
         text = text.strip()
         if text:
-            self._user_transcript_parts.append(text)
+            current = self.user_transcript()
+            merged = _merge_transcript_completion(current, text)
+            if merged != current:
+                self._user_transcript_parts = [merged]
 
     def _on_connection_lost(self) -> None:
         if self._released or self._turn_lost:
@@ -2276,6 +2279,43 @@ def _extract_function_calls(response) -> list:
         item for item in output
         if _event_field(item, "type") == "function_call"
     ]
+
+
+def _merge_transcript_completion(current: str, text: str) -> str:
+    """Merge one completed user transcript into the turn aggregate.
+
+    Grok can emit progressive ``input_audio_transcription.completed`` strings
+    for one user item. Treat prefix-shaped completions as refinements instead
+    of appending them into ``/chat`` as repeated commands.
+    """
+    current = current.strip()
+    text = text.strip()
+    if not current:
+        return text
+    if not text:
+        return current
+    if _transcript_is_prefix(current, text):
+        return text
+    if _transcript_is_prefix(text, current):
+        return current
+    return f"{current} {text}"
+
+
+def _transcript_is_prefix(short: str, long: str) -> bool:
+    short_key = _transcript_compare_key(short)
+    long_key = _transcript_compare_key(long)
+    if not short_key:
+        return True
+    return long_key == short_key or long_key.startswith(f"{short_key} ")
+
+
+def _transcript_compare_key(text: str) -> str:
+    boundary = ".,!?;:"
+    return " ".join(
+        token.strip(boundary).casefold()
+        for token in text.split()
+        if token.strip(boundary)
+    )
 
 
 def _read_initial_connect_budget_env() -> float:

@@ -15,11 +15,11 @@ explain the current intent.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Mapping, TypedDict, cast
 
@@ -67,6 +67,10 @@ DEFAULT_OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 DEFAULT_FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 DEFAULT_GROUPING_ENV_PATH = "/var/lib/jasper/grouping.env"
 
+OUTPUTD_PERIOD_KEY = "JASPER_OUTPUTD_PERIOD_FRAMES"
+OUTPUTD_CONTENT_BUFFER_KEY = "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
+OUTPUTD_DAC_BUFFER_KEY = "JASPER_OUTPUTD_DAC_BUFFER_FRAMES"
+OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER = 2
 DEFAULT_OUTPUTD_PERIOD_FRAMES = 1024
 DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES = 4096
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES = 3072
@@ -120,9 +124,9 @@ UAC2_LOW_LATENCY_EXPECTED_ATTRS = {
 OUTPUTD_LATENCY_KEYS = (
     "JASPER_CAMILLA_CHUNKSIZE",
     "JASPER_CAMILLA_TARGET_LEVEL",
-    "JASPER_OUTPUTD_PERIOD_FRAMES",
-    "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES",
-    "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
+    OUTPUTD_PERIOD_KEY,
+    OUTPUTD_CONTENT_BUFFER_KEY,
+    OUTPUTD_DAC_BUFFER_KEY,
 )
 AUDIO_RUNTIME_OVERRIDE_KEYS = frozenset(
     OUTPUTD_LATENCY_KEYS
@@ -530,6 +534,78 @@ class AudioRuntimePlan:
             camilla_config_hash=self.camilla_config_hash,
             dac_profile_id=None if self.profile_id == "unknown" else self.profile_id,
         )
+
+
+def minimum_outputd_buffer_frames(period_frames: int) -> int:
+    """Minimum outputd ALSA buffer for one period, matching Rust validation."""
+
+    return period_frames * OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER
+
+
+def outputd_buffer_pair_error(
+    *,
+    buffer_name: str,
+    buffer_frames: int,
+    period_name: str,
+    period_frames: int,
+) -> str | None:
+    """Return Rust-shaped detail when an outputd buffer/period pair is invalid."""
+
+    min_buffer_frames = minimum_outputd_buffer_frames(period_frames)
+    if buffer_frames >= min_buffer_frames:
+        return None
+    return (
+        f"{buffer_name}={buffer_frames} must be >= "
+        f"{OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER} x {period_name}={period_frames} "
+        "(minimum ALSA jitter margin)"
+    )
+
+
+def outputd_content_buffer_pair_error(
+    *,
+    period_frames: int,
+    content_buffer_frames: int,
+) -> str | None:
+    """Return the content-buffer invariant error that maps to outputd exit 78."""
+
+    return outputd_buffer_pair_error(
+        buffer_name=OUTPUTD_CONTENT_BUFFER_KEY,
+        buffer_frames=content_buffer_frames,
+        period_name=OUTPUTD_PERIOD_KEY,
+        period_frames=period_frames,
+    )
+
+
+def outputd_env_content_buffer_pair_error(
+    *,
+    base_env: Mapping[str, str] | None = None,
+    outputd_env: Mapping[str, str] | None = None,
+) -> str | None:
+    """Validate the effective outputd content buffer pair for env-file writers.
+
+    Precedence mirrors the service contract: packaged defaults, then
+    ``/etc/jasper/jasper.env``, then the reconciler-owned ``outputd.env``.
+    """
+
+    values = [dict(base_env or {}), dict(outputd_env or {})]
+    period_frames, period_error = _effective_outputd_positive_int(
+        OUTPUTD_PERIOD_KEY,
+        default=DEFAULT_OUTPUTD_PERIOD_FRAMES,
+        layers=values,
+    )
+    if period_error is not None:
+        return period_error
+    content_buffer_frames, content_error = _effective_outputd_positive_int(
+        OUTPUTD_CONTENT_BUFFER_KEY,
+        default=DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
+        layers=values,
+    )
+    if content_error is not None:
+        return content_error
+    return outputd_content_buffer_pair_error(
+        period_frames=period_frames,
+        content_buffer_frames=content_buffer_frames,
+    )
 
 
 def coupling_supported_for_route(coupling: str, route_mode: RouteMode) -> CouplingSupport:
@@ -1120,22 +1196,21 @@ def build_audio_runtime_plan(
         target_setting=camilla_target_setting,
         coupling=str(coupling_setting.value),
     )
-    settings = [
-        camilla_chunksize_setting,
-        camilla_target_setting,
-        _resolve_profile_floor_int(
-            key="JASPER_OUTPUTD_PERIOD_FRAMES",
-            default=DEFAULT_OUTPUTD_PERIOD_FRAMES,
-            floor_value=getattr(floor, "outputd_period_frames", None),
-            base_env=base_values,
-            override_env=override_values,
-            generated_env=outputd_values,
-            base_label=base_env_label,
-            override_label=override_label,
-            generated_label=outputd_env_label,
-            profile_id=profile_id,
-        ),
-        _resolve_outputd_content_buffer_int(
+    outputd_period_setting = _resolve_profile_floor_int(
+        key=OUTPUTD_PERIOD_KEY,
+        default=DEFAULT_OUTPUTD_PERIOD_FRAMES,
+        floor_value=getattr(floor, "outputd_period_frames", None),
+        base_env=base_values,
+        override_env=override_values,
+        generated_env=outputd_values,
+        base_label=base_env_label,
+        override_label=override_label,
+        generated_label=outputd_env_label,
+        profile_id=profile_id,
+    )
+    outputd_content_buffer_setting = _coherent_outputd_content_buffer_setting(
+        period_setting=outputd_period_setting,
+        content_buffer_setting=_resolve_outputd_content_buffer_int(
             route=route_profile,
             base_env=base_values,
             override_env=override_values,
@@ -1144,8 +1219,14 @@ def build_audio_runtime_plan(
             override_label=override_label,
             generated_label=outputd_env_label,
         ),
+    )
+    settings = [
+        camilla_chunksize_setting,
+        camilla_target_setting,
+        outputd_period_setting,
+        outputd_content_buffer_setting,
         _resolve_profile_floor_int(
-            key="JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
+            key=OUTPUTD_DAC_BUFFER_KEY,
             default=DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
             floor_value=getattr(floor, "outputd_dac_buffer_frames", None),
             base_env=base_values,
@@ -1544,34 +1625,34 @@ def outputd_latency_floor_actions(
     deciding whether a set/unset changes the file.
     """
 
-    del outputd_env
     base_values = dict(base_env or {})
     override_values = dict(overrides or {})
     profile = (profile_id or "").strip()
-    floor = latency_floor_for(profile) if profile else None
-    route = resolve_audio_route_profile(base_values)
-    floor_values: dict[str, int] = {}
-    if floor is not None:
-        floor_values = {
-            "JASPER_CAMILLA_CHUNKSIZE": floor.camilla_chunksize,
-            "JASPER_CAMILLA_TARGET_LEVEL": floor.camilla_target_level,
-            "JASPER_OUTPUTD_PERIOD_FRAMES": floor.outputd_period_frames,
-            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES": floor.outputd_dac_buffer_frames,
-        }
-    if route.route_id == ROUTE_USB_LOW_LATENCY_48K:
-        floor_values["JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"] = (
-            DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
-        )
+    plan = build_audio_runtime_plan(
+        profile_id=profile,
+        base_env=base_values,
+        outputd_env=outputd_env,
+        overrides=override_values,
+        route_mode="solo",
+    )
 
     actions: list[RuntimeEnvAction] = []
     for key in OUTPUTD_LATENCY_KEYS:
         override_value, _ = _positive_int(_raw(override_values, key))
+        setting = plan.setting(key)
         if override_value is not None:
-            actions.append(RuntimeEnvAction("set", key, str(override_value)))
-        elif key in base_values or key not in floor_values:
+            actions.append(RuntimeEnvAction("set", key, str(setting.value)))
+        elif key in base_values:
             actions.append(RuntimeEnvAction("unset", key))
+        elif setting.source_kind in {"device_profile", "route_policy"}:
+            if key == OUTPUTD_CONTENT_BUFFER_KEY and int(setting.value) == (
+                DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
+            ):
+                actions.append(RuntimeEnvAction("unset", key))
+            else:
+                actions.append(RuntimeEnvAction("set", key, str(setting.value)))
         else:
-            actions.append(RuntimeEnvAction("set", key, str(floor_values[key])))
+            actions.append(RuntimeEnvAction("unset", key))
     return tuple(actions)
 
 
@@ -1755,6 +1836,23 @@ def _raw(env: Mapping[str, str], key: str) -> str | None:
     return str(value).strip().strip("'\"")
 
 
+def _effective_outputd_positive_int(
+    key: str,
+    *,
+    default: int,
+    layers: list[Mapping[str, str]],
+) -> tuple[int, str | None]:
+    for env in reversed(layers):
+        raw = _raw(env, key)
+        if raw is None:
+            continue
+        value, error = _positive_int(raw)
+        if error is not None or value is None:
+            return default, f"{key}={raw!r} is invalid ({error})"
+        return value, None
+    return default, None
+
+
 def _resolve_profile_floor_int(
     *,
     key: str,
@@ -1879,7 +1977,7 @@ def _resolve_outputd_content_buffer_int(
     override_label: str,
     generated_label: str,
 ) -> RuntimeSetting:
-    key = "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
+    key = OUTPUTD_CONTENT_BUFFER_KEY
     operator_raw = _raw(base_env, key)
     override_raw = _raw(override_env, key)
     generated_raw = _raw(generated_env, key)
@@ -1983,6 +2081,58 @@ def _resolve_outputd_content_buffer_int(
         operator_value=operator_raw,
         generated_value=generated_raw,
         warnings=tuple(warnings),
+    )
+
+
+def _coherent_outputd_content_buffer_setting(
+    *,
+    period_setting: RuntimeSetting,
+    content_buffer_setting: RuntimeSetting,
+) -> RuntimeSetting:
+    period_frames = int(period_setting.value)
+    content_buffer_frames = int(content_buffer_setting.value)
+    detail = outputd_content_buffer_pair_error(
+        period_frames=period_frames,
+        content_buffer_frames=content_buffer_frames,
+    )
+    if detail is None:
+        return content_buffer_setting
+    if content_buffer_setting.source_kind != "route_policy":
+        return replace(
+            content_buffer_setting,
+            warnings=content_buffer_setting.warnings
+            + (
+                f"{detail}; {content_buffer_setting.key} comes from "
+                f"{content_buffer_setting.source}, so the reconciler will refuse "
+                "to write this candidate until the pair is coherent",
+            ),
+        )
+
+    repaired_value = max(
+        DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
+        minimum_outputd_buffer_frames(period_frames),
+    )
+    source_kind: SourceKind = (
+        "packaged_default"
+        if repaired_value == DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
+        else "route_policy"
+    )
+    source = (
+        "packaged systemd/outputd default"
+        if source_kind == "packaged_default"
+        else content_buffer_setting.source
+    )
+    return replace(
+        content_buffer_setting,
+        value=repaired_value,
+        source_kind=source_kind,
+        source=source,
+        warnings=content_buffer_setting.warnings
+        + (
+            f"{detail}; suppressing the low-latency route buffer until "
+            f"{OUTPUTD_PERIOD_KEY} is coherent, using "
+            f"{content_buffer_setting.key}={repaired_value}",
+        ),
     )
 
 

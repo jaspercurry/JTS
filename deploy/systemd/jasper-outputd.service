@@ -20,14 +20,17 @@ WatchdogSec=30s
 TimeoutStopSec=5s
 Restart=on-failure
 RestartSec=5
-# CONFIG-validation failures exit 78 (EX_CONFIG) and must PARK the unit
-# failed (visible on /state + doctor) instead of restart-looping:
-# restarting cannot fix bad config, and on this unit the loop escalates
-# to StartLimitAction=reboot. Measured incident (jts3, 2026-06-11): a
-# grouping lane env + a lab content-bridge retune layered into a
-# guard-rejected combination; outputd crash-looped into THREE Pi reboots
-# before the T5.1 boot-loop guard contained it. Recovery after a park:
-# fix the env, then `systemctl restart jasper-outputd`.
+# CONFIG-validation failures exit 78 (EX_CONFIG) do not use systemd's
+# built-in restart loop: persistent bad config would otherwise escalate
+# to StartLimitAction=reboot. ExecStopPost gives exit 78 one bounded
+# audio-hardware reconcile + explicit retry for transient DAC hotplug
+# shear; if the retried process exits 78 too, the helper's marker stops
+# the loop and leaves the unit parked (visible on /state + doctor).
+# Measured incident (jts3, 2026-06-11): a grouping lane env + a lab
+# content-bridge retune layered into a guard-rejected combination;
+# outputd crash-looped into THREE Pi reboots before the T5.1 boot-loop
+# guard contained it. Recovery after a persistent park: fix the env,
+# then `systemctl restart jasper-outputd`.
 RestartPreventExitStatus=78
 
 # Final-output owner. This is more important than Camilla for speaker
@@ -99,9 +102,11 @@ EnvironmentFile=-/var/lib/jasper/grouping-outputd.env
 # in the outputd cutover topology it writes only to snd-aloop.
 ExecCondition=/bin/sh -c 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"; card="$${JASPER_AUDIO_DAC_CARD:-}"; id="$${JASPER_AUDIO_DAC_ID:-unknown}"; if [ "$$backend" = "fake" ] || [ -z "$$card" ] || [ -e "/proc/asound/$$card" ]; then exit 0; fi; echo "event=outputd.output_device_gate.park reason=missing_dac output_dac_id=$$id output_dac_card=$$card outputd_backend=$$backend" >&2; exit 1'
 # On an outputd crash, refresh the output-hardware env before systemd's
-# built-in Restart=on-failure retry. The helper skips normal stops,
-# ExecCondition parks, and EX_CONFIG=78; it uses --no-restart so it never
-# controls jasper-outputd from inside this unit's stop transaction.
+# built-in Restart=on-failure retry. The helper skips normal stops and
+# ExecCondition parks. For EX_CONFIG=78 it performs one bounded reconcile
+# plus no-block outputd retry, then parks on a repeated config exit. It uses
+# --no-restart for the reconcile itself so that reconciler never controls
+# jasper-outputd from inside this unit's stop transaction.
 ExecStopPost=-/usr/local/sbin/jasper-outputd-failure-reconcile
 ExecStart=/opt/jasper/bin/jasper-outputd
 
