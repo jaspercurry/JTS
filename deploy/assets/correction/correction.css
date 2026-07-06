@@ -681,8 +681,8 @@ details.disclosure > .disclosure-body {
    proposer. Shown only on measurement screens (gated by the
    envelope's tuning_llm.offered); the two actions each make one
    per-tap paid call. Reads canonical tokens like the rest of the
-   page. Untrusted model text reaches the DOM only via textContent
-   / escaped h() in main.js — never innerHTML.
+   page. Untrusted model text reaches the DOM only via
+   createElement + textContent in main.js — never innerHTML.
    ============================================================ */
 .tuning-panel {
   border-radius: var(--radius-md);

@@ -258,3 +258,46 @@ def test_response_contract_advertises_new_actions():
     assert contract["target_move_limits"]["target_ids"] == sorted(
         {"flat", "neutral", "warm", "bright"}
     )
+
+
+def test_mirrored_safety_literals_pinned_to_their_sources():
+    """response.py keeps three comment-documented mirrors of correction
+    vocabulary as literals (so it stays free of the numpy-importing
+    correction package). Pin each against its source of truth — drift here
+    silently rejects valid proposals or accepts values the target math
+    clamps differently.
+    """
+    import numpy as np
+
+    from jasper.correction import strategy, target
+
+    # 1. The named-target vocabulary mirrors TARGET_PROFILES exactly.
+    assert R._TARGET_IDS == set(strategy.TARGET_PROFILES)
+
+    # 2. The warmth bounds mirror house_curve's clip range — checked
+    #    BEHAVIORALLY (the clip is an inline np.clip, not an exported
+    #    constant): values at the bounds are fixed points, values beyond
+    #    them clamp back to the bound's curve.
+    freqs = np.geomspace(30.0, 10_000.0, 24)
+    lo_curve = target.house_curve(freqs, warmth=R.TARGET_WARMTH_MIN)
+    hi_curve = target.house_curve(freqs, warmth=R.TARGET_WARMTH_MAX)
+    assert np.allclose(
+        target.house_curve(freqs, warmth=R.TARGET_WARMTH_MIN - 5.0), lo_curve
+    )
+    assert np.allclose(
+        target.house_curve(freqs, warmth=R.TARGET_WARMTH_MAX + 5.0), hi_curve
+    )
+    # The two bounds are genuinely different curves (the clip range is
+    # non-degenerate), so the fixed-point check above is meaningful.
+    assert not np.allclose(lo_curve, hi_curve)
+
+    # 3. The fallback caps equal the DEFAULT shipped strategy's matching
+    #    subset (balanced — apply-time re-validation always re-derives the
+    #    live caps, so this fallback can only ever tighten).
+    assert strategy.DEFAULT_CORRECTION_STRATEGY_ID == "balanced"
+    balanced = strategy.CORRECTION_STRATEGIES["balanced"].to_dict()
+    for key, value in R._CORRECTION_FALLBACK_BOUNDS.items():
+        assert balanced[key] == value, (
+            f"_CORRECTION_FALLBACK_BOUNDS[{key!r}]={value!r} drifted from "
+            f"the balanced strategy's {balanced[key]!r}"
+        )

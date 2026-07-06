@@ -167,20 +167,40 @@ def test_schema_version_is_four():
     assert env["schema_version"] == 4
 
 
-def test_tuning_llm_block_offered_on_review_shape_pinned():
+def test_tuning_llm_block_offered_on_review_shape_pinned(monkeypatch):
     # P6: the affordance block always carries `offered` (measurement-screen
     # gate) + `available`/`provider`; `nudge` when no OpenAI key is
     # configured. READY maps to the review screen (a measurement screen).
+    # HERMETIC: availability is monkeypatched so BOTH branches are pinned
+    # deterministically regardless of the test host's key state (a keyed
+    # dev box must not silently skip the nudge assertions).
+    from jasper.calibration_agent import key_provisioning as kp
+
+    monkeypatch.setattr(
+        kp, "availability",
+        lambda **_: kp.TuningAvailability(
+            available=False, model="", nudge="Add an OpenAI key at /voice …",
+        ),
+    )
     env = envelope.build_envelope(_FakeSession(SessionState.READY))
     block = env["tuning_llm"]
     assert block["offered"] is True
     assert block["provider"] == "openai"
-    assert "available" in block
-    # Availability depends on the runtime key; when absent, a nudge is
-    # present and no model id is leaked.
-    if not block["available"]:
-        assert isinstance(block["nudge"], str) and block["nudge"]
-        assert "model" not in block
+    # Offered-but-unavailable: the nudge is present, no model id leaks.
+    assert block["available"] is False
+    assert isinstance(block["nudge"], str) and block["nudge"]
+    assert "model" not in block
+
+    monkeypatch.setattr(
+        kp, "availability",
+        lambda **_: kp.TuningAvailability(available=True, model="gpt-5.4"),
+    )
+    env2 = envelope.build_envelope(_FakeSession(SessionState.READY))
+    block2 = env2["tuning_llm"]
+    assert block2["offered"] is True
+    assert block2["available"] is True
+    assert block2["model"] == "gpt-5.4"
+    assert "nudge" not in block2
 
 
 def test_tuning_llm_not_offered_before_measurement():
