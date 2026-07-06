@@ -637,10 +637,12 @@ def _validate_target_move_action(
     # model schema requires BOTH fields, so an unused warmth arrives as
     # 0.0 alongside a named target — preferring target_id avoids reading
     # that sentinel as a competing move. A warmth move sends target_id="".
-    has_target = isinstance(target_id, str) and target_id.strip() != ""
+    # (Inline isinstance narrowing — mypy does not propagate narrowing
+    # through an aliased boolean, and this function is new code under the
+    # required CI mypy gate.)
     has_warmth = isinstance(warmth, (int, float)) and not isinstance(warmth, bool)
 
-    if has_target:
+    if isinstance(target_id, str) and target_id.strip():
         tid = target_id.strip().lower()
         if tid not in _TARGET_IDS:
             issues.append(_issue(
