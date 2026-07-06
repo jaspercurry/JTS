@@ -9,6 +9,12 @@
 > [docs/HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md),
 > and [docs/HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md). This
 > doc is the *plan*; those stay the source of truth for what ships.
+>
+> **2026-07-06: the hardware-free track is COMPLETE.** All phases
+> (P1a/P1b, P2, P3a/P3b, P4, P5, P6, P7) are merged to `main` — twelve
+> program PRs, each through the adversarial-review gate, ending with
+> P6's live validation against real `gpt-5.4`. What remains is the
+> on-device H-track (H0–H4, §5): prove the loop on real hardware.
 
 ## TL;DR
 
@@ -395,7 +401,14 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   with a nudge when no OpenAI key is configured); surface the interpreter in
   the flow; the confirm-gated proposer with simulate-before-apply. (Paid-call
   cost discipline per AGENTS.md — never in CI.)
-  *(Status: implemented hardware-free on `claude/p6-tuning-llm`.)* Shipped:
+  *(Status: MERGED #1170, 2026-07-06 — through Fable-max adversarial
+  review + focused re-review, then LIVE-VALIDATED against real `gpt-5.4`
+  via the capped harness (~$0.12 total): the first run caught reasoning
+  tokens consuming `max_output_tokens` on the Responses API
+  (`status=incomplete`), fixed by pinning `reasoning: {effort: low}` and
+  moving one shared `TUNING_LLM_MAX_OUTPUT_TOKENS` (2500) to the model
+  boundary; fixtures are refreshed from the real captures. H-track: the
+  on-device browser pass of the panel remains.)* Shipped:
   (1) **key seam** — `jasper/calibration_agent/key_provisioning.py` reads
   `OPENAI_API_KEY` FRESH from the `jasper-secrets` compartment file
   (`/var/lib/jasper-secrets/voice_keys.env`); `jasper-correction-web` is NOT a
@@ -608,4 +621,4 @@ Follows the JTS orchestrator pattern (memory: `orchestrator-pattern-default`).
   comparison basis, confirmatory re-measure before revert) now in P4's bullet
   in §4.
 
-Last verified: 2026-07-03
+Last verified: 2026-07-06
