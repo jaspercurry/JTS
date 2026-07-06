@@ -447,10 +447,15 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   schema v4 `tuning_llm` block. Fixture-driven tests only (real-shape OpenAI fixtures
   under `tests/fixtures/`); `scripts/tuning-llm-live-check.py` is the
   budget-capped (`--yes-spend`, 2-call cap, cost estimate) live-validation +
-  fixture-capture harness. **Spend accounting is observable (per-call
-  `event=` token logs) but not yet ledgered into `jasper/usage.py`** — a
-  follow-up (cross-process SQLite write from root correction-web + a pricing
-  row for the tuning model).
+  fixture-capture harness. **Spend accounting is observable AND ledgered**
+  (follow-up SHIPPED): each paid call is gated before (a `SpendCap` over
+  `household_usage_reader` — voice + tuning ledgers summed — refuses with
+  HTTP 429 at the household daily cap) and recorded after into a separate
+  `usage-tuning.db` that root correction-web alone writes (never the
+  jasper-voice-owned `usage.db`), pricing synthesized text-modality details so
+  `gpt-5.4`'s text-only rate card doesn't record $0. Fail-soft record,
+  fail-open cap read; voice sessions refuse once tuning spend exhausts the
+  shared cap. See `docs/HANDOFF-calibration-agent.md` "Cost discipline".
 - **P7 — Active-crossover measurement flow (hardware-free shaping).** *(Status:
   implemented hardware-free on `claude/p7-crossover-flow`, adversarial-review
   remediation applied — real-payload-shape consume guard, `hard_timeout_ms`

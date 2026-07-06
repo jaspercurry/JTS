@@ -13,15 +13,20 @@ from pathlib import Path
 import pytest
 
 from jasper.usage import (
+    AggregateUsageReader,
     BillableActivityMeter,
+    DEFAULT_TUNING_USAGE_DB,
+    DEFAULT_USAGE_DB,
     _SESSIONS_TABLE_DDL,
     _UNRECORDED_SESSION,
     Pricing,
     SpendCap,
     UsageStore,
+    household_usage_reader,
     load_default_pricing,
     load_pricing_overrides,
     pricing_for_model,
+    tuning_usage_db_path,
 )
 
 
@@ -867,3 +872,177 @@ def test_read_only_open_performs_no_writes(tmp_path: Path):
     assert not os.path.exists(str(db) + "-journal")
     assert not os.path.exists(str(db) + "-wal")
     assert db.read_bytes() == before
+
+# ---------------------------------------------------------------------------
+# Household aggregation seam — AggregateUsageReader + household_usage_reader
+# ---------------------------------------------------------------------------
+
+
+def _record_cost(db_path: str, cost_usd: float, *, provider: str = "openai") -> None:
+    """Write one closed session with an explicit cost into a usage DB."""
+    store = UsageStore(db_path)
+    sid = store.open_session(provider=provider)
+    # Force the row's stored cost to a known value regardless of pricing.
+    store._conn.execute(
+        "UPDATE sessions SET ended_at = ?, cost_usd = ? WHERE id = ?",
+        (datetime.now(timezone.utc).isoformat(), cost_usd, sid),
+    )
+    store._conn.close()
+
+
+def test_tuning_db_is_sibling_of_usage_db():
+    assert tuning_usage_db_path("/var/lib/jasper/usage.db") == (
+        "/var/lib/jasper/usage-tuning.db"
+    )
+    # The module default is derived, not hardcoded separately.
+    assert DEFAULT_TUNING_USAGE_DB == tuning_usage_db_path(DEFAULT_USAGE_DB)
+
+
+def test_aggregate_sums_across_two_dbs(tmp_path: Path):
+    a = tmp_path / "usage.db"
+    b = tmp_path / "usage-tuning.db"
+    _record_cost(str(a), 0.30)
+    _record_cost(str(b), 0.12)
+    reader = household_usage_reader(str(a))  # members: [a, sibling b]
+    assert reader.spend_last_24h_usd() == pytest.approx(0.42)
+    assert reader.spend_month_to_date_usd() == pytest.approx(0.42)
+    assert reader.session_count_today_utc() == 2
+
+
+def test_aggregate_missing_second_member_counts_zero(tmp_path: Path):
+    a = tmp_path / "usage.db"
+    _record_cost(str(a), 0.30)
+    # The tuning sibling does not exist yet.
+    reader = household_usage_reader(str(a))
+    assert reader.spend_last_24h_usd() == pytest.approx(0.30)
+    assert reader.session_count_today_utc() == 1
+
+
+def test_aggregate_picks_up_member_created_after_first_read(tmp_path: Path):
+    """The lazy-reopen pin: a long-lived voice daemon reads its aggregate for
+    weeks; a tuning DB created LATER must be summed on the next read, with no
+    restart and no cached failed-open."""
+    a = tmp_path / "usage.db"
+    b = tmp_path / "usage-tuning.db"
+    _record_cost(str(a), 0.30)
+    reader = household_usage_reader(str(a))
+    assert reader.spend_last_24h_usd() == pytest.approx(0.30)  # b absent
+    # Now the tuning surface creates + writes its ledger.
+    _record_cost(str(b), 0.12)
+    assert reader.spend_last_24h_usd() == pytest.approx(0.42)  # picked up
+
+
+def test_aggregate_with_live_main_store_reflects_unwritten_reopen(tmp_path: Path):
+    """When a live writer store is passed as main_store, its recorded spend is
+    visible through the reader's own connection (not a stale read-only reopen),
+    plus the tuning sibling path."""
+    a = tmp_path / "usage.db"
+    b = tmp_path / "usage-tuning.db"
+    main = UsageStore(str(a), pricing=pricing_for_model("gpt-realtime-2"))
+    cost = main.close_session(main.open_session(provider="openai"), 10_000, 2_000)
+    _record_cost(str(b), 0.05)
+    reader = household_usage_reader(str(a), main_store=main)
+    assert reader.spend_last_24h_usd() == pytest.approx(cost + 0.05)
+
+
+def test_aggregate_multiplier_applies_once_through_spend_cap(tmp_path: Path):
+    """SpendCap over the aggregate pads the summed spend exactly once."""
+    a = tmp_path / "usage.db"
+    b = tmp_path / "usage-tuning.db"
+    _record_cost(str(a), 0.40)
+    _record_cost(str(b), 0.40)  # household = 0.80
+    reader = household_usage_reader(str(a))
+    # 0.80 * 1.25 = 1.00 padded; cap 0.99 -> blocked, cap 1.01 -> allowed.
+    assert SpendCap(reader, cap_usd=0.99, safety_multiplier=1.25).allowed() is False
+    assert SpendCap(reader, cap_usd=1.01, safety_multiplier=1.25).allowed() is True
+
+
+def test_aggregate_unreadable_member_counts_zero_not_raise(tmp_path: Path, caplog):
+    """A corrupt/unopenable member contributes zero (fail-open), logged at
+    DEBUG — never raising, never WARN spam."""
+    a = tmp_path / "usage.db"
+    b = tmp_path / "usage-tuning.db"
+    _record_cost(str(a), 0.30)
+    b.write_bytes(b"not a sqlite database at all")  # exists but unreadable
+    reader = household_usage_reader(str(a))
+    with caplog.at_level("WARNING"):
+        total = reader.spend_last_24h_usd()
+    assert total == pytest.approx(0.30)  # only the good member counted
+    # Nothing at WARNING or above — the noise stays at DEBUG.
+    assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
+
+
+def test_tuning_path_record_prices_above_zero(tmp_path: Path):
+    """THE $0 GUARD at the usage layer: the default tuning model is priced
+    (not the 'unpriced:' sentinel), and recording through record_background_usage
+    with synthesized text-modality details yields cost_usd > 0. 1000 in + 1000
+    out at gpt-5.4 text rates (2.5 / 15.0 per MTok) = $0.0175."""
+    from jasper.calibration_agent.key_provisioning import resolve_tuning_model
+
+    model = resolve_tuning_model()
+    assert not pricing_for_model(model).label.startswith("unpriced:"), (
+        f"tuning model {model!r} has no rate — cost would read $0 and the "
+        "spend cap could not bound it"
+    )
+
+    db = str(tmp_path / "usage-tuning.db")
+    store = UsageStore(db)
+    usage = {
+        "input_tokens": 1000,
+        "output_tokens": 1000,
+        "input_token_details": {"text_tokens": 1000},
+        "output_token_details": {"text_tokens": 1000},
+    }
+    cost = store.record_background_usage(
+        provider="openai", model="gpt-5.4",
+        input_tokens=1000, output_tokens=1000, usage=usage,
+    )
+    assert cost == pytest.approx(0.0175)
+    assert store.spend_last_24h_usd() == pytest.approx(0.0175)
+
+
+def test_tuning_path_without_details_would_be_zero_dollars(tmp_path: Path):
+    """Proves WHY the synthesis is load-bearing: the SAME token counts priced
+    WITHOUT modality details price at gpt-5.4's (absent) audio rate → $0. This
+    is the trap the synthesized details avoid."""
+    db = str(tmp_path / "usage-tuning.db")
+    store = UsageStore(db)
+    naive = store.record_background_usage(
+        provider="openai", model="gpt-5.4",
+        input_tokens=1000, output_tokens=1000,  # no usage= details
+    )
+    assert naive == pytest.approx(0.0)
+
+
+def test_read_only_ctor_closes_connection_on_corrupt_file(
+    tmp_path: Path, monkeypatch,
+):
+    """Exception safety in UsageStore.__init__: sqlite3.connect is lazy, so a
+    corrupt member file only raises on the first post-connect probe — the
+    half-built store's connection must be CLOSED before the raise, not left
+    for a GC pass to reclaim (review-proven +1 FD per aggregate read with gc
+    disabled, on the voice daemon's wake-fire cap check)."""
+    db = tmp_path / "corrupt.db"
+    db.write_bytes(b"not a sqlite database at all")
+
+    created: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def spy_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        created.append(conn)
+        return conn
+
+    monkeypatch.setattr("jasper.usage.sqlite3.connect", spy_connect)
+    with pytest.raises(sqlite3.Error):
+        UsageStore(str(db), read_only=True)
+    assert len(created) == 1
+    # Executing on a closed connection raises ProgrammingError — the
+    # deterministic "was closed" probe.
+    with pytest.raises(sqlite3.ProgrammingError, match="[Cc]losed"):
+        created[0].execute("SELECT 1")
+
+    # And the aggregate stays fail-open over the same corrupt member: zero
+    # contribution, no raise (its per-read open now cannot leak the FD).
+    reader = AggregateUsageReader(paths=[str(db)])
+    assert reader.spend_last_24h_usd() == 0.0

@@ -43,6 +43,7 @@ from ..usage import (
     BillableActivityMeter,
     SpendCap,
     UsageStore,
+    household_usage_reader,
     load_pricing_overrides,
     pricing_for_model,
 )
@@ -601,8 +602,15 @@ async def run() -> None:
         pricing=pricing,
         pricing_overrides=pricing_overrides,
     )
+    # The cap reads HOUSEHOLD spend: this daemon's own voice ledger plus the
+    # tuning-surface sibling ledger (jasper-correction-web's paid tuning
+    # calls). Passing the live writer store as main_store means spend this
+    # daemon just recorded is visible without a read-only reopen; the tuning
+    # sibling is summed as a path, picked up lazily even if created later. So
+    # voice sessions and hold-to-talk refuse once tuning spend has exhausted
+    # the shared cap.
     spend_cap = SpendCap(
-        usage_store,
+        household_usage_reader(cfg.usage_db, main_store=usage_store),
         cfg.daily_spend_cap_usd,
         cfg.daily_spend_cap_safety_multiplier,
     )

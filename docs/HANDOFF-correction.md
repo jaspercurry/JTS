@@ -972,9 +972,11 @@ POST /apply                  → SetConfig(correction_<id>_<unixtime>.yml) + Rel
 POST /reset                  → SetConfig(topology-safe reset graph) + Reload
 POST /verify                 fresh single-position sweep for the verify pass
 POST /session/delete         delete one historical measurement bundle
-POST /interpret              P6 tuning LLM (ONE PAID CALL, per-tap): plain-
+POST /interpret              P6 tuning LLM (ONE PAID CALL, per-tap, spend-cap
+                             gated → 429 at the household daily cap): plain-
                              language narration of the server-computed result
-POST /propose                P6 tuning LLM (ONE PAID CALL, per-tap): bounded
+POST /propose                P6 tuning LLM (ONE PAID CALL, per-tap, spend-cap
+                             gated → 429 at the household daily cap): bounded
                              correction/target proposals, simulated server-
                              side; applies NOTHING
 POST /propose/apply          NO paid call: re-validate + re-simulate a user-
@@ -2077,8 +2079,9 @@ Internal:
 Last verified: 2026-07-06 (P6: the three tuning-LLM POST routes —
 `/interpret`, `/propose`, `/propose/apply` — added to the route table,
 verified against `jasper/web/correction_setup.py`'s `_POST_ROUTES` +
-handlers; design canon for that surface is HANDOFF-calibration-agent.md
-"The P6 tuning surface"). Prior 2026-07-03 (P7: crossover relay transport
+handlers; the two paid routes are now spend-cap gated → 429 at the household
+daily cap, per the tuning-spend ledger; design canon for that surface is
+HANDOFF-calibration-agent.md "The P6 tuning surface" / "Cost discipline"). Prior 2026-07-03 (P7: crossover relay transport
 `/crossover/relay-capture`, `crossover_sweep` stimulus-length alignment to
 `driver_acoustics.DEFAULT_DURATION_S`, `run_level_match` lock/cancel
 retention seam, `/crossover/envelope` + passive `active` gate — all

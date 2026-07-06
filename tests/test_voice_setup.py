@@ -383,9 +383,13 @@ def test_apply_clear_unknown_provider_errors():
 # ---------- Spend cap ------------------------------------------------------
 
 
-def _usage_db_with_cost(tmp_path: Path, cost_usd: float) -> Path:
-    db = tmp_path / "usage.db"
-    voice_setup.UsageStore(str(db))
+def _usage_db_with_cost(
+    tmp_path: Path, cost_usd: float, *, name: str = "usage.db",
+) -> Path:
+    from jasper.usage import UsageStore
+
+    db = tmp_path / name
+    UsageStore(str(db))
     con = sqlite3.connect(db)
     now = datetime.now(timezone.utc).isoformat()
     con.execute(
@@ -426,6 +430,43 @@ def test_index_renders_spend_cap_status_and_save_form(tmp_path: Path):
     assert 'name="daily_spend_cap_usd"' in page
     assert "Rolling 24h spend" in page
     assert "$0.2500" in page
+    # The card explains the household-spend semantics: dollars include the
+    # tuning assistant, the turn count does not.
+    assert "Turns today counts voice turns only" in page
+
+
+def test_read_spend_cap_status_tuning_only_ledger_shows_dollars(tmp_path: Path):
+    """Tuning-only box (usage.db absent, usage-tuning.db present): the card
+    must render the real household dollars — the daemon's cap counts that
+    spend, so 'no usage yet' would disagree with a cap that can block. And
+    'Turns today' stays VOICE-only, so it reads 0 here."""
+    usage_db = tmp_path / "usage.db"  # never created
+    _usage_db_with_cost(tmp_path, 0.40, name="usage-tuning.db")
+    status = voice_setup._read_spend_cap_status({
+        "JASPER_USAGE_DB": str(usage_db),
+        "JASPER_DAILY_SPEND_CAP_USD": "1.00",
+        "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER": "1.0",
+    })
+
+    assert status["usage_available"] is True
+    assert status["spend_last_24h_usd"] == pytest.approx(0.40)
+    assert status["sessions_today"] == 0  # voice-only count
+    assert not usage_db.exists()  # the status read never creates the voice DB
+
+
+def test_read_spend_cap_status_turns_today_counts_voice_only(tmp_path: Path):
+    """Dollar figures are household (voice + tuning); the 'Turns today'
+    figure counts only voice sessions."""
+    db = _usage_db_with_cost(tmp_path, 0.10)  # 1 voice session
+    _usage_db_with_cost(tmp_path, 0.05, name="usage-tuning.db")  # 1 tuning tap
+    status = voice_setup._read_spend_cap_status({
+        "JASPER_USAGE_DB": str(db),
+        "JASPER_DAILY_SPEND_CAP_USD": "1.00",
+        "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER": "1.0",
+    })
+
+    assert status["spend_last_24h_usd"] == pytest.approx(0.15)  # household
+    assert status["sessions_today"] == 1  # voice member only
 
 
 def test_apply_spend_cap_writes_env_keys_and_preserves_provider_state():

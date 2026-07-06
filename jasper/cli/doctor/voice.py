@@ -195,25 +195,37 @@ def check_tool_packs() -> CheckResult:
 @doctor_check(order=43, group="voice", label="daily spend cap", needs_cfg=True)
 def check_spend_cap(cfg: Config) -> CheckResult:
     try:
-        from ...usage import SpendCap, UsageStore
+        from ...usage import (
+            SpendCap,
+            household_usage_reader,
+            tuning_usage_db_path,
+        )
         if cfg.daily_spend_cap_usd <= 0:
             return CheckResult(
                 "daily spend cap", "ok",
                 "disabled (JASPER_DAILY_SPEND_CAP_USD=0)",
             )
-        # The doctor runs as root. Never open usage.db read-write here:
-        # creating/re-owning it would lock jasper-voice out of its own DB
-        # (open_session would then fail on every wake). Treat an absent DB
-        # as "no spend yet" rather than creating it. See UsageStore.__init__.
-        if not os.path.exists(cfg.usage_db):
+        # The doctor runs as root. Never open a usage DB read-write here:
+        # creating/re-owning it would lock the owning daemon out of its own DB
+        # (open_session would then fail on every wake). household_usage_reader
+        # opens every member read_only. See UsageStore.__init__.
+        tuning_db = tuning_usage_db_path(cfg.usage_db)
+        # "includes tuning ledger" tells the operator household spend now folds
+        # in jasper-correction-web's paid tuning calls, and whether that
+        # sibling file exists yet.
+        ledger_note = (
+            "includes tuning ledger"
+            if os.path.exists(tuning_db)
+            else "tuning ledger absent"
+        )
+        if not os.path.exists(cfg.usage_db) and not os.path.exists(tuning_db):
             return CheckResult(
                 "daily spend cap", "ok",
                 f"no usage recorded yet; $0.00 of "
-                f"${cfg.daily_spend_cap_usd:.2f} used",
+                f"${cfg.daily_spend_cap_usd:.2f} used ({ledger_note})",
             )
-        store = UsageStore(cfg.usage_db, read_only=True)
         cap = SpendCap(
-            store,
+            household_usage_reader(cfg.usage_db),
             cfg.daily_spend_cap_usd,
             cfg.daily_spend_cap_safety_multiplier,
         )
@@ -226,7 +238,8 @@ def check_spend_cap(cfg: Config) -> CheckResult:
             )
         return CheckResult(
             "daily spend cap", "ok",
-            f"${remaining:.4f} remaining of ${cfg.daily_spend_cap_usd:.2f}",
+            f"${remaining:.4f} remaining of ${cfg.daily_spend_cap_usd:.2f} "
+            f"({ledger_note})",
         )
     except Exception as e:  # noqa: BLE001
         return CheckResult("daily spend cap", "warn", str(e))

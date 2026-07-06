@@ -6034,6 +6034,34 @@ def test_check_spend_cap_reports_disabled_not_zero_remaining(tmp_path: Path, mon
     assert result.status == "ok"
     assert "disabled" in result.detail
     assert "remaining" not in result.detail
+
+
+def test_check_spend_cap_detail_names_tuning_ledger_state(tmp_path: Path, monkeypatch):
+    """The detail string surfaces whether the tuning sibling ledger exists, so
+    the operator knows household spend now folds in correction-web's paid
+    tuning calls. Absent by default; present once the sibling file exists."""
+    from jasper.cli.doctor.voice import check_spend_cap
+    from jasper.usage import tuning_usage_db_path
+
+    usage_db = tmp_path / "usage.db"
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
+    monkeypatch.setenv("JASPER_USAGE_DB", str(usage_db))
+    monkeypatch.setenv("JASPER_DAILY_SPEND_CAP_USD", "1.00")
+    cfg = Config.from_env()
+
+    # Neither ledger exists yet.
+    result = check_spend_cap(cfg)
+    assert result.status == "ok"
+    assert "tuning ledger absent" in result.detail
+
+    # Create the tuning sibling; now the detail says it is included.
+    from jasper.usage import UsageStore
+
+    UsageStore(tuning_usage_db_path(str(usage_db)))._conn.close()
+    result = check_spend_cap(cfg)
+    assert result.status == "ok"
+    assert "includes tuning ledger" in result.detail
 # DTLN engine — bridge stats snapshot surface (journal-independent)
 # ---------------------------------------------------------------------------
 

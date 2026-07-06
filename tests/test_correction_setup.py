@@ -749,6 +749,39 @@ def test_e2e_start_safety_refusal_returns_422(monkeypatch):
         server.server_close()
 
 
+@pytest.mark.parametrize("route", ["/interpret", "/propose"])
+def test_e2e_spend_cap_exceeded_returns_429_with_honest_json(monkeypatch, route):
+    """The spend-cap refusal maps to HTTP 429 (distinct from RequestConflict's
+    409) with the rollover-worded JSON body the panel renders verbatim. Drives
+    the real do_POST dispatch for both paid routes."""
+    handler_name = (
+        "_handle_interpret" if route == "/interpret" else "_handle_propose"
+    )
+
+    def fake(handler):
+        raise correction_setup.SpendCapExceeded(
+            "daily spend cap reached — the tuning assistant will be "
+            "available again after the daily rollover"
+        )
+
+    monkeypatch.setattr(correction_setup, handler_name, fake)
+    server, base = _start_server()
+    try:
+        e = request_with_csrf(
+            base,
+            route,
+            b"{}",
+            content_type="application/json",
+            expect_status=429,
+        )
+        body = json.loads(e.read().decode())
+        assert "daily spend cap reached" in body["error"]
+        assert "rollover" in body["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_e2e_healthz_returns_plain_ok():
     """systemd's `Type=notify` could replace this later, but for now a
     simple HTTP-200 / "ok" body is what makes `curl jts.local/correction/healthz`

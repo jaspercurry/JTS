@@ -262,6 +262,13 @@ Mode in the consumer apps and dictation in Claude Code.
     breaker stays conservative without inflating the displayed number.
     `/voice` shows the rolling 24h true estimate, the padded comparison,
     and the remaining headroom.
+  - **"Household spend" sums per-surface ledgers.** The cap and the
+    `/voice` card read `usage.py`'s `household_usage_reader`, which sums the
+    voice ledger (`usage.db`) and the P6 tuning-surface ledger
+    (`usage-tuning.db`, written solely by root `jasper-correction-web`). So a
+    voice session refuses once the tuning assistant's paid calls have exhausted
+    the shared daily cap. Definition + fail direction:
+    [HANDOFF-calibration-agent.md](HANDOFF-calibration-agent.md) "Cost discipline".
   - **The cap is editable on `/voice`.** The form writes
     `JASPER_DAILY_SPEND_CAP_USD` and
     `JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER` into the wizard-owned
@@ -597,7 +604,12 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
 
-Last verified: 2026-06-30 (chip-AEC input-policy classification rechecked
+Last verified: 2026-07-06 (spend-cap section: added the household-spend note —
+the cap + `/voice` card now sum the voice ledger and the P6 tuning ledger via
+`usage.py`'s `household_usage_reader`, verified against `jasper/usage.py`,
+`jasper/voice/daemon_main.py`, and `jasper/web/voice_setup.py`; canonical
+definition lives in HANDOFF-calibration-agent.md. Prior pass 2026-06-30:
+chip-AEC input-policy classification rechecked
 against `jasper/voice/input_policy.py` and `tests/test_voice_input_policy.py`;
 base chip-AEC no longer depends on optional 150/210 wake-beam device vars.
 Prior pass 2026-06-24: time-billed Grok accounting re-verified against xAI's pricing/cost-tracking/Voice WebSocket docs plus `jasper/usage.py`, `jasper/voice/openai_session.py`, `jasper/voice/grok_session.py`, and `tests/test_grok_session.py`; barge-in interruption contract re-verified against `jasper/voice/session.py`, `jasper/voice/turn_playback.py`, and the adapters — added the `drop_pending_audio()` seam member and the `reconcile`/`barge_in_reconcile` observability after the integrated-review remediation; unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice/daemon_main.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice; server-VAD public hook contract and response-stall cap rechecked against `jasper/voice/session.py`, `jasper/voice/openai_session.py`, `jasper/voice/turn_playback.py`, `jasper/voice_daemon.py`, and `tests/test_voice_daemon_defects.py`;
