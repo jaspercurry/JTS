@@ -71,11 +71,10 @@ _DEFAULT_MODEL_FALLBACK = "gpt-5.4"
 def _default_model() -> str:
     try:
         from jasper.research.providers.openai_research import DEFAULT_MODEL
-
-        model = (DEFAULT_MODEL or "").strip()
-        return model or _DEFAULT_MODEL_FALLBACK
-    except Exception:  # pragma: no cover - defensive; research pkg is in-tree
+    except ImportError:  # pragma: no cover - defensive; research pkg is in-tree
         return _DEFAULT_MODEL_FALLBACK
+    model = (DEFAULT_MODEL or "").strip()
+    return model or _DEFAULT_MODEL_FALLBACK
 
 
 def read_openai_key(
