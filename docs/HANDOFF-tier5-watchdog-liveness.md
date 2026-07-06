@@ -74,7 +74,10 @@ or escalating to `StartLimitAction=reboot`. The audio-hardware udev
 reconciler remains the recovery path: when a recognized DAC returns it
 re-renders env/asound state when needed and always reset-failed+starts
 outputd, so a condition-parked unit recovers even when the replug does
-not change any env values.
+not change any env values. For outputd `EX_CONFIG=78`, the failure hook gives
+hotplug-shear recovery one bounded no-restart reconcile plus explicit outputd
+retry; a repeated config exit parks instead of consuming the restart burst and
+rebooting the box.
 
 **Still deferred (with revisit triggers documented below)**:
 shorter `RuntimeWatchdogSec` (T5.3 — needs ≥30 days of soak data),
@@ -451,7 +454,8 @@ risk, not worth being first.
 
 ---
 
-Last verified: 2026-06-25 (current T5.1 shipped-unit list and Camilla
-`OnFailure=jasper-camilla-recover.service` exception rechecked against
-systemd units and doctor policy; historical option matrix not fully
-re-reviewed)
+Last verified: 2026-07-06 (outputd EX_CONFIG=78 retry/park exception rechecked
+against `jasper-outputd.service` and `jasper-outputd-failure-reconcile`;
+current T5.1 shipped-unit list and Camilla `OnFailure=jasper-camilla-recover.service`
+exception previously rechecked 2026-06-25 against systemd units and doctor
+policy; historical option matrix not fully re-reviewed)

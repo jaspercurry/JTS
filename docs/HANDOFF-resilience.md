@@ -1199,13 +1199,18 @@ For anyone touching the resilience code:
   facts, renders the direct final-output `outputd_dac` path for recognized
   hardware, and enables Apple mixer helpers only for the Apple output role.
   A recognized role must render the managed ALSA template before the
-  reconciler publishes new active env values; if rendering fails, the
-  previous runtime env remains in place. If no recognized output DAC is
+  reconciler publishes new active env values; if rendering fails, or if the
+  staged `outputd.env` candidate would violate outputd buffer/period config,
+  the previous runtime env remains in place. If no recognized output DAC is
   present, it parks `jasper-voice` and `jasper-outputd` instead of leaving
   stale final-output state active;
   recognized DAC arrival restarts outputd when state changed and
   reset-failed+starts outputd when the arrival is value-neutral, so a
   condition-parked final-output owner recovers without a full deploy.
+  If outputd exits with `EX_CONFIG=78` during hotplug shear, the
+  `jasper-outputd-failure-reconcile` stop hook runs one bounded no-restart
+  reconcile plus explicit outputd retry, then parks repeated config exits
+  instead of looping into `StartLimitAction=reboot`.
 - `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
   unit that `reset-failed`s the audio daemons, restarts the output graph
   (`jasper-camilla`, `jasper-outputd`, `jasper-audio-hardware-reconcile`),
@@ -1351,6 +1356,9 @@ is queued with `--no-block` and the AEC oneshot timeout is bounded; Wi-Fi
 scan-suppression root helper path verified on `jts3.local` 2026-06-22 and
 active-profile scan-suppression recovery verified from `jts.local` incident
 logs 2026-06-26;
-broader resilience doc last fully reviewed 2026-06-15; 2026-06-24
+broader resilience doc last fully reviewed 2026-06-15; 2026-07-06
+output-DAC config-shear guard rechecked against
+`jasper-audio-hardware-reconcile`, `jasper-outputd-failure-reconcile`, and
+`jasper-outputd.service`; 2026-06-24
 `/state.resilience` supervisor doctor surface and multiroom cascade ring
 rechecked against current code)

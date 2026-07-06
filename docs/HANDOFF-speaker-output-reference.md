@@ -859,8 +859,9 @@ rejected — see the "Stage 2a landed" callout above.)
 - **DAC hotplug:** reconciler re-derives on udev (pattern-3 self-heal); replug
   re-arms **muted** via the masked startup config.
 - **Config-shear during DAC re-enumeration:** the reconciler stages and validates
-  `outputd.env` before replacing the prior file. If outputd still exits 78 from
-  a transient hotplug shear, the failure helper runs one bounded
+  `outputd.env` buffer/period pairs (content and DAC buffers) before replacing
+  the prior file. If outputd still exits 78 from a transient hotplug shear, the
+  failure helper runs one bounded
   `jasper-audio-hardware-reconcile --no-restart` pass and no-block retries
   outputd; a repeated exit 78 parks instead of looping into reboot policy.
 
@@ -1435,7 +1436,8 @@ datum: how much assistant audio was actually heard.
 Last verified: 2026-07-06 (outputd config-shear resilience rechecked against
 `jasper.audio_runtime_plan`, `jasper.cli.audio_config validate-outputd-env`,
 `deploy/bin/jasper-audio-hardware-reconcile`, and
-`deploy/bin/jasper-outputd-failure-reconcile`; Camilla/outputd install choreography
+`deploy/bin/jasper-outputd-failure-reconcile`, including content and DAC
+buffer/period validation; Camilla/outputd install choreography
 previously rechecked
 against `deploy/lib/install/systemd-units.sh` and
 `deploy/bin/jasper-camilla-recover`; 2026-06-24 active-endpoint and
