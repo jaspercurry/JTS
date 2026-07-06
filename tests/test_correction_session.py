@@ -859,3 +859,326 @@ def test_compute_autolevel_cap_clamps():
     assert cap(-28.5) == -20.0   # very quiet listener floored UP to usable
     assert cap(-2.0) == -6.0     # loud listener clamped to the safety ceiling
     assert cap(-12.0) == -6.0    # -12+6 = -6 exactly at the ceiling
+
+
+# --- P4 acceptance verdict — session integration through the real verify path
+#
+# These drive the REAL on_verify_capture_uploaded (real deconv, real analysis,
+# real AcceptanceEvaluator) with synthetic captures whose ground-truth verdict
+# is known, stubbing only the CamillaDSP I/O boundary. They prove: the verdict
+# lands on session.acceptance; the position-1 curve is the matched basis; the
+# confirmatory-re-measure concordance advances across two verifies; and a
+# confirmed regression auto-reverts through the existing reset() path.
+
+
+async def _measure_positions(sess, room_gains_db: list[float]) -> None:
+    """Run the flow measure→READY through the real pipeline, one synthetic
+    room per position (an 80 Hz mode of the given gain per seat)."""
+
+    async def fake_play(path, **kw):
+        pass
+
+    sess.total_positions = len(room_gains_db)
+    sess.repeat_main_position = False
+    for gain in room_gains_db:
+        await sess.prepare_and_play_sweep(fake_play)
+        sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
+        captured = _synthesize_room_capture(
+            sweep_signal, sr, mode_freq_hz=80.0, mode_gain_db=gain,
+        )
+        cap_path = sess.capture_path_for_position(sess.current_position)
+        cap_path.parent.mkdir(parents=True, exist_ok=True)
+        sweep.write_sweep_wav(cap_path, captured.astype(np.float32), sr)
+        await sess.on_capture_uploaded(cap_path)
+
+
+async def _measure_one_position(sess, room_gain_db: float) -> None:
+    """Single-position variant of :func:`_measure_positions`."""
+    await _measure_positions(sess, [room_gain_db])
+
+
+async def _run_verify(sess, verify_room_gain_db: float) -> None:
+    """Play + upload one verify sweep whose captured room has an 80 Hz mode of
+    the given gain, through the real verify path."""
+
+    async def fake_play(path, **kw):
+        pass
+
+    async def fake_camilla(path: str) -> bool:
+        return True
+
+    await sess.start_verify_sweep(fake_play)
+    sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
+    captured = _synthesize_room_capture(
+        sweep_signal, sr, mode_freq_hz=80.0, mode_gain_db=verify_room_gain_db,
+    )
+    verify_path = sess.verify_capture_path()
+    verify_path.parent.mkdir(parents=True, exist_ok=True)
+    sweep.write_sweep_wav(verify_path, captured.astype(np.float32), sr)
+    await sess.on_verify_capture_uploaded(verify_path)
+
+
+@pytest.mark.asyncio
+async def test_verify_populates_acceptance_verdict_and_position1_basis(
+    tmp_path: Path,
+):
+    """A real measure→apply→verify run lands a verdict on session.acceptance,
+    computed against the retained position-1 curve."""
+    sess = _make_session(tmp_path)
+
+    async def fake_camilla(path: str) -> bool:
+        return True
+
+    await _measure_one_position(sess, room_gain_db=8.0)
+    assert sess.state == SessionState.READY
+    # Position-1 curve is retained as the matched basis.
+    assert sess.position1_curve is not None
+
+    await sess.apply(fake_camilla)
+    # A near-flat verify (mode corrected) → the verdict should be present and
+    # is not a revert.
+    await _run_verify(sess, verify_room_gain_db=0.5)
+    assert sess.state == SessionState.VERIFIED
+    assert isinstance(sess.acceptance, dict)
+    assert sess.acceptance["verdict"] in ("accept", "surface")
+    assert sess.acceptance["basis"] == "position_1"
+    assert sess.acceptance["verify_index"] == 1
+    assert sess.acceptance_verdict == sess.acceptance["verdict"]
+
+
+@pytest.mark.asyncio
+async def test_confirmatory_remeasure_concordance_and_auto_revert(
+    tmp_path: Path,
+):
+    """A clear regression on the first verify is revert_pending_confirm (not
+    reverted); a second concordant clear regression escalates to revert and
+    auto_revert() rolls back through the existing reset() path."""
+    sess = _make_session(tmp_path)
+
+    reset_targets: list[str] = []
+
+    async def fake_camilla(path: str) -> bool:
+        reset_targets.append(path)
+        return True
+
+    # Measure a nearly-flat room, then a verify that measures a big NEW mode
+    # (a genuinely-regressed result). Because the before is flat-ish and the
+    # verify has a strong 80 Hz mode, this is a clear regression.
+    await _measure_one_position(sess, room_gain_db=0.5)
+    # Compatibility apply path (no config getter) — the topology-aware carrier
+    # rejects tmp stub graphs; this test targets the verdict/auto-revert loop,
+    # not the carrier. auto_revert is driven with an explicit target below.
+    await sess.apply(fake_camilla)
+
+    await _run_verify(sess, verify_room_gain_db=20.0)
+    assert sess.state == SessionState.VERIFIED
+    assert isinstance(sess.acceptance, dict)
+    # First verify with a clear regression → pending confirmation, NOT reverted.
+    assert sess.acceptance["verdict"] == "revert_pending_confirm"
+    assert sess.acceptance["confirmed"] is False
+    # auto_revert is a no-op on a pending (unconfirmed) verdict.
+    reverted = await sess.auto_revert(fake_camilla, target_config_path="/x.yml")
+    assert reverted is False
+    assert sess.state == SessionState.VERIFIED
+    assert sess.auto_revert_outcome is None  # nothing ran, nothing recorded
+
+    # Second, concordant verify (same regression) → confirmed → revert verdict.
+    await _run_verify(sess, verify_room_gain_db=20.0)
+    assert sess.acceptance["verdict"] == "revert"
+    assert sess.acceptance["confirmed"] is True
+    assert sess.acceptance["verify_index"] == 2
+
+    # Now auto_revert rolls back through reset() with the given target.
+    reset_targets.clear()
+    reverted = await sess.auto_revert(fake_camilla, target_config_path="/restore.yml")
+    assert reverted is True
+    assert sess.state == SessionState.IDLE
+    assert reset_targets == ["/restore.yml"]
+    # The completed rollback is recorded as fact...
+    assert sess.auto_revert_outcome is not None
+    assert sess.auto_revert_outcome["result"] == "ok"
+    # ...and the REAL envelope tells the household what happened — the IDLE
+    # screen carries the reverted copy, not the silent default (blocker pin
+    # through the real session, not a fake).
+    from jasper.correction.envelope import build_envelope
+
+    env = build_envelope(sess)
+    assert env["screen"] == "idle"
+    assert "Reverted" in env["verdict_text"]
+    assert "removed the correction" in env["verdict_text"]
+
+
+@pytest.mark.asyncio
+async def test_clean_confirmatory_verify_clears_the_concordance_flag(
+    tmp_path: Path,
+):
+    """Adjudication (A) pin — STRICT ADJACENCY: regress → clean → regress
+    yields REVERT_PENDING_CONFIRM on the third verify, never an instant
+    REVERT off the stale first flag. The clean confirmatory sweep answered
+    the pending question (first read = noise); a later regression must earn
+    its own confirmatory re-measure."""
+    sess = _make_session(tmp_path)
+
+    async def fake_camilla(path: str) -> bool:
+        return True
+
+    await _measure_one_position(sess, room_gain_db=0.5)
+    await sess.apply(fake_camilla)
+
+    # Verify 1: clear regression → pending confirmation.
+    await _run_verify(sess, verify_room_gain_db=20.0)
+    assert sess.acceptance["verdict"] == "revert_pending_confirm"
+
+    # Verify 2 (the confirmatory one): clean — the regression was noise.
+    await _run_verify(sess, verify_room_gain_db=0.5)
+    assert sess.acceptance["verdict"] in ("accept", "surface")
+
+    # Verify 3: a regression again — a FRESH pending cycle, not a revert.
+    await _run_verify(sess, verify_room_gain_db=20.0)
+    assert sess.acceptance["verdict"] == "revert_pending_confirm"
+    assert sess.acceptance["confirmed"] is False
+    # No rollback ran at any point.
+    assert sess.auto_revert_outcome is None
+    assert sess.state == SessionState.VERIFIED
+
+
+@pytest.mark.asyncio
+async def test_auto_revert_camilla_reject_records_failed_outcome(
+    tmp_path: Path,
+):
+    """A rollback whose config load is rejected records outcome=failed (and
+    reset() fails the session loudly) — auto_revert never claims success."""
+    sess = _make_session(tmp_path)
+
+    async def fake_camilla_ok(path: str) -> bool:
+        return True
+
+    async def fake_camilla_reject(path: str) -> bool:
+        return False
+
+    await _measure_one_position(sess, room_gain_db=0.5)
+    await sess.apply(fake_camilla_ok)
+    await _run_verify(sess, verify_room_gain_db=20.0)  # pending
+    await _run_verify(sess, verify_room_gain_db=20.0)  # confirmed → revert
+    assert sess.acceptance_verdict == "revert"
+
+    reverted = await sess.auto_revert(
+        fake_camilla_reject, target_config_path="/restore.yml",
+    )
+    assert reverted is False
+    assert sess.auto_revert_outcome is not None
+    assert sess.auto_revert_outcome["result"] == "failed"
+    # reset() failed the session loudly (no silent revert failure).
+    assert sess.state == SessionState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_auto_revert_falls_back_to_pre_apply_config(tmp_path: Path):
+    """With no explicit target, auto_revert restores the pre-apply config the
+    apply() path captured."""
+    sess = _make_session(tmp_path)
+
+    prior = "/etc/camilladsp/prior-graph.yml"
+
+    async def fake_set(path: str) -> bool:
+        fake_set.calls.append(path)
+        return True
+
+    fake_set.calls = []  # type: ignore[attr-defined]
+
+    await _measure_one_position(sess, room_gain_db=0.5)
+    await sess.apply(fake_set)  # compatibility path (no topology-aware carrier)
+    # Simulate what the getter-driven apply() records on the real web path: the
+    # pre-swap graph. (Driving the getter path here would exercise the
+    # topology-aware carrier, which rejects tmp stub graphs — a separate,
+    # already-tested concern; this test is about the auto-revert FALLBACK.)
+    sess.pre_apply_config_path = prior
+
+    await _run_verify(sess, verify_room_gain_db=20.0)  # regressed
+    await _run_verify(sess, verify_room_gain_db=20.0)  # confirmed
+    assert sess.acceptance_verdict == "revert"
+
+    fake_set.calls.clear()
+    reverted = await sess.auto_revert(fake_set)  # no explicit target
+    assert reverted is True
+    assert fake_set.calls == [prior]  # restored the captured pre-apply graph
+
+
+@pytest.mark.asyncio
+async def test_acceptance_verdict_lands_in_result_json(tmp_path: Path):
+    """The verdict is recorded in the evidence bundle's result.json."""
+    sess = _make_session(tmp_path)
+    sess.save_bundles = True
+
+    async def fake_camilla(path: str) -> bool:
+        return True
+
+    await _measure_one_position(sess, room_gain_db=8.0)
+    await sess.apply(fake_camilla)
+    await _run_verify(sess, verify_room_gain_db=0.5)
+
+    result_path = sess.bundle_dir / "result.json"
+    assert result_path.exists()
+    data = json.loads(result_path.read_text())
+    assert data["acceptance"] is not None
+    assert data["acceptance"]["verdict"] == sess.acceptance["verdict"]
+    assert data["position1"] is not None  # matched-basis curve recorded
+
+
+@pytest.mark.asyncio
+async def test_multi_position_verify_judges_against_position1_not_average(
+    tmp_path: Path,
+):
+    """SF pin — the MATCHED basis is real, not a label: with divergent seats
+    the position-1 ground truth and the spatial average yield DIFFERENT
+    verdicts, and the session must follow position 1 (plan §4 P4 point 3).
+
+    Seat 1 has a mild 80 Hz mode; seats 2-3 have big ones, so the spatial
+    average is much worse than seat 1. The verify (captured at seat 1, same
+    room as before) is a wash against the position-1 basis — but reads as a
+    big "improvement" against the average. A mutation that stores the
+    averaged curve in position1_curve, or an evaluator preferring
+    measured_curve, produces "accept" here and fails."""
+    sess = _make_session(tmp_path)
+
+    async def fake_camilla(path: str) -> bool:
+        return True
+
+    await _measure_positions(sess, [2.0, 14.0, 14.0])
+    assert sess.state == SessionState.READY
+    assert sess.position1_curve is not None
+
+    # position1_curve is the FIRST seat's curve, not the spatial average.
+    pos1 = np.asarray(sess.position1_curve.magnitude_db)
+    avg = np.asarray(sess.measured_curve.magnitude_db)
+    assert np.allclose(pos1, sess.position_magnitudes[0])
+    assert not np.allclose(pos1, avg)
+
+    await sess.apply(fake_camilla)
+    await _run_verify(sess, verify_room_gain_db=2.0)  # seat-1 room, unchanged
+
+    assert isinstance(sess.acceptance, dict)
+    assert sess.acceptance["basis"] == "position_1"
+    # Ground truth at the matched seat: nothing changed → a wash → surface.
+    assert sess.acceptance["verdict"] == "surface"
+
+    # Discriminator: the SAME verify judged against the spatial average would
+    # have read "accept" (a large apparent improvement) — proving this test
+    # fails if the average sneaks in as the basis.
+    from jasper.correction.acceptance import Verdict, evaluate_acceptance
+
+    freqs = np.asarray(sess.verify_curve.freqs_hz)
+    verify = np.asarray(sess.verify_curve.magnitude_db)
+    target = np.asarray(sess.target_curve.magnitude_db)
+    avg_result = evaluate_acceptance(
+        freqs=freqs,
+        before_db=np.interp(
+            freqs, np.asarray(sess.measured_curve.freqs_hz), avg,
+        ),
+        verify_db=verify,
+        target_db=target,
+        f_high=sess.cfg.peq_f_high,
+        basis="spatial_average",
+    )
+    assert avg_result.verdict is Verdict.ACCEPT
+    assert avg_result.verdict.value != sess.acceptance["verdict"]

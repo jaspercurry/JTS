@@ -361,7 +361,12 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   (4) **one confirmatory re-measure is required before auto-revert** — a
   second concordant verify is cheap, a false revert is trust-expensive; (5)
   every accept/surface/revert verdict emits an `event=` log, lands in the
-  envelope's `verdict_text`, and is recorded in the evidence bundle.
+  envelope's `verdict_text`, and is recorded in the evidence bundle. *(Status:
+  implemented hardware-free on `claude/p4-acceptance-loop-v2`,
+  adversarial-review remediation applied — outcome-recorded truthful revert
+  surfacing, strict-adjacency concordance, floor-level smooth-noise +
+  multi-position-basis pins; H1 threshold retuning pending. Operational
+  summary in [HANDOFF-correction.md](HANDOFF-correction.md) §Status.)*
 - **P5 — Bass management unification (§3.3, non-timing):** unify the
   duplicated crossover-corner constant/bounds and apply the §6 corner-
   precedence default; room correction reads the corner and enforces the

@@ -342,6 +342,8 @@ def session_snapshot(session: Any) -> dict[str, Any]:
         ),
         "verify_metrics": session.verify_metrics,
         "verify_before_after": session.verify_before_after,
+        "acceptance": getattr(session, "acceptance", None),
+        "auto_revert_outcome": getattr(session, "auto_revert_outcome", None),
         "autolevel": session.autolevel.snapshot(),
     }
 
@@ -397,6 +399,8 @@ def info_json_payload(session: Any) -> dict[str, Any]:
         ),
         "verify_metrics": session.verify_metrics,
         "verify_before_after": session.verify_before_after,
+        "acceptance": getattr(session, "acceptance", None),
+        "auto_revert_outcome": getattr(session, "auto_revert_outcome", None),
         "config": session_config_payload(session),
     }
 
@@ -412,9 +416,12 @@ def result_json_payload(session: Any) -> dict[str, Any]:
         "measured": _curve_payload(session.measured_curve),
         "target": _curve_payload(session.target_curve),
         "predicted": _curve_payload(session.predicted_curve),
+        "position1": _curve_payload(getattr(session, "position1_curve", None)),
         "verify": _curve_payload(session.verify_curve),
         "verify_metrics": session.verify_metrics,
         "verify_before_after": session.verify_before_after,
+        "acceptance": getattr(session, "acceptance", None),
+        "auto_revert_outcome": getattr(session, "auto_revert_outcome", None),
         "capture_quality": session.capture_quality,
         "noise_reports": session.noise_reports,
         "repeat": _curve_payload(session.repeat_curve),

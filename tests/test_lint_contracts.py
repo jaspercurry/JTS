@@ -92,8 +92,29 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # the handler base class's own required signatures, not project style debt.
 # Only MAX_NOQA_MARKERS moves (these are N802/A002, not blind-except), so
 # MAX_BLE001_MARKERS is unchanged.
+# 2026-07-05 (P4 verify-acceptance loop, +1 blind-except suppression): exactly
+# one new broad catch carries the suppression marker spelled B-L-E-0-0-1 —
+# correction_setup._maybe_auto_revert, the top-level auto-revert side-action
+# boundary of the verify upload. It is a genuine last resort: session.reset()
+# re-raises the ORIGINAL exception of arbitrary type by contract (its own
+# catch-and-re-raise after _fail), so the boundary's exception surface —
+# pycamilladsp/websocket/transport errors, the response-timeout future,
+# target-resolution raises — is unbounded, and any named tuple would leave an
+# unenumerated class that 500s the verify upload after a partial revert, the
+# precise outcome the mandate forbids ("leave the correction applied for
+# manual undo, never fail the upload"). It is not a silent path: it
+# logger.exceptions, stamps a failed auto_revert_outcome the envelope
+# surfaces as "STILL APPLIED", and reset() itself fails the session loudly on
+# a CamillaDSP rejection. The verdict computation in
+# MeasurementSession._evaluate_acceptance deliberately carries NO such
+# suppression — it catches the named RECOVERABLE_ERRORS family from
+# jasper.audio_measurement.ramp (P2's precedent). The relocated catch in
+# _resolve_reset_target moved verbatim out of _handle_reset (net-zero). Net
+# effect on the ceilings: suppression-marker count +0, blind-except count +1.
+# (Marker strings spelled out, not literal, so this comment does not inflate
+# the counts it documents.)
 MAX_NOQA_MARKERS = 813
-MAX_BLE001_MARKERS = 629
+MAX_BLE001_MARKERS = 630
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

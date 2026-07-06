@@ -52,7 +52,10 @@ from ..log_event import log_event
 logger = logging.getLogger(__name__)
 
 # Bumped independently of the bundle schema; a pinning test guards it.
-ENVELOPE_SCHEMA_VERSION = 1
+# v2 (P4) adds the top-level `verdict` block — the deterministic
+# accept/surface/revert_pending_confirm/revert decision, its reasons, and the
+# per-band table — and folds the verdict into the RESULT-screen verdict_text.
+ENVELOPE_SCHEMA_VERSION = 2
 
 # 1/N-octave smoothing applied to the empirical display curves. 6 =
 # 1/6-octave — visibly smoothed (no raw jaggedness) while preserving
@@ -441,6 +444,104 @@ def _nudges(session: Any) -> list[dict[str, str]]:
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# verdict — the deterministic P4 accept/surface/revert decision (§4 P4).
+# --------------------------------------------------------------------------
+#
+# The evaluator (jasper.correction.acceptance) runs at verify time and lands
+# its typed result on ``session.acceptance``. The envelope relays it verbatim
+# as a ``verdict`` block and folds a homeowner sentence into the RESULT-screen
+# verdict_text. Copy tone is honest: "confirmed improved", "needs another
+# look", "reverted — the room says no" (§3.2).
+#
+# "revert" is deliberately NOT in this map: its copy depends on whether the
+# rollback actually ran (session.auto_revert_outcome) — see
+# _revert_result_text. A successful revert lands the session in IDLE, so the
+# honest success copy lives on the IDLE branch of _verdict_text instead.
+_VERDICT_HEADLINE: dict[str, str] = {
+    "accept": "Confirmed improved — the room measured better.",
+    "surface": "Applied — but the change was too small to be sure. Take a "
+    "look and decide.",
+    "revert_pending_confirm": "That measured worse. Measure once more to be "
+    "sure before we undo it.",
+}
+
+# The three truthful revert copies, keyed by what ACTUALLY happened — never
+# by intent. Success is only claimed once reset() completed (outcome "ok").
+_REVERT_DONE_TEXT = (
+    "Reverted — the room says no. The re-measure came back worse, so we "
+    "removed the correction and restored your previous sound. You can "
+    "measure again anytime."
+)
+_REVERT_FAILED_TEXT = (
+    "That measured worse — but we couldn't remove the correction "
+    "automatically. It is STILL APPLIED. Use Reset to remove it."
+)
+_REVERT_PENDING_ROLLBACK_TEXT = (
+    "That measured worse — removing the correction now. If this message "
+    "stays, use Reset to remove it."
+)
+
+
+def _revert_outcome(session: Any) -> str | None:
+    """The recorded rollback outcome ("ok" / "failed"), or None.
+
+    None means no rollback has run to completion — not attempted yet, or
+    still in flight (the session records the outcome when reset() actually
+    finishes, so the envelope converges on the truth even after an upload-
+    response timeout).
+    """
+    outcome = getattr(session, "auto_revert_outcome", None)
+    if not isinstance(outcome, dict):
+        return None
+    result = outcome.get("result")
+    return result if isinstance(result, str) else None
+
+
+def _revert_result_text(session: Any) -> str:
+    """Result-screen copy for a ``revert`` verdict, driven by the outcome.
+
+    On the result screen a ``revert`` verdict means the rollback has NOT
+    completed successfully (success moves the session to IDLE): either it is
+    still running (outcome None) or it failed (outcome "failed" — the
+    correction is still applied and the copy must say so, with the manual
+    Reset pointer). The defensive "ok" branch covers an envelope racing the
+    IDLE transition.
+    """
+    outcome = _revert_outcome(session)
+    if outcome == "ok":
+        return _REVERT_DONE_TEXT
+    if outcome == "failed":
+        return _REVERT_FAILED_TEXT
+    return _REVERT_PENDING_ROLLBACK_TEXT
+
+
+def _verdict(session: Any) -> dict[str, Any] | None:
+    """Relay the session's deterministic acceptance verdict block.
+
+    ``session.acceptance`` is the dict produced by
+    :meth:`MeasurementSession._evaluate_acceptance`
+    (``acceptance.AcceptanceResult.to_dict()``): verdict, reasons, the per-band
+    table, and the aggregate numbers. Absent until a verify capture lands; a
+    malformed value is omitted rather than surfaced half-formed. When an
+    automatic rollback has recorded its outcome, it rides along as
+    ``auto_revert_outcome`` (additive; the copy is a shallow dict so the
+    session's record is never mutated).
+    """
+    acc = getattr(session, "acceptance", None)
+    if not isinstance(acc, dict):
+        return None
+    verdict = acc.get("verdict")
+    if not isinstance(verdict, str):
+        return None
+    outcome = getattr(session, "auto_revert_outcome", None)
+    if isinstance(outcome, dict):
+        out = dict(acc)
+        out["auto_revert_outcome"] = dict(outcome)
+        return out
+    return acc
+
+
 def _verdict_text(session: Any, screen: str) -> str:
     """A single homeowner sentence describing where the flow stands.
 
@@ -454,6 +555,23 @@ def _verdict_text(session: Any, screen: str) -> str:
             if err:
                 return f"Measurement stopped: {err}"
             return "The measurement stopped before finishing."
+        # The deterministic verdict leads on the result screen — it is the
+        # honest "did this work?" answer, ahead of the raw before/after number.
+        verdict = _verdict(session)
+        if verdict is not None:
+            verdict_value = str(verdict.get("verdict"))
+            if verdict_value == "revert":
+                # Outcome-driven: on this screen the rollback either failed
+                # (correction STILL APPLIED — say so, point at Reset) or is
+                # still running. Success moved the session to IDLE, whose
+                # branch below owns the "we removed it" copy.
+                return _revert_result_text(session)
+            lead = _VERDICT_HEADLINE.get(verdict_value)
+            if lead is not None:
+                headline = _headline(session)
+                if headline is not None:
+                    return f"{lead} {headline['text']}"
+                return lead
         headline = _headline(session)
         if headline is not None:
             return f"Done. {headline['text']} You can measure again to compare."
@@ -477,7 +595,46 @@ def _verdict_text(session: Any, screen: str) -> str:
         return "Recording a moment of quiet to gauge the room noise."
     if screen == SCREEN_LEVEL:
         return "Setting a safe, consistent measurement volume."
+    # Post-revert IDLE: a successful auto-revert lands here (reset() → IDLE),
+    # and "Ready to measure your room." would silently erase what just
+    # happened to the household's correction. The session object persists
+    # until /start replaces it, so this honest line naturally holds until the
+    # user starts a new measurement — the smaller change than inventing a
+    # terminal acknowledged-state (no new SessionState, no state-machine or
+    # screen-map surgery, no acknowledge endpoint), with the same honesty.
+    if _revert_outcome(session) == "ok":
+        return _REVERT_DONE_TEXT
     return "Ready to measure your room."
+
+
+def _next_action_for(
+    session: Any, screen: str, verdict: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    """The single forward button, verdict-aware on the result screen.
+
+    Normally the static ``_NEXT_ACTION`` map. The one override: when the
+    deterministic verdict is ``revert_pending_confirm`` on the result screen,
+    the forward button becomes the confirmatory re-measure (§4 P4 point 4) —
+    ``/verify`` re-runs the one-position verify sweep from the VERIFIED state,
+    the concordance gate the auto-revert waits on.
+
+    While a confirmation is pending the envelope deliberately does NOT offer
+    ``/start`` as the primary action: /start replaces the session, which
+    destroys the pending verdict + concordance state — offering it as the
+    default forward button would make the confirmatory gate unreachable via
+    the wizard's primary action. /start itself stays available and unblocked
+    (measurement flow never blocks): a household that navigates away or
+    starts fresh has simply declined — the verdict stays pending, nothing
+    reverts, the correction stays applied, and /reset remains the manual
+    undo.
+    """
+    if screen == SCREEN_RESULT and verdict is not None:
+        if str(verdict.get("verdict")) == "revert_pending_confirm":
+            return {
+                "label": "Measure again to confirm",
+                "endpoint": "/verify",
+            }
+    return _NEXT_ACTION.get(screen)
 
 
 def build_envelope(session: Any) -> dict[str, Any]:
@@ -485,11 +642,13 @@ def build_envelope(session: Any) -> dict[str, Any]:
 
     Pure read over the session; does not mutate it and does not touch the
     ``/status`` payload. Every field is pre-computed for a dumb frontend:
-    smoothed curves, the two-tone fill, the one-number headline, verdict
-    text, homeowner nudges, the next action, and progress.
+    smoothed curves, the two-tone fill, the one-number headline, the
+    deterministic verdict block + verdict text, homeowner nudges, the next
+    action, and progress.
     """
     screen = _screen_for(session)
-    next_action = _NEXT_ACTION.get(screen)
+    verdict = _verdict(session)
+    next_action = _next_action_for(session, screen, verdict)
     envelope: dict[str, Any] = {
         "schema_version": ENVELOPE_SCHEMA_VERSION,
         "screen": screen,
@@ -497,6 +656,7 @@ def build_envelope(session: Any) -> dict[str, Any]:
         "curves": _curves(session),
         "fill_segments": _fill_segments(session),
         "headline": _headline(session),
+        "verdict": verdict,
         "verdict_text": _verdict_text(session, screen),
         "nudges": _nudges(session),
         "next_action": dict(next_action) if next_action is not None else None,
@@ -512,6 +672,7 @@ def build_envelope_logged(session: Any) -> dict[str, Any]:
     noise; the endpoint calls this variant.
     """
     envelope = build_envelope(session)
+    verdict_block = envelope.get("verdict")
     log_event(
         logger,
         "correction_envelope.serve",
@@ -520,5 +681,10 @@ def build_envelope_logged(session: Any) -> dict[str, Any]:
         state=envelope["state"],
         nudge_count=len(envelope["nudges"]),
         has_headline=envelope["headline"] is not None,
+        verdict=(
+            verdict_block.get("verdict")
+            if isinstance(verdict_block, dict)
+            else None
+        ),
     )
     return envelope

@@ -20,7 +20,11 @@ from typing import Any, Iterable
 
 from ..log_event import log_event
 
-CURRENT_BUNDLE_SCHEMA_VERSION = 3
+# v4 (P4): result.json / info.json / status gain the deterministic
+# `acceptance` verdict block and the `auto_revert_outcome` rollback record,
+# and result.json gains the `position1` matched-basis curve. Additive — older
+# readers ignore the new keys.
+CURRENT_BUNDLE_SCHEMA_VERSION = 4
 CURRENT_ARTIFACT_MANIFEST_VERSION = 1
 ARTIFACT_MANIFEST_NAME = "artifact_manifest.json"
 RAW_AUDIO_RELATIVE_PATHS = ("verify.wav",)

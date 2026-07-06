@@ -347,6 +347,8 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
         "pre_measurement_config_path",
         "verify_metrics",
         "verify_before_after",
+        "acceptance",
+        "auto_revert_outcome",
         "autolevel",
     }
     assert snapshot["sweep"] == sess.sweep_meta.to_dict()
@@ -391,6 +393,8 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
         "pre_measurement_config_path",
         "verify_metrics",
         "verify_before_after",
+        "acceptance",
+        "auto_revert_outcome",
         "config",
     }
     assert info["bundle_schema_version"] == bundles.CURRENT_BUNDLE_SCHEMA_VERSION
@@ -408,9 +412,12 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
         "measured",
         "target",
         "predicted",
+        "position1",
         "verify",
         "verify_metrics",
         "verify_before_after",
+        "acceptance",
+        "auto_revert_outcome",
         "capture_quality",
         "noise_reports",
         "repeat",

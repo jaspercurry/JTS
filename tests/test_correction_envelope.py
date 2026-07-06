@@ -33,6 +33,7 @@ ENVELOPE_KEYS = {
     "curves",
     "fill_segments",
     "headline",
+    "verdict",
     "verdict_text",
     "nudges",
     "next_action",
@@ -79,6 +80,8 @@ class _FakeSession:
         self.predicted_curve: CurveJSON | None = None
         self.verify_curve: CurveJSON | None = None
         self.verify_before_after: dict[str, object] | None = None
+        self.acceptance: dict[str, object] | None = None
+        self.auto_revert_outcome: dict[str, object] | None = None
         self.confidence_report: dict[str, object] | None = None
 
 
@@ -153,10 +156,11 @@ def test_unknown_state_value_falls_back_to_idle_not_crash():
 # ---------- top-level shape ------------------------------------------------
 
 
-def test_schema_version_is_one():
-    assert envelope.ENVELOPE_SCHEMA_VERSION == 1
+def test_schema_version_is_two():
+    # v2 added the P4 `verdict` block (P4).
+    assert envelope.ENVELOPE_SCHEMA_VERSION == 2
     env = envelope.build_envelope(_FakeSession())
-    assert env["schema_version"] == 1
+    assert env["schema_version"] == 2
 
 
 def test_envelope_top_level_shape_is_pinned():
@@ -175,6 +179,7 @@ def test_idle_envelope_has_entry_action_and_no_headline():
     assert env["next_action"] == {"label": "Start measuring", "endpoint": "/start"}
     assert env["progress"] == {"position": 1, "total": 6}
     assert isinstance(env["verdict_text"], str) and env["verdict_text"]
+    assert env["verdict"] is None  # no verify yet → no acceptance verdict
 
 
 # ---------- level screen (autolevel sub-state) -----------------------------
@@ -539,10 +544,145 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
         server.server_close()
 
     assert set(body) == ENVELOPE_KEYS
-    assert body["schema_version"] == 1
+    assert body["schema_version"] == 2
     assert body["screen"] == "review"
     assert body["state"] == "ready"
     assert body["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}
     # The uncalibrated-mic nudge survives the full round-trip, non-blocking.
     assert any(n["code"] == "uncalibrated_mic" for n in body["nudges"])
     assert all(n["severity"] in {"info", "warn"} for n in body["nudges"])
+
+
+# ---------- P4 verdict-driven copy + flow (blocker + should-fix pins) -------
+#
+# The deterministic verdict must truthfully reach the household through
+# env.verdict_text — the ONLY field the shipped envelope client renders
+# (deploy/assets/correction/js/main.js wizardVerdict). These pins cover the
+# three revert copies (success / failed / in-flight), the pending-confirm
+# next_action override, and the accept/surface headline folds — deleting
+# _next_action_for or the _VERDICT_HEADLINE fold must fail tests, not ship.
+
+
+def _acceptance(verdict: str, **extra: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "verdict": verdict,
+        "reasons": ["r"],
+        "confirmed": verdict == "revert",
+        "verify_index": 2 if verdict == "revert" else 1,
+        "basis": "position_1",
+        "overall_before_rms_db": 4.0,
+        "overall_after_rms_db": 6.0,
+        "overall_rms_delta_db": -2.0,
+        "regressed_band_count": 1,
+        "worst_band_delta_db": -7.0,
+        "worst_band_center_hz": 112.0,
+        "bands": [],
+    }
+    base.update(extra)
+    return base
+
+
+def test_successful_auto_revert_is_announced_on_idle():
+    """BLOCKER pin: after a successful auto-revert the session is IDLE — the
+    envelope must say the correction was removed, never the silent default
+    'Ready to measure your room.'"""
+    sess = _FakeSession(SessionState.IDLE)
+    sess.acceptance = _acceptance("revert")
+    sess.auto_revert_outcome = {"result": "ok", "at": 1234.0}
+    env = envelope.build_envelope(sess)
+    assert env["screen"] == "idle"
+    assert "Reverted" in env["verdict_text"]
+    assert "removed the correction" in env["verdict_text"]
+    assert env["verdict_text"] != "Ready to measure your room."
+
+
+def test_fresh_idle_session_keeps_default_copy():
+    """The post-revert branch must not fire for an ordinary fresh session."""
+    env = envelope.build_envelope(_FakeSession(SessionState.IDLE))
+    assert env["verdict_text"] == "Ready to measure your room."
+
+
+def test_failed_auto_revert_says_still_applied():
+    """BLOCKER pin: a failed rollback must say the correction is STILL
+    APPLIED with the manual Reset pointer — never claim 'we put it back'."""
+    sess = _FakeSession(SessionState.VERIFIED)
+    sess.acceptance = _acceptance("revert")
+    sess.auto_revert_outcome = {"result": "failed", "at": 1234.0}
+    env = envelope.build_envelope(sess)
+    assert env["screen"] == "result"
+    assert "STILL APPLIED" in env["verdict_text"]
+    assert "Reset" in env["verdict_text"]
+    assert "put it back" not in env["verdict_text"]
+    assert "removed the correction" not in env["verdict_text"]
+
+
+def test_inflight_revert_copy_does_not_claim_completion():
+    """BLOCKER pin: a revert verdict with no recorded outcome (rollback still
+    running, or a pre-reset failure not yet stamped) must not claim the
+    correction was removed; it names the manual Reset escape hatch."""
+    sess = _FakeSession(SessionState.VERIFIED)
+    sess.acceptance = _acceptance("revert")
+    env = envelope.build_envelope(sess)
+    assert env["screen"] == "result"
+    assert "removing the correction" in env["verdict_text"]
+    assert "Reset" in env["verdict_text"]
+    assert "restored" not in env["verdict_text"]
+    assert "put it back" not in env["verdict_text"]
+
+
+def test_verdict_block_carries_auto_revert_outcome_without_mutation():
+    sess = _FakeSession(SessionState.IDLE)
+    sess.acceptance = _acceptance("revert")
+    sess.auto_revert_outcome = {"result": "ok", "at": 1234.0}
+    env = envelope.build_envelope(sess)
+    assert env["verdict"]["auto_revert_outcome"] == {"result": "ok", "at": 1234.0}
+    # The session's own acceptance record is relayed by copy, not mutated.
+    assert "auto_revert_outcome" not in sess.acceptance
+
+
+def test_pending_confirm_offers_verify_not_start():
+    """SF pin: while a confirmation is pending, the single forward action is
+    the confirmatory re-measure — NOT /start, which replaces the session and
+    would destroy the pending verdict + concordance state."""
+    sess = _FakeSession(SessionState.VERIFIED)
+    sess.acceptance = _acceptance(
+        "revert_pending_confirm", confirmed=False, verify_index=1,
+    )
+    env = envelope.build_envelope(sess)
+    assert env["next_action"] == {
+        "label": "Measure again to confirm",
+        "endpoint": "/verify",
+    }
+    assert env["next_action"]["endpoint"] != "/start"
+
+
+def test_pending_confirm_headline_folds_into_verdict_text():
+    sess = _FakeSession(SessionState.VERIFIED)
+    sess.acceptance = _acceptance(
+        "revert_pending_confirm", confirmed=False, verify_index=1,
+    )
+    sess.verify_before_after = _verify_before_after()
+    env = envelope.build_envelope(sess)
+    assert env["verdict_text"].startswith("That measured worse. Measure once more")
+    # The one-number headline folds in after the verdict lead.
+    assert "±" in env["verdict_text"]
+
+
+def test_accept_verdict_headline_and_default_action():
+    sess = _FakeSession(SessionState.VERIFIED)
+    sess.acceptance = _acceptance(
+        "accept", confirmed=False, verify_index=1, overall_rms_delta_db=2.0,
+    )
+    env = envelope.build_envelope(sess)
+    assert env["verdict_text"].startswith("Confirmed improved")
+    assert env["next_action"] == {"label": "Measure again", "endpoint": "/start"}
+
+
+def test_surface_verdict_headline():
+    sess = _FakeSession(SessionState.VERIFIED)
+    sess.acceptance = _acceptance(
+        "surface", confirmed=False, verify_index=1, overall_rms_delta_db=0.1,
+    )
+    env = envelope.build_envelope(sess)
+    assert "too small to be sure" in env["verdict_text"]
+    assert env["next_action"] == {"label": "Measure again", "endpoint": "/start"}

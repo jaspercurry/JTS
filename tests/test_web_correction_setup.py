@@ -255,3 +255,231 @@ def test_public_surface_present():
     assert callable(correction_setup.main)
     assert callable(correction_setup._render_page)
     assert callable(correction_setup._make_handler)
+
+
+# ---------------------------------------------------------------------------
+# P4 auto-revert wiring (the verify-upload handler → session.auto_revert).
+# ---------------------------------------------------------------------------
+
+
+class _FakeSession:
+    """Minimal stand-in for the auto-revert helper: it exposes just the
+    verdict accessor and an async auto_revert that records the target."""
+
+    def __init__(self, verdict: str | None) -> None:
+        self._verdict = verdict
+        self.revert_calls: list[str | None] = []
+
+    @property
+    def acceptance_verdict(self) -> str | None:
+        return self._verdict
+
+    async def auto_revert(self, camilla_set_config, *, target_config_path=None):
+        self.revert_calls.append(target_config_path)
+        # A real revert flips to IDLE; the fake just reports it acted.
+        return True
+
+
+def _patch_no_op_camilla(monkeypatch) -> None:
+    class _FakeCam:
+        async def set_config_file_path(self, path, *, best_effort=False):
+            return True
+
+        async def get_config_file_path(self, *, best_effort=False):
+            return "/etc/camilladsp/outputd-cutover.yml"
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: _FakeCam())
+    # Resolve target without touching the topology-aware carrier.
+    monkeypatch.setattr(
+        correction_setup,
+        "_resolve_reset_target",
+        lambda sess, cam: "/etc/camilladsp/no-room.yml",
+    )
+
+
+def test_maybe_auto_revert_acts_only_on_confirmed_revert(monkeypatch):
+    import asyncio
+
+    _patch_no_op_camilla(monkeypatch)
+
+    # Run the async helper on a fresh event loop for the test.
+    monkeypatch.setattr(
+        correction_setup, "_run_async",
+        lambda coro, timeout=None: asyncio.new_event_loop().run_until_complete(
+            coro
+        ),
+    )
+
+    for verdict in ("accept", "surface", "revert_pending_confirm", None):
+        sess = _FakeSession(verdict)
+        assert correction_setup._maybe_auto_revert(sess) is False
+        assert sess.revert_calls == []  # never touched CamillaDSP
+
+    sess = _FakeSession("revert")
+    assert correction_setup._maybe_auto_revert(sess) is True
+    assert sess.revert_calls == ["/etc/camilladsp/no-room.yml"]
+
+
+def test_maybe_auto_revert_swallows_errors(monkeypatch):
+    """A revert failure is logged and returns False — it never 500s the verify
+    upload (the correction is left applied for manual undo)."""
+    import asyncio
+
+    class _FailSession(_FakeSession):
+        async def auto_revert(
+            self, camilla_set_config, *, target_config_path=None,
+        ):
+            raise RuntimeError("camilla rejected the base config")
+
+    _patch_no_op_camilla(monkeypatch)
+    monkeypatch.setattr(
+        correction_setup, "_run_async",
+        lambda coro, timeout=None: asyncio.new_event_loop().run_until_complete(
+            coro
+        ),
+    )
+    sess = _FailSession("revert")
+    assert correction_setup._maybe_auto_revert(sess) is False
+
+
+def test_auto_revert_accepts_target_detection():
+    # A function with the kwarg → True.
+    async def with_kwarg(cam, *, target_config_path=None):
+        return True
+
+    # A function without it and no **kwargs → False.
+    async def without_kwarg(cam):
+        return True
+
+    # A function with **kwargs → True (forwards through).
+    async def with_var_kwargs(cam, **kw):
+        return True
+
+    assert correction_setup._auto_revert_accepts_target(with_kwarg) is True
+    assert correction_setup._auto_revert_accepts_target(without_kwarg) is False
+    assert correction_setup._auto_revert_accepts_target(with_var_kwargs) is True
+
+
+# ---------------------------------------------------------------------------
+# P4 upload-handler wiring — the verify upload that lands "revert" must drive
+# the auto-revert (SF pin: removing `auto_reverted = _maybe_auto_revert(sess)`
+# from _handle_upload_capture must fail these, not ship).
+# ---------------------------------------------------------------------------
+
+
+def _session_primed_for_confirmed_revert(tmp_path):
+    """Real MeasurementSession one verify away from a CONFIRMED regression.
+
+    Runs the real pipeline on the module's background loop (measure a
+    near-flat seat, apply, one regressed verify → revert_pending_confirm,
+    then arm the confirmatory verify sweep) and returns the session plus the
+    regressed verify WAV bytes to upload through the handler.
+    """
+    from jasper.audio_measurement import sweep
+
+    from .test_correction_session import (
+        _make_session,
+        _measure_one_position,
+        _run_verify,
+        _synthesize_room_capture,
+    )
+
+    sess = _make_session(tmp_path)
+
+    async def _prime():
+        async def fake_play(path, **kw):
+            pass
+
+        async def fake_camilla(path: str) -> bool:
+            return True
+
+        await _measure_one_position(sess, room_gain_db=0.5)
+        await sess.apply(fake_camilla)
+        await _run_verify(sess, verify_room_gain_db=20.0)
+        assert sess.acceptance["verdict"] == "revert_pending_confirm"
+        # Arm the confirmatory verify; the handler does the upload.
+        await sess.start_verify_sweep(fake_play)
+
+    correction_setup._run_async(_prime(), timeout=60.0)
+
+    sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
+    regressed = _synthesize_room_capture(
+        sweep_signal, sr, mode_freq_hz=80.0, mode_gain_db=20.0,
+    )
+    wav_path = tmp_path / "confirm_verify_upload.wav"
+    sweep.write_sweep_wav(wav_path, regressed.astype("float32"), sr)
+    return sess, wav_path.read_bytes()
+
+
+class _RecordingCam:
+    def __init__(self) -> None:
+        self.loads: list[str] = []
+
+    async def set_config_file_path(self, path, *, best_effort=False):
+        self.loads.append(str(path))
+        return True
+
+    async def get_config_file_path(self, *, best_effort=False):
+        return "/etc/camilladsp/outputd-cutover.yml"
+
+
+def test_upload_handler_runs_auto_revert_on_confirmed_regression(
+    tmp_path, monkeypatch,
+):
+    sess, wav_bytes = _session_primed_for_confirmed_revert(tmp_path)
+    cam = _RecordingCam()
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_setup, "_read_wav_body", lambda handler: wav_bytes,
+    )
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
+    monkeypatch.setattr(
+        correction_setup,
+        "_resolve_reset_target",
+        lambda s, c: "/tmp/no-room-test.yml",
+    )
+
+    resp = correction_setup._handle_upload_capture(object())
+
+    # The response tells the truth about what just happened...
+    assert resp["acceptance"]["verdict"] == "revert"
+    assert resp["auto_reverted"] is True
+    # ...and the revert genuinely ran through the shared reset target.
+    assert sess.state.value == "idle"
+    assert cam.loads == ["/tmp/no-room-test.yml"]
+    assert sess.auto_revert_outcome["result"] == "ok"
+
+
+def test_upload_handler_auto_revert_failure_still_returns_ok(
+    tmp_path, monkeypatch,
+):
+    """A failed auto-revert never 500s the upload: the response reports
+    auto_reverted=false, the correction stays applied (VERIFIED), and the
+    envelope says so honestly."""
+    sess, wav_bytes = _session_primed_for_confirmed_revert(tmp_path)
+    cam = _RecordingCam()
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_setup, "_read_wav_body", lambda handler: wav_bytes,
+    )
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
+
+    def _boom(s, c):
+        raise RuntimeError("target resolution exploded")
+
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target", _boom)
+
+    resp = correction_setup._handle_upload_capture(object())
+
+    assert resp["acceptance"]["verdict"] == "revert"
+    assert resp["auto_reverted"] is False
+    assert cam.loads == []  # nothing was loaded
+    assert sess.state.value == "verified"  # correction still applied
+    assert sess.auto_revert_outcome["result"] == "failed"
+
+    # The envelope tells the household the truth: still applied + Reset.
+    from jasper.correction.envelope import build_envelope
+
+    env = build_envelope(sess)
+    assert "STILL APPLIED" in env["verdict_text"]
+    assert "Reset" in env["verdict_text"]
