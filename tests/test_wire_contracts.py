@@ -316,6 +316,11 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # never appear in the Rust surface. Absence-vs-present semantics, mirrors
     # JASPER_TRANSIT_CITIES.
     "JASPER_FANIN_COUPLING_CHOICE": "P3/P4 operator-choice marker; reconciler-only revert lever, not Rust-read",
+    # outputd failure-reconcile helper state. These tune the one-shot marker that
+    # bounds EX_CONFIG=78 self-heal retries; they are consumed only by
+    # deploy/bin/jasper-outputd-failure-reconcile, not by the Rust daemon.
+    "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper retry marker path; script-only",
+    "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper retry marker window; script-only",
 }
 
 # Script-local variables that *name the env file path itself* (e.g.
