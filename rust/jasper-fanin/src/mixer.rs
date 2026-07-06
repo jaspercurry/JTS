@@ -4272,7 +4272,7 @@ mod tests {
             State::Setup,
             State::Prepared,
             State::Running,
-            State::Xrun,
+            State::XRun,
             State::Draining,
             State::Paused,
             State::Suspended,
