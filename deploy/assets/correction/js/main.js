@@ -1406,8 +1406,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         pollState();
         refreshEnvelope();
       } else {
-        setTuningStatus('Not applied: ' + (payload.reason || 'the safety check rejected it.'));
+        // Server-derived honesty: applied is false both for a safety-gate
+        // rejection AND for an apply that failed downstream (CamillaDSP
+        // rejected the reload — the speaker kept its previous sound). The
+        // server's reason carries the honest sentence; refresh so the UI
+        // shows the real session state rather than a stale review screen.
+        setTuningStatus('Not applied: ' + (payload.reason || "couldn't apply — the speaker kept its previous sound."));
         if (btn) btn.disabled = false;
+        pollState();
+        refreshEnvelope();
       }
     } catch (e) {
       setTuningStatus('Apply failed: ' + (e && e.message ? e.message : e));

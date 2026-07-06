@@ -190,3 +190,107 @@ def test_propose_apply_good_cut_routes_through_apply(monkeypatch):
     assert applied["peqs"] and isinstance(applied["peqs"][0], PEQJSON)
     assert applied["peqs"][0].freq_hz == 62.0
     assert out["simulation"]["accepted"] is True
+
+
+def _real_ready_session(tmp_path, *, with_target=True):
+    """A REAL MeasurementSession forced into READY with server curves set —
+    for tests that must drive the genuine _handle_apply -> session.apply
+    path (no handler mocks; the P7 mock-shape lesson at one remove)."""
+    from jasper.correction.session import (
+        CurveJSON,
+        MeasurementSession,
+        SessionConfig,
+        SessionState,
+    )
+
+    cfg = SessionConfig(
+        sweep_dir=tmp_path / "sweeps",
+        capture_dir=tmp_path / "captures",
+        sessions_dir=tmp_path / "sessions",
+        config_dir=tmp_path / "configs",
+        base_config_path=tmp_path / "v1.yml",
+        duration_s=1.0,
+    )
+    cfg.base_config_path.write_text("# stub base v1.yml for tests\n")
+    sess = MeasurementSession(cfg)
+    sess.state = SessionState.READY
+    freqs = np.geomspace(20, 350, 60)
+    measured = 8.0 * np.exp(-((np.log2(freqs / 62.0)) ** 2) / (2 * 0.25 ** 2))
+    sess.measured_curve = CurveJSON(
+        freqs_hz=freqs.tolist(), magnitude_db=measured.tolist(),
+    )
+    sess.position1_curve = sess.measured_curve
+    if with_target:
+        sess.target_curve = CurveJSON(
+            freqs_hz=freqs.tolist(),
+            magnitude_db=np.zeros_like(freqs).tolist(),
+        )
+    return sess
+
+
+class _RejectingCam:
+    """Fake CamillaController: reports the flat base config as loaded
+    (carrier_for_loaded_config short-circuits on that exact path without
+    reading the file) and REJECTS every candidate load — driving
+    session.apply's swallowed DspApplyError branch (state -> FAILED,
+    no exception raised)."""
+
+    def __init__(self):
+        self.load_attempts: list[str] = []
+
+    async def get_config_file_path(self, best_effort=True):
+        from jasper.sound.camilla_yaml import BASE_CONFIG_PATH
+
+        return str(BASE_CONFIG_PATH)
+
+    async def set_config_file_path(self, path, best_effort=False):
+        self.load_attempts.append(str(path))
+        return False
+
+
+def test_propose_apply_reports_honest_failure_when_reload_rejected(
+    tmp_path, monkeypatch,
+):
+    """The swallowed-CamillaDSP-reload-failure path, driven through the
+    REAL _handle_apply + session.apply (no handler mocks): session.apply
+    swallows the rejected-reload DspApplyError (state FAILED, returns
+    normally) — the response must say applied:false, never a dishonest
+    applied:true with state:"failed"."""
+    sess = _real_ready_session(tmp_path)
+    cam = _RejectingCam()
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
+
+    body = b'{"confirm":true,"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}'
+    out = correction_setup._handle_propose_apply(_FakeHandler(body))
+
+    # CamillaDSP genuinely rejected a real emitted candidate config...
+    assert cam.load_attempts, "the real apply path never reached CamillaDSP"
+    assert sess.state.value == "failed"
+    # ...and the response tells the truth about it.
+    assert out["applied"] is False
+    assert out["state"] == "failed"
+    assert "previous sound" in out["reason"]
+    # The simulation itself HAD accepted (the failure is downstream).
+    assert out["simulation"]["accepted"] is True
+
+
+def test_propose_apply_fails_closed_without_acceptance_basis(monkeypatch):
+    """Fail-closed split: the propose PREVIEW is lenient without
+    baseline/target curves (ring+headroom only), but the APPLY seam
+    requires the P4 acceptance judge to have run — no judge, no apply."""
+    sess = _fake_session("ready")
+    sess.target_curve = None  # no target -> evaluate_acceptance cannot run
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+
+    def forbidden_apply(handler):  # pragma: no cover - must never run
+        raise AssertionError("apply must not be reached without the judge")
+
+    monkeypatch.setattr(correction_setup, "_handle_apply", forbidden_apply)
+    body = b'{"confirm":true,"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}'
+    out = correction_setup._handle_propose_apply(_FakeHandler(body))
+    assert out["applied"] is False
+    assert out["code"] == "missing_acceptance_basis"
+    # The sim preview itself stayed lenient: bounds+ring+headroom passed.
+    assert out["simulation"]["accepted"] is True
+    assert out["simulation"]["acceptance"] is None

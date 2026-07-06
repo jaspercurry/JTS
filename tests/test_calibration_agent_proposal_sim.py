@@ -109,8 +109,17 @@ def test_ring_ceiling_tightens_with_gain():
 
 
 def test_simulation_without_baseline_still_returns_predicted():
-    # If baseline/target are missing, no acceptance verdict, but ring +
-    # headroom checks still run and (if clean) the proposal is accepted.
+    """Pins the lenient-PREVIEW vs strict-APPLY split.
+
+    The SIM stays lenient without baseline/target: no acceptance verdict,
+    but ring + headroom checks still run and (if clean) the proposal is
+    ``accepted`` with a predicted curve — an honest ring+headroom-only
+    preview for /propose. The APPLY seam is the strict half:
+    _handle_propose_apply requires ``sim.acceptance is not None`` (the P4
+    judge actually ran) and rejects with ``missing_acceptance_basis``
+    otherwise — pinned by tests/test_web_correction_tuning.py::
+    test_propose_apply_fails_closed_without_acceptance_basis.
+    """
     freqs, mags = _room_with_mode()
     mc = _curve(freqs, mags)
     r = ps.simulate_correction_proposal(

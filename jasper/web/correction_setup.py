@@ -2558,6 +2558,24 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             "session_id": sess.session_id,
             "state": sess.state.value,
         }
+    if sim.acceptance is None:
+        # Fail-closed at the apply seam: the P4 acceptance judge could not
+        # run (baseline/target curves were absent), so the promise "every
+        # applied proposal is judged by the same acceptance evaluator" can't
+        # hold. The propose PREVIEW stays lenient by design (a ring+headroom
+        # only preview is honest there); applying without the judge is not.
+        return {
+            "applied": False,
+            "code": "missing_acceptance_basis",
+            "reason": (
+                "proposal could not be judged against the room baseline "
+                "(no baseline/target curves for the acceptance evaluator); "
+                "not applying"
+            ),
+            "simulation": sim.to_dict(),
+            "session_id": sess.session_id,
+            "state": sess.state.value,
+        }
 
     # Deterministic gate + explicit confirm both passed: swap in the
     # proposed filters and route through the SAME apply path any
@@ -2574,7 +2592,13 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         for p in validated_peqs
     ]
     result = _handle_apply(handler)
-    result["applied"] = True
+    # Derive success from the actual outcome, never stamp it: session.apply
+    # deliberately swallows the CamillaDSP-rejected-reload failure (state ->
+    # FAILED, no exception raised), and claiming "applied" while the speaker
+    # kept its previous sound would be a dishonest success message.
+    result["applied"] = result.get("state") == "applied"
+    if not result["applied"]:
+        result["reason"] = "couldn't apply — the speaker kept its previous sound"
     result["simulation"] = sim.to_dict()
     return result
 
