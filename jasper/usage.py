@@ -52,6 +52,16 @@ Override file: the bundled rates are defaults. An optional
 per MODEL ID using the ``Pricing`` field names as keys — see
 ``load_pricing_overrides``. Missing/malformed file falls back to the
 bundled defaults (fail-soft).
+
+Per-surface ledger files, one writer per file: spend is recorded into a
+separate SQLite DB per writing surface — the voice daemon owns
+``usage.db``; root ``jasper-correction-web`` owns the sibling
+``usage-tuning.db`` (it must never touch ``usage.db``, whose owner is
+jasper-voice — a root-created file or ``-journal`` sidecar would wedge the
+voice ledger, the 2026-06-19 "readonly database" class). ``household_usage_reader``
+is the single definition of "household spend": it sums every member file at
+read time, so the cap and every display surface see one total while each file
+keeps exactly one writer.
 """
 from __future__ import annotations
 
@@ -70,6 +80,26 @@ logger = logging.getLogger(__name__)
 DEFAULT_DAILY_SPEND_CAP_USD = 1.0
 DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER = 1.25
 DEFAULT_USAGE_DB = "/var/lib/jasper/usage.db"
+
+
+def tuning_usage_db_path(usage_db_path: str) -> str:
+    """The tuning-surface ledger file: a sibling of the voice usage DB in
+    the same directory, named ``usage-tuning.db``.
+
+    Derived (not a separate env var) so the two ledgers always live side by
+    side and a future consolidation is a one-function edit. ``jasper-correction-web``
+    is its SOLE writer; every cap/display reader sums it with ``usage_db_path``
+    through ``household_usage_reader``. It is a SEPARATE file on purpose: the
+    root correction-web daemon must never open the jasper-voice-owned
+    ``usage.db`` read-write, since a root-created file or ``-journal`` sidecar
+    wedges the voice daemon's own writes (the 2026-06-19 outage class)."""
+    parent = Path(usage_db_path).parent
+    return str(parent / "usage-tuning.db")
+
+
+# The tuning ledger for the default install layout. Derived so a rename of
+# DEFAULT_USAGE_DB moves both.
+DEFAULT_TUNING_USAGE_DB = tuning_usage_db_path(DEFAULT_USAGE_DB)
 
 # Sentinel session id returned by ``UsageStore.open_session`` when the
 # accounting INSERT fails (e.g. usage.db ends up owned by the wrong user
@@ -893,6 +923,102 @@ class UsageStore:
         )
         row = cur.fetchone()
         return row[0] if row else None
+
+
+class AggregateUsageReader:
+    """Sums the reader trio across every per-surface ledger file.
+
+    Implements exactly the three methods the display / cap surfaces call —
+    ``spend_last_24h_usd`` / ``spend_month_to_date_usd`` /
+    ``session_count_today_utc`` — so it duck-types as a ``UsageStore`` wherever
+    those are read (and behind ``SpendCap``, which only calls
+    ``spend_last_24h_usd``). It never writes.
+
+    Members are a mix of already-open stores (the voice daemon passes its own
+    live writer, so its just-recorded spend is visible without a re-open) and
+    paths (opened READ-ONLY, LAZILY, on EVERY read). A missing or unopenable
+    path-member contributes zero — logged at DEBUG, never WARN — because the
+    voice daemon runs for weeks and MUST pick up a tuning DB that
+    ``jasper-correction-web`` creates later without a restart. A failed open is
+    never cached: the next read retries, so the member appears the moment it
+    exists. This matches the module's fail-open direction (an unreadable ledger
+    reads as zero spend, never blocks)."""
+
+    def __init__(
+        self,
+        *,
+        stores: "list[UsageStore] | None" = None,
+        paths: list[str] | None = None,
+    ) -> None:
+        self._stores = list(stores or [])
+        self._paths = list(paths or [])
+
+    def _read_all(self, method_name: str) -> "list[float | int]":
+        values: list[float | int] = []
+        for store in self._stores:
+            try:
+                values.append(getattr(store, method_name)())
+            except sqlite3.Error as e:
+                logger.debug(
+                    "usage aggregate: open store %s failed (%s: %s); "
+                    "counting zero",
+                    method_name, type(e).__name__, e,
+                )
+        for path in self._paths:
+            if not os.path.exists(path):
+                # The common steady state before a surface has ever spent —
+                # DEBUG, not WARN, so weeks of uptime don't spam the journal.
+                logger.debug(
+                    "usage aggregate: member %s absent; counting zero", path,
+                )
+                continue
+            try:
+                # read_only never creates the file and never writes, so a
+                # reader cannot re-own another surface's DB. Open fresh per
+                # read and close immediately — never cache a handle (or a
+                # failed open).
+                store = UsageStore(path, read_only=True)
+                try:
+                    values.append(getattr(store, method_name)())
+                finally:
+                    store._conn.close()
+            except sqlite3.Error as e:
+                logger.debug(
+                    "usage aggregate: member %s unreadable (%s: %s); "
+                    "counting zero", path, type(e).__name__, e,
+                )
+        return values
+
+    def spend_last_24h_usd(self) -> float:
+        return float(sum(self._read_all("spend_last_24h_usd")))
+
+    def spend_month_to_date_usd(self) -> float:
+        return float(sum(self._read_all("spend_month_to_date_usd")))
+
+    def session_count_today_utc(self) -> int:
+        return int(sum(self._read_all("session_count_today_utc")))
+
+
+def household_usage_reader(
+    usage_db_path: str, *, main_store: "UsageStore | None" = None,
+) -> AggregateUsageReader:
+    """THE definition of "household spend": the voice usage DB + the tuning
+    sibling, summed at read time.
+
+    This is the single place the member list lives. Every cap and display
+    surface builds its reader here, so "household spend" has exactly one
+    definition and consolidating later (if correction-web ever de-roots into
+    the jasper group and can share one DB) is a one-function edit.
+
+    ``main_store`` lets the voice daemon pass its OWN open writer instance so
+    the reader sees spend it just recorded (its live connection) rather than a
+    stale read-only reopen; the tuning sibling is always a path (correction-web
+    owns that file, this process only reads it). Callers without a live writer
+    (the /voice card, doctor) pass both as paths."""
+    tuning_db = tuning_usage_db_path(usage_db_path)
+    if main_store is not None:
+        return AggregateUsageReader(stores=[main_store], paths=[tuning_db])
+    return AggregateUsageReader(paths=[usage_db_path, tuning_db])
 
 
 class SpendCap:
