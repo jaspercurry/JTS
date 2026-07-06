@@ -41,10 +41,14 @@
 //! spuriously fail if it runs while the resampler's correction is railed (the
 //! jts.local 2026-07-03 false-fail — a floor-primed session whose held target
 //! snapped to the ceiling post-lock railed at −500 ppm while the DLL rebuilt the
-//! fill, so the probe read baseline ≈ step ≈ −500 → response_ratio ≈ 0 → FAIL; the
-//! rail's exact mechanism — the `NotL0` snap — is still open, and the
-//! unrailed-settle guard in `jasper-host-clock` is what actually prevents the
-//! false-fail regardless of cause). Costing the household the ~2.5-min descent on ONE
+//! fill, so the probe read baseline ≈ step ≈ −500 → response_ratio ≈ 0 → FAIL; that
+//! specific rail's mechanism — the post-lock `NotL0` snap — is now root-FIXED by the
+//! prime-aware `NotL0` hold (#1161), so it no longer occurs). This TWO-strike
+//! tolerance — NOT a settle-time rail guard — is what keeps a residual spurious
+//! probe read from costing the floor: an earlier CORRECTION-mode unrailed-settle
+//! guard in `jasper-host-clock` also targeted this rail, but was REMOVED 2026-07-05
+//! (it deadlocked beyond-authority hosts whose correction rails steady-state), so
+//! do NOT rely on it here. Costing the household the ~2.5-min descent on ONE
 //! ambiguous read is the wrong trade. So a probe fail is TWO-strike (see
 //! [`classify_strike`] / [`PROBE_FAIL_STRIKE_LIMIT`]): the first fail RETAINS the
 //! proof but persists an incremented `consecutive_failures` (and `flag_present`
@@ -287,9 +291,13 @@ impl RevokeReason {
 /// The consecutive-probe-FAIL count at which a floor-primed proof is DELETED
 /// (the two-strike limit). A single probe FAIL is a MEASUREMENT, not proof the
 /// host changed — the lock-gated probe can spuriously fail if it runs during a
-/// railed acquisition (the hardware-diagnosed jts.local 2026-07-03 false-fail
-/// that motivated the floor-prime-seating + unrailed-settle fixes). Costing the
-/// household the ~2.5-min descent on ONE bad measurement is the wrong trade, so
+/// railed acquisition (the hardware-diagnosed jts.local 2026-07-03 false-fail).
+/// That specific rail is now root-fixed by the prime-aware `NotL0` hold (#1161),
+/// and floor-prime seating remains as defense-in-depth; an unrailed-settle guard
+/// that also landed for it was REMOVED 2026-07-05 (it deadlocked beyond-authority
+/// hosts), so this two-strike tolerance is the standing net for a residual
+/// spurious read. Costing the household the ~2.5-min descent on ONE bad
+/// measurement is the wrong trade, so
 /// a probe fail RETAINS the proof (bumping this counter) the first time and only
 /// deletes on the SECOND consecutive fail — by then two independent sessions
 /// disagreed with the proof, which IS a host change worth distrusting. Value 2:

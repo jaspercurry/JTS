@@ -653,9 +653,12 @@ impl LaneResampler {
         // baseline −9.6). FIX: while a floor prime is live for the session, the
         // `NotL0` branch HOLDS the held target at the floor (a floor prime is a
         // deliberate divergence the `NotL0` branch must respect) until the ladder
-        // reaches l0 — see `floor_prime_pending` and `tick`. Parts 2 (unrailed
-        // settle) and 3 (two-strike) remain the defense-in-depth safety net for a
-        // genuinely bad host that cannot hold the floor through Probing.
+        // reaches l0 — see `floor_prime_pending` and `tick`. The two-strike
+        // probe-fail policy (in `host_compliance`) remains the defense-in-depth
+        // safety net for a genuinely bad host that cannot hold the floor through
+        // Probing. (An unrailed-settle guard in `jasper-host-clock` was a second
+        // net here, but was REMOVED 2026-07-05 — it deadlocked beyond-authority
+        // hosts whose correction rails steady-state.)
         //
         // COST. In DEFAULT geometry the cost vs the parent is ZERO — the deep arm
         // was already the only reachable path for a primed lane, so the seat depth,
@@ -3041,7 +3044,8 @@ mod tests {
     /// deleting the prime-aware hold in `tick` makes the FIRST locked-but-Probing
     /// tick snap the held target to the ceiling; `hold_fill_frames()` then reads the
     /// ceiling and `ratio_ppm()` rails toward −500 while the DLL rebuilds the fill —
-    /// both the `hold_fill_frames()==floor` and the rail-guard assertions below fail.
+    /// both the `hold_fill_frames()==floor` and the no-rail (`QUIESCENT_PPM_BOUND`)
+    /// assertions below fail.
     /// (The complementary "remove the NotL0 snap entirely" direction is caught by
     /// the unprimed bit-identical pin above.)
     #[test]
@@ -3072,9 +3076,10 @@ mod tests {
         // ladder is still Probing) for longer than the ≥19 s the false-fail railed.
         // 19 s ≈ 3562 periods at 48 kHz / 256; run 4000 to cover the whole probe.
         const PROBE_PERIODS: usize = 4000;
-        // The compliance probe's own rail guard is 450 ppm (< the ±500 authority);
-        // a healthy quiescent correction sits FAR below it. Assert a strict bound so
-        // a partial/late rail can't slip through.
+        // A healthy quiescent correction sits FAR below the ±500 ppm inner
+        // authority; a rail (the failure this pins) drives it toward ±500. Assert a
+        // strict bound well under that authority so a partial/late rail can't slip
+        // through.
         const QUIESCENT_PPM_BOUND: f64 = 100.0;
         let block = tone(PERIOD as usize);
         let mut max_abs_ppm: f64 = 0.0;
