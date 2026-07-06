@@ -67,6 +67,7 @@ import logging
 import math
 import os
 import re
+import sqlite3
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -148,6 +149,14 @@ class BadRequest(ValueError):
 
 class RequestConflict(RuntimeError):
     """Client request conflicts with the current correction session state."""
+
+
+class SpendCapExceeded(RuntimeError):
+    """The household daily spend cap is reached, so a PAID tuning call is
+    refused. Distinct from RequestConflict (409, transient session/rate
+    conflict) because this maps to HTTP 429 (Too Many Requests) with a
+    rollover-worded message — the condition clears at the daily UTC rollover,
+    not by retrying in a moment."""
 
 
 # Module-level session + bridge to the async loop. Lazy-init on
@@ -2476,6 +2485,173 @@ def _tuning_paid_call_gate() -> None:
         _tuning_last_paid_call[0] = now
 
 
+# Lazily-created writer for the tuning-surface spend ledger — jasper-correction-web
+# is its SOLE writer (never usage.db, which jasper-voice owns; a root-created file
+# there wedges the voice ledger — the 2026-06-19 outage class). Guarded by its own
+# module lock because the wizard is a ThreadingHTTPServer. Serialised writes plus
+# a 0644 chmod on first create make the file readable by jasper-voice / jasper-web
+# / doctor, which only ever read it (through household_usage_reader).
+_tuning_usage_lock = threading.Lock()
+_tuning_usage_store: "Any | None" = None
+
+
+def _tuning_usage_store_for(usage_db: str) -> "Any":
+    """Return the process-wide tuning UsageStore, creating it on first use and
+    chmod'ing the DB file to 0644 exactly once (right after creation, so a
+    0077 UMask on the root daemon still leaves a file readers can open ro).
+
+    Caller MUST hold ``_tuning_usage_lock``. Raises on create/open failure so
+    the fail-soft caller can log ``tuning_spend.record_failed`` and still serve
+    the normal response — a ledger problem must never block the user."""
+    global _tuning_usage_store
+    if _tuning_usage_store is not None:
+        return _tuning_usage_store
+    from jasper.usage import UsageStore, tuning_usage_db_path
+
+    tuning_db = tuning_usage_db_path(usage_db)
+    existed = os.path.exists(tuning_db)
+    store = UsageStore(tuning_db)  # read-write: creates schema + file
+    if not existed:
+        # UMask=0077 on the unit would otherwise leave the fresh DB 0600 and
+        # unreadable by the jasper-group readers. chmod only on first create.
+        try:
+            os.chmod(tuning_db, 0o644)
+        except OSError:
+            logger.debug("tuning ledger chmod failed", exc_info=True)
+    _tuning_usage_store = store
+    return store
+
+
+def _record_tuning_spend(out: dict[str, Any], usage_db: str) -> None:
+    """Record one paid tuning call into the tuning ledger. FAIL-SOFT: any
+    OSError / sqlite error logs ``tuning_spend.record_failed`` and returns —
+    never raises, so a ledger problem cannot block the response the user is
+    waiting on.
+
+    The advisor's ``out["usage"]`` carries only aggregate token counts
+    (``input_tokens`` / ``output_tokens``); gpt-5.4 has ONLY text rates, so
+    pricing those aggregates as-is would charge the (absent) audio rate and
+    record $0. Synthesize text-modality details (the research idiom) so the
+    cost prices at the text rate — all-text with no cached refinement is the
+    decided, conservative (slight over-estimate) simplification.
+    """
+    from jasper.calibration_agent.key_provisioning import resolve_tuning_model
+
+    usage_in = out.get("usage") or {}
+    try:
+        input_tokens = int(usage_in.get("input_tokens") or 0)
+        output_tokens = int(usage_in.get("output_tokens") or 0)
+    except (TypeError, ValueError):
+        input_tokens = output_tokens = 0
+    # Text-modality details (note the SINGULAR "token" in the detail keys —
+    # that is what usage.py's breakdown reads).
+    usage = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "input_token_details": {"text_tokens": input_tokens},
+        "output_token_details": {"text_tokens": output_tokens},
+    }
+    model = resolve_tuning_model()
+    try:
+        with _tuning_usage_lock:
+            store = _tuning_usage_store_for(usage_db)
+            cost = store.record_background_usage(
+                provider="openai",
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                usage=usage,
+            )
+    except (OSError, sqlite3.Error) as e:
+        log_event(
+            logger,
+            "tuning_spend.record_failed",
+            level=logging.WARNING,
+            error=type(e).__name__,
+        )
+        return
+    log_event(
+        logger,
+        "tuning_spend.recorded",
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost_usd=round(cost, 6),
+    )
+
+
+def _spend_settings() -> tuple[str, float, float]:
+    """The three spend knobs (usage_db, daily cap, safety multiplier) read
+    directly from the environment, mirroring ``Config``'s field defaults.
+
+    Deliberately NOT ``Config.from_env()``: that hard-raises
+    ``VoiceProviderNotConfigured`` when no voice provider is set, which would
+    crash the tuning spend gate on an otherwise-valid box (OpenAI key + spend
+    cap configured, voice provider not yet picked). The tuning surface is
+    OpenAI-only and independent of the voice-provider choice, so it must not
+    inherit that precondition. Values + defaults are identical to what
+    ``Config.from_env`` would produce for these fields."""
+    from jasper.usage import (
+        DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
+        DEFAULT_DAILY_SPEND_CAP_USD,
+        DEFAULT_USAGE_DB,
+    )
+
+    usage_db = os.environ.get("JASPER_USAGE_DB") or DEFAULT_USAGE_DB
+
+    def _float(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            return default
+
+    cap_usd = _float("JASPER_DAILY_SPEND_CAP_USD", DEFAULT_DAILY_SPEND_CAP_USD)
+    multiplier = _float(
+        "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER",
+        DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
+    )
+    return usage_db, cap_usd, multiplier
+
+
+def _spend_usage_db() -> str:
+    """The voice usage DB path (JASPER_USAGE_DB), so the tuning ledger sibling
+    lands in the same directory the voice daemon uses."""
+    return _spend_settings()[0]
+
+
+def _tuning_spend_cap_gate() -> None:
+    """Refuse a PAID tuning call when the household daily spend cap is reached.
+
+    Built fresh per call over ``household_usage_reader(usage_db)`` — so tuning
+    spend AND voice spend share one ceiling. When blocked, raise
+    ``SpendCapExceeded`` (→ 429) with a rollover-worded message.
+
+    Fail-OPEN on a read error, matching the rest of the spend accounting: if
+    the cap can't read (SpendCap's store returns zero on an unreadable DB),
+    ``allowed()`` is True — a ledger problem never blocks the user. We do NOT
+    invent fail-closed here."""
+    from jasper.usage import SpendCap, household_usage_reader
+
+    usage_db, cap_usd, multiplier = _spend_settings()
+    reader = household_usage_reader(usage_db)
+    cap = SpendCap(reader, cap_usd, multiplier)
+    if not cap.allowed():
+        log_event(
+            logger,
+            "tuning_spend.cap_blocked",
+            level=logging.WARNING,
+            padded_spend_usd=round(cap._padded_spend(), 6),
+            cap_usd=cap_usd,
+        )
+        raise SpendCapExceeded(
+            "daily spend cap reached — the tuning assistant will be "
+            "available again after the daily rollover"
+        )
+
+
 def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /interpret: one paid call. Read-only "explain my room"."""
     from jasper.calibration_agent import correction_advisor, model_client
@@ -2487,8 +2663,9 @@ def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         raise BadRequest("message must be a string")
     sess = _get_or_create_session()
     _tuning_paid_call_gate()
+    _tuning_spend_cap_gate()
     try:
-        return correction_advisor.interpret(
+        out = correction_advisor.interpret(
             sess,
             user_message=user_message,
             timeout_sec=float(TUNING_LLM_TIMEOUT_SEC),
@@ -2496,6 +2673,8 @@ def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
     except model_client.AdvisorModelError as e:
         raise BadRequest(str(e)) from e
+    _record_tuning_spend(out, _spend_usage_db())
+    return out
 
 
 def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -2514,8 +2693,9 @@ def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         raise BadRequest("message must be a string")
     sess = _get_or_create_session()
     _tuning_paid_call_gate()
+    _tuning_spend_cap_gate()
     try:
-        return correction_advisor.propose(
+        out = correction_advisor.propose(
             sess,
             user_message=user_message,
             timeout_sec=float(TUNING_LLM_TIMEOUT_SEC),
@@ -2523,6 +2703,8 @@ def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
     except model_client.AdvisorModelError as e:
         raise BadRequest(str(e)) from e
+    _record_tuning_spend(out, _spend_usage_db())
+    return out
 
 
 def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -3421,6 +3603,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         self._send_json(_handle_interpret(self))
                     except BadRequest as e:
                         self._send_client_error(str(e))
+                    except SpendCapExceeded as e:
+                        self._send_client_error(
+                            str(e), status=HTTPStatus.TOO_MANY_REQUESTS,
+                        )
                     except RequestConflict as e:
                         self._send_client_error(str(e), status=409)
                     return
@@ -3429,6 +3615,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         self._send_json(_handle_propose(self))
                     except BadRequest as e:
                         self._send_client_error(str(e))
+                    except SpendCapExceeded as e:
+                        self._send_client_error(
+                            str(e), status=HTTPStatus.TOO_MANY_REQUESTS,
+                        )
                     except RequestConflict as e:
                         self._send_client_error(str(e), status=409)
                     return

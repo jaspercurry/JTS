@@ -72,6 +72,7 @@ import sqlite3
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Protocol
 
 from jasper.log_event import log_event
 
@@ -1021,6 +1022,14 @@ def household_usage_reader(
     return AggregateUsageReader(paths=[usage_db_path, tuning_db])
 
 
+class SpendReader(Protocol):
+    """The one method SpendCap reads from its store. Both ``UsageStore`` and
+    ``AggregateUsageReader`` satisfy it structurally, so the breaker takes a
+    single live DB or the household aggregate interchangeably."""
+
+    def spend_last_24h_usd(self) -> float: ...
+
+
 class SpendCap:
     """Daily spend circuit breaker.
 
@@ -1048,7 +1057,7 @@ class SpendCap:
 
     def __init__(
         self,
-        store: UsageStore,
+        store: SpendReader,
         cap_usd: float,
         safety_multiplier: float = 1.0,
     ) -> None:
