@@ -21,7 +21,7 @@ import os
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, Mapping, TypedDict, cast
+from typing import Any, Literal, Mapping, Sequence, TypedDict, cast
 
 from jasper.audio_hardware.dac import by_id as dac_profile_by_id
 from jasper.audio_hardware.dac import latency_floor_for
@@ -1840,7 +1840,7 @@ def _effective_outputd_positive_int(
     key: str,
     *,
     default: int,
-    layers: list[Mapping[str, str]],
+    layers: Sequence[Mapping[str, str]],
 ) -> tuple[int, str | None]:
     for env in reversed(layers):
         raw = _raw(env, key)
