@@ -388,9 +388,13 @@ curl -s http://jts.local:8780/state | jq .audio_graph.fanin.host_clock
 
 - Fan-in STATUS (`/run/jasper-fanin/control.sock` `STATUS`, surfaced on `/state`):
   every input gains `"source":"lane"|"direct"`; the direct lane also gains
-  `"direct":{"device","present","opens","retries"}`. The lane's frames/xruns
-  ride the existing `frames_read`/`xrun_count`; its rate-lock rides the existing
-  `resampler{}` block.
+  `"direct":{"device","present","opens","retries","reopens"}`. The lane's
+  frames/xruns ride the existing `frames_read`/`xrun_count`; its rate-lock rides
+  the existing `resampler{}` block. `reopens` is the ZOMBIE-handle forced-reopen
+  counter (C): a growing value means the gadget function is being rebuilt
+  underneath fan-in (UDC rebind / usbsink stop-start) and the lane is self-healing
+  the deaf `Ok(0)`-forever capture handle instead of needing a manual fan-in
+  restart.
 - Bridge STATUS/state.json gains additive `"standby":true|false` (schema_version
   stays 1); in standby `playing:false`, `rms_dbfs:-120`, ring/counters zero, and
   `host_connected` is best-effort from sysfs (`/sys/class/udc/*/state ==
@@ -398,6 +402,20 @@ curl -s http://jts.local:8780/state | jq .audio_graph.fanin.host_clock
 - Transition logs: `event=fanin.usb_direct.present` / `.absent` (one line per
   presence change, device + errno + cumulative retries), `event=fanin.usb_direct.armed`
   at config load, `event=usbsink_audio.standby active=true` at bridge start.
+  `event=fanin.usb_direct.reopen reason=zombie_handle` fires when a Present handle
+  that had been feeding the lane goes deaf — `avail_update()` returns exactly 0 for
+  ~2 s **after** frames had flowed on that handle (the gadget was rebuilt underneath
+  it, no errno) — and the lane force-closes + re-opens the capture; the host-clock
+  servo's ctl handle is dropped on the same edge (`event=fanin.host_clock_ctl_error
+  ... action=drop_stale_handle`) so the next session edge re-opens it against the
+  rebuilt card. The **flowing→dead** gate (`frames_flowed_since_open`, added
+  2026-07-05) is load-bearing: an ordinary attached-but-silent host streams
+  `avail≈0` drains indefinitely with no gadget rebuild (see "attached-idle drains
+  record `avail≈0`" below), and firing on raw zero-avail alone would churn a reopen
+  every ~2 s of idle on a Mac-wired box — journal spam plus a `reopens` counter that
+  no longer means "gadget rebuilt underneath." Because a fresh reopen clears the
+  latch, a reopen that lands back on a still-zombie gadget does not immediately
+  re-fire; `reopens` counts one increment per real rebuild.
 
 ### Impulse tap moves to fan-in (C4)
 
@@ -1706,3 +1724,24 @@ which are unchanged). Pinned by `correction_probe_settle_accrues_at_the_rail`
 `beyond_authority_railed_host_probes_pass_then_fail` (a +600 ppm host: compliant
 PASSES from the rail via the away-from-rail step, non-compliant FAILS —
 fail-bias) in the `jasper-host-clock` crate.
+
+**Fast stop→start "obs-dead" re-observation (jts.local 2026-07-05, 22:07 EDT) —
+same deadlock, INVESTIGATED not re-fixed.** A separate hardware note observed
+a ~0-1 s gap between a stream stop and a new stream start leaving the ladder "in
+AwaitLock for the entire next session with dead observation (correction_ppm 0.0,
+dll locked=false) while the lane itself was locked and railing; no session_start
+transition fired." This is NOT a distinct session-edge re-arm bug — it is a
+composition of the SAME beyond-authority rail deadlock above (note the "pre-rail-
+guard-removal" timestamp): (1) the ladder was stuck in AwaitLock because the
+correction railed at +500 under the neutral AwaitLock pitch (the deadlock), and
+(2) "no session_start" is a CONSEQUENCE — across a sub-second stop→start the
+resampler never lost lock, so `playing` (= resampler locked) never went false at
+a 1 Hz tick, so no session falling edge and no fresh `begin_probe`; that is
+CORRECT behaviour (an uninterrupted session must not re-probe), and it was only
+pathological because the session it stayed in was the deadlocked AwaitLock one.
+With `settle_regime_ok == obs.locked` (#1167) the railing session leaves AwaitLock
+and reaches a verdict on its own, and a genuine stop→start (lock actually dropped)
+re-arms the probe cleanly. Pinned by
+`defect_f_fast_stop_start_does_not_deadlock_await_lock` in the `jasper-host-clock`
+crate (a railing +600 ppm host reaches a verdict; a sub-second stop→start re-arms
+a LIVE probe wait — never dead-in-AwaitLock). No code changed for this note.

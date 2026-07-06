@@ -191,12 +191,23 @@ ExecStart=/opt/jasper/bin/jasper-fanin
 # The card is derived from JASPER_FANIN_USB_DIRECT_DEVICE (default hw:UAC2Gadget)
 # so a device override redirects the belt to the right card (review N6 — no
 # hardcoded card drift; the in-daemon actuator derives the same card via
-# `ctl_card_from_capture`). Strip a `plughw:`/`hw:` prefix and any `,dev,subdev`
-# tail down to the bare card token (e.g. `UAC2Gadget`), which is what `amixer -c`
-# takes. `-` ignores failure when the card is absent (combo off, gadget torn
-# down). Mirrors jasper-usbsink.service's owner-gated ExecStopPost so both
-# writers target the same element the same way.
-ExecStopPost=-/bin/sh -c '[ "$(printf %s "$JASPER_FANIN_HOST_CLOCK" | tr "[:upper:]" "[:lower:]")" = "enabled" ] || exit 0; [ "$(printf %s "$JASPER_FANIN_USB_DIRECT" | tr "[:upper:]" "[:lower:]")" = "enabled" ] || exit 0; dev="${JASPER_FANIN_USB_DIRECT_DEVICE:-hw:UAC2Gadget}"; card="${dev#plughw:}"; card="${card#hw:}"; card="${card%%,*}"; exec /usr/bin/amixer -c "$card" cset iface=PCM,name="Capture Pitch 1000000" 1000000'
+# `ctl_card_from_capture`). Mirrors jasper-usbsink.service's owner-gated
+# ExecStopPost so both writers target the same element the same way.
+#
+# The gate + card-derive + neutralize live in the shipped helper
+# jasper-fanin-pitch-neutralize (deploy/bin/, installed to /usr/local/sbin by
+# install.sh). It was moved OUT of an inline `sh -c` here (defect E, 2026-07-05):
+# the inline form derived the card with `card="${card%%,*}"`, and systemd
+# consumes `%%` as a specifier escape — logging "Invalid environment variable
+# name evaluates to an empty string: card%,*" on every start AND running the
+# SHORTEST-match `${card%,*}` instead of the longest-match at runtime (worked by
+# luck for the current bare-card device names). No `%` gymnastics in a real
+# script. Behavior is identical: fires ONLY when THIS daemon is the configured
+# clock owner (BOTH JASPER_FANIN_HOST_CLOCK and JASPER_FANIN_USB_DIRECT set to
+# `enabled`, case-insensitive) → amixer reset to neutral 1000000. `-` ignores a
+# missing card (combo off, gadget torn down); the helper also exits 0 on the
+# not-owner / absent-card paths so the journal stays clean.
+ExecStopPost=-/usr/local/sbin/jasper-fanin-pitch-neutralize
 
 [Install]
 WantedBy=multi-user.target

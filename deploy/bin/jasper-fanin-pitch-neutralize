@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Combo-mode host-slaved USB clock (C6) — belt-and-braces pitch neutralize.
+#
+# Invoked from jasper-fanin.service's ExecStopPost. On SIGKILL / OOM-kill /
+# watchdog abort the daemon's in-process pitch neutralize is skipped, and a host
+# must never stay slaved to a command from a daemon that is no longer running.
+# This helper resets the gadget's "Capture Pitch 1000000" ctl to the neutral
+# value (1000000).
+#
+# WHY A SHIPPED HELPER, NOT INLINE `sh -c` IN THE UNIT (defect E, 2026-07-05):
+# the previous inline form derived the card with `card="${card%%,*}"`. systemd
+# consumes `%%` as a specifier escape ("Invalid environment variable name
+# evaluates to an empty string: card%,*") and then runs the shell with the
+# SHORTEST-match `${card%,*}` — wrong for any `hw:Card,dev,subdev` device and a
+# footgun that only worked by luck for the current bare-card device names. A
+# shipped script has no `%` gymnastics and is unit-testable on its own.
+#
+# The owner gate is LOAD-BEARING, not cosmetic: fan-in restarts on every deploy,
+# and an UNCONDITIONAL neutralize would, on a solo-mode box (usbsink owns the
+# clock in aloop mode), overwrite an active usbsink L0 command with 1000000
+# behind usbsink's back — desyncing its write-suppression epsilon gate (it
+# believes the last written value is its own command and won't rewrite until
+# >10 ppm drift). So the belt fires ONLY when THIS daemon is the configured
+# clock owner: BOTH JASPER_FANIN_HOST_CLOCK and JASPER_FANIN_USB_DIRECT set to
+# `enabled` in the same env snapshot ExecStopPost sees. Requiring USB_DIRECT too
+# loses zero coverage: fan-in owns the ctl only when both flags were set (the
+# daemon resolves `host_clock_enabled_effective = host_clock_enabled &&
+# !usb_direct_off`). Mirrors jasper-usbsink.service's owner-gated ExecStopPost.
+#
+# Both checks are CASE-INSENSITIVE to match the config parser, which arms each
+# flag on `eq_ignore_ascii_case("enabled")` (jasper_fanin::config), and the
+# .env.example prose that advertises "case-insensitive". An exact-match compare
+# would leave a box armed with e.g. `JASPER_FANIN_HOST_CLOCK=Enabled` running
+# the servo with a DEAD belt — the precise non-neutral-after-SIGKILL scenario C6
+# exists to cover.
+#
+# The card is derived from JASPER_FANIN_USB_DIRECT_DEVICE (default
+# hw:UAC2Gadget) so a device override redirects the belt to the right card (no
+# hardcoded card drift; the in-daemon actuator derives the same card via
+# `ctl_card_from_capture`). Strip a `plughw:`/`hw:` prefix and any `,dev,subdev`
+# tail down to the bare card token (e.g. `UAC2Gadget`), which is what
+# `amixer -c` takes.
+#
+# Fail-soft, in two layers:
+#   - Owner-gate mismatch (not the clock owner, or the flags aren't both enabled)
+#     exits 0 here — a clean no-op, no amixer invoked.
+#   - A missing card (combo off, gadget torn down) or an amixer error does NOT
+#     exit 0: the final line `exec`s amixer, so the script's exit status IS
+#     amixer's, which is non-zero on those cases. That is deliberately harmless
+#     because jasper-fanin.service invokes this with a leading `-` on the
+#     ExecStopPost line, so systemd treats any non-zero exit as non-fatal to the
+#     stop. (We keep `exec` rather than swallowing the code so a real amixer
+#     failure still surfaces its exit status in the journal for debugging, instead
+#     of being masked to a silent 0.)
+
+set -uo pipefail
+
+AMIXER="${JASPER_AMIXER:-/usr/bin/amixer}"
+HOST_CLOCK="${JASPER_FANIN_HOST_CLOCK:-}"
+USB_DIRECT="${JASPER_FANIN_USB_DIRECT:-}"
+DEVICE="${JASPER_FANIN_USB_DIRECT_DEVICE:-hw:UAC2Gadget}"
+
+lower() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# Owner gate: BOTH flags must be `enabled` (case-insensitive). Anything else is
+# not-the-owner → do nothing (fail-soft exit 0).
+[ "$(lower "$HOST_CLOCK")" = "enabled" ] || exit 0
+[ "$(lower "$USB_DIRECT")" = "enabled" ] || exit 0
+
+# Derive the bare card token from the capture device: drop a plughw:/hw: prefix,
+# then drop any ,dev,subdev tail. Done with bash parameter expansion in a real
+# script (no systemd %-escaping to fight): the longest-match ${card%%,*} is safe
+# here.
+card="${DEVICE#plughw:}"
+card="${card#hw:}"
+card="${card%%,*}"
+
+exec "$AMIXER" -c "$card" cset iface=PCM,name="Capture Pitch 1000000" 1000000

@@ -343,6 +343,15 @@ impl HostClockActuator {
     /// Apply one ladder action, translating the commanded ppm to the ctl integer.
     /// A `None` ctl no-ops (fail-soft); a write error is logged at most once per
     /// ~10 s (`now_ms` is a monotonic clock so a flapping card cannot spam).
+    ///
+    /// Device-loss handling (C, the ctl twin of the capture zombie fix): when the
+    /// gadget function is REBUILT underneath the servo (UDC rebind / usbsink
+    /// stop-start), the open ctl handle points at the destroyed card and every
+    /// write fails with ENODEV ("No such device (19)" — the observed
+    /// `event=fanin.host_clock_ctl_error`). We DROP the stale handle on that class
+    /// so the next session rising edge's `reopen_if_closed` re-opens it against the
+    /// rebuilt card (and forces one neutralize). Without this the handle stays
+    /// `Some` forever, `reopen_if_closed` early-returns, and the servo runs deaf.
     fn apply(&mut self, action: Action, now_ms: u64) {
         use jasper_host_clock::PitchCtl;
         let Action::WritePitch { ppm, .. } = action;
@@ -351,12 +360,33 @@ impl HostClockActuator {
             return;
         };
         if let Err(e) = ctl.write(value) {
+            let device_lost = ctl_error_is_device_lost(&e);
             if should_log_ctl_error(self.last_error_ms, now_ms) {
                 self.last_error_ms = Some(now_ms);
-                log::warn!("event=fanin.host_clock_ctl_error detail={e}");
+                log::warn!(
+                    "event=fanin.host_clock_ctl_error detail={e}{}",
+                    if device_lost {
+                        " action=drop_stale_handle (gadget rebuilt; will reopen on next session edge)"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            if device_lost {
+                // Drop the stale handle so the session-edge reopen re-opens it.
+                self.ctl = None;
             }
         }
     }
+}
+
+/// True when a ctl write/open error string is the DEVICE-LOST class (ENODEV — the
+/// gadget card was rebuilt underneath the open handle). Pure string match so it is
+/// unit-testable without ALSA; the alsa crate's Display renders ENODEV as "No such
+/// device", and the kernel errno is 19. Matches either surface form.
+fn ctl_error_is_device_lost(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("no such device") || lower.contains("(19)") || lower.contains("enodev")
 }
 
 /// The dedicated `fanin-host-clock` thread body (C5). Owns the [`HostClock`]
@@ -728,6 +758,40 @@ mod tests {
         // stays None (writes keep no-op'ing — safe degrade, no spurious probe).
         assert!(!a.reopen_if_closed());
         assert!(!a.is_open());
+    }
+
+    // ---- Ctl device-loss classifier (C: gadget rebuilt underneath the handle) --
+    //
+    // The `apply` drop-on-ENODEV wiring needs a real open ctl + a write that fails
+    // ENODEV (gadget rebuilt), which is an on-device / Linux-CI condition. The pure
+    // classifier that DECIDES device-loss is unit-testable everywhere.
+
+    #[test]
+    fn ctl_error_device_lost_matches_enodev_surface_forms() {
+        // The observed error: elem_write against a rebuilt gadget card.
+        assert!(ctl_error_is_device_lost(
+            "elem_write(1000000): No such device (19)"
+        ));
+        // Case-insensitive + either surface form (message text or errno).
+        assert!(ctl_error_is_device_lost("NO SUCH DEVICE"));
+        assert!(ctl_error_is_device_lost("errno (19)"));
+        assert!(ctl_error_is_device_lost("ENODEV writing ctl"));
+    }
+
+    #[test]
+    fn ctl_error_device_lost_does_not_match_unrelated_errors() {
+        // An ordinary transient write error is NOT device-loss: we must NOT drop
+        // the handle (a healthy card with a one-off EINVAL keeps its open handle,
+        // and the rate-limited log covers it).
+        assert!(!ctl_error_is_device_lost(
+            "elem_write(1000000): Invalid argument"
+        ));
+        assert!(!ctl_error_is_device_lost(
+            "open ctl hw:UAC2Gadget: Permission denied"
+        ));
+        assert!(!ctl_error_is_device_lost("elem value: out of memory"));
+        // A "19" that is not the errno token must not false-positive.
+        assert!(!ctl_error_is_device_lost("wrote 190000 to ctl ok"));
     }
 
     // ---- Compliance-revalidation reverse-signal encoders -------------------

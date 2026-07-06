@@ -73,6 +73,19 @@ _NOT_INSTALLED_ALLOWLIST: dict[str, str] = {}
 
 _INSTALL_REF_RE = re.compile(r'\$\{REPO_DIR\}"?/(deploy/[^"\'\s)]+)')
 
+# The install-rows-table idiom: a bash array of `"<octal-mode> deploy/<src>
+# <dest>"` rows consumed by a loop that stages each source via
+# `install -m "${mode}" "${REPO_DIR}/${src}" "${dst}"` (e.g.
+# JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS in deploy/lib/install/systemd-units.sh).
+# The `deploy/...` source is a bare middle token there — `${REPO_DIR}/` is only
+# prepended at the call site — so _INSTALL_REF_RE (which needs a literal
+# `${REPO_DIR}/deploy/...`) misses it, and a file installed ONLY through such a
+# table would look orphaned. This second matcher recognizes that row shape so the
+# source counts as installed. Anchored on the leading octal mode inside a quoted
+# row to avoid matching arbitrary `deploy/...` mentions in prose/comments.
+_INSTALL_ROW_REF_RE = re.compile(r'"[0-7]{3,4}\s+(deploy/[^"\'\s]+)\s')
+
+
 # Referenced deploy paths that legitimately may not exist in the tree:
 # the install script guards them with an existence check and no-ops.
 # Stale entries (no longer referenced, or now committed) fail.
@@ -82,7 +95,9 @@ _OPTIONAL_INSTALL_REFS: dict[str, str] = {}
 def _install_refs() -> set[str]:
     refs: set[str] = set()
     for script in _INSTALL_SCRIPTS:
-        refs.update(_INSTALL_REF_RE.findall(script.read_text()))
+        text = script.read_text()
+        refs.update(_INSTALL_REF_RE.findall(text))
+        refs.update(_INSTALL_ROW_REF_RE.findall(text))
     return refs
 
 

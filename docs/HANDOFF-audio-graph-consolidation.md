@@ -236,11 +236,18 @@ Verified missing on main (2026-07-03):
    `--coupling`/`--ring-flat-config` to the seeder.
 4. **Ordered-transition ownership**: ~~`shm_ring` has no ordered arm/disarm.~~
    **CLOSED by P2**: `jasper-fanin-coupling-reconcile shm_ring` is a first-class
-   mode. `_arm_ring` PREFLIGHTs P1 ring assets (`ring_assets_ready`), then flips
-   BOTH ends coherently (`_outputd_actions` is the single writer of the
-   `JASPER_FANIN_CAMILLA_COUPLING=shm_ring` + `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`
-   pair), ordered outputd→fanin→camilla, and fail-safes to loopback+direct on any
-   failure or a partial flip.
+   mode. `_arm_ring` PREFLIGHTs P1 ring assets (`ring_assets_ready`), topology
+   eligibility (`ring_topology_ready`), and BOTH geometry axes — the period
+   (`ring_geometry_ready`: conf.d period == outputd period) AND the Ring-A slot
+   count (`ring_slot_geometry_ready`: `JASPER_FANIN_RING_SLOTS` == conf.d
+   `jts_ring_capture` `n_slots`; the 2026-07-05 stale-`=2`-lab-line hole the period
+   gate missed). It also self-heals a shear-prone stale slot value out of fanin.env
+   (`_migrate_stale_fanin_ring_slots`) and deletes a geometry-mismatched on-disk
+   ring file (`_delete_stale_ring_files`, tmpfs transport state) before bouncing the
+   daemons. Then it flips BOTH ends coherently (`_outputd_actions` is the single
+   writer of the `JASPER_FANIN_CAMILLA_COUPLING=shm_ring` +
+   `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring` pair), ordered outputd→fanin→camilla,
+   and fail-safes to loopback+direct on any failure or a partial flip.
 5. **Topology-contract citizenship**: ~~know nothing of ring mode.~~ **CLOSED by
    P2**: `topology_supports_shm_ring` (`jasper/active_speaker/runtime_contract.py`)
    is the ring-eligibility predicate — solo-stereo/unconfigured only, NOT roleful /
@@ -257,12 +264,15 @@ Verified missing on main (2026-07-03):
    topology gate — it does not consult this predicate.
    `transport_topology_for_coupling` names the resolved ring topology.
 6. **Doctor**: ~~no ring asset/drift checks;~~ **Ring-asset check CLOSED by P1**
-   (`check_ring_platform_assets`), **made ARMED-AWARE + a coherence check added by
+   (`check_ring_platform_assets`), **made ARMED-AWARE + coherence checks added by
    P2**: armed boxes skip the open-probe (EBUSY is not a defect) and a missing
    asset is a hard `fail`; `check_fanin_coupling` now verifies the coherent ring
    pair (capture/playback devices + the outputd bridge) and warns on a partial flip
-   or a finding-5 revert; `check_fanin_service` recognizes the `shm_ring` transport.
-   The E-list loopback-check rewrites remain a later-phase (P7/P9) task.
+   or a finding-5 revert; `check_ring_geometry_coherence` verifies the Ring-A
+   `n_slots` agrees across all three axes (env ↔ conf.d ↔ on-disk ring header) when
+   armed and skips cleanly when not (the 2026-07-05 geometry-hole surface);
+   `check_fanin_service` recognizes the `shm_ring` transport. The E-list
+   loopback-check rewrites remain a later-phase (P7/P9) task.
 7. **/state observability**: ~~`/state.audio_graph` needs the resolved transport.~~
    **CLOSED by P2**: `/state.audio_graph.coupling` surfaces the persisted coupling,
    the outputd content bridge, whether the pair is coherent, and the live fan-in

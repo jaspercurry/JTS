@@ -16,10 +16,13 @@ three audio daemons. Two non-loopback couplings are supported:
   ONE coherent flip of BOTH ends: ``JASPER_FANIN_CAMILLA_COUPLING=shm_ring``
   (fanin.env) AND ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the Ring B
   path/slots (outputd.env). ``_outputd_actions`` is the single writer of that
-  pair; ``_arm_ring`` PREFLIGHTs the P1 ring assets (``ring_assets_ready``) and
-  fail-safes to loopback+direct on any failure, so a half-installed ring platform
-  or a partial flip never strands the realtime path. Arming stays explicit
-  env/reconciler-driven; the DEFAULT is still loopback until P4.
+  pair; ``_arm_ring`` PREFLIGHTs the P1 ring assets (``ring_assets_ready``), the
+  topology eligibility, and BOTH geometry axes (period AND Ring-A slot count),
+  self-heals a shear-prone stale ``JASPER_FANIN_RING_SLOTS``, deletes a
+  geometry-mismatched on-disk ring, and fail-safes to loopback+direct on any
+  failure, so a half-installed ring platform, an incoherent geometry, or a partial
+  flip never strands the realtime path. Arming stays explicit env/reconciler-driven;
+  the DEFAULT is still loopback until P4.
 
 - ``transport_pipe`` (lab) — an end-to-end DAC-paced named-pipe path:
 
@@ -340,8 +343,36 @@ def reconcile_coupling(
         )
 
     if not changed:
-        # Env already at desired: re-confirm camilla only (self-heal a drifted
-        # loaded config) — no fan-in bounce on a no-op tick.
+        # Env already at desired. An already-armed shm_ring box can still be
+        # INCOHERENT — a stale JASPER_FANIN_RING_SLOTS or a stale on-disk ring file
+        # from a pre-fix arm that leaves CamillaDSP crash-looping on the ioplug
+        # geometry mismatch. The coupling-flip write didn't change (already
+        # shm_ring), so the arm self-heal never ran; the doctor then pointed the
+        # operator at a reconcile that only re-loaded camilla and healed nothing
+        # (defect A CONFIRM-path gap, 2026-07-05). Detect that exact incoherence and
+        # escalate to the full _arm_ring spine (self-heal THEN ordered bounce). A
+        # coherent box skips this and keeps the lightweight camilla-only confirm
+        # below (no daemon bounce on every reconcile tick).
+        if desired == COUPLING_SHM_RING:
+            heal_needed, heal_detail = _ring_confirm_needs_self_heal(fanin_snapshot.text)
+            if heal_needed:
+                log_event(
+                    logger, "fanin.coupling_reconcile",
+                    result="confirm_ring_self_heal", desired=desired, reason=reason,
+                    detail=heal_detail, level=logging.WARNING,
+                )
+                return _arm_ring(
+                    do_restart,
+                    do_restart_outputd,
+                    do_reconcile,
+                    desired,
+                    reason,
+                    fanin_snapshot,
+                    outputd_snapshot,
+                )
+
+        # Env already at desired AND coherent: re-confirm camilla only (self-heal a
+        # drifted loaded config) — no fan-in bounce on a no-op tick.
         ok, detail = do_reconcile(desired)
         validated = False
         if ok and desired == COUPLING_TRANSPORT_PIPE:
@@ -807,6 +838,299 @@ def ring_geometry_ready(outputd_text: str) -> tuple[bool, str]:
     return False, match.detail
 
 
+def _resolved_fanin_ring_slots(fanin_text: str) -> int | None:
+    """fan-in's resolved Ring-A ``JASPER_FANIN_RING_SLOTS`` (env-file, else default).
+
+    Reads the reconciler-owned ``fanin.env`` for the slot override and resolves it
+    through :func:`resolve_ring_slots` (default 8, fail-LOUD on an out-of-range /
+    non-integer value — the same validation the Rust daemon does). Returns ``None``
+    when the value is present but INVALID, so the caller can refuse to arm with the
+    resolver's own crisp reason rather than crashing the reconcile.
+    """
+    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR, resolve_ring_slots
+
+    try:
+        return resolve_ring_slots(read_value(fanin_text, RING_SLOTS_ENV_VAR))
+    except ValueError:
+        return None
+
+
+def ring_slot_geometry_ready(fanin_text: str) -> tuple[bool, str]:
+    """The shm_ring PREFLIGHT gate for Ring-A slot COUNT: fanin env == conf.d n_slots.
+
+    Checked BEFORE arming (alongside the period gate). fan-in creates Ring A with
+    ``resolve_ring_slots(JASPER_FANIN_RING_SLOTS)`` slots; the ``jts_ring_capture``
+    ioplug attaches expecting the conf.d ``n_slots``. A mismatch is a hard
+    ``hw_params`` EINVAL + ioplug ``attach_fatal reason=ring header does not match
+    expected geometry`` → CamillaDSP crash-loop → start-limit-hit. This is the
+    2026-07-05 defect: a stale ``JASPER_FANIN_RING_SLOTS=2`` lab line in fanin.env
+    made fan-in write a 2-slot (1152-byte) program.ring against the conf.d's pinned
+    8. The period gate (:func:`ring_geometry_ready`) does NOT cover this second
+    axis. Fail-SAFE: refuse to arm (recover to loopback) with a crisp reason.
+    """
+    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
+    from jasper.ring_assets import ring_slot_geometry_matches_conf
+
+    slots = _resolved_fanin_ring_slots(fanin_text)
+    if slots is None:
+        return False, (
+            f"{RING_SLOTS_ENV_VAR} in {FANIN_ENV_PATH} is out of range / not an "
+            "integer — a shear-prone Ring A slot geometry must fail loud; clear the "
+            "stale value (default 8) before arming"
+        )
+    match = ring_slot_geometry_matches_conf(slots)
+    if match.ok:
+        return True, (
+            "Ring A slot count matches "
+            f"(JASPER_FANIN_RING_SLOTS={match.fanin_n_slots} == conf.d "
+            f"jts_ring_capture n_slots={match.conf_n_slots})"
+        )
+    return False, match.detail
+
+
+def _migrate_stale_fanin_ring_slots(
+    fanin_snapshot: _EnvSnapshot, reason: str
+) -> _EnvSnapshot:
+    """Strip a stale, shear-prone ``JASPER_FANIN_RING_SLOTS`` from fanin.env.
+
+    ``JASPER_FANIN_RING_SLOTS`` is an operator-tunable env (documented range
+    2..16), so this does NOT blindly remove a non-default — a value that MATCHES
+    the conf.d ``jts_ring_capture`` ``n_slots`` is a coherent operator override and
+    stays. It strips the key ONLY when the persisted value DISAGREES with the
+    conf.d (the shear-prone case: fan-in would create a ring the ioplug can't
+    attach), so a stale lab line like ``JASPER_FANIN_RING_SLOTS=2`` self-heals to
+    the coherent default (the conf.d's pinned 8) rather than blocking every arm
+    forever. When the coupling is product-managed (arming shm_ring) the reconciler
+    IS the authority for slot coherence — mirrors install.sh's ``migrate_*`` strip
+    of stale operator values into the wizard-owned file. Returns the (possibly
+    rewritten) snapshot so the caller's preflight sees the corrected text.
+
+    Fail-safe: an unreadable conf.d (indeterminate expected geometry) or an
+    absent/default env value is a no-op — nothing to strip, and the slot preflight
+    is the backstop. A write failure logs and returns the CURRENT snapshot (the
+    preflight then refuses on the still-stale value — never a silent bad arm).
+
+    IMPORTANT: this runs INSIDE ``_arm_ring``, AFTER ``reconcile_coupling`` already
+    persisted the coupling flip (``JASPER_FANIN_CAMILLA_COUPLING=shm_ring``) to
+    fanin.env. The passed ``fanin_snapshot`` is the PRE-flip snapshot, so we re-read
+    the file fresh here and strip from the CURRENT content — writing the stale
+    snapshot back would clobber the just-written coupling line.
+    """
+    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR, resolve_ring_slots
+    from jasper.ring_assets import RING_A_CONF_PCM, ring_conf_n_slots
+
+    # Re-read fresh: the coupling flip was already written to this file above.
+    current = _read_snapshot(fanin_snapshot.path)
+    raw = read_value(current.text, RING_SLOTS_ENV_VAR)
+    if raw is None or not raw.strip():
+        return current  # nothing persisted → default already coherent.
+    conf_a = ring_conf_n_slots(RING_A_CONF_PCM)
+    if conf_a is None:
+        return current  # indeterminate conf.d → the preflight fails closed.
+    # Only self-heal a VALID, in-range integer that merely disagrees with the conf.d
+    # (the shear-prone lab-residue class, e.g. `=2` vs 8). An out-of-range /
+    # non-integer value is a broken operator env — leave it for the preflight to
+    # FAIL LOUD (repo doctrine: don't silently paper over a bad operator value).
+    try:
+        persisted = resolve_ring_slots(raw)
+    except ValueError:
+        return current  # invalid → preflight refuses with a crisp reason.
+    if persisted == conf_a:
+        return current  # coherent operator override → keep it.
+
+    new_text, changed = _apply_action(
+        current.text, RuntimeEnvAction("unset", RING_SLOTS_ENV_VAR)
+    )
+    if not changed:
+        return current
+    try:
+        _write_env_text(current.path, new_text)
+    except OSError as e:
+        log_event(
+            logger, "fanin.coupling_reconcile", result="stale_ring_slots_strip_failed",
+            reason=reason, key=RING_SLOTS_ENV_VAR, value=raw, error=e,
+            level=logging.WARNING,
+        )
+        return current
+    os.environ.pop(RING_SLOTS_ENV_VAR, None)
+    log_event(
+        logger, "fanin.coupling_reconcile", result="stale_ring_slots_stripped",
+        reason=reason, key=RING_SLOTS_ENV_VAR, stale_value=raw,
+        conf_n_slots=conf_a,
+    )
+    return _EnvSnapshot(current.path, new_text, True)
+
+
+def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
+    """Delete on-disk ring files whose geometry != the expected arm geometry.
+
+    A ring file left over from a PRIOR geometry (e.g. a 2-slot program.ring from a
+    stale ``JASPER_FANIN_RING_SLOTS=2`` arm, before the env was corrected) is a
+    create-or-ATTACH ``open()`` error for the writer: ``RingWriter::create_or_attach``
+    validates the existing header's geometry against the requested one and bails on
+    a mismatch. The files live on tmpfs (``/dev/shm``) — pure transport state,
+    recreated by the writer on the next arm, NOT user data — so deleting a
+    geometry-mismatched file is safe and lets the arm re-create it fresh.
+
+    Only deletes a file whose header is VALID (carries the ``JRIN`` magic) AND whose
+    geometry differs from what fan-in / the conf.d will create — on EITHER axis:
+    ``n_slots`` OR ``period_frames`` (the ring slot IS one outputd period, so a file
+    with matching slots but a stale period also fails the ioplug attach). A magic-
+    less / absent / correct-geometry file is left untouched (the writer reclaims a
+    magic-less file itself; a correct file is reused). Best-effort: a delete failure
+    is logged, never raised — the writer's own attach error is the backstop.
+
+    ``fanin_text`` is the (post-migration) fanin.env text — used ONLY as the
+    fallback expected Ring-A slot count when the conf.d is unreadable.
+    """
+    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR, resolve_ring_slots
+    from jasper.ring_assets import (
+        RING_A_CONF_PCM,
+        RING_A_PROGRAM_FILE,
+        RING_B_CONF_PCM,
+        RING_B_CONTENT_FILE,
+        read_ring_header,
+        ring_conf_n_slots,
+        ring_conf_period_frames,
+    )
+
+    # Expected Ring-A slot count: the conf.d is the attach authority for what the
+    # ioplug expects; fall back to fan-in's resolved env if the conf.d is
+    # unreadable. The stale-file guard's job is to clear a file that will NOT
+    # attach, so compare on-disk against the value the ioplug attaches with.
+    try:
+        fanin_slots = resolve_ring_slots(
+            read_value(fanin_text, RING_SLOTS_ENV_VAR)
+        )
+    except ValueError:
+        fanin_slots = None
+    expected_a = ring_conf_n_slots(RING_A_CONF_PCM)
+    if expected_a is None:
+        expected_a = fanin_slots
+    expected_b = ring_conf_n_slots(RING_B_CONF_PCM)
+    # Expected period is a single conf.d line shared by both rings (the ring slot is
+    # one outputd period). None (unreadable) → skip the period axis, don't guess.
+    expected_period = ring_conf_period_frames()
+
+    for path, expected in (
+        (RING_A_PROGRAM_FILE, expected_a),
+        (RING_B_CONTENT_FILE, expected_b),
+    ):
+        if expected is None:
+            continue  # indeterminate expected geometry — leave it for the writer.
+        header = read_ring_header(path)
+        if not header.valid:
+            continue  # absent / magic-less: the writer reclaims it itself.
+        slots_mismatch = header.n_slots != expected
+        period_mismatch = (
+            expected_period is not None and header.period_frames != expected_period
+        )
+        if not slots_mismatch and not period_mismatch:
+            continue  # coherent on both axes: reused by the writer.
+        try:
+            os.unlink(path)
+        except OSError as e:
+            log_event(
+                logger, "fanin.coupling_reconcile", result="stale_ring_unlink_failed",
+                reason=reason, path=path, on_disk_n_slots=header.n_slots,
+                on_disk_period_frames=header.period_frames,
+                expected_n_slots=expected, expected_period_frames=expected_period,
+                error=e, level=logging.WARNING,
+            )
+            continue
+        log_event(
+            logger, "fanin.coupling_reconcile", result="stale_ring_deleted",
+            reason=reason, path=path, on_disk_n_slots=header.n_slots,
+            on_disk_period_frames=header.period_frames,
+            expected_n_slots=expected, expected_period_frames=expected_period,
+        )
+
+
+def _ring_confirm_needs_self_heal(fanin_text: str) -> tuple[bool, str]:
+    """Does an ALREADY-armed shm_ring box have a ring-geometry incoherence the arm
+    self-heal would fix? (defect A CONFIRM-path gap, 2026-07-05.)
+
+    The CONFIRM path (``reconcile_coupling`` with the env already at ``shm_ring``)
+    used to only re-load CamillaDSP — it never ran the slot-migration / stale-file
+    self-heal, because those live inside ``_arm_ring`` and ``_arm_ring`` is only
+    reached when the coupling-flip WRITE changed something. So a box armed pre-fix
+    with a stale ``JASPER_FANIN_RING_SLOTS=2`` (or a stale on-disk ring file) —
+    CamillaDSP crash-looping on the ioplug geometry mismatch — stayed broken: the
+    doctor told the operator to run the reconciler, they ran it, it logged
+    ``confirmed ok``, and nothing healed. This predicate lets the CONFIRM path
+    detect exactly that incoherence and escalate to the full ``_arm_ring`` spine
+    (which self-heals THEN bounces the daemons), while a coherent box keeps the
+    lightweight camilla-only confirm (no bounce on every reconcile tick).
+
+    Returns ``(True, reason)`` ONLY on POSITIVE evidence of a self-healable
+    incoherence — a stale/invalid ``JASPER_FANIN_RING_SLOTS`` that disagrees with a
+    READABLE conf.d, or an on-disk ring file whose valid header geometry disagrees
+    with the READABLE conf.d. Fail-SAFE: an unreadable/indeterminate conf.d returns
+    ``(False, ...)`` so the CONFIRM path does NOT escalate to an arm that might fail
+    its own asset/topology gates and recover a working box to loopback. We only
+    escalate when we can prove the box is in the exact state the self-heal repairs.
+    """
+    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
+    from jasper.ring_assets import (
+        RING_A_CONF_PCM,
+        RING_A_PROGRAM_FILE,
+        RING_B_CONF_PCM,
+        RING_B_CONTENT_FILE,
+        read_ring_header,
+        ring_conf_n_slots,
+        ring_conf_period_frames,
+    )
+
+    conf_a = ring_conf_n_slots(RING_A_CONF_PCM)
+    if conf_a is None:
+        # Indeterminate expected geometry: can't prove incoherence — stay
+        # lightweight (never disarm a working box on a hunch).
+        return False, "conf.d Ring-A n_slots unreadable — CONFIRM stays lightweight"
+
+    # Axis 1 — stale/invalid slots line. A persisted value that is invalid, or valid
+    # but disagreeing with the readable conf.d, is the exact residue the arm
+    # migration strips. (An absent / matching value is coherent → no escalation.)
+    raw = read_value(fanin_text, RING_SLOTS_ENV_VAR)
+    if raw is not None and raw.strip():
+        slots = _resolved_fanin_ring_slots(fanin_text)
+        if slots is None:
+            return True, (
+                f"{RING_SLOTS_ENV_VAR}={raw.strip()!r} is invalid — needs the arm "
+                "self-heal to fail loud / re-converge"
+            )
+        if slots != conf_a:
+            return True, (
+                f"{RING_SLOTS_ENV_VAR}={slots} disagrees with conf.d "
+                f"jts_ring_capture n_slots={conf_a} — needs the arm slot self-heal"
+            )
+
+    # Axis 2 — stale on-disk ring file. A valid header whose geometry differs from
+    # the readable conf.d expectation on EITHER axis (n_slots or period_frames) is
+    # what _delete_stale_ring_files clears; its presence means the writer would hit a
+    # create-or-attach mismatch on next start. (Mirror the delete's two-axis compare
+    # so the CONFIRM path escalates on exactly the files the arm would then remove.)
+    expected_b = ring_conf_n_slots(RING_B_CONF_PCM)
+    expected_period = ring_conf_period_frames()
+    for path, expected in ((RING_A_PROGRAM_FILE, conf_a), (RING_B_CONTENT_FILE, expected_b)):
+        if expected is None:
+            continue
+        header = read_ring_header(path)
+        if not header.valid:
+            continue
+        if header.n_slots != expected:
+            return True, (
+                f"on-disk ring {path} has n_slots={header.n_slots} != expected "
+                f"{expected} — needs the arm stale-file self-heal"
+            )
+        if expected_period is not None and header.period_frames != expected_period:
+            return True, (
+                f"on-disk ring {path} has period_frames={header.period_frames} != "
+                f"expected {expected_period} — needs the arm stale-file self-heal"
+            )
+
+    return False, "ring geometry coherent — CONFIRM stays lightweight"
+
+
 def _arm_ring(
     do_restart,
     do_restart_outputd,
@@ -818,15 +1142,23 @@ def _arm_ring(
 ) -> CouplingResult:
     """Arm the ``shm_ring`` coupling (Ring A + Ring B), fail-safe to loopback.
 
-    PREFLIGHT: refuse to arm when the P1 ring assets are missing (a half-installed
-    ring platform would strand the realtime path). Then the SAME ordered spine as
-    transport_pipe — outputd (Ring B reader) first, fan-in (Ring A writer) second,
-    CamillaDSP (loads the ring config, opening jts_ring_capture/jts_ring_playback)
-    last — matching the validated ring-proto arm order. Any failure rolls the whole
-    box back to loopback + direct (``recovered=True``). The rings are forgiving
-    (empty-ring reader/writer emit/drop silence), so unlike transport_pipe there is
-    no queue-drift activation window; the gate is asset-presence + the ordered
-    restart landing, and the fan-in STATUS transport is confirmed by the doctor.
+    PREFLIGHTs run in order, each fail-safe to loopback (no daemon bounced until
+    all pass): (1) P1 ring assets present (``ring_assets_ready`` — a half-installed
+    ring platform would strand the realtime path); (2) topology ring-eligible
+    (``ring_topology_ready``); (3) conf.d period == outputd period
+    (``ring_geometry_ready``); (4) Ring-A slot count == conf.d n_slots
+    (``ring_slot_geometry_ready``, after ``_migrate_stale_fanin_ring_slots``
+    self-heals a shear-prone stale ``JASPER_FANIN_RING_SLOTS`` — the 2026-07-05
+    defect-A geometry hole); then (5) ``_delete_stale_ring_files`` clears a
+    geometry-mismatched on-disk ring so the writer re-creates it fresh. Then the
+    SAME ordered spine as transport_pipe — outputd (Ring B reader) first, fan-in
+    (Ring A writer) second, CamillaDSP (loads the ring config, opening
+    jts_ring_capture/jts_ring_playback) last — matching the validated ring-proto arm
+    order. Any failure rolls the whole box back to loopback + direct
+    (``recovered=True``). The rings are forgiving (empty-ring reader/writer
+    emit/drop silence), so unlike transport_pipe there is no queue-drift activation
+    window; the gates are asset-presence + geometry coherence + the ordered restart
+    landing, and the fan-in STATUS transport is confirmed by the doctor.
     """
     assets_ok, assets_detail = ring_assets_ready()
     if not assets_ok:
@@ -868,11 +1200,11 @@ def _arm_ring(
             detail=topo_detail, recovered=recovered,
         )
 
-    # Slot-geometry preflight: the conf.d ring period MUST equal outputd's resolved
-    # DAC period (the ring slot IS one outputd period). A mismatch is a hard ioplug
-    # open() error, so CamillaDSP's ring load would fail and this arm would roll
-    # back with a confusing daemon-level error. Refuse UP FRONT with a crisp reason
-    # (fail-safe: recover to loopback), before bouncing any daemon.
+    # Period-geometry preflight: the conf.d ring period MUST equal outputd's
+    # resolved DAC period (the ring slot IS one outputd period). A mismatch is a
+    # hard ioplug open() error, so CamillaDSP's ring load would fail and this arm
+    # would roll back with a confusing daemon-level error. Refuse UP FRONT with a
+    # crisp reason (fail-safe: recover to loopback), before bouncing any daemon.
     geom_ok, geom_detail = ring_geometry_ready(outputd_snapshot.text)
     if not geom_ok:
         recovered = _recover_to_loopback(
@@ -888,6 +1220,45 @@ def _arm_ring(
             ok=False, desired=desired, changed=False, direction="arm",
             detail=geom_detail, recovered=recovered,
         )
+
+    # Migrate a stale, shear-prone JASPER_FANIN_RING_SLOTS out of fanin.env FIRST
+    # (defect A migration): a stale lab `=2` line that disagrees with the conf.d
+    # self-heals to the coherent default, so the arm proceeds instead of being
+    # blocked forever. A value that MATCHES the conf.d (a coherent operator
+    # override) is kept. The preflight below validates the post-migration state.
+    fanin_snapshot = _migrate_stale_fanin_ring_slots(fanin_snapshot, reason)
+
+    # Slot-COUNT preflight (defect A): fan-in's resolved Ring-A n_slots
+    # (JASPER_FANIN_RING_SLOTS) MUST equal the conf.d jts_ring_capture n_slots. A
+    # mismatch — the 2026-07-05 stale-`=2`-lab-line class — makes fan-in write a
+    # 2-slot program.ring while CamillaDSP's ioplug attaches expecting 8:
+    # hw_params EINVAL + attach_fatal → CamillaDSP crash-loop → start-limit-hit.
+    # The period gate above does NOT cover this second axis. Refuse UP FRONT.
+    # (After the migration this only still fails if the conf.d itself is not the
+    # default 8 — a genuinely custom conf.d needing a matching env — where the
+    # crisp reason names both values.)
+    slot_ok, slot_detail = ring_slot_geometry_ready(fanin_snapshot.text)
+    if not slot_ok:
+        recovered = _recover_to_loopback(
+            do_restart, do_restart_outputd, do_reconcile,
+            fanin_snapshot.path, outputd_snapshot.path, reason,
+        )
+        log_event(
+            logger, "fanin.coupling_reconcile", result="arm_ring_slot_mismatch",
+            desired=desired, reason=reason, detail=slot_detail,
+            recovered=recovered, level=logging.WARNING,
+        )
+        return CouplingResult(
+            ok=False, desired=desired, changed=False, direction="arm",
+            detail=slot_detail, recovered=recovered,
+        )
+
+    # Stale-ring-file guard (defect A): a ring file left over from a PRIOR geometry
+    # is a create-or-ATTACH open() error for the writer (the header geometry won't
+    # match the requested one). Delete any geometry-mismatched on-disk ring before
+    # bouncing the daemons so the writer re-creates it fresh. tmpfs transport state,
+    # not user data. Best-effort — the writer's own attach error is the backstop.
+    _delete_stale_ring_files(reason, fanin_snapshot.text)
 
     out_ok, out_detail = do_restart_outputd()
     if not out_ok:

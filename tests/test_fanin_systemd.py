@@ -226,16 +226,14 @@ def test_combo_gated_pitch_neutralize_exec_stop_post():
     """The combo-mode host-clock belt-and-braces (C6): on SIGKILL / OOM /
     watchdog abort — which skip the daemon's in-process pitch neutralize — the
     unit must reset the gadget's "Capture Pitch 1000000" ctl to neutral, but
-    ONLY when THIS daemon is the configured clock owner — which requires BOTH
-    `$JASPER_FANIN_HOST_CLOCK = enabled` AND `$JASPER_FANIN_USB_DIRECT = enabled`
-    (review F2: the daemon resolves ownership as `host_clock_enabled &&
-    !usb_direct_off` and writes zero non-neutral pitch otherwise).
+    ONLY when THIS daemon is the configured clock owner.
 
-    The gate is LOAD-BEARING, not cosmetic: fan-in restarts on every deploy, and
-    an unconditional (or HOST_CLOCK-only) neutralize would overwrite an active
-    solo-mode usbsink L0 command with 1000000 behind usbsink's back — desyncing
-    its write-suppression epsilon gate. If someone drops either half of the gate
-    to "simplify" the line, this fails.
+    The gate + card-derive + neutralize now live in the shipped helper
+    jasper-fanin-pitch-neutralize (moved OUT of an inline `sh -c` in defect E:
+    the inline `${card%%,*}` collided with systemd's `%%` specifier escape). The
+    unit must invoke that helper best-effort. The owner-gate semantics (BOTH
+    flags, case-insensitive, device-derived card, neutral 1000000) are pinned by
+    the helper's own tests in tests/test_fanin_pitch_neutralize.py.
     """
     unit = _read_unit()
     val = _value_for(unit, "ExecStopPost")
@@ -248,54 +246,101 @@ def test_combo_gated_pitch_neutralize_exec_stop_post():
         "the ExecStopPost must be best-effort (leading `-`) so a missing gadget "
         f"card can't fail the unit stop. Got {val!r}"
     )
-    # The load-bearing gate: fires only when fan-in is the configured owner.
-    # It reads JASPER_FANIN_HOST_CLOCK and compares against the "enabled" literal.
-    assert "JASPER_FANIN_HOST_CLOCK" in val and "enabled" in val, (
-        "the ExecStopPost MUST gate on JASPER_FANIN_HOST_CLOCK = enabled — an "
-        "unconditional neutralize would desync a solo-mode usbsink L0 command. "
-        f"Got {val!r}"
+    # It invokes the shipped helper at its installed path — NOT an inline sh -c
+    # (defect E: the inline form's `${card%%,*}` collided with systemd's `%%`).
+    assert val.lstrip("-").strip() == "/usr/local/sbin/jasper-fanin-pitch-neutralize", (
+        "the ExecStopPost must invoke the shipped helper "
+        "/usr/local/sbin/jasper-fanin-pitch-neutralize (installed by install.sh), "
+        f"not an inline sh -c with %-expansion. Got {val!r}"
     )
-    # Review F2: the belt must ALSO gate on JASPER_FANIN_USB_DIRECT = enabled,
-    # because fan-in owns the ctl only when BOTH flags are set. Gating on
-    # HOST_CLOCK alone fires on a part-rolled-back combo box (USB_DIRECT unset,
-    # HOST_CLOCK left enabled) where solo usbsink's DLL is the live writer,
-    # neutralizing its command on every fan-in stop. Pin the exact
-    # `"$JASPER_FANIN_USB_DIRECT"` reference (with the closing quote) so the
-    # substring in JASPER_FANIN_USB_DIRECT_DEVICE can't satisfy this assertion.
-    assert '"$JASPER_FANIN_USB_DIRECT"' in val, (
-        "the ExecStopPost MUST also gate on JASPER_FANIN_USB_DIRECT = enabled — "
-        "fan-in owns the pitch ctl only when BOTH flags are set (review F2). "
-        "HOST_CLOCK-only fires the belt on a part-rolled-back combo box and "
-        f"desyncs a live solo-mode usbsink command. Got {val!r}"
-    )
-    # Review F3: the gate must be CASE-INSENSITIVE (lowercase the value before
-    # the compare), because the config parser arms on eq_ignore_ascii_case and
-    # .env.example advertises "case-insensitive". An exact-match `= "enabled"`
-    # here would leave a box armed with e.g. `Enabled` running the servo with a
-    # DEAD belt. The unit lowercases via `tr "[:upper:]" "[:lower:]"`.
-    assert 'tr "[:upper:]" "[:lower:]"' in val, (
-        "the ExecStopPost gate must be case-insensitive (tr-lowercase the flag "
-        "value) to match the config parser's eq_ignore_ascii_case arming and the "
-        f".env.example 'case-insensitive' prose (review F3). Got {val!r}"
-    )
-    # Review N6: the card must be DERIVED from JASPER_FANIN_USB_DIRECT_DEVICE the
-    # same way the daemon's actuator derives it — NOT hardcoded — so a device
-    # override redirects the belt to the right card (no drift). usbsink's belt
-    # already expands its own card var; fan-in must too.
-    assert "JASPER_FANIN_USB_DIRECT_DEVICE" in val, (
-        "the ExecStopPost must derive the card from JASPER_FANIN_USB_DIRECT_DEVICE "
-        "(matches the in-daemon actuator), not hardcode UAC2Gadget — otherwise a "
-        f"device override + SIGKILL neutralizes the wrong card (review N6). Got {val!r}"
-    )
-    # Resets to the identity value on the correct element, by name (not numid).
-    assert 'name="Capture Pitch 1000000"' in val, (
-        "the ExecStopPost must target the pitch ctl by name (matches the "
-        f"in-daemon actuator + usbsink's ExecStopPost). Got {val!r}"
-    )
-    # The cset command's last argument is the neutral value 1000000 (the sh
-    # wrapper closes with a trailing quote, so match the value + close-quote).
-    assert "1000000'" in val or val.rstrip().endswith("1000000"), (
-        f"the ExecStopPost must reset the pitch to neutral (1000000). Got {val!r}"
+
+
+def test_exec_stop_post_has_no_bare_percent_specifier_collision():
+    """Defect E lint (fan-in unit): no ExecStopPost / ExecStartPost line may
+    carry a bare shell `%%`/`${var%...}` expansion, which systemd mis-reads as a
+    specifier escape ("Invalid environment variable name evaluates to an empty
+    string"). The neutralize logic that used `${card%%,*}` moved into a shipped
+    helper for exactly this reason; this pins that it does not creep back."""
+    unit = _read_unit()
+    for line in unit.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        if key.strip() not in ("ExecStopPost", "ExecStartPost", "ExecStartPre"):
+            continue
+        # A literal `%%` (or a lone `%` not part of a systemd specifier) in an
+        # Exec* value is the collision class. systemd's own specifiers are
+        # `%N`/`%%`; a shell parameter expansion like `${card%%,*}` reaches
+        # systemd as a bare `%%` and is what broke. The fix ships helpers, so no
+        # Exec* line should contain `%` at all.
+        assert "%" not in value, (
+            "an Exec* line carries a bare '%' — systemd treats it as a specifier "
+            "escape (defect E). Move the shell logic into a shipped deploy/bin/ "
+            f"helper instead. Offending line: {stripped!r}"
+        )
+
+
+_EXEC_KEYS = (
+    "ExecStart",
+    "ExecStartPre",
+    "ExecStartPost",
+    "ExecStop",
+    "ExecStopPost",
+    "ExecReload",
+    "ExecCondition",
+)
+
+
+def _shipped_unit_files() -> list[Path]:
+    """Every shipped systemd unit + drop-in the installer lays down.
+
+    Both the top-level ``*.service`` files (under deploy/ and deploy/systemd/)
+    and ``*.service.d/*.conf`` drop-ins carry Exec* lines, so both are in scope
+    for the %-specifier collision lint.
+    """
+    systemd = REPO / "deploy"
+    units = sorted(systemd.rglob("*.service"))
+    dropins = sorted(systemd.rglob("*.service.d/*.conf"))
+    return units + dropins
+
+
+def test_no_shipped_unit_has_shell_param_expansion_in_exec():
+    """Defect E lint (ALL shipped units + drop-ins): no Exec* line may carry a
+    shell parameter expansion containing '%' — e.g. ``${card%%,*}`` — which
+    systemd mis-reads as a specifier escape ("Invalid environment variable name
+    evaluates to an empty string"). This is the exact class that broke the inline
+    combo-mode neutralize before it moved to jasper-fanin-pitch-neutralize; the
+    per-unit test above pins the fan-in unit, and this one is the repo-wide
+    backstop the brief asked for ("no bare '%' expansion remains in shipped unit
+    files", plural) so a NEW unit can't reintroduce it.
+
+    Precise on purpose: it flags a '%' INSIDE a ``${...}`` expansion (always the
+    bug), not a bare legitimate systemd specifier like ``%i`` / ``%N`` (which a
+    future template unit may validly use). Today no shipped Exec* line carries any
+    '%' at all — this keeps that clean while allowing genuine specifiers later.
+    """
+    # A `%` appearing inside a ${...} shell expansion on an Exec* line — the
+    # `${var%pat}` / `${var%%pat}` collision class, never a systemd specifier.
+    shell_expansion_with_percent = re.compile(r"\$\{[^}]*%[^}]*\}")
+    offenders: list[str] = []
+    files = _shipped_unit_files()
+    assert files, "expected to find shipped unit files under deploy/"
+    for path in files:
+        for raw in path.read_text().splitlines():
+            stripped = raw.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, _, value = stripped.partition("=")
+            if key.strip() not in _EXEC_KEYS:
+                continue
+            if shell_expansion_with_percent.search(value):
+                offenders.append(f"{path.relative_to(REPO)}: {stripped!r}")
+    assert not offenders, (
+        "shipped unit Exec* line(s) carry a shell '%' parameter expansion that "
+        "systemd mis-reads as a specifier escape (defect E). Move the shell logic "
+        "into a deploy/bin/ helper (see jasper-fanin-pitch-neutralize). Offenders:\n"
+        + "\n".join(offenders)
     )
 
 

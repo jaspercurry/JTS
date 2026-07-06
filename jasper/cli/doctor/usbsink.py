@@ -710,3 +710,110 @@ def check_usbsink_preempt_port_reachable() -> CheckResult:
         "usbsink preempt port", "ok",
         f"daemon listening on {host}:{port} (mux preempts will land)",
     )
+
+
+def _unit_main_start_epoch(unit: str) -> float | None:
+    """Wall-clock epoch (seconds) when ``unit``'s main process last started, or None.
+
+    Derived from systemd's ``ExecMainStartTimestampMonotonic`` (µs since boot) plus
+    ``/proc/uptime`` so the comparison is boot-relative and immune to wall-clock
+    steps (NTP jumps) between start and now: ``boot_epoch = now - uptime`` then
+    ``start_epoch = boot_epoch + start_us/1e6``. Returns None when the field is
+    absent / unparsable / ``0`` (never started) or ``/proc/uptime`` is unreadable —
+    the caller then skips the drift check rather than guessing.
+    """
+    import time
+
+    out = _run(
+        [
+            "systemctl", "show", unit,
+            "-p", "ExecMainStartTimestampMonotonic", "--value",
+        ]
+    )
+    raw = out.stdout.strip()
+    if not raw.isdigit():
+        return None
+    start_us = int(raw)
+    if start_us == 0:  # not currently running under this main PID
+        return None
+    try:
+        with open("/proc/uptime", encoding="utf-8") as fh:
+            uptime = float(fh.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    boot_epoch = time.time() - uptime
+    return boot_epoch + start_us / 1_000_000.0
+
+
+# The reconciler writes usbsink.env then restarts the daemon in the same call, so
+# on a converged box the daemon start is comfortably AFTER the env mtime. Require
+# the env to be newer than the start by this margin before calling it drift, so a
+# within-the-same-second write→restart ordering can't read as a false positive.
+_USBSINK_ENV_DRIFT_SLACK_SEC = 5.0
+
+
+@doctor_check(order=61.5, group="usbsink")
+def check_usbsink_env_drift() -> CheckResult:
+    """Catch jasper-usbsink running STALE env after a rate-limited reconcile (defect D).
+
+    ``jasper-audio-hardware-reconcile`` rewrites ``usbsink.env`` whenever the route
+    profile changes, then try-restarts the daemon — but that restart is rate-limited
+    (a usbsink restart recomposes the USB gadget → a fresh udev card-add → the
+    reconciler runs again; the limiter breaks that storm). When the limiter REFUSES,
+    the env file has already been rewritten while the daemon keeps the old geometry,
+    and nothing schedules a retry — convergence would otherwise wait unbounded for
+    the next udev event / boot / manual run ("I changed the route and nothing
+    happened"). This standing check makes that drift observable: if usbsink.env's
+    mtime is newer than the running daemon's start, the daemon is serving stale env.
+
+    Skips cleanly when USB Audio isn't wanted (disabled / parked follower — the env
+    is irrelevant), when the daemon isn't active, or when the daemon start time /
+    env mtime can't be read (indeterminate → don't guess). Remediation is a single
+    restart: the limiter only damps automatic reconciler churn, not an operator
+    action.
+    """
+    wanted, reason = _audio_wanted()
+    if not wanted:
+        return CheckResult(
+            "usbsink env drift", "ok",
+            f"USB Audio not active ({reason}) — env drift irrelevant",
+        )
+    if not _systemd_is_active(USBSINK_UNIT):
+        return CheckResult(
+            "usbsink env drift", "ok",
+            "service enabled but not active — env drift check skipped",
+        )
+
+    from jasper.usbsink.output_mode_reconcile import USBSINK_ENV_PATH
+
+    try:
+        env_mtime = os.stat(USBSINK_ENV_PATH).st_mtime
+    except OSError:
+        # No env file → the daemon runs on defaults; there is nothing to drift from.
+        return CheckResult(
+            "usbsink env drift", "ok",
+            f"{USBSINK_ENV_PATH} absent — daemon on defaults, no drift",
+        )
+
+    start_epoch = _unit_main_start_epoch(USBSINK_UNIT)
+    if start_epoch is None:
+        return CheckResult(
+            "usbsink env drift", "ok",
+            "daemon start time unavailable — drift check skipped",
+        )
+
+    drift = env_mtime - start_epoch
+    if drift > _USBSINK_ENV_DRIFT_SLACK_SEC:
+        return CheckResult(
+            "usbsink env drift", "warn",
+            f"{USBSINK_ENV_PATH} was rewritten {drift:.0f} s AFTER jasper-usbsink "
+            "started — the daemon is serving stale route env (a reconcile restart "
+            "was likely rate-limited). Run `sudo systemctl restart "
+            "jasper-usbsink.service jasper-usbsink-volume.service` to converge (the "
+            "reconciler's limiter only damps automatic churn, not this manual "
+            "restart).",
+        )
+    return CheckResult(
+        "usbsink env drift", "ok",
+        "daemon started after the current usbsink.env (running live route env)",
+    )
