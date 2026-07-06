@@ -512,32 +512,51 @@ def test_created_tuning_db_is_0644_under_restrictive_umask(
     assert oct(os.stat(tuning_db).st_mode & 0o777) == "0o644"
 
 
-def test_record_from_two_threads_lands_two_priced_rows(_tuning_ledger_env):
+def test_record_from_two_concurrent_threads_lands_two_priced_rows(_tuning_ledger_env):
     """Regression shaped like the review-proven Blocker 1: correction-web is a
     ThreadingHTTPServer (one thread per TCP connection), and a process-global
     sqlite store binds to its creator thread (check_same_thread=True) — the
     old global-store shape recorded 1 row of 2 while still logging a
     "recorded" event for both (the cross-thread ProgrammingError is swallowed
     by open_session's fail-soft). The record path must land ONE PRICED ROW PER
-    CALL regardless of which thread runs it."""
+    CALL regardless of which thread runs it.
+
+    The two record calls MUST overlap on CONCURRENTLY-LIVE threads: CPython's
+    sqlite check_same_thread only raises when a connection is used from a
+    *currently-alive* different thread. A sequential start()/join() drive
+    leaves the creator thread dead before the second runs, so the guard never
+    fires and the OLD global-store shape would pass with 2 rows too — a
+    non-discriminating guard (proven in the 2026-07-06 re-review). A
+    Barrier(2) holds both threads live across the write, so this test
+    fails-with-1-row on the old shape and passes-with-2 on the fresh-store-
+    per-record fix."""
     usage_db = _tuning_ledger_env
     out = {
         "kind": "jts_correction_interpret",
         "usage": {"input_tokens": 1000, "output_tokens": 1000},
     }
 
+    # Both threads rendezvous at the barrier, then write while the other is
+    # still alive — the only structure that trips the old shape's cross-thread
+    # sqlite guard.
+    barrier = threading.Barrier(2)
+
     def _record():
         # The record path is fail-soft by contract (never raises); if it ever
         # does, threading's default excepthook prints the traceback and the
         # row-count assertion below fails.
+        barrier.wait(timeout=5)
         correction_setup._record_tuning_spend(dict(out), str(usage_db))
+        # Hold this thread alive briefly so the sibling's write overlaps a
+        # still-live peer thread (defeats the thread-liveness escape hatch).
+        barrier.wait(timeout=5)
 
-    # Two calls on two DIFFERENT threads (sequential — the failure is
-    # thread-identity, not a race).
-    for _ in range(2):
-        t = threading.Thread(target=_record)
+    threads = [threading.Thread(target=_record) for _ in range(2)]
+    for t in threads:
         t.start()
-        t.join()
+    for t in threads:
+        t.join(timeout=10)
+        assert not t.is_alive(), "record thread hung"
 
     from jasper.usage import UsageStore, tuning_usage_db_path
 
