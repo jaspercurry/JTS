@@ -770,7 +770,7 @@ def reconcile_auto(
                 ok=False, owned=True, coupling=decision.coupling,
                 gadget_present=gadget, usb_intent_enabled=usb_intent,
                 combo_armed=decision.combo_armed, usb_combo_changed=combo_changed,
-                usbsink_standby_changed=standby_changed,
+                usbsink_standby_changed=standby_changed, reason=decision.reason,
                 coupling_result=coupling_result, restarted_fanin_for_combo=False,
                 restarted_usbsink=restarted_usbsink, detail=fan_detail,
             )
