@@ -267,6 +267,7 @@ const DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS: u64 = 375;
 ///      never latched, so it accumulates the streak but never trips.
 ///   2. a run of `zero_avail_streak` consecutive zero-avail drains at or beyond
 ///      `threshold` — the handle went deaf after having fed the lane.
+///
 /// Extracted (arming condition and all) so the detection is scratch-crate testable
 /// without ALSA — the `Ok(0)`-forever gadget-rebuild condition and the attached-idle
 /// avail≈0 stream can't be reproduced in a unit test otherwise, and the false-
@@ -3122,7 +3123,7 @@ fn read_direct_and_render(
 /// `avail_update` has returned exactly 0 for `DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS`
 /// consecutive drains — a gadget rebuilt underneath us). Both non-Ok outcomes drive
 /// the SAME close→Absent→bounded-reopen recovery; they differ only in the log line
-/// + which counter increments, so an operator can tell a clean unplug (DeviceLost,
+/// and which counter increments, so an operator can tell a clean unplug (DeviceLost,
 /// errno-driven) from a silent gadget rebuild (ZombieReopen, avail-0-driven) apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DirectDrainOutcome {
