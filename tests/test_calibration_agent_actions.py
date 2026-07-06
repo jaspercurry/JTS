@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
@@ -17,6 +18,26 @@ def _context(tmp_path: Path) -> dict:
         bundle_dir=write_golden_correction_bundle(tmp_path),
     )
     return tools.build_intake(bundle)["advisor_context"]
+
+
+def _context_allowing_target_move(tmp_path: Path) -> dict:
+    """Golden context with the target-move action permitted by policy.
+
+    The shipped calibration policy packet does NOT list
+    ``propose_target_move`` (the CLI path rejects it as
+    ``action_not_allowed_by_context``), so a bare golden context can't
+    exercise the runner's target-move presentation branch. Appending the
+    allowed-action entry lets a VALIDATED target move reach the runner —
+    the defensive branch this test pins.
+    """
+    ctx = copy.deepcopy(_context(tmp_path))
+    ctx["advisor_policy"]["allowed_actions"].append({
+        "id": "propose_target_move",
+        "label": "may suggest a bounded shared-target move",
+        "allowed": True,
+        "reasons": [],
+    })
+    return ctx
 
 
 def _advisor_response_with_audition() -> dict:
@@ -162,6 +183,85 @@ def test_action_runner_rejects_failed_validation(tmp_path: Path):
     assert run["accepted"] is False
     assert run["status"] == "rejected"
     assert run["action_results"] == []
+
+
+def test_action_runner_presents_named_target_move_without_side_effect(
+    tmp_path: Path,
+):
+    """A validated named target move is presented, never executed.
+
+    Pins the runner's ``propose_target_move`` branch (defensive
+    completeness — production marks target moves ``applicable: False``,
+    so nothing dispatches them today). The honest shape is
+    presentation-only: ``presented`` + ``user_prompt_only`` + no DSP or
+    config mutation, exactly like ``recommend_remeasure``.
+    """
+    raw = {
+        "artifact_schema_version": response.RESPONSE_SCHEMA_VERSION,
+        "kind": "jts_advisor_response",
+        "action_plan": [{
+            "type": "propose_target_move",
+            "rationale": "The room measures a touch bright; a warmer target may suit.",
+            "target_id": "warm",
+            "warmth": 0.0,
+        }],
+    }
+    validation = response.validate_advisor_response(
+        raw,
+        advisor_context=_context_allowing_target_move(tmp_path),
+    )
+    assert validation["accepted"] is True
+
+    run = actions.run_validated_action_plan(validation)
+
+    assert run["accepted"] is True
+    assert run["status"] == "complete"
+    # No executed action carries a real side effect (a target move is
+    # user_prompt_only, which _run_result excludes from side_effects).
+    assert run["side_effects"] == []
+    assert run["human_in_loop"]["required"] is True
+
+    result = run["action_results"][0]
+    assert result["type"] == "propose_target_move"
+    assert result["status"] == "presented"
+    assert result["executed"] is True
+    assert result["pending"] is False
+    assert result["side_effect"] == "user_prompt_only"
+    assert result["target_id"] == "warm"
+    assert result["rationale"].startswith("The room measures")
+    assert result["human_in_loop"]["role"] == "operator_next_step"
+    assert result["human_in_loop"]["subjective_judgement_required"] is True
+
+
+def test_action_runner_presents_warmth_target_move_without_side_effect(
+    tmp_path: Path,
+):
+    """A warmth-valued target move surfaces the bounded warmth, no execute path."""
+    raw = {
+        "artifact_schema_version": response.RESPONSE_SCHEMA_VERSION,
+        "kind": "jts_advisor_response",
+        "action_plan": [{
+            "type": "propose_target_move",
+            "rationale": "Nudge the shared target warmer within bounds.",
+            "target_id": "",
+            "warmth": 1.5,
+        }],
+    }
+    validation = response.validate_advisor_response(
+        raw,
+        advisor_context=_context_allowing_target_move(tmp_path),
+    )
+    assert validation["accepted"] is True
+
+    run = actions.run_validated_action_plan(validation)
+
+    assert run["status"] == "complete"
+    assert run["side_effects"] == []
+    result = run["action_results"][0]
+    assert result["status"] == "presented"
+    assert result["side_effect"] == "user_prompt_only"
+    assert result["warmth"] == 1.5
+    assert result["target_id"] is None
 
 
 def test_cli_run_advisor_actions_is_side_effect_free(tmp_path: Path, capsys):
