@@ -2238,6 +2238,60 @@ def _summed_test_session_stop_reason(session: dict[str, Any]) -> str | None:
     return None
 
 
+# A summed-test session sits at ``process=None`` normally *between* the looped
+# ``aplay`` spawns, but the same shape also describes a session that leaked
+# before its owning request reached the try/finally teardown — e.g. the request
+# was cancelled (or the summed-config load raised) in the window between claiming
+# the session and entering the loop. A leaked session stays ``process=None``
+# forever with no owner to clear it, and the start guard would then wedge every
+# retry with ``summed_test_already_active`` until jasper-web was restarted (the
+# jts3 2026-07-06 incident). A *running* loop refreshes ``progress_monotonic``
+# each iteration, so a stale heartbeat distinguishes "leaked" from "still working".
+#
+# The window MUST exceed the longest a genuinely-live session can sit at
+# process=None, which is the prepare phase before the first spawn: a ~15 s
+# jasper-audio-hardware-reconcile wait (startup_load, manage_units timeout=15.0)
+# plus the summed-config camilla WS ops. If the window were shorter than a
+# slow-but-live prepare, a concurrent start would misjudge it leaked and preempt
+# it — racing on the fan-in lane, a second aplay, and the config rollback. 90 s
+# clears that bounded budget with margin; a truly leaked session still
+# auto-recovers within it (and #1181's reload-safe Stop recovers it
+# immediately). A *hung* (not merely slow) camilla is out of scope — the test
+# cannot run then, and both starts block on the same dead WS.
+SUMMED_TEST_SESSION_STALE_SECONDS = 90.0
+
+
+def _summed_test_session_active(
+    session: dict[str, Any] | None,
+    *,
+    now: float | None = None,
+) -> bool:
+    """Whether a combined-test session is genuinely live. Caller holds the lock.
+
+    Live means: a session exists, no stop has been requested, and either the
+    ``aplay`` child is alive *or* the loop refreshed its heartbeat within
+    ``SUMMED_TEST_SESSION_STALE_SECONDS``. The heartbeat window reclaims a leaked
+    ``process=None`` session so a reload's Stop, or a fresh Play, is never
+    permanently blocked. This is the single source of truth shared by the start
+    guard and the reload-safe view snapshot so they can never disagree on
+    "active".
+    """
+
+    if not session or session.get("stop_reason"):
+        return False
+    proc = session.get("process")
+    if proc is not None:
+        return proc.poll() is None
+    if now is None:
+        now = time.monotonic()
+    heartbeat = session.get("progress_monotonic", session.get("started_monotonic"))
+    try:
+        heartbeat = float(heartbeat)
+    except (TypeError, ValueError):
+        return False
+    return (now - heartbeat) < SUMMED_TEST_SESSION_STALE_SECONDS
+
+
 def _active_summed_test_snapshot() -> dict[str, Any]:
     """Live snapshot of the in-progress combined (summed) test, if any.
 
@@ -2253,10 +2307,7 @@ def _active_summed_test_snapshot() -> dict[str, Any]:
 
     with _SUMMED_TEST_TONE_LOCK:
         session = _SUMMED_TEST_TONE_SESSION
-        if not session or session.get("stop_reason"):
-            return {"active": False}
-        proc = session.get("process")
-        if proc is not None and proc.poll() is not None:
+        if session is None or not _summed_test_session_active(session):
             return {"active": False}
         return {
             "active": True,
@@ -2781,10 +2832,10 @@ async def _active_speaker_play_summed_commission_tone(
         return artifact_playback
 
     playback_id = str(artifact_playback.get("playback_id") or uuid.uuid4().hex)
+    reclaimed: tuple[str, Any] | None = None
     with _SUMMED_TEST_TONE_LOCK:
-        active_session = _SUMMED_TEST_TONE_SESSION
-        active_proc = active_session.get("process") if active_session else None
-        if active_session and (active_proc is None or active_proc.poll() is None):
+        prior = _SUMMED_TEST_TONE_SESSION
+        if _summed_test_session_active(prior):
             return _summed_playback_with_issue(
                 artifact_playback,
                 issue=_commission_setup_issue(
@@ -2792,15 +2843,33 @@ async def _active_speaker_play_summed_commission_tone(
                     "a combined speaker test is already running",
                 ),
             )
+        if prior is not None:
+            # Overwriting a non-active prior session: either a leaked prepare
+            # (its owner died before the try/finally teardown) or one whose stop
+            # is still settling. A leaked prior is the only way this path is hit
+            # without an explicit stop, so surface it — it flags a prior bug.
+            reclaimed = (
+                "stopped" if prior.get("stop_reason") else "stale",
+                prior.get("playback_id"),
+            )
+        now_monotonic = time.monotonic()
         session: dict[str, Any] = {
             "playback_id": playback_id,
             "process": None,
             "speaker_group_id": speaker_group_id,
             "level_dbfs": None,
-            "started_monotonic": time.monotonic(),
+            "started_monotonic": now_monotonic,
+            "progress_monotonic": now_monotonic,
             "stop_reason": None,
         }
         _SUMMED_TEST_TONE_SESSION = session
+    if reclaimed is not None:
+        logger.info(
+            "event=sound.active_speaker_summed_test action=reclaim_prior_session "
+            "reason=%s prior_playback_id=%s",
+            reclaimed[0],
+            reclaimed[1],
+        )
 
     tone = artifact_playback.get("tone") if isinstance(artifact_playback.get("tone"), dict) else {}
     try:
@@ -3008,6 +3077,7 @@ async def _active_speaker_play_summed_commission_tone(
                 with _SUMMED_TEST_TONE_LOCK:
                     if _SUMMED_TEST_TONE_SESSION is session:
                         session["process"] = None
+                        session["progress_monotonic"] = time.monotonic()
     except Exception as exc:  # noqa: BLE001 - always re-mute below.
         playback_result = _summed_playback_with_issue(
             artifact_playback,

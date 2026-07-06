@@ -608,6 +608,60 @@ def _apple_dongle_cards_from_state(
     ]
 
 
+CAMILLA_CONFIGS_DIR = Path("/var/lib/camilladsp/configs")
+
+
+def _camilla_configs_writable_result(
+    path: Path, *, expected_group: str = "jasper"
+) -> CheckResult:
+    """CheckResult for the CamillaDSP config dir's group-write posture.
+
+    ``jasper-web`` runs non-root (WS1 privilege drop) and writes active-speaker
+    staged/commissioning configs and room-correction configs into this dir
+    *atomically* (temp file in-dir + rename), which needs directory group-write.
+    install.sh's intended posture is ``root:jasper 2775``; a deploy that lands it
+    root-only (e.g. an interrupted install before the widen step) makes non-root
+    staging fail with ``PermissionError`` and surfaces to the household as
+    "could not load the silent active-speaker setup" (the jts3 2026-07-06
+    incident). Catch that here instead of at the wizard.
+    """
+
+    import grp
+
+    label = "CamillaDSP config dir writable"
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return CheckResult(label, "warn", f"{path} missing — re-run install.sh")
+    except OSError as exc:
+        return CheckResult(label, "warn", f"{path}: {exc}")
+
+    try:
+        group_name = grp.getgrgid(st.st_gid).gr_name
+    except (KeyError, OSError):
+        group_name = str(st.st_gid)
+    mode = st.st_mode & 0o7777
+    group_writable = bool(st.st_mode & 0o0020)  # S_IWGRP
+    detail = f"{path} mode={mode:04o} group={group_name}"
+    if group_name != expected_group or not group_writable:
+        return CheckResult(
+            label,
+            "fail",
+            f"{detail} — non-root jasper-web cannot write staged/correction "
+            f"configs; fix with `sudo install -d -m 2775 -g {expected_group} "
+            f"{path}` and redeploy (active-speaker staging fails with "
+            "PermissionError otherwise)",
+        )
+    return CheckResult(label, "ok", detail)
+
+
+@doctor_check(order=20.6, group="audio")
+def check_camilla_configs_writable() -> CheckResult:
+    """Guard the CamillaDSP config dir's group-write posture for jasper-web."""
+
+    return _camilla_configs_writable_result(CAMILLA_CONFIGS_DIR)
+
+
 @doctor_check(order=20.7, group="audio")
 def check_dac_usb_sync_mode() -> CheckResult:
     """Classify the speaker DAC's USB sync mode as an advisory clock-coherence

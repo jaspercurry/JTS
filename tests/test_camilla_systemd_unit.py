@@ -202,9 +202,16 @@ def test_install_sh_creates_camilladsp_state_dirs():
     """install.sh must create /var/lib/camilladsp/ and configs/ as
     a precondition for both the --statefile and the room-correction
     wizard's emitted YAMLs. Without these dirs, the unit fails to
-    write its statefile and the wizard fails on apply."""
+    write its statefile and the wizard fails on apply.
+
+    configs/ must be created *group-writable* (2775 -g jasper) from its first
+    creation, not root-only, so a partial deploy can't leave the non-root
+    jasper-web user unable to write staged/correction configs (the jts3
+    2026-07-06 PermissionError incident). check_camilla_configs_writable pins
+    the runtime posture."""
     body = INSTALL_SH.read_text()
-    assert "install -d -m 0755 /var/lib/camilladsp /var/lib/camilladsp/configs" in body
+    assert "install -d -m 0755 /var/lib/camilladsp" in body
+    assert "install -d -m 2775 -g jasper /var/lib/camilladsp/configs" in body
 
 
 def test_install_sh_repairs_generated_camilla_config_modes_for_non_root_daemons():

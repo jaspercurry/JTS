@@ -490,7 +490,13 @@ before the drop:
   *directory*, so `/etc/bluetooth` (the BlueZ name persists across the rename's
   `bluetooth.service` restart, so `main.conf` is load-bearing, not just the
   runtime D-Bus Alias) and `/var/lib/camilladsp/configs` (the `/sound/` EQ
-  editor) become `root:jasper 2775` (setgid). `/etc/avahi/services` was already
+  editor) become `root:jasper 2775` (setgid). install.sh creates `configs/`
+  group-writable **at first creation** (not root-only-then-widened), so a
+  partial deploy can't strand non-root jasper-web unable to atomically write
+  staged/correction configs — the jts3 2026-07-06 `PermissionError` that
+  surfaced as "could not load the silent active-speaker setup"; `jasper-doctor`'s
+  `check_camilla_configs_writable` fails loudly if the runtime posture
+  regresses. `/etc/avahi/services` was already
   `2775` from 3b-2; adding it to the unit's `ReadWritePaths` also fixes a
   **latent bug** — the `/speaker` avahi re-render silently no-op'd under
   `ProtectSystem=strict` (the dir was outside the writable set). The WiFi PSK
