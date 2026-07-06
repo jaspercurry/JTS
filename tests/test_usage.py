@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from jasper.usage import (
+    AggregateUsageReader,
     BillableActivityMeter,
     DEFAULT_TUNING_USAGE_DB,
     DEFAULT_USAGE_DB,
