@@ -558,6 +558,156 @@ async def test_usbsink_preempt_release_idempotent(mux, patched_probes):
 
 
 # ----------------------------------------------------------------------
+# USB *combo* box arbitration — on a box with JASPER_FANIN_USB_DIRECT the
+# usbsink bridge is in standby (opens no PCM), so its RMS-gated `playing`
+# flag is frozen false. mux detects USB liveness off fan-in's DIRECT lane
+# `frames_read` advancing across ticks (step_combo_liveness). This makes USB
+# a winnable/visible source in AUTO mode (the default) — which also fixes the
+# landing-page highlight (active_source) and the transport voice tool (mux
+# winner → renderer.selected_source). Regression for the 2026-07-06 gap.
+# ----------------------------------------------------------------------
+
+
+def _make_combo_box(mux: Mux, monkeypatch, frames_seq):
+    """Turn `mux` into a USB combo box.
+
+    read_usbsink_state reports the standby bridge (frozen playing:false), and
+    _fanin_status_best_effort yields fan-in STATUS snapshots whose usbsink
+    DIRECT lane carries the given frames_read sequence. A `None` entry
+    simulates a fan-in STATUS read miss that tick. The last value repeats once
+    the sequence is exhausted so a test can tick past its explicit list."""
+    monkeypatch.setattr(
+        "jasper.mux.read_usbsink_state",
+        lambda *a, **k: {
+            "standby": True, "playing": False, "host_connected": True,
+            "rms_dbfs": -120.0,
+        },
+    )
+    frames = list(frames_seq)
+    idx = {"i": 0}
+
+    async def _fanin():
+        value = frames[min(idx["i"], len(frames) - 1)]
+        idx["i"] += 1
+        if value is None:
+            return None
+        return {"inputs": [
+            {"label": "spotify", "source": "lane", "frames_read": 5},
+            {"label": "usbsink", "source": "direct", "frames_read": value},
+        ]}
+
+    mux._fanin_status_best_effort = _fanin
+    return mux
+
+
+@pytest.mark.asyncio
+async def test_combo_usb_streaming_takes_speaker_in_auto(mux, patched_probes, monkeypatch):
+    """Combo box, AUTO mode (the default): the host starts streaming, so fan-in's
+    DIRECT-lane frames_read advances → USB becomes the winner and the active
+    source, and mux STATUS reports it playing. This is what lights the
+    landing-page USB indicator and lets the transport tool detect USB."""
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    # Networked sources idle; usbsink solo-flag stubbed False (combo path wins).
+    _stub_probes(patched_probes, usbsink=False)
+    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000])
+
+    await mux._tick()  # frames=0, first reading → not playing yet
+    assert mux._winner is None
+
+    await mux._tick()  # frames advanced → USB is live → wins the speaker
+    assert mux._winner is Source.USBSINK
+    mux._pause.assert_not_awaited()
+    payload = mux._status_payload()
+    assert payload["active_source"] == "usbsink"
+    assert payload["winner"] == "usbsink"
+    assert payload["sources"]["usbsink"]["playing"] is True
+    # Arbiter-view observability: /source/state shows this is a combo box.
+    assert payload["usbsink"]["combo"] is True
+
+    await mux._tick()  # still advancing → stays the winner
+    assert mux._winner is Source.USBSINK
+
+
+@pytest.mark.asyncio
+async def test_combo_usb_idle_frames_never_win(mux, patched_probes, monkeypatch):
+    """Host connected but not streaming (PCM open, frames_read flat at 0 — the
+    live jts.local idle state): USB must NOT become a winner. A static
+    presence signal would falsely preempt other sources on mere connection."""
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    _stub_probes(patched_probes, usbsink=False)
+    _make_combo_box(mux, monkeypatch, [0, 0, 0, 0])
+
+    for _ in range(4):
+        await mux._tick()
+    assert mux._winner is None
+    assert mux._status_payload()["active_source"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_combo_usb_preempted_by_newly_started_source(mux, patched_probes, monkeypatch):
+    """USB is streaming and winning on a combo box; AirPlay then starts. Latest
+    source wins: AirPlay preempts USB (and mux still POSTs the — harmless in
+    standby — USB preempt)."""
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    _stub_probes(patched_probes, usbsink=False, airplay=False)
+    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
+
+    await mux._tick()  # frames=0
+    await mux._tick()  # USB streaming → wins
+    assert mux._winner is Source.USBSINK
+
+    _stub_probes(patched_probes, usbsink=False, airplay=True)
+    await mux._tick()  # AirPlay newly-started → preempts USB
+    assert mux._winner is Source.AIRPLAY
+    mux._pause.assert_any_await(Source.USBSINK)
+
+
+@pytest.mark.asyncio
+async def test_combo_usb_survives_single_fanin_status_miss(mux, patched_probes, monkeypatch):
+    """A transient fan-in STATUS read miss (None) mid-stream must NOT drop a live
+    USB winner — that would move the fan-in gate off USB and cause an audible
+    ~1 s dropout. The stop debounce holds it across one missed tick."""
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    _stub_probes(patched_probes, usbsink=False)
+    _make_combo_box(mux, monkeypatch, [0, 48_000, None, 96_000])
+
+    await mux._tick()  # 0
+    await mux._tick()  # advance → win
+    assert mux._winner is Source.USBSINK
+    await mux._tick()  # STATUS miss (None) → held by debounce
+    assert mux._winner is Source.USBSINK
+    await mux._tick()  # advance again → still winning
+    assert mux._winner is Source.USBSINK
+
+
+@pytest.mark.asyncio
+async def test_solo_box_never_takes_combo_path(mux, patched_probes, monkeypatch):
+    """A solo box (bridge not in standby) must delegate to usbsink_playing()
+    unchanged and NEVER fetch the fan-in DIRECT lane — proving the combo change
+    is inert on the majority (non-combo) fleet."""
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    # Solo state file: no `standby` key. usbsink_playing() (patched) is truth.
+    monkeypatch.setattr(
+        "jasper.mux.read_usbsink_state",
+        lambda *a, **k: {"playing": True, "host_connected": True},
+    )
+    fanin_probe = AsyncMock(return_value=None)
+    mux._fanin_status_best_effort = fanin_probe
+    _stub_probes(patched_probes, usbsink=True)
+
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+    assert mux._usbsink_combo_box is False
+    assert mux._status_payload()["usbsink"]["combo"] is False
+    fanin_probe.assert_not_awaited()  # combo path never touched
+
+
+# ----------------------------------------------------------------------
 # Escape-hatch env var. JASPER_USBSINK_PREEMPT=disabled short-circuits
 # the preempt POST so mux still tracks state but never asks the daemon
 # to silence — degrades to Bluetooth-style "brief mixing on preempt"

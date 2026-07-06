@@ -156,6 +156,15 @@ def test_detect_source_supports_usbsink():
     assert asyncio.run(_detect_source(renderer)) == "usbsink"
 
 
+def test_detect_source_prefers_mux_usbsink_winner():
+    # The combo-box fix: on a USB-DIRECT box the raw usbsinkactive probe is
+    # frozen false (bridge in standby), but mux reports winner=usbsink off the
+    # fan-in DIRECT lane, surfaced as selected_source. Transport must detect
+    # USB from that mux winner even though the raw renderer flag is unset.
+    renderer = FakeRenderer(renderers={}, selected_source="usbsink")
+    assert asyncio.run(_detect_source(renderer)) == "usbsink"
+
+
 def test_detect_source_falls_back_when_mux_unavailable():
     renderer = FakeRenderer(
         renderers={"btactive": True},

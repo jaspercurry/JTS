@@ -183,6 +183,73 @@ def read_usbsink_state(state_path: str = USBSINK_STATE_PATH) -> dict[str, Any] |
     return data if isinstance(data, dict) else None
 
 
+def usbsink_bridge_in_standby(state: dict[str, Any] | None) -> bool:
+    """True when the jasper-usbsink bridge is running in USB-DIRECT standby.
+
+    On a "combo" box (``JASPER_FANIN_USB_DIRECT=enabled``) fan-in DIRECT-captures
+    the gadget and the bridge runs with ``JASPER_USBSINK_AUDIO_STANDBY=1``: it
+    opens no PCM, so its published ``playing`` / ``rms_dbfs`` are frozen idle
+    defaults (``false`` / ``-120``) that describe nothing. The bridge advertises
+    this by publishing ``standby: true``. Callers that need "is USB actually
+    playing" on a combo box must NOT trust ``playing`` here — the live audio
+    flows through fan-in's DIRECT lane, whose liveness is
+    ``usbsink_direct_frames_read`` advancing across ticks.
+
+    Mirrors the /state aggregator's combo detection (the ``standby`` fallback in
+    PR #1177's ``_usbsink_in_combo_mode``); kept here so the source-arbiter
+    (jasper-mux) shares one definition of "the bridge is in standby"."""
+    return bool(isinstance(state, dict) and state.get("standby"))
+
+
+def _fanin_usbsink_input(
+    fanin_status: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """The fan-in STATUS ``inputs[]`` entry for the usbsink lane, or None.
+
+    A ~5-line finder duplicated here (rather than imported from
+    jasper.control.state_aggregate's ``_fanin_input_status``) so
+    jasper.source_state / jasper-mux don't pull the control package into their
+    import graph — the same import-hygiene reason ``USBSINK_STATE_PATH`` is
+    duplicated above."""
+    if not isinstance(fanin_status, dict):
+        return None
+    inputs = fanin_status.get("inputs")
+    if not isinstance(inputs, list):
+        return None
+    for entry in inputs:
+        if isinstance(entry, dict) and entry.get("label") == "usbsink":
+            return entry
+    return None
+
+
+def usbsink_direct_frames_read(
+    fanin_status: dict[str, Any] | None,
+) -> int | None:
+    """Cumulative ``frames_read`` on fan-in's USB DIRECT lane, else None.
+
+    Returns the counter ONLY when the usbsink lane is in direct mode
+    (``source == "direct"`` — the authoritative "fan-in owns the live gadget
+    capture" signal, the same one the route-latency harness keys its combo tap
+    off and PR #1177 uses). None when the fan-in STATUS is unavailable, has no
+    usbsink lane, or the lane is an ordinary aloop lane (``source == "lane"`` — a
+    solo box, where the bridge's own RMS-gated ``playing`` is the truth).
+
+    The counter advances while the host clocks the gadget's isochronous OUT
+    stream — INCLUDING silence (the solo bridge reads the same continuous stream
+    and RMS-gates it; the direct lane exposes no RMS). So a rising counter means
+    "host actively streaming", not "audible audio". A single snapshot is not
+    enough — it becomes a liveness signal only as a DELTA across ticks (see
+    ``jasper.mux.step_combo_liveness``)."""
+    lane = _fanin_usbsink_input(fanin_status)
+    if not (isinstance(lane, dict) and lane.get("source") == "direct"):
+        return None
+    frames = lane.get("frames_read")
+    # Reject bools (an int subclass) and non-int; the counter is a u64.
+    if isinstance(frames, bool) or not isinstance(frames, int):
+        return None
+    return frames
+
+
 def usbsink_state_fresh_host_connected(
     state_path: str = USBSINK_STATE_PATH,
     *,
