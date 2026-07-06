@@ -66,8 +66,20 @@ def resolve_settings(
     model: str | None = None,
     timeout_sec: float | None = None,
     environ: Mapping[str, str] | None = None,
+    api_key: str | None = None,
+    default_model: str | None = None,
 ) -> AdvisorModelSettings:
-    """Resolve provider settings without accepting secrets on argv."""
+    """Resolve provider settings without accepting secrets on argv.
+
+    ``api_key`` lets a caller that already resolved the key out-of-band
+    (P6's tuning surface reads it from the ``jasper-secrets`` compartment
+    file directly) inject it instead of requiring it in ``environ``.
+    ``default_model`` is the fallback model id when neither an explicit
+    ``model`` nor an env override is set — the tuning surface passes its
+    seeded ``JASPER_TUNING_LLM_MODEL`` default here so it never has to be
+    operator-supplied, while the calibration-agent CLI leaves it ``None``
+    and keeps its "you must name a model" behavior.
+    """
 
     env = environ or os.environ
     resolved_provider = (
@@ -80,15 +92,16 @@ def resolve_settings(
             f"unsupported advisor provider: {resolved_provider or '(missing)'}"
         )
 
-    api_key = env.get("OPENAI_API_KEY", "").strip()
-    if not api_key:
+    resolved_key = (api_key or env.get("OPENAI_API_KEY", "")).strip()
+    if not resolved_key:
         raise AdvisorModelError("OPENAI_API_KEY is required for --call-advisor")
+    api_key = resolved_key
 
     resolved_model = (
         model
         or env.get("JASPER_CALIBRATION_ADVISOR_MODEL")
         or env.get("OPENAI_ADVISOR_MODEL")
-        or ""
+        or (default_model or "")
     ).strip()
     if not resolved_model:
         raise AdvisorModelError(
@@ -132,12 +145,16 @@ def call_advisor(
     timeout_sec: float | None = None,
     environ: Mapping[str, str] | None = None,
     transport: Transport | None = None,
+    api_key: str | None = None,
+    default_model: str | None = None,
 ) -> dict[str, Any]:
     """Call the configured advisor model and return its candidate JSON.
 
     This function has exactly one external side effect: the provider API
     request. It never applies filters, stores profiles, reads raw audio,
-    or logs response content.
+    or logs response content. ``api_key`` / ``default_model`` are for
+    callers that resolved the key/model out-of-band (see
+    :func:`resolve_settings`).
     """
 
     settings = resolve_settings(
@@ -145,6 +162,8 @@ def call_advisor(
         model=model,
         timeout_sec=timeout_sec,
         environ=environ,
+        api_key=api_key,
+        default_model=default_model,
     )
     payload = build_openai_request(prompt_package, settings.model)
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
