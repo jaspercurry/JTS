@@ -2860,6 +2860,9 @@ def test_state_usbsink_section_populated_when_enabled(
     status, body = _get(f"{base}/state")
     assert status == 200
     section = body["renderers"]["usbsink"]
+    # Solo box (no fan-in direct lane, bridge not in standby): the bridge's
+    # RMS-gated truth is surfaced verbatim.
+    assert section["combo"] is False
     assert section["playing"] is True
     assert section["preempted"] is False
     assert section["host_connected"] is True
@@ -2915,6 +2918,91 @@ def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
 
     status, body = _get(f"{base}/state")
     assert status == 200
+    assert body["active_source"] == "usbsink"
+
+
+def test_state_usbsink_section_honest_in_combo_standby_mode(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """Combo box: the jasper-usbsink bridge is in standby (fan-in DIRECT-captures
+    the gadget) and publishes frozen idle defaults (playing:false / rms:-120).
+    /state must NOT relay those as live truth — it nulls playing/rms and flags
+    combo, keeping the still-valid host_connected. Regression for the
+    2026-07-06 'renderers.usbsink misleads while combo audio flows' bug.
+
+    Detection here rides the bridge's own `standby` flag (the test server has no
+    fan-in socket, so fanin_st is None); the fan-in `source=="direct"` detector
+    is pinned in tests/test_state_usbsink_renderer.py."""
+    base, _ = server_with_coordinator
+    usbsink_state = tmp_path / "usbsink_state.json"
+    usbsink_state.write_text(json.dumps({
+        "standby": True,
+        "playing": False, "preempted": False, "host_connected": True,
+        "rms_dbfs": -120.0,
+        "updated_at": "2026-07-06T16:15:33.123Z",
+    }))
+    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+    monkeypatch.setenv(
+        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+    )
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    section = body["renderers"]["usbsink"]
+    assert section["combo"] is True
+    assert section["playing"] is None
+    assert section["rms_dbfs"] is None
+    assert section["host_connected"] is True
+    # The stale standby-bridge `playing:false` must not be the only signal that
+    # keeps USB out of active_source — but it must also never PICK usbsink off a
+    # dead flag. With no mux winner and combo playing=None, USB is not active.
+    assert body["active_source"] != "usbsink"
+    json.dumps(body, allow_nan=False)
+
+
+def test_state_combo_active_source_still_driven_by_mux_selection(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """Combo box in manual mode: renderers.usbsink.playing is None (combo), but
+    active_source must still resolve to usbsink from mux's selected_source.
+    Pins the state_aggregate line-1004 promise — nulling the dead bridge flag in
+    combo mode must not break the mux-driven (step 2) USB selection."""
+    import jasper.control.server as srv_mod
+    base, _ = server_with_coordinator
+
+    async def fake_mux_status(*args, **kwargs):
+        return {
+            "mode": "manual",
+            "selected_source": "usbsink",
+            "winner": "usbsink",
+            "active_source": "usbsink",
+        }
+
+    monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
+    usbsink_state = tmp_path / "usbsink_state.json"
+    usbsink_state.write_text(json.dumps({
+        "standby": True,
+        "playing": False, "preempted": False, "host_connected": True,
+        "rms_dbfs": -120.0,
+        "updated_at": "2026-07-06T16:15:33.123Z",
+    }))
+    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+    monkeypatch.setenv(
+        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+    )
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    section = body["renderers"]["usbsink"]
+    assert section["combo"] is True
+    assert section["playing"] is None
+    # active_source is mux-driven (step 2), not the nulled combo bridge flag.
     assert body["active_source"] == "usbsink"
 
 

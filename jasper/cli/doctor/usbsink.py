@@ -270,6 +270,20 @@ def check_usbsink_state() -> CheckResult:
             "warn",
             f"{rms_error} — schema drift?",
         )
+    if data.get("standby"):
+        # Combo box: jasper-fanin DIRECT-captures the gadget and the bridge
+        # stands by (JASPER_USBSINK_AUDIO_STANDBY=1, opens no PCM), so its
+        # playing/rms_dbfs are frozen idle defaults that measure nothing — the
+        # live audio flows through fan-in's direct lane. Report combo mode rather
+        # than the meaningless numbers, so this diagnostic matches the honest
+        # /state.renderers.usbsink projection (combo=true, playing/rms nulled)
+        # instead of reading as "USB connected but silent" while it plays.
+        return CheckResult(
+            "usbsink state", "ok",
+            "active (USB combo mode — jasper-fanin direct-captures the gadget; "
+            "bridge in standby, playing/rms_dbfs not measured here) "
+            f"host_connected={data.get('host_connected')}",
+        )
     return CheckResult(
         "usbsink state", "ok",
         f"active, playing={data.get('playing')} "

@@ -1152,25 +1152,40 @@ Hooked into the main check list in `doctor.py`'s `_all_checks()`.
 
 ### 4.9 jasper-control `/state` aggregator
 
-**Modified file**: `jasper/control/server.py`.
+**Owner (as shipped)**: `jasper/control/state_aggregate.py`
+(`_build_usbsink_renderer_state`) — *not* `server.py`.
 
-Add a `usbsink` section:
+`/state.renderers.usbsink` projects the bridge's `state.json`:
 
 ```json
 {
   "usbsink": {
-    "enabled": true,
-    "host_connected": true,
+    "combo": false,
     "playing": false,
     "preempted": false,
-    "rms_dbfs": -85.4
+    "host_connected": true,
+    "rms_dbfs": -85.4,
+    "updated_at": "2026-05-16T00:00:00+00:00"
   }
 }
 ```
 
-This is read by the dashboard and the dial firmware (if either chooses
-to display USB state in the future). Fail-soft per the existing
-pattern.
+The section is `null` (not the object) when the feature is off (no
+`state.json`), so consumers distinguish "off" from "on but idle". Fail-soft per
+the existing pattern.
+
+On a **combo box** (`JASPER_FANIN_USB_DIRECT` — fan-in DIRECT-captures the
+gadget, bridge in standby) the bridge measures nothing, so the projection sets
+`combo: true` with `playing` and `rms_dbfs` as `null`; `host_connected` stays
+valid. USB *selection* on a combo box is read from `/state.active_source` /
+`source_selection` (mux), and the live capture from
+`/state.audio.fanin.usbsink_input`. Combo detection reuses
+`jasper.fanin.status.fanin_usbsink_lane_is_direct` (the `source=="direct"`
+signal — the one owner of that contract, shared with the route-latency harness /
+mux), with the bridge's `standby` flag as an equivalent-by-design fallback.
+
+Note: the landing-page Source selector reads `/source/state` (mux), not this
+section; no `/system/` card renders it today.
 
 ### 4.10 install.sh additions
 
@@ -1797,7 +1812,11 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-07-04 (§1 boot-config paragraph corrected: libcomposite +
+Last verified: 2026-07-06 (§4.9 corrected to the shipped `/state.renderers.usbsink`
+shape — owner is `jasper/control/state_aggregate.py`, not `server.py`; documented
+the combo-mode projection: `combo:true` with nulled `playing`/`rms_dbfs` when
+fan-in DIRECT-captures the gadget. Prior recheck 2026-07-04: §1 boot-config
+paragraph corrected: libcomposite +
 the ConfigFS descriptor are owned by `jasper-usbgadget.service` and composed by
 default at boot for the always-on USB network, not gated behind the retired
 `jasper-usbsink-init.service` — HANDOFF-usb-gadget.md is canonical for gadget
