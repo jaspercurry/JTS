@@ -278,8 +278,15 @@ def simulate_correction_proposal(
                     ),
                     {"verdict": result.verdict.value},
                 ))
-        except Exception as e:  # noqa: BLE001 — sim boundary: a degenerate
-            # curve must never crash the endpoint; surface as a rejection.
+        except (
+            ValueError,
+            IndexError,
+            TypeError,
+            ZeroDivisionError,
+            FloatingPointError,
+        ) as e:
+            # A degenerate curve (empty band, NaN, mismatched grid) must
+            # never crash the endpoint; surface it as a rejection instead.
             issues.append(SimIssue(
                 "simulation_failed",
                 f"could not evaluate the proposal: {type(e).__name__}",
