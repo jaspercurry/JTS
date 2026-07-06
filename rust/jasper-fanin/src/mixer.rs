@@ -276,6 +276,129 @@ fn zombie_handle_suspected(frames_flowed: bool, zero_avail_streak: u64, threshol
     frames_flowed && threshold > 0 && zero_avail_streak >= threshold
 }
 
+/// Re-stat cadence for the CARD-GENERATION zombie signal (C, defect 2026-07-06),
+/// in render PERIODS between `/proc/asound/<card>` identity checks. ~1/s at the
+/// default 256/48k period (≈188 periods) — the check is a `stat(2)` off `/proc`,
+/// cheap but a syscall, so it rides the existing drain-stats housekeeping cadence
+/// (once per drain call, i.e. once per period) gated to roughly one second rather
+/// than firing on the per-period hot path. 187 is the whole-period count nearest
+/// one second at the default geometry; the cadence is advisory (detection latency,
+/// not correctness), so an off-by-a-few-periods drift under a non-default period
+/// override is harmless. A rebuilt-and-still-attached gadget is thus detected
+/// within ~1 s regardless of whether frames ever flowed on the handle — the gap
+/// the flowing→dead latch structurally cannot close.
+const DIRECT_CARD_STAT_EVERY_PERIODS: u64 = 187;
+
+/// Derive the bare ALSA card token (e.g. `UAC2Gadget`) from a capture device
+/// spec, for building the `/proc/asound/<token>` path whose inode is the
+/// card-generation identity. Strips a `plughw:`/`hw:` prefix, an optional
+/// `CARD=` key, and any `,dev,subdev` tail — the SAME reduction the shipped
+/// `deploy/bin/jasper-fanin-pitch-neutralize` ExecStopPost helper performs (and
+/// the private `card_token` in `jasper-host-clock`), so the belt, the servo
+/// actuator, and this signal all target one card token. Pure so it is
+/// unit-testable without ALSA. An unparseable spec falls back to the trimmed
+/// string verbatim; the resulting `/proc/asound/<garbage>` simply never stats
+/// (identity stays unknown), which is the fail-soft no-op direction.
+fn direct_card_token(device: &str) -> String {
+    let trimmed = device.trim();
+    let rest = trimmed
+        .strip_prefix("plughw:")
+        .or_else(|| trimmed.strip_prefix("hw:"))
+        .unwrap_or(trimmed);
+    let rest = rest.strip_prefix("CARD=").unwrap_or(rest);
+    rest.split(',').next().unwrap_or(rest).trim().to_string()
+}
+
+/// The card-generation identity of the gadget's `/proc/asound/<card>` node: the
+/// `(st_dev, st_ino)` pair the kernel assigns the card's procfs directory. The
+/// kernel RECREATES this node (fresh inode) when the UAC2 gadget FUNCTION is
+/// rebuilt — a UDC unbind/rebind or a usbsink stop-start — even when the card
+/// KEEPS the same name (`UAC2Gadget`). So a changed identity is the definitive
+/// "the card under my open handle is a different kernel object now" signal,
+/// orthogonal to whether audio ever flowed on the handle. `st_dev` is carried
+/// alongside `st_ino` for completeness (procfs is one filesystem, but the pair
+/// is the canonical file identity and costs nothing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CardIdentity {
+    dev: u64,
+    ino: u64,
+}
+
+/// `stat(2)` the card's procfs node and return its `(st_dev, st_ino)` identity.
+/// `None` when the path does not exist (card entirely absent — gadget torn down /
+/// unplugged) or the stat otherwise fails. Impure (one syscall); kept tiny and
+/// isolated so the DECISION built on it (`card_generation_verdict`) stays pure and
+/// testable. Called on the housekeeping cadence, never the per-period hot path.
+fn stat_card_identity(card_token: &str) -> Option<CardIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let path = format!("/proc/asound/{card_token}");
+    std::fs::metadata(&path).ok().map(|m| CardIdentity {
+        dev: m.dev(),
+        ino: m.ino(),
+    })
+}
+
+/// The outcome of comparing the card identity captured at OPEN against the
+/// identity observed on a housekeeping re-stat. Pure decision, unit-testable
+/// without ALSA (the whole point of splitting it from `stat_card_identity`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CardGenerationVerdict {
+    /// Identity unchanged (same `(dev, ino)`) — the card under the handle is the
+    /// same kernel object. No action.
+    Stable,
+    /// The card's procfs node changed identity or disappeared while the handle is
+    /// held — the gadget function was rebuilt (new inode) or torn down (`None`)
+    /// underneath us. Force a bounded close→reopen; if the card is truly gone the
+    /// reopen re-arms the Absent/park path (the errno/`DeviceLost` twin already
+    /// parks a hard unplug — this is the belt for a rebuild the flowing→dead latch
+    /// cannot see because frames never flowed on this handle).
+    Rebuilt,
+}
+
+/// Pure card-generation decision (C, defect 2026-07-06): given the identity
+/// captured at the current handle's OPEN and the identity observed now, decide
+/// whether the card was rebuilt/removed underneath the open handle.
+///
+/// Precedence + semantics (asserted by the unit tests):
+///   - `open == None` → `Stable`. We have no baseline to compare against (the open
+///     never captured an identity — e.g. a startup where `/proc` stat failed), so
+///     we do NOT manufacture a reopen. Fail-soft: absence of evidence is not a trip.
+///   - `open == Some(x)`, `current == Some(x)` → `Stable`. Same object.
+///   - `open == Some(x)`, `current == Some(y)`, `x != y` → `Rebuilt`. New inode =
+///     the gadget function was rebuilt underneath the handle (the routine
+///     post-deploy window: fan-in restarted, its fresh handle never carried a
+///     frame, then a gadget rebuild left it deaf with no errno).
+///   - `open == Some(x)`, `current == None` → `Rebuilt`. The card node is GONE.
+///     This trips too — but note the precedence in the DRAIN: an `avail_update`
+///     errno (`ENODEV` on a hard unplug) is classified as `DeviceLost` and parks
+///     BEFORE this identity check is ever reached, so a clean unplug takes the
+///     errno park path. This `None` arm only fires for the racy teardown shape
+///     where the `/proc` node vanished but `avail_update` still returned `Ok(0)`;
+///     the resulting bounded reopen then fails to open and re-arms the same Absent
+///     park path, so gone and rebuilt converge on identical recovery — no
+///     double-handling.
+///
+/// Note there is NO false-positive on an attached-IDLE host: an idle-but-attached
+/// Mac keeps the SAME card node (stable inode) indefinitely, so `current == open`
+/// and this returns `Stable` no matter how long the host sits silent. That is the
+/// exact gap the flowing→dead latch left open, closed here without reintroducing
+/// the attached-idle churn that latch was added to prevent.
+fn card_generation_verdict(
+    open: Option<CardIdentity>,
+    current: Option<CardIdentity>,
+) -> CardGenerationVerdict {
+    match open {
+        // No baseline captured at open — nothing to compare, never trip.
+        None => CardGenerationVerdict::Stable,
+        Some(open_id) => match current {
+            Some(cur_id) if cur_id == open_id => CardGenerationVerdict::Stable,
+            // Changed inode (rebuilt) OR gone (None) — both are "not the object I
+            // opened onto" → force the bounded reopen.
+            _ => CardGenerationVerdict::Rebuilt,
+        },
+    }
+}
+
 /// Delay, in whole seconds, from a lane's idle→active transition to its
 /// one-shot AUTO-TRIM fire. Gives the chain time to warm up and establish its
 /// standing fill before the trim drops it — trimming at t=0 (before the fill
@@ -860,6 +983,40 @@ pub struct DirectObservability {
     /// to one per real rebuild and keeps the `reopens` counter / incident
     /// fingerprint honest. Lock-free atomic, same mixer-writes / state-reads idiom.
     pub frames_flowed_since_open: Arc<AtomicBool>,
+    /// The bare ALSA card token (e.g. `UAC2Gadget`) parsed once from `device`, so
+    /// the drain's housekeeping re-stat builds `/proc/asound/<token>` without
+    /// re-parsing the device string each cadence tick. Empty only if `device`
+    /// was empty (never true on a real direct lane); an empty token stats a
+    /// nonexistent path → identity `None` → the card-gen signal stays inert
+    /// (fail-soft).
+    pub card_token: String,
+    /// CARD-GENERATION identity captured at the CURRENT handle's open (C, defect
+    /// 2026-07-06). `card_identity_valid` gates whether `(dev, ino)` hold a real
+    /// captured identity: `false` means "no baseline" (stat failed at open — never
+    /// trip), `true` means the pair is the `/proc/asound/<card>` node's identity at
+    /// open. On the housekeeping cadence the drain re-stats the node and, via the
+    /// pure `card_generation_verdict`, forces a bounded reopen if the identity
+    /// CHANGED (gadget function rebuilt → new inode) or the node is GONE — the
+    /// signal orthogonal to the flowing→dead latch, catching a rebuild on a fresh
+    /// handle that never carried a frame (the routine post-deploy deaf-until-manual-
+    /// restart window). Written/read ONLY on the mixer work thread (open, reopen,
+    /// and the drain re-stat all run there, strictly ordered after construction),
+    /// so the two-atomic pair is never torn across threads. Atomics anyway to keep
+    /// the `Clone` (into the state snapshot) and the block's lock-free idiom uniform.
+    pub open_card_dev: Arc<AtomicU64>,
+    pub open_card_ino: Arc<AtomicU64>,
+    pub card_identity_valid: Arc<AtomicBool>,
+    /// Render-period index of the LAST card-generation re-stat, so the check fires
+    /// on the `DIRECT_CARD_STAT_EVERY_PERIODS` (~1 s) cadence off the drain count
+    /// rather than every period. Mixer-thread only.
+    pub card_last_checked_drain: Arc<AtomicU64>,
+    /// Cumulative CARD-GENERATION forced reopens (C, defect 2026-07-06): the count
+    /// of times the `/proc/asound/<card>` identity changed/vanished under the open
+    /// handle and this lane self-healed with a bounded reopen. Distinct from
+    /// `reopens` (the flowing→dead zero-avail zombie counter) so an operator can
+    /// tell a rebuild-on-a-live-stream (zero-avail latch) from a rebuild-on-a-fresh-
+    /// idle-handle (card-generation) apart. Surfaced via STATUS alongside `reopens`.
+    pub card_gen_reopens: Arc<AtomicU64>,
     /// Drain-entry avail dwell stats (lever 2). SINCE-BOOT cumulative (matches
     /// the `opens`/`retries` idiom in this block — no reset-on-read state to
     /// carry, and a monotonic denominator makes the STATUS `mean` a lifetime
@@ -2495,11 +2652,25 @@ fn open_direct_input(
     let present = Arc::new(AtomicBool::new(false));
     let opens = Arc::new(AtomicU64::new(0));
     let retries = Arc::new(AtomicU64::new(0));
+    // Card-generation baseline (C, defect 2026-07-06): the bare card token and the
+    // `/proc/asound/<card>` identity at open. Captured on the Ok arm so a rebuild
+    // that changes the inode under a still-attached handle is detected even when
+    // no frame ever flows on it. Absent-at-startup leaves the identity invalid;
+    // the first successful reopen captures it.
+    let card_token = direct_card_token(&device);
+    let open_card_dev = Arc::new(AtomicU64::new(0));
+    let open_card_ino = Arc::new(AtomicU64::new(0));
+    let card_identity_valid = Arc::new(AtomicBool::new(false));
     let direct = match open_direct_capture(&device, open_period) {
         Ok((pcm, negotiated_buffer)) => {
             present.store(true, Ordering::Relaxed);
             opens.fetch_add(1, Ordering::Relaxed);
             buffer_frames.store(negotiated_buffer as u64, Ordering::Relaxed);
+            if let Some(id) = stat_card_identity(&card_token) {
+                open_card_dev.store(id.dev, Ordering::Relaxed);
+                open_card_ino.store(id.ino, Ordering::Relaxed);
+                card_identity_valid.store(true, Ordering::Relaxed);
+            }
             info!(
                 "event=fanin.usb_direct.present device={} period_frames={} buffer_frames={} (initial open) opens=1 retries=0",
                 device, open_period, negotiated_buffer,
@@ -2547,6 +2718,12 @@ fn open_direct_input(
             reopens: Arc::new(AtomicU64::new(0)),
             zero_avail_streak: Arc::new(AtomicU64::new(0)),
             frames_flowed_since_open: Arc::new(AtomicBool::new(false)),
+            card_token,
+            open_card_dev,
+            open_card_ino,
+            card_identity_valid,
+            card_last_checked_drain: Arc::new(AtomicU64::new(0)),
+            card_gen_reopens: Arc::new(AtomicU64::new(0)),
             drain_stats: DrainStats::new(),
         }),
     }
@@ -3062,6 +3239,10 @@ fn read_direct_and_render(
                         obs.present.store(false, Ordering::Relaxed);
                         obs.zero_avail_streak.store(0, Ordering::Relaxed);
                         obs.frames_flowed_since_open.store(false, Ordering::Relaxed);
+                        // The captured handle is gone; drop the card-generation
+                        // baseline so it is only ever `valid` while a live handle is
+                        // held. The reopen re-captures the fresh identity on success.
+                        obs.card_identity_valid.store(false, Ordering::Relaxed);
                         warn!(
                             "event=fanin.usb_direct.absent device={} reason=runtime_loss (will retry ~every {} periods)",
                             obs.device, DIRECT_REOPEN_RETRY_PERIODS,
@@ -3086,10 +3267,45 @@ fn read_direct_and_render(
                         obs.present.store(false, Ordering::Relaxed);
                         obs.zero_avail_streak.store(0, Ordering::Relaxed);
                         obs.frames_flowed_since_open.store(false, Ordering::Relaxed);
+                        // The zombie handle is dead; drop the card-generation baseline
+                        // too (same "valid only while a live handle is held" invariant
+                        // the device-loss arm keeps). The reopen re-captures it.
+                        obs.card_identity_valid.store(false, Ordering::Relaxed);
                         let reopens = obs.reopens.fetch_add(1, Ordering::Relaxed) + 1;
                         warn!(
                             "event=fanin.usb_direct.reopen device={} reason=zombie_handle reopens={} (avail=0 for ~{} periods after frames flowed; gadget rebuilt underneath — closing + re-opening the capture)",
                             obs.device, reopens, DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS,
+                        );
+                    }
+                    direct = DirectCapture::Absent {
+                        periods_until_retry: 0,
+                    };
+                }
+                DirectDrainOutcome::CardGenerationReopen => {
+                    // Card-generation rebuild (C, defect 2026-07-06): the
+                    // `/proc/asound/<card>` node changed identity or vanished under
+                    // the open handle — the gadget FUNCTION was rebuilt even though
+                    // no frame ever flowed on this handle. Same close→Absent→reopen
+                    // recovery as the zombie/device-loss paths (periods_until_retry=0
+                    // → reopen next period: this is a live rebuild, not an absent
+                    // host), but logged + counted DISTINCTLY (reason=card_generation,
+                    // card_gen_reopens) so the routine post-deploy self-heal is
+                    // visible and separable from the flowing→dead zero-avail zombie.
+                    // Invalidate the stale baseline so the reopen re-captures the
+                    // rebuilt card's fresh identity rather than comparing against the
+                    // dead one (maybe_reopen_direct re-stats on success).
+                    if let Some(r) = input.resampler.as_mut() {
+                        r.reset();
+                    }
+                    if let Some(obs) = &input.direct_obs {
+                        obs.present.store(false, Ordering::Relaxed);
+                        obs.zero_avail_streak.store(0, Ordering::Relaxed);
+                        obs.frames_flowed_since_open.store(false, Ordering::Relaxed);
+                        obs.card_identity_valid.store(false, Ordering::Relaxed);
+                        let reopens = obs.card_gen_reopens.fetch_add(1, Ordering::Relaxed) + 1;
+                        warn!(
+                            "event=fanin.usb_direct.reopen device={} reason=card_generation card_gen_reopens={} (/proc/asound/{} identity changed or gone under the open handle; gadget function rebuilt with no frames flowed — closing + re-opening the capture)",
+                            obs.device, reopens, obs.card_token,
                         );
                     }
                     direct = DirectCapture::Absent {
@@ -3118,18 +3334,25 @@ fn read_direct_and_render(
     real_frames
 }
 
-/// The outcome of one direct-capture drain: normal (kept Present), a device loss
-/// (an errno the drain classified as DeviceLost), or a ZOMBIE handle (Present but
-/// `avail_update` has returned exactly 0 for `DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS`
-/// consecutive drains — a gadget rebuilt underneath us). Both non-Ok outcomes drive
-/// the SAME close→Absent→bounded-reopen recovery; they differ only in the log line
-/// and which counter increments, so an operator can tell a clean unplug (DeviceLost,
-/// errno-driven) from a silent gadget rebuild (ZombieReopen, avail-0-driven) apart.
+/// The outcome of one direct-capture drain. All non-`Ok` outcomes drive the SAME
+/// close→Absent→bounded-reopen recovery; they differ only in the log line and
+/// which counter increments, so an operator can tell the three distinct causes
+/// apart:
+///   - `DeviceLost` — an `avail_update`/read errno (ENODEV on a clean unplug, etc.)
+///     the drain classified as a device loss.
+///   - `ZombieReopen` — Present but `avail_update` returned exactly 0 for
+///     `DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS` consecutive drains AFTER frames had
+///     flowed (the flowing→dead latch: a gadget rebuilt underneath a LIVE stream).
+///   - `CardGenerationReopen` — the `/proc/asound/<card>` identity changed or
+///     vanished under the open handle (C, defect 2026-07-06): the gadget FUNCTION
+///     was rebuilt even though no frame ever flowed on this handle (the routine
+///     post-deploy window the flowing→dead latch structurally cannot catch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DirectDrainOutcome {
     Ok,
     DeviceLost,
     ZombieReopen,
+    CardGenerationReopen,
 }
 
 /// Drain all currently-available frames from the gadget capture into the lane
@@ -3214,6 +3437,43 @@ fn drain_direct_capture(
                 } else {
                     obs.zero_avail_streak.store(0, Ordering::Relaxed);
                     obs.frames_flowed_since_open.store(true, Ordering::Relaxed);
+                }
+                // CARD-GENERATION detection (C, defect 2026-07-06): the THIRD signal,
+                // orthogonal to the flowing→dead latch above. On the ~1 s housekeeping
+                // cadence (NOT every period — a `/proc` stat is a syscall) re-stat the
+                // gadget's `/proc/asound/<card>` node and compare its identity against
+                // the one captured at this handle's open. A CHANGED inode means the
+                // UAC2 gadget FUNCTION was rebuilt underneath the open handle (UDC
+                // rebind / usbsink stop-start) even though the card kept its name —
+                // the routine post-deploy window where fan-in's fresh handle has NEVER
+                // carried a frame, so `frames_flowed_since_open` is false and the
+                // zero-avail zombie latch above can structurally NEVER fire. The
+                // card-generation check closes exactly that gap. It CANNOT false-fire
+                // on an attached-idle host: that host keeps the same card node (stable
+                // inode) forever, so the identity matches and this stays Stable no
+                // matter how long the host sits silent — the reason it is safe where a
+                // raw zero-avail trip is not. Precedence: an `avail_update` errno
+                // (ENODEV on a hard unplug) is matched ABOVE and returns DeviceLost
+                // before this block is reached, so a clean unplug takes the errno park
+                // path; this only fires for rebuild (new inode) or the racy
+                // node-gone-but-`Ok(0)` teardown, both of which want the bounded
+                // reopen.
+                if obs.card_identity_valid.load(Ordering::Relaxed) {
+                    let drains = obs.drain_stats.count.load(Ordering::Relaxed);
+                    let last = obs.card_last_checked_drain.load(Ordering::Relaxed);
+                    if drains.saturating_sub(last) >= DIRECT_CARD_STAT_EVERY_PERIODS {
+                        obs.card_last_checked_drain.store(drains, Ordering::Relaxed);
+                        let open_id = Some(CardIdentity {
+                            dev: obs.open_card_dev.load(Ordering::Relaxed),
+                            ino: obs.open_card_ino.load(Ordering::Relaxed),
+                        });
+                        let current = stat_card_identity(&obs.card_token);
+                        if card_generation_verdict(open_id, current)
+                            == CardGenerationVerdict::Rebuilt
+                        {
+                            return DirectDrainOutcome::CardGenerationReopen;
+                        }
+                    }
                 }
             }
         }
@@ -3398,6 +3658,33 @@ fn maybe_reopen_direct(direct: DirectCapture, input: &mut Input) -> DirectCaptur
                 // on a still-zombie gadget (card node exists, avail stays 0) does
                 // NOT immediately re-fire, bounding reopens to one per real rebuild.
                 obs.frames_flowed_since_open.store(false, Ordering::Relaxed);
+                // Re-capture the CARD-GENERATION baseline for the fresh handle (C,
+                // defect 2026-07-06): a rebuilt gadget has a NEW `/proc/asound`
+                // inode, so re-statting here makes the rebuilt card the new baseline
+                // — the same "bound reopens to one per real rebuild" discipline the
+                // flowing→dead reset above gives the zero-avail signal. If the stat
+                // fails (racy: opened the PCM but `/proc` not settled), invalidate so
+                // the next housekeeping tick re-captures rather than comparing against
+                // a stale identity. The cadence anchor is re-based below so the first
+                // re-stat waits a full interval past this reopen.
+                match stat_card_identity(&obs.card_token) {
+                    Some(id) => {
+                        obs.open_card_dev.store(id.dev, Ordering::Relaxed);
+                        obs.open_card_ino.store(id.ino, Ordering::Relaxed);
+                        obs.card_identity_valid.store(true, Ordering::Relaxed);
+                    }
+                    None => {
+                        obs.card_identity_valid.store(false, Ordering::Relaxed);
+                    }
+                }
+                // Anchor the cadence to the current (cumulative-since-boot) drain
+                // count so the first re-stat waits a full interval PAST this reopen
+                // rather than firing immediately — the drain count never resets, so
+                // storing 0 here would look like a full interval had already elapsed.
+                obs.card_last_checked_drain.store(
+                    obs.drain_stats.count.load(Ordering::Relaxed),
+                    Ordering::Relaxed,
+                );
                 // Re-store the freshly negotiated buffer: a device re-enumeration
                 // could in principle land a different (still valid) geometry, so
                 // STATUS tracks the live PCM, not the initial open's number.
@@ -4043,6 +4330,143 @@ mod tests {
             (seconds - 2.0).abs() < 1e-9,
             "zombie window must be ~2 s, got {seconds}"
         );
+    }
+
+    // ---- C: card-generation zombie signal (defect 2026-07-06) --------------
+
+    #[test]
+    fn card_token_matches_execstoppost_helper_reduction() {
+        // The bare card token MUST come out the same way the shipped
+        // deploy/bin/jasper-fanin-pitch-neutralize ExecStopPost helper reduces the
+        // device (strip plughw:/hw: prefix, an optional CARD= key, and a
+        // ,dev,subdev tail), so the belt, the servo actuator, and this signal all
+        // target one card. These vectors mirror the helper's cases + the
+        // jasper-host-clock ctl_card_from_capture derivation test.
+        assert_eq!(direct_card_token("hw:UAC2Gadget"), "UAC2Gadget");
+        assert_eq!(direct_card_token("plughw:UAC2Gadget"), "UAC2Gadget");
+        assert_eq!(direct_card_token("hw:UAC2Gadget,0"), "UAC2Gadget");
+        assert_eq!(direct_card_token("hw:UAC2Gadget,0,0"), "UAC2Gadget");
+        assert_eq!(direct_card_token("hw:CARD=UAC2Gadget,DEV=0"), "UAC2Gadget");
+        assert_eq!(direct_card_token("plughw:CARD=UAC2Gadget"), "UAC2Gadget");
+        // A bare card name (no prefix) passes through; whitespace is trimmed.
+        assert_eq!(direct_card_token("UAC2Gadget"), "UAC2Gadget");
+        assert_eq!(direct_card_token("  hw:UAC2Gadget  "), "UAC2Gadget");
+        // Numeric card index (the ALSA `hw:N` form) reduces to the index token —
+        // /proc/asound also exposes cardN symlinks, but the daemon default is the
+        // named gadget; this just proves the parser does not choke on it.
+        assert_eq!(direct_card_token("hw:0"), "0");
+    }
+
+    #[test]
+    fn card_generation_verdict_stable_when_identity_unchanged() {
+        // Same (dev, ino) at open and now → the card under the handle is the SAME
+        // kernel object → no reopen. This is the steady-state every-tick case.
+        let id = CardIdentity { dev: 42, ino: 1000 };
+        assert_eq!(
+            card_generation_verdict(Some(id), Some(id)),
+            CardGenerationVerdict::Stable
+        );
+    }
+
+    #[test]
+    fn card_generation_verdict_never_fires_on_attached_idle_host() {
+        // The WHOLE POINT of the identity signal over a raw zero-avail trip: an
+        // attached-but-IDLE host (Mac wired 24/7, music paused) keeps the SAME
+        // /proc/asound/<card> node — its inode is STABLE no matter how long the host
+        // sits silent. So the re-stat returns the identical identity and the verdict
+        // is Stable forever. This is why the card-generation check is safe to run
+        // unconditionally (no frames-flowed gate), where the zero-avail zombie latch
+        // needed one: the kernel object simply does not change under an idle host.
+        // (This asserts the attached-idle false-positive risk the task flags is
+        // structurally NONE — an idle host cannot manufacture an inode change.)
+        let id = CardIdentity { dev: 7, ino: 55 };
+        // Re-stat after an arbitrarily long idle stretch still sees the same node.
+        for _ in 0..10_000 {
+            assert_eq!(
+                card_generation_verdict(Some(id), Some(id)),
+                CardGenerationVerdict::Stable
+            );
+        }
+    }
+
+    #[test]
+    fn card_generation_verdict_rebuilt_on_changed_inode() {
+        // A CHANGED inode = the gadget FUNCTION was rebuilt underneath the open
+        // handle (UDC rebind / usbsink stop-start) — the kernel recreated the procfs
+        // node with a fresh inode even though the card kept its name. This is the
+        // exact fresh-handle-never-flowed window the flowing→dead latch cannot see.
+        let open = CardIdentity { dev: 42, ino: 1000 };
+        // Same device (procfs), new inode — the canonical rebuild signature.
+        let rebuilt = CardIdentity { dev: 42, ino: 2000 };
+        assert_eq!(
+            card_generation_verdict(Some(open), Some(rebuilt)),
+            CardGenerationVerdict::Rebuilt
+        );
+        // A different dev too (belt: any part of the pair differing trips).
+        let rebuilt_dev = CardIdentity { dev: 43, ino: 1000 };
+        assert_eq!(
+            card_generation_verdict(Some(open), Some(rebuilt_dev)),
+            CardGenerationVerdict::Rebuilt
+        );
+    }
+
+    #[test]
+    fn card_generation_verdict_rebuilt_when_node_gone() {
+        // current == None: the /proc/asound/<card> node VANISHED under the handle.
+        // The pure fn trips (Rebuilt) — but note the DRAIN-level precedence: an
+        // avail_update errno (ENODEV on a clean unplug) is classified as DeviceLost
+        // and parks BEFORE this identity check is reached, so a hard unplug takes the
+        // errno path. This None arm only matters for the racy teardown where the node
+        // is gone but avail_update still returned Ok(0); the resulting bounded reopen
+        // then fails to open and re-arms the SAME Absent/park path, so gone and
+        // rebuilt converge on identical recovery — the trip here is not
+        // double-handling, it is the belt for the one shape the errno path misses.
+        let open = CardIdentity { dev: 42, ino: 1000 };
+        assert_eq!(
+            card_generation_verdict(Some(open), None),
+            CardGenerationVerdict::Rebuilt
+        );
+    }
+
+    #[test]
+    fn card_generation_verdict_stable_without_a_baseline() {
+        // open == None: no identity was captured at open (a startup where the /proc
+        // stat failed). We have no baseline to compare against, so we must NOT
+        // manufacture a reopen — absence of evidence is not a trip. Fail-soft: the
+        // next successful (re)open captures the baseline and the signal arms then.
+        // Even against a present-and-changed current, no baseline means Stable.
+        assert_eq!(
+            card_generation_verdict(None, None),
+            CardGenerationVerdict::Stable
+        );
+        assert_eq!(
+            card_generation_verdict(None, Some(CardIdentity { dev: 1, ino: 2 })),
+            CardGenerationVerdict::Stable
+        );
+    }
+
+    #[test]
+    fn card_stat_cadence_is_about_one_second() {
+        // The re-stat rides the drain housekeeping cadence gated to ~1 s (a /proc
+        // stat is a syscall — kept off the per-period hot path). 187 periods ×
+        // 256 frames / 48000 Hz ≈ 0.997 s. The cadence is advisory (detection
+        // latency, not correctness), so "within ~1 s" is the contract, not exactness.
+        let seconds = (DIRECT_CARD_STAT_EVERY_PERIODS as f64) * (DIRECT_PERIOD_FRAMES as f64)
+            / (SAMPLE_RATE_HZ as f64);
+        assert!(
+            (seconds - 1.0).abs() < 0.05,
+            "card-gen re-stat cadence must be ~1 s, got {seconds}"
+        );
+    }
+
+    #[test]
+    fn stat_card_identity_returns_none_for_missing_card() {
+        // The impure stat wrapper: a nonexistent /proc/asound/<garbage> yields None
+        // (fail-soft — the card-gen check then stays inert rather than tripping on a
+        // bad token). A token unlikely to ever exist on the test host stands in for
+        // "card absent". This is the only place the syscall is exercised in-test; the
+        // decision built on it is covered purely above.
+        assert_eq!(stat_card_identity("jts_nonexistent_card_zzz_9987"), None);
     }
 
     #[test]

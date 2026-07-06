@@ -807,9 +807,22 @@ impl StateServer {
                 buf.push(',');
                 // Zombie-handle forced reopens (C): a growing value means the
                 // gadget function is being rebuilt underneath fan-in (UDC rebind /
-                // usbsink stop-start) and this lane is self-healing the deaf handle
-                // rather than needing a manual fan-in restart.
+                // usbsink stop-start) WHILE A STREAM WAS FLOWING and this lane is
+                // self-healing the deaf handle rather than needing a manual fan-in
+                // restart.
                 push_kv_u64(&mut buf, "reopens", d.reopens.load(Ordering::Relaxed));
+                buf.push(',');
+                // Card-generation forced reopens (C, defect 2026-07-06): the twin
+                // counter for a rebuild detected via the `/proc/asound/<card>`
+                // identity CHANGING under the open handle when NO frame ever flowed
+                // (the routine post-deploy window the flowing→dead `reopens` signal
+                // structurally cannot catch). Separate so an operator can tell a
+                // rebuild-on-a-live-stream from a rebuild-on-a-fresh-idle-handle apart.
+                push_kv_u64(
+                    &mut buf,
+                    "card_gen_reopens",
+                    d.card_gen_reopens.load(Ordering::Relaxed),
+                );
                 buf.push(',');
                 // Negotiated gadget geometry (lever 2). 256/768 by default;
                 // JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES overrides the period and
@@ -1325,6 +1338,12 @@ mod tests {
                         reopens: Arc::new(AtomicU64::new(0)),
                         zero_avail_streak: Arc::new(AtomicU64::new(0)),
                         frames_flowed_since_open: Arc::new(AtomicBool::new(true)),
+                        card_token: "UAC2Gadget".to_string(),
+                        open_card_dev: Arc::new(AtomicU64::new(0)),
+                        open_card_ino: Arc::new(AtomicU64::new(0)),
+                        card_identity_valid: Arc::new(AtomicBool::new(true)),
+                        card_last_checked_drain: Arc::new(AtomicU64::new(0)),
+                        card_gen_reopens: Arc::new(AtomicU64::new(0)),
                         // Two drain-entry samples (128 + 192 = 320, mean 160,
                         // max 192) exercising buckets 2 and 3.
                         drain_stats: {
@@ -2027,6 +2046,12 @@ mod tests {
         assert!(j.contains(r#""retries":0"#), "direct retries counter: {j}");
         // Zombie-handle forced-reopen counter (C) — additive to the direct block.
         assert!(j.contains(r#""reopens":0"#), "direct reopens counter: {j}");
+        // Card-generation forced-reopen counter (C, defect 2026-07-06) — the twin
+        // counter, additive alongside `reopens`.
+        assert!(
+            j.contains(r#""card_gen_reopens":0"#),
+            "direct card_gen_reopens counter: {j}"
+        );
         // The whole document still parses.
         let parsed: serde_json::Value = serde_json::from_str(&j).unwrap();
         let inputs = parsed["inputs"].as_array().unwrap();
@@ -2034,6 +2059,7 @@ mod tests {
         assert_eq!(direct["source"].as_str(), Some("direct"));
         assert_eq!(direct["direct"]["present"].as_bool(), Some(true));
         assert_eq!(direct["direct"]["reopens"].as_u64(), Some(0));
+        assert_eq!(direct["direct"]["card_gen_reopens"].as_u64(), Some(0));
         // ADDITIVE (lever 2): negotiated geometry + drain-entry dwell stats.
         assert_eq!(direct["direct"]["period_frames"].as_u64(), Some(256));
         assert_eq!(direct["direct"]["buffer_frames"].as_u64(), Some(768));
