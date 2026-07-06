@@ -238,9 +238,10 @@ impl LaneResampler {
     /// DLL setpoint. The earlier c57 warm-up path seated this deep but then let
     /// the DLL drain the cushion away; on hardware, that over-consumed the
     /// bursty USB feed during acquisition and caused lock/unlock cycling. The
-    /// current `usb_low_latency_48k` route keeps a conservative six-period
-    /// held cushion (`512 + 1536 = 2048` frames total); hardware soak/cold-start
-    /// validation must pass before any lower route default ships.
+    /// current `usb_low_latency_48k` route keeps a conservative eight-period
+    /// held cushion (`512 + 2048 = 2560` frames total, the `config.rs`
+    /// `WARMUP_CUSHION_FRAMES` default); hardware soak/cold-start validation must
+    /// pass before any lower route default ships.
     ///
     /// `ring_frames` is the input buffer depth: it MUST exceed
     /// `target_fill_frames` plus the warm-up cushion plus one render period plus
@@ -620,7 +621,7 @@ impl LaneResampler {
         // (~1024 fr with default period 256 / target 512) — the deep arm is the
         // ONLY arm a floor-primed lane can reach, so the fall-through was already
         // unreachable while primed and this gate is a no-op. That covers EVERY
-        // default box (jts.local: target 512, period 256, floor 576, ceiling 2048
+        // default box (jts.local: target 512, period 256, floor 576, ceiling 2560
         // → deep-prefill 593, fallthrough 1041; the fall-through needs fill>=1041
         // AND fill<593 — the empty set). So on jts.local a floor-primed lock ALWAYS
         // seated exactly at the floor (593 fr) via the deep arm — at the PARENT
@@ -638,11 +639,12 @@ impl LaneResampler {
         // ≈274) bounds the deficit at (576−274)=302 fr, so at ±500 ppm the rail
         // could last at most 302/(48000·5e-4)≈12.6 s and would SHRINK as the fill
         // builds — it could not read −500.0 flat through the step tail. A ≥19 s
-        // exact rail therefore required a CEILING-SCALE held target (~2048) relative
-        // to the fill during the probe — i.e. something RAISED the held target AFTER
-        // lock. That was the decay's `snap_back`: a floor-primed lock seats AT the
-        // floor, but at session START the host-clock ladder is NECESSARILY still
-        // Probing (l0 only arrives after the ~21 s probe), so the FIRST locked
+        // exact rail therefore required a CEILING-SCALE held target (~2560 = target
+        // 512 + cushion 2048) relative to the fill during the probe — i.e. something
+        // RAISED the held target AFTER lock. That was the decay's `snap_back`: a
+        // floor-primed lock seats AT the floor, but at session START the host-clock
+        // ladder is NECESSARILY still Probing (l0 only arrives after the ~21 s
+        // probe), so the FIRST locked
         // `tick_decay` ran with `dll_l0_locked == false`, cleared the prime latch,
         // and took the `NotL0` branch — snapping the held target floor→ceiling and
         // railing the DLL to rebuild the fill 576→~2560 for ~40 s (the probe

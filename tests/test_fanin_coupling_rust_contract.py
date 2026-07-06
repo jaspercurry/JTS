@@ -511,6 +511,67 @@ def test_host_compliance_prime_is_per_session_not_construction_only():
     )
 
 
+def test_host_compliance_prime_gated_on_host_clock_servo_armed():
+    """The prime-at-floor must be gated on the host-clock DLL actually being armed.
+
+    The prime skips the ~2.5-min cushion descent on the strength of a PRIOR
+    session's host-clock compliance proof, and its whole safety story ("the
+    per-session servo probe revalidates the prime") is enacted by the
+    `fanin-host-clock` servo thread: `dll_l0_locked`, the probe verdict, the
+    two-strike ProbeFail (#1160), and the `PrimeHold` exit all ride it. That
+    thread runs ONLY when host-clock AND USB-direct are both armed
+    (`Config::host_clock_servo_armed`). If a valid proof primes a session while
+    that servo is NOT running, `dll_l0_locked` is pinned false forever: the
+    session sits in `PrimeHold` at the floor with no ladder to reach l0, no probe
+    to revalidate, and no demotion — the floor held FOREVER on stale evidence
+    (only the underfill/churn net could catch an unsustainable floor). #1145
+    proved this exact misconfig inert (armed-but-frozen decay == disabled); a prime
+    without the DLL would silently convert that into a permanent unvalidated
+    divergence. This pins the config gate so the prime and the servo can never
+    disagree about whether the revalidating DLL is live.
+    """
+    config_text = _config_rs_text()
+    mixer_text = _mixer_rs_text()
+    main_text = (_REPO_ROOT / "rust" / "jasper-fanin" / "src" / "main.rs").read_text(
+        encoding="utf-8"
+    )
+
+    # 1. The single-source-of-truth predicate is the AND of host-clock and direct.
+    assert "pub fn host_clock_servo_armed(&self) -> bool {" in config_text, (
+        "Config must expose the servo-armed predicate (the SSOT the prime gate + "
+        "the servo-spawn gate both read)"
+    )
+    armed_start = config_text.index("pub fn host_clock_servo_armed(&self) -> bool {")
+    armed_body = config_text[armed_start : config_text.index("}", armed_start)]
+    assert "self.host_clock_enabled && self.usb_direct_enabled" in armed_body, (
+        "host_clock_servo_armed must be host_clock_enabled AND usb_direct_enabled"
+    )
+
+    # 2. The mixer's prime arm is guarded on that predicate — a valid proof alone
+    #    does NOT prime; the servo must be armed too. Pin the guarded match arm and
+    #    the un-primed fall-through arm for the disarmed case.
+    assert "let host_clock_armed = config.host_clock_servo_armed();" in mixer_text, (
+        "the prime gate must resolve host_clock_armed via the SSOT predicate"
+    )
+    assert (
+        "Some(rec) if rec.valid_for(live_floor) && host_clock_armed =>" in mixer_text
+    ), (
+        "the prime-at-floor arm must additionally require host_clock_armed "
+        "(the DLL that revalidates the prime must be live)"
+    )
+    assert "reason=host_clock_disarmed" in mixer_text, (
+        "a valid proof with the DLL disarmed must log the suppressed-prime "
+        "diagnostic and descend from the ceiling (proof preserved, lane inert)"
+    )
+
+    # 3. `main`'s servo-spawn gate derives from the SAME predicate, so the servo
+    #    and the prime can never disagree about whether the DLL is live.
+    assert "config.host_clock_servo_armed()" in main_text, (
+        "main's host_clock_enabled_effective must derive from the shared "
+        "servo-armed predicate (single source of truth)"
+    )
+
+
 def test_servo_thread_exit_clears_reverse_signals():
     """A stopped `fanin-host-clock` servo thread must clear its REVERSE signals.
 

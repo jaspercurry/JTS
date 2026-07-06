@@ -531,9 +531,15 @@ End-to-end = measured span + 1.2 ms gadget dwell (delta-windowed drain-entry evi
   A cross-mode sim (drain→render→tick_decay, faithful to `mixer::step`) proves an
   ARMED+frozen(`not_l0`) decay is BIT-IDENTICAL to disabled over the same delivery
   trace (unlocks/locks/held/silence/output **and a per-period FNV checksum of the
-  rendered PCM** all equal), and the code path confirms it: `tick_decay` with
-  `dll_l0=false` snaps the held target back to the ceiling every tick, so the
-  setpoint never differs from the disabled path — mechanically inert. The 16-vs-115
+  rendered PCM** all equal), and the code path confirms it: in the UNPRIMED case
+  (`floor_prime_pending == false`), `tick_decay` with `dll_l0=false` snaps the held
+  target back to the ceiling every tick, so the setpoint never differs from the
+  disabled path — mechanically inert. (This scoping is the #1145 invariant as it
+  stands after #1161: a FLOOR-PRIMED lane instead HOLDS the floor on `dll_l0=false`
+  — frozen_reason `prime_hold` — a documented, separately-pinned divergence, NOT the
+  ceiling snap; see the prime-aware `NotL0` hold in the floor-prime bullet below. The
+  bit-identical pin's own trace is never primed, so it exercises exactly the unprimed
+  branch this sentence describes.) The 16-vs-115
   spread is the same environmental USB-coalescing variance that moves the
   default-path counter (1 ↔ ~295); correlating it with the decay env was coincidental
   at n=2. Pinned by
@@ -956,7 +962,7 @@ defense-in-depth for an exotic geometry and a no-op on default boxes:**
   floor + radius + 1`; whenever `floor <= fallthrough − radius − 1` (~1024 fr at the
   default period 256 / target 512) the deep arm is the ONLY arm a floor-primed lane
   can reach, so the fall-through was already unreachable while primed. jts.local
-  (target 512, period 256, floor 576, ceiling 2048) has deep-prefill 593 and
+  (target 512, period 256, floor 576, ceiling 2560) has deep-prefill 593 and
   fallthrough 1041, so a floor-primed lock ALWAYS seated exactly at the floor (593
   fr) via the deep arm — **at the parent commit too**. The gate only bites when the
   operator raises the decay floor above ~1024 (the geometry where the fall-through
