@@ -484,6 +484,23 @@ writing. Each item names the specific claim above it verifies.
   gadget link to the host; the power leg stays connected to the Pi's
   normal PSU. See [HANDOFF-usbsink.md](HANDOFF-usbsink.md) "Hardware
   setup" for the full topology diagram — unchanged by this work.
+- **Pi 5 halts at boot (solid red LED) on splitter power without
+  `usb_max_current_enable`.** The Pi 5 sizes its power budget from the USB-C
+  **PD** negotiation, and the splitter (like USB-C power injectors generally)
+  does not pass PD through — so the Pi 5 can't confirm a 5 A supply, runs
+  power-restricted, and can stop at the *firmware* stage before the OS boots:
+  a solid red LED, unreachable on the network, and **no journal at all**
+  (nothing reached userspace, so `journalctl --list-boots` shows no entry for
+  the attempt) — even with a fully capable PSU on the power leg. `install.sh`'s
+  `set_usb_gadget_mode` writes `usb_max_current_enable=1` to
+  `/boot/firmware/config.txt` (a second `[all]` step alongside the `dwc2`
+  dtoverlay, checked independently so already-deployed gadget boxes backfill it
+  on a re-run) to tell the firmware to allow full current without the PD
+  handshake. No-op on a box powered by a normal PD supply (PD negotiates 5 A
+  anyway); safe with a capable supply — the Pi's own undervoltage detection
+  still guards a marginal one. Diagnosed + verified on jts.local 2026-07-06
+  (red-LED halt → boots clean with the flag, `EXT5V=5.00 V`, `throttled=0x0`);
+  pinned by `tests/test_install_helpers.py::test_set_usb_gadget_mode_writes_dtoverlay_and_usb_max_current`.
 
 ---
 

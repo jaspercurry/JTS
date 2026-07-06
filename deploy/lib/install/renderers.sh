@@ -199,12 +199,15 @@ install_renderers() {
 }
 
 set_usb_gadget_mode() {
-    # Add the dtoverlay that puts the board's OTG-capable USB controller
-    # into peripheral mode so it can present as a USB gadget to a
-    # connected host. This is the precondition for the jasper-usbsink
-    # feature — a fourth music source where a computer plugged into the
-    # Pi via an appropriate power/data splitter sees the configured
-    # speaker name as a USB audio output device.
+    # Write the two config.txt settings a USB-C gadget box needs: (1) the
+    # dtoverlay that puts the board's OTG-capable USB controller into
+    # peripheral mode so it can present as a USB gadget to a connected host,
+    # and (2) usb_max_current_enable so a Pi 5 actually boots when powered
+    # through a USB-C power/data splitter that doesn't pass PD negotiation
+    # (see step 2 below for the full rationale). This is the precondition for
+    # the jasper-usbsink feature — a fourth music source where a computer
+    # plugged into the Pi via an appropriate power/data splitter sees the
+    # configured speaker name as a USB audio output device.
     #
     # We only set the dtoverlay here. libcomposite / the ConfigFS gadget are
     # composed by jasper-usbgadget.service (enabled by install.sh for the
@@ -228,11 +231,11 @@ set_usb_gadget_mode() {
         echo "  $cfg not present; skipping USB gadget dtoverlay."
         return 0
     fi
+    # 1. Peripheral dtoverlay — the gadget precondition.
     if grep -qE '^[[:space:]]*dtoverlay=dwc2,dr_mode=peripheral' "$cfg"; then
         echo "  USB gadget dtoverlay already present in $cfg."
-        return 0
-    fi
-    cat >> "$cfg" <<'EOF'
+    else
+        cat >> "$cfg" <<'EOF'
 
 # JTS install — required for the composite USB gadget (management network +
 # optional audio). Puts the board's OTG-capable USB controller into peripheral
@@ -248,7 +251,38 @@ set_usb_gadget_mode() {
 [all]
 dtoverlay=dwc2,dr_mode=peripheral
 EOF
-    echo "  USB gadget dtoverlay added to $cfg (reboot required to apply)."
+        echo "  USB gadget dtoverlay added to $cfg (reboot required to apply)."
+    fi
+
+    # 2. usb_max_current_enable — checked INDEPENDENTLY of the dtoverlay above so
+    #    a box that already had the overlay from a prior install still picks this
+    #    up on a re-run (that early-return used to skip it). On a Pi 5 the USB-C
+    #    port both powers the board AND carries the gadget data; when power comes
+    #    through a USB-C power/data splitter, the splitter typically does NOT pass
+    #    the USB-C PD negotiation, so the Pi 5 cannot confirm a 5A supply, runs
+    #    power-restricted, and can halt at the firmware stage before the OS boots
+    #    (solid red LED, no journal) even with a capable PSU behind the splitter.
+    #    This flag tells the firmware to allow full USB current without that PD
+    #    confirmation, letting a gadget box boot through the splitter. No-op on a
+    #    box powered by a normal PD supply (PD negotiates 5A anyway); safe as long
+    #    as the supply is genuinely capable — the Pi's own undervoltage detection
+    #    still guards a marginal one. Verified on jts.local 2026-07-06.
+    if grep -qE '^[[:space:]]*usb_max_current_enable=1' "$cfg"; then
+        echo "  usb_max_current_enable already present in $cfg."
+    else
+        cat >> "$cfg" <<'EOF'
+
+# JTS install — allow full USB current without 5A PD confirmation so a Pi 5
+# gadget box boots when powered through a USB-C power/data splitter (which
+# doesn't pass PD negotiation). No-op with a normal PD supply; safe with a
+# capable supply — undervoltage protection still guards a marginal one.
+# Reboot required to take effect. See set_usb_gadget_mode() +
+# docs/HANDOFF-usbsink.md.
+[all]
+usb_max_current_enable=1
+EOF
+        echo "  usb_max_current_enable=1 added to $cfg (reboot required to apply)."
+    fi
 }
 
 tune_wifi_for_airplay() {

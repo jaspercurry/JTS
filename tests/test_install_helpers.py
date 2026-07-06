@@ -406,6 +406,67 @@ def test_wifi_tuning_persists_retry_forever_and_power_save_disable():
     assert "802-11-wireless.powersave 2" in body
 
 
+def _run_set_usb_gadget_mode(cfg_path: Path) -> str:
+    """Run renderers.sh's set_usb_gadget_mode against a temp config.txt.
+
+    The function defs source standalone; JTS_BOOT_CONFIG_FILE points the writer
+    at a temp file instead of the real /boot/firmware/config.txt."""
+    result = subprocess.run(
+        ["bash", "-c", f"source {_RENDERERS_LIB} >/dev/null 2>&1; set_usb_gadget_mode"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={**os.environ, "JTS_BOOT_CONFIG_FILE": str(cfg_path)},
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"set_usb_gadget_mode failed (rc={result.returncode}): {result.stderr}"
+        )
+    return result.stdout
+
+
+def test_set_usb_gadget_mode_writes_dtoverlay_and_usb_max_current(tmp_path):
+    """A USB-C gadget box needs BOTH config.txt settings: the peripheral
+    dtoverlay AND usb_max_current_enable — the latter so a Pi 5 boots through a
+    USB-C power/data splitter that doesn't pass PD negotiation (verified on
+    jts.local 2026-07-06; without it the Pi halted at firmware, red LED)."""
+    cfg = tmp_path / "config.txt"
+    cfg.write_text("# stock\ndtparam=audio=on\n", encoding="utf-8")
+    _run_set_usb_gadget_mode(cfg)
+    text = cfg.read_text(encoding="utf-8")
+    assert "dtoverlay=dwc2,dr_mode=peripheral" in text
+    assert "usb_max_current_enable=1" in text
+
+
+def test_set_usb_gadget_mode_is_idempotent(tmp_path):
+    cfg = tmp_path / "config.txt"
+    cfg.write_text("dtparam=audio=on\n", encoding="utf-8")
+    _run_set_usb_gadget_mode(cfg)
+    once = cfg.read_text(encoding="utf-8")
+    _run_set_usb_gadget_mode(cfg)
+    twice = cfg.read_text(encoding="utf-8")
+    assert once == twice  # a re-run adds nothing
+    assert twice.count("dtoverlay=dwc2,dr_mode=peripheral") == 1
+    assert twice.count("usb_max_current_enable=1") == 1
+
+
+def test_set_usb_gadget_mode_backfills_current_enable_on_existing_gadget_box(tmp_path):
+    """Regression the codification exists for: a box that already had the
+    peripheral dtoverlay (an install predating usb_max_current_enable) must still
+    pick up the current-enable on a re-run. The step is checked INDEPENDENTLY of
+    the dtoverlay — the earlier early-return after the dtoverlay check skipped
+    it, so every already-deployed gadget box would have missed the fix."""
+    cfg = tmp_path / "config.txt"
+    cfg.write_text(
+        "dtparam=audio=on\n[all]\ndtoverlay=dwc2,dr_mode=peripheral\n",
+        encoding="utf-8",
+    )
+    _run_set_usb_gadget_mode(cfg)
+    text = cfg.read_text(encoding="utf-8")
+    assert text.count("dtoverlay=dwc2,dr_mode=peripheral") == 1  # not duplicated
+    assert "usb_max_current_enable=1" in text  # ...but backfilled
+
+
 def test_install_enables_wifi_recover_timer_with_now():
     """The low-footprint Wi-Fi recovery loop must be live from first deploy."""
     install_sh = installer_text()
