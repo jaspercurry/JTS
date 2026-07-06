@@ -276,6 +276,79 @@ fn zombie_handle_suspected(frames_flowed: bool, zero_avail_streak: u64, threshol
     frames_flowed && threshold > 0 && zero_avail_streak >= threshold
 }
 
+/// Cadence for the HANDLE-LIVENESS probe (C, defect 2026-07-06), in render
+/// PERIODS between one `snd_pcm_status(2)` ioctl on the open capture handle.
+/// ~1/s at the default 256/48k period (≈188 periods) — the probe is a real
+/// syscall (unlike the mmap-served `avail_update`), so it rides the existing
+/// drain-stats housekeeping cadence (once per drain call, i.e. once per period)
+/// gated to roughly one second rather than firing on the per-period hot path.
+/// 187 is the whole-period count nearest one second at the default geometry; the
+/// cadence is advisory (detection latency, not correctness), so an
+/// off-by-a-few-periods drift under a non-default period override is harmless. A
+/// rebuilt-and-still-attached gadget is thus detected within ~1 s regardless of
+/// whether frames ever flowed on the handle — the gap the flowing→dead latch
+/// structurally cannot close.
+const DIRECT_LIVENESS_PROBE_EVERY_PERIODS: u64 = 187;
+
+/// Pure handle-liveness decision (C, defect 2026-07-06): map the result of one
+/// `snd_pcm_status` ioctl on the open capture handle to "is this handle dead
+/// (force a reopen) or live (no-op)?".
+///
+/// The argument is the PCM `State` the ioctl reported, or `None` when the ioctl
+/// ITSELF errored (`status()` returned `Err`). Split from the impure
+/// [`probe_direct_liveness`] so the decision is unit-testable without ALSA.
+///
+/// Why this is the deterministic discriminator (and the procfs-inode compare it
+/// replaced was not): when the UAC2 gadget FUNCTION is rebuilt underneath the
+/// open handle (a UDC unbind/rebind or a usbsink stop-start), the kernel runs
+/// `snd_card_disconnect`, which swaps the stale file's fops to the shutdown set.
+/// `snd_pcm_status` is a real `SNDRV_PCM_IOCTL_STATUS` ioctl (the hw plugin never
+/// serves it from the mmap'd control page), so on a disconnected card it
+/// deterministically returns `-ENODEV` (→ `None` here) or reports
+/// `State::Disconnected`. That is exactly why `avail_update` cannot see the
+/// zombie — it reads the frozen mmap status page and keeps returning `Ok(0)` —
+/// and why issuing ONE real syscall per second closes the gap by kernel contract,
+/// with no dependence on procfs inode-reuse semantics or dcache retention.
+///
+/// Precedence + semantics (asserted by the unit tests):
+///   - `None` (ioctl errored) → dead. On a rebuilt/disconnected card the STATUS
+///     ioctl returns `-ENODEV`; any other query error likewise means the handle
+///     cannot be confirmed live, so we fail toward the bounded reopen (safe: a
+///     reopen that lands on a healthy handle is a cheap no-op re-establish).
+///   - `Some(State::Disconnected)` → dead. The kernel explicitly reports the
+///     stream disconnected underneath the handle.
+///   - `Some(_any_other_state_)` → live. Prepared/Running/Setup/Xrun/etc. all mean
+///     the handle still refers to a live kernel object; no reopen.
+///
+/// There is NO false-positive on an attached-IDLE host: an idle-but-attached Mac
+/// keeps the capture stream alive (`Prepared`/`Running`), so the probe reports a
+/// live state and this returns `false` no matter how long the host sits silent.
+/// That is the exact gap the flowing→dead latch left open, closed here without
+/// reintroducing the attached-idle churn that latch was added to prevent, and
+/// without a frames-flowed gate (an idle host cannot make a live handle report
+/// `Disconnected`).
+fn liveness_probe_dead(state: Option<State>) -> bool {
+    match state {
+        // The STATUS ioctl itself errored — on a disconnected card that is
+        // `-ENODEV`; any error means we can't confirm liveness → reopen.
+        None => true,
+        // Kernel explicitly reports the stream disconnected.
+        Some(State::Disconnected) => true,
+        // Any live state (Prepared/Running/Setup/Xrun/Draining/Paused/Suspended/
+        // Open) → the handle is fine.
+        Some(_) => false,
+    }
+}
+
+/// Issue one `snd_pcm_status` ioctl on the open capture handle and reduce it to
+/// the [`liveness_probe_dead`] input: `Some(state)` on success, `None` when the
+/// ioctl errored (`-ENODEV` on a rebuilt/disconnected card). Impure (one
+/// syscall); kept tiny and isolated so the DECISION built on it stays pure and
+/// testable. Called on the housekeeping cadence, never the per-period hot path.
+fn probe_direct_liveness(pcm: &PCM) -> Option<State> {
+    pcm.status().ok().map(|s| s.get_state())
+}
+
 /// Delay, in whole seconds, from a lane's idle→active transition to its
 /// one-shot AUTO-TRIM fire. Gives the chain time to warm up and establish its
 /// standing fill before the trim drops it — trimming at t=0 (before the fill
@@ -860,6 +933,26 @@ pub struct DirectObservability {
     /// to one per real rebuild and keeps the `reopens` counter / incident
     /// fingerprint honest. Lock-free atomic, same mixer-writes / state-reads idiom.
     pub frames_flowed_since_open: Arc<AtomicBool>,
+    /// Render-period index of the LAST handle-liveness probe, so the probe fires
+    /// on the `DIRECT_LIVENESS_PROBE_EVERY_PERIODS` (~1 s) cadence off the drain
+    /// count rather than every period (a `snd_pcm_status` ioctl is a real
+    /// syscall). Mixer-thread only.
+    pub liveness_last_checked_drain: Arc<AtomicU64>,
+    /// Cumulative LIVENESS-PROBE forced reopens (C, defect 2026-07-06): the count
+    /// of times the ~1 s `snd_pcm_status` probe found the open handle dead
+    /// (ioctl `-ENODEV` or `State::Disconnected`) and this lane self-healed with a
+    /// bounded reopen. This is the signal the frozen-mmap `avail_update` fast path
+    /// structurally cannot raise — a rebuilt gadget leaves `avail_update` returning
+    /// `Ok(0)` forever with no errno, so a real STATUS ioctl is the only thing that
+    /// sees the dead handle. Kept a DISTINCT counter from `reopens` (the
+    /// flowing→dead zero-avail zombie latch) so an operator can tell which signal
+    /// caught the rebuild — the zero-avail latch (a rebuild while a stream was
+    /// flowing, caught within ~2 s once the streak crosses threshold) vs the
+    /// liveness probe (any rebuild, incl. a fresh handle that never carried a
+    /// frame, caught on the ~1 s ioctl cadence). Which signal fires first is
+    /// timing-dependent, so read these two as "which probe caught it," not as a
+    /// clean live-vs-idle partition. Surfaced via STATUS alongside `reopens`.
+    pub card_gen_reopens: Arc<AtomicU64>,
     /// Drain-entry avail dwell stats (lever 2). SINCE-BOOT cumulative (matches
     /// the `opens`/`retries` idiom in this block — no reset-on-read state to
     /// carry, and a monotonic denominator makes the STATUS `mean` a lifetime
@@ -2495,6 +2588,11 @@ fn open_direct_input(
     let present = Arc::new(AtomicBool::new(false));
     let opens = Arc::new(AtomicU64::new(0));
     let retries = Arc::new(AtomicU64::new(0));
+    // Handle-liveness probe (C, defect 2026-07-06) needs no captured baseline: it
+    // queries the LIVE open handle each cadence tick via `snd_pcm_status`, so a
+    // rebuild that leaves the handle attached to a destroyed instance is detected
+    // even when no frame ever flows on it (the ioctl returns `-ENODEV` /
+    // `Disconnected` where the frozen-mmap `avail_update` keeps returning `Ok(0)`).
     let direct = match open_direct_capture(&device, open_period) {
         Ok((pcm, negotiated_buffer)) => {
             present.store(true, Ordering::Relaxed);
@@ -2547,6 +2645,8 @@ fn open_direct_input(
             reopens: Arc::new(AtomicU64::new(0)),
             zero_avail_streak: Arc::new(AtomicU64::new(0)),
             frames_flowed_since_open: Arc::new(AtomicBool::new(false)),
+            liveness_last_checked_drain: Arc::new(AtomicU64::new(0)),
+            card_gen_reopens: Arc::new(AtomicU64::new(0)),
             drain_stats: DrainStats::new(),
         }),
     }
@@ -3096,6 +3196,37 @@ fn read_direct_and_render(
                         periods_until_retry: 0,
                     };
                 }
+                DirectDrainOutcome::CardGenerationReopen => {
+                    // Card-generation rebuild (C, defect 2026-07-06): the ~1 s
+                    // `snd_pcm_status` liveness probe found the open handle dead
+                    // (ioctl `-ENODEV` / `State::Disconnected`) while `avail_update`
+                    // still reported `Ok(0)` — the gadget FUNCTION was rebuilt even
+                    // though no frame ever flowed on this handle. Same
+                    // close→Absent→reopen recovery as the zombie/device-loss paths
+                    // (periods_until_retry=0 → reopen next period: this is a live
+                    // rebuild, not an absent host), but logged + counted DISTINCTLY
+                    // (reason=card_generation, card_gen_reopens) so the routine
+                    // post-deploy self-heal is visible and separable from the
+                    // flowing→dead zero-avail zombie. The probe re-runs against the
+                    // live reopened handle each tick, so there is no baseline to
+                    // invalidate here.
+                    if let Some(r) = input.resampler.as_mut() {
+                        r.reset();
+                    }
+                    if let Some(obs) = &input.direct_obs {
+                        obs.present.store(false, Ordering::Relaxed);
+                        obs.zero_avail_streak.store(0, Ordering::Relaxed);
+                        obs.frames_flowed_since_open.store(false, Ordering::Relaxed);
+                        let reopens = obs.card_gen_reopens.fetch_add(1, Ordering::Relaxed) + 1;
+                        warn!(
+                            "event=fanin.usb_direct.reopen device={} reason=card_generation card_gen_reopens={} (snd_pcm_status reported the open handle dead — ENODEV/Disconnected — while avail_update still returned Ok(0); gadget function rebuilt with no frames flowed — closing + re-opening the capture)",
+                            obs.device, reopens,
+                        );
+                    }
+                    direct = DirectCapture::Absent {
+                        periods_until_retry: 0,
+                    };
+                }
             }
         }
         DirectCapture::Absent { .. } => {
@@ -3118,18 +3249,28 @@ fn read_direct_and_render(
     real_frames
 }
 
-/// The outcome of one direct-capture drain: normal (kept Present), a device loss
-/// (an errno the drain classified as DeviceLost), or a ZOMBIE handle (Present but
-/// `avail_update` has returned exactly 0 for `DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS`
-/// consecutive drains — a gadget rebuilt underneath us). Both non-Ok outcomes drive
-/// the SAME close→Absent→bounded-reopen recovery; they differ only in the log line
-/// and which counter increments, so an operator can tell a clean unplug (DeviceLost,
-/// errno-driven) from a silent gadget rebuild (ZombieReopen, avail-0-driven) apart.
+/// The outcome of one direct-capture drain. All non-`Ok` outcomes drive the SAME
+/// close→Absent→bounded-reopen recovery; they differ only in the log line and
+/// which counter increments, so an operator can tell the three distinct causes
+/// apart:
+///   - `DeviceLost` — an `avail_update`/read errno (ENODEV on a clean unplug, etc.)
+///     the drain classified as a device loss.
+///   - `ZombieReopen` — Present but `avail_update` returned exactly 0 for
+///     `DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS` consecutive drains AFTER frames had
+///     flowed (the flowing→dead latch: a gadget rebuilt underneath a LIVE stream).
+///   - `CardGenerationReopen` — the ~1 s `snd_pcm_status` liveness probe found the
+///     open handle dead (ioctl `-ENODEV` / `State::Disconnected`) under a handle
+///     that `avail_update` still reported `Ok(0)` for (C, defect 2026-07-06): the
+///     gadget FUNCTION was rebuilt even though no frame ever flowed on this handle
+///     (the routine post-deploy window the flowing→dead latch structurally cannot
+///     catch). Named for the card-generation change it detects (STATUS counter
+///     `card_gen_reopens`), not the ioctl that detects it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DirectDrainOutcome {
     Ok,
     DeviceLost,
     ZombieReopen,
+    CardGenerationReopen,
 }
 
 /// Drain all currently-available frames from the gadget capture into the lane
@@ -3214,6 +3355,35 @@ fn drain_direct_capture(
                 } else {
                     obs.zero_avail_streak.store(0, Ordering::Relaxed);
                     obs.frames_flowed_since_open.store(true, Ordering::Relaxed);
+                }
+                // HANDLE-LIVENESS probe (C, defect 2026-07-06): the THIRD signal,
+                // orthogonal to the flowing→dead latch above. On the ~1 s housekeeping
+                // cadence (NOT every period — a `snd_pcm_status` ioctl is a real
+                // syscall) issue ONE STATUS ioctl on the open handle. On a rebuilt or
+                // disconnected card the kernel swapped the file's fops to the shutdown
+                // set, so the ioctl returns `-ENODEV` / `State::Disconnected` — even
+                // though the frozen-mmap `avail_update` above kept returning `Ok(0)`
+                // with no errno. That is the routine post-deploy window where fan-in's
+                // fresh handle has NEVER carried a frame, so `frames_flowed_since_open`
+                // is false and the zero-avail zombie latch above can structurally NEVER
+                // fire; the liveness probe closes exactly that gap. It CANNOT false-fire
+                // on an attached-idle host: that host keeps the capture stream live
+                // (`Prepared`/`Running`), so the probe reports a live state no matter
+                // how long the host sits silent — the reason it is safe where a raw
+                // zero-avail trip is not, and why it needs no frames-flowed gate.
+                // Precedence: an `avail_update` errno (ENODEV on a hard unplug) is
+                // matched ABOVE and returns DeviceLost before this block is reached, so
+                // a clean unplug takes the errno park path; this only fires for a
+                // rebuild/disconnect the mmap fast path is blind to, which wants the
+                // bounded reopen.
+                let drains = obs.drain_stats.count.load(Ordering::Relaxed);
+                let last = obs.liveness_last_checked_drain.load(Ordering::Relaxed);
+                if drains.saturating_sub(last) >= DIRECT_LIVENESS_PROBE_EVERY_PERIODS {
+                    obs.liveness_last_checked_drain
+                        .store(drains, Ordering::Relaxed);
+                    if liveness_probe_dead(probe_direct_liveness(pcm)) {
+                        return DirectDrainOutcome::CardGenerationReopen;
+                    }
                 }
             }
         }
@@ -3398,6 +3568,21 @@ fn maybe_reopen_direct(direct: DirectCapture, input: &mut Input) -> DirectCaptur
                 // on a still-zombie gadget (card node exists, avail stays 0) does
                 // NOT immediately re-fire, bounding reopens to one per real rebuild.
                 obs.frames_flowed_since_open.store(false, Ordering::Relaxed);
+                // The liveness probe (C, defect 2026-07-06) needs no per-handle
+                // re-capture — it queries the LIVE reopened handle each tick — so
+                // there is no baseline to (re)arm and no way for a racy open to
+                // permanently disarm the signal. Re-base only the cadence anchor to
+                // the current (cumulative-since-boot) drain count so the first probe
+                // on the fresh handle waits a full interval PAST this reopen rather
+                // than firing immediately (the drain count never resets, so storing 0
+                // here would look like a full interval had already elapsed). If the
+                // reopen landed back on a still-dead gadget, the next probe one
+                // interval out re-detects it and re-fires — bounded to one reopen per
+                // interval, never a permanent disarm.
+                obs.liveness_last_checked_drain.store(
+                    obs.drain_stats.count.load(Ordering::Relaxed),
+                    Ordering::Relaxed,
+                );
                 // Re-store the freshly negotiated buffer: a device re-enumeration
                 // could in principle land a different (still valid) geometry, so
                 // STATUS tracks the live PCM, not the initial open's number.
@@ -4042,6 +4227,75 @@ mod tests {
         assert!(
             (seconds - 2.0).abs() < 1e-9,
             "zombie window must be ~2 s, got {seconds}"
+        );
+    }
+
+    // ---- C: handle-liveness probe / card-generation signal (defect 2026-07-06) --
+
+    #[test]
+    fn liveness_probe_dead_when_ioctl_errored() {
+        // `None` = the `snd_pcm_status` ioctl ITSELF returned Err. On a rebuilt or
+        // disconnected card that is `-ENODEV`; any query error likewise means the
+        // handle cannot be confirmed live. Fail toward the bounded reopen (safe: a
+        // reopen onto a healthy handle is a cheap no-op re-establish). This is the
+        // routine post-deploy shape — a fresh handle that never flowed a frame,
+        // rebuilt underneath us — that `avail_update`'s frozen mmap page cannot see.
+        assert!(liveness_probe_dead(None));
+    }
+
+    #[test]
+    fn liveness_probe_dead_when_state_disconnected() {
+        // The kernel explicitly reports the stream Disconnected under the open
+        // handle → dead → force the bounded reopen.
+        assert!(liveness_probe_dead(Some(State::Disconnected)));
+    }
+
+    #[test]
+    fn liveness_probe_alive_on_every_live_state() {
+        // Any live state means the handle still refers to a live kernel object, so
+        // the probe must NOT trip. This is the attached-idle safety property the
+        // signal is built around: an idle-but-attached Mac keeps the capture stream
+        // in a live state (Prepared/Running) no matter how long it sits silent, so
+        // the probe stays quiet WITHOUT any frames-flowed gate — an idle host cannot
+        // make a live handle report Disconnected. Enumerated (not a loop over one
+        // value) so a future kernel/state addition that should be treated as live is
+        // a conscious edit here.
+        //
+        // NOTE: that the STATUS ioctl actually returns Err/Disconnected across a
+        // real gadget rebuild (vs `avail_update` continuing to return Ok(0)) is
+        // kernel behavior no unit test can pin; it is the on-device obligation —
+        // `curl .../state | jq .audio_graph.fanin ... card_gen_reopens` must tick
+        // across a `systemctl restart jasper-usbsink` on jts.local. See
+        // docs/HANDOFF-usb-low-latency.md "handle-liveness probe".
+        for state in [
+            State::Open,
+            State::Setup,
+            State::Prepared,
+            State::Running,
+            State::XRun,
+            State::Draining,
+            State::Paused,
+            State::Suspended,
+        ] {
+            assert!(
+                !liveness_probe_dead(Some(state)),
+                "live state {state:?} must not trip the liveness probe"
+            );
+        }
+    }
+
+    #[test]
+    fn liveness_probe_cadence_is_about_one_second() {
+        // The probe rides the drain housekeeping cadence gated to ~1 s (a
+        // `snd_pcm_status` ioctl is a real syscall — kept off the per-period hot
+        // path). 187 periods × 256 frames / 48000 Hz ≈ 0.997 s. The cadence is
+        // advisory (detection latency, not correctness), so "within ~1 s" is the
+        // contract, not exactness.
+        let seconds = (DIRECT_LIVENESS_PROBE_EVERY_PERIODS as f64) * (DIRECT_PERIOD_FRAMES as f64)
+            / (SAMPLE_RATE_HZ as f64);
+        assert!(
+            (seconds - 1.0).abs() < 0.05,
+            "liveness-probe cadence must be ~1 s, got {seconds}"
         );
     }
 

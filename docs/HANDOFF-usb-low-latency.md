@@ -388,13 +388,24 @@ curl -s http://jts.local:8780/state | jq .audio_graph.fanin.host_clock
 
 - Fan-in STATUS (`/run/jasper-fanin/control.sock` `STATUS`, surfaced on `/state`):
   every input gains `"source":"lane"|"direct"`; the direct lane also gains
-  `"direct":{"device","present","opens","retries","reopens"}`. The lane's
-  frames/xruns ride the existing `frames_read`/`xrun_count`; its rate-lock rides
-  the existing `resampler{}` block. `reopens` is the ZOMBIE-handle forced-reopen
-  counter (C): a growing value means the gadget function is being rebuilt
-  underneath fan-in (UDC rebind / usbsink stop-start) and the lane is self-healing
-  the deaf `Ok(0)`-forever capture handle instead of needing a manual fan-in
-  restart.
+  `"direct":{"device","present","opens","retries","reopens","card_gen_reopens"}`.
+  The lane's frames/xruns ride the existing `frames_read`/`xrun_count`; its
+  rate-lock rides the existing `resampler{}` block. `reopens` is the ZOMBIE-handle
+  forced-reopen counter (C): a growing value means the flowing→dead zero-avail latch
+  caught a gadget rebuild — the handle had been feeding the lane, then `avail_update`
+  returned exactly 0 for ~2 s (UDC rebind / usbsink stop-start **while a stream was
+  flowing**) — and the lane self-healed the deaf `Ok(0)`-forever capture handle
+  instead of needing a manual fan-in restart. `card_gen_reopens` is its twin (C,
+  defect 2026-07-06): the same self-heal but for a rebuild caught by the ~1 s
+  `snd_pcm_status` **liveness probe** finding the open handle dead (ioctl `-ENODEV`
+  / `State::Disconnected`) while `avail_update`'s frozen mmap still returned `Ok(0)`
+  — the signal that fast path structurally cannot raise, and the one that catches
+  the routine post-deploy window (fan-in restarts, its fresh handle is idle, then a
+  gadget rebuild before the next playback) where no frame ever flowed. The two
+  counters record **which signal caught** a rebuild, not a clean live-vs-idle
+  partition: which fires first for a given rebuild is timing-dependent (the ~1 s
+  probe cadence is shorter than the ~2 s zero-avail threshold, so a rebuild under a
+  live stream is usually caught by the probe first).
 - Bridge STATUS/state.json gains additive `"standby":true|false` (schema_version
   stays 1); in standby `playing:false`, `rms_dbfs:-120`, ring/counters zero, and
   `host_connected` is best-effort from sysfs (`/sys/class/udc/*/state ==
@@ -405,17 +416,50 @@ curl -s http://jts.local:8780/state | jq .audio_graph.fanin.host_clock
   `event=fanin.usb_direct.reopen reason=zombie_handle` fires when a Present handle
   that had been feeding the lane goes deaf — `avail_update()` returns exactly 0 for
   ~2 s **after** frames had flowed on that handle (the gadget was rebuilt underneath
-  it, no errno) — and the lane force-closes + re-opens the capture; the host-clock
-  servo's ctl handle is dropped on the same edge (`event=fanin.host_clock_ctl_error
+  it, no errno) — and the lane force-closes + re-opens the capture. The
+  **flowing→dead** gate (`frames_flowed_since_open`, added 2026-07-05) is
+  load-bearing: an ordinary attached-but-silent host streams `avail≈0` drains
+  indefinitely with no gadget rebuild (see "attached-idle drains record `avail≈0`"
+  below), and firing on raw zero-avail alone would churn a reopen every ~2 s of idle
+  on a Mac-wired box — journal spam plus a `reopens` counter that no longer means
+  "gadget rebuilt underneath." Because a fresh reopen clears the latch, a reopen
+  that lands back on a still-zombie gadget does not immediately re-fire; `reopens`
+  counts one increment per real rebuild.
+- `event=fanin.usb_direct.reopen reason=card_generation` (C, defect 2026-07-06) is
+  the THIRD signal, orthogonal to the flowing→dead latch. On a ~1 s housekeeping
+  cadence (a `snd_pcm_status` ioctl is a real syscall, kept off the per-period hot
+  path) the drain issues ONE STATUS ioctl on the open capture handle. When the UAC2
+  gadget FUNCTION is rebuilt underneath that handle (a UDC rebind / usbsink
+  stop-start), the kernel runs `snd_card_disconnect`, which swaps the stale file's
+  fops to the shutdown set — so `snd_pcm_status` (a real `SNDRV_PCM_IOCTL_STATUS`
+  ioctl, never served from the mmap'd control page) deterministically returns
+  `-ENODEV` or reports `State::Disconnected`. That is precisely why `avail_update`
+  is blind to the zombie: it reads the frozen mmap status page and keeps returning
+  `Ok(0)`. Issuing one real syscall per second closes the gap **by kernel
+  contract** — no procfs inode semantics, no dcache dependence. It fires
+  **regardless of whether a frame ever flowed**, closing the gap the flowing→dead
+  latch cannot: a fan-in restart followed by a gadget rebuild before the next
+  playback (the routine post-deploy window) leaves the fresh handle deaf with
+  `frames_flowed_since_open=false`, so `reason=zombie_handle` can never trip but
+  `reason=card_generation` does within ~1 s. It **cannot** false-fire on an
+  attached-idle host — that host keeps the capture stream in a live state
+  (`Prepared`/`Running`), so the probe reports a live state and stays quiet no
+  matter how long the host sits silent (which is exactly why the probe needs no
+  frames-flowed gate where the raw zero-avail trip did — an idle host cannot make a
+  live handle report `Disconnected`). Precedence: an `avail_update` errno (ENODEV on
+  a clean unplug) is classified as a device loss and parks **before** the probe
+  runs, so a hard unplug takes the errno path; the probe re-runs against the live
+  reopened handle each tick (no captured baseline to re-arm or stale), so
+  `card_gen_reopens` counts one per real rebuild. **On-device obligation:** this
+  premise (STATUS ioctl trips across a real rebuild while `avail_update` stays
+  `Ok(0)`) is kernel behavior no unit test can pin — confirm `card_gen_reopens`
+  ticks across a `systemctl restart jasper-usbsink` on jts.local, and that the box
+  self-heals (no manual fan-in restart). The host-clock servo's ctl handle is NOT
+  poked from this edge (its `!Send` actuator lives in the `fanin-host-clock` thread
+  and never crosses a thread boundary); the same rebuild makes its next ctl write
+  fail with ENODEV, which drops the stale handle (`event=fanin.host_clock_ctl_error
   ... action=drop_stale_handle`) so the next session edge re-opens it against the
-  rebuilt card. The **flowing→dead** gate (`frames_flowed_since_open`, added
-  2026-07-05) is load-bearing: an ordinary attached-but-silent host streams
-  `avail≈0` drains indefinitely with no gadget rebuild (see "attached-idle drains
-  record `avail≈0`" below), and firing on raw zero-avail alone would churn a reopen
-  every ~2 s of idle on a Mac-wired box — journal spam plus a `reopens` counter that
-  no longer means "gadget rebuilt underneath." Because a fresh reopen clears the
-  latch, a reopen that lands back on a still-zombie gadget does not immediately
-  re-fire; `reopens` counts one increment per real rebuild.
+  rebuilt card — the ctl's independent self-heal, unchanged.
 
 ### Impulse tap moves to fan-in (C4)
 
