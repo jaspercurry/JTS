@@ -2359,15 +2359,24 @@ def check_outputd_service() -> CheckResult:
         )
     from jasper.fanin.coupling_reconcile import read_persisted_coupling
     from jasper.fanin_coupling import (
+        COUPLING_SHM_RING,
         COUPLING_TRANSPORT_PIPE,
         OUTPUTD_PIPE_PATH_ENV_VAR,
         resolve_outputd_pipe_path,
     )
 
     coupling = read_persisted_coupling()
-    expected_content_source = (
-        "local_pipe" if coupling == COUPLING_TRANSPORT_PIPE else "alsa"
-    )
+    # Three-way coupling -> outputd content source contract: transport_pipe
+    # feeds outputd's local pipe, shm_ring feeds its ShmRingSource (Ring B),
+    # and loopback rides the ALSA content lane. This mapping predates shm_ring
+    # and its two-way form false-failed every ring-coupled box (content.source
+    # correctly reported 'shm_ring' while the check demanded 'alsa').
+    if coupling == COUPLING_TRANSPORT_PIPE:
+        expected_content_source = "local_pipe"
+    elif coupling == COUPLING_SHM_RING:
+        expected_content_source = "shm_ring"
+    else:
+        expected_content_source = "alsa"
     actual_content_source = content.get("source")
     if actual_content_source != expected_content_source:
         return CheckResult(

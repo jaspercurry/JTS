@@ -3355,6 +3355,50 @@ def test_outputd_service_ok_with_transport_pipe_local_source(monkeypatch, tmp_pa
     assert "local_pipe_startup_empty_periods=3" in r.detail
 
 
+def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch):
+    """Ring-coupled box: coupling=shm_ring + content.source='shm_ring' is OK.
+
+    Regression for the two-way mapping (transport_pipe -> local_pipe, else
+    'alsa') that predated shm_ring: it false-failed every ring-coupled box —
+    outputd correctly reported source='shm_ring' while the check demanded
+    'alsa' (jts.local, 2026-07-06, first post-default-flip fleet smoke)."""
+    _patch_fanin_systemctl(monkeypatch)
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda: "shm_ring",
+    )
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_status_payload(content_source="shm_ring"),
+    )
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "ok"
+    assert "content_source=shm_ring" in r.detail
+
+
+def test_outputd_service_fails_on_coupling_content_source_mismatch(monkeypatch):
+    """The check keeps its teeth: shm_ring coupling with outputd still on the
+    ALSA content lane (a real incoherence — e.g. outputd missed the flip
+    restart) fails with the reconcile remedy."""
+    _patch_fanin_systemctl(monkeypatch)
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda: "shm_ring",
+    )
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_status_payload(content_source="alsa"),
+    )
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "fail"
+    assert "expected 'shm_ring'" in r.detail
+    assert "jasper-fanin-coupling-reconcile" in r.detail
+
+
 def test_outputd_service_allows_period_sized_local_pipe_content_buffer(
     monkeypatch, tmp_path
 ):
