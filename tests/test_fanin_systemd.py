@@ -281,6 +281,69 @@ def test_exec_stop_post_has_no_bare_percent_specifier_collision():
         )
 
 
+_EXEC_KEYS = (
+    "ExecStart",
+    "ExecStartPre",
+    "ExecStartPost",
+    "ExecStop",
+    "ExecStopPost",
+    "ExecReload",
+    "ExecCondition",
+)
+
+
+def _shipped_unit_files() -> list[Path]:
+    """Every shipped systemd unit + drop-in the installer lays down.
+
+    Both the top-level ``*.service`` files (under deploy/ and deploy/systemd/)
+    and ``*.service.d/*.conf`` drop-ins carry Exec* lines, so both are in scope
+    for the %-specifier collision lint.
+    """
+    systemd = REPO / "deploy"
+    units = sorted(systemd.rglob("*.service"))
+    dropins = sorted(systemd.rglob("*.service.d/*.conf"))
+    return units + dropins
+
+
+def test_no_shipped_unit_has_shell_param_expansion_in_exec():
+    """Defect E lint (ALL shipped units + drop-ins): no Exec* line may carry a
+    shell parameter expansion containing '%' — e.g. ``${card%%,*}`` — which
+    systemd mis-reads as a specifier escape ("Invalid environment variable name
+    evaluates to an empty string"). This is the exact class that broke the inline
+    combo-mode neutralize before it moved to jasper-fanin-pitch-neutralize; the
+    per-unit test above pins the fan-in unit, and this one is the repo-wide
+    backstop the brief asked for ("no bare '%' expansion remains in shipped unit
+    files", plural) so a NEW unit can't reintroduce it.
+
+    Precise on purpose: it flags a '%' INSIDE a ``${...}`` expansion (always the
+    bug), not a bare legitimate systemd specifier like ``%i`` / ``%N`` (which a
+    future template unit may validly use). Today no shipped Exec* line carries any
+    '%' at all — this keeps that clean while allowing genuine specifiers later.
+    """
+    # A `%` appearing inside a ${...} shell expansion on an Exec* line — the
+    # `${var%pat}` / `${var%%pat}` collision class, never a systemd specifier.
+    shell_expansion_with_percent = re.compile(r"\$\{[^}]*%[^}]*\}")
+    offenders: list[str] = []
+    files = _shipped_unit_files()
+    assert files, "expected to find shipped unit files under deploy/"
+    for path in files:
+        for raw in path.read_text().splitlines():
+            stripped = raw.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, _, value = stripped.partition("=")
+            if key.strip() not in _EXEC_KEYS:
+                continue
+            if shell_expansion_with_percent.search(value):
+                offenders.append(f"{path.relative_to(REPO)}: {stripped!r}")
+    assert not offenders, (
+        "shipped unit Exec* line(s) carry a shell '%' parameter expansion that "
+        "systemd mis-reads as a specifier escape (defect E). Move the shell logic "
+        "into a deploy/bin/ helper (see jasper-fanin-pitch-neutralize). Offenders:\n"
+        + "\n".join(offenders)
+    )
+
+
 def test_input_buffer_frames_sized_for_wifi_burst_absorption():
     """Per-input ALSA ring buffer must be >= 4096 frames so it
     absorbs the worst-case 802.11 A-MPDU inter-burst gap (~40 ms

@@ -762,6 +762,16 @@ restart_route_runtime_if_needed() {
             "$SYSTEMCTL" --no-block try-restart jasper-usbsink.service jasper-usbsink-volume.service 2>/dev/null || true
             usbsink_restart_stamp
             usbsink_restarted=1
+        else
+            # Refused by the storm limiter (defect D): usbsink.env is now AHEAD of
+            # the running daemon, which keeps the old geometry with no auto-retry
+            # scheduled (convergence would wait for the next udev/boot/manual run).
+            # Name that drift explicitly so it isn't a silent no-op — jasper-doctor's
+            # check_usbsink_env_drift surfaces the same state for the operator, whose
+            # manual `systemctl restart jasper-usbsink.service` converges it (the
+            # limiter only damps automatic reconciler churn, not an operator action).
+            log_event "route_env_drift" \
+                "usbsink_env=${USBSINK_ENV_FILE} reason=usbsink_restart_ratelimited remedy=restart_jasper-usbsink.service"
         fi
     fi
     log_event "route_runtime_restarted" \

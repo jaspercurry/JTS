@@ -4,12 +4,13 @@
 
 """The ring-geometry-coherence doctor check (defect A).
 
-``check_ring_geometry_coherence`` verifies the Ring-A ``n_slots`` agrees across
+``check_ring_geometry_coherence`` verifies the Ring-A geometry agrees across
 three axes — fan-in's resolved ``JASPER_FANIN_RING_SLOTS``, the conf.d
-``jts_ring_capture`` ``n_slots``, and the on-disk ``program.ring`` header — when
-shm_ring is armed. A mismatch on any axis is the 2026-07-05 crash-loop class
-(hw_params EINVAL + ioplug attach_fatal). It skips cleanly when shm_ring is not
-armed (the ring is inert).
+``jts_ring_capture``, and the on-disk ``program.ring`` header — when shm_ring is
+armed. It compares BOTH ``n_slots`` and (on the on-disk header) ``period_frames``;
+a mismatch on any axis is the 2026-07-05 crash-loop class (hw_params EINVAL +
+ioplug attach_fatal). It skips cleanly when shm_ring is not armed (the ring is
+inert).
 """
 
 from __future__ import annotations
@@ -29,11 +30,11 @@ def _write_conf(tmp_path, *, capture_n_slots=8):
     return conf
 
 
-def _write_ring(path, *, n_slots=8, magic=0x4A52_494E):
+def _write_ring(path, *, n_slots=8, period_frames=128, magic=0x4A52_494E):
     hdr = bytearray(128)
     struct.pack_into("<I", hdr, 0, magic)
     struct.pack_into("<I", hdr, 4, 1)  # version
-    struct.pack_into("<I", hdr, 20, 128)  # period_frames
+    struct.pack_into("<I", hdr, 20, period_frames)
     struct.pack_into("<I", hdr, 24, n_slots)
     path.write_bytes(bytes(hdr) + b"\x00" * 256)
 
@@ -103,6 +104,29 @@ def test_fail_when_on_disk_ring_disagrees(monkeypatch, tmp_path):
     assert res.status == "fail"
     assert "on-disk" in res.detail.lower()
     assert "2" in res.detail and "8" in res.detail
+
+
+def test_fail_when_on_disk_ring_period_disagrees(monkeypatch, tmp_path):
+    # Nit-7: env + conf.d + on-disk n_slots all agree (8), but the on-disk ring's
+    # period_frames is stale (256 vs conf.d 128). The ioplug attach still fails on
+    # the SECOND geometry axis — the slot-only check would miss it. Caught now.
+    _arm(monkeypatch)
+    _fanin, program = _stage(monkeypatch, tmp_path, capture_n_slots=8)
+    _write_ring(program, n_slots=8, period_frames=256)
+    res = audio.check_ring_geometry_coherence()
+    assert res.status == "fail"
+    assert "period_frames" in res.detail
+    assert "256" in res.detail and "128" in res.detail
+
+
+def test_ok_when_slots_and_period_both_agree(monkeypatch, tmp_path):
+    # The positive: n_slots AND period_frames coherent across env + conf.d + on-disk.
+    _arm(monkeypatch)
+    _fanin, program = _stage(monkeypatch, tmp_path, capture_n_slots=8)
+    _write_ring(program, n_slots=8, period_frames=128)
+    res = audio.check_ring_geometry_coherence()
+    assert res.status == "ok", res.detail
+    assert "period_frames=128" in res.detail
 
 
 def test_warn_when_ring_file_absent_but_env_conf_agree(monkeypatch, tmp_path):

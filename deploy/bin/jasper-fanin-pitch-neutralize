@@ -46,9 +46,17 @@
 # tail down to the bare card token (e.g. `UAC2Gadget`), which is what
 # `amixer -c` takes.
 #
-# Fail-soft: a missing card (combo off, gadget torn down) or amixer error is
-# ignored (exit 0). The unit invokes this with a leading `-` too, but exiting 0
-# on the expected-absent cases keeps the journal clean.
+# Fail-soft, in two layers:
+#   - Owner-gate mismatch (not the clock owner, or the flags aren't both enabled)
+#     exits 0 here — a clean no-op, no amixer invoked.
+#   - A missing card (combo off, gadget torn down) or an amixer error does NOT
+#     exit 0: the final line `exec`s amixer, so the script's exit status IS
+#     amixer's, which is non-zero on those cases. That is deliberately harmless
+#     because jasper-fanin.service invokes this with a leading `-` on the
+#     ExecStopPost line, so systemd treats any non-zero exit as non-fatal to the
+#     stop. (We keep `exec` rather than swallowing the code so a real amixer
+#     failure still surfaces its exit status in the journal for debugging, instead
+#     of being masked to a silent 0.)
 
 set -uo pipefail
 

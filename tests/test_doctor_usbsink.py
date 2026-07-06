@@ -1133,3 +1133,135 @@ def test_composition_udc_dir_read_error_treated_as_no_udc(monkeypatch, tmp_path)
     r = doctor.check_usbgadget_composition()
     assert r.status == "ok"
     assert "no udc" in r.detail.lower()
+
+
+# --- check_usbsink_env_drift (defect D: stale env after rate-limited restart) ---
+
+
+def _stage_env_drift(monkeypatch, tmp_path, *, mtime_epoch, start_epoch, wanted=True, active=True):
+    """Point the drift check at a tmp usbsink.env with a controlled mtime, and stub
+    the daemon start epoch + wanted/active gates. Returns the env Path."""
+    import os as _os
+
+    import jasper.usbsink.output_mode_reconcile as omr
+
+    env = tmp_path / "usbsink.env"
+    env.write_text("JASPER_USBSINK_ROUTE=direct\n", encoding="utf-8")
+    _os.utime(env, (mtime_epoch, mtime_epoch))
+    monkeypatch.setattr(omr, "USBSINK_ENV_PATH", str(env))
+    monkeypatch.setattr(doctor.usbsink, "_audio_wanted", lambda: (wanted, "enabled" if wanted else "intent_disabled"))
+    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: active)
+    monkeypatch.setattr(doctor.usbsink, "_unit_main_start_epoch", lambda unit: start_epoch)
+    return env
+
+
+def test_usbsink_env_drift_warns_when_env_newer_than_daemon(monkeypatch, tmp_path):
+    # The defect-D state: reconciler rewrote usbsink.env 100 s AFTER the daemon
+    # started (its try-restart was rate-limited), so the daemon serves stale route
+    # geometry with no auto-retry. The check must surface that as a warn.
+    _stage_env_drift(monkeypatch, tmp_path, mtime_epoch=1_000_100.0, start_epoch=1_000_000.0)
+    r = doctor.check_usbsink_env_drift()
+    assert r.status == "warn"
+    assert "stale route env" in r.detail
+    assert "systemctl restart" in r.detail
+
+
+def test_usbsink_env_drift_ok_when_daemon_started_after_env(monkeypatch, tmp_path):
+    # Converged box: the daemon started AFTER the last env write (the normal
+    # reconcile write-then-restart ordering) → running the live env, no drift.
+    _stage_env_drift(monkeypatch, tmp_path, mtime_epoch=1_000_000.0, start_epoch=1_000_050.0)
+    r = doctor.check_usbsink_env_drift()
+    assert r.status == "ok"
+    assert "running live route env" in r.detail
+
+
+def test_usbsink_env_drift_ok_within_slack(monkeypatch, tmp_path):
+    # Env newer than start by less than the slack (write→restart in the same few
+    # seconds) is NOT flagged — avoids a false positive on the converged path.
+    _stage_env_drift(monkeypatch, tmp_path, mtime_epoch=1_000_002.0, start_epoch=1_000_000.0)
+    r = doctor.check_usbsink_env_drift()
+    assert r.status == "ok"
+
+
+def test_usbsink_env_drift_skips_when_not_wanted(monkeypatch, tmp_path):
+    # USB Audio disabled / parked → env is irrelevant, skip cleanly.
+    _stage_env_drift(
+        monkeypatch, tmp_path, mtime_epoch=1_000_100.0, start_epoch=1_000_000.0, wanted=False
+    )
+    r = doctor.check_usbsink_env_drift()
+    assert r.status == "ok"
+    assert "not active" in r.detail
+
+
+def test_usbsink_env_drift_skips_when_inactive(monkeypatch, tmp_path):
+    # Enabled but not currently active → nothing running to drift; skip.
+    _stage_env_drift(
+        monkeypatch, tmp_path, mtime_epoch=1_000_100.0, start_epoch=1_000_000.0, active=False
+    )
+    r = doctor.check_usbsink_env_drift()
+    assert r.status == "ok"
+    assert "not active" in r.detail
+
+
+def test_usbsink_env_drift_skips_when_start_time_unavailable(monkeypatch, tmp_path):
+    # Indeterminate daemon start → skip rather than guess.
+    _stage_env_drift(
+        monkeypatch, tmp_path, mtime_epoch=1_000_100.0, start_epoch=None
+    )
+    r = doctor.check_usbsink_env_drift()
+    assert r.status == "ok"
+    assert "start time unavailable" in r.detail
+
+
+def test_usbsink_env_drift_ok_when_env_absent(monkeypatch, tmp_path):
+    # No env file → daemon runs on defaults, nothing to drift from.
+    import jasper.usbsink.output_mode_reconcile as omr
+
+    monkeypatch.setattr(omr, "USBSINK_ENV_PATH", str(tmp_path / "does-not-exist.env"))
+    monkeypatch.setattr(doctor.usbsink, "_audio_wanted", lambda: (True, "enabled"))
+    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: True)
+    r = doctor.check_usbsink_env_drift()
+    assert r.status == "ok"
+    assert "absent" in r.detail
+
+
+def test_unit_main_start_epoch_parses_monotonic_plus_uptime(monkeypatch):
+    # _unit_main_start_epoch converts systemd's ExecMainStartTimestampMonotonic (µs
+    # since boot) + /proc/uptime into a wall-clock epoch. boot_epoch = now - uptime;
+    # start = boot + start_us/1e6.
+    import subprocess
+    import time as _time
+
+    from jasper.cli.doctor import usbsink as us
+
+    monkeypatch.setattr(
+        us, "_run",
+        lambda cmd, timeout=5.0: subprocess.CompletedProcess(cmd, 0, "5000000\n", ""),
+    )  # 5_000_000 µs = 5 s since boot
+    monkeypatch.setattr(_time, "time", lambda: 2_000.0)
+
+    import builtins
+
+    real_open = builtins.open
+
+    def _fake_open(path, *a, **k):
+        if str(path) == "/proc/uptime":
+            import io
+            return io.StringIO("100.0 50.0\n")  # 100 s of uptime
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", _fake_open)
+    # boot_epoch = 2000 - 100 = 1900; start = 1900 + 5 = 1905.
+    assert us._unit_main_start_epoch("jasper-usbsink.service") == 1905.0
+
+
+def test_unit_main_start_epoch_none_when_never_started(monkeypatch):
+    import subprocess
+
+    from jasper.cli.doctor import usbsink as us
+
+    monkeypatch.setattr(
+        us, "_run",
+        lambda cmd, timeout=5.0: subprocess.CompletedProcess(cmd, 0, "0\n", ""),
+    )
+    assert us._unit_main_start_epoch("jasper-usbsink.service") is None

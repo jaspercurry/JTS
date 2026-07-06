@@ -1324,6 +1324,7 @@ mod tests {
                         retries: Arc::new(AtomicU64::new(0)),
                         reopens: Arc::new(AtomicU64::new(0)),
                         zero_avail_streak: Arc::new(AtomicU64::new(0)),
+                        frames_flowed_since_open: Arc::new(AtomicBool::new(true)),
                         // Two drain-entry samples (128 + 192 = 320, mean 160,
                         // max 192) exercising buckets 2 and 3.
                         drain_stats: {

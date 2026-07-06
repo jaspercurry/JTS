@@ -2772,11 +2772,14 @@ mod tests {
     ///      gone, an uninterrupted railing session progresses to a verdict on its own.
     ///
     /// This test drives the real `HostClock::tick` pipeline through: a railing
-    /// beyond-authority session that reaches a verdict; then a sub-second stop→start
-    /// where `playing` stays true (lock held across the micro-gap); and asserts the
-    /// ladder is NEVER stuck in AwaitLock with a live session — the observation feed
-    /// stays alive (the probe/servo keep running). No code changed for F; this pins
-    /// that #1167 already closed it.
+    /// beyond-authority session that reaches a verdict; then the sub-second gap as a
+    /// single stop tick with `playing=false` (lock briefly lost across the micro-gap
+    /// — the falling-edge variant) immediately followed by a start that re-arms the
+    /// probe; and asserts the ladder is NEVER stuck in AwaitLock with a live session
+    /// — the observation feed stays alive (the probe/servo keep running). The
+    /// harder-to-see no-falling-edge variant of fact 2 (lock never lost, so no
+    /// session edge at all) is covered by session 1's own uninterrupted run to a
+    /// verdict. No code changed for F; this pins that #1167 already closed it.
     #[test]
     fn defect_f_fast_stop_start_does_not_deadlock_await_lock() {
         // A compliant beyond-authority host: correction = (excess + applied pitch)

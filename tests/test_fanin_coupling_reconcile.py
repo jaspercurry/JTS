@@ -1422,6 +1422,177 @@ def test_arm_shm_ring_refused_on_invalid_ring_slots_value(tmp_path, monkeypatch)
     assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
 
 
+def _coherent_shm_ring_outputd_text(*, period_frames: int = 128) -> str:
+    """outputd.env text already at the coherent shm_ring set (Ring B bridge).
+
+    Matches exactly what ``_outputd_actions(shm_ring)`` writes, so a reconcile with
+    the fanin.env already at shm_ring sees ``changed=False`` and takes the CONFIRM
+    path — the branch the defect-A CONFIRM-path fix exercises.
+    """
+    from jasper.fanin_coupling import (
+        DEFAULT_OUTPUTD_RING_PATH,
+        DEFAULT_OUTPUTD_RING_SLOTS,
+        OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
+        OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+        OUTPUTD_RING_PATH_ENV_VAR,
+        OUTPUTD_RING_SLOTS_ENV_VAR,
+    )
+
+    return (
+        f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={OUTPUTD_CONTENT_BRIDGE_SHM_RING}\n"
+        f"{OUTPUTD_RING_PATH_ENV_VAR}={DEFAULT_OUTPUTD_RING_PATH}\n"
+        f"{OUTPUTD_RING_SLOTS_ENV_VAR}={DEFAULT_OUTPUTD_RING_SLOTS}\n"
+        f"JASPER_OUTPUTD_PERIOD_FRAMES={period_frames}\n"
+    )
+
+
+def test_confirm_shm_ring_self_heals_stale_ring_slots(tmp_path, monkeypatch):
+    # Defect A CONFIRM-path gap (2026-07-05): a box ALREADY armed shm_ring with a
+    # stale JASPER_FANIN_RING_SLOTS=2 line — CamillaDSP crash-looping on the ioplug
+    # geometry mismatch — was NOT healed by a reconcile, because the coupling-flip
+    # write didn't change (already shm_ring) so the arm self-heal never ran and the
+    # CONFIRM path only re-loaded camilla. The fix: the CONFIRM path detects the
+    # incoherence and escalates to the full _arm_ring spine (strips the stale line
+    # THEN bounces the daemons). This is the literal state the doctor's remediation
+    # string points at, so it must now actually heal.
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=8)))
+    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
+    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+
+    # ALREADY armed shm_ring + the stale =2 residue → CONFIRM path (changed=False).
+    fanin_env = _write(
+        tmp_path / "fanin.env",
+        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\nJASPER_FANIN_RING_SLOTS=2\n",
+    )
+    outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is True, result.detail
+    # The CONFIRM path escalated to the full arm spine (self-heal THEN bounce), NOT a
+    # lightweight camilla-only confirm.
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+    # The stale =2 line was stripped (resolves to the coherent conf.d default 8).
+    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") is None
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+
+
+def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
+    # The other side of the CONFIRM-path fix: a COHERENT already-armed shm_ring box
+    # must NOT bounce fan-in/outputd on every reconcile tick — only re-load camilla.
+    # This pins that the escalation is gated on POSITIVE incoherence evidence, so a
+    # healthy box keeps the cheap confirm (the property the reviewer flagged as the
+    # regression risk of over-eagerly always running _arm_ring).
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=8)))
+    # No stale on-disk ring (absent files → coherent).
+    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
+    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+
+    # Armed shm_ring, env slots MATCH the conf.d (coherent operator override kept).
+    fanin_env = _write(
+        tmp_path / "fanin.env",
+        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\nJASPER_FANIN_RING_SLOTS=8\n",
+    )
+    outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is True, result.detail
+    assert result.direction == "confirm"
+    assert not result.changed
+    # Lightweight: camilla-only re-load, NO fan-in / outputd bounce.
+    assert calls == ["camilla:shm_ring"]
+    # The coherent operator override is preserved (not stripped).
+    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "8"
+
+
+def test_confirm_shm_ring_self_heals_stale_on_disk_period(tmp_path, monkeypatch):
+    # CONFIRM-path self-heal on the SECOND on-disk geometry axis (period_frames): an
+    # on-disk program.ring whose n_slots MATCHES the conf.d but whose period_frames
+    # is stale still fails the ioplug attach. The CONFIRM path must escalate to the
+    # arm, and the arm's stale-file delete must remove it (defect A + Nit-7
+    # period_frames axis).
+    import struct
+
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    # conf.d pins period_frames=128, n_slots=8.
+    monkeypatch.setattr(
+        ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=8, period_frames=128))
+    )
+    program = tmp_path / "program.ring"
+    content = tmp_path / "content.ring"
+    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(program))
+    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(content))
+
+    def _write_ring(path, n_slots, period_frames):
+        hdr = bytearray(128)
+        struct.pack_into("<I", hdr, 0, 0x4A52_494E)  # magic JRIN
+        struct.pack_into("<I", hdr, 4, 1)  # version
+        struct.pack_into("<I", hdr, 20, period_frames)
+        struct.pack_into("<I", hdr, 24, n_slots)
+        path.write_bytes(bytes(hdr) + b"\x00" * 512)
+
+    # Matching slots (8) but STALE period (256 vs conf.d 128) → must be deleted.
+    _write_ring(program, 8, 256)
+    # Coherent Ring B (2 slots, 128 period) → kept.
+    _write_ring(content, 2, 128)
+
+    fanin_env = _write(
+        tmp_path / "fanin.env",
+        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\nJASPER_FANIN_RING_SLOTS=8\n",
+    )
+    outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is True, result.detail
+    # Escalated to the full arm spine and the stale-period Ring A was deleted.
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+    assert not program.exists(), "stale-period Ring A must be deleted on CONFIRM self-heal"
+    assert content.exists(), "coherent Ring B must be left untouched"
+
+
 def test_arm_shm_ring_refused_on_ineligible_topology_recovers(
     tmp_path, monkeypatch, _ring_assets_present
 ):

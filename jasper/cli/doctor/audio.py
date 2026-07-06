@@ -2126,20 +2126,25 @@ def check_ring_platform_assets() -> CheckResult:
 
 @doctor_check(order=51.9, group="audio")
 def check_ring_geometry_coherence() -> CheckResult:
-    """Verify the Ring-A slot geometry agrees across env, conf.d, and on-disk (defect A).
+    """Verify the Ring-A geometry agrees across env, conf.d, and on-disk (defect A).
 
-    The ring's ``n_slots`` must match on THREE axes or CamillaDSP's ioplug attach
-    fails hard (hw_params EINVAL + ``attach_fatal reason=ring header does not match
-    expected geometry`` → crash-loop → start-limit-hit):
+    The ring geometry must match or CamillaDSP's ioplug attach fails hard
+    (hw_params EINVAL + ``attach_fatal reason=ring header does not match expected
+    geometry`` → crash-loop → start-limit-hit). ``n_slots`` is checked on THREE
+    axes; the on-disk header adds a fourth check on ``period_frames`` (the ring slot
+    IS one outputd period, so a stale period fails the attach even with matching
+    slots — Nit-7, 2026-07-05):
 
       1. fan-in's resolved ``JASPER_FANIN_RING_SLOTS`` (fanin.env, default 8)
       2. the conf.d ``jts_ring_capture`` ``n_slots`` (the ioplug attach authority)
       3. the on-disk ``program.ring`` header ``n_slots`` (what the writer created)
+      4. the on-disk header ``period_frames`` vs the conf.d ``period_frames``
 
     The 2026-07-05 defect was a stale ``JASPER_FANIN_RING_SLOTS=2`` lab line making
     fan-in write a 2-slot ring while the conf.d pinned 8. The coupling reconciler
-    now preflights + self-heals this at arm time; this check is the standing
-    surface that catches drift on a live box.
+    now preflights + self-heals this at arm time (and on the CONFIRM path for an
+    already-armed box); this check is the standing surface that catches drift on a
+    live box.
 
     Skips cleanly when the coupling is NOT shm_ring (the ring is inert — the env /
     conf.d values are placeholders that nothing opens, so a "mismatch" is not a
@@ -2222,10 +2227,26 @@ def check_ring_geometry_coherence() -> CheckResult:
             "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring "
             "(it deletes a geometry-mismatched ring file before re-arming).",
         )
+    # period_frames is the SECOND on-disk geometry axis (the ring slot IS one
+    # outputd period): a file with matching n_slots but a stale period_frames also
+    # fails the ioplug attach — the exact confusing daemon-level error the
+    # preflights exist to pre-empt. Compare against the conf.d's pinned period when
+    # it is readable (indeterminate conf.d period → skip this axis, don't guess).
+    conf_period = ring_assets.ring_conf_period_frames(_JTS_RING_CONF_D)
+    if conf_period is not None and header.period_frames != conf_period:
+        return CheckResult(
+            label, "fail",
+            f"on-disk Ring A ({ring_assets.RING_A_PROGRAM_FILE}) has period_frames="
+            f"{header.period_frames} but conf.d expects {conf_period} (n_slots match "
+            f"at {header.n_slots}). A stale ring file from a prior period geometry "
+            "blocks the ioplug attach. Run: sudo /opt/jasper/.venv/bin/"
+            "jasper-fanin-coupling-reconcile shm_ring (it deletes a geometry-"
+            "mismatched ring file before re-arming).",
+        )
     return CheckResult(
         label, "ok",
-        f"Ring A n_slots coherent across env + conf.d + on-disk header "
-        f"(n_slots={header.n_slots})",
+        f"Ring A geometry coherent across env + conf.d + on-disk header "
+        f"(n_slots={header.n_slots}, period_frames={header.period_frames})",
     )
 
 

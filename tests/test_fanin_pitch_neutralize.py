@@ -33,14 +33,14 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "deploy" / "bin" / "jasper-fanin-pitch-neutralize"
 
 
-def _fake_amixer(tmp_path: Path) -> tuple[Path, Path]:
-    """A fake amixer that appends its full argv to a log and exits 0."""
+def _fake_amixer(tmp_path: Path, *, exit_code: int = 0) -> tuple[Path, Path]:
+    """A fake amixer that appends its full argv to a log and exits ``exit_code``."""
     log = tmp_path / "amixer.log"
     fake = tmp_path / "amixer"
     fake.write_text(
         "#!/usr/bin/env bash\n"
         'printf "%s\\n" "$*" >> "$JASPER_FAKE_AMIXER_LOG"\n'
-        "exit 0\n",
+        f"exit {exit_code}\n",
         encoding="utf-8",
     )
     fake.chmod(0o755)
@@ -53,8 +53,9 @@ def _run(
     host_clock: str | None,
     usb_direct: str | None,
     device: str | None = None,
+    amixer_exit: int = 0,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
-    fake_amixer, log = _fake_amixer(tmp_path)
+    fake_amixer, log = _fake_amixer(tmp_path, exit_code=amixer_exit)
     env = os.environ.copy()
     env["JASPER_AMIXER"] = str(fake_amixer)
     env["JASPER_FAKE_AMIXER_LOG"] = str(log)
@@ -172,3 +173,24 @@ def test_plughw_prefix_is_stripped(tmp_path: Path):
     )
     assert proc.returncode == 0, proc.stderr
     assert "-c UAC2Gadget " in log.read_text()
+
+
+def test_amixer_failure_propagates_nonzero_exit_not_swallowed(tmp_path: Path):
+    # Defect E comment correctness (2026-07-05): the helper `exec`s amixer, so a
+    # missing card / amixer error is NOT swallowed to exit 0 — the script's exit
+    # status IS amixer's. (jasper-fanin.service's leading `-` on the ExecStopPost
+    # line is what makes that non-fatal to the stop; the helper itself surfaces the
+    # real failure code for the journal.) This pins that the "exec, don't mask"
+    # behaviour matches the corrected comment.
+    proc, log = _run(
+        tmp_path,
+        host_clock="enabled",
+        usb_direct="enabled",
+        amixer_exit=1,
+    )
+    assert proc.returncode == 1, (
+        "helper must PROPAGATE amixer's non-zero exit (exec, not swallow-to-0); "
+        f"got returncode={proc.returncode}"
+    )
+    # It still attempted the cset (the failure came from amixer, not a skipped call).
+    assert "Capture Pitch 1000000" in log.read_text()

@@ -403,11 +403,19 @@ curl -s http://jts.local:8780/state | jq .audio_graph.fanin.host_clock
   presence change, device + errno + cumulative retries), `event=fanin.usb_direct.armed`
   at config load, `event=usbsink_audio.standby active=true` at bridge start.
   `event=fanin.usb_direct.reopen reason=zombie_handle` fires when a Present handle
-  has read exactly 0 frames for ~2 s (the gadget was rebuilt underneath it, no
-  errno) and the lane force-closes + re-opens the capture; the host-clock servo's
-  ctl handle is dropped on the same edge (`event=fanin.host_clock_ctl_error ...
-  action=drop_stale_handle`) so the next session edge re-opens it against the
-  rebuilt card.
+  that had been feeding the lane goes deaf — `avail_update()` returns exactly 0 for
+  ~2 s **after** frames had flowed on that handle (the gadget was rebuilt underneath
+  it, no errno) — and the lane force-closes + re-opens the capture; the host-clock
+  servo's ctl handle is dropped on the same edge (`event=fanin.host_clock_ctl_error
+  ... action=drop_stale_handle`) so the next session edge re-opens it against the
+  rebuilt card. The **flowing→dead** gate (`frames_flowed_since_open`, added
+  2026-07-05) is load-bearing: an ordinary attached-but-silent host streams
+  `avail≈0` drains indefinitely with no gadget rebuild (see "attached-idle drains
+  record `avail≈0`" below), and firing on raw zero-avail alone would churn a reopen
+  every ~2 s of idle on a Mac-wired box — journal spam plus a `reopens` counter that
+  no longer means "gadget rebuilt underneath." Because a fresh reopen clears the
+  latch, a reopen that lands back on a still-zombie gadget does not immediately
+  re-fire; `reopens` counts one increment per real rebuild.
 
 ### Impulse tap moves to fan-in (C4)
 

@@ -1553,6 +1553,10 @@ def test_usbsink_restart_is_rate_limited_within_window(tmp_path: Path):
         "the storm breaker must refuse a second gadget-rebuilding restart in the window"
     )
     assert "event=audio_hardware_reconcile.usbsink_restart_ratelimited" in second.stderr
+    # Defect D: the refusal must NAME the resulting env↔daemon drift (not a silent
+    # no-op) so it is observable in the journal — mirroring the doctor's
+    # check_usbsink_env_drift surface. usbsink.env is now ahead of the daemon.
+    assert "event=audio_hardware_reconcile.route_env_drift" in second.stderr
 
 
 def test_usbsink_restart_allowed_after_window_elapses(tmp_path: Path):
