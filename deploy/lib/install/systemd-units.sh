@@ -96,6 +96,7 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
     "0644 deploy/systemd/jasper-camilla-recover.service ${SYSTEMD_DIR}/jasper-camilla-recover.service"
     "0644 deploy/systemd/jasper-camilla-crossover.service ${SYSTEMD_DIR}/jasper-camilla-crossover.service"
     "0644 deploy/systemd/jasper-fanin.service ${SYSTEMD_DIR}/jasper-fanin.service"
+    "0644 deploy/systemd/jasper-fanin-coupling-auto.service ${SYSTEMD_DIR}/jasper-fanin-coupling-auto.service"
     "0644 deploy/systemd/jasper-outputd.service ${SYSTEMD_DIR}/jasper-outputd.service"
     "0644 deploy/systemd/jasper-control.service ${SYSTEMD_DIR}/jasper-control.service"
     "0644 deploy/systemd/jasper-doctor-json.service ${SYSTEMD_DIR}/jasper-doctor-json.service"
@@ -579,9 +580,19 @@ park_low_memory_build_units() {
 park_streambox_brain_units() {
     # Converting from a full speaker to streambox must park local brain
     # surfaces while keeping renderer/DSP/source surfaces alive.
+    #
+    # jasper-fanin-coupling-auto.service is in this list (not just the brain units):
+    # the shared audio-graph rows install its unit file on BOTH profiles, but only
+    # the FULL install enables + runs the P3/P4 default-flip pass
+    # (resolve_fanin_coupling_default). A full box has it ENABLED; a full→streambox
+    # conversion must disable it here, or it would run every boot on the streambox —
+    # arming the ring on zero-class hardware the P4 campaign never validated (its
+    # hardware targets were full boxes). A fresh streambox never enables it, so this
+    # is a no-op there.
     for brain_unit in \
         jasper-voice.service jasper-aec-bridge.service jasper-aec-init.service \
         jasper-aec-reconcile.service jasper-input.service \
+        jasper-fanin-coupling-auto.service \
         jasper-dial-web.socket jasper-dial-web.service \
         camillagui.socket camillagui.service camillagui-proxy.service; do
         systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true
@@ -824,6 +835,11 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-fanin.service" \
         "${SYSTEMD_DIR}/jasper-fanin.service"
+    # P3/P4 default-flip: the boot-time coupling + USB combo default resolver.
+    # Enabled + run once by resolve_fanin_coupling_default below.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-fanin-coupling-auto.service" \
+        "${SYSTEMD_DIR}/jasper-fanin-coupling-auto.service"
     # jasper-outputd: mainline final-output owner.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-outputd.service" \
@@ -1241,6 +1257,13 @@ install_systemd_units() {
     # watchdog-loop on an unfed UDP socket.
     reconcile_aec_state
     reconcile_grouping_state
+    # P3/P4 default-flip: resolve the SHIPPED default fan-in coupling (shm_ring on
+    # a ring-eligible box, else loopback) and the USB combo (on a gadget box),
+    # UNLESS the operator recorded an explicit choice. Runs AFTER grouping
+    # reconcile so the coupling pass sees the settled active-leader state. A no-op
+    # on an operator-frozen box and on an already-resolved box (confirm path, no
+    # daemon bounce).
+    resolve_fanin_coupling_default
     # WiFi profile guardian: oneshot at boot, gated by
     # ConditionPathExists= on the wizard's stash file. Enabling is safe
     # on fresh installs because the unit silently no-ops until the

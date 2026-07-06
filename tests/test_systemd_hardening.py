@@ -51,6 +51,10 @@ RECONCILE_ONESHOTS = {
     "jasper-grouping-reconcile": (
         ROOT / "deploy/systemd/jasper-grouping-reconcile.service"
     ),
+    # P3/P4 default-flip: the boot-time fan-in coupling + USB combo resolver.
+    "jasper-fanin-coupling-auto": (
+        ROOT / "deploy/systemd/jasper-fanin-coupling-auto.service"
+    ),
 }
 
 # Directives every Tier-A unit must carry (key -> required value, or None = any value).

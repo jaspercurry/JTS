@@ -36,11 +36,26 @@ pub const RING_SLOTS_MAX: u32 = 16;
 
 /// The frames the post-lock cushion decay floor keeps ABOVE the base resampler
 /// target — a small working cushion the outer DLL always has to steer within.
-/// The decay never descends below `input_resampler_target_frames + this`, and it
-/// is the default floor. 32 frames ≈ 0.67 ms at 48 kHz: enough for the DLL's
-/// ±adjust authority to hold the fill without underrunning, but the tightest
-/// safe reclaim of the standing cushion.
+/// The decay never descends below `input_resampler_target_frames + this` (the
+/// hard MINIMUM the arm-time guard enforces). 32 frames ≈ 0.67 ms at 48 kHz:
+/// enough for the DLL's ±adjust authority to hold the fill without underrunning,
+/// but the tightest safe reclaim of the standing cushion.
 pub const CUSHION_DECAY_FLOOR_MARGIN_FRAMES: u32 = 32;
+
+/// The SHIPPED decay-floor default (the P3/P4 default-flip value). This is the
+/// hardware-VALIDATED floor from the jts.local combo-armed product-path gate
+/// (2026-07: Apple USB-C dongle, target 512 / period 256 / ±500 ppm — see
+/// `docs/HANDOFF-usb-low-latency.md`), NOT a bare `target + margin`. The tighter
+/// derived minimum `max(target, minimum_safe_fill) + 32` (= 544 at the default
+/// geometry) stays the HARD floor the armed guard rejects below; this constant is
+/// only what an out-of-box combo box descends TO when it sets no explicit
+/// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES`. Clamped into
+/// `[derived_min, ceiling]` at parse time so a small-target geometry (ceiling <
+/// 576) still constructs. Shipping the validated 576 (not 544) means a
+/// default-flip box that arms the combo lands on the exact floor the gate proved
+/// stable — the campaign default-coherence fix (P3). MUST agree with
+/// `.env.example`'s documented default and the HANDOFF's floor value.
+pub const DEFAULT_CUSHION_DECAY_FLOOR_FRAMES: u32 = 576;
 
 /// The jitter headroom the STATIC held target (`target + warm-up cushion`) must
 /// keep above the post-render underfill-unlock threshold. Same 32-frame DLL
@@ -594,18 +609,29 @@ impl Config {
         let cushion_decay_floor_min = (input_resampler_target_frames
             + CUSHION_DECAY_FLOOR_MARGIN_FRAMES)
             .max(cushion_decay_min_safe_fill + CUSHION_DECAY_FLOOR_MARGIN_FRAMES);
-        let cushion_decay_floor_default = cushion_decay_floor_min;
+        // The acquisition ceiling the decay descends FROM. The floor must sit in
+        // [floor_min, ceiling]: above the ceiling there is nothing to decay.
+        // Computed BEFORE the default so the default can clamp under it.
+        let cushion_decay_ceiling =
+            input_resampler_target_frames + input_resampler_warmup_cushion_frames;
+        // Ship the hardware-VALIDATED floor (DEFAULT_CUSHION_DECAY_FLOOR_FRAMES =
+        // 576, the jts.local combo-armed gate value) as the out-of-box default, not
+        // the tighter unvalidated derived minimum (544 at the default geometry).
+        // Clamp into [floor_min, ceiling]: never below the physical/DLL-margin hard
+        // floor, never above the acquisition ceiling (a small-target geometry whose
+        // ceiling < 576 constructs at its ceiling). This is the P3 default-coherence
+        // fix — a default-flip box arming the combo with no explicit floor lands on
+        // the validated 576 and constructs cleanly.
+        let cushion_decay_floor_default = DEFAULT_CUSHION_DECAY_FLOOR_FRAMES
+            .max(cushion_decay_floor_min)
+            .min(cushion_decay_ceiling);
         let input_resampler_cushion_decay_floor_frames = env_u32(
             "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
             cushion_decay_floor_default,
         )?;
-        // The acquisition ceiling the decay descends FROM. The floor must sit in
-        // [floor_min, ceiling]: above the ceiling there is nothing to decay.
         // Validate fail-loud (the `validate_audio_config` idiom) — but only when
         // the feature is armed, so a stale floor on a decay-off box never blocks
         // boot.
-        let cushion_decay_ceiling =
-            input_resampler_target_frames + input_resampler_warmup_cushion_frames;
         if input_resampler_cushion_decay_enabled
             && !(cushion_decay_floor_min..=cushion_decay_ceiling)
                 .contains(&input_resampler_cushion_decay_floor_frames)
@@ -1107,15 +1133,18 @@ mod tests {
                 assert_eq!(cfg.input_resampler_warmup_cushion_frames, 2048);
                 assert_eq!(cfg.input_resampler_ring_frames, 0);
                 // Post-lock cushion DECAY is DEFAULT-OFF (latency lever 1); its
-                // knobs default to the tightest-safe floor (target + 32-frame DLL
-                // margin), an 18-frame gentle step, and a 1 s interval.
+                // knobs default to the hardware-validated floor (576, the jts.local
+                // combo-armed gate value — clamped into [derived_min, ceiling]), an
+                // 18-frame gentle step, and a 1 s interval. (P3 default-coherence:
+                // the shipped default is the validated 576, not the tighter derived
+                // 544 = target 512 + 32-frame margin.)
                 assert!(
                     !cfg.input_resampler_cushion_decay_enabled,
                     "cushion decay must default OFF"
                 );
                 assert_eq!(
                     cfg.input_resampler_cushion_decay_floor_frames,
-                    512 + CUSHION_DECAY_FLOOR_MARGIN_FRAMES
+                    DEFAULT_CUSHION_DECAY_FLOOR_FRAMES
                 );
                 assert_eq!(cfg.input_resampler_cushion_decay_step_frames, 18);
                 assert_eq!(cfg.input_resampler_cushion_decay_interval_ms, 1000);
@@ -1740,17 +1769,73 @@ mod tests {
     }
 
     #[test]
-    fn cushion_decay_floor_defaults_to_target_plus_margin() {
+    fn cushion_decay_floor_defaults_to_validated_floor() {
+        // P3 default-coherence: the SHIPPED default is the hardware-validated
+        // jts.local floor (DEFAULT_CUSHION_DECAY_FLOOR_FRAMES = 576), not the
+        // tighter derived `target + margin` (544 at the default geometry). It sits
+        // above the derived minimum and below the acquisition ceiling.
         with_env(
             &[
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", None),
+                ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
                 ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
             ],
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
                 assert_eq!(
                     cfg.input_resampler_cushion_decay_floor_frames,
-                    cfg.input_resampler_target_frames + CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
+                    DEFAULT_CUSHION_DECAY_FLOOR_FRAMES,
+                    "default floor is the validated 576, not target+margin",
+                );
+                // Still inside the hard bounds: >= derived min (target 512 + 32 =
+                // 544), <= ceiling (target 512 + cushion 2048 = 2560).
+                assert!(
+                    cfg.input_resampler_cushion_decay_floor_frames
+                        >= cfg.input_resampler_target_frames + CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
+                );
+                assert!(
+                    cfg.input_resampler_cushion_decay_floor_frames
+                        <= cfg.input_resampler_target_frames
+                            + cfg.input_resampler_warmup_cushion_frames,
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn combo_armed_default_config_constructs() {
+        // The P3/P4 default-flip regression: a gadget box's auto pass arms the USB
+        // combo (USB_DIRECT + HOST_CLOCK + CUSHION_DECAY, all `enabled`) with NO
+        // explicit floor / target / cushion. The whole point of shipping 576 as the
+        // decay-floor default (instead of leaving the derived 544 that the campaign
+        // brief flagged) is that this exact combo-armed default construction never
+        // fails `Config::from_env`. Pin it: the validated default floor must sit in
+        // range for the armed guard so a default-flip box boots.
+        with_env(
+            &[
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
+                ("JASPER_FANIN_HOST_CLOCK", Some("enabled")),
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
+                // Everything geometry-related left at its default.
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", None),
+                ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
+                ("JASPER_FANIN_PERIOD_FRAMES", None),
+                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", None),
+            ],
+            || {
+                let cfg = Config::from_env()
+                    .expect("combo-armed default config must construct (P3 floor coherence)");
+                assert!(cfg.usb_direct_enabled, "combo arms USB direct");
+                assert!(cfg.host_clock_enabled, "combo arms host clock");
+                assert!(
+                    cfg.input_resampler_cushion_decay_enabled,
+                    "combo arms cushion decay"
+                );
+                // The armed decay-floor guard passed with the shipped default.
+                assert_eq!(
+                    cfg.input_resampler_cushion_decay_floor_frames,
+                    DEFAULT_CUSHION_DECAY_FLOOR_FRAMES,
                 );
             },
         );
@@ -1845,24 +1930,67 @@ mod tests {
 
     #[test]
     fn cushion_decay_floor_default_respects_minimum_safe_fill() {
-        // For a small base target the DEFAULT floor must be lifted to
-        // `minimum_safe_fill + margin`, not `target + margin` — the default must
-        // never itself be churn-by-construction. target 200 / period 256 /
-        // max_ppm 500 → min_safe 274 → default floor 306 (not 232).
+        // The DEFAULT floor must NEVER be churn-by-construction: it must sit at or
+        // above the physical underfill-unlock threshold `minimum_safe_fill +
+        // margin` (the invariant this test guards). Since P3, the shipped default
+        // is `max(DEFAULT_CUSHION_DECAY_FLOOR_FRAMES, derived_min).min(ceiling)`, so
+        // for a small base target the validated 576 already clears the physical
+        // floor with room to spare (target 200 / period 256 / max_ppm 500 →
+        // min_safe 274 → derived floor 306; 576 > 306, and 576 < ceiling 2248).
         with_env(
             &[
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("200")),
                 ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
                 ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
             ],
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
                 let min_safe = jasper_resampler::minimum_safe_fill_frames(256, 500.0) as u32;
+                // The load-bearing invariant: the default is never below the
+                // physical floor (would churn every period).
+                assert!(
+                    cfg.input_resampler_cushion_decay_floor_frames
+                        >= min_safe + CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
+                    "default floor for a small target must respect the physical floor"
+                );
+                // At this small target the validated 576 default binds (it is above
+                // the derived min and below the ceiling).
                 assert_eq!(
                     cfg.input_resampler_cushion_decay_floor_frames,
-                    min_safe + CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
-                    "default floor for a small target must respect the physical floor"
+                    DEFAULT_CUSHION_DECAY_FLOOR_FRAMES,
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn cushion_decay_floor_default_clamps_under_ceiling_for_small_cushion() {
+        // A geometry whose acquisition ceiling (target + warmup cushion) sits BELOW
+        // the validated 576 default must clamp the default down to the ceiling (a
+        // floor above the ceiling has nothing to decay and would fail the guard).
+        // target 512 + cushion 40 = 552 ceiling < 576; derived_min = 544; so the
+        // default clamps to 552 and the armed guard passes.
+        with_env(
+            &[
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("512")),
+                (
+                    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
+                    Some("40"),
+                ),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
+            ],
+            || {
+                let cfg = Config::from_env()
+                    .expect("small-ceiling geometry must construct (default clamps to ceiling)");
+                assert_eq!(
+                    cfg.input_resampler_cushion_decay_floor_frames,
+                    512 + 40,
+                    "default clamps to the acquisition ceiling when it is below 576",
                 );
             },
         );

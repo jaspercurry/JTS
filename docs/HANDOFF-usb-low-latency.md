@@ -177,7 +177,30 @@ window) and states whether the declaration *would* be justified — it never
 asserts `--route-health-ok` on the operator's behalf; read the printed
 deltas and decide.
 
-## USB DIRECT (combo mode) — delete the bridge hop + aloop cable (DEFAULT-OFF PoC)
+## USB DIRECT (combo mode) — delete the bridge hop + aloop cable (P3: DEFAULT-ON on gadget boxes)
+
+> **Default status (P3 default-flip, landed).** The USB combo is now the SHIPPED
+> DEFAULT — but only on a box that BOTH (a) has the gadget stack available
+> (`dtoverlay=dwc2,dr_mode=peripheral` present — the always-on USB network adds it
+> fleet-wide, so this alone is NOT the gate) AND (b) has USB Audio Input turned ON
+> by the household (`jasper-usbsink.service` enabled — the same intent the
+> `/sources/` wizard toggles). The boot/deploy reconciler pass
+> `jasper-fanin-coupling-reconcile --auto` is the SINGLE writer of BOTH combo
+> halves: it writes the three fan-in keys (`JASPER_FANIN_USB_DIRECT` +
+> `JASPER_FANIN_HOST_CLOCK` + `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` = `enabled`)
+> into `/var/lib/jasper/fanin.env` AND `JASPER_USBSINK_AUDIO_STANDBY=1` into
+> `/var/lib/jasper/usbsink.env`, then restarts jasper-usbsink so the bridge stands
+> down and stops holding `hw:UAC2Gadget`. Off a combo box it writes the EXPLICIT off
+> values (`disabled` / `0`, not unset — a stale `enabled` in `/etc/jasper/jasper.env`
+> loads first and would otherwise win). Both halves MUST arm together: arming only
+> the fan-in half leaves fan-in and the still-live bridge fighting over the gadget
+> capture, and USB audio goes silent or crash-loops. The prose below still describes
+> HOW the combo works and its safety matrix; where it says "DEFAULT-OFF / hand-armed"
+> read that as the pre-P3 posture. **To revert:** set
+> `JASPER_FANIN_COUPLING_CHOICE=operator` and set the combo keys to their off values
+> (see `.env.example`) — the auto pass then no-ops and the revert sticks. The floor
+> default is now the validated **576** (`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`) so a
+> combo-armed default constructs.
 
 `JASPER_FANIN_USB_DIRECT=enabled` + `JASPER_USBSINK_AUDIO_STANDBY=1` removes the
 usbsink **bridge hop + the snd-aloop cable** (~25 ms measured) from the USB path:
@@ -219,10 +242,18 @@ idle even while fan-in is audibly mixing its direct lane:
 - **The landing-page Source UI shows USB idle** while it's mixing, because the
   renderer state it reads is the bridge's `playing:false`.
 
-This is acceptable for the lab arming (combo is DEFAULT-OFF and hand-armed for
-measurement, not a household posture), but it is a real containment gap, not
-"nothing else changes." Wiring standby to publish an honest playing/arbitration
-signal is the follow-up before combo could ship on by default.
+**This gap is now LIVE, not lab-only (P3 default-flip).** As of P3 the combo is
+the SHIPPED default on any gadget box, so the arbitration/UI gap above applies to
+every such household — not just a hand-armed lab box. It was validated as
+acceptable on jts.local, where the wired Mac is effectively the SOLE source (USB
+rarely contends with AirPlay/Spotify/BT simultaneously), which is the common
+gadget-box shape. But on a gadget box that DOES mix sources, USB will not preempt
+and the Source UI will show it idle while it plays. **Wiring standby to publish an
+honest playing/arbitration signal remains the top P3 follow-up** — it was
+originally gated as "the follow-up before combo could ship on by default," and the
+default-flip shipped ahead of it on the strength of the solo-box validation. Track
+it before promoting combo to multi-source households. To opt a contended box out,
+revert per the default-status callout at the top of this section.
 
 ### Host-slaved USB clock in combo mode (fan-in owns the ctl)
 

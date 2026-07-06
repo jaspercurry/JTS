@@ -302,8 +302,8 @@ touches it EXCEPT the USB phases, gadget-dependent).
 | P0 | **(in flight)** compliance persistence | fanin compliance state module | its own PR gates | env off | jts.local |
 | P1 | Ring platform ship (inert) | `install.sh` + `deploy/lib/install/`: build `c/jts-ring-ioplug` (needs `libasound2-dev`), install `.so` + conf.d for both ring devices + `/dev/shm/jts-ring` tmpfiles/perms; doctor `ring assets` check | deploy jts3: assets present, default-off byte-identical (doctor clean, AirPlay pass) | none needed (inert) | all 4 |
 | P2 | Ring citizenship | emitters (`sound/camilla_yaml.py` + carrier) emit ring capture/playback; `coupling_reconcile` learns `shm_ring` (ordered arm/disarm + activation gate); topology-contract + statefile seeding; artifact binder + `audio_runtime_plan` accept ring for `usb_low_latency_48k`; `/state` + doctor drift checks; multiroom prechecks extended to `shm_ring` (risk 6) | jts3 arm→disarm round-trip via reconciler + AirPlay clicks; jts.local quick route artifact under ring | ordered disarm → loopback | full first |
-| P3 | USB combo default-on where gadget present | flags direct+standby+servo+decay+persistence; honest standby arbitration signal (mux/Source-UI gap) | user smoke-test approval; quick artifact; soak | env flags off (solo aloop still present until P5a) | jts.local |
-| P4 | **Rings default** (solo-stereo topologies) | reconciler flips default coupling+content-bridge to ring where topology is solo-stereo; rollback env documented in `.env.example` | per-box deploy + AirPlay/Spotify/BT pass + 24 h burn-in each; doctor green | `JASPER_FANIN_CAMILLA_COUPLING=loopback` + `JASPER_OUTPUTD_CONTENT_BRIDGE=direct` | jts, jts3, jts4; **jts5/active EXCLUDED** (P8) |
+| P3 | **LANDED** — USB combo default-on where gadget present | `coupling_reconcile --auto` (single writer) writes `JASPER_FANIN_USB_DIRECT`/`_HOST_CLOCK`/`_RESAMPLER_CUSHION_DECAY=enabled` into fanin.env on a gadget box (`dtoverlay=dwc2,dr_mode=peripheral` present), clears them off one; config.rs decay-floor default → validated **576** so a combo-armed default constructs (`jasper.fanin.coupling_auto`) | user smoke-test approval; quick artifact; soak | operator marker + unset the 3 flags (see below) | jts.local |
+| P4 | **LANDED** — Rings default (solo-stereo topologies) | `coupling_reconcile --auto` resolves the default coupling to `shm_ring` when ALL #1169 arm preflights pass (assets+topology+geometry), else loopback; runs on deploy (install.sh `resolve_fanin_coupling_default`) + boot (`jasper-fanin-coupling-auto.service`); operator-choice marker (`JASPER_FANIN_COUPLING_CHOICE`) freezes a revert; `/state.audio_graph.coupling.choice` surfaces operator-vs-auto | per-box deploy + AirPlay/Spotify/BT pass + 24 h burn-in each; doctor green | marker + `JASPER_FANIN_CAMILLA_COUPLING=loopback` + `JASPER_OUTPUTD_CONTENT_BRIDGE=direct` | jts, jts3, jts4; **jts5/active EXCLUDED** (P8) |
 | P5a | Delete: Python pump + lean lane + solo aloop mode | A1+A3 files, `usbsink_substream` lane, Rust solo bridging + catch-up (daemon → standby-only), env keys, pipe-guard lean branch; guard test: route refuses deleted knobs | fleet deploy; USB DIRECT regression on jts.local | revert PR | all (USB bits jts.local) |
 | P5b | Delete: transport_pipe | `fifo.rs`, `local_content_pipe.rs`, coupling branch + reconciler branch + prechecks, env keys | fleet deploy + doctor | revert PR | all |
 | P5c | Delete: rate_match + adaptive-buffer + cushion recipes | `content_bridge.rs` rate-matcher, `fanin/buffer_reconcile.py`, mux `_settle_adaptive_buffer`, stale env/doc recipes | fleet deploy + doctor | revert PR | all |
@@ -318,6 +318,65 @@ touches it EXCEPT the USB phases, gadget-dependent).
 
 Deletions are separate PRs by repo guardrail. P4 starts the burn-in clock
 that P5+ waits on. P8 may land before or parallel to P6 — it gates only P9.
+
+### P3/P4 landed — what shipped + the RING-A slot-default follow-up
+
+The default-flip landed as one PR (`audio/default-flip-p3-p4`), built on the
+#1169 overnight fix batch (its geometry preflight, self-heal, storm fixes, and
+zombie-handle reopen are prerequisites). What it does:
+
+- **Default resolution owner.** `jasper.fanin.coupling_auto` holds the pure
+  decision; `jasper.fanin.coupling_reconcile.reconcile_auto` (the `--auto` CLI
+  mode) owns the env I/O (pattern 3 — the reconciler is the single env writer).
+  It runs on deploy (`install.sh` → `resolve_fanin_coupling_default`) and boot
+  (`jasper-fanin-coupling-auto.service`).
+- **Coupling default (P4).** On a solo, ring-eligible box the default coupling is
+  `shm_ring`, resolved by gating on the SAME #1169 arm preflights a manual arm
+  uses (`ring_assets_ready` + topology + `ring_geometry_ready` +
+  `ring_slot_geometry_ready`) PLUS two auto-only gates: a ROUTE-support gate
+  (`ring_route_ready` — a grouped box resolves `loopback`, so the boot unit does
+  not fail on a healthy leader/follower) and the fail-CLOSED topology variant
+  (`ring_topology_ready_strict` — an unreadable topology resolves `loopback` instead
+  of arm→rollback-churning every boot). Any gate failing → `loopback`. Before the
+  gates run, the auto pass self-heals a shear-prone stale `JASPER_FANIN_RING_SLOTS`
+  exactly as a manual arm does, so a stale lab `=2` line does not DISARM a box a
+  manual arm would migrate and keep. Ineligible boxes (jts3 roleful, jts5 composite,
+  jts4 fanin-less, any grouped box) are a NO-OP that resolves loopback and succeeds.
+- **USB combo default (P3).** The combo arms only on a box that BOTH has the gadget
+  stack available (`dtoverlay=dwc2,dr_mode=peripheral` — added fleet-wide for the
+  always-on USB network, so NOT a sufficient gate alone) AND has USB Audio Input
+  turned ON by the household (`jasper-usbsink.service` enabled — the `/sources/`
+  intent signal). When armed, the auto pass is the SINGLE writer of BOTH halves: the
+  three fan-in keys (`JASPER_FANIN_USB_DIRECT`/`_HOST_CLOCK`/`_RESAMPLER_CUSHION_DECAY`
+  `=enabled`) in fanin.env AND `JASPER_USBSINK_AUDIO_STANDBY=1` in usbsink.env (then
+  it restarts jasper-usbsink so the bridge stands down and releases `hw:UAC2Gadget`).
+  Off a combo box both halves are written their EXPLICIT off values (`disabled` / `0`,
+  not unset — a stale `enabled` in jasper.env loads first and would otherwise win).
+  The two halves must arm together or fan-in and the still-live bridge fight over the
+  gadget capture and USB audio goes silent / crash-loops.
+- **Floor default (P3).** `config.rs`'s `DEFAULT_CUSHION_DECAY_FLOOR_FRAMES` is the
+  hardware-validated **576** — the exact floor the jts.local combo product-path gate
+  proved stable. (The derived minimum `max(target,min_safe)+32` = 544 at the default
+  geometry was always in range, so the pre-P3 default constructed fine; shipping 576
+  is about landing on the PROVEN floor, not fixing a construct failure. It is still
+  clamped into `[derived_min, ceiling]` so a small-target geometry constructs.
+  Regression: `combo_armed_default_config_constructs`.)
+- **Revert lever.** `JASPER_FANIN_COUPLING_CHOICE=operator` (written by the
+  explicit reconciler CLI path) freezes the box — the auto pass never overrides
+  an operator choice. `/state.audio_graph.coupling.choice` reports operator-vs-auto.
+
+**RING-A slot default STAYS 8 (decision, hardware-backed).** The P3/P4
+product-path gate measured the **8-slot** Ring A at p50 54.3 / p99 57.0 ms
+tap→ref (~65 ms e2e) with 97.5 % match on jts.local — that is the geometry the
+defaults ship (`DEFAULT_FANIN_RING_SLOTS = 8`, the conf.d `jts_ring_capture`
+`n_slots = 8`). The tighter **2-slot** ring hit a ~46 ms e2e floor in the same
+session but is NOT the default: it is documented explicit low-latency tuning
+(`JASPER_FANIN_RING_SLOTS=2` + a matching `conf.d` `n_slots` render), now SAFE
+to set thanks to #1169's geometry preflight (which refuses a mismatched arm
+rather than crash-looping CamillaDSP on the ioplug attach). **Follow-up:** the
+2-slot ring default awaits its own product-path hardware gate (a full
+AirPlay/Spotify/BT + 24 h burn-in pass at 2 slots) before it can ship as the
+default — until then 8 is the proven number.
 
 ## Renderer ingress design (Tier 2 core)
 
@@ -457,4 +516,4 @@ renderers,aec}.py`, `jasper/cli/{aec_tune,aec_bridge}.py`,
 measured floors: [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md)
 "Final state — 2026-07-03".
 
-Last verified: 2026-07-03
+Last verified: 2026-07-06

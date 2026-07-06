@@ -1,0 +1,35 @@
+# DEFAULT-RESOLUTION pass for the fan-in coupling + USB combo (campaign P3/P4).
+# Runs at boot AND on every deploy (install.sh) as a Type=oneshot reconciler
+# (pattern 3: the reconciler is the single env writer; the daemons read the
+# resolved env). It resolves the SHIPPED default:
+#   - ring coupling (shm_ring) on a solo, ring-eligible box, else loopback; and
+#   - the USB low-latency combo on a gadget box, else combo-off.
+# ...UNLESS the operator recorded an explicit choice
+# (JASPER_FANIN_COUPLING_CHOICE=operator in fanin.env), in which case it is a
+# COMPLETE no-op so a deliberate revert sticks across reboots/deploys.
+#
+# A no-op on an already-resolved box (the confirm path bounces no daemon), so
+# the steady-state boot cost is one short reconcile with zero audio churn.
+[Unit]
+Description=Resolve the default fan-in coupling + USB combo (P3/P4 default-flip)
+Documentation=file:/opt/jasper/docs/HANDOFF-audio-graph-consolidation.md
+# Run AFTER the audio graph is up so an arm transition (which bounces
+# fan-in/outputd and reloads CamillaDSP) lands on live daemons. Wants (not
+# Requires) so a degraded box still runs the pass and resolves loopback.
+After=jasper-fanin.service jasper-outputd.service jasper-camilla.service jasper-control.service
+Wants=jasper-fanin.service jasper-outputd.service jasper-camilla.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=60
+# Same env chain the coupling reconciler CLI hydrates internally
+# (load_env_files); listed here too so the unit environment carries the
+# operator marker + combo state for logging context.
+EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/fanin.env
+ExecStart=/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason systemd
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

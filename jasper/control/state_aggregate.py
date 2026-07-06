@@ -290,19 +290,27 @@ def _audio_graph_state(
 
 
 def _coupling_state(*, fanin_status: dict[str, Any] | None) -> dict[str, Any]:
-    """The resolved fan-in -> CamillaDSP coupling (audio-graph consolidation P2).
+    """The resolved fan-in -> CamillaDSP coupling (audio-graph consolidation P2/P4).
 
     Surfaces the persisted intent (``JASPER_FANIN_CAMILLA_COUPLING``, fail-safe to
     loopback), the outputd content bridge it pairs with, whether the two are a
-    COHERENT pair (both ring, or neither — a partial flip is fail-closed), and the
-    live fan-in STATUS transport for a fleet-wide "which transport is this box on"
-    view. Read fresh from the env files (never os.environ — jasper-control isn't
-    restarted on a coupling change). Fail-soft: any read error degrades to the
-    loopback default rather than erroring the whole /state call."""
+    COHERENT pair (both ring, or neither — a partial flip is fail-closed), the live
+    fan-in STATUS transport for a fleet-wide "which transport is this box on" view,
+    and the ``choice`` — whether the current coupling is an explicit ``operator``
+    pick or an ``auto``-resolved default (P4 default-flip; read from the
+    ``JASPER_FANIN_COUPLING_CHOICE`` marker). Read fresh from the env files (never
+    os.environ — jasper-control isn't restarted on a coupling change). Fail-soft:
+    any read error degrades to the loopback default rather than erroring the whole
+    /state call."""
     try:
         from pathlib import Path
 
+        from ..fanin.coupling_auto import (
+            COUPLING_CHOICE_ENV_VAR,
+            resolved_choice_label,
+        )
         from ..fanin.coupling_reconcile import (
+            FANIN_ENV_PATH,
             OUTPUTD_ENV_PATH,
             read_persisted_coupling,
         )
@@ -321,6 +329,11 @@ def _coupling_state(*, fanin_status: dict[str, Any] | None) -> dict[str, Any]:
         content_bridge = resolve_outputd_content_bridge(
             read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
         )
+        try:
+            fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
+        except OSError:
+            fanin_text = ""
+        choice = resolved_choice_label(read_value(fanin_text, COUPLING_CHOICE_ENV_VAR))
         live_transport = None
         if isinstance(fanin_status, dict):
             output = fanin_status.get("output")
@@ -331,6 +344,7 @@ def _coupling_state(*, fanin_status: dict[str, Any] | None) -> dict[str, Any]:
             "content_bridge": content_bridge,
             "coherent": ring_pair_is_coherent(coupling, content_bridge),
             "live_transport": live_transport,
+            "choice": choice,
         }
     except (ImportError, OSError, ValueError, TypeError, AttributeError) as e:
         # Fail-soft: any read/resolve error degrades to the loopback default so a
@@ -343,6 +357,7 @@ def _coupling_state(*, fanin_status: dict[str, Any] | None) -> dict[str, Any]:
             "content_bridge": "direct",
             "coherent": True,
             "live_transport": None,
+            "choice": "auto",
         }
 
 

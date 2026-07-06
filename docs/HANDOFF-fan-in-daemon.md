@@ -613,7 +613,12 @@ coupling selector is deliberately not a lab override; it still goes through the
 ordered `jasper-fanin-coupling-reconcile` transition. The fan-in reconciler
 still owns the actual env-file write, daemon restart, and
 rollback-on-restart-failure ladder; the plan owns the policy so the doctor,
-operator explain CLI, and writer cannot drift.
+operator explain CLI, and writer cannot drift. As of the P3/P4 default-flip the
+reconciler also has an `--auto` mode (`jasper.fanin.coupling_auto`) that resolves
+the SHIPPED default coupling (`shm_ring` on a ring-eligible box, else loopback)
+and the USB combo flags on deploy + boot, unless the operator-choice marker
+`JASPER_FANIN_COUPLING_CHOICE=operator` freezes the box — see
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
 
 **The mechanism (kept here for future reference)**:
 
