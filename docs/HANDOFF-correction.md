@@ -37,6 +37,52 @@
   env knobs in `.env.example` are documented placeholders until then.
   Design of record:
   [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §3.1.
+- 🧪 **P4 — deterministic verify-acceptance loop (hardware-free complete,
+  on-device threshold-tuning pending H1).** After a correction is applied
+  and re-measured, deterministic code — never a model, never the user's
+  optimism — decides **accept / surface / auto-revert**. The pure
+  `AcceptanceEvaluator`
+  ([`jasper/correction/acceptance.py`](../jasper/correction/acceptance.py))
+  takes the pre-correction curve (position-1 matched basis, spatial-average
+  fallback), the re-measured verify curve, and the shared target, and returns
+  a typed verdict `{accept | surface | revert_pending_confirm | revert}` +
+  per-band table + reasons. It NEVER writes CamillaDSP; the session acts. The
+  statistical rules (revision plan §4 P4, born of a red-team that killed the
+  naive per-band rule — the "before" is an N-position average, the verify is
+  one position, and 4–6 dB seat-to-seat std is normal per `spatial.py`):
+  (1) aggregate to **1/3-octave smoothed bands** before any per-band verdict
+  (never raw per-bin); (2) **"clear regression" = a band worse beyond the
+  repeatability floor AND overall band-RMS-error worse beyond a noise margin**
+  — neither alone; (3) **matched basis** — the verify is captured at position 1
+  and compared against the stored position-1 curve (pinned by a
+  divergent-seats multi-position test where the two bases give different
+  verdicts); (4) **one confirmatory re-measure before auto-revert, strictly
+  adjacent** — a first clear regression is `revert_pending_confirm` (the flow
+  offers "Measure again to confirm" via `/verify`, and while it is pending the
+  envelope never offers `/start` as the primary action); only the verify
+  IMMEDIATELY after it, concordantly regressed, escalates to `revert` — a
+  clean confirmatory verify clears the flag, so regress→clean→regress pends
+  again rather than reverting off a stale flag. `auto_revert()` rolls back
+  through the **existing** `reset()` reversal (Layer B removed, speaker DSP +
+  preference preserved) and records the completed outcome as fact
+  (`session.auto_revert_outcome = ok|failed`): a successful revert lands in
+  IDLE where the envelope announces "Reverted — the room says no…" until the
+  next `/start`; a failed one keeps the result screen honest — "STILL
+  APPLIED" with the manual Reset pointer — never claiming a removal that
+  didn't happen. The verdict lands on `session.acceptance`, in the envelope
+  (schema v2 `verdict` block + outcome-driven `verdict_text` — the only field
+  the shipped client renders), in `result.json`/`info.json`/status (bundle
+  schema v4, alongside the `position1` matched-basis curve and
+  `auto_revert_outcome`), and in `event=correction_acceptance.{verdict,
+  auto_revert,auto_revert_outcome}` logs. Thresholds are env-tunable
+  `JASPER_ACCEPT_*` knobs seeded from `spatial.py`'s 4–6 dB std constants —
+  **conservative placeholders retuned at H1** from real on-device
+  repeatability (revision plan §5 H1); a floor-level spectrally-smooth-noise
+  sweep pins that no single sweep can terminal-revert at those seeded floors
+  and documents the measured pend rates as the H1 target. All synthetic (real
+  evaluator against ground-truth curves + session/handler-level integration
+  through the real verify path). Design of record:
+  [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §4 P4.
 - 🧪 **P7 — active-crossover measurement flow (hardware-free complete,
   on-device pending H2).** The Layer-A commissioning *flow* now rides
   the shared substrate: `POST /crossover/relay-capture` (the third

@@ -57,8 +57,10 @@ from jasper.audio_measurement import (
 )
 from jasper.audio_measurement.calibration import CalibrationRecord
 from jasper.audio_measurement.quality_model import ROOM as ROOM_QUALITY
+from jasper.audio_measurement.ramp import RECOVERABLE_ERRORS
 
 from . import (
+    acceptance,
     acoustic_quality,
     browser_audio,
     confidence,
@@ -322,6 +324,14 @@ class MeasurementSession:
         self.measured_curve: CurveJSON | None = None
         self.target_curve: CurveJSON | None = None
         self.predicted_curve: CurveJSON | None = None
+        # Pre-correction curve at position 1 (the FIRST measured position),
+        # retained as the matched comparison basis for the P4 acceptance
+        # verdict: the verify capture is taken at position 1, so comparing it
+        # against this same-geometry curve is apples-to-apples (the spatial
+        # average mixes several seats — see acceptance.py). None for a session
+        # that never captured a position; the evaluator falls back to
+        # measured_curve then.
+        self.position1_curve: CurveJSON | None = None
         self.verify_curve: CurveJSON | None = None
         self.verify_metrics: dict[str, float] | None = None
         # Honest MEASURED before/after readout, populated by the verify
@@ -331,10 +341,38 @@ class MeasurementSession:
         # until a verify measurement lands — the predicted design figure
         # is never promoted into "improvement" without this.
         self.verify_before_after: dict[str, Any] | None = None
+        # P4 deterministic acceptance verdict (accept / surface /
+        # revert_pending_confirm / revert), populated by on_verify_capture_-
+        # uploaded from the pure AcceptanceEvaluator. None until a verify
+        # lands. `_verify_count` and `_prior_clear_regression` track the
+        # confirmatory-re-measure concordance across re-verifies: a clear
+        # regression auto-reverts only when the verify IMMEDIATELY AFTER it
+        # concurs (strict adjacency — a clean verify answers the pending
+        # question and clears the flag).
+        self.acceptance: dict[str, Any] | None = None
+        self._verify_count = 0
+        self._prior_clear_regression = False
+        # Outcome of the automatic rollback, recorded when it actually
+        # completes (never predicted): {"result": "ok"|"failed", "at": ts}.
+        # None = no auto-revert has run to completion (not attempted, or still
+        # in flight after an upload-response timeout — the coroutine keeps
+        # running and records the truth when reset() finishes, which is why
+        # this lives on the session rather than in the HTTP response). The
+        # envelope reads it to tell the household the truth post-revert: a
+        # successful revert lands the session in IDLE, where the honest
+        # "reverted" copy is driven by this field; a failed one leaves the
+        # correction APPLIED and the result-screen copy must say so.
+        self.auto_revert_outcome: dict[str, Any] | None = None
         self.design_report: dict[str, Any] | None = None
 
         self.peqs: list[PEQJSON] = []
         self.config_path: Path | None = None
+        # The CamillaDSP config path that was live immediately BEFORE apply()
+        # swapped in this correction. Captured at apply time so a confirmed-
+        # regression auto-revert can restore exactly the prior graph through
+        # the existing reset() path (never a new reversal mechanism). None
+        # until apply() runs with a config getter.
+        self.pre_apply_config_path: str | None = None
         self.pre_measurement_config_path: Path | None = None
         self.measurement_config_path: Path | None = None
 
@@ -1164,6 +1202,90 @@ class MeasurementSession:
             f_high=self.cfg.peq_f_high,
         )
 
+    def _evaluate_acceptance(
+        self,
+        verify_freqs: np.ndarray,
+        verify_mag_db: np.ndarray,
+        target_db: np.ndarray,
+    ) -> dict[str, Any] | None:
+        """Run the deterministic P4 acceptance verdict for this verify.
+
+        The pure :func:`acceptance.evaluate_acceptance` decides accept /
+        surface / revert_pending_confirm / revert from the MEASURED before/
+        after (never the prediction). The matched comparison basis is the
+        pre-correction **position-1** curve (same geometry as the verify);
+        the spatial-average ``measured_curve`` is the fallback for a session
+        with no retained position-1 curve.
+
+        This method owns the confirmatory-re-measure concordance state: it
+        increments ``_verify_count`` and passes the prior clear-regression flag
+        so a clear regression only escalates from ``revert_pending_confirm`` to
+        ``revert`` when the verify IMMEDIATELY AFTER it concurs. Adjacency is
+        strict: a clean verify ANSWERS the pending question (the first read was
+        noise) and clears the flag, so a later regression starts a fresh
+        pending-confirm cycle rather than firing an instant revert off a stale
+        flag — the household was promised "measure once more to be sure", and
+        that promise holds for every regression.
+
+        Fail-soft: recoverable computation errors return ``None`` (the verdict
+        is simply absent) so the acceptance verdict can never break the verify
+        analysis path. The catch is the named ``RECOVERABLE_ERRORS`` family
+        (P2's precedent in :mod:`jasper.audio_measurement.ramp`), not a blind
+        except — the evaluator itself already degrades malformed inputs to a
+        ``surface`` verdict structurally.
+        """
+        try:
+            if self.position1_curve is not None:
+                basis_freqs = np.asarray(
+                    self.position1_curve.freqs_hz, dtype=np.float64,
+                )
+                basis_mag = np.asarray(
+                    self.position1_curve.magnitude_db, dtype=np.float64,
+                )
+                basis = "position_1"
+            elif self.measured_curve is not None:
+                basis_freqs = np.asarray(
+                    self.measured_curve.freqs_hz, dtype=np.float64,
+                )
+                basis_mag = np.asarray(
+                    self.measured_curve.magnitude_db, dtype=np.float64,
+                )
+                basis = "spatial_average"
+            else:
+                return None
+            if basis_freqs.size == 0 or basis_mag.size != basis_freqs.size:
+                return None
+
+            # Align the pre-correction basis to the verify grid (a no-op when
+            # the grids already match — the normal case).
+            before_on_grid = np.interp(verify_freqs, basis_freqs, basis_mag)
+
+            self._verify_count += 1
+            result = acceptance.evaluate_acceptance(
+                freqs=verify_freqs,
+                before_db=before_on_grid,
+                verify_db=verify_mag_db,
+                target_db=target_db,
+                f_high=self.cfg.peq_f_high,
+                basis=basis,
+                verify_index=self._verify_count,
+                prior_clear_regression=self._prior_clear_regression,
+            )
+            # Record this verify's clear-regression state so the NEXT verify
+            # can judge concordance. STRICT ADJACENCY: a clean verify clears
+            # the flag — the confirmatory sweep the flow asked for has
+            # answered the pending question (first read = noise), so a later
+            # regression must earn its own confirmatory re-measure rather
+            # than reverting instantly off a stale flag. (Latched semantics
+            # compound the single-sweep false-flag rate across re-verifies;
+            # adjacency squares it — the plan's false-revert-is-trust-
+            # expensive axis.)
+            self._prior_clear_regression = result.clear_regression
+            return result.to_dict()
+        except RECOVERABLE_ERRORS:
+            logger.exception("acceptance verdict computation failed")
+            return None
+
     def _build_confidence_report(self) -> dict[str, Any]:
         return confidence.build_confidence_report(
             total_positions=self.total_positions,
@@ -1692,6 +1814,13 @@ class MeasurementSession:
             freqs_hz=log_freqs.tolist(),
             magnitude_db=averaged_db.tolist(),
         )
+        # Retain position 1 (the first captured seat) on its own so the P4
+        # verify can compare against the SAME geometry it re-measures at,
+        # rather than only against the multi-seat spatial average.
+        self.position1_curve = CurveJSON(
+            freqs_hz=log_freqs.tolist(),
+            magnitude_db=self.position_magnitudes[0].tolist(),
+        )
         self.target_curve = CurveJSON(
             freqs_hz=log_freqs.tolist(),
             magnitude_db=design.target_db.tolist(),
@@ -1754,6 +1883,9 @@ class MeasurementSession:
                     raise RuntimeError(
                         "CamillaDSP did not report a loaded config path"
                     )
+                # Remember the pre-swap graph so a P4 confirmed-regression
+                # auto-revert can restore it via the existing reset() path.
+                self.pre_apply_config_path = prior_config_path
                 carrier = carrier_for_loaded_config(
                     prior_config_path,
                     config_dir=self.cfg.config_dir,
@@ -2021,6 +2153,37 @@ class MeasurementSession:
         self.verify_before_after = self._compute_verify_before_after(
             log_freqs, log_mag, target_db,
         )
+        # P4: the deterministic accept/surface/revert verdict. Computed here
+        # (pure — no CamillaDSP) and recorded on the session, in result.json
+        # (below), and in the envelope. When the verdict is a CONFIRMED
+        # regression (`revert`), the web layer performs the automatic rollback
+        # through the existing reset() path — the session never writes
+        # CamillaDSP itself.
+        self.acceptance = self._evaluate_acceptance(
+            log_freqs, log_mag, target_db,
+        )
+        if self.acceptance is not None:
+            log_event(
+                logger,
+                "correction_acceptance.verdict",
+                session=self.session_id,
+                verdict=self.acceptance.get("verdict"),
+                verify_index=self.acceptance.get("verify_index"),
+                basis=self.acceptance.get("basis"),
+                overall_rms_delta_db=self.acceptance.get(
+                    "overall_rms_delta_db"
+                ),
+                regressed_band_count=self.acceptance.get(
+                    "regressed_band_count"
+                ),
+                confirmed=self.acceptance.get("confirmed"),
+                level=(
+                    logging.WARNING
+                    if self.acceptance.get("verdict")
+                    in ("revert", "revert_pending_confirm")
+                    else logging.INFO
+                ),
+            )
         self.verify_quality = self._quality_report_dict(
             capture_quality,
             capture_kind="verify",
@@ -2049,6 +2212,106 @@ class MeasurementSession:
         # listening level here too if autolevel ramped it (e.g. autolevel was
         # re-run from the APPLIED state before this verify).
         await self._restore_listening_volume_if_ramped()
+
+    @property
+    def acceptance_verdict(self) -> str | None:
+        """The current P4 verdict string, or None before a verify lands.
+
+        A thin, side-effect-free accessor the web layer reads to decide
+        whether to trigger the automatic rollback (``revert``) or prompt for a
+        confirmatory re-measure (``revert_pending_confirm``).
+        """
+        if not isinstance(self.acceptance, dict):
+            return None
+        verdict = self.acceptance.get("verdict")
+        return verdict if isinstance(verdict, str) else None
+
+    async def auto_revert(
+        self,
+        camilla_set_config: Callable[[str], Awaitable[bool]],
+        *,
+        target_config_path: str | Path | None = None,
+    ) -> bool:
+        """Automatically roll back a CONFIRMED-regression correction.
+
+        The one automatic action P4 takes against the household's applied
+        choice. It fires only when the deterministic verdict is a *confirmed*
+        clear regression (``revert`` — a second concordant verify, per plan §4
+        P4 point 4); every other verdict (accept / surface /
+        revert_pending_confirm) is a no-op here and returns False.
+
+        The rollback rides the **existing** reset() reversal — this method
+        never invents a new one. ``target_config_path`` is the graph to restore
+        (the caller resolves it the same way ``POST /reset`` does: the no-room
+        re-emit of the current topology, preserving speaker DSP + preference
+        EQ); when the caller passes nothing it falls back to the pre-apply
+        config captured at apply() time, then to the base graph inside reset().
+
+        Returns True only when the rollback actually completed (session now
+        IDLE on the restored graph). The outcome — ok or failed — is recorded
+        on ``self.auto_revert_outcome`` when it is KNOWN, never predicted, so
+        the envelope tells the household the truth even when the caller's HTTP
+        response already went out (an upload-response timeout leaves this
+        coroutine running; it records the result when reset() finishes). On a
+        reset failure reset() itself also fails the session loudly (no silent
+        revert failure).
+        """
+        if self.acceptance_verdict != "revert":
+            return False
+        target = target_config_path or self.pre_apply_config_path
+        log_event(
+            logger,
+            "correction_acceptance.auto_revert",
+            session=self.session_id,
+            target=str(target) if target else None,
+            worst_band_center_hz=(
+                self.acceptance.get("worst_band_center_hz")
+                if isinstance(self.acceptance, dict)
+                else None
+            ),
+            overall_rms_delta_db=(
+                self.acceptance.get("overall_rms_delta_db")
+                if isinstance(self.acceptance, dict)
+                else None
+            ),
+            level=logging.WARNING,
+        )
+        # try/finally (not try/except) so a raising reset() still records a
+        # truthful "failed" outcome while the original exception propagates
+        # untouched. reset() has two NON-raising terminal shapes: success →
+        # IDLE (with rolled_back_to), or CamillaDSP rejected the config →
+        # _fail → FAILED without raising. Only the first is a performed
+        # rollback.
+        ok = False
+        try:
+            await self.reset(camilla_set_config, target_config_path=target)
+            ok = self.state == SessionState.IDLE
+        finally:
+            self._record_auto_revert_outcome("ok" if ok else "failed")
+        return ok
+
+    def _record_auto_revert_outcome(self, result: str) -> None:
+        """Record the completed rollback outcome + rewrite the evidence.
+
+        Called only from auto_revert() once the outcome is a fact. Runs inside
+        its finally-block, so it must never raise: the dict assignment and the
+        log line are non-raising, and the result.json rewrite is guarded (the
+        bundle write must never mask the revert result). The `event=` line
+        makes the outcome greppable next to the intent line auto_revert()
+        already emitted.
+        """
+        self.auto_revert_outcome = {"result": result, "at": time.time()}
+        log_event(
+            logger,
+            "correction_acceptance.auto_revert_outcome",
+            session=self.session_id,
+            result=result,
+            level=logging.WARNING if result != "ok" else logging.INFO,
+        )
+        try:
+            self._write_result_json()
+        except RECOVERABLE_ERRORS:
+            logger.exception("bundle result.json (auto-revert) write failed")
 
     # ------------------------------------------------------------------
     # Auto-level.

@@ -1974,10 +1974,17 @@ def _handle_upload_capture(
     captured_path.parent.mkdir(parents=True, exist_ok=True)
     captured_path.write_bytes(body)
 
+    auto_reverted = False
     if sess.state == SessionState.AWAITING_VERIFY_CAPTURE:
         _run_async(
             sess.on_verify_capture_uploaded(captured_path), timeout=30.0,
         )
+        # P4: a CONFIRMED-regression verdict auto-reverts. The verdict was
+        # computed inside on_verify_capture_uploaded (pure, no CamillaDSP); the
+        # rollback happens here where the CamillaDSP callbacks live, riding the
+        # SAME reset target the /reset button uses (Layer B removed, speaker
+        # DSP + preference preserved). Every other verdict is a no-op.
+        auto_reverted = _maybe_auto_revert(sess)
     elif sess.state == SessionState.AWAITING_REPEAT_CAPTURE:
         _run_async(
             sess.on_repeat_capture_uploaded(captured_path), timeout=30.0,
@@ -2004,6 +2011,8 @@ def _handle_upload_capture(
         ),
         "verify_metrics": sess.verify_metrics,
         "verify_before_after": sess.verify_before_after,
+        "acceptance": getattr(sess, "acceptance", None),
+        "auto_reverted": auto_reverted,
         "capture_quality": sess.capture_quality,
         "noise_reports": sess.noise_reports,
         "repeat": (
@@ -2400,8 +2409,6 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     "remove Layer B" — re-emit the current graph with room PEQs cleared while
     preserving topology-owned speaker DSP and current preference EQ.
     """
-    from jasper.correction.runtime_safety import reset_config_path
-
     sess = _get_or_create_session()
     cam = _camilla()
 
@@ -2409,24 +2416,7 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         return await cam.set_config_file_path(path, best_effort=False)
 
     try:
-        cfg = getattr(sess, "cfg", None)
-        base_config_path = getattr(
-            cfg,
-            "base_config_path",
-            Path("/etc/camilladsp/outputd-cutover.yml"),
-        )
-        target = _pre_measurement_restore_target(sess)
-        if target is None:
-            try:
-                target = _run_async(
-                    _write_no_room_correction_config(sess, cam),
-                    timeout=5.0,
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "/reset: no-room re-emit failed; falling back to safe graph",
-                )
-                target = reset_config_path(base_config_path)
+        target = _resolve_reset_target(sess, cam)
         reset_kwargs = (
             {"target_config_path": target}
             if _reset_accepts_target_config_path(sess.reset)
@@ -2447,6 +2437,106 @@ def _pre_measurement_restore_target(sess: Any) -> Path | None:
         return None
     prior = getattr(sess, "pre_measurement_config_path", None)
     return Path(prior) if prior else None
+
+
+def _resolve_reset_target(sess: Any, cam: Any) -> Path:
+    """Resolve the graph to restore for a reset / auto-revert.
+
+    The single source of truth for "what should the speaker load when we undo
+    room correction," shared by ``POST /reset`` (user-driven) and the P4
+    confirmed-regression auto-revert (deterministic). If a measurement is
+    mid-flight, restore the pre-``/start`` graph; once a correction is applied
+    or verified, re-emit the current topology with room PEQs cleared (Layer B
+    removed, speaker DSP + preference EQ preserved). A re-emit failure falls
+    back to the safe base graph so an undo never strands the speaker.
+    """
+    from jasper.correction.runtime_safety import reset_config_path
+
+    cfg = getattr(sess, "cfg", None)
+    base_config_path = getattr(
+        cfg,
+        "base_config_path",
+        Path("/etc/camilladsp/outputd-cutover.yml"),
+    )
+    target = _pre_measurement_restore_target(sess)
+    if target is None:
+        try:
+            target = _run_async(
+                _write_no_room_correction_config(sess, cam),
+                timeout=5.0,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "reset/auto-revert: no-room re-emit failed; falling back "
+                "to safe graph",
+            )
+            target = reset_config_path(base_config_path)
+    return target
+
+
+def _maybe_auto_revert(sess: Any) -> bool:
+    """Perform the P4 auto-revert when the verdict is a confirmed regression.
+
+    Reads ``sess.acceptance_verdict``; only ``revert`` acts. Resolves the same
+    reset target ``/reset`` uses and drives the session's ``auto_revert`` (which
+    rides the existing ``reset()`` reversal). Returns True when a rollback ran.
+    Best-effort: an auto-revert failure is logged and leaves the correction
+    applied with the ``revert`` verdict still visible — the household can undo
+    manually — rather than 500-ing the verify upload response. reset() itself
+    fails the session loudly on a CamillaDSP rejection, so a failed revert is
+    never silent.
+
+    Failure honesty: when the attempt dies BEFORE the session could record an
+    outcome (target-resolution raise, the 15 s response timeout), a "failed"
+    outcome is stamped here so the result screen says the correction is STILL
+    APPLIED. The stamp never overwrites a recorded outcome, and on a response
+    timeout the still-running auto_revert coroutine records the real result
+    when reset() finishes — a later "ok" overwrites this "failed", so the
+    envelope converges on the truth.
+    """
+    if getattr(sess, "acceptance_verdict", None) != "revert":
+        return False
+    cam = _camilla()
+
+    async def _set(path: str) -> bool:
+        return await cam.set_config_file_path(path, best_effort=False)
+
+    try:
+        target = _resolve_reset_target(sess, cam)
+        revert_kwargs = (
+            {"target_config_path": target}
+            if _auto_revert_accepts_target(sess.auto_revert)
+            else {}
+        )
+        return bool(
+            _run_async(sess.auto_revert(_set, **revert_kwargs), timeout=15.0)
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "P4 auto-revert failed; correction left applied for manual undo",
+        )
+        if getattr(sess, "auto_revert_outcome", None) is None:
+            sess.auto_revert_outcome = {"result": "failed", "at": time.time()}
+        return False
+
+
+def _auto_revert_accepts_target(revert_fn: Any) -> bool:
+    """True when ``auto_revert`` accepts a ``target_config_path`` kwarg.
+
+    Mirrors ``_reset_accepts_target_config_path`` so a duck-typed session
+    stand-in without the kwarg still works (the session falls back to its
+    captured pre-apply config).
+    """
+    try:
+        params = inspect.signature(revert_fn).parameters
+    except (TypeError, ValueError):
+        return True
+    if "target_config_path" in params:
+        return True
+    return any(
+        param.kind is inspect.Parameter.VAR_KEYWORD
+        for param in params.values()
+    )
 
 
 async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
