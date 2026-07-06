@@ -22,6 +22,12 @@ type=ethernet
 interface-name=usb0
 autoconnect=true
 autoconnect-priority=-100
+# Retry forever (NM's 0 sentinel), mirroring the WiFi profile hardening: the
+# usb0 gadget interface is destroyed and recreated on every usbsink/gadget
+# rebuild (deploys included), and carrier can lag the host's re-enumeration by
+# longer than NM's default 4 attempts. Exhausted retries left usb0 down
+# fleet-wide until a manual `nmcli connection up jts-usb` (2026-07-06).
+autoconnect-retries=0
 
 [ethernet]
 
