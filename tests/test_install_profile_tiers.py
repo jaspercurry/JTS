@@ -367,6 +367,24 @@ def test_streambox_parking_disables_brain_units():
     assert "systemctl disable --now" in parking
 
 
+def test_streambox_parking_disables_coupling_auto_unit():
+    """F7: the P3/P4 default-flip unit (jasper-fanin-coupling-auto.service) is
+    installed on BOTH profiles via the shared audio-graph rows, but only the FULL
+    install enables + runs it. A full->streambox conversion must PARK it here, or it
+    would run every boot on the streambox and could arm the ring on zero-class
+    hardware the campaign never validated. A fresh streambox never enables it (no
+    resolve_fanin_coupling_default call in the streambox runtime path), so parking is
+    a no-op there — but the disable-on-conversion is the load-bearing safety."""
+    text = installer_text()
+    parking = text.split("park_streambox_brain_units() {", 1)[1].split("\n}", 1)[0]
+    assert "jasper-fanin-coupling-auto.service" in parking
+    # And the streambox runtime path must NOT invoke the full-profile auto resolver.
+    streambox_runtime = text.split("start_streambox_runtime_units() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert "resolve_fanin_coupling_default" not in streambox_runtime
+
+
 # ---------- Zero-2-W default + low-memory cargo build (preserved) --------
 
 

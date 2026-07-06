@@ -179,20 +179,28 @@ deltas and decide.
 
 ## USB DIRECT (combo mode) — delete the bridge hop + aloop cable (P3: DEFAULT-ON on gadget boxes)
 
-> **Default status (P3 default-flip, landed).** The USB combo
-> (`JASPER_FANIN_USB_DIRECT` + `JASPER_FANIN_HOST_CLOCK` +
-> `JASPER_FANIN_RESAMPLER_CUSHION_DECAY`, all `enabled`) is now the SHIPPED
-> DEFAULT on any box whose USB gadget stack is enabled
-> (`dtoverlay=dwc2,dr_mode=peripheral` present). The boot/deploy reconciler pass
-> `jasper-fanin-coupling-reconcile --auto` writes those three keys into
-> `/var/lib/jasper/fanin.env` (single writer), and clears them off a non-gadget
-> box. The `USBSINK_STANDBY` half is armed by the same reconcile path via the
-> gadget standby signal. The prose below still describes HOW the combo works and
-> its safety matrix; where it says "DEFAULT-OFF / hand-armed" read that as the
-> pre-P3 posture. **To revert:** set `JASPER_FANIN_COUPLING_CHOICE=operator` and
-> unset the three combo keys (see `.env.example`) — the auto pass then no-ops and
-> the revert sticks. The floor default is now the validated **576**
-> (`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`) so a combo-armed default constructs.
+> **Default status (P3 default-flip, landed).** The USB combo is now the SHIPPED
+> DEFAULT — but only on a box that BOTH (a) has the gadget stack available
+> (`dtoverlay=dwc2,dr_mode=peripheral` present — the always-on USB network adds it
+> fleet-wide, so this alone is NOT the gate) AND (b) has USB Audio Input turned ON
+> by the household (`jasper-usbsink.service` enabled — the same intent the
+> `/sources/` wizard toggles). The boot/deploy reconciler pass
+> `jasper-fanin-coupling-reconcile --auto` is the SINGLE writer of BOTH combo
+> halves: it writes the three fan-in keys (`JASPER_FANIN_USB_DIRECT` +
+> `JASPER_FANIN_HOST_CLOCK` + `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` = `enabled`)
+> into `/var/lib/jasper/fanin.env` AND `JASPER_USBSINK_AUDIO_STANDBY=1` into
+> `/var/lib/jasper/usbsink.env`, then restarts jasper-usbsink so the bridge stands
+> down and stops holding `hw:UAC2Gadget`. Off a combo box it writes the EXPLICIT off
+> values (`disabled` / `0`, not unset — a stale `enabled` in `/etc/jasper/jasper.env`
+> loads first and would otherwise win). Both halves MUST arm together: arming only
+> the fan-in half leaves fan-in and the still-live bridge fighting over the gadget
+> capture, and USB audio goes silent or crash-loops. The prose below still describes
+> HOW the combo works and its safety matrix; where it says "DEFAULT-OFF / hand-armed"
+> read that as the pre-P3 posture. **To revert:** set
+> `JASPER_FANIN_COUPLING_CHOICE=operator` and set the combo keys to their off values
+> (see `.env.example`) — the auto pass then no-ops and the revert sticks. The floor
+> default is now the validated **576** (`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`) so a
+> combo-armed default constructs.
 
 `JASPER_FANIN_USB_DIRECT=enabled` + `JASPER_USBSINK_AUDIO_STANDBY=1` removes the
 usbsink **bridge hop + the snd-aloop cable** (~25 ms measured) from the USB path:

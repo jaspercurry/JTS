@@ -332,17 +332,35 @@ zombie-handle reopen are prerequisites). What it does:
   (`jasper-fanin-coupling-auto.service`).
 - **Coupling default (P4).** On a solo, ring-eligible box the default coupling is
   `shm_ring`, resolved by gating on the SAME #1169 arm preflights a manual arm
-  uses (`ring_assets_ready` + `ring_topology_ready` + `ring_geometry_ready` +
-  `ring_slot_geometry_ready`); any gate failing → `loopback`. Ineligible boxes
-  (jts3 roleful, jts5 composite, jts4 fanin-less) are a NO-OP.
-- **USB combo default (P3).** On a gadget box (`dtoverlay=dwc2,dr_mode=peripheral`
-  present — the `/sources/` detection reused verbatim) the auto pass writes
-  `JASPER_FANIN_USB_DIRECT`/`_HOST_CLOCK`/`_RESAMPLER_CUSHION_DECAY=enabled`; off
-  a gadget box it clears them (single-writer discipline).
-- **Floor coherence (P3).** `config.rs`'s `DEFAULT_CUSHION_DECAY_FLOOR_FRAMES` is
-  the hardware-validated **576** (clamped into `[max(target,min_safe)+32,
-  ceiling]`), so a combo-armed default constructs cleanly (regression:
-  `combo_armed_default_config_constructs`).
+  uses (`ring_assets_ready` + topology + `ring_geometry_ready` +
+  `ring_slot_geometry_ready`) PLUS two auto-only gates: a ROUTE-support gate
+  (`ring_route_ready` — a grouped box resolves `loopback`, so the boot unit does
+  not fail on a healthy leader/follower) and the fail-CLOSED topology variant
+  (`ring_topology_ready_strict` — an unreadable topology resolves `loopback` instead
+  of arm→rollback-churning every boot). Any gate failing → `loopback`. Before the
+  gates run, the auto pass self-heals a shear-prone stale `JASPER_FANIN_RING_SLOTS`
+  exactly as a manual arm does, so a stale lab `=2` line does not DISARM a box a
+  manual arm would migrate and keep. Ineligible boxes (jts3 roleful, jts5 composite,
+  jts4 fanin-less, any grouped box) are a NO-OP that resolves loopback and succeeds.
+- **USB combo default (P3).** The combo arms only on a box that BOTH has the gadget
+  stack available (`dtoverlay=dwc2,dr_mode=peripheral` — added fleet-wide for the
+  always-on USB network, so NOT a sufficient gate alone) AND has USB Audio Input
+  turned ON by the household (`jasper-usbsink.service` enabled — the `/sources/`
+  intent signal). When armed, the auto pass is the SINGLE writer of BOTH halves: the
+  three fan-in keys (`JASPER_FANIN_USB_DIRECT`/`_HOST_CLOCK`/`_RESAMPLER_CUSHION_DECAY`
+  `=enabled`) in fanin.env AND `JASPER_USBSINK_AUDIO_STANDBY=1` in usbsink.env (then
+  it restarts jasper-usbsink so the bridge stands down and releases `hw:UAC2Gadget`).
+  Off a combo box both halves are written their EXPLICIT off values (`disabled` / `0`,
+  not unset — a stale `enabled` in jasper.env loads first and would otherwise win).
+  The two halves must arm together or fan-in and the still-live bridge fight over the
+  gadget capture and USB audio goes silent / crash-loops.
+- **Floor default (P3).** `config.rs`'s `DEFAULT_CUSHION_DECAY_FLOOR_FRAMES` is the
+  hardware-validated **576** — the exact floor the jts.local combo product-path gate
+  proved stable. (The derived minimum `max(target,min_safe)+32` = 544 at the default
+  geometry was always in range, so the pre-P3 default constructed fine; shipping 576
+  is about landing on the PROVEN floor, not fixing a construct failure. It is still
+  clamped into `[derived_min, ceiling]` so a small-target geometry constructs.
+  Regression: `combo_armed_default_config_constructs`.)
 - **Revert lever.** `JASPER_FANIN_COUPLING_CHOICE=operator` (written by the
   explicit reconciler CLI path) freezes the box — the auto pass never overrides
   an operator choice. `/state.audio_graph.coupling.choice` reports operator-vs-auto.

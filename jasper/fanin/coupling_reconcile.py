@@ -105,8 +105,12 @@ logger = logging.getLogger(__name__)
 
 FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
+# usbsink.env carries the P3 combo's bridge-standby half; the reconciler is its
+# single writer for that key (jasper-usbsink.service loads it after jasper.env).
+USBSINK_ENV_PATH = "/var/lib/jasper/usbsink.env"
 FANIN_UNIT = "jasper-fanin.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
+USBSINK_UNIT = "jasper-usbsink.service"
 ACTIVE_LEADER_TRANSPORT_BLOCK_REASON = "active_leader_transport_pipe_coupling_unsupported"
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
@@ -188,6 +192,17 @@ def _restart_fanin(reason: str) -> tuple[bool, str]:
 def _restart_outputd(reason: str) -> tuple[bool, str]:
     """Restart jasper-outputd through the broker. (ok, detail)."""
     return _restart_unit(OUTPUTD_UNIT, reason=reason, timeout=8.0)
+
+
+def _restart_usbsink(reason: str) -> tuple[bool, str]:
+    """Restart jasper-usbsink through the broker so it re-reads its standby env.
+
+    The bridge reads ``JASPER_USBSINK_AUDIO_STANDBY`` only at startup, so a combo
+    arm/disarm that flips the standby key in usbsink.env needs a restart to take
+    effect (mirrors ``jasper.usbsink.output_mode_reconcile._restart_usbsink``).
+    (ok, detail).
+    """
+    return _restart_unit(USBSINK_UNIT, reason=reason, timeout=8.0)
 
 
 def _reconcile_camilla(coupling: str, *, reason: str) -> tuple[bool, str]:
@@ -483,12 +498,16 @@ class AutoResult:
     """Outcome of a ``--auto`` default-resolution pass (P3/P4 default-flip).
 
     ``owned`` is False when an operator choice froze the box — the pass made ZERO
-    changes. Otherwise ``coupling`` is the resolved default, ``usb_combo_changed``
-    records whether the USB combo keys moved, ``coupling_result`` is the delegated
-    :class:`CouplingResult`, and ``restarted_fanin_for_combo`` is True when a
-    combo-only change forced an extra fan-in restart (the coupling reconcile did
-    not bounce it). ``ok`` reflects the delegated coupling reconcile (or True when
-    the pass was a clean operator no-op).
+    changes (and ``coupling`` then reports the box's ACTUAL persisted coupling, not a
+    hardcoded loopback). Otherwise ``coupling`` is the resolved default,
+    ``combo_armed`` is whether the USB combo resolved on, ``usb_combo_changed`` /
+    ``usbsink_standby_changed`` record whether the fan-in combo keys / the
+    usbsink.env standby key moved, ``coupling_result`` is the delegated
+    :class:`CouplingResult`, ``restarted_fanin_for_combo`` is True when a combo-only
+    change forced an extra fan-in restart (the coupling reconcile did not bounce it),
+    and ``restarted_usbsink`` is True when the standby change forced a usbsink
+    restart. ``ok`` reflects the delegated coupling reconcile plus the combo restarts
+    (or True when the pass was a clean operator no-op).
     """
 
     ok: bool
@@ -497,8 +516,12 @@ class AutoResult:
     gadget_present: bool
     usb_combo_changed: bool
     reason: str
+    combo_armed: bool = False
+    usb_intent_enabled: bool = False
+    usbsink_standby_changed: bool = False
     coupling_result: "CouplingResult | None" = None
     restarted_fanin_for_combo: bool = False
+    restarted_usbsink: bool = False
     detail: str = ""
 
 
@@ -507,10 +530,13 @@ def reconcile_auto(
     reason: str = "auto",
     env_path: str | Path = FANIN_ENV_PATH,
     outputd_env_path: str | Path = OUTPUTD_ENV_PATH,
+    usbsink_env_path: str | Path = USBSINK_ENV_PATH,
     apply: bool = True,
     gadget_present: bool | None = None,
+    usb_intent_enabled: bool | None = None,
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
+    restart_usbsink: "DaemonOp | None" = None,
     reconcile_camilla=None,
     active_leader_check: "Callable[[], bool] | None" = None,
 ) -> AutoResult:
@@ -522,45 +548,96 @@ def reconcile_auto(
     1. Read the operator-choice marker from fanin.env. If it names an explicit
        operator choice (``JASPER_FANIN_COUPLING_CHOICE=operator``), make ZERO
        changes — the operator's revert (loopback + direct + combo-off) sticks. Log
-       ``result=auto_skipped_operator_choice`` and return ``owned=False``.
-    2. Otherwise the pass OWNS the box. Resolve the coupling default via
-       :func:`jasper.fanin.coupling_auto.resolve_auto_decision`, gating on the SAME
-       #1169 ring preflights a manual arm uses (assets present, topology
-       ring-eligible, BOTH geometry axes coherent) — ``shm_ring`` iff all pass,
-       else ``loopback``. Resolve the USB combo from gadget presence.
-    3. Write the USB combo keys into fanin.env (the reconciler is their single
-       writer): set-enabled on a gadget box, unset otherwise. Idempotent — a
-       second pass with the same inputs writes nothing.
+       ``result=auto_skipped_operator_choice`` and return ``owned=False`` with the
+       box's ACTUAL persisted coupling (not a hardcoded loopback).
+    2. Otherwise the pass OWNS the box. First self-heal a shear-prone stale
+       ``JASPER_FANIN_RING_SLOTS`` (the same migration a manual arm runs) so the
+       auto slot gate sees the corrected value — a stale ``=2`` lab line must not
+       DISARM a box a manual arm would migrate+keep (defect-F6). Then resolve the
+       coupling default via :func:`jasper.fanin.coupling_auto.resolve_auto_decision`,
+       gating on the SAME #1169 ring preflights a manual arm uses PLUS a
+       ROUTE-support gate (grouped boxes resolve loopback — defect-F3) and a
+       fail-CLOSED topology gate (unreadable topology → loopback — defect-F4).
+       Resolve the USB combo from gadget presence AND the household's USB-audio
+       intent (``jasper-usbsink.service`` enabled — defect-B2).
+    3. Write BOTH combo halves (reconciler = single writer of each): the three
+       fan-in keys into fanin.env and the ``JASPER_USBSINK_AUDIO_STANDBY`` key into
+       usbsink.env — explicit ``enabled``/``1`` on a combo box, explicit
+       ``disabled``/``0`` off it (never unset — defeats jasper.env precedence,
+       defect-F5). Idempotent — a second pass with the same inputs writes nothing.
     4. Delegate the coupling flip + ordered daemon transition to
        :func:`reconcile_coupling` (``mark_operator_choice=False`` so the marker
-       stays absent — auto-owned). If the combo changed but the coupling did not
-       (so reconcile_coupling took the no-bounce confirm path), issue ONE extra
-       fan-in restart so the new combo takes effect.
+       stays absent — auto-owned). Order the usbsink restart around it so the two
+       gadget-capture owners never both hold ``hw:UAC2Gadget``: on ARM restart
+       usbsink into standby FIRST (it releases the gadget before fan-in opens it
+       directly); on DISARM restart usbsink LAST (after fan-in has released the
+       gadget). A combo-only change that took the no-bounce confirm path also issues
+       one extra fan-in restart.
 
     NO-OP on an ineligible / fanin-less box: jts3 (roleful) / jts5 (composite)
-    resolve loopback with no combo (no gadget) and converge with zero churn; jts4
-    (streambox, no fan-in stack) sees the coupling reconcile no-op and no gadget,
-    so nothing is written. ``gadget_present`` / ``restart_*`` / ``reconcile_camilla``
+    resolve loopback with the combo off (no gadget intent) and converge with zero
+    churn; jts4 (streambox, no fan-in stack) sees the coupling reconcile no-op.
+    ``gadget_present`` / ``usb_intent_enabled`` / ``restart_*`` / ``reconcile_camilla``
     / ``active_leader_check`` are injectable for tests; ``gadget_present=None`` reads
-    the live boot config.
+    the live boot config and ``usb_intent_enabled=None`` reads the live unit state.
     """
     from jasper.fanin.coupling_auto import (
         default_ring_gates,
+        is_operator_choice,
         read_boot_config_gadget_present,
         read_marker,
         resolve_auto_decision,
+        usbsink_intent_enabled as read_usbsink_intent,
     )
 
     fanin_snapshot = _read_snapshot(env_path)
     outputd_snapshot = _read_snapshot(outputd_env_path)
+    usbsink_snapshot = _read_snapshot(usbsink_env_path)
     marker = read_marker(fanin_snapshot.text)
     gadget = (
         read_boot_config_gadget_present() if gadget_present is None else gadget_present
     )
+    usb_intent = (
+        read_usbsink_intent() if usb_intent_enabled is None else usb_intent_enabled
+    )
 
-    # The full ordered ring preflight set (assets + topology, plus the two geometry
-    # gates that need the outputd/fanin env text — bound here as closures).
+    # Operator-frozen short-circuit FIRST — before any migration or gate work — so
+    # an operator revert is a true zero-touch no-op. Report the box's ACTUAL
+    # persisted coupling (defect-Nit8), not a hardcoded loopback: an operator who
+    # froze the box at shm_ring must see shm_ring on /state / the CLI.
+    if is_operator_choice(marker):
+        current = resolve_coupling(read_value(fanin_snapshot.text, COUPLING_ENV_VAR))
+        reason_detail = "operator choice in force — auto pass is a no-op"
+        log_event(
+            logger, "fanin.coupling_reconcile", result="auto_skipped_operator_choice",
+            reason=reason, coupling_marker="operator", coupling=current,
+            detail=reason_detail,
+        )
+        return AutoResult(
+            ok=True, owned=False, coupling=current,
+            gadget_present=gadget, usb_intent_enabled=usb_intent,
+            usb_combo_changed=False, reason=reason_detail,
+        )
+
+    # Self-heal a shear-prone stale JASPER_FANIN_RING_SLOTS BEFORE the gates read it,
+    # exactly as a manual arm does inside _arm_ring — otherwise a stale `=2` lab line
+    # fails the slot gate and DISARMS a box a manual arm would migrate and keep
+    # armed (defect-F6). No-op on a coherent/absent value or an unreadable conf.d.
+    # Runs regardless of ``apply`` (it is an env write, and ``reconcile_coupling``
+    # itself writes env under ``--no-apply``) so the resolved decision is consistent
+    # between a staging preview and a real apply.
+    fanin_snapshot = _migrate_stale_fanin_ring_slots(fanin_snapshot, reason)
+
+    # Route shape for the ring ROUTE-support gate (defect-F3). Computed once here and
+    # reused; reconcile_coupling recomputes its own from the same active_leader_check
+    # so both agree.
+    route_mode = _route_mode_for_reconcile(active_leader_check)
+
+    # The full ordered ring preflight set: assets + fail-closed topology (from
+    # default_ring_gates), then route-support, then the two geometry gates that need
+    # the outputd/fanin env text (bound here as closures).
     ring_gates = default_ring_gates() + (
+        ("ring_route", lambda: ring_route_ready(route_mode)),
         ("ring_geometry", lambda: ring_geometry_ready(outputd_snapshot.text)),
         (
             "ring_slot_geometry",
@@ -568,20 +645,13 @@ def reconcile_auto(
         ),
     )
     decision = resolve_auto_decision(
-        marker_raw=marker, gadget_present=gadget, ring_gates=ring_gates
+        marker_raw=marker,
+        gadget_present=gadget,
+        usb_intent_enabled=usb_intent,
+        ring_gates=ring_gates,
     )
 
-    if not decision.owned:
-        log_event(
-            logger, "fanin.coupling_reconcile", result="auto_skipped_operator_choice",
-            reason=reason, coupling_marker="operator", detail=decision.reason,
-        )
-        return AutoResult(
-            ok=True, owned=False, coupling=decision.coupling,
-            gadget_present=gadget, usb_combo_changed=False, reason=decision.reason,
-        )
-
-    # Step 3 — USB combo keys (reconciler = single writer). Write only on change.
+    # Step 3a — fan-in combo keys (reconciler = single writer). Write only on change.
     fanin_after_combo, combo_changed = _apply_actions(
         fanin_snapshot.text, decision.usb_combo_actions
     )
@@ -595,7 +665,8 @@ def reconcile_auto(
             )
             return AutoResult(
                 ok=False, owned=True, coupling=decision.coupling,
-                gadget_present=gadget, usb_combo_changed=False,
+                gadget_present=gadget, usb_intent_enabled=usb_intent,
+                combo_armed=decision.combo_armed, usb_combo_changed=False,
                 reason=decision.reason, detail=str(e),
             )
         # Keep the live env coherent for the coupling reconcile's own re-read.
@@ -606,17 +677,64 @@ def reconcile_auto(
                 os.environ.pop(a.key, None)
         log_event(
             logger, "fanin.coupling_reconcile", result="auto_usb_combo_written",
-            reason=reason, gadget_present=gadget,
+            reason=reason, gadget_present=gadget, usb_intent_enabled=usb_intent,
+            combo_armed=decision.combo_armed,
             keys=",".join(a.key for a in decision.usb_combo_actions),
+        )
+
+    # Step 3b — usbsink standby key (reconciler = single writer of this key in
+    # usbsink.env). The OTHER combo half; without it the fan-in direct capture and
+    # the still-live bridge both hold hw:UAC2Gadget and USB audio goes silent /
+    # crash-loops (defect-B1).
+    usbsink_after, standby_changed = _apply_actions(
+        usbsink_snapshot.text, decision.usbsink_standby_actions
+    )
+    if standby_changed:
+        try:
+            _write_env_text(usbsink_snapshot.path, usbsink_after)
+        except OSError as e:
+            log_event(
+                logger, "fanin.coupling_reconcile",
+                result="auto_usbsink_standby_write_failed",
+                reason=reason, gadget_present=gadget, error=e, level=logging.ERROR,
+            )
+            return AutoResult(
+                ok=False, owned=True, coupling=decision.coupling,
+                gadget_present=gadget, usb_intent_enabled=usb_intent,
+                combo_armed=decision.combo_armed, usb_combo_changed=combo_changed,
+                usbsink_standby_changed=False, reason=decision.reason, detail=str(e),
+            )
+        log_event(
+            logger, "fanin.coupling_reconcile", result="auto_usbsink_standby_written",
+            reason=reason, combo_armed=decision.combo_armed,
+            keys=",".join(a.key for a in decision.usbsink_standby_actions),
         )
 
     log_event(
         logger, "fanin.coupling_reconcile", result="auto_resolved",
         reason=reason, coupling=decision.coupling, gadget_present=gadget,
-        usb_combo_changed=combo_changed, detail=decision.reason,
+        usb_intent_enabled=usb_intent, combo_armed=decision.combo_armed,
+        usb_combo_changed=combo_changed, usbsink_standby_changed=standby_changed,
+        detail=decision.reason,
     )
 
-    # Step 4 — delegate the coupling flip. The reconciler re-reads fanin.env fresh
+    do_restart_usbsink = restart_usbsink or (lambda: _restart_usbsink(reason=reason))
+    restarted_usbsink = False
+
+    # Step 4a — on ARM, restart usbsink into standby BEFORE fan-in opens the gadget
+    # directly, so the bridge has released hw:UAC2Gadget first (no EBUSY race).
+    if apply and standby_changed and decision.combo_armed:
+        us_ok, us_detail = do_restart_usbsink()
+        restarted_usbsink = us_ok
+        log_event(
+            logger, "fanin.coupling_reconcile",
+            result="auto_usbsink_standby_restarted" if us_ok
+            else "auto_usbsink_standby_restart_failed",
+            reason=reason, phase="arm_before_fanin", detail=us_detail or None,
+            level=logging.INFO if us_ok else logging.WARNING,
+        )
+
+    # Step 4b — delegate the coupling flip. The reconciler re-reads fanin.env fresh
     # (it snapshots inside), so the combo keys we just wrote persist untouched (it
     # owns only the coupling line + ring slots).
     coupling_result = reconcile_coupling(
@@ -632,8 +750,8 @@ def reconcile_auto(
         active_leader_check=active_leader_check,
     )
 
-    # If the combo changed but the coupling reconcile did NOT restart fan-in (a
-    # combo-only change on an already-at-desired-coupling box takes the no-bounce
+    # If the fan-in combo changed but the coupling reconcile did NOT restart fan-in
+    # (a combo-only change on an already-at-desired-coupling box takes the no-bounce
     # confirm path), the new combo won't be live until fan-in restarts. Issue one.
     restarted_for_combo = False
     if apply and combo_changed and not coupling_result.restarted_fanin:
@@ -650,17 +768,38 @@ def reconcile_auto(
         if not fan_ok:
             return AutoResult(
                 ok=False, owned=True, coupling=decision.coupling,
-                gadget_present=gadget, usb_combo_changed=combo_changed,
-                reason=decision.reason, coupling_result=coupling_result,
-                restarted_fanin_for_combo=False, detail=fan_detail,
+                gadget_present=gadget, usb_intent_enabled=usb_intent,
+                combo_armed=decision.combo_armed, usb_combo_changed=combo_changed,
+                usbsink_standby_changed=standby_changed,
+                coupling_result=coupling_result, restarted_fanin_for_combo=False,
+                restarted_usbsink=restarted_usbsink, detail=fan_detail,
             )
 
+    # Step 4c — on DISARM, restart usbsink LAST (after fan-in has released the
+    # gadget), so the bridge re-opens hw:UAC2Gadget without racing fan-in's release.
+    if apply and standby_changed and not decision.combo_armed:
+        us_ok, us_detail = do_restart_usbsink()
+        restarted_usbsink = us_ok
+        log_event(
+            logger, "fanin.coupling_reconcile",
+            result="auto_usbsink_standby_restarted" if us_ok
+            else "auto_usbsink_standby_restart_failed",
+            reason=reason, phase="disarm_after_fanin", detail=us_detail or None,
+            level=logging.INFO if us_ok else logging.WARNING,
+        )
+
+    # ``ok`` folds in the standby restart: a combo transition that could not restart
+    # usbsink left the two gadget owners in a split state, so surface it as a failure
+    # (the unit exits non-zero; the doctor/operator sees the incoherence) rather than
+    # a silently-broken USB path.
+    ok = coupling_result.ok and (restarted_usbsink or not standby_changed or not apply)
     return AutoResult(
-        ok=coupling_result.ok, owned=True, coupling=decision.coupling,
-        gadget_present=gadget, usb_combo_changed=combo_changed,
-        reason=decision.reason, coupling_result=coupling_result,
-        restarted_fanin_for_combo=restarted_for_combo,
-        detail=coupling_result.detail,
+        ok=ok, owned=True, coupling=decision.coupling,
+        gadget_present=gadget, usb_intent_enabled=usb_intent,
+        combo_armed=decision.combo_armed, usb_combo_changed=combo_changed,
+        usbsink_standby_changed=standby_changed, reason=decision.reason,
+        coupling_result=coupling_result, restarted_fanin_for_combo=restarted_for_combo,
+        restarted_usbsink=restarted_usbsink, detail=coupling_result.detail,
     )
 
 
@@ -982,7 +1121,7 @@ def _resolved_outputd_period_frames(outputd_text: str) -> int:
     return value if value > 0 else DEFAULT_OUTPUTD_PERIOD_FRAMES
 
 
-def ring_topology_ready() -> tuple[bool, str]:
+def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate for topology eligibility.
 
     Ring A/Ring B carry a full-range STEREO program on a single coherent ALSA
@@ -992,9 +1131,18 @@ def ring_topology_ready() -> tuple[bool, str]:
     sink), NOT explicit mono. This consults ``topology_supports_shm_ring`` (the
     single ring-eligibility predicate) so arming a non-eligible box refuses with a
     crisp reason here, instead of failing later at outputd's Rust full-range-stereo
-    rejection (a confusing daemon-level rollback). Fail-SAFE: if the topology can't
-    be read (a transient/absent topology file), do NOT block — that is not a
-    confirmed non-eligible topology, and outputd's own guard is the backstop.
+    rejection (a confusing daemon-level rollback).
+
+    Unreadable-topology policy is caller-selectable:
+
+    - ``strict_unreadable=False`` (the DEFAULT, a HUMAN-initiated arm): fail-OPEN —
+      an indeterminate read is not a confirmed non-eligible topology, and outputd's
+      own guard is the backstop. A human accepts that risk when they type the arm.
+    - ``strict_unreadable=True`` (the UNATTENDED ``--auto`` default pass): fail-
+      CLOSED — an unattended default that armed a ring on an unreadable topology
+      would arm→rollback on every boot/deploy the file is transiently corrupt, so
+      the auto pass treats an unreadable topology as ineligible and stays loopback.
+      (See ``jasper.fanin.coupling_auto`` module docstring, FAIL-SAFE DIRECTION.)
     """
     from jasper.active_speaker.runtime_contract import topology_supports_shm_ring
     from jasper.output_topology import (
@@ -1005,7 +1153,16 @@ def ring_topology_ready() -> tuple[bool, str]:
     try:
         topology = load_output_topology_strict()
     except (OutputTopologyError, OSError, ValueError) as exc:
-        # Indeterminate topology -> don't refuse a legitimate arm (fail-safe).
+        if strict_unreadable:
+            # Unattended auto path: an unreadable topology is NOT proven eligible —
+            # fail closed to loopback so the default never arm/rollback-churns.
+            return False, (
+                f"topology unreadable ({exc}); the unattended default resolves "
+                "loopback (fail-closed) rather than arm a ring it cannot prove is "
+                "eligible"
+            )
+        # Human arm: indeterminate topology -> don't refuse (fail-open, backstopped
+        # by outputd's own guard).
         return True, f"topology unreadable ({exc}); deferring to outputd's own guard"
     if topology_supports_shm_ring(topology):
         return True, "topology is ring-eligible (stereo/unconfigured single sink)"
@@ -1032,6 +1189,40 @@ def ring_topology_ready() -> tuple[bool, str]:
         "single-sink speaker carrying a stale roleful/subwoofer topology, run "
         "`jasper-output-topology-reset` to re-derive a clean passive topology from "
         "detected hardware, then re-arm."
+    )
+
+
+def ring_topology_ready_strict() -> tuple[bool, str]:
+    """``ring_topology_ready`` for the unattended auto path — fail-CLOSED on an
+    unreadable topology. See the ``strict_unreadable`` note there (defect-F4)."""
+    return ring_topology_ready(strict_unreadable=True)
+
+
+def ring_route_ready(route_mode: RouteMode) -> tuple[bool, str]:
+    """The shm_ring PREFLIGHT gate for ROUTE support (defect-F3).
+
+    ``shm_ring`` is a solo-stereo-only coupling until ring v2 (P8): a grouped box
+    (active leader/follower, or an invalid grouping config) has no solo content path
+    for the ring to drive, so ``coupling_supported_for_route`` blocks it. The auto
+    default MUST resolve loopback on such a box — otherwise ``resolve_auto_decision``
+    would resolve ``shm_ring`` (the topology/geometry gates pass on the box's stereo
+    output shape), the delegated ``reconcile_coupling`` would then route-block it
+    (``direction=blocked``, ``ok=False``), and the boot/deploy oneshot unit would
+    FAIL on every boot of a perfectly healthy grouped box. Gating on route support
+    UP FRONT resolves loopback (the correct default there) and the reconcile
+    succeeds. Solo / unknown never block (unknown = a transient indeterminate
+    grouping read that must not refuse a legitimate solo arm — same fail-open as the
+    support matrix itself).
+    """
+    from jasper.audio_runtime_plan import coupling_supported_for_route
+
+    support = coupling_supported_for_route(COUPLING_SHM_RING, route_mode)
+    if support.supported:
+        return True, f"route supports shm_ring (route_mode={route_mode})"
+    return False, (
+        f"shm_ring is not supported for this route ({support.reason}); a grouped "
+        "box has no solo content path for the ring until ring v2 (P8) — the default "
+        "resolves loopback"
     )
 
 
@@ -2259,11 +2450,18 @@ def main(argv: "list[str] | None" = None) -> int:
         auto = reconcile_auto(reason=args.reason, apply=not args.no_apply)
         print(
             f"coupling auto: owned={auto.owned} coupling={auto.coupling} "
-            f"gadget={auto.gadget_present} usb_combo_changed={auto.usb_combo_changed} "
-            f"ok={auto.ok}"
+            f"gadget={auto.gadget_present} usb_intent={auto.usb_intent_enabled} "
+            f"combo_armed={auto.combo_armed} "
+            f"usb_combo_changed={auto.usb_combo_changed} "
+            f"usbsink_standby_changed={auto.usbsink_standby_changed} ok={auto.ok}"
             + (
                 f" fanin_restarted_for_combo={auto.restarted_fanin_for_combo}"
                 if auto.usb_combo_changed
+                else ""
+            )
+            + (
+                f" usbsink_restarted={auto.restarted_usbsink}"
+                if auto.usbsink_standby_changed
                 else ""
             )
             + (f" reason={auto.reason}" if auto.reason else "")

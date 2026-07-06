@@ -580,9 +580,19 @@ park_low_memory_build_units() {
 park_streambox_brain_units() {
     # Converting from a full speaker to streambox must park local brain
     # surfaces while keeping renderer/DSP/source surfaces alive.
+    #
+    # jasper-fanin-coupling-auto.service is in this list (not just the brain units):
+    # the shared audio-graph rows install its unit file on BOTH profiles, but only
+    # the FULL install enables + runs the P3/P4 default-flip pass
+    # (resolve_fanin_coupling_default). A full box has it ENABLED; a full→streambox
+    # conversion must disable it here, or it would run every boot on the streambox —
+    # arming the ring on zero-class hardware the P4 campaign never validated (its
+    # hardware targets were full boxes). A fresh streambox never enables it, so this
+    # is a no-op there.
     for brain_unit in \
         jasper-voice.service jasper-aec-bridge.service jasper-aec-init.service \
         jasper-aec-reconcile.service jasper-input.service \
+        jasper-fanin-coupling-auto.service \
         jasper-dial-web.socket jasper-dial-web.service \
         camillagui.socket camillagui.service camillagui-proxy.service; do
         systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true
