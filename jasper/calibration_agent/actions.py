@@ -157,6 +157,30 @@ def _run_one_action(
             ),
         }
 
+    if action_type == response.ACTION_PROPOSE_TARGET_MOVE:
+        # Presentation-only, exactly like recommend_remeasure: there is no
+        # execute path for a target move — the household changes the target
+        # themselves in the correction flow.
+        return {
+            "index": index,
+            "type": action_type,
+            "status": "presented",
+            "executed": True,
+            "pending": False,
+            "side_effect": "user_prompt_only",
+            "rationale": str(action.get("rationale") or ""),
+            "target_id": action.get("target_id"),
+            "warmth": action.get("warmth"),
+            "human_in_loop": _human_loop(
+                role="operator_next_step",
+                prompt=(
+                    "A target suggestion only — change the Target curve in "
+                    "the correction flow if you want to try it."
+                ),
+                subjective_judgement_required=True,
+            ),
+        }
+
     if action_type == response.ACTION_AUDITION:
         if audition_executor is None:
             return _pending_executor_result(

@@ -59,6 +59,10 @@ def test_build_openai_request_uses_structured_output_and_no_store():
 
     assert payload["model"] == "test-model"
     assert payload["store"] is False
+    # Low reasoning effort is part of the request contract: on GPT-5-class
+    # models reasoning tokens count against max_output_tokens, and the
+    # 2026-07-06 live check saw status=incomplete without this.
+    assert payload["reasoning"] == {"effort": "low"}
     assert payload["text"]["format"]["type"] == "json_schema"
     assert payload["text"]["format"]["strict"] is True
     assert payload["input"][0]["role"] == "system"

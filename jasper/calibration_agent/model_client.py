@@ -35,6 +35,19 @@ MODEL_CALL_SCHEMA_VERSION = 1
 MODEL_CALL_KIND = "jts_advisor_model_call"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_TIMEOUT_SEC = 60.0
+# Per-call output-token budget for the P6 tuning surface. On the
+# Responses API a GPT-5-class model's REASONING tokens count against
+# max_output_tokens before any visible JSON is emitted — the first live
+# check (2026-07-06) saw propose come back status=incomplete at a
+# 400-token cap even with `reasoning.effort=low`. 2500 leaves room for
+# low-effort reasoning plus the strict-schema JSON while still bounding
+# a runaway response to ~$0.025 at list rates. Shared by the paid
+# /correction/ endpoints and the live harness so the two cannot drift.
+TUNING_LLM_MAX_OUTPUT_TOKENS = 2500
+# Model-facing cap on a proposed correction filter set — the widest
+# shipped strategy's max_filters. The deterministic validator re-checks
+# against the ACTIVE strategy's (possibly tighter) cap.
+_CORRECTION_PEQ_MAX_ITEMS = 5
 
 Transport = Callable[[str, Mapping[str, str], bytes, float], tuple[int, bytes]]
 
@@ -66,8 +79,20 @@ def resolve_settings(
     model: str | None = None,
     timeout_sec: float | None = None,
     environ: Mapping[str, str] | None = None,
+    api_key: str | None = None,
+    default_model: str | None = None,
 ) -> AdvisorModelSettings:
-    """Resolve provider settings without accepting secrets on argv."""
+    """Resolve provider settings without accepting secrets on argv.
+
+    ``api_key`` lets a caller that already resolved the key out-of-band
+    (P6's tuning surface reads it from the ``jasper-secrets`` compartment
+    file directly) inject it instead of requiring it in ``environ``.
+    ``default_model`` is the fallback model id when neither an explicit
+    ``model`` nor an env override is set — the tuning surface passes its
+    seeded ``JASPER_TUNING_LLM_MODEL`` default here so it never has to be
+    operator-supplied, while the calibration-agent CLI leaves it ``None``
+    and keeps its "you must name a model" behavior.
+    """
 
     env = environ or os.environ
     resolved_provider = (
@@ -80,15 +105,16 @@ def resolve_settings(
             f"unsupported advisor provider: {resolved_provider or '(missing)'}"
         )
 
-    api_key = env.get("OPENAI_API_KEY", "").strip()
-    if not api_key:
+    resolved_key = (api_key or env.get("OPENAI_API_KEY", "")).strip()
+    if not resolved_key:
         raise AdvisorModelError("OPENAI_API_KEY is required for --call-advisor")
+    api_key = resolved_key
 
     resolved_model = (
         model
         or env.get("JASPER_CALIBRATION_ADVISOR_MODEL")
         or env.get("OPENAI_ADVISOR_MODEL")
-        or ""
+        or (default_model or "")
     ).strip()
     if not resolved_model:
         raise AdvisorModelError(
@@ -132,12 +158,18 @@ def call_advisor(
     timeout_sec: float | None = None,
     environ: Mapping[str, str] | None = None,
     transport: Transport | None = None,
+    api_key: str | None = None,
+    default_model: str | None = None,
+    max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Call the configured advisor model and return its candidate JSON.
 
     This function has exactly one external side effect: the provider API
     request. It never applies filters, stores profiles, reads raw audio,
-    or logs response content.
+    or logs response content. ``api_key`` / ``default_model`` are for
+    callers that resolved the key/model out-of-band (see
+    :func:`resolve_settings`); ``max_output_tokens`` caps the response
+    length (a budget guard).
     """
 
     settings = resolve_settings(
@@ -145,8 +177,12 @@ def call_advisor(
         model=model,
         timeout_sec=timeout_sec,
         environ=environ,
+        api_key=api_key,
+        default_model=default_model,
     )
-    payload = build_openai_request(prompt_package, settings.model)
+    payload = build_openai_request(
+        prompt_package, settings.model, max_output_tokens=max_output_tokens,
+    )
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     url = f"{settings.base_url}/responses"
     headers = {
@@ -184,7 +220,16 @@ def call_advisor(
 
     provider_status = str(provider_response.get("status") or "")
     if provider_status and provider_status != "completed":
-        raise AdvisorModelError(f"advisor provider response status={provider_status}")
+        # Surface WHY when the provider says so — status=incomplete with
+        # reason=max_output_tokens is the actionable shape (raise the
+        # TUNING_LLM_MAX_OUTPUT_TOKENS budget or lower reasoning effort).
+        detail = ""
+        incomplete = provider_response.get("incomplete_details")
+        if isinstance(incomplete, Mapping) and incomplete.get("reason"):
+            detail = f" ({incomplete['reason']})"
+        raise AdvisorModelError(
+            f"advisor provider response status={provider_status}{detail}"
+        )
 
     text = _extract_response_text(provider_response)
     advisor_response = _loads_json_object(text)
@@ -215,8 +260,13 @@ def call_advisor(
 def build_openai_request(
     prompt_package: Mapping[str, Any],
     model: str,
+    *,
+    max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
-    """Build a small, replayable Responses API request payload."""
+    """Build a small, replayable Responses API request payload.
+
+    ``max_output_tokens`` caps the response length when set — the P6 live
+    harness passes it as a hard per-call budget guard."""
 
     messages = list(prompt_package.get("messages") or [])
     system = _first_message(messages, "system") or ""
@@ -239,9 +289,17 @@ def build_openai_request(
         "JTS_RESPONSE_CONTRACT_JSON:",
         json.dumps(response_contract, separators=(",", ":"), sort_keys=True),
     ])
-    return {
+    payload: dict[str, Any] = {
         "model": model,
         "store": False,
+        # Low reasoning effort: the task is bounded JSON against a compact
+        # packet, and JTS re-validates + re-simulates everything locally.
+        # Default (medium) effort burns output-token budget on reasoning —
+        # the live check saw status=incomplete from exactly that. Assumes a
+        # reasoning-capable GPT-5-class model (the surface's documented
+        # contract for JASPER_TUNING_LLM_MODEL); an incompatible model
+        # fails at call time with an honest AdvisorModelError.
+        "reasoning": {"effort": "low"},
         "input": [
             {"role": "system", "content": system},
             {"role": "user", "content": user_content},
@@ -255,6 +313,9 @@ def build_openai_request(
             }
         },
     }
+    if max_output_tokens is not None and max_output_tokens > 0:
+        payload["max_output_tokens"] = int(max_output_tokens)
+    return payload
 
 
 def _first_message(messages: list[Any], role: str) -> str | None:
@@ -302,6 +363,16 @@ def _advisor_response_schema() -> dict[str, Any]:
         "required": ["enabled", "curve_id", "simple_eq", "parametric_bands"],
         "additionalProperties": False,
     }
+    correction_peq = {
+        "type": "object",
+        "properties": {
+            "freq_hz": {"type": "number"},
+            "q": {"type": "number"},
+            "gain_db": {"type": "number"},
+        },
+        "required": ["freq_hz", "q", "gain_db"],
+        "additionalProperties": False,
+    }
     action = {
         "type": "object",
         "properties": {
@@ -315,6 +386,17 @@ def _advisor_response_schema() -> dict[str, Any]:
                 "maxLength": MAX_PROFILE_NAME_CHARS,
             },
             "profile": profile,
+            # P6 correction-scope fields. Not-applicable actions send an
+            # empty list / empty string / 0.0 (same "empty when unused"
+            # convention as profile above); JTS validates the real action
+            # contract locally.
+            "correction_peqs": {
+                "type": "array",
+                "items": correction_peq,
+                "maxItems": _CORRECTION_PEQ_MAX_ITEMS,
+            },
+            "target_id": {"type": "string"},
+            "warmth": {"type": "number"},
         },
         "required": [
             "type",
@@ -324,6 +406,9 @@ def _advisor_response_schema() -> dict[str, Any]:
             "rationale",
             "profile_name",
             "profile",
+            "correction_peqs",
+            "target_id",
+            "warmth",
         ],
         "additionalProperties": False,
     }

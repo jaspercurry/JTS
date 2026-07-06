@@ -606,7 +606,7 @@ group reverted to `jasper` on the next mux start). The secrets must live in
 
 | Dir (group; mode 2770 setgid) | Members | Holds |
 |---|---|---|
-| `/var/lib/jasper-secrets/` (`jasper-secrets`) | voice, web | `voice_keys.env` (the 3 LLM API keys, split out of `voice_provider.env`), `google_credentials.env`, the `google/` OAuth token tree |
+| `/var/lib/jasper-secrets/` (`jasper-secrets`) | voice, web (+ root `jasper-correction-web`, see note) | `voice_keys.env` (the 3 LLM API keys, split out of `voice_provider.env`), `google_credentials.env`, the `google/` OAuth token tree |
 | `/var/lib/jasper-intsecrets/` (`jasper-intsecrets`) | voice, control, mux, web | `home_assistant.env`, `spotify_credentials.env`, the Spotify token cache |
 
 `2770` setgid: members rwx (read/write/traverse), non-members get nothing
@@ -615,6 +615,18 @@ files written at runtime inherit the compartment group. `voice_provider.env` (no
 keyless: provider + model/voice) and `transit.env` (the low-value MTA key) stay
 in `/var/lib/jasper` group `jasper`, because jasper-control reads them fresh for
 `/system/` and `/state.transit` and the MTA key is not worth a split.
+
+> **Deliberate root reader (P6, 2026-07-05):** `jasper-correction-web` —
+> still root, not a Tier-A drop target yet — reads `voice_keys.env`
+> **directly** (fresh, fail-soft file read in
+> [`jasper/calibration_agent/key_provisioning.py`](../jasper/calibration_agent/key_provisioning.py))
+> for the `/correction/` tuning-LLM surface. Root bypasses the group, so
+> no membership or `EnvironmentFile=` grant exists for it — the design is
+> the compartment-respecting choice (no second key copy, no broad grant).
+> **If this daemon is ever de-rooted** (it is the obvious next Tier-B
+> candidate), it needs `SupplementaryGroups=jasper-secrets` or the tuning
+> surface silently degrades to its hidden-with-nudge state (fail-soft, not
+> broken — but the migrator should decide, not discover).
 
 ### Phase 4a — Group A (LANDED): LLM keys + Google
 
