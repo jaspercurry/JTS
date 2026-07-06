@@ -137,6 +137,15 @@ def _apple_dongle_shipped_default() -> OutputTopology:
     state="unused" — exactly what ``new_topology_draft`` writes on a fresh box
     (and jts.local's real current hardware). state="unused" is orthogonal to the
     contract (the classifier reads speaker_groups + routing, never output state).
+
+    CRITICAL: this fixture carries the single ``child_devices`` entry that
+    ``topology_hardware_from_state`` (via ``new_topology_draft`` ->
+    ``classify_output_cards``) ALWAYS records for a detected single DAC — the
+    ``card_id="A"`` child with its serial identity. Earlier this fixture omitted
+    it, which is exactly why the DEFECT-2 refusal escaped the test suite: the real
+    jts.local artifact has ``child_devices=[{card_id: A, ...}]`` and the bare
+    ``if child_devices:`` predicate refused it while this childless fixture passed.
+    A single child MUST be ring-eligible (it is the one coherent L/R sink).
     """
     return OutputTopology.from_mapping(
         {
@@ -150,6 +159,16 @@ def _apple_dongle_shipped_default() -> OutputTopology:
                 "device_label": "Apple USB-C audio adapter",
                 "physical_output_count": 2,
                 "card_id": "A",
+                "child_devices": [
+                    {
+                        "child_id": "apple_dac_1",
+                        "device_id": "apple_usb_c_dongle",
+                        "device_label": "Apple USB-C audio adapter",
+                        "physical_output_indexes": [0, 1],
+                        "serial": "DWH53530FLL2FN3A3",
+                        "card_id": "A",
+                    },
+                ],
                 "outputs": [
                     {"index": 0, "human_label": "Left", "terminal_label": "1",
                      "state": "unused"},
@@ -171,6 +190,11 @@ def _apple_dongle_with_stale_subwoofer() -> OutputTopology:
     stereo dongle. The classifier HONESTLY reports subwoofer_present -> roleful ->
     ineligible: a stereo ring cannot drive a sub. The fix is the operator
     topology-reset, not weakening the predicate.
+
+    Carries the single ``child_devices`` entry a detected dongle always records,
+    so the ineligibility here is proven to be driven by the subwoofer ROLE
+    (``requires_roleful_graph``), not by the child-device presence — the roleful
+    check runs first and returns before the composite (>=2 children) check.
     """
     return OutputTopology.from_mapping(
         {
@@ -184,6 +208,16 @@ def _apple_dongle_with_stale_subwoofer() -> OutputTopology:
                 "device_label": "Apple USB-C audio adapter",
                 "physical_output_count": 2,
                 "card_id": "A",
+                "child_devices": [
+                    {
+                        "child_id": "apple_dac_1",
+                        "device_id": "apple_usb_c_dongle",
+                        "device_label": "Apple USB-C audio adapter",
+                        "physical_output_indexes": [0, 1],
+                        "serial": "DWH53530FLL2FN3A3",
+                        "card_id": "A",
+                    },
+                ],
             },
             "speaker_groups": [
                 {
@@ -205,7 +239,26 @@ def test_shipped_default_apple_dongle_supports_ring():
     topo = _apple_dongle_shipped_default()
     assert all(o.state == "unused" for o in topo.hardware.outputs)
     assert topo.speaker_groups == ()
+    # The fixture MUST carry the single child a detected dongle records — this is
+    # the field whose omission masked the DEFECT-2 refusal. Pin it so the fixture
+    # can never silently drift back to childless (which would make the assertion
+    # below pass for the wrong reason).
+    assert len(topo.hardware.child_devices) == 1
     assert topology_supports_shm_ring(topo) is True
+
+
+def test_single_child_is_ring_eligible_but_two_children_are_not():
+    # The precise DEFECT-2 boundary: a bare `if child_devices:` refused BOTH.
+    # Ring eligibility keys on a PLURALITY of children (a genuine composite spans
+    # >1 USB clock domain), never on child presence. One child == one coherent
+    # sink == eligible; two children == dual-DAC 4-ch composite == P8's ring-v2.
+    single = _apple_dongle_shipped_default()
+    assert len(single.hardware.child_devices) == 1
+    assert topology_supports_shm_ring(single) is True
+
+    dual = _dual_apple_stereo()
+    assert len(dual.hardware.child_devices) == 2
+    assert topology_supports_shm_ring(dual) is False
 
 
 def test_shipped_default_ignores_unused_output_state():
@@ -236,11 +289,22 @@ def test_topology_reset_recovers_ring_eligibility_from_stale_artifacts(
     # roleful topology, re-deriving a passive (speaker_groups=[]) topology from
     # detected hardware -> unconfigured -> ring-eligible again. This is the
     # operator path the reconciler's refusal reason now names.
+    #
+    # The observed hardware state is built through the SAME production path
+    # (classify_output_cards) that runs on a real box, so it records the single
+    # child_devices=(card,) a detected dongle always has. Earlier this test wrote
+    # an OutputHardwareState with child_devices=() — a state classify_output_cards
+    # cannot produce for a real dongle — which let the reset re-derive a childless
+    # topology and dodged the operative field. new_topology_draft re-emits that one
+    # child, so this now proves the reset+DEFECT-2-fix RECOVER on the true box
+    # shape (single child + no groups), not a fictional childless one.
     from jasper.cli import output_topology_reset as reset_cli
-    from jasper.output_hardware import OutputHardwareState
+    from jasper.output_hardware import (
+        APPLE_USB_C_DONGLE_DEVICE_ID as HW_APPLE_DONGLE_ID,
+    )
+    from jasper.output_hardware import OutputCardFact, classify_output_cards
     from jasper.output_hardware import write_state as write_output_hardware_state
     from jasper.output_topology import (
-        APPLE_USB_C_DONGLE_DEVICE_ID,
         load_output_topology_strict,
         save_output_topology,
     )
@@ -249,15 +313,25 @@ def test_topology_reset_recovers_ring_eligibility_from_stale_artifacts(
     hw_path = tmp_path / "output_hardware.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
     monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(hw_path))
-    write_output_hardware_state(
-        OutputHardwareState(
-            profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-            profile_label="Apple USB-C audio adapter",
-            status="ok",
-            physical_output_count=2,
-        ),
-        path=hw_path,
+    # Real detected single Apple dongle -> classify_output_cards yields the
+    # len(apple)==1 branch with child_devices=(card,).
+    observed = classify_output_cards(
+        [
+            OutputCardFact(
+                card_id="A",
+                card_index=0,
+                label="Apple USB-C audio adapter",
+                device_id=HW_APPLE_DONGLE_ID,
+                serial="DWH53530FLL2FN3A3",
+                pcm="hw:CARD=A,DEV=0",
+                has_playback=True,
+            )
+        ]
     )
+    assert observed.profile_id == HW_APPLE_DONGLE_ID
+    assert len(observed.child_devices) == 1  # the load-bearing field
+    write_output_hardware_state(observed, path=hw_path)
+
     # Stale subwoofer topology on disk -> ineligible.
     save_output_topology(_apple_dongle_with_stale_subwoofer())
     assert (
@@ -268,6 +342,9 @@ def test_topology_reset_recovers_ring_eligibility_from_stale_artifacts(
 
     recovered = load_output_topology_strict()
     assert recovered.speaker_groups == ()
+    # The recovered topology carries the single child the real box has — proving
+    # the reset re-derived the TRUE shape, not a childless placeholder.
+    assert len(recovered.hardware.child_devices) == 1
     # Ring-eligible again — the box can now arm shm_ring.
     assert topology_supports_shm_ring(recovered) is True
 

@@ -120,11 +120,14 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     # Hydrate os.environ from the wizard-owned env files (same set the daemons
     # load, fanin.env wins last) so a reconcile run from the CLI / install.sh —
-    # neither of which pre-sources those files — sees the persisted
-    # JASPER_FANIN_CAMILLA_COUPLING. Without this, a deploy on a
-    # coupling=transport_pipe box would re-emit a loopback capture while
-    # fan-in/outputd use the pipe topology (a silent split-brain). setdefault
-    # semantics keep an explicit shell override winning.
+    # neither of which pre-sources those files — sees the persisted pipe-path /
+    # chunksize / target-level keys the emit consults from the live env
+    # (JASPER_FANIN_CAMILLA_PIPE, etc.). The coupling TOKEN itself no longer
+    # depends on this hydration: fanin_coupling_capture_kwargs(None) reads it
+    # file-fresh from fanin.env (read_persisted_coupling), so even an un-hydrated
+    # CLI run resolves the right coupling — hydration remains for the pipe-path
+    # OVERRIDES that ride os.environ. setdefault semantics keep an explicit shell
+    # override winning.
     from jasper.env_load import load_env_files
 
     load_env_files()

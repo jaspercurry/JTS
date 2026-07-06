@@ -1637,9 +1637,13 @@ def fanin_coupling_capture_kwargs(
     reconciler's pre-synced-env caller). On a loopback box a polluted
     ``os.environ`` coupling then emitted a RING capture/playback config —
     CamillaDSP crash-loops on a ring nobody writes (hardware-reproduced on
-    jts.local). An EXPLICIT ``env`` mapping stays authoritative (no file read):
-    the reconciler/binder passes ``dict(os.environ)`` right after pre-syncing it,
-    and unit tests pass a controlled env.
+    jts.local). An EXPLICIT ``env`` mapping stays authoritative (no file read) for
+    callers that want to pin the resolution deterministically — today only unit
+    tests, which pass a controlled env. No production caller passes ``env=``: the
+    reconciler/binder pre-syncs ``os.environ`` and the coupling files, then relies
+    on the ``coupling is None, env is None`` file-fresh path here (the token is
+    read from the ``fanin.env`` it just wrote), so the live emit never depends on a
+    stale ``os.environ`` coupling token.
     """
 
     if coupling is None:

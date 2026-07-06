@@ -759,16 +759,19 @@ def ring_topology_ready() -> tuple[bool, str]:
     if topology_supports_shm_ring(topology):
         return True, "topology is ring-eligible (stereo/unconfigured single sink)"
     # Not ring-eligible. This is CORRECT for a genuinely roleful/composite/mono box
-    # (dac8x active speaker, dual-Apple, explicit mono) — the household knows that
-    # setup and loopback is the right coupling. But a plain stereo single-sink box
-    # (e.g. the shipped-default Apple dongle) whose SAVED topology carries STALE
-    # roleful/subwoofer speaker_groups from a prior campaign (jts.local's shape
-    # after the 2026-06 subwoofer campaign) is a false refusal *of the box*, not of
-    # the topology: the classifier honestly reports the saved subwoofer role, and a
-    # stereo ring truly cannot drive it. The remediation is to CLEAR the drifted
-    # topology so it re-derives the plain-stereo shape from detected hardware —
-    # ``jasper-output-topology-reset`` (returns speaker_groups=[] -> unconfigured ->
-    # ring-eligible). Name it here so the operator has an actionable next step
+    # (dac8x active speaker, dual-Apple 4-ch, explicit mono) — the household knows
+    # that setup and loopback is the right coupling. A shipped-default plain stereo
+    # single-sink box (one Apple dongle / one registered DAC) is NOT refused here:
+    # ``topology_supports_shm_ring`` reports it eligible above (its lone
+    # ``child_devices`` entry is the single coherent sink the ring drives — the
+    # DEFECT-2 fix). The one way a plain single-sink box lands in THIS branch is a
+    # SAVED topology that still declares STALE roleful/subwoofer ``speaker_groups``
+    # from a prior campaign after the hardware reverted to plain stereo: the
+    # classifier honestly reports the saved sub role and a stereo ring truly cannot
+    # drive it. The remediation is to CLEAR the drifted topology so it re-derives
+    # the plain-stereo shape from detected hardware —
+    # ``jasper-output-topology-reset`` (rewrites speaker_groups=[] -> unconfigured
+    # -> ring-eligible). Name it here so the operator has an actionable next step
     # instead of an opaque refusal.
     return False, (
         "saved output topology is not ring-eligible (shm_ring is a full-range "
