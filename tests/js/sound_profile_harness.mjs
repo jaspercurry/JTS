@@ -1349,6 +1349,99 @@ async function testCombinedTestButtonStopsActiveRequest() {
   return { combinedTestButtonStopsActiveRequest: true };
 }
 
+async function testReloadedPageRendersReloadSafeStopForActiveTest() {
+  // Regression for the jts3 2026-07-06 incident: a combined test kept looping
+  // ("Like and subscribe to Jasper tech") but a reloaded /sound/ page showed
+  // "Play combined test" with no way to stop it. The fix surfaces the live
+  // session on the commissioning view (summed_test_active) so any page load can
+  // render Stop — even a tab that never clicked Play.
+  const stopPosts = [];
+  let testActive = true;
+  const commissioningView = () => response({
+    status: "needs_combined_check",
+    test_level: {
+      requested_level_dbfs: -72,
+      min_level_dbfs: -80,
+      max_level_dbfs: 0,
+      step_db: 1,
+    },
+    active_summed_test: testActive
+      ? {
+          active: true,
+          speaker_group_id: "main",
+          playback_id: "summed-playback-1",
+          level_dbfs: -30,
+        }
+      : { active: false },
+    combined_groups: [{
+      group_id: "main",
+      label: "Main speaker",
+      status: "ready_to_test",
+      status_label: testActive ? "playing" : "next",
+      message: "Run the combined speaker test.",
+      summed_test_active: testActive,
+      actions: {
+        start_combined_test: {
+          id: "start_combined_test",
+          label: "Play combined test",
+          enabled: true,
+          endpoint: "./active-speaker/summed-test",
+          body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
+        },
+      },
+    }],
+  });
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/measurements": () => Promise.resolve(response({
+      status: "needs_summed_validation",
+      summary: {
+        driver_measurements_complete: true,
+        validated_summed_group_count: 0,
+        summed_validation_complete: false,
+        latest_driver_measurements: {
+          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
+          "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
+        },
+        latest_summed_tests: {},
+        latest_summed_validations: {},
+      },
+      permissions: {},
+      issues: [],
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(commissioningView()),
+    "./active-speaker/summed-test/stop": (_path, options = {}) => {
+      stopPosts.push(JSON.parse(options.body || "{}"));
+      testActive = false;
+      return Promise.resolve(response({ status: "stopped", reason: "operator_stop" }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  // Fresh page load only — this tab NEVER clicked "Play combined test", so the
+  // Stop control must come purely from the server's summed_test_active flag.
+  await loadAndSetActiveState(harness);
+
+  let html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('data-act="stop-summed-test"') || !html.includes("btn--danger")) {
+    fail("a reloaded page with a live combined test should render Stop", { html });
+  }
+  if (html.includes('data-act="prepare-summed-test"')) {
+    fail("a reloaded page with a live combined test must not offer Play", { html });
+  }
+
+  harness.dispatchClick({ "data-act": "stop-summed-test", "data-group-id": "main" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  if (stopPosts.length !== 1 || stopPosts[0].reason !== "operator_stop") {
+    fail("the reload-safe Stop should post to the stop endpoint once", { stopPosts });
+  }
+  html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('data-act="prepare-summed-test"') ||
+      html.includes('data-act="stop-summed-test"')) {
+    fail("after Stop the card should return to Play once the server clears the test", { html });
+  }
+  return { reloadedPageRendersReloadSafeStop: true };
+}
+
 async function testCombinedSoundsRightStopsAndSavesActiveLoop() {
   const start = deferred();
   const stopPosts = [];
@@ -4059,6 +4152,7 @@ results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testCombinedTestLevelPostsSelectedBoundedLevel());
 results.push(await testCombinedTestButtonStopsActiveRequest());
+results.push(await testReloadedPageRendersReloadSafeStopForActiveTest());
 results.push(await testCombinedSoundsRightStopsAndSavesActiveLoop());
 results.push(await testStaleSummedValidationDoesNotRenderValidatedGroup());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());

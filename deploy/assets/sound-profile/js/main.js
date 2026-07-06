@@ -2979,10 +2979,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var combinedPlaying = activeSpeaker.action === 'Playing combined test';
       var combinedStopping = activeSpeaker.action === 'Stopping combined test';
       var combinedSaving = activeSpeaker.action === 'Saving combined check';
+      // Server-authoritative "a combined test is still looping" — lets a freshly
+      // loaded/reloaded page render Stop even though this tab never held the
+      // local 'Playing combined test' action (the un-stoppable-after-reload bug).
+      var serverTestActive = !!(groupView && groupView.summed_test_active === true);
       var combinedControlsLocked = combinedStarting || combinedStopping || combinedSaving;
-      var combinedPlaybackActive = combinedStarting || combinedPlaying || combinedStopping;
+      var combinedPlaybackActive = combinedStarting || combinedPlaying || combinedStopping || serverTestActive;
+      var showStop = (combinedPlaying || serverTestActive) && !combinedStopping;
       var testButton;
-      if (combinedPlaying) {
+      if (showStop) {
         testButton = '<button type="button" class="btn btn--danger" ' +
           'data-act="stop-summed-test" data-group-id="' + escapeHtml(group.id) + '"' +
           '>Stop</button>';
@@ -3001,6 +3006,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
       var recordEnabled = !combinedControlsLocked &&
         (recordAction ? recordAction.enabled === true : hasAudibleTest);
+      // Only the tab that is locally playing force-enables "Sounds right"; a
+      // reloaded page that only knows the test is active (serverTestActive) has
+      // no summed_test_id to record, so it leaves recording to the normal gate
+      // and just offers Stop.
       if (combinedPlaying) recordEnabled = true;
       var summedTestId =
         recordAction && recordAction.body && recordAction.body.summed_test_id ||
@@ -3039,7 +3048,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '</div>' +
         renderSummedLevelControl(group.id, {
           disabled: combinedControlsLocked,
-          live: combinedPlaying
+          live: combinedPlaying || serverTestActive
         }) +
         '<div class="active-speaker-actions">' + testButton + blendOkButton +
           backButton + '</div>' +
