@@ -35,6 +35,10 @@ MODEL_CALL_SCHEMA_VERSION = 1
 MODEL_CALL_KIND = "jts_advisor_model_call"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_TIMEOUT_SEC = 60.0
+# Model-facing cap on a proposed correction filter set — the widest
+# shipped strategy's max_filters. The deterministic validator re-checks
+# against the ACTIVE strategy's (possibly tighter) cap.
+_CORRECTION_PEQ_MAX_ITEMS = 5
 
 Transport = Callable[[str, Mapping[str, str], bytes, float], tuple[int, bytes]]
 
@@ -321,6 +325,16 @@ def _advisor_response_schema() -> dict[str, Any]:
         "required": ["enabled", "curve_id", "simple_eq", "parametric_bands"],
         "additionalProperties": False,
     }
+    correction_peq = {
+        "type": "object",
+        "properties": {
+            "freq_hz": {"type": "number"},
+            "q": {"type": "number"},
+            "gain_db": {"type": "number"},
+        },
+        "required": ["freq_hz", "q", "gain_db"],
+        "additionalProperties": False,
+    }
     action = {
         "type": "object",
         "properties": {
@@ -334,6 +348,17 @@ def _advisor_response_schema() -> dict[str, Any]:
                 "maxLength": MAX_PROFILE_NAME_CHARS,
             },
             "profile": profile,
+            # P6 correction-scope fields. Not-applicable actions send an
+            # empty list / empty string / 0.0 (same "empty when unused"
+            # convention as profile above); JTS validates the real action
+            # contract locally.
+            "correction_peqs": {
+                "type": "array",
+                "items": correction_peq,
+                "maxItems": _CORRECTION_PEQ_MAX_ITEMS,
+            },
+            "target_id": {"type": "string"},
+            "warmth": {"type": "number"},
         },
         "required": [
             "type",
@@ -343,6 +368,9 @@ def _advisor_response_schema() -> dict[str, Any]:
             "rationale",
             "profile_name",
             "profile",
+            "correction_peqs",
+            "target_id",
+            "warmth",
         ],
         "additionalProperties": False,
     }

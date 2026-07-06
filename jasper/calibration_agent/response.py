@@ -32,8 +32,12 @@ from jasper.sound.profile import (
     estimate_headroom_db,
 )
 
-RESPONSE_SCHEMA_VERSION = 1
-VALIDATION_SCHEMA_VERSION = 1
+# v2 (P6): adds the two correction-scope proposal actions
+# (propose_correction_peq_adjustment, propose_target_move). The
+# preference-only v1 shape is otherwise unchanged; the model-facing
+# strict schema in model_client mirrors this version.
+RESPONSE_SCHEMA_VERSION = 2
+VALIDATION_SCHEMA_VERSION = 2
 MAX_ACTION_PLAN_ITEMS = 6
 TEXT_LIMIT_CHARS = 1_200
 
@@ -41,12 +45,48 @@ ACTION_EXPLAIN = "explain"
 ACTION_REMEASURE = "recommend_remeasure"
 ACTION_AUDITION = "propose_preference_eq_audition"
 ACTION_COMMIT = "request_user_approved_preference_commit"
+# P6 correction-scope proposals. Unlike the preference actions above,
+# these move room-correction filters / the shared target. Both are
+# CONFIRM-GATED and, critically, every candidate is SIMULATED
+# deterministically and judged by the P4 AcceptanceEvaluator downstream
+# (see jasper.calibration_agent.proposal_sim). This module only validates
+# schema + bounds; it never applies anything and never authors a number a
+# tool computed.
+ACTION_PROPOSE_CORRECTION_PEQ = "propose_correction_peq_adjustment"
+ACTION_PROPOSE_TARGET_MOVE = "propose_target_move"
+
+# Named targets the model may switch to via propose_target_move. Mirrors
+# jasper.correction.strategy.TARGET_PROFILES keys — kept as a literal set
+# so response.py stays free of the numpy-importing correction package.
+_TARGET_IDS = {"flat", "neutral", "warm", "bright"}
+# The house-curve "warmth" axis bound (jasper.correction.target.house_curve
+# clamps warmth to [-1, 2]); a propose_target_move warmth must stay inside.
+TARGET_WARMTH_MIN = -1.0
+TARGET_WARMTH_MAX = 2.0
+
+# Hard fallback caps for a proposed correction PEQ set when the advisor
+# context does not carry the live session's strategy caps. These match the
+# widest shipped strategy ("balanced") so a proposal is never accepted
+# outside the project's room-correction envelope even if bounds go missing.
+_CORRECTION_FALLBACK_BOUNDS = {
+    "f_low_hz": 20.0,
+    "f_high_hz": 350.0,
+    "max_filters": 5,
+    "max_cut_db": -10.0,
+    "max_boost_db": 3.0,
+    "cuts_only": True,
+    "q_min": 1.0,
+    "q_max": 8.0,
+    "max_total_boost_db": 0.0,
+}
 
 ALLOWED_ACTIONS = {
     ACTION_EXPLAIN,
     ACTION_REMEASURE,
     ACTION_AUDITION,
     ACTION_COMMIT,
+    ACTION_PROPOSE_CORRECTION_PEQ,
+    ACTION_PROPOSE_TARGET_MOVE,
 }
 
 _CURVE_IDS = {preset.id for preset in CURVE_PRESETS}
@@ -118,7 +158,48 @@ def response_contract() -> dict[str, Any]:
                     "The model cannot self-confirm."
                 ),
             },
+            {
+                "type": ACTION_PROPOSE_CORRECTION_PEQ,
+                "side_effect": "proposed_room_correction",
+                "required_fields": ["correction_peqs", "rationale"],
+                "execution": (
+                    "JTS deterministically simulates this room-correction "
+                    "filter set (predicted response + headroom/ring checks) "
+                    "and judges it with the same acceptance evaluator any "
+                    "correction faces. It is applied only after that passes "
+                    "AND the user confirms. Cuts-only stays the default; the "
+                    "model proposes filter values, never DSP config."
+                ),
+            },
+            {
+                "type": ACTION_PROPOSE_TARGET_MOVE,
+                "side_effect": "proposed_target_move",
+                "required_fields": ["rationale"],
+                "execution": (
+                    "A bounded move of the shared house-curve target "
+                    "(a named target id, or a warmth value within the "
+                    "existing house-curve bounds). Applied only after the "
+                    "user confirms; JTS owns the target math."
+                ),
+            },
         ],
+        "correction_peq_limits": {
+            "note": (
+                "A propose_correction_peq_adjustment is bounded by the "
+                "ACTIVE session's correction strategy caps, not these "
+                "fallbacks; the fallbacks apply only if the live caps are "
+                "unavailable."
+            ),
+            "fallback_bounds": dict(_CORRECTION_FALLBACK_BOUNDS),
+            "peq_fields": ["freq_hz", "q", "gain_db"],
+            "always_simulated_before_apply": True,
+            "judged_by_acceptance_evaluator": True,
+        },
+        "target_move_limits": {
+            "target_ids": sorted(_TARGET_IDS),
+            "warmth_min": TARGET_WARMTH_MIN,
+            "warmth_max": TARGET_WARMTH_MAX,
+        },
         "preference_eq_limits": {
             "simple_gain_db": SIMPLE_EQ_LIMIT_DB,
             "advanced_gain_db": ADVANCED_GAIN_LIMIT_DB,
@@ -331,6 +412,14 @@ def _validate_action(
             "position_hint": hint,
         } if not issues else None
 
+    if action_type == ACTION_PROPOSE_CORRECTION_PEQ:
+        return _validate_correction_peq_action(
+            raw, index=index, advisor_context=advisor_context, issues=issues,
+        )
+
+    if action_type == ACTION_PROPOSE_TARGET_MOVE:
+        return _validate_target_move_action(raw, index=index, issues=issues)
+
     profile_issues, profile_payload = _validate_profile(raw.get("profile"), index=index)
     issues.extend(profile_issues)
     rationale = _bounded_text(raw.get("rationale"), "rationale", index, issues)
@@ -382,6 +471,8 @@ def _policy_allows(
         ACTION_REMEASURE: "recommend_remeasure",
         ACTION_AUDITION: "propose_preference_eq_audition",
         ACTION_COMMIT: "request_user_approved_preference_commit",
+        ACTION_PROPOSE_CORRECTION_PEQ: "propose_correction_peq_adjustment",
+        ACTION_PROPOSE_TARGET_MOVE: "propose_target_move",
     }.get(action_type, action_type)
     payload = actions.get(policy_id)
     if payload is None and action_type == ACTION_AUDITION:
@@ -389,6 +480,240 @@ def _policy_allows(
     if not payload:
         return False, ["advisor policy does not list this action"]
     return bool(payload.get("allowed")), [str(r) for r in payload.get("reasons") or []]
+
+
+def _correction_bounds(advisor_context: dict[str, Any]) -> dict[str, Any]:
+    """The live correction-strategy caps a proposed PEQ set is bounded
+    by, falling back to the widest shipped strategy when the packet does
+    not carry them. Keys mirror
+    :class:`jasper.correction.strategy.CorrectionStrategy`."""
+    correction = advisor_context.get("correction") or {}
+    bounds = correction.get("strategy_bounds")
+    if not isinstance(bounds, dict):
+        return dict(_CORRECTION_FALLBACK_BOUNDS)
+    merged = dict(_CORRECTION_FALLBACK_BOUNDS)
+    for key in _CORRECTION_FALLBACK_BOUNDS:
+        if bounds.get(key) is not None:
+            merged[key] = bounds[key]
+    return merged
+
+
+def _validate_correction_peq_action(
+    raw: dict[str, Any],
+    *,
+    index: int,
+    advisor_context: dict[str, Any],
+    issues: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Schema + BOUNDS gate for a proposed room-correction filter set.
+
+    This is the *first* gate. It rejects a set whose per-filter or
+    stacked values fall outside the active strategy caps, but it does NOT
+    decide acoustics — the deterministic simulate-and-judge step
+    (:mod:`jasper.calibration_agent.proposal_sim`, then the P4 acceptance
+    evaluator) runs downstream on what survives here. The model proposes
+    filter values only; JTS owns simulation, headroom, and apply.
+    """
+    rationale = _bounded_text(raw.get("rationale"), "rationale", index, issues)
+    bounds = _correction_bounds(advisor_context)
+    peqs = _validate_correction_peqs(raw.get("correction_peqs"), bounds, index, issues)
+    if issues:
+        return issues, None
+    return issues, {
+        "type": ACTION_PROPOSE_CORRECTION_PEQ,
+        "status": "ready_for_simulation",
+        "side_effect": "proposed_room_correction",
+        # NOT execution-ready: the simulate-and-judge + user-confirm gate
+        # decides that downstream. Keeping this False means the plain
+        # action runner treats it as pending-human, never auto-applies.
+        "execution_ready": False,
+        "requires_user_confirmation": True,
+        "requires_simulation": True,
+        "correction_peqs": peqs,
+        "strategy_bounds": bounds,
+        "rationale": rationale,
+    }
+
+
+def _validate_correction_peqs(
+    raw: Any,
+    bounds: dict[str, Any],
+    index: int,
+    issues: list[dict[str, Any]],
+) -> list[dict[str, float]]:
+    if not isinstance(raw, list):
+        issues.append(_issue(
+            "fail",
+            "correction_peqs_not_list",
+            "correction_peqs must be a list of {freq_hz, q, gain_db}",
+            index=index,
+        ))
+        return []
+    max_filters = int(bounds.get("max_filters", 5))
+    if len(raw) > max_filters:
+        issues.append(_issue(
+            "fail",
+            "too_many_correction_peqs",
+            f"correction_peqs is limited to {max_filters} filters",
+            index=index,
+            count=len(raw),
+        ))
+    f_low = float(bounds.get("f_low_hz", 20.0))
+    f_high = float(bounds.get("f_high_hz", 350.0))
+    q_min = float(bounds.get("q_min", 1.0))
+    q_max = float(bounds.get("q_max", 8.0))
+    max_cut = float(bounds.get("max_cut_db", -10.0))
+    max_boost = float(bounds.get("max_boost_db", 3.0))
+    cuts_only = bool(bounds.get("cuts_only", True))
+    max_total_boost = float(bounds.get("max_total_boost_db", 0.0))
+
+    out: list[dict[str, float]] = []
+    total_boost = 0.0
+    for band_index, band in enumerate(raw[:max_filters]):
+        if not isinstance(band, dict):
+            issues.append(_issue(
+                "fail",
+                "correction_peq_not_object",
+                "each correction filter must be an object",
+                index=index,
+                band_index=band_index,
+            ))
+            continue
+        freq = _numeric_in_range(
+            band.get("freq_hz", band.get("freq")),
+            "freq_hz", f_low, f_high, issues, index=index, band_index=band_index,
+        )
+        q = _numeric_in_range(
+            band.get("q"), "q", q_min, q_max,
+            issues, index=index, band_index=band_index,
+        )
+        gain_lo = max_cut
+        gain_hi = 0.0 if cuts_only else max_boost
+        gain = _numeric_in_range(
+            band.get("gain_db", band.get("gain")),
+            "gain_db", gain_lo, gain_hi,
+            issues, index=index, band_index=band_index,
+        )
+        if freq is None or q is None or gain is None:
+            continue
+        if gain > 0:
+            total_boost += gain
+        out.append({"freq_hz": freq, "q": q, "gain_db": gain})
+
+    # Boost-stacking headroom rule: adjacent boosts sum. Mirrors
+    # jasper.correction.peq.total_max_boost_db's concern.
+    if total_boost > max_total_boost + 1e-9:
+        issues.append(_issue(
+            "fail",
+            "correction_boost_stack_exceeds_headroom",
+            (
+                f"summed positive boost {total_boost:.2f} dB exceeds the "
+                f"{max_total_boost:.2f} dB headroom ceiling"
+            ),
+            index=index,
+            total_boost_db=round(total_boost, 3),
+        ))
+    return out
+
+
+def _validate_target_move_action(
+    raw: dict[str, Any],
+    *,
+    index: int,
+    issues: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Schema + BOUNDS gate for a bounded shared-target move.
+
+    Accepts EITHER a named ``target_id`` (one of the stock targets) OR a
+    ``warmth`` value inside the house-curve bound. JTS owns the target
+    math; the model only names the destination.
+    """
+    rationale = _bounded_text(raw.get("rationale"), "rationale", index, issues)
+    target_id = raw.get("target_id")
+    warmth = raw.get("warmth")
+    payload: dict[str, Any] = {}
+
+    # A named target_id, when present and non-empty, wins. The strict
+    # model schema requires BOTH fields, so an unused warmth arrives as
+    # 0.0 alongside a named target — preferring target_id avoids reading
+    # that sentinel as a competing move. A warmth move sends target_id="".
+    has_target = isinstance(target_id, str) and target_id.strip() != ""
+    has_warmth = isinstance(warmth, (int, float)) and not isinstance(warmth, bool)
+
+    if has_target:
+        tid = target_id.strip().lower()
+        if tid not in _TARGET_IDS:
+            issues.append(_issue(
+                "fail",
+                "target_id_invalid",
+                "target_id must be one of the stock targets",
+                index=index,
+                allowed=sorted(_TARGET_IDS),
+            ))
+        else:
+            payload["target_id"] = tid
+    elif has_warmth:
+        value = _numeric_in_range(
+            warmth, "warmth", TARGET_WARMTH_MIN, TARGET_WARMTH_MAX,
+            issues, index=index,
+        )
+        if value is not None:
+            payload["warmth"] = value
+    else:
+        issues.append(_issue(
+            "fail",
+            "target_move_missing",
+            "propose_target_move needs a target_id or a warmth value",
+            index=index,
+        ))
+
+    if issues:
+        return issues, None
+    return issues, {
+        "type": ACTION_PROPOSE_TARGET_MOVE,
+        "status": "awaiting_user_confirmation",
+        "side_effect": "proposed_target_move",
+        "execution_ready": False,
+        "requires_user_confirmation": True,
+        "rationale": rationale,
+        **payload,
+    }
+
+
+def _numeric_in_range(
+    value: Any,
+    field: str,
+    lo: float,
+    hi: float,
+    issues: list[dict[str, Any]],
+    *,
+    index: int,
+    band_index: int | None = None,
+) -> float | None:
+    """Range-check one number, appending an issue on failure. Returns the
+    coerced float on success, else ``None`` (so callers can skip it)."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        issues.append(_issue(
+            "fail",
+            f"{field}_not_number",
+            f"{field} must be numeric",
+            index=index,
+            band_index=band_index,
+        ))
+        return None
+    if not math.isfinite(numeric) or not lo <= numeric <= hi:
+        issues.append(_issue(
+            "fail",
+            f"{field}_out_of_range",
+            f"{field} must be between {lo:g} and {hi:g}",
+            index=index,
+            band_index=band_index,
+            value=numeric if math.isfinite(numeric) else str(numeric),
+        ))
+        return None
+    return numeric
 
 
 def _bounded_text(
