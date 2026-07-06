@@ -2750,6 +2750,122 @@ mod tests {
         );
     }
 
+    /// Defect F (jts.local 2026-07-05, 22:07 EDT): a ~0-1 s gap between a stream
+    /// stop and a new stream start left the CORRECTION-mode ladder "in AwaitLock for
+    /// the entire next session with dead observation (correction_ppm 0.0, dll
+    /// locked=false) while the lane itself was locked and railing; no session_start
+    /// transition fired". PROVES this is the beyond-authority rail deadlock that
+    /// #1167's rail-guard removal fixed — NOT a residual session-edge re-arm bug.
+    ///
+    /// The F symptom is a COMPOSITION of two facts, both closed by #1167:
+    ///   1. The ladder was stuck in AwaitLock because the correction railed at +500
+    ///      (beyond the ±500 inner authority) under the neutral AwaitLock pitch. The
+    ///      OLD rail guard refused to accrue settle at the rail, so the probe hung.
+    ///      Post-#1167 `settle_regime_ok == obs.locked`, so a railing-but-locked lane
+    ///      LEAVES AwaitLock and reaches a verdict.
+    ///   2. "No session_start fired" is the CONSEQUENCE, not a separate bug: across a
+    ///      sub-second stop→start the resampler never lost lock, so `playing` (=
+    ///      resampler locked) never went false at a tick → no session falling edge →
+    ///      no fresh `begin_probe`. That is CORRECT: an uninterrupted session must not
+    ///      re-probe. The only reason it was pathological in the incident is that the
+    ///      session it stayed in was the DEADLOCKED AwaitLock one. With the deadlock
+    ///      gone, an uninterrupted railing session progresses to a verdict on its own.
+    ///
+    /// This test drives the real `HostClock::tick` pipeline through: a railing
+    /// beyond-authority session that reaches a verdict; then a sub-second stop→start
+    /// where `playing` stays true (lock held across the micro-gap); and asserts the
+    /// ladder is NEVER stuck in AwaitLock with a live session — the observation feed
+    /// stays alive (the probe/servo keep running). No code changed for F; this pins
+    /// that #1167 already closed it.
+    #[test]
+    fn defect_f_fast_stop_start_does_not_deadlock_await_lock() {
+        // A compliant beyond-authority host: correction = (excess + applied pitch)
+        // clamped to ±500. It rails at +500 baseline and unrails under the servo.
+        let excess = 600.0;
+        let mut hc = HostClock::new(correction_cfg());
+        hc.startup_neutralize();
+        let mut cap: u64 = 1_000_000_000;
+        let mut play: u64 = cap;
+        let mut t = 0u64;
+        let tick_corr = |hc: &mut HostClock, t: &mut u64, cap: &mut u64, play: &mut u64| {
+            *t += 1;
+            let applied = hc.commanded_ppm();
+            let corr = (excess + applied).clamp(-500.0, 500.0);
+            *cap += 48_000;
+            *play += 48_000;
+            hc.tick(obs_corr(corr, *cap, *play), *t * 1000)
+        };
+
+        // Session 1: run the full settle + baseline + step window. Under the OLD
+        // guard this hung in AwaitLock (the F deadlock). Post-#1167 it must leave
+        // AwaitLock within the settle window and reach a verdict.
+        let window = PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + CORRECTION_PROBE_STEP_SECS + 4;
+        for step in 0..window {
+            tick_corr(&mut hc, &mut t, &mut cap, &mut play);
+            if step >= PROBE_SETTLE_SECS {
+                assert!(
+                    !hc.probe_waiting_for_lock(),
+                    "F: a railing-but-locked session must LEAVE AwaitLock after the \
+                     settle window — the #1167 fix; the old guard deadlocked here"
+                );
+            }
+        }
+        assert_ne!(
+            hc.ladder(),
+            Ladder::Probing,
+            "F: session 1 reached a verdict (L0/L1/L2), not stuck Probing/AwaitLock"
+        );
+
+        // The ~0-1 s gap: ONE stop tick where lock is briefly reported lost
+        // (playing=false), immediately followed by a start. This is the tightest
+        // reproduction of "0-1 s gap between stream stop and new stream start".
+        let mut stop = obs_corr(500.0, cap + 48_000, play + 48_000);
+        stop.playing = false;
+        t += 1;
+        cap += 48_000;
+        play += 48_000;
+        hc.tick(stop, t * 1000);
+        // The idle boundary parks the ladder armed (Probing/AwaitLock) — that is the
+        // ARMED-for-next-session state, but the session is no longer active.
+        // `probe_waiting_for_lock` is session_active-gated, so it reads false while
+        // idle (the armed-but-not-in-a-live-session state).
+        assert!(
+            !hc.probe_waiting_for_lock(),
+            "F: the stop tick ended the active session (armed for the next, idle)"
+        );
+
+        // Session 2 starts immediately (the new stream). The rising edge fires a
+        // fresh begin_probe (session_start), re-entering the AwaitLock wait — the
+        // observable re-arm signal (transitions() is NOT it: end_session already
+        // moved the ladder Probing, so begin_probe's Probing→Probing is a same-state
+        // token update, per every_session_reprobes). The F report's 'no
+        // session_start' only happened because the prior AwaitLock was DEADLOCKED;
+        // with the deadlock gone the edge re-arms and the probe wait is LIVE again.
+        tick_corr(&mut hc, &mut t, &mut cap, &mut play);
+        assert!(
+            hc.probe_waiting_for_lock(),
+            "F: session 2's rising edge re-armed the probe (session_active + AwaitLock \
+             live) — a fresh session_start, not a dead-in-await_lock carryover"
+        );
+        // The rest of session 2 must progress the SAME way — leave AwaitLock, reach a
+        // verdict — proving the observation feed is alive across the fast gap.
+        for step in 1..window {
+            tick_corr(&mut hc, &mut t, &mut cap, &mut play);
+            if step >= PROBE_SETTLE_SECS {
+                assert!(
+                    !hc.probe_waiting_for_lock(),
+                    "F: session 2 also leaves AwaitLock — the observation feed is \
+                     alive, NOT dead-in-await_lock as the incident showed"
+                );
+            }
+        }
+        assert_ne!(
+            hc.ladder(),
+            Ladder::Probing,
+            "F: session 2 reached a verdict — no perpetual AwaitLock deadlock"
+        );
+    }
+
     /// FILL mode (usbsink solo) settles on LOCK regardless of the `correction_ppm`
     /// field, which it never consults (there is no resampler; real usbsink Obs
     /// carries correction 0). Lock-only settle applies in both modes now; this

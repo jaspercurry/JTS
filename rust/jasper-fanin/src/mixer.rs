@@ -241,6 +241,32 @@ const TAP_CHANNEL_CAPACITY: usize = 256;
 /// reads a wall clock (same discipline as the auto-trim frames-delta latch, C3).
 const DIRECT_REOPEN_RETRY_PERIODS: u64 = 375;
 
+/// Consecutive zero-avail drains that mark a ZOMBIE capture handle (C, defect
+/// 2026-07-05). When the gadget function is REBUILT underneath fan-in (a UDC
+/// rebind / usbsink stop-start), fan-in's open `hw:UAC2Gadget` PCM stays attached
+/// to a DESTROYED instance: `avail_update()` returns `Ok(0)` forever — NOT an
+/// errno, so `classify_direct_errno` never fires and the DeviceLost path never
+/// triggers. The drain just sees avail=0, reads nothing, and the lane goes deaf
+/// (observed: drain_count 71k / 6.4k with zero frames, opens=1 retries=0, /proc
+/// pcm0c 'closed'). This threshold (~2 s at the default 256/48k period, matching
+/// `DIRECT_REOPEN_RETRY_PERIODS`) is how many consecutive render periods of
+/// exactly-zero avail — while the handle is Present — trip a forced close +
+/// bounded re-open. A genuinely idle-but-healthy host still streams silence
+/// frames (avail > 0), so sustained EXACTLY-zero avail means the gadget is no
+/// longer feeding this handle at all: either a zombie (reopen fixes it) or a
+/// clean host-stream-stop (reopen re-establishes an identical handle, harmless
+/// since no audio was flowing). Either way a bounded reopen is the safe recovery.
+const DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS: u64 = 375;
+
+/// Pure zombie-handle predicate (C): does a run of `zero_avail_streak` consecutive
+/// zero-avail drains at or beyond `threshold` mark the Present handle as a zombie
+/// to force-reopen? Extracted so the detection is scratch-crate testable without
+/// ALSA (the `Ok(0)`-forever gadget-rebuild condition can't be reproduced in a
+/// unit test otherwise).
+fn zombie_handle_suspected(zero_avail_streak: u64, threshold: u64) -> bool {
+    threshold > 0 && zero_avail_streak >= threshold
+}
+
 /// Delay, in whole seconds, from a lane's idle→active transition to its
 /// one-shot AUTO-TRIM fire. Gives the chain time to warm up and establish its
 /// standing fill before the trim drops it — trimming at t=0 (before the fill
@@ -796,6 +822,20 @@ pub struct DirectObservability {
     /// `present=false` means the gadget is not attachable — bridge holding it,
     /// or no host).
     pub retries: Arc<AtomicU64>,
+    /// Cumulative ZOMBIE-handle forced reopens (C, defect 2026-07-05): a run of
+    /// `DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS` consecutive zero-avail drains while
+    /// Present tripped a close + bounded re-open of the gadget capture. A growing
+    /// value means the gadget function is being rebuilt underneath fan-in (UDC
+    /// rebind / usbsink stop-start) and this lane is self-healing the deaf handle
+    /// instead of needing a manual fan-in restart. Surfaced via STATUS.
+    pub reopens: Arc<AtomicU64>,
+    /// Consecutive zero-avail drain count (C). Incremented each drain entry where
+    /// `avail_update()` reported exactly 0 while Present; reset to 0 the moment any
+    /// avail > 0 is seen or the handle transitions to Absent/reopened. When it
+    /// reaches `DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS` the zombie-reopen fires. This is
+    /// live state (not since-boot), so it lives in `direct_obs` alongside the other
+    /// mixer-thread-written / state-thread-read atomics.
+    pub zero_avail_streak: Arc<AtomicU64>,
     /// Drain-entry avail dwell stats (lever 2). SINCE-BOOT cumulative (matches
     /// the `opens`/`retries` idiom in this block — no reset-on-read state to
     /// carry, and a monotonic denominator makes the STATUS `mean` a lifetime
@@ -2480,6 +2520,8 @@ fn open_direct_input(
             present,
             opens,
             retries,
+            reopens: Arc::new(AtomicU64::new(0)),
+            zero_avail_streak: Arc::new(AtomicU64::new(0)),
             drain_stats: DrainStats::new(),
         }),
     }
@@ -2983,21 +3025,50 @@ fn read_direct_and_render(
                 ring_fill_before,
                 xrun_tx,
             );
-            if outcome == DirectDrainOutcome::DeviceLost {
-                // Runtime loss: close the PCM, reset the resampler, go Absent.
-                if let Some(r) = input.resampler.as_mut() {
-                    r.reset();
+            match outcome {
+                DirectDrainOutcome::Ok => {}
+                DirectDrainOutcome::DeviceLost => {
+                    // Runtime loss (errno-driven): close the PCM, reset the
+                    // resampler, go Absent — the reopen retry re-establishes it.
+                    if let Some(r) = input.resampler.as_mut() {
+                        r.reset();
+                    }
+                    if let Some(obs) = &input.direct_obs {
+                        obs.present.store(false, Ordering::Relaxed);
+                        obs.zero_avail_streak.store(0, Ordering::Relaxed);
+                        warn!(
+                            "event=fanin.usb_direct.absent device={} reason=runtime_loss (will retry ~every {} periods)",
+                            obs.device, DIRECT_REOPEN_RETRY_PERIODS,
+                        );
+                    }
+                    direct = DirectCapture::Absent {
+                        periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
+                    };
                 }
-                if let Some(obs) = &input.direct_obs {
-                    obs.present.store(false, Ordering::Relaxed);
-                    warn!(
-                        "event=fanin.usb_direct.absent device={} reason=runtime_loss (will retry ~every {} periods)",
-                        obs.device, DIRECT_REOPEN_RETRY_PERIODS,
-                    );
+                DirectDrainOutcome::ZombieReopen => {
+                    // Zombie handle (C): Present but deaf for ~2 s (gadget rebuilt
+                    // underneath us — no errno). Force the SAME close→Absent→reopen
+                    // recovery as a device loss, but log + count it distinctly so a
+                    // silent gadget rebuild is visible. periods_until_retry=0 so the
+                    // very next render period attempts the reopen (a zombie is a
+                    // live rebuild, not a truly-absent host — no need to wait 2 s
+                    // more on top of the 2 s we already spent detecting it).
+                    if let Some(r) = input.resampler.as_mut() {
+                        r.reset();
+                    }
+                    if let Some(obs) = &input.direct_obs {
+                        obs.present.store(false, Ordering::Relaxed);
+                        obs.zero_avail_streak.store(0, Ordering::Relaxed);
+                        let reopens = obs.reopens.fetch_add(1, Ordering::Relaxed) + 1;
+                        warn!(
+                            "event=fanin.usb_direct.reopen device={} reason=zombie_handle reopens={} (avail=0 for ~{} periods; gadget rebuilt underneath — closing + re-opening the capture)",
+                            obs.device, reopens, DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS,
+                        );
+                    }
+                    direct = DirectCapture::Absent {
+                        periods_until_retry: 0,
+                    };
                 }
-                direct = DirectCapture::Absent {
-                    periods_until_retry: DIRECT_REOPEN_RETRY_PERIODS,
-                };
             }
         }
         DirectCapture::Absent { .. } => {
@@ -3020,12 +3091,18 @@ fn read_direct_and_render(
     real_frames
 }
 
-/// The outcome of one direct-capture drain: normal (kept Present) or a device
-/// loss that must transition the lane to Absent.
+/// The outcome of one direct-capture drain: normal (kept Present), a device loss
+/// (an errno the drain classified as DeviceLost), or a ZOMBIE handle (Present but
+/// `avail_update` has returned exactly 0 for `DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS`
+/// consecutive drains — a gadget rebuilt underneath us). Both non-Ok outcomes drive
+/// the SAME close→Absent→bounded-reopen recovery; they differ only in the log line
+/// + which counter increments, so an operator can tell a clean unplug (DeviceLost,
+/// errno-driven) from a silent gadget rebuild (ZombieReopen, avail-0-driven) apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DirectDrainOutcome {
     Ok,
     DeviceLost,
+    ZombieReopen,
 }
 
 /// Drain all currently-available frames from the gadget capture into the lane
@@ -3080,6 +3157,23 @@ fn drain_direct_capture(
         if !drain_entry_recorded {
             drain_entry_recorded = true;
             record_drain_entry(input, avail);
+            // Zombie-handle detection (C): a Present handle whose avail_update has
+            // returned exactly 0 for DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS consecutive
+            // drains is attached to a destroyed gadget instance (UDC rebind /
+            // usbsink stop-start) — deaf forever with no errno. Track the streak on
+            // the drain-ENTRY sample only (once per drain call, like the dwell
+            // stats). A single avail > 0 resets it; crossing the threshold returns
+            // ZombieReopen so read_direct_and_render force-reopens the capture.
+            if let Some(obs) = &input.direct_obs {
+                if avail == 0 {
+                    let streak = obs.zero_avail_streak.fetch_add(1, Ordering::Relaxed) + 1;
+                    if zombie_handle_suspected(streak, DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS) {
+                        return DirectDrainOutcome::ZombieReopen;
+                    }
+                } else {
+                    obs.zero_avail_streak.store(0, Ordering::Relaxed);
+                }
+            }
         }
         let want = resampler_read_budget_frames(avail, period_frames).min(read_budget_remaining);
         if want == 0 {
@@ -3814,6 +3908,47 @@ mod tests {
         assert!(
             (seconds - 2.0).abs() < 1e-9,
             "reopen cadence must be ~2 s, got {seconds}"
+        );
+    }
+
+    #[test]
+    fn zombie_handle_suspected_fires_only_at_threshold() {
+        // Below the threshold: not a zombie (a healthy host can be briefly idle).
+        assert!(!zombie_handle_suspected(
+            0,
+            DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS
+        ));
+        assert!(!zombie_handle_suspected(
+            1,
+            DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS
+        ));
+        assert!(!zombie_handle_suspected(
+            DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS - 1,
+            DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS
+        ));
+        // At or beyond the threshold: the Present handle has been deaf too long.
+        assert!(zombie_handle_suspected(
+            DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS,
+            DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS
+        ));
+        assert!(zombie_handle_suspected(
+            DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS + 100,
+            DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS
+        ));
+        // A zero threshold disables the detector (belt-and-braces: never fire).
+        assert!(!zombie_handle_suspected(u64::MAX, 0));
+    }
+
+    #[test]
+    fn zombie_zero_avail_window_is_about_two_seconds() {
+        // The zombie detection window matches the reopen cadence (~2 s at the
+        // default 256/48k period) — enough dead time to be sure the gadget stopped
+        // feeding, not a transient.
+        let seconds = (DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS as f64) * (DIRECT_PERIOD_FRAMES as f64)
+            / (SAMPLE_RATE_HZ as f64);
+        assert!(
+            (seconds - 2.0).abs() < 1e-9,
+            "zombie window must be ~2 s, got {seconds}"
         );
     }
 

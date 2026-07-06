@@ -107,6 +107,7 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
     "0755 deploy/bin/jasper-camilla-pipe-guard /usr/local/sbin/jasper-camilla-pipe-guard"
     "0755 deploy/bin/jasper-camilla-recover /usr/local/sbin/jasper-camilla-recover"
     "0755 deploy/bin/jasper-camilla-crossover-guard /usr/local/sbin/jasper-camilla-crossover-guard"
+    "0755 deploy/bin/jasper-fanin-pitch-neutralize /usr/local/sbin/jasper-fanin-pitch-neutralize"
 )
 
 install_local_audio_graph_unit_files() {

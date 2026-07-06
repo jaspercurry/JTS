@@ -2124,6 +2124,111 @@ def check_ring_platform_assets() -> CheckResult:
     )
 
 
+@doctor_check(order=51.9, group="audio")
+def check_ring_geometry_coherence() -> CheckResult:
+    """Verify the Ring-A slot geometry agrees across env, conf.d, and on-disk (defect A).
+
+    The ring's ``n_slots`` must match on THREE axes or CamillaDSP's ioplug attach
+    fails hard (hw_params EINVAL + ``attach_fatal reason=ring header does not match
+    expected geometry`` → crash-loop → start-limit-hit):
+
+      1. fan-in's resolved ``JASPER_FANIN_RING_SLOTS`` (fanin.env, default 8)
+      2. the conf.d ``jts_ring_capture`` ``n_slots`` (the ioplug attach authority)
+      3. the on-disk ``program.ring`` header ``n_slots`` (what the writer created)
+
+    The 2026-07-05 defect was a stale ``JASPER_FANIN_RING_SLOTS=2`` lab line making
+    fan-in write a 2-slot ring while the conf.d pinned 8. The coupling reconciler
+    now preflights + self-heals this at arm time; this check is the standing
+    surface that catches drift on a live box.
+
+    Skips cleanly when the coupling is NOT shm_ring (the ring is inert — the env /
+    conf.d values are placeholders that nothing opens, so a "mismatch" is not a
+    live defect). On an armed box a mismatch is ``fail`` (the graph cannot run);
+    an indeterminate conf.d / env is ``warn`` (redeploy to reinstall).
+    """
+    label = "ring geometry"
+    try:
+        from jasper.fanin.coupling_reconcile import FANIN_ENV_PATH, read_persisted_coupling
+        from jasper.fanin_coupling import (
+            COUPLING_SHM_RING,
+            RING_SLOTS_ENV_VAR,
+            resolve_ring_slots,
+        )
+        from jasper.env_file import read_value
+    except ImportError as e:  # pragma: no cover - always importable in prod
+        return CheckResult(label, "warn", f"ring modules unavailable: {e}")
+
+    if read_persisted_coupling() != COUPLING_SHM_RING:
+        return CheckResult(
+            label, "ok",
+            "skipped — shm_ring not armed (Ring A geometry is inert; the env / "
+            "conf.d n_slots are placeholders nothing opens)",
+        )
+
+    # Axis 1: fan-in's resolved env slot count (fail-loud on a bad value).
+    try:
+        fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
+    except OSError:
+        fanin_text = ""
+    try:
+        fanin_slots = resolve_ring_slots(read_value(fanin_text, RING_SLOTS_ENV_VAR))
+    except ValueError as e:
+        return CheckResult(
+            label, "fail",
+            f"{RING_SLOTS_ENV_VAR} in {FANIN_ENV_PATH} is invalid: {e}. shm_ring is "
+            "armed — fan-in will refuse to create the ring. Clear the stale value.",
+        )
+
+    # Axis 2: the conf.d attach authority.
+    conf_slots = ring_assets.ring_conf_n_slots(
+        ring_assets.RING_A_CONF_PCM, _JTS_RING_CONF_D
+    )
+    if conf_slots is None:
+        return CheckResult(
+            label, "warn",
+            f"conf.d ({_JTS_RING_CONF_D}) has no single n_slots for "
+            f"pcm.{ring_assets.RING_A_CONF_PCM}; Ring A geometry is indeterminate — "
+            "redeploy to reinstall the ring conf.d.",
+        )
+    if fanin_slots != conf_slots:
+        return CheckResult(
+            label, "fail",
+            f"Ring A slot mismatch: JASPER_FANIN_RING_SLOTS resolves to {fanin_slots} "
+            f"but conf.d pcm.{ring_assets.RING_A_CONF_PCM} pins n_slots={conf_slots}. "
+            "shm_ring is armed — CamillaDSP's ioplug attach fails (hw_params EINVAL) "
+            "and crash-loops. Run: sudo /opt/jasper/.venv/bin/"
+            "jasper-fanin-coupling-reconcile shm_ring (it self-heals a stale env), "
+            "or match the two values.",
+        )
+
+    # Axis 3: the on-disk ring header (what the writer actually created).
+    header = ring_assets.read_ring_header(ring_assets.RING_A_PROGRAM_FILE)
+    if not header.valid:
+        # Armed but no coherent on-disk ring yet: fan-in may be between restarts,
+        # or the ring was cleared. The env/conf.d agree, so the next writer create
+        # is coherent — noteworthy, not a hard failure.
+        return CheckResult(
+            label, "warn",
+            f"env + conf.d agree (n_slots={fanin_slots}) but {ring_assets.RING_A_PROGRAM_FILE} "
+            "has no valid ring header yet (fan-in restarting / ring cleared). It "
+            "will be created coherently on the next fan-in start.",
+        )
+    if header.n_slots != conf_slots:
+        return CheckResult(
+            label, "fail",
+            f"on-disk Ring A ({ring_assets.RING_A_PROGRAM_FILE}) has n_slots="
+            f"{header.n_slots} but env + conf.d expect {conf_slots}. A stale ring "
+            "file from a prior geometry blocks the ioplug attach. Run: sudo "
+            "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring "
+            "(it deletes a geometry-mismatched ring file before re-arming).",
+        )
+    return CheckResult(
+        label, "ok",
+        f"Ring A n_slots coherent across env + conf.d + on-disk header "
+        f"(n_slots={header.n_slots})",
+    )
+
+
 @doctor_check(order=52, group="audio")
 def check_outputd_service() -> CheckResult:
     """Validate the outputd final-output-owner daemon.

@@ -805,6 +805,12 @@ impl StateServer {
                 buf.push(',');
                 push_kv_u64(&mut buf, "retries", d.retries.load(Ordering::Relaxed));
                 buf.push(',');
+                // Zombie-handle forced reopens (C): a growing value means the
+                // gadget function is being rebuilt underneath fan-in (UDC rebind /
+                // usbsink stop-start) and this lane is self-healing the deaf handle
+                // rather than needing a manual fan-in restart.
+                push_kv_u64(&mut buf, "reopens", d.reopens.load(Ordering::Relaxed));
+                buf.push(',');
                 // Negotiated gadget geometry (lever 2). 256/768 by default;
                 // JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES overrides the period and
                 // resolve_direct_buffer_frames derives the requested deep buffer.
@@ -1316,6 +1322,8 @@ mod tests {
                         present: Arc::new(AtomicBool::new(true)),
                         opens: Arc::new(AtomicU64::new(1)),
                         retries: Arc::new(AtomicU64::new(0)),
+                        reopens: Arc::new(AtomicU64::new(0)),
+                        zero_avail_streak: Arc::new(AtomicU64::new(0)),
                         // Two drain-entry samples (128 + 192 = 320, mean 160,
                         // max 192) exercising buckets 2 and 3.
                         drain_stats: {
@@ -2016,12 +2024,15 @@ mod tests {
         assert!(j.contains(r#""present":true"#), "direct present flag: {j}");
         assert!(j.contains(r#""opens":1"#), "direct opens counter: {j}");
         assert!(j.contains(r#""retries":0"#), "direct retries counter: {j}");
+        // Zombie-handle forced-reopen counter (C) — additive to the direct block.
+        assert!(j.contains(r#""reopens":0"#), "direct reopens counter: {j}");
         // The whole document still parses.
         let parsed: serde_json::Value = serde_json::from_str(&j).unwrap();
         let inputs = parsed["inputs"].as_array().unwrap();
         let direct = inputs.iter().find(|i| i["label"] == "usbsink").unwrap();
         assert_eq!(direct["source"].as_str(), Some("direct"));
         assert_eq!(direct["direct"]["present"].as_bool(), Some(true));
+        assert_eq!(direct["direct"]["reopens"].as_u64(), Some(0));
         // ADDITIVE (lever 2): negotiated geometry + drain-entry dwell stats.
         assert_eq!(direct["direct"]["period_frames"].as_u64(), Some(256));
         assert_eq!(direct["direct"]["buffer_frames"].as_u64(), Some(768));
