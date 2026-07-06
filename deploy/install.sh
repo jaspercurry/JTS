@@ -1732,6 +1732,26 @@ reconcile_grouping_state() {
         echo "  WARN: grouping reconcile failed. Check logs with: journalctl -u jasper-grouping-reconcile -e"
 }
 
+resolve_fanin_coupling_default() {
+    # P3/P4 default-flip. Enable the boot-time default-resolution unit AND run
+    # the pass once now so this deploy converges the box onto the shipped
+    # defaults:
+    #   - fan-in coupling: shm_ring on a solo, ring-eligible box (all #1169 arm
+    #     preflights pass), else loopback;
+    #   - USB combo (JASPER_FANIN_USB_DIRECT + _HOST_CLOCK + _RESAMPLER_CUSHION_DECAY):
+    #     enabled on a gadget box (dtoverlay=dwc2,dr_mode=peripheral present), else
+    #     cleared.
+    # It is a COMPLETE no-op when the operator recorded an explicit choice
+    # (JASPER_FANIN_COUPLING_CHOICE=operator in fanin.env) — a deliberate revert
+    # sticks across deploys — and a zero-churn confirm on an already-resolved box.
+    # Mirrors reconcile_aec_state / reconcile_grouping_state: reconciler is the
+    # single env writer; daemons read the resolved env. The reconciler CLI hydrates
+    # its own env (load_env_files) so the camilla re-emit keeps the tuned chunksize.
+    systemctl enable jasper-fanin-coupling-auto.service
+    /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || \
+        echo "  WARN: fan-in coupling default resolution failed. Check logs with: journalctl -u jasper-fanin-coupling-auto -e"
+}
+
 remove_legacy_https_artifacts() {
     # The old install topology served /spotify/ over HTTPS using a
     # self-signed cert at /etc/nginx/ssl/jasper.{crt,key} so Spotify's

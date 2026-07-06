@@ -704,6 +704,92 @@ def test_cli_main_reports_transport_gate(monkeypatch, capsys):
     assert "transport_gate=True" in capsys.readouterr().out
 
 
+def test_cli_explicit_choice_stamps_operator_marker(tmp_path):
+    """The explicit positional path writes JASPER_FANIN_COUPLING_CHOICE=operator so
+    a later --auto pass treats this coupling as an operator choice (the revert
+    lever)."""
+    from jasper.fanin.coupling_auto import COUPLING_CHOICE_ENV_VAR
+
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+    result = _reconcile(
+        COUPLING_LOOPBACK,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+        mark_operator_choice=True,
+    )
+    assert result.ok
+    assert read_value(fanin_env.read_text(), COUPLING_CHOICE_ENV_VAR) == "operator"
+
+
+def test_marker_only_change_does_not_bounce_daemons(tmp_path):
+    """Stamping the operator marker on an already-loopback box must NOT trigger a
+    disarm bounce — the coupling did not move, so it stays on the confirm path."""
+    from jasper.fanin.coupling_auto import COUPLING_CHOICE_ENV_VAR
+
+    fanin_env = _write(tmp_path / "fanin.env", "JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+    result = _reconcile(
+        COUPLING_LOOPBACK,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+        mark_operator_choice=True,
+    )
+    assert result.direction == "confirm"
+    # No fan-in/outputd bounce — only the camilla confirm ran.
+    assert "fanin" not in calls
+    assert "outputd" not in calls
+    # But the marker WAS written (env moved, confirm reports changed=True).
+    assert read_value(fanin_env.read_text(), COUPLING_CHOICE_ENV_VAR) == "operator"
+    assert result.changed is True
+
+
+def test_cli_auto_dispatches_to_reconcile_auto(monkeypatch, capsys):
+    from jasper.fanin import coupling_reconcile as cr
+
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    seen = {}
+
+    def fake_auto(*a, **k):
+        seen.update(k)
+        return cr.AutoResult(
+            ok=True, owned=True, coupling="shm_ring", gadget_present=True,
+            usb_combo_changed=True, reason="all ring gates passed",
+        )
+
+    monkeypatch.setattr(cr, "reconcile_auto", fake_auto)
+    rc = cr.main(["--auto"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "coupling auto:" in out and "coupling=shm_ring" in out
+
+
+def test_cli_auto_and_explicit_are_mutually_exclusive(monkeypatch):
+    from jasper.fanin import coupling_reconcile as cr
+
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    with pytest.raises(SystemExit):
+        cr.main(["loopback", "--auto"])
+
+
+def test_cli_requires_a_choice_or_auto(monkeypatch):
+    from jasper.fanin import coupling_reconcile as cr
+
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    with pytest.raises(SystemExit):
+        cr.main([])
+
+
 def test_transport_pipe_status_gate_accepts_stable_window():
     fanin_samples = [
         _transport_fanin_status(),

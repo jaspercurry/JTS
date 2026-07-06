@@ -230,6 +230,7 @@ def reconcile_coupling(
     env_path: str | Path = FANIN_ENV_PATH,
     outputd_env_path: str | Path = OUTPUTD_ENV_PATH,
     apply: bool = True,
+    mark_operator_choice: bool = False,
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
     reconcile_camilla=None,
@@ -252,9 +253,14 @@ def reconcile_coupling(
       self-heal a drifted loaded config, WITHOUT bouncing fan-in.
 
     ``apply=False`` writes the env only (no daemon ops) — for staging/migration.
-    ``restart_fanin`` / ``restart_outputd`` / ``reconcile_camilla`` /
-    ``active_leader_check`` are injectable for tests (default to the real broker
-    + reconcile_current_dsp + grouping-state reader); the camilla hook takes the
+    ``mark_operator_choice=True`` (the explicit CLI/HTTP paths) additionally stamps
+    the operator-choice marker ``JASPER_FANIN_COUPLING_CHOICE=operator`` into
+    fanin.env in the SAME write, so a later ``--auto`` pass treats this coupling as
+    an explicit operator choice and never overrides it (the revert lever). The
+    ``--auto`` pass itself passes False so it leaves the marker absent (its writes
+    stay auto-owned). ``restart_fanin`` / ``restart_outputd`` / ``reconcile_camilla``
+    / ``active_leader_check`` are injectable for tests (default to the real broker +
+    reconcile_current_dsp + grouping-state reader); the camilla hook takes the
     resolved coupling string.
     """
     do_restart = restart_fanin or (lambda: _restart_fanin(reason=reason))
@@ -299,11 +305,36 @@ def reconcile_coupling(
             direction="error",
             detail=support.detail or "unsupported coupling action",
         )
-    fanin_new_text, fanin_changed = _apply_action(fanin_snapshot.text, action)
+    fanin_new_text, coupling_changed = _apply_action(fanin_snapshot.text, action)
+    # ``coupling_changed`` is the COUPLING line moving alone — it (with
+    # ``outputd_changed``) drives the arm/disarm-vs-confirm decision below. A
+    # marker-only write must NOT be mistaken for a coupling flip (that would bounce
+    # the daemons on an already-at-desired box), so the marker's own change is
+    # tracked separately and folded only into ``fanin_changed`` (whether to rewrite
+    # the file), never into the transition decision.
+    fanin_changed = coupling_changed
+    if mark_operator_choice:
+        # Stamp the operator-choice marker in the SAME fanin.env write as the
+        # coupling flip, so an explicit CLI/HTTP arm is recorded as an operator
+        # choice the --auto pass must never override (the revert lever). Absence =
+        # auto-owned; presence-and-operator = frozen to the operator's pick.
+        from jasper.fanin.coupling_auto import (
+            COUPLING_CHOICE_ENV_VAR,
+            COUPLING_CHOICE_OPERATOR,
+        )
+
+        fanin_new_text, marker_changed = _apply_action(
+            fanin_new_text,
+            RuntimeEnvAction("set", COUPLING_CHOICE_ENV_VAR, COUPLING_CHOICE_OPERATOR),
+        )
+        fanin_changed = fanin_changed or marker_changed
     outputd_new_text, outputd_changed = _apply_actions(
         outputd_snapshot.text, _outputd_actions(desired, outputd_snapshot.text)
     )
+    # ``changed`` = should we rewrite either file. ``coupling_moved`` = did the
+    # actual coupling topology move (gates the transition vs the confirm path).
     changed = fanin_changed or outputd_changed
+    coupling_moved = coupling_changed or outputd_changed
 
     # Persist the desired value first (single source of truth for the daemons'
     # next start). A write failure aborts BEFORE any daemon op so we never bounce
@@ -342,8 +373,11 @@ def reconcile_coupling(
             direction="disarm" if desired == COUPLING_LOOPBACK else "arm",
         )
 
-    if not changed:
-        # Env already at desired. An already-armed shm_ring box can still be
+    if not coupling_moved:
+        # Coupling already at desired (a marker-only or combo-only fanin.env write
+        # still lands here — the env was rewritten above, but the coupling topology
+        # did not move, so there is no daemon transition to run). An already-armed
+        # shm_ring box can still be
         # INCOHERENT — a stale JASPER_FANIN_RING_SLOTS or a stale on-disk ring file
         # from a pre-fix arm that leaves CamillaDSP crash-looping on the ioplug
         # geometry mismatch. The coupling-flip write didn't change (already
@@ -415,7 +449,7 @@ def reconcile_coupling(
             level=logging.INFO if ok else logging.WARNING,
         )
         return CouplingResult(
-            ok=ok, desired=desired, changed=False, direction="confirm",
+            ok=ok, desired=desired, changed=changed, direction="confirm",
             reconciled_camilla=ok, validated_transport_pipe=validated,
             detail="" if ok else detail,
         )
@@ -442,6 +476,192 @@ def reconcile_coupling(
             outputd_snapshot,
         )
     return _disarm(do_restart, do_restart_outputd, do_reconcile, desired, reason)
+
+
+@dataclass(frozen=True)
+class AutoResult:
+    """Outcome of a ``--auto`` default-resolution pass (P3/P4 default-flip).
+
+    ``owned`` is False when an operator choice froze the box — the pass made ZERO
+    changes. Otherwise ``coupling`` is the resolved default, ``usb_combo_changed``
+    records whether the USB combo keys moved, ``coupling_result`` is the delegated
+    :class:`CouplingResult`, and ``restarted_fanin_for_combo`` is True when a
+    combo-only change forced an extra fan-in restart (the coupling reconcile did
+    not bounce it). ``ok`` reflects the delegated coupling reconcile (or True when
+    the pass was a clean operator no-op).
+    """
+
+    ok: bool
+    owned: bool
+    coupling: str
+    gadget_present: bool
+    usb_combo_changed: bool
+    reason: str
+    coupling_result: "CouplingResult | None" = None
+    restarted_fanin_for_combo: bool = False
+    detail: str = ""
+
+
+def reconcile_auto(
+    *,
+    reason: str = "auto",
+    env_path: str | Path = FANIN_ENV_PATH,
+    outputd_env_path: str | Path = OUTPUTD_ENV_PATH,
+    apply: bool = True,
+    gadget_present: bool | None = None,
+    restart_fanin: "DaemonOp | None" = None,
+    restart_outputd: "DaemonOp | None" = None,
+    reconcile_camilla=None,
+    active_leader_check: "Callable[[], bool] | None" = None,
+) -> AutoResult:
+    """DEFAULT-RESOLUTION pass (P3/P4): resolve the coupling + USB combo by
+    eligibility when the household made no explicit choice.
+
+    Runs on deploy (install.sh) and boot (the reconciler's ``--auto`` CLI). Steps:
+
+    1. Read the operator-choice marker from fanin.env. If it names an explicit
+       operator choice (``JASPER_FANIN_COUPLING_CHOICE=operator``), make ZERO
+       changes — the operator's revert (loopback + direct + combo-off) sticks. Log
+       ``result=auto_skipped_operator_choice`` and return ``owned=False``.
+    2. Otherwise the pass OWNS the box. Resolve the coupling default via
+       :func:`jasper.fanin.coupling_auto.resolve_auto_decision`, gating on the SAME
+       #1169 ring preflights a manual arm uses (assets present, topology
+       ring-eligible, BOTH geometry axes coherent) — ``shm_ring`` iff all pass,
+       else ``loopback``. Resolve the USB combo from gadget presence.
+    3. Write the USB combo keys into fanin.env (the reconciler is their single
+       writer): set-enabled on a gadget box, unset otherwise. Idempotent — a
+       second pass with the same inputs writes nothing.
+    4. Delegate the coupling flip + ordered daemon transition to
+       :func:`reconcile_coupling` (``mark_operator_choice=False`` so the marker
+       stays absent — auto-owned). If the combo changed but the coupling did not
+       (so reconcile_coupling took the no-bounce confirm path), issue ONE extra
+       fan-in restart so the new combo takes effect.
+
+    NO-OP on an ineligible / fanin-less box: jts3 (roleful) / jts5 (composite)
+    resolve loopback with no combo (no gadget) and converge with zero churn; jts4
+    (streambox, no fan-in stack) sees the coupling reconcile no-op and no gadget,
+    so nothing is written. ``gadget_present`` / ``restart_*`` / ``reconcile_camilla``
+    / ``active_leader_check`` are injectable for tests; ``gadget_present=None`` reads
+    the live boot config.
+    """
+    from jasper.fanin.coupling_auto import (
+        default_ring_gates,
+        read_boot_config_gadget_present,
+        read_marker,
+        resolve_auto_decision,
+    )
+
+    fanin_snapshot = _read_snapshot(env_path)
+    outputd_snapshot = _read_snapshot(outputd_env_path)
+    marker = read_marker(fanin_snapshot.text)
+    gadget = (
+        read_boot_config_gadget_present() if gadget_present is None else gadget_present
+    )
+
+    # The full ordered ring preflight set (assets + topology, plus the two geometry
+    # gates that need the outputd/fanin env text — bound here as closures).
+    ring_gates = default_ring_gates() + (
+        ("ring_geometry", lambda: ring_geometry_ready(outputd_snapshot.text)),
+        (
+            "ring_slot_geometry",
+            lambda: ring_slot_geometry_ready(fanin_snapshot.text),
+        ),
+    )
+    decision = resolve_auto_decision(
+        marker_raw=marker, gadget_present=gadget, ring_gates=ring_gates
+    )
+
+    if not decision.owned:
+        log_event(
+            logger, "fanin.coupling_reconcile", result="auto_skipped_operator_choice",
+            reason=reason, coupling_marker="operator", detail=decision.reason,
+        )
+        return AutoResult(
+            ok=True, owned=False, coupling=decision.coupling,
+            gadget_present=gadget, usb_combo_changed=False, reason=decision.reason,
+        )
+
+    # Step 3 — USB combo keys (reconciler = single writer). Write only on change.
+    fanin_after_combo, combo_changed = _apply_actions(
+        fanin_snapshot.text, decision.usb_combo_actions
+    )
+    if combo_changed:
+        try:
+            _write_env_text(fanin_snapshot.path, fanin_after_combo)
+        except OSError as e:
+            log_event(
+                logger, "fanin.coupling_reconcile", result="auto_usb_combo_write_failed",
+                reason=reason, gadget_present=gadget, error=e, level=logging.ERROR,
+            )
+            return AutoResult(
+                ok=False, owned=True, coupling=decision.coupling,
+                gadget_present=gadget, usb_combo_changed=False,
+                reason=decision.reason, detail=str(e),
+            )
+        # Keep the live env coherent for the coupling reconcile's own re-read.
+        for a in decision.usb_combo_actions:
+            if a.action == "set":
+                os.environ[a.key] = a.value
+            else:
+                os.environ.pop(a.key, None)
+        log_event(
+            logger, "fanin.coupling_reconcile", result="auto_usb_combo_written",
+            reason=reason, gadget_present=gadget,
+            keys=",".join(a.key for a in decision.usb_combo_actions),
+        )
+
+    log_event(
+        logger, "fanin.coupling_reconcile", result="auto_resolved",
+        reason=reason, coupling=decision.coupling, gadget_present=gadget,
+        usb_combo_changed=combo_changed, detail=decision.reason,
+    )
+
+    # Step 4 — delegate the coupling flip. The reconciler re-reads fanin.env fresh
+    # (it snapshots inside), so the combo keys we just wrote persist untouched (it
+    # owns only the coupling line + ring slots).
+    coupling_result = reconcile_coupling(
+        decision.coupling,
+        reason=reason,
+        env_path=env_path,
+        outputd_env_path=outputd_env_path,
+        apply=apply,
+        mark_operator_choice=False,
+        restart_fanin=restart_fanin,
+        restart_outputd=restart_outputd,
+        reconcile_camilla=reconcile_camilla,
+        active_leader_check=active_leader_check,
+    )
+
+    # If the combo changed but the coupling reconcile did NOT restart fan-in (a
+    # combo-only change on an already-at-desired-coupling box takes the no-bounce
+    # confirm path), the new combo won't be live until fan-in restarts. Issue one.
+    restarted_for_combo = False
+    if apply and combo_changed and not coupling_result.restarted_fanin:
+        do_restart = restart_fanin or (lambda: _restart_fanin(reason=reason))
+        fan_ok, fan_detail = do_restart()
+        restarted_for_combo = fan_ok
+        log_event(
+            logger, "fanin.coupling_reconcile",
+            result="auto_usb_combo_fanin_restarted" if fan_ok
+            else "auto_usb_combo_fanin_restart_failed",
+            reason=reason, detail=fan_detail or None,
+            level=logging.INFO if fan_ok else logging.WARNING,
+        )
+        if not fan_ok:
+            return AutoResult(
+                ok=False, owned=True, coupling=decision.coupling,
+                gadget_present=gadget, usb_combo_changed=combo_changed,
+                reason=decision.reason, coupling_result=coupling_result,
+                restarted_fanin_for_combo=False, detail=fan_detail,
+            )
+
+    return AutoResult(
+        ok=coupling_result.ok, owned=True, coupling=decision.coupling,
+        gadget_present=gadget, usb_combo_changed=combo_changed,
+        reason=decision.reason, coupling_result=coupling_result,
+        restarted_fanin_for_combo=restarted_for_combo,
+        detail=coupling_result.detail,
+    )
 
 
 def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
@@ -1981,7 +2201,13 @@ def read_persisted_coupling(env_path: str | Path = FANIN_ENV_PATH) -> str:
 
 
 def main(argv: "list[str] | None" = None) -> int:
-    """CLI: ``jasper-fanin-coupling-reconcile <loopback|transport_pipe>``."""
+    """CLI: ``jasper-fanin-coupling-reconcile <loopback|transport_pipe|shm_ring>``
+    (explicit operator choice) OR ``--auto`` (P3/P4 default resolution).
+
+    The explicit positional path stamps the operator-choice marker so a later
+    ``--auto`` pass never overrides the operator's pick; ``--auto`` resolves the
+    coupling + USB combo by eligibility and leaves the marker absent (auto-owned).
+    """
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -1990,10 +2216,22 @@ def main(argv: "list[str] | None" = None) -> int:
     )
     parser.add_argument(
         "coupling",
+        nargs="?",
         choices=[COUPLING_LOOPBACK, COUPLING_TRANSPORT_PIPE, COUPLING_SHM_RING],
         help=(
-            "loopback (default, snd-aloop); transport_pipe (lab dual-pipe); "
-            "shm_ring (Ring A + Ring B SHM rings — arms both fan-in and outputd)"
+            "explicit operator choice (stamps the operator-choice marker so --auto "
+            "won't override it): loopback (snd-aloop); transport_pipe (lab "
+            "dual-pipe); shm_ring (Ring A + Ring B SHM rings — arms both fan-in and "
+            "outputd). Mutually exclusive with --auto."
+        ),
+    )
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help=(
+            "DEFAULT-RESOLUTION pass (P3/P4): when NO operator choice is recorded, "
+            "resolve shm_ring on a ring-eligible box (else loopback) and arm the USB "
+            "combo on a gadget box. A no-op when the operator marker is set."
         ),
     )
     parser.add_argument("--reason", default="cli")
@@ -2002,6 +2240,10 @@ def main(argv: "list[str] | None" = None) -> int:
         help="write the env only; skip the daemon transition (staging).",
     )
     args = parser.parse_args(argv)
+    if args.auto and args.coupling is not None:
+        parser.error("--auto is mutually exclusive with an explicit coupling choice")
+    if not args.auto and args.coupling is None:
+        parser.error("give an explicit coupling choice or --auto")
     # Hydrate os.environ from the wizard-owned env files (same set the daemons
     # load) BEFORE reconciling, so the camilla reconcile this triggers emits with
     # the persisted JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} etc. — not their
@@ -2012,8 +2254,28 @@ def main(argv: "list[str] | None" = None) -> int:
     from jasper.env_load import load_env_files
 
     load_env_files()
+
+    if args.auto:
+        auto = reconcile_auto(reason=args.reason, apply=not args.no_apply)
+        print(
+            f"coupling auto: owned={auto.owned} coupling={auto.coupling} "
+            f"gadget={auto.gadget_present} usb_combo_changed={auto.usb_combo_changed} "
+            f"ok={auto.ok}"
+            + (
+                f" fanin_restarted_for_combo={auto.restarted_fanin_for_combo}"
+                if auto.usb_combo_changed
+                else ""
+            )
+            + (f" reason={auto.reason}" if auto.reason else "")
+            + (f" detail={auto.detail}" if auto.detail else "")
+        )
+        return 0 if auto.ok else 1
+
+    # Explicit operator choice: mark_operator_choice=True freezes the box to this
+    # pick across future --auto passes (the revert lever).
     result = reconcile_coupling(
         args.coupling, reason=args.reason, apply=not args.no_apply,
+        mark_operator_choice=True,
     )
     print(
         f"coupling reconcile: desired={result.desired} direction={result.direction} "

@@ -173,4 +173,47 @@ def test_coupling_state_fail_soft_on_read_error(monkeypatch):
         "content_bridge": "direct",
         "coherent": True,
         "live_transport": None,
+        "choice": "auto",
     }
+
+
+def test_coupling_state_choice_reports_operator_marker(monkeypatch, tmp_path):
+    # P4 default-flip: /state surfaces whether the coupling is an operator pick or
+    # an auto-resolved default, read from the JASPER_FANIN_COUPLING_CHOICE marker.
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(
+        "JASPER_FANIN_COUPLING_CHOICE=operator\n"
+        "JASPER_FANIN_CAMILLA_COUPLING=loopback\n"
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "loopback",
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
+        str(tmp_path / "nope.env"),
+    )
+    block = state_aggregate._coupling_state(fanin_status=None)
+    assert block["choice"] == "operator"
+
+
+def test_coupling_state_choice_defaults_to_auto(monkeypatch, tmp_path):
+    # No marker in fanin.env -> the default is auto-owned.
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
+        str(tmp_path / "nope.env"),
+    )
+    block = state_aggregate._coupling_state(fanin_status=None)
+    assert block["choice"] == "auto"
