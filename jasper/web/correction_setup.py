@@ -555,6 +555,23 @@ __TABS__
   <button id="wizard-next" type="button" class="btn btn--primary hidden"></button>
 </section>
 
+<!-- P6 tuning assistant. Hidden until the envelope's tuning_llm block says
+     it is offered (a measurement screen). When offered-but-unavailable
+     (no OpenAI key) it renders the nudge; when available it shows the two
+     per-tap actions. The paid call happens ONLY on a tap. -->
+<section id="tuning-panel" class="tuning-panel hidden" aria-live="polite">
+  <h2 class="tuning-title">Tuning assistant</h2>
+  <p id="tuning-nudge" class="tuning-nudge hidden"></p>
+  <div id="tuning-actions" class="tuning-actions hidden">
+    <button id="tuning-interpret" type="button" class="btn">Explain my room</button>
+    <button id="tuning-propose" type="button" class="btn">Suggest a tweak</button>
+  </div>
+  <p id="tuning-status" class="tuning-status hidden"></p>
+  <div id="tuning-explanation" class="tuning-explanation hidden"></div>
+  <p id="tuning-provenance" class="tuning-provenance hidden"></p>
+  <div id="tuning-proposals" class="tuning-proposals"></div>
+</section>
+
 <section id="relay-panel" class="relay-panel hidden" aria-live="polite">
   <h2 style="margin-top:0">Room measurement</h2>
   <p class="hint">JTS will open a guided capture page on <code>capture.jasper.tech</code>. The phone records first; the speaker plays only after that page is ready.</p>

@@ -223,6 +223,9 @@ source = source.replace(
     renderProgress,
     showScreenSections,
     pollState,
+    // P6 tuning-assistant surfaces (IIFE-local).
+    renderTuning,
+    renderTuningProposals,
     // Client step-label lexicon, pinned against the server progress spine.
     wizardStepLabels: WIZARD_STEP_LABELS,
     // Probe seams for the fetch-once poll-discipline test.
@@ -331,6 +334,8 @@ const {
   renderProgress,
   showScreenSections,
   pollState,
+  renderTuning,
+  renderTuningProposals,
   wizardStepLabels,
   getEnvelopeFetchCount,
   resetEnvelopeBookkeeping,
@@ -1091,8 +1096,75 @@ await (async () => {
     "every wizard step label is non-empty homeowner copy");
 }
 
+// 32. P6 tuning affordance: the panel is hidden until offered, shows the
+//     nudge when offered-but-unavailable (no key), and shows the two
+//     per-tap actions when available.
+function tuningPanelEl() { return getOrMake("tuning-panel"); }
+function tuningNudgeEl() { return getOrMake("tuning-nudge"); }
+function tuningActionsEl() { return getOrMake("tuning-actions"); }
+function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
+{
+  renderTuning(null);
+  assert(tuningPanelEl().classList.contains("hidden"),
+    "tuning: a missing block keeps the panel hidden");
+
+  renderTuning({ offered: false, available: true, provider: "openai" });
+  assert(tuningPanelEl().classList.contains("hidden"),
+    "tuning: not offered (pre-measurement screen) keeps the panel hidden");
+
+  renderTuning({ offered: true, available: false, provider: "openai", nudge: "Add an OpenAI key at /voice" });
+  assert(!tuningPanelEl().classList.contains("hidden"),
+    "tuning: offered-but-unavailable reveals the panel");
+  assert(!tuningNudgeEl().classList.contains("hidden"),
+    "tuning: offered-but-unavailable shows the nudge");
+  assert(tuningActionsEl().classList.contains("hidden"),
+    "tuning: offered-but-unavailable hides the action buttons");
+  assert(tuningNudgeEl().textContent.indexOf("/voice") >= 0,
+    "tuning: the no-key nudge points at /voice");
+
+  renderTuning({ offered: true, available: true, provider: "openai", model: "gpt-5.4" });
+  assert(!tuningActionsEl().classList.contains("hidden"),
+    "tuning: available shows the two per-tap actions");
+  assert(tuningNudgeEl().classList.contains("hidden"),
+    "tuning: available hides the nudge");
+}
+
+// 33. A simulate-accepted room-correction proposal renders an applicable
+//     card; a rejected one renders its reason and no Apply button; a
+//     target move renders as a question (taste, not a claim).
+{
+  renderTuningProposals([
+    {
+      kind: "room_correction", applicable: true,
+      correction_peqs: [{ freq_hz: 62, q: 3, gain_db: -7 }],
+      rationale: "deeper cut at the 62 Hz mode",
+      simulation: { accepted: true, issues: [], acceptance: { verdict: "accept", overall_rms_delta_db: 2.4 } },
+    },
+    {
+      kind: "room_correction", applicable: false,
+      correction_peqs: [{ freq_hz: 62, q: 6, gain_db: 6 }],
+      rationale: "boost the dip",
+      simulation: { accepted: false, issues: [{ code: "boost_would_ring", message: "would ring" }], acceptance: null },
+    },
+    {
+      kind: "preference_question", applicable: true,
+      target_id: "warm", warmth: null, rationale: "you asked for warmer",
+    },
+  ]);
+  const cards = tuningProposalsEl().children;
+  assert(cards.length === 3, "tuning: three proposal cards render", { got: cards.length });
+  // The rejected card carries the rejection modifier class.
+  assert(cards[1].className.indexOf("tuning-proposal--rejected") >= 0,
+    "tuning: the ring-rejected proposal card is styled as rejected");
+
+  // Empty proposals clears the container.
+  renderTuningProposals([]);
+  assert(tuningProposalsEl().children.length === 0,
+    "tuning: empty proposals clears the cards");
+}
+
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 31 }));
+console.log(JSON.stringify({ ok: true, tests: 33 }));
