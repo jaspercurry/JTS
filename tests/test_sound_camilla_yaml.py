@@ -780,13 +780,16 @@ def test_emit_flat_ring_config_names_both_ring_devices_s16le():
     assert 'device: "jts_ring_playback"' in playback
     assert "format: S16_LE" in playback
     assert "type: Alsa" in playback
-    # CamillaDSP rate_adjust stays ON — it trades Ring B fill (its pacing input).
-    assert "enable_rate_adjust: true" in yaml
+    # Ring graph geometry is the hardware-validated low-latency shape.
+    assert "chunksize: 128" in yaml
+    assert "queuelimit: 1" in yaml
+    assert "target_level: 128" in yaml
+    assert "enable_rate_adjust: false" in yaml
     # It is the disabled (flat) profile — no preference EQ filters.
     assert "volume_limit: 0.0" in yaml
 
 
-def test_emit_flat_ring_config_differs_from_loopback_only_in_devices():
+def test_emit_flat_ring_config_keeps_loopback_flat_config_unchanged():
     from jasper.sound.camilla_yaml import (
         emit_flat_outputd_cutover_config,
         emit_flat_ring_config,
@@ -796,9 +799,15 @@ def test_emit_flat_ring_config_differs_from_loopback_only_in_devices():
     loop = emit_flat_outputd_cutover_config()
     # The loopback flat config has NO ring devices.
     assert "jts_ring" not in loop
-    # The ring config replaces exactly the two device lines; the chunksize /
-    # target_level / volume_limit floor is the same (same generator).
-    for key in ("samplerate:", "chunksize:", "target_level:", "volume_limit:"):
+    # The ring config uses its own low-latency geometry; the loopback flat config
+    # keeps the ordinary generated floor and does not inherit the ring queue.
+    assert "chunksize: 128" in ring
+    assert "target_level: 128" in ring
+    assert "queuelimit: 1" in ring
+    assert "enable_rate_adjust: false" in ring
+    assert "queuelimit: 4" in loop
+    assert "enable_rate_adjust: true" in loop
+    for key in ("samplerate:", "volume_limit:"):
         ring_line = [ln for ln in ring.splitlines() if ln.strip().startswith(key)]
         loop_line = [ln for ln in loop.splitlines() if ln.strip().startswith(key)]
         assert ring_line == loop_line, f"{key} drifted between ring and loopback flat"

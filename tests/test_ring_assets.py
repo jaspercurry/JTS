@@ -93,7 +93,7 @@ pcm.jts_ring_capture {{
     type jts_ring
     path "/dev/shm/jts-ring/program.ring"
     period_frames {p}
-    n_slots 8
+    n_slots 2
 }}
 pcm.jts_ring_playback {{
     type jts_ring
@@ -162,11 +162,12 @@ def test_ring_geometry_missing_conf_is_failclosed(tmp_path):
 
 
 def test_ring_conf_n_slots_parses_per_block(tmp_path):
-    # The conf.d has TWO blocks with DIFFERENT slot counts; the parser must scope to
-    # the named block, not pick ambiguously across both.
+    # The parser must scope to the named block, not scan the whole file; Ring A and
+    # Ring B happen to both use 2 slots today, but either block may diverge under a
+    # coherent future override.
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(_RING_CONF_TEMPLATE.format(p=128), encoding="utf-8")
-    assert ring_assets.ring_conf_n_slots("jts_ring_capture", str(conf)) == 8
+    assert ring_assets.ring_conf_n_slots("jts_ring_capture", str(conf)) == 2
     assert ring_assets.ring_conf_n_slots("jts_ring_playback", str(conf)) == 2
 
 
@@ -183,22 +184,23 @@ def test_ring_conf_n_slots_none_when_absent_or_missing_block(tmp_path):
 def test_ring_slot_geometry_matches_when_env_equals_conf(tmp_path):
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(_RING_CONF_TEMPLATE.format(p=128), encoding="utf-8")
-    match = ring_assets.ring_slot_geometry_matches_conf(8, conf_d=str(conf))
+    match = ring_assets.ring_slot_geometry_matches_conf(2, conf_d=str(conf))
     assert match.ok is True
-    assert match.fanin_n_slots == 8
-    assert match.conf_n_slots == 8
+    assert match.fanin_n_slots == 2
+    assert match.conf_n_slots == 2
 
 
 def test_ring_slot_geometry_mismatch_gives_crisp_reason(tmp_path):
-    # The 2026-07-05 defect: fan-in resolves 2 (stale JASPER_FANIN_RING_SLOTS=2) but
-    # the conf.d pins 8. Names both counts + the fix, not a bare "mismatch".
+    # Default migration: fan-in resolves an old 8-slot value while the conf.d pins
+    # the new 2-slot production default. Names both counts + the fix, not a bare
+    # "mismatch".
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(_RING_CONF_TEMPLATE.format(p=128), encoding="utf-8")
-    match = ring_assets.ring_slot_geometry_matches_conf(2, conf_d=str(conf))
+    match = ring_assets.ring_slot_geometry_matches_conf(8, conf_d=str(conf))
     assert match.ok is False
-    assert match.fanin_n_slots == 2
-    assert match.conf_n_slots == 8
-    assert "n_slots=2" in match.detail and "n_slots=8" in match.detail
+    assert match.fanin_n_slots == 8
+    assert match.conf_n_slots == 2
+    assert "n_slots=8" in match.detail and "n_slots=2" in match.detail
     assert "JASPER_FANIN_RING_SLOTS" in match.detail
 
 
@@ -213,7 +215,7 @@ def test_ring_slot_geometry_missing_conf_is_failclosed(tmp_path):
 # --- On-disk ring header reader (defect A stale-file guard) -------------------
 
 
-def _write_ring_header(path, *, magic=0x4A52_494E, version=1, period=128, n_slots=8):
+def _write_ring_header(path, *, magic=0x4A52_494E, version=1, period=128, n_slots=2):
     import struct
 
     hdr = bytearray(ring_assets._RING_HEADER_BYTES)

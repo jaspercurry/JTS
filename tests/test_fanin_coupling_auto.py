@@ -682,7 +682,7 @@ def test_ring_topology_strict_fails_closed_on_unreadable(monkeypatch):
 
 
 def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
-    """F6: a box armed with a stale JASPER_FANIN_RING_SLOTS=2 lab line must NOT be
+    """F6: a box armed with a stale JASPER_FANIN_RING_SLOTS=8 line must NOT be
     disarmed to loopback — the auto pass runs the SAME slot self-heal a manual arm
     does before the slot gate, so the residue is stripped and the ring resolves."""
     fanin = tmp_path / "fanin.env"
@@ -690,12 +690,12 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     usbsink = tmp_path / "usbsink.env"
     fanin.write_text(
         "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
-        "JASPER_FANIN_RING_SLOTS=2\n"
+        "JASPER_FANIN_RING_SLOTS=8\n"
     )
     outputd.write_text("")
 
-    # Assets/topology/route/geometry eligible; conf.d says n_slots=8 so the stale
-    # `=2` is shear-prone and self-heals. Use the REAL slot gate + migration so the
+    # Assets/topology/route/geometry eligible; conf.d says n_slots=2 so the stale
+    # `=8` is shear-prone and self-heals. Use the REAL slot gate + migration so the
     # F6 wiring is exercised end to end.
     assets = ("ring_assets", lambda: (True, "assets"))
     topo = ("ring_topology", lambda: (True, "topology"))
@@ -710,8 +710,8 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    # conf.d Ring-A n_slots = 8 (the pinned default); the on-disk `=2` disagrees.
-    monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 8)
+    # conf.d Ring-A n_slots = 2 (the pinned default); the on-disk `=8` disagrees.
+    monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 2)
 
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=False, usbsink=usbsink, restarts=restarts)

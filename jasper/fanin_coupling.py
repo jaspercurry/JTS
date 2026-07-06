@@ -5,15 +5,13 @@
 """fan-in → CamillaDSP coupling selector (``JASPER_FANIN_CAMILLA_COUPLING``).
 
 The single source of truth for HOW the fan-in mixer's summed program reaches
-CamillaDSP's capture. Three transports (``loopback`` default; ``transport_pipe``
-and ``shm_ring`` are LAB flags, inert in every product path):
+CamillaDSP's capture. Three transports:
 
-- ``loopback`` (the **default**) — fan-in writes the ALSA snd-aloop substream
+- ``loopback`` — fan-in writes the ALSA snd-aloop substream
   (``hw:Loopback,0,7``); CamillaDSP captures ``plug:jasper_capture`` (a dsnoop
-  on ``hw:Loopback,1,7``). This is exactly today's production topology. With the
-  flag unset or set to ``loopback``, both the fan-in daemon and the emitted
-  CamillaDSP capture block are **byte-for-byte** what shipped before this module
-  existed — proven by tests on both sides.
+  on ``hw:Loopback,1,7``). With the flag unset or set to ``loopback``, both the
+  fan-in daemon and the emitted CamillaDSP capture block stay on the historical
+  snd-aloop topology.
 
 - ``transport_pipe`` — fan-in writes a bounded named pipe into CamillaDSP
   ``RawFile`` capture, and CamillaDSP writes its post-DSP stereo program to a
@@ -63,12 +61,12 @@ COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
 # byte-identical-to-today path.
 COUPLING_LOOPBACK = "loopback"
 COUPLING_TRANSPORT_PIPE = "transport_pipe"
-# Ring A (prototype): fan-in writes an SPSC ping-pong SHM ring
-# (``jasper_ring::RingWriter``) that CamillaDSP reads via a CAPTURE direction of
-# the ``jts_ring`` ioplug. Same SHM contract v1 as Ring B; roles flipped. Like
-# ``transport_pipe`` this is a LAB flag — inert in every product path (env unset
-# resolves to ``loopback``), armed only by ``scripts/ring-proto/`` for the soak.
-# The Rust ``Coupling::ShmRing`` normalizer MUST agree with this token.
+# Ring A: fan-in writes an SPSC SHM ring (``jasper_ring::RingWriter``) that
+# CamillaDSP reads via a CAPTURE direction of the ``jts_ring`` ioplug. Same SHM
+# contract v1 as Ring B; roles flipped. The product auto reconciler now resolves
+# eligible solo boxes to this coupling by default; explicit loopback / operator
+# markers still fail safe to the historical snd-aloop path. The Rust
+# ``Coupling::ShmRing`` normalizer MUST agree with this token.
 COUPLING_SHM_RING = "shm_ring"
 # The recognized coupling tokens. Public so other planners (e.g.
 # ``jasper.audio_runtime_plan``) can reuse this SSOT instead of re-listing the
@@ -106,7 +104,11 @@ PIPE_WIRE_FORMAT = "S32_LE"
 RING_PATH_ENV_VAR = "JASPER_FANIN_RING_PATH"
 DEFAULT_FANIN_RING_PATH = "/dev/shm/jts-ring/program.ring"
 RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
-DEFAULT_FANIN_RING_SLOTS = 8
+DEFAULT_FANIN_RING_SLOTS = 2
+RING_CAMILLA_CHUNKSIZE = 128
+RING_CAMILLA_TARGET_LEVEL = 128
+RING_CAMILLA_QUEUELIMIT = 1
+RING_CAMILLA_ENABLE_RATE_ADJUST = False
 
 # Ring A capture device + wire format. fan-in is S16 native and the SHM ring
 # carries S16LE with NO widening (unlike ``transport_pipe``'s S32 FIFO-page
@@ -132,9 +134,9 @@ RING_WIRE_FORMAT = "S16_LE"
 # (``rust/jasper-outputd/src/config.rs``): ``JASPER_OUTPUTD_CONTENT_BRIDGE`` +
 # ``JASPER_OUTPUTD_SHM_RING_PATH`` / ``_SLOTS``. Pinned here so the Python control
 # plane (emitters + coupling reconciler) names the same bridge the daemon reads.
-# The n_slots defaults DIFFER between the two rings on purpose: Ring A holds
-# ``DEFAULT_FANIN_RING_SLOTS`` (8), Ring B holds ``DEFAULT_OUTPUTD_RING_SLOTS``
-# (2, ping-pong) — they are SEPARATE ring files, so their depths are independent.
+# The n_slots defaults now match on purpose: Ring A and Ring B both hold the
+# 2-slot latency floor. They are still SEPARATE ring files, so a future coherent
+# operator override can tune Ring A without changing Ring B.
 OUTPUTD_CONTENT_BRIDGE_ENV_VAR = "JASPER_OUTPUTD_CONTENT_BRIDGE"
 OUTPUTD_CONTENT_BRIDGE_DIRECT = "direct"
 OUTPUTD_CONTENT_BRIDGE_SHM_RING = "shm_ring"
@@ -370,11 +372,10 @@ def capture_kwargs_for_coupling(
       only RESOLVE once P1's
       ioplug conf.d block (``60-jts-ring.conf``) is installed and the coupling
       reconciler has armed both rings; until then the flag stays unset (env unset
-      -> ``loopback`` -> ``{}``, byte-identical to today). Inert in every product
-      path while the flag is unset. ``rate_adjust`` is deliberately LEFT ON (the
-      caller's default) under ring: CamillaDSP's own rate controller trades Ring B
-      fill — it is CamillaDSP's single pacing input, the one-rate-matcher-per-
-      foreign-clock the campaign end-state keeps (see the audit's Clock inventory).
+      -> ``loopback`` -> ``{}``). The ring graph carries its own low-latency
+      CamillaDSP geometry: chunk 128 / target 128 / queue 1 / rate_adjust off.
+      Those values are coupled to the 2-slot Ring A default; chunk 256 would span
+      the entire 2-slot buffer.
 
     ``pipe_path`` overrides the capture pipe path (the env override is resolved by
     :func:`resolve_pipe_path`; pass its result here so the emitted config and the
@@ -387,6 +388,10 @@ def capture_kwargs_for_coupling(
             "capture_format": RING_WIRE_FORMAT,
             "playback_device": RING_PLAYBACK_DEVICE,
             "playback_format": RING_WIRE_FORMAT,
+            "chunksize": RING_CAMILLA_CHUNKSIZE,
+            "target_level": RING_CAMILLA_TARGET_LEVEL,
+            "queuelimit": RING_CAMILLA_QUEUELIMIT,
+            "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
         }
     if resolved != COUPLING_TRANSPORT_PIPE:
         return {}

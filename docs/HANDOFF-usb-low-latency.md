@@ -5,23 +5,44 @@ The shipped route is **not** the old lean-FIFO bypass plan: it keeps USB in
 the shared fan-in/Camilla/outputd protection path and earns any low-latency
 claim only through measured route-latency evidence.
 
-## Current Production Route (2026-07-02)
+## Current Production Route (2026-07-06)
 
-`usb_low_latency_48k` is the claiming profile:
+`usb_low_latency_48k` is the claiming profile. On a solo, ring-eligible USB
+combo box, the product default is the shm-ring path:
 
 ```
 UAC2 gadget capture
   → jasper-usbsink-audio (Rust, 256 frames / 3 periods, S32_LE→S16_LE high-word truncation)
   → usbsink_substream
   → jasper-fanin USB input resampler (target 512 + cushion 1536, ring 4096)
-  → fan-in output ALSA loopback
-  → CamillaDSP ALSA capture
-  → CamillaDSP protection/correction
-  → outputd content ALSA loopback
+  → Ring A program.ring (jts_ring_capture, 2 slots × 128 frames)
+  → CamillaDSP protection/correction (chunk 128 / target 128 / queue 1, rate_adjust off)
+  → Ring B content.ring (jts_ring_playback, 2 slots × 128 frames)
   → outputd final DAC owner + final-speaker reference
 ```
 
-Apple USB-C DAC tuned floor after the 2026-07-02 jts.local pass:
+Ring-coupled geometry is one coherent set; do not change one value without the
+others:
+
+| Axis | Product default | Latency / reason |
+|---|---:|---|
+| Ring A `jts_ring_capture` | 2 slots × 128 frames | ≈5.3 ms at 48 kHz |
+| Old Ring A placeholder | 8 slots × 128 frames | ≈21.3 ms, always paid under the blocking-writer handshake |
+| CamillaDSP ring emit | chunk 128 / target 128 / queue 1 | chunk is one slot; target is one chunk |
+| CamillaDSP ring `rate_adjust` | off | one-clock blocking chain; the rate-adjust-on Ring A+B lesson packed queues |
+| Ring B `jts_ring_playback` | 2 slots × 128 frames | already minimal; unchanged |
+
+Measured reconstruction on jts.local: the 8-slot/deep-queue shipped default was
+≈90-95 ms e2e, while the validated 2-slot Ring A plus chunk 128 / target 128 /
+queue 1 product shape is ≈48.8 ms e2e. The 2026-07-06 primed product-path run
+measured 54.3 ms tap→ref with chunk 128 / target 128 / queue 1; the earlier
+40 ms-descent PoC measured 35.4 ms tap→ref. Once this deploys, refreshing the
+route-latency artifact against the 40 ms p95 budget becomes achievable; the
+artifact still needs a real click/capture run before doctor may certify it.
+
+The loopback path remains the fallback when the ring gates fail, the box is not
+ring-eligible, or an operator freezes the coupling. Its tuned Apple USB-C DAC
+floor remains:
 
 | Layer | Shipped floor | Rejected lower setting |
 |---|---:|---|
@@ -32,7 +53,7 @@ Apple USB-C DAC tuned floor after the 2026-07-02 jts.local pass:
 | outputd | period 128 / DAC buffer 256 | 64/128 caused bridge playback xruns |
 | outputd content capture | buffer 1536 | 640/768/1024/1280 caused content xruns |
 
-Best values to keep for the current Apple USB-C DAC fallback:
+Best values to keep for the Apple USB-C DAC loopback fallback:
 
 ```text
 JASPER_USBSINK_BLOCK_FRAMES=256
@@ -62,23 +83,15 @@ and validates the whole `outputd.env` candidate's outputd buffer/period pairs
 `jasper-outputd-failure-reconcile` gives exit 78 one bounded re-reconcile +
 retry so a settled DAC can self-heal instead of wedging silently.
 
-Clean hardware evidence so far: a 5-minute jts.local steady-state sample with
-outputd content buffer 1536 had zero new outputd content xruns/empty reads,
-zero outputd DAC xruns, zero fan-in output xruns, zero fan-in USB resampler
-relocks/unlocks/silence/overruns, and zero CamillaDSP warnings. A 2048-frame
-content-buffer sample was also clean. Lower content-buffer probes at 640, 768,
-1024, and 1280 each produced a content-side xrun. The 1280 test window also had
-a host-output handoff nearby, but the repeat still showed the same content-side
-failure mode with USB playback active, so 1280 is not accepted.
-
-This proves stability of the tuned loopback floor, **not** the 40 ms end-to-end
-p95 target. The configured buffers alone exceed that target: the fan-in USB
-resampler held target is 2048 frames (~42.7 ms at 48 kHz), before the observed
-fan-in output delay (~16-19 ms), outputd DAC delay (~10-11 ms), CamillaDSP
-targeting, and bridge/ALSA boundary costs. Doctor must keep failing
-`route latency evidence` until a click/capture artifact certifies p95 <= 40 ms
-with >=200 impulses over >=5 minutes; p99 promotion requires >=1000 impulses
-over >=30 minutes with jittered spacing and p99 <= 60 ms.
+Clean fallback evidence: a 5-minute jts.local steady-state sample with outputd
+content buffer 1536 had zero new outputd content xruns/empty reads, zero outputd
+DAC xruns, zero fan-in output xruns, zero fan-in USB resampler relocks/unlocks/
+silence/overruns, and zero CamillaDSP warnings. Lower content-buffer probes at
+640, 768, 1024, and 1280 each produced a content-side xrun. This proves fallback
+stability, not route certification. Doctor must keep failing `route latency
+evidence` until a click/capture artifact certifies p95 <= 40 ms with >=200
+impulses over >=5 minutes; p99 promotion requires >=1000 impulses over >=30
+minutes with jittered spacing and p99 <= 60 ms.
 
 The claiming route now hard-fails if it is combined with legacy low-latency lab
 transports: `JASPER_FANIN_CAMILLA_COUPLING=transport_pipe` or

@@ -2189,16 +2189,16 @@ def check_ring_geometry_coherence() -> CheckResult:
     IS one outputd period, so a stale period fails the attach even with matching
     slots — Nit-7, 2026-07-05):
 
-      1. fan-in's resolved ``JASPER_FANIN_RING_SLOTS`` (fanin.env, default 8)
+      1. fan-in's resolved ``JASPER_FANIN_RING_SLOTS`` (fanin.env, default 2)
       2. the conf.d ``jts_ring_capture`` ``n_slots`` (the ioplug attach authority)
       3. the on-disk ``program.ring`` header ``n_slots`` (what the writer created)
       4. the on-disk header ``period_frames`` vs the conf.d ``period_frames``
 
-    The 2026-07-05 defect was a stale ``JASPER_FANIN_RING_SLOTS=2`` lab line making
-    fan-in write a 2-slot ring while the conf.d pinned 8. The coupling reconciler
-    now preflights + self-heals this at arm time (and on the CONFIRM path for an
-    already-armed box); this check is the standing surface that catches drift on a
-    live box.
+    The 2026-07-06 default migration class is old 8-slot state making fan-in or
+    the existing ring file present 8 slots while the conf.d pins 2. The coupling
+    reconciler preflights + self-heals this at arm time (and on the CONFIRM path
+    for an already-armed box); this check is the standing surface that catches
+    drift on a live box.
 
     Skips cleanly when the coupling is NOT shm_ring (the ring is inert — the env /
     conf.d values are placeholders that nothing opens, so a "mismatch" is not a
@@ -2220,8 +2220,7 @@ def check_ring_geometry_coherence() -> CheckResult:
     if read_persisted_coupling() != COUPLING_SHM_RING:
         return CheckResult(
             label, "ok",
-            "skipped — shm_ring not armed (Ring A geometry is inert; the env / "
-            "conf.d n_slots are placeholders nothing opens)",
+            "skipped — shm_ring not armed (Ring A geometry is inert; nothing opens it)",
         )
 
     # Axis 1: fan-in's resolved env slot count (fail-loud on a bad value).

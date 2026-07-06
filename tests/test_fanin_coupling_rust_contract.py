@@ -151,7 +151,7 @@ def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
     # Python resolver could write an N-slot ioplug conf.d geometry while the
     # daemon refuses to start on the same env (split-brain, fail-closed but
     # maximally confusing on-Pi). This pins the exact agreed behavior:
-    #   unset      -> the same default (8) on both sides
+    #   unset      -> the same default (2) on both sides
     #   2 and 16   -> accepted on both sides
     #   17 (and other out-of-range) -> rejected on both sides
 

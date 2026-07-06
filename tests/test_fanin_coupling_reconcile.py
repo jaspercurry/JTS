@@ -1224,7 +1224,7 @@ def test_arm_shm_ring_refused_on_geometry_mismatch_recovers(tmp_path, monkeypatc
     )
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(
-        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 8\n}\n"
+        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 2\n}\n"
         "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
         encoding="utf-8",
     )
@@ -1267,7 +1267,7 @@ def test_arm_shm_ring_succeeds_when_geometry_matches(tmp_path, monkeypatch):
     )
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(
-        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 8\n}\n"
+        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 2\n}\n"
         "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
         encoding="utf-8",
     )
@@ -1298,7 +1298,7 @@ def test_arm_shm_ring_succeeds_when_geometry_matches(tmp_path, monkeypatch):
 # --- defect A: Ring-A slot-count coherence + stale-file guard + migration -----
 
 
-def _ring_conf(tmp_path, *, capture_n_slots: int = 8, period_frames: int = 128):
+def _ring_conf(tmp_path, *, capture_n_slots: int = 2, period_frames: int = 128):
     """Write a ring conf.d with a configurable jts_ring_capture n_slots.
 
     period_frames stays 128 (the Apple-dongle floor) so the SEPARATE period gate
@@ -1326,11 +1326,11 @@ def test_arm_shm_ring_refused_on_slot_mismatch_recovers(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    # conf.d pins n_slots 4; fan-in env will resolve to 8 (a mismatch that also
-    # cannot self-heal to the default, since the conf.d itself is non-default).
+    # conf.d pins n_slots 4; fan-in env resolves to the product default 2, a
+    # genuine custom-conf mismatch that the stale-env stripper cannot repair.
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=4)))
 
-    fanin_env = _write(tmp_path / "fanin.env", "JASPER_FANIN_RING_SLOTS=8\n")
+    fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
     calls, ro, rf, rc = _recorder()
 
@@ -1348,7 +1348,7 @@ def test_arm_shm_ring_refused_on_slot_mismatch_recovers(tmp_path, monkeypatch):
     assert result.recovered is True
     assert result.desired == COUPLING_SHM_RING
     # Crisp reason names both slot counts; not a bare "arm failed".
-    assert "n_slots=8" in result.detail and "n_slots=4" in result.detail
+    assert "n_slots=2" in result.detail and "n_slots=4" in result.detail
     # The ring was NEVER armed — camilla only reconciled to loopback (recovery).
     assert "camilla:shm_ring" not in calls
     assert "camilla:loopback" in calls
@@ -1356,22 +1356,21 @@ def test_arm_shm_ring_refused_on_slot_mismatch_recovers(tmp_path, monkeypatch):
 
 
 def test_arm_shm_ring_migrates_stale_ring_slots_then_arms(tmp_path, monkeypatch):
-    # Defect A migration: a stale JASPER_FANIN_RING_SLOTS=2 lab line that disagrees
-    # with the conf.d's pinned 8 is STRIPPED at arm time (self-heals to the coherent
-    # default) so the arm proceeds instead of being blocked forever. This is the
-    # exact 2026-07-05 residue.
+    # Default migration: a stale JASPER_FANIN_RING_SLOTS=8 old-default line that
+    # disagrees with the conf.d's pinned 2 is STRIPPED at arm time (self-heals to
+    # the coherent default) so the arm proceeds instead of being blocked forever.
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=8)))
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
     # No on-disk stale ring in this test (macOS has no /dev/shm; the guard no-ops on
     # an absent file). The migration is the axis under test.
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
     monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
 
-    fanin_env = _write(tmp_path / "fanin.env", "JASPER_FANIN_RING_SLOTS=2\n")
+    fanin_env = _write(tmp_path / "fanin.env", "JASPER_FANIN_RING_SLOTS=8\n")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
     calls, ro, rf, rc = _recorder()
 
@@ -1388,7 +1387,7 @@ def test_arm_shm_ring_migrates_stale_ring_slots_then_arms(tmp_path, monkeypatch)
     assert result.ok is True, result.detail
     assert calls == ["outputd", "fanin", "camilla:shm_ring"]
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-    # The stale =2 line was stripped from fanin.env (resolves to the coherent 8).
+    # The stale =8 line was stripped from fanin.env (resolves to the coherent 2).
     assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") is None
 
 
@@ -1426,9 +1425,10 @@ def test_arm_shm_ring_keeps_matching_operator_ring_slots(tmp_path, monkeypatch):
 
 
 def test_arm_shm_ring_deletes_stale_on_disk_ring_before_arming(tmp_path, monkeypatch):
-    # Defect A stale-file guard: an on-disk program.ring with a MISMATCHED geometry
-    # (a 2-slot file from a prior arm) is deleted before the daemons bounce, so the
-    # writer re-creates it fresh. A geometry-matched file is left untouched.
+    # Defect A stale-file guard: an on-disk program.ring with a MISMATCHED
+    # geometry (an 8-slot file from before the 2-slot default) is deleted before
+    # the daemons bounce, so the writer re-creates it fresh. A geometry-matched
+    # file is left untouched.
     import struct
 
     import jasper.ring_assets as ra
@@ -1436,7 +1436,7 @@ def test_arm_shm_ring_deletes_stale_on_disk_ring_before_arming(tmp_path, monkeyp
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=8)))
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
     program = tmp_path / "program.ring"
     content = tmp_path / "content.ring"
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(program))
@@ -1450,8 +1450,8 @@ def test_arm_shm_ring_deletes_stale_on_disk_ring_before_arming(tmp_path, monkeyp
         struct.pack_into("<I", hdr, 24, n_slots)  # n_slots
         path.write_bytes(bytes(hdr) + b"\x00" * 512)
 
-    # Stale Ring A (2 slots vs conf.d's 8) → must be deleted.
-    _write_ring(program, 2)
+    # Stale Ring A (8 slots vs conf.d's 2) → must be deleted.
+    _write_ring(program, 8)
     # Coherent Ring B (2 slots == conf.d's jts_ring_playback 2) → must be KEPT.
     _write_ring(content, 2)
 
@@ -1483,7 +1483,7 @@ def test_arm_shm_ring_refused_on_invalid_ring_slots_value(tmp_path, monkeypatch)
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=8)))
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
     monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
 
@@ -1532,9 +1532,86 @@ def _coherent_shm_ring_outputd_text(*, period_frames: int = 128) -> str:
     )
 
 
+def test_confirm_shm_ring_migrates_old_eight_slot_ring_file_to_default_two_slot(
+    tmp_path, monkeypatch
+):
+    # Default-flip migration: after deploy, conf.d pins the new 2-slot default but
+    # tmpfs may still contain an 8-slot program.ring from the old armed runtime.
+    # A no-op CONFIRM reconcile must notice the stale header, run the full arm
+    # self-heal, delete the stale ring before any Camilla reload, and emit the
+    # chunk-128 / target-128 / queue-1 ring config.
+    import struct
+
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
+    program = tmp_path / "program.ring"
+    content = tmp_path / "content.ring"
+    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(program))
+    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(content))
+
+    def _write_ring(path, n_slots, period_frames=128):
+        hdr = bytearray(128)
+        struct.pack_into("<I", hdr, 0, 0x4A52_494E)  # magic JRIN
+        struct.pack_into("<I", hdr, 4, 1)  # version
+        struct.pack_into("<I", hdr, 20, period_frames)
+        struct.pack_into("<I", hdr, 24, n_slots)
+        path.write_bytes(bytes(hdr) + b"\x00" * 512)
+
+    _write_ring(program, 8)  # old Ring A default from the already-armed box
+    _write_ring(content, 2)  # Ring B was already minimal
+
+    fanin_env = _write(tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n")
+    outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
+    calls: list[str] = []
+
+    def restart_outputd() -> tuple[bool, str]:
+        calls.append("outputd")
+        return True, ""
+
+    def restart_fanin() -> tuple[bool, str]:
+        calls.append("fanin")
+        return True, ""
+
+    def reconcile_camilla(coupling: str) -> tuple[bool, str]:
+        assert coupling == COUPLING_SHM_RING
+        assert not program.exists(), "stale Ring A must be deleted before Camilla reload"
+        assert content.exists(), "coherent Ring B must be preserved"
+        from jasper.sound.camilla_yaml import emit_flat_ring_config
+
+        yaml = emit_flat_ring_config()
+        assert 'device: "jts_ring_capture"' in yaml
+        assert 'device: "jts_ring_playback"' in yaml
+        assert "chunksize: 128" in yaml
+        assert "target_level: 128" in yaml
+        assert "queuelimit: 1" in yaml
+        assert "enable_rate_adjust: false" in yaml
+        calls.append(f"camilla:{coupling}")
+        return True, "reconciled"
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=restart_outputd,
+        restart_fanin=restart_fanin,
+        reconcile_camilla=reconcile_camilla,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is True, result.detail
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+    assert not program.exists()
+    assert content.exists()
+    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") is None
+
+
 def test_confirm_shm_ring_self_heals_stale_ring_slots(tmp_path, monkeypatch):
-    # Defect A CONFIRM-path gap (2026-07-05): a box ALREADY armed shm_ring with a
-    # stale JASPER_FANIN_RING_SLOTS=2 line — CamillaDSP crash-looping on the ioplug
+    # CONFIRM-path migration: a box ALREADY armed shm_ring with a stale
+    # JASPER_FANIN_RING_SLOTS=8 line — CamillaDSP crash-looping on the ioplug
     # geometry mismatch — was NOT healed by a reconcile, because the coupling-flip
     # write didn't change (already shm_ring) so the arm self-heal never ran and the
     # CONFIRM path only re-loaded camilla. The fix: the CONFIRM path detects the
@@ -1546,14 +1623,14 @@ def test_confirm_shm_ring_self_heals_stale_ring_slots(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=8)))
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
     monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
 
-    # ALREADY armed shm_ring + the stale =2 residue → CONFIRM path (changed=False).
+    # ALREADY armed shm_ring + the stale =8 residue → CONFIRM path (changed=False).
     fanin_env = _write(
         tmp_path / "fanin.env",
-        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\nJASPER_FANIN_RING_SLOTS=2\n",
+        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\nJASPER_FANIN_RING_SLOTS=8\n",
     )
     outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
     calls, ro, rf, rc = _recorder()
@@ -1572,7 +1649,7 @@ def test_confirm_shm_ring_self_heals_stale_ring_slots(tmp_path, monkeypatch):
     # The CONFIRM path escalated to the full arm spine (self-heal THEN bounce), NOT a
     # lightweight camilla-only confirm.
     assert calls == ["outputd", "fanin", "camilla:shm_ring"]
-    # The stale =2 line was stripped (resolves to the coherent conf.d default 8).
+    # The stale =8 line was stripped (resolves to the coherent conf.d default 2).
     assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") is None
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
 
@@ -1588,15 +1665,29 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=8)))
-    # No stale on-disk ring (absent files → coherent).
-    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
-    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
+    program = tmp_path / "program.ring"
+    content = tmp_path / "content.ring"
+    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(program))
+    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(content))
+
+    import struct
+
+    def _write_ring(path, n_slots):
+        hdr = bytearray(128)
+        struct.pack_into("<I", hdr, 0, 0x4A52_494E)  # magic JRIN
+        struct.pack_into("<I", hdr, 4, 1)  # version
+        struct.pack_into("<I", hdr, 20, 128)
+        struct.pack_into("<I", hdr, 24, n_slots)
+        path.write_bytes(bytes(hdr) + b"\x00" * 512)
+
+    _write_ring(program, 2)
+    _write_ring(content, 2)
 
     # Armed shm_ring, env slots MATCH the conf.d (coherent operator override kept).
     fanin_env = _write(
         tmp_path / "fanin.env",
-        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\nJASPER_FANIN_RING_SLOTS=8\n",
+        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\nJASPER_FANIN_RING_SLOTS=2\n",
     )
     outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
     calls, ro, rf, rc = _recorder()
@@ -1617,7 +1708,9 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
     # Lightweight: camilla-only re-load, NO fan-in / outputd bounce.
     assert calls == ["camilla:shm_ring"]
     # The coherent operator override is preserved (not stripped).
-    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "8"
+    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
+    assert program.exists()
+    assert content.exists()
 
 
 def test_confirm_shm_ring_self_heals_stale_on_disk_period(tmp_path, monkeypatch):
@@ -1633,9 +1726,9 @@ def test_confirm_shm_ring_self_heals_stale_on_disk_period(tmp_path, monkeypatch)
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    # conf.d pins period_frames=128, n_slots=8.
+    # conf.d pins period_frames=128, n_slots=2.
     monkeypatch.setattr(
-        ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=8, period_frames=128))
+        ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2, period_frames=128))
     )
     program = tmp_path / "program.ring"
     content = tmp_path / "content.ring"
@@ -1650,14 +1743,14 @@ def test_confirm_shm_ring_self_heals_stale_on_disk_period(tmp_path, monkeypatch)
         struct.pack_into("<I", hdr, 24, n_slots)
         path.write_bytes(bytes(hdr) + b"\x00" * 512)
 
-    # Matching slots (8) but STALE period (256 vs conf.d 128) → must be deleted.
-    _write_ring(program, 8, 256)
+    # Matching slots (2) but STALE period (256 vs conf.d 128) → must be deleted.
+    _write_ring(program, 2, 256)
     # Coherent Ring B (2 slots, 128 period) → kept.
     _write_ring(content, 2, 128)
 
     fanin_env = _write(
         tmp_path / "fanin.env",
-        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\nJASPER_FANIN_RING_SLOTS=8\n",
+        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\nJASPER_FANIN_RING_SLOTS=2\n",
     )
     outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
     calls, ro, rf, rc = _recorder()

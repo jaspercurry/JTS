@@ -73,6 +73,7 @@ def emit_sound_config(
     playback_format: str = DEFAULT_PLAYBACK_FORMAT,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int | None = None,
+    queuelimit: int = 4,
     target_level: int | None = None,
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     out_path: str | Path | None = None,
@@ -364,7 +365,7 @@ def emit_sound_config(
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
-  queuelimit: 4
+  queuelimit: {queuelimit}
   target_level: {target_level}
   volume_limit: {volume_limit_db:.1f}
   enable_rate_adjust: {rate_adjust_literal}{resampler_line}
@@ -445,14 +446,18 @@ def emit_flat_ring_config(*, out_path: str | Path | None = None) -> str:
     Identical to :func:`emit_flat_outputd_cutover_config` except the CamillaDSP
     capture device is ``jts_ring_capture`` (Ring A) and the playback device is
     ``jts_ring_playback`` (Ring B), both S16_LE — the end-to-end ring topology the
-    ``shm_ring`` coupling arms. ``enable_rate_adjust`` stays on (the default):
-    CamillaDSP's rate controller trades Ring B fill, its single pacing input. This
-    is the config the statefile seeder re-seeds on a ring-armed box so a deploy /
-    camilla restart keeps the rings instead of reverting to loopback.
+    ``shm_ring`` coupling arms. The ring graph uses the hardware-validated
+    low-latency geometry (chunk 128 / target 128 / queue 1 / rate_adjust off).
+    This is the config the statefile seeder re-seeds on a ring-armed box so a
+    deploy / camilla restart keeps the rings instead of reverting to loopback.
     """
 
     from jasper.fanin_coupling import (
         RING_CAPTURE_DEVICE,
+        RING_CAMILLA_CHUNKSIZE,
+        RING_CAMILLA_ENABLE_RATE_ADJUST,
+        RING_CAMILLA_QUEUELIMIT,
+        RING_CAMILLA_TARGET_LEVEL,
         RING_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT,
     )
@@ -463,6 +468,10 @@ def emit_flat_ring_config(*, out_path: str | Path | None = None) -> str:
         capture_format=RING_WIRE_FORMAT,
         playback_device=RING_PLAYBACK_DEVICE,
         playback_format=RING_WIRE_FORMAT,
+        chunksize=RING_CAMILLA_CHUNKSIZE,
+        target_level=RING_CAMILLA_TARGET_LEVEL,
+        queuelimit=RING_CAMILLA_QUEUELIMIT,
+        enable_rate_adjust=RING_CAMILLA_ENABLE_RATE_ADJUST,
         out_path=out_path,
     )
 

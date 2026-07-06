@@ -148,9 +148,10 @@ fan-in lane resamplers, outputd reference/AEC clocks, host-clock crate);
 — single source, pinned by cross-crate vectors); `rust/jasper-host-clock`
 (one servo core, `Fill`/`Correction` modes). Duplicates to delete:
 `rate_match` (C), CamillaDSP `enable_rate_adjust`+AsyncSinc in lean
-configs (A3), the usbsink aloop catch-up sawtooth (A2). Stays: CamillaDSP's
-own rate controller trading Ring B fill (it is camilla's single pacing
-input), snapclient sample-stuffing on bonded chains.
+configs (A3), the usbsink aloop catch-up sawtooth (A2). On the ring graph,
+CamillaDSP `enable_rate_adjust` is off; the blocking one-clock chain bounds
+latency through the Ring A/B capacities instead. Stays: snapclient
+sample-stuffing on bonded chains.
 
 ### H. Legacy cushion recipes
 
@@ -240,8 +241,8 @@ Verified missing on main (2026-07-03):
    eligibility (`ring_topology_ready`), and BOTH geometry axes — the period
    (`ring_geometry_ready`: conf.d period == outputd period) AND the Ring-A slot
    count (`ring_slot_geometry_ready`: `JASPER_FANIN_RING_SLOTS` == conf.d
-   `jts_ring_capture` `n_slots`; the 2026-07-05 stale-`=2`-lab-line hole the period
-   gate missed). It also self-heals a shear-prone stale slot value out of fanin.env
+   `jts_ring_capture` `n_slots`; the stale slot-value hole the period gate missed).
+   It also self-heals a shear-prone stale slot value out of fanin.env
    (`_migrate_stale_fanin_ring_slots`) and deletes a geometry-mismatched on-disk
    ring file (`_delete_stale_ring_files`, tmpfs transport state) before bouncing the
    daemons. Then it flips BOTH ends coherently (`_outputd_actions` is the single
@@ -319,7 +320,7 @@ touches it EXCEPT the USB phases, gadget-dependent).
 Deletions are separate PRs by repo guardrail. P4 starts the burn-in clock
 that P5+ waits on. P8 may land before or parallel to P6 — it gates only P9.
 
-### P3/P4 landed — what shipped + the RING-A slot-default follow-up
+### P3/P4 landed — what shipped + finding G resolution
 
 The default-flip landed as one PR (`audio/default-flip-p3-p4`), built on the
 #1169 overnight fix batch (its geometry preflight, self-heal, storm fixes, and
@@ -339,9 +340,10 @@ zombie-handle reopen are prerequisites). What it does:
   (`ring_topology_ready_strict` — an unreadable topology resolves `loopback` instead
   of arm→rollback-churning every boot). Any gate failing → `loopback`. Before the
   gates run, the auto pass self-heals a shear-prone stale `JASPER_FANIN_RING_SLOTS`
-  exactly as a manual arm does, so a stale lab `=2` line does not DISARM a box a
-  manual arm would migrate and keep. Ineligible boxes (jts3 roleful, jts5 composite,
-  jts4 fanin-less, any grouped box) are a NO-OP that resolves loopback and succeeds.
+  exactly as a manual arm does, so a stale old-default `=8` line does not DISARM a
+  box a manual arm would migrate and keep. Ineligible boxes (jts3 roleful, jts5
+  composite, jts4 fanin-less, any grouped box) are a NO-OP that resolves loopback
+  and succeeds.
 - **USB combo default (P3).** The combo arms only on a box that BOTH has the gadget
   stack available (`dtoverlay=dwc2,dr_mode=peripheral` — added fleet-wide for the
   always-on USB network, so NOT a sufficient gate alone) AND has USB Audio Input
@@ -365,18 +367,21 @@ zombie-handle reopen are prerequisites). What it does:
   explicit reconciler CLI path) freezes the box — the auto pass never overrides
   an operator choice. `/state.audio_graph.coupling.choice` reports operator-vs-auto.
 
-**RING-A slot default STAYS 8 (decision, hardware-backed).** The P3/P4
-product-path gate measured the **8-slot** Ring A at p50 54.3 / p99 57.0 ms
-tap→ref (~65 ms e2e) with 97.5 % match on jts.local — that is the geometry the
-defaults ship (`DEFAULT_FANIN_RING_SLOTS = 8`, the conf.d `jts_ring_capture`
-`n_slots = 8`). The tighter **2-slot** ring hit a ~46 ms e2e floor in the same
-session but is NOT the default: it is documented explicit low-latency tuning
-(`JASPER_FANIN_RING_SLOTS=2` + a matching `conf.d` `n_slots` render), now SAFE
-to set thanks to #1169's geometry preflight (which refuses a mismatched arm
-rather than crash-looping CamillaDSP on the ioplug attach). **Follow-up:** the
-2-slot ring default awaits its own product-path hardware gate (a full
-AirPlay/Spotify/BT + 24 h burn-in pass at 2 slots) before it can ship as the
-default — until then 8 is the proven number.
+**Finding G resolved: Ring-A slot default is 2.** The production default is now
+`DEFAULT_FANIN_RING_SLOTS = 2` and the packaged `jts_ring_capture` conf.d block
+pins `n_slots = 2`. With `period_frames = 128`, Ring A contributes ≈5.3 ms at
+48 kHz (`2 * 128 / 48000`) instead of the old 8-slot placeholder's ≈21.3 ms.
+The CamillaDSP ring emit moves in lockstep to chunk 128 / target 128 /
+queuelimit 1 with `enable_rate_adjust: false`; chunk 256 would span the whole
+2-slot Ring-A buffer. Ring B was already 2 slots and is unchanged.
+
+Hardware evidence for the default flip: the 40 ms-descent PoC measured 35.4 ms
+tap→ref on the 2-slot/chunk-128 geometry, and the 2026-07-06 primed product-path
+run measured 54.3 ms tap→ref with chunk 128 / target 128 / queuelimit 1.
+Reconstruction puts the old 8-slot/deep-queue default at ≈90-95 ms e2e and the
+new geometry at ≈48.8 ms e2e. #1169's geometry preflight, stale-ring-file
+delete, CONFIRM-path self-heal, and doctor three-way coherence check are the
+migration guardrails for already-armed 8-slot boxes.
 
 ## Renderer ingress design (Tier 2 core)
 

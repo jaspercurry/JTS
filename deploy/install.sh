@@ -1209,13 +1209,14 @@ render_outputd_cutover_config() {
     # below still decides whether flat is legal for the saved topology.
     #
     # Also renders the RING flat startup config (outputd-cutover-ring.yml), the
-    # shm_ring sibling. It is INERT until a coupling arms the rings (default
-    # loopback selects the plain cutover), but it MUST exist on disk so a
+    # shm_ring sibling. It is INERT until a coupling arms the rings (loopback
+    # coupling selects the plain cutover), but it MUST exist on disk so a
     # ring-armed box's statefile seeding can re-seed a ring graph instead of
-    # reverting to loopback (audit finding 5). Rendering it every deploy keeps its
-    # DAC latency floor current alongside the loopback config.
+    # reverting to loopback (audit finding 5). Rendering it every deploy keeps
+    # the ring graph's fixed low-latency geometry current alongside the loopback
+    # config's active-DAC latency floor.
     local output
-    echo "  Rendering outputd flat startup configs (loopback + ring) with active DAC latency floor"
+    echo "  Rendering outputd flat startup configs (loopback DAC floor + ring geometry)"
     if ! output="$(/opt/jasper/.venv/bin/python - <<'PY' 2>&1
 from pathlib import Path
 
