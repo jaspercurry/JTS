@@ -52,6 +52,15 @@ JASPER_OUTPUTD_CONTENT_BRIDGE=direct
 JASPER_FANIN_CAMILLA_COUPLING=loopback
 ```
 
+`JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536` is coupled to the Apple floor's
+`JASPER_OUTPUTD_PERIOD_FRAMES=128`. If the DAC is transiently absent during USB
+re-enumeration, `jasper.audio_runtime_plan` suppresses that low-latency content
+buffer and leaves outputd on the coherent conservative pair (`1024/4096`) until
+the profile floor is available again. `jasper-audio-hardware-reconcile` stages
+and validates the whole `outputd.env` candidate before replacing the prior file,
+and `jasper-outputd-failure-reconcile` gives exit 78 one bounded re-reconcile +
+retry so a settled DAC can self-heal instead of wedging silently.
+
 Clean hardware evidence so far: a 5-minute jts.local steady-state sample with
 outputd content buffer 1536 had zero new outputd content xruns/empty reads,
 zero outputd DAC xruns, zero fan-in output xruns, zero fan-in USB resampler
@@ -1712,7 +1721,11 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-03 (20-minute final run at the merged floor: 640/640
+Last verified: 2026-07-06 (`outputd.env` config-shear guard rechecked against
+`jasper.audio_runtime_plan`, `jasper.cli.audio_config validate-outputd-env`,
+`deploy/bin/jasper-audio-hardware-reconcile`, and
+`deploy/bin/jasper-outputd-failure-reconcile`; prior hardware evidence remains
+from 2026-07-03: 20-minute final run at the merged floor, 640/640
 impulses, e2e p50 45.8 / p95 47.3 / p99 48.1 ms; fleet AirPlay/Spotify pass).
 Ladder "Observable mode" + "Two controllers in cascade" sections re-verified
 2026-07-03 against the correction-observable redesign AND its staff-review fix

@@ -543,11 +543,14 @@ def test_outputd_parks_on_missing_configured_output_dac_without_reboot_loop():
     assert "ExecStartPre=/bin/sh -c" not in outputd_unit
     assert "ExecStopPost=-/usr/local/sbin/jasper-outputd-failure-reconcile" in outputd_unit
     assert "--reason outputd-failure --no-restart" in failure_reconcile
+    assert "--reason outputd-config-failure --no-restart" in failure_reconcile
+    assert "--no-block restart jasper-outputd.service" in failure_reconcile
+    assert "JASPER_OUTPUTD_CONFIG_RETRY_STATE" in failure_reconcile
     assert 'RESULT="${SERVICE_RESULT:-unknown}"' in failure_reconcile
     assert 'STATUS="${EXIT_STATUS:-}"' in failure_reconcile
     assert '"$RESULT" == "success"' in failure_reconcile
     assert '"$RESULT" == "condition"' in failure_reconcile
-    assert '"$STATUS" == "78"' in failure_reconcile
+    assert 'CONFIG_EXIT_STATUS=78' in failure_reconcile
 
     assert "JASPER_AUDIO_DAC_CARD" not in camilla_unit
     assert 'device: "outputd_content_playback"' in cutover
