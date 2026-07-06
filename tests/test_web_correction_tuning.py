@@ -32,10 +32,21 @@ class _FakeHandler:
 
 
 @pytest.fixture(autouse=True)
-def _reset_paid_call_gate():
+def _reset_paid_call_gate(tmp_path, monkeypatch):
     """The per-process paid-call min-interval gate is shared state; reset
     it around every test so happy-path tests within one pytest run don't
-    trip each other."""
+    trip each other.
+
+    Also pins the spend-settings inputs hermetic: the gate reads the
+    wizard-owned voice_provider.env (via JASPER_VOICE_PROVIDER_FILE) and the
+    usage DB — point both at absent tmp paths so a test run on a real Pi never
+    reads the box's live ledgers/cap and 429s a happy-path test."""
+    monkeypatch.setenv("JASPER_USAGE_DB", str(tmp_path / "usage.db"))
+    monkeypatch.setenv(
+        "JASPER_VOICE_PROVIDER_FILE", str(tmp_path / "voice_provider.env"),
+    )
+    monkeypatch.delenv("JASPER_DAILY_SPEND_CAP_USD", raising=False)
+    monkeypatch.delenv("JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER", raising=False)
     correction_setup._tuning_last_paid_call[0] = 0.0
     yield
     correction_setup._tuning_last_paid_call[0] = 0.0
@@ -619,6 +630,94 @@ def test_cap_zero_means_disabled_allows(monkeypatch, _tuning_ledger_env):
     usage_db = _tuning_ledger_env
     monkeypatch.setenv("JASPER_DAILY_SPEND_CAP_USD", "0")
     _fund_household_over_cap(usage_db, cost_usd=999.0)
+    monkeypatch.setattr(
+        "jasper.calibration_agent.correction_advisor.interpret",
+        _advisor_returning({"input_tokens": 100, "output_tokens": 100}),
+    )
+    out = correction_setup._handle_interpret(_FakeHandler())
+    assert out["explanation"] == "ok"
+
+
+# --- Blocker 2: the cap comes from the wizard file, not frozen env -----
+#
+# The /voice spend-cap form writes the cap knobs into voice_provider.env,
+# which jasper-voice sources but the correction-web unit does not — and this
+# process is not restarted on a save. _spend_settings must read the wizard
+# file FRESH per call, file winning over os.environ (matching jasper-voice's
+# EnvironmentFile order where the wizard file is sourced last).
+
+
+def _write_wizard_cap(tmp_path, **keys) -> None:
+    """Write spend keys into the tmp voice_provider.env the autouse fixture
+    points JASPER_VOICE_PROVIDER_FILE at."""
+    lines = "".join(f"{k}={v}\n" for k, v in keys.items())
+    (tmp_path / "voice_provider.env").write_text(lines)
+
+
+def test_wizard_file_cap_wins_over_process_env(
+    monkeypatch, tmp_path, _tuning_ledger_env
+):
+    """A household lowering the cap on /voice must bind the tuning surface
+    even though this unit's start-time env still carries the old value."""
+    usage_db = _tuning_ledger_env
+    monkeypatch.setenv("JASPER_DAILY_SPEND_CAP_USD", "100.00")  # stale env
+    _write_wizard_cap(
+        tmp_path,
+        JASPER_DAILY_SPEND_CAP_USD="0.25",  # wizard-set household cap
+        JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER="1.0",
+    )
+    _fund_household_over_cap(usage_db, cost_usd=0.50)  # over 0.25, under 100
+
+    _db, cap_usd, multiplier = correction_setup._spend_settings()
+    assert cap_usd == pytest.approx(0.25)  # file wins
+    assert multiplier == pytest.approx(1.0)
+
+    called = {"advisor": False}
+
+    def _boom(session, **kwargs):
+        called["advisor"] = True
+        return {"kind": "x"}
+
+    monkeypatch.setattr(
+        "jasper.calibration_agent.correction_advisor.interpret", _boom
+    )
+    with pytest.raises(correction_setup.SpendCapExceeded):
+        correction_setup._handle_interpret(_FakeHandler())
+    assert called["advisor"] is False
+
+
+def test_wizard_file_absent_falls_back_to_env_then_default(
+    monkeypatch, _tuning_ledger_env
+):
+    """No wizard file (fresh box / operator-only setup): the env value
+    applies; with neither, the shared jasper.usage defaults."""
+    from jasper.usage import (
+        DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
+        DEFAULT_DAILY_SPEND_CAP_USD,
+    )
+
+    # The autouse fixture points JASPER_VOICE_PROVIDER_FILE at an absent tmp
+    # file and clears the cap env vars → pure defaults.
+    _db, cap_usd, multiplier = correction_setup._spend_settings()
+    assert cap_usd == pytest.approx(DEFAULT_DAILY_SPEND_CAP_USD)
+    assert multiplier == pytest.approx(DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER)
+
+    # Env applies when the file stays absent.
+    monkeypatch.setenv("JASPER_DAILY_SPEND_CAP_USD", "3.50")
+    _db, cap_usd, _m = correction_setup._spend_settings()
+    assert cap_usd == pytest.approx(3.50)
+
+
+def test_wizard_file_cap_zero_disables_and_call_proceeds(
+    monkeypatch, tmp_path, _tuning_ledger_env
+):
+    """The documented cap=0 disable contract must hold when the ZERO comes
+    from the wizard file — the old env-only read kept 429ing at the stale
+    env/default cap after a household disabled the cap on /voice."""
+    usage_db = _tuning_ledger_env
+    monkeypatch.setenv("JASPER_DAILY_SPEND_CAP_USD", "1.00")  # stale env cap
+    _write_wizard_cap(tmp_path, JASPER_DAILY_SPEND_CAP_USD="0.00")
+    _fund_household_over_cap(usage_db, cost_usd=999.0)  # over any real cap
     monkeypatch.setattr(
         "jasper.calibration_agent.correction_advisor.interpret",
         _advisor_returning({"input_tokens": 100, "output_tokens": 100}),

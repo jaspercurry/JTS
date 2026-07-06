@@ -2604,26 +2604,47 @@ def _record_tuning_spend(out: dict[str, Any], usage_db: str) -> None:
 
 
 def _spend_settings() -> tuple[str, float, float]:
-    """The three spend knobs (usage_db, daily cap, safety multiplier) read
-    directly from the environment, mirroring ``Config``'s field defaults.
+    """The three spend knobs (usage_db, daily cap, safety multiplier), read
+    FRESH per call: the wizard-owned SSOT file wins over ``os.environ``.
+
+    The /voice spend-cap form writes ``JASPER_DAILY_SPEND_CAP_USD`` /
+    ``_SAFETY_MULTIPLIER`` into ``/var/lib/jasper/voice_provider.env``.
+    jasper-voice sources that file LAST in its EnvironmentFile chain, but this
+    unit does not source it at all — and this socket-activated process is not
+    restarted on a save (it can outlive one by its 10-min idle window), so a
+    start-time env would go stale anyway. Overlaying the file's values over
+    ``os.environ`` per call is the :mod:`jasper.voice.provider_state` idiom
+    for exactly this stale-``os.environ`` trap, and matches what the running
+    jasper-voice sees (file wins).
 
     Deliberately NOT ``Config.from_env()``: that hard-raises
     ``VoiceProviderNotConfigured`` when no voice provider is set, which would
     crash the tuning spend gate on an otherwise-valid box (OpenAI key + spend
-    cap configured, voice provider not yet picked). The tuning surface is
-    OpenAI-only and independent of the voice-provider choice, so it must not
-    inherit that precondition. Values + defaults are identical to what
-    ``Config.from_env`` would produce for these fields."""
+    cap configured, voice provider not yet picked). Defaults are shared with
+    ``Config`` via the ``jasper.usage`` constants (no mirrored literals);
+    malformed values fall back to those defaults — deliberately SOFTER than
+    ``Config.from_env``'s hard-raise, because a jasper.env typo must not 500
+    the tuning surface."""
+    from jasper.env_load import read_env_file_state
     from jasper.usage import (
         DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
         DEFAULT_DAILY_SPEND_CAP_USD,
         DEFAULT_USAGE_DB,
     )
+    from jasper.voice.provider_state import PROVIDER_FILE
 
-    usage_db = os.environ.get("JASPER_USAGE_DB") or DEFAULT_USAGE_DB
+    # Path resolution mirrors provider_state._resolve_path: the path override
+    # is a static deploy constant, so reading it from os.environ once per call
+    # is fine — only the file's CONTENTS need the fresh read.
+    provider_file = os.environ.get("JASPER_VOICE_PROVIDER_FILE", PROVIDER_FILE)
+    file_state = read_env_file_state(provider_file)
+    file_values = file_state.values if file_state.loaded else {}
+
+    def _value(name: str) -> str:
+        return (file_values.get(name) or os.environ.get(name) or "").strip()
 
     def _float(name: str, default: float) -> float:
-        raw = os.environ.get(name)
+        raw = _value(name)
         if not raw:
             return default
         try:
@@ -2631,6 +2652,7 @@ def _spend_settings() -> tuple[str, float, float]:
         except ValueError:
             return default
 
+    usage_db = _value("JASPER_USAGE_DB") or DEFAULT_USAGE_DB
     cap_usd = _float("JASPER_DAILY_SPEND_CAP_USD", DEFAULT_DAILY_SPEND_CAP_USD)
     multiplier = _float(
         "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER",
@@ -2661,18 +2683,23 @@ def _tuning_spend_cap_gate() -> None:
     usage_db, cap_usd, multiplier = _spend_settings()
     reader = household_usage_reader(usage_db)
     cap = SpendCap(reader, cap_usd, multiplier)
-    if not cap.allowed():
-        log_event(
-            logger,
-            "tuning_spend.cap_blocked",
-            level=logging.WARNING,
-            padded_spend_usd=round(cap._padded_spend(), 6),
-            cap_usd=cap_usd,
-        )
-        raise SpendCapExceeded(
-            "daily spend cap reached — the tuning assistant will be "
-            "available again after the daily rollover"
-        )
+    if cap.allowed():
+        return
+    log_event(
+        logger,
+        "tuning_spend.cap_blocked",
+        level=logging.WARNING,
+        # Public surface only (no SpendCap._padded_spend): the raw summed
+        # spend plus the multiplier lets the journal reader recompute the
+        # padded comparison. One extra ledger read, blocked path only.
+        spend_last_24h_usd=round(reader.spend_last_24h_usd(), 6),
+        safety_multiplier=multiplier,
+        cap_usd=cap_usd,
+    )
+    raise SpendCapExceeded(
+        "daily spend cap reached — the tuning assistant will be "
+        "available again after the daily rollover"
+    )
 
 
 def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
