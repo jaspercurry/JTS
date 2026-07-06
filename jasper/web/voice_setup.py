@@ -82,6 +82,7 @@ from jasper.voice.model_discovery import (
     refresh_provider_cache,
 )
 from jasper.usage import (
+    AggregateUsageReader,
     DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
     DEFAULT_DAILY_SPEND_CAP_USD,
     DEFAULT_PRICING_FILE,
@@ -91,6 +92,7 @@ from jasper.usage import (
     load_pricing_overrides,
     pricing_for_model,
     sanitize_pricing_models,
+    tuning_usage_db_path,
 )
 from jasper.log_event import log_event
 
@@ -390,7 +392,14 @@ def _read_spend_cap_status(state: dict[str, str]) -> dict[str, Any]:
     cap_usd = max(0.0, cap_usd)
     safety_multiplier = max(1.0, safety_multiplier)
     usage_db = _value_for(state, "JASPER_USAGE_DB", DEFAULT_USAGE_DB)
-    usage_available = os.path.exists(usage_db)
+    # Either household ledger member counts as "usage exists": on a
+    # tuning-only box (the tuning assistant used before the first voice turn)
+    # the daemon's cap already counts that spend, so the card must render the
+    # real household dollars rather than "no usage yet". Mirrors the doctor's
+    # two-file treatment in jasper.cli.doctor.voice.check_spend_cap.
+    usage_available = os.path.exists(usage_db) or os.path.exists(
+        tuning_usage_db_path(usage_db)
+    )
     usage_error = ""
     spend_last_24h = 0.0
     month_to_date = 0.0
@@ -406,7 +415,15 @@ def _read_spend_cap_status(state: dict[str, str]) -> dict[str, Any]:
             reader = household_usage_reader(usage_db)
             spend_last_24h = reader.spend_last_24h_usd()
             month_to_date = reader.spend_month_to_date_usd()
-            sessions_today = reader.session_count_today_utc()
+            # "Turns today" stays VOICE-only: each paid tuning tap opens a
+            # session row in the tuning ledger, and folding those into a
+            # figure labelled "Turns today" would over-count. The DOLLAR
+            # figures above deliberately include tuning (household spend);
+            # the card carries a hint saying so. Single-member aggregate =
+            # the same lazy/read-only/fail-open discipline for one file.
+            sessions_today = AggregateUsageReader(
+                paths=[usage_db],
+            ).session_count_today_utc()
         except Exception as e:  # noqa: BLE001
             usage_available = False
             usage_error = str(e)
@@ -484,6 +501,7 @@ def _spend_cap_section_html(state: dict[str, str], csrf_token: str) -> str:
         <dt>Month to date</dt><dd>{_fmt_usd(status["month_to_date_usd"]) if status["usage_available"] else "—"}</dd>
         <dt>Turns today</dt><dd>{html.escape(str(status["sessions_today"])) if status["usage_available"] else "—"}</dd>
       </dl>
+      <p class="form-hint">Spend figures include the tuning assistant's paid calls; Turns today counts voice turns only.</p>
       {note_html}
       <form method="post" action="spend-cap" class="spend-cap__form">
         {csrf_field_html(csrf_token)}
