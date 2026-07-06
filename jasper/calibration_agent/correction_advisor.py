@@ -346,9 +346,24 @@ def _number_regex():
     if _NUMBER_RE is None:
         import re
 
-        # A signed decimal, optionally with a unit suffix we ignore.
+        # A signed decimal; the unit (if any) is inspected separately.
         _NUMBER_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
     return _NUMBER_RE
+
+
+_UNIT_RE = None
+
+
+def _unit_regex():
+    global _UNIT_RE
+    if _UNIT_RE is None:
+        import re
+
+        # A measurement unit immediately following a number ("25 dB",
+        # "40Hz", "1.2 kHz") — such a number is a claimed measurement
+        # fact, never an exempt count/ordinal.
+        _UNIT_RE = re.compile(r"\s*k?(?:dB|Hz)\b", re.IGNORECASE)
+    return _UNIT_RE
 
 
 def check_number_provenance(
@@ -363,9 +378,10 @@ def check_number_provenance(
     correction facts, but it may not author a number a deterministic tool
     computed. We extract decimals from the model's prose and flag any that
     do not round-match (within ``tolerance``) a number present in the
-    evidence packet. Small integers (0..~30, counts / small ordinals like
-    "a few dB", "2 positions") are exempt — they are ordinary prose, not
-    claimed measurement facts.
+    evidence packet. Small integers (0..~30 — counts / small ordinals like
+    "2 positions") are exempt as ordinary prose, UNLESS the number is
+    immediately followed by a measurement unit (dB / Hz / kHz): "a 25 dB
+    peak" is a claimed measurement fact, not a count, and gets checked.
 
     Returns ``{ok, unverified: [floats]}``; ``ok`` is True when no
     unverified measurement-scale number appears. This is advisory
@@ -375,14 +391,17 @@ def check_number_provenance(
     """
     allowed = _packet_numbers(context)
     unverified: list[float] = []
-    for match in _number_regex().findall(text or ""):
+    source = text or ""
+    for match in _number_regex().finditer(source):
         try:
-            value = float(match)
+            value = float(match.group(0))
         except ValueError:
             continue
         rounded = round(value, 1)
-        # Exempt small counts / ordinals that are ordinary prose.
-        if abs(value) <= 30 and float(value).is_integer():
+        # Exempt small counts / ordinals that are ordinary prose — but a
+        # unit suffix makes it a measurement claim, never exempt.
+        has_unit = bool(_unit_regex().match(source, match.end()))
+        if not has_unit and abs(value) <= 30 and float(value).is_integer():
             continue
         if any(abs(rounded - a) <= tolerance for a in allowed):
             continue
@@ -638,7 +657,15 @@ def _advisor_packet_for_model(
 
 def _narration_text(advisor: dict[str, Any]) -> str:
     """The plain-language text the panel renders: the summary plus any
-    explain-action messages, concatenated."""
+    explain-action messages, concatenated.
+
+    Clamped to ``response.TEXT_LIMIT_CHARS`` before it enters the payload:
+    the narration is assembled from the UNvalidated model response (so an
+    interpret whose action plan fails validation still gets its summary
+    surfaced), which means the validator's per-field ``_bounded_text``
+    limit does not apply here — without this clamp a degenerate model
+    response would have no server-side length bound at all.
+    """
     parts: list[str] = []
     summary = advisor.get("summary")
     if isinstance(summary, str) and summary.strip():
@@ -648,4 +675,8 @@ def _narration_text(advisor: dict[str, Any]) -> str:
             message = action.get("message")
             if isinstance(message, str) and message.strip():
                 parts.append(message.strip())
-    return "\n\n".join(parts)
+    text = "\n\n".join(parts)
+    limit = response.TEXT_LIMIT_CHARS
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text

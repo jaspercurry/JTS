@@ -66,8 +66,12 @@ TARGET_WARMTH_MAX = 2.0
 
 # Hard fallback caps for a proposed correction PEQ set when the advisor
 # context does not carry the live session's strategy caps. These match the
-# widest shipped strategy ("balanced") so a proposal is never accepted
-# outside the project's room-correction envelope even if bounds go missing.
+# DEFAULT shipped strategy ("balanced") — NOT the widest ("assertive" is
+# wider on every axis) — and apply-time re-validation always re-derives the
+# live caps via resolve_correction_strategy, so a missing-bounds fallback
+# can only ever TIGHTEN what the apply seam would accept, never widen it.
+# Pinned against strategy.CORRECTION_STRATEGIES["balanced"] by
+# tests/test_calibration_agent_correction_vocabulary.py.
 _CORRECTION_FALLBACK_BOUNDS = {
     "f_low_hz": 20.0,
     "f_high_hz": 350.0,

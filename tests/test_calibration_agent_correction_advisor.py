@@ -151,6 +151,40 @@ def test_provenance_exempts_small_counts():
     assert result["ok"] is True
 
 
+def test_provenance_small_integer_with_unit_is_not_exempt():
+    """Unit-aware exemption: a small integer immediately followed by a
+    measurement unit ('a 25 dB peak', '18Hz rumble') is a claimed
+    measurement fact, not a count — it gets checked against the packet."""
+    ctx = ca.build_correction_advisor_context(_fake_session())
+    result = ca.check_number_provenance("There is a 25 dB peak at 40 Hz.", ctx)
+    assert result["ok"] is False
+    assert 25.0 in result["unverified"]
+    assert 40.0 in result["unverified"]
+    # No-space unit form is caught too.
+    result2 = ca.check_number_provenance("an 18Hz rumble", ctx)
+    assert result2["ok"] is False
+    assert 18.0 in result2["unverified"]
+    # A small unit-suffixed number that IS in the packet stays verified
+    # (8.1 dB / 62 Hz are packet facts on this session).
+    result3 = ca.check_number_provenance("the 8.1 dB peak near 62 Hz", ctx)
+    assert result3["ok"] is True
+
+
+def test_narration_text_is_clamped_to_text_limit():
+    """The narration is assembled from the UNvalidated model response, so
+    the validator's per-field bound doesn't apply — the advisor clamps it
+    server-side before it enters the payload."""
+    from jasper.calibration_agent import response as R
+
+    huge = "x" * (3 * R.TEXT_LIMIT_CHARS)
+    narration = ca._narration_text({
+        "summary": huge,
+        "action_plan": [{"type": "explain", "message": huge}],
+    })
+    assert len(narration) <= R.TEXT_LIMIT_CHARS
+    assert narration.endswith("…")
+
+
 # --- interpret (read-only) --------------------------------------------
 
 def test_interpret_uses_fixture_and_passes_provenance():

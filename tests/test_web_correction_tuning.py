@@ -29,6 +29,16 @@ class _FakeHandler:
         self.headers = {"Content-Length": str(len(body))}
 
 
+@pytest.fixture(autouse=True)
+def _reset_paid_call_gate():
+    """The per-process paid-call min-interval gate is shared state; reset
+    it around every test so happy-path tests within one pytest run don't
+    trip each other."""
+    correction_setup._tuning_last_paid_call[0] = 0.0
+    yield
+    correction_setup._tuning_last_paid_call[0] = 0.0
+
+
 def _fake_session(state_value="ready"):
     from jasper.correction.session import SessionState
 
@@ -92,6 +102,11 @@ def test_interpret_delegates_to_advisor(monkeypatch):
     assert out["explanation"] == "ok"
     assert captured["called"] is True
     assert captured["kwargs"]["user_message"] == "hi"
+    # The paid call carries the hard output-token budget guard.
+    assert (
+        captured["kwargs"]["max_output_tokens"]
+        == correction_setup.TUNING_LLM_MAX_OUTPUT_TOKENS
+    )
 
 
 def test_interpret_rejects_non_string_message(monkeypatch):
@@ -101,6 +116,47 @@ def test_interpret_rejects_non_string_message(monkeypatch):
     )
     with pytest.raises(correction_setup.BadRequest):
         correction_setup._handle_interpret(_FakeHandler(b'{"message":123}'))
+
+
+def test_paid_call_min_interval_gate(monkeypatch):
+    """A second paid call inside the min-interval window is refused with
+    an honest 409 (never a silent drop) — a stuck client retry loop must
+    not burn spend. The two paid handlers share one gate."""
+    monkeypatch.setattr(
+        "jasper.calibration_agent.key_provisioning.tuning_llm_available",
+        lambda **_: True,
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", _fake_session)
+    monkeypatch.setattr(
+        "jasper.calibration_agent.correction_advisor.interpret",
+        lambda session, **kwargs: {"kind": "jts_correction_interpret"},
+    )
+    monkeypatch.setattr(
+        "jasper.calibration_agent.correction_advisor.propose",
+        lambda session, **kwargs: {"kind": "jts_correction_proposal_review"},
+    )
+    # First paid call passes and stamps the gate...
+    correction_setup._handle_interpret(_FakeHandler())
+    # ...an immediate second paid call (either handler) is refused honestly.
+    with pytest.raises(correction_setup.RequestConflict, match="paid call"):
+        correction_setup._handle_interpret(_FakeHandler())
+    with pytest.raises(correction_setup.RequestConflict, match="paid call"):
+        correction_setup._handle_propose(_FakeHandler())
+    # Once the window has passed, calls flow again.
+    correction_setup._tuning_last_paid_call[0] = 0.0
+    out = correction_setup._handle_propose(_FakeHandler())
+    assert out["kind"] == "jts_correction_proposal_review"
+
+
+def test_tuning_timeout_env_typo_degrades_to_default(monkeypatch):
+    """A garbage JASPER_TUNING_LLM_TIMEOUT_SEC must degrade to the 90 s
+    default, never crash the whole /correction/ wizard at import."""
+    monkeypatch.setenv("JASPER_TUNING_LLM_TIMEOUT_SEC", "ninety")
+    assert correction_setup._tuning_timeout_sec() == 90.0
+    monkeypatch.setenv("JASPER_TUNING_LLM_TIMEOUT_SEC", "-5")
+    assert correction_setup._tuning_timeout_sec() == 90.0
+    monkeypatch.setenv("JASPER_TUNING_LLM_TIMEOUT_SEC", "120")
+    assert correction_setup._tuning_timeout_sec() == 120.0
 
 
 # --- /propose/apply: the safety core ----------------------------------

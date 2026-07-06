@@ -55,9 +55,8 @@ from jasper.correction import peq as _peq
 # AutoEQ's max-gain discipline) a boost above a few dB with a high Q is
 # where audible ringing starts. We cap a positive-gain filter's Q by a
 # gain-scaled ceiling: small boosts may be a little narrower, large
-# boosts must be gentle. These are conservative env-tunable placeholders
-# (revision plan §5 H1 retunes from on-device listening); out-of-range or
-# unparseable env values fall back to the documented default.
+# boosts must be gentle. These are conservative placeholder constants —
+# revision plan §5 H1 retunes them from on-device listening.
 RING_GUARD_BASE_Q = 2.0        # a +0 dB boost may be up to this Q
 RING_GUARD_Q_PER_DB = 0.35     # each dB of boost tightens the Q ceiling
 RING_GUARD_MIN_Q = 1.0         # never demand narrower than this

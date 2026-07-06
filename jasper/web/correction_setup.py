@@ -115,9 +115,28 @@ MAX_DEVICE_FIELD_CHARS = 160
 # P6 tuning-LLM per-tap call budget. A frontier text model answering the
 # interpret / propose packet is a few seconds; 90 s is a generous ceiling
 # that still bounds a stalled provider connection on the Pi web process.
-TUNING_LLM_TIMEOUT_SEC = float(
-    os.environ.get("JASPER_TUNING_LLM_TIMEOUT_SEC", "90") or "90"
-)
+# Parse defensively: a jasper.env typo must degrade to the default, not
+# crash the whole /correction/ wizard at import.
+def _tuning_timeout_sec() -> float:
+    try:
+        value = float(os.environ.get("JASPER_TUNING_LLM_TIMEOUT_SEC", "90") or "90")
+    except ValueError:
+        return 90.0
+    return value if value > 0 else 90.0
+
+
+TUNING_LLM_TIMEOUT_SEC = _tuning_timeout_sec()
+# Per-call output-token cap for the paid tuning calls — a hard budget guard
+# on the surface whose spend is not yet ledgered into jasper/usage.py. 700
+# comfortably fits the contracted JSON (summary + explain + a proposal or
+# two, each text field <= TEXT_LIMIT_CHARS) while bounding a degenerate
+# response's cost.
+TUNING_LLM_MAX_OUTPUT_TOKENS = 700
+# Minimum spacing between PAID tuning calls (interpret/propose), per
+# process. Human taps are seconds apart; a stuck client retry loop must not
+# silently burn spend. A second call inside the window gets an honest JSON
+# error (409) the panel shows — never a silent drop.
+TUNING_LLM_MIN_INTERVAL_SEC = 3.0
 _FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/balance", "/sync"})
 _RETURN_HOST_RE = re.compile(
     r"^(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$"
@@ -2432,6 +2451,32 @@ def _require_tuning_key() -> None:
         )
 
 
+# Monotonic timestamp of the last PAID tuning call attempt, shared across
+# the two paid handlers. A mutable single-slot list so tests can reset it;
+# guarded by a lock because the wizard is a ThreadingHTTPServer.
+_tuning_paid_call_lock = threading.Lock()
+_tuning_last_paid_call: list[float] = [0.0]
+
+
+def _tuning_paid_call_gate() -> None:
+    """Refuse a second PAID call within TUNING_LLM_MIN_INTERVAL_SEC.
+
+    Stamped at ATTEMPT time (before the provider call), so concurrent or
+    rapid-fire requests — a stuck client retry loop, a double-tap — cannot
+    silently burn spend while one call is already in flight. The refusal
+    is an honest 409 the panel shows, never a silent drop.
+    """
+    now = time.monotonic()
+    with _tuning_paid_call_lock:
+        since = now - _tuning_last_paid_call[0]
+        if since < TUNING_LLM_MIN_INTERVAL_SEC:
+            raise RequestConflict(
+                "the tuning assistant just made a paid call — wait a "
+                "moment and tap again"
+            )
+        _tuning_last_paid_call[0] = now
+
+
 def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /interpret: one paid call. Read-only "explain my room"."""
     from jasper.calibration_agent import correction_advisor, model_client
@@ -2442,11 +2487,13 @@ def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if user_message is not None and not isinstance(user_message, str):
         raise BadRequest("message must be a string")
     sess = _get_or_create_session()
+    _tuning_paid_call_gate()
     try:
         return correction_advisor.interpret(
             sess,
             user_message=user_message,
             timeout_sec=float(TUNING_LLM_TIMEOUT_SEC),
+            max_output_tokens=TUNING_LLM_MAX_OUTPUT_TOKENS,
         )
     except model_client.AdvisorModelError as e:
         raise BadRequest(str(e)) from e
@@ -2467,11 +2514,13 @@ def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if user_message is not None and not isinstance(user_message, str):
         raise BadRequest("message must be a string")
     sess = _get_or_create_session()
+    _tuning_paid_call_gate()
     try:
         return correction_advisor.propose(
             sess,
             user_message=user_message,
             timeout_sec=float(TUNING_LLM_TIMEOUT_SEC),
+            max_output_tokens=TUNING_LLM_MAX_OUTPUT_TOKENS,
         )
     except model_client.AdvisorModelError as e:
         raise BadRequest(str(e)) from e
