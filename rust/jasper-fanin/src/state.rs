@@ -806,18 +806,21 @@ impl StateServer {
                 push_kv_u64(&mut buf, "retries", d.retries.load(Ordering::Relaxed));
                 buf.push(',');
                 // Zombie-handle forced reopens (C): a growing value means the
-                // gadget function is being rebuilt underneath fan-in (UDC rebind /
-                // usbsink stop-start) WHILE A STREAM WAS FLOWING and this lane is
-                // self-healing the deaf handle rather than needing a manual fan-in
-                // restart.
+                // flowing→dead zero-avail latch caught a gadget rebuild — the handle
+                // had been feeding the lane, then `avail_update` returned exactly 0
+                // for ~2 s (UDC rebind / usbsink stop-start underneath a live stream)
+                // — and this lane self-healed the deaf handle rather than needing a
+                // manual fan-in restart.
                 push_kv_u64(&mut buf, "reopens", d.reopens.load(Ordering::Relaxed));
                 buf.push(',');
-                // Card-generation forced reopens (C, defect 2026-07-06): the twin
-                // counter for a rebuild detected via the `/proc/asound/<card>`
-                // identity CHANGING under the open handle when NO frame ever flowed
-                // (the routine post-deploy window the flowing→dead `reopens` signal
-                // structurally cannot catch). Separate so an operator can tell a
-                // rebuild-on-a-live-stream from a rebuild-on-a-fresh-idle-handle apart.
+                // Liveness-probe forced reopens (C, defect 2026-07-06): the twin
+                // counter for a rebuild caught by the ~1 s `snd_pcm_status` ioctl
+                // finding the open handle dead (ENODEV / Disconnected) while
+                // `avail_update`'s frozen mmap still returned Ok(0) — the signal that
+                // fast path structurally cannot raise. Kept separate from `reopens`
+                // so an operator can tell WHICH signal caught the rebuild; which
+                // fires first for a given rebuild is timing-dependent, so read the
+                // pair as "which probe caught it," not a clean live-vs-idle split.
                 push_kv_u64(
                     &mut buf,
                     "card_gen_reopens",
@@ -1338,11 +1341,7 @@ mod tests {
                         reopens: Arc::new(AtomicU64::new(0)),
                         zero_avail_streak: Arc::new(AtomicU64::new(0)),
                         frames_flowed_since_open: Arc::new(AtomicBool::new(true)),
-                        card_token: "UAC2Gadget".to_string(),
-                        open_card_dev: Arc::new(AtomicU64::new(0)),
-                        open_card_ino: Arc::new(AtomicU64::new(0)),
-                        card_identity_valid: Arc::new(AtomicBool::new(true)),
-                        card_last_checked_drain: Arc::new(AtomicU64::new(0)),
+                        liveness_last_checked_drain: Arc::new(AtomicU64::new(0)),
                         card_gen_reopens: Arc::new(AtomicU64::new(0)),
                         // Two drain-entry samples (128 + 192 = 320, mean 160,
                         // max 192) exercising buckets 2 and 3.
