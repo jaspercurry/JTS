@@ -31,10 +31,12 @@ CLI that most operators invoke for a quick `arm`/`disarm` one-liner.
 from __future__ import annotations
 
 import json
+import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from jasper.route_latency.pairing import TapEvent
 
@@ -43,6 +45,19 @@ DEFAULT_TAP_HOST = "127.0.0.1"
 DEFAULT_TAP_PORT = 8781
 DEFAULT_TAP_PATH = "/run/jasper-usbsink/impulse-tap.jsonl"
 DEFAULT_HTTP_TIMEOUT_SECONDS = 5.0
+
+# The fan-in DIRECT-capture tap (the combo-box ingress). On a USB combo box
+# (JASPER_FANIN_USB_DIRECT=enabled) the certified route's ingress is fan-in's
+# hw:UAC2Gadget DIRECT capture, so the impulse tap lives in jasper-fanin, NOT the
+# usbsink bridge — the bridge stands down and opens no capture, so its :8781 tap
+# never fires. fan-in exposes the tap over its control UDS with plaintext verbs
+# (not HTTP). These MUST match the Rust side: DEFAULT_TAP_PATH / the control
+# socket in rust/jasper-fanin/src/impulse_tap.rs + config.rs. FANIN_CONTROL_SOCKET
+# is the SAME socket jasper.route_latency.status_socket reads STATUS from
+# (FANIN_STATUS_SOCKET); pinned equal by the tap-transport contract test.
+FANIN_CONTROL_SOCKET = "/run/jasper-fanin/control.sock"
+FANIN_DEFAULT_TAP_PATH = "/run/jasper-fanin/impulse-tap.jsonl"
+DEFAULT_FANIN_TAP_TIMEOUT_SECONDS = 5.0
 
 
 class TapClientError(RuntimeError):
@@ -121,6 +136,22 @@ def _coerce_int(value: object) -> int:
     return 0
 
 
+@runtime_checkable
+class TapArmer(Protocol):
+    """The arm/disarm surface both tap transports satisfy.
+
+    Two implementations speak two different wires to two different daemons —
+    :class:`TapClient` (usbsink bridge, HTTP :8781) and :class:`FaninTapClient`
+    (fan-in DIRECT-capture tap, control UDS) — so the harness can drive whichever
+    tap is actually live on the box behind one interface. ``arm`` raises
+    :class:`TapClientError` on any failure (a run with a tap that never armed
+    produces zero ingress evidence — the "refuse to certify" case)."""
+
+    def arm(self, params: TapArmParams | None = None) -> dict[str, object]: ...
+
+    def disarm(self) -> dict[str, object]: ...
+
+
 class TapClient:
     """Thin HTTP client for the Rust tap's arm/disarm/status endpoints."""
 
@@ -176,6 +207,121 @@ class TapClient:
         )
 
 
+def _coerce_int_or_str(value: str) -> object:
+    """Coerce a control-socket reply token's value to int when it parses as one,
+    else leave it a string (a path stays a path, the counters become numbers)."""
+
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def parse_tap_socket_reply(reply: str) -> dict[str, object]:
+    """Parse a fan-in tap control-socket reply line into a dict.
+
+    The fan-in tap replies plaintext (unlike the usbsink HTTP tap's JSON), so
+    this normalizes both replies into a dict the caller can treat like the HTTP
+    one:
+
+    * ``OK armed path=<p>`` -> ``{"ok": True, "status": "armed", "path": <p>}``
+    * ``OK disarmed events_written=N events_dropped=M`` ->
+      ``{"ok": True, "status": "disarmed", "events_written": N,
+      "events_dropped": M}``
+    * ``ERR <reason>`` / empty / anything else -> ``{"ok": False, ...}``
+
+    ``key=value`` tokens split on the first ``=`` (a ``/run`` path carries no
+    spaces, so it stays one token); a value that parses as an int is coerced so
+    counters come back as numbers. ``reply`` keeps the raw line for the error
+    path. The reply shapes are pinned to the Rust ``tap_arm_command`` /
+    ``tap_disarm_command`` serializers by the tap-transport contract test.
+    """
+
+    text = reply.strip()
+    tokens = text.split()
+    out: dict[str, object] = {"ok": bool(tokens) and tokens[0] == "OK", "reply": text}
+    for token in tokens[1:]:
+        if "=" in token:
+            key, value = token.split("=", 1)
+            out[key] = _coerce_int_or_str(value)
+        else:
+            out.setdefault("status", token)
+    return out
+
+
+class FaninTapClient:
+    """Arm/disarm the fan-in DIRECT-capture impulse tap over its control UDS.
+
+    The combo-box counterpart to :class:`TapClient`. On a USB combo box the
+    certified route's ingress is fan-in's ``hw:UAC2Gadget`` DIRECT capture, and
+    the impulse tap lives in ``jasper-fanin`` (``rust/jasper-fanin/src/
+    impulse_tap.rs``), NOT the usbsink bridge (which stands down and opens no
+    capture, so its :8781 HTTP tap never fires — arming it against known-good
+    combo audio records zero detections, the reported bug). fan-in exposes the
+    tap over its existing control socket as plaintext line verbs, not HTTP:
+
+    * ``TAP_ARM {json}\\n`` — the SAME JSON body / validation / ceilings /
+      ``/run/jasper-fanin/`` path-constraint as the usbsink HTTP ``/tap/arm``
+      (both parse ``TapConfig::from_arm_body``); reply is a plaintext line
+      ``OK armed path=<path>`` or ``ERR <reason>``.
+    * ``TAP_DISARM\\n`` — reply ``OK disarmed events_written=N events_dropped=M``.
+
+    Speaks the same ``AF_UNIX`` mechanic :mod:`jasper.route_latency.status_socket`
+    uses for ``STATUS`` — connect, send one line, read the reply to EOF (fan-in
+    writes the reply then drops the stream) — but with the tap verbs and a
+    plaintext reply it parses via :func:`parse_tap_socket_reply`. Satisfies
+    :class:`TapArmer` so the harness drives it exactly like the HTTP client.
+    """
+
+    def __init__(
+        self,
+        *,
+        socket_path: str = FANIN_CONTROL_SOCKET,
+        timeout_seconds: float = DEFAULT_FANIN_TAP_TIMEOUT_SECONDS,
+    ) -> None:
+        self._socket_path = socket_path
+        self._timeout_seconds = timeout_seconds
+
+    def _command(self, line: str, *, verb: str) -> dict[str, object]:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(self._timeout_seconds)
+                sock.connect(self._socket_path)
+                sock.sendall(line.encode("utf-8"))
+                # Half-close the write side so the daemon sees end-of-request
+                # even if it ever reads to EOF; harmless with its line reader.
+                try:
+                    sock.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+                chunks: list[bytes] = []
+                while True:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+        except (OSError, TimeoutError) as e:
+            raise TapClientError(
+                f"{verb} failed against {self._socket_path} — is jasper-fanin "
+                f"running with its control socket? ({e})"
+            ) from e
+        reply = b"".join(chunks).decode("utf-8", errors="replace")
+        parsed = parse_tap_socket_reply(reply)
+        if not parsed.get("ok"):
+            raise TapClientError(
+                f"{verb} on {self._socket_path} returned: "
+                f"{parsed.get('reply') or '<empty reply>'}"
+            )
+        return parsed
+
+    def arm(self, params: TapArmParams | None = None) -> dict[str, object]:
+        body = json.dumps((params or TapArmParams()).to_body())
+        return self._command(f"TAP_ARM {body}\n", verb="TAP_ARM")
+
+    def disarm(self) -> dict[str, object]:
+        return self._command("TAP_DISARM\n", verb="TAP_DISARM")
+
+
 def read_tap_events(path: Path) -> list[TapEvent]:
     """Parse the tap's JSONL event log into :class:`TapEvent` objects.
 
@@ -212,13 +358,19 @@ def read_tap_events(path: Path) -> list[TapEvent]:
 
 
 __all__ = [
+    "DEFAULT_FANIN_TAP_TIMEOUT_SECONDS",
     "DEFAULT_HTTP_TIMEOUT_SECONDS",
     "DEFAULT_TAP_HOST",
     "DEFAULT_TAP_PATH",
     "DEFAULT_TAP_PORT",
+    "FANIN_CONTROL_SOCKET",
+    "FANIN_DEFAULT_TAP_PATH",
+    "FaninTapClient",
     "TapArmParams",
+    "TapArmer",
     "TapClient",
     "TapClientError",
     "TapStatus",
+    "parse_tap_socket_reply",
     "read_tap_events",
 ]

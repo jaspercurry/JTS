@@ -594,7 +594,17 @@ software) plays a generated click-track WAV into the JTS USB audio device.
 A default-off ingress tap inside `jasper-usbsink-audio` (Rust; armed/disarmed
 over its existing `127.0.0.1:8781` HTTP listener) timestamps each click the
 instant it lands in the claiming route's own capture stream, binding the
-measurement to route identity by construction. This harness separately reads
+measurement to route identity by construction. On a **USB combo box**
+(`JASPER_FANIN_USB_DIRECT=enabled`, the shipped default on an eligible gadget
+box) the route's ingress is instead fan-in's own `hw:UAC2Gadget` DIRECT
+capture, so the equivalent tap lives in `jasper-fanin` and is armed over its
+control UDS (`TAP_ARM` verb, `/run/jasper-fanin/impulse-tap.jsonl`); the usbsink
+bridge stands down and its `:8781` tap never fires. The harness picks the live
+one automatically — `--tap-transport auto` (default) reads fan-in `STATUS` and
+arms the fan-in tap when a lane reports `source:"direct"`, else the usbsink tap
+(force either with `--tap-transport fanin|usbsink`). See
+[`docs/HANDOFF-usb-low-latency.md`](HANDOFF-usb-low-latency.md) "Harness support
+(`--tap-transport`)". This harness separately reads
 the AEC bridge's always-on `raw0` leg on localhost UDP `:9879` (an
 unprocessed XVF3800 room-mic capture — a corpus-only leg per
 `jasper.wake_legs`, consumed here but never added as a wake-detection input)
@@ -632,8 +642,14 @@ sudo /opt/jasper/.venv/bin/jasper-route-latency-harness capture \
   /tmp/route-latency/quick-schedule.json \
   --out-dir /tmp/route-latency
 
-# 3. Analyze the captured evidence and emit an artifact-feedable samples file:
+# 3. Analyze the captured evidence and emit an artifact-feedable samples file.
+#    Point --tap-events at the JSONL that `capture` printed it armed: the fan-in
+#    path on a USB combo box (shown here), the usbsink default
+#    (/run/jasper-usbsink/impulse-tap.jsonl) in solo/aloop mode. The `run`
+#    one-shot below threads this automatically — only the split capture/analyze
+#    flow needs the flag, since `analyze` runs offline with no tap to probe.
 /opt/jasper/.venv/bin/jasper-route-latency-harness analyze \
+  --tap-events /run/jasper-fanin/impulse-tap.jsonl \
   --mic-detections /tmp/route-latency/mic-detections.jsonl \
   --route-health-snapshot /tmp/route-latency/route-health-snapshot.json \
   --out-dir /tmp/route-latency \

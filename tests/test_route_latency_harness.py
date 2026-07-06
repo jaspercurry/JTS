@@ -197,18 +197,26 @@ def test_cmd_capture_warns_loudly_when_mic_stops_early(tmp_path, monkeypatch, ca
     schedule_path = tmp_path / "schedule.json"
     harness.click_track.write_schedule_json(schedule, schedule_path)
 
-    # Stub the tap client (no real daemon) and the health snapshot.
+    # Stub the resolved tap (no real daemon) and the health snapshot. The CLI
+    # builds its arm/disarm client through build_resolved_tap now, so stub that
+    # seam rather than the concrete client class.
     class _StubTapClient:
-        def __init__(self, **_kwargs):
-            pass
-
         def arm(self, _params):
             return {"ok": True, "armed": True}
 
         def disarm(self):
             return {"ok": True, "armed": False}
 
-    monkeypatch.setattr(harness, "TapClient", _StubTapClient)
+    monkeypatch.setattr(
+        harness,
+        "build_resolved_tap",
+        lambda **_kwargs: harness.ResolvedTap(
+            transport="usbsink",
+            client=_StubTapClient(),
+            tap_path="/run/jasper-usbsink/impulse-tap.jsonl",
+            reason="stubbed for test",
+        ),
+    )
     monkeypatch.setattr(harness, "snapshot_route_health", lambda: {})
     monkeypatch.setattr(
         harness,
