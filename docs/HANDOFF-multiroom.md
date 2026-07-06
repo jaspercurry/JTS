@@ -210,7 +210,22 @@ Increment 6 (per-follower calibration). What exists:
   outputd `dac_content` lane is disabled, so Layer-A CamillaDSP owns the HP/LP
   protection path. This `channel_split.py` LR4 fragment stays the recipe for
   the *brainy/CamillaDSP* sub and the leader pre-bake (gap 5 alternatives).
-  Both reuse the same `emit_linkwitz_riley` corner math. See
+  Both reuse the same `emit_linkwitz_riley` corner math. **The corner value
+  itself has ONE home since P5** — `jasper.camilla_emit.BASS_MANAGEMENT_CORNER_HZ_*`
+  (default 80 Hz / 40-200 Hz bounds / LR4); `multiroom.config`
+  (`DEFAULT_CROSSOVER_HZ`/`CROSSOVER_HZ_LO`/`_HI`), `active_speaker.profile`,
+  `output_topology`, and `channel_split` all bind to it rather than
+  re-declaring four numbers that could drift, and the 200 Hz sub-LP guard
+  ceiling references the same constant. The **§6 corner precedence** is explicit
+  + tested in `reconcile.outputd_grouping_env`: an active main bonded to a
+  wireless sub clears the wireless `JASPER_OUTPUTD_DAC_CONTENT_HP_HZ` — for an
+  active main WITH a local sub, mains-HP is therefore applied exactly once, in
+  its Layer-A CamillaDSP graph, not also in this lane. An active main WITHOUT a
+  local sub currently gets NO mains-HP at all (the Layer-A graph only folds one
+  for a local sub) — that is the documented "Remaining" active-endpoint sub gap
+  in HANDOFF-distributed-active.md, and `jasper.bass_management` reports it
+  honestly to the `/correction/bass/` display
+  (`mains_highpass_unwired_reason=active_endpoint_wireless_sub`). See
   [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md) "Subwoofer —
   two different subs" for the full gap-5 picture.
 - **`jasper-outputd` snapfifo producer — REMOVED (2026-06-11 cleanup).**

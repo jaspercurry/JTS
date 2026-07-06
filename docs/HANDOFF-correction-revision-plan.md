@@ -371,7 +371,25 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   duplicated crossover-corner constant/bounds and apply the §6 corner-
   precedence default; room correction reads the corner and enforces the
   ±1/3-octave no-boost rule near Fc with the crossover-vs-room-mode verdict
-  distinction; build out the bass wizard; fix the stale docstring.
+  distinction; build out the bass wizard; fix the stale docstring. *(Status:
+  implemented hardware-free. The corner default/bounds/order now have ONE home
+  — `jasper.camilla_emit.BASS_MANAGEMENT_CORNER_HZ_*` — and `multiroom.config`,
+  `active_speaker.profile`, `output_topology`, and `multiroom.channel_split`
+  bind their public names to it (the 200 Hz sub-LP guard ceiling references the
+  same constant). The §6 precedence is explicit + pinned in
+  `reconcile.outputd_grouping_env` (an active endpoint clears the wireless HP;
+  for an active main WITH a local sub, mains-HP is applied once, in CamillaDSP —
+  an active main with only a wireless sub currently gets no mains-HP, the
+  pre-existing "Remaining" gap in HANDOFF-distributed-active.md, which the
+  resolver + `/correction/bass/` display report honestly rather than claim
+  away). Room correction reads the corner via
+  the new `jasper.bass_management` resolver and `strategy.design_correction`
+  excludes boosts within ±1/3 octave of Fc (cuts allowed) + annotates a
+  `crossover_region` report block; the envelope's REVIEW verdict_text + a
+  `crossover_region_dip_not_boosted` nudge carry the crossover-vs-room-mode
+  distinction (envelope schema v2→v3). The `/correction/bass/` wizard is a
+  read-only display of the corner/owner/sub/mains-HP state. H-track parked:
+  sub-level ramp on-device + sub↔mains delay (H3).)*
 - **P6 — Tuning LLM (§3.4):** extend the advisor vocabulary to target + correction
   moves; reuse the existing OpenAI key from `jasper-secrets` (hide the surface
   with a nudge when no OpenAI key is configured); surface the interpreter in

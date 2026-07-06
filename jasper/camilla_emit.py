@@ -118,6 +118,36 @@ def emit_peaking_biquad(name: str, *, freq: float, q: float, gain: float) -> lis
     ]
 
 
+# ---------- Bass-management crossover corner — the ONE definition ----------
+#
+# The sub/main bass-management crossover corner (Hz) and its legal bounds.
+# BOTH sub features share this single vocabulary:
+#   - the WIRELESS sub (jasper.multiroom): a "sub" member LR4 low-passes here
+#     and every non-sub main LR4 high-passes at the SAME corner;
+#   - the LOCAL-DAC sub (jasper.active_speaker.LocalSubwoofer): the sub output
+#     LR4 low-passes here and the mains' lowest driver LR4 high-passes.
+#
+# It lives in this stdlib-only leaf — next to `emit_linkwitz_riley`, the shared
+# primitive that spells the corner into YAML — because that is the one module
+# every corner consumer already imports (multiroom.channel_split directly,
+# active_speaker.camilla_yaml directly, and output_topology can import it
+# without the circular active_speaker dependency its bounds comment warned
+# about). Before P5 the same three numbers were re-declared four ways
+# (multiroom.config, active_speaker.profile, output_topology,
+# multiroom.channel_split) — four independent numbers that could drift. Each of
+# those modules now BINDS its public constant name to these values (keeping the
+# stable public spelling) so there is one source of truth. The 200 Hz ceiling
+# in particular is load-bearing safety: `graph_safety.sub_audible_guard_present`
+# caps an audible sub's low-pass at it, so a corner ceiling that drifted higher
+# than the guard's would let a wider-than-legal sub low-pass past the guard.
+#
+# LR4 (order 4) is the standard sub/main slope; both halves at order 4.
+BASS_MANAGEMENT_CORNER_HZ_DEFAULT = 80.0
+BASS_MANAGEMENT_CORNER_HZ_LO = 40.0
+BASS_MANAGEMENT_CORNER_HZ_HI = 200.0
+BASS_MANAGEMENT_CROSSOVER_ORDER = 4
+
+
 def emit_linkwitz_riley(
     name: str,
     *,

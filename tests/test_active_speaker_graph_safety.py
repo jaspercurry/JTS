@@ -477,3 +477,77 @@ def test_tweeter_guard_rejects_unwired():
 
 def test_tweeter_guard_fails_closed_on_unparsed_view():
     assert not _guard(gs.view_from_camilla_dict(None))
+
+
+# --------------------------------------------------------------------------- #
+# sub_audible_guard_present — the corner CEILING is the shared bass-mgmt bound
+# (revision plan §3.3 / P5). Ground-truth: a sub low-pass AT the shared ceiling
+# passes; ABOVE it fails closed. This proves the load-bearing safety claim that
+# a wider-than-legal sub low-pass to a bass driver never slips past the guard.
+# --------------------------------------------------------------------------- #
+
+SUB_CH = 2
+SUB_LP_NAME = "as_sub_lowpass"
+SUB_LIMITER_NAME = "as_sub_startup_limiter"
+SUB_CLIP_CEILING = -12.0
+
+
+def _sub_view(*, lp_freq: float) -> gs.GraphView:
+    """A commissioning sub lane: LR4 low-pass + startup limiter wired to the sub
+    channel, low-pass corner tunable per test."""
+    return gs.view_from_camilla_dict(
+        {
+            "filters": {
+                SUB_LP_NAME: {
+                    "type": "BiquadCombo",
+                    "parameters": {
+                        "type": "LinkwitzRileyLowpass",
+                        "freq": lp_freq,
+                        "order": 4,
+                    },
+                },
+                SUB_LIMITER_NAME: {
+                    "type": "Limiter",
+                    "parameters": {"clip_limit": -12.0, "soft_clip": True},
+                },
+            },
+            "pipeline": [
+                {
+                    "type": "Filter",
+                    "channels": [SUB_CH],
+                    "names": [SUB_LP_NAME, SUB_LIMITER_NAME],
+                }
+            ],
+        }
+    )
+
+
+def _sub_guard(view: gs.GraphView) -> bool:
+    # The ceiling is the SHARED bass-management upper bound — the exact number
+    # runtime_contract passes (SUB_CROSSOVER_HZ_HI, bound to the shared const).
+    from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_HI
+
+    return gs.sub_audible_guard_present(
+        view,
+        channels={SUB_CH},
+        lowpass_name=SUB_LP_NAME,
+        lowpass_freq_ceiling_hz=BASS_MANAGEMENT_CORNER_HZ_HI,
+        limiter_name=SUB_LIMITER_NAME,
+        limiter_clip_ceiling_db=SUB_CLIP_CEILING,
+    )
+
+
+def test_sub_audible_guard_passes_at_and_below_the_shared_ceiling():
+    from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_HI
+
+    assert _sub_guard(_sub_view(lp_freq=80.0))  # the default corner
+    assert _sub_guard(_sub_view(lp_freq=BASS_MANAGEMENT_CORNER_HZ_HI))  # AT ceiling
+
+
+def test_sub_audible_guard_fails_above_the_shared_ceiling():
+    from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_HI
+
+    # A degenerate high-corner "low-pass" (e.g. 1000 Hz) is full-range to a bass
+    # driver — MUST fail closed.
+    assert not _sub_guard(_sub_view(lp_freq=BASS_MANAGEMENT_CORNER_HZ_HI + 1.0))
+    assert not _sub_guard(_sub_view(lp_freq=1000.0))
