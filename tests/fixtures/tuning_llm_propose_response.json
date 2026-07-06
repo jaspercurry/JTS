@@ -1,0 +1,23 @@
+{
+  "_comment": "Real-SHAPE OpenAI Responses API payload for a P6 tuning PROPOSE call — proposes one bounded correction cut and one preference (target) move. Hand-authored to the wire shape; scripts/tuning-llm-live-check.py overwrites it with a real captured response. Tests parse it exactly as model_client does — no paid call.",
+  "id": "resp_tuning_propose_fixture",
+  "status": "completed",
+  "model": "gpt-5.4",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"artifact_schema_version\":2,\"kind\":\"jts_advisor_response\",\"summary\":\"The 62 Hz mode is still slightly above target after the current cut. I suggest a marginally deeper cut there. Separately, if you like a fuller low end, a warm target is worth auditioning.\",\"recommended_next_action\":\"Try the deeper 62 Hz cut, then verify.\",\"action_plan\":[{\"type\":\"propose_correction_peq_adjustment\",\"message\":\"\",\"reason\":\"\",\"position_hint\":\"\",\"rationale\":\"A slightly deeper cut at the 62 Hz mode to bring it fully to target.\",\"profile_name\":\"\",\"profile\":{\"enabled\":false,\"curve_id\":\"flat\",\"simple_eq\":{\"sub_bass_db\":0,\"bass_db\":0,\"mid_db\":0,\"presence_db\":0,\"treble_db\":0},\"parametric_bands\":[]},\"correction_peqs\":[{\"freq_hz\":62.0,\"q\":3.0,\"gain_db\":-7.5}],\"target_id\":\"\",\"warmth\":0.0},{\"type\":\"propose_target_move\",\"message\":\"\",\"reason\":\"\",\"position_hint\":\"\",\"rationale\":\"You mentioned wanting more warmth; a warm house curve tilts gently toward the low end.\",\"profile_name\":\"\",\"profile\":{\"enabled\":false,\"curve_id\":\"flat\",\"simple_eq\":{\"sub_bass_db\":0,\"bass_db\":0,\"mid_db\":0,\"presence_db\":0,\"treble_db\":0},\"parametric_bands\":[]},\"correction_peqs\":[],\"target_id\":\"warm\",\"warmth\":0.0}]}"
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 905,
+    "output_tokens": 210,
+    "total_tokens": 1115
+  }
+}

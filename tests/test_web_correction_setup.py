@@ -239,6 +239,8 @@ def test_known_post_routes_reach_csrf_guard():
         "/crossover/summed-test", "/crossover/driver-capture-sweep",
         "/crossover/summed-capture-sweep", "/crossover/driver-capture",
         "/crossover/summed-capture",
+        # P6 tuning-LLM routes.
+        "/interpret", "/propose", "/propose/apply",
     }
     for route in known:
         resp = _drive(route, method="POST", body=b"{}")

@@ -1,0 +1,23 @@
+{
+  "_comment": "Real-SHAPE OpenAI Responses API payload for a P6 tuning interpret call. Hand-authored to match the wire shape (output[].content[].text carrying the strict-JSON advisor_response); scripts/tuning-llm-live-check.py overwrites this with a real captured response when run with a live key. Tests parse this exactly as jasper.calibration_agent.model_client does — no paid call.",
+  "id": "resp_tuning_interpret_fixture",
+  "status": "completed",
+  "model": "gpt-5.4",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"artifact_schema_version\":2,\"kind\":\"jts_advisor_response\",\"summary\":\"Your room has one clear problem in the bass: a peak of about 8.1 dB near 62 Hz, which is a room resonance. JTS placed a single cut there, and the re-measurement confirmed the room now tracks the target — the correction was accepted.\",\"recommended_next_action\":\"Nothing more is needed; the correction is doing its job.\",\"action_plan\":[{\"type\":\"explain\",\"message\":\"The dip near your 80 Hz crossover was left alone on purpose — that is where your subwoofer hands off, not a room mode to boost.\",\"reason\":\"\",\"position_hint\":\"\",\"rationale\":\"\",\"profile_name\":\"\",\"profile\":{\"enabled\":false,\"curve_id\":\"flat\",\"simple_eq\":{\"sub_bass_db\":0,\"bass_db\":0,\"mid_db\":0,\"presence_db\":0,\"treble_db\":0},\"parametric_bands\":[]},\"correction_peqs\":[],\"target_id\":\"\",\"warmth\":0.0}]}"
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 820,
+    "output_tokens": 142,
+    "total_tokens": 962
+  }
+}
