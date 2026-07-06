@@ -368,6 +368,23 @@ impl Config {
         (self.input_resampler_enabled || self.usb_direct_enabled)
             && label == self.input_resampler_lane_label
     }
+
+    /// Whether the `fanin-host-clock` servo thread is CONFIGURED to run — the
+    /// combo-mode host-slaved USB clock. True only when the host-clock DLL is
+    /// armed AND USB direct capture is on, because fan-in must own the gadget
+    /// capture to own the pitch ctl (`enabled` + direct-off is a fully-inert
+    /// warn — the usbsink bridge owns the clock in aloop mode). This is the
+    /// SINGLE source of truth for that coupling: `main` derives the servo-spawn
+    /// gate (`host_clock_enabled_effective`) from it, and the mixer gates the
+    /// host-compliance PRIME-AT-FLOOR on it — the prime skips the cushion
+    /// descent on the strength of a prior session's compliance proof that ONLY
+    /// this servo (its l0/probe/two-strike revalidation) can re-verify, so
+    /// priming without the servo would hold the floor forever on stale evidence.
+    /// The runtime servo ALSO needs a live direct-lane resampler (signals
+    /// present); this is the config-level predicate both call sites share.
+    pub fn host_clock_servo_armed(&self) -> bool {
+        self.host_clock_enabled && self.usb_direct_enabled
+    }
 }
 
 /// fan-in → CamillaDSP coupling transport. Mirrors `jasper.fanin_coupling`'s
@@ -1344,6 +1361,47 @@ mod tests {
                     "{raw:?} must NOT arm host-clock (only `enabled` does)"
                 );
             });
+        }
+    }
+
+    #[test]
+    fn host_clock_servo_armed_requires_both_host_clock_and_direct() {
+        // The servo-armed predicate is the AND of host-clock and USB-direct: the
+        // servo can only own the pitch ctl when fan-in owns the gadget capture
+        // (`enabled` + direct-off is a fully-inert warn). This is the SINGLE
+        // source of truth `main`'s servo-spawn gate AND the mixer's
+        // host-compliance prime gate share — a floor prime whose revalidating
+        // servo never runs would hold the floor forever on stale evidence (the
+        // #1161 ladder-inert regime). A mutation dropping either conjunct fails
+        // here.
+        let cases = [
+            (None, None, false),
+            (Some("enabled"), None, false), // host-clock only → inert (no ctl owner)
+            (None, Some("enabled"), false), // direct only → no host-clock servo
+            (Some("enabled"), Some("enabled"), true), // both → servo configured
+        ];
+        for (host_clock, direct, want) in cases {
+            with_env(
+                &[
+                    ("JASPER_FANIN_HOST_CLOCK", host_clock),
+                    ("JASPER_FANIN_USB_DIRECT", direct),
+                ],
+                || {
+                    let cfg = Config::from_env().expect("parses");
+                    assert_eq!(
+                        cfg.host_clock_servo_armed(),
+                        want,
+                        "host_clock={host_clock:?} usb_direct={direct:?} \
+                         → servo_armed should be {want}"
+                    );
+                    // The predicate is exactly the AND of the two flags (no third
+                    // hidden input), so it is the honest servo-configured signal.
+                    assert_eq!(
+                        cfg.host_clock_servo_armed(),
+                        cfg.host_clock_enabled && cfg.usb_direct_enabled,
+                    );
+                },
+            );
         }
     }
 

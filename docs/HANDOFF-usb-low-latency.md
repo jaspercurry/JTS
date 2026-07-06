@@ -531,9 +531,15 @@ End-to-end = measured span + 1.2 ms gadget dwell (delta-windowed drain-entry evi
   A cross-mode sim (drain→render→tick_decay, faithful to `mixer::step`) proves an
   ARMED+frozen(`not_l0`) decay is BIT-IDENTICAL to disabled over the same delivery
   trace (unlocks/locks/held/silence/output **and a per-period FNV checksum of the
-  rendered PCM** all equal), and the code path confirms it: `tick_decay` with
-  `dll_l0=false` snaps the held target back to the ceiling every tick, so the
-  setpoint never differs from the disabled path — mechanically inert. The 16-vs-115
+  rendered PCM** all equal), and the code path confirms it: in the UNPRIMED case
+  (`floor_prime_pending == false`), `tick_decay` with `dll_l0=false` snaps the held
+  target back to the ceiling every tick, so the setpoint never differs from the
+  disabled path — mechanically inert. (This scoping is the #1145 invariant as it
+  stands after #1161: a FLOOR-PRIMED lane instead HOLDS the floor on `dll_l0=false`
+  — frozen_reason `prime_hold` — a documented, separately-pinned divergence, NOT the
+  ceiling snap; see the prime-aware `NotL0` hold in the floor-prime bullet below. The
+  bit-identical pin's own trace is never primed, so it exercises exactly the unprimed
+  branch this sentence describes.) The 16-vs-115
   spread is the same environmental USB-coalescing variance that moves the
   default-path counter (1 ↔ ~295); correlating it with the decay env was coincidental
   at n=2. Pinned by
@@ -909,8 +915,9 @@ CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
 > that the unrailed-settle guard now prevents: a floor-primed session whose held
 > target snapped to the ceiling post-lock railed at −500 ppm while the DLL rebuilt
 > the fill, so a probe reading against that rail would see baseline ≈ step ≈ −500 →
-> response_ratio ≈ 0 → FAIL; the rail's exact mechanism — the `NotL0` snap — is
-> still open, see the floor-prime bullet). Costing the household the ~2.5-min
+> response_ratio ≈ 0 → FAIL; the rail's exact mechanism — the post-lock `NotL0`
+> snap — is now FIXED by the prime-aware hold, see the floor-prime bullet). Even so,
+> costing the household the ~2.5-min
 > descent on ONE ambiguous read is the wrong trade. So a probe fail is
 > handled by the pure `classify_strike` (`PROBE_FAIL_STRIKE_LIMIT = 2`): the FIRST
 > fail RETAINS the proof, persisting an incremented `consecutive_failures` (and
@@ -955,7 +962,7 @@ defense-in-depth for an exotic geometry and a no-op on default boxes:**
   floor + radius + 1`; whenever `floor <= fallthrough − radius − 1` (~1024 fr at the
   default period 256 / target 512) the deep arm is the ONLY arm a floor-primed lane
   can reach, so the fall-through was already unreachable while primed. jts.local
-  (target 512, period 256, floor 576, ceiling 2048) has deep-prefill 593 and
+  (target 512, period 256, floor 576, ceiling 2560) has deep-prefill 593 and
   fallthrough 1041, so a floor-primed lock ALWAYS seated exactly at the floor (593
   fr) via the deep arm — **at the parent commit too**. The gate only bites when the
   operator raises the decay floor above ~1024 (the geometry where the fall-through
@@ -974,25 +981,36 @@ defense-in-depth for an exotic geometry and a no-op on default boxes:**
   `is_floor_primed()` is false, so the deep prefill is the full ceiling and the
   fall-through still fires on the bounded-prime expiry exactly as before.
 
-  > **The observed jts.local rail's true cause is still OPEN (not fixed by this
-  > PR).** The false-fail sat at baseline≈step≈−500 ppm FLAT for ≥19 s (through the
-  > 4 s baseline AND the 15 s step). A floor-height held target (576) cannot produce
-  > that — from the deepest shallow seat the underfill-unlock threshold
-  > (`minimum_safe_fill` ≈274) bounds the deficit at (576−274)=302 fr, so the rail
-  > could last at most 302/(48000·5e-4)≈12.6 s and would SHRINK as the fill builds,
-  > never reading −500.0 flat through the step tail. A ≥19 s exact rail requires a
-  > CEILING-SCALE held target (~2048) relative to the fill during the probe — i.e.
-  > something RAISED the held target AFTER lock. The leading suspect is the decay's
-  > `snap_back`: the FIRST locked `tick_decay` runs while the outer ladder is still
-  > Probing (`dll_l0_locked == false`), so it clears the prime latch and takes the
-  > `NotL0` branch, snapping the held target from the floor to the ceiling and
-  > railing the DLL to rebuild the fill 576→~2048. This is intermittent/race-
-  > dependent (a 2026-07-03 primed-session PASS with baseline −9.6 shows the regime
-  > is not deterministic), so the mechanism is genuinely unpinned. It is NOT audible
-  > or proof-costing because the unrailed-settle guard holds the probe and the
-  > two-strike policy absorbs any residual fail — but a primed session still silently
-  > pays the ceiling rebuild + re-descent (the latency win the feature exists to
-  > deliver). **Pinning it is owed on-device work; see validation step 6.**
+  > **The observed jts.local rail's true cause — PINNED and FIXED (the prime-aware
+  > `NotL0` hold).** The false-fail sat at baseline≈step≈−500 ppm FLAT for ≥19 s
+  > (through the 4 s baseline AND the 15 s step). A floor-height held target (576)
+  > cannot produce that — from the deepest shallow seat the underfill-unlock
+  > threshold (`minimum_safe_fill` ≈274) bounds the deficit at (576−274)=302 fr, so
+  > the rail could last at most 302/(48000·5e-4)≈12.6 s and would SHRINK as the fill
+  > builds, never reading −500.0 flat through the step tail. A ≥19 s exact rail
+  > requires a CEILING-SCALE held target (~2560) relative to the fill during the
+  > probe — i.e. something RAISED the held target AFTER lock. It was the decay's
+  > `snap_back`: a floor-primed lock seats AT the floor, but at session start the
+  > outer ladder is NECESSARILY still Probing (`dll_l0_locked == false`; l0 arrives
+  > only after the ~21 s probe), so the FIRST locked `tick_decay` cleared the prime
+  > latch and took the `NotL0` branch — snapping the held target floor→ceiling and
+  > railing the DLL to rebuild the fill 576→~2560 for ~40 s. Race-dependent: a probe
+  > that completed before the first snap saw a quiescent baseline (the 2026-07-03
+  > primed-session PASS, baseline −9.6). **FIX:** while a floor prime is live for the
+  > session, `CushionDecay::tick`'s `NotL0` branch HOLDS the held target at the floor
+  > (frozen_reason `prime_hold`) instead of snapping to the ceiling — a floor prime
+  > is a deliberate divergence the `NotL0` branch must respect. The prime-hold ends
+  > when (a) the ladder reaches l0 (normal `at_floor`/warm-up accounting resumes),
+  > (b) any revocation fires (`snap_decay_to_ceiling` wins, latch cleared), or (c)
+  > the session ends (boundary snap re-primes at the floor if the proof is still
+  > live, else the ceiling). The old ARMED+frozen(`NotL0`) == disabled invariant
+  > (#1145) STILL HOLDS for the UNPRIMED case and is scoped explicitly; the primed
+  > case is a documented, tested divergence. The two-strike ProbeFail (#1160) and the
+  > churn discriminator (#1156) remain the safety net for a genuinely bad host riding
+  > the held floor during Probing. Pinned by
+  > `primed_notl0_lock_holds_floor_until_l0_arrives` (decay level) and
+  > `primed_notl0_probe_window_stays_quiescent_no_rail` (LaneResampler level — the
+  > ≥19 s −500 ppm rail is impossible by construction), both-ways mutation-guarded.
 
 - **Unrailed-settle guard (`jasper-host-clock`, CORRECTION mode only).** The
   pre-probe `AwaitLock` settle window now requires, in CORRECTION mode, that the
@@ -1141,22 +1159,24 @@ silent-but-streaming host; the on-device validation run proves it on hardware.
 4b. **Cold-start win (across a reboot):** restart fan-in (or reboot) with the proof
    on disk. Confirm `event=fanin.host_compliance.prime_at_floor` at startup, the held
    target at the floor from the first lock, the probe passes, and no revoke fires.
-4c. **OWED — pin the `NotL0`-snap rail (open root cause of the 2026-07-03 false-fail).**
+4c. **CONFIRM ON-DEVICE — the prime-aware `NotL0` hold holds the floor (root cause
+   FIXED; this is the on-device confirmation of the hardware-free proof).**
    During a floor-primed session's FIRST ~30 s, poll `/state` at high cadence
    (e.g. every 200 ms:
    `curl -s http://jts.local:8780/state | jq '.audio_graph.fanin.inputs[]|select(.resampler).resampler|{held_target_frames,decay:.decay.frozen_reason}'`)
    and grab the fan-in journal for the same window. The floor-prime bullet above
-   argues the observed −500-ppm rail is the decay's `NotL0` snap on the FIRST locked
-   tick (ladder still Probing, `dll_l0=false`) raising the held target floor→ceiling.
-   The SIGNATURE that confirms it: `decay.frozen_reason` transitions
-   `at_floor`→`not_l0` and `held_target_frames` JUMPS from the floor (576) up toward
-   the ceiling (2048) right after the first lock, with `correction_ppm` sitting at
-   the ±500 rail while it rebuilds. If instead `frozen_reason` stays `at_floor` and
-   `held_target_frames` holds at 576 through the settle window, the `NotL0` snap is
-   NOT the cause and the mechanism is still open — capture the trace and re-diagnose.
-   Either way this run is what finally pins (or refutes) the mechanism; the guards
-   already shipped make it non-audible and non-proof-costing, but the latency win is
-   silently lost on every primed session until the root cause is fixed.
+   pins the observed −500-ppm rail as the decay's `NotL0` snap on the FIRST locked
+   tick (ladder still Probing, `dll_l0=false`) having raised the held target
+   floor→ceiling — now fixed by the prime-aware hold. The EXPECTED (fixed) signature:
+   `decay.frozen_reason` stays `prime_hold` (then `at_floor` once l0 arrives) and
+   `held_target_frames` HOLDS at the floor (576) through the whole settle window,
+   with `correction_ppm` quiescent (nowhere near the ±500 rail). The REGRESSION
+   signature (should be impossible now): `frozen_reason` transitions to `not_l0`,
+   `held_target_frames` JUMPS toward the ceiling (2560), and `correction_ppm` rails
+   at ±500 while it rebuilds — if that ever appears, the prime-aware hold has
+   regressed (the `primed_notl0_*` tests would already be red) — capture the trace
+   and re-diagnose. The latency win the feature exists to deliver (no ceiling rebuild
+   + re-descent on a primed session) now lands from the first lock.
 5. **Silence check:** repeat step 4 with the Mac output OPEN but PLAYING NOTHING
    (pure silence). The lane must still lock, the probe still run, and the prime
    still hold — proving the calibration is content-agnostic.
@@ -1587,23 +1607,30 @@ That is provably impossible here** — floor-primed locks seat AT the floor (593
 the deep-prefill arm in jts.local's geometry, at the parent commit too, and a
 floor-height held target bounds any shallow-seat rail below ~13 s and cannot read
 −500.0 FLAT through the ≥19 s baseline+step. The real rail requires a CEILING-SCALE
-held target during the probe; the leading suspect is the decay's `NotL0` snap on the
-first locked tick (ladder still Probing, `dll_l0=false`), which raises the held target
-floor→ceiling and rails the DLL to rebuild the fill. **That root cause is still OPEN**
-(see the floor-prime bullet above). What the three guards DO deliver: the unrailed-
-settle guard holds the probe in AwaitLock while any correction is railed (so it never
-baselines against the rail — this is the guard that actually prevents the false-fail);
-the two-strike policy means even one spurious probe read never costs the floor on the
-next session; floor-prime seating is a no-op in default geometry and only bites the
-exotic operator-set deep floor. Verified hardware-free: the `jasper-host-clock` crate
-tests (railed settle holds + FILL-mode no-op, mutation-guarded); macOS scratch crates
-for the `jasper-fanin` pure logic (the constructed-geometry floor-prime seat regression
-with a both-ways mutation guard, the `classify_strike` two-strike policy + on-disk
-lifecycle, the observability strike-counter transitions, and the Part 1 × #1156
-interaction — a floor-SEATED lock still confirms churn on relock); and the
-`test_fanin_coupling_rust_contract` Python twin (STATUS `consecutive_failures`, the
+held target during the probe: it was the decay's `NotL0` snap on the first locked tick
+(ladder still Probing, `dll_l0=false`), which raised the held target floor→ceiling and
+railed the DLL to rebuild the fill 576→2560. **That root cause is now PINNED and FIXED**
+— the `NotL0` snap-back is prime-aware (see the floor-prime bullet above): while a floor
+prime is live for the session, the `NotL0` branch HOLDS the floor instead of snapping to
+the ceiling, so a primed session's correction stays quiescent through Probing and the
+probe measures a real baseline. The three earlier guards remain as defense-in-depth: the
+unrailed-settle guard holds the probe in AwaitLock while any correction is railed (so it
+never baselines against a rail from a *genuinely* bad host); the two-strike policy means
+even one spurious probe read never costs the floor on the next session; floor-prime
+seating is a no-op in default geometry and only bites the exotic operator-set deep floor.
+Verified hardware-free: the `jasper-host-clock` crate tests (railed settle holds +
+FILL-mode no-op, mutation-guarded); macOS scratch crates for the `jasper-fanin` pure
+logic (the prime-aware `NotL0`-hold decay tests + the LaneResampler-level hardware-
+signature regression `primed_notl0_probe_window_stays_quiescent_no_rail` that makes the
+≥19 s −500 ppm rail impossible by construction, both-ways mutation-guarded against the
+#1145 unprimed bit-identical pin; the constructed-geometry floor-prime seat regression;
+the `classify_strike` two-strike policy + on-disk lifecycle; the observability
+strike-counter transitions; and the Part 1 × #1156 interaction — a floor-SEATED lock
+still confirms churn on relock); and the `test_fanin_coupling_rust_contract` Python twin
+(the prime-aware `NotL0`/`prime_hold` contract, STATUS `consecutive_failures`, the
 strike_retained/pass_reset events, the `classify_strike`/`PROBE_FAIL_STRIKE_LIMIT`
 policy). On-device re-verification of the full prove→prime→spurious-probe-fail→retain→
-re-prove cycle against jts.local's Apple dongle — AND pinning the `NotL0`-snap rail
-mechanism (validation step 6) — is a separate, not-yet-run task (this session touched
-no Pi).
+re-prove cycle against jts.local's Apple dongle — AND confirming the primed session now
+holds the floor through the first 30 s (validation step 4c: `decay.frozen_reason` stays
+`at_floor`/`prime_hold`, `held_target_frames` never jumps to the ceiling) — is a
+separate, not-yet-run task (this session touched no Pi).

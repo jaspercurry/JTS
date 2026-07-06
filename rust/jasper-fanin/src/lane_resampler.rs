@@ -238,9 +238,10 @@ impl LaneResampler {
     /// DLL setpoint. The earlier c57 warm-up path seated this deep but then let
     /// the DLL drain the cushion away; on hardware, that over-consumed the
     /// bursty USB feed during acquisition and caused lock/unlock cycling. The
-    /// current `usb_low_latency_48k` route keeps a conservative six-period
-    /// held cushion (`512 + 1536 = 2048` frames total); hardware soak/cold-start
-    /// validation must pass before any lower route default ships.
+    /// current `usb_low_latency_48k` route keeps a conservative eight-period
+    /// held cushion (`512 + 2048 = 2560` frames total, the `config.rs`
+    /// `WARMUP_CUSHION_FRAMES` default); hardware soak/cold-start validation must
+    /// pass before any lower route default ships.
     ///
     /// `ring_frames` is the input buffer depth: it MUST exceed
     /// `target_fill_frames` plus the warm-up cushion plus one render period plus
@@ -620,7 +621,7 @@ impl LaneResampler {
         // (~1024 fr with default period 256 / target 512) — the deep arm is the
         // ONLY arm a floor-primed lane can reach, so the fall-through was already
         // unreachable while primed and this gate is a no-op. That covers EVERY
-        // default box (jts.local: target 512, period 256, floor 576, ceiling 2048
+        // default box (jts.local: target 512, period 256, floor 576, ceiling 2560
         // → deep-prefill 593, fallthrough 1041; the fall-through needs fill>=1041
         // AND fill<593 — the empty set). So on jts.local a floor-primed lock ALWAYS
         // seated exactly at the floor (593 fr) via the deep arm — at the PARENT
@@ -629,30 +630,32 @@ impl LaneResampler {
         // prefill; there it stops a shallow seat that would otherwise rail while the
         // fill built up to the (now-higher) floor.
         //
-        // WHAT ACTUALLY CAUSED THE OBSERVED RAIL (still OPEN — do not chase the
-        // seat depth). The jts.local false-fail sat at baseline≈step≈−500 ppm FLAT
-        // for ≥19 s (through the 4 s baseline AND 15 s step). A floor-height held
-        // target (576) cannot produce that: from the deepest shallow seat the
-        // underfill-unlock threshold (`minimum_safe_fill` ≈274) bounds the deficit
-        // at (576−274)=302 fr, so at ±500 ppm the rail could last at most
-        // 302/(48000·5e-4)≈12.6 s and would SHRINK as the fill builds — it could
-        // not read −500.0 flat through the step tail. A ≥19 s exact rail therefore
-        // requires a CEILING-SCALE held target (~2048) relative to the fill during
-        // the probe — i.e. something RAISED the held target AFTER lock. The leading
-        // suspect is the decay's `snap_back`: the FIRST locked `tick_decay` runs
-        // while the outer ladder is still Probing (`dll_l0_locked == false`), so it
-        // clears the prime latch and takes the `NotL0` branch (decay.rs), snapping
-        // the held target from the floor up to the ceiling and railing the DLL to
-        // rebuild the fill from 576→~2048. That is a real, un-fixed bug; this PR
-        // does not fix it. It is not audible or proof-costing because Part 2 (the
-        // unrailed-settle guard) holds the probe in AwaitLock while the correction
-        // is railed and Part 3 (two-strike) would absorb any residual fail — but a
-        // primed session still silently pays the ceiling rebuild + re-descent (the
-        // exact latency win the feature exists to deliver). Pinning the mechanism is
-        // OWED on-device work (see HANDOFF-usb-low-latency.md validation step 6:
-        // watch `resampler.decay.frozen_reason` / `resampler.held_target_frames`
-        // through a primed session's first 30 s — the signature is at_floor→not_l0
-        // with held_target_frames jumping floor→ceiling).
+        // WHAT ACTUALLY CAUSED THE OBSERVED RAIL — now PINNED and FIXED (the
+        // floor-prime railed regime, closed by the prime-aware `NotL0` hold in
+        // `decay::CushionDecay::tick`). The jts.local false-fail sat at
+        // baseline≈step≈−500 ppm FLAT for ≥19 s (through the 4 s baseline AND 15 s
+        // step). A floor-height held target (576) cannot produce that: from the
+        // deepest shallow seat the underfill-unlock threshold (`minimum_safe_fill`
+        // ≈274) bounds the deficit at (576−274)=302 fr, so at ±500 ppm the rail
+        // could last at most 302/(48000·5e-4)≈12.6 s and would SHRINK as the fill
+        // builds — it could not read −500.0 flat through the step tail. A ≥19 s
+        // exact rail therefore required a CEILING-SCALE held target (~2560 = target
+        // 512 + cushion 2048) relative to the fill during the probe — i.e. something
+        // RAISED the held target AFTER lock. That was the decay's `snap_back`: a
+        // floor-primed lock seats AT the floor, but at session START the host-clock
+        // ladder is NECESSARILY still Probing (l0 only arrives after the ~21 s
+        // probe), so the FIRST locked
+        // `tick_decay` ran with `dll_l0_locked == false`, cleared the prime latch,
+        // and took the `NotL0` branch — snapping the held target floor→ceiling and
+        // railing the DLL to rebuild the fill 576→~2560 for ~40 s (the probe
+        // measured through that rail). Race-dependent: a probe that completed before
+        // the first snap saw a quiescent baseline (the 2026-07-03 primed PASS,
+        // baseline −9.6). FIX: while a floor prime is live for the session, the
+        // `NotL0` branch HOLDS the held target at the floor (a floor prime is a
+        // deliberate divergence the `NotL0` branch must respect) until the ladder
+        // reaches l0 — see `floor_prime_pending` and `tick`. Parts 2 (unrailed
+        // settle) and 3 (two-strike) remain the defense-in-depth safety net for a
+        // genuinely bad host that cannot hold the floor through Probing.
         //
         // COST. In DEFAULT geometry the cost vs the parent is ZERO — the deep arm
         // was already the only reachable path for a primed lane, so the seat depth,
@@ -870,9 +873,10 @@ impl LaneResampler {
     /// defense-in-depth for the exotic `floor > ~1024` geometry; in default
     /// geometry the deep-prefill arm already wins for a primed lane, so the gate
     /// is a no-op there (see `try_lock`; the observed jts.local false-fail's rail
-    /// came from the post-lock `NotL0` snap, NOT from shallow seating). Always
-    /// `false` on a non-primed lane (feature off or no valid proof), so a
-    /// ceiling session's seating is unchanged. A plain delegated field read.
+    /// came from the post-lock `NotL0` snap, NOT from shallow seating — that snap
+    /// is now HELD while primed, `tick`). Always `false` on a non-primed lane
+    /// (feature off or no valid proof), so a ceiling session's seating is
+    /// unchanged. A plain delegated field read.
     fn is_floor_primed(&self) -> bool {
         self.decay.floor_prime_pending()
     }
@@ -1016,6 +1020,17 @@ mod decay {
         Warmup,
         /// Held target is already at the floor — nothing left to decay.
         AtFloor,
+        /// Floor-PRIMED and locked, but the outer DLL ladder is still Probing
+        /// (`dll_l0_locked == false`) on the FIRST locked periods of a primed
+        /// session — HOLD the floor instead of snapping to the ceiling. This is
+        /// the prime-aware `NotL0` hold: a floor prime is a deliberate divergence
+        /// the `NotL0` branch must respect until l0 arrives (see `tick`). It is
+        /// distinct from `NotL0` (which snaps to the ceiling for an UNPRIMED lane
+        /// that loses l0) and from `Warmup`/`AtFloor` (which are the post-l0
+        /// steady-state accounting). Cleared to normal accounting the instant the
+        /// ladder reaches l0; a revocation (ceiling snap) or session boundary
+        /// clears the underlying prime latch through the existing SSOT paths.
+        PrimeHold,
     }
 
     impl DecayFrozenReason {
@@ -1033,6 +1048,7 @@ mod decay {
                 Some(DecayFrozenReason::Cascade) => 3,
                 Some(DecayFrozenReason::Warmup) => 4,
                 Some(DecayFrozenReason::AtFloor) => 5,
+                Some(DecayFrozenReason::PrimeHold) => 6,
             }
         }
 
@@ -1045,6 +1061,7 @@ mod decay {
                 3 => "cascade",
                 4 => "warmup",
                 5 => "at_floor",
+                6 => "prime_hold",
                 _ => "",
             }
         }
@@ -1191,14 +1208,20 @@ mod decay {
         periods_since_step: u64,
         /// Last computed reason; `None` while actively decaying.
         frozen_reason: Option<DecayFrozenReason>,
-        /// PRIME-AT-FLOOR latch: `true` between [`prime_at_floor`] and the first
-        /// period this machine sees the lane LOCKED. While set, the not-yet-locked
-        /// prime periods keep the held target at the FLOOR instead of snapping it
-        /// up to the ceiling — so the imminent `try_lock` seats the cursor at the
-        /// floor depth (the whole point of persisted compliance). Cleared the first
-        /// time `tick` observes `locked`; after that, any lock LOSS snaps back to
-        /// the ceiling normally (a real re-acquisition must start deep). Always
-        /// `false` on a machine that was never primed.
+        /// PRIME-AT-FLOOR latch: `true` from [`prime_at_floor`] until the outer DLL
+        /// ladder reaches l0 for the primed session. While set it holds the held
+        /// target at the FLOOR across BOTH windows a primed session passes through
+        /// before l0: (1) the not-yet-locked prime periods (so the imminent
+        /// `try_lock` seats the cursor at the floor depth), and (2) the FIRST locked
+        /// periods while the ladder is still Probing (`dll_l0_locked == false`) —
+        /// the prime-aware `NotL0` hold. Without window (2) the first locked tick
+        /// would take the `NotL0` snap and rebuild the fill floor→ceiling, railing
+        /// the resampler for ~40 s (the observed floor-prime railed regime). The
+        /// latch clears the instant `tick` sees the lane locked AND `dll_l0_locked`
+        /// (l0 arrived → normal warm-up/at-floor accounting takes over); after that,
+        /// any lock LOSS or DLL demotion snaps back to the ceiling normally (a real
+        /// re-acquisition must start deep). A `snap_back` (revocation / boundary)
+        /// also clears it. Always `false` on a machine that was never primed.
         floor_prime_pending: bool,
     }
 
@@ -1257,17 +1280,20 @@ mod decay {
         }
 
         /// Whether a prime-at-floor is currently PENDING — the held target is
-        /// seeded at the floor and the lane has NOT yet locked since the prime
-        /// (`prime_at_floor` set the latch; the first locked `tick` clears it).
+        /// seeded at the floor and the primed session has NOT yet reached l0
+        /// (`prime_at_floor` set the latch; it clears the first `tick` that sees the
+        /// lane locked AND `dll_l0_locked`, spanning both the pre-lock prime periods
+        /// and the first locked-but-Probing periods — see the field docs).
         /// Read by `LaneResampler::try_lock` to gate OFF the shallow bounded-prime
         /// fall-through so a floor-primed lock can only seat AT the floor depth.
         /// This is defense-in-depth for the exotic `floor > ~1024` geometry; in
         /// default geometry the deep-prefill arm already wins for a primed lane, so
         /// the gate changes nothing there (the observed jts.local false-fail's rail
         /// was the post-lock `NotL0` snap raising the held target to the ceiling,
-        /// NOT shallow seating — see `try_lock`). Always `false` on a machine that
-        /// was never primed (feature off, or no valid proof), so the ceiling path
-        /// is byte-identical to today.
+        /// NOT shallow seating — see `try_lock`; that snap is now HELD while primed,
+        /// closing the railed regime). Always `false` on a machine that was never
+        /// primed (feature off, or no valid proof), so the ceiling path is
+        /// byte-identical to today.
         pub fn floor_prime_pending(&self) -> bool {
             self.floor_prime_pending
         }
@@ -1298,10 +1324,13 @@ mod decay {
         /// untouched).
         ///
         /// Sets the [`floor_prime_pending`](Self::floor_prime_pending) latch so the
-        /// not-yet-locked prime periods do NOT snap the held target up to the
-        /// ceiling (the `!locked` branch of `tick` would otherwise undo the prime
-        /// before the first lock ever seats). The latch clears the first period
-        /// `tick` sees the lane locked.
+        /// held target is HELD at the floor across every period a primed session
+        /// passes through before the ladder reaches l0: the not-yet-locked prime
+        /// periods (the `!locked` branch of `tick` would otherwise raise the held
+        /// target before the first lock seats) AND the first locked-but-Probing
+        /// periods (the `NotL0` branch would otherwise snap it to the ceiling and
+        /// rail the resampler — the floor-prime railed regime). The latch clears the
+        /// first period `tick` sees the lane locked AND `dll_l0_locked`.
         ///
         /// A no-op-cheap on a disabled machine (nothing to prime). Called at lane
         /// build time BEFORE the first tick; the mixer gates it on a VALID
@@ -1323,13 +1352,14 @@ mod decay {
             if !self.enabled {
                 return self.held;
             }
-            // Prime-at-floor latch: while the lane has not yet locked since a
-            // prime-at-floor, HOLD the floor across the pre-lock prime periods
-            // instead of snapping up to the ceiling. Without this, the `!locked`
-            // branch below would raise the held target to the ceiling on the very
-            // first tick and `try_lock` would then seat deep — defeating the
-            // persisted-compliance prime. The latch clears the instant the lane
-            // locks (below), so a subsequent lock LOSS snaps back normally.
+            // Prime-at-floor latch, WINDOW (1) — not yet locked. While the lane has
+            // not yet locked since a prime-at-floor, HOLD the floor across the
+            // pre-lock prime periods instead of snapping up to the ceiling. Without
+            // this, the `!locked` branch below would raise the held target to the
+            // ceiling on the very first tick and `try_lock` would then seat deep —
+            // defeating the persisted-compliance prime. The latch does NOT clear
+            // here (it persists into window (2), the first locked-but-Probing
+            // periods below); it clears only once the ladder reaches l0.
             if self.floor_prime_pending && !s.locked {
                 self.stable_periods = 0;
                 self.periods_since_step = 0;
@@ -1342,8 +1372,35 @@ mod decay {
                 self.snap_back(DecayFrozenReason::Unlocked);
                 return self.held;
             }
-            // The lane is locked. Clear the prime-at-floor latch: from here on, a
-            // lock LOSS is a real discontinuity that snaps back to the ceiling.
+            // PRIME-AWARE `NotL0` HOLD. The lane is locked. If it is floor-primed
+            // AND the outer DLL ladder is still Probing (`dll_l0_locked == false`),
+            // HOLD the floor and KEEP the latch — do NOT take the `NotL0` snap
+            // below. This is the crux of the floor-prime railed-regime fix: at a
+            // primed session's START the ladder is NECESSARILY still Probing (l0
+            // only arrives after the ~21 s host-clock probe), so the FIRST locked
+            // tick would otherwise clear the latch and snap the held target
+            // floor→ceiling, railing the resampler's ±500 ppm authority for ~40 s
+            // while it rebuilt the fill — the observed −500 ppm rail the compliance
+            // probe measured through. A floor prime is a DELIBERATE divergence the
+            // `NotL0` branch must respect; the two-strike ProbeFail (#1160) and the
+            // churn discriminator (#1156) remain the safety net if a genuinely bad
+            // host cannot hold the floor through Probing. The hold ends when the
+            // ladder reaches l0 (next branch clears the latch → normal
+            // warm-up/at-floor accounting), OR a revocation snaps to the ceiling
+            // (mixer `snap_decay_to_ceiling` clears the latch), OR the session ends
+            // (`reset`/`unlock_for_underfill` re-decides the destination via
+            // `snap_decay_back_honoring_proof`). An UNPRIMED lane (latch false)
+            // falls straight through to the `NotL0` snap below — bit-identical to
+            // pre-fix behaviour (the #1145 invariant).
+            if self.floor_prime_pending && !s.dll_l0_locked {
+                self.stable_periods = 0;
+                self.periods_since_step = 0;
+                self.frozen_reason = Some(DecayFrozenReason::PrimeHold);
+                return self.held;
+            }
+            // The lane is locked and (if it was primed) l0 has now arrived — or it
+            // was never primed. Clear the prime-at-floor latch: from here on, a lock
+            // LOSS is a real discontinuity that snaps back to the ceiling.
             self.floor_prime_pending = false;
             if !s.dll_l0_locked {
                 self.snap_back(DecayFrozenReason::NotL0);
@@ -1656,11 +1713,18 @@ mod decay {
                 DecayFrozenReason::Cascade,
                 DecayFrozenReason::Warmup,
                 DecayFrozenReason::AtFloor,
+                DecayFrozenReason::PrimeHold,
             ] {
                 let code = DecayFrozenReason::code(Some(r));
                 assert_ne!(code, 0);
                 assert_eq!(DecayFrozenReason::code_str(code), r.as_expected_str());
             }
+            // The prime-aware NotL0 hold's STATUS token (append-only code 6).
+            assert_eq!(
+                DecayFrozenReason::code(Some(DecayFrozenReason::PrimeHold)),
+                6
+            );
+            assert_eq!(DecayFrozenReason::code_str(6), "prime_hold");
         }
 
         impl DecayFrozenReason {
@@ -1671,6 +1735,7 @@ mod decay {
                     DecayFrozenReason::Cascade => "cascade",
                     DecayFrozenReason::Warmup => "warmup",
                     DecayFrozenReason::AtFloor => "at_floor",
+                    DecayFrozenReason::PrimeHold => "prime_hold",
                 }
             }
         }
@@ -1744,6 +1809,145 @@ mod decay {
             });
             assert_eq!(h, CEIL, "post-lock unlock snaps back to ceiling");
             assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::Unlocked));
+        }
+
+        #[test]
+        fn primed_notl0_lock_holds_floor_until_l0_arrives() {
+            // THE CORE FIX (floor-prime railed regime, closed). A floor-primed lane
+            // LOCKS while the outer DLL ladder is STILL Probing (`dll_l0_locked ==
+            // false`) — the necessary session-start state, since l0 only arrives
+            // after the ~21 s host-clock probe. The `NotL0` branch must HOLD the
+            // floor across those locked-but-Probing periods (frozen_reason
+            // `PrimeHold`), NOT snap the held target to the ceiling. When l0 finally
+            // arrives the latch clears and normal `AtFloor` accounting takes over.
+            //
+            // PRIMARY MUTATION GUARD: restore the pre-fix unconditional `NotL0`
+            // snap-back (delete the `if self.floor_prime_pending && !s.dll_l0_locked`
+            // hold in `tick`) and the FIRST locked-but-Probing tick snaps `held` to
+            // CEIL here — this test fails on the very first `assert_eq!(…, FLOOR)`.
+            let mut d = build();
+            d.prime_at_floor();
+            assert_eq!(d.held(), FLOOR, "primed directly at the floor");
+
+            // Lock while the ladder is still Probing (dll_l0=false) and hold it there
+            // for a long window (well past the ~21 s probe, in periods). The held
+            // target must stay pinned at the floor the WHOLE time — this is what
+            // keeps the resampler's correction quiescent so the compliance probe
+            // measures a real baseline, not a rail.
+            let probing = DecaySignals {
+                locked: true,
+                dll_l0_locked: false,
+                commanded_ppm_abs: 0.0,
+            };
+            for i in 0..(STABILITY + INTERVAL * 20) {
+                assert_eq!(
+                    d.tick(probing),
+                    FLOOR,
+                    "primed + locked + Probing must HOLD the floor (period {i}), \
+                     never snap to the ceiling — the floor-prime railed regime fix"
+                );
+                assert_eq!(
+                    d.frozen_reason(),
+                    Some(DecayFrozenReason::PrimeHold),
+                    "the honest STATUS token while primed-holding through Probing (period {i})"
+                );
+                assert!(
+                    d.floor_prime_pending(),
+                    "the prime latch stays live until l0 (period {i})"
+                );
+            }
+
+            // l0 arrives: the latch clears and the machine enters normal steady-state
+            // accounting. The held target is ALREADY at the floor, so it stays there
+            // (re-earns the warm-up window from l0, then settles AtFloor) — it never
+            // rises. The load-bearing invariant is `held == FLOOR` throughout.
+            for _ in 0..STABILITY + 10 {
+                assert_eq!(
+                    d.tick(locked_l0(0.0)),
+                    FLOOR,
+                    "after l0 the primed-held floor stays at the floor (no ceiling rebuild)"
+                );
+            }
+            assert!(!d.floor_prime_pending(), "l0 cleared the prime latch");
+            assert_eq!(
+                d.frozen_reason(),
+                Some(DecayFrozenReason::AtFloor),
+                "past the l0 warm-up window it settles at AtFloor"
+            );
+            assert!(!d.active());
+        }
+
+        #[test]
+        fn unprimed_notl0_lock_still_snaps_to_ceiling() {
+            // SCOPE GUARD (the decay-level twin of the #1145 bit-identical pin): the
+            // prime-aware hold is scoped to a LIVE floor prime. An UNPRIMED lane that
+            // is locked while the ladder is NotL0 must snap the held target to the
+            // ceiling exactly as before — the `NotL0` snap is load-bearing for a
+            // genuine mid-stream DLL demotion / cold acquisition. A floor prime is a
+            // deliberate divergence; the absence of one is NOT.
+            //
+            // MUTATION GUARD (the "removed the snap entirely / made it unconditional"
+            // direction at the decay level): widen the hold to fire without the
+            // `floor_prime_pending` guard and this test fails (held would stay at the
+            // ceiling only because it started there — so also drive a decayed lane
+            // below to make the snap observable).
+            let mut d = build();
+            assert!(!d.floor_prime_pending(), "never primed");
+            // Decay a locked+l0 lane below the ceiling first so the NotL0 snap has
+            // somewhere to snap FROM (otherwise held==ceiling and the assertion is
+            // vacuous).
+            for _ in 0..STABILITY + INTERVAL * 5 {
+                d.tick(locked_l0(0.0));
+            }
+            assert!(d.held() < CEIL, "decayed below the ceiling");
+            // Now the ladder demotes (locked, dll_l0=false) on an UNPRIMED lane: snap
+            // to the ceiling, reason NotL0 (never PrimeHold).
+            let h = d.tick(DecaySignals {
+                locked: true,
+                dll_l0_locked: false,
+                commanded_ppm_abs: 0.0,
+            });
+            assert_eq!(h, CEIL, "unprimed NotL0 must snap to the ceiling, not hold");
+            assert_eq!(
+                d.frozen_reason(),
+                Some(DecayFrozenReason::NotL0),
+                "unprimed NotL0 uses the NotL0 reason, not PrimeHold"
+            );
+        }
+
+        #[test]
+        fn primed_notl0_hold_yields_to_revocation_snap() {
+            // EXIT CONDITION (b): a revocation (the mixer's `snap_decay_to_ceiling`,
+            // which calls `snap_back`) wins over the prime-hold and clears the latch,
+            // even while primed and Probing. After that, the lane is a normal
+            // ceiling-acquiring lane again — a subsequent NotL0 tick keeps it at the
+            // ceiling (the latch is spent), NOT back at the floor.
+            let mut d = build();
+            d.prime_at_floor();
+            // Hold the floor through a few Probing ticks (the prime-hold window).
+            let probing = DecaySignals {
+                locked: true,
+                dll_l0_locked: false,
+                commanded_ppm_abs: 0.0,
+            };
+            for _ in 0..50 {
+                assert_eq!(d.tick(probing), FLOOR);
+            }
+            assert!(d.floor_prime_pending());
+            // Revocation: snap_back clears the latch and raises the ceiling.
+            d.snap_back(DecayFrozenReason::Unlocked);
+            assert_eq!(d.held(), CEIL, "revocation snap wins over the prime-hold");
+            assert!(
+                !d.floor_prime_pending(),
+                "revocation clears the prime latch"
+            );
+            // A following Probing tick must NOT re-seat the floor — the latch is spent.
+            assert_eq!(
+                d.tick(probing),
+                CEIL,
+                "after a revocation snap the lane acquires from the ceiling, not the floor"
+            );
+            assert_eq!(d.frozen_reason(), Some(DecayFrozenReason::NotL0));
         }
 
         #[test]
@@ -2674,6 +2878,19 @@ mod tests {
     /// The comparison folds a running FNV checksum of every rendered `out`
     /// period, so "bit-identical" is a claim about output PCM, not just the five
     /// aggregate counters (both runs are deterministic — no RNG, no clock).
+    ///
+    /// SCOPE — this is the UNPRIMED invariant. The lane here is NEVER floor-primed
+    /// (no `arm_compliance` / `prime_decay_at_floor`; `floor_prime_pending` is false
+    /// for the whole trace), so the prime-aware `NotL0` hold (the floor-prime
+    /// railed-regime fix) is inert and the `NotL0` branch takes its plain
+    /// snap-to-ceiling. That is the deliberate contract: **no prime ⇒ the armed-
+    /// but-frozen path is bit-identical to disabled.** A PRIMED `NotL0` lane is a
+    /// DOCUMENTED divergence — it HOLDS the floor instead of snapping — pinned
+    /// separately by `primed_notl0_lock_holds_floor_until_l0_arrives` (decay level)
+    /// and `primed_notl0_probe_window_stays_quiescent_no_rail` (LaneResampler level,
+    /// the hardware-signature sibling of this test). Removing the `NotL0` snap
+    /// ENTIRELY (both branches) breaks THIS unprimed pin — the required both-ways
+    /// mutation coverage.
     #[test]
     fn armed_frozen_decay_is_bit_identical_to_disabled_over_the_same_trace() {
         // The exact churny LAB geometry (base target 256 + one-period cushion =
@@ -2802,6 +3019,120 @@ mod tests {
              (target 256 + cushion 256 = 512); if this drifts the trace geometry \
              changed and the freeze comparison is no longer meaningful"
         );
+    }
+
+    /// HARDWARE-SIGNATURE REGRESSION for the floor-prime railed regime (jts.local
+    /// 2026-07-03 false-fail), the PRIMED sibling of
+    /// `armed_frozen_decay_is_bit_identical_to_disabled_over_the_same_trace`.
+    ///
+    /// Reproduces the exact session-start state the #1160 constraint proof pinned:
+    /// a floor-primed lane LOCKS at the floor, but the outer host-clock ladder is
+    /// still Probing (`dll_l0 == false`) because l0 only arrives after the ~21 s
+    /// probe. We drive the lane on-rate (one period per render) through a probe
+    /// window LONGER than the ≥19 s the false-fail railed for (19 s ≈ 3562 periods
+    /// at 48 kHz / 256; we run 4000), ticking decay with `dll_l0=false` every
+    /// period exactly as the mixer does. The correction (`ratio_ppm`) the compliance
+    /// probe measures must stay QUIESCENT the whole window — the ≥19 s −500 ppm rail
+    /// is impossible BY CONSTRUCTION because the held target never leaves the floor,
+    /// so the DLL's fill error stays ~0 rather than the ~−1984 fr (fill 576 vs
+    /// ceiling 2560) that pins the ratio to the ±500 rail.
+    ///
+    /// MUTATION GUARD (the "restore the unconditional NotL0 snap" direction):
+    /// deleting the prime-aware hold in `tick` makes the FIRST locked-but-Probing
+    /// tick snap the held target to the ceiling; `hold_fill_frames()` then reads the
+    /// ceiling and `ratio_ppm()` rails toward −500 while the DLL rebuilds the fill —
+    /// both the `hold_fill_frames()==floor` and the rail-guard assertions below fail.
+    /// (The complementary "remove the NotL0 snap entirely" direction is caught by
+    /// the unprimed bit-identical pin above.)
+    #[test]
+    fn primed_notl0_probe_window_stays_quiescent_no_rail() {
+        let mut r = build_with_decay();
+        let _obs = arm_compliance(&mut r, true); // a live proof primes this session
+        let mut out = vec![0i16; PERIOD as usize * 2];
+
+        // Prime at the floor (what the mixer does at build / session boundary when a
+        // valid proof is live), then lock at the FLOOR depth.
+        r.prime_decay_at_floor();
+        assert_eq!(r.hold_fill_frames() as u64, FLOOR, "primed at the floor");
+        assert!(r.is_floor_primed(), "prime latch set pre-lock");
+        r.push_input(&tone(FLOOR as usize + RADIUS_FRAMES as usize + 1 + 64));
+        assert_eq!(
+            r.render_period(&mut out),
+            PERIOD as usize,
+            "primed lane locks"
+        );
+        assert!(r.is_locked());
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            FLOOR,
+            "the primed lane seats AT the floor (shallow), not the ceiling"
+        );
+
+        // The probe window: feed on-rate and tick decay with dll_l0=FALSE (the
+        // ladder is still Probing) for longer than the ≥19 s the false-fail railed.
+        // 19 s ≈ 3562 periods at 48 kHz / 256; run 4000 to cover the whole probe.
+        const PROBE_PERIODS: usize = 4000;
+        // The compliance probe's own rail guard is 450 ppm (< the ±500 authority);
+        // a healthy quiescent correction sits FAR below it. Assert a strict bound so
+        // a partial/late rail can't slip through.
+        const QUIESCENT_PPM_BOUND: f64 = 100.0;
+        let block = tone(PERIOD as usize);
+        let mut max_abs_ppm: f64 = 0.0;
+        for i in 0..PROBE_PERIODS {
+            r.push_input(&block);
+            r.render_period(&mut out);
+            r.tick_decay(false, 0.0); // Probing: dll_l0 = false
+                                      // The held target must NOT leave the floor for even one period — this is
+                                      // what keeps the correction off the rail.
+            assert_eq!(
+                r.hold_fill_frames() as u64,
+                FLOOR,
+                "primed + Probing must HOLD the floor every period (period {i}); a \
+                 ceiling snap here is the floor-prime railed regime"
+            );
+            assert_eq!(
+                r.decay_frozen_reason.load(Ordering::Relaxed),
+                DecayFrozenReason::code(Some(DecayFrozenReason::PrimeHold)),
+                "STATUS frozen_reason is prime_hold through the probe window (period {i})"
+            );
+            let ppm = r.controller.ratio_ppm().abs();
+            max_abs_ppm = max_abs_ppm.max(ppm);
+            assert!(
+                ppm < QUIESCENT_PPM_BOUND,
+                "the correction must stay quiescent through the probe window \
+                 (period {i}: |ppm|={ppm:.1} >= {QUIESCENT_PPM_BOUND}); a rail here \
+                 is exactly the ≥19 s −500 ppm signature the fix makes impossible"
+            );
+        }
+        // Belt: the peak over the WHOLE window is nowhere near the ±500 rail — the
+        // rail is impossible by construction, not merely absent this run.
+        assert!(
+            max_abs_ppm < QUIESCENT_PPM_BOUND,
+            "peak |ppm| over the probe window ({max_abs_ppm:.1}) must be far below the \
+             ±500 rail — the held floor keeps the DLL's fill error ~0"
+        );
+        assert!(
+            r.is_locked(),
+            "the lane stays locked through the probe window"
+        );
+        assert!(
+            r.is_floor_primed(),
+            "still Probing → prime latch still live"
+        );
+
+        // l0 finally arrives: the latch clears, the held target is already the floor,
+        // and it stays there — no ceiling rebuild, no re-descent (the latency win).
+        for _ in 0..2000 {
+            r.push_input(&block);
+            r.render_period(&mut out);
+            r.tick_decay(true, 0.0); // l0 locked
+        }
+        assert_eq!(
+            r.hold_fill_frames() as u64,
+            FLOOR,
+            "after l0 the held target is still the floor (no rebuild + re-descent)"
+        );
+        assert!(!r.is_floor_primed(), "l0 cleared the prime latch");
     }
 
     #[test]

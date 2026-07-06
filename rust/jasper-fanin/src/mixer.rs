@@ -2248,8 +2248,30 @@ fn build_host_compliance_state(
     // reads as `None` here just as it does for `flag_present`.
     let mut record: Option<HostCompliance> = None;
     let mut consecutive_failures: u32 = 0;
+    // The prime-at-floor is only SAFE to arm when the host-clock DLL that
+    // revalidates it is itself armed. The prime skips the ~2.5-min descent on the
+    // strength of a PRIOR session's host-clock compliance proof, and its entire
+    // safety story ("the per-session servo probe revalidates the prime, revoking a
+    // regressed host") is enacted by that DLL: `dll_l0_locked`, the probe result,
+    // the two-strike ProbeFail (#1160), and the `PrimeHold` exit all ride the
+    // `fanin-host-clock` servo thread. That thread runs ONLY when
+    // `host_clock_enabled && usb_direct_enabled` (main.rs `host_clock_enabled_effective`
+    // + a live direct-lane resampler). Without it, `ladder_l0` is pinned false
+    // forever, so a primed session would sit in `PrimeHold` at the floor with NO
+    // ladder to reach l0, NO probe to revalidate, and NO demotion — the held target
+    // held FOREVER on stale evidence (only the underfill/churn net could catch an
+    // unsustainable floor). #1145 proved this exact misconfig inert (armed-but-frozen
+    // decay == disabled: `NotL0` snaps the held target back to the ceiling every
+    // tick); priming without the DLL would silently convert that into a permanent
+    // unvalidated divergence. So gate the prime on the DLL being armed. When it is
+    // NOT, we leave the proof untouched on disk and descend from the ceiling — decay
+    // is inert (`NotL0` pins the ceiling with no l0), i.e. exactly the #1145 behaviour
+    // — and the prime resumes automatically the next boot the DLL is re-armed.
+    // `host_clock_servo_armed()` is the SAME predicate `main` derives the
+    // servo-spawn gate from, so the prime and the servo can never disagree.
+    let host_clock_armed = config.host_clock_servo_armed();
     let (floor_primed, proved_at_epoch_s) = match &loaded {
-        Some(rec) if rec.valid_for(live_floor) => {
+        Some(rec) if rec.valid_for(live_floor) && host_clock_armed => {
             resampler.prime_decay_at_floor();
             info!(
                 "event=fanin.host_compliance.prime_at_floor lane={} floor_frames={} \
@@ -2264,6 +2286,28 @@ fn build_host_compliance_state(
             record = Some(rec.clone());
             consecutive_failures = rec.consecutive_failures;
             (true, rec.proved_at_epoch_s)
+        }
+        Some(rec) if rec.valid_for(live_floor) => {
+            // Valid proof, but the host-clock DLL that revalidates the prime is NOT
+            // armed (host-clock or USB-direct off). Do NOT prime — an un-revalidated
+            // floor prime would hold forever on stale evidence (see `host_clock_armed`
+            // above). Leave the proof untouched on disk and descend from the ceiling;
+            // with no `dll_l0_locked` the decay's `NotL0` branch pins the ceiling, so
+            // the lane is inert (the #1145 armed-but-frozen == disabled invariant).
+            // STATUS reads absent (`flag_present=false`, `proved_at=0`), matching the
+            // stale-geometry arm. The prime resumes the next boot the DLL is re-armed.
+            info!(
+                "event=fanin.host_compliance.prime_suppressed lane={} floor_frames={} \
+                 proved_at={} reason=host_clock_disarmed host_clock_enabled={} \
+                 usb_direct_enabled={} — descending from ceiling (no DLL to revalidate \
+                 the prime; proof preserved)",
+                label,
+                live_floor,
+                rec.proved_at_epoch_s,
+                config.host_clock_enabled,
+                config.usb_direct_enabled,
+            );
+            (false, 0)
         }
         Some(rec) => {
             // Present but stale geometry: descend normally, do NOT prime. STATUS

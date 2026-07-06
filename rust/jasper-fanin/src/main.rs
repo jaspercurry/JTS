@@ -199,14 +199,16 @@ fn main() -> Result<()> {
     // The STATUS fragment Arc is created regardless (initialized to the
     // disabled block) so /state carries a definite host_clock from boot; the
     // thread updates it once per tick when armed.
-    let host_clock_enabled_effective = if config.host_clock_enabled && !config.usb_direct_enabled {
+    // The servo runs only when host-clock AND USB-direct are both armed
+    // (`host_clock_servo_armed` — the SINGLE source of truth the mixer's
+    // host-compliance prime gate also reads, so the prime and the servo can
+    // never disagree about whether the revalidating DLL is live).
+    let host_clock_enabled_effective = config.host_clock_servo_armed();
+    if config.host_clock_enabled && !host_clock_enabled_effective {
         // enabled + direct-off: inert, one warn, zero ctl writes. In aloop mode
         // the usbsink bridge owns the gadget capture and its clock.
         warn!("event=fanin.host_clock.noop reason=usb_direct_off");
-        false
-    } else {
-        config.host_clock_enabled
-    };
+    }
     // The setpoint is the resampler's HELD target (target + warmup cushion),
     // shared with the inner RateController (C4). Fall back to the config sum
     // when the mixer has no direct-lane resampler (signals absent) — the config
