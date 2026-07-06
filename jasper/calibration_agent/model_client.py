@@ -35,6 +35,15 @@ MODEL_CALL_SCHEMA_VERSION = 1
 MODEL_CALL_KIND = "jts_advisor_model_call"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_TIMEOUT_SEC = 60.0
+# Per-call output-token budget for the P6 tuning surface. On the
+# Responses API a GPT-5-class model's REASONING tokens count against
+# max_output_tokens before any visible JSON is emitted — the first live
+# check (2026-07-06) saw propose come back status=incomplete at a
+# 400-token cap even with `reasoning.effort=low`. 2500 leaves room for
+# low-effort reasoning plus the strict-schema JSON while still bounding
+# a runaway response to ~$0.025 at list rates. Shared by the paid
+# /correction/ endpoints and the live harness so the two cannot drift.
+TUNING_LLM_MAX_OUTPUT_TOKENS = 2500
 # Model-facing cap on a proposed correction filter set — the widest
 # shipped strategy's max_filters. The deterministic validator re-checks
 # against the ACTIVE strategy's (possibly tighter) cap.
@@ -211,7 +220,16 @@ def call_advisor(
 
     provider_status = str(provider_response.get("status") or "")
     if provider_status and provider_status != "completed":
-        raise AdvisorModelError(f"advisor provider response status={provider_status}")
+        # Surface WHY when the provider says so — status=incomplete with
+        # reason=max_output_tokens is the actionable shape (raise the
+        # TUNING_LLM_MAX_OUTPUT_TOKENS budget or lower reasoning effort).
+        detail = ""
+        incomplete = provider_response.get("incomplete_details")
+        if isinstance(incomplete, Mapping) and incomplete.get("reason"):
+            detail = f" ({incomplete['reason']})"
+        raise AdvisorModelError(
+            f"advisor provider response status={provider_status}{detail}"
+        )
 
     text = _extract_response_text(provider_response)
     advisor_response = _loads_json_object(text)
@@ -274,6 +292,14 @@ def build_openai_request(
     payload: dict[str, Any] = {
         "model": model,
         "store": False,
+        # Low reasoning effort: the task is bounded JSON against a compact
+        # packet, and JTS re-validates + re-simulates everything locally.
+        # Default (medium) effort burns output-token budget on reasoning —
+        # the live check saw status=incomplete from exactly that. Assumes a
+        # reasoning-capable GPT-5-class model (the surface's documented
+        # contract for JASPER_TUNING_LLM_MODEL); an incompatible model
+        # fails at call time with an honest AdvisorModelError.
+        "reasoning": {"effort": "low"},
         "input": [
             {"role": "system", "content": system},
             {"role": "user", "content": user_content},

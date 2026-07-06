@@ -61,14 +61,18 @@ _HARD_CALL_CAP = 2  # interpret + one propose round. Never more.
 
 
 def _demo_session() -> SimpleNamespace:
-    """A deterministic synthetic verified session (one 62 Hz mode, cut,
-    accepted) — enough for the model to interpret and propose against.
-    Mirrors the shape jasper.correction.session.MeasurementSession exposes
-    (the advisor reads it duck-typed)."""
+    """A deterministic synthetic verified session with a PARTIALLY tamed
+    62 Hz mode (an 8 dB peak cut by only -3.5 dB, leaving ~+4.5 dB) —
+    enough for the model to interpret, and a genuine bounded improvement
+    for it to propose. A fully-corrected room made the first live capture
+    (2026-07-06) come back with nothing but a preference question, which
+    starved the propose-path fixture. Mirrors the shape
+    jasper.correction.session.MeasurementSession exposes (the advisor
+    reads it duck-typed)."""
     freqs = np.geomspace(20, 350, 60)
     measured = 8.0 * np.exp(-((np.log2(freqs / 62.0)) ** 2) / (2 * 0.25 ** 2))
     target = np.zeros_like(freqs)
-    predicted = measured - 7.0 * np.exp(
+    predicted = measured - 3.5 * np.exp(
         -((np.log2(freqs / 62.0)) ** 2) / (2 * 0.3 ** 2)
     )
     curve = lambda m: SimpleNamespace(
@@ -84,15 +88,15 @@ def _demo_session() -> SimpleNamespace:
         target_curve=curve(target),
         predicted_curve=curve(predicted),
         position1_curve=curve(measured),
-        peqs=[SimpleNamespace(freq_hz=62.0, q=3.0, gain_db=-7.0)],
+        peqs=[SimpleNamespace(freq_hz=62.0, q=3.0, gain_db=-3.5)],
         design_report={
             "dominant_residuals": {
-                "peaks": [{"freq_hz": 62.0, "residual_db": 8.1}],
+                "peaks": [{"freq_hz": 62.0, "residual_db": 4.6}],
                 "nulls": [],
             },
             "band_hz": [20.0, 350.0],
             "predicted": {
-                "rms_db": 2.4, "max_abs_db": 7.0,
+                "rms_db": 1.6, "max_abs_db": 4.6,
                 "filter_count": 1, "total_positive_boost_db": 0.0,
             },
             "crossover_region": {
@@ -103,11 +107,12 @@ def _demo_session() -> SimpleNamespace:
         },
         confidence_report={"findings": []},
         acceptance={
-            "verdict": "accept", "overall_rms_delta_db": 2.4,
-            "reasons": ["62 Hz within target"], "bands": [],
+            "verdict": "accept", "overall_rms_delta_db": 1.2,
+            "reasons": ["improved overall; ~4.6 dB residual remains at 62 Hz"],
+            "bands": [],
         },
         verify_before_after={
-            "delta": {"rms_db": 2.1, "max_db": 6.5}, "band_hz": [50.0, 350.0],
+            "delta": {"rms_db": 1.2, "max_db": 4.6}, "band_hz": [50.0, 350.0],
         },
     )
 
@@ -162,8 +167,13 @@ def main(argv: "list[str] | None" = None) -> int:
              "captured live responses",
     )
     parser.add_argument(
-        "--max-output-tokens", type=int, default=400,
-        help="per-call output-token cap (default 400)",
+        "--max-output-tokens", type=int,
+        default=model_client.TUNING_LLM_MAX_OUTPUT_TOKENS,
+        help=(
+            "per-call output-token cap (default: the production cap the "
+            "/correction/ endpoints use, so the live check validates the "
+            "deployed budget)"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -203,13 +213,25 @@ def main(argv: "list[str] | None" = None) -> int:
 
     print("[2/2] propose …")
     prop = correction_advisor.propose(
-        session, transport=capture, max_output_tokens=args.max_output_tokens,
+        session,
+        # A concrete household ask about the known remaining residual —
+        # reliably elicits a bounded correction proposal so the captured
+        # fixture exercises the sim-gate path, not just a preference chat.
+        user_message="It still booms a little around 60 Hz — can we tame it slightly?",
+        transport=capture, max_output_tokens=args.max_output_tokens,
     )
     _assert(prop["validation_accepted"], "propose output failed validation")
+    corrections = [
+        p for p in prop["proposals"] if p.get("kind") == "room_correction"
+    ]
+    _assert(
+        bool(corrections),
+        "live propose returned no room_correction proposal — the captured "
+        "fixture would starve the sim-gate tests; not saving",
+    )
     # Every correction proposal must have gone through the sim gate.
-    for p in prop["proposals"]:
-        if p.get("kind") == "room_correction":
-            _assert("simulation" in p, "a correction proposal skipped the sim gate")
+    for p in corrections:
+        _assert("simulation" in p, "a correction proposal skipped the sim gate")
     print(f"      ok — {len(prop['proposals'])} proposal(s), {prop['usage']} tokens")
 
     # Re-validate the raw model outputs against the deterministic contract

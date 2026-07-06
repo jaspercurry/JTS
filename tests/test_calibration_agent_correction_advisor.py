@@ -37,6 +37,22 @@ def _transport_from_fixture(name: str):
     return transport
 
 
+def _live_check_demo_session():
+    """The demo session the LIVE fixtures were captured against, loaded
+    from scripts/tuning-llm-live-check.py itself (not mirrored here) so
+    the test packet and the captured model output stay in provenance
+    lockstep by construction — a number cited by the live model must be
+    in this exact packet."""
+    import importlib.util
+
+    path = Path(__file__).parents[1] / "scripts" / "tuning-llm-live-check.py"
+    spec = importlib.util.spec_from_file_location("tuning_llm_live_check", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod._demo_session()
+
+
 def _curve(freqs, mags):
     return SimpleNamespace(freqs_hz=freqs.tolist(), magnitude_db=mags.tolist())
 
@@ -187,8 +203,11 @@ def test_narration_text_is_clamped_to_text_limit():
 
 # --- interpret (read-only) --------------------------------------------
 
-def test_interpret_uses_fixture_and_passes_provenance():
-    sess = _fake_session()
+def test_interpret_uses_live_fixture_and_passes_provenance():
+    # The LIVE-captured fixture (scripts/tuning-llm-live-check.py) against
+    # the exact session it was captured from — real gpt-5.4 wire shape,
+    # and every number the real model cited must be in this packet.
+    sess = _live_check_demo_session()
     out = ca.interpret(
         sess,
         environ={"OPENAI_API_KEY": "sk-x"},
@@ -196,10 +215,11 @@ def test_interpret_uses_fixture_and_passes_provenance():
     )
     assert out["kind"] == ca.INTERPRET_KIND
     assert out["validation_accepted"] is True
-    # The fixture cites 8.1 dB / 62 Hz / 80 Hz — all in the packet.
     assert out["provenance"]["ok"] is True
-    assert "62 Hz" in out["explanation"]
-    assert out["usage"]["input_tokens"] == 820
+    assert "62" in out["explanation"]
+    # Token counts vary per capture — pin the shape, not the number.
+    assert out["usage"]["input_tokens"] > 0
+    assert out["usage"]["output_tokens"] > 0
 
 
 def test_interpret_without_key_raises_advisor_error():
@@ -212,12 +232,43 @@ def test_interpret_without_key_raises_advisor_error():
 
 # --- propose (confirm-gated) ------------------------------------------
 
-def test_propose_simulates_and_marks_applicable():
-    sess = _fake_session()
+def test_propose_live_fixture_simulates_and_marks_applicable():
+    # The LIVE-captured propose fixture against the session it was
+    # captured from. The harness refuses to save a capture without a
+    # room_correction proposal, so this path — validate → simulate →
+    # confirm-gate — is pinned against REAL model output.
+    sess = _live_check_demo_session()
     out = ca.propose(
         sess,
         environ={"OPENAI_API_KEY": "sk-x"},
         transport=_transport_from_fixture("tuning_llm_propose_response.json"),
+    )
+    assert out["kind"] == ca.PROPOSE_KIND
+    assert out["validation_accepted"] is True
+    kinds = {p["kind"] for p in out["proposals"]}
+    assert "room_correction" in kinds
+
+    corr = next(p for p in out["proposals"] if p["kind"] == "room_correction")
+    # A bounded extra cut on the remaining 62 Hz residual must
+    # simulate-accept on this room and stay confirm-gated.
+    assert corr["applicable"] is True
+    assert corr["simulation"]["accepted"] is True
+    assert corr["requires_user_confirmation"] is True
+
+
+def test_propose_multikind_fixture_renders_every_kind():
+    # Hand-authored REAL-SHAPE fixture carrying one proposal of every
+    # kind, so the multi-kind rendering/validation path stays pinned
+    # regardless of what the live model happened to propose at capture
+    # time. Uses _fake_session — the session this fixture was authored
+    # against.
+    sess = _fake_session()
+    out = ca.propose(
+        sess,
+        environ={"OPENAI_API_KEY": "sk-x"},
+        transport=_transport_from_fixture(
+            "tuning_llm_propose_multikind_response.json"
+        ),
     )
     assert out["kind"] == ca.PROPOSE_KIND
     assert out["validation_accepted"] is True

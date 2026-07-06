@@ -126,12 +126,11 @@ def _tuning_timeout_sec() -> float:
 
 
 TUNING_LLM_TIMEOUT_SEC = _tuning_timeout_sec()
-# Per-call output-token cap for the paid tuning calls — a hard budget guard
-# on the surface whose spend is not yet ledgered into jasper/usage.py. 700
-# comfortably fits the contracted JSON (summary + explain + a proposal or
-# two, each text field <= TEXT_LIMIT_CHARS) while bounding a degenerate
-# response's cost.
-TUNING_LLM_MAX_OUTPUT_TOKENS = 700
+# The per-call output-token cap for the paid tuning calls lives at the
+# model boundary — jasper.calibration_agent.model_client
+# .TUNING_LLM_MAX_OUTPUT_TOKENS — shared with the live harness so the
+# deployed cap and the live-validated cap cannot drift. The paid handlers
+# reference it through their existing lazy model_client import.
 # Minimum spacing between PAID tuning calls (interpret/propose), per
 # process. Human taps are seconds apart; a stuck client retry loop must not
 # silently burn spend. A second call inside the window gets an honest JSON
@@ -2493,7 +2492,7 @@ def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             sess,
             user_message=user_message,
             timeout_sec=float(TUNING_LLM_TIMEOUT_SEC),
-            max_output_tokens=TUNING_LLM_MAX_OUTPUT_TOKENS,
+            max_output_tokens=model_client.TUNING_LLM_MAX_OUTPUT_TOKENS,
         )
     except model_client.AdvisorModelError as e:
         raise BadRequest(str(e)) from e
@@ -2520,7 +2519,7 @@ def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             sess,
             user_message=user_message,
             timeout_sec=float(TUNING_LLM_TIMEOUT_SEC),
-            max_output_tokens=TUNING_LLM_MAX_OUTPUT_TOKENS,
+            max_output_tokens=model_client.TUNING_LLM_MAX_OUTPUT_TOKENS,
         )
     except model_client.AdvisorModelError as e:
         raise BadRequest(str(e)) from e

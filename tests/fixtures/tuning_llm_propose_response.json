@@ -1,23 +1,297 @@
 {
-  "_comment": "Real-SHAPE OpenAI Responses API payload for a P6 tuning PROPOSE call — proposes one bounded correction cut and one preference (target) move. Hand-authored to the wire shape; scripts/tuning-llm-live-check.py overwrites it with a real captured response. Tests parse it exactly as model_client does — no paid call.",
-  "id": "resp_tuning_propose_fixture",
+  "id": "resp_03551646788fcf55016a4b45f2dcf881929329f88fc81278f9",
+  "object": "response",
+  "created_at": 1783318002,
   "status": "completed",
-  "model": "gpt-5.4",
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1783318007,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": 2500,
+  "max_tool_calls": null,
+  "model": "gpt-5.4-2026-03-05",
+  "moderation": null,
   "output": [
     {
+      "id": "rs_03551646788fcf55016a4b45f345608192bea0139b4288d1db",
+      "type": "reasoning",
+      "content": [],
+      "summary": []
+    },
+    {
+      "id": "msg_03551646788fcf55016a4b45f55a7881929c435547a025a713",
       "type": "message",
-      "role": "assistant",
+      "status": "completed",
       "content": [
         {
           "type": "output_text",
-          "text": "{\"artifact_schema_version\":2,\"kind\":\"jts_advisor_response\",\"summary\":\"The 62 Hz mode is still slightly above target after the current cut. I suggest a marginally deeper cut there. Separately, if you like a fuller low end, a warm target is worth auditioning.\",\"recommended_next_action\":\"Try the deeper 62 Hz cut, then verify.\",\"action_plan\":[{\"type\":\"propose_correction_peq_adjustment\",\"message\":\"\",\"reason\":\"\",\"position_hint\":\"\",\"rationale\":\"A slightly deeper cut at the 62 Hz mode to bring it fully to target.\",\"profile_name\":\"\",\"profile\":{\"enabled\":false,\"curve_id\":\"flat\",\"simple_eq\":{\"sub_bass_db\":0,\"bass_db\":0,\"mid_db\":0,\"presence_db\":0,\"treble_db\":0},\"parametric_bands\":[]},\"correction_peqs\":[{\"freq_hz\":62.0,\"q\":3.0,\"gain_db\":-7.5}],\"target_id\":\"\",\"warmth\":0.0},{\"type\":\"propose_target_move\",\"message\":\"\",\"reason\":\"\",\"position_hint\":\"\",\"rationale\":\"You mentioned wanting more warmth; a warm house curve tilts gently toward the low end.\",\"profile_name\":\"\",\"profile\":{\"enabled\":false,\"curve_id\":\"flat\",\"simple_eq\":{\"sub_bass_db\":0,\"bass_db\":0,\"mid_db\":0,\"presence_db\":0,\"treble_db\":0},\"parametric_bands\":[]},\"correction_peqs\":[],\"target_id\":\"warm\",\"warmth\":0.0}]}"
+          "annotations": [],
+          "logprobs": [],
+          "text": "{\"action_plan\":[{\"correction_peqs\":[{\"freq_hz\":62,\"gain_db\":-4.6,\"q\":1}],\"message\":\"\",\"position_hint\":\"Measured 3 positions; verified session.\",\"profile\":{\"curve_id\":\"\",\"enabled\":false,\"parametric_bands\":[],\"simple_eq\":{\"bass_db\":0,\"mid_db\":0,\"presence_db\":0,\"sub_bass_db\":0,\"treble_db\":0}},\"profile_name\":\"\",\"rationale\":\"The strongest remaining issue is a detected peak at 62 Hz with 4.6 dB residual, and the verify result also notes ~4.6 dB remains at 62 Hz. Because this is a positive residual in the correction band and the active strategy is cuts-only, a single cut centered at 62 Hz is the most direct bounded adjustment to audition through JTS simulation and validation.\",\"reason\":\"\",\"target_id\":\"\",\"type\":\"propose_correction_peq_adjustment\",\"warmth\":0}],\"artifact_schema_version\":2,\"kind\":\"jts_advisor_response\",\"recommended_next_action\":\"Simulate this small additional 62 Hz cut and let the user confirm only if JTS says it improves the result.\",\"summary\":\"There is still a confirmed low-bass peak around 62 Hz. A single additional cuts-only correction centered there is the most evidence-backed way to slightly reduce the boom.\"}"
         }
-      ]
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
     }
   ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "low",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": false,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "description": null,
+      "name": "jts_advisor_response",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action_plan": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "correction_peqs": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "freq_hz": {
+                        "type": "number"
+                      },
+                      "gain_db": {
+                        "type": "number"
+                      },
+                      "q": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "freq_hz",
+                      "q",
+                      "gain_db"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 5,
+                  "type": "array"
+                },
+                "message": {
+                  "maxLength": 1200,
+                  "type": "string"
+                },
+                "position_hint": {
+                  "maxLength": 1200,
+                  "type": "string"
+                },
+                "profile": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "curve_id": {
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "parametric_bands": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "freq_hz": {
+                            "type": "number"
+                          },
+                          "gain_db": {
+                            "type": "number"
+                          },
+                          "q": {
+                            "type": "number"
+                          },
+                          "type": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "enabled",
+                          "type",
+                          "freq_hz",
+                          "gain_db",
+                          "q"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 8,
+                      "type": "array"
+                    },
+                    "simple_eq": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bass_db": {
+                          "type": "number"
+                        },
+                        "mid_db": {
+                          "type": "number"
+                        },
+                        "presence_db": {
+                          "type": "number"
+                        },
+                        "sub_bass_db": {
+                          "type": "number"
+                        },
+                        "treble_db": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "sub_bass_db",
+                        "bass_db",
+                        "mid_db",
+                        "presence_db",
+                        "treble_db"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "curve_id",
+                    "simple_eq",
+                    "parametric_bands"
+                  ],
+                  "type": "object"
+                },
+                "profile_name": {
+                  "maxLength": 48,
+                  "type": "string"
+                },
+                "rationale": {
+                  "maxLength": 1200,
+                  "type": "string"
+                },
+                "reason": {
+                  "maxLength": 1200,
+                  "type": "string"
+                },
+                "target_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "enum": [
+                    "explain",
+                    "propose_correction_peq_adjustment",
+                    "propose_preference_eq_audition",
+                    "propose_target_move",
+                    "recommend_remeasure",
+                    "request_user_approved_preference_commit"
+                  ],
+                  "type": "string"
+                },
+                "warmth": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "type",
+                "message",
+                "reason",
+                "position_hint",
+                "rationale",
+                "profile_name",
+                "profile",
+                "correction_peqs",
+                "target_id",
+                "warmth"
+              ],
+              "type": "object"
+            },
+            "maxItems": 6,
+            "type": "array"
+          },
+          "artifact_schema_version": {
+            "enum": [
+              2
+            ],
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "jts_advisor_response"
+            ],
+            "type": "string"
+          },
+          "recommended_next_action": {
+            "maxLength": 1200,
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 1200,
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_schema_version",
+          "kind",
+          "summary",
+          "recommended_next_action",
+          "action_plan"
+        ],
+        "type": "object"
+      },
+      "strict": true
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
   "usage": {
-    "input_tokens": 905,
-    "output_tokens": 210,
-    "total_tokens": 1115
-  }
+    "input_tokens": 2881,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 535,
+    "output_tokens_details": {
+      "reasoning_tokens": 245
+    },
+    "total_tokens": 3416
+  },
+  "user": null,
+  "metadata": {},
+  "_comment": "Captured from the live OpenAI endpoint by scripts/tuning-llm-live-check.py. Real provider wire shape for the P6 tuning path; tests parse this offline (no paid call)."
 }

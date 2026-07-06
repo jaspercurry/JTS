@@ -102,10 +102,18 @@ def test_interpret_delegates_to_advisor(monkeypatch):
     assert out["explanation"] == "ok"
     assert captured["called"] is True
     assert captured["kwargs"]["user_message"] == "hi"
-    # The paid call carries the hard output-token budget guard.
+    # The paid call carries the hard output-token budget guard — the
+    # single shared constant at the model boundary (also the live
+    # harness default, so deployed and live-validated caps can't drift).
+    from jasper.calibration_agent import model_client
+
     assert (
         captured["kwargs"]["max_output_tokens"]
-        == correction_setup.TUNING_LLM_MAX_OUTPUT_TOKENS
+        == model_client.TUNING_LLM_MAX_OUTPUT_TOKENS
+    )
+    assert model_client.TUNING_LLM_MAX_OUTPUT_TOKENS >= 2000, (
+        "GPT-5-class reasoning tokens count against max_output_tokens; "
+        "the 2026-07-06 live check saw status=incomplete below this"
     )
 
 
