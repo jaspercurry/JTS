@@ -1082,7 +1082,21 @@ install_camilladsp() {
     # survive Pi restarts; outputd uses outputd-statefile.yml and
     # preserves the normal statefile for rollback. The room-correction
     # wizard writes correction_<id>_<unixtime>.yml under configs/.
-    install -d -m 0755 /var/lib/camilladsp /var/lib/camilladsp/configs
+    install -d -m 0755 /var/lib/camilladsp
+    # configs/ is written atomically (temp file in-dir + rename) by the non-root
+    # jasper-web user (WS1 privilege drop) for active-speaker staging and
+    # room-correction configs, so it must be group-writable from its FIRST
+    # creation — not only after the later widen step below. A deploy that stops
+    # between here and that widen (or a future reorder) must not leave it
+    # root-only, or non-root staging fails with PermissionError and surfaces to
+    # the household as "could not load the silent active-speaker setup" (the
+    # jts3 2026-07-06 incident). check_camilla_configs_writable pins this at
+    # runtime.
+    if getent group jasper >/dev/null 2>&1; then
+        install -d -m 2775 -g jasper /var/lib/camilladsp/configs
+    else
+        install -d -m 0755 /var/lib/camilladsp/configs
+    fi
     ensure_state_dir
     # Shared correction/test artifacts are written by the correction web flow and
     # by jasper-web's active-speaker commissioning tone path. Keep the tree

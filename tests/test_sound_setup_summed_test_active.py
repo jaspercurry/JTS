@@ -14,6 +14,7 @@ client-side render half is pinned in tests/js/sound_profile_harness.mjs.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import jasper.web.sound_setup as sound_setup
 
@@ -29,11 +30,29 @@ class _FakeProc:
 
 
 def _live_session(**overrides):
+    now = time.monotonic()
     session = {
         "playback_id": "summed-playback-1",
         "process": _FakeProc(alive=True),
         "speaker_group_id": "main",
         "level_dbfs": -18.0,
+        "started_monotonic": now,
+        "progress_monotonic": now,
+        "stop_reason": None,
+    }
+    session.update(overrides)
+    return session
+
+
+def _prep_session(progress, **overrides):
+    """A process=None (preparing OR leaked) session with an explicit heartbeat."""
+    session = {
+        "playback_id": "summed-playback-1",
+        "process": None,
+        "speaker_group_id": "main",
+        "level_dbfs": None,
+        "started_monotonic": progress,
+        "progress_monotonic": progress,
         "stop_reason": None,
     }
     session.update(overrides)
@@ -179,3 +198,79 @@ def test_commissioning_view_payload_idle_when_no_test(monkeypatch):
     )
     assert view["active_summed_test"] == {"active": False}
     assert "summed_test_active" not in view["combined_groups"][0]
+
+
+# --- Leaked-session recovery (the process=None wedge) ---------------------
+#
+# _summed_test_session_active is the single source of truth shared by BOTH the
+# reload-safe view snapshot and the start guard in
+# _active_speaker_play_summed_commission_tone. Pinning it here pins both: a
+# leaked process=None session (owning request died before the try/finally
+# teardown) ages out of "active", so it neither shows a phantom Stop nor wedges
+# every retry with summed_test_already_active until jasper-web is restarted.
+
+
+def test_session_active_true_while_process_alive():
+    assert sound_setup._summed_test_session_active(_live_session()) is True
+
+
+def test_session_active_true_when_preparing_with_fresh_heartbeat():
+    assert (
+        sound_setup._summed_test_session_active(_prep_session(1000.0), now=1000.5)
+        is True
+    )
+
+
+def test_session_active_false_when_leaked_heartbeat_stale():
+    stale = sound_setup.SUMMED_TEST_SESSION_STALE_SECONDS + 5.0
+    assert (
+        sound_setup._summed_test_session_active(
+            _prep_session(1000.0), now=1000.0 + stale
+        )
+        is False
+    )
+
+
+def test_session_active_false_when_stop_requested():
+    assert (
+        sound_setup._summed_test_session_active(
+            _live_session(stop_reason="operator_stop")
+        )
+        is False
+    )
+
+
+def test_session_active_false_when_none():
+    assert sound_setup._summed_test_session_active(None) is False
+
+
+def test_session_active_false_when_process_exited():
+    assert (
+        sound_setup._summed_test_session_active(
+            _live_session(process=_FakeProc(alive=False))
+        )
+        is False
+    )
+
+
+def test_session_active_falls_back_to_started_monotonic():
+    # A session created the instant before its first heartbeat carries only
+    # started_monotonic; a fresh one still reads as active.
+    session = _prep_session(1000.0)
+    del session["progress_monotonic"]
+    assert sound_setup._summed_test_session_active(session, now=1000.5) is True
+
+
+def test_session_active_false_when_heartbeat_unparseable():
+    session = _prep_session(1000.0, progress_monotonic=None, started_monotonic=None)
+    assert sound_setup._summed_test_session_active(session, now=1000.5) is False
+
+
+def test_snapshot_inactive_for_leaked_stale_session(monkeypatch):
+    # End-to-end through the reload-safe snapshot: a heartbeat far in the past
+    # (relative to real time.monotonic()) is treated as leaked, so the view
+    # shows no phantom Stop and the shared guard admits a fresh test.
+    monkeypatch.setattr(
+        sound_setup, "_SUMMED_TEST_TONE_SESSION", _prep_session(-10_000.0)
+    )
+    assert sound_setup._active_summed_test_snapshot() == {"active": False}
