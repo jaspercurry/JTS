@@ -346,29 +346,39 @@ plan's "the LLM never authors a number a tool computed").
 **The confirm-gated proposer — `POST /correction/propose` +
 `POST /correction/propose/apply`.** `/propose` lets the model propose a
 bounded alternative correction filter set (`propose_correction_peq_adjustment`)
-and/or a target move (`propose_target_move`, a named target or a house-curve
-`warmth` in `[-1, 2]`). **Nothing is applied by `/propose`** — every
-correction proposal is validated against the ACTIVE strategy caps
+and/or a target-move *suggestion* (`propose_target_move`, a named target or a
+house-curve `warmth` in `[-1, 2]`). **Nothing is applied by `/propose`** —
+every correction proposal is validated against the ACTIVE strategy caps
 ([`response.py`](../jasper/calibration_agent/response.py) schema v2) and then
 **deterministically simulated**
 ([`proposal_sim.py`](../jasper/calibration_agent/proposal_sim.py)):
 `peq.predicted_response` → an AutoEQ-style steep-positive-gain **ring guard**
 → the boost-stacking **headroom ceiling** → the **P4 `evaluate_acceptance`**
-verdict on the simulated curve. Only a simulate-accepted proposal comes back
-`applicable`. `/propose/apply` **re-validates + re-simulates server-side**
-(never trusting the client), requires an explicit `confirm: true`, and only
-then routes the set through the **existing** `session.apply()` path (same
-headroom re-clip any correction gets — no new apply path). The re-measure
-remains the true judge (the correction loop closes by re-measure; preference
-suggestions are phrased as questions). The LLM never emits YAML / FIR /
-volume — the `_PROHIBITED_KEYS` blocklist and the `volume_limit: 0.0` ceiling
-are untouched.
+verdict on the simulated curve. Only a simulate-accepted PEQ proposal comes
+back `applicable`. `/propose/apply` **re-validates + re-simulates server-side**
+(never trusting the client), requires an explicit `confirm: true`, requires
+the P4 judge to have actually run (`missing_acceptance_basis` rejection when
+baseline/target curves are absent — the preview is lenient, the apply seam is
+strict), and only then routes the set through the **existing**
+`session.apply()` path (same headroom re-clip any correction gets — no new
+apply path). `applied` in the response is derived from the real outcome — a
+CamillaDSP-rejected reload reports `applied: false` ("the speaker kept its
+previous sound"), never a false success. The re-measure remains the true
+judge (the correction loop closes by re-measure; preference suggestions are
+phrased as questions). **Target moves are suggestion-only**: there is no
+apply route for them — the card points the household at the flow's own
+Target curve picker, and the model-facing contract says exactly that (no
+apply-after-confirm promise). The LLM never emits YAML / FIR / volume — the
+`_PROHIBITED_KEYS` blocklist and the `volume_limit: 0.0` ceiling are
+untouched.
 
 **UI.** A hidden-with-nudge "Tuning assistant" panel on the correction page
 (`deploy/assets/correction/js/main.js` `renderTuning` / `renderTuningProposals`):
 the explanation, a provenance note when the model cited an unverified number,
-and per-proposal confirm cards. Untrusted model text reaches the DOM via
-`textContent` only, never `innerHTML`.
+confirm cards for **PEQ proposals only** (Apply → `/propose/apply`), and
+suggestion cards for target moves that link to the flow's Target curve
+picker. Untrusted model text reaches the DOM via `textContent` only, never
+`innerHTML`.
 
 **Cost discipline.** The two calls are **per-tap** (no polling). Tests are
 100% fixture-driven (real-shape OpenAI payloads under

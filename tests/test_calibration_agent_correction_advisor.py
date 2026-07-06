@@ -199,7 +199,11 @@ def test_propose_simulates_and_marks_applicable():
 
     pref = next(p for p in out["proposals"] if p["kind"] == "preference_question")
     assert pref["target_id"] == "warm"
-    assert pref["applicable"] is True
+    # Honest suggestion-only semantics: a target move has NO apply path, so
+    # it is never "applicable" and never claims a confirm-then-execute.
+    assert pref["applicable"] is False
+    assert pref["suggestion_only"] is True
+    assert "requires_user_confirmation" not in pref
 
 
 def test_propose_rejects_ringing_correction_via_simulation():

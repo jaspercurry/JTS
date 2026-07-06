@@ -144,6 +144,37 @@ def test_target_move_named_accepted_with_sentinel_warmth():
     assert v["validated_action_plan"][0]["target_id"] == "warm"
 
 
+def test_target_move_is_suggestion_only_vocabulary():
+    """Pins the honest target-move representation: there is NO apply /
+    execute path for a target move, so the validated action must carry
+    the presentation-only shape (recommend_remeasure's vocabulary) and
+    must NOT claim a confirmation-then-execute contract."""
+    v = R.validate_advisor_response(
+        _resp({
+            "type": R.ACTION_PROPOSE_TARGET_MOVE,
+            "target_id": "warm",
+            "warmth": 0.0,
+            "rationale": "you asked for warmer",
+        }),
+        advisor_context=_ctx(),
+    )
+    assert v["accepted"]
+    action = v["validated_action_plan"][0]
+    assert action["status"] == "ready"
+    assert action["side_effect"] == "user_prompt_only"
+    assert action["execution_ready"] is True
+    assert "requires_user_confirmation" not in action
+    # The model-facing contract makes the same no-apply promise.
+    contract = R.response_contract()
+    move = next(
+        a for a in contract["allowed_action_types"]
+        if a["type"] == R.ACTION_PROPOSE_TARGET_MOVE
+    )
+    assert move["side_effect"] == "user_prompt_only"
+    assert "suggestion" in move["execution"].lower()
+    assert "never applies this automatically" in move["execution"]
+
+
 def test_target_move_warmth_accepted():
     v = R.validate_advisor_response(
         _resp({

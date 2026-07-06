@@ -90,9 +90,11 @@ You may additionally propose, when the evidence supports it:
   caps in the packet. JTS will SIMULATE it and reject it if it would ring
   or make the room measurably worse, then require the user to confirm
   before applying. Cuts-only is the default. Propose filter VALUES only.
-- propose_target_move: a bounded move of the shared house-curve target
-  (a named target id, or a warmth value in range). Taste, not
-  correction — pair it with a question.
+- propose_target_move: a bounded suggestion to move the shared
+  house-curve target (a named target id, or a warmth value in range).
+  Taste, not correction — pair it with a question. It is surfaced as a
+  suggestion only; the household changes the target themselves in the
+  correction flow. JTS never applies it automatically.
 
 Every number you state MUST come from the evidence packet. Never author
 a frequency, dB, Q, or verdict a tool computed.
@@ -539,9 +541,11 @@ def _review_actions(
 
     Correction PEQ proposals get deterministically simulated + judged;
     only a simulate-accepted one is marked ``applicable`` (offer the
-    confirm-apply). Target moves are marked applicable (bounded taste,
-    user confirms). Preference/explain/remeasure actions pass through as
-    read-only notes.
+    confirm-apply). Target moves are suggestion-only — there is no apply
+    path for them, so they are honestly marked ``applicable: False`` +
+    ``suggestion_only: True`` and the UI points the household at the
+    flow's own target picker. Preference/explain/remeasure actions pass
+    through as read-only notes.
     """
     reviewed: list[dict[str, Any]] = []
     for action in validation.get("validated_action_plan") or []:
@@ -551,8 +555,11 @@ def _review_actions(
         elif atype == response.ACTION_PROPOSE_TARGET_MOVE:
             reviewed.append({
                 "type": atype,
-                "applicable": True,
-                "requires_user_confirmation": True,
+                # No apply/execute path exists for a target move — never
+                # claim confirm-then-execute. The household acts on it in
+                # the flow (the Target curve picker) themselves.
+                "applicable": False,
+                "suggestion_only": True,
                 "target_id": action.get("target_id"),
                 "warmth": action.get("warmth"),
                 "rationale": action.get("rationale"),

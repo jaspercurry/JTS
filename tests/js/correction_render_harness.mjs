@@ -1131,7 +1131,8 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
 
 // 33. A simulate-accepted room-correction proposal renders an applicable
 //     card; a rejected one renders its reason and no Apply button; a
-//     target move renders as a question (taste, not a claim).
+//     target move renders as a suggestion linking to the flow's Target
+//     curve picker (no apply path exists for target moves).
 {
   renderTuningProposals([
     {
@@ -1147,7 +1148,8 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
       simulation: { accepted: false, issues: [{ code: "boost_would_ring", message: "would ring" }], acceptance: null },
     },
     {
-      kind: "preference_question", applicable: true,
+      // Honest server payload shape: suggestion-only, never applicable.
+      kind: "preference_question", applicable: false, suggestion_only: true,
       target_id: "warm", warmth: null, rationale: "you asked for warmer",
     },
   ]);
@@ -1156,6 +1158,15 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
   // The rejected card carries the rejection modifier class.
   assert(cards[1].className.indexOf("tuning-proposal--rejected") >= 0,
     "tuning: the ring-rejected proposal card is styled as rejected");
+  // The target-move card carries a link to the flow's target picker —
+  // an honest affordance, not a dead question.
+  const targetCard = cards[2];
+  const question = targetCard.children.find(
+    (c) => c.className === "tuning-question");
+  assert(question, "tuning: the target-move card renders its question line");
+  const pickerLink = question.children.find((c) => c.href === "#target-select");
+  assert(pickerLink,
+    "tuning: the target-move card links to the flow's Target curve picker");
 
   // Empty proposals clears the container.
   renderTuningProposals([]);

@@ -418,14 +418,20 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   validates + deterministically SIMULATES each correction proposal
   (`proposal_sim`: `peq.predicted_response` + AutoEQ-style ring guard + headroom
   ceiling + P4 `evaluate_acceptance` on the simulated curve), returning only
-  simulate-accepted proposals as `applicable`; `POST /correction/propose/apply`
+  simulate-accepted PEQ proposals as `applicable` (target moves are honest
+  suggestion-only cards — no apply route; the UI points at the flow's Target
+  curve picker); `POST /correction/propose/apply`
   RE-VALIDATES + RE-SIMULATES server-side, requires explicit `confirm:true`,
-  and routes the set through the EXISTING `session.apply()` path (no new apply,
+  requires the P4 judge to have actually run (`missing_acceptance_basis`
+  rejection when baseline/target curves are absent), derives `applied` from
+  the real outcome (a CamillaDSP-rejected reload reports `applied:false` —
+  never a false success), and routes the set through the EXISTING
+  `session.apply()` path (no new apply,
   same headroom re-clip). The LLM never emits YAML/FIR/volume; the room's
   re-measure remains the judge. (5) **UI** — a hidden-with-nudge "Tuning
-  assistant" panel (explanation + provenance note + per-proposal confirm
-  cards; untrusted model text via `textContent` only), envelope schema v4
-  `tuning_llm` block. Fixture-driven tests only (real-shape OpenAI fixtures
+  assistant" panel (explanation + provenance note + confirm cards for PEQ
+  proposals only; untrusted model text via `textContent` only), envelope
+  schema v4 `tuning_llm` block. Fixture-driven tests only (real-shape OpenAI fixtures
   under `tests/fixtures/`); `scripts/tuning-llm-live-check.py` is the
   budget-capped (`--yes-spend`, 2-call cap, cost estimate) live-validation +
   fixture-capture harness. **Spend accounting is observable (per-call

@@ -1367,11 +1367,18 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       rat.textContent = String(p.rationale);
       card.appendChild(rat);
     }
-    // Preference is subjective — phrase it as a question, never a claim.
+    // Suggestion-only, honestly: there is no apply path for a target move.
+    // Preference is subjective — phrase it as a question and point at the
+    // flow's own Target curve picker (the household acts on it themselves
+    // when they next measure).
     var q = document.createElement('p');
     q.className = 'tuning-question';
     var dest = p.target_id ? ('a "' + p.target_id + '" target') : ('a warmth of ' + p.warmth);
-    q.textContent = 'This would move you toward ' + dest + ' — want to try it?';
+    q.textContent = 'This would move you toward ' + dest + ' — worth a listen? ';
+    var link = document.createElement('a');
+    link.href = '#target-select';
+    link.textContent = 'Pick it under Target curve when you next measure.';
+    q.appendChild(link);
     card.appendChild(q);
     return card;
   }

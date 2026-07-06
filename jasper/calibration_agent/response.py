@@ -173,13 +173,15 @@ def response_contract() -> dict[str, Any]:
             },
             {
                 "type": ACTION_PROPOSE_TARGET_MOVE,
-                "side_effect": "proposed_target_move",
+                "side_effect": "user_prompt_only",
                 "required_fields": ["rationale"],
                 "execution": (
-                    "A bounded move of the shared house-curve target "
-                    "(a named target id, or a warmth value within the "
-                    "existing house-curve bounds). Applied only after the "
-                    "user confirms; JTS owns the target math."
+                    "A bounded suggestion to move the shared house-curve "
+                    "target (a named target id, or a warmth value within "
+                    "the existing house-curve bounds). Surfaced as a "
+                    "suggestion only; the household changes the target "
+                    "themselves in the correction flow. JTS owns the "
+                    "target math and never applies this automatically."
                 ),
             },
         ],
@@ -671,12 +673,16 @@ def _validate_target_move_action(
 
     if issues:
         return issues, None
+    # Honest substrate vocabulary: there is NO apply/execute path for a
+    # target move — it is a suggestion the household acts on themselves in
+    # the correction flow (the same presentation-only shape as
+    # recommend_remeasure). Claiming requires-confirmation-then-execute
+    # here would promise an execution that does not exist.
     return issues, {
         "type": ACTION_PROPOSE_TARGET_MOVE,
-        "status": "awaiting_user_confirmation",
-        "side_effect": "proposed_target_move",
-        "execution_ready": False,
-        "requires_user_confirmation": True,
+        "status": "ready",
+        "side_effect": "user_prompt_only",
+        "execution_ready": True,
         "rationale": rationale,
         **payload,
     }
