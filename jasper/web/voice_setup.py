@@ -86,8 +86,8 @@ from jasper.usage import (
     DEFAULT_DAILY_SPEND_CAP_USD,
     DEFAULT_PRICING_FILE,
     DEFAULT_USAGE_DB,
-    UsageStore,
     default_pricing_as_of,
+    household_usage_reader,
     load_pricing_overrides,
     pricing_for_model,
     sanitize_pricing_models,
@@ -397,13 +397,16 @@ def _read_spend_cap_status(state: dict[str, str]) -> dict[str, Any]:
     sessions_today = 0
     if usage_available:
         try:
-            # read_only: this runs in jasper-web (root), not jasper-voice.
-            # A read-write open could re-own usage.db and lock the voice
-            # daemon out of its own DB. See UsageStore.__init__.
-            store = UsageStore(usage_db, read_only=True)
-            spend_last_24h = store.spend_last_24h_usd()
-            month_to_date = store.spend_month_to_date_usd()
-            sessions_today = store.session_count_today_utc()
+            # Read HOUSEHOLD spend: the voice ledger plus the tuning-surface
+            # sibling ledger, so the displayed figure includes P6 tuning-LLM
+            # spend. The aggregate opens each member read_only and lazily —
+            # this runs in jasper-web (root), not jasper-voice, and a
+            # read-write open could re-own usage.db and lock the voice daemon
+            # out of its own DB (see UsageStore.__init__).
+            reader = household_usage_reader(usage_db)
+            spend_last_24h = reader.spend_last_24h_usd()
+            month_to_date = reader.spend_month_to_date_usd()
+            sessions_today = reader.session_count_today_utc()
         except Exception as e:  # noqa: BLE001
             usage_available = False
             usage_error = str(e)

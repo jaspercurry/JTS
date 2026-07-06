@@ -384,8 +384,10 @@ def test_apply_clear_unknown_provider_errors():
 
 
 def _usage_db_with_cost(tmp_path: Path, cost_usd: float) -> Path:
+    from jasper.usage import UsageStore
+
     db = tmp_path / "usage.db"
-    voice_setup.UsageStore(str(db))
+    UsageStore(str(db))
     con = sqlite3.connect(db)
     now = datetime.now(timezone.utc).isoformat()
     con.execute(
