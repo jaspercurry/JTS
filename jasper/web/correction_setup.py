@@ -2485,41 +2485,40 @@ def _tuning_paid_call_gate() -> None:
         _tuning_last_paid_call[0] = now
 
 
-# Lazily-created writer for the tuning-surface spend ledger — jasper-correction-web
-# is its SOLE writer (never usage.db, which jasper-voice owns; a root-created file
-# there wedges the voice ledger — the 2026-06-19 outage class). Guarded by its own
-# module lock because the wizard is a ThreadingHTTPServer. Serialised writes plus
-# a 0644 chmod on first create make the file readable by jasper-voice / jasper-web
-# / doctor, which only ever read it (through household_usage_reader).
+# Writes to the tuning-surface spend ledger — jasper-correction-web is its
+# SOLE writer (never usage.db, which jasper-voice owns; a root-created file
+# there wedges the voice ledger — the 2026-06-19 outage class). Serialised
+# under this module lock, and each record opens a FRESH UsageStore
+# (open → record → close). A process-global store would silently die on every
+# handler thread except its creator's: this server is a ThreadingHTTPServer
+# (one thread per TCP connection) and sqlite3 connections default to
+# check_same_thread=True, so a store created on thread A raises
+# ProgrammingError from thread B — which open_session's fail-soft catch
+# swallows while the "recorded" event still logs (the review-proven
+# one-row-of-three shape). Per-call open also makes the 0644 perms
+# self-healing and removes any partial-init state.
 _tuning_usage_lock = threading.Lock()
-_tuning_usage_store: "Any | None" = None
 
 
-def _tuning_usage_store_for(usage_db: str) -> "Any":
-    """Return the process-wide tuning UsageStore, creating it on first use and
-    chmod'ing the DB file to 0644 exactly once (right after creation, so a
-    0077 UMask on the root daemon still leaves a file readers can open ro).
+def _heal_tuning_ledger_mode(tuning_db: str) -> None:
+    """Ensure the ledger file is 0644 so the jasper-group readers
+    (jasper-voice, jasper-web, doctor) can open it read-only.
 
-    Caller MUST hold ``_tuning_usage_lock``. Raises on create/open failure so
-    the fail-soft caller can log ``tuning_spend.record_failed`` and still serve
-    the normal response — a ledger problem must never block the user."""
-    global _tuning_usage_store
-    if _tuning_usage_store is not None:
-        return _tuning_usage_store
-    from jasper.usage import UsageStore, tuning_usage_db_path
-
-    tuning_db = tuning_usage_db_path(usage_db)
-    existed = os.path.exists(tuning_db)
-    store = UsageStore(tuning_db)  # read-write: creates schema + file
-    if not existed:
-        # UMask=0077 on the unit would otherwise leave the fresh DB 0600 and
-        # unreadable by the jasper-group readers. chmod only on first create.
-        try:
+    Self-healing on EVERY record, not just first create: a crash between
+    sqlite-create (0600 under the root unit's UMask=0077) and the chmod, or a
+    single failed chmod, must not permanently — and invisibly, since readers
+    count an unopenable member as zero at DEBUG — break household-spend
+    aggregation for the non-root surfaces. Root chmod'ing its own file is
+    trivially cheap. Failure logs at WARNING: a wrong mode means other
+    surfaces are under-counting household spend."""
+    try:
+        mode = os.stat(tuning_db).st_mode & 0o777
+        if mode != 0o644:
             os.chmod(tuning_db, 0o644)
-        except OSError:
-            logger.debug("tuning ledger chmod failed", exc_info=True)
-    _tuning_usage_store = store
-    return store
+    except OSError:
+        logger.warning(
+            "tuning ledger mode heal failed for %s", tuning_db, exc_info=True,
+        )
 
 
 def _record_tuning_spend(out: dict[str, Any], usage_db: str) -> None:
@@ -2552,22 +2551,46 @@ def _record_tuning_spend(out: dict[str, Any], usage_db: str) -> None:
         "output_token_details": {"text_tokens": output_tokens},
     }
     model = resolve_tuning_model()
+    from jasper.usage import UsageStore, tuning_usage_db_path
+
+    tuning_db = tuning_usage_db_path(usage_db)
     try:
         with _tuning_usage_lock:
-            store = _tuning_usage_store_for(usage_db)
-            cost = store.record_background_usage(
-                provider="openai",
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                usage=usage,
-            )
+            # Fresh store per record — sqlite connections are thread-bound
+            # (see the lock's comment block) and each handler request runs on
+            # its own server thread. Open → record → close, all under the lock.
+            store = UsageStore(tuning_db)
+            try:
+                _heal_tuning_ledger_mode(tuning_db)
+                cost = store.record_background_usage(
+                    provider="openai",
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    usage=usage,
+                )
+                write_degraded = store.write_degraded
+            finally:
+                store._conn.close()
     except (OSError, sqlite3.Error) as e:
         log_event(
             logger,
             "tuning_spend.record_failed",
             level=logging.WARNING,
             error=type(e).__name__,
+        )
+        return
+    if write_degraded:
+        # The store's own fail-soft (open_session/close_session) swallowed a
+        # write error, so NO row was persisted — the store already WARN-logged
+        # the detail. Emit record_failed, never a "recorded" event for a row
+        # that does not exist (the observability-lies half of the review's
+        # Blocker 1).
+        log_event(
+            logger,
+            "tuning_spend.record_failed",
+            level=logging.WARNING,
+            error="write_degraded",
         )
         return
     log_event(

@@ -13,6 +13,8 @@ explicit confirm before routing through the existing apply path.
 from __future__ import annotations
 
 import io
+import os
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -365,9 +367,10 @@ def test_propose_apply_fails_closed_without_acceptance_basis(monkeypatch):
 
 @pytest.fixture()
 def _tuning_ledger_env(tmp_path, monkeypatch):
-    """Point the tuning ledger at a temp dir, reset the module-level writer,
-    default the tuning model, and enable the key gate. Yields the usage-db
-    path (its sibling is the tuning ledger)."""
+    """Point the tuning ledger at a temp dir, default the tuning model, and
+    enable the key gate. Yields the usage-db path (its sibling is the tuning
+    ledger). No writer reset needed: the record path opens a fresh store per
+    record (nothing process-global to leak between tests)."""
     usage_db = tmp_path / "usage.db"
     monkeypatch.setenv("JASPER_USAGE_DB", str(usage_db))
     monkeypatch.setenv("JASPER_TUNING_LLM_MODEL", "gpt-5.4")
@@ -376,11 +379,7 @@ def _tuning_ledger_env(tmp_path, monkeypatch):
         lambda **_: True,
     )
     monkeypatch.setattr(correction_setup, "_get_or_create_session", _fake_session)
-    # The module-level lazily-created writer is process-global; reset it so
-    # each test opens its own temp DB.
-    correction_setup._tuning_usage_store = None
-    yield usage_db
-    correction_setup._tuning_usage_store = None
+    return usage_db
 
 
 def _advisor_returning(usage: dict):
@@ -463,16 +462,12 @@ def test_record_is_fail_soft_on_unwritable_dir(monkeypatch, tmp_path, caplog):
         lambda **_: True,
     )
     monkeypatch.setattr(correction_setup, "_get_or_create_session", _fake_session)
-    correction_setup._tuning_usage_store = None
     monkeypatch.setattr(
         "jasper.calibration_agent.correction_advisor.interpret",
         _advisor_returning({"input_tokens": 100, "output_tokens": 100}),
     )
-    try:
-        with caplog.at_level("WARNING"):
-            out = correction_setup._handle_interpret(_FakeHandler())
-    finally:
-        correction_setup._tuning_usage_store = None
+    with caplog.at_level("WARNING"):
+        out = correction_setup._handle_interpret(_FakeHandler())
     assert out["explanation"] == "ok"  # user got their answer
     assert any("tuning_spend.record_failed" in r.message for r in caplog.records)
 
@@ -482,8 +477,6 @@ def test_created_tuning_db_is_0644_under_restrictive_umask(
 ):
     """The DB file must end up 0644 regardless of a 0077 UMask (the root unit's
     umask), so the jasper-group readers (voice/web/doctor) can open it ro."""
-    import os
-
     usage_db = _tuning_ledger_env
     monkeypatch.setattr(
         "jasper.calibration_agent.correction_advisor.interpret",
@@ -498,6 +491,64 @@ def test_created_tuning_db_is_0644_under_restrictive_umask(
     from jasper.usage import tuning_usage_db_path
 
     tuning_db = tuning_usage_db_path(str(usage_db))
+    assert oct(os.stat(tuning_db).st_mode & 0o777) == "0o644"
+
+
+def test_record_from_two_threads_lands_two_priced_rows(_tuning_ledger_env):
+    """Regression shaped like the review-proven Blocker 1: correction-web is a
+    ThreadingHTTPServer (one thread per TCP connection), and a process-global
+    sqlite store binds to its creator thread (check_same_thread=True) — the
+    old global-store shape recorded 1 row of 2 while still logging a
+    "recorded" event for both (the cross-thread ProgrammingError is swallowed
+    by open_session's fail-soft). The record path must land ONE PRICED ROW PER
+    CALL regardless of which thread runs it."""
+    usage_db = _tuning_ledger_env
+    out = {
+        "kind": "jts_correction_interpret",
+        "usage": {"input_tokens": 1000, "output_tokens": 1000},
+    }
+
+    def _record():
+        # The record path is fail-soft by contract (never raises); if it ever
+        # does, threading's default excepthook prints the traceback and the
+        # row-count assertion below fails.
+        correction_setup._record_tuning_spend(dict(out), str(usage_db))
+
+    # Two calls on two DIFFERENT threads (sequential — the failure is
+    # thread-identity, not a race).
+    for _ in range(2):
+        t = threading.Thread(target=_record)
+        t.start()
+        t.join()
+
+    from jasper.usage import UsageStore, tuning_usage_db_path
+
+    ro = UsageStore(tuning_usage_db_path(str(usage_db)), read_only=True)
+    rows = list(ro._conn.execute("SELECT cost_usd FROM sessions"))
+    assert len(rows) == 2, rows
+    assert all(cost == pytest.approx(0.0175) for (cost,) in rows), rows
+
+
+def test_preexisting_0600_ledger_healed_to_0644_on_next_record(
+    monkeypatch, _tuning_ledger_env
+):
+    """Perms are SELF-HEALING per record, not first-create-only: a crash in
+    the create→chmod window (or one failed chmod) leaves a 0600 file that
+    non-root readers silently count as zero forever. The next record must
+    repair it."""
+    usage_db = _tuning_ledger_env
+    from jasper.usage import UsageStore, tuning_usage_db_path
+
+    tuning_db = tuning_usage_db_path(str(usage_db))
+    store = UsageStore(tuning_db)  # pre-create the ledger…
+    store._conn.close()
+    os.chmod(tuning_db, 0o600)  # …in the crash-window shape
+
+    monkeypatch.setattr(
+        "jasper.calibration_agent.correction_advisor.interpret",
+        _advisor_returning({"input_tokens": 100, "output_tokens": 100}),
+    )
+    correction_setup._handle_interpret(_FakeHandler())
     assert oct(os.stat(tuning_db).st_mode & 0o777) == "0o644"
 
 
