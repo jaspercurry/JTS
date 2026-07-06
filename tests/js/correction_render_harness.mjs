@@ -163,7 +163,18 @@ const globalFetch = (url) => {
       // A bodyFn that throws simulates a DOWN endpoint: the response comes
       // back non-ok so the caller's `if (!resp.ok) throw` fail-soft path
       // runs (mirrors a 5xx / network stall on the Pi).
-      try { body = bodyFn(); } catch (_e) { ok = false; status = 503; body = {}; }
+      try {
+        body = bodyFn();
+        // A route can return an explicit non-2xx response that still
+        // carries a JSON body (e.g. the paid-call 409 with {"error": ...}):
+        // { __status: 409, __body: {...} }. Distinct from a thrown/DOWN
+        // route, which is a bodyless failure.
+        if (body && typeof body === "object" && "__status" in body) {
+          status = body.__status;
+          ok = status >= 200 && status < 300;
+          body = body.__body || {};
+        }
+      } catch (_e) { ok = false; status = 503; body = {}; }
       break;
     }
   }
@@ -226,6 +237,10 @@ source = source.replace(
     // P6 tuning-assistant surfaces (IIFE-local).
     renderTuning,
     renderTuningProposals,
+    onTuningInterpret,
+    onTuningPropose,
+    // The tuning status line text, for the fetch-error-framing tests.
+    getTuningStatusText: function () { return tuningStatus.textContent; },
     // Client step-label lexicon, pinned against the server progress spine.
     wizardStepLabels: WIZARD_STEP_LABELS,
     // Probe seams for the fetch-once poll-discipline test.
@@ -336,6 +351,9 @@ const {
   pollState,
   renderTuning,
   renderTuningProposals,
+  onTuningInterpret,
+  onTuningPropose,
+  getTuningStatusText,
   wizardStepLabels,
   getEnvelopeFetchCount,
   resetEnvelopeBookkeeping,
@@ -1180,8 +1198,50 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
     "tuning: empty proposals clears the cards");
 }
 
+// 34. The paid-call min-interval gate returns an honest 409 whose JSON body
+//     carries the server's message. The tuning panel shows that message
+//     AS-IS (the assistant WAS reached), NOT under the "Could not reach"
+//     network-failure prefix. A genuine down endpoint still keeps that
+//     prefix.
+await (async () => {
+  const tuningStatusEl = () => getOrMake("tuning-status");
+
+  // 34a. A 409 carrying the server's honest reason is shown verbatim.
+  const gate409 = "the tuning assistant just made a paid call — wait a moment and tap again";
+  setFetchRoute("/interpret", () => ({ __status: 409, __body: { error: gate409 } }));
+  await onTuningInterpret();
+  const status409 = getTuningStatusText();
+  assert(status409 === gate409,
+    "tuning: a 409 gate refusal shows the server message verbatim",
+    { got: status409 });
+  assert(status409.indexOf("Could not reach") < 0,
+    "tuning: a 409 refusal is NOT framed as 'Could not reach'",
+    { got: status409 });
+
+  // 34b. Same honest surfacing on /propose.
+  setFetchRoute("/propose", () => ({ __status: 409, __body: { error: gate409 } }));
+  await onTuningPropose();
+  assert(getTuningStatusText() === gate409,
+    "tuning: /propose 409 refusal also shows the server message verbatim",
+    { got: getTuningStatusText() });
+
+  // 34c. A genuine down endpoint (no JSON error body) keeps the
+  //      "Could not reach" network-failure framing.
+  setFetchRoute("/interpret", () => { throw new Error("down"); });
+  await onTuningInterpret();
+  const statusDown = getTuningStatusText();
+  assert(statusDown.indexOf("Could not reach the tuning assistant") === 0,
+    "tuning: a true network failure keeps the 'Could not reach' framing",
+    { got: statusDown });
+
+  // Restore benign defaults.
+  setFetchRoute("/interpret", () => ({}));
+  setFetchRoute("/propose", () => ({}));
+  tuningStatusEl().textContent = "";
+})();
+
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 33 }));
+console.log(JSON.stringify({ ok: true, tests: 34 }));

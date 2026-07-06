@@ -1260,6 +1260,26 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
   }
 
+  // An HTTP error whose body carried the server's honest JSON error
+  // message (e.g. the paid-call min-interval 409): the assistant WAS
+  // reached, so its message is shown as-is. A plain Error (fetch threw,
+  // or the body wasn't JSON) is a genuine network/parse failure and keeps
+  // the "Could not reach" framing.
+  function tuningServerError(message) {
+    var err = new Error(String(message));
+    err.serverMessage = true;
+    return err;
+  }
+
+  function setTuningError(e) {
+    if (e && e.serverMessage) {
+      setTuningStatus(e.message);
+    } else {
+      setTuningStatus('Could not reach the tuning assistant: '
+        + (e && e.message ? e.message : e));
+    }
+  }
+
   async function onTuningInterpret() {
     setTuningBusy(true);
     setTuningStatus('Reading your measurement…');
@@ -1269,11 +1289,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         method: 'POST', headers: jsonHeaders(), body: '{}',
       });
       var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload && payload.error ? payload.error : ('interpret ' + resp.status));
+      if (!resp.ok) {
+        throw payload && payload.error
+          ? tuningServerError(payload.error)
+          : new Error('interpret ' + resp.status);
+      }
       renderTuningExplanation(payload);
       setTuningStatus('');
     } catch (e) {
-      setTuningStatus('Could not reach the tuning assistant: ' + (e && e.message ? e.message : e));
+      setTuningError(e);
     } finally {
       setTuningBusy(false);
     }
@@ -1287,12 +1311,16 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         method: 'POST', headers: jsonHeaders(), body: '{}',
       });
       var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload && payload.error ? payload.error : ('propose ' + resp.status));
+      if (!resp.ok) {
+        throw payload && payload.error
+          ? tuningServerError(payload.error)
+          : new Error('propose ' + resp.status);
+      }
       renderTuningExplanation(payload);
       renderTuningProposals(payload.proposals || []);
       setTuningStatus('');
     } catch (e) {
-      setTuningStatus('Could not reach the tuning assistant: ' + (e && e.message ? e.message : e));
+      setTuningError(e);
     } finally {
       setTuningBusy(false);
     }
