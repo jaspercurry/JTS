@@ -2963,6 +2963,49 @@ def test_state_usbsink_section_honest_in_combo_standby_mode(
     json.dumps(body, allow_nan=False)
 
 
+def test_state_combo_active_source_still_driven_by_mux_selection(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """Combo box in manual mode: renderers.usbsink.playing is None (combo), but
+    active_source must still resolve to usbsink from mux's selected_source.
+    Pins the state_aggregate line-1004 promise — nulling the dead bridge flag in
+    combo mode must not break the mux-driven (step 2) USB selection."""
+    import jasper.control.server as srv_mod
+    base, _ = server_with_coordinator
+
+    async def fake_mux_status(*args, **kwargs):
+        return {
+            "mode": "manual",
+            "selected_source": "usbsink",
+            "winner": "usbsink",
+            "active_source": "usbsink",
+        }
+
+    monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
+    usbsink_state = tmp_path / "usbsink_state.json"
+    usbsink_state.write_text(json.dumps({
+        "standby": True,
+        "playing": False, "preempted": False, "host_connected": True,
+        "rms_dbfs": -120.0,
+        "updated_at": "2026-07-06T16:15:33.123Z",
+    }))
+    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+    monkeypatch.setenv(
+        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+    )
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    section = body["renderers"]["usbsink"]
+    assert section["combo"] is True
+    assert section["playing"] is None
+    # active_source is mux-driven (step 2), not the nulled combo bridge flag.
+    assert body["active_source"] == "usbsink"
+
+
 def test_state_502_when_aggregator_raises(
     server_with_coordinator, monkeypatch,
 ):

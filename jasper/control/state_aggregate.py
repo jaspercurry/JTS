@@ -23,6 +23,7 @@ from ..audio_quality import (
     read_state as _read_audio_quality_state,
 )
 from ..music_sources import MUSIC_SOURCE_SPECS
+from ..fanin.status import fanin_usbsink_lane_is_direct
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom import cascade_timeline
@@ -160,12 +161,13 @@ def _usbsink_in_combo_mode(
     ``audio.fanin.usbsink_input`` (``source=="direct"`` with ``frames_read``
     advancing).
 
-    Detected primarily off that fan-in STATUS lane (``source=="direct"`` — the
-    same signal the route-latency harness keys its combo tap off), with the
-    bridge's own ``standby`` flag as a fallback so a momentarily-unavailable
-    fan-in STATUS can't resurrect the stale bridge values."""
-    lane = _fanin_input_status(fanin_status, "usbsink")
-    if isinstance(lane, dict) and lane.get("source") == "direct":
+    Detected primarily off the fan-in STATUS lane via the shared
+    :func:`jasper.fanin.status.fanin_usbsink_lane_is_direct` predicate (the one
+    owner of the ``source=="direct"`` contract, also used by the route-latency
+    harness / mux), with the bridge's own ``standby`` flag as a fallback so a
+    momentarily-unavailable fan-in STATUS can't resurrect the stale bridge
+    values."""
+    if fanin_usbsink_lane_is_direct(fanin_status):
         return True
     return bool(isinstance(usbsink_blob, dict) and usbsink_blob.get("standby"))
 

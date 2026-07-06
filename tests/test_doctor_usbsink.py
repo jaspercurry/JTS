@@ -229,6 +229,37 @@ def test_usbsink_state_active_fresh_state(monkeypatch, tmp_path):
     assert "playing=True" in r.detail
 
 
+def test_usbsink_state_active_combo_standby_reports_combo_not_dead_numbers(
+    monkeypatch, tmp_path,
+):
+    """On a combo box the bridge runs in standby and publishes frozen idle
+    playing=false / rms_dbfs=-120. The check must report combo mode instead of
+    those meaningless numbers, so it doesn't read as 'USB connected but silent'
+    while fan-in's direct lane plays — matching the honest /state projection."""
+    _patch_active(monkeypatch, True)
+    _patch_libcomp_loaded(monkeypatch, True)
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "standby": True,
+        "playing": False, "preempted": False,
+        "host_connected": True, "rms_dbfs": -120.0,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }))
+    with patch.object(doctor.usbsink, "Path") as mock_path:
+        def _path(p):
+            if p == "/run/jasper-usbsink/state.json":
+                return state_path
+            return Path(p)
+        mock_path.side_effect = _path
+        r = doctor.check_usbsink_state()
+    assert r.status == "ok"
+    assert "combo mode" in r.detail.lower()
+    assert "host_connected=True" in r.detail
+    # The dead standby-bridge numbers must NOT be presented as measured.
+    assert "playing=False" not in r.detail
+    assert "-120" not in r.detail
+
+
 def test_usbsink_state_active_null_rms_is_ok(monkeypatch, tmp_path):
     _patch_active(monkeypatch, True)
     _patch_libcomp_loaded(monkeypatch, True)
