@@ -151,6 +151,7 @@ def call_advisor(
     transport: Transport | None = None,
     api_key: str | None = None,
     default_model: str | None = None,
+    max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Call the configured advisor model and return its candidate JSON.
 
@@ -158,7 +159,8 @@ def call_advisor(
     request. It never applies filters, stores profiles, reads raw audio,
     or logs response content. ``api_key`` / ``default_model`` are for
     callers that resolved the key/model out-of-band (see
-    :func:`resolve_settings`).
+    :func:`resolve_settings`); ``max_output_tokens`` caps the response
+    length (a budget guard).
     """
 
     settings = resolve_settings(
@@ -169,7 +171,9 @@ def call_advisor(
         api_key=api_key,
         default_model=default_model,
     )
-    payload = build_openai_request(prompt_package, settings.model)
+    payload = build_openai_request(
+        prompt_package, settings.model, max_output_tokens=max_output_tokens,
+    )
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     url = f"{settings.base_url}/responses"
     headers = {
@@ -238,8 +242,13 @@ def call_advisor(
 def build_openai_request(
     prompt_package: Mapping[str, Any],
     model: str,
+    *,
+    max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
-    """Build a small, replayable Responses API request payload."""
+    """Build a small, replayable Responses API request payload.
+
+    ``max_output_tokens`` caps the response length when set — the P6 live
+    harness passes it as a hard per-call budget guard."""
 
     messages = list(prompt_package.get("messages") or [])
     system = _first_message(messages, "system") or ""
@@ -262,7 +271,7 @@ def build_openai_request(
         "JTS_RESPONSE_CONTRACT_JSON:",
         json.dumps(response_contract, separators=(",", ":"), sort_keys=True),
     ])
-    return {
+    payload: dict[str, Any] = {
         "model": model,
         "store": False,
         "input": [
@@ -278,6 +287,9 @@ def build_openai_request(
             }
         },
     }
+    if max_output_tokens is not None and max_output_tokens > 0:
+        payload["max_output_tokens"] = int(max_output_tokens)
+    return payload
 
 
 def _first_message(messages: list[Any], role: str) -> str | None:

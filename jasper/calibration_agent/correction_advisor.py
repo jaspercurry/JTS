@@ -411,6 +411,7 @@ def interpret(
     environ: "dict[str, str] | None" = None,
     transport: "model_client.Transport | None" = None,
     timeout_sec: float | None = None,
+    max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Read-only "explain my room" narration. One paid call.
 
@@ -434,6 +435,7 @@ def interpret(
         api_key=api_key,
         default_model=model,
         timeout_sec=timeout_sec,
+        max_output_tokens=max_output_tokens,
     )
     advisor = call.get("advisor_response") or {}
     validation = response.validate_advisor_response(
@@ -470,6 +472,7 @@ def propose(
     environ: "dict[str, str] | None" = None,
     transport: "model_client.Transport | None" = None,
     timeout_sec: float | None = None,
+    max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     """The confirm-gated proposer. One paid call.
 
@@ -496,6 +499,7 @@ def propose(
         api_key=api_key,
         default_model=model,
         timeout_sec=timeout_sec,
+        max_output_tokens=max_output_tokens,
     )
     advisor = call.get("advisor_response") or {}
     validation = response.validate_advisor_response(advisor, advisor_context=packet)
