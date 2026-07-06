@@ -55,7 +55,11 @@ logger = logging.getLogger(__name__)
 # v2 (P4) adds the top-level `verdict` block — the deterministic
 # accept/surface/revert_pending_confirm/revert decision, its reasons, and the
 # per-band table — and folds the verdict into the RESULT-screen verdict_text.
-ENVELOPE_SCHEMA_VERSION = 2
+# v3 (P5) adds the crossover-region distinction: the REVIEW verdict_text and a
+# `crossover_region_dip_not_boosted` nudge explain that a dip AT the
+# bass-management corner is the crossover, not a room mode (both derived from
+# strategy.design_correction's `crossover_region` design-report annotation).
+ENVELOPE_SCHEMA_VERSION = 3
 
 # 1/N-octave smoothing applied to the empirical display curves. 6 =
 # 1/6-octave — visibly smoothed (no raw jaggedness) while preserving
@@ -397,46 +401,84 @@ _SEVERITY_CEILING: dict[str, str] = {
 
 
 def _nudges(session: Any) -> list[dict[str, str]]:
-    """Homeowner-language nudges derived from the confidence findings.
+    """Homeowner-language nudges.
 
-    Never a block: the strongest nudge is ``warn``. Order follows the
-    confidence report's own finding order (most-impactful first there).
+    Never a block: the strongest nudge is ``warn``. Confidence-report findings
+    come first (in the report's own most-impactful-first order); the
+    design-report crossover-region nudge is appended after. A session with a
+    design report but no confidence report still surfaces the crossover nudge.
     """
-    report = getattr(session, "confidence_report", None)
-    if not isinstance(report, dict):
-        return []
-    findings = report.get("findings")
-    if not isinstance(findings, list):
-        return []
     nudges: list[dict[str, str]] = []
     seen: set[str] = set()
-    for finding in findings:
-        if not isinstance(finding, dict):
-            continue
-        code = str(finding.get("code") or "")
-        if not code or code in seen:
-            continue
-        seen.add(code)
-        canned = _NUDGE_COPY.get(code)
-        if canned is not None:
+    report = getattr(session, "confidence_report", None)
+    findings = report.get("findings") if isinstance(report, dict) else None
+    if isinstance(findings, list):
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            code = str(finding.get("code") or "")
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            canned = _NUDGE_COPY.get(code)
+            if canned is not None:
+                nudges.append(
+                    {"code": code, "severity": canned["severity"],
+                     "text": canned["text"]}
+                )
+                continue
+            # Unknown finding: surface it (degraded to its raw message) rather
+            # than dropping it, with severity clamped into the nudge vocabulary.
+            raw_sev = str(finding.get("severity") or "info")
+            message = str(finding.get("message") or "").strip()
+            if not message:
+                continue
             nudges.append(
-                {"code": code, "severity": canned["severity"], "text": canned["text"]}
+                {
+                    "code": code,
+                    "severity": _SEVERITY_CEILING.get(raw_sev, "info"),
+                    "text": message,
+                }
             )
-            continue
-        # Unknown finding: surface it (degraded to its raw message) rather
-        # than dropping it, with severity clamped into the nudge vocabulary.
-        raw_sev = str(finding.get("severity") or "info")
-        message = str(finding.get("message") or "").strip()
-        if not message:
-            continue
-        nudges.append(
-            {
-                "code": code,
-                "severity": _SEVERITY_CEILING.get(raw_sev, "info"),
-                "text": message,
-            }
-        )
+    # Append the crossover-region nudge from the DESIGN report (not the
+    # confidence report) so the homeowner learns a crossover-region dip was left
+    # un-boosted on purpose. Additive; only present when a boost was excluded
+    # there. Never a block (info severity).
+    design_nudge = _crossover_region_nudge(session)
+    if design_nudge is not None and design_nudge["code"] not in seen:
+        nudges.append(design_nudge)
     return nudges
+
+
+def _crossover_region_nudge(session: Any) -> dict[str, str] | None:
+    """The homeowner nudge for a crossover-region dip left un-boosted, or None.
+
+    Reads strategy.design_correction's ``crossover_region`` annotation off the
+    session's design report (fail-soft). Mirrors the design warning
+    ``crossover_region_dip_not_boosted`` — surfacing the same distinction the
+    verdict_text makes, in nudge form."""
+    report = getattr(session, "design_report", None)
+    if not isinstance(report, dict):
+        return None
+    region = report.get("crossover_region")
+    if not isinstance(region, dict):
+        return None
+    excluded = region.get("excluded_boosts")
+    if not isinstance(excluded, list) or not excluded:
+        return None
+    corner = region.get("corner_hz")
+    if not isinstance(corner, (int, float)) or isinstance(corner, bool):
+        return None
+    corner_hz = float(corner)
+    return {
+        "code": "crossover_region_dip_not_boosted",
+        "severity": "info",
+        "text": (
+            f"A dip near your {corner_hz:.0f} Hz crossover was left un-boosted "
+            "on purpose — that's where your subwoofer and speakers hand off, "
+            "not a room mode."
+        ),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -542,6 +584,36 @@ def _verdict(session: Any) -> dict[str, Any] | None:
     return acc
 
 
+def _crossover_region_note(session: Any) -> str:
+    """One homeowner sentence naming the crossover region, or "".
+
+    The design report (strategy.design_correction) carries a ``crossover_region``
+    annotation whenever a bass-management corner is being read. On the REVIEW
+    screen we fold it into the verdict text so a dip AT the crossover reads as
+    "that's your subwoofer handing off, not a room mode" — distinguishing it from
+    a genuine room-mode call. Only added when a boost was actually left excluded
+    there (otherwise the corner is silent, nothing to explain). Fail-soft: any
+    malformed shape yields "".
+    """
+    report = getattr(session, "design_report", None)
+    if not isinstance(report, dict):
+        return ""
+    region = report.get("crossover_region")
+    if not isinstance(region, dict):
+        return ""
+    excluded = region.get("excluded_boosts")
+    if not isinstance(excluded, list) or not excluded:
+        return ""
+    corner = region.get("corner_hz")
+    if not isinstance(corner, (int, float)) or isinstance(corner, bool):
+        return ""
+    corner_hz = float(corner)
+    return (
+        f"The dip near {corner_hz:.0f} Hz is where your subwoofer and speakers "
+        "hand off — that's the crossover, not a room mode, so we don't boost it."
+    )
+
+
 def _verdict_text(session: Any, screen: str) -> str:
     """A single homeowner sentence describing where the flow stands.
 
@@ -582,7 +654,9 @@ def _verdict_text(session: Any, screen: str) -> str:
             "your main seat."
         )
     if screen == SCREEN_REVIEW:
-        return "Here's what your room is doing and the fix we'd apply."
+        base = "Here's what your room is doing and the fix we'd apply."
+        note = _crossover_region_note(session)
+        return f"{base} {note}" if note else base
     if screen == SCREEN_VERIFY:
         return "Measuring again to check the correction worked."
     if screen == SCREEN_SWEEP:

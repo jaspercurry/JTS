@@ -69,18 +69,30 @@ Design invariants (each has a regression test):
 Subwoofer crossover is a fixed Linkwitz-Riley 4th-order lowpass
 (CamillaDSP's native ``BiquadCombo`` ``LinkwitzRileyLowpass`` at
 ``order: 4``, via the shared ``emit_linkwitz_riley``), default 80 Hz —
-the de-facto consumer-AVR sub corner. Main-speaker bass-management highpass (to
-unload <80 Hz from the L/R speakers) is a deliberate V1 non-goal: the
-mains stay full-range and the sub ADDS low end, so 20–80 Hz is
-reproduced by BOTH — expect an audible low-end lift and a phase-overlap
-region until bass management lands. Simple and safe; revisit if a
-household wants true bass management.
+the de-facto consumer-AVR sub corner.
+
+This module emits only the LOW-pass half of the crossover (the sub's own
+channel). The complementary mains high-pass — unloading <80 Hz from the L/R
+speakers so the crossover has both halves — is applied SEPARATELY in each main
+member's own local output path by the wireless-sub bass-management path
+(``jasper.multiroom.reconcile.outputd_grouping_env`` writes
+``JASPER_OUTPUTD_DAC_CONTENT_HP_HZ`` at the SAME corner for a dumb single-DAC
+main; an active-speaker main WITH a local sub folds the high-pass into its own
+CamillaDSP graph instead — an active main with only the wireless sub currently
+applies NO mains high-pass, the documented "Remaining" active-endpoint sub gap
+in HANDOFF-distributed-active.md). Both halves share the one corner defined in
+``jasper.camilla_emit``. (The mains high-pass was a V1 non-goal when this
+module first shipped; the dumb-member path shipped since, so full bass
+management — sub low-pass + matched mains high-pass at one corner — is the
+current behavior for passive/dumb mains, not a deferred goal.)
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from jasper.camilla_emit import (
+    BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
+    BASS_MANAGEMENT_CROSSOVER_ORDER,
     CHANNEL_SELECT_MIXER,
     emit_channel_select_mixer,
     emit_linkwitz_riley,
@@ -99,14 +111,17 @@ from jasper.multiroom.config import ALLOWED_CHANNELS
 
 # Sub crossover corner. 80 Hz is the standard consumer crossover (THX /
 # most AV receivers default here). Tunable via build_channel_split(...).
-DEFAULT_CROSSOVER_HZ = 80.0
+# BOUND TO the one shared bass-management corner definition
+# (jasper.camilla_emit) so this LOW-pass corner and the mains HIGH-pass corner
+# can never be two different numbers.
+DEFAULT_CROSSOVER_HZ = BASS_MANAGEMENT_CORNER_HZ_DEFAULT
 
 # A 4th-order Linkwitz-Riley lowpass (-6 dB at fc, 24 dB/octave) is the
 # standard sub slope. Emitted as CamillaDSP's NATIVE BiquadCombo
 # LinkwitzRileyLowpass (jasper.camilla_emit.emit_linkwitz_riley) — the
 # same primitive the active-speaker crossovers use, not a hand-cascaded
 # pair of Biquad Lowpass sections.
-_CROSSOVER_ORDER = 4
+_CROSSOVER_ORDER = BASS_MANAGEMENT_CROSSOVER_ORDER
 SUB_CROSSOVER_FILTER = "sub_crossover"
 
 

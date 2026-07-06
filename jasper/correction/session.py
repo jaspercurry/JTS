@@ -1802,12 +1802,18 @@ class MeasurementSession:
 
         averaged_db = analysis.spatial_average_db(self.position_magnitudes)
         log_freqs = self.position_freqs
+        # Read the active bass-management corner (fail-soft None). The room
+        # designer READS it — it never re-picks it (the speaker layer owns the
+        # corner) — so it can refuse to boost inside the crossover region.
+        from jasper.bass_management import active_crossover_corner_hz
+
         design = strategy.design_correction(
             averaged_db,
             log_freqs,
             target_choice=self.target_choice,
             strategy_choice=self.strategy_choice,
             position_magnitudes=self.position_magnitudes,
+            crossover_hz=active_crossover_corner_hz(),
         )
 
         self.measured_curve = CurveJSON(

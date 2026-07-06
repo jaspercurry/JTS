@@ -83,6 +83,7 @@ class _FakeSession:
         self.acceptance: dict[str, object] | None = None
         self.auto_revert_outcome: dict[str, object] | None = None
         self.confidence_report: dict[str, object] | None = None
+        self.design_report: dict[str, object] | None = None
 
 
 def _log_grid(n: int = 480) -> np.ndarray:
@@ -156,11 +157,12 @@ def test_unknown_state_value_falls_back_to_idle_not_crash():
 # ---------- top-level shape ------------------------------------------------
 
 
-def test_schema_version_is_two():
-    # v2 added the P4 `verdict` block (P4).
-    assert envelope.ENVELOPE_SCHEMA_VERSION == 2
+def test_schema_version_is_three():
+    # v2 added the P4 `verdict` block; v3 added the P5 crossover-region
+    # distinction (REVIEW verdict_text + crossover_region_dip_not_boosted nudge).
+    assert envelope.ENVELOPE_SCHEMA_VERSION == 3
     env = envelope.build_envelope(_FakeSession())
-    assert env["schema_version"] == 2
+    assert env["schema_version"] == 3
 
 
 def test_envelope_top_level_shape_is_pinned():
@@ -544,7 +546,7 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
         server.server_close()
 
     assert set(body) == ENVELOPE_KEYS
-    assert body["schema_version"] == 2
+    assert body["schema_version"] == 3
     assert body["screen"] == "review"
     assert body["state"] == "ready"
     assert body["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}
@@ -686,3 +688,76 @@ def test_surface_verdict_headline():
     env = envelope.build_envelope(sess)
     assert "too small to be sure" in env["verdict_text"]
     assert env["next_action"] == {"label": "Measure again", "endpoint": "/start"}
+
+
+# --------------------------------------------------------------------------
+# Crossover-region distinction (revision plan §3.3 / P5). The envelope reads
+# strategy.design_correction's `crossover_region` annotation off the session's
+# design report and surfaces it on the REVIEW verdict_text + as a nudge.
+# --------------------------------------------------------------------------
+
+
+def _design_report_with_excluded_crossover_boost() -> dict[str, object]:
+    return {
+        "crossover_region": {
+            "corner_hz": 80.0,
+            "no_boost_band_hz": [63.5, 100.8],
+            "excluded_boosts": [{"freq_hz": 82.0, "gain_db": 2.0}],
+        },
+    }
+
+
+def test_review_verdict_text_distinguishes_crossover_from_room_mode():
+    sess = _FakeSession(SessionState.READY)  # READY -> REVIEW screen
+    sess.design_report = _design_report_with_excluded_crossover_boost()
+    env = envelope.build_envelope(sess)
+    # Base review copy PLUS the crossover-region distinction.
+    assert env["verdict_text"].startswith(
+        "Here's what your room is doing and the fix we'd apply."
+    )
+    assert "crossover, not a room mode" in env["verdict_text"]
+    assert "80 Hz" in env["verdict_text"]
+
+
+def test_crossover_region_nudge_surfaces_and_never_blocks():
+    sess = _FakeSession(SessionState.READY)
+    sess.design_report = _design_report_with_excluded_crossover_boost()
+    env = envelope.build_envelope(sess)
+    matching = [
+        n for n in env["nudges"]
+        if n["code"] == "crossover_region_dip_not_boosted"
+    ]
+    assert matching, "the crossover-region nudge must appear"
+    # Never a block — the strongest measurement-flow nudge is warn/info.
+    assert matching[0]["severity"] == "info"
+
+
+def test_no_crossover_region_leaves_review_copy_and_nudges_plain():
+    sess = _FakeSession(SessionState.READY)
+    # No design report / no annotation (e.g. no bass management).
+    env = envelope.build_envelope(sess)
+    assert env["verdict_text"] == (
+        "Here's what your room is doing and the fix we'd apply."
+    )
+    assert not any(
+        n["code"] == "crossover_region_dip_not_boosted" for n in env["nudges"]
+    )
+
+
+def test_crossover_region_with_no_excluded_boosts_is_silent():
+    sess = _FakeSession(SessionState.READY)
+    # A corner is being read but nothing was excluded there -> no note/nudge.
+    sess.design_report = {
+        "crossover_region": {
+            "corner_hz": 80.0,
+            "no_boost_band_hz": [63.5, 100.8],
+            "excluded_boosts": [],
+        },
+    }
+    env = envelope.build_envelope(sess)
+    assert env["verdict_text"] == (
+        "Here's what your room is doing and the fix we'd apply."
+    )
+    assert not any(
+        n["code"] == "crossover_region_dip_not_boosted" for n in env["nudges"]
+    )

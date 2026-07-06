@@ -165,8 +165,13 @@
   `jasper.active_speaker.web_commissioning` owns safe driver/summed
   playback orchestration and `jasper.active_speaker.web_measurement`
   owns bounded browser WAV evidence plus acoustic-analysis recording.
-  `/correction/bass/` is a placeholder tab for subwoofer /
-  low-frequency tuning. The plain-HTTP preflight accepts
+  `/correction/bass/` is a READ-ONLY bass-management display (P5): it
+  renders the live bass-management state (crossover corner, its owner —
+  active-speaker local vs wireless sub, sub-present, mains-HP status) from
+  `jasper.bass_management.resolve_bass_management` via `GET /bass/status`,
+  and points to the Room tab where the bass-region measurement lives. It
+  owns no corner control (the speaker layer owns the corner). The plain-HTTP
+  preflight accepts
   `?next=/correction/...` so HTTP-only setup flows can link directly to a
   secure subflow after showing the certificate warning; its Proceed
   button has a no-JS fallback through `/correction/proceed[/subflow]`.
@@ -303,6 +308,16 @@
   calibration-agent intake tool surfaces the same report so a future
   LLM can explain and recommend bounded strategy changes without
   reverse-engineering the filters.
+- ✅ **P5 — room correction reads the bass-management corner.** The
+  designer READS the active crossover corner (via
+  `jasper.bass_management.active_crossover_corner_hz`; it never picks it —
+  the speaker layer owns the corner) and, in boost-capable strategies,
+  excludes boosts within ±1/3 octave of Fc (cuts stay allowed): an LR4 sum
+  is flat there by design, so a dip AT the corner is the crossover, not a
+  room mode, and boosting it fights the crossover. `design_report` gains a
+  `crossover_region` annotation (corner, no-boost band, excluded boosts) and
+  the envelope's REVIEW `verdict_text` + a `crossover_region_dip_not_boosted`
+  nudge carry the crossover-vs-room-mode distinction (envelope schema v3).
 - ✅ **Phase 2.6 — first-pass measurement confidence report.**
   Implemented 2026-05-26. Adds `jasper.correction.confidence`, a
   deterministic confidence summary derived from existing facts:

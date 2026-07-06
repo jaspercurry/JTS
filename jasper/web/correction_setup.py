@@ -25,7 +25,8 @@ Architecture (per docs/HANDOFF-correction.md):
       GET  /room            room correction page render
       GET  /crossover       active-crossover measurement page render
       GET  /crossover/status
-      GET  /bass            bass measurement placeholder page render
+      GET  /bass            bass-management display page render
+      GET  /bass/status     read-only bass-management state JSON
       GET  /healthz         liveness
       GET  /status          session snapshot JSON
       GET  /envelope        server-computed screen envelope (dumb-frontend)
@@ -2846,6 +2847,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/crossover/status",
                 "/crossover/envelope",
                 "/bass",
+                "/bass/status",
                 "/balance",
                 "/balance/status",
                 "/sync",
@@ -2902,6 +2904,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         cfg["hostname"], ctx["csrf_token"],
                     )
                 )
+                return
+            if path == "/bass/status":
+                from . import correction_bass_flow
+                try:
+                    payload, status = correction_bass_flow.handle_status()
+                    self._send_json(payload, status=int(status))
+                except (OSError, RuntimeError, TypeError, ValueError) as e:
+                    logger.exception("/bass/status failed")
+                    self._send_json({"error": str(e)}, status=500)
                 return
             if path == "/balance":
                 from . import balance_flow

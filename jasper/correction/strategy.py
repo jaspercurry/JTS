@@ -13,12 +13,22 @@ from plots.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
 from . import peq, spatial, target
+
+# The crossover-region no-boost half-width, in octaves (revision plan §3.3). A
+# BOOST whose center frequency falls within ±(this) of the bass-management
+# corner Fc is excluded: an LR4 sum is flat there by design, so a measured dip
+# at the corner is usually phase/placement, not a room mode — boosting it fights
+# the crossover instead of correcting the room. Cuts near Fc are still allowed
+# (a genuine peak at the corner is still a peak). One-third octave is the
+# conventional crossover-overlap width.
+CROSSOVER_NO_BOOST_HALF_WIDTH_OCT = 1.0 / 3.0
 
 
 @dataclass(frozen=True)
@@ -408,6 +418,39 @@ def _enforce_total_boost_cap(
     return capped
 
 
+def _crossover_no_boost_band_hz(crossover_hz: float) -> tuple[float, float]:
+    """The ``(lo, hi)`` Hz band, ±1/3 octave around Fc, in which boosts are
+    excluded. Pure."""
+    factor = 2.0 ** CROSSOVER_NO_BOOST_HALF_WIDTH_OCT
+    return crossover_hz / factor, crossover_hz * factor
+
+
+def _exclude_boosts_near_crossover(
+    filters: list[peq.PEQ],
+    crossover_hz: float | None,
+) -> tuple[list[peq.PEQ], list[dict[str, float]]]:
+    """Drop BOOST filters whose center is within ±1/3 octave of ``crossover_hz``.
+
+    Returns ``(kept_filters, excluded)`` where ``excluded`` is a list of
+    ``{freq_hz, gain_db}`` for the audit report so the envelope can explain that
+    a crossover-region dip was left un-boosted on purpose (it is the crossover,
+    not a room mode). Cuts (gain <= 0) are never excluded — a real peak at the
+    corner is still corrected. A ``None`` corner (no bass management) is a no-op.
+    Pure.
+    """
+    if crossover_hz is None or not math.isfinite(crossover_hz) or crossover_hz <= 0:
+        return filters, []
+    lo, hi = _crossover_no_boost_band_hz(crossover_hz)
+    kept: list[peq.PEQ] = []
+    excluded: list[dict[str, float]] = []
+    for filt in filters:
+        if filt.gain > 0 and lo <= filt.freq <= hi:
+            excluded.append({"freq_hz": float(filt.freq), "gain_db": float(filt.gain)})
+            continue
+        kept.append(filt)
+    return kept, excluded
+
+
 def design_correction(
     measured_db: np.ndarray,
     freqs: np.ndarray,
@@ -415,8 +458,17 @@ def design_correction(
     target_choice: str | None = None,
     strategy_choice: str | None = None,
     position_magnitudes: list[np.ndarray] | None = None,
+    crossover_hz: float | None = None,
 ) -> CorrectionDesign:
-    """Design PEQs and return an assistant-readable audit report."""
+    """Design PEQs and return an assistant-readable audit report.
+
+    ``crossover_hz`` is the ACTIVE bass-management corner (Hz) this speaker is
+    running, or ``None`` when nothing is bass-managing it. The designer READS it
+    (it never picks it — the speaker layer owns the corner, revision plan §3.3):
+    in a boost-capable strategy, boosts within ±1/3 octave of the corner are
+    excluded because an LR4 sum is flat there by design, so a dip at the corner
+    is the crossover, not a room mode. Cuts near the corner are still allowed.
+    """
     target_profile = resolve_target_profile(target_choice)
     correction_strategy = resolve_correction_strategy(strategy_choice)
     target_db = target_profile.curve_db(freqs)
@@ -436,7 +488,13 @@ def design_correction(
         q_max=correction_strategy.q_max,
         min_filter_gain_db=correction_strategy.min_filter_gain_db,
     )
-    filters = _enforce_total_boost_cap(raw_filters, correction_strategy)
+    capped = _enforce_total_boost_cap(raw_filters, correction_strategy)
+    # Read the active crossover corner (never pick it) and forbid boosts inside
+    # the crossover region — a dip at the corner is the crossover, not a room
+    # mode. Runs AFTER the boost cap so the excluded set reflects final filters.
+    filters, crossover_excluded_boosts = _exclude_boosts_near_crossover(
+        capped, crossover_hz
+    )
     predicted_shift = peq.predicted_response(filters, freqs)
     predicted_db = measured_db + predicted_shift
 
@@ -454,17 +512,47 @@ def design_correction(
         after_metrics,
         correction_strategy,
     )
+    # Each warning owns exactly its own reduction: boosts_capped compares the
+    # raw design against the PRE-exclusion capped list (the headroom cap's own
+    # work), while the crossover annotation below owns the boosts the near-Fc
+    # rule then removed. Comparing raw vs the FINAL (post-exclusion) filters
+    # here would misattribute crossover exclusions to headroom capping — a
+    # false claim this report (the assistant-readable audit, P6's LLM input)
+    # would narrate to the household.
     raw_total_boost = peq.total_max_boost_db(raw_filters)
-    final_total_boost = peq.total_max_boost_db(filters)
-    if raw_total_boost > final_total_boost + 1e-6:
+    capped_total_boost = peq.total_max_boost_db(capped)
+    if raw_total_boost > capped_total_boost + 1e-6:
         warnings.append({
             "code": "boosts_capped",
             "severity": "info",
             "message": (
                 f"Positive boosts were capped from {raw_total_boost:.1f} dB "
-                f"to {final_total_boost:.1f} dB to preserve headroom."
+                f"to {capped_total_boost:.1f} dB to preserve headroom."
             ),
         })
+    # The crossover-region annotation: present whenever a corner is being read.
+    # It lets the envelope's verdict_text distinguish "that's your crossover,
+    # not a room mode" from a genuine room-mode call. Only carries a nudge-worthy
+    # warning when a boost was actually excluded there.
+    crossover_region: dict[str, Any] | None = None
+    if crossover_hz is not None and math.isfinite(crossover_hz) and crossover_hz > 0:
+        lo, hi = _crossover_no_boost_band_hz(crossover_hz)
+        crossover_region = {
+            "corner_hz": float(crossover_hz),
+            "no_boost_band_hz": [lo, hi],
+            "excluded_boosts": crossover_excluded_boosts,
+        }
+        if crossover_excluded_boosts:
+            warnings.append({
+                "code": "crossover_region_dip_not_boosted",
+                "severity": "info",
+                "message": (
+                    f"A dip near your {crossover_hz:.0f} Hz crossover was left "
+                    "un-boosted on purpose — that's where your subwoofer and "
+                    "speakers hand off, not a room mode. Boosting there fights "
+                    "the crossover instead of fixing the room."
+                ),
+            })
 
     report = {
         "target_profile": target_profile.to_dict(),
@@ -501,6 +589,10 @@ def design_correction(
         ),
         "warnings": warnings,
     }
+    # Additive: only present when a corner is being read, so old consumers that
+    # never saw this key are unaffected (no bass management -> absent).
+    if crossover_region is not None:
+        report["crossover_region"] = crossover_region
     return CorrectionDesign(
         target_profile=target_profile,
         strategy=correction_strategy,

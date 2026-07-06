@@ -39,6 +39,12 @@ import re
 from dataclasses import dataclass
 from typing import Mapping
 
+from jasper.camilla_emit import (
+    BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
+    BASS_MANAGEMENT_CORNER_HZ_HI,
+    BASS_MANAGEMENT_CORNER_HZ_LO,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,9 +93,14 @@ CHANNEL_DELAY_MS_HI = 100.0
 # its own local output path. A blank/non-numeric value falls back to the
 # default (a "sub" must never play full-range); an out-of-range value on
 # a sub is fail-LOUD. Bounds bracket sane home-sub corners.
-DEFAULT_CROSSOVER_HZ = 80.0
-CROSSOVER_HZ_LO = 40.0
-CROSSOVER_HZ_HI = 200.0
+#
+# BOUND TO the one shared bass-management corner definition
+# (jasper.camilla_emit) so the wireless sub, the local-DAC sub, and the safety
+# guard reference one number, not four that can drift. The public spelling
+# stays for this module's importers (control.server, channel_split, etc.).
+DEFAULT_CROSSOVER_HZ = BASS_MANAGEMENT_CORNER_HZ_DEFAULT
+CROSSOVER_HZ_LO = BASS_MANAGEMENT_CORNER_HZ_LO
+CROSSOVER_HZ_HI = BASS_MANAGEMENT_CORNER_HZ_HI
 
 # Wireless-sub bass management. Default ON: when a bond contains a sub, mains
 # high-pass at the same crossover corner the sub low-passes. The toggle exists
@@ -735,6 +746,24 @@ def follower_leader_addr(cfg: GroupingConfig) -> str | None:
 def is_bonded_follower(cfg: GroupingConfig) -> bool:
     """True when ``cfg`` describes an ACTIVE bonded FOLLOWER. PURE."""
     return follower_leader_addr(cfg) is not None
+
+
+def bond_has_subwoofer(cfg: GroupingConfig) -> bool:
+    """True when this bond contains a subwoofer member — this box IS the sub,
+    the persisted fan-out fact says one exists, or the leader roster lists one.
+
+    The ONE predicate behind every "does this bond bass-manage" decision. It is
+    shared on purpose by the reconciler's outputd env writer
+    (:func:`jasper.multiroom.reconcile.outputd_grouping_env` — decides whether
+    to arm the wireless mains high-pass) and the bass-management resolver
+    (:func:`jasper.bass_management.resolve_bass_management` — reports the
+    corner/ownership to displays and the room designer), so the two readers can
+    never drift on what "a sub is present" means. PURE."""
+    return (
+        cfg.subwoofer_present
+        or cfg.channel == "sub"
+        or any(m.channel == "sub" for m in cfg.roster)
+    )
 
 
 def local_sources_park_reason(cfg: GroupingConfig) -> str | None:

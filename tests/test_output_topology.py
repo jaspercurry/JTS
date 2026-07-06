@@ -1062,16 +1062,21 @@ def test_sub_crossover_fc_out_of_range_is_loud_blocker(fc: float) -> None:
 
 
 def test_sub_crossover_bounds_mirror_profile() -> None:
-    # The bounds duplicated in output_topology (to keep it free of an
-    # active_speaker import) MUST equal the profile's canonical numbers.
+    # output_topology, the active-speaker profile, AND the one shared corner
+    # home (jasper.camilla_emit) must all agree — since P5 they are bound to the
+    # same constant, not three independent numbers.
     from jasper.active_speaker.profile import (
         SUB_CROSSOVER_HZ_HI as PROFILE_HI,
         SUB_CROSSOVER_HZ_LO as PROFILE_LO,
+    )
+    from jasper.camilla_emit import (
+        BASS_MANAGEMENT_CORNER_HZ_HI as SHARED_HI,
+        BASS_MANAGEMENT_CORNER_HZ_LO as SHARED_LO,
     )
     from jasper.output_topology import (
         SUB_CROSSOVER_HZ_HI,
         SUB_CROSSOVER_HZ_LO,
     )
 
-    assert SUB_CROSSOVER_HZ_LO == PROFILE_LO == 40.0
-    assert SUB_CROSSOVER_HZ_HI == PROFILE_HI == 200.0
+    assert SUB_CROSSOVER_HZ_LO == PROFILE_LO == SHARED_LO == 40.0
+    assert SUB_CROSSOVER_HZ_HI == PROFILE_HI == SHARED_HI == 200.0

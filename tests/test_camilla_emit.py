@@ -255,3 +255,113 @@ def test_master_gain_pipeline_right_names_differ_and_parse():
     assert steps[0]["name"] == "master_gain"
     assert steps[1]["names"] == ["peq_1", "flat"]
     assert steps[2]["names"] == ["peq_r1", "flat"]
+
+
+# --------------------------------------------------------------------------
+# Bass-management corner — the ONE shared definition (revision plan §3.3 / P5).
+# --------------------------------------------------------------------------
+#
+# Before P5 the corner default + bounds were re-declared FOUR ways — one per
+# consumer — so the four numbers could silently drift apart. These tests pin
+# every consumer's public constant to the single shared definition. If a
+# consumer is ever un-bound (re-hardcodes its own number), the identity breaks
+# and one of these fails.
+
+
+def test_bass_management_corner_shared_constant_values():
+    from jasper.camilla_emit import (
+        BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
+        BASS_MANAGEMENT_CORNER_HZ_HI,
+        BASS_MANAGEMENT_CORNER_HZ_LO,
+        BASS_MANAGEMENT_CROSSOVER_ORDER,
+    )
+
+    # 80 Hz is the de-facto consumer-AVR sub corner; 40-200 Hz brackets sane
+    # home-sub corners; LR4 is the standard slope.
+    assert BASS_MANAGEMENT_CORNER_HZ_DEFAULT == 80.0
+    assert BASS_MANAGEMENT_CORNER_HZ_LO == 40.0
+    assert BASS_MANAGEMENT_CORNER_HZ_HI == 200.0
+    assert BASS_MANAGEMENT_CROSSOVER_ORDER == 4
+    # A well-ordered, sane band.
+    assert (
+        BASS_MANAGEMENT_CORNER_HZ_LO
+        < BASS_MANAGEMENT_CORNER_HZ_DEFAULT
+        < BASS_MANAGEMENT_CORNER_HZ_HI
+    )
+
+
+def test_every_corner_consumer_is_bound_to_the_shared_constant():
+    """All four corner-carrying layers reference the ONE shared definition."""
+    from jasper.active_speaker.profile import (
+        DEFAULT_SUB_CROSSOVER_HZ,
+        SUB_CROSSOVER_HZ_HI,
+        SUB_CROSSOVER_HZ_LO,
+        SUB_CROSSOVER_ORDER,
+    )
+    from jasper.camilla_emit import (
+        BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
+        BASS_MANAGEMENT_CORNER_HZ_HI,
+        BASS_MANAGEMENT_CORNER_HZ_LO,
+        BASS_MANAGEMENT_CROSSOVER_ORDER,
+    )
+    from jasper.multiroom.channel_split import (
+        DEFAULT_CROSSOVER_HZ as CS_DEFAULT,
+        _CROSSOVER_ORDER as CS_ORDER,
+    )
+    from jasper.multiroom.config import (
+        CROSSOVER_HZ_HI,
+        CROSSOVER_HZ_LO,
+        DEFAULT_CROSSOVER_HZ,
+    )
+    from jasper.output_topology import (
+        SUB_CROSSOVER_HZ_HI as OT_HI,
+        SUB_CROSSOVER_HZ_LO as OT_LO,
+    )
+
+    # `is`, not just `==`: the consumers must be ALIASED to the shared float
+    # objects, not carry equal copies. CPython does not share float literals
+    # across modules, so a consumer that re-hardcodes `80.0` produces a
+    # DIFFERENT object — `is` fails immediately, whereas `==` would stay green
+    # until the shared default changed (exactly when the drift bites). The
+    # order constant stays `==` because small ints are interned (`4 is 4`
+    # always), making an `is` pin vacuous there.
+    #
+    # Default corner: wireless-sub config, local-DAC-sub profile, and the
+    # channel-split low-pass are all THE shared default object.
+    assert (
+        DEFAULT_CROSSOVER_HZ
+        is DEFAULT_SUB_CROSSOVER_HZ
+        is CS_DEFAULT
+        is BASS_MANAGEMENT_CORNER_HZ_DEFAULT
+    )
+    # Lower bound across all consumers.
+    assert (
+        CROSSOVER_HZ_LO
+        is SUB_CROSSOVER_HZ_LO
+        is OT_LO
+        is BASS_MANAGEMENT_CORNER_HZ_LO
+    )
+    # Upper bound (the load-bearing 200 Hz sub-LP safety ceiling) across all.
+    assert (
+        CROSSOVER_HZ_HI
+        is SUB_CROSSOVER_HZ_HI
+        is OT_HI
+        is BASS_MANAGEMENT_CORNER_HZ_HI
+    )
+    # LR4 order across the two crossover emitters that reference it.
+    assert SUB_CROSSOVER_ORDER == CS_ORDER == BASS_MANAGEMENT_CROSSOVER_ORDER
+
+
+def test_audible_sub_guard_ceiling_uses_the_shared_upper_bound():
+    """The 200 Hz sub-LP safety ceiling the guard enforces IS the shared bound.
+
+    runtime_contract passes SUB_CROSSOVER_HZ_HI as the audible-sub low-pass
+    ceiling to graph_safety.sub_audible_guard_present — so an audible sub whose
+    low-pass corner exceeds the shared ceiling fails the guard. This pins that
+    the guard ceiling and the shared corner ceiling are the same number: were
+    they to drift apart, a wider-than-legal sub low-pass could slip past.
+    """
+    from jasper.active_speaker.profile import SUB_CROSSOVER_HZ_HI
+    from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_HI
+
+    assert SUB_CROSSOVER_HZ_HI == BASS_MANAGEMENT_CORNER_HZ_HI == 200.0

@@ -17,6 +17,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from jasper.camilla_emit import (
+    BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
+    BASS_MANAGEMENT_CORNER_HZ_HI,
+    BASS_MANAGEMENT_CORNER_HZ_LO,
+    BASS_MANAGEMENT_CROSSOVER_ORDER,
+)
+
 SCHEMA_VERSION = 1
 ACTIVE_PRESET_KIND = "jts_active_speaker_preset"
 ACTIVE_BASELINE_KIND = "jts_speaker_baseline_profile"
@@ -48,14 +55,17 @@ LOWEST_DRIVER_ROLE_BY_WAY: dict[int, str] = {
     3: "woofer",
 }
 
-# Local-subwoofer bass-management crossover corner. Mirrors the wireless sub
-# (jasper.multiroom.config DEFAULT_CROSSOVER_HZ / CROSSOVER_HZ_LO / _HI) so the
-# two sub features share one corner vocabulary.
-DEFAULT_SUB_CROSSOVER_HZ = 80.0
-SUB_CROSSOVER_HZ_LO = 40.0
-SUB_CROSSOVER_HZ_HI = 200.0
+# Local-subwoofer bass-management crossover corner. BOUND TO the one shared
+# bass-management corner definition (jasper.camilla_emit) — the same values the
+# wireless sub (jasper.multiroom.config) and the safety guard reference — so the
+# two sub features share one corner vocabulary and cannot drift. The public
+# spelling stays for this module's importers (graph_safety, runtime_contract,
+# output_topology's mirror test).
+DEFAULT_SUB_CROSSOVER_HZ = BASS_MANAGEMENT_CORNER_HZ_DEFAULT
+SUB_CROSSOVER_HZ_LO = BASS_MANAGEMENT_CORNER_HZ_LO
+SUB_CROSSOVER_HZ_HI = BASS_MANAGEMENT_CORNER_HZ_HI
 # LR4 is the standard sub/main bass-management slope (both halves at order 4).
-SUB_CROSSOVER_ORDER = 4
+SUB_CROSSOVER_ORDER = BASS_MANAGEMENT_CROSSOVER_ORDER
 SUPPORTED_LAYOUTS = {"mono", "stereo"}
 SIDES_BY_LAYOUT: dict[str, tuple[str, ...]] = {
     "mono": ("mono",),

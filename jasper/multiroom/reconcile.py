@@ -55,6 +55,7 @@ from ..local_sources import (
 from ..fanin_coupling import OUTPUTD_PIPE_PATH_ENV_VAR
 from .config import (
     GroupingConfig,
+    bond_has_subwoofer,
     is_active_leader,
     load_config,
     local_sources_parked,
@@ -627,6 +628,25 @@ def outputd_grouping_env(
 
     if cfg.enabled and cfg.error is None:
         if active_endpoint:
+            # CORNER PRECEDENCE (revision plan §6 default): an ACTIVE main is
+            # both a bonded endpoint AND an active-speaker, so it could carry the
+            # crossover corner TWICE — the wireless-sub mains high-pass here in
+            # outputd's dac_content lane, AND its own CamillaDSP active graph's
+            # bass-management high-pass (active_speaker.camilla_yaml folds the
+            # mains' lowest-driver HP at LocalSubwoofer.crossover_fc_hz). The
+            # active-speaker LOCAL config wins: this box's dac_content lane is
+            # cleared entirely (camilla owns the channel-pick + split + any
+            # crossover), so the wireless HP DEFERS. For an active main WITH a
+            # local sub, mains-HP is therefore applied exactly ONCE, in the
+            # CamillaDSP graph. KNOWN GAP for an active main WITHOUT a local
+            # sub: its Layer-A graph only folds a mains HP when
+            # preset.local_subwoofer is set, so with a wireless-only sub this
+            # clear leaves the active box's mains running FULL-RANGE (zero
+            # mains-HP) — the documented "Remaining" active-endpoint sub path
+            # in HANDOFF-distributed-active.md; jasper.bass_management reports
+            # that state honestly to displays. Only a DUMB (passive single-DAC)
+            # member — active_endpoint=False, below — carries the wireless HP
+            # in this lane.
             return {
                 OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
                 OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
@@ -636,11 +656,13 @@ def outputd_grouping_env(
                 # Empty = unset to outputd's env_f32 (default 0.0).
                 OUTPUTD_DAC_CONTENT_TRIM_ENV: "",
             }
-        sub_present = (
-            cfg.subwoofer_present
-            or cfg.channel == "sub"
-            or any(m.channel == "sub" for m in cfg.roster)
-        )
+        sub_present = bond_has_subwoofer(cfg)
+        # The wireless-sub mains high-pass corner, applied in THIS (dumb-member)
+        # lane. Reached only for a passive single-DAC main (active endpoints
+        # returned above with this cleared — the §6 precedence). The corner is
+        # cfg.crossover_hz, the SHARED bass-management corner (jasper.camilla_emit
+        # via multiroom.config), so the sub's low-pass and this high-pass are one
+        # matched crossover, not two independent numbers.
         main_highpass_hz = (
             str(cfg.crossover_hz)
             if (

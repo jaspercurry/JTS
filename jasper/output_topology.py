@@ -37,6 +37,10 @@ from .audio_hardware.dac import (
     physical_output_count_for as _dac_physical_output_count_for,
 )
 from .camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+from .camilla_emit import (
+    BASS_MANAGEMENT_CORNER_HZ_HI,
+    BASS_MANAGEMENT_CORNER_HZ_LO,
+)
 from .output_hardware import (
     OutputHardwareState,
     load_state as load_output_hardware_state,
@@ -84,14 +88,15 @@ MIN_DUAL_APPLE_CLOCK_EVIDENCE_SECONDS = 900.0
 MAX_DUAL_APPLE_CLOCK_DRIFT_PPM = 1.0
 MAX_DUAL_APPLE_CLOCK_DELTA_FRAMES = 1.0
 
-# Bass-management corner bounds for a user-settable subwoofer crossover. These
-# MUST equal jasper.active_speaker.profile.SUB_CROSSOVER_HZ_LO / _HI — they are
-# duplicated here only to keep this widely-imported, import-cheap module free of
-# an active_speaker package import (which would be circular: active_speaker
-# imports output_topology). The equality is pinned by
+# Bass-management corner bounds for a user-settable subwoofer crossover. BOUND
+# TO the one shared bass-management corner definition (jasper.camilla_emit) — a
+# stdlib-only leaf this import-cheap module CAN depend on (unlike
+# active_speaker, which would be circular: active_speaker imports
+# output_topology). Before P5 these were re-declared here to dodge that circular
+# import; the shared leaf home removes the need. The equality is pinned by
 # test_output_topology.py::test_sub_crossover_bounds_mirror_profile.
-SUB_CROSSOVER_HZ_LO = 40.0
-SUB_CROSSOVER_HZ_HI = 200.0
+SUB_CROSSOVER_HZ_LO = BASS_MANAGEMENT_CORNER_HZ_LO
+SUB_CROSSOVER_HZ_HI = BASS_MANAGEMENT_CORNER_HZ_HI
 
 SUPPORTED_GROUP_KINDS = {"left", "right", "mono", "subwoofer"}
 SUPPORTED_GROUP_MODES = {

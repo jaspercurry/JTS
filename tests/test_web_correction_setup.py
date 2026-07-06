@@ -183,11 +183,21 @@ def test_get_crossover_subpath_renders_secure_capture_ui():
     assert b"Play each driver, confirm the right driver sounded" in resp
 
 
-def test_get_bass_subpath_renders_placeholder():
+def test_get_bass_subpath_renders_display_page():
     resp = _drive("/bass/")
     assert b"200" in resp.split(b"\r\n", 1)[0]
-    assert b"Bass correction" in resp
-    assert b"/correction/crossover/" in resp
+    assert b"Bass management" in resp  # P5: read-only display, not a placeholder
+    assert b"/assets/correction/js/bass/main.js" in resp
+    assert b"/correction/room/" in resp  # pointer to the bass-region measurement
+
+
+def test_get_bass_status_returns_display_json():
+    import json
+
+    resp = _drive("/bass/status")
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+    body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+    assert "configured" in body and "corner_hz" in body
 
 
 def test_get_healthz_ok():
