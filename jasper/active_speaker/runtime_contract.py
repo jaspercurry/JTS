@@ -436,9 +436,19 @@ def topology_supports_shm_ring(topology: OutputTopology) -> bool:
       outputd config.rs likewise requires a full-range stereo L/R sink for
       ``shm_ring``, and the statefile seeder sends these to the driver-domain graph,
       never the ring flat config);
-    - composite sinks (dual-Apple — ``hardware.child_devices`` present): the ring
+    - composite sinks (dual-Apple — TWO+ ``hardware.child_devices``): the ring
       ioplug is a single coherent 2-ch device, not the 4-ch composite the two
-      child DACs need. That is P8's ring-v2 (N-channel) problem.
+      child DACs need. That is P8's ring-v2 (N-channel) problem. The exclusion is
+      keyed on ``len(child_devices) >= 2`` — a *plurality* of child DACs, each its
+      own USB clock domain (``dac.py``'s only ``kind="composite"`` profile is the
+      dual-Apple 4-ch, ``child_profile_ids=(apple, apple)``). A *single* child
+      (``len == 1``) is the opposite: one coherent stereo sink on one clock, which
+      IS exactly what the ring drives — the single-Apple-dongle and single
+      registered DAC (hifiberry) paths both populate ``child_devices=(card,)`` for
+      stable serial identity, and that single entry must NOT disqualify the ring.
+      (Pre-2026-07 this read ``if child_devices:`` — a bare truthiness check that
+      wrongly refused every shipped-default box, since observed hardware always
+      records its one child. See DEFECT 2.)
 
     An UNCONFIGURED topology (no speaker groups — the common fresh-install shape)
     IS ring-eligible: it uses the flat stereo graph, exactly the shape ring
@@ -448,9 +458,12 @@ def topology_supports_shm_ring(topology: OutputTopology) -> bool:
     contract = classify_output_contract(topology)
     if contract.requires_roleful_graph:
         return False
-    # Composite (dual-Apple) is excluded even when it is nominally stereo: a
-    # dual-child sink is not the single coherent L/R sink the ring drives.
-    if topology.hardware.child_devices:
+    # Composite (dual-Apple, kind="composite") is excluded even when nominally
+    # stereo: a MULTI-child sink spans >1 USB clock domain and is not the single
+    # coherent L/R sink the ring drives. A single child (len == 1) IS that coherent
+    # sink — the shipped-default dongle/hifiberry path records one child for stable
+    # identity — so gate on a plurality of children, never bare truthiness.
+    if len(topology.hardware.child_devices) >= 2:
         return False
     # Stereo full-range OR unconfigured (flat stereo fallback) are the ring-legal
     # shapes; an explicit mono full-range cannot be driven by a stereo ring.

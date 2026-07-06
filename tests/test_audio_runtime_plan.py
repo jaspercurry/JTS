@@ -503,8 +503,51 @@ def test_fanin_coupling_capture_kwargs_explicit_intent_beats_env(monkeypatch):
     assert kwargs["transport_paced_pipe"] is True
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", COUPLING_TRANSPORT_PIPE)
     assert fanin_coupling_capture_kwargs("loopback") == {}
-    assert "capture_pipe_path" in fanin_coupling_capture_kwargs(None)
-    assert "playback_pipe_path" in fanin_coupling_capture_kwargs(None)
+
+
+def test_fanin_coupling_capture_kwargs_none_reads_coupling_file_fresh(monkeypatch):
+    # DEFECT 1: coupling=None resolves the TOKEN from the persisted fanin.env SSOT
+    # (read_persisted_coupling), NOT from os.environ. os.environ here says
+    # transport_pipe, but the file-fresh SSOT drives the result. Pipe PATH overrides
+    # still come from the live env (the persisted file names WHICH coupling only).
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "transport_pipe")  # stale
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_PIPE", "/run/custom.pipe")
+    monkeypatch.setenv("JASPER_OUTPUTD_LOCAL_CONTENT_PIPE", "/run/outputd.pipe")
+
+    # SSOT says transport_pipe -> pipe kwargs, honoring the live PATH overrides.
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "transport_pipe",
+    )
+    kwargs = fanin_coupling_capture_kwargs(None)
+    assert kwargs["capture_pipe_path"] == "/run/custom.pipe"
+    assert kwargs["playback_pipe_path"] == "/run/outputd.pipe"
+
+    # SSOT says loopback -> {}, even though os.environ still says transport_pipe.
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "loopback",
+    )
+    assert fanin_coupling_capture_kwargs(None) == {}
+
+
+def test_fanin_coupling_capture_kwargs_none_explicit_env_ignores_file(monkeypatch):
+    # An EXPLICIT env mapping stays authoritative (the reconciler/binder path
+    # passes dict(os.environ) right after pre-syncing it): the persisted file is
+    # NOT read. Fails loudly if the file reader is consulted.
+    def _boom(*a, **k):
+        raise AssertionError("explicit-env path must not read the persisted file")
+
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling", _boom
+    )
+    assert fanin_coupling_capture_kwargs(None, env={}) == {}
+    assert (
+        fanin_coupling_capture_kwargs(
+            None, env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"}
+        ).get("capture_device")
+        == "jts_ring_capture"
+    )
 
 
 def test_capture_precedence_applies_fanin_coupling_when_no_stronger_capture():

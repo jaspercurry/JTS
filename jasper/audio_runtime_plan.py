@@ -1622,12 +1622,36 @@ def fanin_coupling_capture_kwargs(
     after it rewrites ``fanin.env``; process env may still be stale, so the
     explicit value wins while the FIFO path still comes from the supplied/live
     env.
+
+    **Coupling TOKEN is resolved FILE-FRESH on the live path** (``coupling is
+    None`` AND ``env is None``): we delegate to
+    :func:`coupling_capture_kwargs_from_env` with ``env=None`` so it reads the
+    persisted ``fanin.env`` SSOT (:func:`read_persisted_coupling`) rather than a
+    STALE ``os.environ``. This is the same ``os.environ``-stale class the #1158
+    Blocker-1 fix closed for the socket-activated wizards (``/sound/`` /
+    ``/correction/``) — but that fix lived inside
+    ``coupling_capture_kwargs_from_env``, and this helper previously synthesized
+    ``dict(os.environ)`` unconditionally, forcing the explicit-env branch and
+    defeating it on the CLI/install ``jasper-sound reconcile-current-dsp`` path
+    (which only ``load_env_files()``-hydrates via ``setdefault`` and is NOT the
+    reconciler's pre-synced-env caller). On a loopback box a polluted
+    ``os.environ`` coupling then emitted a RING capture/playback config —
+    CamillaDSP crash-loops on a ring nobody writes (hardware-reproduced on
+    jts.local). An EXPLICIT ``env`` mapping stays authoritative (no file read) for
+    callers that want to pin the resolution deterministically — today only unit
+    tests, which pass a controlled env. No production caller passes ``env=``: the
+    reconciler/binder pre-syncs ``os.environ`` and the coupling files, then relies
+    on the ``coupling is None, env is None`` file-fresh path here (the token is
+    read from the ``fanin.env`` it just wrote), so the live emit never depends on a
+    stale ``os.environ`` coupling token.
     """
 
     if coupling is None:
+        # Live path (env is None): file-fresh coupling token. Explicit env:
+        # authoritative, no file read — pass the mapping straight through.
         return cast(
             EmitSoundConfigKwargs,
-            coupling_capture_kwargs_from_env(dict(os.environ if env is None else env)),
+            coupling_capture_kwargs_from_env(None if env is None else dict(env)),
         )
     source = os.environ if env is None else env
     return cast(

@@ -758,11 +758,29 @@ def ring_topology_ready() -> tuple[bool, str]:
         return True, f"topology unreadable ({exc}); deferring to outputd's own guard"
     if topology_supports_shm_ring(topology):
         return True, "topology is ring-eligible (stereo/unconfigured single sink)"
+    # Not ring-eligible. This is CORRECT for a genuinely roleful/composite/mono box
+    # (dac8x active speaker, dual-Apple 4-ch, explicit mono) — the household knows
+    # that setup and loopback is the right coupling. A shipped-default plain stereo
+    # single-sink box (one Apple dongle / one registered DAC) is NOT refused here:
+    # ``topology_supports_shm_ring`` reports it eligible above (its lone
+    # ``child_devices`` entry is the single coherent sink the ring drives — the
+    # DEFECT-2 fix). The one way a plain single-sink box lands in THIS branch is a
+    # SAVED topology that still declares STALE roleful/subwoofer ``speaker_groups``
+    # from a prior campaign after the hardware reverted to plain stereo: the
+    # classifier honestly reports the saved sub role and a stereo ring truly cannot
+    # drive it. The remediation is to CLEAR the drifted topology so it re-derives
+    # the plain-stereo shape from detected hardware —
+    # ``jasper-output-topology-reset`` (rewrites speaker_groups=[] -> unconfigured
+    # -> ring-eligible). Name it here so the operator has an actionable next step
+    # instead of an opaque refusal.
     return False, (
         "saved output topology is not ring-eligible (shm_ring is a full-range "
         "stereo single-sink coupling; roleful/protected/subwoofer, composite "
         "dual-DAC, and explicit-mono topologies are excluded until ring v2 / P8). "
-        "Keeping the coupling on loopback"
+        "Keeping the coupling on loopback. If this box is actually a plain stereo "
+        "single-sink speaker carrying a stale roleful/subwoofer topology, run "
+        "`jasper-output-topology-reset` to re-derive a clean passive topology from "
+        "detected hardware, then re-arm."
     )
 
 
@@ -1541,11 +1559,15 @@ def _sync_process_env_for_emit(
     """Make the in-process Camilla re-emit see the env we just persisted.
 
     Mirrors :func:`_outputd_actions`: the in-process env must carry the SAME
-    content-source keys the files now carry so the immediate camilla re-emit
-    (``fanin_coupling_capture_kwargs`` reads ``os.environ``) names the right
-    devices. shm_ring's capture/playback devices come from the coupling constant,
-    not the env, so setting the coupling key is enough for the emit; the outputd
-    ring keys below keep the in-process env coherent for any reader.
+    content-source keys the files now carry so the immediate camilla re-emit names
+    the right devices for any reader. Note the coupling TOKEN itself no longer
+    rides ``os.environ`` for the live emit: since the CLI-render-coupling fix,
+    ``fanin_coupling_capture_kwargs(None)`` reads the coupling file-fresh from the
+    persisted ``fanin.env`` (which we wrote BEFORE calling this), while the pipe /
+    ring PATH env vars set here remain the live override source the file-fresh
+    reader consults. shm_ring's capture/playback devices come from the coupling
+    constant, not the env, so the coupling key alone drives the emit; the outputd
+    ring keys below keep the in-process env coherent for any other reader.
     """
     os.environ[COUPLING_ENV_VAR] = coupling
     os.environ[PIPE_PATH_ENV_VAR] = resolve_pipe_path(

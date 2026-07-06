@@ -452,10 +452,13 @@ def coupling_capture_kwargs_from_env(
     EnvironmentFile flip still takes effect on the next regeneration without a code
     edit; the persisted file is just the authoritative source for WHICH coupling.
 
-    An EXPLICIT ``env`` mapping is treated as authoritative (no file fallback):
-    ``jasper.audio_runtime_plan`` passes ``dict(os.environ)`` right after the
-    reconciler rewrote the files (and pre-synced ``os.environ``), and unit tests
-    pass a controlled env — both want the env they hand in, not a disk read.
+    An EXPLICIT ``env`` mapping is treated as authoritative (no file fallback) for
+    a caller that wants the env it hands in, not a disk read. Today that is unit
+    tests only: since the CLI-render-coupling fix, ``jasper.audio_runtime_plan``'s
+    live path calls this with ``env=None`` (file-fresh), and no production caller
+    synthesizes ``dict(os.environ)`` into the explicit branch anymore — the
+    reconciler pre-syncs ``os.environ`` + the files and then leans on the
+    ``env is None`` file-fresh read above.
     """
     import os
 
