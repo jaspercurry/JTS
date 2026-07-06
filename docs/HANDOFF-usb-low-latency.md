@@ -911,12 +911,16 @@ CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
 
 > **Two-strike probe fail (jts.local 2026-07-03).** A probe FAIL is a
 > MEASUREMENT, not proof the host changed — the lock-gated probe can spuriously
-> fail if it runs while the resampler's correction is railed (the exact false-fail
-> that the unrailed-settle guard now prevents: a floor-primed session whose held
-> target snapped to the ceiling post-lock railed at −500 ppm while the DLL rebuilt
-> the fill, so a probe reading against that rail would see baseline ≈ step ≈ −500 →
-> response_ratio ≈ 0 → FAIL; the rail's exact mechanism — the post-lock `NotL0`
-> snap — is now FIXED by the prime-aware hold, see the floor-prime bullet). Even so,
+> fail if it runs while the resampler's correction is railed (the 2026-07-03
+> false-fail: a floor-primed session whose held target snapped to the ceiling
+> post-lock railed at −500 ppm while the DLL rebuilt the fill, so a probe reading
+> against that rail would see baseline ≈ step ≈ −500 → response_ratio ≈ 0 → FAIL).
+> The rail's exact mechanism — the post-lock `NotL0` snap — is now root-FIXED by the
+> prime-aware hold (see the floor-prime bullet), so that specific rail no longer
+> occurs. (An earlier CORRECTION-mode unrailed-settle guard also targeted this, but
+> was REMOVED 2026-07-05 — it deadlocked beyond-authority hosts whose correction
+> rails steady-state; see the settle-guard bullet in the productization section.)
+> Even so,
 > costing the household the ~2.5-min
 > descent on ONE ambiguous read is the wrong trade. So a probe fail is
 > handled by the pure `classify_strike` (`PROBE_FAIL_STRIKE_LIMIT = 2`): the FIRST
@@ -948,10 +952,13 @@ CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
 > re-proves, exactly as before. STATUS surfaces the counter as
 > `resampler.compliance.consecutive_failures`.
 
-**Two guards near the railed-acquisition failure mode. The unrailed-settle guard
-(below) is the one that actually keeps the probe from baselining against a rail (so
-the two-strike tolerance is rarely even exercised); floor-prime seating is
-defense-in-depth for an exotic geometry and a no-op on default boxes:**
+**Guarding the railed-acquisition failure mode.** The 2026-07-03 rail is
+root-fixed by the prime-aware `NotL0` hold (above), so the probe no longer
+baselines against that snap rail. Floor-prime seating below is
+defense-in-depth for an exotic geometry and a no-op on default boxes. (An
+unrailed-settle guard also lived here briefly but was REMOVED 2026-07-05 — it
+deadlocked beyond-authority hosts; see the settle-guard bullet in the
+productization section.)
 
 - **Floor-prime seating (`lane_resampler::try_lock`) — DEFENSE-IN-DEPTH for an
   exotic geometry, NOT the fix for the observed rail.** When a lane is floor-primed,
@@ -1012,16 +1019,28 @@ defense-in-depth for an exotic geometry and a no-op on default boxes:**
   > `primed_notl0_probe_window_stays_quiescent_no_rail` (LaneResampler level — the
   > ≥19 s −500 ppm rail is impossible by construction), both-ways mutation-guarded.
 
-- **Unrailed-settle guard (`jasper-host-clock`, CORRECTION mode only).** The
-  pre-probe `AwaitLock` settle window now requires, in CORRECTION mode, that the
-  resampler's smoothed correction ppm be UNRAILED (magnitude below
-  `CORRECTION_SETTLE_RAIL_GUARD_PPM = 450`, just under the ±500 inner authority)
-  for the whole settle duration — not just `Obs::locked`. A railed correction means
-  the lane is not in its steady regime regardless of lock state, so the probe holds
-  (commanding neutral) until the inner loop pulls the correction off the rail, then
-  baselines against a quiescent signal. FILL mode (usbsink solo) is UNAFFECTED — it
-  has no resampler stage, so `Obs::correction_ppm` is always 0 and the guard is a
-  no-op there (the mode gate, not the value, suppresses it).
+- **Unrailed-settle guard (`jasper-host-clock`, CORRECTION mode) — REMOVED
+  2026-07-05 (`settle_regime_ok` reverts to `obs.locked` in both modes).** This
+  guard briefly required the smoothed correction to be UNRAILED (below
+  `CORRECTION_SETTLE_RAIL_GUARD_PPM = 450`) before the settle window could accrue.
+  Hardware on jts.local falsified it: the Mac host runs ~+600 ppm fast — BEYOND the
+  lane's ±500 ppm inner authority — so under the NEUTRAL pitch AwaitLock commands
+  the correction rails at +500 STEADY-STATE and can only come off the rail with the
+  servo's pitch help. The guard waited for the unrail; the unrail needed the pitch
+  authority the guard withheld — a deadlock. Two consecutive sessions sat in
+  `ProbePhase::AwaitLock` for 6+ min (`correction_mean_ppm` pinned 500.0,
+  `pitch_ppm_commanded` 0.0, no compliance proof written). Lock-only settle is
+  correct because the probe steps AWAY from the nearer rail (a railed baseline stays
+  measurable — an earlier jts.local session probed `baseline=500 → step=258`,
+  `response_ratio=0.807` PASS) and rail-clipping is fail-biased, never pass-biased
+  (a clipped baseline understates demand, so a truly non-compliant host reads
+  `ratio≈0 → FAIL`; removing the guard cannot manufacture a false PASS). The
+  transient the guard was built for (the 2026-07-03 `NotL0` snap-back rail, below)
+  was root-fixed by the prime-aware `NotL0` hold, so it no longer exists. The
+  two-strike ProbeFail (#1160) and churn discriminator (#1156) remain the safety net
+  for a genuinely bad host. Pinned by `correction_probe_settle_accrues_at_the_rail`
+  + `beyond_authority_railed_host_probes_pass_then_fail` in the `jasper-host-clock`
+  crate.
 
 **The EarlyUnlock churn discriminator — a relock is required (#1156, hardware-diagnosed
 on jts.local 2026-07-03).** The underfill-unlock trigger is TWO-PHASE, not a bare
@@ -1194,10 +1213,12 @@ silent-but-streaming host; the on-device validation run proves it on hardware.
 
 State machine + I/O: `rust/jasper-fanin/src/host_compliance.rs`; two-strike policy:
 `classify_strike` / `PROBE_FAIL_STRIKE_LIMIT`; floor-prime seating:
-`lane_resampler::try_lock` (`is_floor_primed()`); unrailed-settle guard:
-`jasper-host-clock` `settle_regime_ok` / `CORRECTION_SETTLE_RAIL_GUARD_PPM`; mixer
-wiring: `mixer::service_host_compliance`; STATUS: `resampler.compliance
-{flag_present, proved_at, revoked_reason_last, consecutive_failures}`.
+`lane_resampler::try_lock` (`is_floor_primed()`); pre-probe settle gate:
+`jasper-host-clock` `settle_regime_ok` (lock-only in both modes — the
+CORRECTION-mode rail guard was removed 2026-07-05, see the settle-guard bullet
+above); mixer wiring: `mixer::service_host_compliance`; STATUS:
+`resampler.compliance {flag_present, proved_at, revoked_reason_last,
+consecutive_failures}`.
 
 ### Cross-platform conditions
 
@@ -1595,10 +1616,10 @@ pytest/cargo coverage on both sides of the state.json contract; on-device
 compliance-probe validation against jts.local's Apple dongle host is a
 separate, not-yet-run task.)
 
-The **probe false-fail hardening** — the unrailed-settle guard (`jasper-host-clock`
-`settle_regime_ok` / `CORRECTION_SETTLE_RAIL_GUARD_PPM = 450`), the two-strike probe
-fail (`classify_strike` / `PROBE_FAIL_STRIKE_LIMIT = 2`), and floor-prime seating
-(`lane_resampler::try_lock`, defense-in-depth) — landed 2026-07-03 in response to the
+The **probe false-fail hardening** — the two-strike probe fail (`classify_strike` /
+`PROBE_FAIL_STRIKE_LIMIT = 2`) and floor-prime seating (`lane_resampler::try_lock`,
+defense-in-depth), plus a since-removed unrailed-settle guard (see below) — landed
+2026-07-03 in response to the
 jts.local journal evidence: a floor-primed session that had passed the probe at ratio
 1.312 the prior session then read baseline=step=−500 ppm → response_ratio=0.000 → a
 one-strike ProbeFail revoked the proof. **The rail's mechanism is NOT the one an
@@ -1613,13 +1634,16 @@ railed the DLL to rebuild the fill 576→2560. **That root cause is now PINNED a
 — the `NotL0` snap-back is prime-aware (see the floor-prime bullet above): while a floor
 prime is live for the session, the `NotL0` branch HOLDS the floor instead of snapping to
 the ceiling, so a primed session's correction stays quiescent through Probing and the
-probe measures a real baseline. The three earlier guards remain as defense-in-depth: the
-unrailed-settle guard holds the probe in AwaitLock while any correction is railed (so it
-never baselines against a rail from a *genuinely* bad host); the two-strike policy means
-even one spurious probe read never costs the floor on the next session; floor-prime
-seating is a no-op in default geometry and only bites the exotic operator-set deep floor.
-Verified hardware-free: the `jasper-host-clock` crate tests (railed settle holds +
-FILL-mode no-op, mutation-guarded); macOS scratch crates for the `jasper-fanin` pure
+probe measures a real baseline. Two guards remain as defense-in-depth: the two-strike
+policy means even one spurious probe read never costs the floor on the next session, and
+floor-prime seating is a no-op in default geometry and only bites the exotic operator-set
+deep floor. (A third, the CORRECTION-mode unrailed-settle guard, was REMOVED 2026-07-05 —
+it deadlocked a beyond-authority host whose correction rails steady-state; see the
+settle-guard bullet in the productization section and the 2026-07-05 appendix entry
+below.)
+Verified hardware-free: the `jasper-host-clock` crate tests (lock-only settle accrues at
+the rail + the beyond-authority pass/fail composition + FILL-mode correction-oblivious,
+mutation-guarded); macOS scratch crates for the `jasper-fanin` pure
 logic (the prime-aware `NotL0`-hold decay tests + the LaneResampler-level hardware-
 signature regression `primed_notl0_probe_window_stays_quiescent_no_rail` that makes the
 ≥19 s −500 ppm rail impossible by construction, both-ways mutation-guarded against the
@@ -1634,3 +1658,38 @@ re-prove cycle against jts.local's Apple dongle — AND confirming the primed se
 holds the floor through the first 30 s (validation step 4c: `decay.frozen_reason` stays
 `at_floor`/`prime_hold`, `held_target_frames` never jumps to the ceiling) — is a
 separate, not-yet-run task (this session touched no Pi).
+
+**Unrailed-settle guard REMOVED (jts.local 2026-07-05).** The CORRECTION-mode
+rail guard added 2026-07-03 (`settle_regime_ok` refusing to accrue the AwaitLock
+settle window while `|correction_mean| >= 450`) was falsified on hardware and
+removed; `settle_regime_ok` reverts to `obs.locked` in both modes. **Deadlock
+class — beyond-authority host.** jts.local's Mac host runs ~+600 ppm fast,
+BEYOND the lane resampler's ±500 ppm inner authority. With the servo holding
+NEUTRAL pitch during AwaitLock (by design), the correction rails at +500
+STEADY-STATE and cannot leave the rail without the servo's pitch help — but the
+servo (probe → l0 → TRIM) waits on the probe, the probe waits on the guard, and
+the guard waits on the unrail that only the pitch can produce. Two consecutive
+sessions sat in `ProbePhase::AwaitLock` for the full 6+ min session:
+`event=fanin.host_clock_probe_wait reason=await_lock` at session start, then
+NOTHING until `event=fanin.host_clock_probe_result result=await_lock_ended` at
+stream stop; `correction_mean_ppm` pinned 500.0, `pitch_ppm_commanded` 0.0,
+decay frozen `not_l0`, no compliance proof written. One earlier session escaped
+only by racing the correction ramp-up (settle accrued while correction was still
+climbing through <450 after a fresh daemon start), then probed FROM A RAILED
+BASELINE — `baseline_obs_ppm=500.0, step_obs_ppm=258.0, response_ratio=0.807`
+PASS — proving the probe math works from the rail. **Why removal, not bounding.**
+(1) The transient the guard was built for — the floor-primed `NotL0` snap-back
+rail (above) — was ROOT-FIXED by the prime-aware hold (#1161, prime-aware
+`NotL0` snap-back), so it no longer occurs. (2) #1144's step-AWAY-from-the-rail
+already makes a railed baseline measurable (the 0.807 pass is the hardware
+proof). (3) Rail-clipping is fail-biased, never pass-biased: a clipped baseline
+UNDERSTATES demand, so a truly non-compliant host reads `baseline 500 → step 500
+→ ratio 0 → FAIL` — removing the guard cannot create a false PASS. (4) A steady
+railed correction is indistinguishable from a beyond-authority host, which is
+exactly the host the servo exists to serve; probing is measurement, not
+commitment (fail verdicts stay retained/two-strike per #1160's other parts,
+which are unchanged). Pinned by `correction_probe_settle_accrues_at_the_rail`
+(railed-but-locked leaves AwaitLock and reaches a verdict, no deadlock) and
+`beyond_authority_railed_host_probes_pass_then_fail` (a +600 ppm host: compliant
+PASSES from the rail via the away-from-rail step, non-compliant FAILS —
+fail-bias) in the `jasper-host-clock` crate.
