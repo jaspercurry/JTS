@@ -42,10 +42,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import numpy as np  # noqa: E402
+import numpy as np
 
-from jasper.calibration_agent import correction_advisor, key_provisioning  # noqa: E402
-from jasper.calibration_agent import model_client, response as advisor_response  # noqa: E402
+from jasper.calibration_agent import correction_advisor, key_provisioning
+from jasper.calibration_agent import model_client, response as advisor_response
 
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
 
@@ -71,7 +71,7 @@ def _demo_session() -> SimpleNamespace:
     predicted = measured - 7.0 * np.exp(
         -((np.log2(freqs / 62.0)) ** 2) / (2 * 0.3 ** 2)
     )
-    curve = lambda m: SimpleNamespace(  # noqa: E731
+    curve = lambda m: SimpleNamespace(
         freqs_hz=freqs.tolist(), magnitude_db=m.tolist()
     )
     return SimpleNamespace(

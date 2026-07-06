@@ -34,7 +34,7 @@ def _fake_session(state_value="ready"):
 
     freqs = np.geomspace(20, 350, 60)
     measured = 8.0 * np.exp(-((np.log2(freqs / 62.0)) ** 2) / (2 * 0.25 ** 2))
-    Curve = lambda m: SimpleNamespace(  # noqa: E731 - tiny local ctor
+    Curve = lambda m: SimpleNamespace(
         freqs_hz=freqs.tolist(), magnitude_db=m.tolist()
     )
     state = getattr(SessionState, state_value.upper())
