@@ -2238,6 +2238,60 @@ def _summed_test_session_stop_reason(session: dict[str, Any]) -> str | None:
     return None
 
 
+def _active_summed_test_snapshot() -> dict[str, Any]:
+    """Live snapshot of the in-progress combined (summed) test, if any.
+
+    The commissioning view is otherwise composed from *persisted* state and
+    cannot see this in-memory playback session, so a freshly loaded (or
+    reloaded) ``/sound/`` page would render "Play combined test" with no Stop
+    control while the test audio is still looping — the un-stoppable-after-reload
+    bug (jts3, 2026-07-06). Surfacing the live session on the commissioning view
+    lets any page load render a reload-safe Stop. "Active" means a session
+    exists, no stop has been requested yet, and the ``aplay`` child is either
+    preparing (``None``) or still alive.
+    """
+
+    with _SUMMED_TEST_TONE_LOCK:
+        session = _SUMMED_TEST_TONE_SESSION
+        if not session or session.get("stop_reason"):
+            return {"active": False}
+        proc = session.get("process")
+        if proc is not None and proc.poll() is not None:
+            return {"active": False}
+        return {
+            "active": True,
+            "playback_id": session.get("playback_id"),
+            "speaker_group_id": session.get("speaker_group_id"),
+            "level_dbfs": session.get("level_dbfs"),
+        }
+
+
+def _attach_active_summed_test(
+    view: dict[str, Any], snapshot: dict[str, Any]
+) -> None:
+    """Fold the live summed-test snapshot into the commissioning view.
+
+    Attaches a top-level ``active_summed_test`` block and, when active, marks the
+    matching ``combined_groups`` entry with ``summed_test_active`` so the client
+    can render a reload-safe Stop per group. See ``_active_summed_test_snapshot``.
+    """
+
+    if not isinstance(view, dict):
+        return
+    view["active_summed_test"] = snapshot
+    if not snapshot.get("active"):
+        return
+    group_id = str(snapshot.get("speaker_group_id") or "")
+    groups = view.get("combined_groups")
+    if not isinstance(groups, list):
+        return
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        if not group_id or str(group.get("group_id") or "") == group_id:
+            group["summed_test_active"] = True
+
+
 def _summed_test_playback_at_session_level(
     playback: dict[str, Any],
     session: dict[str, Any],
@@ -3640,10 +3694,14 @@ async def _active_speaker_commissioning_view_payload(
         camilla_factory=camilla_factory,
     )
     view = load_commissioning_view(commission=commission)
+    active_summed_test = _active_summed_test_snapshot()
+    _attach_active_summed_test(view, active_summed_test)
     logger.info(
-        "event=sound.active_speaker_commissioning_view status=%s next_action=%s",
+        "event=sound.active_speaker_commissioning_view status=%s next_action=%s "
+        "summed_test_active=%s",
         view.get("status"),
         (view.get("next_action") or {}).get("id"),
+        active_summed_test.get("active"),
     )
     return view
 
