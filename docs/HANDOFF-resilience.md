@@ -1037,7 +1037,10 @@ layer is a periodic nudge around that same policy:
   on the stash), and also invoked by the recovery timer when WiFi
   is down.
 - **Low-footprint recovery timer**:
-  `jasper-wifi-recover.timer` runs every ~3 min with no resident RAM.
+  `jasper-wifi-recover.timer` runs every ~3 min with no resident RAM. It is
+  deliberately **not** gated on the guardian stash: active-link brcmfmac scan
+  repair does not need the PSK, and must still run on manually configured or
+  not-yet-stashed WiFi profiles.
   The steady-state path is one `nmcli connection show --active` read plus
   a narrow recent-kernel-log check for
   `brcmf_cfg80211_scan: Scanning suppressed` and **no script output** —
@@ -1051,7 +1054,12 @@ layer is a periodic nudge around that same policy:
   `python -m jasper.wifi_scan_repair --iface wlan0` even if NetworkManager
   still reports an active profile (skipped with
   `event=wifi_recover.scan_repair_skip` if the venv python is absent).
-  If no WiFi connection is active, it then calls the guardian.
+  If no WiFi connection is active, it calls the guardian only when the
+  root-only stash exists; without the stash it can still run scan repair, then
+  emits `event=wifi_recover.guardian_skip reason=no_stash` instead of calling
+  the guardian. With no stash and no scan-suppression evidence, timer ticks
+  exit quietly and manual runs report `event=wifi_recover.absent
+  reason=no_stash`.
   `jasper-doctor`'s
   `check_wifi_recover_timer` warns if the timer is disabled.
 - **Scan-suppression helper for the web wizard**:
@@ -1355,7 +1363,9 @@ derived from detected XVF profile for selectable profiles; AEC voice restart
 is queued with `--no-block` and the AEC oneshot timeout is bounded; Wi-Fi
 scan-suppression root helper path verified on `jts3.local` 2026-06-22 and
 active-profile scan-suppression recovery verified from `jts.local` incident
-logs 2026-06-26;
+logs 2026-06-26; 2026-07-07 review rechecked that
+`jasper-wifi-recover.service` is not stash-gated and that the script gates only
+the no-active guardian handoff on `/var/lib/jasper/wifi_guardian.env`;
 broader resilience doc last fully reviewed 2026-06-15; 2026-07-06
 output-DAC config-shear guard rechecked against
 `jasper-audio-hardware-reconcile`, `jasper-outputd-failure-reconcile`, and

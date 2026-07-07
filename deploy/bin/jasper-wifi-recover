@@ -11,7 +11,8 @@
 # NetworkManager read plus a narrow recent-kernel-log check and exits;
 # when the Pi 5 brcmfmac scan-suppression signature is present it runs
 # the bounded scan repair even if NetworkManager still reports an active
-# WiFi profile. If no WiFi is active, it then delegates profile
+# WiFi profile. If no WiFi is active, it then checks whether the
+# PSK-owning guardian stash exists before delegating profile
 # activation/recreation to jasper-wifi-guardian.
 #
 # The small arg-parse / emit() / stash-gate boilerplate here intentionally
@@ -42,7 +43,8 @@ Cheap periodic WiFi recovery check:
     run the bounded non-disruptive scan repair and exit
   - if WiFi is down and recent kernel logs show brcmfmac scan suppression,
     run the bounded non-disruptive scan repair
-  - delegate profile activation/recreation to jasper-wifi-guardian
+  - delegate profile activation/recreation to jasper-wifi-guardian only
+    when its PSK stash is present
 
 Emits structured event=wifi_recover.* lines only when manual or when
 real recovery work is attempted. PSKs are owned by jasper-wifi-guardian.
@@ -124,11 +126,6 @@ run_scan_repair() {
     fi
 }
 
-if [[ ! -f "$STASH_FILE" ]]; then
-    [[ "$REASON" == "manual" ]] && emit absent "reason=no_stash"
-    exit 0
-fi
-
 active="$(active_wifi_profile || true)"
 if [[ -n "$active" ]]; then
     if recent_scan_suppression; then
@@ -140,9 +137,26 @@ if [[ -n "$active" ]]; then
     exit 0
 fi
 
+scan_suppressed=0
+if recent_scan_suppression; then
+    scan_suppressed=1
+fi
+
+if [[ ! -f "$STASH_FILE" ]]; then
+    if [[ "$scan_suppressed" == "1" ]]; then
+        emit no_active "iface=$IFACE"
+        emit scan_suppressed "iface=$IFACE"
+        run_scan_repair
+        emit guardian_skip "reason=no_stash"
+    elif [[ "$REASON" == "manual" ]]; then
+        emit absent "reason=no_stash"
+    fi
+    exit 0
+fi
+
 emit no_active "iface=$IFACE"
 
-if recent_scan_suppression; then
+if [[ "$scan_suppressed" == "1" ]]; then
     emit scan_suppressed "iface=$IFACE"
     run_scan_repair
 fi

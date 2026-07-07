@@ -1433,7 +1433,8 @@ resident RAM, it performs one active-WiFi read plus a narrow recent
 kernel-log check for `brcmf_cfg80211_scan: Scanning suppressed`. If that
 signature is present, it runs the bounded `jasper.wifi_scan_repair` CLI
 even when WiFi is nominally active. If no WiFi is active, it also invokes
-the guardian afterward. The cadence is minutes, not seconds, on purpose: NM's
+the guardian afterward only when the guardian's PSK stash exists. The cadence
+is minutes, not seconds, on purpose: NM's
 `connection.autoconnect-retries=0` (set on every JTS profile) already
 retries ordinary AP/ISP flaps forever, so the timer's unique job is the
 rare scan-suppression *wedge* — a few-minutes detection window is fine,
@@ -1452,7 +1453,9 @@ run by `jasper-wifi-guardian.service` (`Type=oneshot`, after
 `NetworkManager-wait-online.service`, gated by
 `ConditionPathExists=`). The recovery timer uses
 [`deploy/bin/jasper-wifi-recover`](deploy/bin/jasper-wifi-recover),
-also gated by the same stash.
+but is not itself stash-gated: active-link brcmfmac scan repair does not need
+the PSK stash, while the no-active guardian handoff still checks the stash
+before acting.
 
 Zero resident RAM. ~3-5 ms at boot in the steady-state path. Full
 design in [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)
