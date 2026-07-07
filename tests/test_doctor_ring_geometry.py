@@ -5,12 +5,12 @@
 """The ring-geometry-coherence doctor check (defect A).
 
 ``check_ring_geometry_coherence`` verifies the Ring-A geometry agrees across
-three axes — fan-in's resolved ``JASPER_FANIN_RING_SLOTS``, the conf.d
-``jts_ring_capture``, and the on-disk ``program.ring`` header — when shm_ring is
-armed. It compares BOTH ``n_slots`` and (on the on-disk header) ``period_frames``;
-a mismatch on any axis is the 2026-07-05 crash-loop class (hw_params EINVAL +
-ioplug attach_fatal). It skips cleanly when shm_ring is not armed (the ring is
-inert).
+three axes — fan-in's resolved ``JASPER_FANIN_RING_SLOTS`` through the systemd
+env chain, the conf.d ``jts_ring_capture``, and the on-disk ``program.ring``
+header — when shm_ring is armed. It compares BOTH ``n_slots`` and (on the
+on-disk header) ``period_frames``; a mismatch on any axis is the 2026-07-05
+crash-loop class (hw_params EINVAL + ioplug attach_fatal). It skips cleanly when
+shm_ring is not armed (the ring is inert).
 """
 
 from __future__ import annotations
@@ -46,16 +46,28 @@ def _arm(monkeypatch):
     )
 
 
-def _stage(monkeypatch, tmp_path, *, fanin_env_text="", capture_n_slots=2):
+def _stage(
+    monkeypatch,
+    tmp_path,
+    *,
+    fanin_env_text="",
+    jasper_env_text="",
+    capture_n_slots=2,
+):
     conf = _write_conf(tmp_path, capture_n_slots=capture_n_slots)
     fanin_env = tmp_path / "fanin.env"
+    jasper_env = tmp_path / "jasper.env"
     fanin_env.write_text(fanin_env_text, encoding="utf-8")
+    jasper_env.write_text(jasper_env_text, encoding="utf-8")
     program = tmp_path / "program.ring"
     monkeypatch.setattr(audio.ring_assets, "RING_CONF_D", str(conf))
     monkeypatch.setattr(audio, "_JTS_RING_CONF_D", str(conf))
     monkeypatch.setattr(audio.ring_assets, "RING_A_PROGRAM_FILE", str(program))
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
     )
     return fanin_env, program
 
@@ -91,6 +103,39 @@ def test_fail_when_env_disagrees_with_conf(monkeypatch, tmp_path):
     assert res.status == "fail"
     assert "2" in res.detail and "8" in res.detail
     assert "crash-loop" in res.detail.lower()
+
+
+def test_fail_when_base_env_disagrees_with_conf(monkeypatch, tmp_path):
+    # The effective env chain is /etc/jasper/jasper.env, then fanin.env. A stale
+    # base-env value still controls the next fan-in start when fanin.env has no
+    # override, so doctor must not report the product default.
+    _arm(monkeypatch)
+    _fanin, program = _stage(
+        monkeypatch,
+        tmp_path,
+        jasper_env_text="JASPER_FANIN_RING_SLOTS=8\n",
+    )
+    _write_ring(program, n_slots=8)
+    res = audio.check_ring_geometry_coherence()
+    assert res.status == "fail"
+    assert "2" in res.detail and "8" in res.detail
+    assert "crash-loop" in res.detail.lower()
+
+
+def test_ok_when_fanin_env_overrides_stale_base_env(monkeypatch, tmp_path):
+    # Later systemd EnvironmentFile wins. The reconciler's fix writes this exact
+    # fanin.env override to neutralize stale /etc/jasper/jasper.env residue.
+    _arm(monkeypatch)
+    _fanin, program = _stage(
+        monkeypatch,
+        tmp_path,
+        fanin_env_text="JASPER_FANIN_RING_SLOTS=2\n",
+        jasper_env_text="JASPER_FANIN_RING_SLOTS=8\n",
+    )
+    _write_ring(program, n_slots=2)
+    res = audio.check_ring_geometry_coherence()
+    assert res.status == "ok", res.detail
+    assert "n_slots=2" in res.detail
 
 
 def test_fail_when_on_disk_ring_disagrees(monkeypatch, tmp_path):

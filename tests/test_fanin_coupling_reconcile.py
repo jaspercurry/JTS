@@ -30,6 +30,16 @@ from jasper.fanin_coupling import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_base_jasper_env(tmp_path, monkeypatch):
+    """Keep effective-env tests independent of the developer host's /etc state."""
+    jasper_env = tmp_path / "jasper.env"
+    jasper_env.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
+    )
+
+
 def _recorder(
     *,
     outputd_ok=True,
@@ -1327,7 +1337,7 @@ def test_arm_shm_ring_refused_on_slot_mismatch_recovers(tmp_path, monkeypatch):
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
     # conf.d pins n_slots 4; fan-in env resolves to the product default 2, a
-    # genuine custom-conf mismatch that the stale-env stripper cannot repair.
+    # genuine custom-conf mismatch that the stale-env migration cannot repair.
     monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=4)))
 
     fanin_env = _write(tmp_path / "fanin.env", "")
@@ -1357,8 +1367,9 @@ def test_arm_shm_ring_refused_on_slot_mismatch_recovers(tmp_path, monkeypatch):
 
 def test_arm_shm_ring_migrates_stale_ring_slots_then_arms(tmp_path, monkeypatch):
     # Default migration: a stale JASPER_FANIN_RING_SLOTS=8 old-default line that
-    # disagrees with the conf.d's pinned 2 is STRIPPED at arm time (self-heals to
-    # the coherent default) so the arm proceeds instead of being blocked forever.
+    # disagrees with the conf.d's pinned 2 is overridden in fanin.env at arm time
+    # (self-heals to the coherent default) so the arm proceeds instead of being
+    # blocked forever.
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(
@@ -1387,8 +1398,48 @@ def test_arm_shm_ring_migrates_stale_ring_slots_then_arms(tmp_path, monkeypatch)
     assert result.ok is True, result.detail
     assert calls == ["outputd", "fanin", "camilla:shm_ring"]
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-    # The stale =8 line was stripped from fanin.env (resolves to the coherent 2).
-    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") is None
+    # The stale =8 line was overridden in fanin.env (the later systemd env file).
+    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
+
+
+def test_arm_shm_ring_overrides_stale_base_ring_slots_then_arms(
+    tmp_path, monkeypatch
+):
+    # Regression for the real systemd env chain: jasper-fanin.service loads
+    # /etc/jasper/jasper.env first and fanin.env last. A stale base-env =8 is
+    # still live when fanin.env has no slot override, so migration must write an
+    # explicit coherent =2 into fanin.env rather than merely relying on defaults.
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
+    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
+    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    jasper_env = _write(tmp_path / "jasper.env", "JASPER_FANIN_RING_SLOTS=8\n")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
+    )
+
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is True, result.detail
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
 
 
 def test_arm_shm_ring_keeps_matching_operator_ring_slots(tmp_path, monkeypatch):
@@ -1615,7 +1666,7 @@ def test_confirm_shm_ring_self_heals_stale_ring_slots(tmp_path, monkeypatch):
     # geometry mismatch — was NOT healed by a reconcile, because the coupling-flip
     # write didn't change (already shm_ring) so the arm self-heal never ran and the
     # CONFIRM path only re-loaded camilla. The fix: the CONFIRM path detects the
-    # incoherence and escalates to the full _arm_ring spine (strips the stale line
+    # incoherence and escalates to the full _arm_ring spine (overrides the stale line
     # THEN bounces the daemons). This is the literal state the doctor's remediation
     # string points at, so it must now actually heal.
     import jasper.ring_assets as ra
@@ -1649,8 +1700,48 @@ def test_confirm_shm_ring_self_heals_stale_ring_slots(tmp_path, monkeypatch):
     # The CONFIRM path escalated to the full arm spine (self-heal THEN bounce), NOT a
     # lightweight camilla-only confirm.
     assert calls == ["outputd", "fanin", "camilla:shm_ring"]
-    # The stale =8 line was stripped (resolves to the coherent conf.d default 2).
-    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") is None
+    # The stale =8 line was overridden in fanin.env.
+    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+
+
+def test_confirm_shm_ring_self_heals_stale_base_ring_slots(tmp_path, monkeypatch):
+    # Already-armed CONFIRM path, but the stale slot value lives in the earlier
+    # /etc/jasper/jasper.env layer. This must still escalate to _arm_ring and
+    # write the later fanin.env override before the daemon bounce.
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
+    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
+    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
+    jasper_env = _write(tmp_path / "jasper.env", "JASPER_FANIN_RING_SLOTS=8\n")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
+    )
+
+    fanin_env = _write(
+        tmp_path / "fanin.env",
+        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
+    )
+    outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is True, result.detail
+    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
 
 
@@ -1707,7 +1798,7 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
     assert not result.changed
     # Lightweight: camilla-only re-load, NO fan-in / outputd bounce.
     assert calls == ["camilla:shm_ring"]
-    # The coherent operator override is preserved (not stripped).
+    # The coherent operator override is preserved.
     assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
     assert program.exists()
     assert content.exists()

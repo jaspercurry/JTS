@@ -64,6 +64,35 @@ def test_full_install_runs_ring_platform_before_systemd_units():
     )
 
 
+def test_streambox_install_runs_ring_platform_before_streambox_systemd_units():
+    body = _function_body(INSTALL_SH.read_text(encoding="utf-8"), "main")
+
+    streambox_start = body.index('if [[ "${install_profile}" == "streambox" ]]')
+    streambox_end = body.index("    fi\n    require_root", streambox_start)
+    streambox_body = body[streambox_start:streambox_end]
+    assert _call_pos(streambox_body, "install_jts_ring_platform") < _call_pos(
+        streambox_body, "install_streambox_systemd_units"
+    )
+
+
+def _assert_camilla_restart_stays_after_dsp_reconcile(function_name: str):
+    body = _function_body(
+        SYSTEMD_UNITS_SH.read_text(encoding="utf-8"),
+        function_name,
+    )
+    fanin_restart = body.index("systemctl restart jasper-fanin.service")
+    reconcile = body.index("reconcile_sound_dsp_state", fanin_restart)
+    camilla_restart = body.index(
+        "systemctl try-restart jasper-camilla.service", reconcile
+    )
+    vulnerable_window = body[fanin_restart:reconcile]
+
+    assert fanin_restart < reconcile < camilla_restart
+    assert "JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR=1" not in vulnerable_window
+    assert "try-restart jasper-camilla.service" not in vulnerable_window
+    assert "restart jasper-camilla.service" not in vulnerable_window
+
+
 def test_camilla_restart_stays_after_dsp_reconcile_in_systemd_units():
     """Camilla must not restart in the fan-in-restart to DSP-reconcile window.
 
@@ -74,16 +103,8 @@ def test_camilla_restart_stays_after_dsp_reconcile_in_systemd_units():
     existing core-audio bounce contract instead of a second geometry race.
     """
 
-    body = _function_body(
-        SYSTEMD_UNITS_SH.read_text(encoding="utf-8"),
-        "install_systemd_units",
-    )
-    fanin_restart = body.index("systemctl restart jasper-fanin.service")
-    reconcile = body.index("reconcile_sound_dsp_state", fanin_restart)
-    camilla_restart = body.index("systemctl try-restart jasper-camilla.service")
-    vulnerable_window = body[fanin_restart:reconcile]
+    _assert_camilla_restart_stays_after_dsp_reconcile("install_systemd_units")
 
-    assert fanin_restart < reconcile < camilla_restart
-    assert "JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR=1" not in vulnerable_window
-    assert "try-restart jasper-camilla.service" not in vulnerable_window
-    assert "restart jasper-camilla.service" not in vulnerable_window
+
+def test_camilla_restart_stays_after_dsp_reconcile_in_streambox_units():
+    _assert_camilla_restart_stays_after_dsp_reconcile("start_streambox_runtime_units")

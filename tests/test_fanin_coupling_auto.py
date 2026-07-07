@@ -37,6 +37,14 @@ from jasper.fanin_coupling import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_base_jasper_env(tmp_path, monkeypatch):
+    """Keep effective-env tests independent of the developer host's /etc state."""
+    jasper_env = tmp_path / "jasper.env"
+    jasper_env.write_text("", encoding="utf-8")
+    monkeypatch.setattr(cr, "JASPER_ENV_PATH", str(jasper_env))
+
+
 # --------------------------------------------------------------------------
 # Pure decision: is_operator_choice + resolve_auto_decision
 # --------------------------------------------------------------------------
@@ -684,7 +692,7 @@ def test_ring_topology_strict_fails_closed_on_unreadable(monkeypatch):
 def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     """F6: a box armed with a stale JASPER_FANIN_RING_SLOTS=8 line must NOT be
     disarmed to loopback — the auto pass runs the SAME slot self-heal a manual arm
-    does before the slot gate, so the residue is stripped and the ring resolves."""
+    does before the slot gate, so the residue is overridden and the ring resolves."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
     usbsink = tmp_path / "usbsink.env"
@@ -716,7 +724,46 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=False, usbsink=usbsink, restarts=restarts)
     assert r.owned is True
-    # The stale slots line was stripped (self-heal), so the ring resolved — NOT
+    # The stale slots line was overridden (self-heal), so the ring resolved — NOT
     # disarmed to loopback.
     assert r.coupling == COUPLING_SHM_RING
-    assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") is None
+    assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
+
+
+def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
+    """F6 through the real systemd env chain.
+
+    A stale ``JASPER_FANIN_RING_SLOTS=8`` in /etc/jasper/jasper.env is still the
+    effective fan-in value when fanin.env has no later override. The auto pass must
+    write the coherent fanin.env override before its slot gate runs.
+    """
+    fanin = tmp_path / "fanin.env"
+    outputd = tmp_path / "outputd.env"
+    usbsink = tmp_path / "usbsink.env"
+    jasper_env = tmp_path / "jasper.env"
+    fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n", encoding="utf-8")
+    outputd.write_text("", encoding="utf-8")
+    jasper_env.write_text("JASPER_FANIN_RING_SLOTS=8\n", encoding="utf-8")
+    monkeypatch.setattr(cr, "JASPER_ENV_PATH", str(jasper_env))
+
+    assets = ("ring_assets", lambda: (True, "assets"))
+    topo = ("ring_topology", lambda: (True, "topology"))
+    monkeypatch.setattr(ca, "default_ring_gates", lambda: (assets, topo))
+    monkeypatch.setattr(cr, "ring_route_ready", lambda route_mode: (True, "route"))
+    monkeypatch.setattr(cr, "ring_geometry_ready", lambda text: (True, "geom"))
+    monkeypatch.setattr(cr, "ring_assets_ready", lambda: (True, "assets"))
+    monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (True, "topology"))
+    monkeypatch.setattr(cr, "_delete_stale_ring_files", lambda reason, fanin_text="": None)
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 2)
+
+    restarts: list[str] = []
+    r = _auto(fanin, outputd, gadget=False, usbsink=usbsink, restarts=restarts)
+
+    assert r.owned is True
+    assert r.coupling == COUPLING_SHM_RING
+    assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"

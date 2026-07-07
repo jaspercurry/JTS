@@ -2189,7 +2189,8 @@ def check_ring_geometry_coherence() -> CheckResult:
     IS one outputd period, so a stale period fails the attach even with matching
     slots — Nit-7, 2026-07-05):
 
-      1. fan-in's resolved ``JASPER_FANIN_RING_SLOTS`` (fanin.env, default 2)
+      1. fan-in's resolved ``JASPER_FANIN_RING_SLOTS`` (jasper.env -> fanin.env
+         systemd env chain, default 2)
       2. the conf.d ``jts_ring_capture`` ``n_slots`` (the ioplug attach authority)
       3. the on-disk ``program.ring`` header ``n_slots`` (what the writer created)
       4. the on-disk header ``period_frames`` vs the conf.d ``period_frames``
@@ -2207,17 +2208,19 @@ def check_ring_geometry_coherence() -> CheckResult:
     """
     label = "ring geometry"
     try:
-        from jasper.fanin.coupling_reconcile import FANIN_ENV_PATH, read_persisted_coupling
+        from jasper.fanin.coupling_reconcile import (
+            FANIN_ENV_PATH,
+            read_persisted_coupling,
+            resolve_effective_fanin_ring_slots,
+        )
         from jasper.fanin_coupling import (
             COUPLING_SHM_RING,
             RING_SLOTS_ENV_VAR,
-            resolve_ring_slots,
         )
-        from jasper.env_file import read_value
     except ImportError as e:  # pragma: no cover - always importable in prod
         return CheckResult(label, "warn", f"ring modules unavailable: {e}")
 
-    if read_persisted_coupling() != COUPLING_SHM_RING:
+    if read_persisted_coupling(FANIN_ENV_PATH) != COUPLING_SHM_RING:
         return CheckResult(
             label, "ok",
             "skipped — shm_ring not armed (Ring A geometry is inert; nothing opens it)",
@@ -2228,14 +2231,15 @@ def check_ring_geometry_coherence() -> CheckResult:
         fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
     except OSError:
         fanin_text = ""
-    try:
-        fanin_slots = resolve_ring_slots(read_value(fanin_text, RING_SLOTS_ENV_VAR))
-    except ValueError as e:
+    resolution = resolve_effective_fanin_ring_slots(fanin_text)
+    if resolution.value is None:
         return CheckResult(
             label, "fail",
-            f"{RING_SLOTS_ENV_VAR} in {FANIN_ENV_PATH} is invalid: {e}. shm_ring is "
-            "armed — fan-in will refuse to create the ring. Clear the stale value.",
+            f"effective {RING_SLOTS_ENV_VAR} from {resolution.source} is invalid: "
+            f"{resolution.error}. shm_ring is armed — fan-in will refuse to create "
+            "the ring. Clear the stale value.",
         )
+    fanin_slots = resolution.value
 
     # Axis 2: the conf.d attach authority.
     conf_slots = ring_assets.ring_conf_n_slots(
