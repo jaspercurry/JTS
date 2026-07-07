@@ -100,6 +100,7 @@ def patched_probes(monkeypatch):
     monkeypatch.setattr("jasper.mux.airplay_playing", airplay)
     monkeypatch.setattr("jasper.mux.bluetooth_playing", bluetooth)
     monkeypatch.setattr("jasper.mux.usbsink_playing", usbsink)
+    monkeypatch.setattr("jasper.mux.read_usbsink_state", lambda *a, **k: None)
     return SimpleNamespace(
         spotify=spotify, airplay=airplay,
         bluetooth=bluetooth, usbsink=usbsink,
@@ -555,6 +556,144 @@ async def test_usbsink_preempt_release_idempotent(mux, patched_probes):
     _stub_probes(patched_probes, usbsink=False)
     await mux._tick()
     preempt.assert_not_awaited()
+
+
+# ----------------------------------------------------------------------
+# USB combo box arbitration. In combo mode jasper-usbsink is in standby
+# (bridge `playing:false` forever) while fan-in DIRECT-captures the gadget.
+# mux detects USB liveness from the direct lane's host-input counter advancing
+# across ticks.
+# ----------------------------------------------------------------------
+
+
+def _make_combo_box(mux: Mux, monkeypatch, frames_seq):
+    monkeypatch.setattr(
+        "jasper.mux.read_usbsink_state",
+        lambda *a, **k: {
+            "standby": True,
+            "playing": False,
+            "host_connected": True,
+            "rms_dbfs": -120.0,
+        },
+    )
+    frames = list(frames_seq)
+    idx = {"i": 0}
+
+    async def _fanin():
+        value = frames[min(idx["i"], len(frames) - 1)]
+        idx["i"] += 1
+        if value is None:
+            return None
+        return {
+            "inputs": [
+                {"label": "spotify", "source": "lane", "frames_read": 5},
+                {
+                    "label": "usbsink",
+                    "source": "direct",
+                    # The captured broken shape: direct lane-level frames_read
+                    # can stay frozen while resampler.input_frames advances.
+                    "frames_read": 0,
+                    "resampler": {"input_frames": value},
+                },
+            ],
+        }
+
+    mux._fanin_status_best_effort = _fanin
+    return mux
+
+
+@pytest.mark.asyncio
+async def test_combo_usb_streaming_takes_speaker_in_auto(
+    mux, patched_probes, monkeypatch,
+):
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    _stub_probes(patched_probes, usbsink=False)
+    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000])
+
+    await mux._tick()
+    assert mux._winner is None
+
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+    mux._pause.assert_not_awaited()
+    payload = mux._status_payload()
+    assert payload["active_source"] == "usbsink"
+    assert payload["winner"] == "usbsink"
+    assert payload["sources"]["usbsink"]["playing"] is True
+    assert payload["usbsink"]["combo"] is True
+
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+
+
+@pytest.mark.asyncio
+async def test_combo_usb_idle_frames_never_win(mux, patched_probes, monkeypatch):
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    _stub_probes(patched_probes, usbsink=False)
+    _make_combo_box(mux, monkeypatch, [0, 0, 0, 0])
+
+    for _ in range(4):
+        await mux._tick()
+    assert mux._winner is None
+    assert mux._status_payload()["active_source"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_combo_usb_preempted_by_newly_started_source(
+    mux, patched_probes, monkeypatch,
+):
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    _stub_probes(patched_probes, usbsink=False, airplay=False)
+    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
+
+    await mux._tick()
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+
+    _stub_probes(patched_probes, usbsink=False, airplay=True)
+    await mux._tick()
+    assert mux._winner is Source.AIRPLAY
+    mux._pause.assert_any_await(Source.USBSINK)
+
+
+@pytest.mark.asyncio
+async def test_combo_usb_survives_single_fanin_status_miss(
+    mux, patched_probes, monkeypatch,
+):
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    _stub_probes(patched_probes, usbsink=False)
+    _make_combo_box(mux, monkeypatch, [0, 48_000, None, 96_000])
+
+    await mux._tick()
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+
+
+@pytest.mark.asyncio
+async def test_solo_box_never_takes_combo_path(mux, patched_probes, monkeypatch):
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    monkeypatch.setattr(
+        "jasper.mux.read_usbsink_state",
+        lambda *a, **k: {"playing": True, "host_connected": True},
+    )
+    fanin_probe = AsyncMock(return_value=None)
+    mux._fanin_status_best_effort = fanin_probe
+    _stub_probes(patched_probes, usbsink=True)
+
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+    assert mux._usbsink_combo_box is False
+    assert mux._status_payload()["usbsink"]["combo"] is False
+    fanin_probe.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------

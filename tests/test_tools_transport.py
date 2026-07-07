@@ -156,6 +156,11 @@ def test_detect_source_supports_usbsink():
     assert asyncio.run(_detect_source(renderer)) == "usbsink"
 
 
+def test_detect_source_prefers_mux_usbsink_winner():
+    renderer = FakeRenderer(renderers={}, selected_source="usbsink")
+    assert asyncio.run(_detect_source(renderer)) == "usbsink"
+
+
 def test_detect_source_falls_back_when_mux_unavailable():
     renderer = FakeRenderer(
         renderers={"btactive": True},
