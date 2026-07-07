@@ -452,9 +452,10 @@ def topology_supports_shm_ring(topology: OutputTopology) -> bool:
 
     An UNCONFIGURED topology (no speaker groups — the common fresh-install shape)
     IS ring-eligible: it uses the flat stereo graph, exactly the shape ring
-    replaces. This predicate is what the multiroom bond-formation prechecks and the
-    reconciler consult; the DEFAULT coupling stays loopback regardless (arming is
-    explicit until P4)."""
+    replaces. This predicate is what the default-coupling resolver, multiroom
+    bond-formation prechecks, and the reconciler consult; DEFAULT coupling may
+    resolve to ``shm_ring`` only when this predicate and the ring arm preflights
+    pass, otherwise it remains loopback."""
     contract = classify_output_contract(topology)
     if contract.requires_roleful_graph:
         return False

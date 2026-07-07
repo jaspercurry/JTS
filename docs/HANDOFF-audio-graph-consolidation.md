@@ -452,10 +452,11 @@ bounded-retry presence model and `/state` `source:"ring"` labeling.
    [`jasper/multiroom/reconcile.py`](../jasper/multiroom/reconcile.py)).
    P9 is HARD-GATED on P8. jts5 and any bonded-active pair are excluded
    from P4's default flip by topology check, not by hostname.
-3. **Half-armed multiroom graphs**: `precheck_active_leader` +
-   `reconcile_coupling` block `transport_pipe` on active leaders but know
-   nothing of `shm_ring` — extend both in P2 BEFORE any default flip, or
-   a bond formed on a ring box splits camilla#1's graph across topologies.
+3. **Half-armed multiroom graphs**: **CLOSED by P2/P4**:
+   `precheck_active_leader`, `topology_supports_shm_ring`, and
+   `reconcile_coupling` now gate `shm_ring` on the same active/composite
+   topology contract before any default arm, so a bonded active graph cannot
+   split camilla#1 across ring and driver-domain topologies.
 4. **Fleet box wedged mid-migration**: coupling transitions are owned by
    the ordered reconciler with fail-safe-to-loopback; camilla ExecStartPre
    statefile re-seed means any camilla restart reverts to the contract
