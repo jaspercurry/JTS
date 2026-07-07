@@ -96,7 +96,7 @@ named reason rather than crash-looping CamillaDSP on deploy.
 | `JASPER_FANIN_USB_DIRECT` | `enabled` | written to `fanin.env` by `jasper-fanin-coupling-reconcile --auto` when the gadget stack + usbsink intent are present |
 | `JASPER_FANIN_HOST_CLOCK` | `enabled` | same |
 | `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` | `enabled` | same |
-| `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES` | `576` | `config.rs` `DEFAULT_CUSHION_DECAY_FLOOR_FRAMES` (the hardware-validated floor; clamped ≥ the 562-frame churn-safe minimum) |
+| `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES` | `576` | `config.rs` `DEFAULT_CUSHION_DECAY_FLOOR_FRAMES` (the hardware-validated floor; clamped into `[544, ceiling]` — 544 = `max(target, minimum_safe_fill) + 32` at the default geometry) |
 | `JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES` | `512` | `config.rs` default |
 | `JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM` | `500` | `config.rs` default |
 | `JASPER_FANIN_OUTPUT_BUFFER_FRAMES` | `1024` | `config.rs` default |
@@ -294,3 +294,7 @@ floor via STATUS: `held_target_frames: 576`, `decay.frozen_reason: at_floor` (or
 6. Run the analog capture (§4) for 75 s; expect p50 ≈ 54 ms tap→analog.
 7. Cross-check: it should equal electrical (~40.7) + DAC (`snd_pcm_delay` ~10.3 +
    ~2.9 residual). Restore mux to auto; `TAP_DISARM`.
+
+---
+
+Last verified: 2026-07-07 (jts.local, main @ `66d03bd4`, 2-slot ring geometry).
