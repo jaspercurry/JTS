@@ -5,6 +5,7 @@
 """Guards for phone-mic relay deploy defaults."""
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 
@@ -31,14 +32,49 @@ def test_fresh_public_boxes_use_jasper_public_capture_relay() -> None:
 
 def test_existing_box_install_migration_seeds_public_relay_when_missing() -> None:
     install = (ROOT / "deploy/lib/install/python-runtime.sh").read_text(encoding="utf-8")
-    assert "grep -qE '^JASPER_CAPTURE_RELAY_BASE='" in install
-    assert "JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech" in install
+    assert (
+        "grep -qE '^JASPER_CAPTURE_RELAY_BASE=[[:space:]]*[^[:space:]]'"
+        in install
+    )
+    assert (
+        'set_jasper_env_value JASPER_CAPTURE_RELAY_BASE "https://relay.jasper.tech"'
+        in install
+    )
     assert "set_jasper_env_value JASPER_CAPTURE_RELAY_BASE" in install
-    assert "grep -qE '^JASPER_CAPTURE_ORIGIN='" in install
-    assert "JASPER_CAPTURE_ORIGIN=capture.jasper.tech" in install
+    assert (
+        "grep -qE '^JASPER_CAPTURE_ORIGIN=[[:space:]]*[^[:space:]]'"
+        in install
+    )
+    assert (
+        'set_jasper_env_value JASPER_CAPTURE_ORIGIN "capture.jasper.tech"'
+        in install
+    )
     assert "set_jasper_env_value JASPER_CAPTURE_ORIGIN" in install
     assert "grep -qE '^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN='" in install
     assert "set_jasper_env_value" in install
+    assert "JASPER_CAPTURE_RELAY_BASE=disabled" in install
+
+
+def test_existing_box_blank_relay_values_count_as_missing_for_migration(
+    tmp_path: Path,
+) -> None:
+    pattern = r"^JASPER_CAPTURE_RELAY_BASE=[[:space:]]*[^[:space:]]"
+
+    def matches(body: str) -> bool:
+        env_file = tmp_path / "jasper.env"
+        env_file.write_text(body, encoding="utf-8")
+        result = subprocess.run(
+            ["grep", "-qE", pattern, str(env_file)],
+            check=False,
+            timeout=5,
+        )
+        return result.returncode == 0
+
+    assert matches("JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech\n")
+    assert matches("JASPER_CAPTURE_RELAY_BASE=disabled\n")
+    assert not matches("JASPER_CAPTURE_RELAY_BASE=\n")
+    assert not matches("JASPER_CAPTURE_RELAY_BASE=   \n")
+    assert not matches("JASPER_HOSTNAME=jts.local\n")
 
 
 def test_relay_template_explains_https_mic_requirement_and_self_hosting() -> None:

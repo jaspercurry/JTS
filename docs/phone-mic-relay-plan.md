@@ -6,9 +6,11 @@
 > implemented, deployed at `capture.jasper.tech` / `relay.jasper.tech`, and
 > covered by hardware-free tests. Fresh installs seed
 > `JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech` and
-> `JASPER_CAPTURE_ORIGIN=capture.jasper.tech`; operators can clear those values
-> to keep the older on-Pi same-origin path, or replace them with a self-hosted
-> relay/capture-page deployment.
+> `JASPER_CAPTURE_ORIGIN=capture.jasper.tech`; operators can set
+> `JASPER_CAPTURE_RELAY_BASE=disabled` to keep the older on-Pi same-origin path,
+> or replace the relay/capture origin with a self-hosted deployment. Blank legacy
+> values are repaired to the public defaults during install/update so a stale
+> Pi does not silently fall back to local HTTPS.
 >
 > **Kinds wired today:** room correction (`POST /relay/capture`) and **sync**
 > (`POST /sync/relay-capture`) — both ride one kind-agnostic seam
@@ -606,7 +608,10 @@ is unreachable.
 
 ---
 
-Last updated: 2026-07-01 — `/correction/` room relay now uses a guided phone
+Last updated: 2026-07-07 — blank legacy `JASPER_CAPTURE_RELAY_BASE` /
+`JASPER_CAPTURE_ORIGIN` values now migrate to the public relay defaults on
+install/update; explicit `disabled`/`off`/`0`/`none` remains the persistent
+on-Pi fallback opt-out. Prior 2026-07-01: `/correction/` room relay now uses a guided phone
 setup, passive noise-floor capture, Pi host-progress events, and
 stop-on-`sweep_complete` recording; supported calibration mic models are emitted
 from the Pi registry in `CaptureSpec`; `/sync` still rides the generic relay

@@ -234,20 +234,23 @@ install_jasper() {
     # on capture.jasper.tech while the LAN-only Pi pulls encrypted blobs over
     # outbound HTTPS. Self-hosters can deploy the same Cloudflare code from
     # relay/ and capture-page/ (see their README files) and override these via
-    # deploy env or by editing /etc/jasper/jasper.env. An existing explicit
-    # blank/custom value on the Pi is operator intent and is preserved.
+    # deploy env or by editing /etc/jasper/jasper.env. Existing non-empty custom
+    # values are preserved; missing/blank legacy values are migrated to the public
+    # defaults so an updated Pi does not silently fall back to the local HTTPS
+    # mic path. To intentionally keep the old on-Pi fallback across installs, set
+    # JASPER_CAPTURE_RELAY_BASE=disabled (or off/0/none).
     if [[ -n "${JASPER_CAPTURE_RELAY_BASE:-}" ]]; then
         set_jasper_env_value JASPER_CAPTURE_RELAY_BASE "${JASPER_CAPTURE_RELAY_BASE}"
         echo "  capture relay: configured from deploy environment"
-    elif ! grep -qE '^JASPER_CAPTURE_RELAY_BASE=' "${ENV_DIR}/jasper.env"; then
-        printf 'JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech\n' >> "${ENV_DIR}/jasper.env"
+    elif ! grep -qE '^JASPER_CAPTURE_RELAY_BASE=[[:space:]]*[^[:space:]]' "${ENV_DIR}/jasper.env"; then
+        set_jasper_env_value JASPER_CAPTURE_RELAY_BASE "https://relay.jasper.tech"
         echo "  capture relay: using Jasper Tech public relay"
     fi
     if [[ -n "${JASPER_CAPTURE_ORIGIN:-}" ]]; then
         set_jasper_env_value JASPER_CAPTURE_ORIGIN "${JASPER_CAPTURE_ORIGIN}"
         echo "  capture origin: configured from deploy environment"
-    elif ! grep -qE '^JASPER_CAPTURE_ORIGIN=' "${ENV_DIR}/jasper.env"; then
-        printf 'JASPER_CAPTURE_ORIGIN=capture.jasper.tech\n' >> "${ENV_DIR}/jasper.env"
+    elif ! grep -qE '^JASPER_CAPTURE_ORIGIN=[[:space:]]*[^[:space:]]' "${ENV_DIR}/jasper.env"; then
+        set_jasper_env_value JASPER_CAPTURE_ORIGIN "capture.jasper.tech"
         echo "  capture origin: using capture.jasper.tech"
     fi
     if [[ -n "${JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN:-}" ]]; then

@@ -354,8 +354,9 @@ def check_capture_relay() -> CheckResult:
 
     Fresh installs seed JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech so
     phones can use a publicly trusted HTTPS mic-capture page. If an operator
-    explicitly clears the base, the speaker uses the on-Pi same-origin capture
-    and this reports OK/skipped. When configured, confirm the AEAD decrypt
+    explicitly sets the base to disabled/off/0/none, the speaker uses the on-Pi
+    same-origin capture and this reports OK/skipped. When configured, confirm the
+    AEAD decrypt
     dependency is importable and the relay's /healthz is reachable (a relay
     outage breaks NEW measurements only — existing corrections are unaffected)."""
     label = "Phone-mic relay"
@@ -368,7 +369,7 @@ def check_capture_relay() -> CheckResult:
     if not base:
         return CheckResult(
             label, "ok",
-            "explicitly not configured (skipped — fresh installs default to "
+            "not configured/disabled (skipped — fresh installs default to "
             "https://relay.jasper.tech; set JASPER_CAPTURE_RELAY_BASE to route "
             "phone-mic capture through another cloud relay)",
         )

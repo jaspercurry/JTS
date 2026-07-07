@@ -41,6 +41,21 @@ def test_relay_config_configured_strips_trailing_slash(monkeypatch):
     assert health.relay_registration_token_from_env() == "pi-secret"
 
 
+@pytest.mark.parametrize(
+    "value",
+    ["disabled", "off", "0", "none", " DISABLED/ "],
+)
+def test_relay_config_explicit_disable_sentinel(monkeypatch, value):
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", value)
+    monkeypatch.delenv("JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN", raising=False)
+    assert health.relay_config_from_env() == {
+        "configured": False,
+        "relay_base": None,
+        "registration_secret_configured": False,
+    }
+    assert health.relay_base_from_env() is None
+
+
 def test_probe_rejects_non_https():
     ok, detail = health.probe_relay_health("http://relay.jasper.tech")
     assert ok is False
@@ -91,7 +106,13 @@ def test_probe_unreachable(monkeypatch):
 
 @pytest.mark.parametrize(
     "value",
-    [None, "https://relay.jasper.tech", "https://relay.jasper.tech/", ""],
+    [
+        None,
+        "https://relay.jasper.tech",
+        "https://relay.jasper.tech/",
+        "",
+        *sorted(health.DISABLED_RELAY_BASE_VALUES),
+    ],
 )
 def test_state_snapshot_matches_health(monkeypatch, value):
     from jasper.control.state_aggregate import _capture_relay_config
