@@ -65,6 +65,7 @@ class FakeRelayBackend:
                 "max_upload_bytes": reg["max_upload_bytes"],
                 "state": "pending",
                 "event": None,
+                "host_event": None,
                 "integrity": None,
                 "blob": None,
             }
@@ -86,9 +87,15 @@ class FakeRelayBackend:
                         "size": len(s["blob"] or b""),
                         "integrity": s["integrity"],
                         "event": s["event"],
+                        "host_event": s["host_event"],
                         "expires_at": 0,
                     },
                 )
+            if sub == "host-event" and method == "POST":
+                if token != s["pull_token"]:
+                    return jr(401, {"error": "unauthorized"})
+                s["host_event"] = json.loads(body)
+                return jr(200, {"ok": True})
             if sub == "blob" and method == "GET":
                 if s["state"] != "ready":
                     return jr(409, {"error": "not_ready"})
@@ -115,6 +122,13 @@ class FakeRelayBackend:
         if setup is not None:
             event["setup"] = setup
         self.sessions[sid]["event"] = event
+
+    def phone_setup_validate(self, sid, setup, *, token="setup-token"):
+        self.sessions[sid]["event"] = {
+            "setup_validate": True,
+            "setup_token": token,
+            "setup": setup,
+        }
 
     def phone_abort(self, sid, reason="backgrounded"):
         self.sessions[sid]["event"] = {"aborted": True, "abort_reason": reason}
@@ -226,6 +240,39 @@ def test_device_flows_from_armed_event():
     )
     assert result.wav == wav
     assert result.device == device
+
+
+def test_setup_validation_callback_runs_before_armed_capture():
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    wav = b"RIFF" + bytes(range(64))
+    setup = {"calibration": {"mode": "serial", "model": "dayton_imm6"}}
+    setup_calls = []
+    armed_calls = []
+    backend.phone_setup_validate(session.session_id, setup, token="tok-1")
+
+    def on_setup(state):
+        setup_calls.append((state.setup_token, state.setup))
+        backend.phone_arm(session.session_id, setup=state.setup)
+
+    def on_armed(state):
+        armed_calls.append(state.setup)
+        backend.phone_upload(session.session_id, session.content_key, wav)
+
+    result = run_capture(
+        client,
+        session,
+        on_setup=on_setup,
+        on_armed=on_armed,
+        poll_interval_s=0.0,
+        timeout_s=5.0,
+        sleep=lambda _s: None,
+    )
+
+    assert result.wav == wav
+    assert result.setup == setup
+    assert setup_calls == [("tok-1", setup)]
+    assert armed_calls == [setup]
 
 
 def test_timeout_is_loud():
@@ -601,6 +648,19 @@ def test_classify_status():
         }
     )
     assert noisy.noise_floor == {"duration_ms": 800, "rms_dbfs": -52.5}
+    setup = classify_status(
+        {
+            "state": "pending",
+            "event": {
+                "setup_validate": True,
+                "setup_token": "tok",
+                "setup": {"calibration": {"mode": "serial"}},
+            },
+        }
+    )
+    assert setup.setup_validate is True
+    assert setup.setup_token == "tok"
+    assert setup.setup == {"calibration": {"mode": "serial"}}
 
 
 # --- step 7: abort + no-silent-failure cues ----------------------------------

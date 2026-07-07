@@ -14,6 +14,8 @@ per-position capture path, then the host awaits
 
 Host-mediated indirection (docs/extensibility.md §1): this module NEVER plays
 audio, touches CamillaDSP, or imports the correction daemon. The caller injects:
+  - `on_setup` — optional setup-preflight callback fired when the phone asks the
+    Pi to validate guided setup before the user reaches Start, and
   - `on_armed` — fired once when the phone is recording; the host plays the
     stimulus through the existing `measurement_window()` + `prepare_and_play_
     sweep` machinery (so the loud-output safety + renderer/voice pause still
@@ -151,8 +153,9 @@ def run_and_store(
 ) -> CaptureResult:
     """Run the relay capture, write the verified WAV to `capture_path`, purge the
     relay session, and return the `CaptureResult` (WAV + phone-reported device).
-    The caller then runs any device/calibration check on `result.device` and feeds
-    the path to ``await measurement_session.on_capture_uploaded(path)`` — the same
+    Optional run_kwargs such as ``on_setup`` pass through to ``run_capture``. The
+    caller then runs any device/calibration check on `result.device` and feeds the
+    path to ``await measurement_session.on_capture_uploaded(path)`` — the same
     seam a same-origin ``/upload-capture`` POST uses.
 
     Raises loudly (CaptureTimeout / CaptureAborted / CaptureFailed / RelayError)

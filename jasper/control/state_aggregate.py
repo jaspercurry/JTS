@@ -737,6 +737,10 @@ def _capture_relay_config() -> dict[str, Any]:
     tests/test_capture_relay_health.py.
     """
     base = (os.environ.get("JASPER_CAPTURE_RELAY_BASE") or "").strip().rstrip("/")
+    # Keep in lockstep with jasper.capture_relay.health.DISABLED_RELAY_BASE_VALUES
+    # without importing that package on the /state hot path.
+    if base.lower() in {"0", "false", "off", "disable", "disabled", "none"}:
+        base = ""
     registration_token = (
         os.environ.get("JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN") or ""
     ).strip()

@@ -137,9 +137,11 @@
   (`capture.jasper.tech`) and pulls the WAV back through a stateless
   E2E-encrypted relay, feeding **this same** MeasurementSession analysis. It is
   seeded by default as `JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech` /
-  `JASPER_CAPTURE_ORIGIN=capture.jasper.tech`; clearing the relay base keeps the
-  on-Pi same-origin flow below byte-identical and makes `POST /relay/capture`
-  return a clear "not configured" error.
+  `JASPER_CAPTURE_ORIGIN=capture.jasper.tech`; setting the relay base to
+  `disabled` (or `off` / `0` / `none`) keeps the on-Pi same-origin flow below
+  byte-identical and makes `POST /relay/capture` return a clear "not configured"
+  error. Blank legacy relay values are repaired to the public defaults during
+  install/update so stale Pis do not silently fall back to local HTTPS.
   The relay exists because phone browsers only expose `getUserMedia` on a secure
   context with a publicly trusted HTTPS certificate: a LAN Pi self-signed cert is
   fragile on iOS and blocked for microphone access by Android Chrome.
@@ -589,6 +591,13 @@
     successful fetch in the browser's `localStorage` (raw serials stay off the
     Pi) — auto-filling and auto-fetching it next time so a repeat measurement
     needs no re-typing or Fetch tap.
+  - **Relay guided-setup preflight.** The public capture page still cannot talk
+    directly to `jts.local`; it posts `{setup_validate:true, setup:{...}}` through
+    the relay and waits for the Pi to answer with
+    `host_event.phase="setup_validated"` before showing Start. Dayton/miniDSP
+    serial misses and uploaded calibration parse errors therefore surface on the
+    calibration step instead of after the user starts a measurement. The later
+    `armed` event still carries setup as the backstop and playback trigger.
 
   Backend logic is unit-covered; the iPhone device-picker, Cancel button,
   Wake Lock, auto-level copy, and the mic-picker UX still need an on-device
@@ -2076,7 +2085,15 @@ Internal:
 
 ---
 
-Last verified: 2026-07-06 (P6: the three tuning-LLM POST routes —
+Last verified: 2026-07-07 (phone-mic relay config fallback: blank legacy
+`JASPER_CAPTURE_RELAY_BASE` / `JASPER_CAPTURE_ORIGIN` values migrate to the
+public relay defaults on install/update, explicit `disabled`/`off`/`0`/`none`
+keeps the old local HTTPS path; verified against
+`deploy/lib/install/python-runtime.sh`, `jasper/capture_relay/health.py`,
+`jasper/control/state_aggregate.py`, `jasper/web/correction_setup.py`, and live
+`http://jts.local/correction/room/` rendering
+`data-capture-relay-enabled="1"`).
+Prior 2026-07-06 (P6: the three tuning-LLM POST routes —
 `/interpret`, `/propose`, `/propose/apply` — added to the route table,
 verified against `jasper/web/correction_setup.py`'s `_POST_ROUTES` +
 handlers; the two paid routes are now spend-cap gated → 429 at the household

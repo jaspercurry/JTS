@@ -249,6 +249,9 @@ class CaptureSpec:
     output_format: str = "wav"
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
     return_url: str = ""
+    # Whether the phone page should preflight its guided setup (notably vendor
+    # mic serial lookup) through the Pi before advancing to the Start step.
+    setup_validation: bool = False
     # Optional per-run nonce (additive, empty for kinds that don't use it). The
     # level_ramp flow mints one per ramp run; the phone echoes it in every
     # level_batch so the Pi's feed can distinguish THIS run's events from a
@@ -288,6 +291,7 @@ class CaptureSpec:
                 "screen": [dict(component) for component in self.screen],
             },
             "return_url": self.return_url,
+            "setup_validation": self.setup_validation,
             "run_token": self.run_token,
             "output": {"format": self.output_format},
             "max_upload_bytes": self.max_upload_bytes,
@@ -315,6 +319,7 @@ class CaptureSpec:
             calibration_models, (str, bytes)
         ):
             raise CaptureSpecError("calibration_models must be a list")
+        setup_validation = data.get("setup_validation", False)
         stimulus_raw = data.get("stimulus")
         spec = cls(
             kind=str(data.get("kind", "")),
@@ -346,6 +351,7 @@ class CaptureSpec:
                 data, "max_upload_bytes", default=DEFAULT_MAX_UPLOAD_BYTES
             ),
             return_url=str(data.get("return_url") or ""),
+            setup_validation=setup_validation,
             run_token=str(data.get("run_token") or ""),
             schema_version=_as_int(data, "schema_version", default=SCHEMA_VERSION),
         )
@@ -395,6 +401,8 @@ class CaptureSpec:
                 f"output.format must be one of {OUTPUT_FORMATS}, "
                 f"got {self.output_format!r}"
             )
+        if not isinstance(self.setup_validation, bool):
+            raise CaptureSpecError("setup_validation must be a boolean")
         if (
             not isinstance(self.max_upload_bytes, int)
             or isinstance(self.max_upload_bytes, bool)
@@ -671,6 +679,7 @@ def build_room_sweep_spec(
         ),
         calibration_models=tuple(calibration_models),
         max_upload_bytes=max_upload_bytes,
+        setup_validation=True,
     )
     return spec.validate()
 

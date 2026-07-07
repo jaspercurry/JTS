@@ -94,6 +94,10 @@ class FakeRelayBackend:
 def test_relay_enabled_gates_on_relay_base(monkeypatch):
     monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
     assert adapter.relay_enabled() is False
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "")
+    assert adapter.relay_enabled() is False
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "disabled")
+    assert adapter.relay_enabled() is False
     monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech")
     assert adapter.relay_enabled() is True
 

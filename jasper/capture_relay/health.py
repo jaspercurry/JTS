@@ -18,9 +18,9 @@ Both read `JASPER_CAPTURE_RELAY_BASE` — the deploy-time relay origin the Pi pu
 from — plus the optional `JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN` registration
 gate. Fresh installs seed the Jasper Tech public relay
 (`https://relay.jasper.tech`) because phone microphone capture needs a
-publicly-trusted HTTPS origin; an operator may still clear the base to use the
-existing on-Pi same-origin capture, in which case the doctor check skips cleanly
-rather than warning.
+publicly-trusted HTTPS origin. Set the base to one of the explicit disable
+sentinels below to use the existing on-Pi same-origin capture; the doctor check
+then skips cleanly rather than warning.
 """
 from __future__ import annotations
 
@@ -33,12 +33,17 @@ from jasper.capture_relay.client import RELAY_USER_AGENT
 
 ENV_RELAY_BASE = "JASPER_CAPTURE_RELAY_BASE"
 ENV_RELAY_REGISTRATION_TOKEN = "JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN"
+DISABLED_RELAY_BASE_VALUES = frozenset(
+    {"0", "false", "off", "disable", "disabled", "none"}
+)
 
 
 def relay_base_from_env(env: dict[str, str] | None = None) -> str | None:
-    """The configured relay origin (https://…), or None when unconfigured."""
+    """The configured relay origin (https://…), or None when unconfigured/disabled."""
     source = env if env is not None else os.environ
     base = (source.get(ENV_RELAY_BASE) or "").strip().rstrip("/")
+    if base.lower() in DISABLED_RELAY_BASE_VALUES:
+        return None
     return base or None
 
 

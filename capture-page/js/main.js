@@ -43,6 +43,13 @@ function setStatus(message, kind = "info") {
   }
 }
 
+function setupValidationToken() {
+  const cryptoObj = globalThis.crypto || {};
+  if (typeof cryptoObj.randomUUID === "function") return cryptoObj.randomUUID();
+  const random = Math.random().toString(36).slice(2);
+  return `setup-${Date.now()}-${random}`;
+}
+
 function captureFailureMessage(err) {
   const message = err && err.message ? String(err.message) : String(err);
   if (message === "not_found") {
@@ -52,6 +59,36 @@ function captureFailureMessage(err) {
     );
   }
   return `Measurement failed: ${message}. Tap Start to try again.`;
+}
+
+async function waitForSetupValidation(ctx, token) {
+  const pollMs = Math.max(100, Math.min(1000, Number(ctx.spec.progress_poll_ms) || 250));
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    const status = await ctx.client.fetchPhoneStatus();
+    const event = (status && status.host_event) || {};
+    if (String(event.setup_token || "") === token) {
+      if (event.phase === "setup_validated") return;
+      if (event.phase === "setup_validation_failed") {
+        throw new Error(event.error || "speaker could not validate that calibration");
+      }
+    }
+    await delayMs(pollMs);
+  }
+  throw new Error("speaker did not validate the calibration before the timeout");
+}
+
+async function validateSetupBeforeContinue(ctx) {
+  const calibration = setupState.calibration || {};
+  if (!ctx.spec.setup_validation || calibration.mode === "none") return;
+  const token = setupValidationToken();
+  setStatus("Checking calibration on the speaker…", "info");
+  await ctx.client.postEvent({
+    setup_validate: true,
+    setup_token: token,
+    setup: setupState,
+  });
+  await waitForSetupValidation(ctx, token);
 }
 
 async function blobToBytes(blob) {
@@ -284,6 +321,12 @@ function renderCalibration(screenEl, ctx) {
       };
     } else {
       setupState.calibration = { mode: "none" };
+    }
+    try {
+      await validateSetupBeforeContinue(ctx);
+    } catch (err) {
+      setStatus(err && err.message ? String(err.message) : String(err), "error");
+      return;
     }
     renderPositionCount(screenEl, ctx);
   };
