@@ -344,8 +344,9 @@ component estimates only until a route-latency artifact exists):
   failed the USB resampler lock tests and would regress AirPlay burst
   absorption. The USB resampler is the latency-control point, not the
   global input ring.
-- fan-in USB resampler: route-owned target 512 + cushion 1536, held
-  target 2048. This replaces the old catch-up sawtooth for the USB lane.
+- fan-in USB resampler: route-owned target 512 + cushion 1536 (jts.local's
+  box tuning; the shipped code default cushion is 2048), held target 2048.
+  This replaces the old catch-up sawtooth for the USB lane.
 - fan-in output buffer: 1024 frames ≈ 21 ms.
 - CamillaDSP / outputd: Apple USB-C dongle profile is chunk 256 /
   target 1536, outputd period 128 / DAC buffer 256 after the
