@@ -82,7 +82,10 @@ from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
     airplay_playing,
     bluetooth_playing,
+    read_usbsink_state,
     spotify_playing,
+    usbsink_bridge_in_standby,
+    usbsink_direct_frames_read,
     usbsink_playing,
     usbsink_state_fresh_host_connected,
 )
@@ -161,6 +164,45 @@ def _usbsink_preempt_disabled() -> bool:
     ).strip().lower() == "disabled"
 
 
+# Combo-mode USB liveness debounce (mux ticks at POLL_INTERVAL_SEC = 1 Hz).
+# On a combo box (JASPER_FANIN_USB_DIRECT) the usbsink bridge is in standby, so
+# its RMS-gated `playing` flag is frozen. The best liveness signal is fan-in's
+# DIRECT-lane host-input counter, read via usbsink_direct_frames_read().
+USBSINK_COMBO_STOP_TICKS = 2
+
+
+@dataclass(frozen=True)
+class ComboLiveness:
+    """Temporal state for combo-mode USB frames-flowing detection."""
+
+    prev_frames: int | None = None
+    idle_ticks: int = 0
+    playing: bool = False
+
+
+def step_combo_liveness(
+    state: ComboLiveness, frames: int | None, *, stop_ticks: int,
+) -> ComboLiveness:
+    """Advance the combo-USB liveness state by one mux tick.
+
+    ``frames`` is the current fan-in DIRECT-lane liveness counter:
+
+    - advanced (``frames > prev_frames``) -> playing, idle reset.
+    - first reading or counter reset -> re-baseline without inventing a delta.
+    - flat or missing -> non-advance; drop after ``stop_ticks`` consecutive
+      non-advancing ticks while playing.
+    """
+    prev = state.prev_frames
+    advanced = frames is not None and prev is not None and frames > prev
+    new_prev = frames if frames is not None else prev
+    if advanced:
+        return ComboLiveness(new_prev, 0, True)
+    if not state.playing:
+        return ComboLiveness(new_prev, 0, False)
+    idle = state.idle_ticks + 1
+    return ComboLiveness(new_prev, idle, idle < stop_ticks)
+
+
 @dataclass
 class _State:
     """Per-source playing flag from the previous tick. The mux uses
@@ -211,6 +253,11 @@ class Mux:
         # all other sources go idle (so a host pause-then-resume can
         # re-take the speaker via a fresh inactive→active transition).
         self._usbsink_preempted = False
+        # Combo-mode USB liveness (see step_combo_liveness). On a USB-DIRECT
+        # combo box the bridge is in standby and its `playing` flag is frozen,
+        # so `_usbsink_playing` measures liveness off fan-in's DIRECT lane.
+        self._usbsink_combo = ComboLiveness()
+        self._usbsink_combo_box = False
         # Short-lived httpx client for the localhost preempt POSTs.
         # The url is fixed; reusing the client across POSTs avoids
         # one socket-setup per tick when preempt is changing rapidly.
@@ -288,7 +335,7 @@ class Mux:
             spotify_playing(self._librespot_state_path),
             airplay_playing(),
             bluetooth_playing(),
-            usbsink_playing(),
+            self._usbsink_playing(),
         )
         return {
             Source.SPOTIFY: spotify,
@@ -296,6 +343,60 @@ class Mux:
             Source.BLUETOOTH: bluetooth,
             Source.USBSINK: usbsink,
         }
+
+    async def _usbsink_playing(self) -> bool:
+        """Combo-aware "is USB playing" for the source arbiter.
+
+        Solo boxes delegate to the bridge's RMS-gated ``playing`` flag. Combo
+        boxes use the fan-in DIRECT-lane counter advancing across ticks, because
+        the standby bridge opens no PCM and publishes frozen idle values.
+        """
+        state = read_usbsink_state()
+        if not usbsink_bridge_in_standby(state):
+            self._usbsink_combo_box = False
+            return await usbsink_playing()
+
+        self._usbsink_combo_box = True
+        fanin = await self._fanin_status_best_effort()
+        frames = usbsink_direct_frames_read(fanin)
+        self._usbsink_combo = step_combo_liveness(
+            self._usbsink_combo,
+            frames,
+            stop_ticks=USBSINK_COMBO_STOP_TICKS,
+        )
+        return self._usbsink_combo.playing
+
+    async def _fanin_status_best_effort(self) -> dict[str, Any] | None:
+        """Read jasper-fanin's STATUS snapshot over its control UDS, fail-soft."""
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_unix_connection(FANIN_CONTROL_SOCKET),
+                timeout=1.0,
+            )
+        except (
+            FileNotFoundError,
+            ConnectionRefusedError,
+            asyncio.TimeoutError,
+            OSError,
+        ):
+            return None
+        try:
+            writer.write(b"STATUS\n")
+            await writer.drain()
+            body = await asyncio.wait_for(reader.read(65536), timeout=1.0)
+        except (asyncio.TimeoutError, ConnectionResetError, OSError):
+            return None
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except (OSError, AssertionError):
+                pass
+        try:
+            payload = json.loads(body.decode("utf-8", errors="replace"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
     async def _tick(self) -> None:
         current = await self._probe_sources()
@@ -879,6 +980,9 @@ class Mux:
             "sources": {
                 source.value: {"playing": bool(current.get(source, False))}
                 for source in MUSIC_SOURCES
+            },
+            "usbsink": {
+                "combo": self._usbsink_combo_box,
             },
             # Review should-fix #1: surface the adaptive output-buffer mode so an
             # operator sees the live shrink state from /state without ssh+journal.

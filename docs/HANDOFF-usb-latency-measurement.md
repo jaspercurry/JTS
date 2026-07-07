@@ -7,7 +7,8 @@ them, and the host/bench setup to reproduce it. For the *design* narrative
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) — this doc links to it
 rather than restating it.
 
-`Last verified: 2026-07-07` (jts.local, main @ `66d03bd4`, 2-slot ring geometry).
+`Last verified: 2026-07-07` (jts.local live probes, combo mux liveness patch,
+2-slot ring geometry).
 
 ---
 
@@ -242,8 +243,10 @@ ssh pi@jts.local 'G=/sys/kernel/config/usb_gadget/jts-usb-audio; U=$(ls /sys/cla
   echo "" | sudo tee $G/UDC; sleep 5; echo $U | sudo tee $G/UDC'
 ```
 
-**Force USB source selection** — a current mux bug means auto mode never promotes
-USB in combo mode (see §6). Before measuring:
+**Source selection sanity check** — combo-aware mux builds promote USB in auto
+mode when fan-in's direct-lane `resampler.input_frames` advances. Before
+measuring, confirm `/source/state` shows `active_source: "usbsink"`. On an
+older pre-fix build, or if you need to force the measurement lane explicitly:
 ```sh
 curl -s -X POST http://jts.local:8780/source/select -H 'Content-Type: application/json' -d '{"source":"usbsink"}'
 # restore afterward:  -d '{"source":null}'   (or the documented auto value)
@@ -276,11 +279,13 @@ floor via STATUS: `held_target_frames: 576`, `decay.frozen_reason: at_floor` (or
 - **`WARMUP_CUSHION_FRAMES`** on jts.local is `1536`; the code default is `2048`.
   This affects only the cold-start descent shape, not the steady-state floor or
   the measured numbers above.
-- **Combo auto-selection bug** (§5 workaround): in combo mode `jasper-mux` never
-  promotes `usbsink` as the auto winner, because the deployed liveness check reads
-  a counter that stays zero on the direct lane. The fix (repoint to
-  `resampler.input_frames`) is pending; until then measurement and any auto-mode
-  USB playback needs a manual `/source/select`.
+- **Combo auto-selection fixed in current code**: in combo mode `jasper-mux`
+  treats USB as live when fan-in's direct-lane `resampler.input_frames` advances
+  across ticks, with lane-level `frames_read` as a fallback for older snapshots.
+  If auto mode fails to promote USB, capture `/source/state` plus fan-in
+  `STATUS` before forcing `/source/select`; the expected shape is
+  `/source/state.usbsink.combo: true` and an advancing
+  `inputs[label=usbsink].resampler.input_frames`.
 
 ---
 
@@ -351,7 +356,7 @@ ever pushing below the current churn-safe floor.
 1. Box on main with 2-slot geometry (`jasper-doctor` ring-geometry check green).
 2. Scarlett wired (§4); non-interference verified.
 3. Mac output pinned to the gadget by UID (§5); gadget `host_connected: true`.
-4. Force `usbsink` source selection (§5).
+4. Confirm auto selected `usbsink`, or force it on a pre-fix build (§5).
 5. Descend to the 576 floor (§5) — continuous playback until `held == 576`.
 6. Run the analog capture (§4) for 75 s; expect p50 ≈ 54 ms tap→analog.
 7. Cross-check: it should equal electrical (~40.7) + DAC (`snd_pcm_delay` ~10.3 +
@@ -359,4 +364,5 @@ ever pushing below the current churn-safe floor.
 
 ---
 
-Last verified: 2026-07-07 (jts.local, main @ `66d03bd4`, 2-slot ring geometry).
+Last verified: 2026-07-07 (jts.local live probes, combo mux liveness patch,
+2-slot ring geometry).

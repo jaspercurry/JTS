@@ -902,28 +902,23 @@ observer. **Decision: no new UsbSinkObserver.** Saves complexity.
 
 ### 4.4 Source-state probe
 
-**Modified file**: `jasper/source_state.py`. Add:
+**Owner**: `jasper/source_state.py`.
 
-```python
-USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
+`usbsink_playing()` reads `/run/jasper-usbsink/state.json` and returns
+the bridge's RMS-gated `playing` flag. That remains the truth on solo /
+aloop boxes, where the bridge owns the gadget capture.
 
-async def usbsink_playing(state_path: str = USBSINK_STATE_PATH) -> bool:
-    """jasper-usbsink publishes RMS-based playing state every ~1 s.
-    Reading is cheap (file is <1 KB)."""
-    try:
-        with open(state_path) as f:
-            state = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
-        logger.debug("usbsink state probe failed: %s", e)
-        return False
-    return bool(state.get("playing", False))
-```
+Combo boxes are different: `JASPER_FANIN_USB_DIRECT=enabled` means
+jasper-fanin DIRECT-captures the gadget and `jasper-usbsink` runs in
+standby. Its `playing:false` / `rms_dbfs:-120` are frozen idle defaults.
+The source-state module therefore also owns two pure helpers used by
+`jasper-mux`: `usbsink_bridge_in_standby()` gates combo mode from the
+bridge's `standby` flag, and `usbsink_direct_frames_read()` extracts the
+direct-lane liveness counter from fan-in `STATUS`, preferring
+`resampler.input_frames` and falling back to lane-level `frames_read`.
 
-Mirrors `spotify_playing()` at
-[jasper/source_state.py:25](../jasper/source_state.py:25).
-
-**Modified file**: `jasper/renderer.py`. Add `usbsinkactive` to the
-dict returned by `active_renderers()`:
+**Owner**: `jasper/renderer.py`. `active_renderers()` exports
+`usbsinkactive` from `usbsink_playing()`:
 
 ```python
 async def active_renderers(self) -> dict[str, bool]:
@@ -939,8 +934,12 @@ async def active_renderers(self) -> dict[str, bool]:
         "btactive": bt,
         "spotactive": spot,
         "usbsinkactive": usb,
-    }
+}
 ```
+
+On combo boxes this raw renderer flag can stay false during live USB
+audio. Voice transport detection therefore prefers mux's
+`selected_source` / `winner` before falling back to raw renderer flags.
 
 ### 4.5 Mux integration
 
@@ -950,25 +949,27 @@ Current source metadata lives in `jasper/music_sources.py`; USB sink is
 declared there with fan-in label `usbsink`, active-renderer key
 `usbsinkactive`, wizard key `usbsink`, and
 `VolumeMode.CAMILLA_MASTER`. `jasper-mux` consumes that registry for its
-playing-state map and source-selection status. The source-specific probe
-still comes from `usbsink_playing()` in `_probe_sources()`:
+playing-state map and source-selection status.
+
+The USB source-specific probe is combo-aware:
 
 ```python
-async def _tick(self) -> None:
-    spotify, airplay, bluetooth, usbsink = await asyncio.gather(
-        spotify_playing(...),
-        airplay_playing(),
-        bluetooth_playing(),
-        usbsink_playing(),
-    )
-    current = {
-        Source.SPOTIFY: spotify,
-        Source.AIRPLAY: airplay,
-        Source.BLUETOOTH: bluetooth,
-        Source.USBSINK: usbsink,
-    }
-    # ... rest of existing logic
+async def _usbsink_playing(self) -> bool:
+    state = read_usbsink_state()
+    if not usbsink_bridge_in_standby(state):
+        return await usbsink_playing()
+    fanin = await self._fanin_status_best_effort()
+    frames = usbsink_direct_frames_read(fanin)
+    self._usbsink_combo = step_combo_liveness(...)
+    return self._usbsink_combo.playing
 ```
+
+`step_combo_liveness()` is a pure tick-state machine: first advancing
+counter tick starts USB immediately, flat / missing readings stop only
+after the debounce window, and counter resets re-baseline without waiting
+for the new counter to overtake the old one. `/source/state` exposes
+`sources.usbsink.playing` from that mux view plus `usbsink.combo` so the
+landing page and operators can tell which regime they are seeing.
 
 Extend `_pause()`:
 
@@ -985,7 +986,7 @@ USB preempt:
 
 ```python
 # At the end of _tick, after handling transitions:
-if not any(current.values()) and self._usbsink_preempted:
+if self._usbsink_preempted and no_other_sources_are_playing:
     ok = await self._usbsink_set_preempt(False)
     if ok:
         self._usbsink_preempted = False
@@ -1813,7 +1814,10 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-07-06 (§4.9 corrected to the shipped `/state.renderers.usbsink`
+Last verified: 2026-07-07 (§4.4/§4.5 corrected for combo-aware mux liveness:
+solo boxes use bridge RMS `playing`; combo boxes use fan-in direct-lane
+`resampler.input_frames` with `frames_read` fallback. Prior recheck 2026-07-06:
+§4.9 corrected to the shipped `/state.renderers.usbsink`
 shape — owner is `jasper/control/state_aggregate.py`, not `server.py`; documented
 the combo-mode projection: `combo:true` with nulled `playing`/`rms_dbfs` when
 fan-in DIRECT-captures the gadget. Prior recheck 2026-07-04: §1 boot-config

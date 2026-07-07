@@ -28,6 +28,7 @@ from typing import Any
 
 from . import bluealsa_probe
 from . import librespot_state
+from .fanin.status import FANIN_INPUT_SOURCE_DIRECT, USBSINK_INPUT_LABEL
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,70 @@ def read_usbsink_state(state_path: str = USBSINK_STATE_PATH) -> dict[str, Any] |
         logger.debug("usbsink_playing probe failed: %s", e)
         return None
     return data if isinstance(data, dict) else None
+
+
+def usbsink_bridge_in_standby(state: dict[str, Any] | None) -> bool:
+    """True when the jasper-usbsink bridge is running in USB-DIRECT standby.
+
+    On a "combo" box (``JASPER_FANIN_USB_DIRECT=enabled``) fan-in
+    DIRECT-captures the gadget and the bridge runs with
+    ``JASPER_USBSINK_AUDIO_STANDBY=1``: it opens no PCM, so its published
+    ``playing`` / ``rms_dbfs`` are frozen idle defaults that describe nothing.
+    The bridge advertises this by publishing ``standby: true``.
+    """
+    return bool(isinstance(state, dict) and state.get("standby"))
+
+
+def _fanin_usbsink_input(
+    fanin_status: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """The fan-in STATUS ``inputs[]`` entry for the usbsink lane, or None."""
+    if not isinstance(fanin_status, dict):
+        return None
+    inputs = fanin_status.get("inputs")
+    if not isinstance(inputs, list):
+        return None
+    for entry in inputs:
+        if isinstance(entry, dict) and entry.get("label") == USBSINK_INPUT_LABEL:
+            return entry
+    return None
+
+
+def _nonnegative_int_counter(value: Any) -> int | None:
+    """Return a JSON u64-ish counter value, rejecting bools and bad shapes."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def usbsink_direct_frames_read(
+    fanin_status: dict[str, Any] | None,
+) -> int | None:
+    """Cumulative liveness counter on fan-in's USB DIRECT lane, else None.
+
+    Returns a counter only when the usbsink lane is in direct mode
+    (``source == "direct"``), meaning fan-in owns the live gadget capture and
+    the standby bridge's RMS-gated ``playing`` flag is not meaningful.
+
+    Prefer ``resampler.input_frames``: direct capture accounts host input there
+    on builds where the lane-level ``frames_read`` can remain frozen at 0.
+    Fall back to lane-level ``frames_read`` for older/no-resampler snapshots.
+    A single snapshot is not enough; the value becomes a liveness signal only as
+    a delta across mux ticks.
+    """
+    lane = _fanin_usbsink_input(fanin_status)
+    if not (
+        isinstance(lane, dict)
+        and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
+    ):
+        return None
+
+    resampler = lane.get("resampler")
+    if isinstance(resampler, dict):
+        frames = _nonnegative_int_counter(resampler.get("input_frames"))
+        if frames is not None:
+            return frames
+    return _nonnegative_int_counter(lane.get("frames_read"))
 
 
 def usbsink_state_fresh_host_connected(
