@@ -316,8 +316,9 @@ runs automatically only when the configured AEC mic is present with
   (`nmcli --wait 30 dev wifi connect` + explicit `connection up
   <previous>` on non-zero exit). Saved profiles are hardened to keep
   retrying after router/ISP flaps, and a no-resident-RAM recovery timer
-  nudges scan suppression + guardian activation when Wi-Fi is actually
-  down. WPA-Enterprise deferred — home-network case only.
+  nudges scan suppression even when NetworkManager still reports an
+  active profile; it calls the guardian activation path only when
+  Wi-Fi is actually down. WPA-Enterprise deferred — home-network case only.
 - ✅ Persistent live session with sustained-speech VAD
 - ✅ Hardware AEC investigation: the 2026-05-29 Option D lab pass has
   been promoted into the recommended XVF3800 input profile. Fresh

@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-wifi-recover"
+SERVICE = ROOT / "deploy" / "systemd" / "jasper-wifi-recover.service"
 
 
 def _write_fake(bin_dir: Path, name: str, body: str) -> Path:
@@ -88,6 +89,13 @@ exit "${JASPER_GUARDIAN_RC:-0}"
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def test_recover_service_is_not_guardian_stash_gated():
+    unit = SERVICE.read_text(encoding="utf-8")
+
+    assert "ConditionPathExists=/var/lib/jasper/wifi_guardian.env" not in unit
+    assert "ExecStart=/usr/local/sbin/jasper-wifi-recover --reason systemd" in unit
 
 
 def _run_recover(
@@ -192,6 +200,26 @@ def test_active_wifi_with_scan_suppression_runs_repair_without_guardian(tmp_path
     assert '"attempted":true' in proc.stdout
 
 
+def test_active_wifi_scan_suppression_repairs_even_without_guardian_stash(tmp_path):
+    """The scan repair does not need the PSK stash. Missing stash should only
+    disable the guardian handoff once Wi-Fi is down; it must not suppress the
+    active-link brcmfmac repair that keeps the box reachable."""
+    proc, paths = _run_recover(
+        tmp_path,
+        active="802-11-wireless:Home\n",
+        kernel="brcmf_cfg80211_scan: Scanning suppressed: status (4)\n",
+        stash=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "event=wifi_recover.scan_suppressed iface=wlan0 active=Home" in proc.stderr
+    assert "event=wifi_recover.scan_repair_ok iface=wlan0" in proc.stderr
+    assert "-m jasper.wifi_scan_repair --iface wlan0 --json" in _read(
+        paths["python_log"]
+    )
+    assert _read(paths["guardian_log"]) == ""
+
+
 def test_no_active_wifi_delegates_to_guardian_without_scan_evidence(tmp_path):
     proc, paths = _run_recover(tmp_path)
 
@@ -250,6 +278,24 @@ def test_scan_repair_skipped_when_venv_python_missing(tmp_path):
     assert "--reason wifi-recover" in _read(paths["guardian_log"])
 
 
+def test_no_active_scan_suppression_repairs_even_without_guardian_stash(tmp_path):
+    proc, paths = _run_recover(
+        tmp_path,
+        kernel="brcmf_cfg80211_scan: Scanning suppressed: status (4)\n",
+        stash=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "event=wifi_recover.no_active iface=wlan0" in proc.stderr
+    assert "event=wifi_recover.scan_suppressed iface=wlan0" in proc.stderr
+    assert "event=wifi_recover.scan_repair_ok iface=wlan0" in proc.stderr
+    assert "event=wifi_recover.guardian_skip reason=no_stash" in proc.stderr
+    assert "-m jasper.wifi_scan_repair --iface wlan0 --json" in _read(
+        paths["python_log"]
+    )
+    assert _read(paths["guardian_log"]) == ""
+
+
 def test_active_wifi_with_colon_in_name_is_parsed(tmp_path):
     """A colon-bearing profile name (nmcli escapes it as `\\:`) must be
     read as active, not mis-split — otherwise recover would needlessly
@@ -283,7 +329,13 @@ def test_no_stash_is_silent_for_systemd_and_visible_for_manual(tmp_path):
 
     assert systemd.returncode == 0
     assert systemd.stderr == ""
-    assert _read(systemd_paths["nmcli_log"]) == ""
+    assert "connection show --active" in _read(systemd_paths["nmcli_log"])
+    assert "-k --since" in _read(systemd_paths["journalctl_log"])
+    assert _read(systemd_paths["guardian_log"]) == ""
+    assert _read(systemd_paths["python_log"]) == ""
     assert manual.returncode == 0
     assert "event=wifi_recover.absent reason=no_stash" in manual.stderr
-    assert _read(manual_paths["nmcli_log"]) == ""
+    assert "connection show --active" in _read(manual_paths["nmcli_log"])
+    assert "-k --since" in _read(manual_paths["journalctl_log"])
+    assert _read(manual_paths["guardian_log"]) == ""
+    assert _read(manual_paths["python_log"]) == ""
