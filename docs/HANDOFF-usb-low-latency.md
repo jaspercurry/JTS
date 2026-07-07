@@ -5,6 +5,13 @@ The shipped route is **not** the old lean-FIFO bypass plan: it keeps USB in
 the shared fan-in/Camilla/outputd protection path and earns any low-latency
 claim only through measured route-latency evidence.
 
+> **Measuring it?** The measurement method (electrical `:9891` + analog
+> Scarlett-loopback), the current hardware-measured numbers (~55.5 ms full
+> chain), the per-stage breakdown, and the productized-settings reference table
+> live in [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md).
+> This doc owns the *route design + evidence gate*; that doc owns *how to measure
+> and what a fresh install ships*.
+
 ## Current Production Route (2026-07-06)
 
 `usb_low_latency_48k` is the claiming profile. On a solo, ring-eligible USB
