@@ -24,6 +24,10 @@ from jasper.fanin_coupling import (
     PIPE_WIRE_FORMAT,
     OUTPUTD_PIPE_PATH_ENV_VAR,
     RING_CAPTURE_DEVICE,
+    RING_CAMILLA_CHUNKSIZE,
+    RING_CAMILLA_ENABLE_RATE_ADJUST,
+    RING_CAMILLA_QUEUELIMIT,
+    RING_CAMILLA_TARGET_LEVEL,
     RING_PLAYBACK_DEVICE,
     RING_WIRE_FORMAT,
     capture_kwargs_for_coupling,
@@ -73,6 +77,10 @@ def test_shm_ring_kwargs_are_full_ring_topology_capture_and_playback():
         "capture_format": RING_WIRE_FORMAT,
         "playback_device": RING_PLAYBACK_DEVICE,
         "playback_format": RING_WIRE_FORMAT,
+        "chunksize": RING_CAMILLA_CHUNKSIZE,
+        "target_level": RING_CAMILLA_TARGET_LEVEL,
+        "queuelimit": RING_CAMILLA_QUEUELIMIT,
+        "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
     }
     # S16LE, NOT the transport_pipe S32 widening — an SHM ring has no page floor.
     assert RING_WIRE_FORMAT == "S16_LE"
@@ -94,7 +102,7 @@ def test_shm_ring_ring_path_and_slots_resolve_with_fail_safe_defaults():
     assert resolve_ring_slots("   ") == DEFAULT_FANIN_RING_SLOTS
     assert resolve_ring_slots("  16 ") == 16
     assert resolve_ring_slots("2") == 2
-    assert DEFAULT_FANIN_RING_SLOTS == 8
+    assert DEFAULT_FANIN_RING_SLOTS == 2
     # A present-but-out-of-range or unparseable value FAILS LOUD (never a
     # silent clamp) — repo doctrine, and it must agree with the Rust daemon,
     # which anyhow::bail!s on the same range.
@@ -114,6 +122,10 @@ def test_coupling_capture_kwargs_from_env_shm_ring_returns_full_ring_kwargs():
         "capture_format": RING_WIRE_FORMAT,
         "playback_device": RING_PLAYBACK_DEVICE,
         "playback_format": RING_WIRE_FORMAT,
+        "chunksize": RING_CAMILLA_CHUNKSIZE,
+        "target_level": RING_CAMILLA_TARGET_LEVEL,
+        "queuelimit": RING_CAMILLA_QUEUELIMIT,
+        "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
     }
 
 
@@ -151,6 +163,10 @@ def test_shm_ring_armed_env_emits_ring_capture_device_s16le():
     assert 'device: "outputd_content_playback"' not in playback_block
     # S16_LE native — no S32 widening (an SHM ring has no FIFO page floor).
     assert RING_WIRE_FORMAT == "S16_LE"
+    assert "chunksize: 128" in cfg
+    assert "target_level: 128" in cfg
+    assert "queuelimit: 1" in cfg
+    assert "enable_rate_adjust: false" in cfg
 
 
 def test_live_env_path_reads_coupling_file_fresh_not_os_environ(monkeypatch):
@@ -178,6 +194,10 @@ def test_live_env_path_reads_coupling_file_fresh_not_os_environ(monkeypatch):
         "capture_format": RING_WIRE_FORMAT,
         "playback_device": RING_PLAYBACK_DEVICE,
         "playback_format": RING_WIRE_FORMAT,
+        "chunksize": RING_CAMILLA_CHUNKSIZE,
+        "target_level": RING_CAMILLA_TARGET_LEVEL,
+        "queuelimit": RING_CAMILLA_QUEUELIMIT,
+        "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
     }
 
 

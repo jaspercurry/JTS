@@ -61,6 +61,9 @@ from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
     COUPLING_TRANSPORT_PIPE,
     OUTPUTD_PIPE_PATH_ENV_VAR,
+    RING_CAMILLA_CHUNKSIZE,
+    RING_CAMILLA_QUEUELIMIT,
+    RING_CAMILLA_TARGET_LEVEL,
     VALID_COUPLINGS,
 )
 
@@ -106,6 +109,29 @@ def test_transport_pipe_plan_uses_effective_camilla_file_target():
     assert target.generated_value == "1536"
     assert "transport_pipe" in target.source
     assert any("2 x chunksize" in warning for warning in target.warnings)
+
+
+def test_shm_ring_plan_uses_effective_ring_camilla_geometry():
+    plan = build_audio_runtime_plan(
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        route_mode="solo",
+        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
+        outputd_env={
+            "JASPER_CAMILLA_CHUNKSIZE": "256",
+            "JASPER_CAMILLA_TARGET_LEVEL": "1536",
+        },
+    )
+
+    chunksize = plan.setting("JASPER_CAMILLA_CHUNKSIZE")
+    target = plan.setting("JASPER_CAMILLA_TARGET_LEVEL")
+    assert chunksize.value == RING_CAMILLA_CHUNKSIZE
+    assert chunksize.source_kind == "route_policy"
+    assert "shm_ring" in chunksize.source
+    assert any("under shm_ring" in warning for warning in chunksize.warnings)
+    assert target.value == RING_CAMILLA_TARGET_LEVEL
+    assert target.source_kind == "route_policy"
+    assert "shm_ring" in target.source
+    assert any("under shm_ring" in warning for warning in target.warnings)
 
 
 def test_operator_env_wins_but_duplicate_generated_home_warns():
@@ -1173,6 +1199,8 @@ def test_transport_topology_for_shm_ring_names_both_ring_devices():
     assert topo["fanin_to_camilla"]["camilla_capture_device"] == "jts_ring_capture"
     assert topo["camilla_to_outputd"]["transport"] == "shm_ring"
     assert topo["camilla_to_outputd"]["camilla_playback_device"] == "jts_ring_playback"
-    # rate_adjust stays ON for the ring (CamillaDSP paces against Ring B fill).
-    assert topo["camilla"]["enable_rate_adjust"] is True
+    assert topo["camilla"]["chunksize"] == RING_CAMILLA_CHUNKSIZE
+    assert topo["camilla"]["target_level"] == RING_CAMILLA_TARGET_LEVEL
+    assert topo["camilla"]["queuelimit"] == RING_CAMILLA_QUEUELIMIT
+    assert topo["camilla"]["enable_rate_adjust"] is False
     assert topo["outputd_content_source"] == "shm_ring"

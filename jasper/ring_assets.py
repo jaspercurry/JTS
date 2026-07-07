@@ -202,24 +202,26 @@ def ring_geometry_matches_outputd(
 #
 # The ring's ``n_slots`` is a SECOND geometry axis independent of period_frames.
 # fan-in creates Ring A with ``resolve_ring_slots(JASPER_FANIN_RING_SLOTS)`` slots
-# (default 8); the ``jts_ring_capture`` ioplug conf.d block pins ``n_slots`` (8 in
+# (default 2); the ``jts_ring_capture`` ioplug conf.d block pins ``n_slots`` (2 in
 # the shipped file); the on-disk ring header records the ``n_slots`` the writer
 # actually created. A mismatch on ANY of the three axes is a hard failure:
-#   - fan-in env vs conf.d: fan-in creates a 2-slot ring but CamillaDSP's ioplug
-#     attaches expecting 8 → hw_params EINVAL + ioplug attach_fatal ("ring header
-#     does not match expected geometry") → CamillaDSP crash-loop → start-limit-hit.
-#     (The exact 2026-07-05 defect: a stale ``JASPER_FANIN_RING_SLOTS=2`` lab line
-#     in fanin.env made fan-in write a 1152-byte 2-slot program.ring against the
-#     conf.d's pinned 8.)
+#   - fan-in env vs conf.d: fan-in creates an old 8-slot ring but CamillaDSP's
+#     ioplug attaches expecting 2 → hw_params EINVAL + ioplug attach_fatal
+#     ("ring header does not match expected geometry") → CamillaDSP crash-loop →
+#     start-limit-hit.
+#     (The 2026-07-06 default migration class: old 8-slot ring state must converge
+#     to the new 2-slot production default.)
 #   - on-disk vs expected: a stale ring file left over from a prior geometry (e.g.
-#     a 2-slot file from before a re-arm) is a create-or-ATTACH open() error for
-#     the writer, because ``jasper_ring::RingWriter::create_or_attach`` validates
-#     the existing header's geometry against the requested one.
+#     an old 8-slot file from before this 2-slot default) is a create-or-ATTACH
+#     open() error for the writer, because
+#     ``jasper_ring::RingWriter::create_or_attach`` validates the existing header's
+#     geometry against the requested one.
 #
 # ``_RING_CONF_PCM_N_SLOTS_RE`` extracts the ``n_slots`` line WITHIN a named PCM
-# block. The conf.d has TWO blocks with different slot counts (Ring A = 8, Ring B
-# = 2), so a naive whole-file scan would be ambiguous — this parser scopes to the
-# requested block. It is intentionally forgiving of the ALSA conf brace style the
+# block. The conf.d has TWO blocks (Ring A and Ring B); they both pin 2 slots
+# today, but this parser still scopes to the requested block so a future coherent
+# override on one ring cannot be hidden by a whole-file scan. It is intentionally
+# forgiving of the ALSA conf brace style the
 # shipped file uses (``pcm.NAME {`` … ``n_slots N`` … ``}``).
 _RING_CONF_PCM_BLOCK_RE_TEMPLATE = (
     r"pcm\.{name}\s*\{{(?P<body>[^}}]*)\}}"

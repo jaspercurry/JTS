@@ -508,7 +508,7 @@ def test_install_uses_separate_outputd_statefile():
     assert "ensure_outputd_camilla_statefile" in install_sh
     assert "--write-statefile" in install_sh
     assert "tweeter/protected role" in install_sh
-    assert "JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR=1" in systemd_units
+    assert "systemctl try-restart jasper-camilla.service" in systemd_units
     assert "Restarting jasper-camilla.service after statefile repair" in install_sh
     assert "Reset outputd Camilla statefile" not in install_sh
     assert "--statefile /var/lib/camilladsp/outputd-statefile.yml" in camilla_unit

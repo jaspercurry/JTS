@@ -622,11 +622,15 @@ start_streambox_runtime_units() {
     /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
     systemctl restart jasper-fanin.service 2>/dev/null || true
-    systemctl try-restart jasper-camilla.service 2>/dev/null || true
     require_outputd_ready || \
         echo "  WARN: jasper-outputd is not ready. Check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing so the web UI and doctor remain available."
-    JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR=1 ensure_outputd_camilla_statefile
+    ensure_outputd_camilla_statefile
     reconcile_sound_dsp_state
+    # Restart CamillaDSP only after the DSP state reconcile has re-emitted the
+    # active config for the current ring geometry. Restarting it in the gap after
+    # fan-in/outputd recreate fresh ring files can load an old chunk-256 statefile
+    # against the 2-slot ring before the reconcile gets a chance to heal it.
+    systemctl try-restart jasper-camilla.service 2>/dev/null || true
 
     systemctl enable nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service
@@ -1204,10 +1208,6 @@ install_systemd_units() {
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
 
     systemctl restart jasper-fanin.service 2>/dev/null || true
-    # CamillaDSP captures the fan-in output (`pcm.jasper_capture`).
-    # Restart it after fan-in/asound wiring changes so it cannot keep
-    # an old capture fd across topology updates.
-    systemctl try-restart jasper-camilla.service 2>/dev/null || true
     # outputd owns the final DAC loop on current main. If it is not active
     # and answering STATUS, the voice daemon's outputd TTS socket points at a
     # silent path. Surface that LOUDLY, but do NOT abort the install: nginx,
@@ -1220,8 +1220,12 @@ install_systemd_units() {
     # non-fatal jasper-audio-hardware-reconcile handling a few lines above.
     require_outputd_ready || \
         echo "  WARN: jasper-outputd is not ready (see the STATUS-probe error above). Voice TTS may be silent until outputd recovers; check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing install so the web UI and doctor remain available."
-    JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR=1 ensure_outputd_camilla_statefile
+    ensure_outputd_camilla_statefile
     reconcile_sound_dsp_state
+    # CamillaDSP captures the fan-in output. Restart it after the DSP state
+    # reconcile so a ring-default deploy cannot start Camilla on a stale
+    # chunk-256 statefile against freshly-created 2-slot ring files.
+    systemctl try-restart jasper-camilla.service 2>/dev/null || true
 
     systemctl enable nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service

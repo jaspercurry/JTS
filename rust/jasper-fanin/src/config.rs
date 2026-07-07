@@ -29,7 +29,7 @@ pub const RING_SLOT_FRAMES: u32 = 128;
 /// `MAX_N_SLOTS`; the ring header validates the same range at attach. A present
 /// out-of-range value FAILS LOUD here (`Config::from_env` bails) — Python's
 /// `fanin_coupling.resolve_ring_slots` raises on the same range, so the two
-/// normalizers agree on the drift axis (unset => default 8; out-of-range =>
+/// normalizers agree on the drift axis (unset => default 2; out-of-range =>
 /// error on BOTH sides, never a silent clamp).
 pub const RING_SLOTS_MIN: u32 = 2;
 pub const RING_SLOTS_MAX: u32 = 16;
@@ -198,8 +198,8 @@ pub struct Config {
 
     /// The ring's slot count under `Coupling::ShmRing`. Buffer depth is
     /// `ring_slots * 128` frames — the ONLY latency axis with slot_frames pinned
-    /// at 128 (the outputd DAC-period contract). Default 8 (1024 frames ≈
-    /// 21.3 ms, clearing camilla's negotiated capture buffer at chunksize 256);
+    /// at 128 (the outputd DAC-period contract). Default 2 (256 frames ≈
+    /// 5.3 ms, matching the hardware-validated chunk-128 ring graph);
     /// a present value outside 2..=16 (the ring header's MIN/MAX) FAILS LOUD in
     /// `Config::from_env` — NOT clamped. Env: `JASPER_FANIN_RING_SLOTS`. Python
     /// `fanin_coupling.resolve_ring_slots` uses the same default and likewise
@@ -517,12 +517,12 @@ impl Config {
 
         // Ring A (shm_ring) knobs. Parsed unconditionally (sane defaults) but
         // only USED under Coupling::ShmRing. Path default matches Python's
-        // resolve_ring_path; slots default 8, clamped to the ring header's
+        // resolve_ring_path; slots default 2, checked against the ring header's
         // 2..=16 range (RING_SLOTS_MIN/MAX) — a fail-loud out-of-range value is
         // a config error, not a silent clamp, so a typo can't ship a geometry
         // the ring header would reject at attach.
         let ring_path = env_str("JASPER_FANIN_RING_PATH", "/dev/shm/jts-ring/program.ring");
-        let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 8)?;
+        let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 2)?;
         if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {
             anyhow::bail!(
                 "JASPER_FANIN_RING_SLOTS={} out of range {}..={} — the SHM ring \
@@ -2339,7 +2339,7 @@ mod tests {
                 let cfg = Config::from_env().expect("shm_ring defaults must parse");
                 assert_eq!(cfg.camilla_coupling, Coupling::ShmRing);
                 assert_eq!(cfg.ring_path, "/dev/shm/jts-ring/program.ring");
-                assert_eq!(cfg.ring_slots, 8);
+                assert_eq!(cfg.ring_slots, 2);
                 // Default period (256) is a multiple of the 128-frame slot.
                 assert_eq!(cfg.period_frames, 256);
             },

@@ -51,6 +51,10 @@ from jasper.fanin_coupling import (
     COUPLING_TRANSPORT_PIPE,
     PIPE_PATH_ENV_VAR,
     OUTPUTD_PIPE_PATH_ENV_VAR,
+    RING_CAMILLA_CHUNKSIZE,
+    RING_CAMILLA_ENABLE_RATE_ADJUST,
+    RING_CAMILLA_QUEUELIMIT,
+    RING_CAMILLA_TARGET_LEVEL,
     VALID_COUPLINGS,
     capture_kwargs_for_coupling,
     coupling_capture_kwargs_from_env,
@@ -238,6 +242,9 @@ class EmitSoundConfigKwargs(TypedDict, total=False):
     capture_format: str
     playback_device: str
     playback_format: str
+    chunksize: int
+    target_level: int
+    queuelimit: int
 
 
 @dataclass(frozen=True)
@@ -1201,6 +1208,18 @@ def build_audio_runtime_plan(
         generated_label=outputd_env_label,
         profile_id=profile_id,
     )
+    coupling_setting = _resolve_coupling(
+        base_env=base_values,
+        override_env=override_values,
+        fanin_env=fanin_values,
+        base_label=base_env_label,
+        override_label=override_label,
+        fanin_label=fanin_env_label,
+    )
+    camilla_chunksize_setting = _effective_camilla_chunksize_setting(
+        chunksize_setting=camilla_chunksize_setting,
+        coupling=str(coupling_setting.value),
+    )
     camilla_target_setting = _resolve_profile_floor_int(
         key="JASPER_CAMILLA_TARGET_LEVEL",
         default=DEFAULT_TARGET_LEVEL,
@@ -1212,14 +1231,6 @@ def build_audio_runtime_plan(
         override_label=override_label,
         generated_label=outputd_env_label,
         profile_id=profile_id,
-    )
-    coupling_setting = _resolve_coupling(
-        base_env=base_values,
-        override_env=override_values,
-        fanin_env=fanin_values,
-        base_label=base_env_label,
-        override_label=override_label,
-        fanin_label=fanin_env_label,
     )
     camilla_target_setting = _effective_camilla_target_setting(
         chunksize_setting=camilla_chunksize_setting,
@@ -1344,8 +1355,7 @@ def transport_topology_for_coupling(
     normalized = resolve_coupling(coupling)
     if normalized == COUPLING_SHM_RING:
         # Ring A (fan-in -> CamillaDSP, jts_ring_capture) + Ring B (CamillaDSP ->
-        # outputd, jts_ring_playback). Both S16_LE ALSA ioplug devices; CamillaDSP
-        # rate_adjust stays ON (its rate controller trades Ring B fill). The
+        # outputd, jts_ring_playback). Both S16_LE ALSA ioplug devices; the
         # concrete ring paths live in the daemons' env (fan-in RING_PATH, outputd
         # SHM_RING_PATH), surfaced here so /state names the resolved transport.
         from jasper.fanin_coupling import (
@@ -1383,9 +1393,14 @@ def transport_topology_for_coupling(
                 "sample_rate": DEFAULT_SAMPLE_RATE,
             },
             camilla={
-                # CamillaDSP's rate controller trades Ring B fill — its single
-                # pacing input — so rate_adjust stays on (unlike transport_pipe).
-                "enable_rate_adjust": True,
+                "chunksize": RING_CAMILLA_CHUNKSIZE,
+                "target_level": RING_CAMILLA_TARGET_LEVEL,
+                "queuelimit": RING_CAMILLA_QUEUELIMIT,
+                # The one-clock ring graph is already DAC-paced by outputd's
+                # blocking read/write chain; the validated chunk-128 PoC ran
+                # rate_adjust off, while the rate_adjust-on Ring A+B lesson
+                # packed the queues and measured ~194 ms.
+                "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
                 "capture_resampler": None,
             },
             outputd_content_source="shm_ring",
@@ -2178,12 +2193,39 @@ def _effective_camilla_target_setting(
     playback-buffer latency/stability knob. In the local transport-pipe topology
     (`RawFile` capture + `File` playback), outputd's DAC loop is the pace root
     and Camilla target_level is only schema padding; `emit_sound_config` clamps
-    it to 2 x chunksize. Keep the route plan/hash on that same effective value
-    so latency artifacts match the loaded graph instead of the generated env
-    floor used by loopback profiles.
+    it to 2 x chunksize. Under shm_ring, the emitter uses the validated ring
+    geometry (target 128) instead of the loopback DAC floor. Keep the route
+    plan/hash on those same effective values so latency artifacts match the
+    loaded graph instead of the generated env floor used by loopback profiles.
     """
 
-    if resolve_coupling(coupling) != COUPLING_TRANSPORT_PIPE:
+    normalized = resolve_coupling(coupling)
+    if normalized == COUPLING_SHM_RING:
+        if (
+            target_setting.value == RING_CAMILLA_TARGET_LEVEL
+            and target_setting.source_kind == "route_policy"
+        ):
+            return target_setting
+        warnings = list(target_setting.warnings)
+        if target_setting.value != RING_CAMILLA_TARGET_LEVEL:
+            warnings.append(
+                "JASPER_CAMILLA_TARGET_LEVEL effective value is "
+                f"{RING_CAMILLA_TARGET_LEVEL} under shm_ring; "
+                f"{target_setting.value} from {target_setting.source} is the "
+                "loopback/hardware-floor value, not the ring runtime value"
+            )
+        return RuntimeSetting(
+            key=target_setting.key,
+            value=RING_CAMILLA_TARGET_LEVEL,
+            source_kind="route_policy",
+            source="shm_ring validated ring geometry",
+            unit=target_setting.unit,
+            override_value=target_setting.override_value,
+            generated_value=target_setting.generated_value,
+            operator_value=target_setting.operator_value,
+            warnings=tuple(warnings),
+        )
+    if normalized != COUPLING_TRANSPORT_PIPE:
         return target_setting
     try:
         chunksize = int(chunksize_setting.value)
@@ -2209,6 +2251,41 @@ def _effective_camilla_target_setting(
         override_value=target_setting.override_value,
         generated_value=target_setting.generated_value,
         operator_value=target_setting.operator_value,
+        warnings=tuple(warnings),
+    )
+
+
+def _effective_camilla_chunksize_setting(
+    *,
+    chunksize_setting: RuntimeSetting,
+    coupling: str,
+) -> RuntimeSetting:
+    """Return the Camilla chunksize generated YAML actually emits."""
+
+    if resolve_coupling(coupling) != COUPLING_SHM_RING:
+        return chunksize_setting
+    if (
+        chunksize_setting.value == RING_CAMILLA_CHUNKSIZE
+        and chunksize_setting.source_kind == "route_policy"
+    ):
+        return chunksize_setting
+    warnings = list(chunksize_setting.warnings)
+    if chunksize_setting.value != RING_CAMILLA_CHUNKSIZE:
+        warnings.append(
+            "JASPER_CAMILLA_CHUNKSIZE effective value is "
+            f"{RING_CAMILLA_CHUNKSIZE} under shm_ring; "
+            f"{chunksize_setting.value} from {chunksize_setting.source} is the "
+            "loopback/hardware-floor value, not the ring runtime value"
+        )
+    return RuntimeSetting(
+        key=chunksize_setting.key,
+        value=RING_CAMILLA_CHUNKSIZE,
+        source_kind="route_policy",
+        source="shm_ring validated ring geometry",
+        unit=chunksize_setting.unit,
+        override_value=chunksize_setting.override_value,
+        generated_value=chunksize_setting.generated_value,
+        operator_value=chunksize_setting.operator_value,
         warnings=tuple(warnings),
     )
 

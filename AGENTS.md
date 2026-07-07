@@ -662,19 +662,23 @@ This is the **only** supported deploy path. It does, in order:
    box isn't cleanly running — the direction-guard reads an honest value.
    Also migrates units to socket activation, conditionally enables AEC on
    6-ch firmware. Rust daemon binaries are sha256-compared on install: the
-   core audio graph (jasper-fanin, jasper-outputd) is bounced by the
-   systemd step on every deploy regardless — expect a brief local-audio
-   interruption — and `jasper-usbsink.service` is try-restarted only when
-   the installed `jasper-usbsink-audio` binary content actually changed, so
-   USB-in cannot keep serving a stale daemon (the 2026-07-02 404-endpoints
-   class). `SKIP_RESTART=1` is forwarded into install.sh and skips that
-   conditional restart. See "Runtime Python lives in /opt/jasper" below and
+   core audio graph (jasper-fanin, DSP state, jasper-camilla,
+   jasper-outputd) is bounced by the systemd step on every deploy
+   regardless — expect a brief local-audio interruption. Camilla is
+   restarted only after `jasper-sound reconcile-current-dsp` so it does not
+   reopen a stale DSP statefile against freshly-created fan-in ring files.
+   `jasper-usbsink.service` is try-restarted only when the installed
+   `jasper-usbsink-audio` binary content actually changed, so USB-in cannot
+   keep serving a stale daemon (the 2026-07-02 404-endpoints class).
+   `SKIP_RESTART=1` is forwarded into install.sh and skips that conditional
+   restart. See "Runtime Python lives in /opt/jasper" below and
    [docs/HANDOFF-install-update-transaction.md](docs/HANDOFF-install-update-transaction.md).
 5. `systemctl restart jasper-control` + `systemctl start
    jasper-aec-reconcile` — picks up Python control code and lets the
    mic/AEC reconciler restart or park `jasper-voice` according to the
    hardware actually present. `jasper-camilla` is the Rust camilladsp
-   binary (not restarted).
+   binary and is handled inside install.sh's ordered core-audio bounce, not
+   by the deploy wrapper.
 6. Verifies the management surface: probes `/system/data.json` through
    loopback nginx with `Host: <speaker hostname>` (bounded retries) and
    **fails the deploy** if it doesn't answer 200. This exercises the
@@ -691,8 +695,10 @@ This is the **only** supported deploy path. It does, in order:
    the deployed SHA+`status=ok` (problem #4), and **surfaces** `jasper-doctor`
    health covering voice/AEC/renderers (problem #7, advisory — the
    broken-vs-idle reclassification of missing-hardware daemons is the
-   hot-plug workstream's job). On install failure the deploy exits *before*
-   restarting daemons, so live services keep serving the prior build.
+   hot-plug workstream's job). On install failure the deploy exits before
+   the post-install control/AEC restart and verification layer; install.sh's
+   own ordered audio-graph bounces are visible in the transcript and still
+   leave the prior manifest in place if a later step aborts.
    Canonical doc:
    [docs/HANDOFF-install-update-transaction.md](docs/HANDOFF-install-update-transaction.md).
 
