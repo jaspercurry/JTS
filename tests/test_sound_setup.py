@@ -4226,6 +4226,78 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     assert last_dsp_apply_state() is None
 
 
+def test_summed_validation_route_conflicts_while_combined_test_active(
+    tmp_path,
+    monkeypatch,
+):
+    import io
+    import time
+
+    class _LiveProc:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda handler: True)
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_summed_validation_payload",
+        lambda raw: pytest.fail("active validation conflict must not write evidence"),
+    )
+    now = time.monotonic()
+    monkeypatch.setattr(
+        sound_setup,
+        "_SUMMED_TEST_TONE_SESSION",
+        {
+            "playback_id": "active-summed-playback",
+            "process": _LiveProc(),
+            "speaker_group_id": "main",
+            "level_dbfs": -8.0,
+            "started_monotonic": now,
+            "progress_monotonic": now,
+            "stop_reason": None,
+        },
+    )
+
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    Handler = sound_setup._make_handler(
+        profile_path=tmp_path / "sound_profile.json",
+        library_path=tmp_path / "sound_profiles.json",
+        config_dir=config_dir,
+        camilla_factory=lambda: None,
+    )
+    body = json.dumps({
+        "speaker_group_id": "main",
+        "outcome": "blend_ok",
+        "summed_test_id": "stale-summed-playback",
+    }).encode()
+    raw = (
+        b"POST /active-speaker/summed-validation HTTP/1.1\r\nHost: jts.local\r\n"
+        + f"Content-Length: {len(body)}\r\n".encode()
+        + b"\r\n"
+        + body
+    )
+    rfile = io.BytesIO(raw)
+    wfile = io.BytesIO()
+    handler = Handler.__new__(Handler)
+    handler.rfile = rfile
+    handler.wfile = wfile
+    handler.client_address = ("127.0.0.1", 0)
+    handler.server = None
+    handler.raw_requestline = rfile.readline()
+    handler.parse_request()
+    handler.protocol_version = "HTTP/1.1"
+    handler.do_POST()
+    resp = wfile.getvalue()
+
+    status_line = resp.split(b"\r\n", 1)[0]
+    assert b"409" in status_line, status_line
+    payload = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode())
+    assert payload["status"] == "active_summed_test_running"
+    assert payload["reason"] == "active_summed_test_running"
+    assert payload["active_summed_test"]["playback_id"] == "active-summed-playback"
+
+
 async def test_apply_profile_rechecks_carrier_under_lock_against_concurrent_swap(
     tmp_path: Path, monkeypatch
 ):

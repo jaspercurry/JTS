@@ -2983,6 +2983,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       // loaded/reloaded page render Stop even though this tab never held the
       // local 'Playing combined test' action (the un-stoppable-after-reload bug).
       var serverTestActive = !!(groupView && groupView.summed_test_active === true);
+      var localTestCurrent = summedTestRequest.current || null;
+      var localCombinedPlaying = combinedPlaying &&
+        localTestCurrent && localTestCurrent.groupId === group.id &&
+        localTestCurrent.promise;
       var combinedControlsLocked = combinedStarting || combinedStopping || combinedSaving;
       var combinedPlaybackActive = combinedStarting || combinedPlaying || combinedStopping || serverTestActive;
       var showStop = (combinedPlaying || serverTestActive) && !combinedStopping;
@@ -3006,12 +3010,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
       var recordEnabled = !combinedControlsLocked &&
         (recordAction ? recordAction.enabled === true : hasAudibleTest);
-      // Only the tab that is locally playing force-enables "Sounds right"; a
-      // reloaded page that only knows the test is active (serverTestActive) has
-      // no summed_test_id to record, so it leaves recording to the normal gate
-      // and just offers Stop.
-      if (combinedPlaying) recordEnabled = true;
+      // Only the tab that owns the active play request can turn "Sounds right"
+      // into a confirmed stop + fresh validation. A reloaded page may know from
+      // the server that a test is active, but it has no pending play promise to
+      // await, so it offers Stop only.
+      if (serverTestActive && !localCombinedPlaying) recordEnabled = false;
+      if (localCombinedPlaying) recordEnabled = true;
       var summedTestId =
+        localCombinedPlaying ? '' :
         recordAction && recordAction.body && recordAction.body.summed_test_id ||
         latestTest && (latestTest.summed_test_id || latestTest.playback_id) || '';
       // Positive by-ear path for the core /sound flow. Mic-backed level/delay
@@ -5462,13 +5468,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Choose a speaker group and validation result before saving the combined check.', true);
       return;
     }
-    if (!summedTestId && activeSpeaker.action === 'Playing combined test') {
+    var groupView = commissioningGroupView(groupId);
+    var localActiveTest = summedTestRequest.current &&
+      summedTestRequest.current.groupId === groupId &&
+      summedTestRequest.current.promise &&
+      (activeSpeaker.action === 'Starting combined test' ||
+        activeSpeaker.action === 'Playing combined test');
+    if (localActiveTest) {
       try {
         summedTestId = await finishPlayingSummedTestForValidation(groupId);
       } catch (e) {
         status('Could not finish the combined speaker test: ' + e.message, true);
         return;
       }
+    } else if (groupView && groupView.summed_test_active === true) {
+      status('Stop the combined speaker test before recording the check from this tab.', true);
+      return;
     }
     if (!summedTestId) {
       status('Run the combined speaker test first, then record what you heard.', true);
@@ -5486,7 +5501,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var body = Object.assign({}, action && action.body || {}, {
         speaker_group_id: groupId,
         outcome: outcome,
-        summed_test_id: action && action.body && action.body.summed_test_id || summedTestId,
+        summed_test_id: summedTestId || action && action.body && action.body.summed_test_id || '',
         operator_listening_check: true,
         polarity: 'normal'
       });
@@ -5514,8 +5529,21 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       } catch (profileError) {
         patchActiveSpeaker({baselineProfile: activeSpeaker.baselineProfile});
       }
-      if (summedValidationComplete()) outputStepOverride = 'profile';
-      status('Combined crossover check saved. Save and apply the active profile when ready.');
+      if (summedValidationComplete()) {
+        outputStepOverride = 'profile';
+        status('Combined crossover check saved. Save and apply the active profile when ready.');
+      } else {
+        var latestValidations = payload && payload.summary &&
+          payload.summary.latest_summed_validations || {};
+        var latestValidation = latestValidations[String(groupId || '')] || {};
+        var issues = Array.isArray(latestValidation.issues) ? latestValidation.issues : [];
+        var blocker = issues.find(function(issue) {
+          return issue && issue.severity === 'blocker';
+        });
+        status('Combined crossover check did not count yet: ' +
+          (blocker && blocker.message || 'run the combined test again, then save the result.'),
+          true);
+      }
     } catch (e) {
       patchActiveSpeaker({
         loading: false, action: '',
