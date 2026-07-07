@@ -627,6 +627,7 @@ code = [
 docs = [
   "docs/HANDOFF-audio-latency-foundation.md",
   "docs/HANDOFF-usb-low-latency.md",
+  "docs/HANDOFF-usb-latency-measurement.md",
   "docs/HANDOFF-audio-graph-consolidation.md",
   "docs/testing-tooling.md",
 ]
@@ -635,6 +636,7 @@ requires_docs_when = [
   "The USB-only lean-fifo route, its solo-only/mux-ladder arming, or the DAC-floor codification plan changes (see HANDOFF-usb-low-latency.md).",
   "The route-latency artifact schema/gate thresholds, the click/capture harness's mic-source contract or presets, or the Rust ingress tap's JSONL/HTTP arm-disarm contract change (see HANDOFF-usb-low-latency.md and testing-tooling.md's harness section).",
   "The host-slaved USB clock's env keys/defaults, ladder states, state.json `host_clock` block shape, servo constants, or bandwidth-separation derivation change (see HANDOFF-usb-low-latency.md 'Host-slaved USB clock (Stage 1)').",
+  "The USB-input ring geometry, cushion-decay floor, or the productized fresh-install combo defaults change — re-verify the measured latency numbers and the fresh-install settings table (see HANDOFF-usb-latency-measurement.md).",
 ]
 verification = [
   "pytest tests/test_audio_runtime_plan.py tests/test_mux_lean_lane.py tests/test_sound_camilla_yaml.py tests/test_active_speaker_runtime_contract.py tests/test_route_latency_artifact_cli.py tests/test_route_latency_click_track.py tests/test_route_latency_impulse_detect.py tests/test_route_latency_pairing.py tests/test_route_latency_harness.py tests/test_route_latency_status_socket.py tests/test_route_latency_tap_transport.py tests/test_usbsink_impulse_tap_contract.py tests/test_usbsink_host_clock_contract.py tests/test_doctor_usbsink.py tests/test_usbsink_systemd.py",
