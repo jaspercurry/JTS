@@ -284,6 +284,68 @@ floor via STATUS: `held_target_frames: 576`, `decay.frozen_reason: at_floor` (or
 
 ---
 
+## 7. Future work — the remaining latency ladder
+
+We are at diminishing returns on the *controllable* path: tap→`:9891` p50
+`40.73` ms. An early proof-of-concept reached ~35 ms tap→ref, but only at a
+256-frame cushion that was **not churn-stable** (unlock storms on a drifting
+host); the production 576-frame floor is the churn-*safe* minimum, ~7 ms higher
+by a deliberate stability trade. So the remaining floor is gated by churn
+stability, not by tuning. The full-chain `55.5` ms is dominated by two terms —
+the host-clock cushion and the DAC-side buffering — and the honest ranking of
+what's left, most-actionable first:
+
+1. **Cold-start reliability — the highest-value item (a reliability fix, not a
+   floor reduction).** §6's compliance-revoke thread: on the ~+600 ppm Mac the
+   persisted proof is `revoked reason=early_unlock` at stream end, so a cold
+   session runs the ~43 ms ceiling for ~2.5 min before descending to the 40 ms
+   floor. Fixing this converts the measured floor from an aspirational
+   steady-state number into the *actual* first-click experience. It is a
+   control-loop question — is the stream-end unlock leaking past the #1156
+   terminal-unlock discriminator (a bug), or genuine floor churn on a hard host
+   (correct backoff)? Diagnosing that is the single most impactful next step and
+   warrants a proper investigation before any code change. This is the same churn
+   problem that keeps the cushion floor where it is (see #4) — solving it well
+   could unlock both.
+
+2. **DAC-side URB/ring depth (~2–3 ms, concrete near-term win).** The measured
+   `:9891`→analog term is `13.23` ms: `10.33` ms of ALSA ring occupancy
+   (`snd_pcm_delay`, 496 frames) + `2.90` ms of URB-in-flight and dongle
+   codec/analog-reconstruction presentation. The ALSA ring depth (the outputd URB
+   queue) is tunable; earlier probes estimated ~2–3 ms recoverable by reducing it,
+   bounded by the URB-cadence underrun floor. The `2.90` ms analog term is dongle
+   hardware — fixed unless the output DAC changes.
+
+3. **Resampler-bypass on proven-compliant hosts (~1–3 ms, depends on #1).** Once a
+   host has a persisted compliance proof, the in-path varispeed resampler runs at
+   near-unity and exists only as a safety net. A compliance-gated direct path
+   (the host-clock DLL steers gadget Capture-Pitch alone, resampler bypassed)
+   removes a processing stage and its CPU. It only pays off once #1 makes the
+   proof reliably persistent — otherwise the bypass never engages.
+
+4. **Cushion floor (~13–14 ms) — structurally near minimum; do not chase without a
+   new clock-recovery approach.** The 576-frame floor is clamped ≥ `544` by the
+   DLL-margin / churn-safe math (§2). Going lower risks the underrun churn that
+   the 256-frame PoC hit. The only durable way past it is a fundamentally
+   different clock-recovery design: an Adriaensen 2nd-order **timestamp-DLL**
+   (observe hardware period timestamps instead of the resampler's correction-ppm
+   — content-independent, so it cannot be perturbed by silence or transients), or
+   the **UAC2 async feedback endpoint** (make the Mac slave to the Pi's clock,
+   eliminating in-path resampling entirely). Both are research-tier — bigger lifts
+   than #1–#3 — but they could make the lock content-robust (curing the cold-start
+   fragility in #1) *and* permit a smaller cushion. The prior-art survey
+   (Adriaensen "Using a DLL to filter time", zita-ajbridge, PipeWire's `spa_dll`,
+   the `f_uac2` feedback path) is captured in the design notes; this is where those
+   directions would land.
+
+**Net:** #1 (cold-start reliability) and #2 (DAC URB depth) are the realistic
+near-term targets — together they'd make the box *reliably* deliver ~40 ms
+tap→ref / ~53 ms full-chain from the first click, instead of only in steady
+state. #3 and #4 are larger and lower-priority; #4 is the research frontier for
+ever pushing below the current churn-safe floor.
+
+---
+
 ## Reproduce-the-number checklist
 
 1. Box on main with 2-slot geometry (`jasper-doctor` ring-geometry check green).
