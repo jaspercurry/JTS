@@ -100,3 +100,14 @@ def test_capture_page_serial_models_match_pi_registry_keys():
         "dayton_umm_6",
     ):
         assert stale not in main_js
+
+
+def test_capture_page_preflights_guided_setup_before_start():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "validateSetupBeforeContinue(ctx)" in main_js
+    assert "setup_validate: true" in main_js
+    assert "setup_token" in main_js
+    assert 'event.phase === "setup_validation_failed"' in main_js
+    assert 'event.phase === "setup_validated"' in main_js
+    assert "renderPositionCount(screenEl, ctx)" in main_js

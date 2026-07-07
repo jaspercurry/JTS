@@ -2153,6 +2153,44 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # keep them aligned if either constant changes.
         capture_path = sess.capture_path_for_position(sess.current_position)
 
+        def _on_setup(state: Any) -> None:
+            token = str(getattr(state, "setup_token", "") or "")
+            try:
+                _apply_relay_setup_to_session(sess, state.setup)
+            except (RuntimeError, ValueError) as exc:
+                log_event(
+                    logger,
+                    "capture_relay.setup_validation",
+                    level=logging.WARNING,
+                    kind="room_sweep",
+                    outcome="failed",
+                    reason=type(exc).__name__,
+                )
+                event = {
+                    "phase": "setup_validation_failed",
+                    "setup_token": token,
+                    "error": str(exc),
+                }
+            else:
+                log_event(
+                    logger,
+                    "capture_relay.setup_validation",
+                    kind="room_sweep",
+                    outcome="ok",
+                )
+                event = {
+                    "phase": "setup_validated",
+                    "setup_token": token,
+                }
+            try:
+                client.post_host_event(
+                    pi_session.session_id,
+                    pi_session.pull_token,
+                    event,
+                )
+            except (RuntimeError, OSError, ValueError):
+                logger.debug("relay setup validation event failed", exc_info=True)
+
         def _on_armed(state: Any) -> None:
             try:
                 _apply_relay_setup_to_session(sess, state.setup)
@@ -2189,6 +2227,7 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             pi_session,
             capture_path,
             on_armed=_on_armed,
+            on_setup=_on_setup,
         )
         # Device-aware calibration gate (the phone's mic is known only now): refuse
         # a loaded vendor curve on the phone's built-in mic, allow it for the

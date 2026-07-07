@@ -42,11 +42,12 @@ const DEFAULT_MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
 
 // A capture spec is ~1 KB; cap the opaque string well above that but bounded.
 const MAX_SPEC_BYTES = 64 * 1024;
-// Relay-control event envelopes carry setup/progress metadata: phone {armed:true,
-// noise_floor:{...}, calibration:{...}} and host {phase:"sweep_complete"}. They
-// are not audio payloads; the relay stores and relays them as bounded opaque JSON
-// control state. The cap mirrors the Pi's calibration-upload JSON cap so a phone
-// wizard can carry a user-provided mic calibration file without another endpoint.
+// Relay-control event envelopes carry setup/progress metadata: phone
+// {setup_validate:true, setup:{...}} / {armed:true, noise_floor:{...}} and host
+// {phase:"setup_validated"|"sweep_complete"}. They are not audio payloads; the
+// relay stores and relays them as bounded opaque JSON control state. The cap
+// mirrors the Pi's calibration-upload JSON cap so a phone wizard can carry a
+// user-provided mic calibration file without another endpoint.
 const MAX_EVENT_BYTES = 1024 * 1024;
 const MAX_SESSION_ID_LEN = 128;
 const MAX_TOKEN_LEN = 512;

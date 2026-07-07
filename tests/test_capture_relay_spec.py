@@ -97,6 +97,13 @@ def test_room_sweep_calibration_models_are_registry_driven():
     assert s.to_dict()["calibration_models"] == list(supported_model_options())
 
 
+def test_room_sweep_requests_guided_setup_validation():
+    s = build_room_sweep_spec()
+
+    assert s.setup_validation is True
+    assert s.to_dict()["setup_validation"] is True
+
+
 def test_room_sweep_default_upload_cap_matches_backend():
     s = build_room_sweep_spec()
     assert s.max_upload_bytes == 32 * 1024 * 1024

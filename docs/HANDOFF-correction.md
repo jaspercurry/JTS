@@ -589,6 +589,13 @@
     successful fetch in the browser's `localStorage` (raw serials stay off the
     Pi) — auto-filling and auto-fetching it next time so a repeat measurement
     needs no re-typing or Fetch tap.
+  - **Relay guided-setup preflight.** The public capture page still cannot talk
+    directly to `jts.local`; it posts `{setup_validate:true, setup:{...}}` through
+    the relay and waits for the Pi to answer with
+    `host_event.phase="setup_validated"` before showing Start. Dayton/miniDSP
+    serial misses and uploaded calibration parse errors therefore surface on the
+    calibration step instead of after the user starts a measurement. The later
+    `armed` event still carries setup as the backstop and playback trigger.
 
   Backend logic is unit-covered; the iPhone device-picker, Cancel button,
   Wake Lock, auto-level copy, and the mic-picker UX still need an on-device

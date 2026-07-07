@@ -16,7 +16,9 @@
 > is a descriptor, not a new handler. **A USB-C measurement mic plugged into the
 > phone is supported:** the room capture page now runs a guided setup on
 > `capture.jasper.tech` (permission → mic choice → calibration choice → position
-> count). Calibration is still applied **Pi-side during analysis, never at record
+> count). Room-sweep specs set `setup_validation=true`, so vendor serial lookup
+> / calibration-file parsing preflights through the Pi before the phone shows
+> Start. Calibration is still applied **Pi-side during analysis, never at record
 > time** (it's a post-hoc FR correction in `MeasurementSession._smooth_capture`);
 > the phone records raw and reports *which* mic it used in the opaque `armed`
 > event. A device-aware gate (`_relay_device_calibration_block`, POST-capture)
@@ -193,8 +195,9 @@ aligns the phone's recording against that known stimulus.
 Start creates the one-time relay link and mirrors progress. The jasper.tech page
 owns the phone-only setup the Pi page cannot do reliably: microphone permission,
 input choice, calibration choice (none / vendor serial / uploaded file), and
-measurement count. Once setup is complete, the user taps **Start measurement** on
-the phone, and that tap does both:
+measurement count. For room sweeps, calibration setup is validated by the Pi over
+the relay before the page advances. Once setup is complete, the user taps
+**Start measurement** on the phone, and that tap does both:
 
 1. records a short passive room-noise floor, then starts the sweep recording
    **locally** on the phone (instant — `getUserMedia`),
@@ -214,19 +217,22 @@ audio. Full sequence:
 1. **Pi** mints the session + capture-spec, registers it with the relay, shows
    the tap-link on `jts.local`.
 2. **Phone** opens the jasper.tech page, fetches the spec, asks for microphone
-   permission, lets the user pick mic/calibration/count, and records passive room
-   noise.
-3. **Phone** starts the sweep recording and drops setup + `armed` in the relay →
+   permission, and lets the user pick mic/calibration/count.
+3. **Phone** posts `{setup_validate:true, setup:{...}}` when guided setup needs
+   Pi validation, then waits for `host_event.phase="setup_validated"` before
+   showing Start. Lookup/parse failures stay on the calibration screen.
+4. **Phone** records passive room noise, starts the sweep recording, and drops
+   setup + `armed` in the relay →
    `POST /sessions/:id/event {armed:true, noise_floor:{...}, setup:{...}}`.
-4. **Pi** — already polling `GET /sessions/:id/status` — sees `armed`, applies
+5. **Pi** — already polling `GET /sessions/:id/status` — sees `armed`, applies
    setup (position count/calibration), publishes `host_event.phase="sweep_started"`,
    and **plays the stimulus** through the speaker.
-5. In the room, the phone's mic (still recording) captures it.
-6. **Pi** publishes `host_event.phase="sweep_complete"` after the actual playback
+6. In the room, the phone's mic (still recording) captures it.
+7. **Pi** publishes `host_event.phase="sweep_complete"` after the actual playback
    path returns.
-7. **Phone** sees `sweep_complete`, keeps the spec's post-roll, encrypts, uploads
+8. **Phone** sees `sweep_complete`, keeps the spec's post-roll, encrypts, uploads
    → `PUT /sessions/:id/blob`.
-8. **Pi** polls, sees `ready`, pulls the blob, decrypts, verifies, and
+9. **Pi** polls, sees `ready`, pulls the blob, decrypts, verifies, and
    **cross-correlates** against the stimulus it knows it played → aligned
    measurement.
 
@@ -342,10 +348,11 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
 - `POST   /sessions` — Pi registers `{session_id, capture_spec, upload_token,
   pull_token, ttl_s}`. *Hardening:* store the two tokens as SHA-256 hashes.
 - `GET    /sessions/:id/spec` — phone fetches `capture_spec` (auth: upload_token).
-- `POST   /sessions/:id/event` — phone posts `{armed:true}` so the Pi can trigger
-  the stimulus (auth: upload_token). Room correction also includes passive
-  `noise_floor`, phone-reported `device`, and setup metadata (`total_positions`,
-  calibration choice).
+- `POST   /sessions/:id/event` — phone posts `{setup_validate:true}` for guided
+  setup preflight and `{armed:true}` so the Pi can trigger the stimulus (auth:
+  upload_token). Room correction also includes passive `noise_floor`,
+  phone-reported `device`, and setup metadata (`total_positions`, calibration
+  choice).
 - `GET    /sessions/:id/phone-status` — phone polls `{state, host_event}` (auth:
   upload_token) so it can wait for Pi progress, especially `sweep_complete`,
   without seeing pull-only blob/integrity fields.

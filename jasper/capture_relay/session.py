@@ -137,6 +137,8 @@ class PollState:
     device: dict | None = None
     noise_floor: dict | None = None
     setup: dict | None = None
+    setup_validate: bool = False
+    setup_token: str = ""
 
 
 @dataclass(frozen=True)
@@ -170,6 +172,8 @@ def classify_status(status_payload: dict) -> PollState:
         else None
     )
     setup = event.get("setup") if isinstance(event.get("setup"), dict) else None
+    setup_validate = bool(event.get("setup_validate"))
+    setup_token = str(event.get("setup_token") or "")
     ready = status_payload.get("state") == "ready"
     integrity = status_payload.get("integrity")
     return PollState(
@@ -181,15 +185,17 @@ def classify_status(status_payload: dict) -> PollState:
         device=device,
         noise_floor=noise_floor,
         setup=setup,
+        setup_validate=setup_validate,
+        setup_token=setup_token,
     )
 
 
-def _call_on_armed(callback: Callable[..., None], state: PollState) -> None:
-    """Call old zero-arg or new state-aware armed callbacks.
+def _call_state_callback(callback: Callable[..., None], state: PollState) -> None:
+    """Call old zero-arg or new state-aware callbacks.
 
     Existing tests and sibling relay kinds used ``on_armed()``. Room correction's
-    guided relay flow now needs the phone setup payload before playback, so it
-    accepts ``on_armed(state)``. Supporting both keeps the seam additive.
+    guided relay flow now also has state-aware ``on_setup(state)`` and
+    ``on_armed(state)`` callbacks. Supporting both keeps the seam additive.
     """
     try:
         sig = inspect.signature(callback)
@@ -212,6 +218,7 @@ def run_capture(
     session: PiCaptureSession,
     *,
     on_armed: Callable[..., None],
+    on_setup: Callable[..., None] | None = None,
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     sleep: Callable[[float], None] = time.sleep,
@@ -240,6 +247,7 @@ def run_capture(
             client,
             session,
             on_armed=on_armed,
+            on_setup=on_setup,
             poll_interval_s=poll_interval_s,
             timeout_s=timeout_s,
             sleep=sleep,
@@ -273,6 +281,7 @@ def _poll_until_capture(
     session: PiCaptureSession,
     *,
     on_armed: Callable[..., None],
+    on_setup: Callable[..., None] | None,
     poll_interval_s: float,
     timeout_s: float,
     sleep: Callable[[float], None],
@@ -283,6 +292,7 @@ def _poll_until_capture(
     capture_device: dict | None = None
     capture_noise_floor: dict | None = None
     capture_setup: dict | None = None
+    setup_tokens_seen: set[str] = set()
     while True:
         status = client.status(session.session_id, session.pull_token)
         state = classify_status(status)
@@ -298,10 +308,25 @@ def _poll_until_capture(
                 f"phone aborted the capture ({state.abort_reason or 'no reason'})"
             )
 
+        if (
+            on_setup is not None
+            and state.setup_validate
+            and state.setup is not None
+            and state.setup_token
+            and state.setup_token not in setup_tokens_seen
+        ):
+            setup_tokens_seen.add(state.setup_token)
+            log_event(
+                logger,
+                "capture_relay.setup_validate",
+                session_id=session.session_id,
+            )
+            _call_state_callback(on_setup, state)
+
         if state.armed and not armed_fired:
             armed_fired = True
             log_event(logger, "capture_relay.armed", session_id=session.session_id)
-            _call_on_armed(on_armed, state)
+            _call_state_callback(on_armed, state)
 
         if state.ready:
             log_event(logger, "capture_relay.ready", session_id=session.session_id)
