@@ -4132,6 +4132,23 @@ def _active_speaker_summed_validation_payload(raw: dict[str, Any]) -> dict[str, 
     return payload
 
 
+def _active_speaker_summed_validation_active_conflict(
+    raw: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Reject validation writes while a combined test is still in progress."""
+
+    active = _active_summed_test_snapshot()
+    if active.get("active") is not True:
+        return None
+    return {
+        "status": "active_summed_test_running",
+        "reason": "active_summed_test_running",
+        "error": "stop the combined speaker test before recording the check",
+        "speaker_group_id": str(raw.get("speaker_group_id") or "").strip(),
+        "active_summed_test": active,
+    }
+
+
 def _active_speaker_alignment_curves(
     measurements: dict[str, Any],
     group: str | None,
@@ -4774,6 +4791,25 @@ def _make_handler(
                     return
                 if path == "/active-speaker/summed-validation":
                     try:
+                        conflict = (
+                            _active_speaker_summed_validation_active_conflict(raw)
+                        )
+                        if conflict is not None:
+                            logger.info(
+                                "event=sound.active_speaker_summed_validation "
+                                "status=blocked reason=active_summed_test_running "
+                                "group_id=%s active_playback_id=%s",
+                                conflict.get("speaker_group_id"),
+                                (
+                                    conflict.get("active_summed_test", {})
+                                    if isinstance(
+                                        conflict.get("active_summed_test"), dict
+                                    )
+                                    else {}
+                                ).get("playback_id"),
+                            )
+                            self._send_json(conflict, status=HTTPStatus.CONFLICT)
+                            return
                         self._send_json(_active_speaker_summed_validation_payload(raw))
                     except OSError as e:
                         logger.exception(

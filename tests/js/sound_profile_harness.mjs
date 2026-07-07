@@ -1247,7 +1247,19 @@ async function testCombinedTestButtonStopsActiveRequest() {
           "main:woofer": { captured: true, outcome: "heard_correct_driver" },
           "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
         },
-        latest_summed_tests: {},
+        latest_summed_tests: {
+          main: {
+            captured: false,
+            audio_emitted: false,
+            summed_test_id: "summed-playback-stale",
+            playback_id: "summed-playback-stale",
+            issues: [{
+              severity: "blocker",
+              code: "summed_test_playback_incomplete",
+              message: "combined test did not complete",
+            }],
+          },
+        },
         latest_summed_validations: {},
       },
       permissions: {},
@@ -1264,9 +1276,12 @@ async function testCombinedTestButtonStopsActiveRequest() {
       combined_groups: [{
         group_id: "main",
         label: "Main speaker",
-        status: "ready_to_test",
-        status_label: "next",
-        message: "Run the combined speaker test.",
+        status: "test_failed",
+        status_label: "not tested",
+        message: "The combined test did not finish. Press Play combined test to retry.",
+        failure_message: "The combined test did not finish. Press Play combined test to retry.",
+        latest_test_id: "summed-playback-stale",
+        has_audible_test: false,
         actions: {
           start_combined_test: {
             id: "start_combined_test",
@@ -1491,7 +1506,7 @@ async function testCombinedSoundsRightStopsAndSavesActiveLoop() {
             label: "Record combined check",
             enabled: false,
             endpoint: "./active-speaker/summed-validation",
-            body: { speaker_group_id: "main", summed_test_id: "" },
+            body: { speaker_group_id: "main", summed_test_id: "summed-playback-stale" },
           },
         },
       }],
@@ -1548,10 +1563,15 @@ async function testCombinedSoundsRightStopsAndSavesActiveLoop() {
       "data-label": "Main speaker",
     });
     await harness.flush(); await harness.flush(); await harness.flush();
+    const html = harness.elements.get("view-body").innerHTML;
+    const soundsRight = html.match(/<button type="button" class="btn btn--primary" [^>]*data-act="record-summed-validation"[^>]*>Sounds right<\/button>/);
+    if (!soundsRight || soundsRight[0].includes('data-summed-test-id="summed-playback-stale"')) {
+      fail("active Sounds right must not carry a stale summed test id", { html, soundsRight });
+    }
     harness.dispatchClick({
       "data-act": "record-summed-validation",
       "data-group-id": "main",
-      "data-summed-test-id": "",
+      "data-summed-test-id": "summed-playback-stale",
       "data-outcome": "blend_ok",
     });
     await harness.flush(); await harness.flush();
