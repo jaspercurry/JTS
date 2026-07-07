@@ -1243,6 +1243,9 @@ def ring_geometry_ready(outputd_text: str) -> tuple[bool, str]:
 
     match = ring_geometry_matches_outputd(_resolved_outputd_period_frames(outputd_text))
     if match.ok:
+        # TODO(#1169): if shm_ring later permits operator chunk/target overrides,
+        # feed the resolved emitted values through jasper.ring_negotiation.accept()
+        # here so arm-time refusal uses the same CamillaDSP/ioplug reason.
         return True, (
             "ring slot geometry matches "
             f"(conf.d period_frames={match.conf_period_frames} == outputd "

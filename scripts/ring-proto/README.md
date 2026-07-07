@@ -365,6 +365,9 @@ never alias to a zero delta).
 # Build the .so on the Pi first (shared with Ring B):
 PI_HOST=jts.local bash scripts/ring-proto/build-on-pi.sh
 
+# Product default is now 2-slot / chunk 128 / target 128 / queuelimit 1 /
+# rate_adjust off (PR #1186); the 8-slot default below remains valid only for
+# isolated Ring-A measurement.
 # Arm Ring A (default 8 slots — the capture BufferManager negotiates a
 # 1024-frame buffer = 8 * 128; overridable 2..16):
 PI_HOST=jts.local bash scripts/ring-proto/arm-ring-a.sh

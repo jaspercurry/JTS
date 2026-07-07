@@ -16,6 +16,10 @@
 # See arm.sh's banner for the full rationale. This script remains useful ONLY for
 # the isolated Ring-A-only lab experiment (fan-in's Ring A capture WITHOUT
 # outputd's Ring B); for the real end-to-end ring, use the reconciler above.
+#
+# PRODUCT default as of PR #1186: 2-slot / chunk 128 / target 128 / queuelimit 1 /
+# rate_adjust off. This lab script intentionally keeps the old 8-slot/chunk-256
+# Ring-A-only measurement shape unless JASPER_RING_PROTO_SLOTS overrides it.
 # ============================================================================
 #
 # THIS IS A PROTOTYPE, LAB-ONLY PROCEDURE, the CAPTURE mirror of arm.sh

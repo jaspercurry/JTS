@@ -23,9 +23,10 @@ A deploy answers two different questions; conflating them was the bug.
 1. **"Did the install *process* complete?"** — owned by `install.sh`,
    recorded in the build manifest. Hardware-independent: it means every
    build compiled, every file installed, the venv resolved, units loaded.
-   It does **not** claim any daemon is currently healthy (install.sh
-   doesn't even restart the hardware-gated daemons — the deploy wrapper's
-   reconcile does).
+   It does **not** claim any daemon is currently healthy. `install.sh` may
+   bounce the core audio graph while loading the new code and derived
+   state; the deploy wrapper's post-install doctor/reconcile layer owns the
+   separate "healthy or correctly idle" claim.
 
 2. **"Is the running system healthy, or correctly idle?"** — owned by
    `scripts/deploy-to-pi.sh` post-restart, via `jasper-doctor`. This is
@@ -88,8 +89,9 @@ the posture that gets fully-verified deploys.
 ### 3. Derived audio state is repaired best-effort, never a manifest gate
 
 Generated CamillaDSP sound YAML is a cache of saved JTS intent, not the
-source of truth. During install's runtime-unit bring-up, after outputd/Camilla
-readiness and statefile repair, `install.sh` runs
+source of truth. During install's runtime-unit bring-up, after outputd
+readiness and statefile legality checks but before the explicit CamillaDSP
+restart, `install.sh` runs
 `jasper-sound reconcile-current-dsp --fail-open` under an outer 30 s process
 timeout. This deliberately refreshes only a currently-loaded JTS-owned
 `sound_current.yml` from `/var/lib/jasper/sound_profile.json` and
@@ -235,4 +237,4 @@ sourced bash helpers). Confirm on a Pi:
 
 ---
 
-Last verified: 2026-06-21
+Last verified: 2026-07-07

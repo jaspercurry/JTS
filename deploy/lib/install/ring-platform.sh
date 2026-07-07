@@ -192,4 +192,12 @@ install_jts_ring_conf_assets() {
 install_jts_ring_platform() {
     build_install_jts_ring_ioplug
     install_jts_ring_conf_assets
+    # Program/content ring files are tmpfs transport state, never user data.
+    # Delete both explicit files before install_systemd_units can restart
+    # fan-in/outputd: an existing 8-slot mmap from an older default would be a
+    # fatal attach mismatch after the new 2-slot default lands. CamillaDSP keeps
+    # reading its old unlinked fd until the later DSP reconcile reloads it onto
+    # the freshly-created ring, which is inside the normal deploy audio bounce.
+    rm -f /dev/shm/jts-ring/program.ring
+    rm -f /dev/shm/jts-ring/content.ring
 }

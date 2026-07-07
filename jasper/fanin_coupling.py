@@ -104,6 +104,10 @@ PIPE_WIRE_FORMAT = "S32_LE"
 RING_PATH_ENV_VAR = "JASPER_FANIN_RING_PATH"
 DEFAULT_FANIN_RING_PATH = "/dev/shm/jts-ring/program.ring"
 RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
+# Ring A/B slot size in frames. Mirrors rust/jasper-fanin/src/config.rs
+# RING_SLOT_FRAMES and c/jts-ring-ioplug/pcm_jts_ring.c JTS_RING_DEFAULT_PERIOD.
+# The conf.d period parser and contract tests pin those copies to this value.
+RING_SLOT_FRAMES = 128
 DEFAULT_FANIN_RING_SLOTS = 2
 RING_CAMILLA_CHUNKSIZE = 128
 RING_CAMILLA_TARGET_LEVEL = 128
