@@ -255,11 +255,14 @@ What exists:
 - Fake backend remains the default for safe developer runs:
   `jasper-outputd --once` does not open ALSA or touch `/run`.
 - Real backend: systemd sets `JASPER_OUTPUTD_BACKEND=alsa`.
-- Content input: `outputd_content_capture`, backed by snd-aloop
-  substream 6 (`hw:Loopback,1,6`).
-- Content bridge: packaged default is
-  `JASPER_OUTPUTD_CONTENT_BRIDGE=direct`. The opt-in lab mode
-  `rate_match` keeps the DAC as timing owner, drains
+- Content input: on ring-eligible stereo boxes the product default is
+  `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`; CamillaDSP writes Ring B through
+  `jts_ring_playback`, and outputd reads `/dev/shm/jts-ring/content.ring`
+  one 128-frame slot per DAC period. The legacy/fail-safe `direct` bridge
+  still reads `outputd_content_capture`, backed by snd-aloop substream 6
+  (`hw:Loopback,1,6`), for ring-ineligible, operator-frozen, and active-N-ch
+  paths.
+- Lab bridge: the opt-in `rate_match` mode keeps the DAC as timing owner, drains
   `outputd_content_capture` into an explicit bounded ring, and renders
   DAC-sized periods through a ppm-clamped windowed-sinc rate matcher.
   Use this for DAC/content-lane clock-slip validation only until it has
@@ -269,16 +272,6 @@ What exists:
   path. The sinc table is precomputed at startup; steady state should
   be multiply/add work only, but Pi 5 CPU and xrun behavior still need
   hardware soak before enabling it outside the lab.
-  A third `CONTENT_BRIDGE` value, `shm_ring`, is a lab-only latency
-  prototype (Ring B: CamillaDSP writes the post-DSP program into a 2-slot
-  SHM ping-pong ring via a lab-only ALSA ioplug, and outputd reads one slot
-  per DAC period). It is default-off and arms nothing in a product install
-  — no product ALSA config, reconciler, or installer references it; it is
-  wired only by the lab scripts under `scripts/ring-proto/`. Its canonical
-  operational home is
-  [`scripts/ring-proto/README.md`](../scripts/ring-proto/README.md), not this
-  doc. Do not treat it as shipped output-owner behavior until it is
-  productized (a reconciler-owned device replacing the lab arm scripts).
 - Multi-room round-trip content lane (OFF by default, inert until a
   grouping bond activates it in Increment 5): when
   `JASPER_OUTPUTD_DAC_CONTENT_FIFO` is set, a grouping leader feeds its
@@ -1433,7 +1426,10 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-07-06 (outputd config-shear resilience rechecked against
+Last verified: 2026-07-07 (ring/default outputd bridge text rechecked against
+`jasper.fanin_coupling`, `jasper.fanin.coupling_auto`, and
+`jasper.fanin.coupling_reconcile`; prior 2026-07-06 outputd config-shear
+resilience rechecked against
 `jasper.audio_runtime_plan`, `jasper.cli.audio_config validate-outputd-env`,
 `deploy/bin/jasper-audio-hardware-reconcile`, and
 `deploy/bin/jasper-outputd-failure-reconcile`, including content and DAC

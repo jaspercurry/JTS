@@ -58,20 +58,26 @@ voice while keeping outputd TTS unarmed. See
 [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md) for the
 active-endpoint route.
 
-`jasper-outputd` normally reads the content capture lane directly. For
-lab validation, `JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match` inserts an
+On ring-eligible stereo boxes, `jasper-outputd` normally reads Ring B:
+CamillaDSP writes the post-DSP stereo program to `jts_ring_playback`, and
+outputd consumes `/dev/shm/jts-ring/content.ring` one DAC-sized slot at a
+time. The legacy `direct` content capture lane remains the fail-safe path
+for ring-ineligible, operator-frozen, and active-N-ch topologies. For lab
+validation, `JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match` inserts an
 outputd-owned bounded ring plus ppm-clamped rate matcher at this final
 content/DAC clock boundary while leaving the DAC write loop as timing
-owner. The default bridge target is 4096 frames (~85 ms at 48 kHz);
-AirPlay latency rendering accounts for that target only when the bridge
-is explicitly enabled.
+owner. The lab bridge target is 4096 frames (~85 ms at 48 kHz); AirPlay
+latency rendering accounts for that target only when the bridge is
+explicitly enabled.
 
 Each renderer has its own snd-aloop lane, and room-correction/test
 playback has a dedicated `correction_substream` lane. `jasper-fanin`
-sums those lanes into substream 7, which CamillaDSP reads via
-`pcm.jasper_capture`; `pcm.jasper_ref` remains the explicit pre-DSP
-AEC fallback/diagnostic view. Production AEC consumes outputd's
-post-Camilla speaker monitor. This replaced the
+sums those lanes; on ring-coupled boxes it writes Ring A for CamillaDSP
+and keeps a lossy lane-7 mirror so `pcm.jasper_capture` /
+`pcm.jasper_ref` remain explicit pre-DSP fallback/diagnostic views until
+the snd-aloop cleanup phases remove them. On loopback fallback boxes,
+CamillaDSP still captures `pcm.jasper_capture` directly. Production AEC
+consumes outputd's post-Camilla speaker monitor. This replaced the
 short-lived renderer-side dmix (`jasper_renderer_mix`) after AirPlay
 testing showed dmix's per-write timing could drop WiFi-bursty RTP
 packets.
@@ -607,7 +613,10 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-07-01 (assistant loudness safety text rechecked against
+Last verified: 2026-07-07 (ring/default path text rechecked against
+`jasper.fanin_coupling`, `jasper.fanin.coupling_auto`, and
+`jasper.fanin.coupling_reconcile`; prior 2026-07-01 assistant loudness
+safety text rechecked against
 `jasper.audio_io`, `jasper-tts-protocol`, and fan-in/outputd TTS gain tests;
 prior 2026-06-30 pass rechecked assistant output episode ownership
 against `jasper.voice.output_gate`, `jasper/voice_daemon.py`, and

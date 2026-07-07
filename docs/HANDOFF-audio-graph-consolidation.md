@@ -62,9 +62,9 @@ trap; A1 and A3 must be deleted together.
 
 | Coupling | Lives in | Status |
 |---|---|---|
-| `loopback` (default) | fan-in writes lane 7; CamillaDSP dsnoop-captures `plug:jasper_capture` | Replaced by Ring A; deleted P7/P9 |
+| `loopback` | fan-in writes lane 7; CamillaDSP dsnoop-captures `plug:jasper_capture` | Legacy / fail-safe fallback for ring-ineligible or operator-frozen boxes; replaced by Ring A on eligible product-default boxes; deleted P7/P9 |
 | `transport_pipe` | `FifoWriter` in [`rust/jasper-fanin/src/fifo.rs`](../rust/jasper-fanin/src/fifo.rs), `local_content_pipe.rs` (outputd side), [`jasper/fanin/coupling_reconcile.py`](../jasper/fanin/coupling_reconcile.py) ordered arm/disarm, `JASPER_FANIN_CAMILLA_PIPE_BYTES`, active-leader precheck | Hardware-demoted 2026-07-01 (16 KiB Pi-5 page floor); deleted P5b |
-| `shm_ring` (Ring A, lab) | `RingOutput` transport in [`rust/jasper-fanin/src/mixer.rs`](../rust/jasper-fanin/src/mixer.rs), [`jasper/fanin_coupling.py`](../jasper/fanin_coupling.py) (`RING_CAPTURE_DEVICE = "jts_ring_capture"`), `JASPER_FANIN_RING_PATH`/`_SLOTS` | Becomes the only coupling (P2→P4) |
+| `shm_ring` (Ring A, product default on eligible stereo boxes) | `RingOutput` transport in [`rust/jasper-fanin/src/mixer.rs`](../rust/jasper-fanin/src/mixer.rs), [`jasper/fanin_coupling.py`](../jasper/fanin_coupling.py) (`RING_CAPTURE_DEVICE = "jts_ring_capture"`), `JASPER_FANIN_RING_PATH`/`_SLOTS` | Shipped default via `jasper-fanin-coupling-reconcile --auto`; becomes the only coupling after the remaining snd-aloop removals |
 
 **Load-bearing finding: fan-in's `RingOutput` keeps a lossy aloop MIRROR
 on lane 7** (`mixer.rs` — the ring writer plus `mirror: Option<PCM>` on
@@ -78,9 +78,9 @@ mirror itself is a hidden aloop dependency that dies in P7.
 
 | Mode | Lives in | Status |
 |---|---|---|
-| `direct` (default) | outputd reads `outputd_content_capture` (lane 6) / `outputd_active_content_capture` (lane 5, N-ch) via `alsa_backend.rs`/`dac_content.rs` | Stereo path replaced by Ring B; active N-ch path is the P8 problem (below) |
+| `direct` | outputd reads `outputd_content_capture` (lane 6) / `outputd_active_content_capture` (lane 5, N-ch) via `alsa_backend.rs`/`dac_content.rs` | Legacy / fail-safe stereo fallback and the active N-ch bridge; stereo path replaced by Ring B on eligible product-default boxes; active N-ch path is the P8 problem (below) |
 | `rate_match` | [`rust/jasper-outputd/src/content_bridge.rs`](../rust/jasper-outputd/src/content_bridge.rs) + `JASPER_OUTPUTD_CONTENT_BRIDGE_{RING,TARGET,MAX_ADJUST}_*` env | Rejected in tuning (content xruns/EAGAIN); a second rate matcher inside an already DAC-paced domain — exactly the duplicate-clock class the end state forbids. Deleted P5c |
-| `shm_ring` (Ring B) | `shm_ring_source.rs`, `JASPER_OUTPUTD_SHM_RING_PATH`/`_SLOTS`; CamillaDSP writes via the `jts_ring_playback` ioplug device | Becomes the only bridge for stereo topologies (P2→P4) |
+| `shm_ring` (Ring B, product default on eligible stereo boxes) | `shm_ring_source.rs`, `JASPER_OUTPUTD_SHM_RING_PATH`/`_SLOTS`; CamillaDSP writes via the `jts_ring_playback` ioplug device | Shipped default paired with Ring A by the coupling reconciler; becomes the only bridge for stereo topologies after fallback deletion |
 
 `config.rs` already hard-fails `usb_low_latency_48k` claims combined with
 `transport_pipe`/`rate_match`, and requires **full-range stereo** for
@@ -522,4 +522,4 @@ renderers,aec}.py`, `jasper/cli/{aec_tune,aec_bridge}.py`,
 measured floors: [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md)
 "Final state — 2026-07-03".
 
-Last verified: 2026-07-06
+Last verified: 2026-07-07

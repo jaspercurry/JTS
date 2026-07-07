@@ -764,8 +764,8 @@ def test_fanin_coupling_is_transition_owned_not_lab_overrideable():
     )
 
 
-def test_plan_recognizes_shm_ring_lab_coupling_without_false_warning():
-    # The Ring A lab flag: the plan reuses fanin_coupling's SSOT
+def test_plan_recognizes_shm_ring_coupling_without_false_warning():
+    # The Ring A transport: the plan reuses fanin_coupling's SSOT
     # (VALID_COUPLINGS), so setting JASPER_FANIN_CAMILLA_COUPLING=shm_ring
     # surfaces value=shm_ring and does NOT emit the spurious
     # "is not recognized; resolved to loopback" warning it used to when the plan

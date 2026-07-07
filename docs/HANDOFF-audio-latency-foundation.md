@@ -161,32 +161,36 @@ Structural findings the measurements pinned:
 - **camilla's unit ExecStartPre re-seeds the statefile from the output-topology
   contract** — a prototype config must be applied via the live websocket
   set_config_file_path, and any camilla restart safely reverts to cutover
-  (fail-safe: silence, not noise). Ring mode must become a topology-contract
-  citizen when productized.
+  (fail-safe: silence, not noise). Ring mode is now a topology-contract
+  citizen: a ring-armed, ring-eligible box re-seeds the ring flat config instead
+  of reverting to the loopback cutover.
 
 Ring A (fan-in → Camilla, plan pinned 2026-07-02) bounds that hop to
 n_slots×128 frames with fan-in blocking-on-full as the transitively DAC-paced
 writer; falsifiable target ≈ −25..35 ms plus the variance the hysteretic aloop
 carried. Certification note: the route-latency artifact binder correctly
-REFUSES shm_ring topologies for `usb_low_latency_48k` (lab-only until the
-route/topology contracts learn the ring) — ring numbers above are harness
-measurements, not certified artifacts, by design.
+accepts the coherent Ring A + Ring B pair for `usb_low_latency_48k`; it still
+rejects partial ring flips and deferred lab transports (`transport_pipe`,
+`rate_match`).
 
 ## The chain, and where latency lives
 
 ```
-renderer → snd-aloop fan-in ring → jasper-fanin → (capture) → CamillaDSP
-         → outputd_content_playback (snd-aloop) → jasper-outputd → DAC
+renderer → snd-aloop fan-in lane → jasper-fanin → Ring A → CamillaDSP
+         → Ring B → jasper-outputd → DAC
 ```
 
 - The **fan-in input ring** (~85 ms) is the WiFi-burst absorber — load-bearing
   for networked sources (AirPlay/Spotify), *not* needed by a wired USB source.
-- The **fan-in output queue** is fixed downstream latency. As of the
+- The legacy **fan-in output queue** is fixed downstream latency. As of the
   2026-06-29 JTS2 retune, the loopback-path production floor is 1024 frames
   (~21.3 ms at 48 kHz). A 512-frame trial failed fast with fan-in output
-  xruns, so sub-1024 remains lab-only.
-- **CamillaDSP** owns `chunksize` / `target_level` (config-baked in
-  [`jasper/camilla_config_contract.py`](../jasper/camilla_config_contract.py)).
+  xruns, so sub-1024 remains loopback-only lab work; eligible product-default
+  boxes bypass that downstream queue with Ring A.
+- **CamillaDSP** owns `chunksize` / `target_level`; ring-coupled emits use the
+  fixed 128 / 128 / queue-1 geometry from
+  [`jasper.fanin_coupling`](../jasper/fanin_coupling.py), while loopback emits
+  keep the deeper historical queueing.
 - **jasper-outputd** is the final-output owner: a blocking DAC write is the
   timing master; the content lane is read non-blocking (absent content → silence).
   Both AEC references are produced here (software AEC3 → 48 kHz UDP `:9891`;
@@ -577,7 +581,10 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-07-06 (`outputd.env` config-shear resilience rechecked
+Last verified: 2026-07-07 (ring route-policy/current-chain text rechecked
+against `jasper.audio_runtime_plan`, `jasper.fanin_coupling`, and
+`jasper.fanin.coupling_reconcile`; prior 2026-07-06 `outputd.env`
+config-shear resilience rechecked
 against the runtime plan, staged audio-hardware reconcile writer, and outputd
 failure helper, including content and DAC buffer/period validation; prior ring
 checkpoint and jts.local tuning evidence from
