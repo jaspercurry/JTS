@@ -25,6 +25,8 @@ Pins the campaign brief's contracts + the review remediation:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from jasper.env_file import read_value
@@ -34,6 +36,11 @@ from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
+    DEFAULT_FANIN_RING_SLOTS,
+    RING_CAMILLA_CHUNKSIZE,
+    RING_CAMILLA_ENABLE_RATE_ADJUST,
+    RING_CAMILLA_QUEUELIMIT,
+    RING_CAMILLA_TARGET_LEVEL,
 )
 
 
@@ -767,3 +774,124 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     assert r.owned is True
     assert r.coupling == COUPLING_SHM_RING
     assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
+
+
+# --------------------------------------------------------------------------
+# Fresh-install low-latency reproduction — pins the measurement doc's claim
+# --------------------------------------------------------------------------
+#
+# docs/HANDOFF-usb-latency-measurement.md §2 ("this is what a fresh install
+# ships") asserts that EVERY low-latency USB value is either a shipped code
+# default or armed automatically by the coupling auto-pass on an eligible gadget
+# box. That is a load-bearing promise (the ~55.5 ms measured number only holds if
+# a fresh flash actually reproduces the measured config with no operator action).
+# These tests PIN that promise, so a silent drift in any of the named values
+# reddens here and the doc's claim is caught rather than becoming stale prose.
+#
+# Two halves, matching the doc's two §2 tables:
+#   1. the host-clock combo the auto-pass ARMS on an eligible gadget box, and
+#   2. the ring-geometry CODE DEFAULTS the doc's table names.
+#
+# ``ring_slots default == 2`` is pinned to config.rs's ``env_u32(…, 2)`` source
+# text in tests/test_fanin_coupling_rust_contract.py
+# (test_shm_ring_env_var_names_and_defaults_agree); here we only reference the
+# Python constant that pin ties the Rust default to, so we do not duplicate the
+# source-text read.
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_FANIN_CONFIG_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "config.rs"
+
+
+def test_fresh_install_auto_arms_exactly_the_documented_combo_block(
+    tmp_path, monkeypatch
+):
+    """§2 combo table: on an ELIGIBLE gadget box (gadget present + usbsink intent
+    enabled + ring-eligible topology) the auto-pass writes EXACTLY this block into
+    fanin.env — the three combo flags ``enabled`` AND coupling ``shm_ring`` — and
+    stamps NO operator marker. If the auto-pass ever stopped arming one of these,
+    a fresh install would silently ship a slower config than the doc claims.
+    """
+    fanin = tmp_path / "fanin.env"
+    outputd = tmp_path / "outputd.env"
+    usbsink = tmp_path / "usbsink.env"
+    fanin.write_text("")
+    outputd.write_text("")
+    _stub_ring_gates(monkeypatch, eligible=True)
+
+    r = _auto(fanin, outputd, gadget=True, usbsink=usbsink, restarts=[])
+
+    assert r.owned is True
+    assert r.combo_armed is True
+    text = fanin.read_text()
+    # EXACTLY the documented combo env block (measurement doc §2 host-clock table).
+    documented_combo = {
+        ca.USB_DIRECT_ENV_VAR: "enabled",
+        ca.HOST_CLOCK_ENV_VAR: "enabled",
+        ca.CUSHION_DECAY_ENV_VAR: "enabled",
+        COUPLING_ENV_VAR: COUPLING_SHM_RING,
+    }
+    for key, value in documented_combo.items():
+        assert read_value(text, key) == value, (
+            f"fresh-install auto-pass must write {key}={value} on an eligible "
+            "gadget box (measurement doc §2); it did not"
+        )
+    # Auto ownership is preserved — the auto-pass never freezes the box to an
+    # operator choice (that would stop the combo re-arming across deploys).
+    assert read_value(text, ca.COUPLING_CHOICE_ENV_VAR) is None
+    # The usbsink standby half of the combo lands (documented as armed together).
+    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "1"
+
+
+def test_fresh_install_ring_geometry_defaults_match_the_doc_table():
+    """§2 ring-geometry table: the Camilla ring-emit geometry the doc names —
+    chunksize 128 / target_level 128 / queuelimit 1 / rate_adjust off — and the
+    2-slot Ring A default. These are shipped CODE defaults (no auto-pass needed);
+    a fresh install reproduces them because they are the constant values. Pinning
+    the literals here catches a silent drift the doc could not.
+    """
+    # The doc's table values are these constants; assert the literals so a drift
+    # in the constant itself (not just its usage) reddens.
+    assert RING_CAMILLA_CHUNKSIZE == 128
+    assert RING_CAMILLA_TARGET_LEVEL == 128
+    assert RING_CAMILLA_QUEUELIMIT == 1
+    assert RING_CAMILLA_ENABLE_RATE_ADJUST is False
+    # ring_slots default == 2 (config.rs env_u32(…, 2) is pinned to this constant
+    # in test_fanin_coupling_rust_contract.py; referenced, not re-read here).
+    assert DEFAULT_FANIN_RING_SLOTS == 2
+
+
+def test_fresh_install_ring_geometry_emits_the_doc_table_values():
+    """The same §2 ring-geometry values as they actually land in the emitted
+    CamillaDSP ring config (``emit_flat_ring_config`` — the config the statefile
+    seeder re-seeds on a ring-armed box). Pins the values end-to-end through the
+    emitter, not just the constants, so a wiring change that dropped one can't slip
+    past. Hardware-free: a pure YAML-text emit, no CamillaDSP process.
+    """
+    from jasper.sound.camilla_yaml import emit_flat_ring_config
+
+    text = emit_flat_ring_config()
+    assert "chunksize: 128" in text
+    assert "target_level: 128" in text
+    assert "queuelimit: 1" in text
+    assert "enable_rate_adjust: false" in text
+    # Both ring ends are the SHM-ring devices (the end-to-end shm_ring topology).
+    assert 'device: "jts_ring_capture"' in text
+    assert 'device: "jts_ring_playback"' in text
+
+
+def test_fresh_install_cushion_decay_floor_default_is_576():
+    """§2 host-clock table: JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES ships
+    at the hardware-validated 576 floor (config.rs DEFAULT_CUSHION_DECAY_FLOOR_FRAMES).
+    The Rust behavioural test (cushion_decay_floor_defaults_to_validated_floor)
+    asserts the config equals the CONSTANT but is tautological on the constant's
+    value; this source-text pin catches the constant itself silently drifting off
+    the 576 the doc's table names. Hardware-free (the crate does not build on
+    macOS; the CI Linux rust job builds it).
+    """
+    if not _FANIN_CONFIG_RS.exists():
+        pytest.skip(f"rust source not present: {_FANIN_CONFIG_RS}")
+    text = _FANIN_CONFIG_RS.read_text(encoding="utf-8")
+    assert "pub const DEFAULT_CUSHION_DECAY_FLOOR_FRAMES: u32 = 576;" in text, (
+        "config.rs DEFAULT_CUSHION_DECAY_FLOOR_FRAMES must stay 576 — the "
+        "hardware-validated floor the measurement doc §2 table ships"
+    )

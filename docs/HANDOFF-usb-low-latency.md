@@ -5,6 +5,13 @@ The shipped route is **not** the old lean-FIFO bypass plan: it keeps USB in
 the shared fan-in/Camilla/outputd protection path and earns any low-latency
 claim only through measured route-latency evidence.
 
+> **Measuring it?** The measurement method (electrical `:9891` + analog
+> Scarlett-loopback), the current hardware-measured numbers (~55.5 ms full
+> chain), the per-stage breakdown, and the productized-settings reference table
+> live in [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md).
+> This doc owns the *route design + evidence gate*; that doc owns *how to measure
+> and what a fresh install ships*.
+
 ## Current Production Route (2026-07-06)
 
 `usb_low_latency_48k` is the claiming profile. On a solo, ring-eligible USB
@@ -14,12 +21,25 @@ combo box, the product default is the shm-ring path:
 UAC2 gadget capture
   → jasper-usbsink-audio (Rust, 256 frames / 3 periods, S32_LE→S16_LE high-word truncation)
   → usbsink_substream
-  → jasper-fanin USB input resampler (target 512 + cushion 1536, ring 4096)
+  → jasper-fanin USB input resampler (target 512 + warm-up cushion 2048, ring 4096)
   → Ring A program.ring (jts_ring_capture, 2 slots × 128 frames)
   → CamillaDSP protection/correction (chunk 128 / target 128 / queue 1, rate_adjust off)
   → Ring B content.ring (jts_ring_playback, 2 slots × 128 frames)
   → outputd final DAC owner + final-speaker reference
 ```
+
+The warm-up cushion above is the **shipped code default** (2048 frames;
+`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES` /
+`config.rs` `env_u32(…, 2048)`). It is the acquisition ceiling the held target
+starts at and — with cushion decay armed — descends *from* toward the 576 floor,
+so it shapes only cold-start descent/underrun margin, **not** the steady-state
+floor or the measured steady numbers. jts.local runs `1536` as a box tuning
+(held target 512+1536 = 2048; the 2026-07-07 ~55.5 ms measurement was taken at
+that override) — documented in
+[HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md) §6.
+Both 2048 and 1536 clear the resampler churn floor by a wide margin
+(`target + cushion >= minimum_safe_fill + period + 32` = 562 at the default
+geometry; 2560 and 2048 held respectively).
 
 Ring-coupled geometry is one coherent set; do not change one value without the
 others:
@@ -42,13 +62,15 @@ artifact still needs a real click/capture run before doctor may certify it.
 
 The loopback path remains the fallback when the ring gates fail, the box is not
 ring-eligible, or an operator freezes the coupling. Its tuned Apple USB-C DAC
-floor remains:
+floor (the best values measured on jts.local — a hand-tuned reference, not the
+shipped code defaults; note the resampler warm-up cushion here is jts.local's
+`1536` box tuning, whereas the shipped default is `2048`) remains:
 
-| Layer | Shipped floor | Rejected lower setting |
+| Layer | jts.local tuned floor | Rejected lower setting |
 |---|---:|---|
 | Rust USB bridge | 256 frames / 3 periods | 128 frames, 256/2 |
 | fan-in input buffer | 4096 frames | 512/1024/2048/3072 failed lock/acquisition |
-| fan-in USB resampler | target 512 + cushion 1536 (held target 2048) | held target 1920 and below relocked/silenced |
+| fan-in USB resampler | target 512 + cushion 1536 (held target 2048) — code default cushion is 2048 | held target 1920 and below relocked/silenced |
 | CamillaDSP | chunksize 256 / target 1536 | target 1024 caused bridge playback xruns |
 | outputd | period 128 / DAC buffer 256 | 64/128 caused bridge playback xruns |
 | outputd content capture | buffer 1536 | 640/768/1024/1280 caused content xruns |
