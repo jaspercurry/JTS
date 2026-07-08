@@ -287,8 +287,8 @@ signal to a compression driver.
 The phone level match refines the datasheet sensitivity trim with a measured
 one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
 
-1. **Capture (near-field, per driver).** The existing "Test each driver" card
-   ramps one driver audible through the production crossover
+1. **Capture (near-field, per driver).** The Confirm outputs card's per-driver
+   Play control ramps one driver audible through the production crossover
    (`commission_ramp.build_stage5_ramp_gate`), the household holds the phone
    ~2–5 cm from that driver, and the browser records the sweep with
    [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js).

@@ -203,12 +203,10 @@ def test_commissioning_view_payload_idle_when_no_test(monkeypatch):
 
 # --- Leaked-session recovery (the process=None wedge) ---------------------
 #
-# _summed_test_session_active is the single source of truth shared by BOTH the
-# reload-safe view snapshot and the start guard in
-# _active_speaker_play_summed_commission_tone. Pinning it here pins both: a
-# leaked process=None session (owning request died before the try/finally
-# teardown) ages out of "active", so it neither shows a phantom Stop nor wedges
-# every retry with summed_test_already_active until jasper-web is restarted.
+# _summed_test_session_active is the reload-safe view predicate. A leaked
+# process=None session (owning request died before the try/finally teardown)
+# ages out of "active", so it does not show a phantom Stop forever; the start
+# guard has its own resource-owner predicate below.
 
 
 def test_session_active_true_while_process_alive():
@@ -270,44 +268,85 @@ def test_session_active_false_when_heartbeat_unparseable():
 def test_snapshot_inactive_for_leaked_stale_session(monkeypatch):
     # End-to-end through the reload-safe snapshot: a heartbeat far in the past
     # (relative to real time.monotonic()) is treated as leaked, so the view
-    # shows no phantom Stop and the shared guard admits a fresh test.
+    # shows no phantom Stop.
     monkeypatch.setattr(
         sound_setup, "_SUMMED_TEST_TONE_SESSION", _prep_session(-10_000.0)
     )
     assert sound_setup._active_summed_test_snapshot() == {"active": False}
 
 
-# --- The start guard actually uses the shared predicate ---------------------
+# --- The start guard uses resource ownership, not UI-active state -----------
 #
-# The guard in _active_speaker_play_summed_commission_tone is a one-line
-# `if _summed_test_session_active(...)`, but pinning it end-to-end keeps it wired
-# to the shared helper (not silently reverted to the old process-is-None logic)
-# and exercises the reclaim log (N1). We stub the artifact backend to complete
-# and make the stimulus raise, so the request returns right after the guard +
-# session claim with no camilla I/O.
+# `_summed_test_session_active` is the UI predicate: Stop should disappear as
+# soon as a stop is requested. The start guard is stricter: a stopped session
+# still owns the fan-in lane and transient Camilla graph until its request
+# finishes teardown, so starts must stay serialized around that resource owner.
 
 
 def _fake_completed_artifact(*_args, **_kwargs):
     return {"status": "completed", "playback_id": "pb-x", "tone": {"level_dbfs": -20.0}}
 
 
-def _run_summed_play():
-    return asyncio.run(
-        sound_setup._active_speaker_play_summed_commission_tone(
-            {"tone": {"level_dbfs": -20.0}},
-            safe_session={},
-            topology=None,
-            speaker_group_id="main",
-            startup_gate_calibration_level=None,
-            preset=None,
-            crossover_preview=None,
-            camilla_factory=lambda: None,
-        )
+async def _run_summed_play_async():
+    return await sound_setup._active_speaker_play_summed_commission_tone(
+        {"tone": {"level_dbfs": -20.0}},
+        safe_session={},
+        topology=None,
+        speaker_group_id="main",
+        startup_gate_calibration_level=None,
+        preset=None,
+        crossover_preview=None,
+        camilla_factory=lambda: None,
     )
+
+
+def _run_summed_play():
+    return asyncio.run(_run_summed_play_async())
 
 
 def _issue_codes(result):
     return {i.get("code") for i in result.get("issues", []) if isinstance(i, dict)}
+
+
+def test_session_resources_occupied_after_stop_until_stale():
+    stopped = _live_session(
+        process=_FakeProc(alive=False),
+        stop_reason="operator_stop",
+    )
+    assert sound_setup._summed_test_session_active(stopped) is False
+    assert sound_setup._summed_test_session_occupies_resources(stopped) is True
+
+
+def test_session_resources_reclaim_stale_stopped_owner():
+    stopped = _prep_session(1000.0, stop_reason="operator_stop")
+    stale = sound_setup.SUMMED_TEST_SESSION_STALE_SECONDS + 5.0
+    assert (
+        sound_setup._summed_test_session_occupies_resources(
+            stopped,
+            now=1000.0 + stale,
+        )
+        is False
+    )
+
+
+def test_stop_refreshes_resource_heartbeat(monkeypatch):
+    session = _prep_session(1000.0)
+    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", session)
+    monkeypatch.setattr(sound_setup.time, "monotonic", lambda: 1005.0)
+
+    payload = sound_setup._active_speaker_stop_summed_test_tone(reason="operator_stop")
+
+    assert payload["status"] == "stopping"
+    assert session["stop_reason"] == "operator_stop"
+    heartbeat = float(session["progress_monotonic"])
+    assert heartbeat > 1000.0
+    assert (
+        sound_setup._summed_test_session_occupies_resources(
+            session,
+            now=heartbeat + 1.0,
+        )
+        is True
+    )
 
 
 def test_guard_admits_start_over_leaked_stale_session(monkeypatch, caplog):
@@ -337,3 +376,140 @@ def test_guard_blocks_start_over_live_session(monkeypatch):
     monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", _live_session())
     result = _run_summed_play()
     assert "summed_test_already_active" in _issue_codes(result)
+
+
+def test_guard_blocks_start_over_stopped_session_still_tearing_down(monkeypatch):
+    monkeypatch.setattr(
+        "jasper.active_speaker.playback.start_tone_playback", _fake_completed_artifact
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_SUMMED_TEST_TONE_SESSION",
+        _live_session(
+            process=_FakeProc(alive=False),
+            stop_reason="operator_stop",
+        ),
+    )
+    result = _run_summed_play()
+    assert "summed_test_already_active" in _issue_codes(result)
+
+
+async def test_summed_start_refused_until_teardown_finishes(monkeypatch):
+    """A Stop->Start during rollback must not interleave with old resources."""
+
+    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
+    monkeypatch.setattr(
+        "jasper.active_speaker.playback.start_tone_playback", _fake_completed_artifact
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_combined_speech_stimulus_wav_path",
+        lambda: (
+            "/tmp/summed-test.wav",
+            {
+                "kind": "jts_active_speaker_speech_stimulus",
+                "duration_s": 12.0,
+            },
+        ),
+    )
+
+    async def _fake_load(**_kwargs):
+        events.append("load")
+        return {"load": {"status": "loaded", "target": {"role": "summed"}}}
+
+    spawned = asyncio.Event()
+    rollback_started = asyncio.Event()
+    rollback_continue = asyncio.Event()
+    events: list[str] = []
+    select_calls = 0
+    rollback_calls = 0
+
+    class _ControllableProc:
+        def __init__(self, args):
+            self.args = args
+            self.returncode = None
+            self.terminated = False
+            spawned.set()
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                self.returncode = 0
+            return self.returncode
+
+    def _fake_popen(args, *_popen_args, **_kwargs):
+        events.append("popen")
+        return _ControllableProc(list(args))
+
+    def _fake_select():
+        nonlocal select_calls
+        select_calls += 1
+        events.append("select")
+        if select_calls > 1:
+            raise RuntimeError("second start reached fan-in lane select")
+        return {"active_source": "correction", "test_source": "correction"}
+
+    def _fake_release(*, reason):
+        events.append(f"release:{reason}")
+        return {"active_source": "airplay", "test_source": None}
+
+    async def _fake_rollback(**_kwargs):
+        nonlocal rollback_calls
+        rollback_calls += 1
+        if rollback_calls == 1:
+            events.append("rollback:start")
+            rollback_started.set()
+            await rollback_continue.wait()
+            events.append("rollback:done")
+        else:
+            events.append("rollback:extra")
+        return {"rollback": {"status": "rolled_back"}}
+
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_load_summed_commissioning_config",
+        _fake_load,
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_rollback_summed_commissioning_config",
+        _fake_rollback,
+    )
+    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(sound_setup, "_commission_tone_select_fanin_lane", _fake_select)
+    monkeypatch.setattr(sound_setup, "_commission_tone_release_fanin_lane", _fake_release)
+
+    first = asyncio.create_task(_run_summed_play_async())
+    await asyncio.wait_for(spawned.wait(), timeout=1.0)
+    stop = sound_setup._active_speaker_stop_summed_test_tone(reason="operator_confirmed")
+    assert stop["status"] == "stopped"
+
+    await asyncio.wait_for(rollback_started.wait(), timeout=1.0)
+    assert sound_setup._SUMMED_TEST_TONE_SESSION is not None
+
+    second = await _run_summed_play_async()
+    assert "summed_test_already_active" in _issue_codes(second)
+    assert select_calls == 1
+    assert rollback_calls == 1
+
+    rollback_continue.set()
+    first_result = await asyncio.wait_for(first, timeout=1.0)
+    assert first_result["rollback"]["rollback"]["status"] == "rolled_back"
+    assert sound_setup._SUMMED_TEST_TONE_SESSION is None
+    assert events == [
+        "load",
+        "select",
+        "popen",
+        "release:summed_test",
+        "rollback:start",
+        "rollback:done",
+    ]

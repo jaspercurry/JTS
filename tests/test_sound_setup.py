@@ -515,7 +515,7 @@ def test_sound_module_preserves_editor_behaviour():
     assert "./output-topology" in js
     assert "./output-topology/reset" in js
     assert "Reset speaker setup" in js
-    assert "Test each driver" in js
+    assert "Test combined drivers" in js
     assert "Validate and apply" in js
     assert "Save and apply" in js
     assert "Choose layout, set crossover values, confirm outputs" in js
@@ -523,7 +523,7 @@ def test_sound_module_preserves_editor_behaviour():
     assert "Stop tone" in js
     assert "Save floor" in js
     assert "save-volume-floor" in js
-    assert "Back to outputs" in js
+    assert "Confirm outputs" in js
     assert "Back to adjust crossover" in js
     assert "Reset floor" in js
     assert "reset-volume-floor" in js
@@ -542,9 +542,9 @@ def test_sound_module_preserves_editor_behaviour():
     assert "return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));" in js
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
     assert "if (!ctx.driverResearchSatisfied) return 'research';" in helper_js
-    assert "if (!ctx.outputIdentityComplete) return 'map';" in helper_js
+    assert "if (!driverTargetProofComplete) return 'map';" in helper_js
     assert "ctx.driverChecksComplete || ctx.driverMeasurementsComplete" in helper_js
-    assert "if (!driverChecksComplete) return 'safety';" in helper_js
+    assert "if (!ctx.summedValidationComplete) return 'safety';" in helper_js
     assert "return 'profile';" in helper_js
     assert "Finish the current card before opening" in js
     assert "output-step__chevron" in js
@@ -622,8 +622,8 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "var activeSpeakerSetupOpen = false;" in js
     assert "'<details class=\"advanced\" data-active-speaker-setup' + (open ? ' open' : '')" in js
     assert "activeSpeakerSetupOpen = !!ev.target.open;" in js
-    assert "No active driver test" in js
-    assert "no separate direct-DAC driver test in the product UI" in js
+    assert "No active driver test" not in js
+    assert "no separate direct-DAC driver test in the product UI" not in js
     assert "id=\"active-speaker-level\"" not in js
     assert "data-act=\"active-level\"" not in js
     assert "Back to quiet" not in js
@@ -642,7 +642,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "Combined test level" in js
     assert "body.level_dbfs = requestedLevel" in js
     assert "operator_listening_check: true" in js
-    assert "Test each driver" in js
+    assert "Test combined drivers" in js
     assert "function baselineProfileRevalidation()" in js
     assert "Revalidate crossover blend" in js
     assert "Revalidation is saved. Save and apply a fresh active profile." in js
@@ -665,7 +665,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "data-act=\"compile-baseline-profile\"" not in js
     assert "data-act=\"apply-baseline-profile\"" not in js
     assert "data-act=\"save-apply-baseline-profile\"" in js
-    assert "I hear the " in js
+    assert "I hear " in js
     assert "I did not hear anything" not in js
     assert "Wrong driver" not in js
     assert "Too loud / stop" not in js
@@ -716,7 +716,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "else if (act === 'save-output-topology')" in js
     assert "data-output-channel" in js
     assert "Assign each driver to one DAC channel. Play starts quiet and ramps." in js
-    assert "Play a quiet ramp if needed, then confirm each DAC output." in js
+    assert "Play each quiet ramp, then confirm the driver you hear." in js
     assert "Multi-DAC aggregate" in js
     assert "Composite clock" in js
     assert "observedHardware" in js
@@ -762,8 +762,8 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Generate WAV (no sound)" not in js
     assert ">Start quiet test</button>" not in js
     assert ">I hear this driver</button>" not in js
-    assert "No active driver test" in js
-    assert "no separate direct-DAC driver test in the product UI" in js
+    assert "No active driver test" not in js
+    assert "no separate direct-DAC driver test in the product UI" not in js
     assert "playbackResultMessage(playback, undefined, friendlySetupReason)" not in js
     assert "Playback: ' + (issue.code" not in js
     assert "JTS could not get the test ready. No sound was played." not in js
@@ -779,7 +779,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Choose passive, active 2-way, or active 3-way to continue." in js
     assert "Refresh hardware to start a speaker layout." in js
     assert "renderOutputHardwareRefresh() +" in js
-    assert "Test each driver" in js
+    assert "Test combined drivers" in js
     assert "data-act=\"output-template-axis\"" in js
     assert "output-template-grid" not in js
     assert "Save output map" not in js
@@ -838,7 +838,7 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
         "Save the checked crossover as your active speaker profile. "
         "JTS validates and applies it in one step; no sound plays."
     ) in js
-    assert "Your active speaker profile, built from the checked crossover and driver checks." in js
+    assert "Your active speaker profile, built from the checked crossover and confirmed outputs." in js
     assert (
         "Your active speaker profile is saved. "
         "Finish applying it to start using it."
@@ -2414,6 +2414,212 @@ def test_sound_channel_identity_route_marks_saved_topology_only(
     assert payload["channel_identity"]["status"] == "needs_verification"
     assert payload["channel_identity"]["verified_channel_count"] == 0
     assert payload["output_topology"]["status"] == "valid"
+    assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
+
+
+async def test_commission_ack_can_promote_output_identity_before_driver_proof(
+    monkeypatch,
+    tmp_path: Path,
+):
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench_active",
+        "name": "Bench active",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+        },
+        "speaker_groups": [
+            {
+                "id": "main",
+                "label": "Main speaker",
+                "kind": "mono",
+                "mode": "active_2_way",
+                "channels": [
+                    {"role": "woofer", "physical_output_index": 0},
+                    {"role": "tweeter", "physical_output_index": 1},
+                ],
+            }
+        ],
+        "routing": {"mono_group_id": "main"},
+    })
+
+    async def fake_ack(*, outcome, load_config):
+        assert outcome == "heard_correct_driver"
+        assert load_config is not None
+        return {
+            "status": "confirmed",
+            "acknowledged_step": {
+                "role": "woofer",
+                "playback_id": "pb-woofer",
+                "gain_db": -80.0,
+            },
+            "issues": [],
+        }
+
+    recorded: dict[str, object] = {}
+
+    def fake_record_driver_measurement(topology, raw, **_kwargs):
+        recorded["raw"] = dict(raw)
+        recorded["woofer_identity"] = (
+            topology.speaker_groups[0].channels[0].identity_verified
+        )
+        return {
+            "status": "needs_summed_validation",
+            "summary": {
+                "driver_checks_complete": False,
+                "captured_driver_check_count": 1,
+            },
+        }
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_ramp.load_ramp_state",
+        lambda: {
+            "speaker_group_id": "main",
+            "pending": {
+                "role": "woofer",
+                "playback_id": "pb-woofer",
+                "gain_db": -80.0,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_ramp.record_ramp_operator_ack",
+        fake_ack,
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.measurement.record_driver_measurement",
+        fake_record_driver_measurement,
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.calibration_level.load_calibration_level_state",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.safe_playback.load_safe_playback_state",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "stopped", "reason": reason},
+    )
+    monkeypatch.setattr(sound_setup, "commission_seams", lambda _cam: (object(), None, None))
+
+    payload = await sound_setup._active_speaker_commission_ramp_ack_payload(
+        {"outcome": "heard_correct_driver", "confirm_output_identity": True},
+        camilla_factory=lambda: object(),
+    )
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["status"] == "confirmed"
+    assert payload["channel_identity"]["verified_channel_count"] == 1
+    assert payload["output_topology"]["speaker_groups"][0]["channels"][0][
+        "identity_verified"
+    ] is True
+    assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is True
+    assert recorded["woofer_identity"] is True
+    assert recorded["raw"]["role"] == "woofer"
+    assert recorded["raw"]["playback_id"] == "pb-woofer"
+
+
+async def test_commission_ack_fails_when_output_identity_cannot_save(
+    monkeypatch,
+    tmp_path: Path,
+):
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench_active",
+        "name": "Bench active",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+        },
+        "speaker_groups": [
+            {
+                "id": "main",
+                "label": "Main speaker",
+                "kind": "mono",
+                "mode": "active_2_way",
+                "channels": [
+                    {"role": "woofer", "physical_output_index": 0},
+                    {"role": "tweeter", "physical_output_index": 1},
+                ],
+            }
+        ],
+        "routing": {"mono_group_id": "main"},
+    })
+
+    async def fake_ack(*, outcome, load_config):
+        return {
+            "status": "confirmed",
+            "acknowledged_step": {
+                "role": "woofer",
+                "playback_id": "pb-woofer",
+                "gain_db": -80.0,
+            },
+            "issues": [],
+        }
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_ramp.load_ramp_state",
+        lambda: {
+            "speaker_group_id": "main",
+            "pending": {
+                "role": "woofer",
+                "playback_id": "pb-woofer",
+                "gain_db": -80.0,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_ramp.record_ramp_operator_ack",
+        fake_ack,
+    )
+
+    def fail_save(_topology):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        sound_setup,
+        "save_output_topology",
+        fail_save,
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.measurement.record_driver_measurement",
+        lambda *_args, **_kwargs: pytest.fail(
+            "driver evidence must not be recorded when identity save fails"
+        ),
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "stopped", "reason": reason},
+    )
+    monkeypatch.setattr(sound_setup, "commission_seams", lambda _cam: (object(), None, None))
+
+    payload = await sound_setup._active_speaker_commission_ramp_ack_payload(
+        {"outcome": "heard_correct_driver", "confirm_output_identity": True},
+        camilla_factory=lambda: object(),
+    )
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["status"] == "failed"
+    assert payload["reason"] == "driver_target_identity_save_failed"
+    assert "measurements" not in payload
+    assert "driver_target_identity_save_failed" in {
+        issue["code"] for issue in payload["issues"]
+    }
     assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
 
 

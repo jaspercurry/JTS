@@ -48,6 +48,7 @@ from .playback_route import (
     resolve_active_playback_device,
 )
 from .profile import ActiveSpeakerPreset, required_driver_roles
+from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
 from .staging import (
     _passive_mains_with_sub_preset,
     compile_preset_from_crossover_preview,
@@ -529,7 +530,7 @@ def _revalidation_payload(
         for issue in (issues or [])
         if isinstance(issue, Mapping)
     }
-    if "baseline_summed_validation_missing" in issue_codes:
+    if issue_codes == {"baseline_summed_validation_missing"}:
         next_step = "combined_check"
         message = (
             "active speaker setup changed after this profile was applied; "
@@ -584,6 +585,20 @@ def _revalidation_payload(
             },
         },
     }
+
+
+def _summed_validation_evidence_complete(summary: Mapping[str, Any]) -> bool:
+    if summary.get("summed_validation_complete"):
+        return True
+    required = int(summary.get("required_summed_group_count") or 0)
+    validated = int(summary.get("validated_summed_group_count") or 0)
+    missing = summary.get("missing_summed_targets")
+    return (
+        required > 0
+        and validated >= required
+        and isinstance(missing, list)
+        and not missing
+    )
 
 
 def _crossover_preview_ready(crossover_preview: Mapping[str, Any]) -> bool:
@@ -717,6 +732,14 @@ def build_baseline_profile_candidate(
 
     issues: list[dict[str, str]] = []
     summary = measurements.get("summary") if isinstance(measurements.get("summary"), Mapping) else {}
+    driver_target_proof_complete = bool(
+        summary.get("driver_checks_complete")
+        or summary.get("driver_measurements_complete")
+    )
+    driver_target_proof_source = (
+        "measurements" if driver_target_proof_complete else "missing"
+    )
+    summed_validation_complete = bool(summary.get("summed_validation_complete"))
     # A passive-mains + local-subwoofer topology has NO inter-driver crossover, so
     # it never produces an active crossover preview and has no per-driver / summed
     # active-crossover measurements to complete. It is still roleful (bass
@@ -749,18 +772,6 @@ def build_baseline_profile_candidate(
                 "baseline_crossover_preview_not_ready",
                 "save a fresh crossover preview before compiling an active profile",
             ))
-        if not summary.get("driver_measurements_complete"):
-            issues.append(_issue(
-                "blocker",
-                "baseline_driver_measurements_missing",
-                "confirm each driver with a quiet test before saving the active profile",
-            ))
-        if not summary.get("summed_validation_complete"):
-            issues.append(_issue(
-                "blocker",
-                "baseline_summed_validation_missing",
-                "validate the combined crossover before saving the active profile",
-            ))
         if not resolved_playback_device:
             issues.append(_issue(
                 "blocker",
@@ -783,6 +794,38 @@ def build_baseline_profile_candidate(
                 dict(crossover_preview),
             )
             issues.extend(preset_issues)
+        if not driver_target_proof_complete:
+            probe_status = "ready_to_compile" if not issues else "blocked"
+            revalidation_for_driver_proof = _revalidation_payload(
+                saved,
+                source,
+                status=probe_status,
+                issues=issues,
+            )
+            if applied_profile_revalidation_satisfies_driver_target_proof(
+                revalidation_for_driver_proof
+            ):
+                driver_target_proof_complete = True
+                driver_target_proof_source = "applied_profile_revalidation"
+        if not driver_target_proof_complete:
+            issues.append(_issue(
+                "blocker",
+                "baseline_driver_measurements_missing",
+                "confirm each driver with a quiet test before saving the active profile",
+            ))
+        summed_validation_complete = (
+            bool(summary.get("summed_validation_complete"))
+            or (
+                driver_target_proof_complete
+                and _summed_validation_evidence_complete(summary)
+            )
+        )
+        if not summed_validation_complete:
+            issues.append(_issue(
+                "blocker",
+                "baseline_summed_validation_missing",
+                "validate the combined crossover before saving the active profile",
+            ))
     if issues:
         return finalize(_blocked_payload(
             topology=topology,
@@ -898,9 +941,9 @@ def build_baseline_profile_candidate(
             "driver_measurements_complete": bool(
                 summary.get("driver_measurements_complete")
             ),
-            "summed_validation_complete": bool(
-                summary.get("summed_validation_complete")
-            ),
+            "driver_target_proof_complete": driver_target_proof_complete,
+            "driver_target_proof_source": driver_target_proof_source,
+            "summed_validation_complete": summed_validation_complete,
             "captured_driver_count": summary.get("captured_driver_count", 0),
             "validated_summed_group_count": summary.get(
                 "validated_summed_group_count",

@@ -29,7 +29,6 @@ import {
   activeCommissionGroup,
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
-  commissionCardState,
   commissioningStepFooter,
   commissionPayloadHasIssue,
   commissionPayloadFailure,
@@ -722,124 +721,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</details>' +
     '</section>';
   }
-  // The "Test each driver" body for active 2/3-way groups: protected
-  // single-audio-path commissioning. Arming is silent; a step makes one driver
-  // audible through the production crossover/limiter graph.
-  function renderCommissionCard() {
-    var group = activeCommissionGroup(currentOutputTopology());
-    var c = commissionCardState(
-      activeSpeaker.commission,
-      group,
-      driverCheckRolesForGroup(group)
-    );
-    if (!c.available) return '';
-    var busy = activeSpeaker.commissionBusy;
-    var roleLabel = function(r) { return escapeHtml(humanRole(r)); };
-    var buttonRoleLabel = function(r) {
-      return escapeHtml(String(humanRole(r)).toLowerCase());
-    };
-    var toneRole = c.pendingRole || c.armedRole || c.startRole || '';
-    var toneActive = !!c.canAck;
-    var rampPreparing = commissionAutoRamp.running && !toneActive;
-    var controlRole = toneRole || c.startRole || c.armedRole || '';
-    var statusLabel = c.complete ? 'Complete' :
-      (toneActive ? 'Tone playing' :
-        (rampPreparing ? 'Preparing' :
-          (c.stale ? 'Stopped' : (c.armed ? 'Ready' : 'Ready to start'))));
-    var toneFrequency = Number(c.toneFrequencyHz);
-    var toneFrequencyLabel = isFinite(toneFrequency) && toneFrequency > 0 ?
-      ' at ' + fmtFreq(toneFrequency) : '';
-    var statusRows =
-      '<div class="commission-status">' +
-      '<div><span class="commission-status__k">Armed driver</span>' +
-        '<span class="commission-status__v">' +
-        (c.armed ? roleLabel(c.armedRole) + ' (' +
-          (c.armedGainDb == null ? '—'
-            : (Number(c.armedGainDb) <= -120 ? 'silent floor'
-              : escapeHtml(String(c.armedGainDb)) + ' dB')) + ')'
-          : (c.startRole ? 'next: ' + roleLabel(c.startRole) : 'none — silent')) +
-        '</span></div>' +
-      '<div><span class="commission-status__k">Status</span>' +
-        '<span class="commission-status__v">' +
-        escapeHtml(statusLabel) + '</span></div>' +
-      '<div><span class="commission-status__k">Confirmed</span>' +
-        '<span class="commission-status__v">' +
-        (c.confirmedRoles.length ? c.confirmedRoles.map(roleLabel).join(', ') : 'none') +
-        '</span></div>' +
-      '</div>';
-
-    var buttons = [];
-    if (c.complete) {
-      buttons.push('<button type="button" class="btn btn--primary" ' +
-        'data-act="output-step-next" data-step="safety">Continue to validate</button>');
-    } else if (toneActive) {
-      buttons.push('<button type="button" class="btn btn--danger" ' +
-        'data-act="commission-abort">Stop</button>');
-      buttons.push('<button type="button" class="btn btn--primary" ' +
-        'data-act="commission-ack" data-outcome="heard_correct_driver"' +
-        '>I hear the ' + buttonRoleLabel(toneRole || 'driver') + '</button>');
-      buttons.push('<button type="button" class="btn btn--ghost" ' +
-        'data-act="back-to-output-map">Back to outputs</button>');
-    } else if (rampPreparing || busy) {
-      buttons.push('<button type="button" class="btn btn--primary" disabled>' +
-        escapeHtml(rampPreparing && controlRole ?
-          'Preparing ' + humanRole(controlRole) : (busy || 'Preparing')) +
-        '</button>');
-    } else if (c.canStep) {
-      buttons.push('<button type="button" class="btn btn--primary" ' +
-        'data-act="commission-step" data-role="' + escapeHtml(c.startRole || c.armedRole || '') + '"' +
-        '>Play ' + roleLabel(c.startRole || c.armedRole || 'driver') + '</button>');
-      buttons.push('<button type="button" class="btn btn--ghost" ' +
-        'data-act="back-to-output-map">Back to outputs</button>');
-    }
-
-    var note = activeSpeaker.commissionError ?
-      '<p class="commission-card__error">' + escapeHtml(activeSpeaker.commissionError) + '</p>' :
-      (toneActive ?
-        '<p class="setting-row__hint">Tone is playing for ' + roleLabel(toneRole) +
-          escapeHtml(toneFrequencyLabel) + '. Press Stop if anything sounds wrong.</p>' :
-      (rampPreparing ?
-        '<p class="setting-row__hint">JTS is preparing the protected ' +
-          roleLabel(controlRole || 'driver') + ' path. No tone has started yet.</p>' :
-        (c.complete ?
-        '<p class="setting-row__hint">All drivers are confirmed. Continue to validate the active speaker profile.</p>' :
-        (c.stale ?
-        '<p class="setting-row__hint">The previous tone session expired safely. Play will reopen it quietly.</p>' :
-        (c.armed ?
-        '<p class="setting-row__hint">Ready to play a quiet tone for ' +
-          roleLabel(c.armedRole) + '.</p>' :
-        '<p class="setting-row__hint">Play a quiet tone for ' +
-          roleLabel(c.startRole || 'driver') +
-          '. It will stay continuous and get louder gradually.</p>')))));
-    var busyNote = busy && !toneActive ?
-      '<p class="setting-row__hint">' + escapeHtml(busy) + '…</p>' : '';
-    var roles = activeCommissionRoles(group);
-    var driverRows = roles.map(function(role) {
-      var confirmed = c.confirmedRoles.indexOf(role) >= 0;
-      return '<li class="output-identity-row">' +
-        '<span>' + roleLabel(role) + '</span>' +
-        '<strong>' + escapeHtml(confirmed ? 'Heard' : 'Not heard yet') + '</strong>' +
-      '</li>';
-    }).join('');
-
-    return '<div class="commission-card">' +
-      statusRows + note + busyNote +
-      '<div class="active-speaker-actions commission-card__actions">' +
-        buttons.join('') + '</div>' +
-      (driverRows ? '<ul class="output-identity-list">' + driverRows + '</ul>' : '') +
-      '<p class="setting-row__hint commission-card__followup">Confirming each driver ' +
-        'by ear proves it is wired and audible through the crossover and limiter. ' +
-        'Mic-based level matching is a separate HTTPS measurement step after this basic setup.</p>' +
-    '</div>';
-  }
-  function renderActiveCommissionOnlyCard() {
-    return '<div class="output-card output-card--commission-only">' +
-      '<div class="output-card__head"><div><p class="output-card__title">No active driver test</p>' +
-        '<p class="setting-row__hint">Per-driver audible commissioning is available only for active crossover layouts.</p></div>' +
-        '<span class="status-pill">not needed</span></div>' +
-      '<p class="setting-row__hint">Passive and full-range layouts use the normal listening path; there is no separate direct-DAC driver test in the product UI.</p>' +
-    '</div>';
-  }
   function activeCommissionRoles(group) {
     var seen = {};
     var order = ['woofer', 'mid', 'tweeter'];
@@ -853,6 +734,37 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function outputGroups(topology) {
     return topology && Array.isArray(topology.speaker_groups) ? topology.speaker_groups : [];
+  }
+  function identityReportFromTopology(topology) {
+    var targets = [];
+    outputGroups(topology).forEach(function(group) {
+      (Array.isArray(group.channels) ? group.channels : []).forEach(function(channel) {
+        if (!channel || !channel.role) return;
+        var assigned = channel.physical_output_index != null;
+        targets.push({
+          id: (group.id || '') + ':' + channel.role,
+          speaker_group_id: group.id || '',
+          speaker_label: group.label || group.id || '',
+          role: channel.role,
+          assigned: assigned,
+          identity_verified: !!channel.identity_verified,
+          physical_output_index: assigned ? channel.physical_output_index : null
+        });
+      });
+    });
+    if (!targets.length) return null;
+    var assignedCount = targets.filter(function(target) { return target.assigned; }).length;
+    var verifiedCount = targets.filter(function(target) {
+      return target.assigned && target.identity_verified;
+    }).length;
+    return {
+      kind: 'jts_output_channel_identity_report',
+      status: assignedCount && verifiedCount === assignedCount ? 'verified' : 'needs_confirmation',
+      assigned_channel_count: assignedCount,
+      verified_channel_count: verifiedCount,
+      unverified_channel_count: assignedCount - verifiedCount,
+      targets: targets
+    };
   }
   function outputHardware(topology) {
     return topology && topology.hardware ? topology.hardware : null;
@@ -963,7 +875,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return topology && topology.evaluation ? topology.evaluation : {};
   }
   function outputIdentityReport() {
-    return outputTopology.identity || null;
+    return outputTopology.identity || identityReportFromTopology(currentOutputTopology());
   }
   function outputClockDomainReport() {
     return outputTopology.clockDomain || null;
@@ -1701,20 +1613,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       statusValue === 'present' ||
       statusValue === 'software_guard_requested';
   }
-  function outputRoleStatusText(channel) {
+  function outputRoleStatusText(group, channel) {
     if (!channel || channel.physical_output_index == null) return 'No DAC output assigned yet.';
     if (!channel.identity_verified) {
-      return 'Confirm this wire before testing the driver.';
+      return 'Play this driver quietly, then confirm what you hear.';
     }
+    var proof = driverMeasurementCaptured(
+      group && group.id || '',
+      channel.role || ''
+    );
     if (!outputChannelGuardReady(channel)) {
       return 'Confirmed. JTS will add the tweeter guard before any sound starts.';
     }
     if (channel.protection_required) {
       return channel.protection_status === 'present' ?
         'Confirmed. Extra protection noted; tests still start very quiet.' :
-        'Confirmed. Continue to Test each driver; JTS will start it very quiet.';
+        'Confirmed. JTS will start it very quiet.';
     }
-    return 'Confirmed. Continue to Test each driver when ready.';
+    return proof ? 'Heard and confirmed.' : 'Confirmed. Play and confirm the driver.';
   }
   function renderOutputTopologySetup() {
     return '<div class="setting-row setting-row--stack output-setup">' +
@@ -1764,13 +1680,31 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function measurementSummary() {
     return activeSpeaker.measurements && activeSpeaker.measurements.summary || {};
   }
+  function commissioningDriverChecksComplete() {
+    var view = activeSpeaker.commissioningView || {};
+    var checks = view.driver_checks && typeof view.driver_checks === 'object' ?
+      view.driver_checks : {};
+    return checks.complete === true;
+  }
   function driverChecksComplete() {
     var summary = measurementSummary();
     return summary.driver_checks_complete === true ||
-      summary.driver_measurements_complete === true;
+      summary.driver_measurements_complete === true ||
+      commissioningDriverChecksComplete();
+  }
+  function driverTargetProofComplete() {
+    var view = activeSpeaker.commissioningView || {};
+    var proof = view.driver_target_proof && typeof view.driver_target_proof === 'object' ?
+      view.driver_target_proof : {};
+    return proof.complete === true ||
+      (outputIdentityComplete() && driverChecksComplete());
   }
   function summedValidationComplete() {
-    return measurementSummary().summed_validation_complete === true;
+    var view = activeSpeaker.commissioningView || {};
+    var summed = view.summed_validation && typeof view.summed_validation === 'object' ?
+      view.summed_validation : {};
+    return measurementSummary().summed_validation_complete === true ||
+      summed.complete === true;
   }
   function baselineProfileApplied() {
     return activeSpeaker.baselineProfile && activeSpeaker.baselineProfile.status === 'applied';
@@ -1790,7 +1724,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       hardwareMatchesSaved: !outputHardwareMismatch(topology),
       driverResearchSatisfied: driverResearchFlowComplete(topology),
       outputIdentityComplete: outputIdentityComplete(),
+      driverTargetProofComplete: driverTargetProofComplete(),
       driverChecksComplete: driverChecksComplete(),
+      summedValidationComplete: summedValidationComplete(),
       baselineProfileApplied: baselineProfileApplied(),
       baselineProfileNeedsRevalidation: baselineProfileNeedsRevalidation()
     };
@@ -2468,9 +2404,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     var evaluation = outputEvaluation(topology);
     var layoutStatusValue = outputTopology.dirty ? 'draft' : 'layout ready';
-    // Active 2/3-way groups commission through the protected crossover/limiter
-    // graph; passive/full-range groups use the normal listening path.
-    var safetyActive = !!activeCommissionGroup(topology);
     return '<div class="output-layout">' +
       renderOutputStepCard(
         'layout',
@@ -2506,20 +2439,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ) +
       renderOutputStepCard(
         'safety',
-        'Test each driver',
-        outputStepHint('safety', safetyActive
-          ? 'Start one driver at a time through the real crossover and limiter.'
-          : 'Per-driver audible commissioning is for active crossover layouts.'),
+        'Test combined drivers',
+        outputStepHint('safety', 'Play the saved crossover with all confirmed drivers.'),
         topology,
-        safetyActive ? renderCommissionCard() : renderActiveCommissionOnlyCard(),
+        renderSummedValidationCard(topology),
         ''
       ) +
       renderOutputStepCard(
         'profile',
         'Validate and apply',
-        outputStepHint('profile', 'Test the combined speaker, then save and apply.'),
+        outputStepHint('profile', 'Save and apply the checked active profile.'),
         topology,
-        renderSummedValidationCard(topology) +
         renderBaselineProfileCard(),
         ''
       ) +
@@ -2648,10 +2578,18 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       channel.physical_output_index == null ||
       otherToneRunning ||
       otherPendingTone;
-    if (tonePlaying || toneStarting) {
+    if (tonePlaying) {
       return '<button type="button" class="btn btn--danger btn--compact output-role__action" ' +
         'data-act="commission-abort">' +
-        escapeHtml(tonePlaying ? 'Stop' : 'Starting') + '</button>';
+        'Stop</button>' +
+        '<button type="button" class="btn btn--primary btn--compact output-role__action" ' +
+          'data-act="commission-ack" data-outcome="heard_correct_driver" ' +
+          'data-confirm-output-identity="true">' +
+          'I hear ' + escapeHtml(String(humanRole(role)).toLowerCase()) + '</button>';
+    }
+    if (toneStarting) {
+      return '<button type="button" class="btn btn--primary btn--compact output-role__action" disabled>' +
+        'Starting</button>';
     }
     return '<button type="button" class="btn btn--ghost btn--compact output-role__action" ' +
       'data-act="commission-step" data-identity-audition="true" ' +
@@ -2679,11 +2617,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     }
     var outputs = physicalOutputOptions(topology);
+    var commissionError = activeSpeaker.commissionError ?
+      '<p class="commission-card__error">' + escapeHtml(activeSpeaker.commissionError) + '</p>' : '';
     return '<div class="output-card output-card--groups">' +
       '<div class="output-card__head"><div><p class="output-card__title">DAC output assignments</p>' +
         '<p class="setting-row__hint">Assign each driver to one DAC channel. Play starts quiet and ramps.</p></div>' +
         '<span class="status-pill' + (outputTopology.dirty ? '' : ' status-pill--ready') + '">' +
           escapeHtml(outputTopology.dirty ? 'draft' : 'saved') + '</span></div>' +
+      commissionError +
       '<div class="output-roles output-roles--flat">' + assignments.map(function(item) {
         var group = item.group;
         var channel = item.channel;
@@ -2726,7 +2667,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '<div class="output-role__text">' +
             '<span>' + escapeHtml(label) + '</span>' +
             '<strong>' + escapeHtml(hardwareLabel) + '</strong>' +
-            '<small>' + escapeHtml(outputRoleStatusText(channel)) + '</small>' +
+            '<small>' + escapeHtml(outputRoleStatusText(group, channel)) + '</small>' +
           '</div>' +
           '<label class="output-role__select">' +
             '<span>DAC channel</span>' +
@@ -2769,26 +2710,49 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var assigned = Number(report.assigned_channel_count || 0);
     var verified = Number(report.verified_channel_count || 0);
     var unverified = Number(report.unverified_channel_count || 0);
+    var proof = activeSpeaker.commissioningView &&
+      activeSpeaker.commissioningView.driver_target_proof || {};
+    var summary = measurementSummary();
+    var proofComplete = proof.complete === true ||
+      (outputIdentityComplete() && driverChecksComplete());
+    var proofCaptured = Number(
+      proof.captured ||
+      summary.captured_driver_check_count ||
+      summary.captured_driver_count ||
+      0
+    );
+    var proofRequired = Number(
+      proof.required ||
+      summary.required_driver_check_count ||
+      summary.required_driver_count ||
+      assigned ||
+      0
+    );
     var targets = Array.isArray(report.targets) ? report.targets : [];
     var rows = targets.length ? targets.map(function(target) {
+      var heard = driverMeasurementCaptured(target.speaker_group_id, target.role);
       return '<li class="output-identity-row">' +
         '<span>' + escapeHtml(target.speaker_label || target.speaker_group_id || 'Speaker') +
           ' · ' + escapeHtml(humanRole(target.role)) + '</span>' +
-        '<strong>' + escapeHtml(target.identity_verified ? 'Confirmed' :
+        '<strong>' + escapeHtml(heard ? 'Heard' : target.identity_verified ? 'Confirmed' :
           (target.assigned ? 'Needs confirmation' : 'Unassigned')) + '</strong>' +
       '</li>';
     }).join('') : '<li class="output-identity-row"><span>No channels configured</span><strong>Draft</strong></li>';
     return '<div class="output-card output-card--identity">' +
       '<div class="output-card__head"><div><p class="output-card__title">Confirmation progress</p>' +
-        '<p class="setting-row__hint">Play a quiet ramp if needed, then confirm each DAC output.</p></div>' +
-        '<span class="status-pill' + (unverified === 0 && assigned > 0 ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(verified + '/' + assigned + ' confirmed') + '</span></div>' +
+        '<p class="setting-row__hint">Play each quiet ramp, then confirm the driver you hear.</p></div>' +
+        '<span class="status-pill' + (proofComplete ? ' status-pill--ready' : '') + '">' +
+          escapeHtml(proofCaptured + '/' + proofRequired + ' heard') + '</span></div>' +
       (outputTopology.dirty ? '<p class="setting-row__hint">Save the draft before changing confirmed outputs.</p>' : '') +
       '<ul class="output-identity-list">' + rows + '</ul>' +
       '<p class="setting-row__hint">' + escapeHtml(
-        unverified > 0 ? 'Confirm the assigned outputs above to continue.' :
-          (report.next_step || 'Outputs are confirmed. Continue when you are ready.')
+        proofComplete ? 'Outputs and drivers are confirmed. Continue to the combined test.' :
+        unverified > 0 ? 'Play and confirm each assigned output above to continue.' :
+          'Each output is assigned; finish hearing each driver to continue.'
       ) + '</p>' +
+      '<p class="setting-row__hint commission-card__followup">Confirming each driver ' +
+        'by ear proves it is wired and audible through the crossover and limiter. ' +
+        'Mic-based level matching is a separate HTTPS measurement step after this basic setup.</p>' +
     '</div>';
   }
   function playbackHasBlocker(playback) {
@@ -2957,7 +2921,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderSummedValidationCard(topology) {
     var groups = activeOutputGroups(topology);
     if (!groups.length) return '';
-    var canRecord = driverChecksComplete();
+    var canRecord = driverTargetProofComplete();
     var revalidation = baselineProfileRevalidation();
     var revalidating = revalidation.required === true;
     var revalidationNeedsCombined = revalidating &&
@@ -3038,7 +3002,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'After the combined test, save the result if the speaker sounds coherent.' :
         (canRecord ?
           'Run the combined speaker test first. It uses the prepared crossover setup at the level you choose.' :
-          'Test each driver first, then test the combined speaker.'));
+          'Confirm outputs first, then test the combined speaker.'));
       // Backend owns the per-failure-code copy (groupView.failure_message); the
       // helper falls back to ONE generic line only when the view is unavailable.
       var retryHint = summedGroupFailureHint(groupView, { suppress: hasAudibleTest });
@@ -3067,9 +3031,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           (revalidationNeedsCombined ?
             'Play the combined speaker again, then save the check if it still sounds right.' :
             'Choose a careful level, play the combined speaker, then save the check if it sounds right.') :
-          'Test each driver first, then validate the combined crossover.') + '</p></div>' +
+          'Confirm outputs first, then validate the combined crossover.') + '</p></div>' +
         '<span class="status-pill' + (summedValidationComplete() ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(summedValidationComplete() ? 'ready' : (revalidationNeedsCombined ? 'recheck' : (canRecord ? 'next' : 'after driver checks'))) + '</span></div>' +
+          escapeHtml(summedValidationComplete() ? 'ready' : (revalidationNeedsCombined ? 'recheck' : (canRecord ? 'next' : 'after outputs'))) + '</span></div>' +
       '<div class="active-speaker-validation">' + rows + '</div>' +
     '</div>';
   }
@@ -3155,7 +3119,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     return '<div class="output-card output-card--baseline-profile">' +
       '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
-        '<p class="setting-row__hint">Your active speaker profile, built from the checked crossover and driver checks.</p></div>' +
+        '<p class="setting-row__hint">Your active speaker profile, built from the checked crossover and confirmed outputs.</p></div>' +
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
           escapeHtml(applied ? 'active' : (readyToApply ? 'saved' : (applyBlocked ? 'blocked' : (revalidating ? 'recheck' : 'not saved')))) + '</span></div>' +
       body +
@@ -3743,7 +3707,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         identityAudition: t.getAttribute('data-identity-audition') === 'true'
       });
     }
-    else if (act === 'commission-ack') { commissionAck(t.getAttribute('data-outcome') || ''); }
+    else if (act === 'commission-ack') {
+      commissionAck(t.getAttribute('data-outcome') || '', {
+        confirmOutputIdentity: t.getAttribute('data-confirm-output-identity') === 'true'
+      });
+    }
     else if (act === 'commission-abort') { commissionAbort(); }
     else if (act === 'toggle-volume-floor-tone') {
       if (volumeFloorTone.active) stopVolumeFloorTone();
@@ -4163,6 +4131,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (payload && payload.measurements) {
         patchActiveSpeaker({measurements: payload.measurements});
       }
+      if (payload && payload.output_topology) {
+        ingestOutputTopology(payload);
+      }
       await refreshCommissionState();
       await refreshCommissioningView();
       if (showBusy) patchActiveSpeaker({commissionBusy: ''});
@@ -4220,22 +4191,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return await postCommission('./active-speaker/commission-ramp-step',
       body, busyLabel);
   }
-  async function commissionAck(outcome) {
+  async function commissionAck(outcome, options) {
+    options = options || {};
     if (!outcome) return;
     stopCommissionAutoRamp('');
+    var body = {outcome: outcome};
+    if (options.confirmOutputIdentity) body.confirm_output_identity = true;
     var result = await postCommission('./active-speaker/commission-ramp-ack',
-      {outcome: outcome}, 'Recording');
+      body, 'Recording');
     var confirmed = !!(result && result.payload &&
       result.payload.status === 'confirmed');
-    var summary = result && result.payload && result.payload.measurements &&
-      result.payload.measurements.summary || null;
     if (outcome === 'heard_correct_driver' && confirmed) {
-      if (summary && (summary.driver_checks_complete === true ||
-          summary.driver_measurements_complete === true)) {
-        outputStepOverride = 'profile';
-        status('Driver checks are saved. Continue with the combined crossover check.');
+      if (driverTargetProofComplete()) {
+        outputStepOverride = 'safety';
+        status('Outputs and drivers are confirmed. Continue with the combined speaker test.');
       } else {
-        status('Driver check saved. Continue with the next driver.');
+        status('Driver confirmation saved. Continue with the next output.');
       }
       render();
     }
@@ -5019,28 +4990,28 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         render();
         return;
       }
-      if (!outputIdentityComplete()) {
+      if (!driverTargetProofComplete()) {
         var report = outputIdentityReport();
         var assigned = Number(report && report.assigned_channel_count || 0);
         outputStepOverride = 'map';
         status(assigned > 0 ?
-          'Confirm every assigned output before continuing.' :
+          'Play and confirm every assigned driver before continuing.' :
           'Save a speaker layout with assigned outputs before continuing.', true);
         render();
         return;
       }
       openOutputStep('safety');
-      status('Outputs are confirmed. Continue with driver checks.');
+      status('Outputs and drivers are confirmed. Continue with the combined speaker test.');
       return;
     }
     if (step === 'safety') {
-      if (driverChecksComplete()) {
+      if (summedValidationComplete()) {
         openOutputStep('profile');
-        status('Driver checks are saved. Continue with the combined crossover check.');
+        status('Combined speaker check is saved. Save and apply the active profile.');
         return;
       }
       outputStepOverride = 'safety';
-      status('Test each active driver before saving the active profile.');
+      status('Run the combined speaker test and save what you heard before applying.');
       render();
       return;
     }
@@ -5566,7 +5537,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return;
     }
     if (!readyToApply && !mayCompile) {
-      status('Test each driver and save the combined crossover check before saving the active profile.', true);
+      status('Confirm outputs and save the combined crossover check before saving the active profile.', true);
       return;
     }
     if (!await jtsConfirm(
@@ -5577,7 +5548,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return;
     }
     if (!readyToApply && !summedValidationComplete()) {
-      status('Test each driver and save the combined crossover check before saving the active profile.', true);
+      status('Confirm outputs and save the combined crossover check before saving the active profile.', true);
       return;
     }
     patchActiveSpeaker({

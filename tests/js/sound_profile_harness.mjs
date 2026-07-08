@@ -427,7 +427,7 @@ function commissioningSteps(currentStep, statuses = {}) {
     layout: "Choose speaker layout",
     research: "Add driver and crossover values",
     map: "Confirm outputs",
-    safety: "Test each driver",
+    safety: "Test combined drivers",
     profile: "Validate and apply",
   };
   return ["layout", "research", "map", "safety", "profile"].map((id) => ({
@@ -471,15 +471,16 @@ function commissioningViewPayload(overrides = {}) {
 
 function profileCommissioningView(overrides = {}) {
   return commissioningViewPayload({
-    current_step: "profile",
+    current_step: "safety",
     stepStatuses: {
       layout: "done",
       research: "done",
       map: "done",
-      safety: "done",
-      profile: "active",
+      safety: "active",
+      profile: "todo",
     },
     status: "needs_combined_check",
+    driver_target_proof: { complete: true, source: "measurements", captured: 2, required: 2 },
     ...overrides,
   });
 }
@@ -668,7 +669,7 @@ function commissionCardHtml(html) {
   const match = String(html || "").match(
     /<div class="commission-card">[\s\S]*?commission-card__followup[\s\S]*?<\/p><\/div>/
   );
-  return match ? match[0] : "";
+  return match ? match[0] : String(html || "");
 }
 
 async function loadAndSetActiveState(harness) {
@@ -679,9 +680,9 @@ async function loadAndSetActiveState(harness) {
 
 function assertQuietTestSurfaceVisible(harness, label) {
   const html = harness.elements.get("view-body").innerHTML;
-  for (const expected of ["Test each driver"]) {
+  for (const expected of ["Test combined drivers"]) {
     if (!html.includes(expected)) {
-      fail(`${label} should keep the driver-test surface visible`, { expected, html });
+      fail(`${label} should keep the combined-test surface visible`, { expected, html });
     }
   }
 }
@@ -844,20 +845,12 @@ async function testQuietTestSurfaceSurvivesStartupActions() {
   return { quietTestSurfacePreserved: true };
 }
 
-async function testPassiveLayoutsRenderNoActiveDriverTestCard() {
+async function testPassiveLayoutsDoNotExposeDirectDriverTestFlow() {
   const fetchHandler = baseFetch();
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
 
   const html = harness.elements.get("view-body").innerHTML;
-  for (const expected of [
-    "No active driver test",
-    "no separate direct-DAC driver test in the product UI",
-  ]) {
-    if (!html.includes(expected)) {
-      fail("Passive layouts should render the non-active product card", { expected, html });
-    }
-  }
   for (const forbidden of [
     "data-act=\"check-output-readiness\"",
     "data-act=\"play-output-readiness-tone\"",
@@ -873,7 +866,7 @@ async function testPassiveLayoutsRenderNoActiveDriverTestCard() {
       fail("Passive layouts should not expose the removed direct test flow", { forbidden, html });
     }
   }
-  return { passiveLayoutsRenderNoActiveDriverTestCard: true };
+  return { passiveLayoutsDoNotExposeDirectDriverTestFlow: true };
 }
 
 async function testActiveCrossoverFirstStepRender() {
@@ -1085,25 +1078,138 @@ async function testMeasuredDriversOpenProfileStep() {
 
   const html = harness.elements.get("view-body").innerHTML;
   for (const expected of [
-    'data-output-step="profile" open',
-    "Validate and apply",
+    'data-output-step="safety" open',
+    "Test combined drivers",
     "Combined crossover check",
     "JTS could not open the quiet combined-test path. Press Play combined test to retry.",
     "Sounds right",
     "Back to adjust crossover",
-    "Save and apply",
   ]) {
     if (!html.includes(expected)) {
-      fail("Completed driver checks should advance to the profile card", { expected, html });
+      fail("Completed driver proof should advance to the combined-test card", { expected, html });
     }
   }
   if (html.includes("could not open the combined active-speaker test path")) {
     fail("Combined-test implementation internals should not be the primary recovery copy", { html });
   }
-  if (html.includes('data-output-step="safety" open')) {
-    fail("Completed driver checks should not reopen the driver-test card", { html });
+  if (html.includes('data-output-step="profile" open')) {
+    fail("Completed driver proof should not skip the combined-test card", { html });
   }
-  return { measuredDriversOpenProfileStep: true };
+  return { measuredDriversOpenCombinedStep: true };
+}
+
+async function testAppliedProfileEditContinueOpensProfileStep() {
+  const confirmedTopology = activeTwoWayTopologyPayload();
+  confirmedTopology.channel_identity = {
+    kind: "jts_output_channel_identity_report",
+    status: "verified",
+    assigned_channel_count: 2,
+    verified_channel_count: 2,
+    unverified_channel_count: 0,
+    targets: [],
+  };
+  const measurements = {
+    status: "needs_driver_measurements",
+    summary: {
+      required_driver_count: 2,
+      captured_driver_count: 0,
+      driver_checks_complete: false,
+      driver_measurements_complete: false,
+      required_summed_group_count: 1,
+      validated_summed_group_count: 0,
+      summed_validation_complete: false,
+      latest_driver_checks: {
+        "main:woofer": { speaker_group_id: "main", role: "woofer", captured: true },
+        "main:tweeter": { speaker_group_id: "main", role: "tweeter", captured: true },
+      },
+      latest_driver_measurements: {},
+      latest_summed_tests: {},
+      latest_summed_validations: {},
+    },
+    issues: [],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: confirmedTopology,
+      channel_identity: confirmedTopology.channel_identity,
+    })),
+    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
+    "./active-speaker/design-draft": () => Promise.resolve(response({
+      status: "ready_for_review",
+      summary: { missing_driver_info_roles: [], missing_crossover_candidate_pairs: [] },
+      operator_inputs: {},
+    })),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+      kind: "jts_active_speaker_crossover_preview",
+      status: "ready_for_protected_staging",
+      permissions: { may_prepare_protected_startup_config: true },
+      issues: [],
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(profileCommissioningView({
+      status: "needs_revalidation",
+      driver_target_proof: {
+        complete: true,
+        source: "applied_profile_revalidation",
+        captured: 0,
+        required: 2,
+      },
+      driver_checks: {
+        complete: true,
+        source: "applied_profile_revalidation",
+        captured: 0,
+        required: 2,
+      },
+      revalidation: {
+        required: true,
+        reason: "applied_profile_superseded",
+        next_step: "combined_check",
+      },
+      combined_groups: [{
+        group_id: "main",
+        label: "Main speaker",
+        status: "ready_to_test",
+        status_label: "next",
+        message: "Run the combined speaker test.",
+        failure_message: "",
+        actions: {
+          start_combined_test: {
+            id: "start_combined_test",
+            label: "Play combined test",
+            enabled: true,
+            endpoint: "./active-speaker/summed-test",
+            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
+          },
+          record_combined_result: {
+            id: "record_combined_result",
+            label: "Record combined check",
+            enabled: false,
+            endpoint: "./active-speaker/summed-validation",
+            body: { speaker_group_id: "main", summed_test_id: "" },
+          },
+        },
+      }],
+    }))),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  if (!initialHtml.includes('data-output-step="safety" open')) {
+    fail("applied-profile edit should open the combined-test card", {
+      initialHtml,
+    });
+  }
+
+  harness.dispatchClick({ "data-act": "output-step-next", "data-step": "safety" });
+  await harness.flush();
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('data-output-step="safety" open')) {
+    fail("combined-test Continue should stay put until validation is saved", {
+      html,
+      status: harness.elements.get("status").textContent,
+    });
+  }
+  return { appliedProfileEditOpensCombinedStep: true };
 }
 
 async function testCombinedTestLevelPostsSelectedBoundedLevel() {
@@ -2836,16 +2942,23 @@ async function testCommissionCardArmsAndSteps() {
   await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
 
   let html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes('class="commission-card"')) fail("commission card not rendered", { html });
   if (html.includes('data-act="commission-arm"')) fail("arm button should not be visible", { html });
   if (!html.includes('data-act="commission-step"')) fail("start button missing before arm", { html });
-  if (!html.includes(">Play Woofer</button>")) fail("idle card should expose Play Woofer", { html });
+  if (!html.includes(">Play</button>")) fail("idle output row should expose Play", { html });
 
   // Play silently opens the quiet driver setup, then begins the
   // automatic ramp. The card treats the whole ramp as one playing state; "too
   // quiet" is internal, not a visible operator button.
-  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
-  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
+  harness.dispatchClick({
+    "data-act": "commission-step",
+    "data-role": "woofer",
+    "data-identity-audition": "true",
+  });
+  harness.dispatchClick({
+    "data-act": "commission-step",
+    "data-role": "woofer",
+    "data-identity-audition": "true",
+  });
   await harness.flush(); await harness.flush(); await harness.flush();
   await harness.flush(); await harness.flush(); await harness.flush();
   const loadPosts = posts.filter((x) =>
@@ -2853,24 +2966,21 @@ async function testCommissionCardArmsAndSteps() {
   if (loadPosts.length !== 1) {
     fail("rapid Start clicks should open the quiet driver test once", { posts });
   }
-  if (loadPosts[0].body.identity_audition) {
-    fail("normal driver-test arm must not use identity-audition mode", { posts });
+  if (!loadPosts[0].body.identity_audition) {
+    fail("Confirm outputs arm must use identity-audition mode", { posts });
   }
   if (!posts.some((x) => x.path === "./active-speaker/commission-ramp-step")) {
     fail("commission-ramp-step not posted on step", { posts });
   }
   if (posts.some((x) =>
       x.path === "./active-speaker/commission-ramp-step" &&
-      x.body.identity_audition)) {
-    fail("normal driver-test ramp must not use identity-audition mode", { posts });
+      !x.body.identity_audition)) {
+    fail("Confirm outputs ramp must use identity-audition mode", { posts });
   }
   html = harness.elements.get("view-body").innerHTML;
   let cardHtml = commissionCardHtml(html);
-  for (const expected of ["Stop", "I hear the woofer", "Back to outputs"]) {
+  for (const expected of ["Stop", "I hear woofer"]) {
     if (!cardHtml.includes(expected)) fail("playing row should expose stable tone controls", { expected, cardHtml });
-  }
-  for (const expected of ["Status", "Tone playing", "250 Hz"]) {
-    if (!cardHtml.includes(expected)) fail("playing card should expose stable status and tone frequency", { expected, cardHtml });
   }
   if (cardHtml.includes("By-ear") || cardHtml.includes("Not yet made audible")) {
     fail("playing card should not expose the old flickering by-ear state", { cardHtml });
@@ -2888,11 +2998,16 @@ async function testCommissionCardArmsAndSteps() {
     if (cardHtml.includes(hidden)) fail("automatic ramp should not expose legacy manual loudness buttons", { hidden, cardHtml });
   }
 
-  harness.dispatchClick({ "data-act": "commission-ack", "data-outcome": "heard_correct_driver" });
+  harness.dispatchClick({
+    "data-act": "commission-ack",
+    "data-outcome": "heard_correct_driver",
+    "data-confirm-output-identity": "true",
+  });
   await harness.flush(); await harness.flush(); await harness.flush();
   if (!posts.some((x) =>
       x.path === "./active-speaker/commission-ramp-ack" &&
-      x.body.outcome === "heard_correct_driver")) {
+      x.body.outcome === "heard_correct_driver" &&
+      x.body.confirm_output_identity === true)) {
     fail("heard verdict should be posted when the user hears the tone", { posts });
   }
   const visibleSilentAcks = posts.filter((x) =>
@@ -2936,18 +3051,8 @@ async function testCommissionCompleteDoesNotWrapToWoofer() {
   await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
 
   const html = harness.elements.get("view-body").innerHTML;
-  const cardHtml = commissionCardHtml(html);
-  if (!cardHtml.includes("Complete")) {
-    fail("all confirmed driver roles should render the card complete", { cardHtml });
-  }
-  if (!cardHtml.includes("All drivers are confirmed")) {
-    fail("complete driver test should tell the user to continue", { cardHtml });
-  }
-  if (!cardHtml.includes("Continue to validate")) {
-    fail("complete driver test should provide an explicit next action", { cardHtml });
-  }
-  if (cardHtml.includes("next: Woofer") || cardHtml.includes('data-act="commission-step"')) {
-    fail("complete driver test must not wrap back to woofer", { cardHtml });
+  if (!html.includes("2/2 heard")) {
+    fail("complete driver proof should show heard progress", { html });
   }
   return { commissionCompleteDoesNotWrapToWoofer: true };
 }
@@ -2974,6 +3079,23 @@ async function testStaleRampConfirmationsDoNotCompleteDriverChecks() {
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
     "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(commissioningViewPayload({
+      status: "needs_driver_target_proof",
+      current_step: "map",
+      stepStatuses: {
+        layout: "done",
+        research: "done",
+        map: "active",
+        safety: "todo",
+        profile: "todo",
+      },
+      driver_target_proof: {
+        complete: false,
+        source: "measurements",
+        captured: 0,
+        required: 2,
+      },
+    }))),
   });
   const harness = setupHarness(fetchHandler);
   await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
@@ -2983,8 +3105,9 @@ async function testStaleRampConfirmationsDoNotCompleteDriverChecks() {
   if (cardHtml.includes("Complete") || cardHtml.includes("All drivers are confirmed")) {
     fail("stale ramp roles without measurement-backed checks must not complete the card", { cardHtml });
   }
-  if (!cardHtml.includes("next: Woofer") || !cardHtml.includes('data-act="commission-step"')) {
-    fail("stale ramp roles should restart visible driver checks from woofer", { cardHtml });
+  if (!html.includes('data-output-step="map" open') ||
+      !html.includes('data-act="commission-step"')) {
+    fail("stale ramp roles should restart visible output confirmation from the map", { html });
   }
   return { staleRampConfirmationsDoNotCompleteDriverChecks: true };
 }
@@ -3368,14 +3491,18 @@ async function testCommissionPendingStepShowsAckWithoutFloorFlag() {
   if (!html.includes('data-act="commission-ack"')) {
     fail("pending ramp step must expose acknowledgement buttons even with a stale floor flag", { html });
   }
-  for (const expected of ["Stop", "I hear the woofer", "Back to outputs"]) {
+  for (const expected of ["Stop", "I hear woofer"]) {
     if (!cardHtml.includes(expected)) fail("pending ramp step should reuse the stable playing row", { expected, cardHtml });
   }
   for (const hidden of ["Too quiet", "Too loud"]) {
     if (cardHtml.includes(hidden)) fail("pending ramp step should not expose legacy manual loudness buttons", { hidden, cardHtml });
   }
-  if (cardHtml.includes('data-act="commission-step"')) {
-    fail("pending ramp step must block another step until it is acknowledged", { cardHtml });
+  const enabledStep = cardHtml.match(/<button\b(?=[^>]*data-act="commission-step")(?![^>]*\bdisabled\b)[^>]*>/);
+  if (enabledStep) {
+    fail("pending ramp step must block another enabled step until it is acknowledged", {
+      button: enabledStep[0],
+      cardHtml,
+    });
   }
   return { commissionPendingStepShowsAckWithoutFloorFlag: true };
 }
@@ -3655,16 +3782,20 @@ async function testCommissionRampLimitKeepsConfirmationOpen() {
   if (!html.includes("Reached the safe test limit")) {
     fail("safe-limit response should surface the room-facing action", { html });
   }
-  if (!html.includes("I hear the woofer")) {
+  if (!html.includes("I hear woofer")) {
     fail("safe-limit response should keep the heard-confirmation CTA visible", { html });
   }
-  harness.dispatchClick({ "data-act": "commission-ack", "data-outcome": "heard_correct_driver" });
+  harness.dispatchClick({
+    "data-act": "commission-ack",
+    "data-outcome": "heard_correct_driver",
+    "data-confirm-output-identity": "true",
+  });
   await harness.flush(); await harness.flush(); await harness.flush();
   const statusText = harness.elements.get("status").textContent;
   if (statusText.includes("Reached the safe test limit")) {
     fail("successful driver confirmation should clear stale ramp-limit status", { statusText });
   }
-  if (!statusText.includes("Driver check saved. Continue with the next driver.")) {
+  if (!statusText.includes("Driver confirmation saved. Continue with the next output.")) {
     fail("partial driver confirmation should give the next-step status", { statusText });
   }
   return { commissionRampLimitKeepsConfirmationOpen: true };
@@ -3850,11 +3981,12 @@ async function testCommissionAutoRampResetsRunningFlagOnThrow() {
 // "Preparing" state forever.
 //
 // We inject the throw via the status className setter, gated to fire on the
-// SECOND "Tone is playing for" render — the first is postCommission's
-// post-success render (now inside its try/catch after fix #2), the second is the
-// loop's own render() at line ~4285.  Targeting the second isolates the loop
-// finally: with the loop finally removed, the card stays wedged and the test
-// fails; with it present, running resets and a fresh click re-runs the flow.
+// SECOND render where the merged Confirm outputs row shows the playing controls
+// ("Stop" + "I hear woofer") — the first is postCommission's post-success render
+// (now inside its try/catch after fix #2), the second is the loop's own render()
+// at line ~4285. Targeting the second isolates the loop finally: with the loop
+// finally removed, the card stays wedged and the test fails; with it present,
+// running resets and a fresh click re-runs the flow.
 async function testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow() {
   let commissionState = {
     commission_load: {
@@ -3895,7 +4027,7 @@ async function testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow() {
   await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
 
   // Replace the 'status' element with one whose className setter throws on the
-  // SECOND render where the card shows "Tone is playing for" — i.e. the loop's
+  // SECOND render where the card shows the playing controls — i.e. the loop's
   // own render() at line ~4285, not postCommission's post-success render.
   const realStatus = harness.elements.get("status");
   let tonePlayingRenderCount = 0;
@@ -3906,7 +4038,7 @@ async function testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow() {
       if (injectThrow) {
         const viewBody = harness.elements.get("view-body");
         const body = viewBody ? String(viewBody.innerHTML || "") : "";
-        if (body.includes("Tone is playing for")) {
+        if (body.includes("I hear woofer") && body.includes("Stop")) {
           tonePlayingRenderCount += 1;
           if (tonePlayingRenderCount === 2) {
             injectThrow = false;
@@ -3938,7 +4070,11 @@ async function testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow() {
   const rejHandler = (reason) => { capturedRejection = reason; };
   process.on("unhandledRejection", rejHandler);
 
-  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
+  harness.dispatchClick({
+    "data-act": "commission-step",
+    "data-role": "woofer",
+    "data-identity-audition": "true",
+  });
   await harness.flush(); await harness.flush(); await harness.flush();
   await harness.flush(); await harness.flush(); await harness.flush();
 
@@ -3975,7 +4111,11 @@ async function testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow() {
   // startCommissionAutoRamp short-circuits at its "already running" guard and no
   // new ramp step is sent.)
   const stepsBefore = stepRequests.length;
-  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
+  harness.dispatchClick({
+    "data-act": "commission-step",
+    "data-role": "woofer",
+    "data-identity-audition": "true",
+  });
   await harness.flush(); await harness.flush(); await harness.flush();
   await harness.flush(); await harness.flush(); await harness.flush();
   if (stepRequests.length <= stepsBefore) {
@@ -4056,7 +4196,7 @@ async function testFollowerModeRendersLocalDriverUi() {
   const html = harness.elements.get("view-body").innerHTML;
   // The local driver/crossover/commissioning surface renders as primary content,
   // expanded (not tucked behind the solo box's "Speaker setup" disclosure).
-  for (const expected of ["Active crossover setup", "Test each driver"]) {
+  for (const expected of ["Active crossover setup", "Test combined drivers"]) {
     if (!html.includes(expected)) {
       fail("follower /sound/ should render the local active-speaker UI", { expected, html });
     }
@@ -4166,10 +4306,11 @@ const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
-results.push(await testPassiveLayoutsRenderNoActiveDriverTestCard());
+results.push(await testPassiveLayoutsDoNotExposeDirectDriverTestFlow());
 results.push(await testActiveCrossoverFirstStepRender());
 results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
+results.push(await testAppliedProfileEditContinueOpensProfileStep());
 results.push(await testCombinedTestLevelPostsSelectedBoundedLevel());
 results.push(await testCombinedTestButtonStopsActiveRequest());
 results.push(await testReloadedPageRendersReloadSafeStopForActiveTest());

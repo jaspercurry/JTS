@@ -871,6 +871,7 @@ def record_summed_validation(
     *,
     calibration_level: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
+    driver_target_proof_complete: bool = False,
     now: str | None = None,
 ) -> dict[str, Any]:
     """Persist one summed crossover validation observation."""
@@ -906,7 +907,10 @@ def record_summed_validation(
             "summed_validation_outcome_invalid",
             "summed validation outcome is unsupported",
         ))
-    if not summary.get("driver_measurements_complete"):
+    if (
+        not summary.get("driver_measurements_complete")
+        and not driver_target_proof_complete
+    ):
         issues.append(_issue(
             "blocker",
             "summed_validation_driver_measurements_missing",
@@ -969,6 +973,7 @@ def record_summed_validation(
         "operator_listening_check": operator_listening_check,
         "summed_test_id": requested_test_id,
         "summed_test": dict(latest_test) if isinstance(latest_test, Mapping) else {},
+        "driver_target_proof_complete": bool(driver_target_proof_complete),
         "observed_mic_dbfs": observed,
         "mic_clipping": clipping,
         "mic_meter": meter,

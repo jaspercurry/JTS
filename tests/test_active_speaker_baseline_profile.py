@@ -888,6 +888,94 @@ def test_superseded_applied_profile_reports_revalidation_path(
     assert ready_to_save["revalidation"]["next_step"] == "save_profile"
 
 
+def test_superseded_applied_profile_revalidates_without_raw_driver_measurements(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(
+        draft,
+        created_at="2026-06-14T12:10:00Z",
+    )
+    baseline_state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    ready = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=_measurements(topology, tmp_path),
+        write=True,
+        state_path=baseline_state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        created_at="2026-06-14T12:20:00Z",
+    )
+    applied = {**ready, "status": "applied", "applied_at": "2026-06-14T12:21:00Z"}
+    applied["permissions"] = {**applied["permissions"], "may_apply": False}
+    baseline_state_path.write_text(json.dumps(applied), encoding="utf-8")
+
+    revalidation_measurements_path = tmp_path / "measurements_revalidation.json"
+    record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "playback": {
+                "status": "completed",
+                "backend": "aplay",
+                "playback_id": "summed-playback-revalidate",
+                "audio_emitted": True,
+                "artifact": {
+                    "wav_basename": "tone_summed-playback-revalidate.wav",
+                    "metadata_basename": "tone_summed-playback-revalidate.json",
+                    "target_output_indices": [0, 1],
+                    "channel_count": 2,
+                },
+                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
+            },
+        },
+        state_path=revalidation_measurements_path,
+        now="2026-06-14T12:22:00Z",
+    )
+    measurements = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40.0,
+            "polarity": "normal",
+            "delay_ms": 0.0,
+            "summed_test_id": "summed-playback-revalidate",
+        },
+        state_path=revalidation_measurements_path,
+        driver_target_proof_complete=True,
+        now="2026-06-14T12:23:00Z",
+    )
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
+        state_path=baseline_state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "ready_to_compile"
+    assert "baseline_driver_measurements_missing" not in {
+        issue["code"] for issue in payload["issues"]
+    }
+    assert payload["verification"]["driver_measurements_complete"] is False
+    assert payload["verification"]["driver_target_proof_complete"] is True
+    assert (
+        payload["verification"]["driver_target_proof_source"]
+        == "applied_profile_revalidation"
+    )
+    assert payload["verification"]["summed_validation_complete"] is True
+    assert payload["revalidation"]["required"] is True
+    assert payload["revalidation"]["next_step"] == "save_profile"
+
+
 def test_baseline_profile_never_emits_positive_driver_gain(
     tmp_path: Path,
 ) -> None:

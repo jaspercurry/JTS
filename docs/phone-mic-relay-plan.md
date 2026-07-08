@@ -608,14 +608,16 @@ is unreachable.
 
 ---
 
-Last updated: 2026-07-07 — blank legacy `JASPER_CAPTURE_RELAY_BASE` /
-`JASPER_CAPTURE_ORIGIN` values now migrate to the public relay defaults on
-install/update; explicit `disabled`/`off`/`0`/`none` remains the persistent
-on-Pi fallback opt-out. Prior 2026-07-01: `/correction/` room relay now uses a guided phone
+Last updated: 2026-07-07 — room-sweep relay setup now preflights calibration
+serial/upload choices through `setup_validation` before the phone shows Start;
+blank legacy `JASPER_CAPTURE_RELAY_BASE` / `JASPER_CAPTURE_ORIGIN` values now
+migrate to the public relay defaults on install/update; explicit
+`disabled`/`off`/`0`/`none` remains the persistent on-Pi fallback opt-out. Prior
+2026-07-03/2026-07-01 updates: `/correction/` room relay uses a guided phone
 setup, passive noise-floor capture, Pi host-progress events, and
 stop-on-`sweep_complete` recording; supported calibration mic models are emitted
-from the Pi registry in `CaptureSpec`; `/sync` still rides the generic relay
-seam. Optional Pi registration secret implemented (hardware-free). Deferred:
-crossover relay (needs its own `calibration_id` guard), balance burst,
-room-helper dedupe, full on-device validation (iPhone/Android, on jts3/jts5),
-alignment-threshold tuning, and an audible failure cue.
+from the Pi registry in `CaptureSpec`; `/sync` and crossover ride the generic
+relay seam. Optional Pi registration secret implemented (hardware-free).
+Deferred: balance burst, room-helper dedupe, full on-device validation
+(iPhone/Android, on jts3/jts5), alignment-threshold tuning, and an audible
+failure cue.

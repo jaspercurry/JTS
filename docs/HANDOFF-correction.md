@@ -2085,14 +2085,19 @@ Internal:
 
 ---
 
-Last verified: 2026-07-07 (phone-mic relay config fallback: blank legacy
-`JASPER_CAPTURE_RELAY_BASE` / `JASPER_CAPTURE_ORIGIN` values migrate to the
-public relay defaults on install/update, explicit `disabled`/`off`/`0`/`none`
-keeps the old local HTTPS path; verified against
+Last verified: 2026-07-07 (phone-mic relay guided-setup preflight:
+room-sweep specs set `setup_validation=true`, the capture page posts setup
+validation requests before showing Start, and `jasper-correction-web` answers
+via `host_event.phase="setup_validated"` / `"setup_validation_failed"`;
+phone-mic relay config fallback: blank legacy `JASPER_CAPTURE_RELAY_BASE` /
+`JASPER_CAPTURE_ORIGIN` values migrate to the public relay defaults on
+install/update, explicit `disabled`/`off`/`0`/`none` keeps the old local HTTPS
+path; verified against
+`capture-page/js/main.js`, `jasper/capture_relay/spec.py`,
+`jasper/capture_relay/session.py`, `jasper/web/correction_setup.py`,
 `deploy/lib/install/python-runtime.sh`, `jasper/capture_relay/health.py`,
-`jasper/control/state_aggregate.py`, `jasper/web/correction_setup.py`, and live
-`http://jts.local/correction/room/` rendering
-`data-capture-relay-enabled="1"`).
+`jasper/control/state_aggregate.py`, and live `http://jts.local/correction/room/`
+rendering `data-capture-relay-enabled="1"`).
 Prior 2026-07-06 (P6: the three tuning-LLM POST routes —
 `/interpret`, `/propose`, `/propose/apply` — added to the route table,
 verified against `jasper/web/correction_setup.py`'s `_POST_ROUTES` +

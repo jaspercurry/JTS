@@ -217,30 +217,33 @@ As of 2026-06-26, `/sound/` also shows a collapsed **Speaker setup** entry
 point for active crossover commissioning. Opening it shows one primary
 **Active crossover setup** walkthrough, not a separate environment card. The
 walkthrough keeps one task card open at a time: choose speaker layout, add
-driver and crossover values, confirm outputs, test each driver, validate the
-summed crossover, then save/apply the active profile. Layout and
+driver and crossover values, confirm outputs and each driver, test the combined
+crossover, then save/apply the active profile. Layout and
 crossover-settings steps do not play sound, load CamillaDSP, or touch live
 audio; detected hardware is supporting context and the hardware refresh control
 is a small utility inside the layout step.
 
-The **Test each driver** card owns the guarded driver-check controls.
+The **Confirm outputs** card owns the guarded driver-check controls.
 The primary UI no longer refreshes the old backend checklist/grid or asks the
 user to understand environment, path-safety, staging, startup-load, or
 safe-session probes as separate steps. Active 2/3-way groups present one
 commission action at a time: **Play** prepares a continuous quiet tone, moves
 through a disabled preparing state while the backend opens the protected path,
 then becomes a red **Stop** button once JTS believes audio is active. The only
-positive result is driver-specific (**I hear the woofer/tweeter/midrange**);
-**Back to configuration** reopens the DAC-channel assignment card if the wrong
-driver or output mapping is suspected. Internally,
+positive result is driver-specific (**I hear woofer/tweeter/midrange**) and
+also promotes the output identity when the output had not yet been confirmed.
+The same card keeps DAC-channel assignment controls visible so the operator can
+fix a wrong output mapping in place. Internally,
 `/sound/active-speaker/commission-load` repairs missing software guards and
 loads the protected active graph, then
 `/sound/active-speaker/commission-ramp-step` raises only the selected driver in
 larger bounded guarded steps while the same cancellable tone keeps playing.
 Transient "raising" progress copy is not shown, so the card does not flap while
-audio is playing. Passive/full-range layouts render **No active driver test** and
-use the normal listening path; there is no separate direct-DAC driver test in
-the product UI. The tone frequency is role-native where that improves operator
+audio is playing. The following **Test combined drivers** step is only the
+summed crossover check; it no longer duplicates individual driver
+commissioning. Passive/full-range layouts use the normal listening path rather
+than a separate direct-DAC driver-test card. The tone frequency is role-native
+where that improves operator
 recognition (woofer/subwoofer use normal low test tones), then bounded by the
 compiled active-speaker preset/crossover edges and tweeter-protection policy. If
 the safe limit is reached with no audible driver, the UI stops/re-mutes and tells the
@@ -331,7 +334,7 @@ characters so they stay a safety-relevant summary; full research reports
 belong outside the design draft. Hidden imported values never override
 user-edited visible settings, and the draft still does not apply filters,
 reload CamillaDSP, or authorize sound.
-Choosing a confirmed active driver in **Test each driver** calls the commission
+Choosing an active driver in **Confirm outputs** calls the commission
 route family: `commission-load`, `commission-ramp-step`,
 `commission-ramp-ack`, and `commission-ramp-abort`. The browser does not expose
 the protected staging/load/arm implementation steps as separate buttons or

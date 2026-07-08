@@ -614,6 +614,44 @@ def test_summed_validation_accepts_operator_check_after_audible_test_without_mic
     }
 
 
+def test_summed_validation_accepts_backend_driver_target_proof(
+    tmp_path: Path,
+) -> None:
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+
+    _record_summed_test(
+        topology,
+        state_path,
+        playback_id="summed-playback-revalidate",
+    )
+    payload = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40,
+            "polarity": "normal",
+            "delay_ms": 0,
+            "summed_test_id": "summed-playback-revalidate",
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+        now="2026-06-14T12:05:00Z",
+    )
+
+    latest = payload["summary"]["latest_summed_validations"]["mono"]
+    assert latest["validated"] is True
+    assert latest["driver_target_proof_complete"] is True
+    assert "summed_validation_driver_measurements_missing" not in {
+        issue["code"] for issue in latest["issues"]
+    }
+    # The low-level measurement summary still describes raw measurement state;
+    # profile compilation composes this validation with the backend proof.
+    assert payload["summary"]["driver_measurements_complete"] is False
+    assert payload["summary"]["summed_validation_complete"] is False
+
+
 def test_driver_measurement_requires_accepted_floor_result_for_same_target(
     tmp_path: Path,
 ) -> None:
