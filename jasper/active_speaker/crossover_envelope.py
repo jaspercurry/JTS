@@ -172,9 +172,9 @@ def _verdict_text(view: Mapping[str, Any], screen: str, *, active: bool) -> str:
     defaults = {
         SCREEN_LAYOUT: "Tell JTS what drivers are wired to each output.",
         SCREEN_RESEARCH: "Save the driver names and crossover points.",
-        SCREEN_MAP: "Confirm each DAC output before testing a driver.",
-        SCREEN_SAFETY: "Test each driver one at a time, quietly.",
-        SCREEN_PROFILE: "Run the combined check, then save the speaker profile.",
+        SCREEN_MAP: "Confirm each DAC output and driver quietly.",
+        SCREEN_SAFETY: "Test the combined crossover quietly.",
+        SCREEN_PROFILE: "Save the checked speaker profile.",
     }
     return defaults.get(screen, "Set up your active crossover, one step at a time.")
 

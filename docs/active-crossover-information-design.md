@@ -197,11 +197,11 @@ evidence labels before choosing the driver they want to hear.
 
 Good language:
 
-- "Test each driver"
+- "Confirm outputs"
 - "Play woofer"
 - "Tone playing at 250 Hz"
 - "I hear the woofer"
-- "Back to configuration"
+- "Test combined drivers"
 - "Stop"
 
 Avoid:

@@ -258,6 +258,148 @@ def test_commissioning_view_surfaces_superseded_profile_revalidation():
     assert "Save and apply a fresh profile" in profile_step["message"]
 
 
+def test_commissioning_view_allows_applied_profile_edit_to_revalidate():
+    view = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
+        measurements={
+            "summary": {
+                "driver_checks_complete": False,
+                "driver_measurements_complete": False,
+                "captured_driver_check_count": 0,
+                "required_driver_check_count": 2,
+                "summed_validation_complete": False,
+                "validated_summed_group_count": 0,
+                "required_summed_group_count": 1,
+                "latest_summed_tests": {},
+                "latest_summed_validations": {},
+            },
+        },
+        baseline_profile={
+            "status": "blocked",
+            "revalidation": {
+                "required": True,
+                "reason": "applied_profile_superseded",
+                "next_step": "combined_check",
+                "superseded_profile": {"status": "applied"},
+            },
+        },
+    )
+
+    assert view["status"] == "needs_revalidation"
+    assert view["current_step"] == "safety"
+    assert view["driver_target_proof"]["complete"] is True
+    assert view["driver_target_proof"]["source"] == "applied_profile_revalidation"
+    assert view["driver_checks"]["complete"] is True
+    assert view["driver_checks"]["source"] == "applied_profile_revalidation"
+    safety_step = next(step for step in view["steps"] if step["id"] == "safety")
+    assert safety_step["status"] == "active"
+    profile_step = next(step for step in view["steps"] if step["id"] == "profile")
+    assert profile_step["status"] == "todo"
+    group = view["combined_groups"][0]
+    assert group["status"] == "ready_to_test"
+    assert group["actions"]["start_combined_test"]["enabled"] is True
+    assert view["next_action"]["id"] == "start_combined_test"
+
+
+def test_commissioning_view_new_setup_stays_on_confirm_outputs_until_driver_proof():
+    view = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
+        measurements={
+            "summary": {
+                "driver_checks_complete": False,
+                "driver_measurements_complete": False,
+                "captured_driver_check_count": 0,
+                "required_driver_check_count": 2,
+                "summed_validation_complete": False,
+                "validated_summed_group_count": 0,
+                "required_summed_group_count": 1,
+                "latest_summed_tests": {},
+                "latest_summed_validations": {},
+            },
+        },
+    )
+
+    assert view["status"] == "needs_driver_target_proof"
+    assert view["current_step"] == "map"
+    assert view["driver_target_proof"]["complete"] is False
+    assert view["driver_target_proof"]["source"] == "missing"
+    assert view["driver_checks"]["complete"] is False
+    assert view["driver_checks"]["source"] == "missing"
+    profile_step = next(step for step in view["steps"] if step["id"] == "profile")
+    assert profile_step["status"] == "todo"
+    group = view["combined_groups"][0]
+    assert group["status"] == "blocked"
+    assert group["actions"]["start_combined_test"]["enabled"] is False
+    assert view["next_action"]["id"] == "confirm_outputs"
+
+
+def test_commissioning_view_setup_check_revalidation_stays_on_confirm_outputs():
+    view = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
+        measurements={
+            "summary": {
+                "driver_checks_complete": False,
+                "driver_measurements_complete": False,
+                "summed_validation_complete": False,
+                "latest_summed_tests": {},
+                "latest_summed_validations": {},
+            },
+        },
+        baseline_profile={
+            "status": "blocked",
+            "revalidation": {
+                "required": True,
+                "reason": "applied_profile_superseded",
+                "next_step": "setup_checks",
+                "superseded_profile": {"status": "applied"},
+            },
+        },
+    )
+
+    assert view["current_step"] == "map"
+    assert view["driver_target_proof"]["complete"] is False
+    assert view["driver_checks"]["complete"] is False
+    assert view["next_action"]["id"] == "confirm_outputs"
+
+
+def test_commissioning_view_topology_change_invalidates_applied_profile_driver_proof():
+    view = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
+        measurements={
+            "summary": {
+                "driver_checks_complete": False,
+                "driver_measurements_complete": False,
+                "summed_validation_complete": False,
+                "latest_summed_tests": {},
+                "latest_summed_validations": {},
+            },
+        },
+        baseline_profile={
+            "status": "blocked",
+            "revalidation": {
+                "required": True,
+                "reason": "applied_profile_superseded",
+                "next_step": "combined_check",
+                "changed": ["topology_fingerprint", "measurement_summary_fingerprint"],
+                "superseded_profile": {"status": "applied"},
+            },
+        },
+    )
+
+    assert view["current_step"] == "map"
+    assert view["driver_target_proof"]["complete"] is False
+    assert view["driver_target_proof"]["source"] == "missing"
+    assert view["next_action"]["id"] == "confirm_outputs"
+
+
 def test_commissioning_view_uses_backend_failure_copy_for_combined_group():
     view = build_commissioning_view(
         _topology(),

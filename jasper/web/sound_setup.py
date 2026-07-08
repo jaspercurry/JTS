@@ -2271,10 +2271,10 @@ def _summed_test_session_active(
     Live means: a session exists, no stop has been requested, and either the
     ``aplay`` child is alive *or* the loop refreshed its heartbeat within
     ``SUMMED_TEST_SESSION_STALE_SECONDS``. The heartbeat window reclaims a leaked
-    ``process=None`` session so a reload's Stop, or a fresh Play, is never
-    permanently blocked. This is the single source of truth shared by the start
-    guard and the reload-safe view snapshot so they can never disagree on
-    "active".
+    ``process=None`` session so a reload's Stop never stays visible forever.
+    Start serialization uses ``_summed_test_session_occupies_resources`` because
+    a stopped-but-tearing-down session is no longer UI-active but still owns the
+    fan-in lane and transient Camilla graph.
     """
 
     if not session or session.get("stop_reason"):
@@ -2282,6 +2282,34 @@ def _summed_test_session_active(
     proc = session.get("process")
     if proc is not None:
         return proc.poll() is None
+    if now is None:
+        now = time.monotonic()
+    heartbeat = session.get("progress_monotonic", session.get("started_monotonic"))
+    try:
+        heartbeat = float(heartbeat)
+    except (TypeError, ValueError):
+        return False
+    return (now - heartbeat) < SUMMED_TEST_SESSION_STALE_SECONDS
+
+
+def _summed_test_session_occupies_resources(
+    session: dict[str, Any] | None,
+    *,
+    now: float | None = None,
+) -> bool:
+    """Whether a session must still serialize starts around owned resources.
+
+    The UI-visible active state goes false as soon as Stop is requested, but the
+    owning request still has to terminate ``aplay``, release the fan-in lane, and
+    roll back the transient Camilla graph. A new start must not reclaim the global
+    until that teardown finishes, or it can race with those still-owned resources.
+    """
+
+    if not session:
+        return False
+    proc = session.get("process")
+    if proc is not None and proc.poll() is None:
+        return True
     if now is None:
         now = time.monotonic()
     heartbeat = session.get("progress_monotonic", session.get("started_monotonic"))
@@ -2396,6 +2424,7 @@ def _stop_summed_test_tone_locked(*, reason: str) -> dict[str, Any]:
     if not session:
         return {"status": "idle", "reason": reason}
     session["stop_reason"] = reason
+    session["progress_monotonic"] = time.monotonic()
     proc = session.get("process")
     if proc is None:
         return {
@@ -2835,7 +2864,7 @@ async def _active_speaker_play_summed_commission_tone(
     reclaimed: tuple[str, Any] | None = None
     with _SUMMED_TEST_TONE_LOCK:
         prior = _SUMMED_TEST_TONE_SESSION
-        if _summed_test_session_active(prior):
+        if _summed_test_session_occupies_resources(prior):
             return _summed_playback_with_issue(
                 artifact_playback,
                 issue=_commission_setup_issue(
@@ -2845,9 +2874,10 @@ async def _active_speaker_play_summed_commission_tone(
             )
         if prior is not None:
             # Overwriting a non-active prior session: either a leaked prepare
-            # (its owner died before the try/finally teardown) or one whose stop
-            # is still settling. A leaked prior is the only way this path is hit
-            # without an explicit stop, so surface it — it flags a prior bug.
+            # (its owner died before the try/finally teardown) or a stopped owner
+            # whose teardown heartbeat aged past the stale budget. A leaked prior
+            # is the only way this path is hit without an explicit stop, so
+            # surface it — it flags a prior bug.
             reclaimed = (
                 "stopped" if prior.get("stop_reason") else "stale",
                 prior.get("playback_id"),
@@ -3089,35 +3119,43 @@ async def _active_speaker_play_summed_commission_tone(
     finally:
         with _SUMMED_TEST_TONE_LOCK:
             if _SUMMED_TEST_TONE_SESSION is session:
-                _SUMMED_TEST_TONE_SESSION = None
-        if started_proc is not None and started_proc.poll() is None:
-            try:
-                started_proc.terminate()
-                started_proc.wait(timeout=0.75)
-            except subprocess.TimeoutExpired:
-                try:
-                    started_proc.kill()
-                    started_proc.wait(timeout=0.75)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-            except (OSError, ProcessLookupError):
-                pass
-        if fanin_gate is not None:
-            _commission_tone_release_fanin_lane(reason="summed_test")
+                now_monotonic = time.monotonic()
+                session["teardown_started_monotonic"] = now_monotonic
+                session["progress_monotonic"] = now_monotonic
         try:
-            rollback = await _active_speaker_rollback_summed_commissioning_config(
-                camilla_factory=camilla_factory,
-            )
-        except Exception as exc:  # noqa: BLE001 - surface but do not mask playback.
-            logger.warning(
-                "event=sound.active_speaker_summed_test action=rollback "
-                "status=failed error=%s",
-                exc,
-            )
-            rollback_issue = _commission_setup_issue(
-                "summed_commission_rollback_failed",
-                "combined test played, but JTS could not re-mute the active-speaker test path",
-            )
+            if started_proc is not None and started_proc.poll() is None:
+                try:
+                    started_proc.terminate()
+                    started_proc.wait(timeout=0.75)
+                except subprocess.TimeoutExpired:
+                    try:
+                        started_proc.kill()
+                        started_proc.wait(timeout=0.75)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+                except (OSError, ProcessLookupError):
+                    pass
+            if fanin_gate is not None:
+                _commission_tone_release_fanin_lane(reason="summed_test")
+            try:
+                rollback = await _active_speaker_rollback_summed_commissioning_config(
+                    camilla_factory=camilla_factory,
+                )
+            except Exception as exc:  # noqa: BLE001 - surface but do not mask playback.
+                logger.warning(
+                    "event=sound.active_speaker_summed_test action=rollback "
+                    "status=failed error=%s",
+                    exc,
+                )
+                rollback_issue = _commission_setup_issue(
+                    "summed_commission_rollback_failed",
+                    "combined test played, but JTS could not re-mute the active-speaker test path",
+                )
+        finally:
+            with _SUMMED_TEST_TONE_LOCK:
+                if _SUMMED_TEST_TONE_SESSION is session:
+                    session["teardown_completed_monotonic"] = time.monotonic()
+                    _SUMMED_TEST_TONE_SESSION = None
     if rollback is not None:
         playback_result["rollback"] = rollback
     if rollback_issue is not None:
@@ -3592,6 +3630,7 @@ async def _active_speaker_commission_ramp_ack_payload(
     from jasper.active_speaker.safe_playback import load_safe_playback_state
 
     outcome = str(raw.get("outcome") or "").strip().lower()
+    confirm_output_identity = bool(raw.get("confirm_output_identity"))
     topology = load_output_topology()
     ramp_state = load_ramp_state()
     pending = ramp_state.get("pending")
@@ -3612,28 +3651,78 @@ async def _active_speaker_commission_ramp_ack_payload(
         and payload.get("status") == "confirmed"
         and not payload.get("issues")
     ) or (outcome == "heard_wrong_driver" and payload.get("status") == "aborted")
+    topology_for_measurement = topology
+    identity_promoted = False
+    if (
+        confirm_output_identity
+        and outcome == "heard_correct_driver"
+        and payload.get("status") == "confirmed"
+        and not payload.get("issues")
+        and isinstance(acknowledged_step, dict)
+    ):
+        group_id = str(ramp_state.get("speaker_group_id") or "").strip()
+        role = str(acknowledged_step.get("role") or "").strip().lower()
+        try:
+            topology_for_measurement = set_channel_identity_verified(
+                topology,
+                speaker_group_id=group_id,
+                role=role,
+                identity_verified=True,
+            )
+            save_output_topology(topology_for_measurement)
+            identity_promoted = True
+            payload["output_topology"] = topology_for_measurement.to_dict(
+                include_evaluation=True
+            )
+            payload["output_hardware"] = _output_hardware_dict()
+            payload["channel_identity"] = channel_identity_report(
+                topology_for_measurement
+            )
+            payload["clock_domain"] = clock_domain_report(topology_for_measurement)
+        except (OSError, ValueError) as exc:
+            payload["status"] = "failed"
+            payload["reason"] = "driver_target_identity_save_failed"
+            payload["issues"] = [
+                *(payload.get("issues") if isinstance(payload.get("issues"), list) else []),
+                _commission_setup_issue(
+                    "driver_target_identity_save_failed",
+                    (
+                        "the driver was heard, but JTS could not save the "
+                        "output confirmation"
+                    ),
+                ),
+            ]
+            logger.warning(
+                "event=sound.active_speaker_commission action=promote_identity "
+                "status=failed group=%s role=%s error=%s",
+                group_id,
+                role,
+                exc,
+            )
     if should_record_driver_evidence and isinstance(acknowledged_step, dict):
-        measurements = record_driver_measurement(
-            topology,
-            {
-                "speaker_group_id": ramp_state.get("speaker_group_id"),
-                "role": acknowledged_step.get("role"),
-                "outcome": outcome,
-                "playback_id": acknowledged_step.get("playback_id"),
-                "test_level_dbfs": acknowledged_step.get("gain_db"),
-                "notes": "Recorded from active-speaker guarded ramp confirmation.",
-            },
-            calibration_level=load_calibration_level_state(),
-            safe_session=load_safe_playback_state(),
-        )
-        payload["measurements"] = measurements
+        if not confirm_output_identity or identity_promoted:
+            measurements = record_driver_measurement(
+                topology_for_measurement,
+                {
+                    "speaker_group_id": ramp_state.get("speaker_group_id"),
+                    "role": acknowledged_step.get("role"),
+                    "outcome": outcome,
+                    "playback_id": acknowledged_step.get("playback_id"),
+                    "test_level_dbfs": acknowledged_step.get("gain_db"),
+                    "notes": "Recorded from active-speaker guarded ramp confirmation.",
+                },
+                calibration_level=load_calibration_level_state(),
+                safe_session=load_safe_playback_state(),
+            )
+            payload["measurements"] = measurements
     if tone_stop is not None:
         payload["tone_stop"] = tone_stop
     logger.info(
-        "event=sound.active_speaker_commission action=ramp_ack outcome=%s status=%s "
-        "measurement_status=%s",
+        "event=sound.active_speaker_commission action=ramp_ack outcome=%s "
+        "status=%s identity_promoted=%s measurement_status=%s",
         outcome,
         payload.get("status"),
+        identity_promoted,
         (payload.get("measurements") or {}).get("status"),
     )
     return payload
@@ -3962,6 +4051,12 @@ async def _active_speaker_summed_test_payload(
         calibration_level_payload,
         load_calibration_level_state,
     )
+    from jasper.active_speaker.baseline_profile import (
+        build_baseline_profile_candidate,
+    )
+    from jasper.active_speaker.commissioning_coordinator import (
+        build_commissioning_view,
+    )
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import (
@@ -4026,19 +4121,37 @@ async def _active_speaker_summed_test_payload(
         safe_session_id=safe_session.get("session_id"),
         protected_startup_loaded=protected_loaded,
     )
-    summary = (
-        measurements.get("summary")
-        if isinstance(measurements.get("summary"), dict)
-        else {}
+    baseline_profile = build_baseline_profile_candidate(
+        topology,
+        design_draft=design_draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
     )
-    if not summary.get("driver_measurements_complete"):
+    commissioning_view = build_commissioning_view(
+        topology,
+        design_draft=design_draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        baseline_profile=baseline_profile,
+        calibration_level=calibration_level,
+    )
+    driver_target_proof = commissioning_view.get("driver_target_proof")
+    driver_target_proof_complete = (
+        isinstance(driver_target_proof, dict)
+        and driver_target_proof.get("complete") is True
+    )
+    if not driver_target_proof_complete:
         plan = _active_speaker_plan_with_issues(
             plan,
             [
                 {
                     "severity": "blocker",
-                    "code": "summed_test_driver_measurements_missing",
-                    "message": "test each driver before running the combined test",
+                    "code": "summed_test_driver_target_proof_missing",
+                    "message": (
+                        "confirm each output and driver before running the "
+                        "combined test"
+                    ),
                 },
             ],
         )
@@ -4102,15 +4215,23 @@ def _active_speaker_summed_validation_payload(raw: dict[str, Any]) -> dict[str, 
     """Record one summed crossover blend validation result."""
 
     from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.commissioning_coordinator import load_commissioning_view
     from jasper.active_speaker.measurement import record_summed_validation
 
     if not isinstance(raw, dict):
         raise ValueError("summed validation request must be an object")
     topology = load_output_topology()
+    commissioning_view = load_commissioning_view(topology)
+    driver_target_proof = (
+        commissioning_view.get("driver_target_proof")
+        if isinstance(commissioning_view.get("driver_target_proof"), dict)
+        else {}
+    )
     payload = record_summed_validation(
         topology,
         raw,
         calibration_level=load_calibration_level_state(),
+        driver_target_proof_complete=driver_target_proof.get("complete") is True,
     )
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     logger.info(
@@ -4130,6 +4251,23 @@ def _active_speaker_summed_validation_payload(raw: dict[str, Any]) -> dict[str, 
         summary.get("required_summed_group_count"),
     )
     return payload
+
+
+def _active_speaker_summed_validation_active_conflict(
+    raw: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Reject validation writes while a combined test is still in progress."""
+
+    active = _active_summed_test_snapshot()
+    if active.get("active") is not True:
+        return None
+    return {
+        "status": "active_summed_test_running",
+        "reason": "active_summed_test_running",
+        "error": "stop the combined speaker test before recording the check",
+        "speaker_group_id": str(raw.get("speaker_group_id") or "").strip(),
+        "active_summed_test": active,
+    }
 
 
 def _active_speaker_alignment_curves(
@@ -4774,6 +4912,25 @@ def _make_handler(
                     return
                 if path == "/active-speaker/summed-validation":
                     try:
+                        conflict = (
+                            _active_speaker_summed_validation_active_conflict(raw)
+                        )
+                        if conflict is not None:
+                            logger.info(
+                                "event=sound.active_speaker_summed_validation "
+                                "status=blocked reason=active_summed_test_running "
+                                "group_id=%s active_playback_id=%s",
+                                conflict.get("speaker_group_id"),
+                                (
+                                    conflict.get("active_summed_test", {})
+                                    if isinstance(
+                                        conflict.get("active_summed_test"), dict
+                                    )
+                                    else {}
+                                ).get("playback_id"),
+                            )
+                            self._send_json(conflict, status=HTTPStatus.CONFLICT)
+                            return
                         self._send_json(_active_speaker_summed_validation_payload(raw))
                     except OSError as e:
                         logger.exception(

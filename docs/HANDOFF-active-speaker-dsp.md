@@ -310,8 +310,8 @@
 > records either physical compression-driver protection evidence or a
 > software-guarded bring-up request. The normal UI path does not expose this as
 > a separate "protection" choice; after the operator confirms a high-frequency
-> output and chooses that named driver in the Test each driver card, the page
-> records the software-guard request internally before checking readiness. The
+> output and then confirms that named driver in the Confirm outputs card, the
+> page records the software-guard request internally before checking readiness. The
 > software-guard state is
 > deliberately still a topology/playback blocker; it only lets
 > `/sound/active-speaker/stage-config` write a no-load muted/protected
@@ -781,9 +781,10 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   any audible output → fail closed, do not unmute.
 - **Stage 5 — per-driver floor unmute, woofer→tweeter, operator-confirmed
   (built; runnable via `jasper-active-speaker commission-ramp` **or** the
-  `/sound/` Speaker setup → "Test each driver" step, which renders the
-  Start-tone commission card for an active 2/3-way group; passive/full-range
-  groups have no separate active driver test —
+  `/sound/` Speaker setup → "Confirm outputs" step, which embeds the guarded
+  per-driver Play/Stop/"I hear <role>" controls next to the DAC-channel mapping
+  for an active 2/3-way group; passive/full-range groups have no separate
+  active driver test —
   POST `/active-speaker/commission-{load,ramp-step,ramp-ack,ramp-abort}` +
   read-only GET `/active-speaker/commission-state`).** A commission
   load still exists internally: it arms a driver at the protected floor (gain
@@ -819,14 +820,15 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   id, and tone frequency. The browser's automatic louder step does **not** clear
   pending with a hidden `silent` ACK; it calls `commission-ramp-step` with
   `auto_retry_pending=true`, and the backend replaces the same-driver pending
-  step in place and updates safe-playback's pending playback id, so "I hear the
-  tone" always confirms the latest audible tone while the tone is playing. The
+  step in place and updates safe-playback's pending playback id, so "I hear
+  <role>" always confirms the latest audible tone while the tone is playing. The
   operator confirms by ear (`commission-ramp ack`) → `floor_confirmed`; in the
-  web flow the ACK also writes the durable `measurement.record_driver_measurement`
-  operator-only driver check used by "Validate and apply", then re-mutes the
-  transient graph. The ramp's `confirmed_roles` remains only ordering memory for
-  woofer-before-tweeter; the `/sound/` card treats measurement-backed driver
-  checks as the product truth, so stale ramp state alone cannot complete the
+  web flow the ACK also promotes output identity when needed and writes the
+  durable `measurement.record_driver_measurement` operator-only driver check
+  used by "Validate and apply", then re-mutes the transient graph. The ramp's
+  `confirmed_roles` remains only ordering memory for woofer-before-tweeter; the
+  `/sound/` card treats measurement-backed driver checks as the product truth,
+  so stale ramp state alone cannot complete the
   card. Start-tone is single-flight in the browser so rapid clicks cannot open
   duplicate commission loads under one continuous tone. Abort/rollback re-mutes
   and clears the safe-playback floor-pending state before another driver test

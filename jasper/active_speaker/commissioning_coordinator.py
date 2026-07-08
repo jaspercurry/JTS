@@ -19,6 +19,7 @@ from typing import Any, Mapping
 from jasper.output_topology import OutputTopology, channel_identity_report
 
 from .measurement import active_summed_targets
+from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
 
@@ -34,7 +35,6 @@ COMMISSIONING_STEP_IDS: tuple[str, ...] = (
     "safety",
     "profile",
 )
-
 
 def issue_codes(issues: Any) -> set[str]:
     if not isinstance(issues, list):
@@ -240,6 +240,7 @@ def _combined_group_view(
     *,
     summary: Mapping[str, Any],
     calibration_level: Mapping[str, Any] | None,
+    driver_target_proof_complete: bool | None = None,
 ) -> dict[str, Any]:
     group_id = str(target.get("speaker_group_id") or "")
     label = str(target.get("speaker_group_label") or group_id or "Speaker")
@@ -248,10 +249,11 @@ def _combined_group_view(
     latest_test = _latest(latest_tests, group_id)
     latest_validation = _latest(latest_validations, group_id)
     test_level = _combined_test_level(calibration_level, latest_test)
-    driver_checks_complete = bool(
-        summary.get("driver_checks_complete")
-        or summary.get("driver_measurements_complete")
-    )
+    if driver_target_proof_complete is None:
+        driver_target_proof_complete = bool(
+            summary.get("driver_checks_complete")
+            or summary.get("driver_measurements_complete")
+        )
     has_audible_test = (
         latest_test.get("captured") is True
         and latest_test.get("audio_emitted") is True
@@ -284,7 +286,7 @@ def _combined_group_view(
         status = "ready_to_record"
         status_label = "ready to record"
         message = "Combined speaker test played. Record what you heard."
-    elif driver_checks_complete:
+    elif driver_target_proof_complete:
         status = "ready_to_test" if not failure_message else "test_failed"
         status_label = "next" if not failure_message else "not tested"
         message = failure_message or (
@@ -293,14 +295,14 @@ def _combined_group_view(
         )
     else:
         status = "blocked"
-        status_label = "after driver checks"
-        message = "Test each driver first, then test the combined speaker."
+        status_label = "after outputs"
+        message = "Confirm each output and driver first, then test the combined speaker."
 
     actions = {
         "start_combined_test": _action(
             "start_combined_test",
             "Play combined test",
-            enabled=driver_checks_complete,
+            enabled=driver_target_proof_complete,
             endpoint="./active-speaker/summed-test",
             body={
                 "speaker_group_id": group_id,
@@ -378,7 +380,7 @@ def build_commissioning_view(
     assigned_count = int(identity.get("assigned_channel_count") or 0)
     unverified_count = int(identity.get("unverified_channel_count") or 0)
     output_identity_complete = assigned_count > 0 and unverified_count == 0
-    driver_checks_complete = bool(
+    raw_driver_checks_complete = bool(
         summary.get("driver_checks_complete")
         or summary.get("driver_measurements_complete")
     )
@@ -390,9 +392,20 @@ def build_commissioning_view(
         else {}
     )
     revalidation_required = revalidation.get("required") is True
+    driver_target_proof_satisfied_by_revalidation = (
+        not raw_driver_checks_complete
+        and output_identity_complete
+        and applied_profile_revalidation_satisfies_driver_target_proof(revalidation)
+    )
+    driver_checks_complete = (
+        raw_driver_checks_complete or driver_target_proof_satisfied_by_revalidation
+    )
     active_targets = active_summed_targets(topology)
     has_layout = bool(topology.speaker_groups)
     active_setup = bool(active_targets)
+    driver_target_proof_complete = (
+        output_identity_complete and (not active_setup or driver_checks_complete)
+    )
     driver_values = _driver_values_view(
         active_setup=active_setup,
         design_draft=design_draft,
@@ -404,6 +417,7 @@ def build_commissioning_view(
             target,
             summary=summary,
             calibration_level=calibration_level,
+            driver_target_proof_complete=driver_target_proof_complete,
         )
         for target in active_targets
     ]
@@ -429,31 +443,36 @@ def build_commissioning_view(
             "map",
             "Confirm outputs",
             "done"
-            if driver_values_complete and output_identity_complete
+            if driver_values_complete and driver_target_proof_complete
             else ("active" if driver_values_complete else "todo"),
             (
-                "All assigned outputs are confirmed."
-                if output_identity_complete
-                else "Confirm each DAC output before any driver test can count."
+                "All assigned outputs and drivers are confirmed."
+                if driver_target_proof_complete
+                else "Play each assigned driver quietly, then confirm what you hear."
             ),
         ),
         _step(
             "safety",
-            "Test each driver",
-            "done" if driver_checks_complete else (
-                "active" if output_identity_complete and driver_values_complete else "todo"
+            "Test combined drivers",
+            "done" if summed_complete else (
+                "active" if driver_target_proof_complete else "todo"
             ),
             (
-                "Driver checks are saved."
-                if driver_checks_complete
-                else "Start with one quiet driver test at a time."
+                "Combined crossover check is saved."
+                if summed_complete
+                else "Existing active profile covers driver/output proof; "
+                "revalidate the combined crossover."
+                if driver_target_proof_satisfied_by_revalidation
+                else "Run the combined speaker test through the saved crossover."
+                if raw_driver_checks_complete
+                else "Confirm each output and driver before the combined test."
             ),
         ),
         _step(
             "profile",
             "Validate and apply",
             "done" if profile_applied else (
-                "active" if driver_checks_complete else "todo"
+                "active" if summed_complete else "todo"
             ),
             (
                 "This is now the active speaker profile."
@@ -484,20 +503,13 @@ def build_commissioning_view(
                 enabled=True,
                 endpoint="./active-speaker/design-draft",
             )
-    if next_action is None and not output_identity_complete:
+    if next_action is None and not driver_target_proof_complete:
         next_action = _action(
             "confirm_outputs",
             "Confirm outputs",
             enabled=driver_values_complete,
             method="GET",
-            message="Confirm each assigned output before testing drivers.",
-        )
-    elif next_action is None and not driver_checks_complete:
-        next_action = _action(
-            "start_driver_test",
-            "Start driver test",
-            enabled=output_identity_complete,
-            message="Choose the first unchecked driver.",
+            message="Play each assigned driver quietly, then confirm what you hear.",
         )
     elif next_action is None and not summed_complete:
         next_action = _first_enabled_action(combined_groups)
@@ -513,10 +525,9 @@ def build_commissioning_view(
         "applied" if profile_applied else
         "ready_to_save_profile" if summed_complete else
         "needs_driver_values" if has_layout and not driver_values_complete else
+        "needs_driver_target_proof" if driver_values_complete and not driver_target_proof_complete else
         "needs_revalidation" if revalidation_required else
-        "needs_combined_check" if driver_checks_complete else
-        "needs_driver_checks" if output_identity_complete else
-        "needs_output_confirmation" if driver_values_complete else
+        "needs_combined_check" if driver_target_proof_complete else
         "needs_layout"
     )
     return {
@@ -533,8 +544,39 @@ def build_commissioning_view(
             "unverified_channel_count": unverified_count,
             "complete": output_identity_complete,
         },
+        "driver_target_proof": {
+            "complete": driver_target_proof_complete,
+            "source": (
+                "applied_profile_revalidation"
+                if driver_target_proof_satisfied_by_revalidation
+                else "measurements"
+                if raw_driver_checks_complete
+                else "not_required"
+                if not active_setup
+                else "missing"
+            ),
+            "output_identity_complete": output_identity_complete,
+            "driver_checks_complete": driver_checks_complete,
+            "captured": int(
+                summary.get("captured_driver_check_count")
+                or summary.get("captured_driver_count")
+                or 0
+            ),
+            "required": int(
+                summary.get("required_driver_check_count")
+                or summary.get("required_driver_count")
+                or 0
+            ),
+        },
         "driver_checks": {
             "complete": driver_checks_complete,
+            "source": (
+                "applied_profile_revalidation"
+                if driver_target_proof_satisfied_by_revalidation
+                else "measurements"
+                if raw_driver_checks_complete
+                else "missing"
+            ),
             "captured": int(
                 summary.get("captured_driver_check_count")
                 or summary.get("captured_driver_count")

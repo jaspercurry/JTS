@@ -139,6 +139,17 @@ assert.equal(levelMatchSummary({ corrections: {} }).available, false);
   assert.ok(!/earlier setup/i.test(reconcileFailure));
 }
 
+// A heard driver is not a successful confirmation unless the backend saved the
+// output identity proof.
+{
+  const identitySaveFailure = commissionPayloadFailure({
+    status: "failed",
+    issues: [{ code: "driver_target_identity_save_failed" }],
+  });
+  assert.ok(/could not save/i.test(identitySaveFailure));
+  assert.ok(/output confirmation/i.test(identitySaveFailure));
+}
+
 // Near-field copy — the level match is OPTIONAL and the copy must say so.
 assert.ok(NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("2–5 cm"));
 assert.ok(/optional/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
@@ -424,21 +435,21 @@ const STEREO_WITH_SUB_UNSET_FC = {
   assert.equal(f.act, "save-driver-design");
 }
 
-// Map step: readiness comes from the backend output_identity.complete signal.
+// Map step: readiness comes from the backend driver_target_proof.complete signal.
 {
   const incomplete = commissioningStepFooter(
     "map",
-    { output_identity: { complete: false }, next_action: {} },
+    { driver_target_proof: { complete: false }, next_action: {} },
     {},
   );
   assert.equal(incomplete.source, "backend");
-  assert.equal(incomplete.label, "Confirm outputs");
+  assert.equal(incomplete.label, "Confirm drivers");
   assert.equal(incomplete.disabled, true);
   assert.equal(incomplete.act, ""); // waiting affordance: confirm in the card
 
   const complete = commissioningStepFooter(
     "map",
-    { output_identity: { complete: true }, next_action: {} },
+    { driver_target_proof: { complete: true }, next_action: {} },
     {},
   );
   assert.equal(complete.source, "backend");
@@ -449,7 +460,7 @@ const STEREO_WITH_SUB_UNSET_FC = {
   // Dirty layout -> client "Save" fallback (the map card owns the save).
   const dirty = commissioningStepFooter(
     "map",
-    { output_identity: { complete: true } },
+    { driver_target_proof: { complete: true } },
     { layoutDirty: true,
       clientFallback: { label: "Save", act: "save-output-topology" } },
   );

@@ -96,17 +96,21 @@ export function activeSpeakerStepState(step, ctx) {
   var driverChecksComplete = !!(
     ctx.driverChecksComplete || ctx.driverMeasurementsComplete
   );
+  var driverTargetProofComplete = !!(
+    ctx.driverTargetProofComplete || (ctx.outputIdentityComplete && driverChecksComplete)
+  );
+  var summedValidationComplete = !!ctx.summedValidationComplete;
   if (step === 'layout') return hasLayout && !dirty && hardwareMatchesSaved ? 'done' : 'active';
   if (!hardwareMatchesSaved) return 'todo';
   if (step === 'research') return hasLayout && !dirty ?
     (ctx.driverResearchSatisfied ? 'done' : 'active') : 'todo';
-  if (step === 'map') return ctx.outputIdentityComplete ? 'done' :
+  if (step === 'map') return driverTargetProofComplete ? 'done' :
     (hasLayout && !dirty ? 'active' : 'todo');
-  if (step === 'safety') return driverChecksComplete ? 'done' :
-    (ctx.outputIdentityComplete ? 'active' : 'todo');
+  if (step === 'safety') return summedValidationComplete ? 'done' :
+    (driverTargetProofComplete ? 'active' : 'todo');
   if (step === 'profile') return ctx.baselineProfileApplied &&
     !ctx.baselineProfileNeedsRevalidation ? 'done' :
-    (driverChecksComplete ? 'active' : 'todo');
+    (summedValidationComplete ? 'active' : 'todo');
   return 'todo';
 }
 
@@ -115,10 +119,13 @@ export function defaultActiveSpeakerStep(ctx) {
   var driverChecksComplete = !!(
     ctx.driverChecksComplete || ctx.driverMeasurementsComplete
   );
+  var driverTargetProofComplete = !!(
+    ctx.driverTargetProofComplete || (ctx.outputIdentityComplete && driverChecksComplete)
+  );
   if (!ctx.hasLayout || ctx.dirty || ctx.hardwareMatchesSaved === false) return 'layout';
   if (!ctx.driverResearchSatisfied) return 'research';
-  if (!ctx.outputIdentityComplete) return 'map';
-  if (!driverChecksComplete) return 'safety';
+  if (!driverTargetProofComplete) return 'map';
+  if (!ctx.summedValidationComplete) return 'safety';
   return 'profile';
 }
 
@@ -127,74 +134,9 @@ export function outputStepTitle(step) {
     layout: 'Choose speaker layout',
     research: 'Add driver and crossover values',
     map: 'Confirm outputs',
-    safety: 'Test each driver',
+    safety: 'Test combined drivers',
     profile: 'Validate and apply'
   }[step] || 'this card';
-}
-
-// Single-audio-path commissioning card: derive the card's affordances from the
-// /active-speaker/commission-state payload + the active speaker group. Pure so
-// the step policy (which buttons are live, what the floor state means) is one
-// small testable contract; main.js owns the DOM + fetch.
-export function commissionCardState(commission, group, checkedRoles) {
-  commission = commission || {};
-  var load = commission.commission_load || {};
-  var ramp = commission.ramp || {};
-  var target = load.target || {};
-  var pending = ramp.pending && typeof ramp.pending === 'object' ? ramp.pending : null;
-  var roles = activeCommissionRolesForGroup(group);
-  var armed = load.status === 'loaded';
-  var stale = load.status === 'stale' ||
-    (load.runtime_status && load.runtime_status.status === 'stale');
-  var awaitingAck = armed && !!pending;
-  var confirmed = Array.isArray(checkedRoles) ?
-    checkedRoles :
-    (Array.isArray(ramp.confirmed_roles) ? ramp.confirmed_roles : []);
-  var complete = roles.length > 0 && !pending && roles.every(function(role) {
-    return confirmed.indexOf(role) >= 0;
-  });
-  var loadedRole = target.role || null;
-  var loadedRoleConfirmed = armed && loadedRole && confirmed.indexOf(loadedRole) >= 0 && !pending;
-  var nextRole = complete ? null : (armed && !loadedRoleConfirmed ?
-    loadedRole :
-    nextCommissionRole(roles, confirmed));
-  return {
-    available: !!group,
-    groupId: group ? (group.id || '') : '',
-    armed: armed,
-    stale: stale,
-    armedRole: armed ? (target.role || null) : null,
-    armedGainDb: armed ? target.audible_gain_db : null,
-    startRole: nextRole,
-    awaitingAck: awaitingAck,
-    pendingRole: pending ? pending.role : null,
-    pendingGainDb: pending ? pending.gain_db : null,
-    toneFrequencyHz: pending ? pending.frequency_hz : null,
-    confirmedRoles: confirmed,
-    complete: complete,
-    canArm: false,
-    canStep: !!group && !!nextRole && !awaitingAck && !complete,
-    canAck: awaitingAck,
-    canRemute: armed
-  };
-}
-
-function activeCommissionRolesForGroup(group) {
-  var seen = {};
-  var order = ['woofer', 'mid', 'tweeter'];
-  (group && Array.isArray(group.channels) ? group.channels : []).forEach(function(ch) {
-    if (ch && ch.role) seen[ch.role] = true;
-  });
-  return order.filter(function(role) { return seen[role]; });
-}
-
-function nextCommissionRole(roles, confirmed) {
-  roles = Array.isArray(roles) ? roles : [];
-  confirmed = Array.isArray(confirmed) ? confirmed : [];
-  for (var i = 0; i < roles.length; i += 1) {
-    if (confirmed.indexOf(roles[i]) < 0) return roles[i];
-  }
-  return null;
 }
 
 export function activeCommissionGroup(topology) {
@@ -289,15 +231,15 @@ export function commissioningStepFooter(step, view, client) {
 
   if (step === 'map') {
     if (dirty || !view || typeof view !== 'object') return fallback;
-    var identity = view.output_identity && typeof view.output_identity === 'object' ?
-      view.output_identity : {};
-    if (identity.complete === true) {
+    var proof = view.driver_target_proof && typeof view.driver_target_proof === 'object' ?
+      view.driver_target_proof : {};
+    if (proof.complete === true) {
       return {label: 'Continue', primary: true, disabled: false,
         act: 'output-step-next', step: 'map', source: 'backend'};
     }
-    // Outputs still need confirming inside the step (the identity card owns that
-    // action); the footer is a disabled waiting affordance, not a CTA.
-    return {label: 'Confirm outputs', primary: true, disabled: true,
+    // Output/driver proof is completed inside the step; the footer is a disabled
+    // waiting affordance, not a second CTA.
+    return {label: 'Confirm drivers', primary: true, disabled: true,
       act: '', source: 'backend'};
   }
 
@@ -459,7 +401,7 @@ function commissionIssueReason(codes) {
     return 'Confirm the woofer first, then start the tweeter tone.';
   }
   if (codes.indexOf('stage5_ramp_gate_blocked') >= 0) {
-    return 'JTS did not start the tone because a driver-test safety check is not satisfied yet. Finish the earlier driver step, then try again.';
+    return 'JTS did not start the tone because an output-confirmation safety check is not satisfied yet. Finish the earlier output, then try again.';
   }
   if (codes.indexOf('commission_not_loaded') >= 0) {
     return 'Start the tone again so JTS can open the quiet driver test first.';
@@ -469,6 +411,9 @@ function commissionIssueReason(codes) {
   }
   if (codes.indexOf('commission_output_hardware_reconcile_failed') >= 0) {
     return 'JTS could not switch the speaker output path into active-driver mode, so it did not start the tone.';
+  }
+  if (codes.indexOf('driver_target_identity_save_failed') >= 0) {
+    return 'JTS heard the driver, but could not save the output confirmation. Try again before continuing.';
   }
   if (codes.indexOf('stage5_ramp_load_failed') >= 0) {
     return 'JTS could not keep the driver test path loaded while raising the tone, so it re-muted the driver. Start the tone again.';
@@ -591,7 +536,7 @@ export function levelMatchSummary(baseline) {
     rows: rows,
     note: provisional ?
       'These per-driver levels are datasheet estimates — fine to keep. ' +
-        'Optionally record a phone mic capture per driver in “Test each driver” ' +
+        'Optionally record a phone mic capture per driver from Confirm outputs ' +
         'to measure them instead.' :
       'Per-driver levels are set — the quietest driver is the 0 dB reference.',
     guidance: NEARFIELD_LEVEL_MATCH_GUIDANCE
