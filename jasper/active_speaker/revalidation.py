@@ -42,10 +42,9 @@ def applied_profile_revalidation_satisfies_driver_target_proof(
         str(item) for item in changed
     }:
         return False
-    superseded = (
-        revalidation.get("superseded_profile")
-        if isinstance(revalidation.get("superseded_profile"), Mapping)
-        else {}
+    superseded_raw = revalidation.get("superseded_profile")
+    superseded: Mapping[str, Any] = (
+        superseded_raw if isinstance(superseded_raw, Mapping) else {}
     )
     return (
         str(revalidation.get("reason") or "") == "applied_profile_superseded"
