@@ -174,11 +174,12 @@ _VALID_ROUTE_MODES = {
     "unknown",
 }
 
-# Reuse fanin_coupling's SSOT so the plan recognizes every coupling the resolver
-# does — including the Ring A ``shm_ring`` lab flag. Before this the plan kept an
-# independent {loopback, transport_pipe} set and false-warned "not recognized;
-# resolved to loopback" whenever the lab flag was set, even though
-# ``resolve_coupling`` correctly returned ``shm_ring``.
+# Reuse fanin_coupling's SSOT so the plan recognizes every coupling the
+# resolver does — including the Ring A ``shm_ring`` product transport. Before
+# this the plan kept an independent {loopback, transport_pipe} set and
+# false-warned "not recognized; resolved to loopback" whenever the ring
+# transport was set, even though ``resolve_coupling`` correctly returned
+# ``shm_ring``.
 _VALID_COUPLINGS = VALID_COUPLINGS
 _VALID_USBSINK_OUTPUT_MODES = {
     USBSINK_OUTPUT_MODE_ALOOP,
@@ -1070,8 +1071,9 @@ def _route_policy_errors(
     ).strip().lower()
 
     # usb_low_latency_48k is certifiable on EITHER of the two COHERENT transports:
-    # loopback + direct (the shipped default), OR the shm_ring pair (Ring A + Ring
-    # B, P2). The ring pair was measured to reduce route latency (the
+    # loopback + direct (legacy/fail-safe fallback), OR the shm_ring pair (Ring A
+    # + Ring B, the shipped default on eligible stereo boxes). The ring pair was
+    # measured to reduce route latency (the
     # ring-proto train), so the artifact binder must accept it — the earlier
     # blanket "requires loopback + direct" would turn a ring-armed box's shipped
     # low-latency claim permanently red (gap 8). transport_pipe / rate_match stay
@@ -1084,15 +1086,15 @@ def _route_policy_errors(
     if normalized_coupling != COUPLING_LOOPBACK:
         errors.append(
             f"{ROUTE_USB_LOW_LATENCY_48K} requires {COUPLING_ENV_VAR}=loopback or a "
-            f"coherent shm_ring pair; {normalized_coupling} is a lab/deferred "
-            "transport and cannot carry the production low-latency claim"
+            f"coherent shm_ring pair; {normalized_coupling} is not coherent for "
+            "the production low-latency claim"
         )
     if raw_bridge != OUTPUTD_CONTENT_BRIDGE_DIRECT:
         errors.append(
             f"{ROUTE_USB_LOW_LATENCY_48K} requires "
             f"{OUTPUTD_CONTENT_BRIDGE_KEY}={OUTPUTD_CONTENT_BRIDGE_DIRECT} (or the "
             f"coherent shm_ring pair); {raw_bridge} without a matching "
-            f"{COUPLING_ENV_VAR}=shm_ring is a partial flip / lab-only bridge"
+            f"{COUPLING_ENV_VAR}=shm_ring is a partial flip"
         )
     return tuple(errors)
 
