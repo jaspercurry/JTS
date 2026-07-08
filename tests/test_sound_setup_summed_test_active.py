@@ -332,6 +332,7 @@ def test_session_resources_reclaim_stale_stopped_owner():
 def test_stop_refreshes_resource_heartbeat(monkeypatch):
     session = _prep_session(1000.0)
     monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", session)
+    monkeypatch.setattr(sound_setup.time, "monotonic", lambda: 1005.0)
 
     payload = sound_setup._active_speaker_stop_summed_test_tone(reason="operator_stop")
 
