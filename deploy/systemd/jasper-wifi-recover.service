@@ -7,13 +7,13 @@ Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
 # affects boot ordering.
 After=NetworkManager.service NetworkManager-wait-online.service
 Wants=NetworkManager.service
-ConditionPathExists=/var/lib/jasper/wifi_guardian.env
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/jasper-wifi-recover --reason systemd
-# Bounded: active Wi-Fi exits immediately; fault path may run one scan-repair
-# attempt plus one guardian activation/recreate attempt.
+# Bounded: active Wi-Fi checks the recent brcmfmac scan-suppression signature;
+# fault path may run one scan-repair attempt plus, when the guardian stash
+# exists and Wi-Fi is down, one guardian activation/recreate attempt.
 TimeoutStartSec=75
 StandardOutput=journal
 StandardError=journal

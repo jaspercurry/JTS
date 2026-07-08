@@ -132,7 +132,7 @@ def test_coupling_capture_kwargs_from_env_shm_ring_returns_full_ring_kwargs():
 def test_shm_ring_armed_env_emits_ring_capture_device_s16le():
     # SF-2: the shm_ring capture kwargs DO flow through
     # coupling_capture_kwargs_from_env into the product emitters (transport_pipe
-    # precedent) — this is deliberate coherence-when-armed. When the lab flag is
+    # precedent) — this is deliberate coherence-when-armed. When the ring coupling is
     # set in the env, a household /sound/ save emits a CamillaDSP config whose
     # ALSA capture device is jts_ring_capture + S16_LE, so the emitted config and
     # the running fan-in daemon name the SAME ring. (That device only RESOLVES
