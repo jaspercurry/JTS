@@ -1194,6 +1194,17 @@ worst-case FP cost.
 > fully reverts. User-authorized carve-out from the "Architecture is
 > fixed" policy in [AGENTS.md](../AGENTS.md).
 
+As of 2026-07-09, corpus chip-AEC mode has its own capture-plan
+contract. `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1` is enough for
+`jasper-aec-bridge` to emit the dedicated `chip_aec_150` and
+`chip_aec_210` UDP legs on `:9887/:9888`; it no longer depends on
+production per-beam wake-device vars being configured. Bridge stats
+schema v2 publishes `active_capture_plan` with the wake-corpus
+`plan_id`, emitted legs, corpus flags, beam plan, ports, and mic /
+reference identity summary. The recorder uses that stats payload, not
+env inference alone, to block clip start when the active bridge no
+longer matches the stored session plan.
+
 **What:** Feed mono music to the XVF3800's USB-in left channel as the
 AEC reference signal, then read the chip's hardware-AEC'd USB capture
 stream. The winning lab shape uses the current 6-channel firmware:
@@ -2680,11 +2691,13 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-06-30 (chip-AEC one-detector default and optional
-150/210 beam opt-ins rechecked against `jasper/audio_profile_state.py`,
-`deploy/bin/jasper-aec-reconcile`, `jasper/cli/aec_bridge.py`,
-`jasper/control/aec_endpoints.py`, `/wake/`, doctor, validation, and
-reconcile tests. Prior pass 2026-06-26: `/aec`
+Last verified: 2026-07-09 (wake-corpus chip-AEC capture-plan gating and
+bridge stats schema v2 rechecked against `jasper/cli/aec_bridge.py` and
+`jasper/wake_corpus/bridge_session.py`. Prior 2026-06-30 pass rechecked
+chip-AEC one-detector default and optional 150/210 beam opt-ins against
+`jasper/audio_profile_state.py`, `deploy/bin/jasper-aec-reconcile`,
+`jasper/cli/aec_bridge.py`, `jasper/control/aec_endpoints.py`, `/wake/`,
+doctor, validation, and reconcile tests. Prior pass 2026-06-26: `/aec`
 intent-vs-applied-runtime status contract rechecked against
 `jasper/audio_profile_state.py`, `jasper/control/aec_endpoints.py`, and
 `tests/test_control_aec_state.py`. Prior pass 2026-06-25: central chip-AEC

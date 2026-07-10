@@ -14,10 +14,13 @@
   `MeasurementRamp` kernel lives in
   [`jasper/audio_measurement/ramp.py`](../jasper/audio_measurement/ramp.py)
   (quiet-start staircase → pre-window freeze → buffered settle read →
-  mid-window jump → k-confirm lock; dynamic cap `original+6` clamped to
-  `[-20,-6]` dBFS + 0 dB hard ceiling; clip/trust/feed-liveness/derived
-  safety timeout; exact — never cap-clamped — restore of the user's
-  pre-ramp volume). The correction adapter
+  mid-window jump → k-confirm lock; dynamic cap is strictly the lower of
+  `original+6`, the configured absolute ceiling, and 0 dB — there is no floor
+  that can jump a quiet listening setting upward; clip/trust/feed-liveness/
+  derived safety timeout; exact — never cap-clamped — restore of the user's
+  pre-ramp volume). `MAXED_OUT` is a failed attempt, stores no lock, restores
+  immediately, and asks the household to raise the external amplifier. The
+  correction adapter
   ([`jasper/correction/level_match.py`](../jasper/correction/level_match.py))
   adds the per-geometry `MeasurementLevelLock` store, the raw-band
   uniform-shift drift check, the armed gate, the run-token-scoped
@@ -31,7 +34,16 @@
   cleared slot (unlike `_autolevel_controller`, a permanent controller,
   this is per-run — an overlapping run is refused, never a stomped
   slot) and exposes `lock_level_match` / `cancel_level_match`, so a
-  manual Lock/Cancel reaches the in-flight `RampController` (P7). All
+  manual controller seams remain available to trusted adapters, while the
+  shipped phone flow refuses *before playing a tone* when the browser cannot
+  prove AGC is disabled. The relay validates the selected mic/calibration once,
+  freezes a compact setup binding, samples a token-scoped ambient batch, and
+  fails closed on every CamillaDSP gain write. A successful lock retains the
+  target but restores the user's original listening volume immediately. Each
+  room/verify/crossover sweep reasserts the target only inside
+  `measurement_window()` and restores the original in that window's `finally`,
+  before renderers resume. Ensure/restore share one async transition lock;
+  safety does not depend on an in-memory expiry timer. All
   synthetic — H1 (on-device settle cadence + iOS/Android AGC-freeze
   confirmation) supplies the real threshold values; the `JASPER_RAMP_*`
   env knobs in `.env.example` are documented placeholders until then.
@@ -85,15 +97,19 @@
   [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §4 P4.
 - 🧪 **P7 — active-crossover measurement flow (hardware-free complete,
   on-device pending H2).** The Layer-A commissioning *flow* now rides
-  the shared substrate: `POST /crossover/relay-capture` (the third
-  `RelayCaptureKind` caller) carries a driver/summed sweep over the
-  **same** phone-mic relay transport + `record_*_capture` upload seam
-  the room/sync flows use — gated + default-off, byte-identical
-  same-origin `postWav` when the relay base is unset. The consume path
+  the shared substrate. After protected speaker setup, one server envelope
+  exposes the real product choice: keep/edit the applied manual crossover and
+  continue to Room, or enter automatic tuning (mic/calibration + near-field
+  level → each driver sweep → summed proof → explicit replacement apply) and
+  then continue to Room. The browser is a thin
+  renderer/dispatcher: it has no local recorder and reads one envelope snapshot,
+  so relay state and the one next action cannot disagree. `POST
+  /crossover/relay-capture` carries driver/summed sweeps over the **same**
+  phone-mic relay transport + `record_*_capture` analysis seam the room/sync
+  flows use. The consume path
   reads the play payload's REAL shape (top-level `status` + nested
   `playback.audio_emitted`, top-level `test_level_dbfs`/`sweep_meta`/
-  `playback_id` — the same canonical read as the same-origin JS's
-  `assertCapturePlayback`), and measurement mutual-exclusion is
+  `playback_id`), and measurement mutual-exclusion is
   server-computed twice: refused at POST while room/balance/sync is
   active, re-checked when the phone arms (never client-supplied). The
   `crossover_sweep` capture spec's stimulus length derives from the
@@ -110,22 +126,15 @@
   gained the same 30 s deadline floor — without both, the capture page
   deadline-killed every sync relay capture. `GET /crossover/envelope`
   ([`jasper/active_speaker/crossover_envelope.py`](../jasper/active_speaker/crossover_envelope.py))
-  is a **parallel minimal** screen envelope aligned with the room flow's
-  envelope-driven pattern — it composes the commissioning coordinator's
-  already-built step model into the shared `{screen, verdict_text,
-  nudges, next_action, progress}` shape through the shared
-  `commissioning_coordinator.load_commissioning_view` loader (the same
-  full input set the `/sound/` card feeds the coordinator — the
-  coordinator is a pure composer, so partial inputs silently report a
-  stuck flow; its state machine is untouched). Passive
+  is the pure sequential `{screen, verdict_text, nudges, next_action, progress,
+  relay}` composer over crossover status. Passive
   (`full_range_passive`) speakers get `active=False` on
   `/crossover/status` + the envelope (no driver/summed targets) so
-  Layer A stays hidden (revision plan §1). The L0 emit gate + graph
-  safety + commission ramp Stop-gates were untouched. Known follow-up:
-  `/crossover/status` does not yet carry the shared relay slot
-  (`tap_link`/progress land on the ROOM `/status.relay` + `event=`
-  logs) — carry it on `/crossover/status` when the envelope-driven page
-  lands (P3b/P7 follow-up). **H2** is the acoustic proof only — the
+  Layer A is skipped and the flow points directly to Room (revision plan §1).
+  Relay state is flow-filtered (room/sync links cannot leak into crossover),
+  and the gain lease is context-bound to the current protected baseline. The
+  L0 emit gate + graph safety + commission ramp Stop-gates remain intact. **H2**
+  is the acoustic proof only — the
   phone-mic `getUserMedia`/CSP path + the driver/summed sweep playback
   on real drivers are not exercised hardware-free (same status as the
   room/sync relay). Design of record:
@@ -148,7 +157,18 @@
   The transport + the `correction_setup.py` adapter
   (`jasper/capture_relay/correction_adapter.py`) are hardware-free tested; the
   room relay now guides mic choice, calibration choice, and position count on the
-  phone, captures passive room noise before any playback, and records until the
+  phone during the level check. The Pi validates the full setup once; later
+  position links carry only its bounded digest and open directly on one Start
+  action, so calibration contents and the position count are not re-entered or
+  re-posted per sweep. Successful capture-only positions slide a 20-minute idle
+  expiry, while a fixed two-hour absolute privacy lifetime tied to the setup
+  binding never moves. The page publishes its build and supported wire versions
+  at `https://capture.jasper.tech/version.json`; every phone event carries that
+  identity and the Pi refuses/logs an incompatible page before a setup or armed
+  callback can play a tone. Publish the compatible Pages build and verify that
+  URL before deploying a Pi protocol bump (the exact release procedure lives in
+  `capture-page/README.md`). It performs the ambient-baselined automatic level check
+  before any sweep, captures passive room noise, and records until the
   Pi publishes `sweep_complete` through the relay. The Pi also includes a
   local `return_url` in each relay spec, so once the phone upload finishes the
   capture page shows a **Back to speaker** CTA to the originating local
@@ -167,6 +187,13 @@
   `jasper.active_speaker.web_commissioning` owns safe driver/summed
   playback orchestration and `jasper.active_speaker.web_measurement`
   owns bounded browser WAV evidence plus acoustic-analysis recording.
+  This page is also the ownership boundary between manual and automatic
+  crossover tuning. A safe applied manual crossover is a valid Layer-A
+  prerequisite for Room and remains editable under `/sound/`. Automatic tuning
+  is optional: mic/calibration, automatic level, driver and summed captures run
+  sequentially, then an explicit apply replaces the manual crossover. Legacy
+  applied profiles offer **Keep current manual crossover** or **Tune
+  automatically** instead of forcing the user into a microphone flow.
   `/correction/bass/` is a READ-ONLY bass-management display (P5): it
   renders the live bass-management state (crossover corner, its owner —
   active-speaker local vs wireless sub, sub-present, mains-HP status) from
@@ -952,7 +979,7 @@ GET  /crossover/status       active-speaker targets + measurement evidence
                              full_range_passive speaker, Layer A hidden})
 GET  /crossover/envelope     commissioning screen envelope (dumb frontend):
                              {schema_version, screen, active, steps,
-                             verdict_text, nudges, next_action, progress}
+                             verdict_text, nudges, next_action, progress, relay}
 GET  /bass                   bass/subwoofer tuning placeholder page
 GET  /healthz                liveness — "ok"
 GET  /status                 session + currently-loaded correction snapshot
@@ -964,7 +991,10 @@ GET  /status                 session + currently-loaded correction snapshot
 GET  /sessions               debug: 20 most-recent session bundles
 GET  /session-report?id=<id> read-only evidence report for one bundle
 GET  /calibration/models     supported calibrated mic providers/models
-POST /start                  reset to base config, begin noise capture, returns session_id;
+POST /start                  first checks setup_status.room_correction_allowed
+                             (passive speakers allowed; incomplete active Layer A
+                             gets 409 + /correction/crossover/ before reservation),
+                             then resets to base config, begins noise capture, returns session_id;
                              body: {total_positions, target_choice,
                              strategy_choice?, noise_floor_db?,
                              calibration_id?, input_device?,
@@ -980,6 +1010,11 @@ POST /calibration/upload     body: {filename, content, model?, label?,
 POST /apply                  → SetConfig(correction_<id>_<unixtime>.yml) + Reload
 POST /reset                  → SetConfig(topology-safe reset graph) + Reload
 POST /verify                 fresh single-position sweep for the verify pass
+POST /relay/level-match      ambient-baselined, gradual listening-position ramp;
+                             stores a bounded gain lease or restores on failure
+POST /relay/capture          relay room sweep using the bound mic + gain lease
+POST /relay/verify           relay post-apply sweep; restores the lease and lands
+                             on the terminal result (or pending-confirm loop)
 POST /session/delete         delete one historical measurement bundle
 POST /interpret              P6 tuning LLM (ONE PAID CALL, per-tap, spend-cap
                              gated → 429 at the household daily cap): plain-
@@ -997,15 +1032,16 @@ POST /test-tone              5-second 1 kHz tone through music chain
 POST /autolevel/start        ramp main_volume while tone plays
 POST /autolevel/lock         freeze main_volume at current ramp value
 POST /autolevel/cancel       abort ramp, restore pre-autolevel volume
+POST /crossover/level-match  guided mic/calibration + near-field automatic level
+POST /crossover/apply        atomically apply measured Layer A; restore gain lease
 POST /crossover/driver-capture body = WAV (audio/wav); analyze + record
                              active-speaker per-driver acoustic evidence
 POST /crossover/summed-capture body = WAV (audio/wav); analyze + record
                              active-speaker summed-crossover evidence
 POST /crossover/relay-capture body: {kind: driver|summed, speaker_group_id,
                              role?}; phone-mic relay transport for one
-                             crossover sweep (gated + default-off; same
-                             record_*_capture analysis as the same-origin
-                             POSTs above; refuses while room/balance/sync
+                             crossover sweep (same record_*_capture analysis;
+                             refuses while room/balance/sync
                              is active — server-computed at POST and
                              re-checked when the phone arms). ON-DEVICE:
                              not exercised hardware-free — H2.
@@ -2085,7 +2121,12 @@ Internal:
 
 ---
 
-Last verified: 2026-07-07 (phone-mic relay guided-setup preflight:
+Last verified: 2026-07-10 (Jasper relay room/crossover sequential flow,
+ambient-baselined automatic level, exact bounded gain leases, mic/calibration
+binding, safe applied manual-or-automatic Layer-A room prerequisite, explicit
+automatic replacement of manual pins, capture-page compatibility handshake,
+privacy-bounded setup reuse, and immutable applied Layer-A
+recomposition; prior 2026-07-07 phone-mic relay guided-setup preflight:
 room-sweep specs set `setup_validation=true`, the capture page posts setup
 validation requests before showing Start, and `jasper-correction-web` answers
 via `host_event.phase="setup_validated"` / `"setup_validation_failed"`;

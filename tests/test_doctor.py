@@ -3145,6 +3145,34 @@ def _patch_fanin_status_socket(monkeypatch, payload: bytes):
         "socket",
         lambda *a, **kw: _FakeSocket(payload=payload),
     )
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return
+    content = decoded.get("content")
+    if not isinstance(content, dict):
+        return
+    content_pcm = str(content.get("pcm") or "")
+    if content.get("source") == "shm_ring":
+        playback_device = "jts_ring_playback"
+        capture_device = "jts_ring_capture"
+    else:
+        playback_device = (
+            "outputd_active_content_playback"
+            if content_pcm == doctor._OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM
+            else "outputd_content_playback"
+        )
+        capture_device = "plug:jasper_capture"
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "output_endpoint_evidence_from_statefiles",
+        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
+            devices={
+                "playback_device": playback_device,
+                "capture_device": capture_device,
+            }
+        ),
+    )
 
 
 def test_check_fanin_service_ok_with_expected_status(monkeypatch):
@@ -3355,13 +3383,16 @@ def test_outputd_service_ok_with_transport_pipe_local_source(monkeypatch, tmp_pa
     assert "local_pipe_startup_empty_periods=3" in r.detail
 
 
-def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch):
+def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch, tmp_path):
     """Ring-coupled box: coupling=shm_ring + content.source='shm_ring' is OK.
 
     Regression for the two-way mapping (transport_pipe -> local_pipe, else
     'alsa') that predated shm_ring: it false-failed every ring-coupled box —
     outputd correctly reported source='shm_ring' while the check demanded
     'alsa' (jts.local, 2026-07-06, first post-default-flip fleet smoke)."""
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
     _patch_fanin_systemctl(monkeypatch)
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
@@ -3865,6 +3896,45 @@ def test_outputd_service_fails_when_active_env_has_legacy_content_pcm(
     assert "active_channels=2" in r.detail
 
 
+def test_outputd_service_fails_when_active_graph_feeds_passive_reader(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
+            devices={
+                "playback_device": "outputd_active_content_playback",
+                "capture_device": "plug:jasper_capture",
+            }
+        ),
+    )
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "fail"
+    assert "post-DSP route disconnected" in r.detail
+    assert "outputd_active_content_capture" in r.detail
+    assert "audio-hardware-reconcile" in r.detail
+
+
+def test_outputd_service_warns_when_transport_evidence_is_unavailable(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
+            devices=None,
+            errors=("statefile unavailable",),
+        ),
+    )
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "warn"
+    assert "transport coherence unknown" in r.detail
+    assert "statefile unavailable" in r.detail
+
+
 def test_outputd_service_ok_when_loudness_is_owned_by_fanin(monkeypatch):
     payload = json.loads(_outputd_status_payload().decode())
     payload.pop("assistant_loudness", None)
@@ -3998,12 +4068,22 @@ def _outputd_aec_clock_payload(
     *,
     chip_ref_pcm: str | None = "plughw:CARD=Array,DEV=0",
     aec_clock: dict | None = None,
+    chip_ref_active: bool = True,
 ) -> bytes:
     """An outputd STATUS payload whose reference_outputs carries a chip-ref
     and (optionally) an aec_clock block — the surface check_aec_clock_drift
     reads."""
     payload = json.loads(_outputd_status_payload().decode())
     payload["reference_outputs"]["chip_ref_pcm"] = chip_ref_pcm
+    if chip_ref_pcm is not None:
+        payload["reference_outputs"]["chip_ref_writer"] = {
+            "desired": True,
+            "enabled": chip_ref_active,
+            "active": chip_ref_active,
+            "status": "active" if chip_ref_active else "degraded",
+            "open_error_count": 1 if not chip_ref_active else 0,
+            "retry_count": 3 if not chip_ref_active else 1,
+        }
     if aec_clock is not None:
         payload["reference_outputs"]["aec_clock"] = aec_clock
     return json.dumps(payload).encode()
@@ -4122,6 +4202,28 @@ def test_aec_clock_drift_skips_when_chip_ref_not_configured(monkeypatch):
     assert r.status == "ok"
     assert "skipped" in r.detail
     assert "chip reference not configured" in r.detail
+
+
+def test_aec_clock_drift_warns_when_optional_chip_reference_is_unavailable(
+    monkeypatch,
+):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_aec_clock_payload(
+            chip_ref_active=False,
+            aec_clock=_aec_clock_block(
+                verdict="fallback", status="observing", ppm=None
+            ),
+        ),
+    )
+
+    r = doctor.check_aec_clock_drift()
+
+    assert r.status == "warn"
+    assert "desired but unavailable" in r.detail
+    assert "speaker playback remains active" in r.detail
+    assert "retries=3" in r.detail
 
 
 def test_aec_clock_drift_skips_on_pre_layer0_build(monkeypatch):

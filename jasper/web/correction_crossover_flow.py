@@ -9,7 +9,7 @@ from __future__ import annotations
 import html
 import logging
 from http import HTTPStatus
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
 
 from ..log_event import log_event
@@ -40,34 +40,24 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
   {section_tabs("crossover")}
 
   <section class="info-card info-card--accent">
-    <h2 class="section__title">Active crossover measurement</h2>
-    <p class="form-hint">Use this secure mic surface after the basic active-crossover setup is working by ear.</p>
+    <p class="eyebrow">Speaker layer</p>
+    <h2 class="section__title">Calibrate the active crossover</h2>
+    <p id="crossover-verdict" class="form-hint">Checking the speaker…</p>
   </section>
 
-  <section id="mic-support" class="info-card" aria-live="polite">
-    <h2 class="section__title">Microphone</h2>
-    <p id="mic-support-message" class="form-hint">Checking microphone support…</p>
-    <button id="check-mic" type="button" class="btn btn--ghost">Check microphone</button>
+  <section class="info-card" aria-label="Crossover calibration progress">
+    <ol id="crossover-steps" class="wizard-steps"></ol>
+    <div id="crossover-nudges" aria-live="polite"></div>
   </section>
 
-  <section class="info-card">
-    <div class="section-head">
-      <div>
-        <h2 class="section__title">Driver level captures</h2>
-        <p class="form-hint">Play each driver, confirm the right driver sounded, then record the secure mic sweep.</p>
-      </div>
-      <button id="refresh-status" type="button" class="btn btn--ghost">Refresh</button>
+  <section class="info-card" aria-live="polite">
+    <div id="crossover-action" class="measurement-row__actions"></div>
+    <div id="crossover-relay" class="hidden">
+      <p id="crossover-relay-status" class="form-hint"></p>
+      <a id="crossover-relay-link" class="btn btn--primary hidden" href="#">Open phone capture</a>
     </div>
-    <div id="driver-targets" class="measurement-list" aria-live="polite"></div>
+    <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
   </section>
-
-  <section class="info-card">
-    <h2 class="section__title">Summed crossover captures</h2>
-    <p class="form-hint">Run the combined crossover test first, then record the secure mic capture here.</p>
-    <div id="summed-targets" class="measurement-list" aria-live="polite"></div>
-  </section>
-
-  <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
 </main>
 <script type="module" src="/assets/correction/js/crossover/main.js"></script>
 """
@@ -130,13 +120,19 @@ def _request_payload(handler: Any) -> dict[str, Any]:
     return payload
 
 
-def handle_status() -> tuple[dict[str, Any], HTTPStatus]:
+def handle_status(
+    *, relay: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], HTTPStatus]:
     from . import correction_crossover_backend as backend
 
-    return backend.status_payload(), HTTPStatus.OK
+    payload = backend.status_payload()
+    payload["relay"] = dict(relay) if relay else None
+    return payload, HTTPStatus.OK
 
 
-def handle_envelope() -> tuple[dict[str, Any], HTTPStatus]:
+def handle_envelope(
+    *, relay: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], HTTPStatus]:
     """GET /crossover/envelope: the server-computed commissioning screen envelope
     the dumb frontend renders each step from (revision plan §3.2), aligned with
     the room flow's envelope-driven pattern. Additive alongside /crossover/status;
@@ -145,8 +141,34 @@ def handle_envelope() -> tuple[dict[str, Any], HTTPStatus]:
         build_crossover_envelope_logged,
     )
 
-    status, _ = handle_status()
+    status, _ = handle_status(relay=relay)
     return build_crossover_envelope_logged(status), HTTPStatus.OK
+
+
+def handle_apply(
+    raw: Mapping[str, Any],
+    run_async: AsyncRunner,
+    camilla_factory: CamillaFactory,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    """Compile and atomically apply the explicitly selected profile owner."""
+    from . import correction_crossover_backend as backend
+
+    tuning_owner = str(raw.get("tuning_owner") or "")
+    if tuning_owner not in {"manual", "automatic"}:
+        return {
+            "status": "refused",
+            "error": "Choose manual or automatic crossover tuning before applying.",
+        }, HTTPStatus.BAD_REQUEST
+    payload = run_async(
+        backend.apply_profile(
+            tuning_owner=tuning_owner,
+            camilla_factory=camilla_factory,
+        ),
+        timeout=30.0,
+    )
+    return payload, (
+        HTTPStatus.OK if payload.get("status") == "applied" else HTTPStatus.CONFLICT
+    )
 
 
 def handle_driver_test(
@@ -378,6 +400,9 @@ def build_crossover_relay_run_and_consume(
     *,
     post_host_event: Callable[[str, str, dict[str, Any]], Any] | None = None,
     blocking_phase: Callable[[], str | None] | None = None,
+    validate_capture: Callable[[Any], None] | None = None,
+    prepare_play: Callable[[], Any] | None = None,
+    restore_play: Callable[[], Any] | None = None,
 ) -> Callable[[Any, Any], Any]:
     """Return the relay ``run_and_consume(client, pi_session)`` coroutine.
 
@@ -409,21 +434,35 @@ def build_crossover_relay_run_and_consume(
     played: dict[str, Any] = {}
 
     async def _play() -> dict[str, Any]:
+        from jasper.correction import coordinator
+
         # Re-evaluate the mutual-exclusion probe NOW (at play time, not POST
         # time) — the play functions refuse with reason=measurement_in_progress
         # when another measurement holds the speaker.
-        phase = blocking_phase() if blocking_phase is not None else None
-        if kind == "driver":
-            return await backend.play_driver_capture_sweep(
-                {"speaker_group_id": group_id, "role": role},
-                camilla_factory=camilla_factory,
-                blocking_phase=phase,
-            )
-        return await backend.play_summed_capture_sweep(
-            {"speaker_group_id": group_id},
-            camilla_factory=camilla_factory,
-            blocking_phase=phase,
-        )
+        async with coordinator.measurement_window():
+            try:
+                if prepare_play is not None:
+                    prepared = await prepare_play()
+                    if prepared is False:
+                        raise RuntimeError(
+                            "could not reassert the locked crossover measurement level"
+                        )
+                phase = blocking_phase() if blocking_phase is not None else None
+                if kind == "driver":
+                    return await backend.play_driver_capture_sweep(
+                        {"speaker_group_id": group_id, "role": role},
+                        camilla_factory=camilla_factory,
+                        blocking_phase=phase,
+                    )
+                return await backend.play_summed_capture_sweep(
+                    {"speaker_group_id": group_id},
+                    camilla_factory=camilla_factory,
+                    blocking_phase=phase,
+                )
+            finally:
+                # Restore before measurement_window resumes household audio.
+                if restore_play is not None:
+                    await restore_play()
 
     def _post_phase(session_id: str, pull_token: str, phase: str, **extra: Any) -> None:
         """Post a REQUIRED progress event; failures propagate.
@@ -484,18 +523,13 @@ def build_crossover_relay_run_and_consume(
         )
         purge(client, pi_session)
 
-        # DELIBERATE SCOPE (phone-mic-relay-plan §"Deferred crossover relay
-        # kind"): this path passes NO `calibration_id`, so `capture_calibration`
-        # resolves no curve and the phone's mic is analyzed uncalibrated — there
-        # is nothing to mis-apply, so the room/sync flow's built-in-vs-USB mic
-        # calibration guard (`_relay_device_calibration_block`, which gates a
-        # LOADED vendor curve against the phone's reported device) is not needed
-        # here. If a calibrated crossover relay capture is ever added, it MUST
-        # add that device guard against `result.device` BEFORE recording — the
-        # crossover path loads calibration by `calibration_id`, not
-        # `session.mic_calibration`, so the room gate would not cover it (the
-        # same silent mis-calibration class on a different path). That is an
-        # on-device (H2) concern.
+        if validate_capture is not None:
+            validate_capture(result)
+
+        # Calibration identity and measurement mode are injected by the host
+        # from the level-check setup. ``validate_capture`` verifies that the
+        # realized capture device is still that same microphone before any
+        # acoustic evidence is recorded.
         # All of these ride the play payload's TOP level (the wrapper hoists
         # them out of the nested `playback`): sweep_meta, playback_id,
         # test_level_dbfs, summed_test_id — the same fields the same-origin JS
@@ -505,6 +539,10 @@ def build_crossover_relay_run_and_consume(
             "sweep_meta": played.get("sweep_meta"),
             "playback_id": played.get("playback_id"),
         }
+        for key in ("calibration_id", "measurement_mode"):
+            value = raw.get(key)
+            if value:
+                record_raw[key] = value
         if kind == "driver":
             record_raw["role"] = role
             record_raw["test_level_dbfs"] = played.get("test_level_dbfs")

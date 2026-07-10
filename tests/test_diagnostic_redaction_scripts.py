@@ -115,6 +115,17 @@ def test_fetch_logs_writes_noise_summary_artifact():
     assert "log-noise-summary-latest.txt" in text
 
 
+def test_fetch_logs_includes_audio_transport_and_reconcilers():
+    text = (ROOT / "scripts" / "fetch-pi-logs.sh").read_text()
+    for unit in (
+        "jasper-outputd",
+        "jasper-fanin",
+        "jasper-aec-reconcile",
+        "jasper-audio-hardware-reconcile",
+    ):
+        assert unit in text
+
+
 def test_fetch_logs_captures_monotonic_boot_timing_context():
     text = (ROOT / "scripts" / "fetch-pi-logs.sh").read_text()
     assert "previous-boot-timeline" in text

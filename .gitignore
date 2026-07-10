@@ -11,6 +11,8 @@ venv/
 .env.local
 .pytest_cache/
 .ruff_cache/
+# Local multi-agent worktrees are disposable orchestration state, not source.
+.worktrees/
 build/
 dist/
 target/

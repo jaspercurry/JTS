@@ -95,6 +95,18 @@ outputd buffer/period pairs (content and DAC buffers) before installing them,
 and the outputd failure helper gives exit 78 one bounded re-reconcile + retry
 instead of permanently wedging on a transient shear.
 
+2026-07-10 transport/reference update: `AudioRuntimePlan.TransportTopology`
+now describes the complete fan-in → CamillaDSP → outputd connection. The ALSA
+fallback derives outputd's capture endpoint from CamillaDSP's loaded playback
+endpoint through the same pairing contract the hardware reconciler consumes;
+both staged reconcile and doctor reject a split active/passive lane, while
+doctor reports missing graph evidence as unknown rather than healthy.
+Separately, outputd treats the XVF3800 chip-reference PCM as an optional
+side output: missing mic hardware degrades AEC observably and retries in the
+background, but cannot gate DAC playback. This does not change the consolidation
+direction: Ring A + Ring B remain the product path and loopback remains a
+coherent fallback that can later be deleted as one topology variant.
+
 The route-specific productization and legacy cleanup plan lives in
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md#productization-plan).
 Keep this file as the clock-domain architecture reference; do not duplicate the
@@ -231,9 +243,12 @@ runtime asks the plan for shared fan-in coupling capture kwargs
 (`fanin_coupling_capture_kwargs`), so the RawFile/AsyncSinc shape does not live
 in separate staged/live/reconcile code paths. The carrier also asks the plan's
 `apply_capture_precedence` helper whether grouped pipe-sink playback or shared
-fan-in coupling owns capture for this emit. Other reconcilers still write their
-existing env files; move those decisions behind the plan as the next migration
-steps. (The lean-lane consumers and `lean_capture_kwargs` /
+fan-in coupling owns capture for this emit. The coupling reconciler remains the
+transport transition owner, and the staged output-hardware writer validates its
+candidate against the same topology contract before commit so a failure-time
+hardware refresh cannot shear the post-DSP route. Other reconcilers still write
+their existing env files; move those decisions behind the plan as the next
+migration steps. (The lean-lane consumers and `lean_capture_kwargs` /
 `usbsink_output_mode_action` that this paragraph used to also describe were
 deleted in the USB dead-pipeline sweep — see the callout below.)
 
@@ -594,12 +609,15 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-07-07 (scoped to the resilience/routing-policy claims
+Last verified: 2026-07-10 (scoped to the resilience/routing-policy claims
 below, NOT to the latency numbers the banner above marks superseded — for
 current measured latency see
 [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md).
-Ring route-policy/current-chain text rechecked
-against `jasper.audio_runtime_plan`, `jasper.fanin_coupling`, and
+Complete transport coherence and optional-reference failure isolation rechecked
+against `jasper.audio_runtime_plan`, `jasper.camilla_config_contract`,
+`jasper.cli.audio_config`, staged audio-hardware reconcile, doctor, and
+`rust/jasper-outputd`; ring route-policy/current-chain text rechecked against
+`jasper.fanin_coupling`, and
 `jasper.fanin.coupling_reconcile`; prior 2026-07-06 `outputd.env`
 config-shear resilience rechecked
 against the runtime plan, staged audio-hardware reconcile writer, and outputd
@@ -612,9 +630,9 @@ CamillaDSP 256/1536, outputd 128/256, outputd content buffer 1536. This is not a
 `jasper.audio_runtime_plan` / `jasper-audio-config
 explain` / `jasper-audio-config outputd-floor-actions` / `jasper-doctor`
 runtime-plan check added as the SSOT layer; numeric lab override artifact added
-while fan-in coupling remains ordered-reconciler-owned; audio-hardware, usbsink
-output-mode, sound capture intent/precedence, and fan-in buffer / coupling
-writers plus mux low-latency source routing consume the plan; JTS2 low-latency
+while fan-in coupling remains ordered-reconciler-owned; audio-hardware, sound
+capture intent/precedence, fan-in buffer/coupling writers, and mux adaptive
+source routing consume the plan; JTS2 low-latency
 Apple-dongle AirPlay budget
 documented: configured downstream delay 58.7 ms at Camilla 256/1536,
 fan-in output 1024, outputd DAC 512; 512-frame fan-in output failed fast.
@@ -626,7 +644,8 @@ audio drops. Documented the replacement direction: outputd owns DAC clock,
 foreign sources get one explicit rate matcher, remaining post-ingress
 boundaries must be clocked/frame-bounded, and sub-60 ms USB → DAC must be
 proved by click-in/capture-back measurement.
-2026-06-27 4b-iv live lane-switch shipped default-OFF:
+Historical 2026-06-27 4b-iv live lane-switch shipped default-OFF (the entire
+lean-lane implementation was removed by the USB dead-pipeline sweep in #1200):
 carrier-preserved `apply_lean_capture_config` / `restore_buffered_config`,
 the `output_mode_reconcile` runtime FIFO arm, and the `Mux._tick`
 enter/leave-lean ladders — all hardware-free-tested; 24 h on-device soak owed

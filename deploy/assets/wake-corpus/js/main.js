@@ -188,12 +188,22 @@ function renderCapturePlan(plan) {
   const header = document.createElement('div');
   header.className = 'capture-plan-header';
   const title = document.createElement('strong');
-  title.textContent = 'Capture plan';
+  title.textContent = plan.state === 'session'
+    ? 'Capture plan'
+    : 'Capture plan preview';
   const resource = document.createElement('span');
   const level = plan.resource?.level || 'unknown';
   resource.className = `pill tiny load-${level}`;
   resource.textContent = `load: ${level}`;
   header.append(title, resource);
+  if (plan.conformance) {
+    const conformance = document.createElement('span');
+    conformance.className = `pill tiny ${plan.conformance.ok ? 'green' : 'red'}`;
+    conformance.textContent = plan.conformance.ok
+      ? 'bridge: matches'
+      : 'bridge: blocked';
+    header.appendChild(conformance);
+  }
   root.appendChild(header);
 
   const devices = document.createElement('div');
@@ -215,10 +225,14 @@ function renderCapturePlan(plan) {
   }
   root.appendChild(devices);
 
-  if ((plan.warnings || []).length) {
+  const planWarnings = [
+    ...(plan.warnings || []),
+    ...((plan.conformance?.errors || []).map(err => `Bridge: ${err}`)),
+  ];
+  if (planWarnings.length) {
     const warnings = document.createElement('ul');
     warnings.className = 'capture-plan-warnings';
-    for (const warning of plan.warnings) {
+    for (const warning of planWarnings) {
       const item = document.createElement('li');
       item.textContent = warning;
       warnings.appendChild(item);
@@ -283,6 +297,8 @@ async function refreshStatus() {
       s.include_usb_dtln ||
       (s.include_aec3_sweep && s.aec3_sweep_source === 'usb')
     );
+    const planConformance = s.capture_plan_conformance || null;
+    const planConforms = !sessionLoaded || Boolean(planConformance?.ok);
     const sessionBridgeReady = !sessionLoaded || (
       (!s.include_dtln || bridgeOutputs.dtln) &&
       (!s.include_aec3_sweep || bridgeOutputs.aec3_sweep) &&
@@ -293,7 +309,8 @@ async function refreshStatus() {
         bridgeOutputs.xvf_raw0_webrtc_aec3 &&
         bridgeOutputs.outputd_ref
       )) &&
-      (!s.include_xvf_raw0_dtln || bridgeOutputs.xvf_raw0_dtln)
+      (!s.include_xvf_raw0_dtln || bridgeOutputs.xvf_raw0_dtln) &&
+      planConforms
     );
     const activeBridgeLabels = [];
     if (recorderOutputs.dtln) activeBridgeLabels.push('XVF DTLN');
@@ -395,7 +412,10 @@ async function refreshStatus() {
       $('record-card').style.display = 'block';
       $('counts-card').style.display = 'block';
       $('clips-card').style.display = 'block';
-      renderCapturePlan(s.capture_plan);
+      renderCapturePlan({
+        ...(s.capture_plan || {}),
+        conformance: s.capture_plan_conformance,
+      });
     } else {
       $('record-card').style.display = 'none';
       $('counts-card').style.display = 'none';

@@ -145,14 +145,20 @@ what a clip represents. The context includes the production audio
 profile classification, AEC intent/runtime env, XVF3800 mic identity and
 firmware channel state, selected leg details from `jasper/wake_legs.py`,
 outputd/DAC/reference env, and optional validation-artifact status.
-As of 2026-06-04, sidecars also add `capture_plan` at session level and
-per clip. Prefer `capture_plan.legs` for source interpretation because
-it explicitly records the layered graph: physical mic, native stream,
-source channel, software/hardware transform, required reference outputs,
-wake/corpus role, and coarse resource load. The frozen `on` token remains
-the primary `:9876` carrier; use `capture_plan.legs` to distinguish
-WebRTC AEC3 from the selected chip-AEC primary beam. Older sessions
-without `audio_context` or `capture_plan` remain valid historical data;
+As of 2026-07-09, sidecars store a canonical `capture_plan` at session
+level and per clip. Prefer `capture_plan.legs` for source
+interpretation because it explicitly records the layered graph:
+physical mic, native stream, source channel, software/hardware
+transform, required bridge outputs/env, wake/corpus role, coarse
+resource load, expected UDP legs, `plan_id`, and mic/DAC/reference
+fingerprints. Clip metadata also stores `capture_plan_id` and the
+clip-start conformance result. Quality tools should use the stored plan
+to decide which legs were promised, then use `capture_health` plus
+`capture_plan_conformance` to distinguish a deliberate absent leg from
+a compromised recording. The frozen `on` token remains the primary
+`:9876` carrier; use `capture_plan.legs` to distinguish WebRTC AEC3
+from the selected chip-AEC primary beam. Older sessions without
+`audio_context` or `capture_plan.plan_id` remain valid historical data;
 quality tools should display the absence but not fail the corpus because
 of it.
 
@@ -594,7 +600,9 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-06-09 (v17 - rechecked against the corpus export and
-feature-bank handoff; quality analyzer still owns review/QA, while training
-dataset assembly lives in scripts/export-wake-corpus-bundle.sh,
+Last verified: 2026-07-09 (v18 - rechecked the wake-corpus
+capture-plan metadata/conformance contract against the recorder and
+bridge stats. Prior v17 pass rechecked the corpus export and feature-bank
+handoff; quality analyzer still owns review/QA, while training dataset
+assembly lives in scripts/export-wake-corpus-bundle.sh,
 scripts/build-wake-feature-bank.sh, and HANDOFF-custom-wakeword-training.md.)

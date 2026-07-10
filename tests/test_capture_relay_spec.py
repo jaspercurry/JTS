@@ -20,6 +20,7 @@ import pytest
 
 from jasper.capture_relay import spec as spec_mod
 from jasper.capture_relay.spec import (
+    CAPTURE_PROTOCOL_VERSION,
     CaptureConstraints,
     CaptureSpec,
     CaptureSpecError,
@@ -116,6 +117,14 @@ def test_to_dict_from_dict_round_trip_is_stable():
     s = build_room_sweep_spec(position=3, total_positions=5)
     again = CaptureSpec.from_dict(s.to_dict())
     assert again.to_dict() == s.to_dict()
+
+
+def test_capture_protocol_version_is_explicit_and_strict():
+    payload = build_room_sweep_spec().to_dict()
+    assert payload["capture_protocol_version"] == CAPTURE_PROTOCOL_VERSION
+    payload["capture_protocol_version"] = CAPTURE_PROTOCOL_VERSION + 1
+    with pytest.raises(CaptureSpecError, match="capture_protocol_version"):
+        CaptureSpec.from_dict(payload)
 
 
 def test_return_url_round_trips_for_phone_done_cta():

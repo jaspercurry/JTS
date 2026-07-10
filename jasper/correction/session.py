@@ -57,7 +57,7 @@ from jasper.audio_measurement import (
 )
 from jasper.audio_measurement.calibration import CalibrationRecord
 from jasper.audio_measurement.quality_model import ROOM as ROOM_QUALITY
-from jasper.audio_measurement.ramp import RECOVERABLE_ERRORS
+from jasper.audio_measurement.ramp import RECOVERABLE_ERRORS, RampState
 
 from . import (
     acceptance,
@@ -406,6 +406,14 @@ class MeasurementSession:
         # occupied and clears it identity-guarded, so an overlapping run can
         # never orphan a live ramp from its Cancel seam.
         self._level_match_session: LevelMatchSession | None = None
+        # Cleanup may be triggered by relay failure, reset, and apply at nearly
+        # the same time.  Serialize the write + restored flag so the lease is
+        # released exactly once and a failed CamillaDSP write remains retryable.
+        self._level_restore_lock = asyncio.Lock()
+        # Presentation/orchestration choice for this run.  The measurement
+        # state machine remains transport-agnostic; the server envelope uses
+        # this marker only to choose the correct thin adapter action.
+        self.capture_transport = "local"
 
         # Single-slot guard that abandons stranded browser-capture states and
         # refuses reset while a fire-and-forget sweep/analysis task is active.
@@ -2459,7 +2467,7 @@ class MeasurementSession:
         the lock blind, the Pi's :class:`RampController` reads the phone's batched
         mic-level samples (via ``read_status``), recovers the chain gain, stops
         ahead into the safe window, and locks — never blasting up to find it. A
-        terminal LOCKED / MAXED_OUT stores a per-geometry
+        terminal LOCKED stores a per-geometry
         :class:`MeasurementLevelLock` in ``level_lock_store``.
 
         ``read_status`` is the relay status reader (the batched-event transport);
@@ -2482,6 +2490,16 @@ class MeasurementSession:
         # the one state where a dead Cancel matters (a live volume ramp).
         if self._level_match_session is not None:
             raise RuntimeError("level match already in progress")
+        prior = self._last_level_match
+        if (
+            prior is not None
+            and prior.ramp.state is RampState.LOCKED
+            and prior.ramp.restored is not True
+        ):
+            raise RuntimeError(
+                "measurement level is already locked; finish or cancel the "
+                "current measurement before checking it again"
+            )
         # Retain the run's session so a Lock/Cancel from the flow can reach the
         # running RampController while the ramp is in flight. The clear is
         # identity-guarded (belt and braces under the single-flight refusal):
@@ -2511,7 +2529,99 @@ class MeasurementSession:
             if self._level_match_session is session:
                 self._level_match_session = None
         self._last_level_match = outcome
+        if outcome.locked:
+            # A level check owns the loud target only while its tone window is
+            # active.  Persist the target/original in the outcome, but return to
+            # the household's listening level before the window is released.
+            restored = await self.restore_level_match_volume(set_main_volume_db)
+            if not restored:
+                raise RuntimeError(
+                    "measurement level locked, but the listening volume could "
+                    "not be restored"
+                )
         return outcome
+
+    async def restore_level_match_volume(
+        self,
+        set_main_volume_db: Callable[[float], Awaitable[Any]],
+    ) -> bool:
+        """Restore the exact pre-ramp listening volume once.
+
+        The shared ramp ends a successful LOCKED run at its target. The session
+        immediately calls this before returning from ``run_level_match``; each
+        later sweep calls ``ensure_level_match_volume`` inside its measurement
+        window and this method again in that window's ``finally``. MAXED_OUT /
+        error / cancel paths are restored by the kernel itself.
+        """
+        async with self._level_restore_lock:
+            outcome = self._last_level_match
+            if outcome is None or outcome.ramp.state is not RampState.LOCKED:
+                return False
+            ramp = outcome.ramp
+            if ramp.restored or ramp.original_main_volume_db is None:
+                return False
+            applied = await set_main_volume_db(float(ramp.original_main_volume_db))
+            if applied is False:
+                log_event(
+                    logger,
+                    "level_match_volume_restore_failed",
+                    level=logging.ERROR,
+                    session=self.session_id,
+                    geometry=outcome.geometry,
+                    to_db=f"{ramp.original_main_volume_db:.1f}",
+                )
+                return False
+            ramp.restored = True
+            log_event(
+                logger,
+                "level_match_volume_restored",
+                session=self.session_id,
+                geometry=outcome.geometry,
+                to_db=f"{ramp.original_main_volume_db:.1f}",
+            )
+            return True
+
+    async def ensure_level_match_volume(
+        self,
+        set_main_volume_db: Callable[[float], Awaitable[Any]],
+    ) -> bool:
+        """Reassert the saved lock immediately before an acoustic sweep.
+
+        The physical dial is external and another software controller may have
+        changed CamillaDSP volume since the level check.  A cached ``locked``
+        flag alone is therefore not permission to play.
+        """
+        async with self._level_restore_lock:
+            outcome = self._last_level_match
+            if outcome is None or outcome.ramp.state is not RampState.LOCKED:
+                return False
+            ramp = outcome.ramp
+            if ramp.locked_main_volume_db is None:
+                return False
+            # Already asserted for this sweep window.  The shared lock makes
+            # concurrent ensure calls one logical transition.
+            if ramp.restored is not True:
+                return True
+            applied = await set_main_volume_db(float(ramp.locked_main_volume_db))
+            if applied is False:
+                log_event(
+                    logger,
+                    "level_match_volume_reassert_failed",
+                    level=logging.ERROR,
+                    session=self.session_id,
+                    geometry=outcome.geometry,
+                    to_db=f"{ramp.locked_main_volume_db:.1f}",
+                )
+                return False
+            ramp.restored = False
+            log_event(
+                logger,
+                "level_match_volume_reasserted",
+                session=self.session_id,
+                geometry=outcome.geometry,
+                to_db=f"{ramp.locked_main_volume_db:.1f}",
+            )
+            return True
 
     async def lock_level_match(self) -> bool:
         """Manual lock (the user tapped Lock during a level match) — freezes the
@@ -2537,6 +2647,7 @@ class MeasurementSession:
         """The current per-geometry locks + last level-match outcome (for
         ``/status`` surfacing). Empty until the first level match runs."""
         return {
+            "running": self._level_match_session is not None,
             "locks": self.level_lock_store.snapshot(),
             "last": (
                 self._last_level_match.snapshot()

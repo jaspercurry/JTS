@@ -856,7 +856,8 @@ def test_compute_autolevel_cap_clamps():
         )
 
     assert cap(-19.0) == -13.0   # +6 bump lands inside the band
-    assert cap(-28.5) == -20.0   # very quiet listener floored UP to usable
+    assert cap(-28.5) == -22.5   # quiet listener never rises by more than +6
+    assert cap(-45.0) == -39.0   # regression: floor must not create a +25 jump
     assert cap(-2.0) == -6.0     # loud listener clamped to the safety ceiling
     assert cap(-12.0) == -6.0    # -12+6 = -6 exactly at the ceiling
 

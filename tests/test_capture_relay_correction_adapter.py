@@ -13,16 +13,36 @@ relay, so the whole graft is proven hardware-free.
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import hashlib
 import json
 import os
+from types import SimpleNamespace
 import urllib.parse
 
+import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from jasper.capture_relay import correction_adapter as adapter
 from jasper.capture_relay import crypto
 from jasper.capture_relay.client import RelayClient, RelayResponse
+
+_CAPTURE_PAGE = {
+    "schema_version": 1,
+    "capture_protocol_version": 1,
+    "supported_capture_protocol_versions": [1],
+    "capture_page_build": "20260710.1",
+}
+
+
+def _level_pi_session():
+    from jasper.capture_relay.spec import build_level_ramp_spec
+
+    return SimpleNamespace(
+        session_id="sid",
+        pull_token="pull",
+        spec=build_level_ramp_spec(run_token="test-run-token"),
+    )
 
 
 class FakeRelayBackend:
@@ -75,7 +95,7 @@ class FakeRelayBackend:
         return jr(404, {"error": "not_found"})
 
     def phone_arm(self, sid, device=None):
-        event = {"armed": True}
+        event = {"armed": True, "capture_page": dict(_CAPTURE_PAGE)}
         if device is not None:
             event["device"] = device
         self.sessions[sid]["event"] = event
@@ -137,6 +157,76 @@ def test_open_room_sweep_capture_registers_and_links():
     # Tap-link carries the handle in the fragment; copy names the position.
     assert rc.tap_link.startswith("https://capture.test/#")
     assert "position 2 of 5" in capture_spec["ui"]["screen"][0]["text"]
+
+
+def test_followup_room_sweep_is_capture_only_after_session_setup():
+    backend = FakeRelayBackend()
+    client = RelayClient("https://relay.test", transport=backend)
+    rc = adapter.open_room_sweep_capture(
+        client,
+        position=2,
+        total_positions=3,
+        relay_base="https://relay.test",
+        capture_origin="capture.test",
+        guided_setup=False,
+    )
+
+    stored = backend.sessions[rc.pi_session.session_id]
+    capture_spec = json.loads(stored["capture_spec"])
+    assert capture_spec["setup_validation"] is False
+    assert capture_spec["calibration_models"] == []
+
+
+def test_followup_room_sweep_carries_the_frozen_setup_binding():
+    backend = FakeRelayBackend()
+    client = RelayClient("https://relay.test", transport=backend)
+    rc = adapter.open_room_sweep_capture(
+        client,
+        position=3,
+        total_positions=3,
+        relay_base="https://relay.test",
+        capture_origin="capture.test",
+        guided_setup=False,
+        setup_binding_id="room-session-12345",
+    )
+
+    capture_spec = json.loads(
+        backend.sessions[rc.pi_session.session_id]["capture_spec"]
+    )
+    assert capture_spec["setup_binding_id"] == "room-session-12345"
+
+
+def test_pi_setup_binding_accepts_only_the_validated_compact_identity():
+    from jasper.web import correction_setup
+
+    owner = SimpleNamespace()
+    setup = {
+        "total_positions": 3,
+        "calibration": {"mode": "none"},
+    }
+    binding_id = "room-session-12345"
+    digest = correction_setup._setup_digest(setup)
+    identity = {"schema": 1, "binding_id": binding_id, "sha256": digest}
+
+    correction_setup._bind_relay_setup(
+        owner,
+        setup,
+        identity,
+        expected_binding_id=binding_id,
+    )
+    correction_setup._assert_relay_setup_binding(
+        owner,
+        {"binding": identity},
+        expected_binding_id=binding_id,
+    )
+
+    changed = {**identity, "sha256": "0" * 64}
+    with pytest.raises(ValueError, match="setup changed"):
+        correction_setup._assert_relay_setup_binding(
+            owner,
+            {"binding": changed},
+            expected_binding_id=binding_id,
+        )
 
 
 def test_run_and_store_feeds_the_verified_wav(tmp_path):
@@ -291,6 +381,39 @@ def test_status_holder_round_trips():
     correction_setup._set_relay_capture(None)  # reset
 
 
+def test_relay_status_is_visible_only_to_its_own_flow():
+    from jasper.web import correction_setup
+
+    correction_setup._set_relay_capture({
+        "status": "awaiting_phone",
+        "kind": "room_sweep",
+        "tap_link": "room-link",
+    })
+    assert correction_setup._get_relay_capture_for("room_") is not None
+    assert correction_setup._get_relay_capture_for("crossover_sweep:") is None
+    correction_setup._set_relay_capture(None)
+
+
+def test_relay_level_identity_binds_mic_and_calibration():
+    from jasper.web import correction_setup
+
+    sess = SimpleNamespace(
+        input_device={"label": "USB measurement mic"},
+        mic_calibration=SimpleNamespace(calibration_id="cal-1"),
+    )
+    identity = correction_setup._relay_level_identity(sess)
+    correction_setup._assert_relay_level_identity(
+        sess, identity, device={"label": "USB measurement mic"}
+    )
+    with pytest.raises(ValueError, match="microphone changed"):
+        correction_setup._assert_relay_level_identity(
+            sess, identity, device={"label": "Phone mic"}
+        )
+    sess.mic_calibration = SimpleNamespace(calibration_id="cal-2")
+    with pytest.raises(ValueError, match="calibration changed"):
+        correction_setup._assert_relay_level_identity(sess, identity)
+
+
 def test_relay_capture_reentrancy_guard():
     # Atomic claim: one in-flight capture blocks a second.
     from jasper.web import correction_setup
@@ -304,3 +427,362 @@ def test_relay_capture_reentrancy_guard():
     correction_setup._set_relay_capture({"tap_link": "x", "status": "complete"})
     assert correction_setup._begin_relay_capture() is True
     correction_setup._set_relay_capture(None)  # reset
+
+
+def test_room_relay_gain_is_restored_before_measurement_window_exits(monkeypatch):
+    from jasper.correction import coordinator, playback
+    from jasper.web import correction_setup
+
+    order = []
+
+    @asynccontextmanager
+    async def window():
+        order.append("window_enter")
+        try:
+            yield
+        finally:
+            order.append("window_exit")
+
+    async def play_sweep(*_args, **_kwargs):
+        order.append("play")
+
+    class Session:
+        current_position = 0
+        total_positions = 1
+
+        async def ensure_level_match_volume(self, _setter):
+            order.append("ensure")
+            return True
+
+        async def prepare_and_play_sweep(self, player, *, runtime_probe_async):
+            await player()
+
+        async def restore_level_match_volume(self, _setter):
+            order.append("restore")
+            return True
+
+    class Cam:
+        async def get_runtime_status(self, *, best_effort):
+            return {"state": "Running"}
+
+        async def set_volume_db(self, _db, *, best_effort):
+            return True
+
+    class Client:
+        def post_host_event(self, _sid, _token, payload):
+            order.append(payload["phase"])
+
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(playback, "play_sweep", play_sweep)
+
+    correction_setup._run_relay_measurement_sweep(
+        Session(),
+        Cam(),
+        client=Client(),
+        pi_session=SimpleNamespace(session_id="sid", pull_token="pull"),
+    )
+
+    assert order == [
+        "window_enter",
+        "ensure",
+        "sweep_started",
+        "play",
+        "sweep_complete",
+        "restore",
+        "window_exit",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
+    monkeypatch,
+):
+    """The transport adapter binds setup/noise before asking the kernel to ramp."""
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator, playback
+    from jasper.web import correction_setup
+
+    setup_binding_id = "room-session-12345"
+    setup = {"total_positions": 3, "calibration": {"mode": "none"}}
+    identity = {
+        "schema": 1,
+        "binding_id": setup_binding_id,
+        "sha256": correction_setup._setup_digest(setup),
+    }
+    setup_status = {
+        "event": {
+            "capture_page": dict(_CAPTURE_PAGE),
+            "setup_validate": True,
+            "setup_token": "setup-1",
+            "setup": setup,
+            "setup_identity": identity,
+        },
+    }
+    batch_status = {
+        "event": {
+            "capture_page": dict(_CAPTURE_PAGE),
+            "level_batch": {
+                "schema": 1,
+                "run_token": "run-1",
+                "armed": True,
+                "samples": [
+                    {"seq": 1, "rms_dbfs": -54.0, "peak_dbfs": -49.0},
+                    {"seq": 2, "rms_dbfs": -50.0, "peak_dbfs": -46.0},
+                    {"seq": 3, "rms_dbfs": -52.0, "peak_dbfs": -47.0},
+                ],
+                "context": {
+                    "setup": {"binding": identity},
+                    "device": {"label": "USB measurement mic"},
+                },
+            },
+        },
+    }
+    current_status = {"value": setup_status}
+    setup_acks = []
+
+    class Client:
+        def status(self, *_args):
+            return current_status["value"]
+
+        def post_host_event(self, *_args):
+            payload = _args[-1]
+            if payload.get("phase") == "setup_validated":
+                setup_acks.append(payload)
+                current_status["value"] = batch_status
+            return None
+
+    writes = []
+
+    class Cam:
+        async def get_volume_db(self, *, best_effort):
+            assert best_effort is False
+            return -32.0
+
+        async def set_volume_db(self, db, *, best_effort):
+            writes.append((db, best_effort))
+            return True
+
+    class Tone:
+        async def play(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: Cam())
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_kwargs: "tone.wav")
+    monkeypatch.setattr(playback, "TonePlayer", lambda _path: Tone())
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    class Session:
+        noise_floor_db = None
+        mic_calibration = None
+        input_device = None
+        total_positions = 1
+        current_position = 0
+
+        async def run_level_match(self, _geometry, **ports):
+            assert ports["noise_floor_dbfs"] == -52.0
+            await ports["set_main_volume_db"](-41.0)
+            return SimpleNamespace(locked=True, ramp=SimpleNamespace(error=None))
+
+    sess = Session()
+    await correction_setup._run_relay_level_match(
+        sess,
+        Client(),
+        _level_pi_session(),
+        geometry="listening_position",
+        run_token="run-1",
+        setup_binding_id=setup_binding_id,
+    )
+
+    assert setup_acks == [{"phase": "setup_validated", "setup_token": "setup-1"}]
+    assert sess.total_positions == 3
+    assert sess.noise_floor_db == -52.0
+    assert sess.input_device["label"] == "USB measurement mic"
+    assert writes == [(-41.0, False)]
+
+
+@pytest.mark.asyncio
+async def test_relay_level_adapter_fails_closed_when_volume_write_is_rejected(
+    monkeypatch,
+):
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator, playback
+    from jasper.web import correction_setup
+
+    status = {
+        "event": {
+            "capture_page": dict(_CAPTURE_PAGE),
+            "level_batch": {
+                "schema": 1,
+                "run_token": "run-2",
+                "armed": True,
+                "samples": [
+                    {"seq": 1, "rms_dbfs": -55.0, "peak_dbfs": -50.0}
+                ],
+                "context": {"setup": {}, "device": {"label": "Phone mic"}},
+            },
+        },
+    }
+
+    class Client:
+        def status(self, *_args):
+            return status
+
+        def post_host_event(self, *_args):
+            return None
+
+    class Cam:
+        async def set_volume_db(self, _db, *, best_effort):
+            assert best_effort is False
+            return False
+
+    class Tone:
+        async def play(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: Cam())
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_kwargs: "tone.wav")
+    monkeypatch.setattr(playback, "TonePlayer", lambda _path: Tone())
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    class Session:
+        noise_floor_db = None
+        mic_calibration = None
+        input_device = None
+
+        async def run_level_match(self, _geometry, **ports):
+            await ports["set_main_volume_db"](-45.0)
+            raise AssertionError("rejected write must raise first")
+
+    with pytest.raises(RuntimeError, match="rejected the measurement volume"):
+        await correction_setup._run_relay_level_match(
+            Session(),
+            Client(),
+            _level_pi_session(),
+            geometry="listening_position",
+            run_token="run-2",
+        )
+
+
+@pytest.mark.asyncio
+async def test_relay_level_agc_refusal_never_starts_tone_and_reaches_phone(
+    monkeypatch,
+):
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator, playback
+    from jasper.web import correction_setup
+
+    status = {
+        "event": {
+            "capture_page": dict(_CAPTURE_PAGE),
+            "level_refused": {
+                "schema": 1,
+                "run_token": "run-agc",
+                "reason": "agc_not_proven_off",
+            }
+        }
+    }
+    host_events = []
+
+    class Client:
+        def status(self, *_args):
+            return status
+
+        def post_host_event(self, _sid, _token, payload):
+            host_events.append(payload)
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(
+        playback,
+        "_ensure_tone_wav",
+        lambda **_kwargs: pytest.fail("AGC refusal must happen before tone creation"),
+    )
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    with pytest.raises(RuntimeError, match="cannot prove automatic microphone gain"):
+        await correction_setup._run_relay_level_match(
+            SimpleNamespace(noise_floor_db=None),
+            Client(),
+            _level_pi_session(),
+            geometry="listening_position",
+            run_token="run-agc",
+        )
+
+    terminal = host_events[-1]["ramp"]
+    assert terminal["state"] == "error"
+    assert terminal["terminal"] is True
+    assert terminal["run_token"] == "run-agc"
+
+
+@pytest.mark.asyncio
+async def test_relay_level_stale_page_never_starts_tone_and_reaches_phone(
+    monkeypatch,
+):
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator, playback
+    from jasper.web import correction_setup
+
+    status = {
+        "event": {
+            "level_batch": {
+                "schema": 1,
+                "run_token": "run-stale",
+                "armed": True,
+                "samples": [{"seq": 1, "rms_dbfs": -50.0, "peak_dbfs": -45.0}],
+            },
+        },
+    }
+    host_events = []
+
+    class Client:
+        def status(self, *_args):
+            return status
+
+        def post_host_event(self, _sid, _token, payload):
+            host_events.append(payload)
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(
+        playback,
+        "_ensure_tone_wav",
+        lambda **_kwargs: pytest.fail("an incompatible page must fail before tone"),
+    )
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    with pytest.raises(relay_session.CapturePageIncompatible):
+        await correction_setup._run_relay_level_match(
+            SimpleNamespace(noise_floor_db=None),
+            Client(),
+            _level_pi_session(),
+            geometry="listening_position",
+            run_token="run-stale",
+        )
+
+    terminal = host_events[-1]["ramp"]
+    assert terminal["state"] == "error"
+    assert "incompatible" in terminal["error"]

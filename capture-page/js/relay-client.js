@@ -27,7 +27,22 @@ export class RelayClient {
     this.baseUrl = String(baseUrl).replace(/\/+$/, "");
     this.sessionId = sessionId;
     this.uploadToken = uploadToken;
+    this.capturePageIdentity = null;
     this._fetch = fetchImpl || ((...a) => globalThis.fetch(...a));
+  }
+
+  setCapturePageIdentity(identity) {
+    if (!identity || typeof identity !== "object" || Array.isArray(identity)) {
+      throw new Error("capture page identity required");
+    }
+    this.capturePageIdentity = Object.freeze({
+      schema_version: Number(identity.schema_version),
+      capture_protocol_version: Number(identity.capture_protocol_version),
+      supported_capture_protocol_versions: Array.isArray(
+        identity.supported_capture_protocol_versions
+      ) ? identity.supported_capture_protocol_versions.map(Number) : [],
+      capture_page_build: String(identity.capture_page_build || ""),
+    });
   }
 
   _url(suffix) {
@@ -64,10 +79,13 @@ export class RelayClient {
 
   // Drop a relay-control event (e.g. {armed:true}) the Pi polls for.
   async postEvent(event) {
+    if (!this.capturePageIdentity) {
+      throw new Error("capture page compatibility was not established");
+    }
     const res = await this._fetch(this._url("/event"), {
       method: "POST",
       headers: this._authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(event),
+      body: JSON.stringify({ ...event, capture_page: this.capturePageIdentity }),
     });
     if (!res.ok) throw await this._failure(res);
     return res.json();

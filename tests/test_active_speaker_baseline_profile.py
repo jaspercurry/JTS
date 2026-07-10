@@ -15,6 +15,8 @@ from jasper.active_speaker.baseline_profile import (
     _derive_corrections,
     apply_baseline_profile,
     build_baseline_profile_candidate,
+    load_applied_baseline_profile_state,
+    recompose_applied_baseline_yaml,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
@@ -1137,6 +1139,20 @@ async def test_apply_baseline_profile_uses_shared_dsp_apply_transaction(
     assert payload["profile"]["status"] == "applied"
     assert payload["profile"]["permissions"]["may_apply"] is False
     assert calls == [str(tmp_path / "active_speaker_baseline.yml")]
+    snapshot = payload["profile"]["recomposition_snapshot"]
+    assert snapshot["schema_version"] == 1
+    assert snapshot["domain"] == "full"
+    assert snapshot["corrections"] == payload["profile"]["corrections"]
+
+    # Production recompose consumes only the applied snapshot. Mutable design /
+    # measurement stores are intentionally not arguments, so later captures
+    # cannot change Layer A while applying preference or room EQ.
+    recomposed, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=payload["profile"],
+    )
+    assert issues == []
+    assert recomposed == (tmp_path / "active_speaker_baseline.yml").read_text()
 
 
 async def test_apply_baseline_profile_threads_capture_device(
@@ -1185,6 +1201,72 @@ async def test_apply_baseline_profile_threads_capture_device(
     assert 'device: "hw:CARD=Loopback,DEV=1"' in config_path.read_text(encoding="utf-8")
 
 
+async def test_new_candidate_cannot_overwrite_applied_graph_or_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    state_path = tmp_path / "baseline_profile.json"
+    applied_config_path = tmp_path / "active_speaker_baseline.yml"
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH",
+        str(applied_config_path),
+    )
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+    current_path: str | None = None
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def get_current_config_path() -> str | None:
+        return current_path
+
+    first_draft = _draft(topology, tweeter_gain_db=-18.5)
+    first_preview = build_crossover_preview(first_draft)
+    measurements = _measurements(topology, tmp_path)
+    applied = await apply_baseline_profile(
+        topology,
+        design_draft=first_draft,
+        crossover_preview=first_preview,
+        measurements=measurements,
+        load_config=load_config,
+        get_current_config_path=get_current_config_path,
+        state_path=state_path,
+        validate=_valid_config,
+    )
+    assert applied["status"] == "applied"
+    applied_yaml = applied_config_path.read_text(encoding="utf-8")
+    applied_snapshot = applied["profile"]["recomposition_snapshot"]
+
+    second_draft = _draft(topology, tweeter_gain_db=-10.0)
+    second_draft["updated_at"] = "2026-07-10T13:00:00Z"
+    second_preview = build_crossover_preview(second_draft)
+    candidate = build_baseline_profile_candidate(
+        topology,
+        design_draft=second_draft,
+        crossover_preview=second_preview,
+        measurements=measurements,
+        write=True,
+        state_path=state_path,
+        validate=_valid_config,
+    )
+
+    candidate_path = Path(candidate["config"]["path"])
+    assert candidate_path != applied_config_path
+    assert "_candidate_" in candidate_path.name
+    assert applied_config_path.read_text(encoding="utf-8") == applied_yaml
+    retained = load_applied_baseline_profile_state(state_path)
+    assert retained is not None
+    assert retained["recomposition_snapshot"] == applied_snapshot
+    assert retained["provisional"] is applied["profile"]["provisional"]
+    assert candidate["applied_recomposition_profile"] == retained
+
+
 # --- Fail-safe level trim derived from the driver sensitivity gap -------------
 #
 # Regression cover for the DE250 compression-driver bug: research that declares
@@ -1198,6 +1280,7 @@ def _research_with_sensitivity(
     woofer_sens_db: float = 83.3,
     tweeter_sens_db: float = 108.5,
     tweeter_gain_db: float | None = None,
+    tweeter_gain_provenance: str | None = None,
 ) -> dict:
     tweeter: dict = {
         "role": "tweeter",
@@ -1209,6 +1292,8 @@ def _research_with_sensitivity(
     }
     if tweeter_gain_db is not None:
         tweeter["gain_offset_db"] = tweeter_gain_db
+    if tweeter_gain_provenance is not None:
+        tweeter["gain_offset_db_provenance"] = tweeter_gain_provenance
     return {
         "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
@@ -1575,6 +1660,7 @@ def _acoustic_measurements(
             captured_wav=wav,
             sweep_meta=meta,
             playback_id=playback_id,
+            test_level_dbfs=-40.0,
             safe_session=_safe_session(
                 role=role, output_index=output_index, playback_id=playback_id
             ),
@@ -1632,6 +1718,10 @@ def test_baseline_measured_trim_overrides_datasheet(tmp_path: Path) -> None:
     measurements = _acoustic_measurements(
         topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
     )
+    measurements["summary"]["latest_summed_validations"]["mono"]["acoustic"] = {
+        "verdict": "blend_ok",
+        "mic_clipping": False,
+    }
 
     payload = build_baseline_profile_candidate(
         topology,
@@ -1658,6 +1748,48 @@ def test_baseline_measured_trim_overrides_datasheet(tmp_path: Path) -> None:
     assert "driver_gain_derived_from_measurement" in codes
     assert "driver_gain_derived_from_sensitivity" not in codes
     assert "baseline_level_match_provisional" not in codes
+
+
+def test_baseline_measured_trim_overrides_ui_sensitivity_estimate(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    research = _research_with_sensitivity()
+    draft = build_design_draft(
+        topology,
+        driver_research=research,
+        manual_settings={
+            "drivers": [{
+                **research["drivers"][1],
+                "gain_offset_db": -25.2,
+                "gain_offset_db_provenance": "sensitivity_estimate",
+            }],
+            "crossover_candidates": [],
+        },
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    measurements = _acoustic_measurements(
+        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
+    )
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    assert payload["corrections"]["tweeter"]["gain_db"] == pytest.approx(
+        -18.0, abs=1.5
+    )
+    assert payload["corrections_source"]["tweeter"] == "measured"
+    assert payload["gain_provenance"]["tweeter"] == "sensitivity_estimate"
+    assert payload["provisional"] is False
 
 
 def test_baseline_provisional_when_no_measured_capture(tmp_path: Path) -> None:
@@ -1770,7 +1902,10 @@ def test_baseline_explicit_gain_skips_measured(tmp_path: Path) -> None:
     topology = _dual_apple_topology()
     draft = build_design_draft(
         topology,
-        driver_research=_research_with_sensitivity(tweeter_gain_db=-15.0),
+        driver_research=_research_with_sensitivity(
+            tweeter_gain_db=-15.0,
+            tweeter_gain_provenance="operator_pinned",
+        ),
         created_at="2026-06-19T12:00:00Z",
     )
     preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
@@ -1793,9 +1928,235 @@ def test_baseline_explicit_gain_skips_measured(tmp_path: Path) -> None:
     )
 
     assert payload["corrections"]["tweeter"]["gain_db"] == -15.0
-    assert payload["corrections_source"]["tweeter"] == "explicit"
+    assert payload["corrections_source"]["tweeter"] == "operator_pinned"
     assert payload["provisional"] is False
-    assert payload["level_match"]["skipped_reason"] == "explicit_gain"
+    assert payload["level_match"]["skipped_reason"] == "operator_pinned_gain"
     codes = {issue["code"] for issue in payload["issues"]}
     assert "driver_gain_derived_from_measurement" not in codes
     assert "driver_gain_derived_from_sensitivity" not in codes
+
+
+def test_automatic_tuning_explicitly_overwrites_operator_pin(tmp_path: Path) -> None:
+    topology = _dual_apple_topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_research_with_sensitivity(
+            tweeter_gain_db=-15.0,
+            tweeter_gain_provenance="operator_pinned",
+        ),
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    measurements = _acoustic_measurements(
+        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
+    )
+    measurements["summary"]["latest_summed_validations"]["mono"]["acoustic"] = {
+        "verdict": "blend_ok",
+        "mic_clipping": False,
+    }
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        tuning_owner="automatic",
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "ready_to_apply"
+    assert payload["tuning_owner"] == "automatic"
+    assert payload["recomposition_snapshot"]["tuning_owner"] == "automatic"
+    assert payload["corrections_source"]["tweeter"] == "measured"
+    assert payload["corrections"]["tweeter"]["gain_db"] == pytest.approx(
+        -18.0, abs=1.5
+    )
+
+
+def test_automatic_tuning_refuses_incomparable_excitation(tmp_path: Path) -> None:
+    topology = _dual_apple_topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_research_with_sensitivity(),
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    measurements = _acoustic_measurements(
+        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
+    )
+    measurements["summary"]["latest_driver_measurements"][
+        "mono:tweeter"
+    ]["excitation"]["effective_peak_dbfs"] += 1.0
+    measurements["summary"]["latest_summed_validations"]["mono"]["acoustic"] = {
+        "verdict": "blend_ok",
+        "mic_clipping": False,
+    }
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        tuning_owner="automatic",
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["automatic_candidate"] == {
+        "ready": False,
+        "reason": "automatic_crossover_excitation_incomparable",
+        "detail": (
+            "Repeat the driver sweeps so their verified excitation can be compared."
+        ),
+        "required_group_ids": ["mono"],
+        "measured_group_ids": [],
+        "summed_group_ids": ["mono"],
+        "excitation_comparable": False,
+    }
+
+
+def test_manual_migration_preserves_exact_applied_corrections(tmp_path: Path) -> None:
+    topology = _dual_apple_topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_research_with_sensitivity(),
+        created_at="2026-06-20T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-20T12:10:00Z")
+    measurements = _by_ear_measurements(topology, tmp_path)
+    preserved = {
+        "woofer": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
+        "tweeter": {"gain_db": -11.0, "delay_ms": 0.4, "inverted": True},
+    }
+    probe = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+    )
+    applied = {
+        "status": "applied",
+        "source": probe["source"],
+        "corrections": preserved,
+    }
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        tuning_owner="manual",
+        preserved_applied_profile=applied,
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "ready_to_apply"
+    assert payload["corrections"] == preserved
+    assert payload["tuning_owner"] == "manual"
+    assert payload["level_match"]["applied"] is False
+    assert {issue["code"] for issue in payload["issues"]} >= {
+        "manual_crossover_preserved"
+    }
+
+
+def test_manual_migration_refuses_unsafe_preserved_gain(tmp_path: Path) -> None:
+    topology = _dual_apple_topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_research_with_sensitivity(),
+        created_at="2026-06-20T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-20T12:10:00Z")
+    preserved = {
+        "woofer": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
+        "tweeter": {"gain_db": 1.0, "delay_ms": 0.0, "inverted": False},
+    }
+    measurements = _by_ear_measurements(topology, tmp_path)
+    probe = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+    )
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        preserved_applied_profile={
+            "status": "applied",
+            "source": probe["source"],
+            "corrections": preserved,
+        },
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["permissions"]["may_apply"] is False
+    assert "preserved_manual_correction_invalid" in {
+        issue["code"] for issue in payload["issues"]
+    }
+
+
+def test_manual_migration_refuses_changed_crossover_preview(tmp_path: Path) -> None:
+    topology = _dual_apple_topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_research_with_sensitivity(),
+        created_at="2026-06-20T12:00:00Z",
+    )
+    applied_preview = build_crossover_preview(
+        draft, created_at="2026-06-20T12:10:00Z"
+    )
+    measurements = _by_ear_measurements(topology, tmp_path)
+    applied_source = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=applied_preview,
+        measurements=measurements,
+    )["source"]
+    changed_preview = {
+        **applied_preview,
+        "updated_at": "2026-06-20T12:11:00Z",
+    }
+    config_path = tmp_path / "changed_candidate.yml"
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=changed_preview,
+        measurements=measurements,
+        tuning_owner="manual",
+        preserved_applied_profile={
+            "status": "applied",
+            "source": applied_source,
+            "corrections": {
+                "woofer": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
+                "tweeter": {"gain_db": -11.0, "delay_ms": 0.0, "inverted": False},
+            },
+        },
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["permissions"]["may_apply"] is False
+    assert not config_path.exists()
+    assert "manual_crossover_source_changed" in {
+        issue["code"] for issue in payload["issues"]
+    }

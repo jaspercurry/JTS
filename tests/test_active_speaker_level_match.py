@@ -53,6 +53,13 @@ def _measurements(*driver_specs) -> dict:
         latest[f"{group}:{role}"] = {
             "speaker_group_id": group,
             "role": role,
+            "excitation": {
+                "schema_version": 1,
+                "scope": "sweep_plus_role_varying_commission_gain",
+                "sweep_peak_dbfs": -12.0,
+                "commissioning_gain_db": -40.0,
+                "effective_peak_dbfs": -52.0,
+            },
             "acoustic": {"verdict": verdict, "overlap_levels": list(overlaps)},
         }
     return {"latest_by_target": latest}
@@ -195,6 +202,47 @@ def test_no_measurements_returns_empty():
     trims, meta = _measured_level_trims(_preset(2, TWO_WAY), {})
     assert trims == {}
     assert meta["groups_measured"] == 0
+
+
+def test_normalizes_driver_excitation_that_differs_by_40_db():
+    measurements = _measurements(
+        ("mono", "woofer", "present", [_overlap(2000.0, -50.0)]),
+        ("mono", "tweeter", "present", [_overlap(2000.0, -50.0)]),
+    )
+    # The old flow could play the woofer at -20 dB and tweeter at -60 dB,
+    # then compare their raw captures as if they shared a reference.
+    measurements["latest_by_target"]["mono:woofer"]["excitation"].update({
+        "commissioning_gain_db": -20.0,
+        "effective_peak_dbfs": -32.0,
+    })
+    measurements["latest_by_target"]["mono:tweeter"]["excitation"].update({
+        "commissioning_gain_db": -60.0,
+        "effective_peak_dbfs": -72.0,
+    })
+
+    trims, meta = _measured_level_trims(_preset(2, TWO_WAY), measurements)
+
+    # Equal captured level at 40 dB less digital drive means the tweeter is
+    # 40 dB more sensitive. The normalized trim attenuates it accordingly.
+    assert trims == {"woofer": 0.0, "tweeter": -40.0}
+    assert meta["groups_measured"] == 1
+    assert meta["comparison"] == "gain_ledger_normalized"
+    assert meta["incomparable_groups"] == []
+
+
+def test_fail_closed_when_excitation_ledger_is_missing():
+    measurements = _measurements(
+        ("mono", "woofer", "present", [_overlap(2000.0, -50.0)]),
+        ("mono", "tweeter", "present", [_overlap(2000.0, -30.0)]),
+    )
+    measurements["latest_by_target"]["mono:tweeter"].pop("excitation")
+
+    trims, meta = _measured_level_trims(_preset(2, TWO_WAY), measurements)
+
+    assert trims == {}
+    assert meta["incomparable_groups"][0]["reason"] == (
+        "excitation_ledger_missing_or_invalid"
+    )
 
 
 # ---------- _overlap_level_at gate ------------------------------------------

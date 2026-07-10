@@ -47,8 +47,8 @@ kernel ticks deliver nothing):
     bounded corrective jump (total jumps ≤ ``max_jumps``).
 
 Safety is the whole point. Every ramp-commanded volume passes the
-``_safe_target`` choke point: ``<=`` the dynamic cap (``original + bump``
-clamped to ``[-20, -6] dBFS`` ``main_volume`` — the operative ceiling) AND
+``_safe_target`` choke point: ``<=`` the dynamic cap (the lower of
+``original + bump`` and the absolute ceiling) AND
 ``<= 0 dB``, and a non-finite target raises instead of propagating (a hostile
 relay post can never become ``set_main_volume_db(nan)``). The coarse staircase
 stops at a pre-window set below the window bottom by the worst-case in-flight
@@ -56,9 +56,10 @@ overshoot — ``step_db + ramp_rate × max_loop_latency_s``, the step-quantizati
 term included. A ``clip=true`` sample is an immediate abort; readings that are
 non-finite, AGC-compressed, or below ``noise_floor + trust_margin`` are never
 trusted; a feed that goes silent aborts (a vanished phone also has no clip
-protection); ``MAXED_OUT`` requires at least one trusted sample ever (a phone
-that never produced a usable sample is an ERROR that restores, not a "raise
-your amp" verdict); the safety timeout is derived from the config's own
+protection); ``MAXED_OUT`` requires at least one trusted sample ever and is a
+failed attempt that restores rather than manufacturing a measurement lock (a
+phone that never produced a usable sample is an ERROR, not a "raise your amp"
+verdict); the safety timeout is derived from the config's own
 worst-case walk so a quiet amp reaches ``MAXED_OUT`` before it; and every stop
 fades down before the tone is killed. Restoring the user's own pre-ramp volume
 is exempt from the dynamic cap (it is not a ramp command) and honors only the
@@ -315,9 +316,11 @@ class MeasurementRamp:
     fade_step_db: float = 2.0
     fade_step_s: float = 0.03
 
-    # Dynamic cap: original + bump clamped to [floor, ceil]. This is the OPERATIVE
-    # ceiling — tighter than HARD_CEILING_DBFS. Preserves AutolevelController's
-    # semantics exactly (bump=6, floor=-20, ceil=-6).
+    # Dynamic cap: the lower of original + bump and the absolute ceiling. This
+    # is the OPERATIVE ceiling — tighter than HARD_CEILING_DBFS. ``cap_floor_db``
+    # remains in the config for API/env compatibility with the legacy ramp, but
+    # is deliberately NOT applied: flooring a quiet listener's cap upward can
+    # turn a promised +6 dB maximum rise into a much larger, unsafe jump.
     cap_bump_db: float = 6.0
     cap_floor_db: float = -20.0
     cap_ceil_db: float = -6.0
@@ -328,6 +331,10 @@ class MeasurementRamp:
     pre_window_db: float | None = None
 
     def __post_init__(self) -> None:
+        if not math.isfinite(self.cap_bump_db) or not math.isfinite(
+            self.cap_ceil_db
+        ):
+            raise ValueError("cap_bump_db and cap_ceil_db must be finite")
         if self.window_high_dbfs <= self.window_low_dbfs:
             raise ValueError(
                 "window_high_dbfs must be above window_low_dbfs, got "
@@ -421,14 +428,19 @@ class MeasurementRamp:
         return climb + settle + self.max_jumps * confirm + 5.0
 
     def dynamic_cap(self, original_db: float) -> float:
-        """The operative end-of-ramp cap: original + bump, clamped to bounds.
+        """Return the operative cap without ever flooring a quiet start upward.
 
-        Identical to ``autolevel.compute_autolevel_cap`` — preserved so callers
-        that relied on that semantics get the same ceiling.
+        The cap is always ``<= original + bump`` and ``<= cap_ceil_db``.  The
+        old ``max(cap_floor_db, ...)`` formula violated the first invariant for
+        quiet listening levels (for example, ``-45 + 6`` became ``-20``).
         """
-        return max(
-            self.cap_floor_db, min(original_db + self.cap_bump_db, self.cap_ceil_db)
-        )
+        requested = original_db + self.cap_bump_db
+        if not math.isfinite(requested):
+            raise ValueError(
+                "non-finite dynamic cap input: "
+                f"original={original_db!r} bump={self.cap_bump_db!r}"
+            )
+        return min(requested, self.cap_ceil_db, HARD_CEILING_DBFS)
 
     @classmethod
     def from_env(cls, **overrides: Any) -> MeasurementRamp:
@@ -531,6 +543,7 @@ class RampData:
             "agc_frozen": self.agc_frozen,
             "trusted_sample_count": self.trusted_sample_count,
             "error": self.error,
+            "restored": self.restored,
         }
 
 
@@ -587,6 +600,7 @@ class RampController:
         self._lock_requested = False
         self._cancel_requested = False
         self._main_volume_setter: VolumeSetter | None = None
+        self._restore_lock = asyncio.Lock()
 
     # -- listening-level restore (idempotent, best-effort) --
 
@@ -601,35 +615,43 @@ class RampController:
     async def restore_listening_volume_if_ramped(self) -> None:
         """Restore main_volume when a measurement ends outside apply/reset.
 
-        The ramp leaves main_volume at the measurement level (LOCKED / MAXED_OUT)
-        for the whole measurement; failed / verify-ended measurements skip the web
-        apply/reset handlers, so this best-effort hook restores the user's level
-        there. Idempotent; swallows recoverable errors. Mirrors
+        A LOCKED ramp leaves main_volume at the measurement level for the whole
+        measurement; failed / verify-ended measurements skip the web apply/reset
+        handlers, so this best-effort hook restores the user's level there. A
+        MAXED_OUT run already attempts an immediate restore, but remains eligible
+        here as a retry. Idempotent; swallows recoverable errors. Mirrors
         ``AutolevelController.restore_listening_volume_if_ramped``.
         """
-        d = self.data
-        if d.restored:
-            return
-        if d.state not in (RampState.LOCKED, RampState.MAXED_OUT):
-            return
-        if d.original_main_volume_db is None or self._main_volume_setter is None:
-            return
-        d.restored = True
-        try:
-            await self._main_volume_setter(d.original_main_volume_db)
-            log_event(
-                logger,
-                "ramp_volume_restored",
-                session=self.session_id,
-                to_db=f"{d.original_main_volume_db:.1f}",
-                trigger="measurement_ended",
-            )
-        except RECOVERABLE_ERRORS:
-            logger.exception(
-                "ramp volume restore on measurement end failed (session=%s) — "
-                "speaker may remain at the measurement level until /reset",
-                self.session_id,
-            )
+        async with self._restore_lock:
+            d = self.data
+            if d.restored:
+                return
+            if d.state not in (RampState.LOCKED, RampState.MAXED_OUT):
+                return
+            if d.original_main_volume_db is None or self._main_volume_setter is None:
+                return
+            try:
+                applied = await self._main_volume_setter(d.original_main_volume_db)
+                if applied is False:
+                    logger.error(
+                        "ramp volume restore was rejected (session=%s)",
+                        self.session_id,
+                    )
+                    return
+                d.restored = True
+                log_event(
+                    logger,
+                    "ramp_volume_restored",
+                    session=self.session_id,
+                    to_db=f"{d.original_main_volume_db:.1f}",
+                    trigger="measurement_ended",
+                )
+            except RECOVERABLE_ERRORS:
+                logger.exception(
+                    "ramp volume restore on measurement end failed (session=%s) — "
+                    "speaker may remain at the measurement level until /reset",
+                    self.session_id,
+                )
 
     async def lock(self) -> bool:
         """Signal the running ramp to lock at the current main_volume (the user
@@ -949,12 +971,16 @@ class RampController:
                 if self._at_cap():
                     # Reached the cap without ever crossing the pre-window.
                     if d.trusted_sample_count > 0:
-                        # Amp genuinely too quiet — hold the cap for the
-                        # measurement; the flow tells the user to raise the amp.
-                        d.locked_main_volume_db = d.current_main_volume_db
+                        # Amp genuinely too quiet. This is diagnostic evidence,
+                        # not a measurement lock: restore the listening level
+                        # and require the flow to ask for an analog-gain change.
                         return await _terminal(
                             RampState.MAXED_OUT,
-                            final_db=d.current_main_volume_db,
+                            final_db=d.original_main_volume_db,
+                            error=(
+                                "safe cap reached below target window; raise "
+                                "the external amplifier and retry"
+                            ),
                             event="ramp_maxed_out",
                             level=logging.WARNING,
                             reason="cap_reached_below_pre_window",
@@ -1033,10 +1059,13 @@ class RampController:
                 if below and self._at_cap():
                     # Consistently below the window while pinned at the cap:
                     # the amp is too quiet — with real trusted evidence.
-                    d.locked_main_volume_db = d.current_main_volume_db
                     return await _terminal(
                         RampState.MAXED_OUT,
-                        final_db=d.current_main_volume_db,
+                        final_db=d.original_main_volume_db,
+                        error=(
+                            "safe cap reached below target window; raise the "
+                            "external amplifier and retry"
+                        ),
                         event="ramp_maxed_out",
                         level=logging.WARNING,
                         reason="cap_reached_below_window",

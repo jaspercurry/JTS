@@ -79,6 +79,12 @@ The product is three tiers:
   remains the no-relay local fallback). The ramp's control-loop tuning lives on
   `MeasurementRamp` (validated, env-overridable), not on the `RAMP` quality
   profile.
+- The relay level target is reusable state, not a long-lived live gain. A
+  successful ramp restores the original listening volume immediately. Room,
+  verification, and active-crossover adapters reassert the target only inside
+  the serialized `measurement_window()` that owns playback, then restore it in
+  that window's `finally` before renderers resume. The shared ensure/restore
+  transition lock makes concurrent cleanup idempotent and retryable.
 - `active_speaker/driver_acoustics.py` **imports**
   `jasper.audio_measurement.{sweep, deconv, analysis, quality}` and the `DRIVER`
   quality profile — it reuses the shared DSP verbatim.
@@ -98,8 +104,9 @@ The product is three tiers:
 ### The gaps (worktree-confirmed)
 - ~~**Active-speaker measurement loop is built but UNWIRED.**~~ **CLOSED.**
   The measurement loop *is* wired. The live browser mic-capture surface is the
-  HTTPS `/correction/crossover/` page: `postWav('driver-capture' | 'summed-capture')`
-  → `correction_crossover_backend` → `web_measurement.record_driver_capture` /
+  HTTPS `/correction/crossover/` page through the Jasper relay:
+  `/crossover/relay-capture` → `correction_crossover_backend` →
+  `web_measurement.record_driver_capture` /
   `record_summed_capture`, which run `driver_acoustics`
   (`record_driver_acoustic_capture` / `record_summed_acoustic_capture`) and
   persist the real acoustic verdict block into measurement state (the 2026-06-19
@@ -107,9 +114,12 @@ The product is three tiers:
   then closed the level-match loop (2026-06-20):** each per-driver capture also
   records an **overlap-band level** at the crossover Fc, and
   `baseline_profile._measured_level_trims` chains the driver-to-driver overlap
-  deltas into a per-driver attenuation that **overrides** the datasheet
-  sensitivity trim (fail-closed to the datasheet, marked *provisional*, when a
-  capture is silent/clipped/low-SNR/missing). **Product routing changed
+  deltas into a per-driver attenuation candidate. A safe applied manual
+  crossover remains valid for room correction; operator-pinned values keep
+  ownership until the user explicitly applies the automatic candidate, at which
+  point its complete measured data replaces those pins. Automatic analysis never
+  silently overwrites manual settings. Missing/silent/clipped/low-SNR evidence
+  blocks that automatic replacement. **Product routing changed
   2026-06-23:** the core `/sound/` active-crossover walkthrough does not expose
   browser mic capture (it is plain HTTP and cannot `getUserMedia`); it uses
   by-ear driver and combined confirmations, then hands users to the HTTPS
@@ -121,7 +131,8 @@ The product is three tiers:
 - ~~**`DriverSpec.sensitivity_db` is stored but never read to set gain.**~~
   **CLOSED.** `baseline_profile._derive_corrections` derives an interim per-driver
   trim from the declared sensitivities (the ~25 dB woofer/horn gap is
-  attenuated), and the L1 measured overlap-band trim refines/overrides it. (The
+  attenuated), and L1 measurements can replace it only through the explicit
+  automatic-apply path. Manual operator pins otherwise remain authoritative. (The
   schema field carrying the datasheet sensitivity is `sensitivity_db_2v83_1m` on
   the crossover-preview drivers, not `DriverSpec.sensitivity_db`.)
 - **Duplicated graph-safety parsing.** The same CamillaDSP-graph
@@ -303,11 +314,20 @@ one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
    silent/clipped/unusable, ≥ `OVERLAP_MIN_BINS` bins) so the trim fails closed.
 3. **Trim chain → override.** `baseline_profile._measured_level_trims` reads those
    overlap levels from measurement state, requires BOTH drivers of EVERY
-   crossover in a group to be `present` + `usable`, chains the deltas into a
+   crossover in a group to be `present` + `usable`, and requires the capture
+   ledger (generated sweep peak + commissioning gain) to normalize both captures
+   to one effective excitation. A missing/invalid ledger fails closed; raw
+   captures made at −20 and −60 dB are comparable only through that exact 40 dB
+   normalization, never as unqualified raw magnitudes. It then
+   chains the deltas into a
    per-driver attenuation (quietest driver = 0 dB reference), averages usable
    groups, and clamps to the −60 dB floor. `_derive_corrections` then applies it
-   **over** the datasheet trim. Precedence: explicit operator gain > measured >
-   datasheet.
+   **over** research/UI/datasheet estimates. A manual apply preserves the
+   operator's ownership (`operator_pinned` > measured > estimate > datasheet).
+   An explicit automatic replacement deliberately reverses the first two
+   (`measured` > prior operator pin > estimate > datasheet). Legacy manual gains
+   without provenance are treated as pinned; UI sensitivity proposals declare
+   `sensitivity_estimate`.
 4. **Fail-closed + provisional.** No usable measurement ⇒ keep the datasheet
    trim, set `provisional=True` + `corrections_source[role]="sensitivity"` and the
    `baseline_level_match_provisional` issue. Surfaced in the baseline payload, the
@@ -621,4 +641,4 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-06-25
+Last verified: 2026-07-10

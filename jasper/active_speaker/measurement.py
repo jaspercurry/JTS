@@ -746,6 +746,15 @@ def record_driver_measurement(
             else None
         ),
         "test_level_dbfs": _finite_float(raw.get("test_level_dbfs")),
+        # Analyzer captures carry the complete generated-sweep + commissioning
+        # gain ledger.  Operator-only floor checks leave this absent and can
+        # prove routing, but can never be consumed as comparable acoustic level
+        # evidence by the baseline compiler.
+        "excitation": (
+            dict(raw["excitation"])
+            if isinstance(raw.get("excitation"), Mapping)
+            else None
+        ),
         "playback_id": _text(raw.get("playback_id"), max_chars=120),
         "floor_confirmation": dict(_safe_floor_result(safe_session) or {}),
         "notes": _text(raw.get("notes"), max_chars=1000),

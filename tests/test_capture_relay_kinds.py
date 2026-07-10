@@ -143,6 +143,8 @@ def test_level_ramp_run_token_rides_the_spec():
 
     ramp = build_level_ramp_spec(run_token="run_ab12-CD")
     assert ramp.run_token == "run_ab12-CD"
+    assert ramp.setup_validation is True
+    assert ramp.setup_binding_id == "level-run_ab12-CD"
     round_tripped = CaptureSpec.from_dict(ramp.to_dict())
     assert round_tripped.run_token == "run_ab12-CD"
     assert build_room_sweep_spec().run_token == ""

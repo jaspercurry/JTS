@@ -41,6 +41,9 @@ const {
   LEVEL_EVENT_SCHEMA_VERSION,
   CLIP_ABS_THRESHOLD,
   ABORT_REPOSTS,
+  RAMP_TERMINAL_STATES,
+  rampEventFromStatus,
+  runLevelRampProtocol,
 } = await import(dataUrl);
 
 let passed = 0;
@@ -52,6 +55,14 @@ function ok() {
 function makeClock() {
   const state = { t: 0 };
   return { now: () => state.t, advance: (ms) => (state.t += ms), state };
+}
+
+function setupBinding(id = "flow-123456789012") {
+  return {
+    schema: 1,
+    binding_id: id,
+    sha256: "a".repeat(64),
+  };
 }
 
 // --- blockLevel agrees with the Pi ------------------------------------------
@@ -88,6 +99,29 @@ function makeClock() {
   ok();
 }
 
+// Raw calibration secrets/text must never ride the repeated meter batch.
+{
+  assert.throws(
+    () => new LevelStreamer({
+      context: {
+        setup: {
+          calibration: { mode: "upload", filename: "mic.cal", content: "20 0" },
+        },
+      },
+    }),
+    /validated compact setup binding/,
+  );
+  assert.throws(
+    () => new LevelStreamer({
+      context: {
+        setup: { calibration: { mode: "serial", serial: "secret-serial" } },
+      },
+    }),
+    /validated compact setup binding/,
+  );
+  ok();
+}
+
 // --- batching: many samples, few posts, superset envelope -------------------
 
 {
@@ -103,6 +137,10 @@ function makeClock() {
     windowMs: 2000,
     sampleRate: 48000,
     agcFrozen: true,
+    context: {
+      setup: { binding: setupBinding() },
+      device: { label: "USB measurement mic", device_id: "mic-1" },
+    },
   });
   streamer.setArmed(true);
 
@@ -129,6 +167,10 @@ function makeClock() {
     assert.equal(p.level_batch.armed, true);
     assert.equal(p.level_batch.aborted, false);
     assert.equal(p.level_batch.agc_frozen, true);
+    assert.deepEqual(p.level_batch.context, {
+      setup: { binding: setupBinding() },
+      device: { label: "USB measurement mic", device_id: "mic-1" },
+    });
     assert.ok(Array.isArray(p.level_batch.samples));
     for (const s of p.level_batch.samples) {
       assert.ok(Math.abs(s.rms_dbfs - -20) < 0.2);
@@ -206,6 +248,10 @@ function makeClock() {
     },
     blockMs: 100,
     postIntervalMs: 5000, // large: normal posts wouldn't fire
+    context: {
+      setup: { binding: setupBinding() },
+      device: { label: "Phone mic", device_id: "default" },
+    },
   });
   await streamer.abort("backgrounded");
   // 1 immediate + ABORT_REPOSTS re-posts, all carrying the aborted superset —
@@ -215,6 +261,8 @@ function makeClock() {
   for (const p of posts) {
     assert.equal(p.level_batch.aborted, true);
     assert.equal(p.level_batch.abort_reason, "backgrounded");
+    assert.deepEqual(p.level_batch.context.setup.binding, setupBinding());
+    assert.equal(p.level_batch.context.device.device_id, "default");
   }
   assert.equal(delays.length, ABORT_REPOSTS);
   ok();
@@ -281,6 +329,165 @@ function makeClock() {
   });
   const blockSamples = Math.round((100 / 1000) * 48000);
   await streamer.addFrame(new Float32Array(blockSamples).fill(0.1)); // must not throw
+  ok();
+}
+
+// A display-only meter failure never interrupts the safety feed.
+{
+  const posts = [];
+  const streamer = new LevelStreamer({
+    postEvent: async (event) => posts.push(event),
+    onLevel: () => {
+      throw new Error("meter detached");
+    },
+    blockMs: 100,
+    postIntervalMs: 100,
+  });
+  await streamer.addFrame(new Float32Array(4800).fill(0.1));
+  assert.equal(posts.length, 1);
+  ok();
+}
+
+// --- terminal host events are token-scoped ----------------------------------
+
+{
+  assert.ok(RAMP_TERMINAL_STATES.includes("locked"));
+  assert.ok(RAMP_TERMINAL_STATES.includes("error"));
+  assert.equal(
+    rampEventFromStatus(
+      { host_event: { ramp: { state: "locked", run_token: "old" } } },
+      "current",
+    ),
+    null,
+  );
+  assert.deepEqual(
+    rampEventFromStatus(
+      { host_event: { ramp: { state: "settling", run_token: "current" } } },
+      "current",
+    ),
+    { state: "settling", terminal: false },
+  );
+  assert.deepEqual(
+    rampEventFromStatus(
+      {
+        host_event: {
+          ramp: {
+            state: "error",
+            run_token: "current",
+            error: "microphone calibration changed",
+          },
+        },
+      },
+      "current",
+    ),
+    {
+      state: "error",
+      terminal: true,
+      error: "microphone calibration changed",
+    },
+  );
+  assert.deepEqual(
+    rampEventFromStatus(
+      { host_event: { ramp: { state: "locked", run_token: "current" } } },
+      "current",
+    ),
+    { state: "locked", terminal: true },
+  );
+  ok();
+}
+
+// --- level_ramp is meter-only: batches + terminal, never a WAV upload --------
+
+{
+  const posts = [];
+  let blobUploads = 0;
+  let statusReads = 0;
+  let starts = 0;
+  let stops = 0;
+  const progress = [];
+  const client = {
+    async postEvent(event) {
+      posts.push(JSON.parse(JSON.stringify(event)));
+    },
+    async fetchPhoneStatus() {
+      statusReads += 1;
+      const state = statusReads < 2 ? "climbing" : "locked";
+      return { host_event: { ramp: { state, run_token: "run-current" } } };
+    },
+    async putBlob() {
+      blobUploads += 1;
+    },
+  };
+  const recorder = {
+    start() {
+      starts += 1;
+    },
+    async stop() {
+      stops += 1;
+      return new Float32Array(4800).fill(0.1);
+    },
+  };
+  const ramp = await runLevelRampProtocol({
+    client,
+    recorder,
+    spec: {
+      kind: "level_ramp",
+      run_token: "run-current",
+      duration_ms: 5000,
+      sample_rate_hz: 48000,
+    },
+    blockMs: 100,
+    delay: async () => {},
+    context: {
+      setup: { binding: setupBinding() },
+      device: { label: "External mic", device_id: "external-1" },
+    },
+    onProgress: (event) => progress.push(event.state),
+  });
+  assert.deepEqual(ramp, { state: "locked", terminal: true });
+  assert.equal(starts, 2);
+  assert.equal(stops, 2);
+  assert.equal(blobUploads, 0, "level ramp must never upload a WAV/blob");
+  assert.ok(posts.length >= 2);
+  assert.ok(posts.every((post) => post.level_batch));
+  assert.ok(posts.every((post) => post.level_batch.run_token === "run-current"));
+  assert.ok(posts.every((post) => (
+    post.level_batch.context.setup.binding.sha256 === "a".repeat(64) &&
+    post.level_batch.context.device.device_id === "external-1"
+  )));
+  assert.deepEqual(progress, ["climbing", "locked"]);
+  ok();
+}
+
+// Every Pi terminal state stops streaming, not only the happy-path lock.
+{
+  for (const state of ["maxed_out", "aborted", "cancelled", "error"]) {
+    const client = {
+      async postEvent() {},
+      async fetchPhoneStatus() {
+        return { host_event: { ramp: { state, run_token: "run-terminal" } } };
+      },
+    };
+    const recorder = {
+      start() {},
+      async stop() {
+        return new Float32Array(4800).fill(0.05);
+      },
+    };
+    const ramp = await runLevelRampProtocol({
+      client,
+      recorder,
+      spec: {
+        kind: "level_ramp",
+        run_token: "run-terminal",
+        duration_ms: 5000,
+        sample_rate_hz: 48000,
+      },
+      blockMs: 100,
+      delay: async () => {},
+    });
+    assert.deepEqual(ramp, { state, terminal: true });
+  }
   ok();
 }
 

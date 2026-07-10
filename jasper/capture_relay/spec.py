@@ -32,6 +32,7 @@ Two boundaries are load-bearing and tested:
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -40,6 +41,11 @@ from urllib.parse import urlsplit
 # --- Contract constants -------------------------------------------------------
 
 SCHEMA_VERSION = 1
+# Phone page/Pi behavior protocol. This is independent of CaptureSpec's JSON
+# schema: additive spec fields may remain schema-compatible while choreography
+# changes (for example, setup binding or a level stream) require a matching
+# public page before the Pi is allowed to play a tone.
+CAPTURE_PROTOCOL_VERSION = 1
 
 # The capture/upload contract mirrors the existing Pi backend so a relay-pulled
 # WAV drops into the same analysis as today's same-origin upload
@@ -252,11 +258,19 @@ class CaptureSpec:
     # Whether the phone page should preflight its guided setup (notably vendor
     # mic serial lookup) through the Pi before advancing to the Start step.
     setup_validation: bool = False
+    # Opaque session binding shared by the guided level stage and its later
+    # capture-only room links. The relay does not interpret it; the phone and Pi
+    # use it to reject stale setup identities.
+    setup_binding_id: str = ""
+    # Whether the guided setup asks for the room position count. Crossover level
+    # matching uses the same setup flow without that room-only question.
+    setup_collect_positions: bool = False
     # Optional per-run nonce (additive, empty for kinds that don't use it). The
     # level_ramp flow mints one per ramp run; the phone echoes it in every
     # level_batch so the Pi's feed can distinguish THIS run's events from a
     # previous run's persisted relay slot (see level_match.RelayLevelFeed).
     run_token: str = ""
+    capture_protocol_version: int = CAPTURE_PROTOCOL_VERSION
     schema_version: int = SCHEMA_VERSION
 
     # -- serialization --
@@ -269,6 +283,7 @@ class CaptureSpec:
         """
         return {
             "schema_version": self.schema_version,
+            "capture_protocol_version": self.capture_protocol_version,
             "kind": self.kind,
             "sample_rate_hz": self.sample_rate_hz,
             "channels": self.channels,
@@ -292,6 +307,8 @@ class CaptureSpec:
             },
             "return_url": self.return_url,
             "setup_validation": self.setup_validation,
+            "setup_binding_id": self.setup_binding_id,
+            "setup_collect_positions": self.setup_collect_positions,
             "run_token": self.run_token,
             "output": {"format": self.output_format},
             "max_upload_bytes": self.max_upload_bytes,
@@ -352,7 +369,16 @@ class CaptureSpec:
             ),
             return_url=str(data.get("return_url") or ""),
             setup_validation=setup_validation,
+            setup_binding_id=str(data.get("setup_binding_id") or ""),
+            setup_collect_positions=_as_bool(
+                data, "setup_collect_positions", default=False
+            ),
             run_token=str(data.get("run_token") or ""),
+            capture_protocol_version=_as_int(
+                data,
+                "capture_protocol_version",
+                default=CAPTURE_PROTOCOL_VERSION,
+            ),
             schema_version=_as_int(data, "schema_version", default=SCHEMA_VERSION),
         )
         # Guard against a screen entry that was not a Mapping (dropped above).
@@ -369,6 +395,11 @@ class CaptureSpec:
         """Strict, loud validation. Returns self so callers can chain."""
         if not self.kind or not isinstance(self.kind, str):
             raise CaptureSpecError("kind must be a non-empty string")
+        if self.capture_protocol_version != CAPTURE_PROTOCOL_VERSION:
+            raise CaptureSpecError(
+                "capture_protocol_version must be "
+                f"{CAPTURE_PROTOCOL_VERSION}, got {self.capture_protocol_version}"
+            )
         # NB: kinds are deliberately NOT enumerated — a new kind needs no schema
         # change. We validate the *shape*, never the *vocabulary* of kind.
         if self.sample_rate_hz != REQUIRED_SAMPLE_RATE_HZ:
@@ -403,6 +434,19 @@ class CaptureSpec:
             )
         if not isinstance(self.setup_validation, bool):
             raise CaptureSpecError("setup_validation must be a boolean")
+        if not isinstance(self.setup_collect_positions, bool):
+            raise CaptureSpecError("setup_collect_positions must be a boolean")
+        _validate_run_token(self.run_token)
+        if self.setup_binding_id and not re.fullmatch(
+            r"[A-Za-z0-9_-]{12,160}", self.setup_binding_id
+        ):
+            raise CaptureSpecError(
+                "setup_binding_id must be 12..160 URL-safe characters"
+            )
+        if self.setup_collect_positions and not self.setup_validation:
+            raise CaptureSpecError(
+                "setup_collect_positions requires setup_validation=true"
+            )
         if (
             not isinstance(self.max_upload_bytes, int)
             or isinstance(self.max_upload_bytes, bool)
@@ -423,7 +467,6 @@ class CaptureSpec:
         _validate_theme(self.theme)
         _validate_screen(self.screen)
         _validate_return_url(self.return_url)
-        _validate_run_token(self.run_token)
         return self
 
     def with_screen(self, *components: Mapping[str, Any]) -> CaptureSpec:
@@ -613,6 +656,8 @@ def build_room_sweep_spec(
     font: str = "figtree",
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     calibration_models: Sequence[Mapping[str, Any]] | None = None,
+    guided_setup: bool = True,
+    setup_binding_id: str = "",
 ) -> CaptureSpec:
     """Build the `kind="room_sweep"` capture spec (plan §6, build step 1).
 
@@ -645,10 +690,12 @@ def build_room_sweep_spec(
     else:
         heading_text = "Room measurement"
     seconds = round(stimulus_duration_ms / 1000)
-    if calibration_models is None:
+    if calibration_models is None and guided_setup:
         from jasper.audio_measurement.calibration import supported_model_options
 
         calibration_models = supported_model_options()
+    elif calibration_models is None:
+        calibration_models = ()
 
     spec = CaptureSpec(
         kind="room_sweep",
@@ -679,7 +726,12 @@ def build_room_sweep_spec(
         ),
         calibration_models=tuple(calibration_models),
         max_upload_bytes=max_upload_bytes,
-        setup_validation=True,
+        # Mic choice + calibration are session setup, not per-position work.
+        # The first level-check link validates and freezes them on the Pi; later
+        # position links are intentionally capture-only and report the realized
+        # device for the Pi's identity check after upload.
+        setup_validation=guided_setup,
+        setup_binding_id=setup_binding_id,
     )
     return spec.validate()
 
@@ -894,6 +946,9 @@ def build_level_ramp_spec(
     font: str = "figtree",
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     run_token: str = "",
+    calibration_models: Sequence[Mapping[str, Any]] | None = None,
+    setup_binding_id: str = "",
+    setup_collect_positions: bool = False,
 ) -> CaptureSpec:
     """`kind="level_ramp"` — the relay-closed level-match ramp (§3.1, P2).
 
@@ -914,14 +969,20 @@ def build_level_ramp_spec(
     insta-cancel or mis-feed a retry.
 
     Clean capture is mandatory — auto-gain would flatten the very level the ramp
-    maps (``clean_capture="refuse"``, ``allow_capability_fallback=True`` so a
-    strict iPhone degrades to the manual-lock UX rather than dead-ending). It is a
+    maps. The page additionally requires explicit realized
+    ``autoGainControl=false`` and refuses before the tone when a browser cannot
+    prove it; ``allow_capability_fallback`` does not authorize a degraded
+    automatic level result. It is a
     level comparison, not a timing one, so alignment is not required and clock
     drift is irrelevant (``require_alignment=False``, ``clock_drift="ignore"``).
     ``geometry_label`` tailors the copy for the near-field (baffle) vs
     listening-position step.
     """
     duration_ms = max(pre_roll_ms + post_roll_ms + 1000, int(hard_timeout_ms))
+    if calibration_models is None:
+        from jasper.audio_measurement.calibration import supported_model_options
+
+        calibration_models = supported_model_options()
     return CaptureSpec(
         kind="level_ramp",
         duration_ms=duration_ms,
@@ -952,6 +1013,10 @@ def build_level_ramp_spec(
             ui_button("Start", action="begin_capture"),
             ui_note("Keep the screen on — leaving this page stops the level match."),
         ),
+        calibration_models=tuple(calibration_models),
+        setup_validation=True,
+        setup_binding_id=(setup_binding_id or (f"level-{run_token}" if run_token else "")),
+        setup_collect_positions=setup_collect_positions,
         max_upload_bytes=max_upload_bytes,
     ).validate()
 

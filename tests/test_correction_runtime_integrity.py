@@ -65,6 +65,7 @@ def test_runtime_integrity_flags_camilla_clipping_delta(monkeypatch):
     from jasper.correction import runtime_integrity
 
     monkeypatch.setattr(runtime_integrity, "_read_fanin_status", lambda: None)
+    monkeypatch.setattr(runtime_integrity, "_read_loadavg_1m", lambda: None)
     report = RuntimeIntegrityReport("abc123")
     report.record_snapshot(
         "sweep_start",

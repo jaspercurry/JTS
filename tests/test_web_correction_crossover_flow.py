@@ -190,26 +190,26 @@ def test_backend_status_includes_active_speaker_commission_state(monkeypatch):
     assert payload["commission"] == {"ramp": {"pending": None}}
 
 
-@pytest.mark.parametrize(
-    ("name", "path"),
-    [
-        ("driver-test", "driver-test"),
-        ("driver-confirm", "driver-confirm"),
-        ("driver-abort", "driver-abort"),
-        ("summed-test", "summed-test"),
-        ("driver-capture-sweep", "driver-capture-sweep"),
-        ("summed-capture-sweep", "summed-capture-sweep"),
-    ],
-)
-def test_crossover_module_calls_secure_measurement_routes(name, path):
+def test_crossover_module_is_a_thin_server_envelope_renderer():
     source = Path("deploy/assets/correction/js/crossover/main.js").read_text(
         encoding="utf-8",
     )
 
-    assert f"'{path}'" in source or f'"{path}"' in source, name
-    assert "micCaptureSupport" in source
-    assert "support.message" in source
+    assert "fetchJSON('/correction/crossover/envelope')" in source
+    assert "fetchJSON('status')" not in source
     assert "postJSON" in source
+    assert "action.endpoint" in source
+    assert "getUserMedia" not in source
+    assert "createMonoRecorder" not in source
+    assert "driver-test" not in source
+    assert "setInterval" not in source
+    assert "refreshInFlight" in source
+    assert "refreshQueued" in source
+    assert "renderEpoch" in source
+    assert "visibilitychange" in source
+    assert "schedulePoll(relayActive ? POLL_MS : null)" in source
+    assert "renderActions(null);" in source
+    assert "env.alternate_actions" in source
 
 
 # --- passive-gating: Layer A hidden for a full-range passive speaker ----------
@@ -254,135 +254,63 @@ def test_status_active_flag_false_for_passive_speaker(monkeypatch):
     assert payload["active"] is False
 
 
-# --- crossover screen envelope (aligned with the room envelope pattern) -------
-#
-# The composition tests run the REAL loaders + REAL coordinator against REAL
-# state files written to env-pointed tmp paths — never a monkeypatched
-# coordinator or a hand-rolled view dict (the mock-shape-drift class the P7
-# review caught: a fake view hid that the envelope starved
-# build_commissioning_view of six of its inputs).
+# --- crossover screen envelope: exactly one sequential next action -----------
 
 
-def _active_topology_mapping(*, identity_verified: bool) -> dict:
-    # The same real active_2_way mapping tests/test_active_speaker_startup_load
-    # builds; parsed by the REAL OutputTopology.from_mapping on load.
+def _envelope_status() -> dict:
     return {
-        "artifact_schema_version": 1,
-        "kind": "jts_output_topology",
-        "topology_id": "bench_mono",
-        "name": "Bench mono cabinet",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-            "card_id": "DAC8",
+        "active": True,
+        "setup": {
+            "active": True,
+            "status": "ready",
+            "acoustic_commissioning": {"allowed": False},
+            "baseline_profile": {
+                "source_fingerprint": "source-1",
+                "revalidation": {"required": False},
+            },
+            "applied_crossover": {
+                "valid": False,
+                "owner": None,
+                "reason": "active_crossover_profile_not_applied",
+            },
+            "manual_preservation": {
+                "ready": False,
+                "reason": "manual_crossover_not_legacy_applied",
+            },
+            "automatic_candidate": {
+                "ready": False,
+                "reason": "automatic_crossover_measurements_incomplete",
+            },
         },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono cabinet",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": identity_verified,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": identity_verified,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
+        "targets": {
+            "drivers": [
+                {"speaker_group_id": "mono", "role": "woofer"},
+                {"speaker_group_id": "mono", "role": "tweeter"},
+            ],
+            "summed": [{"speaker_group_id": "mono"}],
+        },
+        "measurements": {"summary": {}},
+        "level_match": {"running": False, "last": None},
+        "applied_profile": {},
+        "relay": None,
     }
 
 
-def _point_commissioning_state_at(monkeypatch, tmp_path: Path) -> dict[str, Path]:
-    """Env-point every durable commissioning state file at tmp_path."""
-    paths = {
-        "topology": tmp_path / "output_topology.json",
-        "design_draft": tmp_path / "design_draft.json",
-        "crossover_preview": tmp_path / "crossover_preview.json",
-        "measurements": tmp_path / "measurements.json",
-        "calibration_level": tmp_path / "calibration_level.json",
-        "baseline_profile": tmp_path / "baseline_profile.json",
-        "startup_load": tmp_path / "startup_load.json",
+def _locked_level(status: dict) -> None:
+    status["level_match"] = {
+        "running": False,
+        # The target remains reusable after the safe lifecycle restores normal
+        # listening volume between sweep windows.
+        "last": {"ramp": {"state": "locked", "restored": True}},
     }
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(paths["topology"]))
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(paths["design_draft"])
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(paths["crossover_preview"]),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE", str(paths["measurements"])
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
-        str(paths["calibration_level"]),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE",
-        str(paths["baseline_profile"]),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE", str(paths["startup_load"])
-    )
-    return paths
 
 
-def _write_ready_draft_and_preview(paths: dict[str, Path]) -> None:
-    """Write a saved-draft + fresh-preview fixture in the REAL on-disk shapes.
-
-    The preview must carry the REAL design-draft fingerprint or the real
-    `load_crossover_preview(current_design_draft=...)` marks it stale.
-    """
-    import json
-
-    from jasper.active_speaker.crossover_preview import _design_draft_fingerprint
-    from jasper.active_speaker.design_draft import load_design_draft
-
-    paths["design_draft"].write_text(
-        json.dumps({
-            "artifact_schema_version": 1,
-            "kind": "jts_active_speaker_design_draft",
-            "status": "ready_for_review",
-            "summary": {
-                "missing_driver_info_roles": [],
-                "missing_crossover_candidate_pairs": [],
-            },
-        }),
-        encoding="utf-8",
-    )
-    loaded_draft = load_design_draft(paths["design_draft"])
-    paths["crossover_preview"].write_text(
-        json.dumps({
-            "artifact_schema_version": 1,
-            "kind": "jts_active_speaker_crossover_preview",
-            "status": "ready_for_protected_staging",
-            "permissions": {"may_prepare_protected_startup_config": True},
-            "source": {
-                "design_draft_fingerprint": _design_draft_fingerprint(loaded_draft),
-            },
-        }),
-        encoding="utf-8",
-    )
+def _driver_acoustic() -> dict:
+    return {"acoustic": {"verdict": "present"}}
 
 
-_ACTIVE_STATUS = {
-    "targets": {"drivers": [{"target_id": "mono:woofer"}], "summed": []},
-    "measurements": {"summary": {}},
-}
+def _summed_acoustic() -> dict:
+    return {"validated": True, "acoustic": {"verdict": "blend_ok"}}
 
 
 def test_crossover_envelope_passive_speaker_is_gated():
@@ -391,202 +319,332 @@ def test_crossover_envelope_passive_speaker_is_gated():
     from jasper.active_speaker import crossover_envelope
 
     env = crossover_envelope.build_crossover_envelope(
-        {"targets": {"drivers": [], "summed": []}, "measurements": {}}
+        {"active": False, "targets": {"drivers": [], "summed": []}}
     )
     assert env["active"] is False
-    assert env["screen"] == crossover_envelope.SCREEN_NOT_APPLICABLE
+    assert env["screen"] == "not_applicable"
     assert env["steps"] == []
-    assert env["next_action"] is None
+    assert env["next_action"] == {
+        "id": "room",
+        "label": "Correct the room",
+        "href": "/correction/room/",
+    }
     assert env["nudges"] == []
     assert "crossover" in env["verdict_text"].lower()
-    # Literal schema pin (a real shape pin, not a tautology against the const).
-    assert env["schema_version"] == 1
+    assert env["schema_version"] == 2
 
 
-def test_crossover_envelope_real_coordinator_moves_past_research(
-    monkeypatch, tmp_path
-):
-    # THE Blocker-3 regression pin: with a saved design draft + fresh crossover
-    # preview on disk, the envelope must move PAST the "research" step — through
-    # the REAL loaders and the REAL coordinator. Before the shared
-    # `load_commissioning_view` loader, the envelope starved the coordinator
-    # (only `measurements` was passed), which pinned current_step to "research"
-    # forever and pointed next_action backward at "Save values".
-
+def test_crossover_envelope_requires_protected_setup_first():
     from jasper.active_speaker import crossover_envelope
-    from jasper.output_topology import OutputTopology, save_output_topology
 
-    paths = _point_commissioning_state_at(monkeypatch, tmp_path)
-    save_output_topology(
-        OutputTopology.from_mapping(
-            _active_topology_mapping(identity_verified=False)
-        ),
-        paths["topology"],
+    status = _envelope_status()
+    status["setup"]["status"] = "blocked"
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "speaker_setup"
+    assert env["next_action"]["href"] == "/sound/"
+    assert env["next_action"]["id"] == "speaker_setup"
+
+
+def test_crossover_apply_requires_explicit_owner(monkeypatch):
+    from jasper.web import correction_crossover_backend as backend
+
+    seen = {}
+
+    async def fake_apply_profile(*, tuning_owner, camilla_factory):
+        seen["owner"] = tuning_owner
+        return {"status": "applied", "issues": []}
+
+    monkeypatch.setattr(backend, "apply_profile", fake_apply_profile)
+
+    def run_async(awaitable, *, timeout):
+        import asyncio
+
+        assert timeout == 30.0
+        return asyncio.run(awaitable)
+
+    refused, refused_status = flow.handle_apply({}, run_async, lambda: object())
+    assert refused_status == 400
+    assert refused["status"] == "refused"
+
+    payload, status = flow.handle_apply(
+        {"tuning_owner": "automatic"}, run_async, lambda: object()
     )
-    _write_ready_draft_and_preview(paths)
-
-    env = crossover_envelope.build_crossover_envelope(_ACTIVE_STATUS)
-
-    assert env["active"] is True
-    # Draft + preview are saved → research is DONE; unverified outputs make
-    # "map" the active step. The starved envelope reported "research" here.
-    assert env["screen"] == "map"
-    by_id = {s["id"]: s for s in env["steps"]}
-    assert by_id["research"]["status"] == "done"
-    assert by_id["map"]["status"] == "active"
-    # And next_action is no longer the backward "save_driver_values".
-    assert (env["next_action"] or {}).get("id") == "confirm_outputs"
-    assert env["progress"]["position"] == 3  # map is 3rd of 5
+    assert status == 200
+    assert payload["status"] == "applied"
+    assert seen["owner"] == "automatic"
 
 
-def test_crossover_envelope_real_coordinator_reaches_done_when_applied(
-    monkeypatch, tmp_path
-):
-    # SCREEN_DONE must be reachable: a saved baseline profile with
-    # status="applied" and a MATCHING source fingerprint (computed by the REAL
-    # candidate derivation, not hand-rolled) short-circuits
-    # build_baseline_profile_candidate into returning the saved applied state,
-    # and the envelope folds coordinator status "applied" onto "done". The
-    # starved envelope could never reach this (baseline_profile was never
-    # loaded).
-    import json
-
+def test_crossover_envelope_walks_level_drivers_summed_apply_room():
     from jasper.active_speaker import crossover_envelope
-    from jasper.active_speaker.baseline_profile import (
-        build_baseline_profile_candidate,
-    )
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
-    from jasper.output_topology import (
-        OutputTopology,
-        load_output_topology,
-        save_output_topology,
-    )
+    status = _envelope_status()
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "microphone"
+    assert env["next_action"]["id"] == "level_match"
 
-    paths = _point_commissioning_state_at(monkeypatch, tmp_path)
-    save_output_topology(
-        OutputTopology.from_mapping(
-            _active_topology_mapping(identity_verified=True)
-        ),
-        paths["topology"],
-    )
-    _write_ready_draft_and_preview(paths)
+    _locked_level(status)
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "driver"
+    assert env["next_action"]["body"] == {
+        "kind": "driver",
+        "speaker_group_id": "mono",
+        "role": "woofer",
+    }
 
-    # Derive the REAL current-source fingerprint by running the real candidate
-    # once over the same loaded state the envelope's loader will see.
-    topology = load_output_topology()
-    draft = load_design_draft()
-    preview = load_crossover_preview(current_design_draft=draft)
-    measurements = load_measurement_state(topology)
-    first = build_baseline_profile_candidate(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        write=False,
-    )
-    config_path = tmp_path / "baseline.yml"
-    config_path.write_text("# applied baseline stub\n", encoding="utf-8")
-    paths["baseline_profile"].write_text(
-        json.dumps({
-            **first,
-            "status": "applied",
-            "config": {
-                **(first.get("config") or {}),
-                "path": str(config_path),
-                "exists": True,
-            },
-            "issues": [],
-        }),
-        encoding="utf-8",
-    )
+    summary = status["measurements"]["summary"]
+    summary["latest_driver_measurements"] = {"mono:woofer": _driver_acoustic()}
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["next_action"]["body"]["role"] == "tweeter"
 
-    env = crossover_envelope.build_crossover_envelope(_ACTIVE_STATUS)
+    summary["latest_driver_measurements"]["mono:tweeter"] = _driver_acoustic()
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "summed"
+    assert env["next_action"]["body"] == {
+        "kind": "summed",
+        "speaker_group_id": "mono",
+    }
 
-    assert env["active"] is True
-    assert env["screen"] == crossover_envelope.SCREEN_DONE
+    summary["latest_summed_validations"] = {"mono": _summed_acoustic()}
+    status["setup"]["automatic_candidate"] = {
+        "ready": True,
+        "reason": None,
+    }
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "apply"
+    assert env["next_action"]["endpoint"] == "/correction/crossover/apply"
+
+    status["applied_profile"] = {
+        "status": "applied",
+        "provisional": False,
+        "level_match": {"groups_measured": 1},
+        "source": {"fingerprint": "source-1"},
+        "tuning_owner": "automatic",
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "tuning_owner": "automatic",
+        },
+    }
+    status["setup"]["acoustic_commissioning"] = {"allowed": True}
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "automatic",
+        "reason": None,
+    }
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "done"
+    assert env["next_action"]["href"] == "/correction/room/"
     assert env["progress"] == {"position": 5, "total": 5}
-    assert "commissioned" in env["verdict_text"]
 
 
-def test_crossover_envelope_screen_folds_applied_onto_done():
+def test_crossover_envelope_uses_applied_anchor_while_candidate_is_incomplete():
     from jasper.active_speaker import crossover_envelope
 
-    view = {"status": "applied", "current_step": "profile", "steps": []}
-    assert crossover_envelope._screen_for(view) == crossover_envelope.SCREEN_DONE
-    assert crossover_envelope._progress(crossover_envelope.SCREEN_DONE) == {
-        "position": 5, "total": 5,
+    status = _envelope_status()
+    status["setup"].update({
+        "status": "ready",
+        "baseline_profile": {
+            "status": "blocked",
+            "revalidation": {"required": True},
+        },
+        "protected_profile": {"status": "ready"},
+    })
+    _locked_level(status)
+    status["measurements"]["summary"]["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic(),
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "driver"
+    assert env["next_action"]["body"]["role"] == "tweeter"
+
+
+def test_crossover_envelope_legacy_applied_profile_requires_explicit_reapply():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["applied_profile"] = {
+        "status": "applied",
+        "provisional": False,
+        "level_match": {"groups_measured": 1},
+        # Profiles applied before immutable graph snapshots shipped have no
+        # recomposition_snapshot. They are safe anchors, but cannot authorize
+        # Room until the explicit apply transaction migrates them.
+    }
+    status["setup"]["manual_preservation"] = {
+        "ready": True,
+        "reason": None,
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "choose_tuning"
+    assert env["next_action"] == {
+        "id": "keep_manual",
+        "label": "Keep current manual crossover",
+        "endpoint": "/correction/crossover/apply",
+        "body": {"tuning_owner": "manual"},
+    }
+    assert [action["id"] for action in env["alternate_actions"]] == [
+        "tune_automatic",
+        "edit_manual",
+    ]
+    assert "current manual crossover is safe" in env["verdict_text"]
+
+
+def test_changed_legacy_source_removes_keep_manual_action():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["applied_profile"] = {"status": "applied"}
+    status["setup"]["manual_preservation"] = {
+        "ready": False,
+        "reason": "manual_crossover_source_changed",
+        "detail": (
+            "The saved crossover inputs changed after this manual crossover was applied. "
+            "Edit and apply the manual crossover again, or tune automatically."
+        ),
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["next_action"]["id"] == "edit_manual"
+    assert [action["id"] for action in env["alternate_actions"]] == [
+        "tune_automatic"
+    ]
+    assert "changed" in env["verdict_text"]
+
+
+def test_crossover_envelope_manual_profile_offers_room_edit_or_automatic():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["setup"]["acoustic_commissioning"] = {"allowed": True}
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "manual",
+        "reason": None,
+    }
+    status["applied_profile"] = {
+        "status": "applied",
+        "tuning_owner": "manual",
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "tuning_owner": "manual",
+        },
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "done_manual"
+    assert env["next_action"]["href"] == "/correction/room/"
+    assert [action["id"] for action in env["alternate_actions"]] == [
+        "tune_automatic",
+        "edit_manual",
+    ]
+
+
+def test_completed_automatic_measurement_explicitly_replaces_manual_profile():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["setup"]["acoustic_commissioning"] = {"allowed": True}
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "manual",
+        "reason": None,
+    }
+    status["applied_profile"] = {
+        "status": "applied",
+        "tuning_owner": "manual",
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "tuning_owner": "manual",
+        },
+    }
+    _locked_level(status)
+    status["measurements"]["summary"].update({
+        "latest_driver_measurements": {
+            "mono:woofer": _driver_acoustic(),
+            "mono:tweeter": _driver_acoustic(),
+        },
+        "latest_summed_validations": {"mono": _summed_acoustic()},
+    })
+    status["setup"]["automatic_candidate"] = {
+        "ready": True,
+        "reason": None,
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "apply"
+    assert env["next_action"] == {
+        "id": "replace_manual",
+        "label": "Replace manual crossover with automatic tuning",
+        "endpoint": "/correction/crossover/apply",
+        "body": {"tuning_owner": "automatic"},
     }
 
 
-def test_crossover_envelope_nudges_come_from_real_coordinator_output():
-    # The retry-nudge mapping consumes the REAL coordinator's output shape: a
-    # failed combined test computed by build_commissioning_view itself (real
-    # composer, real measurement-summary input shape) surfaces as a warn NUDGE,
-    # never a block.
+def test_incomparable_automatic_evidence_never_offers_apply():
     from jasper.active_speaker import crossover_envelope
-    from jasper.active_speaker.commissioning_coordinator import (
-        build_commissioning_view,
-    )
 
-    from tests.test_active_speaker_startup_load import _topology
-
-    view = build_commissioning_view(
-        _topology(),
-        design_draft={
-            "kind": "jts_active_speaker_design_draft",
-            "status": "ready_for_review",
-            "summary": {
-                "missing_driver_info_roles": [],
-                "missing_crossover_candidate_pairs": [],
-            },
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["summary"] = {
+        "latest_driver_measurements": {
+            "mono:woofer": _driver_acoustic(),
+            "mono:tweeter": _driver_acoustic(),
         },
-        crossover_preview={
-            "kind": "jts_active_speaker_crossover_preview",
-            "status": "ready_for_protected_staging",
-            "permissions": {"may_prepare_protected_startup_config": True},
-        },
-        measurements={
-            "summary": {
-                "driver_checks_complete": True,
-                "latest_summed_tests": {
-                    "mono": {
-                        "captured": True,
-                        "audio_emitted": False,
-                        "summed_test_id": "sum-1",
-                        "issues": [{
-                            "severity": "blocker",
-                            "code": "tone_backend_failed",
-                            "message": "backend failed",
-                        }],
-                    },
-                },
-                "latest_summed_validations": {},
-            },
-        },
-    )
-    nudges = crossover_envelope._nudges(view, active=True)
-    assert any(n["code"].startswith("combined_test_retry") for n in nudges)
-    assert all(n["severity"] in ("info", "warn") for n in nudges)
+        "latest_summed_validations": {"mono": _summed_acoustic()},
+    }
+    status["setup"]["automatic_candidate"] = {
+        "ready": False,
+        "reason": "automatic_crossover_excitation_incomparable",
+        "detail": (
+            "Repeat the driver sweeps so their verified excitation can be compared."
+        ),
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert env["next_action"]["id"] == "level_match"
+    assert env["next_action"].get("endpoint") != "/correction/crossover/apply"
 
 
-def test_crossover_envelope_progress_spine_is_the_coordinators_export():
-    # Single-sourced spine: the envelope derives from the coordinator's exported
-    # tuple, and the REAL coordinator's emitted step ids match that export — a
-    # coordinator step-id rename now fails here instead of silently degrading
-    # _screen_for to its fallback.
+def test_applied_automatic_snapshot_is_done_without_mutable_measurements():
     from jasper.active_speaker import crossover_envelope
-    from jasper.active_speaker.commissioning_coordinator import (
-        COMMISSIONING_STEP_IDS,
-        build_commissioning_view,
-    )
 
-    from tests.test_active_speaker_startup_load import _topology
+    status = _envelope_status()
+    status["applied_profile"] = {
+        "status": "applied",
+        "tuning_owner": "automatic",
+        "recomposition_snapshot": {"schema_version": 1},
+    }
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "automatic",
+        "reason": None,
+    }
 
-    assert crossover_envelope._PROGRESS_SPINE is COMMISSIONING_STEP_IDS
-    view = build_commissioning_view(_topology())
-    assert tuple(s["id"] for s in view["steps"]) == COMMISSIONING_STEP_IDS
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "done"
+    assert env["next_action"]["href"] == "/correction/room/"
+
+
+def test_crossover_envelope_maxed_out_is_retry_not_a_lock():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["level_match"] = {
+        "running": False,
+        "last": {"ramp": {"state": "maxed_out", "restored": True}},
+    }
+    env = crossover_envelope.build_crossover_envelope(status)
+    assert env["screen"] == "microphone"
+    assert env["next_action"]["id"] == "level_match"
+    assert env["nudges"][0]["code"] == "external_amplifier_too_low"
 
 
 # --- phone-mic relay transport (P7) -------------------------------------------
@@ -795,6 +853,63 @@ async def test_crossover_relay_consume_feeds_real_summed_play_payload(
     assert raw["summed_test_id"] == "sum-9"
     assert raw["sweep_meta"]["sample_rate"] == 48000
     assert "role" not in raw
+
+
+@pytest.mark.asyncio
+async def test_crossover_gain_is_scoped_to_the_measurement_window(monkeypatch):
+    """Normal renderers must never resume while measurement gain is asserted."""
+    from contextlib import asynccontextmanager
+
+    from jasper.correction import coordinator
+    from jasper.web import correction_crossover_backend as be
+
+    _fake_relay_transport(monkeypatch)
+    order = []
+
+    @asynccontextmanager
+    async def window():
+        order.append("window_enter")
+        try:
+            yield
+        finally:
+            order.append("window_exit")
+
+    async def prepare():
+        order.append("prepare")
+        return True
+
+    async def restore():
+        order.append("restore")
+        return True
+
+    async def play(*_args, **_kwargs):
+        order.append("play")
+        return {
+            "status": "completed",
+            "playback": {"audio_emitted": True},
+            "playback_id": "play-1",
+            "test_level_dbfs": -72.0,
+            "sweep_meta": {"sample_rate": 48000},
+        }
+
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    monkeypatch.setattr(
+        be,
+        "record_driver_capture",
+        lambda _raw, _wav: {"recorded": True},
+    )
+
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        prepare_play=prepare,
+        restore_play=restore,
+    )
+    await run_and_consume(object(), SimpleNamespace(session_id="s", pull_token="t"))
+
+    assert order == ["window_enter", "prepare", "play", "restore", "window_exit"]
 
 
 @pytest.mark.asyncio

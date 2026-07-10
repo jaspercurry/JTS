@@ -42,12 +42,18 @@ from .camilla_yaml import (
     emit_active_speaker_baseline_config,
     emit_active_speaker_driver_domain_config,
 )
+from .crossover_contract import (
+    TUNING_OWNERS,
+    automatic_candidate_readiness,
+    crossover_snapshot_state,
+    legacy_manual_preservation_state,
+)
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
     active_playback_route_capability,
     resolve_active_playback_device,
 )
-from .profile import ActiveSpeakerPreset, required_driver_roles
+from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
 from .staging import (
     _passive_mains_with_sub_preset,
@@ -68,6 +74,7 @@ CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
 _SENSITIVITY_TRIM_EPS_DB = 0.05
 # Floor for any single attenuation, mirroring the explicit-gain clamp below.
 _MAX_ATTENUATION_DB = -60.0
+_EXCITATION_MATCH_TOLERANCE_DB = 0.05
 
 
 def _utc_now() -> str:
@@ -92,6 +99,15 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _topology_config_fingerprint(topology: OutputTopology) -> str:
+    """Fingerprint only topology fields that determine emitted DSP config."""
+    return _fingerprint({
+        key: value
+        for key, value in topology.to_dict().items()
+        if key != "pairing_intent"
+    })
+
+
 def _source_payload(
     topology: OutputTopology,
     design_draft: Mapping[str, Any],
@@ -114,14 +130,9 @@ def _source_payload(
     # The "pairing field never changes the cache" contract is pinned by
     # test_pairing_intent_change_does_not_invalidate_baseline_cache, which fails
     # if this key is ever renamed without updating the exclusion here.
-    topology_config_view = {
-        key: value
-        for key, value in topology.to_dict().items()
-        if key != "pairing_intent"
-    }
     source = {
         "topology_id": topology.topology_id,
-        "topology_fingerprint": _fingerprint(topology_config_view),
+        "topology_fingerprint": _topology_config_fingerprint(topology),
         "design_draft_updated_at": design_draft.get("updated_at"),
         "crossover_preview_updated_at": crossover_preview.get("updated_at"),
         "crossover_preview_fingerprint": (
@@ -167,6 +178,36 @@ def _overlap_level_at(
         if abs(entry_fc - fc) <= max(tol_hz, fc * 0.01):
             return _finite_float(entry.get("level_db"))
     return None
+
+
+def _effective_excitation_dbfs(record: Any) -> float | None:
+    """Return a verified analyzer excitation, or ``None`` (fail closed).
+
+    The excitation artifact is a small gain ledger owned by the capture record:
+    generated sweep peak + the role-varying commissioning gain = the effective
+    digital drive (the remaining commissioning gains are common and cancel).
+    We recompute the total instead of trusting a loose scalar, which makes the
+    evidence independently auditable and lets captures made at different safe
+    by-ear levels be normalized onto one common 0 dB reference.
+    """
+    if not isinstance(record, Mapping):
+        return None
+    ledger = record.get("excitation")
+    if (
+        not isinstance(ledger, Mapping)
+        or ledger.get("schema_version") != 1
+        or ledger.get("scope") != "sweep_plus_role_varying_commission_gain"
+    ):
+        return None
+    sweep_peak = _finite_float(ledger.get("sweep_peak_dbfs"))
+    commissioning_gain = _finite_float(ledger.get("commissioning_gain_db"))
+    declared_effective = _finite_float(ledger.get("effective_peak_dbfs"))
+    if sweep_peak is None or commissioning_gain is None or declared_effective is None:
+        return None
+    computed = sweep_peak + commissioning_gain
+    if abs(computed - declared_effective) > _EXCITATION_MATCH_TOLERANCE_DB:
+        return None
+    return computed
 
 
 def _measured_level_trims(
@@ -220,7 +261,27 @@ def _measured_level_trims(
 
     per_group_trims: list[dict[str, float]] = []
     deltas: list[dict[str, Any]] = []
+    incomparable_groups: list[dict[str, Any]] = []
     for group_id, group_records in sorted(by_group.items()):
+        if not any(
+            isinstance(record.get("acoustic"), Mapping)
+            for record in group_records.values()
+        ):
+            # Operator-only floor checks prove routing but are not attempted as
+            # acoustic level evidence, so do not diagnose their intentionally
+            # absent analyzer ledger as malformed.
+            continue
+        excitation_by_role = {
+            role: _effective_excitation_dbfs(group_records.get(role))
+            for role in roles
+        }
+        if any(value is None for value in excitation_by_role.values()):
+            incomparable_groups.append({
+                "speaker_group_id": group_id,
+                "reason": "excitation_ledger_missing_or_invalid",
+            })
+            continue
+        assert all(value is not None for value in excitation_by_role.values())
         raw: dict[str, float] = {roles[0]: 0.0}
         group_deltas: list[dict[str, Any]] = []
         usable = True
@@ -228,8 +289,18 @@ def _measured_level_trims(
             lo_role = region.lower_driver
             up_role = region.upper_driver
             fc = float(region.fc_hz)
-            level_lo = _overlap_level_at(group_records.get(lo_role), fc)
-            level_up = _overlap_level_at(group_records.get(up_role), fc)
+            measured_lo = _overlap_level_at(group_records.get(lo_role), fc)
+            measured_up = _overlap_level_at(group_records.get(up_role), fc)
+            level_lo = (
+                measured_lo - float(excitation_by_role[lo_role])
+                if measured_lo is not None
+                else None
+            )
+            level_up = (
+                measured_up - float(excitation_by_role[up_role])
+                if measured_up is not None
+                else None
+            )
             if level_lo is None or level_up is None or lo_role not in raw:
                 usable = False
                 break
@@ -241,6 +312,10 @@ def _measured_level_trims(
                 "lower_role": lo_role,
                 "upper_role": up_role,
                 "delta_db": round(level_up - level_lo, 1),  # + => upper hotter
+                "effective_peak_dbfs": {
+                    lo_role: round(float(excitation_by_role[lo_role]), 2),
+                    up_role: round(float(excitation_by_role[up_role]), 2),
+                },
             })
         if not usable or set(raw) != set(roles):
             continue
@@ -254,7 +329,14 @@ def _measured_level_trims(
     meta: dict[str, Any] = {
         "groups_total": len(by_group),
         "groups_measured": len(per_group_trims),
+        "measured_group_ids": sorted({
+            str(item["speaker_group_id"])
+            for item in deltas
+            if item.get("speaker_group_id")
+        }),
         "deltas": deltas,
+        "comparison": "gain_ledger_normalized",
+        "incomparable_groups": incomparable_groups,
     }
     if not per_group_trims:
         return {}, meta
@@ -276,14 +358,20 @@ def _derive_corrections(
     preset: ActiveSpeakerPreset,
     crossover_preview: Mapping[str, Any],
     measurements: Mapping[str, Any],
+    *,
+    tuning_owner: str = "manual",
 ) -> tuple[dict[str, dict[str, float | bool]], list[dict[str, str]], dict[str, Any]]:
+    if tuning_owner not in TUNING_OWNERS:
+        raise ValueError(f"unsupported crossover tuning owner: {tuning_owner!r}")
     issues: list[dict[str, str]] = []
     corrections: dict[str, dict[str, float | bool]] = {
         role: {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False}
         for role in required_driver_roles(preset.way_count)
     }
     drivers = crossover_preview.get("drivers")
-    explicit_gain_roles: set[str] = set()
+    pinned_gain_roles: set[str] = set()
+    estimated_gains: dict[str, float] = {}
+    gain_provenance: dict[str, str] = {}
     sensitivities: dict[str, float] = {}
     if isinstance(drivers, Mapping):
         for role, driver in drivers.items():
@@ -309,8 +397,16 @@ def _derive_corrections(
                     f"gain for {role} was clamped to -60 dB",
                 ))
                 gain = -60.0
-            corrections[str(role)]["gain_db"] = gain
-            explicit_gain_roles.add(str(role))
+            provenance = str(driver.get("gain_offset_db_provenance") or "").strip()
+            # Pre-provenance preview artifacts are conservatively treated as a
+            # pin: an upgrade must not replace a deliberate safety attenuation.
+            if provenance not in {"research_estimate", "sensitivity_estimate"}:
+                provenance = "operator_pinned"
+                corrections[str(role)]["gain_db"] = gain
+                pinned_gain_roles.add(str(role))
+            else:
+                estimated_gains[str(role)] = gain
+            gain_provenance[str(role)] = provenance
 
     # Interim datasheet trim. When research declares no explicit gain_offset_db
     # for a driver but the sensitivities are known, attenuate the hotter drivers
@@ -322,7 +418,7 @@ def _derive_corrections(
     # provisional) when no measurement is available.
     datasheet_trims: dict[str, float] = {}
     derivable_roles = [
-        role for role in sensitivities if role not in explicit_gain_roles
+        role for role in sensitivities if role not in pinned_gain_roles
     ]
     if len(sensitivities) >= 2 and derivable_roles:
         reference_db = min(sensitivities.values())
@@ -332,27 +428,45 @@ def _derive_corrections(
                 continue  # reference driver and ties stay at unity
             datasheet_trims[role] = max(round(trim_db, 1), _MAX_ATTENUATION_DB)
 
-    # MEASURED refinement: a usable phone near-field level match OVERRIDES the
-    # datasheet trim. Only when there are no explicit operator gains — an explicit
-    # gain_offset_db is the operator's deliberate choice and shifts the chain's
-    # reference, so we never mix it with a measured chain (explicit > measured >
-    # datasheet).
+    # MEASURED refinement overrides research, UI-suggested, and sensitivity
+    # estimates. Manual tuning keeps an operator pin authoritative. Automatic
+    # tuning is an explicit replacement operation, so its measured result wins
+    # over the old manual pins (measured > pin > estimate > sensitivity).
     measured_trims, level_match = _measured_level_trims(preset, measurements)
-    if explicit_gain_roles and measured_trims:
+    if level_match.get("incomparable_groups"):
+        issues.append(_issue(
+            "warning",
+            "driver_measurement_excitation_incomparable",
+            (
+                "saved driver captures have missing or invalid excitation "
+                "evidence; JTS kept the safe estimated trim and needs a new "
+                "guided driver capture"
+            ),
+        ))
+    if tuning_owner == "manual" and pinned_gain_roles and measured_trims:
         level_match["applied"] = False
-        level_match["skipped_reason"] = "explicit_gain"
+        level_match["skipped_reason"] = "operator_pinned_gain"
         measured_trims = {}
 
     sources: dict[str, str] = {}
     measured_notes: list[str] = []
+    estimate_notes: list[str] = []
     datasheet_notes: list[str] = []
     for role in corrections:
-        if role in explicit_gain_roles:
-            sources[role] = "explicit"
+        if tuning_owner == "automatic" and role in measured_trims:
+            corrections[role]["gain_db"] = measured_trims[role]
+            sources[role] = "measured"
+            measured_notes.append(f"{role} {measured_trims[role]:.1f} dB")
+        elif role in pinned_gain_roles:
+            sources[role] = "operator_pinned"
         elif role in measured_trims:
             corrections[role]["gain_db"] = measured_trims[role]
             sources[role] = "measured"
             measured_notes.append(f"{role} {measured_trims[role]:.1f} dB")
+        elif role in estimated_gains:
+            corrections[role]["gain_db"] = estimated_gains[role]
+            sources[role] = "estimate"
+            estimate_notes.append(f"{role} {estimated_gains[role]:.1f} dB")
         elif role in datasheet_trims:
             corrections[role]["gain_db"] = datasheet_trims[role]
             sources[role] = "sensitivity"
@@ -381,14 +495,26 @@ def _derive_corrections(
                 + "); confirm against measurement before final tuning"
             ),
         ))
-    provisional = any(source == "sensitivity" for source in sources.values())
+    if estimate_notes:
+        issues.append(_issue(
+            "warning",
+            "driver_gain_from_unmeasured_estimate",
+            (
+                "applied an interim suggested driver trim ("
+                + ", ".join(estimate_notes)
+                + "); confirm against measurement before final tuning"
+            ),
+        ))
+    provisional = any(
+        source in {"estimate", "sensitivity"} for source in sources.values()
+    )
     if provisional:
         issues.append(_issue(
             "warning",
             "baseline_level_match_provisional",
             (
-                "per-driver level match is a datasheet estimate; run the guided "
-                "phone level-match to measure it"
+                "per-driver level match is an unmeasured estimate; run the "
+                "guided phone level-match to measure it"
             ),
         ))
 
@@ -418,6 +544,7 @@ def _derive_corrections(
                 corrections[role]["inverted"] = True
     meta = {
         "sources": sources,
+        "gain_provenance": gain_provenance,
         "provisional": provisional,
         "level_match": level_match,
     }
@@ -452,6 +579,7 @@ def _blocked_payload(
         "verification": {},
         "corrections": {},
         "corrections_source": {},
+        "gain_provenance": {},
         "level_match": {"groups_total": 0, "groups_measured": 0, "applied": False},
         "provisional": False,
         "validation": {"status": "skipped", "reason": status},
@@ -500,6 +628,66 @@ def _load_saved_state(path: Path) -> dict[str, Any] | None:
     return raw
 
 
+def _applied_profile_anchor(
+    saved: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    """Current or retained applied profile behind a mutable candidate state."""
+    if not isinstance(saved, Mapping):
+        return None
+    if saved.get("status") == "applied":
+        return saved
+    prior = saved.get("applied_recomposition_profile")
+    if isinstance(prior, Mapping) and prior.get("status") == "applied":
+        return prior
+    return None
+
+
+def _frozen_applied_profile(
+    saved: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Small immutable record sufficient to recompose the running Layer A."""
+    applied = _applied_profile_anchor(saved)
+    if applied is None:
+        return None
+    return {
+        "artifact_schema_version": applied.get("artifact_schema_version"),
+        "kind": applied.get("kind"),
+        "status": "applied",
+        "baseline_id": applied.get("baseline_id"),
+        "applied_at": applied.get("applied_at"),
+        "source": dict(applied.get("source") or {}),
+        "config": dict(applied.get("config") or {}),
+        "corrections": dict(applied.get("corrections") or {}),
+        "corrections_source": dict(applied.get("corrections_source") or {}),
+        "gain_provenance": dict(applied.get("gain_provenance") or {}),
+        "level_match": dict(applied.get("level_match") or {}),
+        "tuning_owner": str(applied.get("tuning_owner") or ""),
+        # Quality state belongs to the immutable applied anchor too.  Dropping
+        # it here lets an older sensitivity-only profile masquerade as a
+        # measured profile on every consumer of the frozen view.
+        "provisional": bool(applied.get("provisional")),
+        "recomposition_snapshot": (
+            dict(applied["recomposition_snapshot"])
+            if isinstance(applied.get("recomposition_snapshot"), Mapping)
+            else None
+        ),
+    }
+
+
+def load_baseline_profile_state(
+    path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Read one validated baseline artifact without deriving fresh evidence."""
+    return _load_saved_state(baseline_profile_state_path(path))
+
+
+def load_applied_baseline_profile_state(
+    path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Read the applied Layer-A SSOT, even while a new candidate is staged."""
+    return _frozen_applied_profile(load_baseline_profile_state(path))
+
+
 def _revalidation_payload(
     saved: Mapping[str, Any] | None,
     current_source: Mapping[str, Any],
@@ -515,7 +703,8 @@ def _revalidation_payload(
     the household needs a "revalidate" path, not a mysterious blocked profile.
     """
 
-    if not isinstance(saved, Mapping) or saved.get("status") != "applied":
+    saved = _applied_profile_anchor(saved)
+    if saved is None:
         return {"required": False, "status": "not_required"}
     saved_source = (
         saved.get("source") if isinstance(saved.get("source"), Mapping) else {}
@@ -605,9 +794,9 @@ def _crossover_preview_ready(crossover_preview: Mapping[str, Any]) -> bool:
     """True when the saved crossover preview is a fresh, staging-ready artifact.
 
     The single source of the preview-readiness gate, shared by
-    :func:`build_baseline_profile_candidate` (compile/apply) and
-    :func:`recompose_baseline_yaml` (the carrier's EQ re-emit) so the two cannot
-    drift on what "ready" means.
+    :func:`build_baseline_profile_candidate` and the mutable-evidence preview
+    helper :func:`recompose_baseline_yaml` so those candidate paths cannot drift
+    on what "ready" means. Production EQ recompose reads the applied snapshot.
     """
     return (
         crossover_preview.get("kind") == "jts_active_speaker_crossover_preview"
@@ -635,6 +824,8 @@ def build_baseline_profile_candidate(
     driver_domain: bool = False,
     program_channel: str | None = None,
     driver_domain_pair_trim_db: float = 0.0,
+    tuning_owner: str = "manual",
+    preserved_applied_profile: Mapping[str, Any] | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -664,6 +855,8 @@ def build_baseline_profile_candidate(
     ``capture_device``, writing to role-specific ``config_path`` / ``state_path``
     so the solo baseline artifacts are never clobbered.
     """
+    if tuning_owner not in TUNING_OWNERS:
+        raise ValueError(f"unsupported crossover tuning owner: {tuning_owner!r}")
     if driver_domain and program_channel not in DRIVER_DOMAIN_PROGRAM_CHANNELS:
         raise ValueError(
             "driver_domain requires program_channel in "
@@ -685,8 +878,27 @@ def build_baseline_profile_candidate(
         playback_device=playback_device,
     )
     saved = _load_saved_state(state_target)
+    applied_anchor = _applied_profile_anchor(saved)
+    applied_config = (
+        applied_anchor.get("config")
+        if isinstance(applied_anchor, Mapping)
+        and isinstance(applied_anchor.get("config"), Mapping)
+        else {}
+    )
+    applied_config_path = str(applied_config.get("path") or "")
+    if applied_anchor is not None and applied_config_path == str(config_target):
+        # Never overwrite the file the running/statefile-applied graph may still
+        # read. A candidate gets a content-addressed sibling and becomes durable
+        # only when the explicit apply repoints CamillaDSP to it.
+        config_target = config_target.with_name(
+            f"{config_target.stem}_candidate_{source['fingerprint'][:12]}"
+            f"{config_target.suffix}"
+        )
+    retained_applied = _frozen_applied_profile(applied_anchor)
 
     def finalize(payload: dict[str, Any]) -> dict[str, Any]:
+        if retained_applied is not None:
+            payload["applied_recomposition_profile"] = retained_applied
         payload["revalidation"] = _revalidation_payload(
             saved,
             source,
@@ -703,6 +915,7 @@ def build_baseline_profile_candidate(
         and saved
         and isinstance(saved.get("source"), Mapping)
         and saved["source"].get("fingerprint") == source["fingerprint"]
+        and str(saved.get("tuning_owner") or "manual") == tuning_owner
         and Path(str((saved.get("config") or {}).get("path") or "")).exists()
     ):
         out = dict(saved)
@@ -853,12 +1066,119 @@ def build_baseline_profile_candidate(
             playback_device_source=playback_device_source,
         ))
 
+    preservation = None
+    if preserved_applied_profile is not None:
+        preservation = legacy_manual_preservation_state(
+            preserved_applied_profile,
+            current_source_fingerprint=str(source.get("fingerprint") or ""),
+        )
+        if not preservation["ready"]:
+            return finalize(_blocked_payload(
+                topology=topology,
+                source=source,
+                issues=[_issue(
+                    "blocker",
+                    str(preservation["reason"]),
+                    str(preservation["detail"]),
+                )],
+                status="blocked",
+                config_path=config_target,
+                playback_device=resolved_playback_device,
+                playback_device_source=playback_device_source,
+            ))
+        if not isinstance(preserved_applied_profile.get("corrections"), Mapping):
+            return finalize(_blocked_payload(
+                topology=topology,
+                source=source,
+                issues=[_issue(
+                    "blocker",
+                    "preserved_manual_corrections_missing",
+                    "the applied manual crossover has no corrections to preserve",
+                )],
+                status="blocked",
+                config_path=config_target,
+                playback_device=resolved_playback_device,
+                playback_device_source=playback_device_source,
+            ))
+
     corrections, correction_issues, correction_meta = _derive_corrections(
         preset,
         crossover_preview,
         measurements,
+        tuning_owner=tuning_owner,
     )
     issues.extend(correction_issues)
+    if preserved_applied_profile is not None:
+        preserved_corrections = (
+            preserved_applied_profile.get("corrections")
+            if isinstance(preserved_applied_profile.get("corrections"), Mapping)
+            else None
+        )
+    else:
+        preserved_corrections = None
+    if preserved_corrections is not None:
+        normalized: dict[str, dict[str, float | bool]] = {}
+        for role in required_driver_roles(preset.way_count):
+            raw = preserved_corrections.get(role)
+            gain = _finite_float(raw.get("gain_db")) if isinstance(raw, Mapping) else None
+            delay = _finite_float(raw.get("delay_ms")) if isinstance(raw, Mapping) else None
+            inverted = raw.get("inverted") if isinstance(raw, Mapping) else None
+            if (
+                gain is None
+                or gain > 0.0
+                or gain < _MAX_ATTENUATION_DB
+                or delay is None
+                or not 0.0 <= delay <= 20.0
+                or not isinstance(inverted, bool)
+            ):
+                issues.append(_issue(
+                    "blocker",
+                    "preserved_manual_correction_invalid",
+                    f"the applied manual correction for {role} is incomplete or unsafe",
+                ))
+                continue
+            normalized[role] = {
+                "gain_db": gain,
+                "delay_ms": delay,
+                "inverted": inverted,
+            }
+        if len(normalized) == len(required_driver_roles(preset.way_count)):
+            corrections = normalized
+            correction_meta["sources"] = {
+                role: "operator_pinned" for role in normalized
+            }
+            correction_meta["gain_provenance"] = {
+                role: "operator_pinned" for role in normalized
+            }
+            correction_meta["provisional"] = False
+            correction_meta["level_match"] = {
+                "groups_total": 0,
+                "groups_measured": 0,
+                "deltas": [],
+                "comparison": "preserved_applied_manual_profile",
+                "incomparable_groups": [],
+                "applied": False,
+            }
+            issues.append(_issue(
+                "info",
+                "manual_crossover_preserved",
+                "preserved the currently applied manual crossover corrections",
+            ))
+    automatic_candidate = automatic_candidate_readiness(
+        required_group_ids=(
+            group.id
+            for group in topology.speaker_groups
+            if group.mode in {"active_2_way", "active_3_way"}
+        ),
+        level_match=correction_meta["level_match"],
+        measurement_summary=summary,
+    )
+    if tuning_owner == "automatic" and not automatic_candidate["ready"]:
+        issues.append(_issue(
+            "blocker",
+            str(automatic_candidate["reason"]),
+            str(automatic_candidate["detail"]),
+        ))
     provisional = bool(correction_meta.get("provisional"))
     validation = {"status": "skipped", "reason": "not_written"}
     if write:
@@ -952,10 +1272,13 @@ def build_baseline_profile_candidate(
         },
         "corrections": corrections,
         "corrections_source": correction_meta["sources"],
+        "gain_provenance": correction_meta["gain_provenance"],
         "level_match": correction_meta["level_match"],
-        # The per-driver level trim is a datasheet ESTIMATE, not a measured one.
-        # Surfaced in /state + the wizard so a household knows to run the guided
-        # phone level-match; the speaker is safe (attenuation-only) either way.
+        "automatic_candidate": automatic_candidate,
+        "tuning_owner": tuning_owner,
+        # An unmeasured per-driver trim is explicitly provisional. Surfaced in
+        # /state + the wizard so a household knows to run the guided level-match;
+        # the speaker is safe (attenuation-only) either way.
         "provisional": provisional,
         "validation": validation,
         "permissions": {
@@ -977,6 +1300,23 @@ def build_baseline_profile_candidate(
             "per_driver_limiters": True,
         },
         "issues": issues,
+        # Immutable Layer-A inputs captured at Save. Once this candidate is
+        # explicitly applied, every production recompose reads ONLY this
+        # snapshot; later measurement/design edits remain candidates and cannot
+        # alter playback as a side effect of applying room/preference EQ.
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "topology_id": topology.topology_id,
+            "topology_fingerprint": source["topology_fingerprint"],
+            "preset": preset.to_dict(),
+            "corrections": corrections,
+            "corrections_source": correction_meta["sources"],
+            "gain_provenance": correction_meta["gain_provenance"],
+            "level_match": correction_meta["level_match"],
+            "tuning_owner": tuning_owner,
+            "playback_device": resolved_playback_device,
+            "domain": "driver" if driver_domain else "full",
+        },
     }
     payload = finalize(payload)
     if write:
@@ -986,6 +1326,105 @@ def build_baseline_profile_candidate(
             mode=0o640,
         )
     return payload
+
+
+def recompose_applied_baseline_yaml(
+    topology: OutputTopology,
+    *,
+    applied_profile: Mapping[str, Any],
+    room_peqs: Sequence[PeqFilter] = (),
+    preference_filters: Sequence[FilterSpec] = (),
+    output_trim_db: float = 0.0,
+    out_path: str | Path | None = None,
+    capture_pipe_path: str | None = None,
+    resampler_type: str | None = None,
+    resampler_profile: str = DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
+) -> tuple[str | None, list[dict[str, str]]]:
+    """Re-emit Layer A strictly from the immutable applied-profile snapshot.
+
+    This is the production graph-carrier seam. Mutable design drafts,
+    crossover previews, and measurement stores are deliberately not parameters:
+    captures remain candidates until :func:`apply_baseline_profile` snapshots
+    them under an explicit Apply transaction.
+    """
+    if applied_profile.get("status") != "applied":
+        return None, [_issue(
+            "blocker",
+            "applied_baseline_snapshot_unavailable",
+            "the saved active-speaker profile is not an applied profile",
+        )]
+    snapshot = applied_profile.get("recomposition_snapshot")
+    if not isinstance(snapshot, Mapping) or snapshot.get("schema_version") != 1:
+        return None, [_issue(
+            "blocker",
+            "applied_baseline_snapshot_unavailable",
+            (
+                "the applied active-speaker profile predates immutable "
+                "recomposition; apply it again before adding EQ"
+            ),
+        )]
+    if snapshot.get("domain") != "full":
+        return None, [_issue(
+            "blocker",
+            "applied_baseline_snapshot_domain_invalid",
+            "only a full solo active-speaker profile can host room or preference EQ",
+        )]
+    if (
+        snapshot.get("topology_id") != topology.topology_id
+        or snapshot.get("topology_fingerprint")
+        != _topology_config_fingerprint(topology)
+    ):
+        return None, [_issue(
+            "blocker",
+            "applied_baseline_snapshot_topology_stale",
+            (
+                "the applied active-speaker profile belongs to a different "
+                "output topology; reapply speaker setup first"
+            ),
+        )]
+    try:
+        preset = ActiveSpeakerPreset.from_mapping(dict(snapshot.get("preset") or {}))
+    except (ActiveSpeakerConfigError, TypeError, ValueError) as exc:
+        return None, [_issue(
+            "blocker",
+            "applied_baseline_snapshot_invalid",
+            f"the applied active-speaker snapshot is invalid: {exc}",
+        )]
+    corrections = snapshot.get("corrections")
+    playback_device = snapshot.get("playback_device")
+    expected_roles = set(required_driver_roles(preset.way_count))
+    correction_roles = set(corrections) if isinstance(corrections, Mapping) else set()
+    corrections_valid = (
+        correction_roles == expected_roles
+        and all(isinstance(value, Mapping) for value in corrections.values())
+    ) if isinstance(corrections, Mapping) else False
+    if (
+        not corrections_valid
+        or not isinstance(playback_device, str)
+        or not playback_device
+    ):
+        return None, [_issue(
+            "blocker",
+            "applied_baseline_snapshot_invalid",
+            "the applied active-speaker snapshot is missing corrections or playback device",
+        )]
+    yaml = emit_active_speaker_baseline_config(
+        preset,
+        playback_device=playback_device,
+        corrections={str(role): dict(value) for role, value in corrections.items()},
+        room_peqs=room_peqs,
+        preference_filters=preference_filters,
+        output_trim_db=output_trim_db,
+        out_path=out_path,
+        baseline_id=str(
+            applied_profile.get("baseline_id")
+            or f"baseline-{_safe_id(topology.topology_id)}"
+        ),
+        capture_pipe_path=capture_pipe_path,
+        resampler_type=resampler_type,
+        resampler_profile=resampler_profile,
+    )
+    return yaml, []
 
 
 def recompose_baseline_yaml(
@@ -1006,10 +1445,10 @@ def recompose_baseline_yaml(
     evidence, with optional program-domain room PEQ / preference EQ inserted
     pre-split.
 
-    This is the composition seam the graph carrier
-    (:mod:`jasper.sound.graph_carrier`) uses to apply preference EQ on top of an
-    applied active baseline (``docs/HANDOFF-dsp-graph-carrier.md`` PR-3). It
-    rebuilds the SAME structural baseline from the saved evidence — reusing the
+    This is the candidate/debug composition seam retained for callers that are
+    deliberately previewing current mutable evidence. Production graph
+    recomposition uses :func:`recompose_applied_baseline_yaml` instead. This
+    helper rebuilds the SAME structural baseline from the supplied evidence — reusing the
     exact derivation primitives :func:`build_baseline_profile_candidate` uses
     (``resolve_active_playback_device`` → ``compile_preset_from_crossover_preview``
     → ``_derive_corrections`` → ``emit_active_speaker_baseline_config``) — rather
@@ -1053,12 +1492,8 @@ def recompose_baseline_yaml(
     device, preview-readiness (the shared :func:`_crossover_preview_ready`
     predicate), and a compilable preset. It deliberately does NOT re-run the
     candidate builder's *readiness/quality* gates (driver-measurement /
-    summed-validation completeness, route width, subwoofer-block): the carrier
-    only reaches this for an already-APPLIED baseline that passed all of those
-    at apply time, and the protective invariants are re-proven structurally by
-    ``classify_camilla_graph`` + CamillaDSP ``--check`` downstream — not by these
-    gates. So a quality-degraded (but still structurally-safe) re-emit is
-    preferred over refusing a household's EQ change.
+    summed-validation completeness, route width, subwoofer-block). It is not a
+    production apply authorization; callers must validate the emitted graph.
 
     Returns ``(yaml, [])`` on success (writing to ``out_path`` when given, at the
     same group-readable mode the emitter uses), or ``(None, issues)`` when the
@@ -1131,6 +1566,8 @@ async def apply_baseline_profile(
     driver_domain: bool = False,
     program_channel: str | None = None,
     driver_domain_pair_trim_db: float = 0.0,
+    tuning_owner: str = "manual",
+    preserved_applied_profile: Mapping[str, Any] | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -1164,8 +1601,35 @@ async def apply_baseline_profile(
         driver_domain=driver_domain,
         program_channel=program_channel,
         driver_domain_pair_trim_db=driver_domain_pair_trim_db,
+        tuning_owner=tuning_owner,
+        preserved_applied_profile=preserved_applied_profile,
         validate=validate,
     )
+    snapshot_state = crossover_snapshot_state(
+        candidate,
+        expected_topology_id=topology.topology_id,
+        expected_topology_fingerprint=str(
+            (candidate.get("source") or {}).get("topology_fingerprint") or ""
+        ),
+        expected_domain="driver" if driver_domain else "full",
+        require_applied=False,
+    )
+    if candidate.get("permissions", {}).get("may_apply") and not snapshot_state["valid"]:
+        candidate["status"] = "compiled_apply_blocked"
+        candidate["permissions"]["may_apply"] = False
+        candidate["issues"] = [
+            *candidate.get("issues", []),
+            _issue(
+                "blocker",
+                str(snapshot_state["reason"]),
+                str(snapshot_state["detail"]),
+            ),
+        ]
+        atomic_write_text(
+            state_target,
+            json.dumps(candidate, indent=2, sort_keys=True) + "\n",
+            mode=0o640,
+        )
     if not candidate.get("permissions", {}).get("may_apply"):
         return {
             "status": "blocked",
@@ -1224,6 +1688,9 @@ async def apply_baseline_profile(
         "apply": apply_state.to_dict(),
         "revalidation": {"required": False, "status": "not_required"},
     }
+    # The newly applied profile is now the one SSOT; retaining the predecessor
+    # would create two plausible Layer-A owners.
+    applied.pop("applied_recomposition_profile", None)
     applied["permissions"] = dict(applied.get("permissions") or {})
     applied["permissions"]["may_apply"] = False
     atomic_write_text(

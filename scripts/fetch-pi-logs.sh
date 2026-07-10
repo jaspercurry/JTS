@@ -111,11 +111,15 @@ write_log_noise_summary() {
 # the loop reports "0 lines" and moves on.
 units=(
     jasper-camilla
+    jasper-outputd
+    jasper-fanin
     jasper-voice
     jasper-control
     jasper-mux
     jasper-aec-bridge
     jasper-aec-init
+    jasper-aec-reconcile
+    jasper-audio-hardware-reconcile
     jasper-dac-init
     jasper-headphone-monitor
     librespot

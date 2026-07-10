@@ -23,6 +23,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import re
 import secrets
 import time
 from collections.abc import Callable
@@ -55,6 +56,10 @@ class CaptureFailed(RuntimeError):
 
 class CaptureAborted(RuntimeError):
     """The phone aborted mid-capture (e.g. backgrounded / screen locked)."""
+
+
+class CapturePageIncompatible(RuntimeError):
+    """The public capture page does not implement this Pi's protocol."""
 
 
 @dataclass(frozen=True)
@@ -137,8 +142,10 @@ class PollState:
     device: dict | None = None
     noise_floor: dict | None = None
     setup: dict | None = None
+    setup_identity: dict | None = None
     setup_validate: bool = False
     setup_token: str = ""
+    capture_page: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -172,8 +179,18 @@ def classify_status(status_payload: dict) -> PollState:
         else None
     )
     setup = event.get("setup") if isinstance(event.get("setup"), dict) else None
+    setup_identity = (
+        event.get("setup_identity")
+        if isinstance(event.get("setup_identity"), dict)
+        else None
+    )
     setup_validate = bool(event.get("setup_validate"))
     setup_token = str(event.get("setup_token") or "")
+    capture_page = (
+        event.get("capture_page")
+        if isinstance(event.get("capture_page"), dict)
+        else None
+    )
     ready = status_payload.get("state") == "ready"
     integrity = status_payload.get("integrity")
     return PollState(
@@ -185,9 +202,42 @@ def classify_status(status_payload: dict) -> PollState:
         device=device,
         noise_floor=noise_floor,
         setup=setup,
+        setup_identity=setup_identity,
         setup_validate=setup_validate,
         setup_token=setup_token,
+        capture_page=capture_page,
     )
+
+
+def validate_capture_page(
+    identity: dict | None,
+    spec: CaptureSpec,
+) -> dict:
+    """Validate the phone page identity before any host callback can play audio."""
+    observed = identity if isinstance(identity, dict) else {}
+    protocol = observed.get("capture_protocol_version")
+    supported = observed.get("supported_capture_protocol_versions")
+    build = observed.get("capture_page_build")
+    if (
+        observed.get("schema_version") != 1
+        or isinstance(protocol, bool)
+        or not isinstance(protocol, int)
+        or not isinstance(supported, list)
+        or spec.capture_protocol_version not in supported
+        or protocol not in supported
+        or any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in supported
+        )
+        or not isinstance(build, str)
+        or not re.fullmatch(r"[0-9]{8}\.[0-9]+", build)
+    ):
+        raise CapturePageIncompatible(
+            "capture page is incompatible with this speaker "
+            f"(expected protocol {spec.capture_protocol_version}, "
+            f"observed {protocol!r}, build {build!r})"
+        )
+    return observed
 
 
 def _call_state_callback(callback: Callable[..., None], state: PollState) -> None:
@@ -293,6 +343,7 @@ def _poll_until_capture(
     capture_noise_floor: dict | None = None
     capture_setup: dict | None = None
     setup_tokens_seen: set[str] = set()
+    page_compatible = False
     while True:
         status = client.status(session.session_id, session.pull_token)
         state = classify_status(status)
@@ -306,6 +357,53 @@ def _poll_until_capture(
         if state.aborted:
             raise CaptureAborted(
                 f"phone aborted the capture ({state.abort_reason or 'no reason'})"
+            )
+
+        # The phone page is independently deployed. Establish this contract
+        # before setup callbacks or `on_armed` can reach an audio player. A
+        # stale page therefore fails visibly and cannot start a tone.
+        if not page_compatible and (
+            state.setup_validate or state.armed or state.ready
+        ):
+            try:
+                validate_capture_page(state.capture_page, session.spec)
+            except CapturePageIncompatible as exc:
+                log_event(
+                    logger,
+                    "capture_relay.page_incompatible",
+                    level=logging.WARNING,
+                    session_id=session.session_id,
+                    expected_protocol=session.spec.capture_protocol_version,
+                    observed_protocol=(state.capture_page or {}).get(
+                        "capture_protocol_version"
+                    ),
+                    observed_build=(state.capture_page or {}).get(
+                        "capture_page_build"
+                    ),
+                )
+                try:
+                    client.post_host_event(
+                        session.session_id,
+                        session.pull_token,
+                        {
+                            "phase": "capture_incompatible",
+                            "error": str(exc),
+                            "expected_protocol": session.spec.capture_protocol_version,
+                        },
+                    )
+                except (OSError, RelayError):
+                    logger.warning(
+                        "could not publish capture-page incompatibility",
+                        exc_info=True,
+                    )
+                raise
+            page_compatible = True
+            log_event(
+                logger,
+                "capture_relay.page_compatible",
+                session_id=session.session_id,
+                protocol=session.spec.capture_protocol_version,
+                page_build=(state.capture_page or {}).get("capture_page_build"),
             )
 
         if (

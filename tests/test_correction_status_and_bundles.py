@@ -350,6 +350,8 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
         "acceptance",
         "auto_revert_outcome",
         "autolevel",
+        "capture_transport",
+        "level_match",
     }
     assert snapshot["sweep"] == sess.sweep_meta.to_dict()
     assert snapshot["peqs"] == [{"freq_hz": 80.0, "q": 4.0, "gain_db": -3.0}]
@@ -385,6 +387,8 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
         "position_analysis",
         "current_correction_at_start",
         "autolevel",
+        "capture_transport",
+        "level_match",
         "sweep_meta",
         "peqs",
         "design_report",
@@ -659,12 +663,15 @@ async def test_reset_no_room_config_preserves_preference_and_strips_room(
 
 
 @pytest.mark.asyncio
-async def test_design_writes_result_json(tmp_path: Path):
+async def test_design_writes_result_json(tmp_path: Path, monkeypatch):
     """After spatial average + PEQ design, result.json captures the
     measured / target / predicted curves so a copied-off bundle is
     re-renderable without re-running the deconvolution."""
     import numpy as np
     from jasper.audio_measurement import sweep
+    from jasper.correction import runtime_integrity
+
+    monkeypatch.setattr(runtime_integrity, "_read_loadavg_1m", lambda: None)
 
     sess = _make_session(tmp_path)
     sess.input_device = {
@@ -869,6 +876,11 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     new filters from the already-corrected curve and compound distortion.
     """
     from jasper.web import correction_setup
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {"room_correction_allowed": True},
+    )
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),
@@ -1088,6 +1100,11 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
     """If CamillaDSP cannot switch to the measurement baseline, /start must
     fail before playing a sweep."""
     from jasper.web import correction_setup
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {"room_correction_allowed": True},
+    )
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),
@@ -1140,6 +1157,11 @@ def test_start_handler_rejects_active_measurement(monkeypatch):
     lifecycle is already active.
     """
     from jasper.web import correction_setup
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {"room_correction_allowed": True},
+    )
 
     class ActiveSession:
         state = SessionState.SWEEPING
@@ -1158,6 +1180,11 @@ def test_start_handler_rejects_failed_browser_audio_before_sweep(
     button when getUserMedia reports a capture path that is unsafe for
     measurement."""
     from jasper.web import correction_setup
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {"room_correction_allowed": True},
+    )
 
     monkeypatch.setattr(correction_setup, "_session", None)
     monkeypatch.setattr(correction_setup, "_start_in_progress", False)
@@ -1185,14 +1212,8 @@ def test_start_handler_rejects_failed_browser_audio_before_sweep(
             },
         }))
 
-    sess = captured["sess"]
-    assert sess.browser_audio_report["failed"] is True
-    codes = {
-        issue["code"]
-        for issue in sess.browser_audio_report["issues"]
-        if issue["severity"] == "fail"
-    }
-    assert {"sample_rate_mismatch", "browser_echo_cancellation"} <= codes
+    # Validation happens before replacing the prior session or touching DSP.
+    assert captured == {}
     assert correction_setup._start_in_progress is False
 
 
@@ -1203,6 +1224,11 @@ def test_start_handler_rejects_reserved_start_before_state_transition(monkeypatc
     background sweep has transitioned the fresh session into PREPARING.
     """
     from jasper.web import correction_setup
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {"room_correction_allowed": True},
+    )
 
     monkeypatch.setattr(correction_setup, "_session", None)
     monkeypatch.setattr(correction_setup, "_start_in_progress", False)
@@ -1213,6 +1239,44 @@ def test_start_handler_rejects_reserved_start_before_state_transition(monkeypatc
             correction_setup._handle_start(_DummyJsonHandler())
     finally:
         correction_setup._clear_start_slot()
+
+
+def test_start_handler_rejects_uncommissioned_active_speaker_before_reservation(
+    monkeypatch,
+):
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: {
+            "room_correction_allowed": False,
+            "acoustic_commissioning": {
+                "reason": "active_summed_acoustic_evidence_incomplete",
+                "detail": (
+                    "Finish the acoustic combined-crossover check before room "
+                    "correction."
+                ),
+                "setup_href": "/correction/crossover/",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_reserve_start_slot",
+        lambda: pytest.fail("readiness must reject before session reservation"),
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_replace_session",
+        lambda **_kwargs: pytest.fail("readiness must reject before session creation"),
+    )
+
+    with pytest.raises(
+        correction_setup.RequestConflict,
+        match=r"combined-crossover check.*Open /correction/crossover/",
+    ):
+        correction_setup._handle_start(_DummyJsonHandler())
 
 
 def test_sessions_endpoint_lists_bundles(tmp_path: Path, monkeypatch):

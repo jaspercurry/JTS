@@ -305,6 +305,7 @@ def session_snapshot(session: Any) -> dict[str, Any]:
         "strategy_choice": session.strategy_choice,
         "correction_strategy": _correction_strategy_payload(session),
         "input_device": session.input_device,
+        "capture_transport": getattr(session, "capture_transport", "local"),
         "mic_calibration": _mic_calibration_payload(session),
         "browser_audio_report": session.browser_audio_report,
         # Point-in-time copies: these containers can mutate while a
@@ -345,6 +346,7 @@ def session_snapshot(session: Any) -> dict[str, Any]:
         "acceptance": getattr(session, "acceptance", None),
         "auto_revert_outcome": getattr(session, "auto_revert_outcome", None),
         "autolevel": session.autolevel.snapshot(),
+        "level_match": session.level_match_snapshot(),
     }
 
 
@@ -366,6 +368,7 @@ def info_json_payload(session: Any) -> dict[str, Any]:
         "correction_strategy": _correction_strategy_payload(session),
         "noise_floor_db": session.noise_floor_db,
         "input_device": session.input_device,
+        "capture_transport": getattr(session, "capture_transport", "local"),
         "mic_calibration": _mic_calibration_payload(session),
         "browser_audio_report": session.browser_audio_report,
         "capture_quality": session.capture_quality,
@@ -379,6 +382,7 @@ def info_json_payload(session: Any) -> dict[str, Any]:
         "position_analysis": session.position_analysis,
         "current_correction_at_start": session.current_correction_at_start,
         "autolevel": session.autolevel.snapshot(),
+        "level_match": session.level_match_snapshot(),
         "sweep_meta": (
             session.sweep_meta.to_dict() if session.sweep_meta else None
         ),

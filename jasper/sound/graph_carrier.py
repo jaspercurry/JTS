@@ -297,10 +297,11 @@ class _ActiveGraphCarrier:
     high-pass) and must never be re-emitted through the stereo template.
 
     PR-3: the SOLO active *baseline* now hosts preference EQ. It is recomposed
-    from the saved evidence via the active-speaker emitter — the preference
+    from the immutable applied-profile snapshot via the active-speaker emitter —
+    the preference
     filters fold in PRE-SPLIT, with their worst-case boost rolled into the
     single ``active_baseline_headroom`` gain (see
-    :func:`jasper.active_speaker.baseline_profile.recompose_baseline_yaml` and
+    :func:`jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml` and
     ``docs/HANDOFF-dsp-graph-carrier.md``). It NEVER re-emits through the stereo
     ``emit_sound_config`` template, so the crossover, per-driver limiters, and
     protective high-pass are preserved by construction (invariant 3). The
@@ -435,11 +436,11 @@ def _recompose_active_baseline_with_eq(
     inserted pre-split, returning the emitted YAML (written to ``out_path`` when
     given).
 
-    Rebuilds the structural baseline from the saved evidence via the active
-    emitter (``recompose_baseline_yaml``) rather than parsing the running config
+    Rebuilds the structural baseline from the immutable applied-profile snapshot
+    via ``recompose_applied_baseline_yaml`` rather than parsing the running config
     — so the crossover/limiter/protective-HP come from the canonical builder,
     not a lossy round-trip — and raises :class:`CarrierCannotHostEq` if that
-    evidence can no longer produce a baseline. ``output_trim_db`` (the
+    snapshot can no longer produce a baseline. ``output_trim_db`` (the
     household's manual headroom + loudness-match attenuation) is folded into the
     active headroom so the active path honours it like the stereo path. All
     imports are lazy: this only runs for a speaker that already IS an active
@@ -452,10 +453,10 @@ def _recompose_active_baseline_with_eq(
     is refused before this helper because the active output side has not been
     designed.
     """
-    from jasper.active_speaker.baseline_profile import recompose_baseline_yaml
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+        recompose_applied_baseline_yaml,
+    )
     from jasper.active_speaker.runtime_contract import (
         GRAPH_APPROVED_ACTIVE_RUNTIME,
         classify_camilla_graph,
@@ -464,9 +465,7 @@ def _recompose_active_baseline_with_eq(
     from jasper.sound.profile import build_sound_filters
 
     topology = load_output_topology()
-    design_draft = load_design_draft()
-    crossover_preview = load_crossover_preview(current_design_draft=design_draft)
-    measurements = load_measurement_state(topology)
+    applied_profile = load_applied_baseline_profile_state()
     preference_filters = build_sound_filters(profile)
     # The active emitter hardcodes enable_rate_adjust: true on its roleful graph
     # (it is always DAC-paced), so it takes only the legacy File-capture identity
@@ -477,10 +476,9 @@ def _recompose_active_baseline_with_eq(
         for k, v in (coupling_capture_kwargs or {}).items()
         if k in {"capture_pipe_path", "resampler_type", "resampler_profile"}
     }
-    yaml, issues = recompose_baseline_yaml(
+    yaml, issues = recompose_applied_baseline_yaml(
         topology,
-        crossover_preview=crossover_preview,
-        measurements=measurements,
+        applied_profile=applied_profile or {},
         room_peqs=room_peqs or [],
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
