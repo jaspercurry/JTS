@@ -105,6 +105,23 @@ USBSINK_GADGET_UNIT = _single_unit(
     local_source_lifecycle(Source.USBSINK).advertise_units,
     "USB Audio Input advertise units",
 )
+# Root oneshot reconciler (jasper.fanin.coupling_auto) that resolves the USB
+# low-latency combo — fan-in direct-captures the gadget + the usbsink bridge
+# stands by. It normally runs only at boot/deploy; the USB toggle below kicks
+# it right after an enable/disable so the combo arms/disarms *this session*
+# instead of the first session after a reboot silently running the old,
+# higher-latency path. jasper-web (non-root) may only `start` it via the restart
+# broker's START_ONLY_UNITS grant.
+COUPLING_AUTO_UNIT = "jasper-fanin-coupling-auto.service"
+
+# Surfaced on the usbsink row when the post-toggle combo reconcile could not be
+# kicked live. The reconciler still re-resolves the combo at the next
+# boot/deploy, so the change lands — just not until reboot. Better an honest
+# "takes effect after reboot" than pretending the low-latency path is armed.
+_USBSINK_COMBO_REBOOT_NOTICE = (
+    "USB Audio Input is set, but the low-latency audio path could not be "
+    "reconfigured right now — it will take effect after the next reboot."
+)
 
 VALID_SOURCES = tuple(spec.wizard_key for spec in MUSIC_SOURCE_SPECS)
 SOURCE_UNAVAILABLE = {
@@ -262,6 +279,35 @@ def _recompose_gadget(*, reason: str) -> None:
     _manage_unit(USBSINK_GADGET_UNIT, "restart", reason=reason)
 
 
+def _kick_coupling_reconcile(*, reason: str) -> bool:
+    """Start the fan-in coupling reconciler so the USB low-latency combo arms
+    (on enable) or disarms (on disable) immediately after a /sources USB toggle,
+    instead of only at the next boot/deploy. Returns True iff the broker
+    reported the start succeeded.
+
+    Runs the oneshot to completion (no_block=False) so a failed arm is
+    observable and can be surfaced to the household rather than silently leaving
+    the first post-enable session on the old higher-latency path. Start-only:
+    jasper-web kicks a reconcile pass through the broker's START_ONLY_UNITS
+    grant — it never stop/restarts the reconciler (mirrors the /wifi/ scan-repair
+    kick)."""
+    resp = manage_units(
+        COUPLING_AUTO_UNIT, verb="start", reason=reason,
+        no_block=False, timeout=45.0,
+    )
+    ok = bool(resp.get("ok"))
+    if not ok:
+        log_event(
+            logger,
+            "sources.combo_arm_kick_failed",
+            unit=COUPLING_AUTO_UNIT,
+            reason=reason,
+            error=str(resp.get("error") or f"rc={resp.get('rc')}"),
+            level=logging.WARNING,
+        )
+    return ok
+
+
 def _source_state(
     *,
     enabled: bool,
@@ -405,9 +451,14 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
     }
 
 
-def _apply(source: str, enabled: bool) -> None:
+def _apply(source: str, enabled: bool) -> str | None:
     """Route the toggle to the right backend. Caller has already
-    validated `source` is in VALID_SOURCES."""
+    validated `source` is in VALID_SOURCES.
+
+    Returns a household-facing notice string when the toggle's *intent*
+    applied but a follow-on live step could not complete (today: the USB combo
+    reconcile) — the caller surfaces it so the UI doesn't pretend full success.
+    Returns None on a fully-applied toggle."""
     if source == "airplay":
         if not (_local_sources_allowed() and _unit_available(AIRPLAY_UNIT)):
             raise RuntimeError(SOURCE_UNAVAILABLE["airplay"])
@@ -447,12 +498,25 @@ def _apply(source: str, enabled: bool) -> None:
             _manage_unit(USBSINK_UNIT, "enable", reason="USB source toggle on")
             _recompose_gadget(reason="USB source toggle on")
             _manage_unit(USBSINK_UNIT, "start", reason="USB source toggle on")
+            # 4. Arm the USB low-latency combo now (fan-in direct capture +
+            #    usbsink standby). The reconciler reads is-enabled=yes → arms;
+            #    without this kick the combo would only arm at the next
+            #    boot/deploy, so the first session ran the old path.
+            if not _kick_coupling_reconcile(reason="USB source toggle on"):
+                return _USBSINK_COMBO_REBOOT_NOTICE
         else:
             # Disable the bridge (records household intent off), then recompose
             # the gadget so it drops the uac2 function — the host-visible audio
             # device disappears while the always-on USB network stays up.
             _set_unit(USBSINK_UNIT, False)
             _recompose_gadget(reason="USB source toggle off")
+            # Disarm the combo symmetrically: the reconciler reads is-enabled=no
+            # → writes the fan-in/standby keys to their off values and rearms
+            # the solo bridge path. Skipping this would leave fan-in still
+            # direct-capturing a gadget whose audio function was just dropped.
+            if not _kick_coupling_reconcile(reason="USB source toggle off"):
+                return _USBSINK_COMBO_REBOOT_NOTICE
+    return None
 
 
 # Per-page CSS layered on app.css. Just the source-row layout + notes; the
@@ -654,7 +718,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     )
                     return
                 try:
-                    _apply(source, enabled)
+                    notice = _apply(source, enabled)
                 except Exception as e:  # noqa: BLE001
                     logger.exception("toggle %s -> %s failed", source, enabled)
                     self._send_json({"error": str(e)}, status=502)
@@ -670,10 +734,21 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 # reconciles against truth (in case systemctl no-op'd
                 # or DBus rejected the property write).
                 try:
-                    self._send_json(_gather_state())
+                    state = _gather_state()
                 except Exception as e:  # noqa: BLE001
                     logger.exception("/set readback failed")
                     self._send_json({"error": str(e)}, status=502)
+                    return
+                if notice:
+                    # The toggle intent applied, but a follow-on live step (the
+                    # USB combo arm) could not complete — surface it on the
+                    # usbsink row so the UI is honest rather than pretending
+                    # success. The ordinary /state poll can't know the kick
+                    # failed and will clear it; a reboot re-runs the reconcile.
+                    usb = state.get("usbsink")
+                    if isinstance(usb, dict):
+                        usb["degradedReason"] = notice
+                self._send_json(state)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
