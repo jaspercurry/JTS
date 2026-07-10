@@ -19,9 +19,11 @@ recovery reboot stops firing):
   the matching jasper.control.restart_broker constants (the broker docstring
   promises these never drift — restart_broker.py "derives the polkit rule ...
   from the same constants");
-* it grants manage-units, manage-unit-files, and the login1 reboot/power-off
+* it grants manage-units (scoped per-unit) and the login1 reboot/power-off
   actions (incl. the -multiple-sessions variants that fire when an operator is
-  SSH'd in — verified on hardware);
+  SSH'd in — verified on hardware), and DELIBERATELY does NOT grant
+  manage-unit-files (it can't be unit-scoped on this systemd and `systemctl
+  restart` consults it, so a grant would re-open restart-of-any-unit);
 * it keys on `subject.user` ONLY (a sessionless daemon has subject.active ==
   false, so gating on .active would never fire — the single most likely
   implementation mistake);
@@ -122,6 +124,27 @@ def test_rule_does_not_grant_manage_unit_files():
     assert "manage-unit-files" not in code, (
         "rule must NOT reference manage-unit-files in executable code — granting "
         "it re-opens restart-of-any-unit (see the rule's header comment)."
+    )
+
+
+def test_source_intent_reconcile_is_start_only_scoped():
+    """The /sources enable/disable root helper (jasper-source-intent-reconcile)
+    is granted START-ONLY, mirroring the other fixed helpers. Pinning its exact
+    scope means a future edit that promotes it to general manage-units
+    (stop/restart) — or that reaches for manage-unit-files to persist the toggle
+    — fails CI. It is the AUTHORITY half of the /sources silent-no-op fix: a
+    root oneshot the non-root wizard may only `start`, never a broadened grant."""
+    from jasper.control.restart_broker import MANAGED_UNITS, START_ONLY_UNITS
+
+    unit = "jasper-source-intent-reconcile.service"
+    assert unit in START_ONLY_UNITS, "helper must be start-only in the broker"
+    assert unit not in MANAGED_UNITS, "helper must NOT be generally brokerable"
+    text = _rule_text()
+    assert unit in _units_in_rule_array(text, "START_ONLY_UNITS"), (
+        "helper must be in the polkit START_ONLY_UNITS array"
+    )
+    assert unit not in _units_in_rule_array(text, "MANAGED_UNITS"), (
+        "helper must NOT be in the polkit MANAGED_UNITS array"
     )
 
 

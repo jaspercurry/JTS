@@ -114,6 +114,7 @@ def test_start_only_units_are_not_general_managed_units():
     assert restart_broker.START_ONLY_UNITS == frozenset({
         "jasper-audio-hardware-reconcile.service",
         "jasper-fanin-coupling-auto.service",
+        "jasper-source-intent-reconcile.service",
         "jasper-wifi-scan-repair.service",
         "jasper-xvf-firmware-update.service",
     })

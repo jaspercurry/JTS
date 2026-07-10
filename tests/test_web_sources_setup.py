@@ -234,14 +234,21 @@ def test_gather_state_bluetooth_unavailable(stub_backends):
 
 def test_apply_routes_each_source(monkeypatch):
     units = []
+    persisted = []
     monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(mod, "_unit_available", lambda unit: True)
     monkeypatch.setattr(mod, "_usbsink_available", lambda: True)
     monkeypatch.setattr(
         mod, "_set_unit", lambda unit, enabled: units.append((unit, enabled))
     )
-    # The USB enable/disable path recomposes the always-on composite gadget via
-    # the restart broker (manage_units), not _set_unit — capture it separately.
+    # USB enable persists its enable INTENT through the root source-intent helper
+    # (enable is manage-unit-files, which the non-root broker can't run), then
+    # recomposes the always-on composite gadget + starts the bridge via the
+    # restart broker (manage_units) — capture each separately.
+    monkeypatch.setattr(
+        mod, "_persist_source_intent",
+        lambda unit, enabled: persisted.append((unit, enabled)),
+    )
     managed = []
     monkeypatch.setattr(
         mod, "manage_units",
@@ -261,11 +268,12 @@ def test_apply_routes_each_source(monkeypatch):
 
     assert (mod.AIRPLAY_UNIT, True) in units
     assert (mod.SPOTIFY_CONNECT_UNIT, False) in units
-    # USB enable is the four-step ordering (enable intent, recompose the gadget
-    # so the uac2 card appears, start the bridge, then kick the coupling
-    # reconcile to arm the combo) — all through the broker.
+    # USB enable is a four-step ordering: persist the enable intent (root helper),
+    # recompose the gadget so the uac2 card appears, start the bridge, then kick
+    # the coupling reconcile to arm the combo. Only the last three are broker
+    # (manage_units) calls; the persist is the source-intent helper.
+    assert persisted == [(mod.USBSINK_UNIT, True)]
     assert managed == [
-        ((mod.USBSINK_UNIT,), "enable"),
         ((mod.USBSINK_GADGET_UNIT,), "restart"),
         ((mod.USBSINK_UNIT,), "start"),
         ((mod.COUPLING_AUTO_UNIT,), "start"),
@@ -319,18 +327,97 @@ def test_apply_refuses_bluetooth_when_local_sources_disallowed(monkeypatch):
         mod._apply("bluetooth", True)
 
 
-def test_set_unit_enable_disable_pairing(monkeypatch):
-    # WS1 Phase 3: _set_unit routes enable/disable through jasper-control's
-    # restart broker (manage_units) rather than calling systemctl directly.
-    calls = []
+def test_set_unit_persists_intent_then_starts_or_stops(monkeypatch):
+    # WS1 Phase 3b: _set_unit persists the enable/disable INTENT via the root
+    # source-intent helper (manage-unit-files can't be brokered non-root), then
+    # start/stops at runtime via the broker (manage-units, granted) — no direct
+    # systemctl and no enable-now/disable-now broker verb (which fail-soft).
+    persisted = []
+    managed = []
+    monkeypatch.setattr(
+        mod, "_persist_source_intent",
+        lambda unit, enabled: persisted.append((unit, enabled)),
+    )
     monkeypatch.setattr(
         mod, "manage_units",
-        lambda *units, **kw: calls.append((units, kw.get("verb"))) or {"ok": True},
+        lambda *units, **kw: managed.append((units, kw.get("verb"))) or {"ok": True},
     )
     mod._set_unit("foo.service", True)
     mod._set_unit("foo.service", False)
-    assert (("foo.service",), "enable-now") in calls
-    assert (("foo.service",), "disable-now") in calls
+    assert persisted == [("foo.service", True), ("foo.service", False)]
+    assert (("foo.service",), "start") in managed
+    assert (("foo.service",), "stop") in managed
+    # The enable/disable persistence never goes through the broker's
+    # manage-unit-files verbs (they fail-soft for the non-root broker).
+    verbs = [verb for _units, verb in managed]
+    assert "enable-now" not in verbs and "disable-now" not in verbs
+
+
+# ---- honesty layer: a failed toggle must LOOK failed -----------------------
+#
+# The pre-existing bug: the broker returns rc=1 ("Interactive authentication
+# required") on enable/disable, sources_setup swallowed it, and the /set POST
+# returned 200 — a toggle that lied. These pin that a broker rc!=0 on the
+# persistence (enable/disable) OR the runtime (start/stop) half surfaces as a
+# visible error, never a silent 200.
+
+
+def test_persist_source_intent_raises_on_broker_kick_failure(
+    monkeypatch, tmp_path, caplog,
+):
+    # A broker rc!=0 on the source-intent reconcile kick (the enable/disable
+    # persistence path) MUST raise + log a WARN — a failed persist can't be seen
+    # in the /state read-back (a runtime start/stop can look right now yet be
+    # wrong after reboot), so silence here is the dangerous case.
+    monkeypatch.setattr(mod, "SOURCE_INTENT_ENV", str(tmp_path / "intent.env"))
+    monkeypatch.setattr(
+        mod, "manage_units",
+        lambda *u, **kw: {
+            "ok": False, "rc": 1, "error": "Interactive authentication required",
+        },
+    )
+    with caplog.at_level("WARNING"):
+        with pytest.raises(RuntimeError, match="could not persist"):
+            mod._persist_source_intent("shairport-sync.service", False)
+    assert any(
+        "event=sources.intent_apply_failed" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_set_unit_raises_on_runtime_failure(monkeypatch):
+    # Persistence succeeds, but the runtime start/stop (broker manage-units)
+    # fails — _set_unit must still raise so the toggle surfaces the failure.
+    monkeypatch.setattr(mod, "_persist_source_intent", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mod, "manage_units",
+        lambda *u, **kw: {"ok": False, "rc": 1, "error": "start failed"},
+    )
+    with pytest.raises(RuntimeError, match="start failed"):
+        mod._set_unit("shairport-sync.service", True)
+
+
+def test_post_set_enable_disable_failure_returns_error_not_200(
+    stub_backends, monkeypatch, tmp_path,
+):
+    # END-TO-END reproduction of the reported bug: POST /set with the broker
+    # returning rc=1 "Interactive authentication required" on the enable/disable
+    # persistence path must return a non-200 error response, NOT 200-and-silence.
+    stub_backends(active=set(), usb_ready=True, bt=(True, False, False))
+    monkeypatch.setattr(mod, "SOURCE_INTENT_ENV", str(tmp_path / "intent.env"))
+    monkeypatch.setattr(
+        mod, "manage_units",
+        lambda *u, **kw: {
+            "ok": False, "rc": 1, "error": "Interactive authentication required",
+        },
+    )
+    h = _drive(
+        "POST", "/set",
+        body=json.dumps({"source": "airplay", "enabled": False}).encode(),
+        csrf_cookie=CSRF, csrf_header=CSRF,
+    )
+    assert h.status == 502
+    assert h.status != 200
+    assert "error" in _body_json(h)
 
 
 # ---- dtoverlay probe --------------------------------------------------------

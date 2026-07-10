@@ -149,6 +149,16 @@ START_ONLY_UNITS = frozenset({
     # at the next reboot. Start-only: jasper-web may kick a reconcile pass, not
     # stop/restart the reconciler (mirrors jasper-wifi-scan-repair).
     "jasper-fanin-coupling-auto.service",
+    # Root oneshot that persists /sources enable/disable intent
+    # (jasper.source_intent). enable/disable is manage-unit-files, which the
+    # non-root broker deliberately cannot run (can't be unit-scoped; systemctl
+    # restart consults it → would re-open restart-of-any-unit). So the /sources/
+    # wizard (jasper-web, non-root) records intent in source_intent.env and
+    # starts this helper to apply it. Start-only: jasper-web may kick a
+    # persistence pass, not stop/restart the helper (mirrors
+    # jasper-wifi-scan-repair). The helper enforces its own source-unit allowlist
+    # internally; the broker/polkit only allow STARTING it.
+    "jasper-source-intent-reconcile.service",
     "jasper-wifi-scan-repair.service",
     "jasper-xvf-firmware-update.service",
 })

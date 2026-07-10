@@ -58,11 +58,17 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..atomic_io import locked_update_env_file
 from ..control.restart_broker import manage_units
 from ..install_profile import install_profile_allows_local_sources, read_install_profile
 from ..local_sources import local_source_lifecycle
 from ..log_event import log_event
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
+from ..source_intent import (
+    RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT,
+    SOURCE_INTENT_ENV,
+    intent_env_key,
+)
 from ._common import (
     bonded_follower_active,
     begin_request,
@@ -239,36 +245,93 @@ def _local_sources_allowed() -> bool:
         return False
 
 
-def _set_unit(unit: str, enabled: bool) -> None:
-    """Enable+start or disable+stop a systemd unit. Failures are logged
-    but not raised — partial state ("disabled but still running" or
-    "enabled but stopped") is rare and self-heals on the next toggle.
+def _persist_source_intent(unit: str, enabled: bool) -> None:
+    """Persist a source's enable/disable intent so it survives a reboot.
 
-    enable/disable is paired with start/stop so the on/off state
-    survives a reboot. WS1 Phase 3: the state-changing enable/disable goes
-    through jasper-control's restart broker (the read-only `_systemctl`
-    probes above stay direct — systemd lets any user read unit state)."""
-    verb = "enable-now" if enabled else "disable-now"
+    enable/disable is ``org.freedesktop.systemd1.manage-unit-files``, which the
+    non-root broker deliberately CANNOT run (it can't be unit-scoped on this
+    systemd and ``systemctl restart`` consults it, so granting it would re-open
+    restart-of-any-unit — see restart_broker + deploy/polkit/49-jasper-control.
+    rules). So record the household's choice in the wizard-owned
+    ``source_intent.env`` and kick the fixed root helper
+    ``jasper-source-intent-reconcile`` through the broker's START_ONLY grant; the
+    helper applies enable/disable for the allowlisted source units only.
+
+    Raises ``RuntimeError`` if the write or the apply fails. A failed persist
+    MUST surface: a runtime start/stop can look correct right now yet be wrong
+    after reboot, and the /state read-back cannot detect that — so the only
+    honest signal is a visible error (the caller turns this into a non-200)."""
+    key = intent_env_key(unit)
+    try:
+        locked_update_env_file(
+            SOURCE_INTENT_ENV, {key: "enabled" if enabled else "disabled"},
+        )
+    except OSError as e:
+        log_event(
+            logger, "sources.intent_write_failed",
+            unit=unit, enabled=enabled, error=str(e), level=logging.WARNING,
+        )
+        raise RuntimeError(
+            f"could not record {unit} "
+            f"{'enabled' if enabled else 'disabled'} intent: {e}"
+        ) from e
+    resp = manage_units(
+        SOURCE_INTENT_RECONCILE_UNIT, verb="start",
+        reason="source enable/disable", no_block=False, timeout=30.0,
+    )
+    if not resp.get("ok"):
+        detail = str(resp.get("error") or f"rc={resp.get('rc')}")
+        log_event(
+            logger, "sources.intent_apply_failed",
+            unit=unit, enabled=enabled, error=detail, level=logging.WARNING,
+        )
+        raise RuntimeError(
+            f"could not persist {unit} "
+            f"{'enabled' if enabled else 'disabled'}: {detail}"
+        )
+
+
+def _set_unit(unit: str, enabled: bool) -> None:
+    """Persist a source's on/off intent AND apply it at runtime.
+
+    Two halves take different privilege routes because the non-root posture
+    splits them:
+      * persistence (enable/disable) → the root ``jasper-source-intent-reconcile``
+        helper (manage-unit-files can't be brokered non-root);
+      * runtime (start/stop) → the restart broker (manage-units, granted).
+
+    Raises ``RuntimeError`` if EITHER half fails, so the /set handler returns a
+    visible error instead of a 200 that lies (no silent failure). The read-only
+    ``_systemctl`` probes elsewhere stay direct — systemd lets any user read
+    unit state."""
+    _persist_source_intent(unit, enabled)
+    verb = "start" if enabled else "stop"
     resp = manage_units(
         unit, verb=verb, reason="source toggle", no_block=False, timeout=10.0,
     )
     if not resp.get("ok"):
-        logger.warning(
-            "source %s %s failed: %s", unit, verb,
-            resp.get("error") or f"rc={resp.get('rc')}",
+        detail = str(resp.get("error") or f"rc={resp.get('rc')}")
+        log_event(
+            logger, "sources.runtime_apply_failed",
+            unit=unit, verb=verb, error=detail, level=logging.WARNING,
         )
+        raise RuntimeError(f"{unit} {verb} failed: {detail}")
 
 
 def _manage_unit(unit: str, verb: str, *, reason: str) -> None:
+    """Run one broker (manage-units) verb — start/stop/restart — raising on
+    failure so a broken toggle step surfaces as a visible error rather than a
+    silent 200 (no silent failure)."""
     resp = manage_units(
         unit, verb=verb, reason=reason, no_block=False, timeout=15.0,
     )
     if not resp.get("ok"):
-        logger.warning(
-            "source %s %s failed: %s",
-            unit, verb,
-            resp.get("error") or f"rc={resp.get('rc')}",
+        detail = str(resp.get("error") or f"rc={resp.get('rc')}")
+        log_event(
+            logger, "sources.manage_unit_failed",
+            unit=unit, verb=verb, error=detail, level=logging.WARNING,
         )
+        raise RuntimeError(f"{unit} {verb} failed: {detail}")
 
 
 def _recompose_gadget(*, reason: str) -> None:
@@ -490,12 +553,15 @@ def _apply(source: str, enabled: bool) -> str | None:
             # Three-step ordering, because the gadget reads the intent
             # (jasper-usbsink is-enabled) at recompose time and the bridge's
             # ExecStartPre waits for the uac2 ALSA card:
-            #   1. enable the bridge (record household intent; do NOT start yet
-            #      — starting now would race a card that does not exist);
+            #   1. persist the enable intent via the root helper (record
+            #      household intent; do NOT start yet — starting now would race a
+            #      card that does not exist). enable is manage-unit-files, which
+            #      the non-root broker can't run, so this goes through
+            #      jasper-source-intent-reconcile, not the broker;
             #   2. recompose the gadget (now reads is-enabled=yes → adds uac2,
             #      the UAC2Gadget card appears);
             #   3. start the bridge (the card exists → wait-card passes).
-            _manage_unit(USBSINK_UNIT, "enable", reason="USB source toggle on")
+            _persist_source_intent(USBSINK_UNIT, True)
             _recompose_gadget(reason="USB source toggle on")
             _manage_unit(USBSINK_UNIT, "start", reason="USB source toggle on")
             # 4. Arm the USB low-latency combo now (fan-in direct capture +

@@ -1,0 +1,21 @@
+[Unit]
+# Fixed root helper that persists /sources enable/disable intent (WS1 Phase 3b).
+# The non-root jasper-control broker cannot run manage-unit-files (enable/disable)
+# — it can't be unit-scoped on this systemd and `systemctl restart` consults it,
+# so granting it would re-open restart-of-any-unit. So the /sources/ wizard
+# (non-root jasper-web) records the household's on/off choice in
+# /var/lib/jasper/source_intent.env and kicks THIS root oneshot through the
+# broker's START_ONLY_UNITS grant (`systemctl start` = manage-units = polkit
+# scoped). It enable/disables ONLY the allowlisted source intent units. Mirrors
+# jasper-wifi-scan-repair. See jasper/source_intent.py +
+# docs/HANDOFF-privilege-separation.md.
+Description=Apply persisted /sources enable/disable intent
+Documentation=file:/opt/jasper/AGENTS.md
+
+[Service]
+Type=oneshot
+ExecStart=/opt/jasper/.venv/bin/jasper-source-intent-reconcile --reason systemd
+# Bounded: a handful of `systemctl enable/disable` on the source allowlist.
+TimeoutStartSec=30
+StandardOutput=journal
+StandardError=journal

@@ -236,27 +236,34 @@ def test_gather_state_usbsink_unavailable_when_gadget_unit_missing(monkeypatch):
 # ----------------------------------------------------------------------
 
 
-def test_apply_usbsink_enable_recomposes_gadget_between_enable_and_start(monkeypatch):
-    # Enable is a four-step ordering: enable the bridge intent (do NOT start
-    # yet), recompose the gadget so it adds the uac2 function (card appears),
-    # start the bridge (its wait-card now passes), then kick the fan-in coupling
-    # reconcile so the USB low-latency combo arms this session (not only at the
-    # next boot/deploy). All through the broker.
+def test_apply_usbsink_enable_recomposes_gadget_between_persist_and_start(monkeypatch):
+    # Enable is a four-step ordering: persist the enable intent via the root
+    # source-intent helper (do NOT start yet), recompose the gadget so it adds
+    # the uac2 function (card appears), start the bridge (its wait-card now
+    # passes), then kick the fan-in coupling reconcile so the USB low-latency
+    # combo arms this session (not only at the next boot/deploy). enable is
+    # manage-unit-files, which the non-root broker can't run, so it goes through
+    # the source-intent helper; the last three are broker (manage_units) calls.
     calls = []
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
     monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
     monkeypatch.setattr(
+        sources_setup, "_persist_source_intent",
+        lambda unit, enabled: calls.append(("persist", unit, enabled)),
+    )
+    monkeypatch.setattr(
         sources_setup, "manage_units",
-        lambda *units, **kw: calls.append((units, kw.get("verb"))) or {"ok": True},
+        lambda *units, **kw: calls.append(("manage", units, kw.get("verb")))
+        or {"ok": True},
     )
     notice = sources_setup._apply("usbsink", True)
     assert notice is None  # kick succeeded → no reboot notice
     assert calls == [
-        ((sources_setup.USBSINK_UNIT,), "enable"),
-        ((sources_setup.USBSINK_GADGET_UNIT,), "restart"),
-        ((sources_setup.USBSINK_UNIT,), "start"),
-        ((sources_setup.COUPLING_AUTO_UNIT,), "start"),
+        ("persist", sources_setup.USBSINK_UNIT, True),
+        ("manage", (sources_setup.USBSINK_GADGET_UNIT,), "restart"),
+        ("manage", (sources_setup.USBSINK_UNIT,), "start"),
+        ("manage", (sources_setup.COUPLING_AUTO_UNIT,), "start"),
     ]
 
 
@@ -268,6 +275,9 @@ def test_apply_usbsink_enable_kicks_coupling_reconcile_start_only(monkeypatch):
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
     monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
+    monkeypatch.setattr(
+        sources_setup, "_persist_source_intent", lambda *a, **k: None,
+    )
 
     def fake_manage(*units, **kw):
         if units == (sources_setup.COUPLING_AUTO_UNIT,):
@@ -286,6 +296,9 @@ def test_apply_usbsink_enable_failed_kick_returns_reboot_notice(monkeypatch):
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
     monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
+    monkeypatch.setattr(
+        sources_setup, "_persist_source_intent", lambda *a, **k: None,
+    )
 
     def fake_manage(*units, **kw):
         if units == (sources_setup.COUPLING_AUTO_UNIT,):
@@ -305,6 +318,9 @@ def test_apply_usbsink_disable_failed_kick_returns_reboot_notice(monkeypatch):
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
     monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
+    monkeypatch.setattr(
+        sources_setup, "_persist_source_intent", lambda *a, **k: None,
+    )
 
     def fake_manage(*units, **kw):
         if units == (sources_setup.COUPLING_AUTO_UNIT,):
@@ -317,23 +333,30 @@ def test_apply_usbsink_disable_failed_kick_returns_reboot_notice(monkeypatch):
 
 
 def test_apply_usbsink_disable_recomposes_gadget_keeping_network(monkeypatch):
-    # Disable stops+disables the bridge, then recomposes the gadget so it drops
-    # the uac2 function — the host-visible audio device disappears while the
-    # always-on USB network (ncm) stays up. The gadget is RESTARTED, never
-    # stopped.
+    # Disable persists the disable intent (root source-intent helper) + stops the
+    # bridge (broker), then recomposes the gadget so it drops the uac2 function —
+    # the host-visible audio device disappears while the always-on USB network
+    # (ncm) stays up. The gadget is RESTARTED, never stopped; the persist is the
+    # source-intent helper, never the broker's disable-now verb.
     calls = []
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
     monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
     monkeypatch.setattr(
+        sources_setup, "_persist_source_intent",
+        lambda unit, enabled: calls.append(("persist", unit, enabled)),
+    )
+    monkeypatch.setattr(
         sources_setup, "manage_units",
-        lambda *units, **kw: calls.append((units, kw.get("verb"))) or {"ok": True},
+        lambda *units, **kw: calls.append(("manage", units, kw.get("verb")))
+        or {"ok": True},
     )
     sources_setup._apply("usbsink", False)
-    assert calls[0] == ((sources_setup.USBSINK_UNIT,), "disable-now")
-    assert calls[1] == ((sources_setup.USBSINK_GADGET_UNIT,), "restart")
+    assert calls[0] == ("persist", sources_setup.USBSINK_UNIT, False)
+    assert calls[1] == ("manage", (sources_setup.USBSINK_UNIT,), "stop")
+    assert calls[2] == ("manage", (sources_setup.USBSINK_GADGET_UNIT,), "restart")
     # Then the coupling reconcile is kicked (start-only) to disarm the combo.
-    assert calls[2] == ((sources_setup.COUPLING_AUTO_UNIT,), "start")
+    assert calls[3] == ("manage", (sources_setup.COUPLING_AUTO_UNIT,), "start")
     # The gadget is never stopped — that would drop the always-on USB network.
     assert not any(
         c == ((sources_setup.USBSINK_GADGET_UNIT,), "stop") for c in calls
