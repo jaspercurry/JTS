@@ -308,18 +308,41 @@ combo box — it derives combo USB playing from fan-in's DIRECT lane instead:
   bridge's frozen `playing:false` / `rms_dbfs:-120`). See
   `docs/HANDOFF-usbsink.md` §4.4 / §4.9.
 
-**Remaining (narrower) caveat — mux SILENCING USB.** When ANOTHER source wins in
-auto mode, mux's preempt POST to the standby bridge silences nothing on the audio
-path (the standby bridge has no audio loop; fan-in reports `Obs.preempted =
-false` by design), so on a gadget box that genuinely mixes sources the USB direct
-lane can still layer under a new winner until fan-in's SELECT gate (manual mode)
-routes it out. This is the arbitration-*mechanism* half of the old gap; the
-visibility half above is closed. It was validated as acceptable on jts.local,
-where the wired Mac is effectively the SOLE source (USB rarely contends with
-AirPlay/Spotify/BT simultaneously), the common gadget-box shape. Track a
-combo-aware USB-silencing path before promoting combo to heavily multi-source
-households. To opt a contended box out, revert per the default-status callout at
-the top of this section.
+**Arbitration mechanism — now fan-in-native (combo).** mux has
+single-SELECTed the winner lane on every auto-mode tick since the source-
+selection hardening (`414adcd0`, 2026-05-27): `_reassert_auto_winner` re-sends
+`SELECT <winner>` each poll, the sum-all `AUTO` command (`Mux._fanin_auto`)
+has zero production callers, and the mixer boots at `selected_input_index=-2`
+(NONE — nothing sums but the correction/test lane). The DIRECT usbsink lane
+passes the exact same per-lane `input_selected`/`lane_mix_contributes` gate as
+every other lane, with no USB-specific exemption (pinned by
+`lane_mix_contributes_selection_only_when_unmuted` in `mixer.rs`). So a
+non-winner USB lane has never actually layered under a winner in auto mode —
+the SELECT gate already excluded it from the sum before this PR existed.
+What the fanin-native preempt PR adds is a separate, explicit silencing
+primitive: on a combo box mux now also sends `MUTE`/`UNMUTE usbsink` over
+fan-in's existing control socket (the same channel as SELECT), and fan-in
+drops the direct lane's contribution at its **mix stage**, independent of
+selection/routing policy. Today that makes it **defense-in-depth** — a
+silencing signal that doesn't ride on SELECT's side effects, with its own
+transition-logged observability (`event=fanin.lane_mute`,
+`/state.renderers.usbsink.muted`) — layered on top of an exclusion that was
+already structurally sound. Crucially the mute is applied at the SUM only:
+the direct lane keeps reporting its pre-mute `frames_read` / `rms_dbfs`, so
+mux's combo-liveness gate still sees a muted-but-streaming host as active (no
+mute→"stopped"→release flap; pinned by
+`lane_mix_contributes_mute_overrides_selection`). Solo boxes keep the :8781
+path unchanged; its deletion follows the aloop-capture-path deletion. This PR
+is the **prerequisite for that deletion**: once every box is direct-capture,
+the :8781 preempt has no bridge to talk to, and fan-in `MUTE`/`UNMUTE`
+becomes the **load-bearing** arbitration primitive — the only preempt
+transport left, rather than a belt-and-suspenders layer over SELECT. On a
+combo box, `JASPER_USBSINK_PREEMPT=disabled` skips the `MUTE` call, but the
+losing USB lane still stays excluded from the sum by the SELECT gate — no
+audible layering is expected even with the escape hatch active. The
+visibility half of the old gap was already closed (above); the mechanism half
+was never actually open — this section now describes hardening, not a fix
+for real layering.
 
 ### Host-slaved USB clock in combo mode (fan-in owns the ctl)
 
@@ -1805,11 +1828,16 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-10 ("Arbitration caveat" section updated — the combo
-silence gate closes the visibility half of the gap: fan-in serialises a per-lane
-`rms_dbfs`, and mux's combo liveness + `/state.renderers.usbsink` now derive USB
-playing from that DIRECT-lane level gated at `-60` dBFS, so a muted host no
-longer seizes the speaker; the mux-silencing-USB half stays open. Prior recheck
+Last verified: 2026-07-10 ("Arbitration mechanism" section corrected — auto
+mode has single-SELECTed the winner since `414adcd0` (2026-05-27), which
+already excluded a non-winner USB lane from fan-in's sum with no exemption for
+the DIRECT lane, so a genuinely multi-source gadget box never actually layered
+USB under a new winner. The fanin-native preempt PR's `MUTE`/`UNMUTE usbsink`
+over fan-in's control socket (pre-mute telemetry preserved) is real,
+independent, transition-logged silencing — defense-in-depth today, and it
+becomes the load-bearing arbitration primitive once the :8781/aloop solo path
+is deleted. The earlier combo silence gate had already closed the visibility
+half (per-lane `rms_dbfs` + combo liveness gated at `-60` dBFS). Prior recheck
 2026-07-06: `outputd.env` config-shear guard rechecked against
 content and DAC buffer/period validation in `jasper.audio_runtime_plan`,
 `jasper.cli.audio_config validate-outputd-env`,

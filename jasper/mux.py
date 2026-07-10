@@ -119,6 +119,11 @@ MUX_CONTROL_SOCKET = os.environ.get(
 MUX_MODE_STATE_PATH = os.environ.get(
     "JASPER_MUX_MODE_STATE_PATH", mux_mode_persistence.DEFAULT_PATH,
 )
+# The fan-in input-lane label for the USB source. On a combo/direct box the USB
+# preempt is a MUTE/UNMUTE of THIS lane over the fan-in control socket (the
+# port-8781 POST is a no-op there — the bridge is in standby). Derived from the
+# same source→label map fan-in SELECT uses, so the two never drift.
+USBSINK_FANIN_LABEL = SOURCE_TO_FANIN_LABEL[Source.USBSINK]
 FANIN_TEST_LABELS = frozenset({"correction"})
 SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"
 SHAIRPORT_MPRIS_PATH = "/org/mpris/MediaPlayer2"
@@ -534,6 +539,12 @@ class Mux:
                 await self._usbsink_set_preempt(
                     False, reason="all_others_idle",
                 )
+
+        # Reassert the combo-box fan-in lane mute if still preempted (handles a
+        # fan-in restart that came up unmuted). No-op on solo / not-preempted /
+        # escape-hatch. After the release above so a just-released lane isn't
+        # re-muted this tick.
+        await self._reassert_usbsink_preempt_mute()
 
         await self._settle_low_latency_audio(current)
 
@@ -1085,6 +1096,18 @@ class Mux:
     async def _fanin_none(self) -> dict[str, Any]:
         return await _fanin_command("NONE")
 
+    async def _fanin_lane_mute(
+        self, label: str, muted: bool,
+    ) -> dict[str, Any]:
+        """MUTE/UNMUTE one fan-in input lane at its mix stage.
+
+        Extends the same mux→fan-in control channel used for the selected-input
+        gate (SELECT/AUTO/NONE) with a per-lane silence that is orthogonal to
+        selection and to volume. Today's only caller is the combo-box USB
+        preempt; the command is lane-general (mirrors SELECT)."""
+        verb = "MUTE" if muted else "UNMUTE"
+        return await _fanin_command(f"{verb} {label}")
+
     async def _fanin_select_best_effort(
         self, source: Source, *, reason: str,
     ) -> None:
@@ -1304,15 +1327,27 @@ class Mux:
     # ------------------------------------------------------------------
 
     async def _usbsink_set_preempt(self, silenced: bool, *, reason: str) -> None:
-        """Tell the daemon to silence/un-silence its output. No-ops
-        if the requested state matches our tracked state, so a tick
-        that re-emits the same decision doesn't generate stale POSTs.
+        """Silence/un-silence the USB source when it loses/regains the speaker.
 
-        Failure is logged but not fatal — the worst case is brief
-        mixing on preempt (matches the existing BT fallback). The
-        daemon's `preempt_listener` itself persists the most-recent
-        state to /run/jasper-usbsink/preempt.state, so a future
-        daemon restart picks up where it left off."""
+        Both box shapes make the SAME latest-source-wins decision; only the
+        transport differs (chosen by ``self._usbsink_combo_box``, refreshed each
+        tick in ``_usbsink_playing`` off the bridge's standby flag):
+
+        - **Combo/direct box** — jasper-fanin DIRECT-captures the gadget and the
+          jasper-usbsink bridge is in standby (opens no PCM, emits nothing), so a
+          port-8781 preempt POST would silence nothing on the audio path. Instead
+          we ``MUTE``/``UNMUTE`` the fan-in usbsink lane at its mix stage — the
+          real, independent silencing primitive. The lane keeps reporting its
+          pre-mute frames/level, so mux still sees a muted-but-streaming host as
+          "playing" (no mute→release→mute flap). See ``_usbsink_set_preempt_fanin``.
+        - **Solo box** — POST to the bridge's :8781 listener; the daemon writes
+          zeros into its own aloop lane. See ``_usbsink_set_preempt_http``.
+
+        No-ops if the requested state matches our tracked state, so a tick that
+        re-emits the same decision doesn't generate stale commands. Both paths
+        advance ``self._usbsink_preempted`` only on success, so a failure is a
+        bounded WARN + graceful mixing and mux re-attempts on the next tick
+        (1 Hz, no storm) — the escape hatch degrades to never-silence."""
         if self._usbsink_preempted == silenced:
             return
         if _usbsink_preempt_disabled():
@@ -1327,6 +1362,50 @@ class Mux:
             )
             self._usbsink_preempted = silenced
             return
+        if self._usbsink_combo_box:
+            await self._usbsink_set_preempt_fanin(silenced, reason=reason)
+        else:
+            await self._usbsink_set_preempt_http(silenced, reason=reason)
+
+    async def _usbsink_set_preempt_fanin(
+        self, silenced: bool, *, reason: str,
+    ) -> None:
+        """Combo-box preempt transport: MUTE/UNMUTE the fan-in usbsink lane.
+
+        The mute is applied at fan-in's mix stage only; the lane's capture and
+        per-lane telemetry (frames_read / rms_dbfs) are untouched, so combo
+        liveness (`step_combo_liveness`) still reads the host's true activity.
+        NOT persisted by fan-in — a fan-in restart comes up unmuted, and
+        ``_reassert_usbsink_preempt_mute`` re-mutes on the next tick."""
+        try:
+            await self._fanin_lane_mute(USBSINK_FANIN_LABEL, silenced)
+        except Exception as e:  # noqa: BLE001
+            # Mirror the failed-8781-POST degradation exactly: bounded WARN,
+            # graceful mixing, and re-attempt next tick (tracked flag NOT
+            # advanced) — no retry storm, no silent failure.
+            logger.warning(
+                "usbsink fanin lane mute failed (muted=%s reason=%s): %s; "
+                "audio may briefly mix",
+                silenced, reason, e,
+            )
+            return
+        self._usbsink_preempted = silenced
+        log_event(
+            logger,
+            "usbsink.preempt_set",
+            silenced=silenced,
+            reason=reason,
+            via="fanin_mute",
+        )
+
+    async def _usbsink_set_preempt_http(
+        self, silenced: bool, *, reason: str,
+    ) -> None:
+        """Solo-box preempt transport: POST to the daemon's :8781 listener.
+
+        The daemon's `preempt_listener` persists the most-recent state to
+        /run/jasper-usbsink/preempt.state, so a future daemon restart picks up
+        where it left off (why the solo path needs no per-tick reassertion)."""
         try:
             resp = await self._http.post(
                 USBSINK_PREEMPT_URL,
@@ -1356,6 +1435,31 @@ class Mux:
                 "usbsink preempt POST failed (silenced=%s reason=%s): %s",
                 silenced, reason, e,
             )
+
+    async def _reassert_usbsink_preempt_mute(self) -> None:
+        """Re-issue the fan-in usbsink lane MUTE while USB is preempted on a
+        combo box.
+
+        fan-in does NOT persist the mute (it comes up unmuted on restart), so a
+        fan-in bounce mid-preempt would drop the silence while mux still tracks
+        ``_usbsink_preempted=True`` and would never re-mute (the state guard in
+        ``_usbsink_set_preempt`` short-circuits the unchanged decision). This
+        per-tick reassertion closes that gap — the next tick re-mutes an
+        unmuted-after-restart lane. Idempotent on the fan-in side (it logs only
+        on a real flip → no steady-state journal spam), bounded at the 1 Hz poll
+        cadence, and fail-soft. Mirrors ``_reassert_auto_winner``'s per-tick
+        SELECT reassertion.
+
+        No-op on solo boxes (the :8781 bridge persists its own preempt state),
+        when USB isn't preempted, or when the escape hatch is set."""
+        if not (self._usbsink_preempted and self._usbsink_combo_box):
+            return
+        if _usbsink_preempt_disabled():
+            return
+        try:
+            await self._fanin_lane_mute(USBSINK_FANIN_LABEL, True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("usbsink fanin lane mute reassert failed: %s", e)
 
     # ------------------------------------------------------------------
     # Spotify Web API helpers — librespot 0.8.0 has no local control

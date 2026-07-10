@@ -13,6 +13,10 @@
 //!   `SELECT <label>\n` → pass only one renderer lane to the sum.
 //!   `AUTO\n`    → return to summing all active lanes.
 //!   `NONE\n`    → pass no renderer lanes (correction/test still passes).
+//!   `MUTE <label>\n` / `UNMUTE <label>\n` → drop / restore one lane's
+//!     contribution to the sum WITHOUT gating its capture telemetry
+//!     (`frames_read` / `rms_dbfs`). mux's latest-source-wins arbitration
+//!     primitive on a combo/direct box, where the port-8781 preempt is a no-op.
 //!
 //! Other input is rejected with `{"error": "unknown command"}`.
 //!
@@ -175,6 +179,12 @@ pub struct InputSnapshotSource {
     /// `TRIM` command sets `pending` here; the work loop performs the drain and
     /// bumps `trims` / `trimmed_frames`, which STATUS surfaces.
     pub trim: Arc<TrimControl>,
+    /// Per-lane MIX MUTE flag, shared with the mixer work thread. The
+    /// `MUTE`/`UNMUTE <label>` command flips it; the work loop's SUM stage skips
+    /// the lane while set (`lane_mix_contributes`), WITHOUT gating the pre-mute
+    /// `frames_read` / `rms_dbfs_x100` telemetry above. STATUS surfaces it as the
+    /// lane's `muted`. Default `false`.
+    pub muted: Arc<AtomicBool>,
 }
 
 pub struct StateServerConfig {
@@ -221,6 +231,7 @@ impl StateServer {
                 catchup_events: Arc::clone(&inp.catchup_events),
                 resampler: inp.resampler_observability(),
                 trim: inp.trim_control(),
+                muted: inp.muted_flag(),
             })
             .collect();
         Self {
@@ -335,6 +346,14 @@ impl StateServer {
                 let label = cmd.trim_start_matches("SELECT ").trim();
                 self.select_input_json(label)
             }
+            cmd if cmd.starts_with("MUTE ") => {
+                let label = cmd.trim_start_matches("MUTE ").trim();
+                self.mute_input_json(label, true)
+            }
+            cmd if cmd.starts_with("UNMUTE ") => {
+                let label = cmd.trim_start_matches("UNMUTE ").trim();
+                self.mute_input_json(label, false)
+            }
             "TRIM" => self.trim_command(None),
             cmd if cmd.starts_with("TRIM ") => {
                 let label = cmd.trim_start_matches("TRIM ").trim();
@@ -374,6 +393,40 @@ impl StateServer {
                 .swap(idx as i32, Ordering::Relaxed);
             if previous != idx as i32 {
                 info!("event=fanin.source_select selected={}", input.label);
+            }
+            self.snapshot_json()
+        } else {
+            format!(
+                r#"{{"error":"unknown input label","label":"{}"}}"#,
+                escape_json(label),
+            )
+        }
+    }
+
+    /// Handle a `MUTE <label>` (`muted=true`) / `UNMUTE <label>` (`muted=false`)
+    /// control command. Sets the target lane's shared `muted` flag; the mixer
+    /// work loop reads it at the SUM stage and drops the lane's contribution
+    /// while set (`lane_mix_contributes`), WITHOUT touching the lane's `frames_read`
+    /// / `rms_dbfs_x100` telemetry — so mux still sees a muted-but-streaming host
+    /// as active (the combo-arbitration invariant).
+    ///
+    /// Idempotent: re-issuing the same state is a no-op store; the transition is
+    /// logged ONCE (only when the flag actually flips), so mux's per-tick
+    /// reassertion of the mute produces no steady-state journal spam. Mirrors the
+    /// SELECT/AUTO/NONE idiom (a control write to a shared atomic; the work loop
+    /// owns the audio effect). Unknown label → an error object; the mute state is
+    /// unchanged. Returns the STATUS snapshot on success.
+    fn mute_input_json(&self, label: &str, muted: bool) -> String {
+        if label.is_empty() {
+            return r#"{"error":"missing input label"}"#.to_string();
+        }
+        if let Some(input) = self.inputs.iter().find(|input| input.label == label) {
+            let previous = input.muted.swap(muted, Ordering::Relaxed);
+            if previous != muted {
+                info!(
+                    "event=fanin.lane_mute label={} muted={}",
+                    input.label, muted
+                );
             }
             self.snapshot_json()
         } else {
@@ -615,6 +668,14 @@ impl StateServer {
                 "source",
                 if input.is_direct { "direct" } else { "lane" },
             );
+            buf.push(',');
+            // muted: the lane's MIX-MUTE state (mux latest-source-wins arbitration
+            // on a combo/direct box). SEPARATE from the telemetry fields below —
+            // a `muted:true` lane still reports its true pre-mute `frames_read` /
+            // `rms_dbfs` (silenced at the sum, not the capture), which is what mux
+            // reads to keep a muted-but-streaming host "playing". Always present,
+            // flat + greppable (like `source` / the catch-up counters).
+            push_kv_bool(&mut buf, "muted", input.muted.load(Ordering::Relaxed));
             buf.push(',');
             push_kv_u64(
                 &mut buf,
@@ -1316,6 +1377,7 @@ mod tests {
                     resampler: None,
                     // Never-trimmed lane: all counters 0, no pending request.
                     trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
+                    muted: Arc::new(AtomicBool::new(false)),
                 },
                 InputSnapshotSource {
                     label: "airplay".to_string(),
@@ -1358,6 +1420,7 @@ mod tests {
                     // A lane that HAS been trimmed (fixture): 3 trims, 4608 frames
                     // dropped total, no request currently pending.
                     trim: Arc::new(TrimControl::test_fixture(3, 4608, false)),
+                    muted: Arc::new(AtomicBool::new(false)),
                 },
                 InputSnapshotSource {
                     // A USB DIRECT lane fixture (source:"direct" + a direct{}
@@ -1429,6 +1492,9 @@ mod tests {
                         )),
                     }),
                     trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
+                    // The USB DIRECT (combo) lane starts unmuted; the mute-path
+                    // tests flip this fixture's flag or drive it via mute_input_json.
+                    muted: Arc::new(AtomicBool::new(false)),
                 },
             ],
             output_pcm: "hw:Loopback,0,7".to_string(),
@@ -1888,6 +1954,129 @@ mod tests {
         let j = server.select_input_json("bluetooth");
         assert_eq!(server.selected_input_index.load(Ordering::Relaxed), -1);
         assert!(j.contains(r#""error":"unknown input label""#));
+    }
+
+    // ---- MUTE / UNMUTE state machine + STATUS ----------------------------
+
+    #[test]
+    fn mute_input_json_sets_and_clears_lane_flag() {
+        let server = make_test_server();
+        // The usbsink DIRECT lane is index 2 in the fixture. It starts unmuted.
+        assert!(!server.inputs[2].muted.load(Ordering::Relaxed));
+
+        let j = server.mute_input_json("usbsink", true);
+        assert!(
+            server.inputs[2].muted.load(Ordering::Relaxed),
+            "MUTE must set the target lane's flag",
+        );
+        // The reply is the STATUS snapshot with the lane's muted:true.
+        let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
+        assert_eq!(parsed["inputs"][2]["muted"].as_bool(), Some(true));
+
+        // Only the targeted lane is affected.
+        assert!(!server.inputs[0].muted.load(Ordering::Relaxed));
+        assert!(!server.inputs[1].muted.load(Ordering::Relaxed));
+
+        server.mute_input_json("usbsink", false);
+        assert!(
+            !server.inputs[2].muted.load(Ordering::Relaxed),
+            "UNMUTE must clear the flag",
+        );
+    }
+
+    #[test]
+    fn mute_input_json_is_idempotent() {
+        // Re-issuing the same state is a harmless no-op store (mux reasserts the
+        // mute every tick; the transition log fires only on a real flip, so a
+        // steady muted lane never spams the journal). Both calls succeed and the
+        // flag lands where asked.
+        let server = make_test_server();
+        server.mute_input_json("usbsink", true);
+        let j = server.mute_input_json("usbsink", true);
+        assert!(server.inputs[2].muted.load(Ordering::Relaxed));
+        assert!(j.contains(r#""muted":true"#));
+    }
+
+    #[test]
+    fn mute_input_json_rejects_unknown_and_empty_label() {
+        let server = make_test_server();
+        let j = server.mute_input_json("bluetooth", true);
+        assert!(j.contains(r#""error":"unknown input label""#));
+        // No lane's flag changed on an unknown label.
+        assert!(server
+            .inputs
+            .iter()
+            .all(|i| !i.muted.load(Ordering::Relaxed)));
+        let empty = server.mute_input_json("", true);
+        assert!(empty.contains(r#""error":"missing input label""#));
+    }
+
+    #[test]
+    fn mute_command_over_socket_flips_lane() {
+        use std::io::{Read, Write};
+        use std::net::Shutdown;
+        use std::os::unix::net::UnixStream;
+
+        let server = make_test_server();
+        let (mut client, server_stream) = UnixStream::pair().unwrap();
+        client.write_all(b"MUTE usbsink\n").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        server.handle_connection(server_stream).unwrap();
+
+        assert!(server.inputs[2].muted.load(Ordering::Relaxed));
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.contains(r#""label":"usbsink""#));
+        assert!(response.contains(r#""muted":true"#));
+    }
+
+    #[test]
+    fn muted_lane_still_reports_pre_mute_telemetry_in_status() {
+        // The telemetry-stays-pre-mute invariant, asserted at the STATUS boundary
+        // mux actually reads: a muted lane still carries its true captured
+        // frames_read + rms_dbfs (it is silenced at the SUM, never at the
+        // capture/telemetry). If mute zeroed these, mux would mute USB → see it
+        // "stop" → release → flap.
+        let server = make_test_server();
+        server.mute_input_json("usbsink", true);
+        let j = server.snapshot_json();
+        let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
+        let usb = &parsed["inputs"][2];
+        assert_eq!(usb["label"].as_str(), Some("usbsink"));
+        assert_eq!(usb["muted"].as_bool(), Some(true), "muted flag surfaced");
+        // The fixture's captured level (-6.5 dBFS) and liveness counter (96000)
+        // are UNCHANGED by the mute — mux's combo gate still sees an active host.
+        assert_eq!(
+            usb["rms_dbfs"].as_f64(),
+            Some(-6.5),
+            "muted lane must still report its pre-mute level",
+        );
+        assert_eq!(
+            usb["frames_read"].as_u64(),
+            Some(96000),
+            "muted lane must still report its pre-mute frames_read",
+        );
+    }
+
+    #[test]
+    fn snapshot_json_per_input_muted_flag_present_and_defaults_false() {
+        // Every lane carries a flat, greppable `muted` key (like `source`), so the
+        // shape is stable and mux/state_aggregate can read it unconditionally.
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        assert_eq!(
+            j.matches(r#""muted":"#).count(),
+            3,
+            "each of the 3 lanes must render exactly one muted key: {j}",
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
+        for lane in parsed["inputs"].as_array().unwrap() {
+            assert_eq!(
+                lane["muted"].as_bool(),
+                Some(false),
+                "unmuted fixture ⇒ muted:false on {lane}",
+            );
+        }
     }
 
     #[test]

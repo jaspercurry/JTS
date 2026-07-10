@@ -17,6 +17,7 @@ from jasper.source_state import (
     usbsink_bridge_in_standby,
     usbsink_direct_audible,
     usbsink_direct_frames_read,
+    usbsink_direct_muted,
     usbsink_direct_rms_dbfs,
 )
 
@@ -211,6 +212,30 @@ def test_direct_audible_gates_on_the_shared_threshold():
     # No level / no direct lane -> None (caller picks the fail-soft direction).
     assert usbsink_direct_audible(_fanin_status("direct")) is None
     assert usbsink_direct_audible(_fanin_status("lane", rms_dbfs=-6.0)) is None
+
+
+# ---- Direct-lane MIX-MUTE state (mux combo arbitration) ---------------------
+
+
+def test_direct_muted_reads_the_direct_lane_flag():
+    assert usbsink_direct_muted(_fanin_status("direct", muted=True)) is True
+    assert usbsink_direct_muted(_fanin_status("direct", muted=False)) is False
+
+
+def test_direct_muted_none_for_aloop_lane():
+    # A solo box's aloop lane never carries the fan-in mix mute — that's the
+    # :8781 bridge's job — so the direct-only reader returns None there.
+    assert usbsink_direct_muted(_fanin_status("lane", muted=True)) is None
+
+
+def test_direct_muted_none_when_absent_or_non_bool():
+    # Older fan-in (no per-lane `muted` key) or a malformed value → None, the
+    # fail-soft "unknown" the state surface renders as null.
+    assert usbsink_direct_muted(_fanin_status("direct")) is None
+    assert usbsink_direct_muted(_fanin_status("direct", muted="yes")) is None
+    assert usbsink_direct_muted(_fanin_status("direct", muted=1)) is None
+    assert usbsink_direct_muted(None) is None
+    assert usbsink_direct_muted({"inputs": "nope"}) is None
 
 
 # ---- Combo silence gate: frames-advanced AND audible ------------------------

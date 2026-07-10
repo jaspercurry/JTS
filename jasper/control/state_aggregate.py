@@ -24,7 +24,11 @@ from ..audio_quality import (
 )
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..fanin.status import fanin_usbsink_lane_is_direct
-from ..source_state import usbsink_direct_audible, usbsink_direct_rms_dbfs
+from ..source_state import (
+    usbsink_direct_audible,
+    usbsink_direct_muted,
+    usbsink_direct_rms_dbfs,
+)
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom import cascade_timeline
@@ -211,6 +215,12 @@ def _build_usbsink_renderer_state(
             "combo": True,
             "playing": usbsink_direct_audible(fanin_status),
             "preempted": preempted,
+            # `muted` is the fan-in mix-mute STATE mux drives for combo-box
+            # arbitration (separate from `preempted`, which on a combo box is the
+            # standby bridge's frozen flag): the live USB-silencing truth is
+            # whether fan-in has the direct lane muted. `null` on an older fan-in
+            # build without the per-lane flag.
+            "muted": usbsink_direct_muted(fanin_status),
             "host_connected": host_connected,
             "rms_dbfs": usbsink_direct_rms_dbfs(fanin_status),
             "updated_at": updated_at,
