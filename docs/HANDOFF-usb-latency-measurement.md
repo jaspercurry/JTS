@@ -30,16 +30,27 @@ Two independent measurements, taken through different capture points, at the
 = `53.96` — composing to the directly-measured analog p50 **exactly**. Two
 independent measurements a day apart validate each other.
 
-**Unreconciled delta with the 2026-07-03 tap→ref number — do not treat both as
-current.** [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) records a
-2026-07-03 "FINAL" tap→ref p50 of **34.71** ms, ~6 ms below this doc's
-2026-07-07 tap→`:9891` p50 of **40.73** ms. The two are plausibly different
-reference points (tap→ref vs tap→`:9891`) measured a few days apart under
-different ring geometry, but that has not been confirmed against the current
-code — the delta is **under investigation**. This doc is the current
-single source of truth (see the redirect note in
-HANDOFF-usb-low-latency.md); the 34.71 ms figure should not be quoted as a
-live number until the reconciliation lands.
+**Delta with the 2026-07-03 tap→ref number — explained, not a regression.**
+[HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) records a 2026-07-03
+"FINAL" tap→ref p50 of **34.71** ms, ~6 ms below this doc's 2026-07-07
+tap→`:9891` p50 of **40.73** ms. Both runs used identical ring geometry
+(2-slot Ring A/B, Camilla chunk 128 / target 128 / queue 1) and the same
+`:9891` tap, so the delta is not a measurement-point difference — it's the
+deliberate operating-point change shipped in PR #1173 (commit `50d167e1`,
+"combo becomes default"). The 34.71 ms figure was taken on the pre-productization
+**lab recipe** (resampler target 256 + cushion 256 = held 512, host-clock DLL
+and cushion-decay OFF, free-running); 40.73 ms is the productized **churn-safe
+default** (target 512, cushion-decay floor 576, host-clock DLL + decay armed).
+~3 ms of the delta is the higher steady resampler fill (~13.7 ms vs ~10.7 ms);
+the rest is churn margin the lab recipe was borrowing — its lane rode the
+underfill-unlock threshold (see the 256+256 guard discussion in
+HANDOFF-usb-low-latency.md) — plus session-length variance (640 impulses over
+20 min vs 40). Live corroboration on jts.local: the lane was observed
+descending to held 644 / fill 657 (13.69 ms, matching this doc's ~13.8 ms
+cushion term) then snapping back to the 2048 ceiling — direct observation of
+the churn instability that makes the 576 floor the safe minimum on the
++600 ppm host. Both numbers can be treated as current: 34.71 ms describes the
+lab recipe pre-#1173, 40.73 ms describes the shipped default.
 
 **Definitive full chain (Mac app → analog out) ≈ 55.5 ms p50** = analog `53.96`
 + ~1.5 ms pre-tap ingress (Mac app → gadget URB → fan-in capture, upstream of
