@@ -289,3 +289,31 @@ def test_execstoppost_pitch_reset_gated_on_not_standby():
         "neutralize would stomp fan-in's live L0 command and desync its epsilon "
         f"gate (review F2). Got: {line!r}"
     )
+
+
+def test_start_limit_widened_and_never_reboots():
+    """Hardening rider (defect 2026-07-10): Restart=on-failure/RestartSec=2s with
+    NO StartLimit* would let a fast ENODEV unplug/replug flap exhaust systemd's
+    default 5-in-10s window and park the unit `failed` forever. Widen the window to
+    300 s / 5 starts, and — unlike the core graph (jasper-fanin) — NEVER
+    StartLimitAction=reboot: a repeatedly-failing USB bridge must not reboot the
+    whole speaker."""
+    body = UNIT_PATH.read_text()
+    assert _value_for(body, "StartLimitIntervalSec") == "300", (
+        "jasper-usbsink.service must widen StartLimitIntervalSec to 300 so an "
+        "unplug/replug flap does not exhaust the default 5-in-10s window."
+    )
+    assert _value_for(body, "StartLimitBurst") == "5", (
+        "jasper-usbsink.service must set StartLimitBurst=5."
+    )
+    # The load-bearing safety invariant: a bridge failure must never reboot the box.
+    for line in body.splitlines():
+        s = line.strip()
+        if s.startswith("#"):
+            continue
+        assert not s.startswith("StartLimitAction="), (
+            "jasper-usbsink.service must NOT set StartLimitAction (esp. =reboot): a "
+            f"failing USB bridge must never reboot the speaker. Got: {s!r}"
+        )
+    # Restart policy that the StartLimit governs must still be present.
+    assert _value_for(body, "Restart") == "on-failure"

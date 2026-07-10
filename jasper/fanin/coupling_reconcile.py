@@ -109,6 +109,13 @@ OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 # usbsink.env carries the P3 combo's bridge-standby half; the reconciler is its
 # single writer for that key (jasper-usbsink.service loads it after jasper.env).
 USBSINK_ENV_PATH = "/var/lib/jasper/usbsink.env"
+# Runtime-fallback watcher state (defect 2026-07-10). Re-exported from the pure
+# policy module (its SSOT) so the reconciler's --health verb and the CLI share the
+# exact paths without a second literal.
+from jasper.fanin.combo_health import (  # noqa: E402
+    FALLBACK_MARKER_PATH as COMBO_HEALTH_FALLBACK_MARKER_PATH,
+    TICK_STATE_PATH as COMBO_HEALTH_TICK_STATE_PATH,
+)
 FANIN_UNIT = "jasper-fanin.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 USBSINK_UNIT = "jasper-usbsink.service"
@@ -530,6 +537,10 @@ class AutoResult:
     combo_armed: bool = False
     usb_intent_enabled: bool = False
     usbsink_standby_changed: bool = False
+    # True when the runtime-fallback marker forced the combo OFF on an otherwise
+    # combo-eligible box (defect 2026-07-10). See ``fallback_active`` on
+    # :func:`reconcile_auto`.
+    fallback_active: bool = False
     coupling_result: "CouplingResult | None" = None
     restarted_fanin_for_combo: bool = False
     restarted_usbsink: bool = False
@@ -545,6 +556,7 @@ def reconcile_auto(
     apply: bool = True,
     gadget_present: bool | None = None,
     usb_intent_enabled: bool | None = None,
+    fallback_active: bool | None = None,
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
     restart_usbsink: "DaemonOp | None" = None,
@@ -593,6 +605,7 @@ def reconcile_auto(
     / ``active_leader_check`` are injectable for tests; ``gadget_present=None`` reads
     the live boot config and ``usb_intent_enabled=None`` reads the live unit state.
     """
+    from jasper.fanin.combo_health import fallback_active as read_fallback_active
     from jasper.fanin.coupling_auto import (
         default_ring_gates,
         is_operator_choice,
@@ -612,6 +625,11 @@ def reconcile_auto(
     usb_intent = (
         read_usbsink_intent() if usb_intent_enabled is None else usb_intent_enabled
     )
+    # Runtime-fallback flap guard (defect 2026-07-10). None → read the live marker.
+    # The ``--auto`` CLI clears the marker BEFORE calling us (clear-and-retry on
+    # boot/deploy/toggle), so an --auto pass normally sees no marker; the periodic
+    # ``--health`` disarm path writes the marker then calls us with it forced True.
+    fallback = read_fallback_active() if fallback_active is None else fallback_active
 
     # Operator-frozen short-circuit FIRST — before any migration or gate work — so
     # an operator revert is a true zero-touch no-op. Report the box's ACTUAL
@@ -662,6 +680,7 @@ def reconcile_auto(
         gadget_present=gadget,
         usb_intent_enabled=usb_intent,
         ring_gates=ring_gates,
+        fallback_active=fallback,
     )
 
     # Step 3a — fan-in combo keys (reconciler = single writer). Write only on change.
@@ -679,7 +698,8 @@ def reconcile_auto(
             return AutoResult(
                 ok=False, owned=True, coupling=decision.coupling,
                 gadget_present=gadget, usb_intent_enabled=usb_intent,
-                combo_armed=decision.combo_armed, usb_combo_changed=False,
+                combo_armed=decision.combo_armed,
+                fallback_active=decision.fallback_active, usb_combo_changed=False,
                 reason=decision.reason, detail=str(e),
             )
         # Keep the live env coherent for the coupling reconcile's own re-read.
@@ -714,7 +734,9 @@ def reconcile_auto(
             return AutoResult(
                 ok=False, owned=True, coupling=decision.coupling,
                 gadget_present=gadget, usb_intent_enabled=usb_intent,
-                combo_armed=decision.combo_armed, usb_combo_changed=combo_changed,
+                combo_armed=decision.combo_armed,
+                fallback_active=decision.fallback_active,
+                usb_combo_changed=combo_changed,
                 usbsink_standby_changed=False, reason=decision.reason, detail=str(e),
             )
         log_event(
@@ -727,6 +749,7 @@ def reconcile_auto(
         logger, "fanin.coupling_reconcile", result="auto_resolved",
         reason=reason, coupling=decision.coupling, gadget_present=gadget,
         usb_intent_enabled=usb_intent, combo_armed=decision.combo_armed,
+        combo_fallback=decision.fallback_active,
         usb_combo_changed=combo_changed, usbsink_standby_changed=standby_changed,
         detail=decision.reason,
     )
@@ -782,7 +805,9 @@ def reconcile_auto(
             return AutoResult(
                 ok=False, owned=True, coupling=decision.coupling,
                 gadget_present=gadget, usb_intent_enabled=usb_intent,
-                combo_armed=decision.combo_armed, usb_combo_changed=combo_changed,
+                combo_armed=decision.combo_armed,
+                fallback_active=decision.fallback_active,
+                usb_combo_changed=combo_changed,
                 usbsink_standby_changed=standby_changed, reason=decision.reason,
                 coupling_result=coupling_result, restarted_fanin_for_combo=False,
                 restarted_usbsink=restarted_usbsink, detail=fan_detail,
@@ -809,11 +834,159 @@ def reconcile_auto(
     return AutoResult(
         ok=ok, owned=True, coupling=decision.coupling,
         gadget_present=gadget, usb_intent_enabled=usb_intent,
-        combo_armed=decision.combo_armed, usb_combo_changed=combo_changed,
+        combo_armed=decision.combo_armed, fallback_active=decision.fallback_active,
+        usb_combo_changed=combo_changed,
         usbsink_standby_changed=standby_changed, reason=decision.reason,
         coupling_result=coupling_result, restarted_fanin_for_combo=restarted_for_combo,
         restarted_usbsink=restarted_usbsink, detail=coupling_result.detail,
     )
+
+
+@dataclass(frozen=True)
+class HealthResult:
+    """Outcome of one ``--health`` runtime-fallback watcher tick.
+
+    ``watched`` is False when the box is NOT running the combo (no direct usbsink
+    lane in fan-in STATUS) — a non-combo box or one the fallback already disarmed;
+    the tick is a silent no-op. ``broken`` / ``disarmed`` / ``transition`` /
+    ``consecutive_broken`` mirror the pure :class:`~jasper.fanin.combo_health.HealthTickDecision`;
+    ``auto_result`` is the delegated :class:`AutoResult` when a disarm fired.
+    ``ok`` is True unless a fired disarm failed.
+    """
+
+    ok: bool
+    watched: bool
+    broken: bool = False
+    disarmed: bool = False
+    transition: str = ""
+    consecutive_broken: int = 0
+    auto_result: "AutoResult | None" = None
+    detail: str = ""
+
+
+def run_health_check(
+    *,
+    reason: str = "health",
+    apply: bool = True,
+    tick_state_path: str = COMBO_HEALTH_TICK_STATE_PATH,
+    marker_path: str = COMBO_HEALTH_FALLBACK_MARKER_PATH,
+    read_fanin_status: "Callable[[], tuple[dict[str, object] | None, str]] | None" = None,
+    run_reconcile: "Callable[[], AutoResult] | None" = None,
+) -> HealthResult:
+    """RUNTIME-FALLBACK watcher tick (defect 2026-07-10). Journal-quiet on a
+    healthy tick; only real transitions log.
+
+    Fired every ~3 min by ``jasper-fanin-combo-health.timer`` (mirrors
+    ``jasper-wifi-recover`` — a timer + oneshot, no resident daemon). Steps:
+
+    1. Read fan-in STATUS and extract the USB DIRECT lane's health sample. No
+       direct lane → NOT a combo box (or already disarmed): reset the tick
+       accounting and return a silent no-op (``watched=False``).
+    2. Advance the consecutive-broken accounting (pure
+       :func:`~jasper.fanin.combo_health.decide_health_tick`): a tick is broken on
+       fan-in's own ``health=="broken"`` OR the self-heal reopen counters climbing
+       since the last tick — idle/no-host can never trip either.
+    3. On brokenness SUSTAINED across ``FALLBACK_CONSECUTIVE_TICKS`` (~6 min): write
+       the fallback marker (timestamp + reason) and delegate to
+       :func:`reconcile_auto`, which — reading the marker we just wrote — forces the
+       combo OFF the same way it arms it (env writes + ordered restarts), landing
+       the box on the aloop-bridge solo state. The marker then blocks the periodic
+       pass from re-arming until the next ``--auto`` clear-event (boot/deploy/toggle).
+
+    Injectables (``read_fanin_status`` / ``run_reconcile`` / paths) keep this
+    hardware-free testable; the defaults read the live fan-in socket and run the
+    real :func:`reconcile_auto`.
+    """
+    from jasper.fanin.combo_health import (
+        decide_health_tick,
+        extract_direct_sample,
+        read_tick_state,
+        write_fallback_marker,
+        write_tick_state,
+    )
+
+    status_reader = read_fanin_status or (
+        lambda: _read_status_socket(FANIN_STATUS_SOCKET)
+    )
+    fanin_status, read_err = status_reader()
+    sample = extract_direct_sample(fanin_status)
+    if sample is None:
+        # Not a combo box (or already disarmed) — nothing to watch. Reset the tick
+        # accounting so a later --auto re-arm starts from a clean slate, and stay
+        # journal-quiet (a dead/socketless fan-in is not this watcher's concern).
+        write_tick_state(_combo_health_empty_tick(), tick_state_path)
+        return HealthResult(
+            ok=True, watched=False, detail=read_err or "no direct usbsink lane"
+        )
+
+    prev = read_tick_state(tick_state_path)
+    decision = decide_health_tick(sample, prev)
+    write_tick_state(decision.next_state, tick_state_path)
+
+    if decision.transition == "first_broken":
+        log_event(
+            logger, "fanin.combo_health", result="broken_tick",
+            reason=reason, health=sample.health, present=sample.present,
+            reopens=sample.reopens, card_gen_reopens=sample.card_gen_reopens,
+            frames_read=sample.frames_read,
+            consecutive_broken=decision.next_state.consecutive_broken,
+            level=logging.WARNING,
+        )
+    elif decision.transition == "recovered":
+        log_event(
+            logger, "fanin.combo_health", result="recovered",
+            reason=reason, health=sample.health, present=sample.present,
+            level=logging.INFO,
+        )
+
+    if not decision.disarm:
+        return HealthResult(
+            ok=True, watched=True, broken=decision.broken,
+            transition=decision.transition,
+            consecutive_broken=decision.next_state.consecutive_broken,
+        )
+
+    # SUSTAINED brokenness → fall the combo back to the aloop bridge.
+    fallback_reason = (
+        f"direct capture broke on {decision.next_state.consecutive_broken} "
+        f"consecutive ticks (health={sample.health}, reopens={sample.reopens}, "
+        f"card_gen_reopens={sample.card_gen_reopens})"
+    )
+    log_event(
+        logger, "fanin.combo_health", result="fallback_disarm",
+        reason=reason, health=sample.health, reopens=sample.reopens,
+        card_gen_reopens=sample.card_gen_reopens,
+        consecutive_broken=decision.next_state.consecutive_broken,
+        detail=fallback_reason, level=logging.WARNING,
+    )
+    write_fallback_marker(fallback_reason, marker_path)
+    # reconcile_auto reads the marker fresh (fallback_active=None) → forces combo
+    # off + runs the ordered disarm restarts. Reset the tick accounting after so a
+    # post-disarm residual can't immediately re-fire.
+    reconciler = run_reconcile or (lambda: reconcile_auto(reason=reason, apply=apply))
+    auto = reconciler()
+    write_tick_state(_combo_health_empty_tick(), tick_state_path)
+    log_event(
+        logger, "fanin.combo_health",
+        result="fallback_disarmed" if auto.ok else "fallback_disarm_failed",
+        reason=reason, coupling=auto.coupling, combo_armed=auto.combo_armed,
+        usb_combo_changed=auto.usb_combo_changed, ok=auto.ok,
+        detail=auto.detail or None, level=logging.INFO if auto.ok else logging.WARNING,
+    )
+    return HealthResult(
+        ok=auto.ok, watched=True, broken=True, disarmed=True,
+        transition=decision.transition,
+        consecutive_broken=decision.next_state.consecutive_broken,
+        auto_result=auto, detail=fallback_reason,
+    )
+
+
+def _combo_health_empty_tick():
+    """The empty :class:`~jasper.fanin.combo_health.TickState` (lazy import keeps
+    this module import-cheap for the non-health CLI paths)."""
+    from jasper.fanin.combo_health import TickState
+
+    return TickState.empty()
 
 
 def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
@@ -2441,11 +2614,14 @@ def read_persisted_coupling(env_path: str | Path = FANIN_ENV_PATH) -> str:
 
 def main(argv: "list[str] | None" = None) -> int:
     """CLI: ``jasper-fanin-coupling-reconcile <loopback|transport_pipe|shm_ring>``
-    (explicit operator choice) OR ``--auto`` (P3/P4 default resolution).
+    (explicit operator choice), ``--auto`` (P3/P4 default resolution), or
+    ``--health`` (the USB-combo runtime-fallback watcher tick).
 
     The explicit positional path stamps the operator-choice marker so a later
     ``--auto`` pass never overrides the operator's pick; ``--auto`` resolves the
-    coupling + USB combo by eligibility and leaves the marker absent (auto-owned).
+    coupling + USB combo by eligibility and leaves the marker absent (auto-owned);
+    ``--health`` polls fan-in's direct-capture health and disarms the combo (to the
+    aloop bridge) when it is broken at runtime for >= 2 consecutive ticks.
     """
     import argparse
 
@@ -2461,7 +2637,7 @@ def main(argv: "list[str] | None" = None) -> int:
             "explicit operator choice (stamps the operator-choice marker so --auto "
             "won't override it): loopback (snd-aloop); transport_pipe (lab "
             "dual-pipe); shm_ring (Ring A + Ring B SHM rings — arms both fan-in and "
-            "outputd). Mutually exclusive with --auto."
+            "outputd). Mutually exclusive with --auto/--health."
         ),
     )
     parser.add_argument(
@@ -2470,7 +2646,18 @@ def main(argv: "list[str] | None" = None) -> int:
         help=(
             "DEFAULT-RESOLUTION pass (P3/P4): when NO operator choice is recorded, "
             "resolve shm_ring on a ring-eligible box (else loopback) and arm the USB "
-            "combo on a gadget box. A no-op when the operator marker is set."
+            "combo on a gadget box. A no-op when the operator marker is set. Clears "
+            "the runtime-fallback marker first (clear-and-retry on boot/deploy/toggle)."
+        ),
+    )
+    parser.add_argument(
+        "--health",
+        action="store_true",
+        help=(
+            "RUNTIME-FALLBACK watcher tick: poll fan-in's USB direct-capture health "
+            "and, if it is broken for >= 2 consecutive ticks, disarm the combo to the "
+            "aloop bridge and write the fallback marker. Journal-quiet on a healthy "
+            "tick. Mutually exclusive with --auto / an explicit coupling."
         ),
     )
     parser.add_argument("--reason", default="cli")
@@ -2479,10 +2666,13 @@ def main(argv: "list[str] | None" = None) -> int:
         help="write the env only; skip the daemon transition (staging).",
     )
     args = parser.parse_args(argv)
-    if args.auto and args.coupling is not None:
-        parser.error("--auto is mutually exclusive with an explicit coupling choice")
-    if not args.auto and args.coupling is None:
-        parser.error("give an explicit coupling choice or --auto")
+    _modes = [args.auto, args.health, args.coupling is not None]
+    if sum(bool(m) for m in _modes) > 1:
+        parser.error(
+            "--auto, --health, and an explicit coupling choice are mutually exclusive"
+        )
+    if not any(_modes):
+        parser.error("give an explicit coupling choice, --auto, or --health")
     # Hydrate os.environ from the wizard-owned env files (same set the daemons
     # load) BEFORE reconciling, so the camilla reconcile this triggers emits with
     # the persisted JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} etc. — not their
@@ -2494,7 +2684,37 @@ def main(argv: "list[str] | None" = None) -> int:
 
     load_env_files()
 
+    if args.health:
+        health = run_health_check(reason=args.reason, apply=not args.no_apply)
+        # Print only when there is something to say (a disarm or a broken-tick
+        # transition); a healthy/idle tick prints nothing (journal-quiet, mirrors
+        # jasper-wifi-recover).
+        if health.watched and (health.disarmed or health.transition):
+            print(
+                f"combo health: watched={health.watched} broken={health.broken} "
+                f"disarmed={health.disarmed} "
+                f"consecutive_broken={health.consecutive_broken} ok={health.ok}"
+                + (f" detail={health.detail}" if health.detail else "")
+            )
+        return 0 if health.ok else 1
+
     if args.auto:
+        # Clear-and-retry: --auto runs on exactly the three fallback-marker
+        # clear-events (boot, deploy, /sources/ toggle), so it drops any marker a
+        # prior --health disarm wrote and re-attempts the combo from eligibility.
+        # The periodic --health pass never clears the marker, so combo never
+        # oscillates combo<->solo within a boot on its own.
+        from jasper.fanin.combo_health import (
+            clear_fallback_marker,
+            read_fallback_marker,
+        )
+
+        prior = read_fallback_marker()
+        if clear_fallback_marker() and prior is not None:
+            log_event(
+                logger, "fanin.combo_health", result="fallback_marker_cleared",
+                reason=args.reason, prior_reason=prior.reason or None,
+            )
         auto = reconcile_auto(reason=args.reason, apply=not args.no_apply)
         print(
             f"coupling auto: owned={auto.owned} coupling={auto.coupling} "

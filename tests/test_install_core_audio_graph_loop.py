@@ -32,6 +32,8 @@ EXPECTED_DSTS = (
     "jasper-camilla-crossover.service",
     "jasper-fanin.service",
     "jasper-fanin-coupling-auto.service",
+    "jasper-fanin-combo-health.service",
+    "jasper-fanin-combo-health.timer",
     "jasper-outputd.service",
     "jasper-control.service",
     "jasper-doctor-json.service",

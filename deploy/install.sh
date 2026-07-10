@@ -1763,6 +1763,12 @@ resolve_fanin_coupling_default() {
     # single env writer; daemons read the resolved env. The reconciler CLI hydrates
     # its own env (load_env_files) so the camilla re-emit keeps the tuned chunksize.
     systemctl enable jasper-fanin-coupling-auto.service
+    # Runtime-fallback watcher (defect 2026-07-10): the periodic timer that disarms
+    # the USB combo to the aloop bridge when fan-in's direct capture breaks at
+    # runtime (>= 2 consecutive broken ticks). Enable the TIMER (the boot/deploy
+    # --auto pass above already clears-and-retries any stale fallback marker before
+    # it re-resolves the combo). Mirrors jasper-wifi-recover.timer.
+    systemctl enable jasper-fanin-combo-health.timer
     /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || \
         echo "  WARN: fan-in coupling default resolution failed. Check logs with: journalctl -u jasper-fanin-coupling-auto -e"
 }

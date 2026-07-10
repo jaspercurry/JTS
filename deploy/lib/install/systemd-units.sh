@@ -97,6 +97,8 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
     "0644 deploy/systemd/jasper-camilla-crossover.service ${SYSTEMD_DIR}/jasper-camilla-crossover.service"
     "0644 deploy/systemd/jasper-fanin.service ${SYSTEMD_DIR}/jasper-fanin.service"
     "0644 deploy/systemd/jasper-fanin-coupling-auto.service ${SYSTEMD_DIR}/jasper-fanin-coupling-auto.service"
+    "0644 deploy/systemd/jasper-fanin-combo-health.service ${SYSTEMD_DIR}/jasper-fanin-combo-health.service"
+    "0644 deploy/systemd/jasper-fanin-combo-health.timer ${SYSTEMD_DIR}/jasper-fanin-combo-health.timer"
     "0644 deploy/systemd/jasper-outputd.service ${SYSTEMD_DIR}/jasper-outputd.service"
     "0644 deploy/systemd/jasper-control.service ${SYSTEMD_DIR}/jasper-control.service"
     "0644 deploy/systemd/jasper-doctor-json.service ${SYSTEMD_DIR}/jasper-doctor-json.service"
@@ -593,6 +595,7 @@ park_streambox_brain_units() {
         jasper-voice.service jasper-aec-bridge.service jasper-aec-init.service \
         jasper-aec-reconcile.service jasper-input.service \
         jasper-fanin-coupling-auto.service \
+        jasper-fanin-combo-health.timer \
         jasper-dial-web.socket jasper-dial-web.service \
         camillagui.socket camillagui.service camillagui-proxy.service; do
         systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true

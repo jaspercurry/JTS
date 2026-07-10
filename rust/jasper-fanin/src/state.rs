@@ -819,6 +819,19 @@ impl StateServer {
                 buf.push(',');
                 push_kv_bool(&mut buf, "present", d.present.load(Ordering::Relaxed));
                 buf.push(',');
+                // Coarse capture health for the Pi-side combo runtime-fallback
+                // watcher (jasper-fanin-combo-health): "capturing" (present +
+                // flowing), "idle" (no host / attached-but-silent / (re)opening —
+                // NEVER a failure), or "broken" (the flowing→dead zombie signature
+                // — a real runtime capture break). Instantaneous view; the watcher
+                // acts on the durable `reopens`/`card_gen_reopens` churn below. See
+                // crate::mixer::direct_health.
+                push_kv_str(
+                    &mut buf,
+                    "health",
+                    crate::mixer::direct_health_str_from_obs(d),
+                );
+                buf.push(',');
                 push_kv_u64(&mut buf, "opens", d.opens.load(Ordering::Relaxed));
                 buf.push(',');
                 push_kv_u64(&mut buf, "retries", d.retries.load(Ordering::Relaxed));
@@ -2103,6 +2116,9 @@ mod tests {
         let direct = inputs.iter().find(|i| i["label"] == "usbsink").unwrap();
         assert_eq!(direct["source"].as_str(), Some("direct"));
         assert_eq!(direct["direct"]["present"].as_bool(), Some(true));
+        // health: present + frames_flowed + zero streak = actively capturing (the
+        // combo runtime-fallback watcher's healthy reading). See mixer::direct_health.
+        assert_eq!(direct["direct"]["health"].as_str(), Some("capturing"));
         assert_eq!(direct["direct"]["reopens"].as_u64(), Some(0));
         assert_eq!(direct["direct"]["card_gen_reopens"].as_u64(), Some(0));
         // ADDITIVE (lever 2): negotiated geometry + drain-entry dwell stats.

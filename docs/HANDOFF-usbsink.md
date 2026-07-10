@@ -1336,6 +1336,76 @@ the same size as the AEC bridge subsystem.
 | Mux POST to preempt endpoint fails | httpx exception in `Mux._pause(USBSINK)` | Logs warning; USB audio continues mixing briefly. Documented limitation (matches Bluetooth's behavior, but rarer because the local HTTP path is more reliable than DBus). |
 | Two USB hosts plugged in simultaneously (impossible by UAC2 spec) | Splitter physically prevents this | Hardware-enforced; nothing to do |
 | Sample rate negotiation failure (host requests 44.1k, gadget descriptor only offers 48k) | sounddevice opens at the descriptor's rate; host resamples its own output | No issue — host always resamples to the device's reported rate. Documented in BRINGUP.md so users know JTS doesn't do 192k. |
+| **Combo direct-capture breaks at runtime** (the UAC2 gadget is rebuilt underneath fan-in's open `hw:UAC2Gadget` handle — a UDC rebind / usbsink stop-start under a live stream — leaving the handle deaf, the flowing→dead "zombie" signature) | fan-in self-heals within ~1-2 s via a bounded reopen. If the self-heal is NOT restoring durable flow, `jasper-fanin-combo-health.timer` (~3 min) catches it: fan-in exports `direct.health` in STATUS and the watcher acts on the `reopens`/`card_gen_reopens` self-heal counters climbing across ticks. | After **2 consecutive broken ticks (~6 min)** the combo is disarmed to the aloop bridge (the reconciler disarms it exactly as it arms it) and a fallback marker is written. See **"Runtime fallback"** below. |
+
+### Runtime fallback — combo → aloop bridge on capture break
+
+**Current state (2026-07-10).** The USB combo (fan-in DIRECT-captures the gadget,
+the usbsink bridge in standby) is only *(re)resolved* on a config change — boot,
+deploy, or a `/sources/` toggle (all three run
+`jasper-fanin-coupling-reconcile --auto`). Nothing re-resolved it on a **live**
+capture failure, so a gadget rebuilt underneath fan-in's open handle could leave
+USB silent with no fallback. The runtime-fallback watcher closes that gap.
+
+**The signal (fan-in side).** `rust/jasper-fanin/src/mixer.rs` `direct_health`
+classifies the direct lane, exported as `direct.health` in the STATUS
+`inputs[].direct{}` block:
+
+- `"capturing"` — present + frames flowing (host streaming). Healthy.
+- `"idle"` — no host, an attached-but-silent host, or the handle (re)opening. Healthy.
+  An idle or unplugged Mac reads `"idle"` and can **never** trip the fallback.
+- `"broken"` — the flowing→dead **zombie** signature only (frames flowed on the
+  handle, then `avail_update` returned exactly 0 for ~2 s). Reuses the existing
+  `zombie_handle_suspected` gate, which is already immune to the attached-idle
+  false-positive.
+
+Because `"broken"` is instantaneous (the self-heal reopen resets the zombie streak
+the moment it trips), the **durable** cross-tick signal the watcher acts on is the
+cumulative `reopens` (zombie) / `card_gen_reopens` (dead-handle liveness probe)
+counters **climbing between ticks** — the gadget is repeatedly dying under a live
+stream. Idle/no-host can't move those counters, and a physical unplug/replug moves
+`opens`/`retries`, **not** these — so the signal is idle- AND unplug-immune by
+construction.
+
+**The watcher (Pi side).** `jasper-fanin-combo-health.timer` fires
+`jasper-fanin-coupling-reconcile --health` every ~3 min (a oneshot; no resident
+daemon — mirrors `jasper-wifi-recover`). Pure policy in
+[`jasper/fanin/combo_health.py`](../jasper/fanin/combo_health.py); orchestration
+in `run_health_check` (`jasper/fanin/coupling_reconcile.py`). Healthy ticks produce
+**no** output (journal-quiet); only real transitions log
+(`event=fanin.combo_health.*`). A tick is "broken" on `health=="broken"` OR a
+reopen-counter delta; the tick state persists to
+`/var/lib/jasper/combo_health_tick.json`.
+
+**The action.** After brokenness **sustained across 2 consecutive ticks (~6 min)**,
+the reconciler — the single writer — disarms the combo exactly the way it arms it
+(the same `fanin.env` + `usbsink.env` writes + ordered fan-in/usbsink restarts),
+landing the box on the aloop-bridge solo state, and writes a fallback marker
+(`/var/lib/jasper/usb_combo_fallback.json`, timestamp + reason).
+
+**Flap-proof.** While the marker exists, the periodic `--health` pass never
+re-arms (it is disarm-only). The marker — and combo re-arm — is cleared only by an
+`--auto` pass, which runs on exactly the three clear-events (boot, deploy,
+`/sources/` toggle) and **clears-and-retries once per event**. So combo never
+oscillates combo↔solo within a boot on its own. (Design choice: every `--auto`
+clears the marker because those are the only three ways `--auto` runs, and all
+three are legitimate re-attempt moments; the periodic watcher is the only thing
+that ever *sets* it.)
+
+**Observability.**
+- `/state.audio_graph.coupling.combo` → `{state: "armed"|"fallback"|"disarmed",
+  fallback: {reason, at_epoch} | null}`.
+- `jasper-doctor`'s `check_usb_combo_fallback` cross-checks the usbsink INTENT
+  (`is-enabled`) vs the resolved `fanin.env` armed state vs the marker, and flags a
+  `jasper-usbsink.service` parked in the `failed` state.
+- `journalctl -u jasper-fanin-combo-health | grep event=fanin.combo_health`.
+
+**Unit hardening (rider).** `jasper-usbsink.service` gained
+`StartLimitIntervalSec=300` / `StartLimitBurst=5` (with **no**
+`StartLimitAction=reboot`): a fast ENODEV unplug/replug flap would otherwise
+exhaust systemd's default 5-in-10s and park the bridge `failed` forever. Unlike the
+core graph (jasper-fanin), a failing USB bridge must never reboot the speaker — the
+doctor check surfaces a failed unit instead.
 
 ### Watchdog pattern
 
@@ -1841,7 +1911,13 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-07-10 (§4.4/§4.5/§4.9 updated for the combo silence gate:
+Last verified: 2026-07-10 (added §6 "Runtime fallback — combo → aloop bridge on
+capture break": fan-in exports `direct.health` in STATUS; the
+`jasper-fanin-combo-health.timer` watcher disarms the combo to the aloop bridge
+after a sustained runtime capture break, flap-proofed by a fallback marker cleared
+only by `--auto`; `/state.audio_graph.coupling.combo` + `check_usb_combo_fallback`
+surface it; `jasper-usbsink.service` gained a StartLimit hardening rider. Prior
+2026-07-10: §4.4/§4.5/§4.9 updated for the combo silence gate:
 fan-in now serialises a per-lane `rms_dbfs` in every `STATUS` input; combo mux
 liveness is frames-advanced **AND** level above the shared `-60` dBFS
 `USBSINK_PLAYING_RMS_DBFS` gate — a muted host no longer seizes the speaker; the
