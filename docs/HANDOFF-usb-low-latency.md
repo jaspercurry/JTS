@@ -602,6 +602,24 @@ error). Hardening (deploy wiring, doctor surface, wizard toggle) comes next.
 
 ### Final state — 2026-07-03 overnight productization (where we landed and why)
 
+> **Superseded for current numbers — delta explained.** The measured-floor
+> table below (34.71 / 36.18 / 36.97 ms tap→ref) is a 2026-07-03 snapshot of
+> the pre-productization **lab recipe** (resampler target 256 + cushion 256 =
+> held 512, host-clock DLL and cushion-decay OFF, free-running), kept here for
+> history.
+> [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md) is
+> the single source of truth for the *current* measured latency (2-slot ring
+> geometry, combo mux liveness patch) — its 2026-07-07 tap→`:9891` p50 is
+> **40.73** ms. That ~6 ms delta is not a regression or a measurement-point
+> difference (both runs share ring geometry and the `:9891` tap): it's the
+> deliberate operating-point change shipped in PR #1173 (commit `50d167e1`,
+> "combo becomes default"), which raised the resampler to target 512 with a
+> 576-frame cushion-decay floor and armed the host-clock DLL + decay — the
+> churn-safe default the 256+256 lab geometry could not sustain (see the
+> 2026-07 unlock-counter diagnosis below). See that doc's §1 for the full
+> accounting. Read this section for the productization narrative, not for
+> today's numbers.
+
 **Everything below is merged to main** as the reviewed PR train #1137 (jasper-host-clock
 crate) → #1138 (fan-in USB-DIRECT platform + DLL + jasper-ring + usbsink standby) →
 #1139 (ring consumers: ioplug + outputd reader + lab tooling, EXPERIMENTAL) → #1140

@@ -581,7 +581,11 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-07-07 (ring route-policy/current-chain text rechecked
+Last verified: 2026-07-07 (scoped to the resilience/routing-policy claims
+below, NOT to the latency numbers the banner above marks superseded — for
+current measured latency see
+[HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md).
+Ring route-policy/current-chain text rechecked
 against `jasper.audio_runtime_plan`, `jasper.fanin_coupling`, and
 `jasper.fanin.coupling_reconcile`; prior 2026-07-06 `outputd.env`
 config-shear resilience rechecked
