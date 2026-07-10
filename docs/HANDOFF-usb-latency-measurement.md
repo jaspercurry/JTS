@@ -30,6 +30,17 @@ Two independent measurements, taken through different capture points, at the
 = `53.96` — composing to the directly-measured analog p50 **exactly**. Two
 independent measurements a day apart validate each other.
 
+**Unreconciled delta with the 2026-07-03 tap→ref number — do not treat both as
+current.** [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) records a
+2026-07-03 "FINAL" tap→ref p50 of **34.71** ms, ~6 ms below this doc's
+2026-07-07 tap→`:9891` p50 of **40.73** ms. The two are plausibly different
+reference points (tap→ref vs tap→`:9891`) measured a few days apart under
+different ring geometry, but that has not been confirmed against the current
+code — the delta is **under investigation**. This doc is the current
+single source of truth (see the redirect note in
+HANDOFF-usb-low-latency.md); the 34.71 ms figure should not be quoted as a
+live number until the reconciliation lands.
+
 **Definitive full chain (Mac app → analog out) ≈ 55.5 ms p50** = analog `53.96`
 + ~1.5 ms pre-tap ingress (Mac app → gadget URB → fan-in capture, upstream of
 the tap).
@@ -267,15 +278,27 @@ floor via STATUS: `held_target_frames: 576`, `decay.frozen_reason: at_floor` (or
 
 ## 6. Known caveats (honest current state)
 
-- **Cold-start latency is the ceiling, not the floor, for the first ~2.5 min.**
-  The compliance proof is *supposed* to persist and seat future sessions at the
-  floor immediately. On the jts.local Mac (a ~+600 ppm beyond-authority host) the
-  proof was observed to be written then `revoked reason=early_unlock` at stream
-  end, so the next session cold-descends again. Whether that early-unlock is a
-  terminal-stream-end unlock leaking past the #1156 discriminator (a bug) or
-  genuine floor churn on a hard host (correct backoff) is an **open
-  investigation** — it is the gap between "the default gives 40 ms" and "the
-  default *reliably* gives 40 ms."
+- **Cold-start latency is the ceiling, not the floor, for the first ~2.5 min —
+  root cause was a settle-regime deadlock, fixed 2026-07-05.** The compliance
+  proof is *supposed* to persist and seat future sessions at the floor
+  immediately. An earlier revision of this doc attributed the ~+600 ppm Mac's
+  repeated cold-descent to an open question of whether the settle gate was
+  leaking a bug; that gate (`settle_regime_ok` in
+  `rust/jasper-host-clock/src/lib.rs`, ~lines 1012-1039) is now lock-only —
+  the removed CORRECTION-mode rail guard was the actual deadlock (a
+  beyond-authority host rails at +500 under neutral AwaitLock commands and
+  can never unrail without the very servo authority the guard withheld),
+  fixed and pinned by `correction_probe_settle_accrues_at_the_rail` and
+  `beyond_authority_railed_host_probes_pass_then_fail`. The residual seen
+  post-fix is a *different*, already-understood mechanism —
+  `RevokeReason::EarlyUnlock` in
+  `rust/jasper-fanin/src/host_compliance.rs` is a ONE-strike proof delete
+  (`classify_strike`, ~lines 341-354), unlike the two-strike `ProbeFail`
+  tolerance (`PROBE_FAIL_STRIKE_LIMIT=2`); a stop→restart within
+  `confirm_horizon_periods` confirms the revoke as churn (the code calls this
+  "Accepted residual"), forcing a fresh ~2.5-min re-descent. See §7 item 1 —
+  the open question now is revoke *policy* (is one-strike too strict for an
+  ordinary short session on a hard host?), not deadlock diagnosis.
 - **`WARMUP_CUSHION_FRAMES`** on jts.local is `1536`; the code default is `2048`.
   This affects only the cold-start descent shape, not the steady-state floor or
   the measured numbers above.
@@ -300,18 +323,25 @@ stability, not by tuning. The full-chain `55.5` ms is dominated by two terms —
 the host-clock cushion and the DAC-side buffering — and the honest ranking of
 what's left, most-actionable first:
 
-1. **Cold-start reliability — the highest-value item (a reliability fix, not a
-   floor reduction).** §6's compliance-revoke thread: on the ~+600 ppm Mac the
-   persisted proof is `revoked reason=early_unlock` at stream end, so a cold
-   session runs the ~43 ms ceiling for ~2.5 min before descending to the 40 ms
-   floor. Fixing this converts the measured floor from an aspirational
-   steady-state number into the *actual* first-click experience. It is a
-   control-loop question — is the stream-end unlock leaking past the #1156
-   terminal-unlock discriminator (a bug), or genuine floor churn on a hard host
-   (correct backoff)? Diagnosing that is the single most impactful next step and
-   warrants a proper investigation before any code change. This is the same churn
-   problem that keeps the cushion floor where it is (see #4) — solving it well
-   could unlock both.
+1. **Revoke-policy tuning for `EarlyUnlock` — the highest-value item (a policy
+   question, not a diagnosis).** §6's compliance-revoke thread: the
+   settle-regime deadlock that used to make the ~+600 ppm Mac cold-descend on
+   effectively every session was root-fixed 2026-07-05 (`settle_regime_ok` is
+   lock-only now; see §6). The remaining residual is `RevokeReason::EarlyUnlock`
+   — a ONE-strike proof delete (`classify_strike` in
+   `rust/jasper-fanin/src/host_compliance.rs`, ~lines 341-354), unlike the
+   two-strike `ProbeFail` tolerance. A stop→restart within
+   `confirm_horizon_periods` confirms the revoke as churn ("Accepted residual"
+   per the docstring), so a cold session can still run the ~43 ms ceiling for
+   ~2.5 min after a short-session restart lands inside that horizon. The open
+   question is now **revoke policy**, not deadlock diagnosis: is
+   one-strike-on-`EarlyUnlock` too strict for an ordinary short session (a
+   notification ding, a preview clip) on a hard/beyond-authority host, or is
+   it the correct conservative default given churn cannot otherwise be
+   distinguished from a genuinely-new stream restarting inside the horizon?
+   Tuning that trade-off (e.g. a bounded tolerance for `EarlyUnlock` mirroring
+   `ProbeFail`'s two-strike net) is the single most impactful next step and
+   warrants a proper design discussion before any code change.
 
 2. **DAC-side URB/ring depth (~2–3 ms, concrete near-term win).** The measured
    `:9891`→analog term is `13.23` ms: `10.33` ms of ALSA ring occupancy
@@ -343,7 +373,7 @@ what's left, most-actionable first:
    the `f_uac2` feedback path) is captured in the design notes; this is where those
    directions would land.
 
-**Net:** #1 (cold-start reliability) and #2 (DAC URB depth) are the realistic
+**Net:** #1 (`EarlyUnlock` revoke-policy tuning) and #2 (DAC URB depth) are the realistic
 near-term targets — together they'd make the box *reliably* deliver ~40 ms
 tap→ref / ~53 ms full-chain from the first click, instead of only in steady
 state. #3 and #4 are larger and lower-priority; #4 is the research frontier for
@@ -364,5 +394,11 @@ ever pushing below the current churn-safe floor.
 
 ---
 
-Last verified: 2026-07-07 (jts.local live probes, combo mux liveness patch,
-2-slot ring geometry).
+Last verified: 2026-07-10 (§§6-7 cold-start/revoke-policy claims rechecked
+against `settle_regime_ok` in `rust/jasper-host-clock/src/lib.rs` and
+`classify_strike`/`RevokeReason::EarlyUnlock` in
+`rust/jasper-fanin/src/host_compliance.rs`, including the
+`correction_probe_settle_accrues_at_the_rail` and
+`beyond_authority_railed_host_probes_pass_then_fail` tests; prior 2026-07-07
+verification was jts.local live probes, combo mux liveness patch, 2-slot ring
+geometry).

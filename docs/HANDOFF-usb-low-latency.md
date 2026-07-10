@@ -602,6 +602,15 @@ error). Hardening (deploy wiring, doctor surface, wizard toggle) comes next.
 
 ### Final state — 2026-07-03 overnight productization (where we landed and why)
 
+> **Superseded for current numbers.** The measured-floor table below (34.71 /
+> 36.18 / 36.97 ms tap→ref) is a 2026-07-03 snapshot, kept here for history.
+> [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md) is
+> the single source of truth for the *current* measured latency (2-slot ring
+> geometry, combo mux liveness patch) — its 2026-07-07 tap→`:9891` p50 is
+> **40.73** ms, an unreconciled ~6 ms above this table (see that doc's caveat
+> under §1). Read this section for the productization narrative, not for
+> today's numbers.
+
 **Everything below is merged to main** as the reviewed PR train #1137 (jasper-host-clock
 crate) → #1138 (fan-in USB-DIRECT platform + DLL + jasper-ring + usbsink standby) →
 #1139 (ring consumers: ioplug + outputd reader + lab tooling, EXPERIMENTAL) → #1140
