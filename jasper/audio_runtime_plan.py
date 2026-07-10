@@ -34,9 +34,6 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CHUNKSIZE,
-    DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
-    DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
-    DEFAULT_LEAN_CAPTURE_FIFO,
     DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
@@ -99,9 +96,11 @@ DEFAULT_USB_LOW_LATENCY_RESAMPLER_TARGET_FRAMES = 512
 DEFAULT_USB_LOW_LATENCY_RESAMPLER_MAX_ADJUST_PPM = 500
 DEFAULT_USB_LOW_LATENCY_RESAMPLER_CUSHION_FRAMES = 1536
 DEFAULT_USB_LOW_LATENCY_RESAMPLER_RING_FRAMES = 4096
+# The Rust jasper-usbsink-audio bridge has one delivery mode (the aloop
+# fan-in lane). The route reconciler records it in the route env for route
+# identity; the daemon does not read it. There is no runtime flip.
 USBSINK_OUTPUT_MODE_KEY = "JASPER_USBSINK_OUTPUT_MODE"
 USBSINK_OUTPUT_MODE_ALOOP = "aloop"
-USBSINK_OUTPUT_MODE_FIFO = "fifo"
 LEGACY_USBSINK_AUDIO_IMPL_KEY = "JASPER_USBSINK_AUDIO_IMPL"
 USBSINK_BLOCK_FRAMES_KEY = "JASPER_USBSINK_BLOCK_FRAMES"
 USBSINK_RING_PERIODS_KEY = "JASPER_USBSINK_RING_PERIODS"
@@ -181,10 +180,6 @@ _VALID_ROUTE_MODES = {
 # transport was set, even though ``resolve_coupling`` correctly returned
 # ``shm_ring``.
 _VALID_COUPLINGS = VALID_COUPLINGS
-_VALID_USBSINK_OUTPUT_MODES = {
-    USBSINK_OUTPUT_MODE_ALOOP,
-    USBSINK_OUTPUT_MODE_FIFO,
-}
 _VALID_AUDIO_ROUTE_PROFILES = {
     ROUTE_CORRECTED_48K,
     ROUTE_USB_LOW_LATENCY_48K,
@@ -335,12 +330,11 @@ class SourceRouteDecision:
     """Pure source-route verdict for optional low-latency consumers.
 
     The route decision is intentionally independent of the concrete mechanism
-    that consumes it. Today two experimental consumers use it:
-    ``JASPER_LEAN_LANE`` swaps CamillaDSP to the USB lean FIFO, and
+    that consumes it. Today one experimental consumer uses it:
     ``JASPER_FANIN_ADAPTIVE_BUFFER`` shrinks fan-in's output buffer. A future
-    single low-latency source route should change this support matrix/consumer
-    set here rather than re-implementing the same source-exclusivity check in
-    each caller.
+    low-latency source route should change this support matrix/consumer set
+    here rather than re-implementing the same source-exclusivity check in each
+    caller.
     """
 
     route: SourceLowLatencyRoute
@@ -447,7 +441,6 @@ class CorrectionLatencyEligibility:
 class LowLatencyFeatureFlags:
     """Parsed opt-in gates for experimental low-latency consumers."""
 
-    lean_lane: bool
     adaptive_buffer: bool
 
 
@@ -755,16 +748,13 @@ def low_latency_feature_flags(
 ) -> LowLatencyFeatureFlags:
     """Return default-off low-latency feature gates from ``env``.
 
-    These flags intentionally share one parser because they consume the same
-    source-route policy. Only the exact literal ``enabled`` (case-insensitive,
-    stripped) turns either experiment on; unset, ``disabled``, ``1``, and
-    ``true`` all stay off.
+    Only the exact literal ``enabled`` (case-insensitive, stripped) turns the
+    experiment on; unset, ``disabled``, ``1``, and ``true`` all stay off.
     """
 
     if env is None:
         env = os.environ
     return LowLatencyFeatureFlags(
-        lean_lane=_enabled_literal(env.get("JASPER_LEAN_LANE")),
         adaptive_buffer=_enabled_literal(env.get("JASPER_FANIN_ADAPTIVE_BUFFER")),
     )
 
@@ -1718,26 +1708,6 @@ def fanin_output_buffer_action(frames: int | None) -> RuntimeEnvAction:
     return RuntimeEnvAction("set", FANIN_OUTPUT_BUFFER_KEY, str(frames))
 
 
-def usbsink_output_mode_action(mode: str) -> RuntimeEnvAction:
-    """Return the ``usbsink.env`` action for the USB bridge output mode."""
-
-    normalized = str(mode).strip().lower()
-    if normalized not in _VALID_USBSINK_OUTPUT_MODES:
-        raise ValueError(f"invalid usbsink output mode {mode!r}")
-    return RuntimeEnvAction("set", USBSINK_OUTPUT_MODE_KEY, normalized)
-
-
-def lean_capture_kwargs(capture_pipe_path: str | None = None) -> EmitSoundConfigKwargs:
-    """Return CamillaDSP RawFile-capture kwargs for the USB-only lean lane."""
-
-    return {
-        "capture_pipe_path": capture_pipe_path or DEFAULT_LEAN_CAPTURE_FIFO,
-        "resampler_type": DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE,
-        "resampler_profile": DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE,
-        "enable_rate_adjust": True,
-    }
-
-
 def fanin_coupling_capture_kwargs(
     coupling: str | None = None,
     *,
@@ -1798,7 +1768,6 @@ def apply_capture_precedence(
     emit_kwargs: Mapping[str, object],
     fanin_coupling_capture_kwargs: Mapping[str, object] | None,
     *,
-    lean_capture_kwargs: Mapping[str, object] | None,
     member_kwargs: Mapping[str, object] | None,
 ) -> EmitSoundConfigKwargs:
     """Apply capture-precedence policy to an ``emit_sound_config`` kwargs dict.
@@ -1806,7 +1775,6 @@ def apply_capture_precedence(
     The shared fan-in transport coupling applies only when no more-specific
     topology already owns this emit:
 
-    - a live lean capture wins because it is the more-exclusive USB-only path;
     - a grouped/member pipe sink wins because its Snapcast playback pipe is
       mutually exclusive with the local Camilla -> outputd playback pipe;
     - otherwise the fan-in coupling kwargs overwrite the local Camilla capture
@@ -1818,7 +1786,6 @@ def apply_capture_precedence(
 
     if (
         not fanin_coupling_capture_kwargs
-        or lean_capture_kwargs
         or member_kwargs_are_pipe_sink(dict(member_kwargs or {}))
     ):
         return cast(EmitSoundConfigKwargs, dict(emit_kwargs))

@@ -40,11 +40,6 @@ _ALLOWLIST = {
     # atomic_write_text has no fsync (by design — most callers don't
     # want the latency); do not migrate this one.
     "jasper/wifi_guardian_persistence.py",
-    # fsync the tempfile before rename (crash-consistency for /run
-    # state consumed across daemons) — needs an fsync story before
-    # migrating, same caveat as wifi_guardian_persistence.
-    "jasper/usbsink/preempt_listener.py",
-    "jasper/usbsink/state_publisher.py",
     # Plain burn-down candidates (no fsync; mostly text/YAML/JSON with
     # an explicit chmod) — exact fits for atomic_write_text(mode=...).
     "jasper/active_speaker/path_safety.py",

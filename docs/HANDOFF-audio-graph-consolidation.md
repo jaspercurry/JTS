@@ -43,20 +43,19 @@ what must move first. "Lane N" = snd-aloop substream pair N per
 
 | Path | Lives in | Replaced by | Deleted in |
 |---|---|---|---|
-| **A1. Python/PortAudio pump** (lab-gated) | [`jasper/usbsink/audio_bridge.py`](../jasper/usbsink/audio_bridge.py), `daemon.py`, `preempt_listener.py`, `state_publisher.py`, `jasper/cli/usbsink_main.py` (`jasper-usbsink-python-lab`, refuses without `JASPER_USBSINK_PYTHON_LAB_ALLOW=1`) | Rust `jasper-usbsink-audio` (production since the low-latency train) | P5a |
-| **A2. Rust solo/aloop mode** (today's default) | `rust/jasper-usbsink-audio/src/main.rs` bridging `hw:UAC2Gadget` → `usbsink_substream` (lane 3), incl. the aloop catch-up (`CATCHUP_HIGH_WATER_PERIODS` sawtooth) and the solo `Fill`-mode host clock | fan-in **USB DIRECT** combo (`JASPER_FANIN_USB_DIRECT=enabled` + `JASPER_USBSINK_AUDIO_STANDBY=1`; usbsink keeps state/preempt/HTTP + gadget scripts) | P5a (audio loop only; standby daemon stays) |
-| **A3. Lean-FIFO lane** (default-off) | `Mux._enter_lean`/`_leave_lean` in [`jasper/mux.py`](../jasper/mux.py), [`jasper/usbsink/output_mode_reconcile.py`](../jasper/usbsink/output_mode_reconcile.py), `stage_lean_capture_config`/`apply_lean_capture_config` in [`jasper/sound/runtime.py`](../jasper/sound/runtime.py), `DEFAULT_LEAN_CAPTURE_FIFO` in [`jasper/camilla_config_contract.py`](../jasper/camilla_config_contract.py), `jasper-camilla-pipe-guard` lean-strand repair, `JASPER_LEAN_LANE` / `JASPER_USBSINK_OUTPUT_MODE` / `JASPER_USBSINK_LEAN_FIFO_PATH` env | USB DIRECT + rings (shared path, protection kept) | P5a |
+| **A1. Python/PortAudio pump** (lab-gated) — **DELETED** | was `jasper/usbsink/audio_bridge.py`, `daemon.py`, `preempt_listener.py`, `state_publisher.py`, `jasper/cli/usbsink_main.py` (`jasper-usbsink-python-lab`) | Rust `jasper-usbsink-audio` (production since the low-latency train) | **DONE — USB dead-pipeline sweep** |
+| **A2. Rust solo/aloop mode** (today's default) | `rust/jasper-usbsink-audio/src/main.rs` bridging `hw:UAC2Gadget` → `usbsink_substream` (lane 3), incl. the aloop catch-up (`CATCHUP_HIGH_WATER_PERIODS` sawtooth) and the solo `Fill`-mode host clock | fan-in **USB DIRECT** combo (`JASPER_FANIN_USB_DIRECT=enabled` + `JASPER_USBSINK_AUDIO_STANDBY=1`; usbsink keeps state/preempt/HTTP + gadget scripts) | P5a (audio loop only; standby daemon stays) — **not yet done** |
+| **A3. Lean-FIFO lane** (default-off) — **DELETED** | was `Mux._enter_lean`/`_leave_lean` in `jasper/mux.py`, `jasper/usbsink/output_mode_reconcile.py`, `stage_lean_capture_config`/`apply_lean_capture_config`/`restore_buffered_config` in `jasper/sound/runtime.py`, `DEFAULT_LEAN_CAPTURE_FIFO` in `jasper/camilla_config_contract.py`, `JASPER_LEAN_LANE` / the `fifo` value of `JASPER_USBSINK_OUTPUT_MODE` env. `jasper-camilla-pipe-guard` survives (it still guards the live transport_pipe capture pipe). | USB DIRECT + rings (shared path, protection kept) | **DONE — USB dead-pipeline sweep** |
 
-**Load-bearing finding (2026-07-03): the lean lane is unarmable on a
-production box.** `output_mode="fifo"` is implemented ONLY in the Python
-lab bridge (`audio_bridge.py` `fifo_*` counters); the production Rust
-daemon that `jasper-usbsink.service` actually runs has **no** FIFO mode
-(zero `OUTPUT_MODE` reads in `rust/jasper-usbsink-audio`). If mux ever
-armed lean today, it would write `JASPER_USBSINK_OUTPUT_MODE=fifo`,
-restart the Rust daemon (which ignores it), and load a RawFile CamillaDSP
-config on a pipe **nobody writes** — silence. A naive cleanup that
-deletes "the Python pump" but keeps the lean consumers preserves this
-trap; A1 and A3 must be deleted together.
+**Load-bearing finding (2026-07-03), now resolved: the lean lane was
+unarmable on a production box.** `output_mode="fifo"` was implemented ONLY in
+the Python lab bridge; the production Rust daemon had **no** FIFO mode (zero
+`OUTPUT_MODE` reads in `rust/jasper-usbsink-audio`). The finding warned that a
+naive cleanup deleting "the Python pump" but keeping the lean consumers would
+preserve a silent-audio trap, so **A1 and A3 had to be deleted together** — the
+USB dead-pipeline sweep did exactly that. `JASPER_USBSINK_OUTPUT_MODE` now only
+ever takes the `aloop` value (recorded for route identity, unread by the
+daemon).
 
 ### B. fan-in → CamillaDSP — three couplings (`JASPER_FANIN_CAMILLA_COUPLING`)
 
@@ -305,7 +304,7 @@ touches it EXCEPT the USB phases, gadget-dependent).
 | P2 | Ring citizenship | emitters (`sound/camilla_yaml.py` + carrier) emit ring capture/playback; `coupling_reconcile` learns `shm_ring` (ordered arm/disarm + activation gate); topology-contract + statefile seeding; artifact binder + `audio_runtime_plan` accept ring for `usb_low_latency_48k`; `/state` + doctor drift checks; multiroom prechecks extended to `shm_ring` (risk 6) | jts3 arm→disarm round-trip via reconciler + AirPlay clicks; jts.local quick route artifact under ring | ordered disarm → loopback | full first |
 | P3 | **LANDED** — USB combo default-on where gadget present | `coupling_reconcile --auto` (single writer) writes `JASPER_FANIN_USB_DIRECT`/`_HOST_CLOCK`/`_RESAMPLER_CUSHION_DECAY=enabled` into fanin.env on a gadget box (`dtoverlay=dwc2,dr_mode=peripheral` present), clears them off one; config.rs decay-floor default → validated **576** so a combo-armed default constructs (`jasper.fanin.coupling_auto`) | user smoke-test approval; quick artifact; soak | operator marker + unset the 3 flags (see below) | jts.local |
 | P4 | **LANDED** — Rings default (solo-stereo topologies) | `coupling_reconcile --auto` resolves the default coupling to `shm_ring` when ALL #1169 arm preflights pass (assets+topology+geometry), else loopback; runs on deploy (install.sh `resolve_fanin_coupling_default`) + boot (`jasper-fanin-coupling-auto.service`); operator-choice marker (`JASPER_FANIN_COUPLING_CHOICE`) freezes a revert; `/state.audio_graph.coupling.choice` surfaces operator-vs-auto | per-box deploy + AirPlay/Spotify/BT pass + 24 h burn-in each; doctor green | marker + `JASPER_FANIN_CAMILLA_COUPLING=loopback` + `JASPER_OUTPUTD_CONTENT_BRIDGE=direct` | jts, jts3, jts4; **jts5/active EXCLUDED** (P8) |
-| P5a | Delete: Python pump + lean lane + solo aloop mode | A1+A3 files, `usbsink_substream` lane, Rust solo bridging + catch-up (daemon → standby-only), env keys, pipe-guard lean branch; guard test: route refuses deleted knobs | fleet deploy; USB DIRECT regression on jts.local | revert PR | all (USB bits jts.local) |
+| P5a | Delete: Python pump + lean lane + solo aloop mode | **A1+A3 DONE** (USB dead-pipeline sweep: Python bridge + lean-FIFO consumers + `JASPER_LEAN_LANE` / `fifo` output-mode). **Still pending:** A2 solo-aloop / `usbsink_substream` lane / Rust solo bridging + catch-up (daemon → standby-only) | fleet deploy; USB DIRECT regression on jts.local | revert PR | all (USB bits jts.local) |
 | P5b | Delete: transport_pipe | `fifo.rs`, `local_content_pipe.rs`, coupling branch + reconciler branch + prechecks, env keys | fleet deploy + doctor | revert PR | all |
 | P5c | Delete: rate_match + adaptive-buffer + cushion recipes | `content_bridge.rs` rate-matcher, `fanin/buffer_reconcile.py`, mux `_settle_adaptive_buffer`, stale env/doc recipes | fleet deploy + doctor | revert PR | all |
 | P6a | librespot → ring ingress | fanin per-lane ring-reader `Input` variant; librespot conf.d lane; unit `--device` | Spotify router start/transfer on jts.local + jts3 | per-lane env: lane back to aloop (until P9) | all |

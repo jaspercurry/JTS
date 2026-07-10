@@ -147,7 +147,6 @@ class _StereoHostCarrier:
         output_trim_db: float = 0.0,
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
-        capture_kwargs: dict | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
     ) -> ReemitResult:
         # Refuse (typed, honest) before emitting/loading a flat program graph
@@ -169,37 +168,19 @@ class _StereoHostCarrier:
         member_kwargs = self._resolve_member_kwargs(member_kwargs)
         self._validate_member_kwargs(member_kwargs)
 
-        # capture_kwargs (Stage-4b lean lane) swaps ONLY CamillaDSP's capture
-        # device (an ALSA fan-in lane -> a File pipe). It is otherwise the same
-        # carrier-preserved stereo re-emit — preference filters, the preserved
-        # room PEQs, output trim, and the member policy all fold in unchanged.
-        # None (every existing caller) is byte-identical: no extra kwargs reach
-        # emit_sound_config. emit_sound_config owns the File-capture fail-loud
-        # guards (rate_adjust + async resampler), so an invalid lean kwarg set
-        # raises there, not silently.
-        #
-        # Merge capture_kwargs ONTO member_kwargs (capture wins) rather than
-        # double-splatting: the solo member policy already supplies
-        # enable_rate_adjust/playback_pipe_path, and a double splat would raise
-        # "multiple values" on the overlap. The lean lane is solo by
-        # construction (exclusive USB), so the only overlap — enable_rate_adjust
-        # — matches the solo default (True); the merge is value-preserving.
         emit_kwargs = cast(EmitSoundConfigKwargs, dict(member_kwargs))
-        emit_kwargs.update(cast(EmitSoundConfigKwargs, capture_kwargs or {}))
         # fanin_coupling_capture_kwargs
         # (JASPER_FANIN_CAMILLA_COUPLING=transport_pipe) is the local
         # fan-in -> Camilla -> outputd pipe topology: source-agnostic,
         # always-on for stereo-host emits, and byte-identical when absent. The
         # carrier-preserved room PEQs, preference filters, trim, and member
-        # policy all fold in unchanged. PRECEDENCE: the lean lane wins (it is
-        # the more-exclusive solo File capture), and a grouped pipe-SINK member
+        # policy all fold in unchanged. PRECEDENCE: a grouped pipe-SINK member
         # (enable_rate_adjust=False + SnapFIFO playback) is mutually exclusive
         # with the local outputd playback pipe, so the coupling is a no-op there
         # too. emit_sound_config owns the dual-pipe fail-loud guards.
         emit_kwargs = apply_capture_precedence(
             emit_kwargs,
             fanin_coupling_capture_kwargs,
-            lean_capture_kwargs=capture_kwargs,
             member_kwargs=member_kwargs,
         )
         room_peqs = self._compute_room_peqs() if room_peqs is None else list(room_peqs)
@@ -277,7 +258,6 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
         output_trim_db: float = 0.0,
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
-        capture_kwargs: dict | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
     ) -> ReemitResult:
         # fanin_coupling_capture_kwargs is intentionally a NO-OP here: a program
@@ -289,19 +269,6 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
         # uniformly, but never apply it. (The plan's apply_capture_precedence
         # helper makes the same grouped-sink choice for stereo-host carriers.)
         del fanin_coupling_capture_kwargs
-        # The lean lane (capture_kwargs) is a SOLO File-capture stereo config;
-        # an active-leader program bake is a bonded pipe SINK on the synced
-        # chain (snapclient owns the rate). They are mutually exclusive
-        # topologies — refuse rather than emit a File-in/File-out free-running
-        # graph (emit_sound_config would also raise, but fail closed here with a
-        # household-readable reason).
-        if capture_kwargs:
-            raise CarrierCannotHostEq(
-                "lean_on_program_bake",
-                "This speaker is running the active-leader program bake for a "
-                "speaker group, so the low-latency lean lane isn't available — "
-                "ungroup it first. Your driver protection is unchanged.",
-            )
         member_kwargs = self._resolve_member_kwargs(member_kwargs)
         self._validate_member_kwargs(member_kwargs)
         room_peqs = self._compute_room_peqs() if room_peqs is None else list(room_peqs)
@@ -368,19 +335,8 @@ class _ActiveGraphCarrier:
         output_trim_db: float = 0.0,
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
-        capture_kwargs: dict | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
     ) -> ReemitResult:
-        if capture_kwargs:
-            # A 2-channel File-capture lean config would collapse a roleful
-            # active graph (per-driver split + crossover + limiter + protective
-            # HP). The lean lane is for solo stereo hosts only — refuse.
-            raise CarrierCannotHostEq(
-                "lean_on_active",
-                "This speaker is running an active-crossover setup, so the "
-                "low-latency lean lane isn't available — it would drop your "
-                "crossover and driver protection. They are unchanged.",
-            )
         if not self._is_baseline:
             raise CarrierCannotHostEq(
                 "eq_on_active_not_wired",
@@ -416,9 +372,8 @@ class _ActiveGraphCarrier:
                 "Your crossover and driver protection are unchanged.",
             )
         # By here the carrier has proven this is a SOLO active baseline (bonded
-        # members refused above). Legacy lean capture kwargs can still apply to
-        # the active emitter's capture side, but the end-to-end transport-pipe
-        # topology above is fail-closed until the active output side is designed.
+        # members refused above). The end-to-end transport-pipe topology above
+        # is fail-closed until the active output side is designed.
         yaml = _recompose_active_baseline_with_eq(
             profile,
             room_peqs=room_peqs,
@@ -447,7 +402,6 @@ class _UnknownCarrier:
         output_trim_db: float = 0.0,
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
-        capture_kwargs: dict | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
     ) -> ReemitResult:
         raise CarrierCannotHostEq(

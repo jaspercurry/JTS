@@ -17,17 +17,15 @@
 #      config (playback File -> jasper-outputd's local content pipe), whose
 #      pipe is DEAD.
 #
-#   2. CAPTURE pipe — a lean / transport-pipe config whose RawFile
-#      CAPTURE source is a named pipe under /run (the usbsink lean.pipe
-#      or the fan-in camilla.pipe) that is ABSENT. THE INCIDENT
-#      (2026-06-2x): the statefile was left pointing at the lean config
-#      (RawFile capture of /run/jasper-usbsink/lean.pipe); usbsink
-#      reverted to the aloop lane so the pipe was gone; a camilla
-#      restart loaded the dangling config, could not open the absent
-#      capture pipe, and crash-looped to `failed`. A pure runtime
-#      statefile re-point on leave-lean is not enough — a crash BETWEEN
-#      enter and leave strands the dangling config, so the guard is the
-#      durable floor that breaks this class permanently.
+#   2. CAPTURE pipe — a transport-pipe config whose RawFile CAPTURE
+#      source is a named pipe under /run (the fan-in camilla.pipe) that
+#      is ABSENT. If the statefile is left pointing at a transport-pipe
+#      config while the fan-in producer is gone, a camilla restart loads
+#      the dangling config, cannot open the absent capture pipe, and
+#      crash-loops to `failed`. A pure runtime statefile re-point when
+#      the coupling reverts is not enough — a crash mid-transition
+#      strands the dangling config, so the guard is the durable floor
+#      that breaks this class permanently.
 #
 # Why ExecStartPre and not OnFailure=: StartLimitAction=reboot and
 # OnFailure= both fire when the unit fails — a rescue would RACE the
@@ -71,11 +69,11 @@ SNAPFIFO="${JASPER_GROUPING_SNAPFIFO:-/run/jasper-snapserver/snapfifo}"
 # Seconds the reader-presence probe waits before declaring "no reader".
 PROBE_TIMEOUT="${JASPER_PIPE_GUARD_PROBE_TIMEOUT:-0.5}"
 # Capture-pipe roots: a RawFile capture whose filename lives under one of
-# these and is ABSENT means the lean / transport-pipe producer is gone and
+# these and is ABSENT means the transport-pipe producer is gone and
 # camilla would crash-loop on the dangling config. /run is the runtime
-# tmpfs every lean/transport pipe lives under (usbsink lean.pipe, fan-in
-# camilla.pipe); narrowing to /run keeps the guard from ever touching a
-# persistent ALSA-or-file capture path.
+# tmpfs the transport pipe lives under (fan-in camilla.pipe); narrowing to
+# /run keeps the guard from ever touching a persistent ALSA-or-file capture
+# path.
 CAPTURE_RUNTIME_ROOT="${JASPER_PIPE_GUARD_CAPTURE_ROOT:-/run/}"
 # Playback-pipe roots: a File playback sink under this runtime root must have
 # a live FIFO reader before Camilla starts. This covers the local

@@ -681,8 +681,8 @@ def check_usbgadget_composition() -> CheckResult:
 def check_usbsink_preempt_port_reachable() -> CheckResult:
     """Verify the mux's `_usbsink_set_preempt` URL actually resolves
     to a listening port on the daemon. Detects copy-paste drift
-    between mux.USBSINK_PREEMPT_PORT and
-    preempt_listener.DEFAULT_PORT — both have env-var defaults that
+    between mux.USBSINK_PREEMPT_PORT and the Rust jasper-usbsink-audio
+    daemon's preempt listener — both have env-var defaults that
     must agree at runtime. A silent mismatch means mux POSTs to
     nowhere; preempt protocol degrades to brief mixing without any
     surface error.
@@ -798,7 +798,7 @@ def check_usbsink_env_drift() -> CheckResult:
             "service enabled but not active — env drift check skipped",
         )
 
-    from jasper.usbsink.output_mode_reconcile import USBSINK_ENV_PATH
+    from jasper.fanin.coupling_reconcile import USBSINK_ENV_PATH
 
     try:
         env_mtime = os.stat(USBSINK_ENV_PATH).st_mtime

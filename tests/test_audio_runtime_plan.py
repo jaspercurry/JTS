@@ -42,7 +42,6 @@ from jasper.audio_runtime_plan import (
     fanin_coupling_action,
     fanin_coupling_capture_kwargs,
     fanin_output_buffer_action,
-    lean_capture_kwargs,
     low_latency_feature_flags,
     outputd_content_buffer_pair_error,
     outputd_dac_buffer_pair_error,
@@ -52,7 +51,6 @@ from jasper.audio_runtime_plan import (
     route_owned_env_actions,
     resolve_fanin_output_buffer_target,
     transport_topology_for_coupling,
-    usbsink_output_mode_action,
 )
 from jasper.env_load import EnvFileState
 from jasper.fanin_coupling import (
@@ -394,25 +392,6 @@ def test_fanin_output_buffer_action_rejects_below_floor():
         raise AssertionError("below-floor fan-in output buffer was accepted")
 
 
-def test_usbsink_output_mode_action_sets_owned_key():
-    action = usbsink_output_mode_action("FIFO")
-
-    assert (action.action, action.key, action.value) == (
-        "set",
-        "JASPER_USBSINK_OUTPUT_MODE",
-        "fifo",
-    )
-
-
-def test_usbsink_output_mode_action_rejects_unknown_mode():
-    try:
-        usbsink_output_mode_action("loopback")
-    except ValueError as exc:
-        assert "invalid usbsink output mode" in str(exc)
-    else:  # pragma: no cover - assertion clarity
-        raise AssertionError("unknown usbsink output mode was accepted")
-
-
 def test_audio_route_profile_defaults_to_corrected_safe_path():
     plan = build_audio_runtime_plan(route_mode="solo")
 
@@ -599,15 +578,6 @@ def test_bitperfect_route_is_declared_but_inactive_and_aec_degraded():
     assert "inactive" in profile.blocking_reason
 
 
-def test_lean_capture_kwargs_emit_plan_owned_rawfile_shape():
-    kwargs = lean_capture_kwargs()
-
-    assert kwargs["capture_pipe_path"] == "/run/jasper-usbsink/lean.pipe"
-    assert kwargs["resampler_type"] == "AsyncSinc"
-    assert kwargs["resampler_profile"] == "Balanced"
-    assert kwargs["enable_rate_adjust"] is True
-
-
 def test_fanin_coupling_capture_kwargs_explicit_intent_beats_env(monkeypatch):
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_PIPE", "/run/custom.pipe")
@@ -676,7 +646,6 @@ def test_capture_precedence_applies_fanin_coupling_when_no_stronger_capture():
     merged = apply_capture_precedence(
         base,
         coupling,
-        lean_capture_kwargs=None,
         member_kwargs=base,
     )
 
@@ -684,32 +653,21 @@ def test_capture_precedence_applies_fanin_coupling_when_no_stronger_capture():
     assert base == {"enable_rate_adjust": True, "playback_pipe_path": None}
 
 
-def test_capture_precedence_lean_and_grouped_sink_block_fanin_coupling():
-    base = {"enable_rate_adjust": True, "playback_pipe_path": None}
+def test_capture_precedence_grouped_sink_blocks_fanin_coupling():
     coupling = {
         "capture_pipe_path": "/run/jasper-fanin/camilla.pipe",
         "playback_pipe_path": "/run/jasper-outputd/content.pipe",
         "enable_rate_adjust": False,
         "transport_paced_pipe": True,
     }
-    lean = {"capture_pipe_path": "/run/jasper-usbsink/lean.pipe"}
     grouped = {"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False}
 
-    lean_result = apply_capture_precedence(
-        base,
-        coupling,
-        lean_capture_kwargs=lean,
-        member_kwargs=base,
-    )
     grouped_result = apply_capture_precedence(
         grouped,
         coupling,
-        lean_capture_kwargs=None,
         member_kwargs=grouped,
     )
-    assert "capture_pipe_path" not in lean_result
-    assert lean_result["playback_pipe_path"] is None
-    assert "transport_paced_pipe" not in lean_result
+    # A grouped/bonded pipe SINK owns playback; the local coupling is a no-op.
     assert grouped_result["playback_pipe_path"] == "/run/snapfifo"
     assert "capture_pipe_path" not in grouped_result
     assert "transport_paced_pipe" not in grouped_result
@@ -1097,23 +1055,20 @@ def test_low_latency_feature_flags_are_exact_opt_in_literals():
 
     for value in on_values:
         flags = low_latency_feature_flags(
-            {"JASPER_LEAN_LANE": value, "JASPER_FANIN_ADAPTIVE_BUFFER": value},
+            {"JASPER_FANIN_ADAPTIVE_BUFFER": value},
         )
-        assert flags.lean_lane is True
         assert flags.adaptive_buffer is True
 
     for value in off_values:
         flags = low_latency_feature_flags(
-            {"JASPER_LEAN_LANE": value, "JASPER_FANIN_ADAPTIVE_BUFFER": value},
+            {"JASPER_FANIN_ADAPTIVE_BUFFER": value},
         )
-        assert flags.lean_lane is False
         assert flags.adaptive_buffer is False
 
 
 def test_low_latency_feature_flags_default_off():
     flags = low_latency_feature_flags({})
 
-    assert flags.lean_lane is False
     assert flags.adaptive_buffer is False
 
 

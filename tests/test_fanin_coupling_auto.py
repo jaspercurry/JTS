@@ -222,13 +222,12 @@ def test_usbsink_standby_actions_on_off():
     ]
 
 
-def test_usbsink_env_path_agrees_with_daemon_reconcile():
-    # Drift guard: the standby key lives in the same usbsink.env the usbsink output-
-    # mode reconciler owns. Pin the two literals so they never diverge.
-    from jasper.usbsink.output_mode_reconcile import USBSINK_ENV_PATH as DAEMON_PATH
-
-    assert ca.USBSINK_ENV_PATH == DAEMON_PATH
-    assert cr.USBSINK_ENV_PATH == DAEMON_PATH
+def test_usbsink_env_path_agrees_between_coupling_writers():
+    # Drift guard: the standby key lives in the same usbsink.env both the combo
+    # auto-detector and the coupling reconciler own. Pin the two literals so
+    # they never diverge.
+    assert ca.USBSINK_ENV_PATH == cr.USBSINK_ENV_PATH
+    assert ca.USBSINK_ENV_PATH == "/var/lib/jasper/usbsink.env"
 
 
 # --------------------------------------------------------------------------

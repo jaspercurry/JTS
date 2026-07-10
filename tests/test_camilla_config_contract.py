@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from jasper.camilla_config_contract import (
     DEFAULT_CHUNKSIZE,
-    DEFAULT_LEAN_CAPTURE_FIFO,
     DEFAULT_TARGET_LEVEL,
     PeqFilter,
     file_capture_resampler_yaml,
@@ -16,6 +15,10 @@ from jasper.camilla_config_contract import (
     snd_aloop_rate_adjust_oscillation_reason,
     total_positive_boost_db,
 )
+
+# A File-capture pipe path for exercising the clockless File-capture emit
+# shape (the transport_pipe / ring coupling feeds this in production).
+_FILE_CAPTURE_PIPE = "/run/jasper-fanin/camilla.pipe"
 
 
 def test_camilla_latency_knobs_default_to_literals_when_unset():
@@ -403,17 +406,18 @@ def test_guard_flags_async_resampler_on_snd_aloop_capture():
     assert "AsyncSinc" in reason
 
 
-def test_guard_ignores_file_capture_lean_config():
-    """A File-capture lean config legitimately pairs enable_rate_adjust with an
+def test_guard_ignores_file_capture_config():
+    """A File-capture config legitimately pairs enable_rate_adjust with an
     async resampler — it is clockless and has its OWN guard. The snd-aloop guard
     must not fire on it (its capture is a File pipe, not the loopback)."""
-    lean = _standard_sound_config(
-        capture_pipe_path=DEFAULT_LEAN_CAPTURE_FIFO,
+    file_capture = _standard_sound_config(
+        capture_pipe_path=_FILE_CAPTURE_PIPE,
         enable_rate_adjust=True,
         resampler_type="AsyncSinc",
     )
-    assert "resampler:" in lean  # it DOES carry one — but on a File capture
-    assert snd_aloop_rate_adjust_oscillation_reason(lean) is None
+    # it DOES carry one — but on a File capture
+    assert "resampler:" in file_capture
+    assert snd_aloop_rate_adjust_oscillation_reason(file_capture) is None
 
 
 def test_guard_ignores_bonded_leader_pipe_config():

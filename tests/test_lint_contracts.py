@@ -113,8 +113,17 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # effect on the ceilings: suppression-marker count +0, blind-except count +1.
 # (Marker strings spelled out, not literal, so this comment does not inflate
 # the counts it documents.)
+# 2026-07-10 (-2 suppression markers, both blind-except): the USB dead-pipeline
+# sweep (PR #1200) deletes the entire lean lane wholesale, including
+# `Mux._enter_lean`/`_leave_lean` — the two fail-loud broad-except handlers the
+# 2026-06-27 "+2 suppression markers" entry above added for that ladder are
+# gone with them (their delivery mechanism, the Python usbsink FIFO bridge, was
+# itself unreachable in production). Ratchets MAX_BLE001_MARKERS down by 2
+# (630 -> 628) so the reclaimed slack is not silently reusable; MAX_NOQA_MARKERS
+# is left alone this round even though the same two markers also counted
+# against it, since the noqa ceiling already carries slack from other sources.
 MAX_NOQA_MARKERS = 813
-MAX_BLE001_MARKERS = 630
+MAX_BLE001_MARKERS = 628
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

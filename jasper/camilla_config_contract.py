@@ -238,16 +238,9 @@ def ensure_volume_limit_db(value: float) -> float:
 # one definition (no copy-paste twin, no cross-package private import).
 DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE = "AsyncSinc"
 DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE = "Balanced"
-# The lean-lane capture FIFO — single owner so the producer and consumer can
-# never drift (mirrors snapcast's shared SNAPFIFO). The usbsink writer
-# (jasper.usbsink, JASPER_USBSINK_OUTPUT_MODE=fifo) writes full-width S32_LE
-# PCM here; the File-capture CamillaDSP config reads it. Both sides import this
-# constant rather than spelling the path literally.
-DEFAULT_LEAN_CAPTURE_FIFO = "/run/jasper-usbsink/lean.pipe"
 # Local low-latency content pipe: CamillaDSP's File playback writes the post-DSP
 # stereo program here and jasper-outputd reads it once per DAC period before the
-# blocking DAC write. This is distinct from the multiroom SnapFIFO and from the
-# USB-only lean capture FIFO.
+# blocking DAC write. This is distinct from the multiroom SnapFIFO.
 DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE = "/run/jasper-outputd/content.pipe"
 # CamillaDSP v4 async (ratio-adjustable) resampler types — the ONLY ones that
 # can carry enable_rate_adjust on a clockless File capture. Synchronous cannot.

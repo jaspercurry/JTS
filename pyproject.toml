@@ -172,7 +172,6 @@ jasper-audio-hw-validate = "jasper.audio_validation:hardware_main"
 jasper-route-latency-artifact = "jasper.cli.route_latency_artifact:main"
 jasper-route-latency-harness = "jasper.cli.route_latency_harness:main"
 jasper-audio-config = "jasper.cli.audio_config:main"
-jasper-usbsink-python-lab = "jasper.cli.usbsink_main:main"
 jasper-usbsink-volume = "jasper.cli.usbsink_volume_main:main"
 jasper-dial-onboard = "jasper.cli.dial_onboard:main"
 jasper-dial-web = "jasper.web.dial_setup:main"
@@ -346,9 +345,6 @@ module = [
     "jasper.transit.providers.citibike",
     "jasper.transit.providers.nyc_subway",
     "jasper.usage",
-    "jasper.usbsink.audio_bridge",
-    "jasper.usbsink.daemon",
-    "jasper.usbsink.preempt_listener",
     "jasper.usbsink.volume_bridge",
     "jasper.voice.daemon_main",
     "jasper.voice.gemini_session",

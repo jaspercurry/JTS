@@ -346,9 +346,10 @@ removed both.)
 `logger.isEnabledFor(DEBUG)` is **always True** for `jasper.*` — so the
 usual cheap-guard idiom no longer short-circuits a per-frame
 `logger.debug(...)` on a hot audio path (it builds a record + a string
-every frame). There is none today (checked: `aec_bridge.py`,
-`voice_daemon.py`, and `usbsink/audio_bridge.py` only log DEBUG on
-error/status-change paths), and a comment at the `install()` site flags
+every frame). There is none today (checked: `aec_bridge.py` and
+`voice_daemon.py` only log DEBUG on error/status-change paths; the former
+`usbsink/audio_bridge.py` was deleted in the USB dead-pipeline sweep), and a
+comment at the `install()` site flags
 it — keep hot-loop logging coarser than DEBUG or rate-limit it.
 
 *Honest grounding.* A small custom `logging.Handler` (stdlib

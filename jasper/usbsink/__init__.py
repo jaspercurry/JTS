@@ -13,17 +13,14 @@ they join the same summed music chain as the other renderers.
 
 Production audio data plane:
   rust/jasper-usbsink-audio
-                    ALSA UAC2Gadget capture -> usbsink_substream,
-                    bounded periods, Rust state/preempt publisher.
+                    ALSA UAC2Gadget capture -> usbsink_substream (aloop
+                    bridge, non-combo state) OR fan-in direct capture of
+                    the gadget (combo), bounded periods, Rust
+                    state/preempt publisher built into the daemon.
 
-Legacy lab-only Python bridge:
 Package layout:
-  audio_bridge.py   sounddevice loop: UAC2Gadget capture → Loopback
-                    playback. Not used by the production systemd unit.
-  daemon.py         Orchestration for the lab bridge.
-  state_publisher.py /run/jasper-usbsink/state.json writer.
-  preempt_listener.py localhost HTTP receiver for mux preempt.
-  volume_bridge.py  (Phase 4) amixer-cget mixer poller → jasper-control.
+  volume_bridge.py  amixer-cget mixer poller → jasper-control. Runs in
+                    both the solo and combo states as jasper-usbsink-volume.
 
 See docs/HANDOFF-usbsink.md for the full design.
 """
