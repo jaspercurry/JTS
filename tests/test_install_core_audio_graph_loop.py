@@ -18,6 +18,7 @@ so the loop is exercised hardware-free and root-free.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -32,6 +33,7 @@ EXPECTED_DSTS = (
     "jasper-camilla-crossover.service",
     "jasper-fanin.service",
     "jasper-fanin-coupling-auto.service",
+    "jasper-source-intent-reconcile.service",
     "jasper-fanin-combo-health.service",
     "jasper-fanin-combo-health.timer",
     "jasper-outputd.service",
@@ -106,8 +108,15 @@ def test_all_units_installed_on_clean_run(tmp_path):
     r = _run(tmp_path, fail_basename=None)
     assert r.returncode == 0, r.stderr
     attempted = _attempted_dsts(tmp_path)
-    for dst in EXPECTED_DSTS:
-        assert dst in attempted, f"{dst} was not installed"
+    # Set-equality (not just a subset): EXPECTED_DSTS is the asserted contract,
+    # so a future SSOT row added to JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS without
+    # updating this tuple fails here — making good on the docstring promise that
+    # "a future row addition is caught," not only a removal.
+    assert attempted == set(EXPECTED_DSTS), (
+        "core audio-graph install rows drifted from EXPECTED_DSTS: "
+        f"missing={set(EXPECTED_DSTS) - attempted}, "
+        f"unexpected={attempted - set(EXPECTED_DSTS)}"
+    )
     # daemon-reload ran.
     assert (tmp_path / "reload.log").exists()
 
@@ -127,6 +136,41 @@ def test_full_install_uses_transactional_core_graph_installer():
         if line.strip() and not line.lstrip().startswith("#")
     )
     assert first_command == "install_local_audio_graph_unit_files"
+
+
+def _function_body(source: str, name: str) -> str:
+    """Extract a bash function body from the fragment. Functions here open with
+    `name() {` and close with a `}` alone at column 0."""
+    pattern = r"^" + re.escape(name) + r"\(\) \{\n(.*?)\n\}$"
+    m = re.search(pattern, source, re.S | re.M)
+    assert m, f"function {name} not found in systemd-units.sh"
+    return m.group(1)
+
+
+def test_both_profiles_reapply_source_intent_after_renderer_restart():
+    """S1 regression: a deploy unconditionally re-`enable`s + `restart`s
+    shairport-sync/librespot. If a household disabled AirPlay/Spotify via
+    /sources/, that re-enables AND re-starts the disabled source while
+    source_intent.env still records the disable. BOTH install profiles must
+    therefore re-apply the persisted intent (with --stop-disabled) AFTER that
+    renderer restart, so a disabled source ends disabled and stopped."""
+    source = FRAGMENT.read_text()
+    for fn in ("start_streambox_runtime_units", "install_systemd_units"):
+        body = _function_body(source, fn)
+        restart_idx = body.find(
+            "systemctl restart nqptp.service shairport-sync.service"
+        )
+        assert restart_idx != -1, f"{fn}: renderer restart line missing"
+        reapply_idx = body.find("reapply_source_intent")
+        assert reapply_idx != -1, f"{fn}: reapply_source_intent not called"
+        assert reapply_idx > restart_idx, (
+            f"{fn}: source-intent reconcile must run AFTER the shairport/"
+            "librespot restart or the deploy undoes a household disable"
+        )
+    # The shared helper is the ONE place that runs the root reconciler, and it
+    # passes --stop-disabled (the deploy path that also stops a disabled unit).
+    helper = _function_body(source, "reapply_source_intent")
+    assert "jasper-source-intent-reconcile --stop-disabled" in helper
 
 
 def test_midloop_failure_still_attempts_every_later_unit(tmp_path):

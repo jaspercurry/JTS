@@ -617,6 +617,23 @@ enable_streambox_web_sockets() {
     done
 }
 
+reapply_source_intent() {
+    # Re-apply the household's persisted /sources enable/disable choice AFTER the
+    # unconditional `systemctl enable` + `restart` of shairport-sync/librespot
+    # above. Those lines re-enable AND leave running any source a household turned
+    # OFF via /sources/, while /var/lib/jasper/source_intent.env still records the
+    # disable — so without this a deploy silently undoes the household's choice.
+    # install.sh runs as root, so it invokes the reconciler DIRECTLY (mirrors
+    # resolve_fanin_coupling_default running jasper-fanin-coupling-reconcile
+    # here); --stop-disabled makes it also `systemctl stop` an intent=disabled
+    # unit (the enable/disable-only wizard/systemd path never stops — the broker
+    # handles that at runtime). The reconciler is the single authority for the
+    # source-unit allowlist. A first install (no source_intent.env) is a clean
+    # no-op; a failed apply WARNs and the boot reconcile re-tries — never fatal.
+    /opt/jasper/.venv/bin/jasper-source-intent-reconcile --stop-disabled --reason install || \
+        echo "  WARN: source enable/disable intent reconcile failed. Check logs with: journalctl -u jasper-source-intent-reconcile -e"
+}
+
 start_streambox_runtime_units() {
     systemctl enable jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service jasper-audio-hardware-reconcile.service \
@@ -645,6 +662,7 @@ start_streambox_runtime_units() {
     systemctl restart nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service \
         2>/dev/null || true
+    reapply_source_intent
     # Bounce Rust data-plane daemons OUTSIDE the core-graph restart set
     # when (and only when) this install replaced their binary content.
     restart_services_for_changed_rust_daemons
@@ -1244,6 +1262,7 @@ install_systemd_units() {
     systemctl restart nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service \
         2>/dev/null || true
+    reapply_source_intent
     # Bounce Rust data-plane daemons OUTSIDE the core-graph restart set
     # when (and only when) this install replaced their binary content.
     restart_services_for_changed_rust_daemons

@@ -28,6 +28,26 @@ def _write(tmp_path, text: str) -> str:
     return str(p)
 
 
+class _FakeSystemctl:
+    """A tiny systemctl model tracking enabled + active per unit, so a test can
+    assert the END STATE (disabled AND stopped), not just which calls fired."""
+
+    def __init__(self, *, enabled=None, active=None):
+        self.enabled = dict(enabled or {})
+        self.active = dict(active or {})
+        self.calls: list[tuple[str, str]] = []
+
+    def runner(self, unit: str, en: bool) -> tuple[int, str]:
+        self.calls.append(("enable" if en else "disable", unit))
+        self.enabled[unit] = en
+        return (0, "")
+
+    def stopper(self, unit: str) -> tuple[int, str]:
+        self.calls.append(("stop", unit))
+        self.active[unit] = False
+        return (0, "")
+
+
 def test_allowlist_matches_registry_intent_units():
     # The security boundary is derived from the registry — the same source of
     # truth the wizard uses — so it can never drift from the toggled units.
@@ -179,3 +199,116 @@ def test_main_returns_reconcile_exit_code(tmp_path, monkeypatch):
         f"{source_intent.intent_env_key('librespot.service')}=enabled\n",
     )
     assert source_intent.main(["--env-path", env]) == 0
+
+
+# ---------------------------------------------------------------------------
+# S1 — deploy path (--stop-disabled): a deploy unconditionally re-enables AND
+# restarts shairport-sync/librespot, so a household-disabled source must end up
+# BOTH disabled and stopped, not re-enabled-and-running.
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_stop_disabled_stops_a_disabled_running_unit(tmp_path):
+    # Simulated deploy sequence: install.sh just re-enabled + restarted
+    # shairport (enabled+active below), but the household disabled AirPlay via
+    # /sources/. --stop-disabled must leave it BOTH (a) disabled and (b) stopped.
+    airplay = "shairport-sync.service"
+    fake = _FakeSystemctl(enabled={airplay: True}, active={airplay: True})
+    env = _write(tmp_path, f"{source_intent.intent_env_key(airplay)}=disabled\n")
+    rc = source_intent.reconcile(
+        env_path=env, runner=fake.runner,
+        stop_disabled=True, stopper=fake.stopper,
+    )
+    assert rc == 0
+    assert fake.enabled[airplay] is False  # (a) still disabled
+    assert fake.active[airplay] is False   # (b) NOT left running
+    assert ("disable", airplay) in fake.calls
+    assert ("stop", airplay) in fake.calls
+
+
+def test_reconcile_stop_disabled_never_stops_an_enabled_unit(tmp_path):
+    # An enabled source must never be stopped by the deploy reconcile — only
+    # intent=disabled units are stopped.
+    spotify = "librespot.service"
+    fake = _FakeSystemctl(enabled={spotify: False}, active={spotify: False})
+    env = _write(tmp_path, f"{source_intent.intent_env_key(spotify)}=enabled\n")
+    rc = source_intent.reconcile(
+        env_path=env, runner=fake.runner,
+        stop_disabled=True, stopper=fake.stopper,
+    )
+    assert rc == 0
+    assert fake.enabled[spotify] is True
+    assert all(verb != "stop" for verb, _ in fake.calls)
+
+
+def test_reconcile_default_path_never_stops_disabled_unit(tmp_path):
+    # Wizard / systemd oneshot (stop_disabled defaults OFF): enable/disable only,
+    # never a runtime stop — the broker owns runtime stop there. Pins that the
+    # deploy flag does not leak into the wizard path's semantics.
+    airplay = "shairport-sync.service"
+    fake = _FakeSystemctl(enabled={airplay: True}, active={airplay: True})
+    env = _write(tmp_path, f"{source_intent.intent_env_key(airplay)}=disabled\n")
+    rc = source_intent.reconcile(
+        env_path=env, runner=fake.runner, stopper=fake.stopper,
+    )
+    assert rc == 0
+    assert fake.enabled[airplay] is False
+    assert all(verb != "stop" for verb, _ in fake.calls)
+    assert fake.active[airplay] is True  # untouched — the broker stops at runtime
+
+
+def test_reconcile_stop_disabled_absent_file_is_noop(tmp_path):
+    # First install (no source_intent.env) on the deploy path must be a clean
+    # no-op: nothing enabled/disabled/stopped.
+    fake = _FakeSystemctl()
+    rc = source_intent.reconcile(
+        env_path=str(tmp_path / "missing.env"),
+        runner=fake.runner, stop_disabled=True, stopper=fake.stopper,
+    )
+    assert rc == 0
+    assert fake.calls == []
+
+
+def test_reconcile_stop_disabled_stop_failure_fails_loud(tmp_path, caplog):
+    # A stop failure must surface (non-zero exit + WARN) so the deploy prints the
+    # reconcile WARN and the boot reconcile re-tries.
+    airplay = "shairport-sync.service"
+    env = _write(tmp_path, f"{source_intent.intent_env_key(airplay)}=disabled\n")
+    with caplog.at_level("WARNING"):
+        rc = source_intent.reconcile(
+            env_path=env,
+            runner=lambda unit, enabled: (0, ""),
+            stop_disabled=True,
+            stopper=lambda unit: (1, "job failed"),
+        )
+    assert rc == 1
+    assert any(
+        "event=source_intent.stop_failed" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+# ---------------------------------------------------------------------------
+# N1 — the intent file is jasper-web-writable and root-read; cap the read.
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_rejects_oversized_intent_file(tmp_path, caplog):
+    # The intent file is a few hundred bytes in reality. A pathologically large
+    # file is drift/tampering — reject it LOUD (read_failed + rc=1) instead of
+    # reading it unbounded into the root process, and never touch systemctl.
+    calls = []
+    big = "# pad\n" * (source_intent._MAX_INTENT_BYTES // 6 + 1000)
+    assert len(big) > source_intent._MAX_INTENT_BYTES
+    env = _write(tmp_path, big)
+    with caplog.at_level("WARNING"):
+        rc = source_intent.reconcile(
+            env_path=env,
+            runner=lambda unit, enabled: calls.append((unit, enabled)) or (0, ""),
+        )
+    assert rc == 1
+    assert calls == []  # never parsed / applied
+    assert any(
+        "event=source_intent.read_failed" in r.getMessage()
+        for r in caplog.records
+    )

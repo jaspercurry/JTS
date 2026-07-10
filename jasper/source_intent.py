@@ -62,19 +62,27 @@ logger = logging.getLogger(__name__)
 # lockstep with restart_broker.START_ONLY_UNITS + the polkit rule.
 RECONCILE_UNIT = "jasper-source-intent-reconcile.service"
 
-# Wizard-owned env file the /sources/ page writes and this helper reads. Group
-# `jasper`, mode 0644 (no secrets — just source unit names + enabled/disabled).
-# jasper-web writes it (ReadWritePaths=/var/lib/jasper); this root helper reads
-# it. Absent file / absent key = "no wizard override" = no-op (install.sh sets
-# the shipped-default enabled-state; the wizard is the only override writer).
+# Wizard-owned env file the /sources/ page writes and this helper reads. Written
+# at mode 0644 by non-root jasper-web via locked_update_env_file (no secrets —
+# just source unit names + enabled/disabled); the file lands group `jasper`
+# because that is jasper-web's primary group (the write sets mode, not group —
+# locked_update_env_file takes no group argument). jasper-web writes it
+# (ReadWritePaths=/var/lib/jasper); this root helper reads it. Absent file /
+# absent key = "no wizard override" = no-op (install.sh sets the shipped-default
+# enabled-state; the wizard is the only override writer).
 SOURCE_INTENT_ENV = "/var/lib/jasper/source_intent.env"
 
 _INTENT_KEY_PREFIX = "JASPER_SOURCE_INTENT_"
 _ENABLED = "enabled"
 _DISABLED = "disabled"
 
-# (rc, stderr) systemctl runner; injectable so tests never shell out.
+# (rc, stderr) systemctl enable/disable runner; injectable so tests never
+# shell out.
 SystemctlRunner = Callable[[str, bool], "tuple[int, str]"]
+
+# (unit) -> (rc, stderr) `systemctl stop` runner; injectable so tests never
+# shell out. Used only on the deploy --stop-disabled path (see reconcile).
+SystemctlStopper = Callable[[str], "tuple[int, str]"]
 
 
 def intent_env_key(unit: str) -> str:
@@ -122,22 +130,54 @@ def _run_systemctl(unit: str, enabled: bool) -> tuple[int, str]:
     return proc.returncode, (proc.stderr or "").strip()
 
 
+def _run_systemctl_stop(unit: str) -> tuple[int, str]:
+    """`systemctl stop <unit>` runner (deploy --stop-disabled path only)."""
+    try:
+        proc = subprocess.run(
+            ["systemctl", "stop", unit],
+            check=False, timeout=15,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, str(exc)
+    return proc.returncode, (proc.stderr or "").strip()
+
+
+# The intent file is a handful of `JASPER_SOURCE_INTENT_*=enabled|disabled`
+# lines — a few hundred bytes at most. It is written by non-root jasper-web and
+# read HERE by root, so cap the read: a file past this size is drift/tampering,
+# not a real intent file, and must be rejected loud (logged + non-zero exit via
+# the RuntimeError below, in reconcile's read-failed handler) rather than read
+# unbounded into the root process.
+_MAX_INTENT_BYTES = 64 * 1024
+
+
 def _read_intent(env_path: str) -> str:
     try:
         with open(env_path, encoding="utf-8") as f:
-            return f.read()
+            # Read one past the cap so an oversized file is detectable without
+            # slurping the whole thing.
+            data = f.read(_MAX_INTENT_BYTES + 1)
     except FileNotFoundError:
         return ""
     except OSError as exc:
         # Unreadable file is a real failure — do NOT silently treat as "no
         # intent" (that would let a bad byte mask a household's disable choice).
         raise RuntimeError(f"cannot read {env_path}: {exc}") from exc
+    if len(data) > _MAX_INTENT_BYTES:
+        raise RuntimeError(
+            f"{env_path} exceeds the {_MAX_INTENT_BYTES}-byte cap "
+            "(drift/tampering); refusing to parse"
+        )
+    return data
 
 
 def reconcile(
     *,
     env_path: str = SOURCE_INTENT_ENV,
     runner: SystemctlRunner | None = None,
+    stop_disabled: bool = False,
+    stopper: SystemctlStopper | None = None,
 ) -> int:
     """Apply the persisted /sources intent. Returns a process exit code.
 
@@ -148,11 +188,22 @@ def reconcile(
     wizard (no silent failure). Rejected (non-allowlisted or malformed) keys are
     logged and fail loud — they are never acted on.
 
-    ``runner`` defaults to the real ``systemctl`` runner, resolved at call time
-    (not bound as a default arg) so tests can monkeypatch ``_run_systemctl``.
+    ``stop_disabled`` is the DEPLOY path (install.sh runs this as root right
+    after it unconditionally re-enables AND restarts shairport-sync/librespot):
+    with it set, a unit whose intent is ``disabled`` is also ``systemctl
+    stop``ped after being disabled, so a source a household turned OFF via
+    /sources/ does not come back enabled-and-running after a deploy. It is OFF
+    for the wizard / systemd oneshot path — there the restart broker already
+    issues the runtime stop, and this flag must not change wizard runtime
+    semantics.
+
+    ``runner``/``stopper`` default to the real ``systemctl`` runners, resolved at
+    call time (not bound as default args) so tests can monkeypatch them.
     """
     if runner is None:
         runner = _run_systemctl
+    if stopper is None:
+        stopper = _run_systemctl_stop
     try:
         text = _read_intent(env_path)
     except RuntimeError as exc:
@@ -199,6 +250,19 @@ def reconcile(
             continue
         applied += 1
         log_event(logger, "source_intent.applied", unit=unit, enabled=enabled)
+        if stop_disabled and not enabled:
+            # Deploy path only: the unit was just re-enabled+restarted by
+            # install.sh; disabling it above leaves it RUNNING, so also stop it
+            # to honor the household's OFF choice. A stop failure counts as a
+            # failure so the deploy surfaces the WARN (the boot reconcile
+            # re-tries). Stopping an already-inactive unit is a clean no-op.
+            src, serr = stopper(unit)
+            if src != 0:
+                log_event(logger, "source_intent.stop_failed", unit=unit,
+                          rc=src, detail=serr[:200], level=logging.WARNING)
+                failures += 1
+            else:
+                log_event(logger, "source_intent.stopped", unit=unit)
 
     log_event(logger, "source_intent.reconciled", applied=applied,
               failures=failures)
@@ -221,6 +285,16 @@ def main(argv: list[str] | None = None) -> int:
         "--reason", default="",
         help="Free-text reason for logging context (e.g. 'source toggle').",
     )
+    parser.add_argument(
+        "--stop-disabled", action="store_true",
+        help=(
+            "Also `systemctl stop` a unit whose persisted intent is disabled. "
+            "The DEPLOY path: install.sh re-enables/restarts shairport-sync/"
+            "librespot unconditionally, so a household-disabled source must be "
+            "stopped too. OFF for the wizard/systemd oneshot (the broker stops "
+            "at runtime there)."
+        ),
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
@@ -228,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.reason:
         log_event(logger, "source_intent.begin", reason=args.reason)
-    return reconcile(env_path=args.env_path)
+    return reconcile(env_path=args.env_path, stop_disabled=args.stop_disabled)
 
 
 if __name__ == "__main__":
