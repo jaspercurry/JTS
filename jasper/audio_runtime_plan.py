@@ -1520,7 +1520,7 @@ def transport_coherence_errors(
     ).strip().lower()
 
     if normalized == COUPLING_SHM_RING:
-        expected_capture = str(
+        expected_ring_capture = str(
             topology.fanin_to_camilla.get("camilla_capture_device") or ""
         )
         expected_playback = str(
@@ -1531,10 +1531,10 @@ def transport_coherence_errors(
                 f"transport plan is shm_ring but {OUTPUTD_CONTENT_BRIDGE_KEY}="
                 f"{raw_bridge}; Ring A and Ring B must move together"
             )
-        if capture_device and capture_device != expected_capture:
+        if capture_device and capture_device != expected_ring_capture:
             errors.append(
                 f"transport plan is shm_ring but Camilla capture={capture_device!r}; "
-                f"expected {expected_capture!r}"
+                f"expected {expected_ring_capture!r}"
             )
         if playback_device and playback_device != expected_playback:
             errors.append(
@@ -1550,8 +1550,8 @@ def transport_coherence_errors(
         )
 
     if normalized == COUPLING_LOOPBACK and playback_device:
-        expected_capture = outputd_capture_device_for_playback(playback_device)
-        if expected_capture is not None:
+        expected_outputd_capture = outputd_capture_device_for_playback(playback_device)
+        if expected_outputd_capture is not None:
             actual_capture = str(
                 outputd_values.get(
                     "JASPER_OUTPUTD_CONTENT_PCM",
@@ -1559,10 +1559,10 @@ def transport_coherence_errors(
                 )
                 or ""
             )
-            if actual_capture != expected_capture:
+            if actual_capture != expected_outputd_capture:
                 errors.append(
                     f"post-DSP route disconnected: Camilla playback={playback_device!r} "
-                    f"requires outputd capture={expected_capture!r}, got "
+                    f"requires outputd capture={expected_outputd_capture!r}, got "
                     f"{actual_capture!r}"
                 )
         elif playback_device == ACTIVE_OUTPUTD_PLAYBACK_DEVICE:
