@@ -19,7 +19,6 @@ when daemons change.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 import json
 import logging
 import math
@@ -42,13 +41,10 @@ logger = logging.getLogger(__name__)
 # so a search-fail is the phantom signal.
 _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
 
-# Default path the jasper-usbsink daemon publishes its state to.
-# Kept in sync with jasper.usbsink.state_publisher.DEFAULT_STATE_PATH.
-# Both definitions exist so neither module pulls the other into its
-# import graph (jasper-mux doesn't need to import the usbsink daemon
-# just to know where its state file is).
+# Default path the Rust jasper-usbsink-audio daemon publishes its state to.
+# Spelled here rather than imported so jasper-mux doesn't pull the usbsink
+# package into its import graph just to know where the state file is.
 USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
-USBSINK_STATE_FRESH_SEC = 5.0
 
 # The RMS level (dBFS) at or below which a lane is treated as NOT playing. This
 # mirrors the solo bridge's `PLAYING_RMS_DBFS` gate in
@@ -306,33 +302,6 @@ def usbsink_direct_audible(
         return None
     return rms > threshold_dbfs
 
-
-def usbsink_state_fresh_host_connected(
-    state_path: str = USBSINK_STATE_PATH,
-    *,
-    max_age_sec: float = USBSINK_STATE_FRESH_SEC,
-) -> bool:
-    """True when the USB sink daemon is freshly publishing a present gadget.
-
-    This is deliberately weaker than ``usbsink_playing``: a host can be
-    connected and momentarily RMS-quiet between tracks. Mux's lean FIFO lane uses
-    this to avoid tearing down the low-latency pipe on ordinary quiet passages,
-    while still leaving lean if the daemon/state disappears.
-    """
-    data = read_usbsink_state(state_path)
-    if not data or not data.get("host_connected", False):
-        return False
-    raw_updated = data.get("updated_at")
-    if not isinstance(raw_updated, str):
-        return False
-    try:
-        updated = datetime.fromisoformat(raw_updated)
-    except ValueError:
-        return False
-    if updated.tzinfo is None:
-        updated = updated.replace(tzinfo=timezone.utc)
-    age = (datetime.now(timezone.utc) - updated.astimezone(timezone.utc)).total_seconds()
-    return age <= max_age_sec
 
 
 async def bluetooth_playing() -> bool:

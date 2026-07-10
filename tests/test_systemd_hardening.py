@@ -761,8 +761,11 @@ def test_single_statedirectory_owner():
         "with no StateDirectory, mux must reach /var/lib/jasper via ReadWritePaths "
         "(its source pin + speaker_volume.json writes under ProtectSystem=strict)."
     )
-    assert "/var/lib/camilladsp/configs" in mux_rwp, (
-        "mux owns the live USB lean-lane CamillaDSP swap; under "
-        "ProtectSystem=strict it must be able to write the carrier-preserved "
-        "lean config and DSP apply lock in /var/lib/camilladsp/configs."
+    # The USB lean-lane (which live-swapped a CamillaDSP config from mux) was
+    # deleted in the USB dead-pipeline sweep, so mux no longer writes
+    # /var/lib/camilladsp/configs and must NOT keep that write path (tightening
+    # attack surface under ProtectSystem=strict).
+    assert "/var/lib/camilladsp/configs" not in mux_rwp, (
+        "mux no longer live-swaps CamillaDSP configs (lean lane deleted); drop "
+        "/var/lib/camilladsp/configs from its ReadWritePaths."
     )

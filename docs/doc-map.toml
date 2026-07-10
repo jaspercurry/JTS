@@ -553,7 +553,6 @@ safety = "boot-risk"
 code = [
   "jasper/usbsink/**",
   "jasper/local_sources/**",
-  "jasper/cli/usbsink_main.py",
   "jasper/web/sources_setup.py",
   "deploy/usbsink/**",
   "deploy/systemd/jasper-usbsink*.service",
@@ -573,7 +572,7 @@ requires_docs_when = [
   "Composite gadget composition (network vs. audio function), the `jasper-usbgadget*` scripts/unit, or the local-source registry's gadget-park/restore behavior changes — see HANDOFF-usb-gadget.md.",
 ]
 verification = [
-  "pytest tests/test_usbsink_daemon.py tests/test_usbsink_audio_bridge.py tests/test_usbsink_volume_bridge.py tests/test_usbsink_state.py tests/test_sources_setup_usbsink.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py tests/test_usbgadget_script.py",
+  "pytest tests/test_usbsink_volume_bridge.py tests/test_usbsink_systemd.py tests/test_sources_setup_usbsink.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py tests/test_usbgadget_script.py",
 ]
 
 [[subsystem]]

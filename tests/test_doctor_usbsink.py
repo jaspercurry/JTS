@@ -752,7 +752,8 @@ def test_active_libcomposite_unloaded_is_fail(monkeypatch):
 
 # ----------------------------------------------------------------------
 # check_usbsink_preempt_port_reachable — catches drift between
-# mux.USBSINK_PREEMPT_PORT and preempt_listener.DEFAULT_PORT.
+# mux.USBSINK_PREEMPT_PORT and the Rust jasper-usbsink-audio daemon's
+# preempt listener.
 # ----------------------------------------------------------------------
 
 
@@ -1174,12 +1175,12 @@ def _stage_env_drift(monkeypatch, tmp_path, *, mtime_epoch, start_epoch, wanted=
     the daemon start epoch + wanted/active gates. Returns the env Path."""
     import os as _os
 
-    import jasper.usbsink.output_mode_reconcile as omr
+    import jasper.fanin.coupling_reconcile as cr
 
     env = tmp_path / "usbsink.env"
     env.write_text("JASPER_USBSINK_ROUTE=direct\n", encoding="utf-8")
     _os.utime(env, (mtime_epoch, mtime_epoch))
-    monkeypatch.setattr(omr, "USBSINK_ENV_PATH", str(env))
+    monkeypatch.setattr(cr, "USBSINK_ENV_PATH", str(env))
     monkeypatch.setattr(doctor.usbsink, "_audio_wanted", lambda: (wanted, "enabled" if wanted else "intent_disabled"))
     monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: active)
     monkeypatch.setattr(doctor.usbsink, "_unit_main_start_epoch", lambda unit: start_epoch)
@@ -1246,9 +1247,9 @@ def test_usbsink_env_drift_skips_when_start_time_unavailable(monkeypatch, tmp_pa
 
 def test_usbsink_env_drift_ok_when_env_absent(monkeypatch, tmp_path):
     # No env file → daemon runs on defaults, nothing to drift from.
-    import jasper.usbsink.output_mode_reconcile as omr
+    import jasper.fanin.coupling_reconcile as cr
 
-    monkeypatch.setattr(omr, "USBSINK_ENV_PATH", str(tmp_path / "does-not-exist.env"))
+    monkeypatch.setattr(cr, "USBSINK_ENV_PATH", str(tmp_path / "does-not-exist.env"))
     monkeypatch.setattr(doctor.usbsink, "_audio_wanted", lambda: (True, "enabled"))
     monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: True)
     r = doctor.check_usbsink_env_drift()

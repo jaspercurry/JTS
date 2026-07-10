@@ -143,12 +143,19 @@ def test_rust_audio_bridge_is_the_service_execstart():
     assert "jasper-usbsink-volume.service" in (_value_for(body, "Wants") or "")
 
 
-def test_python_usb_bridge_has_only_explicit_lab_entrypoint():
+def test_no_python_usb_bridge_console_scripts():
+    # The legacy Python/PortAudio bridge (daemon.py / audio_bridge.py /
+    # usbsink_main.py) and its lab entrypoint were deleted; the Rust
+    # jasper-usbsink-audio binary is the only USB-audio data-plane. Only the
+    # volume poller keeps a Python console script.
     data = tomllib.loads(PYPROJECT_PATH.read_text())
     scripts = data["project"]["scripts"]
 
-    assert scripts.get("jasper-usbsink-python-lab") == "jasper.cli.usbsink_main:main"
+    assert "jasper-usbsink-python-lab" not in scripts
     assert "jasper-usbsink" not in scripts
+    assert scripts.get("jasper-usbsink-volume") == (
+        "jasper.cli.usbsink_volume_main:main"
+    )
 
 
 def test_packaged_defaults_do_not_override_operator_or_generated_env():

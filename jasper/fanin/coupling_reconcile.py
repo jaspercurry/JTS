@@ -210,8 +210,7 @@ def _restart_usbsink(reason: str) -> tuple[bool, str]:
 
     The bridge reads ``JASPER_USBSINK_AUDIO_STANDBY`` only at startup, so a combo
     arm/disarm that flips the standby key in usbsink.env needs a restart to take
-    effect (mirrors ``jasper.usbsink.output_mode_reconcile._restart_usbsink``).
-    (ok, detail).
+    effect. Returns (ok, detail).
     """
     return _restart_unit(USBSINK_UNIT, reason=reason, timeout=8.0)
 

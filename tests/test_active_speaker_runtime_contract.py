@@ -38,7 +38,6 @@ from jasper.active_speaker.runtime_contract import (
     safe_graph_for_current_topology,
 )
 from jasper.camilla_config_contract import (
-    DEFAULT_LEAN_CAPTURE_FIFO,
     FilterSpec,
     PeqFilter,
 )
@@ -48,6 +47,10 @@ from jasper.sound.profile import SimpleEq, SoundProfile
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
+
+# A File-capture pipe path for exercising the clockless File-capture emit
+# shape (the transport_pipe / ring coupling feeds this in production).
+_FILE_CAPTURE_PIPE = "/run/jasper-fanin/camilla.pipe"
 
 
 def _flat_yaml() -> str:
@@ -1342,24 +1345,24 @@ def test_program_bake_not_selectable_as_solo_graph(tmp_path: Path) -> None:
 # --- Stage 4: File-CAPTURE lean lane on the ACTIVE baseline (keeps Layer A) ---
 
 
-def _active_baseline_lean_yaml(layout: str = "mono", way: int = 2) -> str:
+def _active_baseline_file_capture_yaml(layout: str = "mono", way: int = 2) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
     return emit_active_speaker_baseline_config(
         ActiveSpeakerPreset.from_mapping(raw),
         playback_device=ACTIVE_PCM,
-        capture_pipe_path=DEFAULT_LEAN_CAPTURE_FIFO,
+        capture_pipe_path=_FILE_CAPTURE_PIPE,
         resampler_type="AsyncSinc",
         baseline_id=f"baseline-{layout}-{way}way",
     )
 
 
-def test_active_baseline_file_capture_lean_variant_classifies_approved() -> None:
+def test_active_baseline_file_capture_variant_classifies_approved() -> None:
     # The File-capture lean lane must classify IDENTICALLY to the ALSA-capture
     # baseline: only devices.capture.type flips (Alsa->File), Layer A untouched,
     # and the classifier never reads capture.type. Classifying approved proves
     # Layer A (tweeter HP + per-driver limiter + non-positive gain) is intact.
     topology = _active_topology("mono", "active_2_way")
-    yaml = _active_baseline_lean_yaml()
+    yaml = _active_baseline_file_capture_yaml()
     graph = classify_camilla_graph(topology=topology, text=yaml)
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
     assert graph.allowed is True
@@ -1368,7 +1371,7 @@ def test_active_baseline_file_capture_lean_variant_classifies_approved() -> None
     # (the active carrier is the live arm path on a crossover speaker).
     assert "type: RawFile" in yaml
     assert "type: File" not in yaml
-    assert f'filename: "{DEFAULT_LEAN_CAPTURE_FIFO}"' in yaml
+    assert f'filename: "{_FILE_CAPTURE_PIPE}"' in yaml
     assert "resampler:" in yaml
     assert "type: AsyncSinc" in yaml
     assert "profile: Balanced" in yaml
@@ -1384,6 +1387,6 @@ def test_active_baseline_file_capture_requires_async_resampler() -> None:
             emit_active_speaker_baseline_config(
                 ActiveSpeakerPreset.from_mapping(raw),
                 playback_device=ACTIVE_PCM,
-                capture_pipe_path=DEFAULT_LEAN_CAPTURE_FIFO,
+                capture_pipe_path=_FILE_CAPTURE_PIPE,
                 resampler_type=bad,
             )

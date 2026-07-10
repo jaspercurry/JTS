@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -244,48 +243,6 @@ async def test_usbsink_playing_reads_published_playing(tmp_path):
     path.write_text(json.dumps({"playing": True}))
 
     assert await source_state.usbsink_playing(str(path)) is True
-
-
-def test_usbsink_fresh_host_connected_accepts_quiet_connected_state(tmp_path):
-    path = tmp_path / "state.json"
-    path.write_text(json.dumps({
-        "playing": False,
-        "host_connected": True,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }))
-
-    assert source_state.usbsink_state_fresh_host_connected(str(path)) is True
-
-
-def test_usbsink_fresh_host_connected_rejects_stale_state(tmp_path):
-    path = tmp_path / "state.json"
-    path.write_text(json.dumps({
-        "playing": False,
-        "host_connected": True,
-        "updated_at": (
-            datetime.now(timezone.utc) - timedelta(seconds=60)
-        ).isoformat(),
-    }))
-
-    assert source_state.usbsink_state_fresh_host_connected(str(path)) is False
-
-
-def test_usbsink_fresh_host_connected_rejects_missing_gadget(tmp_path):
-    path = tmp_path / "state.json"
-    path.write_text(json.dumps({
-        "playing": False,
-        "host_connected": False,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }))
-
-    assert source_state.usbsink_state_fresh_host_connected(str(path)) is False
-
-
-def test_usbsink_fresh_host_connected_rejects_missing_state(tmp_path):
-    assert (
-        source_state.usbsink_state_fresh_host_connected(str(tmp_path / "missing"))
-        is False
-    )
 
 
 # ----------------------------------------------------------------------

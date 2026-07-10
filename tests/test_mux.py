@@ -13,7 +13,6 @@ return values per tick.
 from __future__ import annotations
 import json
 import logging
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -334,109 +333,6 @@ def test_mux_service_can_write_state_dir():
     assert has_rw_path, (
         "mux must list /var/lib/jasper in ReadWritePaths so the source pin + "
         "speaker_volume.json stay writable under ProtectSystem=strict (S2)."
-    )
-
-
-def test_mux_service_can_write_lean_camilla_config_dir():
-    """The USB lean lane live-loads a carrier-preserved CamillaDSP config.
-
-    Mux runs under ProtectSystem=strict, so the lean enter path cannot create
-    ``sound_lean_current.yml`` or the DSP apply lock unless this directory is
-    explicitly writable. Without it, mux arms FIFO, restarts usbsink, then fails
-    before CamillaDSP can swap capture paths, causing audible USB dropouts.
-    """
-    unit = (REPO / "deploy" / "systemd" / "jasper-mux.service").read_text()
-    rwpaths = " ".join(
-        line.strip().split("=", 1)[1]
-        for line in unit.splitlines()
-        if line.strip().startswith("ReadWritePaths=")
-    )
-
-    assert "/var/lib/camilladsp/configs" in rwpaths, (
-        "mux must list /var/lib/camilladsp/configs in ReadWritePaths so "
-        "JASPER_LEAN_LANE can write the lean CamillaDSP config under "
-        "ProtectSystem=strict."
-    )
-
-
-@pytest.mark.asyncio
-async def test_lean_idle_leave_is_deferred_during_source_warmup(mux):
-    from jasper.audio_runtime_plan import SourceRouteDecision
-
-    mux._lean_enabled = True
-    mux._in_lean = True
-    mux._lean_hold_until_mono = time.monotonic() + 60.0
-    mux._leave_lean = AsyncMock()
-
-    await mux._settle_lean(SourceRouteDecision("buffered", "idle"))
-
-    mux._leave_lean.assert_not_awaited()
-    assert mux._in_lean is True
-
-
-@pytest.mark.asyncio
-async def test_lean_idle_leave_runs_after_source_warmup_expires(mux, monkeypatch):
-    from jasper.audio_runtime_plan import SourceRouteDecision
-
-    monkeypatch.setattr("jasper.mux.usbsink_state_fresh_host_connected", lambda: False)
-    mux._lean_enabled = True
-    mux._in_lean = True
-    mux._lean_hold_until_mono = time.monotonic() - 1.0
-    mux._leave_lean = AsyncMock()
-
-    await mux._settle_lean(SourceRouteDecision("buffered", "idle"))
-
-    mux._leave_lean.assert_awaited_once_with(reason="idle")
-
-
-@pytest.mark.asyncio
-async def test_lean_idle_leave_deferred_when_usb_state_is_fresh(mux, monkeypatch):
-    from jasper.audio_runtime_plan import SourceRouteDecision
-
-    monkeypatch.setattr("jasper.mux.usbsink_state_fresh_host_connected", lambda: True)
-    mux._lean_enabled = True
-    mux._in_lean = True
-    mux._lean_hold_until_mono = time.monotonic() - 1.0
-    mux._leave_lean = AsyncMock()
-
-    await mux._settle_lean(SourceRouteDecision("buffered", "idle"))
-
-    mux._leave_lean.assert_not_awaited()
-    assert mux._in_lean is True
-
-
-@pytest.mark.asyncio
-async def test_lean_manual_leave_is_not_deferred_by_source_warmup(mux, monkeypatch):
-    from jasper.audio_runtime_plan import SourceRouteDecision
-
-    monkeypatch.setattr("jasper.mux.usbsink_state_fresh_host_connected", lambda: True)
-    mux._lean_enabled = True
-    mux._in_lean = True
-    mux._manual_source = Source.AIRPLAY
-    mux._lean_hold_until_mono = time.monotonic() + 60.0
-    mux._leave_lean = AsyncMock()
-
-    await mux._settle_lean(SourceRouteDecision("buffered", "idle"))
-
-    mux._leave_lean.assert_awaited_once_with(reason="idle")
-
-
-@pytest.mark.asyncio
-async def test_enter_lean_sets_source_warmup_hold(mux, monkeypatch):
-    from jasper.mux import LEAN_ENTER_SOURCE_WARMUP_SEC
-
-    monkeypatch.setattr(
-        "jasper.usbsink.output_mode_reconcile.set_output_mode",
-        lambda *args, **kwargs: SimpleNamespace(ok=True, detail=None),
-    )
-    mux._lean_apply_config = AsyncMock()
-
-    before = time.monotonic()
-    await mux._enter_lean()
-
-    assert mux._in_lean is True
-    assert mux._lean_hold_until_mono >= (
-        before + LEAN_ENTER_SOURCE_WARMUP_SEC - 0.25
     )
 
 

@@ -1647,8 +1647,8 @@ speaker remains recoverable.
 
 | Legacy path | Status | Cleanup trigger |
 |---|---|---|
-| Python/PortAudio USB audio bridge | Explicit lab only: exposed as `jasper-usbsink-python-lab`, refuses without `JASPER_USBSINK_PYTHON_LAB_ALLOW=1`, and not allowed in claiming route | Delete after Rust bridge has any missing hotplug/state coverage and no tests/docs need the old callback model |
-| lean FIFO USB-only route (`JASPER_LEAN_LANE`, `USBSINK_OUTPUT_MODE=fifo`, lean RawFile capture) | Historical/deferred; solo-only and bypasses fan-in mixing | Remove after a shared frame-bounded route either meets 40/60 or the project explicitly chooses a separate solo profile with AEC-degraded semantics |
+| Python/PortAudio USB audio bridge | **DELETED** (USB dead-pipeline sweep) — the Rust `jasper-usbsink-audio` bridge is the sole data plane; only `volume_bridge.py` survives | done |
+| lean FIFO USB-only route (`JASPER_LEAN_LANE`, `USBSINK_OUTPUT_MODE=fifo`, lean RawFile capture) | **DELETED** (USB dead-pipeline sweep) — it was reachable only through the deleted Python bridge (the Rust daemon has no fifo mode) | done |
 | `transport_pipe` fan-in↔Camilla dual FIFO coupling | Failed/default-off lab path for low latency; Pi page size makes it too deep | Remove or quarantine after the new frame-bounded transport replaces its diagnostic value |
 | outputd `rate_match` content bridge for USB | Rejected for this route; produced content xruns/EAGAIN/partials in tuning | Keep only as a DAC/content clock-slip lab tool, or delete once no active diagnostic depends on it |
 | stale low-latency prose and component estimates | Historical context only | Compress into dated appendices as product docs converge on measured route artifacts |
@@ -1680,8 +1680,16 @@ snd-aloop hops**. Neither is cheaply removable on the shared path.
 
 ## The Former USB-only Answer: the lean-fifo path
 
-This remains historical/deferred. It is no longer the first production route.
-When USB is the *sole* active source, it could route through the already-built
+> **Removed (USB dead-pipeline sweep).** The lean-FIFO lane described below was
+> **deleted** — its only delivery path was the (also-deleted) Python bridge, and
+> the Rust `jasper-usbsink-audio` daemon never had a `fifo` output mode, so the
+> lane was unarmable on a production box. The text below is archaeology: the
+> `mux._enter_lean`/`_leave_lean`, `output_mode_reconcile.py`,
+> `stage_lean_capture_config`/`apply_lean_capture_config`, `lean_capture_kwargs`,
+> and `JASPER_LEAN_LANE` symbols it names no longer exist.
+
+This was historical/deferred and never a production route.
+When USB is the *sole* active source, it could route through the (now-removed)
 lean lane instead of the mixer:
 
 ```

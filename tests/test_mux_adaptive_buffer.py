@@ -88,11 +88,6 @@ def _make_mux(tmp_path, *, adaptive_enabled: bool) -> Mux:
     m._fanin_none = AsyncMock(return_value={})
     m._pause = AsyncMock()
     m._usbsink_set_preempt = AsyncMock()
-    # The lean lane stays OFF in these tests — this is the adaptive consumer of
-    # the shared route policy.
-    m._lean_enabled = False
-    m._lean_apply_config = AsyncMock()
-    m._lean_restore_config = AsyncMock()
     # Force the parsed-once adaptive flag regardless of ambient env.
     m._adaptive_buffer_enabled = adaptive_enabled
     # Stub the two reconciler seams so nothing touches the env file / broker.
@@ -122,9 +117,9 @@ async def test_default_off_does_not_call_source_route_policy(
     tmp_path, patched_probes, monkeypatch,
 ):
     # Byte-identical proof: with the flag off, _settle_adaptive_buffer returns
-    # before the shared route policy is ever consulted. The lean lane is also
-    # off here, so the policy function sees ZERO calls — the adaptive wiring
-    # adds nothing to the hot path when disabled.
+    # before the shared route policy is ever consulted — the policy function
+    # sees ZERO calls, so the adaptive wiring adds nothing to the hot path when
+    # disabled.
     called = {"n": 0}
     real = __import__(
         "jasper.mux", fromlist=["decide_source_low_latency_route"]
@@ -142,13 +137,11 @@ async def test_default_off_does_not_call_source_route_policy(
 
 
 @pytest.mark.asyncio
-async def test_lean_and_adaptive_share_one_source_route_decision(
+async def test_adaptive_consumes_one_source_route_decision(
     tmp_path,
     patched_probes,
     monkeypatch,
 ):
-    from jasper.usbsink import output_mode_reconcile as omr
-
     called = {"n": 0}
     real = __import__(
         "jasper.mux", fromlist=["decide_source_low_latency_route"]
@@ -159,22 +152,13 @@ async def test_lean_and_adaptive_share_one_source_route_decision(
         return real(**kw)
 
     monkeypatch.setattr("jasper.mux.decide_source_low_latency_route", spy)
-    monkeypatch.setattr(
-        omr,
-        "set_output_mode",
-        lambda mode, *, reason: omr.ArmResult(
-            ok=True, changed=True, restarted=True, mode=mode
-        ),
-    )
     _patch_reconcile(monkeypatch, set_ok=True, restore_ok=True)
     m = _make_mux(tmp_path, adaptive_enabled=True)
-    m._lean_enabled = True
     _stub_probes(patched_probes, usbsink=True)
 
     await m._tick()
 
     assert called["n"] == 1
-    assert m._in_lean is True
     assert m._buffer_shrunk is True
 
 
@@ -298,7 +282,7 @@ async def test_shrink_block_clears_on_source_change(tmp_path, patched_probes, mo
     _stub_probes(patched_probes, usbsink=True)
     await m._tick()
     assert m._buffer_shrink_blocked is True
-    # AirPlay alone -> non-lean route clears the block.
+    # AirPlay alone -> non-exclusive route clears the block.
     _stub_probes(patched_probes, airplay=True)
     await m._tick()
     assert m._buffer_shrink_blocked is False
@@ -309,14 +293,14 @@ async def test_restore_failure_keeps_shrunk_and_retries(
     tmp_path, patched_probes, monkeypatch,
 ):
     # If restore fails (broker hiccup), keep _buffer_shrunk=True so the next
-    # non-lean tick retries — convergent, never stuck shrunk silently.
+    # non-exclusive tick retries — convergent, never stuck shrunk silently.
     rec = _patch_reconcile(monkeypatch, set_ok=True, restore_ok=True)
     m = _make_mux(tmp_path, adaptive_enabled=True)
     _stub_probes(patched_probes, usbsink=True)
     await m._tick()
     assert m._buffer_shrunk is True
     rec.restore_ok = False  # first restore fails
-    _stub_probes(patched_probes, airplay=True)  # non-lean route
+    _stub_probes(patched_probes, airplay=True)  # non-exclusive route
     await m._tick()
     assert m._buffer_shrunk is True  # stayed shrunk, will retry
     rec.restore_ok = True  # second restore succeeds

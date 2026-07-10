@@ -849,10 +849,17 @@ DLNA fits squarely in the middle of the existing source costs.
 
 ## 7. Sidecar implementation (`jasper-dlna`)
 
+> **Template note.** This section originally pointed at the Python usbsink
+> daemon (`usbsink_main.py`, `daemon.py`, `state_publisher.py`,
+> `preempt_listener.py`) as its structural template. Those modules were
+> **deleted** in the USB dead-pipeline sweep — the production USB bridge is now
+> the Rust `jasper-usbsink-audio` daemon, which has state-publish/preempt built
+> in. If this DLNA sidecar is ever built, mirror a surviving Python daemon's
+> shape (e.g. `jasper/control/`), not the removed usbsink Python package.
+
 ### 7.1 Entry point (`jasper/cli/dlna_main.py`)
 
-Mirror `jasper/cli/usbsink_main.py`: parse env, instantiate
-daemon, install signal handlers, run event loop.
+Parse env, instantiate daemon, install signal handlers, run event loop.
 
 ```
 pyproject.toml [project.scripts]

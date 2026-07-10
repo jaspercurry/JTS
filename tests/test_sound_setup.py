@@ -20,7 +20,6 @@ import pytest
 
 from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
-from jasper.audio_runtime_plan import lean_capture_kwargs
 from jasper.output_topology import (
     DUAL_APPLE_ACTIVE_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
@@ -43,7 +42,6 @@ from jasper.sound.profile import (
 )
 from jasper.sound.runtime import (
     _config_without_id_header,
-    lean_live_config_path,
     reconcile_current_dsp,
 )
 from jasper.sound.settings import (
@@ -102,16 +100,6 @@ def _room_config(peqs: list[PeqFilter] | None = None) -> str:
         SoundProfile(enabled=False),
         room_peqs=peqs or [],
     )
-
-
-def _lean_config(config_dir: Path, profile: SoundProfile | None = None) -> Path:
-    lean_path = lean_live_config_path(config_dir)
-    emit_sound_config(
-        profile or SoundProfile(enabled=False),
-        out_path=lean_path,
-        **lean_capture_kwargs(),
-    )
-    return lean_path
 
 
 def _record_dsp_epoch(path: Path, op_id: str) -> None:
@@ -3625,33 +3613,6 @@ async def test_reconcile_current_dsp_reemits_saved_profile_without_restamping(
     assert load_profile(profile_path).updated_at == "2020-01-01T00:00:00+00:00"
 
 
-async def test_reconcile_current_dsp_preserves_lean_fifo_capture(
-    tmp_path: Path,
-    monkeypatch,
-):
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    lean_path = _lean_config(config_dir)
-    profile_path = tmp_path / "sound_profile.json"
-    save_profile(SoundProfile(simple_eq=SimpleEq(bass_db=1.0)), profile_path)
-    fake = FakeCamilla(str(lean_path))
-
-    payload = await reconcile_current_dsp(
-        profile_path=profile_path,
-        config_dir=config_dir,
-        camilla_factory=lambda: fake,
-    )
-
-    assert payload["status"] == "reconciled"
-    assert fake.set_calls == [str(lean_path)]
-    lean_yaml = lean_path.read_text()
-    assert "type: RawFile" in lean_yaml
-    assert 'filename: "/run/jasper-usbsink/lean.pipe"' in lean_yaml
-    assert "plug:jasper_capture" not in lean_yaml
-
-
 async def test_reconcile_current_dsp_skips_unknown_config(
     tmp_path: Path, monkeypatch, caplog,
 ):
@@ -4194,70 +4155,6 @@ async def test_live_draft_profile_reports_unavailable_without_reload(
     assert fake.set_calls == []
     assert payload["live_status"] == "unavailable"
     assert payload["live_method"] == "active_config_raw_unavailable"
-
-
-async def test_live_draft_profile_preserves_lean_fifo_capture(
-    tmp_path: Path,
-    monkeypatch,
-):
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    monkeypatch.setenv(
-        "JASPER_SOUND_SETTINGS_PATH",
-        str(tmp_path / "sound_settings.json"),
-    )
-    _record_dsp_epoch(tmp_path / "dsp.json", "epoch-lean")
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    lean_path = _lean_config(config_dir)
-    fake = FakeCamilla(str(lean_path))
-
-    payload = await sound_setup._live_draft_profile(
-        SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
-        expected_dsp_write_epoch="epoch-lean",
-        profile_path=tmp_path / "sound_profile.json",
-        config_dir=config_dir,
-        camilla_factory=lambda: fake,
-    )
-
-    assert fake.set_calls == []
-    assert len(fake.active_raw_values) == 1
-    live_yaml = fake.active_raw_values[0]
-    assert "type: RawFile" in live_yaml
-    assert 'filename: "/run/jasper-usbsink/lean.pipe"' in live_yaml
-    assert "plug:jasper_capture" not in live_yaml
-    assert payload["live_status"] == "live"
-    assert payload["active_config_path"] == str(lean_path)
-
-
-async def test_apply_profile_preserves_lean_fifo_capture(
-    tmp_path: Path,
-    monkeypatch,
-):
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    monkeypatch.setenv(
-        "JASPER_SOUND_SETTINGS_PATH",
-        str(tmp_path / "sound_settings.json"),
-    )
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    lean_path = _lean_config(config_dir)
-    profile_path = tmp_path / "sound_profile.json"
-    fake = FakeCamilla(str(lean_path))
-
-    payload = await sound_setup._apply_profile(
-        SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
-        profile_path=profile_path,
-        config_dir=config_dir,
-        camilla_factory=lambda: fake,
-    )
-
-    assert fake.set_calls == [str(lean_path)]
-    lean_yaml = lean_path.read_text()
-    assert "type: RawFile" in lean_yaml
-    assert 'filename: "/run/jasper-usbsink/lean.pipe"' in lean_yaml
-    assert "plug:jasper_capture" not in lean_yaml
-    assert payload["active_config_path"] == str(lean_path)
-    assert load_profile(profile_path).simple_eq.bass_db == 1.0
 
 
 async def test_apply_profile_rejects_unknown_active_config(tmp_path: Path):

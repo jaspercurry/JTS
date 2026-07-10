@@ -35,16 +35,12 @@ playback remains S16_LE. JTS has 16 KiB kernel pages, so a FIFO cannot shrink
 below 16 KiB; S32_LE stereo halves that floor from 4096 frames (~85 ms) to 2048
 frames (~43 ms). outputd down-converts to i16 at the final DAC write boundary.
 
-**Why a separate flag from the lean lane.** The lean lane
-(``JASPER_LEAN_LANE`` / ``stage_lean_capture_config`` /
-``apply_lean_capture_config``) swaps CamillaDSP's capture to a File pipe fed by
-ONE exclusive wired source (usbsink), bypassing the mixer entirely. This
-coupling keeps the FULL fan-in mixer (all renderer lanes, TTS, ducking,
+This coupling keeps the FULL fan-in mixer (all renderer lanes, TTS, ducking,
 music-only tap) and changes the local program transport on both sides of
-Camilla. They are different points on the same convergence: once
-``transport_pipe`` soaks, it supersedes the lean lane's separate File-capture
-path. **Do not delete the lean lane or the adaptive output-buffer shrink yet** —
-they are superseded *after* this soaks, not before.
+Camilla. It is one point on the convergence toward a single low-latency
+transport; the adaptive fan-in output-buffer shrink
+(``JASPER_FANIN_ADAPTIVE_BUFFER``) is the other. Both remain feature-gated
+until the measured endgame lets one supersede the rest.
 """
 
 from __future__ import annotations
@@ -80,10 +76,8 @@ VALID_COUPLINGS = frozenset(
 _VALID_COUPLINGS = VALID_COUPLINGS
 
 # The shared-capture named pipe written by fan-in under ``transport_pipe`` and
-# RawFile-read by CamillaDSP. DISTINCT from the lean lane's FIFO
-# (``DEFAULT_LEAN_CAPTURE_FIFO`` = /run/jasper-usbsink/lean.pipe), which is fed
-# by usbsink, not the mixer. Lives under the fan-in daemon's own /run dir (tmpfs,
-# recreated each boot) so the producer owns it. Overridable via
+# RawFile-read by CamillaDSP. Lives under the fan-in daemon's own /run dir
+# (tmpfs, recreated each boot) so the producer owns it. Overridable via
 # ``JASPER_FANIN_CAMILLA_PIPE`` for the soak.
 PIPE_PATH_ENV_VAR = "JASPER_FANIN_CAMILLA_PIPE"
 DEFAULT_FANIN_CAMILLA_PIPE = "/run/jasper-fanin/camilla.pipe"

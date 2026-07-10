@@ -225,19 +225,32 @@ the audio-hardware reconciler asks `jasper-audio-config outputd-floor-actions`
 for `/var/lib/jasper/outputd.env` latency-floor set/unset decisions, and
 `jasper.fanin.buffer_reconcile` / `jasper.fanin.coupling_reconcile` ask the
 plan for fan-in output-buffer set/unset/floor decisions, adaptive lab target,
-and coupling route-support policy. Mux's lean-lane and adaptive-buffer consumers
-share the plan's `decide_source_low_latency_route` source-exclusivity decision,
-and `jasper.usbsink.output_mode_reconcile` asks the plan for the
-`JASPER_USBSINK_OUTPUT_MODE` env action. Sound runtime asks the plan for both
-lean RawFile capture kwargs (`lean_capture_kwargs`) and shared fan-in coupling
-capture kwargs (`fanin_coupling_capture_kwargs`), so the RawFile/AsyncSinc shape
-does not live in separate staged/live/reconcile code paths. The carrier also
-asks the plan's `apply_capture_precedence` helper whether lean capture, grouped
-pipe-sink playback, or shared fan-in coupling owns capture for this emit. Other
-reconcilers still write their existing env files; move those decisions behind
-the plan as the next migration steps.
+and coupling route-support policy. Mux's adaptive-buffer consumer uses the
+plan's `decide_source_low_latency_route` source-exclusivity decision. Sound
+runtime asks the plan for shared fan-in coupling capture kwargs
+(`fanin_coupling_capture_kwargs`), so the RawFile/AsyncSinc shape does not live
+in separate staged/live/reconcile code paths. The carrier also asks the plan's
+`apply_capture_precedence` helper whether grouped pipe-sink playback or shared
+fan-in coupling owns capture for this emit. Other reconcilers still write their
+existing env files; move those decisions behind the plan as the next migration
+steps. (The lean-lane consumers and `lean_capture_kwargs` /
+`usbsink_output_mode_action` that this paragraph used to also describe were
+deleted in the USB dead-pipeline sweep — see the callout below.)
 
-## The lean lane (Stage 4)
+## The lean lane (Stage 4) — REMOVED
+
+> **Removed (USB dead-pipeline sweep).** The entire lean lane described in this
+> section was **deleted**. Its only delivery mechanism was the Python
+> `jasper-usbsink` bridge writing a FIFO, which was itself removed, and the
+> production Rust `jasper-usbsink-audio` daemon never had a `fifo` output mode —
+> so the lane was unarmable on a real box. Deleted symbols named below no longer
+> exist: `Mux._enter_lean`/`_leave_lean`, `jasper.usbsink.output_mode_reconcile`,
+> `jasper.sound.runtime.stage_lean_capture_config` /
+> `apply_lean_capture_config` / `restore_buffered_config`,
+> `lean_capture_kwargs`, `DEFAULT_LEAN_CAPTURE_FIFO`, and the `JASPER_LEAN_LANE`
+> env / the `fifo` value of `JASPER_USBSINK_OUTPUT_MODE`. The text below is
+> archaeology of the design. The `jasper-camilla-pipe-guard` dangling-capture
+> floor survives — it now guards the live `transport_pipe` capture pipe.
 
 The lean lane is the low-latency music path for a **single, exclusive, wired**
 source (USB audio input): the source writes a named pipe, CamillaDSP

@@ -113,11 +113,13 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 >
 > Current production-boundary pins:
 >
-> 1. **Rust is the only production USB data plane.**
+> 1. **Rust is the only USB data plane.**
 >    [`deploy/systemd/jasper-usbsink.service`](../deploy/systemd/jasper-usbsink.service)
 >    runs `/opt/jasper/bin/jasper-usbsink-audio`. The old Python/PortAudio
->    bridge is exposed only as `jasper-usbsink-python-lab` and refuses to run
->    unless `JASPER_USBSINK_PYTHON_LAB_ALLOW=1` is set.
+>    bridge (`jasper/usbsink/daemon.py`, `audio_bridge.py`, `usbsink_main.py`,
+>    the `jasper-usbsink-python-lab` entrypoint) and its lean-FIFO delivery
+>    variant were **deleted** in the USB dead-pipeline sweep; the sections below
+>    that describe them are archaeology, not current code.
 > 2. **Asoundrc path migration.** The codebase moved
 >    `/root/.asoundrc` → `/etc/asound.conf` (mode 0644, world-readable)
 >    in PR #223. usbsink doesn't reference asoundrc by path; the
@@ -365,8 +367,11 @@ component estimates only until a route-latency artifact exists):
 > **Production low-latency knobs (2026-07-01).** The current claiming route
 > uses the Rust bridge with `JASPER_USBSINK_BLOCK_FRAMES=256` and
 > `JASPER_USBSINK_RING_PERIODS=3`. `JASPER_USBSINK_LATENCY=low` is now a route
-> hint/state label, not a PortAudio runtime selector. The lean FIFO
-> `JASPER_USBSINK_OUTPUT_MODE=fifo` path is historical/deferred; the production
+> hint/state label, not a PortAudio runtime selector. `JASPER_USBSINK_OUTPUT_MODE`
+> is always `aloop` now — the lean-FIFO (`fifo`) delivery variant and its
+> runtime flip were **deleted** (the Rust bridge has only the aloop lane; the
+> route reconciler records `aloop` for route identity and the daemon does not
+> read it). The production
 > `usb_low_latency_48k` route keeps USB in fan-in and uses the fan-in USB input
 > resampler plus direct ALSA loopback through Camilla/outputd. Env action validation lives
 > in `jasper.audio_runtime_plan`; the reconciler still owns the env write,
@@ -695,10 +700,13 @@ is visible. (Reverting entirely: `rm /lib/modules/*/updates/usb_f_uac2.ko`
 
 ### 4.2 jasper-usbsink daemon
 
-> **Historical Python bridge design.** The production service now runs
-> `/opt/jasper/bin/jasper-usbsink-audio`; the package/script sketch below is
-> retained only to explain the original implementation. Do not copy this
-> `ExecStart` for the current runtime.
+> **Historical Python bridge design — code deleted.** The production service
+> runs `/opt/jasper/bin/jasper-usbsink-audio`. The Python package described below
+> (`daemon.py`, `audio_bridge.py`, `state_publisher.py`, `preempt_listener.py`,
+> `usbsink_main.py`) was **removed** in the USB dead-pipeline sweep — only
+> `volume_bridge.py` (the `jasper-usbsink-volume` poller) survives. The
+> package/script sketch below is retained purely as archaeology of the original
+> implementation; the files it names no longer exist.
 
 **Original Python package**:
 
@@ -1864,8 +1872,8 @@ ownership. Prior recheck 2026-07-02 against
 fan-in USB resampler held target 2048, fan-in output 1024, CamillaDSP 256/1536,
 outputd 128/256, outputd content buffer 1536, direct ALSA loopback. Route-latency
 evidence remains missing, so doctor correctly fails the low-latency claim. The
-old Python/PortAudio bridge and lean FIFO path remain historical/deferred, not
-the claiming production data plane. The state.json field list above now
+old Python/PortAudio bridge and lean-FIFO path were deleted (USB dead-pipeline
+sweep); the Rust bridge is the sole data plane. The state.json field list above now
 includes `tap` and `host_clock`, both pointed at
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
 source of truth per the documentation paradigm.)

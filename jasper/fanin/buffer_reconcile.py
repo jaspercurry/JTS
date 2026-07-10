@@ -22,9 +22,9 @@ also hard-rejects anything below ``2 × period_frames`` (512 at the default
 soak proves they do not cause AirPlay tears or Camilla underruns. We REJECT a
 requested value below the floor rather than clamp it — writing an unvalidated
 buffer into the persisted env could break the daemon on its next natural
-restart (the same no-silent-failure invariant the usbsink FIFO arm protects).
+restart (the same no-silent-failure invariant every JTS reconciler protects).
 
-IDIOM. Mirrors ``jasper.usbsink.output_mode_reconcile``: the reconciler is the
+IDIOM. Mirrors ``jasper-aec-reconcile``: the reconciler is the
 single writer of ``JASPER_FANIN_OUTPUT_BUFFER_FRAMES`` in the unit's
 wizard-owned ``EnvironmentFile`` (``/var/lib/jasper/fanin.env``), and the
 daemon reads the resolved env on its next start. The file is loaded by the unit
