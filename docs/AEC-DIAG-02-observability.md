@@ -51,12 +51,36 @@ The patch does not change the samples written to the DAC, the samples sent over 
 
 ### `reference_outputs.chip_ref_writer`
 
-`enabled`
+`desired`
 
 - Unit: boolean.
 - Source: true when `JASPER_OUTPUTD_CHIP_REF_PCM` is configured.
 - Update cadence: fixed at process start.
-- Diagnostic use: confirms the chip-reference writer is part of this outputd runtime.
+- Diagnostic use: distinguishes configured intent from live writer availability.
+
+`enabled` / `active`
+
+- Unit: boolean (`enabled` is the compatibility alias for `active`).
+- Source: true only while the chip-reference PCM is open and writable.
+- Update cadence: changes as the optional writer opens, fails, and recovers.
+- Diagnostic use: the live runtime verdict consumed by chip-AEC policy and doctor.
+
+`status`
+
+- Values: `disabled`, `connecting`, `active`, `degraded`, or `failed`.
+- Source: the outputd-owned writer lifecycle. Recoverable ALSA open/write faults are
+  `degraded` while bounded background retries continue; a worker/configuration
+  failure that cannot self-recover is `failed`.
+- Diagnostic use: tells an operator whether to wait for hot-plug recovery or correct
+  the device/config and restart outputd. Neither state gates physical DAC playback.
+
+`open_error_count` / `retry_count`
+
+- Unit: cumulative events for this outputd process.
+- Update cadence: `open_error_count` increments on failed ALSA opens;
+  `retry_count` increments on background attempts after the first failure.
+- Diagnostic use: separates a transient device appearance race from sustained
+  reference-path unavailability without per-period journal spam.
 
 `queue_depth_periods`
 
@@ -139,6 +163,14 @@ The patch does not change the samples written to the DAC, the samples sent over 
 - Source: bounded chip-ref queue `try_send` failures with `Disconnected`.
 - Update cadence: when the writer thread has exited and outputd drops a would-be chip-ref packet.
 - Diagnostic use: makes writer death visible without making outputd's main DAC loop crash.
+
+`dropped_periods_while_unavailable`
+
+- Unit: outputd reference periods.
+- Source: packets drained and intentionally discarded while the optional PCM is
+  unavailable and its worker is waiting for the next bounded retry.
+- Diagnostic use: proves DAC playback continued while only the chip-reference branch
+  degraded.
 
 `last_write_age_ms`
 

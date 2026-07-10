@@ -1306,8 +1306,57 @@ def test_reconciler_gets_latency_floor_actions_from_runtime_plan() -> None:
 
     assert "jasper.cli.audio_config" in text
     assert "outputd-floor-actions" in text
+    assert "validate-outputd-env" in text
+    assert '--fanin-env "$FANIN_ENV_FILE"' in text
+    assert '--camilla-statefile "$CAMILLA_STATEFILE"' in text
+    assert '--camilla2-statefile "$CAMILLA2_STATEFILE"' in text
+    assert "outputd-capture-device" in text
+    assert '"outputd_active_content_capture"' not in text
+    assert '"outputd_content_capture"' not in text
     assert "latency_floor_for_dac()" not in text
     assert "from jasper.audio_hardware.dac import latency_floor_for" not in text
+
+
+def test_outputd_env_validation_rejects_active_writer_passive_reader(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    from jasper.cli.audio_config import main as audio_config_main
+
+    graph_env = _active_graph_env(tmp_path, channels=2)
+    base_env = tmp_path / "jasper.env"
+    base_env.write_text("JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n", encoding="utf-8")
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text(
+        "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n",
+        encoding="utf-8",
+    )
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(
+        "JASPER_FANIN_CAMILLA_COUPLING=loopback\n",
+        encoding="utf-8",
+    )
+
+    result = audio_config_main(
+        [
+            "validate-outputd-env",
+            "--base-env",
+            str(base_env),
+            "--outputd-env",
+            str(outputd_env),
+            "--fanin-env",
+            str(fanin_env),
+            "--camilla-statefile",
+            graph_env["JASPER_CAMILLA_STATEFILE"],
+            "--camilla2-statefile",
+            str(tmp_path / "crossover-statefile.yml"),
+            "--output-topology",
+            graph_env["JASPER_OUTPUT_TOPOLOGY_PATH"],
+        ]
+    )
+
+    assert result == 1
+    assert "post-DSP route disconnected" in capsys.readouterr().out
 
 
 def _outputd_env_key_present(outputd_env: str, key: str) -> bool:

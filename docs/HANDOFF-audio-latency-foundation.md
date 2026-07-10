@@ -95,6 +95,18 @@ outputd buffer/period pairs (content and DAC buffers) before installing them,
 and the outputd failure helper gives exit 78 one bounded re-reconcile + retry
 instead of permanently wedging on a transient shear.
 
+2026-07-10 transport/reference update: `AudioRuntimePlan.TransportTopology`
+now describes the complete fan-in → CamillaDSP → outputd connection. The ALSA
+fallback derives outputd's capture endpoint from CamillaDSP's loaded playback
+endpoint through the same pairing contract the hardware reconciler consumes;
+both staged reconcile and doctor reject a split active/passive lane, while
+doctor reports missing graph evidence as unknown rather than healthy.
+Separately, outputd treats the XVF3800 chip-reference PCM as an optional
+side output: missing mic hardware degrades AEC observably and retries in the
+background, but cannot gate DAC playback. This does not change the consolidation
+direction: Ring A + Ring B remain the product path and loopback remains a
+coherent fallback that can later be deleted as one topology variant.
+
 The route-specific productization and legacy cleanup plan lives in
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md#productization-plan).
 Keep this file as the clock-domain architecture reference; do not duplicate the
@@ -232,10 +244,13 @@ runtime asks the plan for shared fan-in coupling capture kwargs
 in separate staged/live/reconcile code paths. The carrier also asks the plan's
 `apply_capture_precedence` helper whether grouped pipe-sink playback or shared
 fan-in coupling owns capture for this emit. Other reconcilers still write their
-existing env files; move those decisions behind the plan as the next migration
-steps. (The lean-lane consumers and `lean_capture_kwargs` /
-`usbsink_output_mode_action` that this paragraph used to also describe were
-deleted in the USB dead-pipeline sweep — see the callout below.)
+physical-hardware env files. The coupling reconciler remains the transport
+transition owner, and the staged output-hardware writer validates its candidate
+against the same topology contract before commit so a failure-time hardware
+refresh cannot shear the post-DSP route. (The lean-lane consumers and
+`lean_capture_kwargs` / `usbsink_output_mode_action` that this paragraph used
+to also describe were deleted in the USB dead-pipeline sweep — see the callout
+below.)
 
 ## The lean lane (Stage 4) — REMOVED
 
@@ -594,12 +609,14 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-07-07 (scoped to the resilience/routing-policy claims
-below, NOT to the latency numbers the banner above marks superseded — for
-current measured latency see
-[HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md).
-Ring route-policy/current-chain text rechecked
-against `jasper.audio_runtime_plan`, `jasper.fanin_coupling`, and
+Last verified: 2026-07-10 (complete transport coherence and optional-reference
+failure isolation rechecked against `jasper.audio_runtime_plan`,
+`jasper.camilla_config_contract`, `jasper.cli.audio_config`, staged
+audio-hardware reconcile, doctor, and `rust/jasper-outputd`; scoped to the
+resilience/routing-policy claims below, NOT to the latency numbers the banner
+above marks superseded — for current measured latency see
+[HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md). Ring
+route-policy/current-chain text rechecked against `jasper.fanin_coupling`, and
 `jasper.fanin.coupling_reconcile`; prior 2026-07-06 `outputd.env`
 config-shear resilience rechecked
 against the runtime plan, staged audio-hardware reconcile writer, and outputd

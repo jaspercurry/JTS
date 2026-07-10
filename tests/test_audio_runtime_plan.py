@@ -47,11 +47,19 @@ from jasper.audio_runtime_plan import (
     outputd_dac_buffer_pair_error,
     outputd_env_buffer_pair_error,
     outputd_latency_floor_actions,
+    output_endpoint_evidence_from_statefiles,
     resolve_audio_route_profile,
     route_owned_env_actions,
     resolve_fanin_output_buffer_target,
+    transport_coherence_errors,
     transport_topology_for_coupling,
 )
+from jasper.camilla_config_contract import (
+    ACTIVE_OUTPUTD_CAPTURE_DEVICE,
+    ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+    DEFAULT_OUTPUTD_CAPTURE_DEVICE,
+)
+from jasper.cli.audio_config import main as audio_config_main
 from jasper.env_load import EnvFileState
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
@@ -837,6 +845,87 @@ def test_transport_topology_reports_loopback_and_transport_pipe_geometry():
     assert pipe["camilla_to_outputd"]["format"] == "S32_LE"
     assert pipe["camilla"]["enable_rate_adjust"] is False
     assert pipe["camilla"]["capture_resampler"] is None
+
+
+def test_loopback_topology_derives_outputd_reader_from_camilla_writer():
+    topology = transport_topology_for_coupling(
+        COUPLING_LOOPBACK,
+        camilla_playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+    )
+
+    assert (
+        topology.camilla_to_outputd["outputd_capture_pcm"]
+        == ACTIVE_OUTPUTD_CAPTURE_DEVICE
+    )
+
+
+def test_transport_coherence_rejects_disconnected_active_output_lane():
+    errors = transport_coherence_errors(
+        coupling=COUPLING_LOOPBACK,
+        outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": DEFAULT_OUTPUTD_CAPTURE_DEVICE},
+        camilla_devices={"playback_device": ACTIVE_OUTPUTD_PLAYBACK_DEVICE},
+    )
+
+    assert len(errors) == 1
+    assert "post-DSP route disconnected" in errors[0]
+    assert ACTIVE_OUTPUTD_CAPTURE_DEVICE in errors[0]
+
+
+def test_transport_coherence_accepts_paired_active_output_lane():
+    assert transport_coherence_errors(
+        coupling=COUPLING_LOOPBACK,
+        outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": ACTIVE_OUTPUTD_CAPTURE_DEVICE},
+        camilla_devices={"playback_device": ACTIVE_OUTPUTD_PLAYBACK_DEVICE},
+    ) == ()
+
+
+def test_audio_config_resolves_outputd_capture_from_canonical_pairing(capsys):
+    assert audio_config_main(
+        [
+            "outputd-capture-device",
+            "--playback-device",
+            ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+        ]
+    ) == 0
+    assert capsys.readouterr().out.strip() == ACTIVE_OUTPUTD_CAPTURE_DEVICE
+
+
+def test_audio_config_rejects_unregistered_outputd_playback(capsys):
+    assert audio_config_main(
+        ["outputd-capture-device", "--playback-device", "future_unknown_lane"]
+    ) == 1
+    assert "no outputd capture endpoint" in capsys.readouterr().out
+
+
+def test_output_endpoint_evidence_preserves_missing_statefile_reason(tmp_path):
+    missing = tmp_path / "missing-statefile.yml"
+
+    evidence = output_endpoint_evidence_from_statefiles(missing)
+
+    assert evidence.devices is None
+    assert evidence.errors
+    assert str(missing) in evidence.errors[0]
+
+
+def test_output_endpoint_evidence_marks_non_output_graph_unknown(tmp_path):
+    config = tmp_path / "program-bake.yml"
+    config.write_text(
+        "devices:\n"
+        "  capture:\n"
+        "    type: Alsa\n"
+        "    device: plug:jasper_capture\n"
+        "  playback:\n"
+        "    type: File\n"
+        "    device: /run/jasper-grouping/program.pipe\n",
+        encoding="utf-8",
+    )
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+
+    evidence = output_endpoint_evidence_from_statefiles(statefile)
+
+    assert evidence.devices is not None
+    assert evidence.endpoint_recognized is False
 
 
 def test_runtime_plan_to_dict_exposes_topology_and_correction_latency_gate():

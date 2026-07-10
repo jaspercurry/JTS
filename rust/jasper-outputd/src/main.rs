@@ -40,6 +40,22 @@ use signal_hook::flag;
 
 const REF_OUTPUT_QUEUE_CAPACITY: usize = 32;
 const MAX_CONTENT_BRIDGE_DRAIN_READS: usize = 8;
+const CHIP_REF_RETRY_INITIAL: Duration = Duration::from_secs(1);
+const CHIP_REF_RETRY_MAX: Duration = Duration::from_secs(30);
+const CHIP_REF_WORKER_POLL: Duration = Duration::from_millis(200);
+
+#[derive(Clone, Copy)]
+struct ChipRefWorkerTiming {
+    retry_initial: Duration,
+    retry_max: Duration,
+    poll: Duration,
+}
+
+const CHIP_REF_WORKER_TIMING: ChipRefWorkerTiming = ChipRefWorkerTiming {
+    retry_initial: CHIP_REF_RETRY_INITIAL,
+    retry_max: CHIP_REF_RETRY_MAX,
+    poll: CHIP_REF_WORKER_POLL,
+};
 
 /// Exit code for a CONFIG-validation failure (sysexits.h EX_CONFIG).
 /// The unit pairs it with `RestartPreventExitStatus=78`: a fail-closed
@@ -286,7 +302,10 @@ fn run_alsa(
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
     let mut sink = RuntimeAlsaSink::open(config)?;
-    let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown, Arc::clone(state))?;
+    // Reference publication is a side output of the final DAC path. A missing
+    // AEC consumer must degrade that consumer, never prevent the speaker from
+    // reaching READY or writing the physical DAC.
+    let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown, Arc::clone(state));
     state.set_negotiated(sink.content_negotiated(), sink.dac_negotiated());
     sink.mark_runtime_status(state);
     // Content/DAC width is carried as data (coherent single DAC of any width);
@@ -763,26 +782,66 @@ struct ReferenceSideOutputs {
 }
 
 impl ReferenceSideOutputs {
-    fn new(config: &Config, shutdown: &Arc<AtomicBool>, state: Arc<OutputdState>) -> Result<Self> {
-        let udp_target =
-            match config.reference_udp_target.as_deref() {
-                Some(raw) => Some(raw.parse::<SocketAddr>().with_context(|| {
-                    format!("parsing JASPER_OUTPUTD_REFERENCE_UDP_TARGET={raw:?}")
-                })?),
-                None => None,
-            };
-        let udp_socket = if udp_target.is_some() {
-            let sock =
-                UdpSocket::bind("127.0.0.1:0").context("binding outputd reference UDP sender")?;
-            sock.set_nonblocking(true)
-                .context("setting outputd reference UDP sender nonblocking")?;
-            Some(sock)
+    fn new(config: &Config, shutdown: &Arc<AtomicBool>, state: Arc<OutputdState>) -> Self {
+        let udp_target = match config.reference_udp_target.as_deref() {
+            Some(raw) => match raw.parse::<SocketAddr>() {
+                Ok(target) => Some(target),
+                Err(e) => {
+                    state.mark_reference_udp_error();
+                    eprintln!(
+                        "event=outputd.reference_udp.unavailable action=continue_without_reference reason=invalid_target target={raw:?} detail={e}"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        let udp_socket = udp_target.and_then(|target| {
+            let opened = (|| -> Result<UdpSocket> {
+                let sock = UdpSocket::bind("127.0.0.1:0")
+                    .context("binding outputd reference UDP sender")?;
+                sock.set_nonblocking(true)
+                    .context("setting outputd reference UDP sender nonblocking")?;
+                Ok(sock)
+            })();
+            match opened {
+                Ok(sock) => {
+                    state.mark_reference_udp_active(true);
+                    Some(sock)
+                }
+                Err(e) => {
+                    state.mark_reference_udp_error();
+                    eprintln!(
+                        "event=outputd.reference_udp.unavailable action=continue_without_reference target={target} detail={e:#}"
+                    );
+                    None
+                }
+            }
+        });
+
+        let chip_downsampler = if config.chip_ref_pcm.is_some() {
+            // Config::from_env has already validated this exact divisibility
+            // invariant. Keep the side-output boundary non-fatal even if that
+            // contract changes in a future build.
+            match ChipRefDownsampler::new(config.sample_rate, config.chip_ref_sample_rate) {
+                Ok(downsampler) => Some(downsampler),
+                Err(e) => {
+                    state.mark_chip_ref_open_error();
+                    state.mark_chip_ref_terminal_failure();
+                    eprintln!(
+                        "event=outputd.chip_ref.unavailable action=continue_without_reference reason=downsampler_config detail={e:#}"
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
 
-        let chip_tx = if let Some(pcm_name) = &config.chip_ref_pcm {
-            Some(spawn_chip_ref_writer(
+        let chip_tx = if let (Some(_), Some(pcm_name)) =
+            (&chip_downsampler, config.chip_ref_pcm.as_ref())
+        {
+            match spawn_chip_ref_writer(
                 pcm_name.clone(),
                 config.chip_ref_sample_rate,
                 config.chip_ref_period_frames,
@@ -790,38 +849,46 @@ impl ReferenceSideOutputs {
                 config.chip_ref_tee_path.clone(),
                 Arc::clone(shutdown),
                 Arc::clone(&state),
-            )?)
+            ) {
+                Ok(tx) => Some(tx),
+                Err(e) => {
+                    state.mark_chip_ref_open_error();
+                    state.mark_chip_ref_terminal_failure();
+                    eprintln!(
+                        "event=outputd.chip_ref.unavailable action=continue_without_reference reason=worker_spawn_failed pcm={pcm_name} detail={e:#}"
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
 
-        if let Some(target) = udp_target {
+        if let (Some(_), Some(target)) = (&udp_socket, udp_target) {
             eprintln!("event=outputd.reference_udp.enabled target={target}");
         }
         if let Some(pcm) = &config.chip_ref_pcm {
-            eprintln!("event=outputd.chip_ref.enabled pcm={pcm}");
+            eprintln!("event=outputd.chip_ref.desired pcm={pcm}");
         }
 
-        Ok(Self {
+        Self {
             udp_socket,
             udp_target,
             chip_tx,
-            chip_downsampler: if config.chip_ref_pcm.is_some() {
-                Some(ChipRefDownsampler::new(
-                    config.sample_rate,
-                    config.chip_ref_sample_rate,
-                )?)
-            } else {
-                None
-            },
+            chip_downsampler,
             state,
-        })
+        }
     }
 
     fn publish(&mut self, stereo_samples: &[i16], reference_sequence: u64) {
         if let (Some(sock), Some(target)) = (&self.udp_socket, self.udp_target) {
-            if let Err(e) = sock.send_to(bytemuck_i16(stereo_samples), target) {
-                if e.kind() != io::ErrorKind::WouldBlock {
+            match sock.send_to(bytemuck_i16(stereo_samples), target) {
+                Ok(_) => self.state.mark_reference_udp_active(true),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    self.state.mark_reference_udp_active(true);
+                }
+                Err(e) => {
+                    self.state.mark_reference_udp_error();
                     eprintln!("event=outputd.reference_udp.send_failed detail={e}");
                 }
             }
@@ -841,20 +908,27 @@ impl ReferenceSideOutputs {
                 reference_sequence,
             };
             self.state.mark_chip_ref_queue_admitted(frames);
-            match tx.try_send(packet) {
+            let writer_disconnected = match tx.try_send(packet) {
                 Ok(()) => {
                     self.state.mark_chip_ref_enqueued(reference_sequence);
+                    false
                 }
                 Err(TrySendError::Full(_packet)) => {
                     self.state.mark_chip_ref_dequeued(frames);
                     self.state.mark_chip_ref_dropped_full();
-                    eprintln!("event=outputd.chip_ref.queue_full action=drop_period");
+                    false
                 }
                 Err(TrySendError::Disconnected(_packet)) => {
                     self.state.mark_chip_ref_dequeued(frames);
                     self.state.mark_chip_ref_dropped_disconnected();
-                    eprintln!("event=outputd.chip_ref.disconnected action=drop_period");
+                    self.state.mark_chip_ref_terminal_failure();
+                    eprintln!("event=outputd.chip_ref.disconnected action=disable_reference_sink");
+                    true
                 }
+            };
+            if writer_disconnected {
+                self.chip_tx = None;
+                self.chip_downsampler = None;
             }
         }
     }
@@ -938,11 +1012,10 @@ fn spawn_chip_ref_writer(
     state: Arc<OutputdState>,
 ) -> Result<SyncSender<ChipRefPacket>> {
     let (tx, rx) = mpsc::sync_channel(REF_OUTPUT_QUEUE_CAPACITY);
-    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     thread::Builder::new()
         .name("outputd-chip-ref".to_string())
         .spawn(move || {
-            let result = run_chip_ref_writer(
+            run_chip_ref_writer(
                 ChipRefWriterConfig {
                     pcm_name: &pcm_name,
                     sample_rate,
@@ -952,100 +1025,154 @@ fn spawn_chip_ref_writer(
                 },
                 &rx,
                 &shutdown,
-                ready_tx,
                 &state,
             );
-            if let Err(e) = result {
-                eprintln!("event=outputd.chip_ref.failed detail={e:#}");
-            }
         })
         .context("spawning outputd chip-ref writer")?;
-    match ready_rx.recv_timeout(Duration::from_secs(5)) {
-        Ok(Ok(())) => Ok(tx),
-        Ok(Err(detail)) => anyhow::bail!("outputd chip-ref writer failed to start: {detail}"),
-        Err(_) => anyhow::bail!("outputd chip-ref writer did not report readiness"),
-    }
+    Ok(tx)
 }
 
 fn run_chip_ref_writer(
     config: ChipRefWriterConfig<'_>,
     rx: &Receiver<ChipRefPacket>,
     shutdown: &AtomicBool,
-    ready_tx: SyncSender<Result<(), String>>,
     state: &OutputdState,
-) -> Result<()> {
+) {
+    run_chip_ref_writer_with(
+        config,
+        rx,
+        shutdown,
+        state,
+        CHIP_REF_WORKER_TIMING,
+        open_chip_ref_pcm,
+        write_playback_period,
+    );
+}
+
+fn run_chip_ref_writer_with<P, Open, WritePeriod>(
+    config: ChipRefWriterConfig<'_>,
+    rx: &Receiver<ChipRefPacket>,
+    shutdown: &AtomicBool,
+    state: &OutputdState,
+    timing: ChipRefWorkerTiming,
+    mut open_pcm: Open,
+    mut write_period: WritePeriod,
+) where
+    Open: FnMut(&ChipRefWriterConfig<'_>, &OutputdState) -> Result<P>,
+    WritePeriod: FnMut(&P, &str, &[i16], &mut PlaybackWriteReport) -> Result<()>,
+{
     let mut tee = open_chip_ref_tee(config.tee_path, state);
-    let startup = (|| -> Result<PCM> {
-        let (pcm, negotiated) = open_playback_pcm(
-            "chip_ref",
-            config.pcm_name,
-            config.sample_rate,
-            config.period_frames,
-            config.buffer_frames,
-        )?;
-        eprintln!(
-            "event=outputd.chip_ref.opened pcm={} sample_rate={} period_frames={} buffer_frames={}",
-            config.pcm_name,
-            negotiated.sample_rate,
-            negotiated.period_frames,
-            negotiated.buffer_frames
-        );
-        let zero = vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)];
-        let mut report = PlaybackWriteReport::default();
-        let result = write_playback_period(&pcm, config.pcm_name, &zero, &mut report);
-        state.mark_chip_ref_write(ChipRefWrite {
-            frames_written: report.frames_written,
-            delay_frames: report.delay_frames,
-            underruns: report.underruns,
-            xruns: report.xruns,
-            recoveries: report.recoveries,
-            write_failed: result.is_err(),
-            ..ChipRefWrite::default()
-        });
-        result?;
-        if pcm.state() != State::Running {
-            pcm.start().context("starting outputd chip-ref PCM")?;
-        }
-        Ok(pcm)
-    })();
-    let pcm = match startup {
-        Ok(pcm) => {
-            let _ = ready_tx.send(Ok(()));
-            pcm
-        }
-        Err(e) => {
-            let detail = format!("{e:#}");
-            let _ = ready_tx.send(Err(detail));
-            return Err(e);
-        }
-    };
+    let mut pcm: Option<P> = None;
+    let mut retry_delay = timing.retry_initial;
+    let mut retry_at = Instant::now();
+    let mut degraded_logged = false;
+
     while !shutdown.load(Ordering::Relaxed) {
-        match rx.recv_timeout(Duration::from_millis(500)) {
+        if pcm.is_none() && Instant::now() >= retry_at {
+            if degraded_logged {
+                state.mark_chip_ref_retry();
+            }
+            match open_pcm(&config, state) {
+                Ok(opened) => {
+                    state.mark_chip_ref_writer_active(true);
+                    eprintln!(
+                        "event=outputd.chip_ref.active pcm={} recovery={}",
+                        config.pcm_name,
+                        if degraded_logged { 1 } else { 0 },
+                    );
+                    pcm = Some(opened);
+                    retry_delay = timing.retry_initial;
+                    degraded_logged = false;
+                }
+                Err(e) => {
+                    state.mark_chip_ref_open_error();
+                    if !degraded_logged {
+                        eprintln!(
+                            "event=outputd.chip_ref.unavailable action=retry_background pcm={} retry_ms={} detail={e:#}",
+                            config.pcm_name,
+                            retry_delay.as_millis(),
+                        );
+                        degraded_logged = true;
+                    }
+                    retry_at = Instant::now() + retry_delay;
+                    retry_delay = next_chip_ref_retry_delay(retry_delay, timing.retry_max);
+                }
+            }
+        }
+
+        match rx.recv_timeout(timing.poll) {
             Ok(packet) => {
                 let frames = (packet.samples.len() / (CHANNELS as usize)) as u64;
                 state.mark_chip_ref_dequeued(frames);
                 write_chip_ref_tee(&mut tee, &packet.samples, state);
-                let mut report = PlaybackWriteReport::default();
-                let result =
-                    write_playback_period(&pcm, config.pcm_name, &packet.samples, &mut report);
-                state.mark_chip_ref_write(ChipRefWrite {
-                    frames_written: report.frames_written,
-                    delay_frames: report.delay_frames,
-                    reference_sequence: Some(packet.reference_sequence),
-                    underruns: report.underruns,
-                    xruns: report.xruns,
-                    recoveries: report.recoveries,
-                    write_failed: result.is_err(),
-                });
-                if let Err(e) = result {
-                    eprintln!("event=outputd.chip_ref.write_failed detail={e:#}");
+                if let Some(opened) = pcm.as_ref() {
+                    let mut report = PlaybackWriteReport::default();
+                    let result =
+                        write_period(opened, config.pcm_name, &packet.samples, &mut report);
+                    state.mark_chip_ref_write(ChipRefWrite {
+                        frames_written: report.frames_written,
+                        delay_frames: report.delay_frames,
+                        reference_sequence: Some(packet.reference_sequence),
+                        underruns: report.underruns,
+                        xruns: report.xruns,
+                        recoveries: report.recoveries,
+                        write_failed: result.is_err(),
+                    });
+                    if let Err(e) = result {
+                        state.mark_chip_ref_writer_active(false);
+                        eprintln!(
+                            "event=outputd.chip_ref.unavailable action=retry_background reason=write_failed pcm={} detail={e:#}",
+                            config.pcm_name,
+                        );
+                        pcm = None;
+                        retry_delay = timing.retry_initial;
+                        retry_at = Instant::now() + retry_delay;
+                        degraded_logged = true;
+                    }
+                } else {
+                    state.mark_chip_ref_dropped_unavailable();
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    Ok(())
+    state.mark_chip_ref_writer_active(false);
+}
+
+fn open_chip_ref_pcm(config: &ChipRefWriterConfig<'_>, state: &OutputdState) -> Result<PCM> {
+    let (pcm, negotiated) = open_playback_pcm(
+        "chip_ref",
+        config.pcm_name,
+        config.sample_rate,
+        config.period_frames,
+        config.buffer_frames,
+    )?;
+    eprintln!(
+        "event=outputd.chip_ref.opened pcm={} sample_rate={} period_frames={} buffer_frames={}",
+        config.pcm_name, negotiated.sample_rate, negotiated.period_frames, negotiated.buffer_frames
+    );
+    let zero = vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)];
+    let mut report = PlaybackWriteReport::default();
+    let result = write_playback_period(&pcm, config.pcm_name, &zero, &mut report);
+    state.mark_chip_ref_write(ChipRefWrite {
+        frames_written: report.frames_written,
+        delay_frames: report.delay_frames,
+        underruns: report.underruns,
+        xruns: report.xruns,
+        recoveries: report.recoveries,
+        write_failed: result.is_err(),
+        ..ChipRefWrite::default()
+    });
+    result?;
+    if pcm.state() != State::Running {
+        pcm.start().context("starting outputd chip-ref PCM")?;
+    }
+    Ok(pcm)
+}
+
+fn next_chip_ref_retry_delay(current: Duration, maximum: Duration) -> Duration {
+    current.saturating_mul(2).min(maximum)
 }
 
 #[derive(Debug, Default)]
@@ -1292,7 +1419,9 @@ fn _period_samples(period_frames: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jasper_outputd::config::ContentBridgeConfig;
     use std::os::fd::FromRawFd;
+    use std::sync::atomic::AtomicUsize;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1321,6 +1450,145 @@ mod tests {
         let err = ChipRefDownsampler::new(48_000, 22_050).unwrap_err();
 
         assert!(err.to_string().contains("must divide"));
+    }
+
+    #[test]
+    fn chip_ref_retry_backoff_is_bounded() {
+        assert_eq!(
+            next_chip_ref_retry_delay(Duration::from_secs(1), CHIP_REF_RETRY_MAX),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            next_chip_ref_retry_delay(Duration::from_secs(16), CHIP_REF_RETRY_MAX),
+            CHIP_REF_RETRY_MAX
+        );
+        assert_eq!(
+            next_chip_ref_retry_delay(CHIP_REF_RETRY_MAX, CHIP_REF_RETRY_MAX),
+            CHIP_REF_RETRY_MAX
+        );
+    }
+
+    fn chip_ref_test_config() -> Config {
+        Config {
+            backend: BackendMode::Alsa,
+            sink_mode: SinkMode::SingleAlsa,
+            content_pcm: "outputd_content_capture".to_string(),
+            content_channels: 2,
+            dac_pcm: "outputd_dac".to_string(),
+            dual_dac_a_pcm: None,
+            dual_dac_b_pcm: None,
+            dual_require_link: false,
+            dual_max_delay_delta_frames: 2,
+            sample_rate: 48_000,
+            period_frames: 128,
+            content_buffer_frames: 512,
+            dac_buffer_frames: 256,
+            content_bridge_mode: ContentBridgeMode::Direct,
+            content_bridge: ContentBridgeConfig {
+                ring_frames: 16_384,
+                target_fill_frames: 4096,
+                max_adjust_ppm: 500,
+            },
+            shm_ring: None,
+            local_content_pipe: None,
+            local_content_pipe_bytes: 8192,
+            chip_ref_pcm: Some("test-unavailable-chip-ref".to_string()),
+            chip_ref_sample_rate: 16_000,
+            chip_ref_period_frames: 320,
+            chip_ref_buffer_frames: 1280,
+            chip_ref_observe: false,
+            chip_ref_tee_path: None,
+            reference_udp_target: None,
+            stream_id: 1,
+            control_socket_path: None,
+            dac_content_fifo: None,
+            dac_content_channel: jasper_outputd::dac_content::ChannelPick::Stereo,
+            dac_content_highpass_hz: None,
+            dac_content_trim_db: 0.0,
+            tts_socket_path: None,
+            tts_max_pending_frames: jasper_outputd::tts::DEFAULT_MAX_PENDING_FRAMES,
+            tts_program_duck_db: -25.0,
+            active_lane: false,
+        }
+    }
+
+    #[test]
+    fn chip_ref_worker_degrades_then_recovers_without_exiting() {
+        let config = chip_ref_test_config();
+        let state = Arc::new(OutputdState::new(&config));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::sync_channel(4);
+
+        let worker_state = Arc::clone(&state);
+        let worker_shutdown = Arc::clone(&shutdown);
+        let worker_attempts = Arc::clone(&attempts);
+        let worker_writes = Arc::clone(&writes);
+        let handle = thread::spawn(move || {
+            run_chip_ref_writer_with(
+                ChipRefWriterConfig {
+                    pcm_name: "test-unavailable-chip-ref",
+                    sample_rate: 16_000,
+                    period_frames: 320,
+                    buffer_frames: 1280,
+                    tee_path: None,
+                },
+                &rx,
+                &worker_shutdown,
+                &worker_state,
+                ChipRefWorkerTiming {
+                    retry_initial: Duration::from_millis(5),
+                    retry_max: Duration::from_millis(10),
+                    poll: Duration::from_millis(1),
+                },
+                move |_, _| {
+                    if worker_attempts.fetch_add(1, Ordering::Relaxed) == 0 {
+                        anyhow::bail!("synthetic missing chip-reference device");
+                    }
+                    Ok(())
+                },
+                move |_, _, samples, report| {
+                    report.frames_written = (samples.len() / CHANNELS as usize) as u64;
+                    worker_writes.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                },
+            );
+        });
+
+        tx.send(ChipRefPacket {
+            samples: vec![0; 640],
+            reference_sequence: 1,
+        })
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while attempts.load(Ordering::Relaxed) < 2 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(attempts.load(Ordering::Relaxed) >= 2);
+
+        tx.send(ChipRefPacket {
+            samples: vec![0; 640],
+            reference_sequence: 2,
+        })
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while writes.load(Ordering::Relaxed) < 1 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(writes.load(Ordering::Relaxed) >= 1);
+
+        let snapshot = state.snapshot_json();
+        assert!(snapshot.contains(r#""status":"active""#), "{snapshot}");
+        assert!(snapshot.contains(r#""retry_count":1"#), "{snapshot}");
+        assert!(
+            snapshot.contains(r#""dropped_periods_while_unavailable":1"#),
+            "{snapshot}"
+        );
+
+        shutdown.store(true, Ordering::Relaxed);
+        drop(tx);
+        handle.join().unwrap();
     }
 
     #[test]

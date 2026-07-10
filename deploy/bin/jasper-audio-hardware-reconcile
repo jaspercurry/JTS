@@ -28,6 +28,10 @@ if [[ -x /opt/jasper/.venv/bin/python ]]; then
     DEFAULT_OUTPUT_HARDWARE_PYTHON="/opt/jasper/.venv/bin/python"
 fi
 OUTPUT_HARDWARE_PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_OUTPUT_HARDWARE_PYTHON}"
+DEFAULT_OUTPUTD_PLAYBACK_DEVICE="outputd_content_playback"
+ACTIVE_OUTPUTD_PLAYBACK_DEVICE="outputd_active_content_playback"
+DEFAULT_OUTPUTD_CAPTURE_DEVICE=""
+ACTIVE_OUTPUTD_CAPTURE_DEVICE=""
 OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper-output-hardware/output_hardware.json}"
 OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topology.json}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
@@ -322,13 +326,22 @@ validate_outputd_env_stage() {
         "$OUTPUT_HARDWARE_PYTHON" -m jasper.cli.audio_config \
             validate-outputd-env \
             --base-env "$ENV_FILE" \
-            --outputd-env "$OUTPUTD_ENV_STAGE_FILE" 2>&1
+            --outputd-env "$OUTPUTD_ENV_STAGE_FILE" \
+            --fanin-env "$FANIN_ENV_FILE" \
+            --camilla-statefile "$CAMILLA_STATEFILE" \
+            --camilla2-statefile "$CAMILLA2_STATEFILE" \
+            --output-topology "$OUTPUT_TOPOLOGY_PATH" 2>&1
     )"; then
         return 0
     fi
     log_event "outputd_env_invalid" \
         "outputd_env=${OUTPUTD_ENV_FILE} preserved=1 detail=$(jasper_asound_log_token "$detail")"
     return 1
+}
+
+resolve_outputd_capture_device() {
+    "$OUTPUT_HARDWARE_PYTHON" -m jasper.cli.audio_config \
+        outputd-capture-device --playback-device "$1"
 }
 
 commit_outputd_env_stage() {
@@ -876,7 +889,7 @@ apply_audio_runtime_env() {
         OUTPUTD_ACTIVE_CHANNELS=""
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_BACKEND" "alsa" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_SINK" "dual_apple" && changed=1
-        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_active_content_capture" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "$ACTIVE_OUTPUTD_CAPTURE_DEVICE" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_PCM" "dual_apple_usb_c_dac_4ch" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "$DUAL_APPLE_DAC_A_PCM" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "$DUAL_APPLE_DAC_B_PCM" && changed=1
@@ -919,7 +932,7 @@ apply_audio_runtime_env() {
         if [[ "$active_mode" == "1" ]]; then
             OUTPUTD_ACTIVE_MODE=1
             OUTPUTD_ACTIVE_CHANNELS="$active_channels"
-            set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_active_content_capture" && changed=1
+            set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "$ACTIVE_OUTPUTD_CAPTURE_DEVICE" && changed=1
             set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "$active_channels" && changed=1
             # Belt-and-suspenders for the latent outputd-TTS-mixer hazard: an
             # active 2-way speaker is ALSO 2-channel, so outputd's bare
@@ -933,7 +946,7 @@ apply_audio_runtime_env() {
         else
             OUTPUTD_ACTIVE_MODE=0
             OUTPUTD_ACTIVE_CHANNELS=""
-            set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_content_capture" && changed=1
+            set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "$DEFAULT_OUTPUTD_CAPTURE_DEVICE" && changed=1
             # Clear the width knob so outputd defaults to stereo; a stale active
             # width would otherwise mis-size the (stereo) content lane.
             set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
@@ -949,7 +962,7 @@ apply_audio_runtime_env() {
         OUTPUTD_ACTIVE_CHANNELS=""
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_BACKEND" "fake" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_SINK" "single_alsa" && changed=1
-        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_content_capture" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "$DEFAULT_OUTPUTD_CAPTURE_DEVICE" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_PCM" "outputd_dac" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "" && changed=1
@@ -973,6 +986,21 @@ if [[ "$PRINT_ENV" == "1" ]]; then
 fi
 observe_output_hardware_state 1
 apply_observed_composite_policy
+
+if ! DEFAULT_OUTPUTD_CAPTURE_DEVICE="$(
+    resolve_outputd_capture_device "$DEFAULT_OUTPUTD_PLAYBACK_DEVICE"
+)" || [[ -z "$DEFAULT_OUTPUTD_CAPTURE_DEVICE" ]]; then
+    log_event "outputd_endpoint_contract_failed" \
+        "playback_device=${DEFAULT_OUTPUTD_PLAYBACK_DEVICE} action=preserve_runtime_env"
+    exit 66
+fi
+if ! ACTIVE_OUTPUTD_CAPTURE_DEVICE="$(
+    resolve_outputd_capture_device "$ACTIVE_OUTPUTD_PLAYBACK_DEVICE"
+)" || [[ -z "$ACTIVE_OUTPUTD_CAPTURE_DEVICE" ]]; then
+    log_event "outputd_endpoint_contract_failed" \
+        "playback_device=${ACTIVE_OUTPUTD_PLAYBACK_DEVICE} action=preserve_runtime_env"
+    exit 66
+fi
 
 env_changed=0
 outputd_env_changed=0
