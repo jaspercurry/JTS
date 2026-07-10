@@ -670,6 +670,13 @@ This is the **only** supported deploy path. It does, in order:
    `jasper-usbsink.service` is try-restarted only when the installed
    `jasper-usbsink-audio` binary content actually changed, so USB-in cannot
    keep serving a stale daemon (the 2026-07-02 404-endpoints class).
+   Crate sources are staged into the build caches content-based
+   (`stage_rust_crate`: `--checksum`, no mtime preservation) so cargo's
+   mtime freshness check can't declare a changed crate "Fresh" and
+   reinstall a stale binary (the 2026-07-02 / 2026-07-10 stale-binary
+   incidents); a `RUST_BUILD_CACHE_FORMAT` bump purges each cache's
+   `target/` once, so the first deploy after a bump does one slow full
+   Rust rebuild.
    `SKIP_RESTART=1` is forwarded into install.sh and skips that conditional
    restart. See "Runtime Python lives in /opt/jasper" below and
    [docs/HANDOFF-install-update-transaction.md](docs/HANDOFF-install-update-transaction.md).

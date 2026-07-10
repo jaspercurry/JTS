@@ -141,6 +141,33 @@ the manifest still points at the prior good build, and the operator is
 told what failed (and any collateral). "No worse than before" holds in the
 immediate term; re-deploying converges.
 
+### 6. Rust build-cache staging is content-based, not mtime-preserving
+
+Cargo's freshness check is mtime-based: a unit recompiles only when a
+source file is *newer* than the fingerprint from the last compile. The
+old staging chain preserved mtimes end to end (`rsync -a` laptop →
+checkout → `/var/cache/<name>-build`), so a changed source whose
+checkout mtime predated the cache's last build landed "in the past",
+cargo declared the crate **Fresh**, and the install shipped the stale
+binary while the manifest honestly said `ok` — the box lied at the
+*binary* layer, below both honest-claim layers above. Bit twice on
+hardware: the 2026-07-02 stale `jasper-usbsink-audio` (404ing endpoints)
+and 2026-07-10 stale `jasper-outputd` (a merged journal-spam fix never
+went live; `cargo build -v` in the poisoned cache said `Fresh` in
+0.03 s while the staged source contained the fix — three same-day
+deploys, the first compiled pre-fix source at 17:23, the later two
+staged the fixed source with a preserved 17:14 mtime).
+
+`stage_rust_crate` (`deploy/lib/install/rust-daemons.sh`) now stages
+every crate with `--checksum` and **without** time preservation
+(`-rlpgoD` = `-a` minus `-t`): unchanged files are skipped (mtime kept —
+no spurious rebuilds), changed files land stamped *now* (always newer
+than the last fingerprint). `rust_build_cache_reset_if_stale_format`
+heals already-poisoned caches: on `RUST_BUILD_CACHE_FORMAT` mismatch
+(marker `.jts-build-cache-format` in each cache dir) it clears
+`target/` once, forcing one full rebuild — expect one slow deploy per
+box after this ships. Pinned by `tests/test_rust_build_cache_staging.py`.
+
 ## The broken-vs-idle seam (Workstream C)
 
 `jasper-doctor` already distinguishes a **crash-looped / failed** daemon
@@ -220,6 +247,11 @@ ssh pi@jts.local 'sudo cat /var/lib/jasper/build.txt'
   interactive-sudo skip.
 - `tests/test_lib_deploy_direction.py` — the direction guard that now
   reads an honest manifest (unchanged, still green).
+- `tests/test_rust_build_cache_staging.py` — `stage_rust_crate`
+  content-based staging (changed source lands newer than the last build
+  stamp; unchanged source keeps its mtime), the one-time
+  `RUST_BUILD_CACHE_FORMAT` purge, and the single-rsync script-shape
+  contract.
 
 ## Needs real-hardware confirmation
 
