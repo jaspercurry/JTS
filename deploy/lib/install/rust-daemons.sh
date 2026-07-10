@@ -70,6 +70,56 @@ rust_cargo_build_env() {
         "CARGO_PROFILE_RELEASE_OPT_LEVEL=0"
 }
 
+# Build-cache staging format. Bump when the staging/freshness contract
+# changes in a way that requires discarding cargo's incremental state
+# once (rust_build_cache_reset_if_stale_format below clears target/ on
+# mismatch). Format 1 = the 2026-07-10 mtime-trap fix: caches populated
+# by mtime-preserving rsync can hold fingerprints NEWER than current
+# source mtimes, which cargo reads as "Fresh" forever — the purge is the
+# only way an already-poisoned cache ever recompiles.
+RUST_BUILD_CACHE_FORMAT=1
+
+# Stage a crate's source into a build/staging dir without poisoning
+# cargo's freshness check. Cargo rebuilds a unit only when a source file
+# is NEWER than the fingerprint stamped at the last compile, and rsync's
+# -a preserves mtimes end to end (laptop -> checkout -> cache). A changed
+# file whose checkout mtime predates the cache's last build therefore
+# lands "in the past", cargo declares the crate Fresh, and install.sh
+# ships the stale binary while reporting success (the 2026-07-02
+# jasper-usbsink-audio and 2026-07-10 jasper-outputd incidents — proven
+# live: cache source carried a fix, `cargo build -v` said Fresh in
+# 0.03s). So: compare by content (--checksum) and do NOT preserve times
+# (-rlpgoD is -a minus -t) — an unchanged file is skipped and keeps its
+# old mtime (no spurious rebuild), a changed file is written with the
+# current time and is always newer than the last fingerprint.
+stage_rust_crate() {
+    local from="$1"
+    local to="$2"
+    rsync -rlpgoD --checksum --delete \
+        --exclude='target/' \
+        --exclude='/.jts-build-cache-format' \
+        "${from}/" "${to}/"
+}
+
+# One-time incremental-state reset when the staging contract changes.
+# stage_rust_crate keeps future syncs honest, but a cache whose
+# fingerprints already postdate its (correct) source mtimes stays
+# false-Fresh forever — only dropping target/ forces the recompile.
+rust_build_cache_reset_if_stale_format() {
+    local cache_dir="$1"
+    local name="$2"
+    local marker="${cache_dir}/.jts-build-cache-format"
+    local have=""
+    if [[ -f "${marker}" ]]; then
+        have="$(<"${marker}")"
+    fi
+    if [[ "${have}" != "${RUST_BUILD_CACHE_FORMAT}" ]]; then
+        echo "  ${name}: build-cache format '${have:-none}' != '${RUST_BUILD_CACHE_FORMAT}'; clearing ${cache_dir}/target (one-time full rebuild)"
+        rm -rf "${cache_dir}/target"
+        printf '%s\n' "${RUST_BUILD_CACHE_FORMAT}" >"${marker}"
+    fi
+}
+
 build_install_rust_daemon() {
     local name="$1"
     local required="$2"
@@ -104,28 +154,23 @@ build_install_rust_daemon() {
     echo "  building ${name} (Rust daemon)..."
     mkdir -p "${cache_dir}"
     chown "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
+    rust_build_cache_reset_if_stale_format "${cache_dir}" "${name}"
 
-    # rsync the source tree into the cache dir, preserving cargo's
+    # Stage the source tree into the cache dir, keeping cargo's
     # incremental compile state in target/ between runs. --delete
     # removes stale source files (e.g., a renamed module).
-    rsync -a --delete \
-        --exclude='target/' \
-        "${src_dir}/" "${cache_dir}/"
+    stage_rust_crate "${src_dir}" "${cache_dir}"
     # Stage the shared wire-protocol crate as a sibling of the cache dir
     # so `path = "../jasper-tts-protocol"` resolves like the repo layout.
-    rsync -a --delete \
-        --exclude='target/' \
-        "${REPO_DIR}/rust/jasper-tts-protocol/" \
-        "$(dirname "${cache_dir}")/jasper-tts-protocol/"
+    stage_rust_crate "${REPO_DIR}/rust/jasper-tts-protocol" \
+        "$(dirname "${cache_dir}")/jasper-tts-protocol"
     chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-tts-protocol"
     # Same for the shared clock crate (jasper-clock) so jasper-outputd's
     # `path = "../jasper-clock"` resolves. Guarded by existence so a branch
     # predating the crate still builds (its daemons don't depend on it).
     if [[ -d "${REPO_DIR}/rust/jasper-clock" ]]; then
-        rsync -a --delete \
-            --exclude='target/' \
-            "${REPO_DIR}/rust/jasper-clock/" \
-            "$(dirname "${cache_dir}")/jasper-clock/"
+        stage_rust_crate "${REPO_DIR}/rust/jasper-clock" \
+            "$(dirname "${cache_dir}")/jasper-clock"
         chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-clock"
     fi
     # Same for the shared resampler crate (jasper-resampler) so the
@@ -136,20 +181,16 @@ build_install_rust_daemon() {
     # transitive dep. Guarded by existence so a branch predating the crate still
     # builds.
     if [[ -d "${REPO_DIR}/rust/jasper-resampler" ]]; then
-        rsync -a --delete \
-            --exclude='target/' \
-            "${REPO_DIR}/rust/jasper-resampler/" \
-            "$(dirname "${cache_dir}")/jasper-resampler/"
+        stage_rust_crate "${REPO_DIR}/rust/jasper-resampler" \
+            "$(dirname "${cache_dir}")/jasper-resampler"
         chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-resampler"
     fi
     # Same for the shared SHM ring crate (jasper-ring) so jasper-fanin's
     # `path = "../jasper-ring"` dep (the default-off SHM ring writer) resolves.
     # Guarded by existence so a branch predating the crate still builds.
     if [[ -d "${REPO_DIR}/rust/jasper-ring" ]]; then
-        rsync -a --delete \
-            --exclude='target/' \
-            "${REPO_DIR}/rust/jasper-ring/" \
-            "$(dirname "${cache_dir}")/jasper-ring/"
+        stage_rust_crate "${REPO_DIR}/rust/jasper-ring" \
+            "$(dirname "${cache_dir}")/jasper-ring"
         chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-ring"
     fi
     # Same for the shared host-clock crate (jasper-host-clock) so the
@@ -158,10 +199,8 @@ build_install_rust_daemon() {
     # resolve. Guarded by existence so a branch predating the crate still
     # builds.
     if [[ -d "${REPO_DIR}/rust/jasper-host-clock" ]]; then
-        rsync -a --delete \
-            --exclude='target/' \
-            "${REPO_DIR}/rust/jasper-host-clock/" \
-            "$(dirname "${cache_dir}")/jasper-host-clock/"
+        stage_rust_crate "${REPO_DIR}/rust/jasper-host-clock" \
+            "$(dirname "${cache_dir}")/jasper-host-clock"
         chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-host-clock"
     fi
     chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
