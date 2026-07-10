@@ -1401,11 +1401,17 @@ that ever *sets* it.)
 - `journalctl -u jasper-fanin-combo-health | grep event=fanin.combo_health`.
 
 **Unit hardening (rider).** `jasper-usbsink.service` gained
-`StartLimitIntervalSec=300` / `StartLimitBurst=5` (with **no**
+`StartLimitIntervalSec=300` / `StartLimitBurst=20` (with **no**
 `StartLimitAction=reboot`): a fast ENODEV unplug/replug flap would otherwise
-exhaust systemd's default 5-in-10s and park the bridge `failed` forever. Unlike the
-core graph (jasper-fanin), a failing USB bridge must never reboot the speaker — the
-doctor check surfaces a failed unit instead.
+exhaust systemd's default 5-in-10s and park the bridge `failed` forever. The
+tolerance is raised via burst count, not a stricter interval — a stricter interval
+alone (keeping burst near systemd's default) would still park the unit on a *slow*
+flap (e.g. a cable jiggled every 30-60 s, well inside a 300 s window). With
+`RestartSec=2s`, burst=20 rides through that slow-flap case entirely, while a
+persistently-crashing bridge still burns ~20 bounded attempts (~40 s) before
+parking `failed` rather than restart-looping forever. Unlike the core graph
+(jasper-fanin), a failing USB bridge must never reboot the speaker — the doctor
+check surfaces the parked `failed` unit instead.
 
 ### Watchdog pattern
 

@@ -294,17 +294,26 @@ def test_execstoppost_pitch_reset_gated_on_not_standby():
 def test_start_limit_widened_and_never_reboots():
     """Hardening rider (defect 2026-07-10): Restart=on-failure/RestartSec=2s with
     NO StartLimit* would let a fast ENODEV unplug/replug flap exhaust systemd's
-    default 5-in-10s window and park the unit `failed` forever. Widen the window to
-    300 s / 5 starts, and — unlike the core graph (jasper-fanin) — NEVER
-    StartLimitAction=reboot: a repeatedly-failing USB bridge must not reboot the
-    whole speaker."""
+    default 5-in-10s window and park the unit `failed` forever. The tolerance is
+    RAISED VIA BURST COUNT, not a stricter interval: StartLimitIntervalSec=300 +
+    StartLimitBurst=20 (a stricter interval alone, e.g. keeping burst at systemd's
+    default-adjacent 5, would still park the unit on a slow flap — a cable jiggled
+    every 30-60 s — well inside a 300 s window). With RestartSec=2s, burst=20 rides
+    through that slow-flap case entirely, while a persistently-crashing bridge still
+    burns ~20 bounded attempts (~40 s) before parking `failed` rather than
+    restart-looping forever — the parked state is what jasper-doctor's
+    check_usb_combo_fallback surfaces. And — unlike the core graph (jasper-fanin) —
+    NEVER StartLimitAction=reboot: a repeatedly-failing USB bridge must not reboot
+    the whole speaker."""
     body = UNIT_PATH.read_text()
     assert _value_for(body, "StartLimitIntervalSec") == "300", (
-        "jasper-usbsink.service must widen StartLimitIntervalSec to 300 so an "
-        "unplug/replug flap does not exhaust the default 5-in-10s window."
+        "jasper-usbsink.service must set StartLimitIntervalSec=300 as the window "
+        "over which StartLimitBurst is counted."
     )
-    assert _value_for(body, "StartLimitBurst") == "5", (
-        "jasper-usbsink.service must set StartLimitBurst=5."
+    assert _value_for(body, "StartLimitBurst") == "20", (
+        "jasper-usbsink.service must set StartLimitBurst=20 — tolerance is raised "
+        "via burst count (rides out a slow replug flap) rather than a stricter "
+        "interval, which would still park the unit on a slow flap."
     )
     # The load-bearing safety invariant: a bridge failure must never reboot the box.
     for line in body.splitlines():

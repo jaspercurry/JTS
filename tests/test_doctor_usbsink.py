@@ -11,12 +11,16 @@ and reads. Pi-side smoke testing happens via jasper-doctor itself.
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from jasper import audio_runtime_plan
 from jasper.cli import doctor
+from jasper.fanin import combo_health as _ch
+from jasper.fanin import coupling_auto as _ca
+from jasper.fanin import coupling_reconcile as _cr
 
 
 # ----------------------------------------------------------------------
@@ -1301,12 +1305,6 @@ def test_unit_main_start_epoch_none_when_never_started(monkeypatch):
 # ----------------------------------------------------------------------
 # check_usb_combo_fallback (defect 2026-07-10)
 # ----------------------------------------------------------------------
-
-import subprocess  # noqa: E402
-
-from jasper.fanin import combo_health as _ch  # noqa: E402
-from jasper.fanin import coupling_auto as _ca  # noqa: E402
-from jasper.fanin import coupling_reconcile as _cr  # noqa: E402
 
 
 def _setup_combo(monkeypatch, tmp_path, *, failed=False, marker=None,

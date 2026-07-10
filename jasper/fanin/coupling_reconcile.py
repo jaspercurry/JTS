@@ -82,6 +82,10 @@ from jasper.atomic_io import atomic_write_text
 from jasper.audio_runtime_plan import RouteMode, RuntimeEnvAction, fanin_coupling_action
 from jasper.camilla_config_contract import DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT
 from jasper.env_file import read_value, remove, upsert
+from jasper.fanin.combo_health import (
+    FALLBACK_MARKER_PATH as COMBO_HEALTH_FALLBACK_MARKER_PATH,
+    TICK_STATE_PATH as COMBO_HEALTH_TICK_STATE_PATH,
+)
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
@@ -112,10 +116,6 @@ USBSINK_ENV_PATH = "/var/lib/jasper/usbsink.env"
 # Runtime-fallback watcher state (defect 2026-07-10). Re-exported from the pure
 # policy module (its SSOT) so the reconciler's --health verb and the CLI share the
 # exact paths without a second literal.
-from jasper.fanin.combo_health import (  # noqa: E402
-    FALLBACK_MARKER_PATH as COMBO_HEALTH_FALLBACK_MARKER_PATH,
-    TICK_STATE_PATH as COMBO_HEALTH_TICK_STATE_PATH,
-)
 FANIN_UNIT = "jasper-fanin.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 USBSINK_UNIT = "jasper-usbsink.service"

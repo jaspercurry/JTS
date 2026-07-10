@@ -28,14 +28,17 @@ PartOf=jasper-usbgadget.service
 # Restart rate limit (defect 2026-07-10). Restart=on-failure/RestartSec=2s below
 # would, on a fast ENODEV unplug/replug flap of the UAC2 gadget, exhaust systemd's
 # DEFAULT StartLimit (5-in-10s) and park the unit `failed` forever — USB audio then
-# stays dead until a manual restart even after the hardware settles. Widen the
-# window to 300 s / 5 starts so an ordinary flap rides through and the unit keeps
-# trying. Deliberately NO StartLimitAction=reboot: unlike jasper-fanin (the core
+# stays dead until a manual restart even after the hardware settles. Raise the
+# TOLERANCE via burst count, not a stricter interval: 300 s / 20 starts. With
+# RestartSec=2s that rides through a slow flap (e.g. a cable jiggled every
+# 30-60 s) entirely, while a persistently-crashing bridge still burns through
+# ~20 bounded attempts (~40 s) before parking `failed` rather than restart-looping
+# forever. Deliberately NO StartLimitAction=reboot: unlike jasper-fanin (the core
 # graph), a repeatedly-failing USB bridge must NEVER reboot the whole speaker — the
 # default action (none) just leaves it failed, and jasper-doctor's
 # check_usb_combo_fallback flags a failed unit so it is loud, not silent.
 StartLimitIntervalSec=300
-StartLimitBurst=5
+StartLimitBurst=20
 
 [Service]
 # Tier 1 + 2 of the resilience ladder (see docs/HANDOFF-resilience.md).
