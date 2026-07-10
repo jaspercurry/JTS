@@ -682,6 +682,13 @@ install_streambox_systemd_units() {
 }
 
 install_systemd_units() {
+    # The table-backed installer is the single source of truth for units and
+    # helpers shared by full-speaker and streambox profiles. Run it first so a
+    # newly added row is present (and daemon-reloaded) before any enable/start
+    # action below. Some older full-profile installs remain duplicated later in
+    # this function while they are migrated; those idempotent copies must not be
+    # relied on for completeness.
+    install_local_audio_graph_unit_files
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \
         "${SYSTEMD_DIR}/jasper-camilla.service"

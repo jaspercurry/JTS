@@ -37,6 +37,7 @@ EXPECTED_DSTS = (
     "jasper-outputd.service",
     "jasper-control.service",
     "jasper-doctor-json.service",
+    "jasper-xvf-firmware-update.service",
     "jasper-audio-hardware-reconcile.service",
     "jasper-audio-hardware-reconcile",
     "jasper-output-hardware-hotplug",
@@ -44,6 +45,7 @@ EXPECTED_DSTS = (
     "jasper-camilla-pipe-guard",
     "jasper-camilla-recover",
     "jasper-camilla-crossover-guard",
+    "jasper-fanin-pitch-neutralize",
 )
 
 
@@ -108,6 +110,23 @@ def test_all_units_installed_on_clean_run(tmp_path):
         assert dst in attempted, f"{dst} was not installed"
     # daemon-reload ran.
     assert (tmp_path / "reload.log").exists()
+
+
+def test_full_install_uses_transactional_core_graph_installer():
+    """The full profile must consume the same table as streambox installs.
+
+    Otherwise a row can pass the table's unit tests yet never land on the
+    production speaker path, which is how the combo-health timer was enabled
+    before its unit file existed.
+    """
+    source = FRAGMENT.read_text()
+    function_tail = source.split("install_systemd_units() {", 1)[1]
+    first_command = next(
+        line.strip()
+        for line in function_tail.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+    assert first_command == "install_local_audio_graph_unit_files"
 
 
 def test_midloop_failure_still_attempts_every_later_unit(tmp_path):
