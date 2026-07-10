@@ -235,9 +235,14 @@ deltas and decide.
 > (`dtoverlay=dwc2,dr_mode=peripheral` present — the always-on USB network adds it
 > fleet-wide, so this alone is NOT the gate) AND (b) has USB Audio Input turned ON
 > by the household (`jasper-usbsink.service` enabled — the same intent the
-> `/sources/` wizard toggles). The boot/deploy reconciler pass
-> `jasper-fanin-coupling-reconcile --auto` is the SINGLE writer of BOTH combo
-> halves: it writes the three fan-in keys (`JASPER_FANIN_USB_DIRECT` +
+> `/sources/` wizard toggles). The reconciler pass
+> `jasper-fanin-coupling-reconcile --auto` (run by
+> `jasper-fanin-coupling-auto.service` at boot + deploy, **and kicked live by the
+> `/sources/` USB toggle** so a fresh enable arms the combo this session instead
+> of only after the next reboot — the `/sources/` handler starts the reconciler
+> through the restart broker's `START_ONLY_UNITS` grant, and on a failed kick the
+> wizard row shows a "takes effect after reboot" notice) is the SINGLE writer of
+> BOTH combo halves: it writes the three fan-in keys (`JASPER_FANIN_USB_DIRECT` +
 > `JASPER_FANIN_HOST_CLOCK` + `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` = `enabled`)
 > into `/var/lib/jasper/fanin.env` AND `JASPER_USBSINK_AUDIO_STANDBY=1` into
 > `/var/lib/jasper/usbsink.env`, then restarts jasper-usbsink so the bridge stands

@@ -142,6 +142,13 @@ MANAGED_UNITS = frozenset({
 # just enough for graph transitions to request a bounded reconciliation pass.
 START_ONLY_UNITS = frozenset({
     "jasper-audio-hardware-reconcile.service",
+    # Root oneshot that resolves the fan-in coupling + USB low-latency combo
+    # (jasper.fanin.coupling_auto). Normally runs at boot/deploy, but the
+    # /sources/ USB-audio toggle (jasper-web, non-root) starts it right after
+    # an enable/disable so the combo arms/disarms immediately instead of only
+    # at the next reboot. Start-only: jasper-web may kick a reconcile pass, not
+    # stop/restart the reconciler (mirrors jasper-wifi-scan-repair).
+    "jasper-fanin-coupling-auto.service",
     "jasper-wifi-scan-repair.service",
     "jasper-xvf-firmware-update.service",
 })

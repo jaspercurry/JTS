@@ -75,6 +75,7 @@ polkit.addRule(function(action, subject) {
 
     var START_ONLY_UNITS = [
         "jasper-audio-hardware-reconcile.service",
+        "jasper-fanin-coupling-auto.service",
         "jasper-wifi-scan-repair.service",
         "jasper-xvf-firmware-update.service"
     ];

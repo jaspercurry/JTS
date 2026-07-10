@@ -261,12 +261,14 @@ def test_apply_routes_each_source(monkeypatch):
 
     assert (mod.AIRPLAY_UNIT, True) in units
     assert (mod.SPOTIFY_CONNECT_UNIT, False) in units
-    # USB enable is the three-step ordering (enable intent, recompose the gadget
-    # so the uac2 card appears, then start the bridge) — all through the broker.
+    # USB enable is the four-step ordering (enable intent, recompose the gadget
+    # so the uac2 card appears, start the bridge, then kick the coupling
+    # reconcile to arm the combo) — all through the broker.
     assert managed == [
         ((mod.USBSINK_UNIT,), "enable"),
         ((mod.USBSINK_GADGET_UNIT,), "restart"),
         ((mod.USBSINK_UNIT,), "start"),
+        ((mod.COUPLING_AUTO_UNIT,), "start"),
     ]
     assert bt_calls == [False]
 
@@ -449,6 +451,38 @@ def test_post_set_with_csrf_dispatches_and_reads_back(stub_backends, monkeypatch
         "pair", "airplay", "bluetooth", "spotify_connect", "usbsink",
     }
     assert payload["pair"] == {"parked": False}
+
+
+def test_post_set_surfaces_apply_notice_on_usbsink_row(stub_backends, monkeypatch):
+    # When _apply returns a notice (the USB combo could not be armed live), the
+    # /set read-back must carry it as usbsink.degradedReason so the UI is honest
+    # rather than reporting a clean success (no silent failure).
+    stub_backends(active=set(), usb_ready=True, bt=(True, False, False))
+    monkeypatch.setattr(
+        mod, "_apply", lambda source, enabled: mod._USBSINK_COMBO_REBOOT_NOTICE
+    )
+    h = _drive(
+        "POST", "/set",
+        body=json.dumps({"source": "usbsink", "enabled": True}).encode(),
+        csrf_cookie=CSRF, csrf_header=CSRF,
+    )
+    assert h.status == 200
+    payload = _body_json(h)
+    assert payload["usbsink"]["degradedReason"] == mod._USBSINK_COMBO_REBOOT_NOTICE
+
+
+def test_post_set_no_notice_leaves_usbsink_row_clean(stub_backends, monkeypatch):
+    # The common path (_apply returns None) must not inject a degradedReason.
+    stub_backends(active=set(), usb_ready=True, bt=(True, False, False))
+    monkeypatch.setattr(mod, "_apply", lambda source, enabled: None)
+    h = _drive(
+        "POST", "/set",
+        body=json.dumps({"source": "usbsink", "enabled": True}).encode(),
+        csrf_cookie=CSRF, csrf_header=CSRF,
+    )
+    assert h.status == 200
+    payload = _body_json(h)
+    assert "degradedReason" not in payload["usbsink"]
 
 
 def test_post_set_unknown_source_400(stub_backends, monkeypatch):

@@ -237,9 +237,11 @@ def test_gather_state_usbsink_unavailable_when_gadget_unit_missing(monkeypatch):
 
 
 def test_apply_usbsink_enable_recomposes_gadget_between_enable_and_start(monkeypatch):
-    # Enable is a three-step ordering: enable the bridge intent (do NOT start
+    # Enable is a four-step ordering: enable the bridge intent (do NOT start
     # yet), recompose the gadget so it adds the uac2 function (card appears),
-    # then start the bridge (its wait-card now passes). All through the broker.
+    # start the bridge (its wait-card now passes), then kick the fan-in coupling
+    # reconcile so the USB low-latency combo arms this session (not only at the
+    # next boot/deploy). All through the broker.
     calls = []
     monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
     monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
@@ -248,12 +250,70 @@ def test_apply_usbsink_enable_recomposes_gadget_between_enable_and_start(monkeyp
         sources_setup, "manage_units",
         lambda *units, **kw: calls.append((units, kw.get("verb"))) or {"ok": True},
     )
-    sources_setup._apply("usbsink", True)
+    notice = sources_setup._apply("usbsink", True)
+    assert notice is None  # kick succeeded → no reboot notice
     assert calls == [
         ((sources_setup.USBSINK_UNIT,), "enable"),
         ((sources_setup.USBSINK_GADGET_UNIT,), "restart"),
         ((sources_setup.USBSINK_UNIT,), "start"),
+        ((sources_setup.COUPLING_AUTO_UNIT,), "start"),
     ]
+
+
+def test_apply_usbsink_enable_kicks_coupling_reconcile_start_only(monkeypatch):
+    # The combo-arm kick must be a START (not restart/stop) of the reconciler:
+    # jasper-web may only `start` jasper-fanin-coupling-auto.service via the
+    # broker's START_ONLY_UNITS grant.
+    kicks = []
+    monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
+    monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
+
+    def fake_manage(*units, **kw):
+        if units == (sources_setup.COUPLING_AUTO_UNIT,):
+            kicks.append(kw.get("verb"))
+        return {"ok": True}
+
+    monkeypatch.setattr(sources_setup, "manage_units", fake_manage)
+    sources_setup._apply("usbsink", True)
+    assert kicks == ["start"]
+
+
+def test_apply_usbsink_enable_failed_kick_returns_reboot_notice(monkeypatch):
+    # If the coupling reconcile can't be kicked, the toggle intent still applied
+    # (bridge enabled + gadget recomposed), but the combo did not arm live. The
+    # caller must get a "takes effect after reboot" notice — never silent success.
+    monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
+    monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
+
+    def fake_manage(*units, **kw):
+        if units == (sources_setup.COUPLING_AUTO_UNIT,):
+            return {"ok": False, "error": "restart broker unavailable"}
+        return {"ok": True}
+
+    monkeypatch.setattr(sources_setup, "manage_units", fake_manage)
+    notice = sources_setup._apply("usbsink", True)
+    assert notice == sources_setup._USBSINK_COMBO_REBOOT_NOTICE
+    assert "reboot" in notice
+
+
+def test_apply_usbsink_disable_failed_kick_returns_reboot_notice(monkeypatch):
+    # Disable must also disarm the combo; a failed kick leaves fan-in
+    # direct-capturing a gadget whose audio function was dropped, so the same
+    # honest reboot notice fires.
+    monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
+    monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
+
+    def fake_manage(*units, **kw):
+        if units == (sources_setup.COUPLING_AUTO_UNIT,):
+            return {"ok": False, "error": "boom"}
+        return {"ok": True}
+
+    monkeypatch.setattr(sources_setup, "manage_units", fake_manage)
+    notice = sources_setup._apply("usbsink", False)
+    assert notice == sources_setup._USBSINK_COMBO_REBOOT_NOTICE
 
 
 def test_apply_usbsink_disable_recomposes_gadget_keeping_network(monkeypatch):
@@ -272,6 +332,8 @@ def test_apply_usbsink_disable_recomposes_gadget_keeping_network(monkeypatch):
     sources_setup._apply("usbsink", False)
     assert calls[0] == ((sources_setup.USBSINK_UNIT,), "disable-now")
     assert calls[1] == ((sources_setup.USBSINK_GADGET_UNIT,), "restart")
+    # Then the coupling reconcile is kicked (start-only) to disarm the combo.
+    assert calls[2] == ((sources_setup.COUPLING_AUTO_UNIT,), "start")
     # The gadget is never stopped — that would drop the always-on USB network.
     assert not any(
         c == ((sources_setup.USBSINK_GADGET_UNIT,), "stop") for c in calls

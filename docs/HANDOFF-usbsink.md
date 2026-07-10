@@ -1008,7 +1008,12 @@ via httpx. Add httpx as a dep if not already (it's already used in
 > restarts `jasper-usbgadget.service` so it recomposes with or without
 > `uac2.usb0` — see [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md)
 > "Toggling audio from `/sources/`". The always-on management network is
-> unaffected by this toggle either way.
+> unaffected by this toggle either way. The toggle then also **kicks
+> `jasper-fanin-coupling-auto.service`** (start-only, via the restart broker)
+> so the USB low-latency combo arms/disarms this session rather than only at
+> the next reboot — see
+> [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) "USB DIRECT (combo
+> mode)".
 
 **Modified file**: `jasper/web/sources_setup.py`.
 
