@@ -78,10 +78,19 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 1,
         "supported_capture_protocol_versions": [1],
-        "capture_page_build": "20260710.1",
+        "capture_page_build": "20260710.2",
     }
     assert "main.js?v=20260710-1" in index_html
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
+
+
+def test_capture_page_csp_allows_version_handshake_and_relay():
+    """The compatibility handshake is same-origin; relay traffic is not."""
+    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert 'connect-src \'self\' https://relay.jasper.tech' in index_html
+    assert 'new URL("../version.json", import.meta.url)' in main_js
 
 
 def test_capture_page_completion_renders_return_cta():
