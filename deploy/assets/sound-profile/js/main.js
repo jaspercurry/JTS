@@ -1242,7 +1242,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     });
   }
   function setManualDriverField(role, field, value) {
-    driverSetting(role)[field] = value;
+    var setting = driverSetting(role);
+    setting[field] = value;
+    if (field === 'gain_offset_db') {
+      setting.gain_offset_db_provenance = 'operator_pinned';
+    }
     driverResearch.error = '';
     driverResearch.dirty = true;
   }
@@ -1272,6 +1276,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         var value = manualNumberValue(setting[field]);
         if (value != null) out[field] = value;
       });
+      if (out.gain_offset_db != null) {
+        out.gain_offset_db_provenance =
+          setting.gain_offset_db_provenance || 'operator_pinned';
+      }
       if ((setting.notes || '').trim()) out.notes = String(setting.notes).trim();
       return out;
     }).filter(function(driver) {
@@ -1327,6 +1335,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var setting = driverSetting(role);
       if (manualNumberValue(setting.gain_offset_db) != null) return;  // keep explicit
       setting.gain_offset_db = trims[role];
+      setting.gain_offset_db_provenance = 'sensitivity_estimate';
     });
   }
   function applyDriverResearchToManualSettings(payload) {
@@ -1349,6 +1358,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ].forEach(function(field) {
         if (driver[field] != null) driverSetting(role)[field] = driver[field];
       });
+      if (driver.gain_offset_db != null) {
+        driverSetting(role).gain_offset_db_provenance =
+          driver.gain_offset_db_provenance || 'research_estimate';
+      }
     });
     // Pick ONE crossover per role-pair: the highest-confidence candidate with a
     // usable frequency (ties keep the first listed). The old code applied every
@@ -3063,15 +3076,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return '<div><dt>' + escapeHtml(row.label) + '</dt><dd>' +
         escapeHtml(trim) + ' · ' + escapeHtml(row.sourceLabel) + '</dd></div>';
     }).join('');
-    var badge = summary.provisional ? ' status-pill' : ' status-pill status-pill--ready';
+    var badge = summary.badge === 'measured'
+      ? ' status-pill status-pill--ready' : ' status-pill';
     return '<div class="active-speaker-level-match">' +
       '<div class="output-card__head"><div>' +
         '<p class="setting-row__title">Driver levels</p>' +
         '<p class="setting-row__hint">' + escapeHtml(summary.note) + '</p></div>' +
         '<span class="' + badge + '">' +
-          escapeHtml(summary.provisional ? 'estimate' : 'measured') + '</span></div>' +
+          escapeHtml(summary.badge) + '</span></div>' +
       '<dl class="active-speaker-facts">' + rows + '</dl>' +
-      (summary.provisional ?
+      (summary.badge !== 'measured' ?
         '<p class="setting-row__hint">' + escapeHtml(summary.guidance) + '</p>' : '') +
     '</div>';
   }

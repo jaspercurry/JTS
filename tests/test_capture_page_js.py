@@ -40,6 +40,8 @@ _HARNESSES = [
     "capture_wakelock_test.mjs",
     "capture_return_url_test.mjs",
     "capture_level_events_test.mjs",
+    "capture_setup_store_test.mjs",
+    "capture_protocol_test.mjs",
 ]
 
 
@@ -65,6 +67,21 @@ def test_capture_page_expired_link_message_points_back_to_speaker():
     assert 'message === "not_found"' in main_js
     assert "This one-time capture link has expired." in main_js
     assert "Return to the speaker page" in main_js
+
+
+def test_capture_page_version_contract_is_published_and_cache_busted():
+    version = json.loads((_REPO / "capture-page/version.json").read_text())
+    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
+    build_sh = (_REPO / "capture-page/build.sh").read_text(encoding="utf-8")
+
+    assert version == {
+        "schema_version": 1,
+        "capture_protocol_version": 1,
+        "supported_capture_protocol_versions": [1],
+        "capture_page_build": "20260710.1",
+    }
+    assert "main.js?v=20260710-1" in index_html
+    assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
 
 
 def test_capture_page_completion_renders_return_cta():
@@ -111,3 +128,74 @@ def test_capture_page_preflights_guided_setup_before_start():
     assert 'event.phase === "setup_validation_failed"' in main_js
     assert 'event.phase === "setup_validated"' in main_js
     assert "renderPositionCount(screenEl, ctx)" in main_js
+
+
+def test_capture_page_level_ramp_uses_meter_protocol_without_wav_upload():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert 'import { runLevelRampProtocol } from "./level-events.js"' in main_js
+    assert 'spec.kind === "level_ramp"' in main_js
+    assert "onLevelRampStart(ctx)" in main_js
+
+    start = main_js.index("async function onLevelRampStart")
+    end = main_js.index("async function waitForSweepComplete", start)
+    level_path = main_js[start:end]
+    assert "runLevelRampProtocol" in level_path
+    assert "float32ToWavBlob" not in level_path
+    assert "encryptWav" not in level_path
+    assert "putBlob" not in level_path
+
+
+def test_capture_page_level_ramp_uses_guided_mic_calibration_setup():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert 'spec.kind === "room_sweep" || spec.kind === "level_ramp"' in main_js
+    assert 'ctx.spec.kind === "level_ramp"' in main_js
+    assert "renderMicChoice(screenEl, ctx, inputs)" in main_js
+    assert "renderCalibration(screenEl, ctx)" in main_js
+    assert "renderLevelReady(screenEl, ctx)" in main_js
+    assert 'button("Start level check", () => onLevelRampStart(ctx))' in main_js
+
+    start = main_js.index("async function onLevelRampStart")
+    end = main_js.index("async function waitForSweepComplete", start)
+    level_path = main_js[start:end]
+    assert "setup: setupWirePayload()" in level_path
+    assert "device: capture.device" in level_path
+
+
+def test_capture_page_binds_setup_once_and_streams_only_identity():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    level_js = (_REPO / "capture-page/js/level-events.js").read_text(
+        encoding="utf-8",
+    )
+
+    setup_store_js = (_REPO / "capture-page/js/setup-store.js").read_text(
+        encoding="utf-8",
+    )
+
+    assert 'SETUP_STORAGE_KEY = "jts.capture.bound-setup.v2"' in setup_store_js
+    assert "SETUP_IDLE_TTL_MS" in setup_store_js
+    assert "SETUP_ABSOLUTE_TTL_MS" in setup_store_js
+    assert "refreshBoundSetup(spec)" in main_js
+    assert "setup_binding_id" in setup_store_js
+    assert "setup_collect_positions" in main_js
+    assert 'spec.kind === "room_sweep" && spec.setup_validation === false' in main_js
+    assert "if (setupCaptureOnly)" in main_js
+    assert "renderBoundRoomReady(screenEl, ctx)" in main_js
+    assert "setup_identity: identity" in main_js
+    assert "persistBoundSetup(ctx.spec, identity)" in main_js
+    assert "setup: setupWirePayload()" in main_js
+    assert "Raw serials/calibration text are forbidden" in level_js
+    assert "validated compact setup binding" in level_js
+
+
+def test_capture_page_rejects_oversize_calibration_and_unproven_agc():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "MAX_CALIBRATION_TEXT_BYTES" in main_js
+    assert "file.size" in main_js
+    assert "utf8Size(content)" in main_js
+    assert "smaller than 256 KiB" in main_js
+    assert "capture.settings.autoGainControl !== false" in main_js
+    assert 'reason: "agc_not_proven_off"' in main_js
+    assert "JTS will not play the level tone" in main_js

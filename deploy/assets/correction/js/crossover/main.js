@@ -2,464 +2,218 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { jtsConfirm } from '/assets/shared/js/dialog.js';
-import { csrfHeaders, postJSON } from '/assets/shared/js/http.js';
-import {
-  DEFAULT_SAMPLE_RATE,
-  createMonoRecorder,
-  delayMs,
-  float32ToWavBlob,
-  micCaptureSupport,
-} from '/assets/shared/js/measurement-audio.js';
-
-const REQUIRED_SR = 48000;
-const CAPTURE_PREROLL_MS = 250;
-const CAPTURE_POSTROLL_MS = 650;
+import { postJSON } from '/assets/shared/js/http.js';
 
 const els = {
-  support: document.getElementById('mic-support'),
-  supportMessage: document.getElementById('mic-support-message'),
-  checkMic: document.getElementById('check-mic'),
-  refresh: document.getElementById('refresh-status'),
-  drivers: document.getElementById('driver-targets'),
-  summed: document.getElementById('summed-targets'),
+  verdict: document.getElementById('crossover-verdict'),
+  steps: document.getElementById('crossover-steps'),
+  nudges: document.getElementById('crossover-nudges'),
+  action: document.getElementById('crossover-action'),
+  relay: document.getElementById('crossover-relay'),
+  relayStatus: document.getElementById('crossover-relay-status'),
+  relayLink: document.getElementById('crossover-relay-link'),
   status: document.getElementById('capture-status'),
 };
 
-let support = micCaptureSupport();
-let currentPayload = null;
+let envelope = null;
+let busy = false;
+let refreshInFlight = null;
+let refreshQueued = false;
+let renderEpoch = 0;
+let pollTimer = null;
+
+const POLL_MS = 1500;
+const RETRY_MS = 5000;
+
+function el(tag, attrs = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === 'class') node.className = value;
+    else if (key === 'text') node.textContent = String(value);
+    else if (key === 'disabled') node.disabled = Boolean(value);
+    else node.setAttribute(key, String(value));
+  }
+  for (const child of children) node.append(child);
+  return node;
+}
+
+async function fetchJSON(path) {
+  const response = await fetch(path, {cache: 'no-store'});
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload;
+}
 
 function setStatus(message, tone = '') {
   els.status.textContent = message || '';
   els.status.dataset.tone = tone;
 }
 
-function setSupport(nextSupport) {
-  support = nextSupport;
-  els.support.dataset.tone = support.ok ? 'ok' : 'bad';
-  els.supportMessage.textContent = support.message;
-  if (currentPayload) render();
-}
-
-async function fetchJSON(path) {
-  const resp = await fetch(path, {cache: 'no-store'});
-  let data = null;
-  try { data = await resp.json(); } catch (_) { /* non-JSON */ }
-  if (!resp.ok) {
-    throw new Error(data && data.error ? data.error : 'HTTP ' + resp.status);
-  }
-  return data;
-}
-
-async function postWav(path, params, blob) {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(params || {})) {
-    if (value !== undefined && value !== null && value !== '') {
-      query.set(key, String(value));
-    }
-  }
-  const url = path + (query.toString() ? '?' + query.toString() : '');
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: csrfHeaders({'Content-Type': 'audio/wav'}),
-    body: blob,
+function renderSteps(steps) {
+  const rows = (Array.isArray(steps) ? steps : []).map((step) => {
+    const item = el('li', {class: `wizard-step ${step.status || 'pending'}`});
+    item.append(
+      el('span', {class: 'wizard-step__dot', 'aria-hidden': 'true'}),
+      el('span', {class: 'wizard-step__label', text: step.label || step.id || 'Step'}),
+    );
+    return item;
   });
-  let data = null;
-  try { data = await resp.json(); } catch (_) { /* non-JSON */ }
-  if (!resp.ok) {
-    throw new Error(data && data.error ? data.error : 'HTTP ' + resp.status);
-  }
-  return data;
+  els.steps.replaceChildren(...rows);
 }
 
-function el(tag, attrs = {}, children = []) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(attrs)) {
-    if (key === 'class') node.className = value;
-    else if (key === 'text') node.textContent = value;
-    else if (key === 'disabled') node.disabled = !!value;
-    else node.setAttribute(key, value);
-  }
-  for (const child of children) node.append(child);
-  return node;
-}
-
-function targetId(groupId, role) {
-  return String(groupId || '') + ':' + String(role || '');
-}
-
-function roleLabel(role) {
-  const value = String(role || '');
-  return value ? value.charAt(0).toUpperCase() + value.slice(1) : 'Driver';
-}
-
-function latestDriver(target) {
-  const summary = currentPayload && currentPayload.measurements &&
-    currentPayload.measurements.summary || {};
-  const latest = summary.latest_driver_measurements || {};
-  return latest[targetId(target.speaker_group_id, target.role)] || null;
-}
-
-function latestSummed(groupId) {
-  const summary = currentPayload && currentPayload.measurements &&
-    currentPayload.measurements.summary || {};
-  const latest = summary.latest_summed_tests || {};
-  return latest[groupId] || null;
-}
-
-function latestSummedValidation(groupId) {
-  const summary = currentPayload && currentPayload.measurements &&
-    currentPayload.measurements.summary || {};
-  const latest = summary.latest_summed_validations || {};
-  return latest[groupId] || null;
-}
-
-function issueMessage(payload, fallback) {
-  const issues = payload && Array.isArray(payload.issues) ? payload.issues : [];
-  for (const issue of issues) {
-    const message = issue && (issue.message || issue.label || issue.code);
-    if (message) return String(message);
-  }
-  const playback = payload && payload.playback || {};
-  const playbackIssues = Array.isArray(playback.issues) ? playback.issues : [];
-  for (const issue of playbackIssues) {
-    const message = issue && (issue.message || issue.label || issue.code);
-    if (message) return String(message);
-  }
-  if (payload && payload.next_step) return String(payload.next_step);
-  if (payload && payload.reason) return String(payload.reason);
-  return fallback;
-}
-
-function errorMessage(err) {
-  return issueMessage(err && err.body, err && err.message || String(err));
-}
-
-function pendingDriver() {
-  const commission = currentPayload && currentPayload.commission || {};
-  const ramp = commission.ramp && typeof commission.ramp === 'object'
-    ? commission.ramp : {};
-  const pending = ramp.pending && typeof ramp.pending === 'object'
-    ? ramp.pending : null;
-  if (!pending) return null;
-  return {
-    speaker_group_id: ramp.speaker_group_id || '',
-    role: pending.role || '',
-    playback_id: pending.playback_id || '',
-    gain_db: pending.gain_db,
-  };
-}
-
-function isPendingTarget(target) {
-  const pending = pendingDriver();
-  return !!(pending &&
-    String(pending.speaker_group_id) === String(target.speaker_group_id || '') &&
-    String(pending.role) === String(target.role || ''));
-}
-
-function assertCapturePlayback(payload) {
-  const playback = payload && payload.playback || {};
-  if (payload && payload.status === 'completed' && playback.audio_emitted) {
-    return playback;
-  }
-  throw new Error(issueMessage(payload, 'The measurement sweep did not play.'));
-}
-
-function renderEmpty(container, message) {
-  container.replaceChildren(el('p', {class: 'form-hint', text: message}));
-}
-
-function renderDrivers() {
-  const targets = currentPayload && currentPayload.targets &&
-    Array.isArray(currentPayload.targets.drivers)
-    ? currentPayload.targets.drivers : [];
-  if (!targets.length) {
-    renderEmpty(els.drivers, 'No active crossover driver targets are saved yet.');
-    return;
-  }
-  const rows = targets.map((target) => {
-    const latest = latestDriver(target);
-    const playbackId = latest && latest.playback_id || '';
-    const confirmed = !!(latest && latest.captured);
-    const hasMicEvidence = !!(latest && latest.acoustic);
-    const pending = isPendingTarget(target);
-    const canCapture = support.ok && playbackId && confirmed && !pending;
-    const playButton = el('button', {
-      class: 'btn btn--ghost',
-      type: 'button',
-      disabled: pending,
-      'data-driver-action': 'start',
-      'data-group-id': target.speaker_group_id || '',
-      'data-role': target.role || '',
-      text: 'Play test',
-    });
-    const confirmButton = el('button', {
-      class: 'btn btn--primary',
-      type: 'button',
-      'data-driver-action': 'confirm',
-      text: 'I hear it',
-    });
-    const abortButton = el('button', {
-      class: 'btn btn--ghost',
-      type: 'button',
-      'data-driver-action': 'abort',
-      text: 'Stop',
-    });
-    const captureButton = el('button', {
-      class: 'btn btn--primary',
-      type: 'button',
-      disabled: !canCapture,
-      'data-capture-kind': 'driver',
-      'data-group-id': target.speaker_group_id || '',
-      'data-role': target.role || '',
-      'data-playback-id': playbackId,
-      'data-test-level-dbfs': latest && latest.test_level_dbfs || '',
-      text: hasMicEvidence ? 'Record again' : 'Record mic',
-    });
-    const actions = pending
-      ? [confirmButton, abortButton]
-      : [playButton, captureButton];
-    const meta = pending
-      ? 'Waiting for confirmation from the active driver test.'
-      : (hasMicEvidence
-        ? 'Mic evidence saved for this driver.'
-        : (confirmed
-          ? (support.ok ? 'Ready for secure mic sweep.' : support.message)
-          : 'Play and confirm this driver before recording mic evidence.'));
-    return el('div', {class: 'measurement-row'}, [
-      el('div', {}, [
-        el('p', {
-          class: 'measurement-row__title',
-          text: (target.speaker_group_label || target.speaker_group_id || 'Speaker') +
-            ' · ' + roleLabel(target.role),
-        }),
-        el('p', {class: 'measurement-row__meta', text: meta}),
-      ]),
-      el('div', {class: 'measurement-row__actions'}, actions),
-    ]);
-  });
-  els.drivers.replaceChildren(...rows);
-}
-
-function renderSummed() {
-  const targets = currentPayload && currentPayload.targets &&
-    Array.isArray(currentPayload.targets.summed)
-    ? currentPayload.targets.summed : [];
-  if (!targets.length) {
-    renderEmpty(els.summed, 'No active crossover groups are saved yet.');
-    return;
-  }
-  const rows = targets.map((target) => {
-    const latestTest = latestSummed(target.speaker_group_id);
-    const latestValidation = latestSummedValidation(target.speaker_group_id);
-    const testId = latestTest &&
-      (latestTest.summed_test_id || latestTest.playback_id) || '';
-    const hasAudibleTest = !!(latestTest && latestTest.captured &&
-      latestTest.audio_emitted);
-    const hasMicEvidence = !!(latestValidation && latestValidation.acoustic);
-    const canCapture = support.ok && hasAudibleTest && testId;
-    const playButton = el('button', {
-      class: 'btn btn--ghost',
-      type: 'button',
-      'data-summed-action': 'start',
-      'data-group-id': target.speaker_group_id || '',
-      text: 'Play combined test',
-    });
-    const captureButton = el('button', {
-      class: 'btn btn--primary',
-      type: 'button',
-      disabled: !canCapture,
-      'data-capture-kind': 'summed',
-      'data-group-id': target.speaker_group_id || '',
-      'data-summed-test-id': testId,
-      text: hasMicEvidence ? 'Record again' : 'Record mic',
-    });
-    const meta = hasMicEvidence
-      ? 'Summed crossover evidence is saved.'
-      : (canCapture
-        ? 'Ready for secure mic sweep.'
-        : (hasAudibleTest ? support.message :
-          'Run the combined crossover test before recording mic evidence.'));
-    return el('div', {class: 'measurement-row'}, [
-      el('div', {}, [
-        el('p', {
-          class: 'measurement-row__title',
-          text: target.speaker_group_label || target.speaker_group_id || 'Speaker',
-        }),
-        el('p', {class: 'measurement-row__meta', text: meta}),
-      ]),
-      el('div', {class: 'measurement-row__actions'}, [playButton, captureButton]),
-    ]);
-  });
-  els.summed.replaceChildren(...rows);
-}
-
-function render() {
-  renderDrivers();
-  renderSummed();
-}
-
-async function refresh() {
-  setStatus('Refreshing…');
-  currentPayload = await fetchJSON('status');
-  render();
-  setStatus('Ready.', 'ok');
-}
-
-async function captureBlob(playbackFn) {
-  const recorder = await createMonoRecorder({sampleRate: REQUIRED_SR});
-  try {
-    recorder.start();
-    await delayMs(CAPTURE_PREROLL_MS);
-    const playbackPayload = await playbackFn();
-    assertCapturePlayback(playbackPayload);
-    await delayMs(CAPTURE_POSTROLL_MS);
-    const samples = await recorder.stop({timeoutMs: 1800});
-    const sampleRate = recorder.context && recorder.context.sampleRate ||
-      DEFAULT_SAMPLE_RATE;
-    return {
-      blob: float32ToWavBlob(samples, sampleRate),
-      playback: playbackPayload,
-    };
-  } finally {
-    await recorder.close();
-  }
-}
-
-async function driverAction(button) {
-  const action = button.dataset.driverAction;
-  const prior = button.textContent;
-  button.disabled = true;
-  button.textContent = action === 'start' ? 'Playing…' : 'Saving…';
-  try {
-    let payload = null;
-    if (action === 'start') {
-      setStatus('Playing driver test…');
-      payload = await postJSON('driver-test', {
-        speaker_group_id: button.dataset.groupId,
-        role: button.dataset.role,
-        force: true,
-      });
-    } else if (action === 'confirm') {
-      setStatus('Saving driver confirmation…');
-      payload = await postJSON('driver-confirm', {
-        outcome: 'heard_correct_driver',
-      });
-    } else {
-      setStatus('Stopping driver test…');
-      payload = await postJSON('driver-abort', {});
-    }
-    setStatus(issueMessage(payload, 'Updated.'), 'ok');
-    await refresh();
-  } catch (err) {
-    setStatus(errorMessage(err), 'bad');
-  } finally {
-    button.textContent = prior;
-    render();
-  }
-}
-
-async function summedAction(button) {
-  const prior = button.textContent;
-  button.disabled = true;
-  button.textContent = 'Playing…';
-  setStatus('Playing combined crossover test…');
-  try {
-    const payload = await postJSON('summed-test', {
-      speaker_group_id: button.dataset.groupId,
-      audio: true,
-      duration_ms: 500,
-    });
-    setStatus(issueMessage(payload, 'Combined test complete.'), 'ok');
-    await refresh();
-  } catch (err) {
-    setStatus(errorMessage(err), 'bad');
-  } finally {
-    button.textContent = prior;
-    render();
-  }
-}
-
-async function record(button) {
-  if (!support.ok) {
-    setStatus(support.message, 'bad');
-    return;
-  }
-  const kind = button.dataset.captureKind;
-  const label = kind === 'driver'
-    ? roleLabel(button.dataset.role) + ' driver'
-    : 'summed crossover';
-  const ok = await jtsConfirm(
-    'Record the ' + label + ' with this microphone while JTS plays a sweep?',
-    {danger: false},
+function renderNudges(nudges) {
+  const rows = (Array.isArray(nudges) ? nudges : []).map((nudge) =>
+    el('p', {
+      class: `wizard-nudge ${nudge.severity === 'warn' ? 'warn' : 'info'}`,
+      text: nudge.text || '',
+    }),
   );
-  if (!ok) return;
-  const prior = button.textContent;
-  button.disabled = true;
-  button.textContent = 'Recording…';
-  setStatus('Recording mic capture while the speaker plays a sweep…');
-  try {
-    const playbackBody = {
-      speaker_group_id: button.dataset.groupId,
-    };
-    if (kind === 'driver') playbackBody.role = button.dataset.role;
-    const recorded = await captureBlob(() => postJSON(
-      kind === 'driver' ? 'driver-capture-sweep' : 'summed-capture-sweep',
-      playbackBody,
-    ));
-    const blob = recorded.blob;
-    const playbackPayload = recorded.playback || {};
-    if (kind === 'driver') {
-      await postWav('driver-capture', {
-        speaker_group_id: button.dataset.groupId,
-        role: button.dataset.role,
-        playback_id: playbackPayload.playback_id || button.dataset.playbackId,
-        test_level_dbfs: playbackPayload.test_level_dbfs ||
-          button.dataset.testLevelDbfs,
-      }, blob);
-    } else {
-      await postWav('summed-capture', {
-        speaker_group_id: button.dataset.groupId,
-        summed_test_id: playbackPayload.summed_test_id ||
-          button.dataset.summedTestId,
-        playback_id: playbackPayload.playback_id || button.dataset.summedTestId,
-      }, blob);
+  els.nudges.replaceChildren(...rows);
+}
+
+function renderActions(primary, alternates = []) {
+  els.action.replaceChildren();
+  const actions = [primary, ...(Array.isArray(alternates) ? alternates : [])]
+    .filter(Boolean);
+  actions.forEach((action, index) => {
+    const className = index === 0 ? 'btn btn--primary' : 'btn btn--ghost';
+    if (action.href) {
+      els.action.append(el('a', {
+        class: className,
+        href: action.href,
+        text: action.label || 'Continue',
+      }));
+      return;
     }
-    setStatus('Capture saved.', 'ok');
-    await refresh();
-  } catch (err) {
-    setStatus('Could not record capture: ' + (err && err.message || err), 'bad');
-  } finally {
-    button.textContent = prior;
-    render();
+    const button = el('button', {
+      class: className,
+      type: 'button',
+      disabled: busy || action.enabled === false,
+      text: action.label || 'Continue',
+    });
+    button.addEventListener('click', () => runAction(action, button));
+    els.action.append(button);
+  });
+}
+
+function renderRelay(relay) {
+  const active = relay && ['starting', 'awaiting_phone'].includes(relay.status);
+  els.relay.classList.toggle('hidden', !active);
+  els.relayLink.classList.add('hidden');
+  if (!active) {
+    if (relay && relay.status === 'failed') {
+      setStatus(relay.error || 'Phone capture failed. Retry this step.', 'bad');
+    } else if (relay && relay.status === 'complete') {
+      setStatus('Phone capture complete.', 'ok');
+    }
+    return;
+  }
+  if (relay.tap_link) {
+    els.relayLink.href = relay.tap_link;
+    els.relayLink.classList.remove('hidden');
+    els.relayStatus.textContent = 'Open the trusted capture page and follow its one next step.';
+  } else {
+    els.relayStatus.textContent = 'Creating the phone capture link…';
   }
 }
 
-els.checkMic.addEventListener('click', async () => {
-  setSupport(micCaptureSupport());
-  if (!support.ok) return;
-  setStatus('Microphone is available.', 'ok');
-});
+function render(env) {
+  envelope = env;
+  els.verdict.textContent = env.verdict_text || '';
+  renderSteps(env.steps);
+  renderNudges(env.nudges);
+  renderRelay(env.relay);
+  const relayActive = env.relay && ['starting', 'awaiting_phone'].includes(env.relay.status);
+  renderActions(
+    relayActive ? null : env.next_action,
+    relayActive ? [] : env.alternate_actions,
+  );
+  schedulePoll(relayActive ? POLL_MS : null);
+}
 
-els.refresh.addEventListener('click', () => {
-  refresh().catch((err) => setStatus(err.message, 'bad'));
-});
-
-document.addEventListener('click', (ev) => {
-  const driverButton = ev.target.closest('[data-driver-action]');
-  if (driverButton) {
-    driverAction(driverButton);
-    return;
+async function runAction(action, button) {
+  if (busy || !action.endpoint) return;
+  busy = true;
+  // An older envelope fetch may already be in flight. Invalidate its render;
+  // the serialized refresh queued after this mutation is the new authority.
+  renderEpoch += 1;
+  button.disabled = true;
+  setStatus('Working…');
+  let relayStarted = false;
+  try {
+    const response = await postJSON(action.endpoint, action.body || {});
+    relayStarted = Boolean(response && response.relay);
+    if (relayStarted) {
+      renderRelay(response.relay);
+      renderActions(null);
+      schedulePoll(POLL_MS);
+    }
+    setStatus(response && response.relay ? 'Phone capture is ready.' : 'Updated.', 'ok');
+    await refresh();
+  } catch (error) {
+    setStatus(error && error.message ? error.message : String(error), 'bad');
+  } finally {
+    busy = false;
+    // If relay registration succeeded but refresh failed, keep the old action
+    // hidden. Showing it beside a live phone link would permit a second run.
+    if (!relayStarted && envelope) {
+      renderActions(envelope.next_action, envelope.alternate_actions);
+    }
   }
-  const summedButton = ev.target.closest('[data-summed-action]');
-  if (summedButton) {
-    summedAction(summedButton);
-    return;
-  }
-  const button = ev.target.closest('[data-capture-kind]');
-  if (!button) return;
-  record(button);
-});
+}
 
-setSupport(support);
-refresh().catch((err) => setStatus(err.message, 'bad'));
+function schedulePoll(delayMs) {
+  if (pollTimer !== null) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+  if (
+    delayMs === null ||
+    (typeof document !== 'undefined' && document.visibilityState === 'hidden')
+  ) return;
+  pollTimer = setTimeout(() => {
+    pollTimer = null;
+    refresh().catch((error) => {
+      setStatus(error.message, 'bad');
+      schedulePoll(RETRY_MS);
+    });
+  }, delayMs);
+}
+
+async function runRefreshQueue() {
+  do {
+    refreshQueued = false;
+    const epoch = renderEpoch;
+    const env = await fetchJSON('/correction/crossover/envelope');
+    if (epoch === renderEpoch) render(env);
+  } while (refreshQueued);
+}
+
+function refresh() {
+  if (refreshInFlight) {
+    refreshQueued = true;
+    return refreshInFlight;
+  }
+  refreshInFlight = runRefreshQueue().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      schedulePoll(null);
+      return;
+    }
+    refresh().catch((error) => {
+      setStatus(error.message, 'bad');
+      schedulePoll(RETRY_MS);
+    });
+  });
+}
+
+refresh().catch((error) => {
+  setStatus(error.message, 'bad');
+  schedulePoll(RETRY_MS);
+});

@@ -1069,8 +1069,7 @@ code = [
   "jasper/capture_relay/health.py",
   "jasper/capture_relay/correction_adapter.py",
   "relay/src/worker.js",
-  "capture-page/js/**",
-  "capture-page/index.html",
+  "capture-page/**",
 ]
 docs = [
   "docs/phone-mic-relay-plan.md",

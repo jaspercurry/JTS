@@ -456,7 +456,7 @@ async def _run_geometry(sess, chain, geometry, *, clock=None, **kw):
 async def test_level_match_session_locks_and_stores_geometry_lock():
     store = LevelLockStore()
     sess = _session(store)
-    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
     outcome = await _run_geometry(sess, chain, MicGeometry.LISTENING_POSITION.value)
     assert outcome.ramp.state == RampState.LOCKED
     assert outcome.locked
@@ -471,12 +471,30 @@ async def test_level_match_session_locks_and_stores_geometry_lock():
 
 
 @pytest.mark.asyncio
+async def test_level_match_maxed_out_restores_and_stores_no_lock():
+    store = LevelLockStore()
+    sess = _session(store)
+    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+
+    outcome = await _run_geometry(
+        sess, chain, MicGeometry.LISTENING_POSITION.value
+    )
+
+    assert outcome.ramp.state == RampState.MAXED_OUT
+    assert outcome.locked is False
+    assert outcome.lock is None
+    assert outcome.ramp.locked_main_volume_db is None
+    assert chain._vol == -30.0
+    assert store.get(MicGeometry.LISTENING_POSITION.value) is None
+
+
+@pytest.mark.asyncio
 async def test_level_match_terminal_state_reposted_until_echoed():
     # The relay event slot is a read-modify-write race: the terminal state is
     # re-posted until /status echoes it back. FakeChain echoes on the first
     # post, so the loop stops early — and at least one post carries the state.
     sess = _session()
-    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
     outcome = await _run_geometry(sess, chain, MicGeometry.LISTENING_POSITION.value)
     assert outcome.ramp.state == RampState.LOCKED
     terminal_posts = [
@@ -492,7 +510,7 @@ async def test_level_match_terminal_state_reposts_without_echo():
     # If the echo never appears (a phone post keeps clobbering host_event),
     # the post is re-attempted the full bounded budget — never exactly once.
     sess = _session()
-    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
 
     def post_no_echo(event):
         chain.host_events.append(event)  # swallowed: never lands in status
@@ -559,7 +577,7 @@ async def test_level_match_token_scoped_retry_ignores_stale_abort():
     # Run 2 of the same relay session: the slot still holds run 1's abort
     # superset. The tokened feed must ignore it and complete run 2 normally.
     sess = _session()
-    chain = FakeChain(gain_db=2.0, start_vol=-30.0, run_token="run-2")
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0, run_token="run-2")
     stale_abort = {
         "event": {
             "level_batch": {
@@ -596,7 +614,7 @@ async def test_level_match_token_scoped_retry_ignores_stale_abort():
 async def test_level_match_manual_lock_via_public_seam():
     store = LevelLockStore()
     sess = _session(store, settle_hold_s=5.0, max_loop_latency_s=2.0)
-    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
 
     reads = {"n": 0}
     base = chain.read_status
@@ -640,7 +658,7 @@ def _make_session(tmp_path):
 @pytest.mark.asyncio
 async def test_session_run_level_match_stores_geometry_lock(tmp_path):
     sess = _make_session(tmp_path)
-    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
     clock = Clock()
 
     outcome = await sess.run_level_match(
@@ -662,6 +680,205 @@ async def test_session_run_level_match_stores_geometry_lock(tmp_path):
     assert MicGeometry.LISTENING_POSITION.value in snap["locks"]
     assert snap["last"]["geometry"] == MicGeometry.LISTENING_POSITION.value
     assert snap["last"]["ramp"]["state"] == "locked"
+    assert snap["last"]["ramp"]["restored"] is True
+    assert chain._vol == pytest.approx(-30.0)
+
+
+@pytest.mark.asyncio
+async def test_session_level_restore_is_retryable_and_exact_once(tmp_path):
+    sess = _make_session(tmp_path)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
+    clock = Clock()
+    await sess.run_level_match(
+        MicGeometry.LISTENING_POSITION.value,
+        get_main_volume_db=chain.get_vol,
+        set_main_volume_db=chain.set_vol,
+        play_continuous_tone=chain.tone,
+        cancel_tone=chain.cancel_tone,
+        read_status=chain.read_status,
+        post_host_event=chain.post_host_event,
+        noise_floor_dbfs=chain.nf,
+        clock=clock.now,
+        sleep=clock.sleep,
+    )
+
+    # A successful level check restores before returning. Reassert the stored
+    # target as a sweep window would, then exercise retryable restoration.
+    assert sess.level_match_snapshot()["last"]["ramp"]["restored"] is True
+    assert await sess.ensure_level_match_volume(chain.set_vol) is True
+    assert sess.level_match_snapshot()["last"]["ramp"]["restored"] is False
+
+    async def refused(_db):
+        return False
+
+    assert await sess.restore_level_match_volume(refused) is False
+    assert sess.level_match_snapshot()["last"]["ramp"]["restored"] is False
+
+    calls = []
+
+    async def restored(db):
+        calls.append(db)
+        await asyncio.sleep(0)
+        return True
+
+    results = await asyncio.gather(
+        sess.restore_level_match_volume(restored),
+        sess.restore_level_match_volume(restored),
+    )
+    assert sorted(results) == [False, True]
+    assert calls == [-30.0]
+
+
+@pytest.mark.asyncio
+async def test_session_level_match_refuses_to_return_with_restore_unapplied(tmp_path):
+    sess = _make_session(tmp_path)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
+    clock = Clock()
+
+    async def setter(db):
+        await chain.set_vol(db)
+        # The ramp writes succeed; only the post-lock listening restore is
+        # refused. This pins the fail-loud, still-retryable lease state.
+        if db == -30.0:
+            return False
+        return True
+
+    with pytest.raises(RuntimeError, match="could not be restored"):
+        await sess.run_level_match(
+            MicGeometry.LISTENING_POSITION.value,
+            get_main_volume_db=chain.get_vol,
+            set_main_volume_db=setter,
+            play_continuous_tone=chain.tone,
+            cancel_tone=chain.cancel_tone,
+            read_status=chain.read_status,
+            post_host_event=chain.post_host_event,
+            noise_floor_dbfs=chain.nf,
+            clock=clock.now,
+            sleep=clock.sleep,
+        )
+
+    ramp = sess._last_level_match.ramp
+    assert ramp.state is RampState.LOCKED
+    assert ramp.restored is False
+
+    async def retry(db):
+        await chain.set_vol(db)
+        return True
+
+    assert await sess.restore_level_match_volume(retry) is True
+    assert ramp.restored is True
+
+
+@pytest.mark.asyncio
+async def test_session_reasserts_locked_volume_before_sweep(tmp_path):
+    sess = _make_session(tmp_path)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
+    clock = Clock()
+    outcome = await sess.run_level_match(
+        MicGeometry.LISTENING_POSITION.value,
+        get_main_volume_db=chain.get_vol,
+        set_main_volume_db=chain.set_vol,
+        play_continuous_tone=chain.tone,
+        cancel_tone=chain.cancel_tone,
+        read_status=chain.read_status,
+        post_host_event=chain.post_host_event,
+        noise_floor_dbfs=chain.nf,
+        clock=clock.now,
+        sleep=clock.sleep,
+    )
+    locked_db = outcome.ramp.locked_main_volume_db
+    assert outcome.ramp.restored is True
+    chain._vol = -48.0
+    assert await sess.ensure_level_match_volume(chain.set_vol) is True
+    assert chain._vol == locked_db
+    assert outcome.ramp.restored is False
+
+    with pytest.raises(RuntimeError, match="already locked"):
+        await sess.run_level_match(
+            MicGeometry.LISTENING_POSITION.value,
+            get_main_volume_db=chain.get_vol,
+            set_main_volume_db=chain.set_vol,
+            play_continuous_tone=chain.tone,
+            cancel_tone=chain.cancel_tone,
+            read_status=chain.read_status,
+            post_host_event=chain.post_host_event,
+            noise_floor_dbfs=chain.nf,
+            clock=clock.now,
+            sleep=clock.sleep,
+        )
+
+
+@pytest.mark.asyncio
+async def test_session_ensure_and_restore_share_one_transition_lock(tmp_path):
+    sess = _make_session(tmp_path)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
+    clock = Clock()
+    outcome = await sess.run_level_match(
+        MicGeometry.LISTENING_POSITION.value,
+        get_main_volume_db=chain.get_vol,
+        set_main_volume_db=chain.set_vol,
+        play_continuous_tone=chain.tone,
+        cancel_tone=chain.cancel_tone,
+        read_status=chain.read_status,
+        post_host_event=chain.post_host_event,
+        noise_floor_dbfs=chain.nf,
+        clock=clock.now,
+        sleep=clock.sleep,
+    )
+    writes: list[float] = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_set(db):
+        writes.append(db)
+        entered.set()
+        await release.wait()
+        return True
+
+    ensure = asyncio.create_task(sess.ensure_level_match_volume(blocked_set))
+    await entered.wait()
+    restore = asyncio.create_task(sess.restore_level_match_volume(blocked_set))
+    await asyncio.sleep(0)
+    # Restore cannot pass the in-flight ensure write.
+    assert writes == [outcome.ramp.locked_main_volume_db]
+    release.set()
+    assert await ensure is True
+    assert await restore is True
+    assert writes == [outcome.ramp.locked_main_volume_db, -30.0]
+    assert outcome.ramp.restored is True
+
+
+@pytest.mark.asyncio
+async def test_crossover_lease_restores_then_scopes_target_to_sweep_window():
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease()
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
+    clock = Clock()
+    outcome = await lease.run_level_match(
+        MicGeometry.NEAR_FIELD_DRIVER.value,
+        get_main_volume_db=chain.get_vol,
+        set_main_volume_db=chain.set_vol,
+        play_continuous_tone=chain.tone,
+        cancel_tone=chain.cancel_tone,
+        read_status=chain.read_status,
+        post_host_event=chain.post_host_event,
+        noise_floor_dbfs=chain.nf,
+        clock=clock.now,
+        sleep=clock.sleep,
+        wait_for_armed=False,
+        context_id="profile-a",
+    )
+
+    assert outcome.ramp.restored is True
+    assert chain._vol == pytest.approx(-30.0)
+    assert lease.context_id == "profile-a"
+    assert await lease.ensure_level_match_volume(chain.set_vol) is True
+    assert chain._vol == pytest.approx(outcome.ramp.locked_main_volume_db)
+    assert outcome.ramp.restored is False
+    assert await lease.restore_level_match_volume(chain.set_vol) is True
+    assert chain._vol == pytest.approx(-30.0)
+    assert outcome.ramp.restored is True
 
 
 def test_session_level_match_snapshot_empty_before_run(tmp_path):
@@ -685,7 +902,7 @@ async def test_session_run_level_match_clears_retained_session(tmp_path):
     # The retained LevelMatchSession is cleared after the run so a stale
     # controller can't be locked/cancelled once the ramp has settled.
     sess = _make_session(tmp_path)
-    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
     clock = Clock()
     outcome = await sess.run_level_match(
         MicGeometry.NEAR_FIELD_DRIVER.value,

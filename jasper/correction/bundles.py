@@ -24,7 +24,7 @@ from ..log_event import log_event
 # `acceptance` verdict block and the `auto_revert_outcome` rollback record,
 # and result.json gains the `position1` matched-basis curve. Additive — older
 # readers ignore the new keys.
-CURRENT_BUNDLE_SCHEMA_VERSION = 4
+CURRENT_BUNDLE_SCHEMA_VERSION = 5
 CURRENT_ARTIFACT_MANIFEST_VERSION = 1
 ARTIFACT_MANIFEST_NAME = "artifact_manifest.json"
 RAW_AUDIO_RELATIVE_PATHS = ("verify.wav",)

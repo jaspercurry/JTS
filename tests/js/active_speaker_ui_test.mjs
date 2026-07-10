@@ -75,15 +75,25 @@ import {
   assert.equal(s.provisional, true);
   assert.equal(s.rows[1].sourceLabel, "Datasheet estimate");
   assert.ok(s.guidance.includes("2–5 cm"));
-  assert.ok(/datasheet estimates/i.test(s.note));
-  // The datasheet fallback is framed as a fine, optional-to-improve state.
-  assert.ok(/optional/i.test(s.note));
+  assert.ok(/safe starting estimates/i.test(s.note));
+  assert.ok(/not acoustic measurements/i.test(s.note));
 }
 
 // Blocked / empty baseline payloads render nothing.
 assert.equal(levelMatchSummary({}).available, false);
 assert.equal(levelMatchSummary(null).available, false);
 assert.equal(levelMatchSummary({ corrections: {} }).available, false);
+
+{
+  const s = levelMatchSummary({
+    corrections: { woofer: { gain_db: 0 }, tweeter: { gain_db: -11 } },
+    corrections_source: { woofer: "operator_pinned", tweeter: "operator_pinned" },
+    provisional: false,
+  });
+  assert.equal(s.badge, "manual");
+  assert.ok(/valid for room correction/i.test(s.note));
+  assert.ok(/explicit apply/i.test(s.note));
+}
 
 // A measurement-in-progress refusal must NOT show the "another driver" message;
 // it has its own distinct, actionable copy naming room correction / balance / sync.
@@ -150,10 +160,11 @@ assert.equal(levelMatchSummary({ corrections: {} }).available, false);
   assert.ok(/output confirmation/i.test(identitySaveFailure));
 }
 
-// Near-field copy — the level match is OPTIONAL and the copy must say so.
+// Near-field copy — manual and automatic are both valid ownership paths. An
+// automatic result cannot silently overwrite manual pins.
 assert.ok(NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("2–5 cm"));
-assert.ok(/optional/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
-assert.ok(/skip/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
+assert.ok(/safe applied manual crossover/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
+assert.ok(/explicitly apply/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
 
 // --- crossover alignment (L2) summary ---------------------------------------
 

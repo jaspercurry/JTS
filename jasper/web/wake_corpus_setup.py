@@ -180,9 +180,11 @@ from jasper.wake_corpus.bridge_session import (  # noqa: F401 - re-exported
     read_bridge_stats_snapshot,
     restart_aec_bridge,
     restart_unit,
+    set_bridge_outputs_for_plan,
     set_bridge_outputs_for_session,
     set_voice_daemon_state,
     usb_mic_status,
+    validate_active_capture_plan,
     voice_daemon_active,
 )
 from jasper.wake_corpus.recording_backend import (  # noqa: F401 - re-exported
@@ -426,6 +428,7 @@ class _Handler(BaseHTTPRequestHandler):
             "aec3_sweep_config": self.backend.aec3_sweep_config(),
             "enabled_legs": list(self.backend.enabled_legs()),
             "capture_plan": self.backend.capture_plan(),
+            "capture_plan_conformance": self.backend.capture_plan_conformance(),
             "audio_context": self.backend.audio_context(),
             "bridge_outputs": bridge_session.bridge_output_status(),
             "is_recording": self.backend.is_recording(),
@@ -603,14 +606,28 @@ class _Handler(BaseHTTPRequestHandler):
             )
             self._send_error_json(409, MIC_MUTED_MESSAGE)
             return
-        missing_outputs = bridge_session.missing_bridge_outputs_for_session(
-            corpus_profile=corpus_profile,
-            include_dtln=include_dtln,
-            include_usb_mic=include_usb_mic,
-            include_usb_dtln=include_usb_dtln,
-            include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-            include_aec3_sweep=include_aec3_sweep,
-            aec3_sweep_source=aec3_sweep_source,
+        try:
+            capture_plan = bridge_session.build_capture_plan(
+                self.backend.ports(),
+                corpus_profile=corpus_profile,
+                include_dtln=include_dtln,
+                include_raw_mic_0=include_raw_mic_0,
+                include_usb_mic=include_usb_mic,
+                include_usb_dtln=include_usb_dtln,
+                include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+                include_aec3_sweep=include_aec3_sweep,
+                aec3_sweep_source=aec3_sweep_source,
+                include_bridge_readiness=True,
+                include_runtime_profile=True,
+                plan_state=bridge_session.CAPTURE_PLAN_STATE_SESSION,
+            )
+        except (ValueError, Aec3SweepConfigError) as e:
+            self._send_error_json(400, str(e))
+            return
+        bridge = capture_plan.get("bridge")
+        missing_outputs = (
+            bridge.get("missing_outputs", [])
+            if isinstance(bridge, dict) else []
         )
         if missing_outputs and not enable_bridge_outputs:
             labels = [
@@ -627,40 +644,45 @@ class _Handler(BaseHTTPRequestHandler):
                 "missing_bridge_output_labels": labels,
             }, status=409)
             return
-        if missing_outputs:
-            try:
-                bridge_session.set_bridge_outputs_for_session(
-                    corpus_profile=corpus_profile,
-                    include_dtln=include_dtln,
-                    include_usb_mic=include_usb_mic,
-                    include_usb_dtln=include_usb_dtln,
-                    include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-                    include_aec3_sweep=include_aec3_sweep,
-                    aec3_sweep_source=aec3_sweep_source,
-                )
-            except subprocess.CalledProcessError as e:
-                detail = (e.stderr or e.stdout or str(e)).strip()
-                msg = (
-                    f"could not enable bridge outputs; {BRIDGE_UNIT} "
-                    "restart failed and the env was rolled back"
-                )
-                if detail:
-                    msg = f"{msg}: {detail[-500:]}"
-                self._send_error_json(500, msg)
-                return
-            except subprocess.TimeoutExpired:
-                self._send_error_json(
-                    500,
-                    f"could not enable bridge outputs; {BRIDGE_UNIT} "
-                    "restart timed out and the env was rolled back",
-                )
-                return
-            except OSError as e:
-                self._send_error_json(
-                    500,
-                    f"failed to enable bridge outputs: {e}",
-                )
-                return
+        try:
+            bridge_session.set_bridge_outputs_for_plan(capture_plan)
+            capture_plan = bridge_session.build_capture_plan(
+                self.backend.ports(),
+                corpus_profile=corpus_profile,
+                include_dtln=include_dtln,
+                include_raw_mic_0=include_raw_mic_0,
+                include_usb_mic=include_usb_mic,
+                include_usb_dtln=include_usb_dtln,
+                include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+                include_aec3_sweep=include_aec3_sweep,
+                aec3_sweep_source=aec3_sweep_source,
+                include_bridge_readiness=True,
+                include_runtime_profile=True,
+                plan_state=bridge_session.CAPTURE_PLAN_STATE_SESSION,
+            )
+        except subprocess.CalledProcessError as e:
+            detail = (e.stderr or e.stdout or str(e)).strip()
+            msg = (
+                f"could not enable bridge outputs; {BRIDGE_UNIT} "
+                "restart failed and the env was rolled back"
+            )
+            if detail:
+                msg = f"{msg}: {detail[-500:]}"
+            self._send_error_json(500, msg)
+            return
+        except subprocess.TimeoutExpired:
+            self._send_error_json(
+                500,
+                f"could not enable bridge outputs; {BRIDGE_UNIT} "
+                "restart timed out and the env was rolled back",
+            )
+            return
+        except OSError as e:
+            self._send_error_json(
+                500,
+                f"failed to enable bridge outputs: {e}",
+            )
+            return
         try:
             session_id = self.backend.begin_session(
                 member,
@@ -672,6 +694,7 @@ class _Handler(BaseHTTPRequestHandler):
                 include_xvf_raw0_dtln=include_xvf_raw0_dtln,
                 include_aec3_sweep=include_aec3_sweep,
                 aec3_sweep_source=aec3_sweep_source,
+                capture_plan=capture_plan,
             )
         except (ValueError, StateError) as e:
             self._send_error_json(400, str(e))

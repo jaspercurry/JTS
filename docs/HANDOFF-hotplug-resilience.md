@@ -41,7 +41,7 @@ For every hot-pluggable component, all four must hold:
 | Component | Owner | Unplug | Plug-in | Notes |
 |---|---|---|---|---|
 | **Output DAC / Apple dongle** | `jasper-outputd` + `jasper-audio-hardware-reconcile` + `jasper-dongle-recover` | clean park / failure-triggered reconcile | udev → reconcile/recover restart | **Fixed 2026-06-22; tightened 2026-07-06.** ALSA control events plus Apple USB remove helper wake reconcile; outputd stages and validates buffer/period env before retry, and config exits get one bounded reconcile/retry before parking |
-| **Microphone (XVF3800 / USB)** | `jasper-voice` + `jasper-aec-reconcile` | clean park | udev → reconcile restart | **Fixed 2026-06-21.** Was the original gap: crash-loop → reboot |
+| **Microphone (XVF3800 / USB)** | `jasper-voice` + `jasper-aec-reconcile`; optional output reference owned by `jasper-outputd` | voice clean park; outputd keeps DAC playback running and retries the chip-reference sink in the background | udev → reconcile restart; outputd reconnects its reference writer without a playback restart | **Fixed 2026-06-21; output/reference isolation tightened 2026-07-10.** A missing mic may park voice and degrade chip AEC, but cannot silence speaker output |
 | **Satellites (dial / AMOLED)** | `jasper-control` (network peers) | reported offline | re-probe online | **Already resilient** — Wi-Fi/HTTP clients, no device-bound unit |
 | **HID accessories** | `jasper-input` | in-process udev | in-process udev | **Already resilient** — pyudev monitor, no per-device unit |
 | **WiiM Remote 2 BLE mic** | `jasper-accessory-reconcile` + `jasper-wiim-remote-mic` + `jasper-voice` manual mic source | Bluetooth forget/boot reconcile removes the manual source and disables the adapter; voice keeps normal mic path | Bluetooth pair/connect reconcile writes `accessory-mics.env`, enables adapter, restarts active voice | **Fixed 2026-06-26.** Optional push-to-talk path; absent remote costs 0 resident RAM and is not a voice-daemon health failure |
@@ -51,6 +51,17 @@ dual-Apple unplug incident found one output-side edge too: when one Apple
 DAC disappeared, the reconciler did not always run before `outputd`
 restarted against stale dual-DAC env. The output side now has the same
 two-direction convergence guarantee.
+
+The output reference is deliberately a side branch, not a playback
+prerequisite. `jasper-outputd` opens and primes the physical DAC first; an
+unavailable XVF3800 USB-IN PCM changes only
+`reference_outputs.chip_ref_writer` to `degraded` and starts bounded background
+retries; a non-recoverable worker/configuration fault is `failed` and calls for
+an outputd restart after correction. `jasper-doctor` warns about that AEC degradation while the outputd
+playback check remains healthy. This separation prevents the 2026-07-10 JTS3
+failure mode where an absent microphone caused outputd startup to fail and a
+reconciler retry left CamillaDSP writing the active lane while outputd read the
+passive lane.
 
 ## The mechanism (mic)
 
@@ -353,4 +364,4 @@ session):**
 - [`deploy/systemd/jasper-accessory-reconcile.service`](../deploy/systemd/jasper-accessory-reconcile.service) — optional accessory mic profile gate
 - [`deploy/systemd/jasper-wiim-remote-mic.service`](../deploy/systemd/jasper-wiim-remote-mic.service) — optional BLE remote mic adapter
 
-Last verified: 2026-07-06
+Last verified: 2026-07-10

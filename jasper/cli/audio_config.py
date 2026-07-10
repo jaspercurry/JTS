@@ -9,9 +9,13 @@ from __future__ import annotations
 import argparse
 import json
 
+from jasper.active_speaker.runtime_contract import outputd_active_lane_decision
+from jasper.audio_hardware.dac import active_outputd_lane_channels_for
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
     DEFAULT_BASE_ENV_PATH,
+    DEFAULT_CAMILLA2_STATEFILE_PATH,
+    DEFAULT_CAMILLA_STATEFILE_PATH,
     DEFAULT_FANIN_ENV_PATH,
     DEFAULT_GROUPING_ENV_PATH,
     DEFAULT_OUTPUTD_ENV_PATH,
@@ -19,9 +23,15 @@ from jasper.audio_runtime_plan import (
     build_audio_runtime_plan,
     build_audio_runtime_plan_from_system,
     outputd_env_buffer_pair_error,
+    output_endpoint_devices_from_statefiles,
     outputd_latency_floor_actions,
     route_owned_env_actions,
     resolve_audio_route_profile,
+    transport_coherence_errors,
+)
+from jasper.camilla_config_contract import (
+    ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+    outputd_capture_device_for_playback,
 )
 from jasper.audio_runtime_overrides import (
     clear_runtime_override,
@@ -30,6 +40,9 @@ from jasper.audio_runtime_overrides import (
     set_runtime_override,
 )
 from jasper.env_load import read_env_file_state
+from jasper.fanin_coupling import COUPLING_ENV_VAR
+
+DEFAULT_OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
 
 def _cmd_explain(args: argparse.Namespace) -> int:
@@ -114,7 +127,53 @@ def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
     if detail is not None:
         print(detail)
         return 1
+    fanin = read_env_file_state(args.fanin_env)
+    devices = output_endpoint_devices_from_statefiles(
+        args.camilla_statefile,
+        args.camilla2_statefile,
+    )
+    # A graph that targets the active lane but fails the hardware/topology
+    # safety proof is intentionally demoted to the passive fail-closed route by
+    # the output-hardware reconciler. Only enforce the active pairing when the
+    # same canonical active-lane decision says that graph is legal for this DAC.
+    if devices and devices.get("playback_device") == ACTIVE_OUTPUTD_PLAYBACK_DEVICE:
+        active_cap = active_outputd_lane_channels_for(
+            str(base.values.get("JASPER_AUDIO_DAC_ID") or "")
+        )
+        decision = (
+            outputd_active_lane_decision(
+                active_cap,
+                statefile_path=args.camilla_statefile,
+                crossover_statefile_path=args.camilla2_statefile,
+                topology_path=args.output_topology,
+            )
+            if active_cap is not None
+            else None
+        )
+        if decision is None or not decision.ok:
+            devices = None
+    merged_outputd = {**base.values, **outputd.values}
+    transport_errors = transport_coherence_errors(
+        coupling=fanin.values.get(COUPLING_ENV_VAR),
+        outputd_env=merged_outputd,
+        camilla_devices=devices,
+    )
+    if transport_errors:
+        print("; ".join(transport_errors))
+        return 1
     print("ok")
+    return 0
+
+
+def _cmd_outputd_capture_device(args: argparse.Namespace) -> int:
+    capture_device = outputd_capture_device_for_playback(args.playback_device)
+    if capture_device is None:
+        print(
+            f"no outputd capture endpoint is registered for "
+            f"CamillaDSP playback={args.playback_device!r}"
+        )
+        return 1
+    print(capture_device)
     return 0
 
 
@@ -213,7 +272,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_outputd.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
     validate_outputd.add_argument("--outputd-env", default=DEFAULT_OUTPUTD_ENV_PATH)
+    validate_outputd.add_argument("--fanin-env", default=DEFAULT_FANIN_ENV_PATH)
+    validate_outputd.add_argument(
+        "--camilla-statefile", default=DEFAULT_CAMILLA_STATEFILE_PATH
+    )
+    validate_outputd.add_argument(
+        "--camilla2-statefile", default=DEFAULT_CAMILLA2_STATEFILE_PATH
+    )
+    validate_outputd.add_argument(
+        "--output-topology", default=DEFAULT_OUTPUT_TOPOLOGY_PATH
+    )
     validate_outputd.set_defaults(func=_cmd_validate_outputd_env)
+
+    capture_device = sub.add_parser(
+        "outputd-capture-device",
+        help="resolve outputd's paired capture PCM for a CamillaDSP playback PCM",
+    )
+    capture_device.add_argument("--playback-device", required=True)
+    capture_device.set_defaults(func=_cmd_outputd_capture_device)
 
     route_actions = sub.add_parser(
         "route-actions",

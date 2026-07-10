@@ -211,8 +211,39 @@ async def test_autolevel_maxes_out_when_no_lock(tmp_path):
     )
 
     assert sess.autolevel.status == AutolevelStatus.MAXED_OUT
-    assert sess.autolevel.current_main_volume_db == 0.0
-    assert sess.autolevel.locked_main_volume_db == 0.0
+    assert sess.autolevel.current_main_volume_db == -10.0
+    assert sess.autolevel.locked_main_volume_db is None
+    assert sess.autolevel.error is not None
+    assert "external amplifier" in sess.autolevel.error
+
+
+@pytest.mark.asyncio
+async def test_autolevel_quiet_start_never_jumps_above_dynamic_cap(tmp_path):
+    """A very quiet listener must not be raised to the nominal start_db."""
+    sess = _make_session(tmp_path)
+    set_history: list[float] = []
+
+    async def fake_get_vol():
+        return -80.0
+
+    async def fake_set_vol(db):
+        set_history.append(db)
+
+    player = _StubTonePlayer()
+    await sess.run_autolevel(
+        get_main_volume_db=fake_get_vol,
+        set_main_volume_db=fake_set_vol,
+        play_continuous_tone=player.play,
+        cancel_tone=player.cancel,
+        start_db=-40.0,
+        step_interval_s=0.01,
+        fade_step_s=0.001,
+    )
+
+    assert sess.autolevel.cap_db == -74.0
+    assert max(set_history) <= -74.0
+    assert sess.autolevel.status == AutolevelStatus.MAXED_OUT
+    assert sess.autolevel.locked_main_volume_db is None
 
 
 @pytest.mark.asyncio
@@ -372,9 +403,9 @@ async def test_autolevel_sets_quiet_start_volume_before_tone(tmp_path):
 @pytest.mark.asyncio
 async def test_autolevel_end_db_computed_relative_to_original(tmp_path):
     """end_db now defaults to None and is computed from the user's
-    actual listening volume at the start of the run — NOT a fixed
-    cap. This is the "stop being a menace about volume" fix: cap
-    is original + 6 dB, clamped to [-15, -6]. Verified via
+        actual listening volume at the start of the run — NOT a fixed
+        cap. This is the "stop being a menace about volume" fix: cap
+        is min(original + 6 dB, -6 dB) with no unsafe upward floor. Verified via
     sess.autolevel.cap_db which now exposes the computed value.
     """
     cases = [
@@ -382,7 +413,7 @@ async def test_autolevel_end_db_computed_relative_to_original(tmp_path):
         (-20.0, -14.0),  # +6 bump
         (-10.0, -6.0),   # bump would give -4; clamped at absolute max
         (-5.0,  -6.0),   # already above; clamped
-        (-45.0, -20.0),  # bump would give -39; clamped at absolute min
+        (-45.0, -39.0),  # quiet listeners still rise by at most the +6 bump
         (-25.0, -19.0),  # +6 bump
     ]
     for original, expected_cap in cases:

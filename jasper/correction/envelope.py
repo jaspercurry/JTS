@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 # affordance shows on the review/apply/result screens (available when an
 # OpenAI key is configured; hidden-with-nudge otherwise). Availability only,
 # no paid call — the endpoints are per-tap and confirm-gated.
-ENVELOPE_SCHEMA_VERSION = 4
+ENVELOPE_SCHEMA_VERSION = 5
 
 # 1/N-octave smoothing applied to the empirical display curves. 6 =
 # 1/6-octave — visibly smoothed (no raw jaggedness) while preserving
@@ -160,11 +160,54 @@ def _screen_for(session: Any) -> str:
     but the ramp is actively ramping, the honest screen is "level".
     """
     screen = screen_for_state(session.state.value)
+    if (
+        getattr(session, "capture_transport", "local") == "relay"
+        and session.state.value == "needs_noise_capture"
+    ):
+        return SCREEN_MIC if _relay_level_ready(session) else SCREEN_LEVEL
+    if (
+        getattr(session, "capture_transport", "local") == "relay"
+        and (
+            session.state.value == "applied"
+            or (
+                session.state.value == "verified"
+                and _relay_confirmation_pending(session)
+            )
+        )
+        and not _relay_level_ready(session)
+    ):
+        return SCREEN_LEVEL
     if screen == SCREEN_IDLE:
         autolevel = _autolevel_snapshot(session)
         if autolevel.get("status") == "ramping":
             return SCREEN_LEVEL
     return screen
+
+
+def _level_match_snapshot(session: Any) -> dict[str, Any]:
+    try:
+        snap = session.level_match_snapshot()
+    except (AttributeError, RuntimeError, TypeError):
+        return {}
+    return snap if isinstance(snap, dict) else {}
+
+
+def _relay_level_ready(session: Any) -> bool:
+    level = _level_match_snapshot(session)
+    last = level.get("last") if isinstance(level, dict) else None
+    ramp = last.get("ramp") if isinstance(last, dict) else None
+    return bool(
+        isinstance(ramp, dict)
+        and ramp.get("state") == "locked"
+    )
+
+
+def _relay_confirmation_pending(session: Any) -> bool:
+    acceptance = getattr(session, "acceptance", None)
+    return bool(
+        isinstance(acceptance, dict)
+        and str(acceptance.get("verdict") or "") == "revert_pending_confirm"
+    )
 
 
 def _autolevel_snapshot(session: Any) -> dict[str, Any]:
@@ -672,6 +715,17 @@ def _verdict_text(session: Any, screen: str) -> str:
     if screen == SCREEN_MIC:
         return "Recording a moment of quiet to gauge the room noise."
     if screen == SCREEN_LEVEL:
+        level = _level_match_snapshot(session)
+        last = level.get("last") if isinstance(level, dict) else None
+        ramp = last.get("ramp") if isinstance(last, dict) else None
+        state = str(ramp.get("state") or "") if isinstance(ramp, dict) else ""
+        if state == "maxed_out":
+            return (
+                "The microphone is still too quiet at the safe software limit. "
+                "Raise the external amplifier a little, then retry the level check."
+            )
+        if state in {"error", "cancelled", "aborted"}:
+            return "The level check stopped safely. Fix the issue shown, then retry."
         return "Setting a safe, consistent measurement volume."
     # Post-revert IDLE: a successful auto-revert lands here (reset() → IDLE),
     # and "Ready to measure your room." would silently erase what just
@@ -706,6 +760,40 @@ def _next_action_for(
     reverts, the correction stays applied, and /reset remains the manual
     undo.
     """
+    if getattr(session, "capture_transport", "local") == "relay":
+        if session.state.value == "needs_next_position":
+            return {
+                "label": "Measure next position",
+                "endpoint": "/next-position",
+            }
+        if session.state.value == "needs_noise_capture":
+            level = _level_match_snapshot(session)
+            if _relay_level_ready(session):
+                return {
+                    "label": "Measure this position",
+                    "endpoint": "/relay/capture",
+                }
+            if level.get("running") is True:
+                return None
+            last = level.get("last") if isinstance(level, dict) else None
+            retry = isinstance(last, dict) and last.get("ramp")
+            return {
+                "label": "Retry level check" if retry else "Check measurement level",
+                "endpoint": "/relay/level-match",
+            }
+        if session.state.value == "applied" or (
+            session.state.value == "verified"
+            and _relay_confirmation_pending(session)
+        ):
+            if _relay_level_ready(session):
+                return {
+                    "label": "Verify the result",
+                    "endpoint": "/relay/verify",
+                }
+            return {
+                "label": "Check verification level",
+                "endpoint": "/relay/level-match",
+            }
     if screen == SCREEN_RESULT and verdict is not None:
         if str(verdict.get("verdict")) == "revert_pending_confirm":
             return {

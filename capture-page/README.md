@@ -36,11 +36,14 @@ sanitizes it again before rendering a plain navigation link to the local Pi page
 | `js/theme.js` | Theme token → fixed CSS value allowlist | (via render) |
 | `js/crypto.js` | AES-256-GCM encrypt + plaintext SHA-256 integrity | `capture_crypto_test.mjs` |
 | `js/relay-client.js` | Phone-side relay requests (upload_token) | `capture_relay_client_test.mjs` |
+| `js/capture-protocol.js` | Public-page/Pi protocol compatibility (including the one legacy-v1 mapping) | `capture_protocol_test.mjs` |
+| `js/setup-store.js` | Privacy-bounded frozen setup reuse (sliding 20-minute idle, fixed 2-hour absolute expiry) | `capture_setup_store_test.mjs` |
 | `js/return-url.js` | Sanitized local-Pi return URL for the done CTA | `capture_return_url_test.mjs` |
 | `js/fragment.js` | Parse `#s=&u=&k=` (key never leaves the fragment) | `capture_fragment_test.mjs` |
 | `js/config.js` | `RELAY_BASE` (one relay origin for the fleet) | — |
 | `js/main.js` | Browser orchestration: one tap → record + arm → encrypt → upload | on-device |
 | `index.html` | Static shell + CSP + base styles | `node --check` |
+| `version.json` | Live page build + supported capture-protocol versions | `test_capture_page_js.py` |
 
 The page **reuses** the canonical JTS browser capture helper
 (`deploy/assets/shared/js/measurement-audio.js`) — the build copies it into the
@@ -53,6 +56,35 @@ cd capture-page
 bash build.sh                                   # -> capture-page/dist/
 npx wrangler pages deploy dist --project-name jts-capture-page
 ```
+
+### Release order (page before Pi)
+
+The Pages site and Pi packages are independent releases. A capture-protocol
+change must use this order so an upgraded Pi never reaches a stale public page:
+
+1. Add the new protocol to `version.json`'s
+   `supported_capture_protocol_versions` **without removing the currently
+   deployed protocol**. The page treats an old spec with no explicit version as
+   legacy protocol 1; this is the only implicit compatibility rule.
+2. Build and test the page: `bash capture-page/build.sh` and
+   `python3 -m pytest -q tests/test_capture_page_js.py`.
+3. Publish `capture-page/dist` to the production Pages project.
+4. Verify the public artifact before touching any Pi:
+   `curl -fsS https://capture.jasper.tech/version.json`. Confirm the expected
+   `capture_page_build` and that the new protocol is in
+   `supported_capture_protocol_versions`.
+5. Only then deploy the Pi code that emits the new
+   `CaptureSpec.capture_protocol_version`.
+6. After the fleet is upgraded, a later page-only release may remove the old
+   protocol from the supported list.
+
+Every phone control event carries the loaded page identity. The Pi validates it
+before setup or `armed` can invoke tone playback and logs
+`event=capture_relay.page_compatible` or
+`event=capture_relay.page_incompatible`. Incompatibility is also posted back to
+the phone as a visible terminal error. `version.json` is therefore the stable
+public release-verification surface; the event log proves the live page/Pi pair
+that actually opened a session.
 
 Jasper Tech's public default is deployed at `capture.jasper.tech` and points to
 `https://relay.jasper.tech`. To self-host, set `js/config.js` `RELAY_BASE` to
@@ -72,9 +104,11 @@ node tests/js/capture_relay_client_test.mjs  # phone-side relay requests
 node tests/js/capture_fragment_test.mjs      # fragment parse + upload cap
 node tests/js/capture_constraints_test.mjs   # realized-constraints verify/degrade
 node tests/js/capture_wakelock_test.mjs      # Screen Wake Lock + visibility abort
+node tests/js/capture_protocol_test.mjs      # page/Pi release compatibility
+node tests/js/capture_setup_store_test.mjs   # sliding + absolute setup expiry
 ```
 
-All six run in CI through `tests/test_capture_page_js.py` (pytest) and
+All harnesses run in CI through `tests/test_capture_page_js.py` (pytest) and
 `scripts/check-js-syntax.sh` (`node --check`).
 
 ## Needs on-device validation

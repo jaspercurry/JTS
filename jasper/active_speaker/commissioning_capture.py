@@ -64,6 +64,14 @@ if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import CalibrationCurve
 
 
+def _finite_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
 def driver_crossover_fcs(preset: ActiveSpeakerPreset, role: str) -> tuple[float, ...]:
     """The crossover frequencies ``role`` participates in (for overlap matching).
 
@@ -187,6 +195,22 @@ def record_driver_acoustic_capture(
             "acoustic": acoustic,
             "measurement": None,
         }
+    sweep_peak_dbfs = _finite_float(sweep_meta.get("amplitude_dbfs"))
+    commissioning_gain_db = _finite_float(test_level_dbfs)
+    excitation = None
+    if sweep_peak_dbfs is not None and commissioning_gain_db is not None:
+        # This is the comparison-critical gain ledger for the isolated-driver
+        # capture: the generated sweep peak plus the only role-varying graph
+        # gain. Other commissioning gains are common to every driver and cancel.
+        # Baseline matching normalizes every capture by this exact ledger, so a
+        # per-driver protected level can never masquerade as sensitivity.
+        excitation = {
+            "schema_version": 1,
+            "scope": "sweep_plus_role_varying_commission_gain",
+            "sweep_peak_dbfs": sweep_peak_dbfs,
+            "commissioning_gain_db": commissioning_gain_db,
+            "effective_peak_dbfs": sweep_peak_dbfs + commissioning_gain_db,
+        }
     raw = {
         "speaker_group_id": speaker_group_id,
         "role": role,
@@ -196,6 +220,7 @@ def record_driver_acoustic_capture(
         "acoustic": acoustic,
         "playback_id": playback_id,
         "test_level_dbfs": test_level_dbfs,
+        "excitation": excitation,
         "notes": notes,
     }
     measurement = record(

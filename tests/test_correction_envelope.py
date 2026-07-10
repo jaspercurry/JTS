@@ -87,6 +87,24 @@ class _FakeSession:
         self.design_report: dict[str, object] | None = None
 
 
+def _relay_session(
+    state: SessionState,
+    *,
+    level_state: str = "locked",
+    restored: bool = False,
+) -> _FakeSession:
+    sess = _FakeSession(state)
+    sess.capture_transport = "relay"
+    sess.level_match_snapshot = lambda: {
+        "running": False,
+        "locks": {},
+        "last": {
+            "ramp": {"state": level_state, "restored": restored},
+        },
+    }
+    return sess
+
+
 def _log_grid(n: int = 480) -> np.ndarray:
     return np.geomspace(20.0, 20000.0, n)
 
@@ -158,13 +176,14 @@ def test_unknown_state_value_falls_back_to_idle_not_crash():
 # ---------- top-level shape ------------------------------------------------
 
 
-def test_schema_version_is_four():
+def test_schema_version_is_five():
     # v2 added the P4 `verdict` block; v3 added the P5 crossover-region
     # distinction (REVIEW verdict_text + crossover_region_dip_not_boosted nudge);
     # v4 (P6) added the `tuning_llm` affordance block.
-    assert envelope.ENVELOPE_SCHEMA_VERSION == 4
+    # v5 wires the relay-owned level-before-sweep actions.
+    assert envelope.ENVELOPE_SCHEMA_VERSION == 5
     env = envelope.build_envelope(_FakeSession())
-    assert env["schema_version"] == 4
+    assert env["schema_version"] == 5
 
 
 def test_tuning_llm_block_offered_on_review_shape_pinned(monkeypatch):
@@ -226,6 +245,34 @@ def test_idle_envelope_has_entry_action_and_no_headline():
     assert env["progress"] == {"position": 1, "total": 6}
     assert isinstance(env["verdict_text"], str) and env["verdict_text"]
     assert env["verdict"] is None  # no verify yet → no acceptance verdict
+
+
+def test_relay_next_position_has_one_compound_forward_action():
+    env = envelope.build_envelope(
+        _relay_session(SessionState.NEEDS_NEXT_POSITION)
+    )
+    assert env["next_action"] == {
+        "label": "Measure next position",
+        "endpoint": "/next-position",
+    }
+
+
+def test_relay_verified_result_does_not_loop_back_to_level_check():
+    sess = _relay_session(SessionState.VERIFIED, restored=True)
+    env = envelope.build_envelope(sess)
+    assert env["screen"] == "result"
+    assert env["next_action"] == {
+        "label": "Measure again",
+        "endpoint": "/start",
+    }
+
+
+def test_relay_pending_confirmation_reuses_retained_level_for_second_verify():
+    sess = _relay_session(SessionState.VERIFIED, restored=True)
+    sess.acceptance = {"verdict": "revert_pending_confirm"}
+    env = envelope.build_envelope(sess)
+    assert env["screen"] == "result"
+    assert env["next_action"]["endpoint"] == "/relay/verify"
 
 
 # ---------- level screen (autolevel sub-state) -----------------------------
@@ -590,7 +637,7 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
         server.server_close()
 
     assert set(body) == ENVELOPE_KEYS
-    assert body["schema_version"] == 4
+    assert body["schema_version"] == 5
     assert body["screen"] == "review"
     assert body["state"] == "ready"
     assert body["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}

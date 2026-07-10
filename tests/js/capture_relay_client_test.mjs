@@ -39,12 +39,19 @@ function res(status, body, { isJson = true } = {}) {
 }
 
 function makeClient(fetchImpl) {
-  return new RelayClient({
+  const client = new RelayClient({
     baseUrl: "https://relay.test/",
     sessionId: "sess-1",
     uploadToken: "up-token",
     fetchImpl,
   });
+  client.setCapturePageIdentity({
+    schema_version: 1,
+    capture_protocol_version: 1,
+    supported_capture_protocol_versions: [1],
+    capture_page_build: "20260710.1",
+  });
+  return client;
 }
 
 async function testFetchSpec() {
@@ -69,7 +76,15 @@ async function testPostEvent() {
   assert.equal(call.init.method, "POST");
   assert.equal(call.init.headers["Content-Type"], "application/json");
   assert.equal(call.init.headers.Authorization, "Bearer up-token");
-  assert.deepEqual(JSON.parse(call.init.body), { armed: true });
+  assert.deepEqual(JSON.parse(call.init.body), {
+    armed: true,
+    capture_page: {
+      schema_version: 1,
+      capture_protocol_version: 1,
+      supported_capture_protocol_versions: [1],
+      capture_page_build: "20260710.1",
+    },
+  });
   ok();
 }
 
@@ -122,6 +137,13 @@ async function testConstructorValidates() {
   assert.throws(
     () => new RelayClient({ baseUrl: "x", uploadToken: "y" }),
     /sessionId/,
+  );
+  const client = new RelayClient({
+    baseUrl: "x", sessionId: "y", uploadToken: "z", fetchImpl: async () => res(200, {}),
+  });
+  await assert.rejects(
+    () => client.postEvent({ armed: true }),
+    /compatibility was not established/,
   );
   ok();
 }

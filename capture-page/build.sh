@@ -28,6 +28,7 @@ rm -rf "${DIST}"
 mkdir -p "${DIST}/js"
 
 cp "${HERE}/index.html" "${DIST}/index.html"
+cp "${HERE}/version.json" "${DIST}/version.json"
 cp "${HERE}"/js/*.js "${DIST}/js/"
 # Single source of truth: the shared helper is copied, never forked.
 cp "${SHARED}" "${DIST}/js/measurement-audio.js"

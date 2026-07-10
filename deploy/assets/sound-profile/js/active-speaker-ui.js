@@ -468,10 +468,11 @@ export function commissionGateReason(gateId) {
 // refines the per-driver levels with a measurement. Holding the mic close and at
 // a CONSISTENT distance for every driver is what makes the levels comparable.
 export const NEARFIELD_LEVEL_MATCH_GUIDANCE =
-  'Optional: for a measured level match, hold your phone’s microphone about ' +
+  'Automatic tuning option: hold your phone’s microphone about ' +
   '2–5 cm from the centre of the driver, pointed straight at it, while its tone ' +
-  'plays — keep the same distance for every driver. You can skip this and finish ' +
-  'by ear; JTS then uses the datasheet levels.';
+  'plays — keep the same distance for every driver. A safe applied manual crossover ' +
+  'can proceed to room correction without this step. Measured values replace manual ' +
+  'pins only when you explicitly apply the automatic crossover.';
 
 // Single generic fallback for the combined-test failure line when the backend
 // commissioning view is unavailable (e.g. its fetch failed). The per-failure-code
@@ -498,7 +499,10 @@ function levelMatchSourceLabel(source) {
   return {
     measured: 'Measured',
     sensitivity: 'Datasheet estimate',
-    explicit: 'Manual',
+    estimate: 'Suggested estimate',
+    research_estimate: 'Research estimate',
+    operator_pinned: 'Manual',
+    explicit: 'Manual (legacy)',
     none: '—'
   }[source] || source || '—';
 }
@@ -530,15 +534,21 @@ export function levelMatchSummary(baseline) {
     });
   });
   var provisional = !!baseline.provisional;
+  var sourceValues = rows.map(function(row) { return row.source; });
+  var badge = sourceValues.indexOf('measured') !== -1
+    ? 'measured'
+    : (sourceValues.indexOf('operator_pinned') !== -1 ||
+       sourceValues.indexOf('explicit') !== -1 ? 'manual' : 'estimate');
   return {
     available: rows.length > 0,
     provisional: provisional,
+    badge: badge,
     rows: rows,
-    note: provisional ?
-      'These per-driver levels are datasheet estimates — fine to keep. ' +
-        'Optionally record a phone mic capture per driver from Confirm outputs ' +
-        'to measure them instead.' :
-      'Per-driver levels are set — the quietest driver is the 0 dB reference.',
+    note: badge === 'measured' ?
+      'Per-driver levels are measured — the quietest driver is the 0 dB reference.' :
+      (badge === 'manual' ?
+        'These per-driver levels are manually pinned. A safe applied manual crossover is valid for room correction; automatic tuning replaces it only after explicit apply.' :
+        'These per-driver levels are safe starting estimates, not acoustic measurements.'),
     guidance: NEARFIELD_LEVEL_MATCH_GUIDANCE
   };
 }

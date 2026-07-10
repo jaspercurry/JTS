@@ -288,7 +288,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   function setRelayMode(enabled) {
     relayMode = !!enabled;
     hideEl(relayPanel, !relayMode);
-    hideEl(relayStartBtn, !relayMode);
+    // The server envelope owns the one primary action.  Keep the legacy relay
+    // Start control retired so it cannot compete with Start/Level/Measure.
+    hideEl(relayStartBtn, true);
     hideEl(runBtn, relayMode);
     hideEl(micPanel, relayMode);
     hideEl(measurementOptions, relayMode);
@@ -1077,6 +1079,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // forward action, so a displayed one is treated as stale on an outage.
   var WIZARD_FORWARD_ACTION_BY_STATE = {
     idle: '/start',
+    needs_next_position: '/next-position',
     ready: '/apply',
     applied: '/verify',
     verified: '/start',
@@ -1117,6 +1120,14 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (!wizardNextBtn || wizardNextBtn.classList.contains('hidden')) return;
     var displayed = wizardNextBtn.getAttribute('data-endpoint');
     var expected = WIZARD_FORWARD_ACTION_BY_STATE[currentState] || null;
+    if (relayMode && currentState === 'needs_noise_capture' &&
+        (displayed === '/relay/level-match' || displayed === '/relay/capture')) {
+      return;
+    }
+    if (relayMode && currentState === 'applied' &&
+        (displayed === '/relay/level-match' || displayed === '/relay/verify')) {
+      return;
+    }
     if (displayed !== expected) {
       renderPrimaryAction(null);
     }
@@ -1132,8 +1143,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (applyBtn && wizardProvidesForwardAction('/apply')) {
       applyBtn.classList.add('hidden');
     }
-    if (verifyBtn && wizardProvidesForwardAction('/verify')) {
+    var wizardEndpoint = wizardNextBtn && wizardNextBtn.getAttribute('data-endpoint');
+    if (verifyBtn && (wizardProvidesForwardAction('/verify') ||
+        (relayMode && (wizardEndpoint === '/relay/level-match' ||
+          wizardEndpoint === '/relay/verify')))) {
       verifyBtn.classList.add('hidden');
+    }
+    if (relayMode && wizardProvidesForwardAction('/next-position')) {
+      continueBtn.classList.add('hidden');
+      if (relayStartBtn) relayStartBtn.disabled = true;
     }
   }
 
@@ -1144,7 +1162,19 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (!ep) return;
     wizardNextBtn.disabled = true;
     try {
-      await postJson(ep.replace(/^\/+/, ''), {});
+      if (ep === '/start') {
+        await startMeasurement();
+      } else if (ep === '/relay/level-match') {
+        await startRelayLevelMatch();
+      } else if (ep === '/relay/capture') {
+        await startRelayCaptureForCurrentPosition();
+      } else if (ep === '/relay/verify') {
+        await startRelayVerify();
+      } else if (relayMode && ep === '/next-position') {
+        await continueToNextPosition();
+      } else {
+        await postJson(ep.replace(/^\/+/, ''), {});
+      }
     } catch (e) {
       setStateBadge('failed', e.message);
     } finally {
@@ -2463,8 +2493,23 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       input_device: relayMode ? null : selectedInputDevice,
       repeat_main_position: relayMode
         ? false
-        : !!(repeatMainPosition && repeatMainPosition.checked)
+        : !!(repeatMainPosition && repeatMainPosition.checked),
+      capture_transport: relayMode ? 'relay' : 'local'
     };
+  }
+
+  async function startRelayLevelMatch() {
+    setRelayStatus('Creating safe level-check link…', 'idle');
+    renderRelayCapture({status: 'starting'});
+    try {
+      var resp = await postJson('relay/level-match', {});
+      renderRelayCapture(resp.relay);
+      pollState();
+    } catch (e) {
+      setStateBadge('failed', e.message);
+      setRelayStatus(e.message, 'bad');
+      runBtn.disabled = false;
+    }
   }
 
   async function startRelayCaptureForCurrentPosition() {
@@ -2484,6 +2529,19 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
   }
 
+  async function startRelayVerify() {
+    setRelayStatus('Creating verification capture link…', 'idle');
+    renderRelayCapture({status: 'starting'});
+    try {
+      var resp = await postJson('relay/verify', {});
+      renderRelayCapture(resp.relay);
+      pollState();
+    } catch (e) {
+      setStateBadge('failed', e.message);
+      setRelayStatus(e.message, 'bad');
+    }
+  }
+
   async function startRelayMeasurement() {
     runBtn.disabled = true;
     if (relayStartBtn) relayStartBtn.disabled = true;
@@ -2498,7 +2556,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       if (relayStartBtn) relayStartBtn.disabled = false;
       return;
     }
-    await startRelayCaptureForCurrentPosition();
+    await startRelayLevelMatch();
   }
 
   async function startMeasurement() {

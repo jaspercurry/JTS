@@ -32,6 +32,7 @@ from jasper.capture_relay.cues import (
 from jasper.capture_relay.session import (
     CaptureAborted,
     CaptureFailed,
+    CapturePageIncompatible,
     CaptureTimeout,
     classify_status,
     mint_session,
@@ -39,6 +40,13 @@ from jasper.capture_relay.session import (
     run_capture,
 )
 from jasper.capture_relay.spec import build_room_sweep_spec
+
+_CAPTURE_PAGE = {
+    "schema_version": 1,
+    "capture_protocol_version": 1,
+    "supported_capture_protocol_versions": [1],
+    "capture_page_build": "20260710.1",
+}
 
 
 class FakeRelayBackend:
@@ -114,7 +122,7 @@ class FakeRelayBackend:
 
     # --- phone simulation ---
     def phone_arm(self, sid, device=None, *, noise_floor=None, setup=None):
-        event = {"armed": True}
+        event = {"armed": True, "capture_page": dict(_CAPTURE_PAGE)}
         if device is not None:
             event["device"] = device
         if noise_floor is not None:
@@ -128,6 +136,7 @@ class FakeRelayBackend:
             "setup_validate": True,
             "setup_token": token,
             "setup": setup,
+            "capture_page": dict(_CAPTURE_PAGE),
         }
 
     def phone_abort(self, sid, reason="backgrounded"):
@@ -220,6 +229,30 @@ def test_full_round_trip_returns_decrypted_wav():
     assert result.wav == wav  # bit-identical, decrypted + verified
     assert result.device is None  # phone reported no device this time
     assert armed_calls == [True]  # on_armed fired exactly once
+
+
+def test_stale_capture_page_fails_before_stimulus_and_publishes_reason(caplog):
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    backend.phone_arm(session.session_id)
+    backend.sessions[session.session_id]["event"].pop("capture_page")
+    armed_calls = []
+
+    with pytest.raises(CapturePageIncompatible, match="expected protocol 1"):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: armed_calls.append(True),
+            poll_interval_s=0.0,
+            timeout_s=5.0,
+            sleep=lambda _s: None,
+        )
+
+    assert armed_calls == []
+    assert backend.sessions[session.session_id]["host_event"]["phase"] == (
+        "capture_incompatible"
+    )
+    assert "capture_relay.page_incompatible" in caplog.text
 
 
 def test_device_flows_from_armed_event():
@@ -661,6 +694,10 @@ def test_classify_status():
     assert setup.setup_validate is True
     assert setup.setup_token == "tok"
     assert setup.setup == {"calibration": {"mode": "serial"}}
+    capture_page = classify_status(
+        {"state": "pending", "event": {"capture_page": _CAPTURE_PAGE}}
+    )
+    assert capture_page.capture_page == _CAPTURE_PAGE
 
 
 # --- step 7: abort + no-silent-failure cues ----------------------------------

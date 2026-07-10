@@ -177,10 +177,10 @@ def test_get_crossover_subpath_renders_secure_capture_ui():
     resp = _drive("/crossover/")
     assert b"200" in resp.split(b"\r\n", 1)[0]
     assert b"/assets/correction/js/crossover/main.js" in resp
-    assert b'id="mic-support"' in resp
-    assert b'id="driver-targets"' in resp
-    assert b'id="summed-targets"' in resp
-    assert b"Play each driver, confirm the right driver sounded" in resp
+    assert b'id="crossover-verdict"' in resp
+    assert b'id="crossover-steps"' in resp
+    assert b'id="crossover-action"' in resp
+    assert b'id="mic-support"' not in resp
 
 
 def test_get_bass_subpath_renders_display_page():
@@ -234,7 +234,9 @@ def test_known_post_routes_reach_csrf_guard():
         "/test-tone", "/autolevel/start", "/autolevel/lock",
         "/autolevel/cancel", "/upload-noise", "/upload-capture",
         "/calibration/fetch", "/calibration/upload", "/apply", "/reset",
-        "/session/delete", "/crossover/driver-test",
+        "/session/delete", "/relay/level-match", "/relay/verify",
+        "/crossover/level-match", "/crossover/apply",
+        "/crossover/relay-capture", "/crossover/driver-test",
         "/crossover/driver-confirm", "/crossover/driver-abort",
         "/crossover/summed-test", "/crossover/driver-capture-sweep",
         "/crossover/summed-capture-sweep", "/crossover/driver-capture",

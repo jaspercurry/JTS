@@ -26,6 +26,7 @@ These tests pin the contract:
 """
 from __future__ import annotations
 
+import json
 import sys
 import types
 from queue import Empty
@@ -483,6 +484,72 @@ def test_aec_loop_chip_aec_extra_beams_are_explicit_opt_in(monkeypatch):
     monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
     monkeypatch.setenv("JASPER_MIC_DEVICE_CHIP_AEC_150", "udp:9887")
     monkeypatch.setenv("JASPER_MIC_DEVICE_CHIP_AEC_210", "udp:9888")
+
+    aec_sock = _mock_socket()
+    raw_sock = _mock_socket()
+    raw0_sock = _mock_socket()
+    chip_150_sock = _mock_socket()
+    chip_210_sock = _mock_socket()
+    socket_factory = MagicMock(
+        side_effect=[
+            aec_sock, raw_sock, raw0_sock, chip_150_sock, chip_210_sock,
+        ],
+    )
+    monkeypatch.setattr(real_socket, "socket", socket_factory)
+
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    chip_150_frames = [
+        bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)
+    ]
+    chip_210_frames = [
+        bytes([i + 150]) * (FRAME_SAMPLES * 2) for i in range(1, 5)
+    ]
+    engine = MagicMock()
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ(mic_frames),
+        engine,
+        chip_aec_qs={
+            "chip_aec_150": _ScriptedMicQ(chip_150_frames),
+            "chip_aec_210": _ScriptedMicQ(chip_210_frames),
+        },
+        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
+        production_chip_aec_enabled=True,
+        chip_aec_primary_leg="chip_aec_150",
+    )
+
+    engine.process.assert_not_called()
+    raw_sock.sendto.assert_not_called()
+    aec_sock.sendto.assert_called_once_with(
+        b"".join(chip_150_frames), (OUT_HOST, OUT_PORT),
+    )
+    chip_150_sock.sendto.assert_called_once_with(
+        b"".join(chip_150_frames), (OUT_HOST, OUT_PORT_CHIP_AEC_150),
+    )
+    chip_210_sock.sendto.assert_called_once_with(
+        b"".join(chip_210_frames), (OUT_HOST, OUT_PORT_CHIP_AEC_210),
+    )
+
+
+def test_aec_loop_corpus_chip_aec_flag_emits_promised_beams(monkeypatch):
+    """The wake-corpus chip-AEC comparison plan promises both fixed beams.
+
+    That promise is owned by JASPER_AEC_CORPUS_CHIP_AEC_ENABLED, not by the
+    production wake-loop JASPER_MIC_DEVICE_CHIP_AEC_* toggles.
+    """
+    import socket as real_socket
+    from jasper.cli.aec_bridge import (
+        OUT_PORT_CHIP_AEC_150,
+        OUT_PORT_CHIP_AEC_210,
+    )
+    from jasper.mics import xvf3800
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+    monkeypatch.delenv("JASPER_MIC_DEVICE_CHIP_AEC_150", raising=False)
+    monkeypatch.delenv("JASPER_MIC_DEVICE_CHIP_AEC_210", raising=False)
+    monkeypatch.setenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "1")
 
     aec_sock = _mock_socket()
     raw_sock = _mock_socket()
@@ -1031,3 +1098,42 @@ def test_bridge_stats_snapshot_carries_leg_engine_status(tmp_path):
     stats.reset()
     stats.write_snapshot(path)
     assert json.loads(path.read_text())["leg_engines"] == {}
+
+
+def test_bridge_stats_snapshot_carries_active_capture_plan(tmp_path):
+    path = tmp_path / "aec_bridge_stats.json"
+    stats = aec_bridge._BridgeStats()
+    stats.set_active_capture_plan(
+        wake_corpus_plan_id="plan-123",
+        expected_legs=("chip_aec_150", "chip_aec_210", "raw0"),
+        emitted_legs=["chip_aec_150", "chip_aec_210", "raw0"],
+        corpus_flags={"chip_aec": True, "ref": True},
+        beam_plan={
+            "plan_id": "xvf_square_fixed_150_210",
+            "primary_leg": "chip_aec_150",
+            "emitted_chip_legs": ["chip_aec_150", "chip_aec_210"],
+        },
+        ports={"chip_aec_150": 9887, "chip_aec_210": 9888, "raw0": 9879},
+        mic_reference_identity={
+            "mic_device": "Array",
+            "ref_source": "outputd_udp",
+        },
+        mic_fingerprint="mic-a",
+        dac_reference_fingerprint="dac-a",
+    )
+
+    stats.write_snapshot(path)
+
+    data = json.loads(path.read_text())
+    assert data["schema_version"] == aec_bridge.BRIDGE_STATS_SCHEMA_VERSION
+    assert data["wake_corpus_plan_id"] == "plan-123"
+    assert data["emitted_legs"] == ["chip_aec_150", "chip_aec_210", "raw0"]
+    active = data["active_capture_plan"]
+    assert active["wake_corpus_plan_id"] == "plan-123"
+    assert active["enabled_corpus_flags"]["chip_aec"] is True
+    assert active["beam_plan"]["emitted_chip_legs"] == [
+        "chip_aec_150", "chip_aec_210",
+    ]
+    assert active["ports"]["chip_aec_210"] == 9888
+    assert active["mic_fingerprint"] == "mic-a"
+    assert active["dac_reference_fingerprint"] == "dac-a"

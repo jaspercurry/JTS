@@ -25,8 +25,9 @@ The safety proof the panel probes:
     never non-finite (a NaN-poisoned relay batch cannot reach the setter);
   * stop-ahead + the settle jump never imply a mic level above ``window_high``;
   * ``clip=true`` aborts immediately with a fade; a vanished feed aborts;
-  * ``maxed_out`` requires trusted evidence and never exceeds the caps; a phone
-    that never produced a usable sample is an ERROR that restores;
+  * ``maxed_out`` requires trusted evidence, never creates a measurement lock,
+    restores the listening volume, and never exceeds the caps; a phone that
+    never produced a usable sample is an ERROR that restores;
   * the safety timeout (derived from the config's own worst-case walk) always
     fires, and a quiet amp reaches MAXED_OUT *before* it;
   * cancel/timeout/clip restore the user's own volume EXACTLY (no cap clamp);
@@ -312,6 +313,12 @@ def test_cap_ceil_cannot_exceed_hard_ceiling():
         MeasurementRamp(cap_ceil_db=6.0)
 
 
+@pytest.mark.parametrize("field", ["cap_bump_db", "cap_ceil_db"])
+def test_dynamic_cap_inputs_must_be_finite(field):
+    with pytest.raises(ValueError, match="must be finite"):
+        MeasurementRamp(**{field: float("nan")})
+
+
 def test_settle_hold_must_cover_loop_latency():
     with pytest.raises(ValueError, match="settle_hold_s"):
         MeasurementRamp(settle_hold_s=1.0, max_loop_latency_s=2.0)
@@ -319,11 +326,33 @@ def test_settle_hold_must_cover_loop_latency():
 
 def test_dynamic_cap_matches_autolevel_semantics():
     cfg = MeasurementRamp()
-    # Same clamp table AutolevelController used: original+6 clamped to [-20,-6].
+    # The cap may be limited by the absolute ceiling, but never floored upward
+    # beyond original+bump.
     assert cfg.dynamic_cap(-20.0) == -14.0
     assert cfg.dynamic_cap(-10.0) == -6.0
     assert cfg.dynamic_cap(-5.0) == -6.0
-    assert cfg.dynamic_cap(-45.0) == -20.0
+    assert cfg.dynamic_cap(-45.0) == -39.0
+
+
+@pytest.mark.parametrize(
+    ("original", "bump", "ceiling"),
+    [
+        (-80.0, 6.0, -6.0),
+        (-45.0, 6.0, -6.0),
+        (-20.0, 6.0, -6.0),
+        (-10.0, 6.0, -6.0),
+        (-5.0, 6.0, -6.0),
+        (-45.0, 3.0, -12.0),
+    ],
+)
+def test_dynamic_cap_never_exceeds_bump_or_absolute_ceiling(
+    original, bump, ceiling
+):
+    cfg = MeasurementRamp(cap_bump_db=bump, cap_ceil_db=ceiling)
+    cap = cfg.dynamic_cap(original)
+    assert cap <= original + bump
+    assert cap <= ceiling
+    assert cap <= HARD_CEILING_DBFS
 
 
 def test_safety_timeout_derived_from_worst_case_walk():
@@ -381,7 +410,7 @@ async def test_sparse_relay_cadence_locks(phase):
     cfg = MeasurementRamp()
     chain = SparseChain(
         clock=clock,
-        gain_db=2.0,
+        gain_db=10.0,
         start_vol=-30.0,
         batch_interval=0.75,
         phase=phase,
@@ -401,7 +430,7 @@ async def test_sparse_jittered_cadence_locks(seed):
     cfg = MeasurementRamp()
     chain = SparseChain(
         clock=clock,
-        gain_db=2.0,
+        gain_db=10.0,
         start_vol=-30.0,
         batch_interval=0.5,
         jitter_ms=30.0,
@@ -424,7 +453,7 @@ async def test_sparse_feed_no_ratchet_past_window_top():
     clock = FakeClock()
     cfg = MeasurementRamp()
     chain = SparseChain(
-        clock=clock, gain_db=10.0, start_vol=-40.0, batch_interval=0.75
+        clock=clock, gain_db=18.0, start_vol=-40.0, batch_interval=0.75
     )
     controller, data, tone = await _run(chain, cfg, clock=clock, original=-40.0)
     assert data.state == RampState.LOCKED
@@ -441,7 +470,7 @@ async def test_sparse_transport_lag_never_overshoots(transport_lag):
     cfg = MeasurementRamp()
     chain = SparseChain(
         clock=clock,
-        gain_db=6.0,
+        gain_db=18.0,
         start_vol=-40.0,
         batch_interval=0.5,
         transport_lag=transport_lag,
@@ -477,7 +506,7 @@ async def test_sparse_down_jump_locks_loud_amp():
 
 @pytest.mark.asyncio
 async def test_sparse_confirming_maxed_out_quiet_amp():
-    # gain -2 with cap -20: the jump target clamps at the cap and the confirm
+    # gain -2 with cap -24: the jump target clamps at the cap and the confirm
     # stream reads consistently below the window → MAXED_OUT via CONFIRMING
     # (the review: this terminal existed only via CLIMBING in tests).
     clock = FakeClock()
@@ -490,7 +519,9 @@ async def test_sparse_confirming_maxed_out_quiet_amp():
     assert data.state == RampState.MAXED_OUT
     assert data.trusted_sample_count > 0  # evidence-gated
     cap = cfg.dynamic_cap(-30.0)
-    assert data.locked_main_volume_db == pytest.approx(cap)
+    assert data.locked_main_volume_db is None
+    assert data.current_main_volume_db == pytest.approx(-30.0)
+    assert data.error is not None and "external amplifier" in data.error
     for vol in chain.commanded:
         assert vol <= cap + 1e-9
 
@@ -593,7 +624,7 @@ async def test_nan_poisoned_batches_never_reach_the_setter():
     # Every third sample is NaN (a hostile relay post): the ramp must still
     # lock on the finite samples, and no commanded volume is ever non-finite.
     cfg = MeasurementRamp(**FAST)
-    chain = ChainModel(gain_db=2.0, start_vol=-30.0, nan_every=3)
+    chain = ChainModel(gain_db=10.0, start_vol=-30.0, nan_every=3)
     controller, data, tone = await _run(chain, cfg, original=-30.0)
     assert data.state == RampState.LOCKED
     for vol in chain.commanded:
@@ -604,7 +635,7 @@ async def test_nan_poisoned_batches_never_reach_the_setter():
 @pytest.mark.asyncio
 async def test_non_finite_noise_floor_is_treated_as_unknown():
     cfg = MeasurementRamp(**FAST)
-    chain = ChainModel(gain_db=2.0, start_vol=-30.0)
+    chain = ChainModel(gain_db=10.0, start_vol=-30.0)
     clock = FakeClock()
     controller = RampController(session_id="t", config=cfg)
     tone = BlockingTone()
@@ -659,8 +690,8 @@ async def test_non_finite_original_errors_before_any_volume_change():
 async def test_clip_aborts_and_restores():
     cfg = MeasurementRamp(**FAST)
     # Clip fires as soon as the ramp climbs above -35 dB.
-    chain = ChainModel(gain_db=2.0, start_vol=-50.0, clip_at_vol=-35.0)
-    controller, data, tone = await _run(chain, cfg, original=-50.0)
+    chain = ChainModel(gain_db=2.0, start_vol=-40.0, clip_at_vol=-35.0)
+    controller, data, tone = await _run(chain, cfg, original=-40.0)
     assert data.state == RampState.ABORTED
     assert data.error == "clip detected"
     # Restored to the original level (last commanded value).
@@ -712,8 +743,9 @@ async def test_maxed_out_when_amp_too_quiet_has_evidence():
     assert data.state == RampState.MAXED_OUT
     assert data.trusted_sample_count > 0
     cap = cfg.dynamic_cap(-40.0)
-    assert data.locked_main_volume_db is not None
-    assert data.locked_main_volume_db <= cap + 1e-9
+    assert data.locked_main_volume_db is None
+    assert data.current_main_volume_db == pytest.approx(-40.0)
+    assert data.error is not None and "external amplifier" in data.error
     for vol in chain.commanded:
         assert vol <= cap + 1e-9
 
@@ -834,7 +866,7 @@ async def test_quiet_start_before_tone_and_fade_before_kill():
     cfg = MeasurementRamp(**FAST)
     events: list[tuple[str, float | None]] = []
     controller = RampController(session_id="order", config=cfg)
-    chain = ChainModel(gain_db=2.0, start_vol=-30.0)
+    chain = ChainModel(gain_db=10.0, start_vol=-30.0)
     clock = FakeClock()
 
     async def set_vol(db):
@@ -924,6 +956,24 @@ async def test_restore_is_idempotent():
     await controller.restore_listening_volume_if_ramped()
     assert restored == [-18.0]
     assert controller.data.restored is True
+
+
+@pytest.mark.asyncio
+async def test_restore_rejection_stays_retryable():
+    controller = RampController(session_id="restore-retry")
+    calls: list[float] = []
+
+    async def rejected(db):
+        calls.append(db)
+        return False
+
+    controller.main_volume_setter = rejected
+    controller.data.state = RampState.LOCKED
+    controller.data.original_main_volume_db = -18.0
+    await controller.restore_listening_volume_if_ramped()
+    await controller.restore_listening_volume_if_ramped()
+    assert calls == [-18.0, -18.0]
+    assert controller.data.restored is False
 
 
 # --- LevelSample parsing -----------------------------------------------------------

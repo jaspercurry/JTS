@@ -25,8 +25,28 @@ from typing import Any, Iterable, Mapping
 DEFAULT_CAPTURE_DEVICE = "plug:jasper_capture"
 DEFAULT_PLAYBACK_DEVICE = "outputd_content_playback"
 ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "outputd_active_content_playback"
+DEFAULT_OUTPUTD_CAPTURE_DEVICE = "outputd_content_capture"
+ACTIVE_OUTPUTD_CAPTURE_DEVICE = "outputd_active_content_capture"
 DEFAULT_CAPTURE_FORMAT = "S32_LE"
 DEFAULT_PLAYBACK_FORMAT = "S16_LE"
+
+_OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE = {
+    DEFAULT_PLAYBACK_DEVICE: DEFAULT_OUTPUTD_CAPTURE_DEVICE,
+    ACTIVE_OUTPUTD_PLAYBACK_DEVICE: ACTIVE_OUTPUTD_CAPTURE_DEVICE,
+}
+
+
+def outputd_capture_device_for_playback(playback_device: object) -> str | None:
+    """Return outputd's paired capture endpoint for a Camilla playback PCM.
+
+    This is the single vocabulary boundary for the two halves of the post-DSP
+    ALSA transport. Callers resolve one playback device and derive its reader;
+    they must not independently choose active/passive lane strings.
+    """
+
+    return _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE.get(str(playback_device or ""))
+
+
 DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT = "S32_LE"
 DEFAULT_SAMPLE_RATE = 48000
 DEFAULT_CHUNKSIZE = 1024

@@ -65,10 +65,17 @@ from jasper.cli.wake_enroll import (
     SAMPLE_RATE_HZ,
     VOICE_UNIT,
 )
+from jasper.wake_ports import build_ports
 from jasper.web._common import (
     delete_env_file,
     read_env_file,
     write_env_file,
+)
+from .capture_plan import (
+    PLAN_ENV_VARS,
+    PlanConformance,
+    WakeCorpusCapturePlan,
+    fingerprint_mapping,
 )
 
 logger = logging.getLogger("jasper-wake-corpus-web")
@@ -212,11 +219,23 @@ AUDIO_VALIDATION_ARTIFACT_PATH = Path(os.environ.get(
 ))
 AUDIO_CONTEXT_SCHEMA_VERSION = 1
 CAPTURE_PLAN_SCHEMA_VERSION = 1
+CAPTURE_PLAN_STATE_PREVIEW = "preview"
+CAPTURE_PLAN_STATE_SESSION = "session"
+_CAPTURE_PLAN_PROBE_ERRORS = (
+    OSError,
+    RuntimeError,
+    ValueError,
+    TypeError,
+    AttributeError,
+    LookupError,
+    subprocess.SubprocessError,
+)
 BRIDGE_UNIT = "jasper-aec-bridge.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 AEC_INIT_UNIT = "jasper-aec-init.service"
 BRIDGE_RESTART_TIMEOUT_SEC = 30.0
 BRIDGE_CORPUS_OUTPUT_VARS = (
+    *PLAN_ENV_VARS,
     "JASPER_AEC_DTLN_ENABLED",
     "JASPER_AEC_CORPUS_REF_ENABLED",
     "JASPER_AEC_CORPUS_USB_ENABLED",
@@ -418,8 +437,69 @@ def bridge_output_status() -> dict[str, Any]:
         "env_path": str(BRIDGE_CORPUS_ENV_PATH),
         "recorder_outputs": recorder_outputs,
     }
-    status["active"] = any(key in corpus_env for key in BRIDGE_CORPUS_OUTPUT_VARS)
+    status["active"] = any(
+        key in corpus_env
+        for key in BRIDGE_CORPUS_OUTPUT_VARS
+        if key not in PLAN_ENV_VARS
+    )
     return status
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(items))
+
+
+def _required_bridge_outputs_for_request(
+    *,
+    corpus_profile: str = PROFILE_STANDARD,
+    include_dtln: bool,
+    include_usb_mic: bool,
+    include_usb_dtln: bool,
+    include_xvf_raw0_dtln: bool = False,
+    include_aec3_sweep: bool = False,
+    aec3_sweep_source: str | None = None,
+) -> list[str]:
+    sweep_source = (
+        _session_aec3_sweep_source(aec3_sweep_source)
+        if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
+    )
+    sweep_needs_usb = (
+        include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
+    )
+    required: list[str] = []
+    if include_dtln:
+        required.append("dtln")
+    if include_usb_mic or include_usb_dtln or sweep_needs_usb:
+        required.extend(["ref", "usb"])
+    if include_usb_dtln:
+        required.append("usb_dtln")
+    if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+        required.extend(["ref", "chip_aec", "xvf_raw0_webrtc_aec3", "outputd_ref"])
+    if include_xvf_raw0_dtln:
+        required.append("xvf_raw0_dtln")
+    if include_aec3_sweep:
+        required.append("aec3_sweep")
+    return _dedupe(required)
+
+
+def _missing_bridge_outputs_from_required(
+    required: list[str],
+    status: Mapping[str, Any],
+    *,
+    aec3_sweep_source: str = AEC3_SWEEP_SOURCE_XVF,
+) -> list[str]:
+    missing: list[str] = []
+    for output in required:
+        if output == "aec3_sweep":
+            if (
+                not status.get("aec3_sweep")
+                or status.get("aec3_sweep_source") != aec3_sweep_source
+            ):
+                missing.append(output)
+            continue
+        if not status.get(output):
+            missing.append(output)
+    return missing
 
 
 def missing_bridge_outputs_for_session(
@@ -438,41 +518,24 @@ def missing_bridge_outputs_for_session(
     raw0 is always emitted by the bridge, so it does not participate
     in this check.
     """
-    status = bridge_output_status()
     sweep_source = (
         _session_aec3_sweep_source(aec3_sweep_source)
         if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
     )
-    sweep_needs_usb = (
-        include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
+    required = _required_bridge_outputs_for_request(
+        corpus_profile=corpus_profile,
+        include_dtln=include_dtln,
+        include_usb_mic=include_usb_mic,
+        include_usb_dtln=include_usb_dtln,
+        include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+        include_aec3_sweep=include_aec3_sweep,
+        aec3_sweep_source=sweep_source,
     )
-    missing: list[str] = []
-    if include_dtln and not status["dtln"]:
-        missing.append("dtln")
-    if include_usb_mic or include_usb_dtln or sweep_needs_usb:
-        if not status["ref"]:
-            missing.append("ref")
-        if not status["usb"]:
-            missing.append("usb")
-    if include_usb_dtln and not status["usb_dtln"]:
-        missing.append("usb_dtln")
-    if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
-        if not status["ref"]:
-            missing.append("ref")
-        if not status["chip_aec"]:
-            missing.append("chip_aec")
-        if not status["xvf_raw0_webrtc_aec3"]:
-            missing.append("xvf_raw0_webrtc_aec3")
-        if not status["outputd_ref"]:
-            missing.append("outputd_ref")
-    if include_xvf_raw0_dtln and not status["xvf_raw0_dtln"]:
-        missing.append("xvf_raw0_dtln")
-    if include_aec3_sweep and (
-        not status["aec3_sweep"]
-        or status.get("aec3_sweep_source") != sweep_source
-    ):
-        missing.append("aec3_sweep")
-    return missing
+    return _missing_bridge_outputs_from_required(
+        required,
+        bridge_output_status(),
+        aec3_sweep_source=sweep_source,
+    )
 
 
 def _parse_amixer_bool(output: str) -> bool | None:
@@ -1260,7 +1323,31 @@ def set_bridge_outputs_for_session(
     carries the additional outputs needed for the selected corpus legs.
     Returns True when the bridge was restarted.
     """
-    system_env = read_env_file(str(SYSTEM_ENV_PATH))
+    plan = WakeCorpusCapturePlan.from_mapping(build_capture_plan(
+        build_ports(),
+        corpus_profile=corpus_profile,
+        include_dtln=include_dtln,
+        include_usb_mic=include_usb_mic,
+        include_usb_dtln=include_usb_dtln,
+        include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+        include_aec3_sweep=include_aec3_sweep,
+        aec3_sweep_source=aec3_sweep_source,
+        include_bridge_readiness=True,
+        include_runtime_profile=True,
+        plan_state=CAPTURE_PLAN_STATE_SESSION,
+    ))
+    return set_bridge_outputs_for_plan(plan)
+
+
+def set_bridge_outputs_for_plan(
+    plan: WakeCorpusCapturePlan | Mapping[str, Any],
+) -> bool:
+    """Apply one resolved capture plan to the recorder-owned bridge env."""
+
+    capture_plan = (
+        plan if isinstance(plan, WakeCorpusCapturePlan)
+        else WakeCorpusCapturePlan.from_mapping(plan)
+    )
     env_path = str(BRIDGE_CORPUS_ENV_PATH)
     existed = BRIDGE_CORPUS_ENV_PATH.exists()
     old_values = read_env_file(env_path)
@@ -1276,56 +1363,7 @@ def set_bridge_outputs_for_session(
     values = dict(old_values)
     for key in BRIDGE_CORPUS_OUTPUT_VARS:
         values.pop(key, None)
-    if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
-        include_aec3_sweep = False
-    sweep_source = (
-        _session_aec3_sweep_source(aec3_sweep_source)
-        if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
-    )
-    sweep_needs_usb = (
-        include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
-    )
-
-    if include_dtln and not _env_truthy(system_env.get("JASPER_AEC_DTLN_ENABLED")):
-        values["JASPER_AEC_DTLN_ENABLED"] = "1"
-    elif (
-        (include_aec3_sweep or corpus_profile == PROFILE_CHIP_AEC_COMPARISON)
-        and not include_dtln
-    ):
-        # AEC3 sweep and chip-AEC comparison are controlled corpus test
-        # modes. Temporarily park production DTLN unless the operator
-        # explicitly selected the legacy dtln leg; exit removes this
-        # override and restores the production intent.
-        values["JASPER_AEC_DTLN_ENABLED"] = "0"
-    needs_ref = corpus_profile == PROFILE_CHIP_AEC_COMPARISON
-    needs_usb = include_usb_mic or include_usb_dtln or sweep_needs_usb
-    if needs_ref or needs_usb:
-        values["JASPER_AEC_CORPUS_REF_ENABLED"] = "1"
-    if needs_usb:
-        values["JASPER_AEC_CORPUS_USB_ENABLED"] = "1"
-        if (
-            "JASPER_AEC_USB_MIC_DEVICE" not in values
-            and "JASPER_AEC_USB_MIC_DEVICE" not in system_env
-        ):
-            values["JASPER_AEC_USB_MIC_DEVICE"] = DEFAULT_USB_MIC_DEVICE
-    if include_usb_dtln:
-        values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] = "1"
-    if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
-        values["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] = "1"
-        values["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] = "1"
-        values["JASPER_AEC_REF_SOURCE"] = "outputd_udp"
-        values["JASPER_AEC_OUTPUTD_REF_UDP_HOST"] = "127.0.0.1"
-        values["JASPER_AEC_OUTPUTD_REF_UDP_PORT"] = OUTPUTD_REF_UDP_PORT
-        values["JASPER_OUTPUTD_CHIP_REF_PCM"] = chip_ref_pcm_for_env(system_env)
-        values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] = OUTPUTD_REF_UDP_TARGET
-        values["JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE"] = DEFAULT_CHIP_REF_SAMPLE_RATE
-        values["JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES"] = DEFAULT_CHIP_REF_PERIOD_FRAMES
-        values["JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES"] = DEFAULT_CHIP_REF_BUFFER_FRAMES
-    if include_xvf_raw0_dtln:
-        values["JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"] = "1"
-    if include_aec3_sweep:
-        values[AEC3_SWEEP_ENV_FLAG] = "1"
-        values[AEC3_SWEEP_SOURCE_ENV] = sweep_source
+    values.update(capture_plan.env_overrides())
 
     if values == old_values:
         return False
@@ -1334,6 +1372,7 @@ def set_bridge_outputs_for_session(
         write_env_file(env_path, values, mode=0o644)
     else:
         delete_env_file(env_path)
+    corpus_profile = str(capture_plan.data.get("corpus_profile") or PROFILE_STANDARD)
     try:
         if had_chip_profile or corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
             restart_unit(OUTPUTD_UNIT)
@@ -1802,6 +1841,235 @@ def _capture_plan_runtime_context() -> tuple[dict[str, Any] | None, dict[str, An
     return profile_status["audio_profile"], runtime_dict
 
 
+def _capture_plan_runtime_snapshot() -> dict[str, Any]:
+    """Snapshot hardware/runtime identity used by the capture-plan hash."""
+
+    system_env = read_env_file(str(SYSTEM_ENV_PATH))
+    bridge_env = _read_bridge_env()
+    merged_env = {**system_env, **bridge_env}
+    intent = _read_aec_intent()
+    runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
+    mic_probe, mic_identity = _mic_probe_and_identity()
+    bridge_outputs = bridge_output_status()
+    chip_gate = _chip_aec_gate_for_status(system_env, intent)
+    bridge_active = aec_bridge_active()
+    profile_status = build_audio_profile_status(
+        intent,
+        runtime,
+        mic_probe,
+        bridge_active=bridge_active,
+        chip_available=_mic_chip_aec_available(mic_probe),
+        chip_gate=chip_gate,
+    )
+    runtime_dict = asdict(runtime)
+    runtime_dict["bridge_active"] = bridge_active
+    validation = _validation_artifact_summary(
+        requested_profile=profile_status["audio_profile"].get("requested"),
+        mic_probe=mic_probe,
+        system_env=merged_env,
+    )
+    dac_reference = _dac_reference_context(
+        merged_env,
+        bridge_outputs,
+        process_env=os.environ,
+        validation=validation,
+    )
+    selected_usb_mic = merged_env.get(
+        "JASPER_AEC_USB_MIC_DEVICE",
+        DEFAULT_USB_MIC_DEVICE,
+    )
+    mic_fingerprint_source = {
+        "family": mic_identity.get("family"),
+        "variant_id": mic_identity.get("variant_id"),
+        "geometry": mic_identity.get("geometry"),
+        "chip_beam_plan": mic_identity.get("chip_beam_plan"),
+        "chip_aec_supported": mic_identity.get("chip_aec_supported"),
+        "usb_vid_pid": mic_identity.get("usb_vid_pid"),
+        "alsa_card": mic_identity.get("alsa_card"),
+        "capture_channels": (
+            mic_identity.get("observed", {})
+            if isinstance(mic_identity.get("observed"), dict) else {}
+        ).get("capture_channels"),
+        "selected_xvf_mic_device": merged_env.get("JASPER_AEC_MIC_DEVICE", ""),
+        "selected_usb_mic_device": selected_usb_mic,
+        "chip_primary_leg": merged_env.get("JASPER_AEC_CHIP_AEC_PRIMARY_LEG", ""),
+    }
+    dac_reference_fingerprint_source = {
+        "audio_dac_id": system_env.get("JASPER_AUDIO_DAC_ID", "unknown"),
+        "dac": dac_reference.get("dac"),
+        "reference": dac_reference.get("reference"),
+        "chip_gate": chip_gate,
+    }
+    return {
+        # The builder may overlay its desired recorder-owned bridge env and
+        # recompute the identity from these sources before hashing the plan.
+        # This keeps "plan to apply" and "plan observed after apply" identical
+        # without mutating the live env merely to discover its future hash.
+        "identity_recomputable": True,
+        "system_env": system_env,
+        "bridge_env": bridge_env,
+        "merged_env": merged_env,
+        "active_audio_profile": profile_status["audio_profile"],
+        "runtime_audio_env": runtime_dict,
+        "mic_identity": mic_identity,
+        "dac_reference": dac_reference,
+        "bridge_outputs": bridge_outputs,
+        "fingerprint_sources": {
+            "mic": mic_fingerprint_source,
+            "dac_reference": dac_reference_fingerprint_source,
+        },
+        "fingerprints": {
+            "mic": fingerprint_mapping(mic_fingerprint_source),
+            "dac_reference": fingerprint_mapping(
+                dac_reference_fingerprint_source,
+            ),
+        },
+    }
+
+
+def _capture_plan_snapshot_for_desired_env(
+    runtime_snapshot: Mapping[str, Any],
+    *,
+    required_env: Mapping[str, str],
+    required_outputs: list[str],
+) -> dict[str, Any]:
+    """Return the plan identity as it will look after its env is applied.
+
+    Recorder-owned reference and optional-mic env is part of the plan itself.
+    Hashing the *currently active* env creates a circular identity: applying the
+    plan changes the fingerprint and therefore changes the plan id.  Production
+    snapshots carry the raw fingerprint sources, so resolve those sources
+    against the desired env once, before the id is assigned.  Synthetic/legacy
+    snapshots without that marker retain their supplied fingerprints.
+    """
+
+    snapshot = json.loads(json.dumps(dict(runtime_snapshot), default=str))
+    if snapshot.get("identity_recomputable") is not True:
+        return snapshot
+    sources = snapshot.get("fingerprint_sources")
+    if not isinstance(sources, Mapping):
+        return snapshot
+    mic_source_raw = sources.get("mic")
+    dac_source_raw = sources.get("dac_reference")
+    if not isinstance(mic_source_raw, Mapping) or not isinstance(
+        dac_source_raw, Mapping
+    ):
+        return snapshot
+
+    merged_raw = snapshot.get("merged_env")
+    desired_env = dict(merged_raw) if isinstance(merged_raw, Mapping) else {}
+    desired_env.update({str(k): str(v) for k, v in required_env.items()})
+
+    desired_outputs_raw = snapshot.get("bridge_outputs")
+    desired_outputs = (
+        dict(desired_outputs_raw)
+        if isinstance(desired_outputs_raw, Mapping)
+        else {}
+    )
+    for output in required_outputs:
+        desired_outputs[str(output)] = True
+
+    mic_source = dict(mic_source_raw)
+    mic_source.update({
+        "selected_xvf_mic_device": desired_env.get("JASPER_AEC_MIC_DEVICE", ""),
+        "selected_usb_mic_device": desired_env.get(
+            "JASPER_AEC_USB_MIC_DEVICE", DEFAULT_USB_MIC_DEVICE
+        ),
+        "chip_primary_leg": desired_env.get(
+            "JASPER_AEC_CHIP_AEC_PRIMARY_LEG", ""
+        ),
+    })
+
+    prior_context = snapshot.get("dac_reference")
+    prior_validation = (
+        prior_context.get("validation")
+        if isinstance(prior_context, Mapping)
+        and isinstance(prior_context.get("validation"), Mapping)
+        else {"status": "unknown"}
+    )
+    desired_dac_context = _dac_reference_context(
+        desired_env,
+        desired_outputs,
+        process_env={},
+        validation=dict(prior_validation),
+    )
+    dac_source = dict(dac_source_raw)
+    dac_source.update({
+        "dac": desired_dac_context.get("dac"),
+        "reference": desired_dac_context.get("reference"),
+    })
+
+    snapshot["merged_env"] = desired_env
+    snapshot["bridge_outputs"] = desired_outputs
+    snapshot["dac_reference"] = desired_dac_context
+    snapshot["fingerprint_sources"] = {
+        **dict(sources),
+        "mic": mic_source,
+        "dac_reference": dac_source,
+    }
+    snapshot["fingerprints"] = {
+        "mic": fingerprint_mapping(mic_source),
+        "dac_reference": fingerprint_mapping(dac_source),
+    }
+    return snapshot
+
+
+def _bridge_env_overrides_for_request(
+    *,
+    system_env: Mapping[str, str],
+    merged_env: Mapping[str, str],
+    corpus_profile: str,
+    include_dtln: bool,
+    include_usb_mic: bool,
+    include_usb_dtln: bool,
+    include_xvf_raw0_dtln: bool,
+    include_aec3_sweep: bool,
+    aec3_sweep_source: str,
+) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if include_dtln and not _env_truthy(system_env.get("JASPER_AEC_DTLN_ENABLED")):
+        values["JASPER_AEC_DTLN_ENABLED"] = "1"
+    elif (
+        (include_aec3_sweep or corpus_profile == PROFILE_CHIP_AEC_COMPARISON)
+        and not include_dtln
+    ):
+        values["JASPER_AEC_DTLN_ENABLED"] = "0"
+
+    sweep_needs_usb = (
+        include_aec3_sweep and aec3_sweep_source == AEC3_SWEEP_SOURCE_USB
+    )
+    needs_ref = corpus_profile == PROFILE_CHIP_AEC_COMPARISON
+    needs_usb = include_usb_mic or include_usb_dtln or sweep_needs_usb
+    if needs_ref or needs_usb:
+        values["JASPER_AEC_CORPUS_REF_ENABLED"] = "1"
+    if needs_usb:
+        values["JASPER_AEC_CORPUS_USB_ENABLED"] = "1"
+        if "JASPER_AEC_USB_MIC_DEVICE" not in system_env:
+            values["JASPER_AEC_USB_MIC_DEVICE"] = merged_env.get(
+                "JASPER_AEC_USB_MIC_DEVICE",
+                DEFAULT_USB_MIC_DEVICE,
+            )
+    if include_usb_dtln:
+        values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] = "1"
+    if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+        values["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] = "1"
+        values["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] = "1"
+        values["JASPER_AEC_REF_SOURCE"] = "outputd_udp"
+        values["JASPER_AEC_OUTPUTD_REF_UDP_HOST"] = "127.0.0.1"
+        values["JASPER_AEC_OUTPUTD_REF_UDP_PORT"] = OUTPUTD_REF_UDP_PORT
+        values["JASPER_OUTPUTD_CHIP_REF_PCM"] = chip_ref_pcm_for_env(system_env)
+        values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] = OUTPUTD_REF_UDP_TARGET
+        values["JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE"] = DEFAULT_CHIP_REF_SAMPLE_RATE
+        values["JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES"] = DEFAULT_CHIP_REF_PERIOD_FRAMES
+        values["JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES"] = DEFAULT_CHIP_REF_BUFFER_FRAMES
+    if include_xvf_raw0_dtln:
+        values["JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"] = "1"
+    if include_aec3_sweep:
+        values[AEC3_SWEEP_ENV_FLAG] = "1"
+        values[AEC3_SWEEP_SOURCE_ENV] = aec3_sweep_source
+    return values
+
+
 def _capture_plan_leg_detail(
     leg: str,
     ports: dict[str, int],
@@ -1903,6 +2171,10 @@ def _capture_plan_from_legs(
     include_aec3_sweep: bool,
     aec3_sweep_source: str,
     missing_bridge_outputs: list[str] | None = None,
+    required_bridge_outputs: list[str] | None = None,
+    required_bridge_env: Mapping[str, str] | None = None,
+    runtime_snapshot: Mapping[str, Any] | None = None,
+    plan_state: str = CAPTURE_PLAN_STATE_PREVIEW,
     active_audio_profile: Mapping[str, Any] | None = None,
     runtime_audio_env: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1979,8 +2251,19 @@ def _capture_plan_from_legs(
             + ", ".join(labels),
         )
 
-    return {
+    fingerprints = {}
+    fingerprint_sources = {}
+    if isinstance(runtime_snapshot, Mapping):
+        raw_fingerprints = runtime_snapshot.get("fingerprints")
+        if isinstance(raw_fingerprints, Mapping):
+            fingerprints = dict(raw_fingerprints)
+        raw_sources = runtime_snapshot.get("fingerprint_sources")
+        if isinstance(raw_sources, Mapping):
+            fingerprint_sources = dict(raw_sources)
+
+    plan = {
         "schema_version": CAPTURE_PLAN_SCHEMA_VERSION,
+        "state": plan_state,
         "recipe": _capture_plan_recipe(
             corpus_profile=corpus_profile,
             include_aec3_sweep=include_aec3_sweep,
@@ -1990,6 +2273,7 @@ def _capture_plan_from_legs(
         ),
         "corpus_profile": corpus_profile,
         "selected_legs": list(enabled_legs),
+        "expected_emitted_legs": list(enabled_legs),
         "selected_physical_mics": mic_ids,
         "devices": list(grouped.values()),
         "legs": leg_details,
@@ -2003,8 +2287,14 @@ def _capture_plan_from_legs(
             "warning_count": len(warnings),
         },
         "bridge": {
+            "required_outputs": list(required_bridge_outputs or []),
+            "required_env": dict(required_bridge_env or {}),
             "missing_outputs": list(missing_bridge_outputs or []),
         },
+        "required_bridge_outputs": list(required_bridge_outputs or []),
+        "required_bridge_env": dict(required_bridge_env or {}),
+        "fingerprints": fingerprints,
+        "fingerprint_sources": fingerprint_sources,
         "flags": {
             "include_raw_mic_0": include_raw_mic_0,
             "include_dtln": include_dtln,
@@ -2016,6 +2306,7 @@ def _capture_plan_from_legs(
         },
         "warnings": warnings,
     }
+    return WakeCorpusCapturePlan.from_mapping(plan, assign_plan_id=True).to_json()
 
 
 def build_capture_plan(
@@ -2033,6 +2324,8 @@ def build_capture_plan(
     include_runtime_profile: bool = False,
     active_audio_profile: Mapping[str, Any] | None = None,
     runtime_audio_env: Mapping[str, Any] | None = None,
+    runtime_snapshot: Mapping[str, Any] | None = None,
+    plan_state: str = CAPTURE_PLAN_STATE_PREVIEW,
 ) -> dict[str, Any]:
     """Return the layered mic/channel/transform plan for a session request.
 
@@ -2045,6 +2338,7 @@ def build_capture_plan(
         raise ValueError(f"unknown corpus_profile: {corpus_profile!r}")
     if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
         include_raw_mic_0 = True
+        include_dtln = False
         include_aec3_sweep = False
         sweep_source = AEC3_SWEEP_SOURCE_XVF
     else:
@@ -2055,6 +2349,29 @@ def build_capture_plan(
     effective_include_usb_mic = include_usb_mic or (
         include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
     )
+    if runtime_snapshot is None:
+        try:
+            runtime_snapshot = _capture_plan_runtime_snapshot()
+        except _CAPTURE_PLAN_PROBE_ERRORS as e:
+            log_event(
+                logger,
+                "wake_corpus.capture_plan_identity_snapshot_failed",
+                error=e,
+                level=logging.DEBUG,
+            )
+            runtime_snapshot = {}
+    system_env = (
+        runtime_snapshot.get("system_env", {})
+        if isinstance(runtime_snapshot, Mapping) else {}
+    )
+    merged_env = (
+        runtime_snapshot.get("merged_env", {})
+        if isinstance(runtime_snapshot, Mapping) else {}
+    )
+    if not isinstance(system_env, Mapping):
+        system_env = {}
+    if not isinstance(merged_env, Mapping):
+        merged_env = {}
     enabled_legs = _session_legs(
         ports,
         corpus_profile=corpus_profile,
@@ -2066,14 +2383,25 @@ def build_capture_plan(
         include_aec3_sweep=include_aec3_sweep,
         aec3_sweep_source=sweep_source,
     )
+    required_outputs = _required_bridge_outputs_for_request(
+        corpus_profile=corpus_profile,
+        include_dtln=include_dtln,
+        include_usb_mic=effective_include_usb_mic,
+        include_usb_dtln=include_usb_dtln,
+        include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+        include_aec3_sweep=include_aec3_sweep,
+        aec3_sweep_source=sweep_source,
+    )
+    bridge_outputs = (
+        runtime_snapshot.get("bridge_outputs", {})
+        if isinstance(runtime_snapshot, Mapping) else {}
+    )
+    if not isinstance(bridge_outputs, Mapping):
+        bridge_outputs = {}
     missing = (
-        missing_bridge_outputs_for_session(
-            corpus_profile=corpus_profile,
-            include_dtln=include_dtln,
-            include_usb_mic=effective_include_usb_mic,
-            include_usb_dtln=include_usb_dtln,
-            include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-            include_aec3_sweep=include_aec3_sweep,
+        _missing_bridge_outputs_from_required(
+            required_outputs,
+            bridge_outputs or bridge_output_status(),
             aec3_sweep_source=sweep_source,
         )
         if include_bridge_readiness else []
@@ -2081,7 +2409,32 @@ def build_capture_plan(
     if include_runtime_profile and (
         active_audio_profile is None or runtime_audio_env is None
     ):
-        active_audio_profile, runtime_audio_env = _capture_plan_runtime_context()
+        active_audio_profile = (
+            runtime_snapshot.get("active_audio_profile")
+            if isinstance(runtime_snapshot, Mapping) else None
+        )
+        runtime_audio_env = (
+            runtime_snapshot.get("runtime_audio_env")
+            if isinstance(runtime_snapshot, Mapping) else None
+        )
+        if active_audio_profile is None or runtime_audio_env is None:
+            active_audio_profile, runtime_audio_env = _capture_plan_runtime_context()
+    required_env = _bridge_env_overrides_for_request(
+        system_env=system_env,
+        merged_env=merged_env,
+        corpus_profile=corpus_profile,
+        include_dtln=DTLN_LEG in enabled_legs,
+        include_usb_mic=effective_include_usb_mic,
+        include_usb_dtln=USB_DTLN_LEG in enabled_legs,
+        include_xvf_raw0_dtln=XVF_RAW0_DTLN_LEG in enabled_legs,
+        include_aec3_sweep=include_aec3_sweep,
+        aec3_sweep_source=sweep_source,
+    )
+    runtime_snapshot = _capture_plan_snapshot_for_desired_env(
+        runtime_snapshot,
+        required_env=required_env,
+        required_outputs=required_outputs,
+    )
     return _capture_plan_from_legs(
         corpus_profile=corpus_profile,
         enabled_legs=enabled_legs,
@@ -2094,8 +2447,112 @@ def build_capture_plan(
         include_aec3_sweep=include_aec3_sweep,
         aec3_sweep_source=sweep_source,
         missing_bridge_outputs=missing,
+        required_bridge_outputs=required_outputs,
+        required_bridge_env=required_env,
+        runtime_snapshot=runtime_snapshot,
+        plan_state=plan_state,
         active_audio_profile=active_audio_profile,
         runtime_audio_env=runtime_audio_env,
+    )
+
+
+def validate_active_capture_plan(
+    plan: WakeCorpusCapturePlan | Mapping[str, Any],
+    bridge_stats: Mapping[str, Any] | None = None,
+    runtime_snapshot: Mapping[str, Any] | None = None,
+) -> PlanConformance:
+    """Validate that the running bridge conforms to a stored capture plan."""
+
+    capture_plan = (
+        plan if isinstance(plan, WakeCorpusCapturePlan)
+        else WakeCorpusCapturePlan.from_mapping(plan)
+    )
+    if not capture_plan.plan_id:
+        return PlanConformance(
+            ok=False,
+            status="legacy_plan",
+            errors=[
+                "session metadata predates the capture-plan contract; "
+                "start a fresh wake-corpus session before appending clips",
+            ],
+        )
+    if bridge_stats is None:
+        bridge_stats = read_bridge_stats_snapshot()
+    if not isinstance(bridge_stats, Mapping):
+        return PlanConformance(
+            ok=False,
+            status="bridge_stats_unavailable",
+            expected_plan_id=capture_plan.plan_id,
+            errors=["aec bridge stats are unavailable"],
+        )
+    active = bridge_stats.get("active_capture_plan")
+    if not isinstance(active, Mapping):
+        active = {}
+    active_plan_id = str(
+        active.get("wake_corpus_plan_id")
+        or bridge_stats.get("wake_corpus_plan_id")
+        or "",
+    )
+    raw_emitted = active.get("emitted_legs") or bridge_stats.get("emitted_legs") or []
+    emitted_legs = (
+        [str(leg) for leg in raw_emitted]
+        if isinstance(raw_emitted, list) else []
+    )
+    expected_legs = list(capture_plan.expected_emitted_legs)
+    missing_legs = [leg for leg in expected_legs if leg not in emitted_legs]
+    errors: list[str] = []
+    warnings: list[str] = []
+    if active_plan_id != capture_plan.plan_id:
+        errors.append(
+            "aec bridge is running a different wake-corpus plan "
+            f"(active={active_plan_id or 'none'}, expected={capture_plan.plan_id})",
+        )
+    if missing_legs:
+        errors.append(
+            "aec bridge is not emitting promised leg(s): "
+            + ", ".join(missing_legs),
+        )
+
+    if runtime_snapshot is None:
+        try:
+            runtime_snapshot = _capture_plan_runtime_snapshot()
+        except _CAPTURE_PLAN_PROBE_ERRORS as e:
+            runtime_snapshot = {}
+            errors.append(f"could not fingerprint current mic/DAC runtime: {e}")
+    fingerprints = (
+        runtime_snapshot.get("fingerprints", {})
+        if isinstance(runtime_snapshot, Mapping) else {}
+    )
+    if not isinstance(fingerprints, Mapping):
+        fingerprints = {}
+    mismatches: list[str] = []
+    current_mic = str(fingerprints.get("mic") or "")
+    if capture_plan.mic_fingerprint and current_mic:
+        if current_mic != capture_plan.mic_fingerprint:
+            mismatches.append("mic")
+    current_dac = str(fingerprints.get("dac_reference") or "")
+    if capture_plan.dac_reference_fingerprint and current_dac:
+        if current_dac != capture_plan.dac_reference_fingerprint:
+            mismatches.append("dac_reference")
+    if mismatches:
+        errors.append(
+            "mic/DAC runtime changed after the session plan was built: "
+            + ", ".join(mismatches),
+        )
+    if not capture_plan.mic_fingerprint or not capture_plan.dac_reference_fingerprint:
+        warnings.append("stored plan has incomplete runtime fingerprints")
+
+    ok = not errors
+    return PlanConformance(
+        ok=ok,
+        status="ok" if ok else "blocked",
+        active_plan_id=active_plan_id,
+        expected_plan_id=capture_plan.plan_id,
+        emitted_legs=emitted_legs,
+        missing_emitted_legs=missing_legs,
+        fingerprint_mismatches=mismatches,
+        errors=errors,
+        warnings=warnings,
     )
 
 

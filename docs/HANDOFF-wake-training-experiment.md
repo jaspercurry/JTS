@@ -415,6 +415,17 @@ is not already emitting the requested optional legs, the recorder will
 offer to enable the matching corpus outputs, restart the affected
 daemons (`jasper-outputd`, `jasper-aec-init`, and/or
 `jasper-aec-bridge`), and only then begin the session.
+As of 2026-07-09, the page, session sidecar, bridge env, bridge stats,
+and clip-start gate all use the same resolved `capture_plan` contract.
+`POST /api/capture-plan` is preview-only; `POST /api/session` rebuilds
+the plan from current mic/DAC/reference runtime, applies that exact
+plan ID to the bridge env, and stores the same plan in metadata.
+`POST /api/clip/start` refuses to record if
+`/run/jasper/aec_bridge_stats.json` does not report the stored plan ID
+and every promised UDP leg, or if the mic/DAC/reference fingerprint
+changed after the session was created. Old sessions remain reviewable,
+but a legacy sidecar without `capture_plan.plan_id` must be rebuilt
+before appending new clips.
 The recorder labels WebRTC legs as **WebRTC AEC3** so they are not
 confused with raw or DTLN outputs. The `usb_raw` leg is JTS-unprocessed
 except for resampling to 16 kHz, which matches the wake/AEC model
@@ -1818,9 +1829,9 @@ and DAC/reference validation status once that validation stream exists.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-06-19 (profile-selected chip-AEC wake legs and the
-corpus leg table were rechecked against the current geometry-aware
-profile-first input policy; v33 capture-plan metadata still matches
-`jasper/web/wake_corpus_setup.py`, with reference capture part of the
-chip profile, cheap USB mic legs optional, and capture controls rendered
-as canonical toggles.)
+Last verified: 2026-07-09 (capture-plan single-source contract rechecked
+against `jasper/wake_corpus/bridge_session.py`,
+`jasper/wake_corpus/recording_backend.py`, and `jasper/cli/aec_bridge.py`;
+prior 2026-06-19 pass rechecked profile-selected chip-AEC wake legs,
+the corpus leg table, reference capture in the chip profile, optional
+cheap USB mic legs, and canonical toggle controls.)

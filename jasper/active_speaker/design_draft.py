@@ -31,6 +31,11 @@ DESIGN_DRAFT_PATH_ENV = "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"
 
 _SUPPORTED_RESEARCH_ROLES = {"full_range", "woofer", "mid", "tweeter", "subwoofer"}
 _SUPPORTED_CONFIDENCE = {"low", "medium", "high", "unknown"}
+_SUPPORTED_GAIN_OFFSET_PROVENANCE = {
+    "research_estimate",
+    "sensitivity_estimate",
+    "operator_pinned",
+}
 _MAX_DRIVERS = 16
 _MAX_CANDIDATES = 16
 _MAX_SOURCES = 8
@@ -98,6 +103,23 @@ def _finite_float(raw: Any, field_name: str) -> float | None:
     return out
 
 
+def _gain_offset_provenance(
+    raw: Any,
+    field_name: str,
+    *,
+    default: str,
+) -> str | None:
+    if raw is None or raw == "":
+        return default
+    value = _text(raw, field_name, max_chars=40)
+    if value not in _SUPPORTED_GAIN_OFFSET_PROVENANCE:
+        supported = ", ".join(sorted(_SUPPORTED_GAIN_OFFSET_PROVENANCE))
+        raise ActiveSpeakerDesignDraftError(
+            f"{field_name} must be one of: {supported}"
+        )
+    return value
+
+
 def _positive_float(raw: Any, field_name: str) -> float | None:
     out = _finite_float(raw, field_name)
     if out is not None and out <= 0:
@@ -138,6 +160,10 @@ def _frequency_range(raw: Any, field_name: str) -> list[float] | None:
 
 def _normalise_driver(raw: Any) -> dict[str, Any]:
     raw = _mapping(raw, "driver")
+    gain_offset_db = _finite_float(
+        raw.get("gain_offset_db"),
+        "driver.gain_offset_db",
+    )
     driver: dict[str, Any] = {
         "role": _role(raw.get("role"), "driver.role"),
         "model": _text(raw.get("model"), "driver.model", required=True, max_chars=120),
@@ -166,9 +192,15 @@ def _normalise_driver(raw: Any) -> dict[str, Any]:
             raw.get("do_not_test_below_hz"),
             "driver.do_not_test_below_hz",
         ),
-        "gain_offset_db": _finite_float(
-            raw.get("gain_offset_db"),
-            "driver.gain_offset_db",
+        "gain_offset_db": gain_offset_db,
+        "gain_offset_db_provenance": (
+            _gain_offset_provenance(
+                raw.get("gain_offset_db_provenance"),
+                "driver.gain_offset_db_provenance",
+                default="research_estimate",
+            )
+            if gain_offset_db is not None
+            else None
         ),
         "notes": _text(
             raw.get("notes"),
@@ -182,6 +214,10 @@ def _normalise_driver(raw: Any) -> dict[str, Any]:
 
 def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
     raw = _mapping(raw, "manual_settings.driver")
+    gain_offset_db = _finite_float(
+        raw.get("gain_offset_db"),
+        "manual_settings.driver.gain_offset_db",
+    )
     driver: dict[str, Any] = {
         "role": _role(raw.get("role"), "manual_settings.driver.role"),
         "model": _text(raw.get("model"), "manual_settings.driver.model", max_chars=120),
@@ -214,9 +250,20 @@ def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
             raw.get("do_not_test_below_hz"),
             "manual_settings.driver.do_not_test_below_hz",
         ),
-        "gain_offset_db": _finite_float(
-            raw.get("gain_offset_db"),
-            "manual_settings.driver.gain_offset_db",
+        "gain_offset_db": gain_offset_db,
+        # Legacy manual values had no provenance. Preserve them as pinned: an
+        # upgrade must never silently replace an attenuation the operator may
+        # have chosen for driver safety. New UI-generated sensitivity proposals
+        # explicitly send ``sensitivity_estimate`` and remain supersedable by
+        # acoustic measurement.
+        "gain_offset_db_provenance": (
+            _gain_offset_provenance(
+                raw.get("gain_offset_db_provenance"),
+                "manual_settings.driver.gain_offset_db_provenance",
+                default="operator_pinned",
+            )
+            if gain_offset_db is not None
+            else None
         ),
         "notes": _text(
             raw.get("notes"),

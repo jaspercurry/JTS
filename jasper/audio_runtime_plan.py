@@ -31,6 +31,7 @@ from jasper.audio_runtime_overrides import (
     runtime_overrides_path,
 )
 from jasper.camilla_config_contract import (
+    ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CHUNKSIZE,
@@ -39,6 +40,8 @@ from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_TARGET_LEVEL,
+    outputd_capture_device_for_playback,
+    read_camilla_devices_config,
 )
 from jasper.env_load import read_env_file_state
 from jasper.fanin_coupling import (
@@ -67,6 +70,8 @@ DEFAULT_BASE_ENV_PATH = "/etc/jasper/jasper.env"
 DEFAULT_OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 DEFAULT_FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 DEFAULT_GROUPING_ENV_PATH = "/var/lib/jasper/grouping.env"
+DEFAULT_CAMILLA_STATEFILE_PATH = "/var/lib/camilladsp/outputd-statefile.yml"
+DEFAULT_CAMILLA2_STATEFILE_PATH = "/var/lib/camilladsp/crossover-statefile.yml"
 
 OUTPUTD_PERIOD_KEY = "JASPER_OUTPUTD_PERIOD_FRAMES"
 OUTPUTD_CONTENT_BUFFER_KEY = "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
@@ -361,6 +366,15 @@ class TransportTopology:
             "camilla": dict(self.camilla),
             "outputd_content_source": self.outputd_content_source,
         }
+
+
+@dataclass(frozen=True)
+class OutputEndpointEvidence:
+    """Loaded CamillaDSP endpoint evidence plus any unreadable inputs."""
+
+    devices: Mapping[str, Any] | None
+    errors: tuple[str, ...] = ()
+    endpoint_recognized: bool = True
 
 
 @dataclass(frozen=True)
@@ -1045,11 +1059,18 @@ def _route_policy_errors(
     route: AudioRouteProfile,
     coupling: str,
     outputd_env: Mapping[str, str],
+    camilla_devices: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
+    errors = list(
+        transport_coherence_errors(
+            coupling=coupling,
+            outputd_env=outputd_env,
+            camilla_devices=camilla_devices,
+        )
+    )
     if route.route_id != ROUTE_USB_LOW_LATENCY_48K:
-        return ()
+        return tuple(errors)
 
-    errors: list[str] = []
     normalized_coupling = resolve_coupling(coupling)
     # RAW bridge value (lowercased) — NOT resolve_outputd_content_bridge, which
     # fail-safes an unknown bridge (e.g. the deferred lab `rate_match`) to
@@ -1293,10 +1314,16 @@ def build_audio_runtime_plan(
     ]
     settings.append(coupling_setting)
     support = coupling_supported_for_route(str(coupling_setting.value), route_mode)
+    camilla_devices = read_camilla_devices_config(correction_config_path)
     topology = transport_topology_for_coupling(
         str(coupling_setting.value),
         fanin_env=fanin_values,
         outputd_env=outputd_values,
+        camilla_playback_device=(
+            str(camilla_devices.get("playback_device") or "")
+            if camilla_devices is not None
+            else None
+        ),
     )
     correction_latency = correction_latency_eligibility_for_config(
         correction_config_path
@@ -1329,6 +1356,7 @@ def build_audio_runtime_plan(
             route=route_profile,
             coupling=str(coupling_setting.value),
             outputd_env=outputd_values,
+            camilla_devices=camilla_devices,
         ),
         plan_warnings=combined_plan_warnings,
     )
@@ -1339,6 +1367,7 @@ def transport_topology_for_coupling(
     *,
     fanin_env: Mapping[str, str] | None = None,
     outputd_env: Mapping[str, str] | None = None,
+    camilla_playback_device: str | None = None,
 ) -> TransportTopology:
     """Return the concrete transport topology implied by the coupling intent."""
 
@@ -1428,6 +1457,11 @@ def transport_topology_for_coupling(
             },
             outputd_content_source="local_pipe",
         )
+    loopback_playback = camilla_playback_device or DEFAULT_PLAYBACK_DEVICE
+    loopback_capture = (
+        outputd_capture_device_for_playback(loopback_playback)
+        or outputd_capture_device_for_playback(DEFAULT_PLAYBACK_DEVICE)
+    )
     return TransportTopology(
         name=COUPLING_LOOPBACK,
         fanin_to_camilla={
@@ -1441,8 +1475,8 @@ def transport_topology_for_coupling(
         },
         camilla_to_outputd={
             "transport": "alsa_loopback",
-            "camilla_playback_device": DEFAULT_PLAYBACK_DEVICE,
-            "outputd_capture_pcm": "outputd_content_capture",
+            "camilla_playback_device": loopback_playback,
+            "outputd_capture_pcm": loopback_capture,
             "format": DEFAULT_PLAYBACK_FORMAT,
             "channels": 2,
             "sample_rate": DEFAULT_SAMPLE_RATE,
@@ -1452,6 +1486,151 @@ def transport_topology_for_coupling(
             "capture_resampler": None,
         },
         outputd_content_source="alsa",
+    )
+
+
+def transport_coherence_errors(
+    *,
+    coupling: str | None,
+    outputd_env: Mapping[str, str] | None = None,
+    camilla_devices: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """Return contradictions across the complete Camilla/outputd transport.
+
+    ``TransportTopology`` is the policy source. This function compares its two
+    runtime consumers without re-deriving endpoint strings in reconcilers or
+    doctor checks. Missing Camilla evidence is not itself an error; a concrete
+    contradiction is.
+    """
+
+    outputd_values = dict(outputd_env or {})
+    devices = dict(camilla_devices or {})
+    playback_device = str(devices.get("playback_device") or "") or None
+    capture_device = str(devices.get("capture_device") or "") or None
+    topology = transport_topology_for_coupling(
+        coupling,
+        outputd_env=outputd_values,
+        camilla_playback_device=playback_device,
+    )
+    errors: list[str] = []
+    normalized = topology.name
+    raw_bridge = str(
+        outputd_values.get(OUTPUTD_CONTENT_BRIDGE_KEY, OUTPUTD_CONTENT_BRIDGE_DIRECT)
+        or OUTPUTD_CONTENT_BRIDGE_DIRECT
+    ).strip().lower()
+
+    if normalized == COUPLING_SHM_RING:
+        expected_capture = str(
+            topology.fanin_to_camilla.get("camilla_capture_device") or ""
+        )
+        expected_playback = str(
+            topology.camilla_to_outputd.get("camilla_playback_device") or ""
+        )
+        if raw_bridge != COUPLING_SHM_RING:
+            errors.append(
+                f"transport plan is shm_ring but {OUTPUTD_CONTENT_BRIDGE_KEY}="
+                f"{raw_bridge}; Ring A and Ring B must move together"
+            )
+        if capture_device and capture_device != expected_capture:
+            errors.append(
+                f"transport plan is shm_ring but Camilla capture={capture_device!r}; "
+                f"expected {expected_capture!r}"
+            )
+        if playback_device and playback_device != expected_playback:
+            errors.append(
+                f"transport plan is shm_ring but Camilla playback={playback_device!r}; "
+                f"expected {expected_playback!r}"
+            )
+        return tuple(errors)
+
+    if raw_bridge == COUPLING_SHM_RING:
+        errors.append(
+            f"transport plan is {normalized} but {OUTPUTD_CONTENT_BRIDGE_KEY}=shm_ring; "
+            "Ring B is armed without the matching Ring A plan"
+        )
+
+    if normalized == COUPLING_LOOPBACK and playback_device:
+        paired_capture = outputd_capture_device_for_playback(playback_device)
+        if paired_capture is not None:
+            actual_capture = str(
+                outputd_values.get(
+                    "JASPER_OUTPUTD_CONTENT_PCM",
+                    outputd_capture_device_for_playback(DEFAULT_PLAYBACK_DEVICE),
+                )
+                or ""
+            )
+            if actual_capture != paired_capture:
+                errors.append(
+                    f"post-DSP route disconnected: Camilla playback={playback_device!r} "
+                    f"requires outputd capture={paired_capture!r}, got "
+                    f"{actual_capture!r}"
+                )
+        elif playback_device == ACTIVE_OUTPUTD_PLAYBACK_DEVICE:
+            # Defensive completeness if the pairing registry is edited without
+            # updating this plan layer.
+            errors.append(
+                f"post-DSP route has no registered outputd capture for "
+                f"Camilla playback={playback_device!r}"
+            )
+    return tuple(errors)
+
+
+def output_endpoint_devices_from_statefiles(
+    *paths: str | Path,
+) -> dict[str, Any] | None:
+    """Compatibility wrapper returning only loaded endpoint devices."""
+
+    evidence = output_endpoint_evidence_from_statefiles(*paths)
+    return dict(evidence.devices) if evidence.devices is not None else None
+
+
+def output_endpoint_evidence_from_statefiles(
+    *paths: str | Path,
+) -> OutputEndpointEvidence:
+    """Return the loaded Camilla graph that actually feeds outputd.
+
+    Active leaders keep a program-bake graph in the primary statefile and the
+    driver/outputd endpoint in the crossover statefile. Inspect both in order
+    and select the first recognized output endpoint, using the same vocabulary
+    as :class:`TransportTopology`.
+    """
+
+    from jasper.active_speaker.environment import parse_camilla_statefile_config_path
+    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE
+
+    fallback: dict[str, Any] | None = None
+    errors: list[str] = []
+    output_endpoints = {
+        DEFAULT_PLAYBACK_DEVICE,
+        ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+        RING_PLAYBACK_DEVICE,
+    }
+    for statefile_path in paths:
+        try:
+            statefile_text = Path(statefile_path).read_text(encoding="utf-8")
+        except OSError as e:
+            errors.append(f"statefile {statefile_path}: {e.strerror or type(e).__name__}")
+            continue
+        config_path = parse_camilla_statefile_config_path(statefile_text)
+        if not config_path:
+            errors.append(f"statefile {statefile_path}: config_path missing")
+            continue
+        devices = read_camilla_devices_config(config_path)
+        if devices is None:
+            errors.append(f"CamillaDSP config {config_path}: devices unavailable")
+            continue
+        if fallback is None:
+            fallback = devices
+        if devices.get("playback_device") in output_endpoints:
+            return OutputEndpointEvidence(
+                devices=devices,
+                errors=tuple(errors),
+                endpoint_recognized=True,
+            )
+    return OutputEndpointEvidence(
+        devices=fallback,
+        errors=tuple(errors),
+        endpoint_recognized=False,
     )
 
 

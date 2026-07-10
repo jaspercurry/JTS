@@ -28,8 +28,7 @@ MUSIC / CONTENT
     -> jasper-fanin
     -> pcm.jasper_capture
     -> jasper-camilla
-    -> outputd_content_playback
-    -> outputd_content_capture
+    -> Ring B (low-latency route), or a paired ALSA playback/capture lane
     -> jasper-outputd
     -> dongle / amp / speaker
 
@@ -39,8 +38,7 @@ ASSISTANT AUDIO
     -> /run/jasper-fanin/tts.sock
     -> jasper-fanin, mixed after program duck
     -> jasper-camilla crossover/protection
-    -> outputd_content_playback/capture
-       (or outputd_active_content_* for active-output profiles)
+    -> Ring B, or the paired outputd_content_* / outputd_active_content_* lane
     -> jasper-outputd final sink
     -> DAC(s) / amp(s) / speaker(s)
 ```
@@ -81,8 +79,9 @@ reference contract:
 
 - `reference_outputs.speaker_reference_source=outputd_final_electrical`
 - 48 kHz stereo for software AEC/corpus/diagnostics
-- `speaker_reference_active=true` when a UDP or chip-reference consumer is
-  configured
+- `speaker_reference_active=true` only while a UDP or chip-reference consumer
+  is actually active; desired-but-unavailable chip hardware is reported
+  separately as `chip_ref_writer.status=degraded`
 - for dual Apple active output, stereo monitor left/right are the average
   of the speaker-local low/high driver lanes for each speaker
 
@@ -98,6 +97,28 @@ diagnostics. Chip-AEC additionally needs the XVF3800 USB-IN reference PCM
 from the software UDP monitor. The UDP tap stays at outputd's 48 kHz graph
 rate; the chip-reference PCM is downsampled to the XVF3800 USB-IN contract
 (`16 kHz`, default `320`-frame periods, `1280`-frame buffer).
+
+Reference fanout is failure-isolated from the critical DAC path. An absent or
+unopenable XVF3800 reference PCM never fails outputd startup: outputd continues
+physical playback, drops only reference periods while unavailable, and retries
+that optional writer with bounded exponential backoff. The STATUS distinction
+is intentional: `desired` describes configuration, `active` describes runtime
+truth, and counters expose open failures, retries, and unavailable-period
+drops. A terminal worker/configuration fault reports `status=failed` rather than
+pretending a retry is pending. Playback readiness depends only on the physical
+output sink.
+
+The complete fan-in → CamillaDSP → outputd transport is described once by
+`AudioRuntimePlan.TransportTopology`. For ALSA loopback, the outputd capture PCM
+is derived from CamillaDSP's playback PCM by the paired endpoint registry; it
+is never chosen independently: the hardware reconciler asks the canonical
+pairing contract for the capture endpoint it writes. Its staged validator rejects a
+candidate that would connect an active Camilla writer to the passive outputd
+reader, and the doctor applies the same coherence check to the loaded graph and
+live outputd STATUS; missing graph evidence is a warning, not false green health.
+Ring A + Ring B remain the low-latency product route;
+loopback remains a coherent fallback until that fallback is deliberately
+retired.
 
 There is intentionally no production fan-in reference side feed. A
 short-lived 2026-05-27 spike explored a Unix-datagram content mirror
@@ -1426,7 +1447,11 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-07-07 (ring/default outputd bridge text rechecked against
+Last verified: 2026-07-10 (optional-reference failure isolation and full
+transport coherence rechecked against `rust/jasper-outputd`,
+`jasper.audio_runtime_plan`, `jasper.camilla_config_contract`,
+`jasper.cli.audio_config`, the staged audio-hardware reconciler, and doctor;
+ring/default outputd bridge text rechecked against
 `jasper.fanin_coupling`, `jasper.fanin.coupling_auto`, and
 `jasper.fanin.coupling_reconcile`; prior 2026-07-06 outputd config-shear
 resilience rechecked against

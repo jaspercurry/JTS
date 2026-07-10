@@ -120,6 +120,12 @@ from jasper.aec_sweep import (
 )
 from jasper.watchdog import Heartbeat
 from jasper import wake_legs
+from jasper.wake_corpus.capture_plan import (
+    DAC_FINGERPRINT_ENV,
+    EXPECTED_LEGS_ENV,
+    MIC_FINGERPRINT_ENV,
+    PLAN_ID_ENV,
+)
 from jasper.log_event import log_event
 from ..mics import xvf3800 as _mic_profile
 
@@ -259,7 +265,7 @@ USB_MIC_RATE = 0
 OUT_FRAME_SAMPLES = 1280
 OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
 BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
-BRIDGE_STATS_SCHEMA_VERSION = 1
+BRIDGE_STATS_SCHEMA_VERSION = 2
 
 # Drop-frame threshold. If queues fill faster than they drain,
 # something's wrong (CPU starvation, clock drift exceeded our
@@ -297,6 +303,10 @@ class BridgeConfig:
     aec3_sweep_config: Aec3SweepConfig
     aec3_sweep_variants: tuple[Aec3SweepVariant, ...]
     aec3_sweep_input_source: str
+    wake_corpus_plan_id: str
+    wake_corpus_expected_legs: tuple[str, ...]
+    wake_corpus_mic_fingerprint: str
+    wake_corpus_dac_fingerprint: str
 
     @classmethod
     def from_env(
@@ -334,6 +344,10 @@ class BridgeConfig:
         def _env_leg_port(env_var: str, token: str) -> int:
             return int(os.environ.get(env_var, str(_leg_default_port(token))))
 
+        corpus_chip_aec_enabled = _env_bool(
+            "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "0",
+        )
+
         return cls(
             mic_device=os.environ.get(
                 "JASPER_AEC_MIC_DEVICE",
@@ -362,11 +376,21 @@ class BridgeConfig:
                 "JASPER_AEC_UDP_PORT_CHIP_AEC_210",
                 "chip_aec_210",
             ),
-            emit_chip_aec_150=bool(
-                os.environ.get("JASPER_MIC_DEVICE_CHIP_AEC_150", "").strip()
+            emit_chip_aec_150=(
+                corpus_chip_aec_enabled
+                or bool(
+                    os.environ.get(
+                        "JASPER_MIC_DEVICE_CHIP_AEC_150", "",
+                    ).strip()
+                )
             ),
-            emit_chip_aec_210=bool(
-                os.environ.get("JASPER_MIC_DEVICE_CHIP_AEC_210", "").strip()
+            emit_chip_aec_210=(
+                corpus_chip_aec_enabled
+                or bool(
+                    os.environ.get(
+                        "JASPER_MIC_DEVICE_CHIP_AEC_210", "",
+                    ).strip()
+                )
             ),
             out_port_xvf_raw0_webrtc_aec3=_env_leg_port(
                 "JASPER_AEC_UDP_PORT_XVF_RAW0_WEBRTC_AEC3",
@@ -411,6 +435,18 @@ class BridgeConfig:
             aec3_sweep_config=sweep_config,
             aec3_sweep_variants=sweep_config.variants,
             aec3_sweep_input_source=sweep_input_source,
+            wake_corpus_plan_id=os.environ.get(PLAN_ID_ENV, "").strip(),
+            wake_corpus_expected_legs=tuple(
+                leg.strip()
+                for leg in os.environ.get(EXPECTED_LEGS_ENV, "").split(",")
+                if leg.strip()
+            ),
+            wake_corpus_mic_fingerprint=os.environ.get(
+                MIC_FINGERPRINT_ENV, "",
+            ).strip(),
+            wake_corpus_dac_fingerprint=os.environ.get(
+                DAC_FINGERPRINT_ENV, "",
+            ).strip(),
         )
 
 
@@ -467,6 +503,7 @@ class _BridgeStats:
         with self._lock:
             self._started_epoch_sec = time.time()
             self._leg_engines = {}
+            self._active_capture_plan: dict[str, object] = {}
             self._counters = {
                 "frames_processed": 0,
                 "ref_starved_frames": 0,
@@ -505,6 +542,32 @@ class _BridgeStats:
                 "error": error,
             }
 
+    def set_active_capture_plan(
+        self,
+        *,
+        wake_corpus_plan_id: str,
+        expected_legs: tuple[str, ...],
+        emitted_legs: list[str],
+        corpus_flags: dict[str, object],
+        beam_plan: dict[str, object],
+        ports: dict[str, int],
+        mic_reference_identity: dict[str, object],
+        mic_fingerprint: str = "",
+        dac_reference_fingerprint: str = "",
+    ) -> None:
+        with self._lock:
+            self._active_capture_plan = {
+                "wake_corpus_plan_id": wake_corpus_plan_id,
+                "expected_legs": list(expected_legs),
+                "emitted_legs": list(emitted_legs),
+                "enabled_corpus_flags": dict(corpus_flags),
+                "beam_plan": dict(beam_plan),
+                "ports": dict(ports),
+                "mic_reference_identity": dict(mic_reference_identity),
+                "mic_fingerprint": mic_fingerprint,
+                "dac_reference_fingerprint": dac_reference_fingerprint,
+            }
+
     def inc(self, key: str, amount: int = 1) -> None:
         with self._lock:
             self._counters[key] = int(self._counters.get(key, 0)) + amount
@@ -520,6 +583,7 @@ class _BridgeStats:
         with self._lock:
             counters = json.loads(json.dumps(self._counters))
             leg_engines = json.loads(json.dumps(self._leg_engines))
+            active_capture_plan = json.loads(json.dumps(self._active_capture_plan))
             started = self._started_epoch_sec
         return {
             "schema_version": BRIDGE_STATS_SCHEMA_VERSION,
@@ -531,6 +595,11 @@ class _BridgeStats:
             "out_frame_samples": OUT_FRAME_SAMPLES,
             "counters": counters,
             "leg_engines": leg_engines,
+            "active_capture_plan": active_capture_plan,
+            "wake_corpus_plan_id": active_capture_plan.get(
+                "wake_corpus_plan_id", "",
+            ),
+            "emitted_legs": active_capture_plan.get("emitted_legs", []),
         }
 
     def write_snapshot(self, path: Path = BRIDGE_STATS_PATH) -> None:
@@ -1900,6 +1969,40 @@ def _aec_loop(  # noqa: PLR0915
             f"{variant.leg}="
             f"{config.out_host}:{config.out_port_aec3_sweep[variant.leg]}"
         )
+    _bridge_stats.set_active_capture_plan(
+        wake_corpus_plan_id=config.wake_corpus_plan_id,
+        expected_legs=config.wake_corpus_expected_legs,
+        emitted_legs=sorted(emitters.keys()),
+        corpus_flags={
+            "ref": emit_ref,
+            "usb": usb_raw_q is not None,
+            "usb_dtln": usb_dtln_engine is not None,
+            "chip_aec": bool(chip_aec_emitters),
+            "aec3_sweep": bool(aec3_sweep_paths),
+            "xvf_raw0_webrtc_aec3": xvf_raw0_webrtc_emitter is not None,
+            "xvf_raw0_dtln": xvf_raw0_dtln_emitter is not None,
+            "production_chip_aec": production_chip_aec_enabled,
+        },
+        beam_plan={
+            "plan_id": chip_beam_plan.plan_id if chip_beam_plan else "",
+            "primary_leg": chip_aec_primary_leg,
+            "emitted_chip_legs": sorted(chip_aec_emitters.keys()),
+        },
+        ports={leg: int(emitter.dest[1]) for leg, emitter in emitters.items()},
+        mic_reference_identity={
+            "mic_device": config.mic_device,
+            "mic_channels": MIC_CHANNELS,
+            "mic_channel_index": MIC_CHANNEL_INDEX,
+            "ref_source": config.ref_source,
+            "outputd_ref_udp": (
+                f"{config.outputd_ref_udp_host}:{config.outputd_ref_udp_port}"
+            ),
+            "usb_mic_device": config.usb_mic_device,
+            "aec3_sweep_input_source": config.aec3_sweep_input_source,
+        },
+        mic_fingerprint=config.wake_corpus_mic_fingerprint,
+        dac_reference_fingerprint=config.wake_corpus_dac_fingerprint,
+    )
     logger.info(
         "udp outputs: %s frame=%d samples (%d bytes)",
         " ".join(output_parts), OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,

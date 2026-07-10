@@ -65,6 +65,8 @@ pub struct OutputdState {
     chip_ref_pcm: Option<String>,
     chip_ref_diagnostic_tee_path: Option<String>,
     reference_udp_target: Option<String>,
+    reference_udp_active: AtomicBool,
+    reference_udp_error_count: AtomicU64,
     sample_rate: AtomicU64,
     content_period_frames: AtomicU64,
     dac_period_frames: AtomicU64,
@@ -157,6 +159,11 @@ pub struct OutputdState {
     chip_ref_write_xrun_count: AtomicU64,
     chip_ref_write_recovery_count: AtomicU64,
     chip_ref_write_error_count: AtomicU64,
+    chip_ref_writer_active: AtomicBool,
+    chip_ref_terminal_failure: AtomicBool,
+    chip_ref_open_error_count: AtomicU64,
+    chip_ref_retry_count: AtomicU64,
+    chip_ref_dropped_unavailable_periods: AtomicU64,
     chip_ref_dropped_full_periods: AtomicU64,
     chip_ref_dropped_disconnected_periods: AtomicU64,
     chip_ref_last_write_ms: AtomicU64,
@@ -256,6 +263,8 @@ impl OutputdState {
             chip_ref_pcm: config.chip_ref_pcm.clone(),
             chip_ref_diagnostic_tee_path: config.chip_ref_tee_path.clone(),
             reference_udp_target: config.reference_udp_target.clone(),
+            reference_udp_active: AtomicBool::new(false),
+            reference_udp_error_count: AtomicU64::new(0),
             sample_rate: AtomicU64::new(config.sample_rate as u64),
             content_period_frames: AtomicU64::new(config.period_frames as u64),
             dac_period_frames: AtomicU64::new(config.period_frames as u64),
@@ -359,6 +368,11 @@ impl OutputdState {
             chip_ref_write_xrun_count: AtomicU64::new(0),
             chip_ref_write_recovery_count: AtomicU64::new(0),
             chip_ref_write_error_count: AtomicU64::new(0),
+            chip_ref_writer_active: AtomicBool::new(false),
+            chip_ref_terminal_failure: AtomicBool::new(false),
+            chip_ref_open_error_count: AtomicU64::new(0),
+            chip_ref_retry_count: AtomicU64::new(0),
+            chip_ref_dropped_unavailable_periods: AtomicU64::new(0),
             chip_ref_dropped_full_periods: AtomicU64::new(0),
             chip_ref_dropped_disconnected_periods: AtomicU64::new(0),
             chip_ref_last_write_ms: AtomicU64::new(NEVER_MS),
@@ -529,6 +543,45 @@ impl OutputdState {
 
     pub fn mark_chip_ref_dropped_disconnected(&self) {
         self.chip_ref_dropped_disconnected_periods
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn mark_reference_udp_active(&self, active: bool) {
+        self.reference_udp_active.store(active, Ordering::Relaxed);
+    }
+
+    pub fn mark_reference_udp_error(&self) {
+        self.reference_udp_active.store(false, Ordering::Relaxed);
+        self.reference_udp_error_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn mark_chip_ref_writer_active(&self, active: bool) {
+        self.chip_ref_writer_active.store(active, Ordering::Relaxed);
+        if active {
+            self.chip_ref_terminal_failure
+                .store(false, Ordering::Relaxed);
+        }
+    }
+
+    pub fn mark_chip_ref_terminal_failure(&self) {
+        self.chip_ref_writer_active.store(false, Ordering::Relaxed);
+        self.chip_ref_terminal_failure
+            .store(true, Ordering::Relaxed);
+    }
+
+    pub fn mark_chip_ref_open_error(&self) {
+        self.chip_ref_writer_active.store(false, Ordering::Relaxed);
+        self.chip_ref_open_error_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn mark_chip_ref_retry(&self) {
+        self.chip_ref_retry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn mark_chip_ref_dropped_unavailable(&self) {
+        self.chip_ref_dropped_unavailable_periods
             .fetch_add(1, Ordering::Relaxed);
     }
 
@@ -1461,7 +1514,8 @@ impl OutputdState {
         push_kv_bool(
             &mut buf,
             "speaker_reference_active",
-            self.chip_ref_pcm.is_some() || self.reference_udp_target.is_some(),
+            self.chip_ref_writer_active.load(Ordering::Relaxed)
+                || self.reference_udp_active.load(Ordering::Relaxed),
         );
         buf.push(',');
         push_kv_u64(&mut buf, "speaker_reference_sample_rate", sample_rate);
@@ -1504,10 +1558,43 @@ impl OutputdState {
                 .load(Ordering::Relaxed),
         );
         let reference_sequence = self.reference_sequence.load(Ordering::Relaxed);
+        let chip_ref_desired = self.chip_ref_pcm.is_some();
+        let chip_ref_active = self.chip_ref_writer_active.load(Ordering::Relaxed);
+        let chip_ref_terminal_failure = self.chip_ref_terminal_failure.load(Ordering::Relaxed);
+        let chip_ref_open_error_count = self.chip_ref_open_error_count.load(Ordering::Relaxed);
+        let chip_ref_write_error_count = self.chip_ref_write_error_count.load(Ordering::Relaxed);
+        let chip_ref_status = if !chip_ref_desired {
+            "disabled"
+        } else if chip_ref_active {
+            "active"
+        } else if chip_ref_terminal_failure {
+            "failed"
+        } else if chip_ref_open_error_count > 0 || chip_ref_write_error_count > 0 {
+            "degraded"
+        } else {
+            "connecting"
+        };
         let chip_ref_sequence_lag = chip_ref_last_written_sequence
             .map(|written| reference_sequence.saturating_sub(written));
         buf.push_str(r#""chip_ref_writer":{"#);
-        push_kv_bool(&mut buf, "enabled", self.chip_ref_pcm.is_some());
+        push_kv_bool(&mut buf, "desired", chip_ref_desired);
+        buf.push(',');
+        // Compatibility: existing AEC policy consumers read `enabled` as the
+        // live writer verdict. It now tells runtime truth instead of merely
+        // echoing that a PCM name was configured.
+        push_kv_bool(&mut buf, "enabled", chip_ref_active);
+        buf.push(',');
+        push_kv_bool(&mut buf, "active", chip_ref_active);
+        buf.push(',');
+        push_kv_str(&mut buf, "status", chip_ref_status);
+        buf.push(',');
+        push_kv_u64(&mut buf, "open_error_count", chip_ref_open_error_count);
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "retry_count",
+            self.chip_ref_retry_count.load(Ordering::Relaxed),
+        );
         buf.push(',');
         push_kv_u64(
             &mut buf,
@@ -1583,6 +1670,13 @@ impl OutputdState {
                 .load(Ordering::Relaxed),
         );
         buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "dropped_periods_while_unavailable",
+            self.chip_ref_dropped_unavailable_periods
+                .load(Ordering::Relaxed),
+        );
+        buf.push(',');
         push_kv_u64_opt(
             &mut buf,
             "last_write_age_ms",
@@ -1632,6 +1726,18 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
         push_kv_str_opt(&mut buf, "udp_target", self.reference_udp_target.as_deref());
+        buf.push(',');
+        push_kv_bool(
+            &mut buf,
+            "udp_active",
+            self.reference_udp_active.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "udp_error_count",
+            self.reference_udp_error_count.load(Ordering::Relaxed),
+        );
         buf.push(',');
 
         // Passive chip-AEC clock drift (Layer 0). Observe-only: SRO estimate,
@@ -2134,7 +2240,7 @@ mod tests {
             r#""chip_ref_sample_rate":16000"#,
             r#""chip_ref_period_frames":320"#,
             r#""chip_ref_buffer_frames":4096"#,
-            r#""chip_ref_writer":{"enabled":false"#,
+            r#""chip_ref_writer":{"desired":false,"enabled":false,"active":false,"status":"disabled""#,
             r#""queue_depth_periods":0"#,
             r#""queued_frames":0"#,
             r#""dropped_periods_due_to_full_queue":0"#,
@@ -2499,8 +2605,11 @@ mod tests {
             recoveries: 1,
             write_failed: false,
         });
+        state.mark_chip_ref_writer_active(true);
+        state.mark_chip_ref_retry();
         state.mark_chip_ref_dropped_full();
         state.mark_chip_ref_dropped_disconnected();
+        state.mark_chip_ref_dropped_unavailable();
         state.mark_chip_ref_tee_open_error();
         state.mark_chip_ref_tee_opened();
         state.mark_chip_ref_tee_write_error();
@@ -2509,7 +2618,8 @@ mod tests {
         for needle in [
             r#""snd_pcm_delay_frames":240"#,
             r#""snd_pcm_delay_ms":5.000"#,
-            r#""chip_ref_writer":{"enabled":true"#,
+            r#""chip_ref_writer":{"desired":true,"enabled":true,"active":true,"status":"active""#,
+            r#""retry_count":1"#,
             r#""queue_depth_periods":0"#,
             r#""queued_frames":0"#,
             r#""frames_written":320"#,
@@ -2521,6 +2631,7 @@ mod tests {
             r#""write_error_count":0"#,
             r#""dropped_periods_due_to_full_queue":1"#,
             r#""dropped_periods_due_to_disconnected_writer":1"#,
+            r#""dropped_periods_while_unavailable":1"#,
             r#""last_enqueued_reference_sequence":10"#,
             r#""last_written_reference_sequence":10"#,
             r#""reference_sequence_lag":2"#,
@@ -2532,6 +2643,28 @@ mod tests {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
         assert!(!j.contains(r#""last_write_age_ms":null"#), "{j}");
+    }
+
+    #[test]
+    fn chip_ref_writer_status_tracks_recoverable_and_terminal_failures() {
+        let cfg = Config {
+            chip_ref_pcm: Some("plughw:CARD=Array,DEV=0".to_string()),
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        assert!(state.snapshot_json().contains(r#""status":"connecting""#));
+
+        state.mark_chip_ref_write(ChipRefWrite {
+            write_failed: true,
+            ..ChipRefWrite::default()
+        });
+        assert!(state.snapshot_json().contains(r#""status":"degraded""#));
+
+        state.mark_chip_ref_terminal_failure();
+        assert!(state.snapshot_json().contains(r#""status":"failed""#));
+
+        state.mark_chip_ref_writer_active(true);
+        assert!(state.snapshot_json().contains(r#""status":"active""#));
     }
 
     #[test]

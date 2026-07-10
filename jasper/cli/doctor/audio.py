@@ -2416,24 +2416,24 @@ def check_outputd_service() -> CheckResult:
         )
     from jasper.fanin.coupling_reconcile import read_persisted_coupling
     from jasper.fanin_coupling import (
-        COUPLING_SHM_RING,
         COUPLING_TRANSPORT_PIPE,
         OUTPUTD_PIPE_PATH_ENV_VAR,
         resolve_outputd_pipe_path,
     )
+    from jasper.audio_runtime_plan import (
+        DEFAULT_CAMILLA2_STATEFILE_PATH,
+        DEFAULT_CAMILLA_STATEFILE_PATH,
+        output_endpoint_evidence_from_statefiles,
+        transport_coherence_errors,
+        transport_topology_for_coupling,
+    )
 
     coupling = read_persisted_coupling()
-    # Three-way coupling -> outputd content source contract: transport_pipe
-    # feeds outputd's local pipe, shm_ring feeds its ShmRingSource (Ring B),
-    # and loopback rides the ALSA content lane. This mapping predates shm_ring
-    # and its two-way form false-failed every ring-coupled box (content.source
-    # correctly reported 'shm_ring' while the check demanded 'alsa').
-    if coupling == COUPLING_TRANSPORT_PIPE:
-        expected_content_source = "local_pipe"
-    elif coupling == COUPLING_SHM_RING:
-        expected_content_source = "shm_ring"
-    else:
-        expected_content_source = "alsa"
+    topology = transport_topology_for_coupling(
+        coupling,
+        outputd_env=outputd_env,
+    )
+    expected_content_source = topology.outputd_content_source
     actual_content_source = content.get("source")
     if actual_content_source != expected_content_source:
         return CheckResult(
@@ -2444,6 +2444,39 @@ def check_outputd_service() -> CheckResult:
             "Run jasper-fanin-coupling-reconcile to restart outputd onto the "
             "persisted topology.",
         )
+    live_outputd_env = dict(outputd_env)
+    live_outputd_env["JASPER_OUTPUTD_CONTENT_PCM"] = str(content.get("pcm") or "")
+    endpoint_evidence = output_endpoint_evidence_from_statefiles(
+        DEFAULT_CAMILLA_STATEFILE_PATH,
+        DEFAULT_CAMILLA2_STATEFILE_PATH,
+    )
+    transport_evidence_warning = ""
+    if (
+        endpoint_evidence.devices is None
+        or not endpoint_evidence.endpoint_recognized
+    ):
+        evidence_detail = "; ".join(endpoint_evidence.errors) or (
+            "loaded graph does not target a registered output endpoint"
+        )
+        transport_evidence_warning = (
+            "post-DSP transport coherence unknown: " + evidence_detail
+        )
+    else:
+        transport_errors = transport_coherence_errors(
+            coupling=coupling,
+            outputd_env=live_outputd_env,
+            camilla_devices=endpoint_evidence.devices,
+        )
+        if transport_errors:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                "; ".join(transport_errors)
+                + ". Run jasper-audio-hardware-reconcile to restore the paired "
+                "CamillaDSP playback/outputd capture lane, then re-run "
+                "jasper-fanin-coupling-reconcile only if the coupling check also "
+                "reports Ring A/Ring B drift.",
+            )
     local_pipe_detail = f"content_source={actual_content_source}"
     local_pipe: dict[str, object] | None = None
     if coupling == COUPLING_TRANSPORT_PIPE:
@@ -2832,9 +2865,13 @@ def check_outputd_service() -> CheckResult:
             "(JASPER_OUTPUTD_DAC_BUFFER_FRAMES), and "
             "`journalctl -u jasper-outputd | grep xrun`.",
         )
+    status = "warn" if transport_evidence_warning else "ok"
+    transport_detail = (
+        f", {transport_evidence_warning}" if transport_evidence_warning else ""
+    )
     return CheckResult(
         "jasper-outputd",
-        "ok",
+        status,
         f"active, backend=alsa, frames_written={frames}, "
         f"content_buffer_frames={content_buffer}, dac_buffer_frames={dac_buffer}, "
         f"xruns={content_xruns}/{dac_xruns}, "
@@ -2852,7 +2889,8 @@ def check_outputd_service() -> CheckResult:
         f"{loudness_detail}, "
         f"progress_age_ms={progress_age}"
         f"{active_detail}"
-        f"{dual_detail}",
+        f"{dual_detail}"
+        f"{transport_detail}",
     )
 
 @doctor_check(order=52.6, group="audio")
@@ -2919,6 +2957,26 @@ def check_aec_clock_drift() -> CheckResult:
         return CheckResult(label, "ok", "skipped — STATUS missing reference_outputs")
     if reference_outputs.get("chip_ref_pcm") is None:
         return CheckResult(label, "ok", "skipped — chip reference not configured")
+    chip_ref_writer = reference_outputs.get("chip_ref_writer")
+    if isinstance(chip_ref_writer, dict) and not bool(
+        chip_ref_writer.get("active", chip_ref_writer.get("enabled", False))
+    ):
+        writer_status = str(chip_ref_writer.get("status") or "unknown")
+        recovery = (
+            "outputd is retrying the optional AEC reference device"
+            if writer_status in {"connecting", "degraded"}
+            else "the reference worker stopped; correct the device/config and "
+            "restart jasper-outputd"
+        )
+        return CheckResult(
+            label,
+            "warn",
+            "chip reference is desired but unavailable; speaker playback remains "
+            f"active and {recovery} "
+            f"(status={writer_status}, "
+            f"open_errors={chip_ref_writer.get('open_error_count')}, "
+            f"retries={chip_ref_writer.get('retry_count')})",
+        )
     aec_clock = reference_outputs.get("aec_clock")
     if not isinstance(aec_clock, dict):
         return CheckResult(

@@ -125,13 +125,20 @@ def open_room_sweep_capture(
     capture_origin: str,
     return_url: str = "",
     ttl_s: int = 900,
+    guided_setup: bool = True,
+    setup_binding_id: str = "",
 ) -> RelayCapture:
     """Mint + register a `room_sweep` relay capture for one measurement position.
 
     `position` is 1-based for display (matches the spec builder); the caller
     passes `measurement_session.current_position + 1`.
     """
-    spec = build_room_sweep_spec(position=position, total_positions=total_positions)
+    spec = build_room_sweep_spec(
+        position=position,
+        total_positions=total_positions,
+        guided_setup=guided_setup,
+        setup_binding_id=setup_binding_id,
+    )
     return open_capture(
         client,
         spec,

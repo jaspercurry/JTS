@@ -661,7 +661,10 @@ def test_recompose_wrapper_refuses_when_evidence_unavailable(tmp_path):
     with mock.patch(
         "jasper.sound.profile.build_sound_filters", return_value=()
     ), mock.patch(
-        "jasper.active_speaker.baseline_profile.recompose_baseline_yaml",
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        return_value={"status": "applied"},
+    ), mock.patch(
+        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml",
         return_value=(None, [{
             "severity": "blocker",
             "code": "baseline_crossover_preview_not_ready",

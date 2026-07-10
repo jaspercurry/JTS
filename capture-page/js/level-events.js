@@ -45,6 +45,18 @@ export const CLIP_ABS_THRESHOLD = 0.999;
 // postIntervalMs) after the first post. Bounded — no timers leak past abort().
 export const ABORT_REPOSTS = 4;
 
+// Pi-side RampState values that end one level-ramp run. Keep this intentionally
+// small and local to the wire protocol: in-progress states are still surfaced
+// to the UI, but only these states stop the phone microphone.
+export const RAMP_TERMINAL_STATES = Object.freeze([
+  "locked",
+  "maxed_out",
+  "aborted",
+  "cancelled",
+  "error",
+]);
+const RAMP_TERMINAL_STATE_SET = new Set(RAMP_TERMINAL_STATES);
+
 // Compute one {rms_dbfs, peak_dbfs, clip} verdict for a block of mono samples.
 // Exported for direct unit testing.
 export function blockLevel(samples) {
@@ -82,6 +94,11 @@ export class LevelStreamer {
   //   windowMs          — rolling window kept in each batch (default 3000).
   //   sampleRate        — mic sample rate (default 48000).
   //   agcFrozen         — realized autoGainControl:false (false = iOS ignored it).
+  //   context           — optional compact JSON metadata repeated in every
+  //                       batch (validated setup identity + realized device).
+  //                       Raw serials/calibration text are forbidden here.
+  //   onLevel(level)    — optional display-only callback for each aggregated
+  //                       block; never participates in the control decision.
   constructor(opts = {}) {
     this._postEvent = opts.postEvent || (async () => {});
     this._now = opts.now || (() => Date.now());
@@ -92,6 +109,8 @@ export class LevelStreamer {
     this._windowMs = opts.windowMs || 3000;
     this._sampleRate = opts.sampleRate || 48000;
     this._agcFrozen = opts.agcFrozen !== false;
+    this._context = compactLevelContext(opts.context);
+    this._onLevel = typeof opts.onLevel === "function" ? opts.onLevel : () => {};
 
     this._blockSamples = Math.max(
       1,
@@ -128,6 +147,11 @@ export class LevelStreamer {
     while (this._pendingLen >= this._blockSamples) {
       const block = this._takeBlock(this._blockSamples);
       const level = blockLevel(block);
+      try {
+        this._onLevel(level);
+      } catch {
+        // Display-only callback: a broken meter must never stop the safety feed.
+      }
       this._seq += 1;
       this._window.push({
         seq: this._seq,
@@ -170,16 +194,18 @@ export class LevelStreamer {
   }
 
   _batchPayload() {
+    const batch = {
+      schema: LEVEL_EVENT_SCHEMA_VERSION,
+      run_token: this._runToken,
+      samples: this._window.slice(),
+      agc_frozen: this._agcFrozen,
+      armed: this._armed,
+      aborted: this._aborted,
+      abort_reason: this._abortReason,
+    };
+    if (this._context) batch.context = this._context;
     return {
-      level_batch: {
-        schema: LEVEL_EVENT_SCHEMA_VERSION,
-        run_token: this._runToken,
-        samples: this._window.slice(),
-        agc_frozen: this._agcFrozen,
-        armed: this._armed,
-        aborted: this._aborted,
-        abort_reason: this._abortReason,
-      },
+      level_batch: batch,
     };
   }
 
@@ -232,6 +258,153 @@ export class LevelStreamer {
     this._closed = true;
     await this._enqueuePost();
   }
+}
+
+// Extract the Pi's ramp progress from phone-safe relay status. A run token is
+// the stale-event fence: a terminal state from a previous tap must never stop a
+// new microphone stream. Returns null for unrelated/malformed host events.
+export function rampEventFromStatus(status, runToken = "") {
+  const hostEvent = status && typeof status === "object" ? status.host_event : null;
+  const ramp = hostEvent && typeof hostEvent === "object" ? hostEvent.ramp : null;
+  if (!ramp || typeof ramp !== "object") return null;
+  const expectedToken = String(runToken || "");
+  const actualToken = String(ramp.run_token || "");
+  if (expectedToken && actualToken !== expectedToken) return null;
+  const state = String(ramp.state || "");
+  if (!state) return null;
+  const event = {
+    state,
+    terminal: RAMP_TERMINAL_STATE_SET.has(state),
+  };
+  if (typeof ramp.error === "string" && ramp.error.trim()) {
+    event.error = ramp.error.trim().slice(0, 300);
+  }
+  return event;
+}
+
+// Run the meter-only phone leg for one level_ramp spec. This is deliberately a
+// separate protocol from the WAV capture path: it repeatedly samples short
+// mono blocks, feeds LevelStreamer, and stops only on the Pi's token-scoped
+// terminal ramp event. It has no content key and no blob-upload dependency, so
+// a level stage cannot accidentally turn into a recording upload.
+//
+// opts:
+//   client             — RelayClient-like {postEvent, fetchPhoneStatus}.
+//   recorder           — createMonoRecorder() result.
+//   spec               — kind=level_ramp capture spec.
+//   agcFrozen          — realized autoGainControl:false.
+//   context            — selected setup + realized capture device metadata.
+//   onLevel(level)     — optional display callback.
+//   onProgress(event)  — optional Pi progress callback.
+//   onStreamer(value)  — exposes the streamer so visibility teardown can abort.
+//   isAborted()        — true after an external teardown.
+//   now/delay          — injectable clock for tests.
+export async function runLevelRampProtocol(opts = {}) {
+  const client = opts.client;
+  const recorder = opts.recorder;
+  const spec = opts.spec || {};
+  if (!client || typeof client.postEvent !== "function") {
+    throw new Error("level ramp relay client is unavailable");
+  }
+  if (!client.fetchPhoneStatus || typeof client.fetchPhoneStatus !== "function") {
+    throw new Error("level ramp status reader is unavailable");
+  }
+  if (!recorder || typeof recorder.start !== "function" || typeof recorder.stop !== "function") {
+    throw new Error("level ramp microphone is unavailable");
+  }
+  if (spec.kind && spec.kind !== "level_ramp") {
+    throw new Error("level ramp protocol received the wrong capture kind");
+  }
+
+  const now = typeof opts.now === "function" ? opts.now : () => Date.now();
+  const delay = typeof opts.delay === "function" ? opts.delay : delayMs;
+  const isAborted = typeof opts.isAborted === "function" ? opts.isAborted : () => false;
+  const blockMs = Math.max(100, Math.min(500, Number(opts.blockMs) || 200));
+  const durationMs = Math.max(1000, Number(spec.duration_ms) || 75000);
+  const deadline = now() + durationMs;
+  const streamer = opts.streamer || new LevelStreamer({
+    postEvent: (event) => client.postEvent(event),
+    runToken: spec.run_token || "",
+    blockMs,
+    postIntervalMs: Math.max(250, Number(spec.progress_poll_ms) || 500),
+    sampleRate: Number(spec.sample_rate_hz) || 48000,
+    agcFrozen: opts.agcFrozen !== false,
+    context: opts.context,
+    onLevel: opts.onLevel,
+    now,
+    delay,
+  });
+  if (typeof opts.onStreamer === "function") opts.onStreamer(streamer);
+  streamer.setArmed(true);
+
+  try {
+    while (now() < deadline) {
+      if (isAborted()) return { state: "aborted", terminal: true };
+      recorder.start();
+      await delay(blockMs);
+      if (isAborted()) return { state: "aborted", terminal: true };
+      const frames = await recorder.stop({ timeoutMs: 5000 });
+      await streamer.addFrame(frames);
+
+      const ramp = rampEventFromStatus(
+        await client.fetchPhoneStatus(),
+        spec.run_token || "",
+      );
+      if (ramp && typeof opts.onProgress === "function") opts.onProgress(ramp);
+      if (ramp && ramp.terminal) {
+        await streamer.close();
+        return ramp;
+      }
+    }
+  } catch (err) {
+    if (!isAborted()) await streamer.abort("phone_error");
+    throw err;
+  }
+
+  await streamer.abort("phone_timeout");
+  throw new Error("speaker did not finish the level check before the timeout");
+}
+
+function cloneJsonObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  try {
+    const copy = JSON.parse(JSON.stringify(value));
+    return copy && typeof copy === "object" && !Array.isArray(copy) ? copy : null;
+  } catch {
+    return null;
+  }
+}
+
+function compactLevelContext(value) {
+  const context = cloneJsonObject(value);
+  if (!context) return null;
+  const setup = context.setup;
+  if (setup && typeof setup === "object") {
+    const binding = setup.binding;
+    const calibration = setup.calibration;
+    if (
+      calibration &&
+      typeof calibration === "object" &&
+      (Object.prototype.hasOwnProperty.call(calibration, "content") ||
+        Object.prototype.hasOwnProperty.call(calibration, "serial"))
+    ) {
+      throw new Error(
+        "level batches require a validated compact setup binding, not raw calibration data",
+      );
+    }
+    if (
+      !binding ||
+      typeof binding !== "object" ||
+      binding.schema !== 1 ||
+      typeof binding.binding_id !== "string" ||
+      !binding.binding_id ||
+      typeof binding.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(binding.sha256)
+    ) {
+      throw new Error("level batches require a validated compact setup binding");
+    }
+  }
+  return context;
 }
 
 function round1(x) {

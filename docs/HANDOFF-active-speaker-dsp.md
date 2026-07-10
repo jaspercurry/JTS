@@ -149,8 +149,9 @@
 > captures can also ride the **phone-mic relay transport**:
 > `POST /correction/crossover/relay-capture` (the third `RelayCaptureKind`
 > caller) plays the same capture sweep on `armed` and feeds the verified WAV into
-> the same `record_*_capture` analysis — gated + default-off, byte-identical
-> same-origin `postWav` when `JASPER_CAPTURE_RELAY_BASE` is unset; it reads the
+> the same `record_*_capture` analysis. The Jasper relay is the normal product
+> transport; explicitly disabling `JASPER_CAPTURE_RELAY_BASE` retains the local
+> fallback. It reads the
 > play payload's real shape (`status` + nested `playback.audio_emitted`,
 > top-level `test_level_dbfs`/`sweep_meta`) and refuses while room/balance/sync
 > is active (server-computed at POST, re-checked when the phone arms). The
@@ -160,12 +161,10 @@
 > pure recorder), with the phone's hard recording deadline floored at 30 s (the
 > `room_sweep` `hard_timeout_ms` contract — the Pi's `sweep_complete` event is
 > the normal stop). `GET /correction/crossover/envelope`
-> (`active_speaker/crossover_envelope.py`) is a parallel screen envelope that
-> composes `commissioning_coordinator`'s step model into the room flow's
-> `{screen, verdict_text, nudges, next_action, progress}` shape through the
-> shared `commissioning_coordinator.load_commissioning_view` loader (the same
-> full input set `/sound/`'s commissioning card feeds the coordinator — a
-> partial input set silently reports a stuck flow); passive
+> (`active_speaker/crossover_envelope.py`) is a pure sequential screen envelope:
+> protected speaker setup → mic/calibration + automatic near-field level → each
+> driver → summed proof → apply → Room. The browser has no second measurement
+> state machine or local recorder; passive
 > (`full_range_passive`) speakers get `active=False` (no driver/summed targets),
 > so Layer A stays hidden. The acoustic proof (real-driver sweep + phone
 > `getUserMedia`/CSP path) is parked as H2. Driver evidence is bound to the current
@@ -244,7 +243,10 @@
 > `/var/lib/camilladsp/configs/active_speaker_baseline.yml`. Compilation is
 > explicit and no-audio: it writes YAML plus
 > `/var/lib/jasper/active_speaker_baseline_profile.json`, but does not load
-> CamillaDSP. The emitter
+> CamillaDSP. If a baseline is already applied, the new candidate is written to
+> a content-addressed sibling instead of overwriting the running/statefile-owned
+> config; the state retains one small `applied_recomposition_profile` anchor
+> until the explicit apply succeeds. The emitter
 > (`jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config`)
 > requires an explicit active playback device, keeps `devices.volume_limit`
 > non-positive, emits `active_baseline_headroom` at `0.0 dB` by default,
@@ -254,8 +256,11 @@
 > `/sound` path; explicit output trim or match-loudness attenuation is the
 > only preference-layer global attenuation folded into
 > `active_baseline_headroom`.
-> Per-driver gain prefers an explicit
-> `gain_offset_db`; when research gives none but declares sensitivities,
+> Per-driver gain provenance is explicit: `operator_pinned` wins, while a
+> `research_estimate` or UI `sensitivity_estimate` is only a provisional
+> starting value that a comparable acoustic measurement supersedes. Legacy
+> manual values without provenance migrate conservatively as `operator_pinned`.
+> When research gives no estimate but declares sensitivities,
 > `_derive_corrections` fail-safes by attenuating the hotter drivers down to the
 > least-sensitive (reference) driver by the sensitivity gap (e.g. a 108.5 dB horn
 > next to an 83.3 dB woofer is trimmed −25.2 dB) so a high-sensitivity
@@ -492,7 +497,14 @@
 > shoulder cancels, leaving the relative driver sensitivity), and
 > `baseline_profile._measured_level_trims` chains the driver-to-driver overlap
 > deltas into a per-driver attenuation that OVERRIDES `_derive_corrections`'
-> interim datasheet trim (precedence: explicit gain > measured > datasheet).
+> interim estimate. Manual apply keeps operator ownership (operator pin >
+> measured > estimate > datasheet); only the explicit automatic-replacement
+> action makes measured data override the prior pin. Each capture owns a
+> sweep-peak + commissioning-gain ledger; exact
+> ledger normalization compares drivers at a common effective excitation even
+> when protection requires different raw sweep levels. Missing or invalid
+> excitation evidence fails closed instead of treating playback gain as driver
+> sensitivity.
 > Magnitude only — never a phase/delay decision. Fail-closed: a
 > silent/clipped/low-SNR/missing capture keeps the datasheet trim and marks the
 > baseline `provisional` (`corrections_source`, `level_match`, and `provisional`
@@ -505,18 +517,35 @@
 > per-request flow). Canonical home for the L1 product tier:
 > [HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md)
 > "L1 measured level match". On-Pi (jts3) audible pass still owed.
-> **The whole phone flow is OPTIONAL (decided 2026-06-20).** A household can
+> **Phone measurement is optional for safe normal playback.** A household can
 > commission and apply an active baseline with zero phone use: each driver is
-> confirmed by ear (the per-driver level-match mic capture is optional → datasheet
-> trim, marked provisional), and the combined crossover check now offers a by-ear
+> confirmed by ear (yielding a provisional estimate), and the combined crossover check offers a by-ear
 > "Sounds right" path in `/sound/`. The by-ear positive is still gated on an
 > AUDIBLE combined test (you can't certify a blend you didn't hear). Mic-backed
-> level/delay verification remains the more reliable follow-up, but it belongs in
-> the HTTPS measurement/correction experience rather than the core `/sound/`
-> flow. This REVERSES the 2026-06-18 "force summed mic evidence" decision and
-> narrows the 2026-06-20 "offer both paths in `/sound/`" decision. Safety is unaffected — a bad blend verdict
+> level and summed validation live in the HTTPS measurement/correction experience
+> as an optional automatic tuning path. Safety is unaffected — a bad blend verdict
 > is a quality issue (a suckout at the crossover), not a hazard: the crossover,
 > tweeter high-pass, limiters, and 0 dB ceiling are in the graph regardless.
+> **Room-correction prerequisite, corrected 2026-07-10:**
+> `active_speaker.setup_status` is the SSOT. Layer B requires a safe,
+> topology-current, full-domain immutable Layer-A snapshot; that snapshot may be
+> owned by either explicit manual tuning or automatic microphone tuning. Current
+> microphone evidence is quality/observability, not authorization to use Room.
+> Passive speakers return allowed/not-required. `/correction/start` consumes this
+> decision before reserving a session and directs incomplete active setups to
+> `/correction/crossover/`.
+> The explicitly applied Layer-A profile is the immutable playback/safety
+> anchor. New driver captures create a mutable candidate and do not invalidate
+> normal output or send the household back through `/sound/`; level evidence is
+> keyed to that protected profile, not the candidate fingerprint. Room
+> correction continues against that applied anchor while newer measurements are
+> only candidates. Applied legacy profiles without a recomposition snapshot offer
+> **Keep current manual crossover** (preserving its exact applied corrections) or
+> **Tune automatically**. Automatic measurements create a candidate and only the
+> explicit **Replace manual crossover with automatic tuning** action changes the
+> owner. The frozen view preserves its `provisional` quality flag. Near-field automatic leveling
+> restores normal listening volume immediately and reasserts its retained target
+> only inside each driver/summed measurement window.
 
 ## Current Operational Truth
 
@@ -1016,7 +1045,8 @@ source/renderers
 speaker).** Layer C preference EQ and Layer B room PEQs now land on the active
 graph for a SOLO active baseline. `/sound` preference apply and `/correction`
 measurement/apply/reset recompose the baseline (via
-[`recompose_baseline_yaml`](../jasper/active_speaker/baseline_profile.py)) with
+[`recompose_applied_baseline_yaml`](../jasper/active_speaker/baseline_profile.py))
+strictly from the immutable snapshot stored by the explicit Layer-A apply, with
 room and preference filters wired on the program channels `[0, 1]` **strictly
 before the split mixer** — upstream of every per-driver crossover, limiter, and
 tweeter high-pass. Preference boosts ride at unity, matching the ordinary
@@ -1692,7 +1722,8 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-24 (room-correction start/apply/reset on solo active
+Last verified: 2026-07-10 (room readiness, applied Layer-A snapshot, and relay
+crossover flow; prior 2026-06-24 room-correction start/apply/reset on solo active
 baselines checked against `jasper.web.correction_setup`,
 `jasper.sound.graph_carrier`, `jasper.active_speaker.camilla_yaml`,
 `jasper.active_speaker.baseline_profile`, and

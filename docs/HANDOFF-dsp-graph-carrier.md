@@ -97,12 +97,12 @@ existing layering):
     branch keys on) decides which it is. *PR-1:* raised
     `CarrierCannotHostEq("eq_on_active_not_wired", …)` for all three. *PR-3
     (DONE):* a **SOLO baseline** inserts room PEQs and preference EQ pre-split
-    — recomposed from the saved evidence via
-    [`recompose_baseline_yaml`](../jasper/active_speaker/baseline_profile.py),
+    — recomposed from the immutable applied-profile snapshot via
+    [`recompose_applied_baseline_yaml`](../jasper/active_speaker/baseline_profile.py),
     NEVER through the stereo template (invariant 3). Startup/commissioning still
     refuse `eq_on_active_not_wired`; a **bonded** baseline refuses
     `eq_on_active_bonded_member` (invariant 7 — the active×grouping decision is
-    deferred); a baseline whose saved evidence has gone missing refuses
+    deferred); a baseline whose applied snapshot is missing, stale, or invalid refuses
     `active_baseline_recompose_unavailable`. Active re-emit preserves existing
     `room_peq_*` filters by default; callers pass an explicit `room_peqs=[]`
     when they are intentionally measuring or resetting with Layer B cleared.
@@ -231,13 +231,17 @@ optional `room_peqs` and `preference_filters` params wired pre-split (separate
 Filter steps on `[0, 1]` after the headroom step, before the split Mixer), so
 all active-graph shape decisions stay in `active_speaker.camilla_yaml`. The
 carrier composes via
-[`recompose_baseline_yaml`](../jasper/active_speaker/baseline_profile.py) — a
-thin helper that rebuilds the structural baseline from the saved evidence using
-the **same derivation primitives** `build_baseline_profile_candidate` uses
-(`resolve_active_playback_device` → `compile_preset_from_crossover_preview` →
-`_derive_corrections` → the emitter), then inserts the room and preference
-bands. It is a sibling of `build_baseline_profile_candidate`, **not** a new
-param on it: the
+[`recompose_applied_baseline_yaml`](../jasper/active_speaker/baseline_profile.py)
+— a thin helper that rebuilds the structural baseline from the immutable preset,
+corrections, playback device, and topology fingerprint captured by the explicit
+Layer-A apply, then inserts the room and preference bands. Mutable design drafts,
+crossover previews, and candidate measurements are deliberately not inputs, so
+a later capture cannot alter production audio during an unrelated EQ recompose.
+While a replacement candidate is staged, its state and content-addressed config
+remain separate and the retained `applied_recomposition_profile` stays the one
+carrier SSOT until apply succeeds.
+It is a sibling of `build_baseline_profile_candidate`, **not** a new param on it:
+the
 durable baseline (`active_speaker_baseline.yml`, the reconcile fallback) stays
 EQ-free, while the carrier writes the EQ'd baseline to `/sound`/`/correction`
 apply targets. It never parses active topology out of the running config (the
@@ -367,8 +371,8 @@ keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
   the "Sharing" section above.
 - **PR-3 (the capability — CI-green; hardware gate on jts3 pending):**
   `emit_active_speaker_baseline_config` grew `preference_filters` (pre-split,
-  with boosts at unity); the new `recompose_baseline_yaml` sibling rebuilds the
-  baseline with EQ from the saved evidence; `_ActiveGraphCarrier` flips
+  with boosts at unity); `recompose_applied_baseline_yaml` rebuilds the
+  baseline with EQ from the immutable applied-profile snapshot; `_ActiveGraphCarrier` flips
   refuse→emit for the SOLO baseline (keyed on `ACTIVE_BASELINE_SOURCE`),
   refuses startup/commissioning (`eq_on_active_not_wired`), bonded
   (`eq_on_active_bonded_member`), and missing-evidence
@@ -459,4 +463,4 @@ boundary:
   `tests/test_active_speaker_runtime_contract.py`,
   `tests/test_active_speaker_baseline_profile.py`
 
-Last verified: 2026-06-25
+Last verified: 2026-07-10

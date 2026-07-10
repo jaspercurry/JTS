@@ -65,13 +65,14 @@ from .bridge_session import (
     _legacy_aec3_sweep_source,
     _metadata_flag,
     _session_aec3_sweep_source,
-    _session_legs,
     build_capture_health,
     build_capture_plan,
     build_session_audio_context,
+    CAPTURE_PLAN_STATE_SESSION,
     chip_aec_config_metadata,
     exit_corpus_test_mode,
     read_bridge_stats_snapshot,
+    validate_active_capture_plan,
 )
 
 logger = logging.getLogger("jasper-wake-corpus-web")
@@ -159,6 +160,8 @@ class ClipMetadata:
     notes: str = ""
     selected_legs: list[str] = field(default_factory=list)
     capture_plan: dict[str, Any] = field(default_factory=dict)
+    capture_plan_id: str = ""
+    capture_plan_conformance: dict[str, Any] = field(default_factory=dict)
     audio_context: dict[str, Any] = field(default_factory=dict)
     capture_health: dict[str, Any] = field(default_factory=dict)
 
@@ -412,6 +415,7 @@ class RecordingBackend:
         self._current: RecordingTask | None = None
         self._current_clip_id: str | None = None
         self._current_meta: dict[str, str] | None = None  # condition, distance, start_ts
+        self._current_plan_conformance: dict[str, Any] | None = None
         # Sentinel: set inside _lock when a start_recording call has
         # passed validation but the (slow) RecordingTask.start() hasn't
         # finished yet. Concurrent start attempts see this and refuse
@@ -615,6 +619,7 @@ class RecordingBackend:
         self._enabled_legs = _default_enabled_legs(self._ports)
         self._capture_plan = None
         self._audio_context = None
+        self._current_plan_conformance = None
 
     def _find_session_metadata(self, session_id: str) -> Path | None:
         for p in self._metadata_dir.glob("enroll_*.json"):
@@ -859,6 +864,7 @@ class RecordingBackend:
         include_xvf_raw0_dtln: bool = False,
         include_aec3_sweep: bool = False,
         aec3_sweep_source: str | None = None,
+        capture_plan: dict[str, Any] | None = None,
     ) -> str:
         """Open a fresh recording session. Resets the in-memory clip
         list (existing on-disk WAVs are untouched).
@@ -923,16 +929,24 @@ class RecordingBackend:
             # in-memory id AND the on-disk metadata filename, and the
             # second would silently overwrite the first.
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            enabled_legs = _session_legs(
-                self._ports,
-                corpus_profile=corpus_profile,
-                include_dtln=include_dtln,
-                include_raw_mic_0=include_raw_mic_0,
-                include_usb_mic=effective_include_usb_mic,
-                include_usb_dtln=include_usb_dtln,
-                include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-                include_aec3_sweep=include_aec3_sweep,
-                aec3_sweep_source=sweep_source,
+            if capture_plan is None:
+                capture_plan = build_capture_plan(
+                    self._ports,
+                    corpus_profile=corpus_profile,
+                    include_raw_mic_0=include_raw_mic_0,
+                    include_dtln=include_dtln,
+                    include_usb_mic=effective_include_usb_mic,
+                    include_usb_dtln=include_usb_dtln,
+                    include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+                    include_aec3_sweep=include_aec3_sweep,
+                    aec3_sweep_source=sweep_source,
+                    include_bridge_readiness=True,
+                    include_runtime_profile=True,
+                    plan_state=CAPTURE_PLAN_STATE_SESSION,
+                )
+            enabled_legs = tuple(
+                str(leg) for leg in capture_plan.get("selected_legs", [])
+                if str(leg) in self._ports
             )
             sweep_variants = (
                 variant_metadata(input_source=sweep_source)
@@ -946,19 +960,6 @@ class RecordingBackend:
             chip_config = (
                 chip_aec_config_metadata()
                 if corpus_profile == PROFILE_CHIP_AEC_COMPARISON else None
-            )
-            capture_plan = build_capture_plan(
-                self._ports,
-                corpus_profile=corpus_profile,
-                include_raw_mic_0=RAW0_LEG in enabled_legs,
-                include_dtln=DTLN_LEG in enabled_legs,
-                include_usb_mic=effective_include_usb_mic,
-                include_usb_dtln=USB_DTLN_LEG in enabled_legs,
-                include_xvf_raw0_dtln=XVF_RAW0_DTLN_LEG in enabled_legs,
-                include_aec3_sweep=include_aec3_sweep,
-                aec3_sweep_source=sweep_source,
-                include_bridge_readiness=True,
-                include_runtime_profile=True,
             )
             self._session_id = session_id
             self._member = safe_member
@@ -1071,6 +1072,20 @@ class RecordingBackend:
         with self._lock:
             return dict(self._audio_context) if self._audio_context else None
 
+    def capture_plan_conformance(self) -> dict[str, Any] | None:
+        """Current bridge/runtime conformance for the active session plan."""
+        with self._lock:
+            capture_plan = dict(self._capture_plan or {})
+            current = (
+                dict(self._current_plan_conformance)
+                if self._current_plan_conformance else None
+            )
+        if not capture_plan:
+            return None
+        if current is not None:
+            return current
+        return validate_active_capture_plan(capture_plan).to_json()
+
     def start_recording(self, condition: str, distance: str) -> dict[str, str]:
         """Begin recording on the backend loop. Returns {clip_id, start_ts}.
 
@@ -1098,6 +1113,7 @@ class RecordingBackend:
                 raise StateError("call begin_session() first")
             if self._current is not None or self._starting_clip_id is not None:
                 raise StateError("recording already in progress")
+            capture_plan = dict(self._capture_plan or {})
             # Reserve the slot — concurrent calls now see this and
             # refuse cleanly.
             self._starting_clip_id = clip_id
@@ -1105,6 +1121,17 @@ class RecordingBackend:
             # session's clips all share one leg set.
             active_legs = list(self._enabled_legs)
             aec3_sweep_source = self._aec3_sweep_source
+
+        conformance = validate_active_capture_plan(capture_plan)
+        if not conformance.ok:
+            with self._lock:
+                if self._starting_clip_id == clip_id:
+                    self._starting_clip_id = None
+            detail = "; ".join(conformance.errors) or conformance.status
+            raise StateError(
+                "capture plan no longer matches the active bridge/runtime; "
+                f"{detail}. Rebuild or re-enter corpus test mode.",
+            )
 
         ports_for_task = {
             leg: self._ports[leg]
@@ -1135,6 +1162,7 @@ class RecordingBackend:
                 "distance": distance,
                 "start_ts": start_ts,
             }
+            self._current_plan_conformance = conformance.to_json()
             self._starting_clip_id = None  # transitioned: starting → current
             # Auto-stop timer — guards against a forgotten Stop click.
             self._auto_stop_handle = self._loop.call_later(
@@ -1228,6 +1256,8 @@ class RecordingBackend:
             member = self._member
             selected_legs = list(self._enabled_legs)
             capture_plan = dict(self._capture_plan or {})
+            capture_plan_id = str(capture_plan.get("plan_id") or "")
+            capture_plan_conformance = dict(self._current_plan_conformance or {})
             audio_context = dict(self._audio_context or {})
             # Cancel the auto-stop timer if it hasn't fired yet.
             if self._auto_stop_handle is not None and not auto:
@@ -1243,6 +1273,7 @@ class RecordingBackend:
             self._current = None
             self._current_clip_id = None
             self._current_meta = None
+            self._current_plan_conformance = None
 
         # Long operations (await stop, write WAVs) happen OUTSIDE the
         # lock — other API calls can read state concurrently.
@@ -1294,6 +1325,8 @@ class RecordingBackend:
             mute_stopped=mute_stopped,
             selected_legs=selected_legs,
             capture_plan=capture_plan,
+            capture_plan_id=capture_plan_id,
+            capture_plan_conformance=capture_plan_conformance,
             audio_context=audio_context,
             capture_health=capture_health,
         )

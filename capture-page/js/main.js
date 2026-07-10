@@ -19,21 +19,115 @@ import { importContentKey, encryptWav } from "./crypto.js";
 import { constraintDecision, verifyRealizedConstraints } from "./constraints.js";
 import { safeReturnUrl } from "./return-url.js";
 import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
+import { runLevelRampProtocol } from "./level-events.js";
+import {
+  assertCaptureProtocolCompatible,
+  validateCapturePageIdentity,
+} from "./capture-protocol.js";
+import {
+  loadBoundSetup,
+  refreshBoundSetup,
+  setupBindingId,
+  storeBoundSetup,
+} from "./setup-store.js";
 import {
   createMonoRecorder,
   delayMs,
   float32ToWavBlob,
   rmsToDbfs,
-} from "./measurement-audio.js?v=20260630-1";
+} from "./measurement-audio.js?v=20260710-1";
 
-// The input the household picked (empty = OS default, which is usually the USB-C
-// measurement mic when one is plugged into the phone). Set by the mic picker.
-let selectedDeviceId = "";
+const PAGE_VERSION_URL = new URL("../version.json", import.meta.url);
+
+async function loadCapturePageIdentity() {
+  const response = await globalThis.fetch(PAGE_VERSION_URL, { cache: "no-store" });
+  if (!response.ok) throw new Error(`capture page version unavailable (${response.status})`);
+  return validateCapturePageIdentity(await response.json());
+}
+
+// The input the household picked (empty = OS default). Keep it on the trusted
+// capture origin so the level stage and following driver/sweep links use the
+// same microphone without asking the household to rediscover it each time.
+const DEVICE_STORAGE_KEY = "jts.capture.selected-device";
+const SETUP_IDENTITY_SCHEMA = 1;
+// Calibration files are ordinarily a few kilobytes. Keep enough headroom for
+// real vendor files while staying well below the relay's 1 MiB event ceiling:
+// the full text is sent exactly once for Pi validation, never in meter batches.
+const MAX_CALIBRATION_TEXT_BYTES = 256 * 1024;
+function storedDeviceId() {
+  try {
+    return globalThis.localStorage
+      ? String(globalThis.localStorage.getItem(DEVICE_STORAGE_KEY) || "")
+      : "";
+  } catch {
+    return "";
+  }
+}
+function rememberDeviceId(value) {
+  try {
+    if (globalThis.localStorage) {
+      globalThis.localStorage.setItem(DEVICE_STORAGE_KEY, String(value || ""));
+    }
+  } catch {
+    /* privacy mode/storage denial: the in-memory choice still works */
+  }
+}
+let selectedDeviceId = storedDeviceId();
 let setupInputs = [];
 let setupState = {
   total_positions: 5,
   calibration: { mode: "none" },
 };
+let setupIdentity = null;
+let setupCaptureOnly = false;
+
+function utf8Size(value) {
+  return new TextEncoder().encode(String(value || "")).byteLength;
+}
+
+function collectsRoomPositions(spec) {
+  return Boolean(spec && spec.setup_collect_positions === true);
+}
+
+function persistBoundSetup(spec, identity) {
+  // Deliberately persist only a compact summary and digest. Raw serials and
+  // uploaded file text exist in memory only until the one validation POST.
+  const calibration = setupState.calibration || {};
+  return storeBoundSetup(spec, identity, {
+    total_positions: Number(setupState.total_positions) || 5,
+    calibration: {
+      mode: String(calibration.mode || "none"),
+      model: String(calibration.model || ""),
+    },
+  });
+}
+
+async function sha256Hex(value) {
+  const cryptoObj = globalThis.crypto || {};
+  if (!cryptoObj.subtle || typeof cryptoObj.subtle.digest !== "function") {
+    throw new Error("this browser cannot securely bind the microphone setup");
+  }
+  const digest = await cryptoObj.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(String(value)),
+  );
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function buildSetupIdentity(spec) {
+  const bindingId = setupBindingId(spec);
+  if (!bindingId) return null;
+  return {
+    schema: SETUP_IDENTITY_SCHEMA,
+    binding_id: bindingId,
+    sha256: await sha256Hex(JSON.stringify(setupState)),
+  };
+}
+
+function setupWirePayload() {
+  if (setupIdentity) return { binding: setupIdentity };
+  return setupCaptureOnly ? null : setupState;
+}
 
 function setStatus(message, kind = "info") {
   const el = document.getElementById("status");
@@ -67,6 +161,9 @@ async function waitForSetupValidation(ctx, token) {
   while (Date.now() < deadline) {
     const status = await ctx.client.fetchPhoneStatus();
     const event = (status && status.host_event) || {};
+    if (event.phase === "capture_incompatible") {
+      throw new Error(event.error || "capture page is incompatible with this speaker");
+    }
     if (String(event.setup_token || "") === token) {
       if (event.phase === "setup_validated") return;
       if (event.phase === "setup_validation_failed") {
@@ -78,17 +175,45 @@ async function waitForSetupValidation(ctx, token) {
   throw new Error("speaker did not validate the calibration before the timeout");
 }
 
-async function validateSetupBeforeContinue(ctx) {
+async function validateSetupBeforeContinue(ctx, identity = null) {
   const calibration = setupState.calibration || {};
-  if (!ctx.spec.setup_validation || calibration.mode === "none") return;
+  // A bound flow validates even an uncalibrated phone mic: the acknowledgement
+  // is what freezes position count + "no calibration" as one setup. Legacy
+  // room specs retain their prior optimization and skip the no-calibration POST.
+  if (
+    !ctx.spec.setup_validation ||
+    (!setupBindingId(ctx.spec) && calibration.mode === "none")
+  ) return;
   const token = setupValidationToken();
   setStatus("Checking calibration on the speaker…", "info");
   await ctx.client.postEvent({
     setup_validate: true,
     setup_token: token,
     setup: setupState,
+    setup_identity: identity,
   });
   await waitForSetupValidation(ctx, token);
+}
+
+async function bindSetupBeforeLevel(ctx) {
+  if (!setupBindingId(ctx.spec) || ctx.spec.setup_validation !== true) {
+    throw new Error(
+      "the speaker capture protocol cannot validate a bound setup; update the speaker before running this level check",
+    );
+  }
+  const identity = await buildSetupIdentity(ctx.spec);
+  await validateSetupBeforeContinue(ctx, identity);
+  setupIdentity = identity;
+  if (
+    identity &&
+    collectsRoomPositions(ctx.spec) &&
+    !persistBoundSetup(ctx.spec, identity)
+  ) {
+    throw new Error(
+      "this browser could not retain the setup for the next room position; " +
+        "allow site storage or use another browser",
+    );
+  }
 }
 
 async function blobToBytes(blob) {
@@ -158,6 +283,56 @@ function renderCaptureComplete(ctx) {
   setScreen(ctx.screenEl, children);
 }
 
+function renderLevelRampComplete(ctx, ramp) {
+  const state = String((ramp && ramp.state) || "error");
+  const terminalError = String((ramp && ramp.error) || "").trim();
+  const returnUrl = safeReturnUrl(ctx.spec);
+  const messages = {
+    locked: {
+      heading: "Level matched",
+      note: "The speaker locked a safe measurement level. Return to the speaker to continue.",
+      status: "Level matched — ready for the measurement sweep.",
+      kind: "done",
+    },
+    maxed_out: {
+      heading: "Level check needs attention",
+      note: "The speaker reached its safe software limit. Return to the speaker for the next instruction.",
+      status: "Safe software limit reached — check the speaker page.",
+      kind: "error",
+    },
+    aborted: {
+      heading: "Level check stopped",
+      note: "The level check was stopped. Return to the speaker before trying again.",
+      status: "Level check stopped.",
+      kind: "error",
+    },
+    cancelled: {
+      heading: "Level check cancelled",
+      note: "The speaker cancelled this level check. Return to the speaker to continue.",
+      status: "Level check cancelled.",
+      kind: "error",
+    },
+    error: {
+      heading: "Level check failed",
+      note: "The speaker could not lock a safe level. Return to the speaker for details.",
+      status: "Level check failed — check the speaker page.",
+      kind: "error",
+    },
+  };
+  const message = messages[state] || messages.error;
+  if (state === "error" && terminalError) {
+    message.note = terminalError;
+    message.status = `Level check failed — ${terminalError}`;
+  }
+  const children = [
+    el("h1", { class: "cap-heading", text: message.heading }),
+    el("p", { class: "cap-note", text: message.note }),
+  ];
+  if (returnUrl) children.push(linkButton("Back to speaker", returnUrl));
+  setScreen(ctx.screenEl, children);
+  setStatus(message.status, message.kind);
+}
+
 async function enumerateAudioInputs() {
   const nav = typeof navigator !== "undefined" ? navigator : null;
   if (!nav || !nav.mediaDevices || !nav.mediaDevices.enumerateDevices) return [];
@@ -179,25 +354,42 @@ async function requestMicPermissionForSetup(spec) {
 }
 
 function renderIntro(screenEl, ctx) {
+  const levelRamp = ctx.spec.kind === "level_ramp";
   setScreen(screenEl, [
-    el("h1", { class: "cap-heading", text: "Room measurement" }),
-    el("ol", { class: "cap-steps" }, [
-      el("li", { text: "Allow microphone access on this phone." }),
-      el("li", { text: "Choose the microphone and calibration." }),
-      el("li", { text: "Pick how many listening positions to measure." }),
-      el("li", { text: "Stay quiet while JTS records noise and plays each sweep." }),
-    ]),
+    el("h1", {
+      class: "cap-heading",
+      text: levelRamp ? "Set a safe measurement level" : "Room measurement",
+    }),
+    el("ol", { class: "cap-steps" }, levelRamp
+      ? [
+          el("li", { text: "Allow microphone access on this phone." }),
+          el("li", { text: "Choose the microphone and calibration." }),
+          ...(collectsRoomPositions(ctx.spec)
+            ? [el("li", { text: "Choose how many listening positions to measure." })]
+            : []),
+          el("li", { text: "Place the microphone where the speaker shows you." }),
+          el("li", { text: "JTS will rise slowly from quiet and lock the level." }),
+        ]
+      : [
+          el("li", { text: "Allow microphone access on this phone." }),
+          el("li", { text: "Choose the microphone and calibration." }),
+          el("li", { text: "Pick how many listening positions to measure." }),
+          el("li", { text: "Stay quiet while JTS records noise and plays each sweep." }),
+        ]),
     button("Continue", () => renderPermission(screenEl, ctx)),
   ]);
   setStatus("Ready to set up the phone microphone.", "info");
 }
 
 function renderPermission(screenEl, ctx) {
+  const levelRamp = ctx.spec.kind === "level_ramp";
   setScreen(screenEl, [
     el("h1", { class: "cap-heading", text: "Microphone permission" }),
     el("p", {
       class: "cap-note",
-      text: "Your browser will ask to use the microphone. Tap Allow so JTS can list available inputs and record the sweep.",
+      text: levelRamp
+        ? "Your browser will ask to use the microphone. Tap Allow so JTS can list available inputs and check the level."
+        : "Your browser will ask to use the microphone. Tap Allow so JTS can list available inputs and record the sweep.",
     }),
     button("Allow microphone", async () => {
       try {
@@ -223,8 +415,13 @@ function renderMicChoice(screenEl, ctx, inputs) {
     }));
   }
   select.value = selectedDeviceId;
+  if (select.value !== selectedDeviceId) {
+    selectedDeviceId = "";
+    rememberDeviceId("");
+  }
   select.addEventListener("change", () => {
     selectedDeviceId = select.value;
+    rememberDeviceId(selectedDeviceId);
   });
   setScreen(screenEl, [
     el("h1", { class: "cap-heading", text: "Choose microphone" }),
@@ -259,6 +456,7 @@ function renderCalibration(screenEl, ctx) {
     el("option", { value: "serial", text: "Known measurement mic serial" }),
     el("option", { value: "upload", text: "Upload calibration file" }),
   ]);
+  mode.value = String((setupState.calibration || {}).mode || "none");
   const details = el("div");
   const renderDetails = () => {
     details.replaceChildren();
@@ -273,6 +471,8 @@ function renderCalibration(screenEl, ctx) {
       for (const option of calibrationModels) {
         model.appendChild(el("option", { value: option.key, text: option.label }));
       }
+      model.value = String((setupState.calibration || {}).model || "");
+      serial.value = String((setupState.calibration || {}).serial || "");
       details.append(
         el("label", { class: "cap-field" }, [el("span", { text: "Mic model" }), model]),
         el("label", { class: "cap-field" }, [el("span", { text: "Serial number" }), serial]),
@@ -287,6 +487,12 @@ function renderCalibration(screenEl, ctx) {
         el("span", { text: "Calibration file" }),
         file,
       ]));
+      if ((setupState.calibration || {}).mode === "upload") {
+        details.append(el("p", {
+          class: "cap-note",
+          text: "Choose the file again only if you want to replace the current selection.",
+        }));
+      }
     }
   };
   mode.addEventListener("change", renderDetails);
@@ -310,25 +516,60 @@ function renderCalibration(screenEl, ctx) {
       }
     } else if (mode.value === "upload") {
       const file = document.getElementById("calibration-file").files[0];
-      if (!file) {
+      const priorUpload = (setupState.calibration || {}).mode === "upload"
+        ? setupState.calibration
+        : null;
+      if (!file && priorUpload && priorUpload.content) {
+        setupState.calibration = priorUpload;
+      } else if (!file) {
         setStatus("Choose a calibration file.", "error");
         return;
+      } else {
+        if (Number(file.size || 0) > MAX_CALIBRATION_TEXT_BYTES) {
+          setStatus(
+            "That calibration file is too large. Choose a text calibration file smaller than 256 KiB.",
+            "error",
+          );
+          return;
+        }
+        const content = await file.text();
+        if (utf8Size(content) > MAX_CALIBRATION_TEXT_BYTES) {
+          setStatus(
+            "That calibration file is too large. Choose a text calibration file smaller than 256 KiB.",
+            "error",
+          );
+          return;
+        }
+        setupState.calibration = {
+          mode: "upload",
+          filename: file.name,
+          content,
+        };
       }
-      setupState.calibration = {
-        mode: "upload",
-        filename: file.name,
-        content: await file.text(),
-      };
     } else {
       setupState.calibration = { mode: "none" };
     }
-    try {
-      await validateSetupBeforeContinue(ctx);
-    } catch (err) {
-      setStatus(err && err.message ? String(err.message) : String(err), "error");
-      return;
+    if (ctx.spec.kind === "level_ramp") {
+      if (collectsRoomPositions(ctx.spec)) {
+        renderPositionCount(screenEl, ctx);
+        return;
+      }
+      try {
+        await bindSetupBeforeLevel(ctx);
+      } catch (err) {
+        setStatus(err && err.message ? String(err.message) : String(err), "error");
+        return;
+      }
+      renderLevelReady(screenEl, ctx);
+    } else {
+      try {
+        await validateSetupBeforeContinue(ctx);
+      } catch (err) {
+        setStatus(err && err.message ? String(err.message) : String(err), "error");
+        return;
+      }
+      renderPositionCount(screenEl, ctx);
     }
-    renderPositionCount(screenEl, ctx);
   };
 
   setScreen(screenEl, [
@@ -350,7 +591,67 @@ function renderCalibration(screenEl, ctx) {
   setStatus("Choose the calibration that matches the microphone.", "info");
 }
 
+function renderLevelReady(screenEl, ctx) {
+  const meterBar = el("div", { class: "cap-meter-bar" });
+  const meter = el("div", { class: "cap-meter", role: "meter" }, [meterBar]);
+  const start = button("Start level check", () => onLevelRampStart(ctx));
+  const back = button("Back", () => renderCalibration(screenEl, ctx), true);
+  setScreen(screenEl, [
+    el("h1", { class: "cap-heading", text: "Ready for the level check" }),
+    el("p", {
+      class: "cap-note",
+      text: "Place the microphone as shown on the speaker page and keep it still. The tone starts quietly and rises only as needed.",
+    }),
+    meter,
+    el("div", { class: "cap-actions" }, [
+      start,
+      back,
+    ]),
+  ]);
+  ctx.captureRefs = {
+    buttons: [
+      { action: "begin_capture", el: start },
+      { action: null, el: back },
+    ],
+    levelMeters: [meterBar],
+  };
+  setStatus("Ready. Tap Start level check.", "info");
+}
+
+function renderBoundRoomReady(screenEl, ctx) {
+  const position = Number(ctx.spec.position) || 0;
+  const total = Number(
+    (ctx.boundSetup && ctx.boundSetup.summary && ctx.boundSetup.summary.total_positions) ||
+      ctx.spec.total_positions,
+  ) || 0;
+  const positionLabel = position > 0 && total >= position
+    ? `position ${position} of ${total}`
+    : "this room position";
+  const start = button("Start measurement", async () => {
+    start.disabled = true;
+    try {
+      await onStart(ctx);
+    } finally {
+      start.disabled = false;
+    }
+  });
+  setScreen(screenEl, [
+    el("h1", { class: "cap-heading", text: `Ready for ${positionLabel}` }),
+    el("p", {
+      class: "cap-note",
+      text: "The microphone, calibration, and position count are locked to the level check. Keep the same microphone selected and place it where the speaker shows you.",
+    }),
+    el("div", { class: "cap-actions" }, [start]),
+  ]);
+  ctx.captureRefs = {
+    buttons: [{ action: "begin_capture", el: start }],
+    levelMeters: [],
+  };
+  setStatus(`Ready to measure ${positionLabel}.`, "info");
+}
+
 function renderPositionCount(screenEl, ctx) {
+  const levelRamp = ctx.spec.kind === "level_ramp";
   const positions = el("select", { id: "position-count" }, [
     el("option", { value: "1", text: "1 position / quick check" }),
     el("option", { value: "3", text: "3 positions" }),
@@ -361,6 +662,20 @@ function renderPositionCount(screenEl, ctx) {
   positions.addEventListener("change", () => {
     setupState.total_positions = Number(positions.value) || 5;
   });
+  const continueFromPositions = async () => {
+    setupState.total_positions = Number(positions.value) || 5;
+    if (!levelRamp) {
+      await onStart(ctx);
+      return;
+    }
+    try {
+      await bindSetupBeforeLevel(ctx);
+    } catch (err) {
+      setStatus(err && err.message ? String(err.message) : String(err), "error");
+      return;
+    }
+    renderLevelReady(screenEl, ctx);
+  };
   setScreen(screenEl, [
     el("h1", { class: "cap-heading", text: "Listening positions" }),
     el("p", {
@@ -372,11 +687,14 @@ function renderPositionCount(screenEl, ctx) {
       positions,
     ]),
     el("div", { class: "cap-actions" }, [
-      button("Start measurement", () => onStart(ctx)),
+      button(levelRamp ? "Continue to level check" : "Start measurement", continueFromPositions),
       button("Back", () => renderCalibration(screenEl, ctx), true),
     ]),
   ]);
-  setStatus("Ready to measure position 1.", "info");
+  setStatus(
+    levelRamp ? "Choose the listening area before checking the level." : "Ready to measure position 1.",
+    "info",
+  );
 }
 
 function samplesRmsDbfs(samples) {
@@ -398,6 +716,160 @@ async function captureAmbientNoise(recorder, spec) {
   };
 }
 
+function inspectRecorder(recorder, spec) {
+  const track = recorder.stream.getAudioTracks ? recorder.stream.getAudioTracks()[0] : null;
+  const settings = track && track.getSettings ? track.getSettings() : {};
+  return {
+    track,
+    settings,
+    decision: constraintDecision(verifyRealizedConstraints(settings, spec), spec),
+    device: {
+      label: (track && track.label) || "",
+      device_id: settings.deviceId || "",
+    },
+  };
+}
+
+function updateLevelMeters(ctx, level) {
+  const meters = (ctx.captureRefs && ctx.captureRefs.levelMeters) || [];
+  const rms = Number(level && level.rms_dbfs);
+  const percent = Number.isFinite(rms)
+    ? Math.max(0, Math.min(100, ((rms + 60) / 54) * 100))
+    : 0;
+  for (const meter of meters) meter.style.width = `${percent.toFixed(1)}%`;
+}
+
+function setCaptureButtonsDisabled(ctx, disabled) {
+  const buttons = (ctx.captureRefs && ctx.captureRefs.buttons) || [];
+  for (const ref of buttons) ref.el.disabled = Boolean(disabled);
+}
+
+async function onLevelRampStart(ctx) {
+  const { spec, client } = ctx;
+  let recorder = null;
+  let streamer = null;
+  let wakeLock = null;
+  let disposeWatch = () => {};
+  let aborted = false;
+  setCaptureButtonsDisabled(ctx, true);
+
+  const abort = async (reason) => {
+    if (aborted) return;
+    aborted = true;
+    setStatus(
+      reason === "backgrounded"
+        ? "Level check stopped — the screen must stay on this page."
+        : `Level check stopped — ${reason}.`,
+      "error",
+    );
+    if (streamer) await streamer.abort(reason);
+    if (recorder) {
+      try {
+        await recorder.close();
+      } catch {
+        /* already closed */
+      }
+      recorder = null;
+    }
+  };
+
+  try {
+    setStatus("Starting microphone…", "info");
+    recorder = await createMonoRecorder({
+      sampleRate: spec.sample_rate_hz || 48000,
+      deviceId: selectedDeviceId,
+    });
+    const capture = inspectRecorder(recorder, spec);
+    if (capture.decision.action === "refuse") {
+      await recorder.close();
+      recorder = null;
+      setStatus(
+        `This phone can't run a clean level check (${capture.decision.reason}). ` +
+          "Try a different phone or measurement microphone.",
+        "error",
+      );
+      return;
+    }
+    // The current relay protocol has no safe manual-lock acknowledgement. If
+    // the browser does not prove AGC=false, a rising tone cannot be interpreted
+    // as a stable acoustic gain map. Refuse explicitly and tell the Pi why;
+    // never silently run a degraded automatic ramp.
+    if (capture.settings.autoGainControl !== false) {
+      await recorder.close();
+      recorder = null;
+      try {
+        await client.postEvent({
+          level_refused: {
+            schema: 1,
+            run_token: String(spec.run_token || ""),
+            reason: "agc_not_proven_off",
+          },
+        });
+      } catch {
+        /* the visible refusal remains authoritative if the relay is unavailable */
+      }
+      setStatus(
+        "This browser cannot prove automatic microphone gain is off, so JTS will not play the level tone. Use a browser or USB microphone that reports automatic gain control disabled.",
+        "error",
+      );
+      return;
+    }
+
+    wakeLock = await acquireWakeLock();
+    disposeWatch = watchVisibilityAbort(
+      typeof document !== "undefined" ? document : null,
+      (reason) => {
+        void abort(reason);
+      },
+    );
+    setStatus(
+      capture.decision.degraded
+        ? `Checking level at lower confidence — ${capture.decision.reason}.`
+        : "Checking level — the speaker will rise slowly from quiet.",
+      "recording",
+    );
+
+    const ramp = await runLevelRampProtocol({
+      client,
+      recorder,
+      spec,
+      // The explicit preflight above proved realized AGC=false; unknown/on
+      // browsers were refused before the Pi could start a tone.
+      agcFrozen: true,
+      context: {
+        setup: setupWirePayload(),
+        device: capture.device,
+      },
+      onStreamer: (value) => {
+        streamer = value;
+      },
+      onLevel: (level) => updateLevelMeters(ctx, level),
+      onProgress: (event) => {
+        if (event.state === "settling") {
+          setStatus("Holding the tone while the microphone settles…", "recording");
+        } else if (event.state === "confirming") {
+          setStatus("Level found — confirming it is stable…", "recording");
+        }
+      },
+      isAborted: () => aborted,
+    });
+    if (!aborted) renderLevelRampComplete(ctx, ramp);
+  } catch (err) {
+    if (!aborted) setStatus(captureFailureMessage(err), "error");
+  } finally {
+    disposeWatch();
+    if (recorder) {
+      try {
+        await recorder.close();
+      } catch {
+        /* already closed */
+      }
+    }
+    if (wakeLock) await wakeLock.release();
+    setCaptureButtonsDisabled(ctx, false);
+  }
+}
+
 async function waitForSweepComplete(client, spec, isAborted) {
   const timeoutMs = Math.max(5000, Number(spec.duration_ms) || 20000);
   const pollMs = Math.max(100, Math.min(1000, Number(spec.progress_poll_ms) || 250));
@@ -408,6 +880,9 @@ async function waitForSweepComplete(client, spec, isAborted) {
     const status = await client.fetchPhoneStatus();
     const event = status && status.host_event || {};
     const phase = String(event.phase || "");
+    if (phase === "capture_incompatible") {
+      throw new Error(event.error || "capture page is incompatible with this speaker");
+    }
     if (phase && phase !== lastPhase) {
       lastPhase = phase;
       if (phase === "sweep_started") {
@@ -472,17 +947,13 @@ async function onStart(ctx) {
     // Measurement validity is loud (step 6, §9): verify the REALIZED constraints
     // — WebKit has historically ignored echoCancellation:false. Decide per the
     // spec's per-kind policy before wasting the user's time recording.
-    const track = recorder.stream.getAudioTracks ? recorder.stream.getAudioTracks()[0] : null;
-    const settings = track && track.getSettings ? track.getSettings() : {};
-    const decision = constraintDecision(verifyRealizedConstraints(settings, spec), spec);
+    const capture = inspectRecorder(recorder, spec);
+    const { decision } = capture;
     // Which mic actually recorded (track.label is the device name, available once
     // permission is granted). The Pi uses this to decide whether a loaded vendor
     // calibration applies — the phone built-in mic ⇒ refuse it, a USB measurement
     // mic ⇒ apply it. It rides the opaque `armed` event below, not the E2E WAV.
-    const captureDevice = {
-      label: (track && track.label) || "",
-      device_id: settings.deviceId || "",
-    };
+    const captureDevice = capture.device;
     if (decision.action === "refuse") {
       await recorder.close();
       recorder = null;
@@ -521,7 +992,7 @@ async function onStart(ctx) {
       degraded: decision.degraded,
       device: captureDevice,
       noise_floor: noise,
-      setup: setupState,
+      setup: setupWirePayload(),
     });
 
     // Record until the Pi reports that the real sweep finished, then keep a
@@ -551,6 +1022,10 @@ async function onStart(ctx) {
       return;
     }
     await client.putBlob(blob, plaintextLen, sha256);
+
+    // A completed capture-only position is active use of the same frozen
+    // setup. Refresh its idle deadline, but never its absolute privacy limit.
+    if (setupCaptureOnly) refreshBoundSetup(spec);
 
     renderCaptureComplete(ctx);
     setStatus("Done — your speaker is analyzing the measurement.", "done");
@@ -590,21 +1065,75 @@ async function boot() {
   let spec;
   try {
     setStatus("Connecting to your speaker…", "info");
-    spec = await client.fetchSpec();
+    const [pageIdentity, fetchedSpec] = await Promise.all([
+      loadCapturePageIdentity(),
+      client.fetchSpec(),
+    ]);
+    spec = fetchedSpec;
+    assertCaptureProtocolCompatible(spec, pageIdentity);
+    client.setCapturePageIdentity(pageIdentity);
   } catch (err) {
     setStatus(
-      "Can't reach the measurement relay. New measurements need an internet " +
-        "connection; any correction already applied to your speaker still works.",
+      String(err && err.message || "").includes("incompatible")
+        ? `${err.message}. Return to the speaker and update it or publish the matching capture page before trying again.`
+        : "Can't reach the measurement relay. New measurements need an internet " +
+          "connection; any correction already applied to your speaker still works.",
       "error",
     );
     return;
   }
 
-  const ctx = { spec, client, contentKeyB64: handle.contentKeyB64, screenEl };
-  if (spec.kind === "room_sweep") {
+  let boundSetup = null;
+  setupCaptureOnly = spec.kind === "room_sweep" && spec.setup_validation === false;
+  if (setupCaptureOnly) {
+    const bindingId = setupBindingId(spec);
+    boundSetup = loadBoundSetup(spec) || (!bindingId ? {
+      identity: null,
+      summary: { total_positions: Number(spec.total_positions) || 1 },
+    } : null);
+    if (bindingId && !boundSetup) {
+      const returnUrl = safeReturnUrl(spec);
+      const children = [
+        el("h1", { class: "cap-heading", text: "Run the level check again" }),
+        el("p", {
+          class: "cap-note",
+          text: "This phone no longer has the setup identity from the safe level check. Return to the speaker and run that check again before measuring.",
+        }),
+      ];
+      if (returnUrl) children.push(linkButton("Back to speaker", returnUrl));
+      setScreen(screenEl, children);
+      setStatus("Measurement setup expired — run the level check again.", "error");
+      return;
+    }
+    setupIdentity = boundSetup.identity || null;
+    setupState = {
+      total_positions: Number(boundSetup.summary && boundSetup.summary.total_positions) || 5,
+      calibration: {
+        mode: String(
+          (boundSetup.summary && boundSetup.summary.calibration &&
+            boundSetup.summary.calibration.mode) || "none",
+        ),
+        model: String(
+          (boundSetup.summary && boundSetup.summary.calibration &&
+            boundSetup.summary.calibration.model) || "",
+        ),
+      },
+    };
+  }
+
+  const ctx = {
+    spec,
+    client,
+    contentKeyB64: handle.contentKeyB64,
+    screenEl,
+    boundSetup,
+  };
+  if (setupCaptureOnly) {
+    renderBoundRoomReady(screenEl, ctx);
+  } else if (spec.kind === "room_sweep" || spec.kind === "level_ramp") {
     renderIntro(screenEl, ctx);
   } else {
-    renderScreen(screenEl, spec, {
+    ctx.captureRefs = renderScreen(screenEl, spec, {
       handlers: {
         begin_capture: () => onStart(ctx),
         retry: () => onStart(ctx),
@@ -648,8 +1177,13 @@ async function buildMicPicker(beforeEl) {
     select.appendChild(opt);
   }
   select.value = selectedDeviceId;
+  if (select.value !== selectedDeviceId) {
+    selectedDeviceId = "";
+    rememberDeviceId("");
+  }
   select.addEventListener("change", () => {
     selectedDeviceId = select.value;
+    rememberDeviceId(selectedDeviceId);
   });
   wrap.appendChild(select);
   if (beforeEl && beforeEl.parentNode) {
@@ -665,4 +1199,4 @@ if (typeof document !== "undefined" && typeof window !== "undefined") {
   }
 }
 
-export { boot, onStart };
+export { boot, onStart, onLevelRampStart };

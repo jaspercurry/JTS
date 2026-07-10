@@ -634,6 +634,25 @@ def test_outputd_chip_ref_tee_is_diagnostic_only_and_env_gated():
     assert "mark_chip_ref_tee_open_error" in main_rs
 
 
+def test_outputd_optional_chip_reference_cannot_gate_dac_playback():
+    main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
+    run_alsa = main_rs.split("fn run_alsa(", 1)[1].split("fn notify_ready", 1)[0]
+    spawn = main_rs.split("fn spawn_chip_ref_writer(", 1)[1].split(
+        "fn run_chip_ref_writer(", 1
+    )[0]
+    writer = main_rs.split("fn run_chip_ref_writer(", 1)[1].split(
+        "fn open_chip_ref_pcm(", 1
+    )[0]
+
+    assert "ReferenceSideOutputs::new(config, shutdown, Arc::clone(state));" in run_alsa
+    assert "ReferenceSideOutputs::new(config, shutdown, Arc::clone(state))?" not in run_alsa
+    assert "ready_rx.recv_timeout" not in spawn
+    assert "action=retry_background" in writer
+    assert "state.mark_chip_ref_dropped_unavailable();" in writer
+    assert "fn run_chip_ref_writer_with<" in main_rs
+    assert "fn chip_ref_worker_degrades_then_recovers_without_exiting()" in main_rs
+
+
 def test_outputd_ready_is_after_alsa_output_is_primed_and_started():
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     backend_rs = (

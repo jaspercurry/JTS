@@ -638,7 +638,10 @@ class LevelMatchOutcome:
 
     @property
     def locked(self) -> bool:
-        return self.ramp.state in (RampState.LOCKED, RampState.MAXED_OUT)
+        # MAXED_OUT means the safe digital ceiling was reached while the mic was
+        # still below the measurement window.  That is actionable evidence
+        # (raise the external amplifier and retry), not a usable level lock.
+        return self.ramp.state is RampState.LOCKED
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -700,12 +703,14 @@ class LevelMatchSession:
 
         Waits (bounded) for the phone's ``armed`` superset before any volume or
         tone change — a premature call must not burn a full tone climb against a
-        phone nobody tapped Start on. A terminal LOCKED / MAXED_OUT stores a
-        :class:`MeasurementLevelLock` under the geometry key; ABORTED /
-        CANCELLED / ERROR store nothing (the original listening level is
-        restored by the kernel). A phone-reported abort seen in the feed cancels
-        the ramp cleanly. ``run_token`` must match the token minted into this
-        run's ``build_level_ramp_spec`` so the feed is scoped to this run.
+        phone nobody tapped Start on. Only a terminal LOCKED stores a
+        :class:`MeasurementLevelLock` under the geometry key. MAXED_OUT means the
+        safe digital ceiling was insufficient and stores no lock; the flow asks
+        the household to raise the external amplifier and retry. ABORTED /
+        CANCELLED / ERROR likewise store nothing and restore the original
+        listening level. A phone-reported abort seen in the feed cancels the ramp
+        cleanly. ``run_token`` must match the token minted into this run's
+        ``build_level_ramp_spec`` so the feed is scoped to this run.
         """
         feed = RelayLevelFeed(
             read_status=read_status,
@@ -766,10 +771,7 @@ class LevelMatchSession:
         )
 
         lock: MeasurementLevelLock | None = None
-        if data.state in (RampState.LOCKED, RampState.MAXED_OUT):
-            # P3b UI note: for MAXED_OUT with data.agc_frozen=False the "raise
-            # your analog amp" copy is unreliable — branch on the snapshot's
-            # agc_frozen and show the degrade nudge instead.
+        if data.state is RampState.LOCKED:
             lock = MeasurementLevelLock.from_ramp(geometry, data)
             self.store.put(lock)
 

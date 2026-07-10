@@ -126,6 +126,9 @@ def test_design_draft_persists_research_without_authorizing_audio(tmp_path: Path
     assert payload["summary"]["crossover_candidate_count"] == 1
     assert payload["summary"]["missing_research_roles"] == []
     assert payload["driver_research"]["drivers"][1]["gain_offset_db"] == -18.5
+    assert payload["driver_research"]["drivers"][1][
+        "gain_offset_db_provenance"
+    ] == "research_estimate"
     assert payload["permissions"]["may_not_load_camilla"] is True
     assert payload["permissions"]["may_not_emit_audio"] is True
     assert payload["safety"]["no_audio"] is True
@@ -228,6 +231,28 @@ def test_manual_crossover_settings_can_replace_ai_research():
     assert payload["summary"]["missing_driver_info_roles"] == []
     assert payload["summary"]["missing_crossover_candidate_pairs"] == []
     assert "driver_research_missing" in {issue["code"] for issue in payload["issues"]}
+    assert payload["manual_settings"]["drivers"][1][
+        "gain_offset_db_provenance"
+    ] == "operator_pinned"
+
+
+def test_ui_suggested_gain_provenance_survives_normalisation():
+    payload = build_design_draft(
+        _topology(),
+        manual_settings={
+            "drivers": [{
+                "role": "tweeter",
+                "model": "F110M-8",
+                "gain_offset_db": -24.7,
+                "gain_offset_db_provenance": "sensitivity_estimate",
+            }],
+            "crossover_candidates": [],
+        },
+    )
+
+    assert payload["manual_settings"]["drivers"][0][
+        "gain_offset_db_provenance"
+    ] == "sensitivity_estimate"
 
 
 def test_design_draft_without_research_is_honest_needs_research():

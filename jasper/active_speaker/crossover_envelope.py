@@ -2,33 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Server-computed *screen envelope* for the active-crossover commissioning flow.
+"""Pure screen envelope for sequential Layer-A acoustic commissioning.
 
-Layer A (the speaker layer) is the PRIMARY, foundational layer for an active
-speaker and is hidden entirely for a passive speaker (revision plan §1). This
-module aligns the crossover flow's step presentation with the room flow's
-envelope-driven pattern (:mod:`jasper.correction.envelope`, §3.2): one JSON
-object per step describing the logical screen, a plain-language verdict, the
-single primary action (nudges never disable it), homeowner nudges, and step
-progress — a **dumb frontend** renders it verbatim.
+``/sound/`` owns topology, driver protection, output identity, and the safe
+starting profile.  This envelope owns the distinct microphone journey:
 
-It is a **parallel, minimal** envelope, deliberately NOT an extension of the
-room envelope: the two flows are disjoint state machines (the room envelope keys
-on :class:`jasper.correction.session.SessionState`; commissioning keys on the
-durable active-speaker state files). Coupling them would force a schema/shape
-pin across two unrelated machines. Instead this composes the step model the
-commissioning coordinator ALREADY builds
-(:func:`jasper.active_speaker.commissioning_coordinator.build_commissioning_view`)
-into the shared envelope shape — the coordinator's state machine is untouched.
+    mic/calibration + level -> driver sweeps -> summed proof -> atomic apply
 
-Purely additive + read-only: it derives from the coordinator view + measurement
-targets, mutates nothing, and does not touch the existing ``/crossover/status``
-payload.
-
-``active`` is the load-bearing gate: ``False`` for a ``full_range_passive``
-speaker (no active driver/summed targets), which is how "passive users never see
-Layer A" is expressed to the frontend. When ``active`` is ``False`` the envelope
-carries no steps and a single explanatory verdict.
+It reads the already-composed crossover status payload and returns one primary
+action plus any explicit alternatives. It performs no I/O and mutates no
+measurement state; the correction web host supplies relay/apply adapters for
+the returned action descriptors.
 """
 from __future__ import annotations
 
@@ -36,240 +20,385 @@ import logging
 from typing import Any, Mapping
 
 from ..log_event import log_event
-from .commissioning_coordinator import COMMISSIONING_STEP_IDS
 
 logger = logging.getLogger(__name__)
 
-# Bumped independently of the coordinator's artifact_schema_version; a pinning
-# test guards it (mirrors correction.envelope.ENVELOPE_SCHEMA_VERSION).
-CROSSOVER_ENVELOPE_SCHEMA_VERSION = 1
+CROSSOVER_ENVELOPE_SCHEMA_VERSION = 2
 
-# The logical commissioning screens: the coordinator's five step ids (imported,
-# never re-typed — a coordinator rename must not silently degrade `_screen_for`
-# to its fallback) plus a terminal "done" and a passive "not_applicable". Kept
-# coarse: the dumb frontend renders the spine; the coordinator's per-step
-# status drives which is active.
-SCREEN_NOT_APPLICABLE = "not_applicable"
-SCREEN_LAYOUT, SCREEN_RESEARCH, SCREEN_MAP, SCREEN_SAFETY, SCREEN_PROFILE = (
-    COMMISSIONING_STEP_IDS
-)
-SCREEN_DONE = "done"
-
-# Ordered spine for the progress indicator — the coordinator's own tuple.
-_PROGRESS_SPINE: tuple[str, ...] = COMMISSIONING_STEP_IDS
+_STEP_IDS = ("speaker_setup", "microphone", "drivers", "summed", "apply")
+_STEP_LABELS = {
+    "speaker_setup": "Protected speaker setup",
+    "microphone": "Microphone and level",
+    "drivers": "Measure each driver",
+    "summed": "Check the crossover sum",
+    "apply": "Apply speaker profile",
+}
 
 
-def _active_targets(status: Mapping[str, Any]) -> bool:
-    """Whether this speaker has any active (Layer A) driver/summed targets.
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
-    Passive (``full_range_passive``) speakers have no active groups, so
-    ``targets.drivers`` / ``targets.summed`` are empty — the single honest gate
-    for "does Layer A apply here?" (revision plan §1). Reads the already-computed
-    ``/crossover/status`` targets so it never re-derives topology.
-    """
-    targets = status.get("targets") if isinstance(status, Mapping) else None
-    if not isinstance(targets, Mapping):
-        return False
-    drivers = targets.get("drivers")
-    summed = targets.get("summed")
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _targets(status: Mapping[str, Any], kind: str) -> list[Mapping[str, Any]]:
+    return [
+        item for item in _list(_mapping(status.get("targets")).get(kind))
+        if isinstance(item, Mapping)
+    ]
+
+
+def _summary(status: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _mapping(_mapping(status.get("measurements")).get("summary"))
+
+
+def _driver_record(status: Mapping[str, Any], target: Mapping[str, Any]) -> Mapping[str, Any]:
+    latest = _mapping(_summary(status).get("latest_driver_measurements"))
+    key = f"{target.get('speaker_group_id') or ''}:{target.get('role') or ''}"
+    return _mapping(latest.get(key))
+
+
+def _summed_record(status: Mapping[str, Any], target: Mapping[str, Any]) -> Mapping[str, Any]:
+    latest = _mapping(_summary(status).get("latest_summed_validations"))
+    return _mapping(latest.get(str(target.get("speaker_group_id") or "")))
+
+
+def _usable_driver_acoustic(record: Mapping[str, Any]) -> bool:
+    acoustic = _mapping(record.get("acoustic"))
     return bool(
-        (isinstance(drivers, list) and drivers)
-        or (isinstance(summed, list) and summed)
+        acoustic.get("verdict") == "present"
+        and record.get("mic_clipping") is not True
+        and acoustic.get("mic_clipping") is not True
     )
 
 
-def _screen_for(view: Mapping[str, Any]) -> str:
-    """The active commissioning screen from the coordinator's current_step.
-
-    ``applied`` (the terminal coordinator status) folds onto ``done``. An
-    unknown/absent current_step falls back to the first spine screen so the
-    frontend is never left with no screen.
-    """
-    if str(view.get("status") or "") == "applied":
-        return SCREEN_DONE
-    current = str(view.get("current_step") or "")
-    if current in _PROGRESS_SPINE:
-        return current
-    # No active step (all done but not yet "applied"): show the last spine step.
-    steps = view.get("steps")
-    if isinstance(steps, list) and steps:
-        last = steps[-1]
-        if isinstance(last, Mapping) and last.get("status") == "done":
-            return SCREEN_PROFILE
-    return SCREEN_LAYOUT
+def _usable_summed_acoustic(record: Mapping[str, Any]) -> bool:
+    acoustic = _mapping(record.get("acoustic"))
+    return bool(
+        record.get("validated") is True
+        and acoustic.get("verdict") == "blend_ok"
+        and record.get("mic_clipping") is not True
+        and acoustic.get("mic_clipping") is not True
+    )
 
 
-def _progress(screen: str) -> dict[str, int]:
-    if screen == SCREEN_DONE:
-        return {"position": len(_PROGRESS_SPINE), "total": len(_PROGRESS_SPINE)}
+def _level_state(status: Mapping[str, Any]) -> tuple[bool, str, bool]:
+    level = _mapping(status.get("level_match"))
+    last = _mapping(level.get("last"))
+    ramp = _mapping(last.get("ramp"))
+    state = str(ramp.get("state") or "")
+    ready = (
+        state == "locked"
+        and level.get("valid") is not False
+    )
+    return ready, state, level.get("running") is True
+
+
+def _relay_active(status: Mapping[str, Any]) -> bool:
+    relay = _mapping(status.get("relay"))
+    return str(relay.get("status") or "") in {"starting", "awaiting_phone"}
+
+
+def _relay_kind(status: Mapping[str, Any]) -> str:
+    return str(_mapping(status.get("relay")).get("kind") or "")
+
+
+def _setup_ready(status: Mapping[str, Any]) -> bool:
+    setup = _mapping(status.get("setup"))
+    return setup.get("active") is True and setup.get("status") == "ready"
+
+
+def _legacy_applied_profile_needs_reapply(status: Mapping[str, Any]) -> bool:
+    applied = _mapping(status.get("applied_profile"))
+    return bool(
+        applied.get("status") == "applied"
+        and not _mapping(applied.get("recomposition_snapshot"))
+    )
+
+
+def _step_payload(done: set[str], active: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for step_id in _STEP_IDS:
+        rows.append({
+            "id": step_id,
+            "label": _STEP_LABELS[step_id],
+            "status": "done" if step_id in done else ("active" if step_id == active else "pending"),
+        })
+    return rows
+
+
+def _progress(active: str) -> dict[str, int]:
     try:
-        position = _PROGRESS_SPINE.index(screen) + 1
+        position = _STEP_IDS.index(active) + 1
     except ValueError:
-        position = 1
-    return {"position": position, "total": len(_PROGRESS_SPINE)}
-
-
-def _steps(view: Mapping[str, Any]) -> list[dict[str, str]]:
-    """The coordinator's steps, relayed as the envelope's step spine.
-
-    Each carries id/label/status/message straight from the coordinator (the
-    single owner of the step model); this never re-derives them.
-    """
-    raw = view.get("steps")
-    if not isinstance(raw, list):
-        return []
-    out: list[dict[str, str]] = []
-    for step in raw:
-        if not isinstance(step, Mapping):
-            continue
-        out.append(
-            {
-                "id": str(step.get("id") or ""),
-                "label": str(step.get("label") or ""),
-                "status": str(step.get("status") or ""),
-                "message": str(step.get("message") or ""),
-            }
-        )
-    return out
-
-
-def _next_action(view: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The single primary action the dumb frontend offers, from the coordinator.
-
-    The coordinator already resolves exactly one ``next_action`` (id/label/
-    enabled/endpoint/method/body/message). We relay it unchanged — an empty dict
-    (the coordinator's "nothing to do") becomes ``None`` so the frontend shows no
-    button. Measurement-quality never blocks here: the action's ``enabled`` flag
-    reflects genuine prerequisites (a driver test needs confirmed outputs), not a
-    quality nudge.
-    """
-    action = view.get("next_action")
-    if not isinstance(action, Mapping) or not action.get("id"):
-        return None
-    return dict(action)
-
-
-def _verdict_text(view: Mapping[str, Any], screen: str, *, active: bool) -> str:
-    """One homeowner sentence describing where commissioning stands.
-
-    Terse + screen-scoped (mirrors correction.envelope._verdict_text). For a
-    passive speaker this states, in plain language, why Layer A does not apply.
-    """
-    if not active:
-        return (
-            "This speaker is a single full-range output, so there is no "
-            "crossover to tune here — measure your room instead."
-        )
-    if screen == SCREEN_DONE:
-        return "Your active crossover is commissioned and saved."
-    # Prefer the coordinator's message for the active step (it is already
-    # homeowner copy), else a spine-default line.
-    for step in view.get("steps") or []:
-        if isinstance(step, Mapping) and step.get("status") == "active":
-            message = str(step.get("message") or "").strip()
-            if message:
-                return message
-    defaults = {
-        SCREEN_LAYOUT: "Tell JTS what drivers are wired to each output.",
-        SCREEN_RESEARCH: "Save the driver names and crossover points.",
-        SCREEN_MAP: "Confirm each DAC output and driver quietly.",
-        SCREEN_SAFETY: "Test the combined crossover quietly.",
-        SCREEN_PROFILE: "Save the checked speaker profile.",
-    }
-    return defaults.get(screen, "Set up your active crossover, one step at a time.")
-
-
-# Coordinator failure/quality signals surfaced as homeowner nudges. Commissioning
-# SAFETY gates (an unprotected tweeter, a bad graph) stay HARD in
-# graph_safety.py / the L0 emit gate — they are never softened to a nudge. What
-# lands here is measurement-quality / retry guidance: a sentence + a checkmark,
-# never a block (§0.2). A failed combined test is a retry nudge, not a gate.
-def _nudges(view: Mapping[str, Any], *, active: bool) -> list[dict[str, str]]:
-    if not active:
-        return []
-    nudges: list[dict[str, str]] = []
-    seen: set[str] = set()
-
-    def _add(code: str, severity: str, text: str) -> None:
-        if code in seen or not text:
-            return
-        seen.add(code)
-        nudges.append({"code": code, "severity": severity, "text": text})
-
-    # Combined-test retry guidance (the coordinator computes per-group
-    # failure_message — retry copy, not a safety block).
-    for group in view.get("combined_groups") or []:
-        if not isinstance(group, Mapping):
-            continue
-        failure = str(group.get("failure_message") or "").strip()
-        if failure:
-            _add(f"combined_test_retry:{group.get('group_id')}", "warn", failure)
-    # Revalidation-needed guidance (a saved profile drifted from the drivers).
-    revalidation = view.get("revalidation")
-    if isinstance(revalidation, Mapping) and revalidation.get("required") is True:
-        reason = str(revalidation.get("message") or "").strip() or (
-            "Something changed since the last profile — re-run the combined "
-            "check and save a fresh profile."
-        )
-        _add("revalidation_required", "info", reason)
-    return nudges
+        position = len(_STEP_IDS)
+    return {"position": position, "total": len(_STEP_IDS)}
 
 
 def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
-    """Build the commissioning screen envelope from a ``/crossover/status`` payload.
-
-    ``status`` is what ``correction_crossover_backend.status_payload`` returns;
-    only its ``targets`` drive the passive gate here. The view itself comes from
-    the SHARED loader ``commissioning_coordinator.load_commissioning_view`` —
-    the same "load every durable state input, then compose" the ``/sound/``
-    card uses — because ``build_commissioning_view`` is a pure composer: called
-    with only part of its inputs it silently reports a stuck flow (a missing
-    ``design_draft`` pins "research" forever; a missing ``baseline_profile``
-    makes "done" unreachable). Read-only. When no active targets exist the
-    envelope is the passive gate: ``active=False``, no steps, one explanatory
-    verdict.
-    """
-    from jasper.active_speaker.commissioning_coordinator import (
-        load_commissioning_view,
-    )
-
-    active = _active_targets(status)
+    active = bool(status.get("active"))
     if not active:
-        screen = SCREEN_NOT_APPLICABLE
         return {
             "schema_version": CROSSOVER_ENVELOPE_SCHEMA_VERSION,
-            "screen": screen,
+            "screen": "not_applicable",
             "active": False,
             "steps": [],
-            "verdict_text": _verdict_text({}, screen, active=False),
+            "verdict_text": (
+                "This speaker has no active crossover. Continue with room correction."
+            ),
             "nudges": [],
-            "next_action": None,
-            "progress": {"position": 0, "total": len(_PROGRESS_SPINE)},
+            "relay": _mapping(status.get("relay")) or None,
+            "next_action": {
+                "id": "room",
+                "label": "Correct the room",
+                "href": "/correction/room/",
+            },
+            "progress": {"position": 0, "total": len(_STEP_IDS)},
         }
 
-    # commission=None: it is a runtime-only relay (never consulted for
-    # steps/status) and its full payload needs the /sound/ caller's async
-    # CamillaDSP probe; the envelope does not surface `runtime`.
-    view = load_commissioning_view()
-    screen = _screen_for(view)
+    drivers = _targets(status, "drivers")
+    summed = _targets(status, "summed")
+    missing_drivers = [
+        target
+        for target in drivers
+        if not _usable_driver_acoustic(_driver_record(status, target))
+    ]
+    missing_summed = [
+        target
+        for target in summed
+        if not _usable_summed_acoustic(_summed_record(status, target))
+    ]
+    level_ready, level_state, level_running = _level_state(status)
+    setup_ready = _setup_ready(status)
+    setup_contract = _mapping(status.get("setup"))
+    applied_contract = _mapping(setup_contract.get("applied_crossover"))
+    applied_ready = applied_contract.get("valid") is True
+    applied_owner = str(applied_contract.get("owner") or "")
+    automatic_applied = applied_ready and applied_owner == "automatic"
+    automatic_candidate = _mapping(setup_contract.get("automatic_candidate"))
+    automatic_candidate_ready = automatic_candidate.get("ready") is True
+    manual_preservation = _mapping(setup_contract.get("manual_preservation"))
+    legacy_reapply = _legacy_applied_profile_needs_reapply(status)
+
+    done: set[str] = set()
+    if setup_ready:
+        done.add("speaker_setup")
+    if level_ready:
+        done.add("microphone")
+    if drivers and not missing_drivers:
+        done.add("drivers")
+    if summed and not missing_summed:
+        done.add("summed")
+    if applied_ready:
+        done.add("apply")
+    if automatic_applied:
+        done.update({"microphone", "drivers", "summed"})
+
+    nudges: list[dict[str, str]] = []
+    if level_state == "maxed_out":
+        nudges.append({
+            "code": "external_amplifier_too_low",
+            "severity": "warn",
+            "text": (
+                "The microphone was still too quiet at the safe software limit. "
+                "Raise the external amplifier a little, then retry."
+            ),
+        })
+
+    alternate_actions: list[dict[str, Any]] = []
+    if not setup_ready:
+        screen = "speaker_setup"
+        verdict = (
+            "Finish the protected speaker setup first. This proves the output map "
+            "and tweeter protection before a microphone sweep can play."
+        )
+        action: dict[str, Any] | None = {
+            "id": "speaker_setup",
+            "label": "Finish speaker setup",
+            "href": "/sound/",
+        }
+        active_step = "speaker_setup"
+    elif legacy_reapply and not (_relay_active(status) or level_running or level_ready):
+        screen = "choose_tuning"
+        if manual_preservation.get("ready") is True:
+            verdict = (
+                "Your current manual crossover is safe. Keep it as-is, or choose "
+                "automatic tuning to measure and replace it."
+            )
+            action = {
+                "id": "keep_manual",
+                "label": "Keep current manual crossover",
+                "endpoint": "/correction/crossover/apply",
+                "body": {"tuning_owner": "manual"},
+            }
+            alternate_actions = [{
+                "id": "tune_automatic",
+                "label": "Tune automatically",
+                "endpoint": "/correction/crossover/level-match",
+                "body": {},
+            }, {
+                "id": "edit_manual",
+                "label": "Edit manual crossover",
+                "href": "/sound/",
+            }]
+        else:
+            verdict = str(
+                manual_preservation.get("detail")
+                or "The crossover inputs changed after the current manual profile was applied."
+            )
+            action = {
+                "id": "edit_manual",
+                "label": "Edit manual crossover",
+                "href": "/sound/",
+            }
+            alternate_actions = [{
+                "id": "tune_automatic",
+                "label": "Tune automatically",
+                "endpoint": "/correction/crossover/level-match",
+                "body": {},
+            }]
+        active_step = "apply"
+    elif applied_ready and applied_owner == "manual" and not (
+        _relay_active(status) or level_running or level_ready
+    ):
+        screen = "done_manual"
+        verdict = "Your manual crossover is applied and ready for room correction."
+        action = {
+            "id": "room",
+            "label": "Correct the room",
+            "href": "/correction/room/",
+        }
+        alternate_actions = [
+            {
+                "id": "tune_automatic",
+                "label": "Tune crossover automatically",
+                "endpoint": "/correction/crossover/level-match",
+                "body": {},
+            },
+            {
+                "id": "edit_manual",
+                "label": "Edit manual crossover",
+                "href": "/sound/",
+            },
+        ]
+        active_step = "apply"
+    elif automatic_applied:
+        screen = "done"
+        verdict = "The automatically tuned crossover is applied and ready for room correction."
+        action = {
+            "id": "room",
+            "label": "Correct the room",
+            "href": "/correction/room/",
+        }
+        active_step = "apply"
+        alternate_actions = [{
+            "id": "edit_manual",
+            "label": "Set crossover manually",
+            "href": "/sound/",
+        }]
+    elif _relay_active(status) or level_running:
+        screen = "waiting"
+        verdict = "Continue on the phone. This page will advance automatically when it finishes."
+        action = None
+        active_step = "microphone" if (
+            level_running or _relay_kind(status).startswith("level_ramp:")
+        ) else (
+            "drivers" if missing_drivers else "summed"
+        )
+    elif not level_ready and (missing_drivers or missing_summed):
+        screen = "microphone"
+        verdict = (
+            "Choose the microphone and calibration, then JTS will raise the "
+            "measurement level gradually from quiet."
+        )
+        action = {
+            "id": "level_match",
+            "label": "Retry level check" if level_state else "Set microphone and level",
+            "endpoint": "/correction/crossover/level-match",
+            "body": {},
+        }
+        active_step = "microphone"
+    elif missing_drivers:
+        target = missing_drivers[0]
+        role = str(target.get("role") or "driver")
+        screen = "driver"
+        verdict = f"Measure the {role}. JTS will use the safe protected path and saved level."
+        action = {
+            "id": "measure_driver",
+            "label": f"Measure {role}",
+            "endpoint": "/correction/crossover/relay-capture",
+            "body": {
+                "kind": "driver",
+                "speaker_group_id": str(target.get("speaker_group_id") or ""),
+                "role": role,
+            },
+        }
+        active_step = "drivers"
+    elif missing_summed:
+        target = missing_summed[0]
+        screen = "summed"
+        verdict = "Measure the drivers together to verify the crossover blend."
+        action = {
+            "id": "measure_summed",
+            "label": "Measure combined drivers",
+            "endpoint": "/correction/crossover/relay-capture",
+            "body": {
+                "kind": "summed",
+                "speaker_group_id": str(target.get("speaker_group_id") or ""),
+            },
+        }
+        active_step = "summed"
+    elif automatic_candidate_ready:
+        screen = "apply"
+        replacing_manual = applied_ready and applied_owner == "manual"
+        verdict = (
+            "The automatic measurements are complete. Review and explicitly "
+            "replace your manual crossover."
+            if replacing_manual
+            else "The automatic measurements are complete. Apply the tuned crossover."
+        )
+        action = {
+            "id": "replace_manual" if replacing_manual else "apply_automatic",
+            "label": (
+                "Replace manual crossover with automatic tuning"
+                if replacing_manual
+                else "Apply automatic crossover"
+            ),
+            "endpoint": "/correction/crossover/apply",
+            "body": {"tuning_owner": "automatic"},
+        }
+        active_step = "apply"
+    else:
+        screen = "microphone"
+        verdict = str(
+            automatic_candidate.get("detail")
+            or "The automatic measurements are not usable yet. Repeat the guided level check."
+        )
+        action = {
+            "id": "level_match",
+            "label": "Repeat microphone and level check",
+            "endpoint": "/correction/crossover/level-match",
+            "body": {},
+        }
+        active_step = "microphone"
+
     return {
         "schema_version": CROSSOVER_ENVELOPE_SCHEMA_VERSION,
         "screen": screen,
         "active": True,
-        "steps": _steps(view),
-        "verdict_text": _verdict_text(view, screen, active=True),
-        "nudges": _nudges(view, active=True),
-        "next_action": _next_action(view),
-        "progress": _progress(screen),
+        "steps": _step_payload(done, active_step),
+        "verdict_text": verdict,
+        "nudges": nudges,
+        "relay": _mapping(status.get("relay")) or None,
+        "next_action": action,
+        "alternate_actions": alternate_actions,
+        "progress": _progress(active_step),
     }
 
 
 def build_crossover_envelope_logged(status: Mapping[str, Any]) -> dict[str, Any]:
-    """`build_crossover_envelope` plus one structured `event=` line.
-
-    Separate from the pure builder so tests pin the shape without log noise; the
-    endpoint calls this variant (mirrors correction.envelope.build_envelope_logged).
-    """
     envelope = build_crossover_envelope(status)
     log_event(
         logger,
@@ -278,5 +407,7 @@ def build_crossover_envelope_logged(status: Mapping[str, Any]) -> dict[str, Any]
         active=envelope["active"],
         step_count=len(envelope["steps"]),
         nudge_count=len(envelope["nudges"]),
+        action=(envelope.get("next_action") or {}).get("id"),
+        alternate_action_count=len(envelope.get("alternate_actions") or []),
     )
     return envelope

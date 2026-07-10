@@ -33,9 +33,9 @@ class AutolevelData:
 
     `original_main_volume_db` is the CamillaDSP `main_volume` value saved at
     the start of the run, so the controller can restore it when the measurement
-    ends. `current` is where the ramp is right now; `locked` is where it ended
-    when the user signalled lock, or where the ramp completed without lock.
-    `cap_db` is the dynamic end-of-ramp cap computed from `original + bump`.
+    ends. `current` is where the ramp is right now; `locked` is populated only
+    when the user signalled a successful lock. `cap_db` is the dynamic
+    end-of-ramp cap computed from `original + bump`.
     """
 
     status: AutolevelStatus = AutolevelStatus.IDLE
@@ -65,8 +65,14 @@ class AutolevelData:
 def compute_autolevel_cap(
     original_db: float, *, bump_db: float, floor_db: float, ceil_db: float
 ) -> float:
-    """End-of-ramp cap: +bump over listening volume, clamped to bounds."""
-    return max(floor_db, min(original_db + bump_db, ceil_db))
+    """End-of-ramp cap: never above ``original + bump`` or ``ceil_db``.
+
+    ``floor_db`` remains in this legacy API for caller compatibility, but is
+    intentionally not applied. Flooring a quiet listener's cap upward can
+    exceed the promised bump by tens of decibels.
+    """
+    del floor_db
+    return min(original_db + bump_db, ceil_db)
 
 
 class AutolevelController:
@@ -204,12 +210,13 @@ class AutolevelController:
                 )
                 logger.info(
                     "autolevel: dynamic end_db=%.1f dB "
-                    "(original=%.1f + bump=%.1f, clamped to [%.1f, %.1f])",
+                    "(min(original=%.1f + bump=%.1f, ceiling=%.1f); "
+                    "legacy_floor_ignored=%.1f)",
                     end_db,
                     al.original_main_volume_db,
                     end_db_bump,
-                    end_db_absolute_min,
                     end_db_absolute_max,
+                    end_db_absolute_min,
                 )
             al.cap_db = float(end_db)
             al.status = AutolevelStatus.RAMPING
@@ -223,7 +230,10 @@ class AutolevelController:
                 step_interval_s * 1000,
             )
 
-            current_db = float(start_db)
+            # A very quiet listening level can put the dynamic cap below the
+            # usual start_db. Never jump straight past that cap just to reach
+            # the nominal start of the legacy ramp.
+            current_db = min(float(start_db), float(end_db))
             await set_main_volume_db(current_db)
             al.current_main_volume_db = current_db
             await asyncio.sleep(0.1)
@@ -278,14 +288,17 @@ class AutolevelController:
                 logger.debug("autolevel: step main_volume=%.1f dB", current_db)
 
             al.status = AutolevelStatus.MAXED_OUT
-            al.locked_main_volume_db = end_db
-            logger.info(
-                "autolevel: MAXED_OUT at main_volume=%.1f dB "
-                "(software cap) — user must turn up amplifier OR "
-                "tap manual Lock button next time",
-                end_db,
+            al.error = (
+                "safe cap reached below target; raise the external amplifier "
+                "and retry"
             )
-            await _graceful_stop(end_db)
+            logger.warning(
+                "autolevel: MAXED_OUT at main_volume=%.1f dB "
+                "(software cap) — no measurement lock; restoring %.1f dB",
+                end_db,
+                al.original_main_volume_db,
+            )
+            await _graceful_stop(al.original_main_volume_db)
         except Exception as e:  # noqa: BLE001
             al.status = AutolevelStatus.ERROR
             al.error = str(e)

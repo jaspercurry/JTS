@@ -1208,7 +1208,9 @@ For anyone touching the resilience code:
   hardware, and enables Apple mixer helpers only for the Apple output role.
   A recognized role must render the managed ALSA template before the
   reconciler publishes new active env values; if rendering fails, or if the
-  staged `outputd.env` candidate would violate outputd buffer/period config,
+  staged `outputd.env` candidate would violate outputd buffer/period config or
+  disconnect CamillaDSP's loaded playback endpoint from outputd's paired capture
+  endpoint,
   the previous runtime env remains in place. If no recognized output DAC is
   present, it parks `jasper-voice` and `jasper-outputd` instead of leaving
   stale final-output state active;
@@ -1352,7 +1354,10 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-06-29 (nginx added to the OOM ladder via package
+Last verified: 2026-07-10 (output-DAC staged transport coherence and optional
+chip-reference failure isolation rechecked against the runtime plan,
+audio-hardware reconciler, outputd STATUS/worker lifecycle, and doctor; nginx
+added to the OOM ladder via package
 drop-in; recoverable front-door/web/renderer start-limit windows rechecked;
 WiiM Remote 2 BLE mic adapter remains in the restartable accessory/OOM/memory-limit inventory; Camilla start-limit recovery contract rechecked
 against `deploy/systemd/jasper-camilla.service`,
