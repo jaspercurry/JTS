@@ -282,6 +282,81 @@ fn zombie_handle_suspected(frames_flowed: bool, zero_avail_streak: u64, threshol
     frames_flowed && threshold > 0 && zero_avail_streak >= threshold
 }
 
+/// Coarse per-direct-lane capture health for the STATUS `direct.health` field
+/// (defect 2026-07-10 — combo runtime-fallback watcher). The Pi-side
+/// `jasper-fanin-combo-health` watcher polls this to decide whether fan-in's
+/// direct capture of `hw:UAC2Gadget` has BROKEN at runtime (and combo should fall
+/// back to the aloop bridge) vs is merely IDLE (no host, or an attached host not
+/// streaming — which must NEVER trip the fallback).
+///
+/// It is a PURE classification over the direct lane's EXISTING atomics — no new
+/// hot-path state — so the "reuse fan-in's detection state" contract holds:
+///
+/// - `Broken` reuses [`zombie_handle_suspected`] verbatim: the flowing→dead deaf
+///   handle (frames actually flowed on this handle, then `avail_update` returned
+///   exactly 0 for ~2 s — the gadget was rebuilt underneath a live stream). That
+///   gate is ALREADY proven immune to the attached-idle false-positive (a Mac
+///   wired but silent never latches `frames_flowed`, so it can never read Broken).
+/// - `Idle` covers BOTH "not present" (Absent — no host, or the gadget being
+///   (re)opened; a Mac unplug is an idle transition, not a failure) AND
+///   "present but never flowed" (host attached, not yet streaming).
+/// - `Capturing` is present + has-flowed + not-deaf — the healthy active state.
+///
+/// The `health` field is the INSTANTANEOUS classification (the zombie streak is
+/// reset by the self-heal reopen the moment it trips, so Broken is a brief live
+/// window). The watcher's DURABLE cross-tick signal is the cumulative `reopens` /
+/// `card_gen_reopens` reopen counters climbing between ticks — this field is the
+/// human-facing instantaneous view for `/state` + jasper-doctor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectHealth {
+    /// Present, frames have flowed, handle not deaf — actively capturing.
+    Capturing,
+    /// Present-but-never-flowed, or Absent (no host / (re)opening). Healthy.
+    Idle,
+    /// Flowing→dead deaf handle (the zombie signature) — a real capture break.
+    Broken,
+}
+
+/// Pure health classifier over the direct lane's existing atomics. See
+/// [`DirectHealth`]. `threshold` is [`DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS`] in
+/// production; injected for the unit tests.
+pub(crate) fn direct_health(
+    present: bool,
+    frames_flowed_since_open: bool,
+    zero_avail_streak: u64,
+    threshold: u64,
+) -> DirectHealth {
+    if zombie_handle_suspected(frames_flowed_since_open, zero_avail_streak, threshold) {
+        DirectHealth::Broken
+    } else if present && frames_flowed_since_open {
+        DirectHealth::Capturing
+    } else {
+        DirectHealth::Idle
+    }
+}
+
+/// Stable STATUS token for a [`DirectHealth`]. Kept in lock-step with the Pi-side
+/// `jasper.fanin.combo_health` reader (`DIRECT_HEALTH_BROKEN`, etc.).
+pub(crate) fn direct_health_str(h: DirectHealth) -> &'static str {
+    match h {
+        DirectHealth::Capturing => "capturing",
+        DirectHealth::Idle => "idle",
+        DirectHealth::Broken => "broken",
+    }
+}
+
+/// Read the live atomics of a [`DirectObservability`] and classify (using the
+/// production zombie threshold). The one call site is `state.rs`'s STATUS emit,
+/// which already holds `&DirectObservability`.
+pub(crate) fn direct_health_str_from_obs(d: &DirectObservability) -> &'static str {
+    direct_health_str(direct_health(
+        d.present.load(Ordering::Relaxed),
+        d.frames_flowed_since_open.load(Ordering::Relaxed),
+        d.zero_avail_streak.load(Ordering::Relaxed),
+        DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS,
+    ))
+}
+
 /// Cadence for the HANDLE-LIVENESS probe (C, defect 2026-07-06), in render
 /// PERIODS between one `snd_pcm_status(2)` ioctl on the open capture handle.
 /// ~1/s at the default 256/48k period (≈188 periods) — the probe is a real
@@ -4262,6 +4337,84 @@ mod tests {
             (seconds - 2.0).abs() < 1e-9,
             "zombie window must be ~2 s, got {seconds}"
         );
+    }
+
+    // ---- direct.health classifier (defect 2026-07-10, combo runtime fallback) ----
+
+    #[test]
+    fn direct_health_broken_only_on_flowing_then_dead() {
+        // The Broken classification IS the zombie signature: frames flowed on this
+        // handle, then it went deaf for >= the threshold. This is the ONLY state the
+        // fallback watcher acts on, so it must fire exactly when a real capture break
+        // happened (not idle, not merely absent).
+        assert_eq!(
+            direct_health(
+                true,
+                true,
+                DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS,
+                DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS
+            ),
+            DirectHealth::Broken
+        );
+        // Below threshold with flow: still capturing, not yet broken.
+        assert_eq!(
+            direct_health(
+                true,
+                true,
+                DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS - 1,
+                DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS
+            ),
+            DirectHealth::Capturing
+        );
+    }
+
+    #[test]
+    fn direct_health_idle_host_and_unplug_never_broken() {
+        // The binding constraint: an attached-but-silent Mac (present, never flowed,
+        // avail≈0 streak growing forever) and a fully unplugged host (not present)
+        // are IDLE, never Broken — they must never trip the runtime fallback. This
+        // mirrors zombie_handle_never_fires_on_attached_idle_host at the health layer.
+        // Attached-idle: present, never flowed, huge zero-avail streak.
+        assert_eq!(
+            direct_health(true, false, u64::MAX, DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS),
+            DirectHealth::Idle
+        );
+        // Unplugged host / (re)opening: not present. A Mac unplug is an idle
+        // transition, not a failure — even if frames had flowed before (the latch
+        // resets to false on going Absent, so this input shape is what the lane
+        // actually presents).
+        assert_eq!(
+            direct_health(false, false, 0, DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS),
+            DirectHealth::Idle
+        );
+        assert_eq!(
+            direct_health(false, false, u64::MAX, DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS),
+            DirectHealth::Idle
+        );
+    }
+
+    #[test]
+    fn direct_health_capturing_when_present_and_flowing() {
+        // Present + flowed + not deaf = actively capturing (the steady healthy state
+        // while a host streams music).
+        assert_eq!(
+            direct_health(true, true, 0, DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS),
+            DirectHealth::Capturing
+        );
+        // Present + not-yet-flowed (host attached, about to stream) = idle, not
+        // capturing.
+        assert_eq!(
+            direct_health(true, false, 0, DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS),
+            DirectHealth::Idle
+        );
+    }
+
+    #[test]
+    fn direct_health_str_tokens_are_stable() {
+        // The Pi-side jasper.fanin.combo_health reader matches these exact tokens.
+        assert_eq!(direct_health_str(DirectHealth::Capturing), "capturing");
+        assert_eq!(direct_health_str(DirectHealth::Idle), "idle");
+        assert_eq!(direct_health_str(DirectHealth::Broken), "broken");
     }
 
     // ---- C: handle-liveness probe / card-generation signal (defect 2026-07-06) --

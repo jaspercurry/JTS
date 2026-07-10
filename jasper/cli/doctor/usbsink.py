@@ -52,6 +52,11 @@ def _systemd_is_active(unit: str) -> bool:
     """Wrapper around `systemctl is-active`. Cheap; ~5 ms per call."""
     return _run(["systemctl", "is-active", unit]).stdout.strip() == "active"
 
+def _systemd_is_failed(unit: str) -> bool:
+    """Wrapper around `systemctl is-failed`. True when the unit is parked in the
+    `failed` state (e.g. Restart=on-failure exhausted its StartLimit). Cheap."""
+    return _run(["systemctl", "is-failed", unit]).stdout.strip() == "failed"
+
 def _module_loaded(name: str) -> bool:
     """True if `lsmod` shows the named kernel module."""
     proc = _run(["lsmod"])
@@ -485,6 +490,111 @@ def check_usbsink_host_clock() -> CheckResult:
             "watch for a demotion to L2.",
         )
     return CheckResult("usbsink host clock", "ok", detail)
+
+@doctor_check(order=59.8, group="usbsink")
+def check_usb_combo_fallback() -> CheckResult:
+    """Cross-check the USB-combo intent vs the resolved combo state vs the
+    runtime-fallback marker (defect 2026-07-10).
+
+    Three facts that must agree on a healthy combo box:
+
+    1. INTENT — ``jasper-usbsink.service`` is enabled (the household turned USB
+       Audio Input on; the same signal the coupling reconciler's combo arming
+       reads).
+    2. RESOLVED — ``fanin.env`` carries ``JASPER_FANIN_USB_DIRECT=enabled`` (the
+       reconciler armed the combo so fan-in DIRECT-captures the gadget).
+    3. FALLBACK — the runtime watcher's marker
+       (``/var/lib/jasper/usb_combo_fallback.json``): present == it disarmed the
+       combo to the aloop bridge after a sustained direct-capture break.
+
+    Reported outcomes:
+
+    - ``fail`` — ``jasper-usbsink.service`` is in the ``failed`` state (the
+      StartLimit hardening rider's target: a flap that parked the bridge; USB audio
+      is dead until a restart).
+    - ``warn`` — the fallback marker is present (combo fell back — surfaces the
+      reason + how it re-arms), OR intent is on + gadget present but the combo was
+      never armed (the coupling kick did not land — the PR #1197 nit: a failed
+      wizard kick otherwise leaves no durable surface).
+    - ``ok`` — armed coherently, or cleanly disarmed (USB audio off / non-gadget
+      box), with no marker and no failed unit.
+
+    Skip-if-not-applicable: a box with no USB gadget dtoverlay can never run the
+    combo, so this reports ok with a skip note (check_usbsink_dtoverlay owns the
+    dtoverlay story)."""
+    from jasper.fanin.combo_health import read_fallback_marker
+    from jasper.fanin.coupling_auto import (
+        USB_COMBO_ENABLED_VALUE,
+        USB_DIRECT_ENV_VAR,
+        read_boot_config_gadget_present,
+    )
+
+    # 1. A failed bridge unit is the most actionable state — report first.
+    if _systemd_is_failed(USBSINK_UNIT):
+        return CheckResult(
+            "usb combo fallback", "fail",
+            f"{USBSINK_UNIT} is in the failed state — the USB audio bridge parked "
+            "(likely a fast gadget unplug/replug flap that exhausted the restart "
+            "limit). USB audio is dead until recovery: "
+            "`sudo systemctl reset-failed jasper-usbsink && sudo systemctl restart "
+            "jasper-usbgadget`.",
+        )
+
+    marker = read_fallback_marker()
+    if marker is not None:
+        return CheckResult(
+            "usb combo fallback", "warn",
+            "USB combo fell back to the aloop bridge after a runtime capture "
+            f"break (reason: {marker.reason or 'unknown'}). The box is on the "
+            "conservative solo path; it re-arms on the next reboot, deploy, or "
+            "a /sources/ USB Audio Input toggle off-then-on.",
+        )
+
+    gadget = read_boot_config_gadget_present()
+    intent_enabled = (
+        _run(["systemctl", "is-enabled", "--quiet", USBSINK_UNIT]).returncode == 0
+    )
+    from jasper.env_file import read_value
+    from jasper.fanin.coupling_reconcile import FANIN_ENV_PATH
+
+    try:
+        fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
+    except OSError:
+        fanin_text = ""
+
+    armed = read_value(fanin_text, USB_DIRECT_ENV_VAR) == USB_COMBO_ENABLED_VALUE
+
+    if not gadget:
+        return CheckResult(
+            "usb combo fallback", "ok",
+            "no USB gadget dtoverlay — combo not applicable (see 'usbsink dtoverlay')",
+        )
+    if intent_enabled and not armed:
+        return CheckResult(
+            "usb combo fallback", "warn",
+            "USB Audio Input is on and the gadget is present, but the combo is NOT "
+            "armed in fanin.env (JASPER_FANIN_USB_DIRECT != enabled) and no fallback "
+            "marker is set — the coupling reconcile likely did not run (a failed "
+            "post-toggle kick). Re-run the /sources/ toggle or `sudo systemctl start "
+            "jasper-fanin-coupling-auto.service`.",
+        )
+    if armed and not intent_enabled:
+        return CheckResult(
+            "usb combo fallback", "warn",
+            "combo is armed in fanin.env but USB Audio Input intent is off — a "
+            "stale arm. `sudo systemctl start jasper-fanin-coupling-auto.service` "
+            "to reconcile.",
+        )
+    if armed:
+        return CheckResult(
+            "usb combo fallback", "ok",
+            "combo armed (fan-in direct-captures the gadget; usbsink bridge in "
+            "standby) — no runtime fallback.",
+        )
+    return CheckResult(
+        "usb combo fallback", "ok",
+        "combo disarmed (USB Audio Input off) — aloop bridge owns the gadget.",
+    )
 
 @doctor_check(order=62, group="usbsink")
 def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:

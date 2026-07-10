@@ -188,6 +188,10 @@ class AutoCouplingDecision:
     combo_armed: bool = False
     gadget_present: bool = False
     usb_intent_enabled: bool = False
+    # True when a runtime-fallback marker forced the combo OFF despite the box
+    # being combo-eligible (gadget present + USB audio on). See ``fallback_active``
+    # in :func:`resolve_auto_decision`.
+    fallback_active: bool = False
     reason: str = ""
     gate_details: tuple[str, ...] = field(default_factory=tuple)
 
@@ -243,6 +247,7 @@ def resolve_auto_decision(
     gadget_present: bool,
     usb_intent_enabled: bool,
     ring_gates: "tuple[tuple[str, RingGate], ...]",
+    fallback_active: bool = False,
 ) -> AutoCouplingDecision:
     """Resolve the default coupling + USB combo for one box (pure).
 
@@ -255,19 +260,32 @@ def resolve_auto_decision(
           with its detail as the reason (so an ineligible box — jts3 roleful, jts5
           composite, a grouped box — resolves loopback with a crisp explanation).
         * combo = ARMED iff ``gadget_present AND usb_intent_enabled`` (see
-          :func:`combo_is_armed`); ``usb_combo_actions`` and
-          ``usbsink_standby_actions`` carry the explicit on/off writes for both
-          halves either way (the single-writer discipline writes an explicit off,
-          never an unset).
+          :func:`combo_is_armed`) AND NOT ``fallback_active``;
+          ``usb_combo_actions`` and ``usbsink_standby_actions`` carry the explicit
+          on/off writes for both halves either way (the single-writer discipline
+          writes an explicit off, never an unset).
+
+    ``fallback_active`` is the runtime-fallback flap guard (defect 2026-07-10): a
+    combo-eligible box whose live capture broke at runtime carries the fallback
+    marker (:mod:`jasper.fanin.combo_health`), which forces the combo OFF here even
+    though ``gadget_present AND usb_intent_enabled`` — the box lands on the
+    aloop-bridge solo state and stays there until an ``--auto`` clear-event
+    (boot/deploy/toggle) drops the marker and re-attempts. It does NOT touch the
+    ring coupling decision (a broken USB capture is not a reason to disarm the
+    ring).
 
     ``ring_gates`` is an ordered ``(name, gate)`` tuple; each gate is the same
     ``() -> (ok, detail)`` callable the reconciler's arm preflights use. Injected
     (not imported) so this stays pure/testable and the caller controls which real
     gates run.
     """
-    armed = combo_is_armed(
+    eligible = combo_is_armed(
         gadget_present=gadget_present, usb_intent_enabled=usb_intent_enabled
     )
+    armed = eligible and not fallback_active
+    # A fallback is only meaningful when the box WOULD otherwise arm — reporting it
+    # on an ineligible box would be noise.
+    fallback = fallback_active and eligible
     if is_operator_choice(marker_raw):
         return AutoCouplingDecision(
             owned=False,
@@ -277,6 +295,7 @@ def resolve_auto_decision(
             combo_armed=armed,
             gadget_present=gadget_present,
             usb_intent_enabled=usb_intent_enabled,
+            fallback_active=fallback,
             reason="operator choice in force — auto pass is a no-op",
         )
 
@@ -304,6 +323,7 @@ def resolve_auto_decision(
         combo_armed=armed,
         gadget_present=gadget_present,
         usb_intent_enabled=usb_intent_enabled,
+        fallback_active=fallback,
         reason=reason,
         gate_details=tuple(details),
     )

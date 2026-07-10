@@ -438,6 +438,7 @@ def _coupling_state(*, fanin_status: dict[str, Any] | None) -> dict[str, Any]:
             "coherent": ring_pair_is_coherent(coupling, content_bridge),
             "live_transport": live_transport,
             "choice": choice,
+            "combo": _combo_fallback_state(fanin_text=fanin_text),
         }
     except (ImportError, OSError, ValueError, TypeError, AttributeError) as e:
         # Fail-soft: any read/resolve error degrades to the loopback default so a
@@ -451,7 +452,45 @@ def _coupling_state(*, fanin_status: dict[str, Any] | None) -> dict[str, Any]:
             "coherent": True,
             "live_transport": None,
             "choice": "auto",
+            "combo": {"state": "disarmed", "fallback": None},
         }
+
+
+def _combo_fallback_state(*, fanin_text: str) -> dict[str, Any]:
+    """The USB-combo runtime-fallback state (defect 2026-07-10) for
+    ``/state.audio_graph.coupling.combo``.
+
+    ``state`` is one of:
+
+    - ``"fallback"`` — the runtime watcher disarmed the combo after a sustained
+      direct-capture break; the ``fallback`` sub-dict carries the marker's
+      ``reason`` + ``at_epoch``. The box is on the aloop bridge until the next
+      ``--auto`` clear-event (boot/deploy/toggle) re-attempts.
+    - ``"armed"`` — the combo is armed in the resolved ``fanin.env``
+      (``JASPER_FANIN_USB_DIRECT=enabled``) and no fallback marker is present.
+    - ``"disarmed"`` — combo off (a non-combo box, or USB audio off), no marker.
+
+    Read fresh from the env file + marker (never ``os.environ`` — jasper-control
+    isn't restarted on a combo change). Fail-soft to ``disarmed`` on any error."""
+    try:
+        from ..env_file import read_value
+        from ..fanin.combo_health import read_fallback_marker
+        from ..fanin.coupling_auto import (
+            USB_COMBO_ENABLED_VALUE,
+            USB_DIRECT_ENV_VAR,
+        )
+
+        marker = read_fallback_marker()
+        if marker is not None:
+            return {
+                "state": "fallback",
+                "fallback": {"reason": marker.reason, "at_epoch": marker.at_epoch},
+            }
+        armed = read_value(fanin_text, USB_DIRECT_ENV_VAR) == USB_COMBO_ENABLED_VALUE
+        return {"state": "armed" if armed else "disarmed", "fallback": None}
+    except (ImportError, OSError, ValueError, TypeError) as e:
+        logger.debug("combo fallback state read failed: %s", e)
+        return {"state": "disarmed", "fallback": None}
 
 
 def _conversation_history_state() -> dict[str, Any] | None:

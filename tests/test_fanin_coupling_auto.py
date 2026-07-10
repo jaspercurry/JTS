@@ -894,3 +894,85 @@ def test_fresh_install_cushion_decay_floor_default_is_576():
         "config.rs DEFAULT_CUSHION_DECAY_FLOOR_FRAMES must stay 576 — the "
         "hardware-validated floor the measurement doc §2 table ships"
     )
+
+
+# ---- runtime-fallback flap guard (defect 2026-07-10) -----------------------
+
+
+def _ring_gates_ok():
+    return (("ring_assets", lambda: (True, "a")), ("ring_topology", lambda: (True, "t")))
+
+
+def test_resolve_fallback_active_forces_combo_off_when_eligible():
+    """A combo-eligible box (gadget + USB intent) whose live capture broke carries
+    the fallback marker -> combo forced OFF (explicit disabled/0), fallback_active
+    reported, but the ring coupling is UNAFFECTED."""
+    d = ca.resolve_auto_decision(
+        marker_raw=None,
+        gadget_present=True,
+        usb_intent_enabled=True,
+        ring_gates=_ring_gates_ok(),
+        fallback_active=True,
+    )
+    assert d.combo_armed is False
+    assert d.fallback_active is True
+    assert d.coupling == COUPLING_SHM_RING  # ring decision untouched by the fallback
+    # Both combo halves written to their explicit-off values.
+    for a in d.usb_combo_actions:
+        assert a.value == ca.USB_COMBO_DISABLED_VALUE
+    assert d.usbsink_standby_actions[0].value == ca.USBSINK_STANDBY_OFF_VALUE
+
+
+def test_resolve_fallback_on_ineligible_box_is_not_reported():
+    """fallback_active is only meaningful when the box WOULD otherwise arm; on an
+    ineligible box (USB intent off) it is not reported as a fallback."""
+    d = ca.resolve_auto_decision(
+        marker_raw=None,
+        gadget_present=True,
+        usb_intent_enabled=False,  # not eligible
+        ring_gates=_ring_gates_ok(),
+        fallback_active=True,
+    )
+    assert d.combo_armed is False
+    assert d.fallback_active is False
+
+
+def test_reconcile_auto_fallback_marker_disarms_a_combo_box(tmp_path, monkeypatch):
+    """End-to-end: an eligible gadget box (would arm) with fallback_active=True
+    resolves the combo OFF and writes explicit-off env, landing on the aloop bridge
+    state."""
+    fanin = tmp_path / "fanin.env"
+    outputd = tmp_path / "outputd.env"
+    usbsink = tmp_path / "usbsink.env"
+    # Pre-arm the combo so the disarm is an actual change.
+    fanin.write_text(
+        f"{ca.USB_DIRECT_ENV_VAR}=enabled\n{ca.HOST_CLOCK_ENV_VAR}=enabled\n"
+        f"{ca.CUSHION_DECAY_ENV_VAR}=enabled\n"
+    )
+    outputd.write_text("")
+    usbsink.write_text(f"{ca.USBSINK_STANDBY_ENV_VAR}=1\n")
+    _stub_ring_gates(monkeypatch, eligible=True)
+    restarts: list[str] = []
+    r = cr.reconcile_auto(
+        reason="health",
+        env_path=fanin,
+        outputd_env_path=outputd,
+        usbsink_env_path=usbsink,
+        gadget_present=True,
+        usb_intent_enabled=True,
+        fallback_active=True,  # the marker forces combo off
+        restart_fanin=lambda: (restarts.append("fanin"), (True, ""))[1],
+        restart_outputd=lambda: (restarts.append("outputd"), (True, ""))[1],
+        restart_usbsink=lambda: (restarts.append("usbsink"), (True, ""))[1],
+        reconcile_camilla=lambda coupling: (True, "reconciled"),
+        active_leader_check=lambda: False,
+    )
+    assert r.combo_armed is False
+    assert r.fallback_active is True
+    assert r.usb_combo_changed is True
+    # Combo env forced to explicit-off on both halves.
+    assert read_value(fanin.read_text(), ca.USB_DIRECT_ENV_VAR) == "disabled"
+    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "0"
+    # usbsink restarted LAST on disarm (after fan-in released the gadget).
+    assert "usbsink" in restarts and "fanin" in restarts
+    assert restarts.index("fanin") < restarts.index("usbsink")

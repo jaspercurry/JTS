@@ -11,12 +11,16 @@ and reads. Pi-side smoke testing happens via jasper-doctor itself.
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from jasper import audio_runtime_plan
 from jasper.cli import doctor
+from jasper.fanin import combo_health as _ch
+from jasper.fanin import coupling_auto as _ca
+from jasper.fanin import coupling_reconcile as _cr
 
 
 # ----------------------------------------------------------------------
@@ -1297,3 +1301,71 @@ def test_unit_main_start_epoch_none_when_never_started(monkeypatch):
         lambda cmd, timeout=5.0: subprocess.CompletedProcess(cmd, 0, "0\n", ""),
     )
     assert us._unit_main_start_epoch("jasper-usbsink.service") is None
+
+
+# ----------------------------------------------------------------------
+# check_usb_combo_fallback (defect 2026-07-10)
+# ----------------------------------------------------------------------
+
+
+def _setup_combo(monkeypatch, tmp_path, *, failed=False, marker=None,
+                 gadget=True, intent=True, armed=False):
+    monkeypatch.setattr(doctor.usbsink, "_systemd_is_failed", lambda unit: failed)
+    monkeypatch.setattr(_ch, "read_fallback_marker", lambda *a, **k: marker)
+    monkeypatch.setattr(_ca, "read_boot_config_gadget_present", lambda *a, **k: gadget)
+
+    def _fake_run(cmd, timeout=5.0):
+        rc = 0 if intent else 1
+        return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor.usbsink, "_run", _fake_run)
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(
+        f"{_ca.USB_DIRECT_ENV_VAR}={_ca.USB_COMBO_ENABLED_VALUE}\n" if armed else ""
+    )
+    monkeypatch.setattr(_cr, "FANIN_ENV_PATH", str(fanin_env))
+
+
+def test_combo_fallback_failed_unit_is_fail(monkeypatch, tmp_path):
+    _setup_combo(monkeypatch, tmp_path, failed=True)
+    r = doctor.usbsink.check_usb_combo_fallback()
+    assert r.status == "fail"
+    assert "failed state" in r.detail
+
+
+def test_combo_fallback_marker_present_is_warn(monkeypatch, tmp_path):
+    marker = _ch.FallbackMarker(reason="direct capture broke", at_epoch=1.0)
+    _setup_combo(monkeypatch, tmp_path, marker=marker)
+    r = doctor.usbsink.check_usb_combo_fallback()
+    assert r.status == "warn"
+    assert "fell back to the aloop bridge" in r.detail
+    assert "direct capture broke" in r.detail
+
+
+def test_combo_fallback_intent_on_but_not_armed_is_warn(monkeypatch, tmp_path):
+    # PR #1197 nit: a failed post-toggle kick leaves combo unarmed with no marker.
+    _setup_combo(monkeypatch, tmp_path, intent=True, armed=False, marker=None)
+    r = doctor.usbsink.check_usb_combo_fallback()
+    assert r.status == "warn"
+    assert "NOT armed" in r.detail
+
+
+def test_combo_fallback_armed_coherent_is_ok(monkeypatch, tmp_path):
+    _setup_combo(monkeypatch, tmp_path, intent=True, armed=True)
+    r = doctor.usbsink.check_usb_combo_fallback()
+    assert r.status == "ok"
+    assert "combo armed" in r.detail
+
+
+def test_combo_fallback_disarmed_off_is_ok(monkeypatch, tmp_path):
+    _setup_combo(monkeypatch, tmp_path, intent=False, armed=False)
+    r = doctor.usbsink.check_usb_combo_fallback()
+    assert r.status == "ok"
+    assert "disarmed" in r.detail
+
+
+def test_combo_fallback_no_gadget_skips(monkeypatch, tmp_path):
+    _setup_combo(monkeypatch, tmp_path, gadget=False)
+    r = doctor.usbsink.check_usb_combo_fallback()
+    assert r.status == "ok"
+    assert "not applicable" in r.detail
