@@ -186,6 +186,44 @@ pub fn convert_s32_to_s16(input: &[i32], output: &mut [i16]) -> bool {
     true
 }
 
+/// The dBFS floor an empty / digitally-silent i16 slice reports. Lives in this
+/// pure crate (rather than duplicated in the two ALSA daemons) so the solo
+/// bridge (`jasper-usbsink-audio`) and the combo lane (`jasper-fanin`) describe
+/// silence with the same sentinel — one const, no drift.
+pub const RMS_DBFS_FLOOR: f64 = -120.0;
+
+/// Per-period RMS in dBFS of an interleaved i16 slice.
+///
+/// The ONE definition of the USB path's per-lane level metric. It lives in this
+/// pure crate (rather than duplicated in the two ALSA daemons) so that the solo
+/// bridge (`jasper-usbsink-audio`) and the combo lane (`jasper-fanin`) yield the
+/// SAME level for the same audio — the parity mux's -60 dBFS combo-liveness gate
+/// depends on that identity, and having one definition makes it hold by
+/// construction rather than by a hand-synced copy.
+///
+/// Semantics (pinned): each sample is normalized by `/ 32768.0`, the mean square
+/// is `sqrt`-ed, and an rms at or below a `1.0e-9` epsilon (empty or fully
+/// silent) returns [`RMS_DBFS_FLOOR`]; otherwise `20 * log10(rms)` clamped up to
+/// the floor. Allocation-free; no ALSA, so it unit-tests on any host.
+pub fn rms_dbfs_i16(samples: &[i16]) -> f64 {
+    if samples.is_empty() {
+        return RMS_DBFS_FLOOR;
+    }
+    let sum_sq: f64 = samples
+        .iter()
+        .map(|sample| {
+            let normalized = (*sample as f64) / 32768.0;
+            normalized * normalized
+        })
+        .sum();
+    let rms = (sum_sq / (samples.len() as f64)).sqrt();
+    if rms <= 1.0e-9 {
+        RMS_DBFS_FLOOR
+    } else {
+        (20.0 * rms.log10()).max(RMS_DBFS_FLOOR)
+    }
+}
+
 /// A precomputed windowed-sinc interpolation table.
 ///
 /// Built ONCE (it is `PHASES * TAPS` `f64` ≈ 540 KB) and shared across every
@@ -1219,6 +1257,63 @@ mod tests {
         // Length mismatch is a programming error: return false, don't panic.
         let mut short = [0i16; 3];
         assert!(!convert_s32_to_s16(&input, &mut short));
+    }
+
+    // ---- Per-lane RMS level (USB combo silence gate) ---------------------
+    // The SINGLE definition of the USB path's dBFS level metric. The solo
+    // bridge (jasper-usbsink-audio) and the combo lane (jasper-fanin) both
+    // consume `rms_dbfs_i16` / `RMS_DBFS_FLOOR` from this crate, so the same
+    // audio yields the same level by construction — the parity the mux's
+    // combo-liveness gate depends on. These pure-math vectors used to live in
+    // jasper-fanin's mixer tests; they moved here with the helper.
+
+    #[test]
+    fn rms_dbfs_i16_silence_is_the_floor() {
+        // Empty and all-zero slices both describe silence at the -120 floor —
+        // the value a muxed-out / gadget-absent / digitally-silent lane reports.
+        assert_eq!(rms_dbfs_i16(&[]), RMS_DBFS_FLOOR);
+        assert_eq!(rms_dbfs_i16(&[0i16; 512]), RMS_DBFS_FLOOR);
+    }
+
+    #[test]
+    fn rms_dbfs_i16_full_scale_is_zero_dbfs() {
+        // A constant full-scale magnitude signal is 0 dBFS by definition
+        // (rms == 32768/32768 == 1.0). Use -i16::MAX so |sample|/32768 == 1.0.
+        let full = vec![-32768i16; 256];
+        assert!(
+            (rms_dbfs_i16(&full) - 0.0).abs() < 1e-6,
+            "full-scale ⇒ 0 dBFS"
+        );
+    }
+
+    #[test]
+    fn rms_dbfs_i16_known_sine_matches_expected_dbfs() {
+        // A full-scale sine has RMS = amplitude/√2 ⇒ -3.01 dBFS regardless of
+        // frequency. Build one cycle at amplitude 32767 and assert the level.
+        let n = 480usize; // whole number of samples over one cycle
+        let sine: Vec<i16> = (0..n)
+            .map(|i| {
+                let phase = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
+                (32767.0 * phase.sin()).round() as i16
+            })
+            .collect();
+        let dbfs = rms_dbfs_i16(&sine);
+        assert!(
+            (dbfs - (-3.01)).abs() < 0.1,
+            "full-scale sine ⇒ ~-3.01 dBFS, got {dbfs}"
+        );
+    }
+
+    #[test]
+    fn rms_dbfs_i16_low_level_is_below_the_combo_gate() {
+        // A -60 dBFS gate rejects a very quiet lane (a host emitting near-silence
+        // / dither). A single-LSB square (±1) sits at ~-90 dBFS — well under any
+        // reasonable playing threshold, so it never reads as "playing".
+        let quiet: Vec<i16> = (0..512).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
+        assert!(
+            rms_dbfs_i16(&quiet) < -60.0,
+            "a ±1-LSB lane must sit under the -60 dBFS combo gate"
+        );
     }
 
     /// `trim_to` drops the OLDEST frames down to the target fill and keeps the

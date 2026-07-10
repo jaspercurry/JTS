@@ -419,9 +419,10 @@ impl SharedState {
         state
             .ring_capacity_periods
             .store(ring_capacity_periods, Ordering::Relaxed);
-        state
-            .rms_dbfs_x100
-            .store((-120.0_f64 * 100.0) as i32, Ordering::Relaxed);
+        state.rms_dbfs_x100.store(
+            (jasper_resampler::RMS_DBFS_FLOOR * 100.0) as i32,
+            Ordering::Relaxed,
+        );
         state
     }
 
@@ -618,25 +619,6 @@ fn convert_s32_to_s16(input: &[i32], output: &mut [i16]) -> Result<()> {
         bail!("input/output sample slices must match");
     }
     Ok(())
-}
-
-fn rms_dbfs_i16(samples: &[i16]) -> f64 {
-    if samples.is_empty() {
-        return -120.0;
-    }
-    let sum_sq: f64 = samples
-        .iter()
-        .map(|sample| {
-            let normalized = (*sample as f64) / 32768.0;
-            normalized * normalized
-        })
-        .sum();
-    let rms = (sum_sq / (samples.len() as f64)).sqrt();
-    if rms <= 1.0e-9 {
-        -120.0
-    } else {
-        (20.0 * rms.log10()).max(-120.0)
-    }
 }
 
 #[cfg(feature = "alsa-runtime")]
@@ -925,7 +907,7 @@ fn run_audio_loop(
             capture_frames_cursor = capture_frames_cursor.saturating_add(frames as u64);
             let samples = frames * (config.channels as usize);
             capture_assembler.push_frames(&converted_i16[..samples], frames, |period| {
-                let rms = rms_dbfs_i16(period);
+                let rms = jasper_resampler::rms_dbfs_i16(period);
                 state
                     .rms_dbfs_x100
                     .store((rms * 100.0).round() as i32, Ordering::Relaxed);

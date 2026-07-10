@@ -55,6 +55,12 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 
 use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S16LE};
+// The ONE shared per-lane RMS level helper + silence-floor sentinel (same crate
+// jasper-usbsink-audio consumes for solo mode). Importing them here — rather
+// than a local copy — makes the combo lane's level identical to the solo
+// bridge's by construction, which the parity mux's -60 dBFS combo-liveness gate
+// relies on. Pure, no ALSA.
+use jasper_resampler::{rms_dbfs_i16, RMS_DBFS_FLOOR};
 
 use crate::config::{Config, Coupling, RING_SLOT_FRAMES};
 use crate::fifo::{FifoWriteOutcome, FifoWriter};
@@ -846,6 +852,16 @@ pub struct Input {
     read_buf: Vec<i16>,
     pub xrun_count: Arc<AtomicU64>,
     pub frames_read: Arc<AtomicU64>,
+    /// Per-lane content level: the most recent period's RMS in dBFS, ×100 and
+    /// rounded into an `i32` (matching the solo bridge's `rms_dbfs_x100`
+    /// scaling in jasper-usbsink-audio). Overwritten EVERY period from exactly
+    /// the samples this lane contributed to the sum; silence / gadget-absent
+    /// renders the `RMS_DBFS_FLOOR` (-120 dBFS). STATUS surfaces it as the
+    /// lane's `rms_dbfs`; mux's combo-liveness gate reads the USB DIRECT lane's
+    /// value to reject a host streaming digital silence (a muted Zoom / an idle
+    /// tab), giving combo boxes parity with the solo bridge's -60 dBFS
+    /// `playing` gate.
+    pub rms_dbfs_x100: Arc<AtomicI32>,
     /// Cumulative frames DISCARDED by the bounded catch-up resync on this
     /// lane (see `drain_input_excess`). Non-zero only on a free-running
     /// lane (the USB host-clock lane); stays 0 forever on DAC-locked lanes.
@@ -1556,6 +1572,17 @@ impl Mixer {
                 drain_input_excess(input, period_frames);
                 read_input(input, period_frames, &self.xrun_tx)?
             };
+            // 3a2. Per-lane content level (RMS dBFS ×100). Computed for EVERY
+            // lane, BEFORE the selection gate below, so a muxed-out lane still
+            // reports its true level to STATUS. Mirrors the solo bridge's
+            // per-period `rms_dbfs_x100` store; silence / gadget-absent → the
+            // RMS_DBFS_FLOOR. `active` is the exact slice this lane contributes
+            // to the sum (0 when it read nothing), reused by the mix below.
+            let active = frames * (CHANNELS as usize);
+            let lane_rms_dbfs = rms_dbfs_i16(&input.read_buf[..active]);
+            input
+                .rms_dbfs_x100
+                .store((lane_rms_dbfs * 100.0).round() as i32, Ordering::Relaxed);
             // 3b. Advance the DEFAULT-OFF post-lock cushion decay one render
             // period on this lane's resampler (if armed). Done AFTER the render
             // so the tick sees this period's fresh lock state, and independent of
@@ -1569,12 +1596,11 @@ impl Mixer {
             if !input_selected(selected_input, idx, &input.label) {
                 continue;
             }
-            // Only sum the samples we actually got. `read_input`
-            // zero-pads the tail of input.read_buf so reading the
-            // full period is also safe; explicit bounds save a few
-            // unnecessary saturating_add calls when an input is
-            // silent.
-            let active = frames * (CHANNELS as usize);
+            // Only sum the samples we actually got (`active`, computed above for
+            // the per-lane RMS). `read_input` zero-pads the tail of
+            // input.read_buf so reading the full period is also safe; explicit
+            // bounds save a few unnecessary saturating_add calls when an input
+            // is silent.
             mix_into(&mut self.sum_buf[..active], &input.read_buf[..active]);
         }
         // 3c. Service the DEFAULT-OFF host-compliance persistence — write the proof
@@ -2555,6 +2581,7 @@ fn open_input(
         read_buf: vec![0i16; period_samples],
         xrun_count: Arc::new(AtomicU64::new(0)),
         frames_read: Arc::new(AtomicU64::new(0)),
+        rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
         catchup_resync_frames: Arc::new(AtomicU64::new(0)),
         catchup_events: Arc::new(AtomicU64::new(0)),
         resampler,
@@ -2631,6 +2658,7 @@ fn open_direct_input(
         read_buf: vec![0i16; period_samples],
         xrun_count: Arc::new(AtomicU64::new(0)),
         frames_read: Arc::new(AtomicU64::new(0)),
+        rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
         catchup_resync_frames: Arc::new(AtomicU64::new(0)),
         catchup_events: Arc::new(AtomicU64::new(0)),
         resampler,
@@ -4017,6 +4045,12 @@ mod tests {
     use super::*;
 
     // Pure-function tests for the mix math. No ALSA needed.
+    //
+    // The per-lane RMS level helper (`rms_dbfs_i16` / `RMS_DBFS_FLOOR`) is now
+    // shared from jasper-resampler; its pure-math vectors live in that crate's
+    // suite. The combo-gate integration behaviour is still asserted here (and in
+    // tests/test_usbsink_playing_rms_contract.py) via the level plumbed onto the
+    // lane and the STATUS surface.
 
     // ---- USB DIRECT pure helpers (C1/C2) ---------------------------------
 

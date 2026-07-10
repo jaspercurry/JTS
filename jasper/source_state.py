@@ -22,6 +22,7 @@ import asyncio
 from datetime import datetime, timezone
 import json
 import logging
+import math
 import os
 import re
 from typing import Any
@@ -48,6 +49,15 @@ _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
 # just to know where its state file is).
 USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
 USBSINK_STATE_FRESH_SEC = 5.0
+
+# The RMS level (dBFS) at or below which a lane is treated as NOT playing. This
+# mirrors the solo bridge's `PLAYING_RMS_DBFS` gate in
+# rust/jasper-usbsink-audio/src/main.rs so a combo box (fan-in DIRECT-captures
+# the gadget) reads a host streaming digital silence — a muted Zoom, an idle tab
+# — the same way a solo box does. The two constants are pinned equal by
+# tests/test_usbsink_playing_rms_contract.py (a cross-language drift guard); if
+# you change one, change both.
+USBSINK_PLAYING_RMS_DBFS = -60.0
 
 
 async def spotify_playing(
@@ -246,6 +256,55 @@ def usbsink_direct_frames_read(
         if frames is not None:
             return frames
     return _nonnegative_int_counter(lane.get("frames_read"))
+
+
+def _finite_float(value: Any) -> float | None:
+    """Coerce ``value`` to a finite float, else ``None`` (rejects bools)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    result = float(value)
+    return result if math.isfinite(result) else None
+
+
+def usbsink_direct_rms_dbfs(
+    fanin_status: dict[str, Any] | None,
+) -> float | None:
+    """Most-recent-period content level (dBFS) on fan-in's USB DIRECT lane, else
+    ``None``.
+
+    Mirrors :func:`usbsink_direct_frames_read`: a value is returned only when the
+    usbsink lane is in direct mode (``source == "direct"``), i.e. fan-in owns the
+    live gadget capture and the standby bridge's own ``rms_dbfs`` is meaningless.
+    ``None`` when there is no direct lane, the STATUS is missing / malformed, or
+    the lane carries no numeric ``rms_dbfs`` (an older fan-in build predating the
+    per-lane level)."""
+    lane = _fanin_usbsink_input(fanin_status)
+    if not (
+        isinstance(lane, dict)
+        and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
+    ):
+        return None
+    return _finite_float(lane.get("rms_dbfs"))
+
+
+def usbsink_direct_audible(
+    fanin_status: dict[str, Any] | None,
+    *,
+    threshold_dbfs: float = USBSINK_PLAYING_RMS_DBFS,
+) -> bool | None:
+    """Whether fan-in's USB DIRECT lane is emitting audible content right now.
+
+    ``True`` / ``False`` from the direct lane's most-recent-period ``rms_dbfs``
+    vs the shared :data:`USBSINK_PLAYING_RMS_DBFS` threshold (the solo bridge's
+    -60 dBFS ``playing`` gate). ``None`` when there is no direct lane or no
+    numeric level to compare (older fan-in) — callers pick the fail-soft
+    direction. This is the instantaneous *level* half of combo liveness; mux
+    pairs it with the frames-advanced *liveness* half (see
+    ``jasper.mux.step_combo_liveness``)."""
+    rms = usbsink_direct_rms_dbfs(fanin_status)
+    if rms is None:
+        return None
+    return rms > threshold_dbfs
 
 
 def usbsink_state_fresh_host_connected(
