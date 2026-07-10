@@ -303,7 +303,6 @@ def usbsink_direct_audible(
     return rms > threshold_dbfs
 
 
-
 async def bluetooth_playing() -> bool:
     """bluealsa-cli list-pcms prints one line per BlueALSA PCM path.
     On an idle box this is empty; with a phone connected and an A2DP
