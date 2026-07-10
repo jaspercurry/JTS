@@ -55,6 +55,12 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 
 use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S16LE};
+// The ONE shared per-lane RMS level helper + silence-floor sentinel (same crate
+// jasper-usbsink-audio consumes for solo mode). Importing them here — rather
+// than a local copy — makes the combo lane's level identical to the solo
+// bridge's by construction, which the parity mux's -60 dBFS combo-liveness gate
+// relies on. Pure, no ALSA.
+use jasper_resampler::{rms_dbfs_i16, RMS_DBFS_FLOOR};
 
 use crate::config::{Config, Coupling, RING_SLOT_FRAMES};
 use crate::fifo::{FifoWriteOutcome, FifoWriter};
@@ -2191,35 +2197,6 @@ impl Input {
     }
 }
 
-/// The dBFS floor an empty / digitally-silent lane reports. Mirrors the solo
-/// bridge's `rms_dbfs_i16` sentinel (jasper-usbsink-audio) so a combo lane and a
-/// solo bridge describe silence with the same number.
-pub const RMS_DBFS_FLOOR: f64 = -120.0;
-
-/// Per-period RMS in dBFS of an interleaved i16 slice. A byte-for-byte port of
-/// the solo bridge's `rms_dbfs_i16` (jasper-usbsink-audio) so the same audio
-/// yields the same level on a combo lane and a solo bridge — the parity mux's
-/// -60 dBFS combo-liveness gate depends on. Empty or fully-silent input returns
-/// the `RMS_DBFS_FLOOR`. Pure (no ALSA) so it is scratch-crate testable.
-fn rms_dbfs_i16(samples: &[i16]) -> f64 {
-    if samples.is_empty() {
-        return RMS_DBFS_FLOOR;
-    }
-    let sum_sq: f64 = samples
-        .iter()
-        .map(|sample| {
-            let normalized = (*sample as f64) / 32768.0;
-            normalized * normalized
-        })
-        .sum();
-    let rms = (sum_sq / (samples.len() as f64)).sqrt();
-    if rms <= 1.0e-9 {
-        RMS_DBFS_FLOOR
-    } else {
-        (20.0 * rms.log10()).max(RMS_DBFS_FLOOR)
-    }
-}
-
 /// Sum input samples into the running i32 accumulator with saturating
 /// arithmetic. Pulled out for unit testability — no ALSA needed.
 fn mix_into(sum: &mut [i32], input: &[i16]) {
@@ -4068,57 +4045,12 @@ mod tests {
     use super::*;
 
     // Pure-function tests for the mix math. No ALSA needed.
-
-    // ---- Per-lane RMS level (combo silence gate) -------------------------
-
-    #[test]
-    fn rms_dbfs_i16_silence_is_the_floor() {
-        // Empty and all-zero slices both describe silence at the -120 floor —
-        // the value a muxed-out / gadget-absent / digitally-silent lane reports.
-        assert_eq!(rms_dbfs_i16(&[]), RMS_DBFS_FLOOR);
-        assert_eq!(rms_dbfs_i16(&[0i16; 512]), RMS_DBFS_FLOOR);
-    }
-
-    #[test]
-    fn rms_dbfs_i16_full_scale_is_zero_dbfs() {
-        // A constant full-scale magnitude signal is 0 dBFS by definition
-        // (rms == 32768/32768 == 1.0). Use -i16::MAX so |sample|/32768 == 1.0.
-        let full = vec![-32768i16; 256];
-        assert!(
-            (rms_dbfs_i16(&full) - 0.0).abs() < 1e-6,
-            "full-scale ⇒ 0 dBFS"
-        );
-    }
-
-    #[test]
-    fn rms_dbfs_i16_known_sine_matches_expected_dbfs() {
-        // A full-scale sine has RMS = amplitude/√2 ⇒ -3.01 dBFS regardless of
-        // frequency. Build one cycle at amplitude 32767 and assert the level.
-        let n = 480usize; // whole number of samples over one cycle
-        let sine: Vec<i16> = (0..n)
-            .map(|i| {
-                let phase = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
-                (32767.0 * phase.sin()).round() as i16
-            })
-            .collect();
-        let dbfs = rms_dbfs_i16(&sine);
-        assert!(
-            (dbfs - (-3.01)).abs() < 0.1,
-            "full-scale sine ⇒ ~-3.01 dBFS, got {dbfs}"
-        );
-    }
-
-    #[test]
-    fn rms_dbfs_i16_low_level_is_below_the_combo_gate() {
-        // A -60 dBFS gate rejects a very quiet lane (a host emitting near-silence
-        // / dither). A single-LSB square (±1) sits at ~-90 dBFS — well under any
-        // reasonable playing threshold, so it never reads as "playing".
-        let quiet: Vec<i16> = (0..512).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
-        assert!(
-            rms_dbfs_i16(&quiet) < -60.0,
-            "a ±1-LSB lane must sit under the -60 dBFS combo gate"
-        );
-    }
+    //
+    // The per-lane RMS level helper (`rms_dbfs_i16` / `RMS_DBFS_FLOOR`) is now
+    // shared from jasper-resampler; its pure-math vectors live in that crate's
+    // suite. The combo-gate integration behaviour is still asserted here (and in
+    // tests/test_usbsink_playing_rms_contract.py) via the level plumbed onto the
+    // lane and the STATUS surface.
 
     // ---- USB DIRECT pure helpers (C1/C2) ---------------------------------
 
