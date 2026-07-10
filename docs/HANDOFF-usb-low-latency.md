@@ -308,18 +308,25 @@ combo box — it derives combo USB playing from fan-in's DIRECT lane instead:
   bridge's frozen `playing:false` / `rms_dbfs:-120`). See
   `docs/HANDOFF-usbsink.md` §4.4 / §4.9.
 
-**Remaining (narrower) caveat — mux SILENCING USB.** When ANOTHER source wins in
-auto mode, mux's preempt POST to the standby bridge silences nothing on the audio
-path (the standby bridge has no audio loop; fan-in reports `Obs.preempted =
-false` by design), so on a gadget box that genuinely mixes sources the USB direct
-lane can still layer under a new winner until fan-in's SELECT gate (manual mode)
-routes it out. This is the arbitration-*mechanism* half of the old gap; the
-visibility half above is closed. It was validated as acceptable on jts.local,
-where the wired Mac is effectively the SOLE source (USB rarely contends with
-AirPlay/Spotify/BT simultaneously), the common gadget-box shape. Track a
-combo-aware USB-silencing path before promoting combo to heavily multi-source
-households. To opt a contended box out, revert per the default-status callout at
-the top of this section.
+**Arbitration mechanism — now fan-in-native (combo).** Historically mux
+silenced a losing USB source by POSTing the bridge's :8781 preempt listener;
+on a combo box that POST silences nothing (the standby bridge has no audio
+loop). As of the fanin-native preempt PR, on a combo box mux instead sends
+`MUTE`/`UNMUTE usbsink` over fan-in's existing control socket (the same channel
+as the SELECT gate), and fan-in drops the direct lane's contribution at its
+**mix stage**. This is real, independent silencing — it no longer depends on
+the SELECT gate routing USB out, so a genuinely multi-source gadget box no
+longer layers USB under a new winner. Crucially the mute is applied at the SUM
+only: the direct lane keeps reporting its pre-mute `frames_read` / `rms_dbfs`,
+so mux's combo-liveness gate still sees a muted-but-streaming host as active
+(no mute→"stopped"→release flap). The lane's STATUS gains a `muted` flag,
+surfaced at `/state.renderers.usbsink.muted`. Solo boxes keep the :8781 path
+unchanged; its deletion follows the aloop-capture-path deletion. This PR is the
+**prerequisite for that deletion** — once every box is direct-capture, the
+:8781 preempt has no bridge to talk to, so the silencing primitive had to move
+to fan-in first. `JASPER_USBSINK_PREEMPT=disabled` still degrades either
+transport to graceful mixing. The visibility half of the old gap was already
+closed (above); this closes the mechanism half.
 
 ### Host-slaved USB clock in combo mode (fan-in owns the ctl)
 
@@ -1805,11 +1812,13 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-10 ("Arbitration caveat" section updated — the combo
-silence gate closes the visibility half of the gap: fan-in serialises a per-lane
-`rms_dbfs`, and mux's combo liveness + `/state.renderers.usbsink` now derive USB
-playing from that DIRECT-lane level gated at `-60` dBFS, so a muted host no
-longer seizes the speaker; the mux-silencing-USB half stays open. Prior recheck
+Last verified: 2026-07-10 ("Arbitration mechanism" section updated — the
+fanin-native preempt PR closes the mechanism half of the gap: on a combo box mux
+now `MUTE`/`UNMUTE usbsink` over fan-in's control socket and fan-in drops the
+lane at its mix stage (pre-mute telemetry preserved), the real silencing
+primitive and the prerequisite for deleting the aloop path. The earlier combo
+silence gate had already closed the visibility half (per-lane `rms_dbfs` +
+combo liveness gated at `-60` dBFS). Prior recheck
 2026-07-06: `outputd.env` config-shear guard rechecked against
 content and DAC buffer/period validation in `jasper.audio_runtime_plan`,
 `jasper.cli.audio_config validate-outputd-env`,

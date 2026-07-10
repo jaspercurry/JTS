@@ -77,12 +77,14 @@ def test_combo_renderer_state_reports_true_playing_from_fanin_level():
     and report the fan-in DIRECT lane's live level: audible → playing:true with
     the real rms, keeping the still-valid host_connected."""
     section = state_aggregate._build_usbsink_renderer_state(
-        _STANDBY_BRIDGE, _fanin_status("direct", frames_read=60768, rms_dbfs=-8.5)
+        _STANDBY_BRIDGE,
+        _fanin_status("direct", frames_read=60768, rms_dbfs=-8.5, muted=False),
     )
     assert section == {
         "combo": True,
         "playing": True,
         "preempted": False,
+        "muted": False,
         "host_connected": True,
         "rms_dbfs": -8.5,
         "updated_at": "2026-07-06T16:15:33.123Z",
@@ -120,6 +122,56 @@ def test_combo_renderer_state_nulls_when_fanin_gives_no_level():
     assert via_standby == no_level
     assert via_standby["playing"] is None
     assert via_standby["rms_dbfs"] is None
+
+
+def test_combo_renderer_state_surfaces_fanin_lane_mute():
+    """The combo section reports the fan-in mix-mute STATE (mux's combo
+    arbitration primitive), read from the direct lane's `muted` flag — separate
+    from `preempted` (the standby bridge's frozen value on a combo box)."""
+    muted = state_aggregate._build_usbsink_renderer_state(
+        _STANDBY_BRIDGE,
+        _fanin_status("direct", frames_read=60768, rms_dbfs=-8.5, muted=True),
+    )
+    assert muted["combo"] is True
+    assert muted["muted"] is True
+    unmuted = state_aggregate._build_usbsink_renderer_state(
+        _STANDBY_BRIDGE,
+        _fanin_status("direct", frames_read=60768, rms_dbfs=-8.5, muted=False),
+    )
+    assert unmuted["muted"] is False
+
+
+def test_combo_renderer_state_muted_is_separate_from_playing():
+    """The decoupling invariant at the /state surface: a MUTED lane still
+    reports playing:true from its live (pre-mute) level. mux depends on this —
+    the muted-but-streaming host must not read as stopped."""
+    section = state_aggregate._build_usbsink_renderer_state(
+        _STANDBY_BRIDGE,
+        _fanin_status("direct", frames_read=60768, rms_dbfs=-8.5, muted=True),
+    )
+    assert section["muted"] is True
+    assert section["playing"] is True  # audible level survives the mute
+    assert section["rms_dbfs"] == -8.5
+
+
+def test_combo_renderer_state_muted_null_on_older_fanin():
+    """An older fan-in build (no per-lane `muted` key) → muted:null, matching the
+    'unmeasured' fallback the playing/rms fields already use."""
+    section = state_aggregate._build_usbsink_renderer_state(
+        _STANDBY_BRIDGE, _fanin_status("direct", frames_read=60768, rms_dbfs=-8.5)
+    )
+    assert section["muted"] is None
+
+
+def test_solo_renderer_state_has_no_muted_field():
+    """The fan-in lane mute is a combo-only mechanism; the solo section (bridge
+    owns capture, :8781 preempt) does not carry a `muted` field."""
+    section = state_aggregate._build_usbsink_renderer_state(
+        {"playing": True, "host_connected": True, "rms_dbfs": -12.3},
+        _fanin_status("lane"),
+    )
+    assert section["combo"] is False
+    assert "muted" not in section
 
 
 def test_solo_renderer_state_preserves_bridge_rms_truth():

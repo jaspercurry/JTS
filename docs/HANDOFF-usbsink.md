@@ -85,7 +85,17 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > standards-compliant JSON.
 > `playing` is the RMS/hysteresis signal from the host stream;
 > `preempted` is separate mux state and does not change `playing`.
-> Mux preempts USB via the local `/preempt` endpoint on port 8781.
+> Mux preempts USB two ways by box shape: on a **solo** box via the
+> bridge's local `/preempt` endpoint on port 8781; on a **combo/direct**
+> box (fan-in captures the gadget, bridge in standby) via a `MUTE`/`UNMUTE
+> usbsink` on fan-in's control socket, which drops the direct lane at its
+> mix stage while the lane keeps reporting pre-mute frames/level (so mux's
+> combo-liveness still sees the host as active). The combo mute state is
+> surfaced at `/state.renderers.usbsink.muted`. See
+> [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) "Arbitration
+> mechanism — now fan-in-native (combo)" — the fan-in mute is the
+> prerequisite for deleting the aloop solo capture path (after which the
+> :8781 preempt has no bridge to talk to).
 > USB capture idleness is normal: the feature may be enabled while no
 > host is plugged in, while a host is plugged in but paused, or while
 > another renderer is being used. `jasper-usbsink` therefore treats
@@ -532,6 +542,25 @@ clean. Mux's `_pause()` method gains a USBSINK branch that POSTs to
 A dropped POST (daemon restarting) is recoverable: on (re)start, the
 daemon reads `/run/jasper-usbsink/preempt.state` written by mux as
 a backup, so the silenced state survives daemon restarts.
+
+**Combo box (fan-in direct capture): the preempt is a fan-in lane mute,
+not the :8781 POST.** The protocol above (option A / :8781) is the
+**solo** path. On a combo/direct box the bridge is in standby and its
+:8781 listener silences nothing (no audio loop), so mux instead sends
+`MUTE`/`UNMUTE usbsink` over fan-in's control socket. Fan-in drops the
+usbsink lane at its mix stage while the lane's `frames_read` / `rms_dbfs`
+telemetry stays pre-mute, so combo liveness still reads the host as
+active. Unlike the solo path (whose state the bridge persists across a
+restart), fan-in does **not** persist the mute — it comes up unmuted, and
+mux reasserts it each poll tick while USB stays preempted. The mux
+transport split lives in `Mux._usbsink_set_preempt` (routing on the combo
+flag) → `_usbsink_set_preempt_fanin` / `_usbsink_set_preempt_http`;
+the fan-in command is `MUTE`/`UNMUTE <label>` in
+`rust/jasper-fanin/src/state.rs`, applied at the mix stage by
+`lane_mix_contributes` in `rust/jasper-fanin/src/mixer.rs`. Canonical
+current-state prose:
+[HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) "Arbitration
+mechanism — now fan-in-native (combo)".
 
 #### Resumption protocol
 
@@ -1925,7 +1954,12 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-07-10 (added §6 "Runtime fallback — combo → aloop bridge on
+Last verified: 2026-07-10 (§3.3 + top blockquote updated for the fanin-native
+combo preempt: on a combo box mux `MUTE`/`UNMUTE usbsink` over fan-in's control
+socket instead of the standby bridge's no-op :8781 POST; the lane is dropped at
+fan-in's mix stage with pre-mute telemetry preserved and a `muted` flag surfaced
+at `/state.renderers.usbsink.muted`; solo boxes keep :8781. Prior 2026-07-10:
+added §6 "Runtime fallback — combo → aloop bridge on
 capture break": fan-in exports `direct.health` in STATUS; the
 `jasper-fanin-combo-health.timer` watcher disarms the combo to the aloop bridge
 after a sustained runtime capture break, flap-proofed by a fallback marker cleared

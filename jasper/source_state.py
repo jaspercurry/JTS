@@ -303,6 +303,30 @@ def usbsink_direct_audible(
     return rms > threshold_dbfs
 
 
+def usbsink_direct_muted(
+    fanin_status: dict[str, Any] | None,
+) -> bool | None:
+    """Whether fan-in's USB DIRECT lane is currently MIX-muted, else ``None``.
+
+    Mirrors :func:`usbsink_direct_rms_dbfs`: a value is returned only when the
+    usbsink lane is in direct mode (``source == "direct"``), i.e. fan-in owns the
+    live gadget capture (a "combo" box) — the mode where mux silences USB by
+    muting this fan-in lane instead of POSTing the standby bridge's :8781
+    listener. ``None`` when there is no direct lane, the STATUS is missing /
+    malformed, or the lane predates the per-lane ``muted`` flag (older fan-in
+    build). This is the mute STATE, separate from the ``rms_dbfs`` /
+    ``frames_read`` telemetry the lane keeps reporting PRE-mute (so mux still
+    sees a muted-but-streaming host as active)."""
+    lane = _fanin_usbsink_input(fanin_status)
+    if not (
+        isinstance(lane, dict)
+        and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
+    ):
+        return None
+    value = lane.get("muted")
+    return value if isinstance(value, bool) else None
+
+
 async def bluetooth_playing() -> bool:
     """bluealsa-cli list-pcms prints one line per BlueALSA PCM path.
     On an idle box this is empty; with a phone connected and an A2DP

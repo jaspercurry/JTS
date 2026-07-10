@@ -957,6 +957,16 @@ pub struct Input {
     /// The control endpoint sets `pending`; the work loop trims the resampler
     /// ring at the next period boundary (see `maybe_trim` / `trim_input`).
     trim: Arc<TrimControl>,
+    /// Per-lane MIX MUTE, shared with the state-server thread. The control
+    /// endpoint (`MUTE`/`UNMUTE <label>`) flips it; the work loop reads it at
+    /// the SUM stage (`lane_mix_contributes`) and skips this lane's contribution
+    /// when set — WITHOUT touching this lane's capture, `frames_read`, or
+    /// `rms_dbfs_x100` telemetry, which are accounted BEFORE the gate. This is
+    /// mux's latest-source-wins arbitration primitive on a combo/direct box,
+    /// where the port-8781 preempt is a no-op (the standby bridge emits nothing).
+    /// NOT persisted: a fan-in restart comes up unmuted and mux reasserts.
+    /// Default `false` (contribute).
+    muted: Arc<AtomicBool>,
     /// OPTIONAL USB DIRECT observability, shared with the state-server thread.
     /// `Some` only on the USB DIRECT lane (`direct.is_some()`); STATUS renders a
     /// `direct{}` block from it (C7). `None` (and absent from STATUS) for every
@@ -1668,7 +1678,19 @@ impl Mixer {
             if let Some(r) = input.resampler.as_mut() {
                 r.tick_decay(decay_l0, decay_commanded_ppm_abs);
             }
-            if !input_selected(selected_input, idx, &input.label) {
+            // Selection AND mute gate. Both are applied at the SUM only — the
+            // per-lane telemetry (rms_dbfs_x100 stored above; frames_read bumped
+            // in the read above) is already accounted, so a de-selected OR muted
+            // lane still reports its true captured level/liveness to STATUS. mux
+            // reads the USB DIRECT lane's pre-mute level to keep a muted-but-
+            // streaming host "playing" (no mute→release→mute flap). See
+            // `lane_mix_contributes`.
+            if !lane_mix_contributes(
+                selected_input,
+                idx,
+                &input.label,
+                input.muted.load(Ordering::Relaxed),
+            ) {
                 continue;
             }
             // Only sum the samples we actually got (`active`, computed above for
@@ -2270,6 +2292,13 @@ impl Input {
     pub fn trim_control(&self) -> Arc<TrimControl> {
         Arc::clone(&self.trim)
     }
+
+    /// The lane's shared MIX-MUTE flag, cloned for the state-server thread. The
+    /// control endpoint (`MUTE`/`UNMUTE <label>`) flips it; the work loop reads
+    /// it at the SUM stage via `lane_mix_contributes`.
+    pub fn muted_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.muted)
+    }
 }
 
 /// Sum input samples into the running i32 accumulator with saturating
@@ -2302,6 +2331,27 @@ fn saturate_to_i16(sum: &[i32], out: &mut [i16]) {
 
 fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool {
     selected_input == -1 || selected_input == input_index as i32 || label == "correction"
+}
+
+/// Pure per-lane MIX-contribution decision: a lane's freshly-read samples enter
+/// the sum this period iff it is selected AND not muted.
+///
+/// The mute is mux's latest-source-wins arbitration primitive on a combo/direct
+/// box (the port-8781 preempt is a no-op there — the standby jasper-usbsink
+/// bridge emits nothing, so fan-in must silence the USB lane itself). It is
+/// applied at the SUM ONLY: the caller stores this lane's `rms_dbfs_x100` and
+/// bumps `frames_read` BEFORE consulting this gate, so a muted lane still
+/// reports its true captured level and liveness to STATUS. mux depends on that
+/// decoupling — it reads the USB DIRECT lane's pre-mute level/frames to keep
+/// seeing a muted-but-streaming host as "playing", so silencing the lane never
+/// makes mux think the host stopped (which would flap mute→release→mute).
+///
+/// Selection and mute both drop the lane from the sum, so a muted lane is
+/// silenced exactly like a de-selected one — the same `continue`. This function
+/// takes only values (no atomics/side effects) so the decision is exhaustively
+/// unit-testable without ALSA and can never itself perturb telemetry.
+fn lane_mix_contributes(selected_input: i32, input_index: usize, label: &str, muted: bool) -> bool {
+    input_selected(selected_input, input_index, label) && !muted
 }
 
 /// Pure decision for the bounded catch-up resync: given the frames a lane
@@ -2661,6 +2711,7 @@ fn open_input(
         catchup_events: Arc::new(AtomicU64::new(0)),
         resampler,
         trim: TrimControl::new(),
+        muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
     })
 }
@@ -2738,6 +2789,7 @@ fn open_direct_input(
         catchup_events: Arc::new(AtomicU64::new(0)),
         resampler,
         trim: TrimControl::new(),
+        muted: Arc::new(AtomicBool::new(false)),
         direct_obs: Some(DirectObservability {
             device,
             period_frames: open_period,
@@ -4126,6 +4178,50 @@ mod tests {
     // suite. The combo-gate integration behaviour is still asserted here (and in
     // tests/test_usbsink_playing_rms_contract.py) via the level plumbed onto the
     // lane and the STATUS surface.
+
+    // ---- Per-lane mix gate: selection + mute -----------------------------
+
+    #[test]
+    fn lane_mix_contributes_selection_only_when_unmuted() {
+        // AUTO (-1): every lane contributes when unmuted.
+        assert!(lane_mix_contributes(-1, 0, "usbsink", false));
+        assert!(lane_mix_contributes(-1, 2, "usbsink", false));
+        // Single-select: only the selected index contributes.
+        assert!(lane_mix_contributes(2, 2, "usbsink", false));
+        assert!(!lane_mix_contributes(2, 0, "spotify", false));
+        // NONE (-2): no lane contributes (except correction, below).
+        assert!(!lane_mix_contributes(-2, 2, "usbsink", false));
+        // The correction/test lane always passes selection.
+        assert!(lane_mix_contributes(-2, 3, "correction", false));
+    }
+
+    #[test]
+    fn lane_mix_contributes_mute_overrides_selection() {
+        // A muted lane never contributes, no matter how it is selected — this is
+        // the arbitration primitive: even an AUTO-summed or explicitly-selected
+        // USB lane is silenced when mux mutes it.
+        assert!(!lane_mix_contributes(-1, 2, "usbsink", true));
+        assert!(!lane_mix_contributes(2, 2, "usbsink", true));
+        assert!(!lane_mix_contributes(-2, 2, "usbsink", true));
+        // Mute wins even over the always-pass correction lane, so the primitive
+        // is total (mux only ever mutes usbsink, but the rule is not lane-special).
+        assert!(!lane_mix_contributes(-1, 3, "correction", true));
+    }
+
+    #[test]
+    fn lane_mix_contributes_is_side_effect_free() {
+        // The gate takes only values — it CANNOT touch a lane's rms_dbfs_x100 or
+        // frames_read. That is the structural guarantee behind the telemetry-
+        // stays-pre-mute invariant: the caller stores telemetry for EVERY lane
+        // before this decision, so muting a lane silences the sum without
+        // perturbing the level/liveness mux reads. Calling it twice with the same
+        // inputs yields the same answer with nothing observable changed.
+        assert_eq!(
+            lane_mix_contributes(-1, 2, "usbsink", true),
+            lane_mix_contributes(-1, 2, "usbsink", true),
+        );
+        assert!(lane_mix_contributes(-1, 2, "usbsink", false));
+    }
 
     // ---- USB DIRECT pure helpers (C1/C2) ---------------------------------
 
