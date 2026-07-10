@@ -24,6 +24,7 @@ from ..audio_quality import (
 )
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..fanin.status import fanin_usbsink_lane_is_direct
+from ..source_state import usbsink_direct_audible, usbsink_direct_rms_dbfs
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom import cascade_timeline
@@ -155,11 +156,13 @@ def _usbsink_in_combo_mode(
     the jasper-usbsink bridge is therefore in standby.
 
     In combo mode the bridge runs with ``JASPER_USBSINK_AUDIO_STANDBY=1``: it
-    opens no PCM, so its published ``playing`` / ``rms_dbfs`` are frozen at their
-    idle defaults (``false`` / ``-120``) and describe nothing. The live audio
-    flows through fan-in's direct capture, whose truth is
+    opens no PCM, so *its own* published ``playing`` / ``rms_dbfs`` are frozen at
+    their idle defaults (``false`` / ``-120``) and describe nothing. The live
+    audio flows through fan-in's direct capture, whose truth is
     ``audio.fanin.usbsink_input`` (``source=="direct"`` with ``frames_read``
-    advancing).
+    advancing and a live per-period ``rms_dbfs``). The renderer section derives
+    combo playing / level from that fan-in lane, not the standby bridge (see
+    :func:`_build_usbsink_renderer_state`).
 
     Detected primarily off the fan-in STATUS lane via the shared
     :func:`jasper.fanin.status.fanin_usbsink_lane_is_direct` predicate (the one
@@ -182,13 +185,19 @@ def _build_usbsink_renderer_state(
     / ``rms_dbfs`` are the truth — surface them verbatim (``combo`` false).
 
     Combo boxes: the bridge is in standby (see :func:`_usbsink_in_combo_mode`),
-    so its ``playing`` / ``rms_dbfs`` are meaningless. Report them as ``null``
-    ("not measured on this surface") with ``combo`` true, rather than the
-    misleading ``false`` / ``-120`` the standby bridge publishes. Consumers read
-    USB *selection* from ``source_selection`` / ``active_source`` (mux) and the
-    live capture from ``audio.fanin.usbsink_input``. ``host_connected`` stays
-    valid (the standby bridge still derives it from ``/sys/class/udc``), as do
-    ``preempted`` / ``updated_at``.
+    so *the bridge's own* ``playing`` / ``rms_dbfs`` are meaningless. But fan-in's
+    USB DIRECT lane measures the live capture level per period, so we surface the
+    TRUE playing / rms from that lane instead of the ``null`` this surface used to
+    report: ``playing`` = the direct lane's level above the shared
+    :data:`~jasper.source_state.USBSINK_PLAYING_RMS_DBFS` gate,
+    ``rms_dbfs`` = that live level. Both fall back to ``null`` only when the
+    fan-in STATUS is unavailable or predates the per-lane level (older build).
+    This is a single-snapshot *level* read (no temporal frames-advanced
+    hysteresis — that lives in mux); it matches the solo box's own /state, which
+    reads the bridge's per-period ``playing`` flag with no hysteresis either.
+    Consumers read USB *selection* from ``source_selection`` / ``active_source``
+    (mux). ``host_connected`` stays valid (the standby bridge still derives it
+    from ``/sys/class/udc``), as do ``preempted`` / ``updated_at``.
 
     Returns ``None`` when the feature is off / the blob is unusable (not a
     dict), matching the "null == off" contract the /system dashboard relies on."""
@@ -200,10 +209,10 @@ def _build_usbsink_renderer_state(
     if _usbsink_in_combo_mode(fanin_status, usbsink_blob):
         return {
             "combo": True,
-            "playing": None,
+            "playing": usbsink_direct_audible(fanin_status),
             "preempted": preempted,
             "host_connected": host_connected,
-            "rms_dbfs": None,
+            "rms_dbfs": usbsink_direct_rms_dbfs(fanin_status),
             "updated_at": updated_at,
         }
     return {
@@ -1078,10 +1087,12 @@ async def _get_state(
     elif airplay:
         active_source = "airplay"
     elif usbsink_state is not None and usbsink_state.get("playing"):
-        # Solo boxes only: the bridge's RMS-gated `playing` is authoritative.
-        # On a combo box `playing` is None (the standby bridge measures nothing),
-        # so this never fires off a stale flag — USB selection there comes from
-        # mux (`mux_effective_source`, above), never this fallback.
+        # Fallback (only when mux is unavailable / has no winner yet). The
+        # `playing` flag is authoritative on both box shapes now: solo reads the
+        # bridge's RMS-gated flag; combo derives it from the fan-in DIRECT lane's
+        # level (audible above the shared -60 dBFS gate — never a stale idle
+        # default). A combo box streaming silence reads playing=false and does
+        # not fire this branch, matching solo.
         active_source = "usbsink"
     else:
         active_source = "idle"

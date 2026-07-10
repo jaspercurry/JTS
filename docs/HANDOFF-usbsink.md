@@ -911,11 +911,20 @@ aloop boxes, where the bridge owns the gadget capture.
 Combo boxes are different: `JASPER_FANIN_USB_DIRECT=enabled` means
 jasper-fanin DIRECT-captures the gadget and `jasper-usbsink` runs in
 standby. Its `playing:false` / `rms_dbfs:-120` are frozen idle defaults.
-The source-state module therefore also owns two pure helpers used by
+The source-state module therefore also owns the pure helpers used by
 `jasper-mux`: `usbsink_bridge_in_standby()` gates combo mode from the
-bridge's `standby` flag, and `usbsink_direct_frames_read()` extracts the
+bridge's `standby` flag; `usbsink_direct_frames_read()` extracts the
 direct-lane liveness counter from fan-in `STATUS`, preferring
-`resampler.input_frames` and falling back to lane-level `frames_read`.
+`resampler.input_frames` and falling back to lane-level `frames_read`;
+and `usbsink_direct_rms_dbfs()` / `usbsink_direct_audible()` read the
+direct lane's live per-period level (`rms_dbfs`, added to every fan-in
+`STATUS` input lane) and compare it against the shared
+`USBSINK_PLAYING_RMS_DBFS` gate (`-60.0` dBFS, pinned equal to the solo
+bridge's `PLAYING_RMS_DBFS` by `tests/test_usbsink_playing_rms_contract.py`).
+That level gate is what makes combo == solo: the fan-in DIRECT lane keeps
+clocking silence frames when the host is connected but muted (a muted Zoom,
+an idle tab), so **frames-advanced alone would seize the speaker on
+silence**, where a solo box reads `playing=false`.
 
 **Owner**: `jasper/renderer.py`. `active_renderers()` exports
 `usbsinkactive` from `usbsink_playing()`:
@@ -960,16 +969,21 @@ async def _usbsink_playing(self) -> bool:
         return await usbsink_playing()
     fanin = await self._fanin_status_best_effort()
     frames = usbsink_direct_frames_read(fanin)
-    self._usbsink_combo = step_combo_liveness(...)
+    rms_dbfs = usbsink_direct_rms_dbfs(fanin)
+    self._usbsink_combo = step_combo_liveness(..., rms_dbfs=rms_dbfs)
     return self._usbsink_combo.playing
 ```
 
-`step_combo_liveness()` is a pure tick-state machine: first advancing
-counter tick starts USB immediately, flat / missing readings stop only
-after the debounce window, and counter resets re-baseline without waiting
-for the new counter to overtake the old one. `/source/state` exposes
-`sources.usbsink.playing` from that mux view plus `usbsink.combo` so the
-landing page and operators can tell which regime they are seeing.
+`step_combo_liveness()` is a pure tick-state machine. A combo box plays on
+a tick iff the DIRECT-lane counter **advanced** since the previous tick AND
+the lane's most-recent-period **level is above the `-60` dBFS gate**. The
+first advancing-and-audible tick starts USB immediately; flat / missing
+counters OR advancing-but-silent readings stop only after the debounce
+window (so a beat-gap in music does not drop the winner, but a muted host
+does); counter resets re-baseline without waiting for the new counter to
+overtake the old one. `/source/state` exposes `sources.usbsink.playing`
+from that mux view plus `usbsink.combo` so the landing page and operators
+can tell which regime they are seeing.
 
 Extend `_pause()`:
 
@@ -1182,10 +1196,18 @@ The section is `null` (not the object) when the feature is off (no
 the existing pattern.
 
 On a **combo box** (`JASPER_FANIN_USB_DIRECT` — fan-in DIRECT-captures the
-gadget, bridge in standby) the bridge measures nothing, so the projection sets
-`combo: true` with `playing` and `rms_dbfs` as `null`; `host_connected` stays
-valid. USB *selection* on a combo box is read from `/state.active_source` /
-`source_selection` (mux), and the live capture from
+gadget, bridge in standby) *the bridge* measures nothing, but fan-in's USB
+DIRECT lane measures the live capture level per period, so the projection sets
+`combo: true` with `playing` / `rms_dbfs` derived from that lane
+(`usbsink_direct_audible()` / `usbsink_direct_rms_dbfs()`), **not** the standby
+bridge's stale idle defaults: audible content → `playing:true` with the real
+level; a muted host → `playing:false`. This is a single-snapshot *level* read
+(no temporal frames-advanced hysteresis — that lives in mux); it matches the
+solo box's `/state`, which reads the bridge's per-period `playing` flag with no
+hysteresis either. Both fall back to `null` only when fan-in gives no level (an
+older build, or the STATUS is unreachable and combo is detected via the bridge
+`standby` fallback). USB *selection* on a combo box is still read from
+`/state.active_source` / `source_selection` (mux), and the raw capture from
 `/state.audio.fanin.usbsink_input`. Combo detection reuses
 `jasper.fanin.status.fanin_usbsink_lane_is_direct` (the `source=="direct"`
 signal — the one owner of that contract, shared with the route-latency harness /
@@ -1819,7 +1841,13 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-07-07 (§4.4/§4.5 corrected for combo-aware mux liveness:
+Last verified: 2026-07-10 (§4.4/§4.5/§4.9 updated for the combo silence gate:
+fan-in now serialises a per-lane `rms_dbfs` in every `STATUS` input; combo mux
+liveness is frames-advanced **AND** level above the shared `-60` dBFS
+`USBSINK_PLAYING_RMS_DBFS` gate — a muted host no longer seizes the speaker; the
+`/state.renderers.usbsink` combo projection reports TRUE `playing`/`rms_dbfs`
+from that fan-in level instead of `null`. Prior recheck 2026-07-07: §4.4/§4.5
+corrected for combo-aware mux liveness:
 solo boxes use bridge RMS `playing`; combo boxes use fan-in direct-lane
 `resampler.input_frames` with `frames_read` fallback. Prior recheck 2026-07-06:
 §4.9 corrected to the shipped `/state.renderers.usbsink`

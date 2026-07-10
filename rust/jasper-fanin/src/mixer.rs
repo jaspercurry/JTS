@@ -846,6 +846,16 @@ pub struct Input {
     read_buf: Vec<i16>,
     pub xrun_count: Arc<AtomicU64>,
     pub frames_read: Arc<AtomicU64>,
+    /// Per-lane content level: the most recent period's RMS in dBFS, ×100 and
+    /// rounded into an `i32` (matching the solo bridge's `rms_dbfs_x100`
+    /// scaling in jasper-usbsink-audio). Overwritten EVERY period from exactly
+    /// the samples this lane contributed to the sum; silence / gadget-absent
+    /// renders the `RMS_DBFS_FLOOR` (-120 dBFS). STATUS surfaces it as the
+    /// lane's `rms_dbfs`; mux's combo-liveness gate reads the USB DIRECT lane's
+    /// value to reject a host streaming digital silence (a muted Zoom / an idle
+    /// tab), giving combo boxes parity with the solo bridge's -60 dBFS
+    /// `playing` gate.
+    pub rms_dbfs_x100: Arc<AtomicI32>,
     /// Cumulative frames DISCARDED by the bounded catch-up resync on this
     /// lane (see `drain_input_excess`). Non-zero only on a free-running
     /// lane (the USB host-clock lane); stays 0 forever on DAC-locked lanes.
@@ -1556,6 +1566,17 @@ impl Mixer {
                 drain_input_excess(input, period_frames);
                 read_input(input, period_frames, &self.xrun_tx)?
             };
+            // 3a2. Per-lane content level (RMS dBFS ×100). Computed for EVERY
+            // lane, BEFORE the selection gate below, so a muxed-out lane still
+            // reports its true level to STATUS. Mirrors the solo bridge's
+            // per-period `rms_dbfs_x100` store; silence / gadget-absent → the
+            // RMS_DBFS_FLOOR. `active` is the exact slice this lane contributes
+            // to the sum (0 when it read nothing), reused by the mix below.
+            let active = frames * (CHANNELS as usize);
+            let lane_rms_dbfs = rms_dbfs_i16(&input.read_buf[..active]);
+            input
+                .rms_dbfs_x100
+                .store((lane_rms_dbfs * 100.0).round() as i32, Ordering::Relaxed);
             // 3b. Advance the DEFAULT-OFF post-lock cushion decay one render
             // period on this lane's resampler (if armed). Done AFTER the render
             // so the tick sees this period's fresh lock state, and independent of
@@ -1569,12 +1590,11 @@ impl Mixer {
             if !input_selected(selected_input, idx, &input.label) {
                 continue;
             }
-            // Only sum the samples we actually got. `read_input`
-            // zero-pads the tail of input.read_buf so reading the
-            // full period is also safe; explicit bounds save a few
-            // unnecessary saturating_add calls when an input is
-            // silent.
-            let active = frames * (CHANNELS as usize);
+            // Only sum the samples we actually got (`active`, computed above for
+            // the per-lane RMS). `read_input` zero-pads the tail of
+            // input.read_buf so reading the full period is also safe; explicit
+            // bounds save a few unnecessary saturating_add calls when an input
+            // is silent.
             mix_into(&mut self.sum_buf[..active], &input.read_buf[..active]);
         }
         // 3c. Service the DEFAULT-OFF host-compliance persistence — write the proof
@@ -2171,6 +2191,35 @@ impl Input {
     }
 }
 
+/// The dBFS floor an empty / digitally-silent lane reports. Mirrors the solo
+/// bridge's `rms_dbfs_i16` sentinel (jasper-usbsink-audio) so a combo lane and a
+/// solo bridge describe silence with the same number.
+pub const RMS_DBFS_FLOOR: f64 = -120.0;
+
+/// Per-period RMS in dBFS of an interleaved i16 slice. A byte-for-byte port of
+/// the solo bridge's `rms_dbfs_i16` (jasper-usbsink-audio) so the same audio
+/// yields the same level on a combo lane and a solo bridge — the parity mux's
+/// -60 dBFS combo-liveness gate depends on. Empty or fully-silent input returns
+/// the `RMS_DBFS_FLOOR`. Pure (no ALSA) so it is scratch-crate testable.
+fn rms_dbfs_i16(samples: &[i16]) -> f64 {
+    if samples.is_empty() {
+        return RMS_DBFS_FLOOR;
+    }
+    let sum_sq: f64 = samples
+        .iter()
+        .map(|sample| {
+            let normalized = (*sample as f64) / 32768.0;
+            normalized * normalized
+        })
+        .sum();
+    let rms = (sum_sq / (samples.len() as f64)).sqrt();
+    if rms <= 1.0e-9 {
+        RMS_DBFS_FLOOR
+    } else {
+        (20.0 * rms.log10()).max(RMS_DBFS_FLOOR)
+    }
+}
+
 /// Sum input samples into the running i32 accumulator with saturating
 /// arithmetic. Pulled out for unit testability — no ALSA needed.
 fn mix_into(sum: &mut [i32], input: &[i16]) {
@@ -2555,6 +2604,7 @@ fn open_input(
         read_buf: vec![0i16; period_samples],
         xrun_count: Arc::new(AtomicU64::new(0)),
         frames_read: Arc::new(AtomicU64::new(0)),
+        rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
         catchup_resync_frames: Arc::new(AtomicU64::new(0)),
         catchup_events: Arc::new(AtomicU64::new(0)),
         resampler,
@@ -2631,6 +2681,7 @@ fn open_direct_input(
         read_buf: vec![0i16; period_samples],
         xrun_count: Arc::new(AtomicU64::new(0)),
         frames_read: Arc::new(AtomicU64::new(0)),
+        rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
         catchup_resync_frames: Arc::new(AtomicU64::new(0)),
         catchup_events: Arc::new(AtomicU64::new(0)),
         resampler,
@@ -4017,6 +4068,57 @@ mod tests {
     use super::*;
 
     // Pure-function tests for the mix math. No ALSA needed.
+
+    // ---- Per-lane RMS level (combo silence gate) -------------------------
+
+    #[test]
+    fn rms_dbfs_i16_silence_is_the_floor() {
+        // Empty and all-zero slices both describe silence at the -120 floor —
+        // the value a muxed-out / gadget-absent / digitally-silent lane reports.
+        assert_eq!(rms_dbfs_i16(&[]), RMS_DBFS_FLOOR);
+        assert_eq!(rms_dbfs_i16(&[0i16; 512]), RMS_DBFS_FLOOR);
+    }
+
+    #[test]
+    fn rms_dbfs_i16_full_scale_is_zero_dbfs() {
+        // A constant full-scale magnitude signal is 0 dBFS by definition
+        // (rms == 32768/32768 == 1.0). Use -i16::MAX so |sample|/32768 == 1.0.
+        let full = vec![-32768i16; 256];
+        assert!(
+            (rms_dbfs_i16(&full) - 0.0).abs() < 1e-6,
+            "full-scale ⇒ 0 dBFS"
+        );
+    }
+
+    #[test]
+    fn rms_dbfs_i16_known_sine_matches_expected_dbfs() {
+        // A full-scale sine has RMS = amplitude/√2 ⇒ -3.01 dBFS regardless of
+        // frequency. Build one cycle at amplitude 32767 and assert the level.
+        let n = 480usize; // whole number of samples over one cycle
+        let sine: Vec<i16> = (0..n)
+            .map(|i| {
+                let phase = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
+                (32767.0 * phase.sin()).round() as i16
+            })
+            .collect();
+        let dbfs = rms_dbfs_i16(&sine);
+        assert!(
+            (dbfs - (-3.01)).abs() < 0.1,
+            "full-scale sine ⇒ ~-3.01 dBFS, got {dbfs}"
+        );
+    }
+
+    #[test]
+    fn rms_dbfs_i16_low_level_is_below_the_combo_gate() {
+        // A -60 dBFS gate rejects a very quiet lane (a host emitting near-silence
+        // / dither). A single-LSB square (±1) sits at ~-90 dBFS — well under any
+        // reasonable playing threshold, so it never reads as "playing".
+        let quiet: Vec<i16> = (0..512).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
+        assert!(
+            rms_dbfs_i16(&quiet) < -60.0,
+            "a ±1-LSB lane must sit under the -60 dBFS combo gate"
+        );
+    }
 
     // ---- USB DIRECT pure helpers (C1/C2) ---------------------------------
 

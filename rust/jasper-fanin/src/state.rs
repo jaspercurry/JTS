@@ -156,6 +156,11 @@ pub struct InputSnapshotSource {
     pub direct: Option<DirectObservability>,
     pub frames_read: Arc<AtomicU64>,
     pub xrun_count: Arc<AtomicU64>,
+    /// Per-lane content level: the most recent period's RMS in dBFS ×100 (the
+    /// mixer's `Input::rms_dbfs_x100`). Serialized as `rms_dbfs`; the USB DIRECT
+    /// lane's value is the combo-mode silence gate mux reads (parity with the
+    /// solo bridge's -60 dBFS `playing`).
+    pub rms_dbfs_x100: Arc<AtomicI32>,
     /// Cumulative frames discarded by the bounded catch-up resync on this
     /// lane (mixer's `drain_input_excess`). 0 on DAC-locked lanes; growing
     /// only on a free-running lane (the USB host-clock lane).
@@ -211,6 +216,7 @@ impl StateServer {
                 direct: inp.direct_observability(),
                 frames_read: Arc::clone(&inp.frames_read),
                 xrun_count: Arc::clone(&inp.xrun_count),
+                rms_dbfs_x100: Arc::clone(&inp.rms_dbfs_x100),
                 catchup_resync_frames: Arc::clone(&inp.catchup_resync_frames),
                 catchup_events: Arc::clone(&inp.catchup_events),
                 resampler: inp.resampler_observability(),
@@ -614,6 +620,18 @@ impl StateServer {
                 &mut buf,
                 "frames_read",
                 input.frames_read.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            // Per-lane content level (dBFS). Always present, flat + greppable
+            // (like frames_read / the catch-up counters). The mixer overwrites
+            // this every period from the samples the lane contributed; a
+            // digitally-silent / muxed-out / gadget-absent lane reports the -120
+            // floor. mux's combo-liveness gate reads the USB DIRECT lane's value.
+            push_kv_f64(
+                &mut buf,
+                "rms_dbfs",
+                (input.rms_dbfs_x100.load(Ordering::Relaxed) as f64) / 100.0,
+                2,
             );
             buf.push(',');
             push_kv_u64(
@@ -1277,6 +1295,8 @@ mod tests {
                     direct: None,
                     frames_read: Arc::new(AtomicU64::new(12345)),
                     xrun_count: Arc::new(AtomicU64::new(0)),
+                    // Silent aloop lane fixture → the -120 floor (×100).
+                    rms_dbfs_x100: Arc::new(AtomicI32::new(-12000)),
                     catchup_resync_frames: Arc::new(AtomicU64::new(0)),
                     catchup_events: Arc::new(AtomicU64::new(0)),
                     // No resampler armed on this lane (the default).
@@ -1291,6 +1311,8 @@ mod tests {
                     direct: None,
                     frames_read: Arc::new(AtomicU64::new(0)),
                     xrun_count: Arc::new(AtomicU64::new(2)),
+                    // A lane playing audible content — ~-12.34 dBFS (×100).
+                    rms_dbfs_x100: Arc::new(AtomicI32::new(-1234)),
                     catchup_resync_frames: Arc::new(AtomicU64::new(1536)),
                     catchup_events: Arc::new(AtomicU64::new(2)),
                     // A lane WITH an armed resampler (fixture only — exercises
@@ -1357,6 +1379,9 @@ mod tests {
                     }),
                     frames_read: Arc::new(AtomicU64::new(96000)),
                     xrun_count: Arc::new(AtomicU64::new(0)),
+                    // The direct (combo) lane emitting audible content: -6.5 dBFS
+                    // (×100), comfortably above the -60 dBFS combo gate.
+                    rms_dbfs_x100: Arc::new(AtomicI32::new(-650)),
                     catchup_resync_frames: Arc::new(AtomicU64::new(0)),
                     catchup_events: Arc::new(AtomicU64::new(0)),
                     // Direct lanes always own a resampler; a minimal armed fixture.
@@ -1551,6 +1576,27 @@ mod tests {
             j.contains(r#""catchup_events":2"#),
             "missing catchup_events=2 (airplay fixture): {j}"
         );
+    }
+
+    #[test]
+    fn snapshot_json_per_input_rms_dbfs() {
+        // Every lane carries a flat `rms_dbfs` (the combo silence-gate signal),
+        // rendered from the mixer's rms_dbfs_x100 with two decimals. The silent
+        // aloop fixture reports the -120 floor; the audible fixtures their levels.
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
+        let inputs = parsed["inputs"].as_array().expect("inputs array");
+        assert_eq!(inputs.len(), 3);
+        assert_eq!(
+            inputs[0]["rms_dbfs"].as_f64(),
+            Some(-120.0),
+            "silent lane ⇒ floor"
+        );
+        assert_eq!(inputs[1]["rms_dbfs"].as_f64(), Some(-12.34));
+        // The USB DIRECT lane's audible level is what mux's combo gate reads.
+        assert_eq!(inputs[2]["source"].as_str(), Some("direct"));
+        assert_eq!(inputs[2]["rms_dbfs"].as_f64(), Some(-6.5));
     }
 
     #[test]

@@ -80,12 +80,14 @@ from .audio_runtime_plan import (
 )
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
+    USBSINK_PLAYING_RMS_DBFS,
     airplay_playing,
     bluetooth_playing,
     read_usbsink_state,
     spotify_playing,
     usbsink_bridge_in_standby,
     usbsink_direct_frames_read,
+    usbsink_direct_rms_dbfs,
     usbsink_playing,
     usbsink_state_fresh_host_connected,
 )
@@ -181,19 +183,48 @@ class ComboLiveness:
 
 
 def step_combo_liveness(
-    state: ComboLiveness, frames: int | None, *, stop_ticks: int,
+    state: ComboLiveness,
+    frames: int | None,
+    *,
+    stop_ticks: int,
+    rms_dbfs: float | None = None,
+    rms_threshold_dbfs: float = USBSINK_PLAYING_RMS_DBFS,
 ) -> ComboLiveness:
     """Advance the combo-USB liveness state by one mux tick.
 
-    ``frames`` is the current fan-in DIRECT-lane liveness counter:
+    A combo box "plays" on a tick iff BOTH:
 
-    - advanced (``frames > prev_frames``) -> playing, idle reset.
+    - **frames advanced** — the fan-in DIRECT-lane counter ``frames`` grew since
+      the previous tick (the lane is being fed), AND
+    - **audible** — the lane's most-recent-period ``rms_dbfs`` is above
+      ``rms_threshold_dbfs`` (the shared :data:`USBSINK_PLAYING_RMS_DBFS` gate).
+
+    The audibility half is what a solo box gets for free from the bridge's
+    RMS-gated ``playing`` flag: a fan-in DIRECT lane keeps clocking silence
+    frames when the host is connected but emitting digital silence (a muted Zoom,
+    an idle tab — see rust/jasper-fanin/src/mixer.rs on
+    DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS), so frames-advanced ALONE would seize the
+    speaker on silence, where a solo box reads playing=false. Gating on level
+    makes combo == solo.
+
+    Semantics:
+
+    - advanced AND audible -> playing, idle reset.
     - first reading or counter reset -> re-baseline without inventing a delta.
-    - flat or missing -> non-advance; drop after ``stop_ticks`` consecutive
-      non-advancing ticks while playing.
+    - flat / missing frames, OR advancing-but-silent -> non-advance; drop after
+      ``stop_ticks`` consecutive non-advancing ticks while playing (the fade-out
+      / pause edge). ``prev_frames`` still tracks the counter so a later audible
+      advance is seen.
+
+    ``rms_dbfs=None`` (an older fan-in build with no per-lane level) is treated
+    as audible so the pre-level frames-only behaviour is preserved for that
+    transition window — a deploy ships fan-in + mux together, so a real combo
+    box carries the level within a bounce.
     """
     prev = state.prev_frames
-    advanced = frames is not None and prev is not None and frames > prev
+    frames_advanced = frames is not None and prev is not None and frames > prev
+    audible = rms_dbfs is None or rms_dbfs > rms_threshold_dbfs
+    advanced = frames_advanced and audible
     new_prev = frames if frames is not None else prev
     if advanced:
         return ComboLiveness(new_prev, 0, True)
@@ -359,10 +390,12 @@ class Mux:
         self._usbsink_combo_box = True
         fanin = await self._fanin_status_best_effort()
         frames = usbsink_direct_frames_read(fanin)
+        rms_dbfs = usbsink_direct_rms_dbfs(fanin)
         self._usbsink_combo = step_combo_liveness(
             self._usbsink_combo,
             frames,
             stop_ticks=USBSINK_COMBO_STOP_TICKS,
+            rms_dbfs=rms_dbfs,
         )
         return self._usbsink_combo.playing
 

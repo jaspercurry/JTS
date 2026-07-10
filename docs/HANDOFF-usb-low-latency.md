@@ -286,30 +286,40 @@ Both halves are DEFAULT-OFF and fail-safe (only the exact literals arm them:
 | `enabled` | off | Misconfig, **safe**: the bridge holds `hw:UAC2Gadget`, so fan-in's direct open fails → the lane goes silent-idle with a 2 s reopen retry (`/state` fan-in `usbsink.direct.present=false`, `retries` grows, one transition log). USB source is SILENT (the direct lane never opens its aloop PCM). Recover by fixing the flags — no crash. |
 | off | `1` | Misconfig, **safe**: the bridge doesn't bridge; fan-in reads an unfed aloop substream → silence via EAGAIN. Observable: bridge `standby:true` while fan-in lane `source:"lane"`. |
 
-**Arbitration caveat (combo opts out of source arbitration + renderer-state
-truth).** In standby the bridge always writes `playing:false` (no audio loop;
-pinned by `test_usbsink_state.py`), so from the rest of the system USB appears
-idle even while fan-in is audibly mixing its direct lane:
+**Visibility gap — now CLOSED (combo silence gate).** In standby the bridge
+still writes `playing:false` on its OWN `state.json` (no audio loop; pinned by
+`test_usbsink_state.py`), but the rest of the system no longer reads that for a
+combo box — it derives combo USB playing from fan-in's DIRECT lane instead:
 
-- **Mux never sees USB playing**, so latest-source-wins auto preemption doesn't
-  fire on a USB start, and mux's preempt POST to the bridge silences nothing on
-  the audio path (fan-in reports `Obs.preempted = false` by design). Another
-  source can layer on top instead of preempting.
-- **The landing-page Source UI shows USB idle** while it's mixing, because the
-  renderer state it reads is the bridge's `playing:false`.
+- **Mux DOES see USB playing.** `Mux._usbsink_playing` reads the DIRECT lane's
+  liveness counter (`usbsink_direct_frames_read`) AND its live per-period level
+  (`usbsink_direct_rms_dbfs`), and `step_combo_liveness` gates playing on
+  frames-advanced **AND** level above the shared `-60` dBFS
+  `USBSINK_PLAYING_RMS_DBFS` (the same gate as the solo bridge's
+  `PLAYING_RMS_DBFS`, pinned by `test_usbsink_playing_rms_contract.py`).
+  Latest-source-wins auto preemption fires on a real USB start, and — the point
+  of the level gate — a host connected but streaming digital silence (a muted
+  Zoom, an idle tab) reads `playing:false`, so it does **not** seize the speaker
+  or block auto-return to AirPlay/Spotify. fan-in's DIRECT lane keeps clocking
+  silence frames in that state, so a frames-only gate would have false-seized;
+  the level gate is what makes combo == solo.
+- **`/state.renderers.usbsink` reports the truth.** The combo projection derives
+  `playing` / `rms_dbfs` from the same fan-in DIRECT-lane level (not the standby
+  bridge's frozen `playing:false` / `rms_dbfs:-120`). See
+  `docs/HANDOFF-usbsink.md` §4.4 / §4.9.
 
-**This gap is now LIVE, not lab-only (P3 default-flip).** As of P3 the combo is
-the SHIPPED default on any gadget box, so the arbitration/UI gap above applies to
-every such household — not just a hand-armed lab box. It was validated as
-acceptable on jts.local, where the wired Mac is effectively the SOLE source (USB
-rarely contends with AirPlay/Spotify/BT simultaneously), which is the common
-gadget-box shape. But on a gadget box that DOES mix sources, USB will not preempt
-and the Source UI will show it idle while it plays. **Wiring standby to publish an
-honest playing/arbitration signal remains the top P3 follow-up** — it was
-originally gated as "the follow-up before combo could ship on by default," and the
-default-flip shipped ahead of it on the strength of the solo-box validation. Track
-it before promoting combo to multi-source households. To opt a contended box out,
-revert per the default-status callout at the top of this section.
+**Remaining (narrower) caveat — mux SILENCING USB.** When ANOTHER source wins in
+auto mode, mux's preempt POST to the standby bridge silences nothing on the audio
+path (the standby bridge has no audio loop; fan-in reports `Obs.preempted =
+false` by design), so on a gadget box that genuinely mixes sources the USB direct
+lane can still layer under a new winner until fan-in's SELECT gate (manual mode)
+routes it out. This is the arbitration-*mechanism* half of the old gap; the
+visibility half above is closed. It was validated as acceptable on jts.local,
+where the wired Mac is effectively the SOLE source (USB rarely contends with
+AirPlay/Spotify/BT simultaneously), the common gadget-box shape. Track a
+combo-aware USB-silencing path before promoting combo to heavily multi-source
+households. To opt a contended box out, revert per the default-status callout at
+the top of this section.
 
 ### Host-slaved USB clock in combo mode (fan-in owns the ctl)
 
@@ -1780,7 +1790,12 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-06 (`outputd.env` config-shear guard rechecked against
+Last verified: 2026-07-10 ("Arbitration caveat" section updated — the combo
+silence gate closes the visibility half of the gap: fan-in serialises a per-lane
+`rms_dbfs`, and mux's combo liveness + `/state.renderers.usbsink` now derive USB
+playing from that DIRECT-lane level gated at `-60` dBFS, so a muted host no
+longer seizes the speaker; the mux-silencing-USB half stays open. Prior recheck
+2026-07-06: `outputd.env` config-shear guard rechecked against
 content and DAC buffer/period validation in `jasper.audio_runtime_plan`,
 `jasper.cli.audio_config validate-outputd-env`,
 `deploy/bin/jasper-audio-hardware-reconcile`, and

@@ -7,10 +7,13 @@
 On a USB *combo* box (jasper-fanin DIRECT-captures the gadget), the
 jasper-usbsink bridge runs in standby and publishes frozen idle defaults —
 ``playing:false`` / ``rms_dbfs:-120`` — that describe nothing. The live audio
-flows through fan-in's direct lane. These tests pin the aggregator's
-``renderers.usbsink`` section to that fan-in truth (nulled, combo-flagged)
-rather than the misleading standby-bridge values, and keep the solo path
-byte-for-byte where the bridge's RMS-gated state IS the truth.
+flows through fan-in's direct lane, which measures the capture level per period.
+These tests pin the aggregator's ``renderers.usbsink`` section to that fan-in
+truth: combo ``playing`` / ``rms_dbfs`` are derived from the direct lane's live
+level (gated on the shared -60 dBFS threshold), not the standby bridge; they
+fall back to ``null`` only when fan-in gives no level (older build / STATUS
+unavailable). The solo path stays byte-for-byte where the bridge's RMS-gated
+state IS the truth.
 """
 from __future__ import annotations
 
@@ -68,33 +71,53 @@ def test_solo_mode_when_lane_is_aloop_and_bridge_not_standby():
     )
 
 
-def test_combo_renderer_state_nulls_stale_playing_and_rms():
+def test_combo_renderer_state_reports_true_playing_from_fanin_level():
     """The reported bug: standby bridge shows playing:false / rms:-120 while
-    combo audio flows. The section must null those and flag combo, keeping the
-    still-valid host_connected."""
+    combo audio flows. The section must IGNORE the standby bridge's stale values
+    and report the fan-in DIRECT lane's live level: audible → playing:true with
+    the real rms, keeping the still-valid host_connected."""
     section = state_aggregate._build_usbsink_renderer_state(
-        _STANDBY_BRIDGE, _fanin_status("direct", frames_read=60768)
+        _STANDBY_BRIDGE, _fanin_status("direct", frames_read=60768, rms_dbfs=-8.5)
     )
     assert section == {
         "combo": True,
-        "playing": None,
+        "playing": True,
         "preempted": False,
         "host_connected": True,
-        "rms_dbfs": None,
+        "rms_dbfs": -8.5,
         "updated_at": "2026-07-06T16:15:33.123Z",
     }
 
 
-def test_combo_renderer_state_via_standby_fallback_matches_fanin_path():
-    # Both combo detectors yield the same honest shape.
+def test_combo_renderer_state_silent_host_reports_not_playing():
+    # A host connected but streaming digital silence (muted Zoom / idle tab): the
+    # fan-in level sits at the floor, so combo reports playing:false — matching a
+    # solo box, and NOT seizing the speaker on silence. rms_dbfs is the real (low)
+    # level, not the standby bridge's frozen -120.
+    section = state_aggregate._build_usbsink_renderer_state(
+        _STANDBY_BRIDGE, _fanin_status("direct", frames_read=60768, rms_dbfs=-105.0)
+    )
+    assert section["combo"] is True
+    assert section["playing"] is False
+    assert section["rms_dbfs"] == -105.0
+
+
+def test_combo_renderer_state_nulls_when_fanin_gives_no_level():
+    """Fallback: a fan-in STATUS with no per-lane ``rms_dbfs`` (older build) or an
+    unavailable STATUS (standby fallback) can't measure the level, so combo
+    playing / rms stay null — the pre-level "unmeasured" semantics."""
+    # Old fan-in: direct lane present but no rms_dbfs key.
+    no_level = state_aggregate._build_usbsink_renderer_state(
+        _STANDBY_BRIDGE, _fanin_status("direct", frames_read=60768)
+    )
+    assert no_level["combo"] is True
+    assert no_level["playing"] is None
+    assert no_level["rms_dbfs"] is None
+    # Standby fallback (fan-in STATUS unreachable): same null shape.
     via_standby = state_aggregate._build_usbsink_renderer_state(
         _STANDBY_BRIDGE, None
     )
-    via_fanin = state_aggregate._build_usbsink_renderer_state(
-        _STANDBY_BRIDGE, _fanin_status("direct")
-    )
-    assert via_standby == via_fanin
-    assert via_standby["combo"] is True
+    assert via_standby == no_level
     assert via_standby["playing"] is None
     assert via_standby["rms_dbfs"] is None
 
