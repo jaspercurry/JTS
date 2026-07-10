@@ -97,6 +97,7 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
     "0644 deploy/systemd/jasper-camilla-crossover.service ${SYSTEMD_DIR}/jasper-camilla-crossover.service"
     "0644 deploy/systemd/jasper-fanin.service ${SYSTEMD_DIR}/jasper-fanin.service"
     "0644 deploy/systemd/jasper-fanin-coupling-auto.service ${SYSTEMD_DIR}/jasper-fanin-coupling-auto.service"
+    "0644 deploy/systemd/jasper-source-intent-reconcile.service ${SYSTEMD_DIR}/jasper-source-intent-reconcile.service"
     "0644 deploy/systemd/jasper-fanin-combo-health.service ${SYSTEMD_DIR}/jasper-fanin-combo-health.service"
     "0644 deploy/systemd/jasper-fanin-combo-health.timer ${SYSTEMD_DIR}/jasper-fanin-combo-health.timer"
     "0644 deploy/systemd/jasper-outputd.service ${SYSTEMD_DIR}/jasper-outputd.service"

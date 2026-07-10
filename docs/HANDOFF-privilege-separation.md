@@ -391,6 +391,23 @@ coupled artifacts make the drop work:
   a future root client / Phase-4 grant), but they fail-soft for the non-root
   broker.
 
+  Where a wizard genuinely needs to **persist** enable/disable across reboots —
+  the `/sources/` on/off toggles (AirPlay, Spotify Connect, USB Audio Input) —
+  it does so through a **fixed root helper**, not this grant. Before that helper,
+  the non-root wizard's `enable-now`/`disable-now` fail-soft was a real bug: the
+  toggle POST returned 200 while nothing changed ("Interactive authentication
+  required" swallowed). The fix is `jasper-source-intent-reconcile` (a
+  `START_ONLY_UNITS` oneshot, mirroring `jasper-wifi-scan-repair`): the wizard
+  records the household's choice in `/var/lib/jasper/source_intent.env` and
+  `start`s the helper through the broker (`manage-units`, scoped/granted); the
+  helper runs as root, enforces its **own** source-unit allowlist (derived from
+  `jasper.local_sources`, never trusting the file for arbitrary unit names), and
+  enable/disables only those units. The oneshot's exit code is the success signal
+  the broker relays, so a failed apply surfaces as a visible wizard error rather
+  than a lying 200. Runtime start/stop stays on the broker's `manage-units`; only
+  the enable/disable *persistence* needs the helper. See the fixed-helper table
+  below and [`jasper/source_intent.py`](../jasper/source_intent.py).
+
 - **Group-readable config/env on the broad state path (`0640` group `jasper`).**
   `jasper-control` does off-disk fresh reads a non-root user must keep doing:
   `/system/diagnostics` spawns `jasper-doctor`, which fresh-reads
@@ -883,6 +900,7 @@ Rules for all Tier-B slices:
 | `jasper-wifi-recover.service` + timer + [`deploy/bin/jasper-wifi-recover`](../deploy/bin/jasper-wifi-recover) | periodic (~3 min) timer, manual operator retry | Read active Wi-Fi state, inspect recent kernel logs for brcmfmac scan suppression, and run the bounded `jasper.wifi_scan_repair` CLI when warranted even if NetworkManager still reports an active profile. If Wi-Fi is down, invoke the Wi-Fi guardian only when the root-only PSK stash exists. | Keep root with the guardian for now. The scan-repair and guardian handoff are lockout-sensitive and should move only after the Wi-Fi recovery slice has hardware validation under a narrower user/polkit/root-helper design. |
 | `jasper-wifi-scan-repair.service` + [`jasper/wifi_scan_repair.py`](../jasper/wifi_scan_repair.py) | `/wifi/scan` after brcmfmac scan-suppression evidence | Root-only oneshot sends the bounded `NL80211_CMD_CRIT_PROTOCOL_STOP` repair and records rate-limit state. `jasper-web` may only `start` it through `START_ONLY_UNITS`; it is not generally restartable/stoppable. | Keep root. This is the narrow helper shape chosen specifically so `jasper-web` does not regain `CAP_NET_ADMIN`. |
 | `jasper-fanin-coupling-auto.service` + [`jasper/fanin/coupling_auto.py`](../jasper/fanin/coupling_auto.py) | boot + deploy; **and the `/sources/` USB-audio toggle** (enable/disable) | Root oneshot reconciler that resolves the USB low-latency combo (single writer of the fan-in `JASPER_FANIN_*` keys + `JASPER_USBSINK_AUDIO_STANDBY`) and bounces fan-in/usbsink. `jasper-web` may only `start` it through `START_ONLY_UNITS` so the combo arms/disarms the same session a USB toggle lands, not only at the next reboot; a failed kick surfaces a "takes effect after reboot" notice on the wizard row. | Keep root. Reconciler owns the env I/O + daemon transitions; the start-only grant is the narrow graph-transition shape (mirrors `jasper-wifi-scan-repair`). |
+| `jasper-source-intent-reconcile.service` + [`jasper/source_intent.py`](../jasper/source_intent.py) | the `/sources/` on/off toggles (AirPlay, Spotify Connect, USB Audio Input) enable/disable | Root oneshot that persists a source's enable/disable choice — `systemctl enable`/`disable` (manage-unit-files) which the non-root broker deliberately cannot run. The non-root wizard writes the household intent to `/var/lib/jasper/source_intent.env` and `start`s this helper through `START_ONLY_UNITS`; the helper enforces its **own** source-unit allowlist (derived from `jasper.local_sources`, never trusting the file for arbitrary unit names) and enable/disables only those units. Exit code is the wizard's success signal (a failed apply is a visible error, not a lying 200). Runtime start/stop stays on the broker. | Keep root. This is the narrow fixed-helper shape (mirrors `jasper-wifi-scan-repair`) chosen because `manage-unit-files` cannot be polkit-unit-scoped and granting it would re-open restart-of-any-unit. |
 | `jasper-aec-init.service` + `jasper-aec-init` | boot and AEC reconcile restarts | Raw XVF3800 USB control writes through `xvf_host`; `amixer` on the `Array` UAC mixer; volatile chip profile only, with `SAVE_CONFIGURATION` and `REBOOT` deliberately forbidden. | Needs a hardware-gated design. Either `jasper-recon` gets a device-specific udev group for the XVF control endpoint plus `audio`, or a root helper owns the raw USB writes. Brick-loop hazards mean this is not an early slice. |
 | `jasper-aec-reconcile.service` + [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile) | install, boot, udev sound add/remove, `/wake/`, grouping | Read/write AEC env state, inspect `/proc/asound`, self-heal XVF mixer with `amixer`/`alsactl store`, and orchestrate `jasper-aec-init`, `jasper-aec-bridge`, `jasper-voice`, and `jasper-outputd`. | Split policy from apply. The policy can become `jasper-recon`; unit orchestration and mixer persistence likely need a root helper or a dedicated reconciler broker. Preserve stale-UDP clearing and voice parking. |
 | `jasper-audio-hardware-reconcile.service` + [`deploy/bin/jasper-audio-hardware-reconcile`](../deploy/bin/jasper-audio-hardware-reconcile) | install, boot, udev sound add/remove | Detect output hardware, write `/var/lib/jasper/outputd.env` and `/run/jasper-output-hardware/output_hardware.json`, render `/etc/jasper/asoundrc.jasper.template`, toggle `jasper-dac-init`/monitor, and kick outputd/AEC reconcile. | Split policy from root apply. Rendering `/etc/jasper/*` and unit orchestration should stay behind a fixed root helper; state observation can move to `jasper-recon`. |
