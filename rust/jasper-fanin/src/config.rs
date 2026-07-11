@@ -346,15 +346,13 @@ pub struct Config {
     /// compliance probe. Default 300; fail-fast range 200..=800 — the floor
     /// clears the ~163 ppm Windows usbaudio2.sys reaction deadband (a probe at
     /// or below it would falsely fail every session), the ceiling keeps the
-    /// probe inside the ±1000 ppm validity window. Identical to usbsink's
-    /// `JASPER_USBSINK_HOST_CLOCK_PROBE_PPM`. Env:
+    /// probe inside the ±1000 ppm validity window. Env:
     /// `JASPER_FANIN_HOST_CLOCK_PROBE_PPM`. Unused when host-clock is off.
     pub host_clock_probe_ppm: u32,
 
     /// The host-clock probe's step-phase duration in seconds. Default 6;
     /// fail-fast range 5..=10. A fixed 4 s neutral baseline runs first, so the
-    /// whole probe is `4 + this` seconds. Identical to usbsink's
-    /// `JASPER_USBSINK_HOST_CLOCK_PROBE_SECONDS`. Env:
+    /// whole probe is `4 + this` seconds. Env:
     /// `JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS`. Unused when host-clock is off.
     pub host_clock_probe_secs: u64,
 }
