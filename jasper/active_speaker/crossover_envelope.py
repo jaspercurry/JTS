@@ -65,22 +65,53 @@ def _summed_record(status: Mapping[str, Any], target: Mapping[str, Any]) -> Mapp
     return _mapping(latest.get(str(target.get("speaker_group_id") or "")))
 
 
-def _usable_driver_acoustic(record: Mapping[str, Any]) -> bool:
+def _usable_driver_acoustic(
+    record: Mapping[str, Any],
+    active_comparison_set: Mapping[str, Any],
+) -> bool:
+    from .capture_geometry import (
+        DRIVER_PLACEMENT_POLICY_ID,
+        capture_proof_valid,
+    )
+
     acoustic = _mapping(record.get("acoustic"))
     return bool(
         acoustic.get("verdict") == "present"
         and record.get("mic_clipping") is not True
         and acoustic.get("mic_clipping") is not True
+        and capture_proof_valid(
+            record,
+            active_comparison_set,
+            policy_id=DRIVER_PLACEMENT_POLICY_ID,
+            role=str(record.get("role") or ""),
+            speaker_group_id=str(record.get("speaker_group_id") or ""),
+        )
     )
 
 
-def _usable_summed_acoustic(record: Mapping[str, Any]) -> bool:
+def _usable_summed_acoustic(
+    record: Mapping[str, Any],
+    active_comparison_set: Mapping[str, Any],
+) -> bool:
+    from .capture_geometry import (
+        SUMMED_PLACEMENT_POLICY_ID,
+        capture_proof_valid,
+    )
+
     acoustic = _mapping(record.get("acoustic"))
     return bool(
         record.get("validated") is True
         and acoustic.get("verdict") == "blend_ok"
         and record.get("mic_clipping") is not True
         and acoustic.get("mic_clipping") is not True
+        and capture_proof_valid(
+            record,
+            active_comparison_set,
+            policy_id=SUMMED_PLACEMENT_POLICY_ID,
+            role="summed",
+            speaker_group_id=str(record.get("speaker_group_id") or ""),
+            target_fingerprint=str(record.get("group_fingerprint") or ""),
+        )
     )
 
 
@@ -160,17 +191,28 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
 
     drivers = _targets(status, "drivers")
     summed = _targets(status, "summed")
+    measurements = _mapping(status.get("measurements"))
+    active_comparison_set = _mapping(measurements.get("active_comparison_set"))
     missing_drivers = [
         target
         for target in drivers
-        if not _usable_driver_acoustic(_driver_record(status, target))
+        if not _usable_driver_acoustic(
+            _driver_record(status, target),
+            active_comparison_set,
+        )
     ]
     missing_summed = [
         target
         for target in summed
-        if not _usable_summed_acoustic(_summed_record(status, target))
+        if not _usable_summed_acoustic(
+            _summed_record(status, target),
+            active_comparison_set,
+        )
     ]
     level_ready, level_state, level_running = _level_state(status)
+    from .capture_geometry import comparison_set_valid
+
+    level_ready = level_ready and comparison_set_valid(active_comparison_set)
     level_last = _mapping(_mapping(status.get("level_match")).get("last"))
     level_ramp = _mapping(level_last.get("ramp"))
     level_lock_kind = str(level_ramp.get("lock_kind") or "")
@@ -184,6 +226,24 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     automatic_candidate_ready = automatic_candidate.get("ready") is True
     manual_preservation = _mapping(setup_contract.get("manual_preservation"))
     legacy_reapply = _legacy_applied_profile_needs_reapply(status)
+    active_comparison_set_id = str(
+        active_comparison_set.get("comparison_set_id") or ""
+    )
+    applied_snapshot = _mapping(_mapping(status.get("applied_profile")).get(
+        "recomposition_snapshot"
+    ))
+    applied_level_match = _mapping(applied_snapshot.get("level_match"))
+    applied_comparison_set_id = str(
+        applied_level_match.get("active_comparison_set_id") or ""
+    )
+    automatic_remeasure = automatic_applied and (
+        _relay_active(status)
+        or level_running
+        or bool(
+            active_comparison_set_id
+            and active_comparison_set_id != applied_comparison_set_id
+        )
+    )
 
     done: set[str] = set()
     if setup_ready:
@@ -196,7 +256,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         done.add("summed")
     if applied_ready:
         done.add("apply")
-    if automatic_applied:
+    if automatic_applied and not automatic_remeasure:
         done.update({"microphone", "drivers", "summed"})
 
     nudges: list[dict[str, str]] = []
@@ -302,7 +362,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             },
         ]
         active_step = "apply"
-    elif automatic_applied:
+    elif automatic_applied and not automatic_remeasure:
         screen = "done"
         verdict = "The automatically tuned crossover is applied and ready for room correction."
         action = {
@@ -311,11 +371,19 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "href": "/correction/room/",
         }
         active_step = "apply"
-        alternate_actions = [{
-            "id": "edit_manual",
-            "label": "Set crossover manually",
-            "href": "/sound/",
-        }]
+        alternate_actions = [
+            {
+                "id": "retune_automatic",
+                "label": "Tune crossover automatically again",
+                "endpoint": "/correction/crossover/level-match",
+                "body": {},
+            },
+            {
+                "id": "edit_manual",
+                "label": "Set crossover manually",
+                "href": "/sound/",
+            },
+        ]
     elif _relay_active(status) or level_running:
         screen = "waiting"
         verdict = "Continue on the phone. This page will advance automatically when it finishes."
@@ -339,13 +407,18 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         }
         active_step = "microphone"
     elif missing_drivers:
+        from .capture_geometry import driver_placement_instruction
+
         target = missing_drivers[0]
         role = str(target.get("role") or "driver")
         screen = "driver"
-        verdict = f"Measure the {role}. JTS will use the safe protected path and saved level."
+        verdict = (
+            f"Measure the {role}. {driver_placement_instruction(role)} "
+            "JTS will use the safe protected path and saved level."
+        )
         action = {
             "id": "measure_driver",
-            "label": f"Measure {role}",
+            "label": f"Position the mic, then measure {role}",
             "endpoint": "/correction/crossover/relay-capture",
             "body": {
                 "kind": "driver",
@@ -355,9 +428,14 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         }
         active_step = "drivers"
     elif missing_summed:
+        from .capture_geometry import summed_placement_instruction
+
         target = missing_summed[0]
         screen = "summed"
-        verdict = "Measure the drivers together to verify the crossover blend."
+        verdict = (
+            "Measure the drivers together to verify the crossover blend. "
+            f"{summed_placement_instruction()}"
+        )
         action = {
             "id": "measure_summed",
             "label": "Measure combined drivers",
@@ -371,18 +449,28 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     elif automatic_candidate_ready:
         screen = "apply"
         replacing_manual = applied_ready and applied_owner == "manual"
+        updating_automatic = applied_ready and applied_owner == "automatic"
         verdict = (
             "The automatic measurements are complete. Review and explicitly "
             "replace your manual crossover."
             if replacing_manual
-            else "The automatic measurements are complete. Apply the tuned crossover."
+            else (
+                "The new automatic measurements are complete. Apply the updated "
+                "crossover."
+                if updating_automatic
+                else "The automatic measurements are complete. Apply the tuned crossover."
+            )
         )
         action = {
             "id": "replace_manual" if replacing_manual else "apply_automatic",
             "label": (
                 "Replace manual crossover with automatic tuning"
                 if replacing_manual
-                else "Apply automatic crossover"
+                else (
+                    "Apply updated automatic crossover"
+                    if updating_automatic
+                    else "Apply automatic crossover"
+                )
             ),
             "endpoint": "/correction/crossover/apply",
             "body": {"tuning_owner": "automatic"},

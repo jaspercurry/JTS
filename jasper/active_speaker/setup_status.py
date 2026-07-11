@@ -519,6 +519,7 @@ def read_active_speaker_setup_status(
             ),
             level_match=candidate_level_match,
             measurement_summary=summary,
+            active_comparison_set=measurements.get("active_comparison_set"),
         )
     )
     if profile_summary is not None:

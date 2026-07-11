@@ -1221,6 +1221,11 @@ A check.
    for a compression-driver horn. This is not a free-field response
    and does not prove the acoustic sum, but it catches driver and
    assembly deviations against the preset envelope.
+   The shipped relay wizard uses one fixed 3 cm on-axis capsule distance for
+   this comparison, requires an explicit driver-specific placement
+   acknowledgement before playback, and binds every role to the same persisted
+   microphone/level comparison set. Old captures without that proof, or captures
+   from different sets, cannot replace a manual crossover.
 2. **Null-depth optimization** proves polarity and relative delay at
    each crossover. With the planned crossover active, invert one
    adjacent driver through the mixer and sweep the crossover band.
@@ -1744,7 +1749,8 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-11 (automatic excitation SSOT, room readiness, applied
+Last verified: 2026-07-11 (relay placement acknowledgement + durable comparable
+capture-set contract, automatic excitation SSOT, room readiness, applied
 Layer-A snapshot, and relay crossover flow; prior 2026-06-24 room-correction
 start/apply/reset on solo active
 baselines checked against `jasper.web.correction_setup`,

@@ -76,11 +76,13 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
 
     assert version == {
         "schema_version": 1,
-        "capture_protocol_version": 1,
-        "supported_capture_protocol_versions": [1],
-        "capture_page_build": "20260710.2",
+        "capture_protocol_version": 2,
+        "supported_capture_protocol_versions": [1, 2],
+        "capture_page_build": "20260711.1",
     }
-    assert "main.js?v=20260710-1" in index_html
+    assert "main.js?v=20260711-1" in index_html
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
 
 

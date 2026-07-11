@@ -99,6 +99,25 @@ class CrossoverLevelLease:
             self.context_id = context_id
         return outcome
 
+    def invalidate_comparison_context(self) -> None:
+        """Drop a prior lock/setup before a newly acquired level run begins."""
+
+        from jasper.correction.level_match import LevelLockStore
+
+        if self._running is not None:
+            raise RuntimeError("cannot invalidate a running crossover level match")
+        self.level_lock_store = LevelLockStore()
+        self._last = None
+        self.context_id = None
+        self.noise_floor_db = None
+        self.mic_calibration = None
+        self.input_device = None
+        self.relay_setup_binding = None
+        log_event(
+            logger,
+            "correction.crossover_level_context_invalidated",
+        )
+
     async def restore_level_match_volume(self, set_main_volume_db: Any) -> bool:
         from jasper.audio_measurement.ramp import RampState
 
@@ -417,29 +436,49 @@ async def play_summed_capture_sweep(
     return payload
 
 
-def record_driver_capture(raw: Mapping[str, Any], wav_bytes: bytes) -> dict[str, Any]:
+def record_driver_capture(
+    raw: Mapping[str, Any],
+    wav_bytes: bytes,
+    *,
+    placement_proof: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Analyze one secure browser WAV and record per-driver evidence."""
 
-    payload = web_measurement.record_driver_capture(raw, wav_bytes)
+    payload = web_measurement.record_driver_capture(
+        raw,
+        wav_bytes,
+        placement_proof=placement_proof,
+    )
     log_event(
         logger,
         "correction.crossover_driver_capture",
         status="recorded" if payload.get("recorded") else "not_recorded",
         group_id=raw.get("speaker_group_id"),
         role=raw.get("role"),
+        placement_policy=(placement_proof or {}).get("policy_id"),
     )
     return payload
 
 
-def record_summed_capture(raw: Mapping[str, Any], wav_bytes: bytes) -> dict[str, Any]:
+def record_summed_capture(
+    raw: Mapping[str, Any],
+    wav_bytes: bytes,
+    *,
+    placement_proof: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Analyze one secure browser WAV and record summed-crossover evidence."""
 
-    payload = web_measurement.record_summed_capture(raw, wav_bytes)
+    payload = web_measurement.record_summed_capture(
+        raw,
+        wav_bytes,
+        placement_proof=placement_proof,
+    )
     log_event(
         logger,
         "correction.crossover_summed_capture",
         status="recorded" if payload.get("recorded") else "not_recorded",
         group_id=raw.get("speaker_group_id"),
         verdict=payload.get("verdict"),
+        placement_policy=(placement_proof or {}).get("policy_id"),
     )
     return payload

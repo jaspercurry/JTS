@@ -48,6 +48,16 @@ def _overlap(fc: float, level_db: float, *, usable: bool = True) -> dict:
 
 def _measurements(*driver_specs) -> dict:
     """Build a measurements dict from (group, role, verdict, [overlap, ...])."""
+    comparison_set = {
+        "schema_version": 1,
+        "comparison_set_id": "1" * 32,
+        "fingerprint": "2" * 64,
+        "profile_context_id": "protected-profile",
+        "setup_sha256": "3" * 64,
+        "device_sha256": "4" * 64,
+        "calibration_id": "",
+        "locked_main_volume_db": -12.0,
+    }
     latest: dict = {}
     for group, role, verdict, overlaps in driver_specs:
         latest[f"{group}:{role}"] = {
@@ -61,8 +71,26 @@ def _measurements(*driver_specs) -> dict:
                 "effective_peak_dbfs": -52.0,
             },
             "acoustic": {"verdict": verdict, "overlap_levels": list(overlaps)},
+            "placement_proof": {
+                "schema_version": 1,
+                "policy_id": "driver_same_distance_v1",
+                "accepted": True,
+                "confirmation_source": "relay_begin_capture",
+                "acknowledgement_binding_sha256": "5" * 64,
+                "relay_session_id": f"relay-{group}-{role}",
+                "capture_protocol_version": 2,
+                "capture_page_build": "20260711.1",
+                "speaker_group_id": group,
+                "role": role,
+                "target_fingerprint": "",
+                "comparison_set_id": comparison_set["comparison_set_id"],
+                "comparison_set_fingerprint": comparison_set["fingerprint"],
+            },
         }
-    return {"latest_by_target": latest}
+    return {
+        "latest_by_target": latest,
+        "active_comparison_set": comparison_set,
+    }
 
 
 TWO_WAY = [("woofer", "tweeter", 2000.0)]
@@ -226,7 +254,7 @@ def test_normalizes_driver_excitation_that_differs_by_40_db():
     # 40 dB more sensitive. The normalized trim attenuates it accordingly.
     assert trims == {"woofer": 0.0, "tweeter": -40.0}
     assert meta["groups_measured"] == 1
-    assert meta["comparison"] == "gain_ledger_normalized"
+    assert meta["comparison"] == "placement_attested_gain_ledger_normalized"
     assert meta["incomparable_groups"] == []
 
 
@@ -243,6 +271,38 @@ def test_fail_closed_when_excitation_ledger_is_missing():
     assert meta["incomparable_groups"][0]["reason"] == (
         "excitation_ledger_missing_or_invalid"
     )
+
+
+def test_legacy_geometryless_records_cannot_drive_automatic_trim():
+    measurements = _measurements(
+        ("mono", "woofer", "present", [_overlap(2000.0, -50.0)]),
+        ("mono", "tweeter", "present", [_overlap(2000.0, -30.0)]),
+    )
+    measurements["latest_by_target"]["mono:woofer"].pop("placement_proof")
+
+    trims, meta = _measured_level_trims(_preset(2, TWO_WAY), measurements)
+
+    assert trims == {}
+    assert meta["incomparable_groups"] == [{
+        "speaker_group_id": "mono",
+        "reason": "placement_or_comparison_set_missing_or_invalid",
+        "roles": ["woofer"],
+    }]
+
+
+def test_driver_records_from_different_comparison_sets_cannot_be_mixed():
+    measurements = _measurements(
+        ("mono", "woofer", "present", [_overlap(2000.0, -50.0)]),
+        ("mono", "tweeter", "present", [_overlap(2000.0, -30.0)]),
+    )
+    measurements["latest_by_target"]["mono:tweeter"]["placement_proof"][
+        "comparison_set_id"
+    ] = "9" * 32
+
+    trims, meta = _measured_level_trims(_preset(2, TWO_WAY), measurements)
+
+    assert trims == {}
+    assert meta["incomparable_groups"][0]["roles"] == ["tweeter"]
 
 
 # ---------- _overlap_level_at gate ------------------------------------------

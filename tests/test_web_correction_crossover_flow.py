@@ -22,6 +22,7 @@ def test_request_payload_parses_capture_query():
             "/crossover/driver-capture?speaker_group_id=mono&role=woofer"
             "&playback_id=abc&test_level_dbfs=-42.5"
             "&has_mic_calibration=true&expect_null=0"
+            "&placement_proof=client-forged"
         )
     )
 
@@ -117,6 +118,7 @@ def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
     assert calls["kwargs"]["playback_id"] == "play-1"
     assert calls["kwargs"]["calibration"] == "curve"
     assert calls["kwargs"]["safe_session"] is None
+    assert calls["kwargs"]["placement_proof"] is None
     assert calls["kwargs"]["durable_floor_confirmation"] == confirmation
 
 
@@ -337,6 +339,25 @@ def test_status_active_flag_false_for_passive_speaker(monkeypatch):
     assert payload["active"] is False
 
 
+def test_new_level_run_drops_prior_in_memory_comparison_context():
+    lease = backend.CrossoverLevelLease()
+    lease._last = SimpleNamespace(snapshot=lambda: {"ramp": {"state": "locked"}})
+    lease.context_id = "old-profile"
+    lease.noise_floor_db = -42.0
+    lease.mic_calibration = object()
+    lease.input_device = {"label": "old mic"}
+    lease.relay_setup_binding = object()
+
+    lease.invalidate_comparison_context()
+
+    assert lease.level_match_snapshot()["last"] is None
+    assert lease.context_id is None
+    assert lease.noise_floor_db is None
+    assert lease.mic_calibration is None
+    assert lease.input_device is None
+    assert lease.relay_setup_binding is None
+
+
 # --- crossover screen envelope: exactly one sequential next action -----------
 
 
@@ -372,7 +393,10 @@ def _envelope_status() -> dict:
             ],
             "summed": [{"speaker_group_id": "mono"}],
         },
-        "measurements": {"summary": {}},
+        "measurements": {
+            "active_comparison_set": _COMPARISON_SET,
+            "summary": {},
+        },
         "level_match": {"running": False, "last": None},
         "applied_profile": {},
         "relay": None,
@@ -388,12 +412,58 @@ def _locked_level(status: dict) -> None:
     }
 
 
-def _driver_acoustic() -> dict:
-    return {"acoustic": {"verdict": "present"}}
+_COMPARISON_SET = {
+    "schema_version": 1,
+    "comparison_set_id": "1" * 32,
+    "fingerprint": "2" * 64,
+    "profile_context_id": "protected-profile",
+    "setup_sha256": "3" * 64,
+    "device_sha256": "4" * 64,
+    "calibration_id": "",
+    "locked_main_volume_db": -12.0,
+}
+
+
+def _placement_proof(policy: str, role: str) -> dict:
+    return {
+        "schema_version": 1,
+        "policy_id": policy,
+        "accepted": True,
+        "confirmation_source": "relay_begin_capture",
+        "acknowledgement_binding_sha256": "5" * 64,
+        "relay_session_id": f"relay-{role}",
+        "capture_protocol_version": 2,
+        "capture_page_build": "20260711.1",
+        "speaker_group_id": "mono",
+        "role": role,
+        "target_fingerprint": "",
+        "comparison_set_id": _COMPARISON_SET["comparison_set_id"],
+        "comparison_set_fingerprint": _COMPARISON_SET["fingerprint"],
+    }
+
+
+def _driver_acoustic(role: str) -> dict:
+    return {
+        "speaker_group_id": "mono",
+        "role": role,
+        "acoustic": {"verdict": "present"},
+        "placement_proof": _placement_proof(
+            "driver_same_distance_v1",
+            role,
+        ),
+    }
 
 
 def _summed_acoustic() -> dict:
-    return {"validated": True, "acoustic": {"verdict": "blend_ok"}}
+    return {
+        "speaker_group_id": "mono",
+        "validated": True,
+        "acoustic": {"verdict": "blend_ok"},
+        "placement_proof": _placement_proof(
+            "summed_listening_position_v1",
+            "summed",
+        ),
+    }
 
 
 def test_crossover_envelope_passive_speaker_is_gated():
@@ -601,11 +671,15 @@ def test_crossover_envelope_walks_level_drivers_summed_apply_room():
     }
 
     summary = status["measurements"]["summary"]
-    summary["latest_driver_measurements"] = {"mono:woofer": _driver_acoustic()}
+    summary["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer")
+    }
     env = crossover_envelope.build_crossover_envelope(status)
     assert env["next_action"]["body"]["role"] == "tweeter"
 
-    summary["latest_driver_measurements"]["mono:tweeter"] = _driver_acoustic()
+    summary["latest_driver_measurements"]["mono:tweeter"] = _driver_acoustic(
+        "tweeter"
+    )
     env = crossover_envelope.build_crossover_envelope(status)
     assert env["screen"] == "summed"
     assert env["next_action"]["body"] == {
@@ -631,6 +705,11 @@ def test_crossover_envelope_walks_level_drivers_summed_apply_room():
         "recomposition_snapshot": {
             "schema_version": 1,
             "tuning_owner": "automatic",
+            "level_match": {
+                "active_comparison_set_id": _COMPARISON_SET[
+                    "comparison_set_id"
+                ],
+            },
         },
     }
     status["setup"]["acoustic_commissioning"] = {"allowed": True}
@@ -659,7 +738,7 @@ def test_crossover_envelope_uses_applied_anchor_while_candidate_is_incomplete():
     })
     _locked_level(status)
     status["measurements"]["summary"]["latest_driver_measurements"] = {
-        "mono:woofer": _driver_acoustic(),
+        "mono:woofer": _driver_acoustic("woofer"),
     }
 
     env = crossover_envelope.build_crossover_envelope(status)
@@ -774,8 +853,8 @@ def test_completed_automatic_measurement_explicitly_replaces_manual_profile():
     _locked_level(status)
     status["measurements"]["summary"].update({
         "latest_driver_measurements": {
-            "mono:woofer": _driver_acoustic(),
-            "mono:tweeter": _driver_acoustic(),
+            "mono:woofer": _driver_acoustic("woofer"),
+            "mono:tweeter": _driver_acoustic("tweeter"),
         },
         "latest_summed_validations": {"mono": _summed_acoustic()},
     })
@@ -800,18 +879,22 @@ def test_incomparable_automatic_evidence_never_offers_apply():
 
     status = _envelope_status()
     _locked_level(status)
-    status["measurements"]["summary"] = {
+    status["measurements"] = {
+        "active_comparison_set": _COMPARISON_SET,
+        "summary": {
         "latest_driver_measurements": {
-            "mono:woofer": _driver_acoustic(),
-            "mono:tweeter": _driver_acoustic(),
+            "mono:woofer": _driver_acoustic("woofer"),
+            "mono:tweeter": _driver_acoustic("tweeter"),
         },
         "latest_summed_validations": {"mono": _summed_acoustic()},
+        },
     }
     status["setup"]["automatic_candidate"] = {
         "ready": False,
-        "reason": "automatic_crossover_excitation_incomparable",
+        "reason": "automatic_crossover_measurements_incomparable",
         "detail": (
-            "Repeat the driver sweeps so their verified excitation can be compared."
+            "Repeat the driver sweeps in one guided run so microphone placement, "
+            "level, and excitation can be compared."
         ),
     }
 
@@ -829,7 +912,14 @@ def test_applied_automatic_snapshot_is_done_without_mutable_measurements():
     status["applied_profile"] = {
         "status": "applied",
         "tuning_owner": "automatic",
-        "recomposition_snapshot": {"schema_version": 1},
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "level_match": {
+                "active_comparison_set_id": _COMPARISON_SET[
+                    "comparison_set_id"
+                ],
+            },
+        },
     }
     status["setup"]["applied_crossover"] = {
         "valid": True,
@@ -841,6 +931,58 @@ def test_applied_automatic_snapshot_is_done_without_mutable_measurements():
 
     assert env["screen"] == "done"
     assert env["next_action"]["href"] == "/correction/room/"
+    assert env["alternate_actions"] == [
+        {
+            "id": "retune_automatic",
+            "label": "Tune crossover automatically again",
+            "endpoint": "/correction/crossover/level-match",
+            "body": {},
+        },
+        {
+            "id": "edit_manual",
+            "label": "Set crossover manually",
+            "href": "/sound/",
+        },
+    ]
+
+
+def test_applied_automatic_profile_can_run_a_fresh_sequential_retune():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["applied_profile"] = {
+        "status": "applied",
+        "tuning_owner": "automatic",
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "level_match": {"active_comparison_set_id": "9" * 32},
+        },
+    }
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "automatic",
+        "reason": None,
+    }
+    _locked_level(status)
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "driver"
+    assert env["next_action"]["body"]["role"] == "woofer"
+
+    status["measurements"]["summary"] = {
+        "latest_driver_measurements": {
+            "mono:woofer": _driver_acoustic("woofer"),
+            "mono:tweeter": _driver_acoustic("tweeter"),
+        },
+        "latest_summed_validations": {"mono": _summed_acoustic()},
+    }
+    status["setup"]["automatic_candidate"] = {"ready": True, "reason": None}
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "apply"
+    assert env["next_action"]["label"] == "Apply updated automatic crossover"
 
 
 def test_crossover_envelope_maxed_out_is_retry_not_a_lock():
@@ -855,6 +997,19 @@ def test_crossover_envelope_maxed_out_is_retry_not_a_lock():
     assert env["screen"] == "microphone"
     assert env["next_action"]["id"] == "level_match"
     assert env["nudges"][0]["code"] == "external_amplifier_too_low"
+
+
+def test_stale_locked_level_without_comparison_set_returns_to_level_step():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["measurements"]["active_comparison_set"] = None
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert env["next_action"]["id"] == "level_match"
 
 
 def test_crossover_envelope_surfaces_bounded_low_lock_without_blocking_sweeps():
@@ -929,7 +1084,19 @@ def _fake_relay_transport(monkeypatch, *, wav=b"phone-wav-bytes"):
     purged = {}
 
     def fake_run_capture(client, pi_session, *, on_armed, **kw):
-        on_armed(SimpleNamespace())  # phone armed → Pi plays the sweep
+        required = pi_session.spec.acknowledgement
+        on_armed(SimpleNamespace(
+            acknowledgement={
+                "schema_version": required.schema_version,
+                "id": required.id,
+                "binding_id": required.binding_id,
+                "accepted": True,
+            },
+            capture_page={
+                "capture_protocol_version": 2,
+                "capture_page_build": "20260711.1",
+            },
+        ))  # phone armed + acknowledged → Pi plays the sweep
         return SimpleNamespace(wav=wav, device={"label": "iPhone mic"})
 
     monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
@@ -937,6 +1104,25 @@ def _fake_relay_transport(monkeypatch, *, wav=b"phone-wav-bytes"):
         relay_session, "purge", lambda c, s: purged.setdefault("done", True)
     )
     return purged
+
+
+def _relay_pi_session(kind: str, *, session_id: str = "sid") -> SimpleNamespace:
+    from jasper.capture_relay.spec import build_crossover_sweep_spec
+
+    role = "woofer" if kind == "driver" else "summed"
+    spec = build_crossover_sweep_spec(
+        driver_label="Woofer driver" if kind == "driver" else "summed crossover",
+        driver_role=role,
+        acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
+    )
+    return SimpleNamespace(session_id=session_id, pull_token="ptok", spec=spec)
+
+
+def _relay_contract() -> dict:
+    return {
+        "comparison_set": _COMPARISON_SET,
+        "target_fingerprint": "",
+    }
 
 
 def _real_play_boundary(monkeypatch, tmp_path, *, kind):
@@ -1113,9 +1299,10 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
 
     record_calls = {}
 
-    def fake_record_driver(raw, wav_bytes):
+    def fake_record_driver(raw, wav_bytes, *, placement_proof):
         record_calls["raw"] = raw
         record_calls["wav"] = wav_bytes
+        record_calls["placement_proof"] = placement_proof
         return {"recorded": True}
 
     monkeypatch.setattr(be, "record_driver_capture", fake_record_driver)
@@ -1131,16 +1318,18 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
         lambda: object(),
         post_host_event=post_host_event,
         blocking_phase=lambda: None,
+        **_relay_contract(),
     )
-    await run_and_consume(
-        object(), SimpleNamespace(session_id="sid", pull_token="ptok")
-    )
+    await run_and_consume(object(), _relay_pi_session("driver"))
 
     # The REAL sweep_meta (generated by _measurement_sweep_wav_path from
     # driver_acoustics defaults) rode into the record call — the deconv basis
     # is the played sweep, never the phone WAV.
     raw = record_calls["raw"]
     assert record_calls["wav"] == b"phone-wav-bytes"
+    assert record_calls["placement_proof"]["policy_id"] == (
+        "driver_same_distance_v1"
+    )
     assert raw["role"] == "woofer"
     assert raw["playback_id"]
     # The old by-ear -72 dB floor record is identity evidence only. The played
@@ -1179,10 +1368,15 @@ async def test_crossover_relay_consume_feeds_real_summed_play_payload(
     _fake_relay_transport(monkeypatch, wav=b"w")
 
     record_calls = {}
+    def fake_record_summed(raw, wav, *, placement_proof):
+        record_calls["raw"] = raw
+        record_calls["placement_proof"] = placement_proof
+        return {"recorded": True}
+
     monkeypatch.setattr(
         be,
         "record_summed_capture",
-        lambda raw, wav: record_calls.setdefault("raw", raw) or {"recorded": True},
+        fake_record_summed,
     )
 
     run_and_consume = flow.build_crossover_relay_run_and_consume(
@@ -1190,8 +1384,9 @@ async def test_crossover_relay_consume_feeds_real_summed_play_payload(
         lambda coro, timeout=None: _run_coro(coro),
         lambda: object(),
         blocking_phase=lambda: None,
+        **_relay_contract(),
     )
-    await run_and_consume(object(), SimpleNamespace(session_id="s", pull_token="t"))
+    await run_and_consume(object(), _relay_pi_session("summed", session_id="s"))
 
     raw = record_calls["raw"]
     assert raw["summed_test_id"] == "sum-9"
@@ -1246,7 +1441,7 @@ async def test_crossover_gain_is_scoped_to_the_measurement_window(monkeypatch):
     monkeypatch.setattr(
         be,
         "record_driver_capture",
-        lambda _raw, _wav: {"recorded": True},
+        lambda _raw, _wav, *, placement_proof: {"recorded": True},
     )
 
     run_and_consume = flow.build_crossover_relay_run_and_consume(
@@ -1255,8 +1450,9 @@ async def test_crossover_gain_is_scoped_to_the_measurement_window(monkeypatch):
         lambda: object(),
         prepare_play=prepare,
         restore_play=restore,
+        **_relay_contract(),
     )
-    await run_and_consume(object(), SimpleNamespace(session_id="s", pull_token="t"))
+    await run_and_consume(object(), _relay_pi_session("driver", session_id="s"))
 
     assert order == ["window_enter", "prepare", "play", "restore", "window_exit"]
 
@@ -1282,14 +1478,87 @@ async def test_crossover_relay_consume_refusal_carries_real_reason(monkeypatch):
         post_host_event=post_host_event,
         # A room sweep started between POST and armed:
         blocking_phase=lambda: "correction:sweeping",
+        **_relay_contract(),
     )
     with pytest.raises(ValueError, match="Finish the other measurement"):
         await run_and_consume(
-            object(), SimpleNamespace(session_id="s", pull_token="t")
+            object(), _relay_pi_session("driver", session_id="s")
         )
     phases = [p.get("phase") for p in host_events]
     assert phases == ["sweep_started", "sweep_failed"]
     assert "Finish the other measurement" in host_events[1]["error"]
+
+
+@pytest.mark.asyncio
+async def test_crossover_flow_revalidates_ack_before_playback(monkeypatch):
+    from jasper.capture_relay import session as relay_session
+    from jasper.web import correction_crossover_backend as be
+
+    play_calls = []
+    host_events = []
+
+    def fake_run_capture(client, pi_session, *, on_armed, **kwargs):
+        on_armed(SimpleNamespace(
+            acknowledgement=None,
+            capture_page={
+                "capture_protocol_version": 2,
+                "capture_page_build": "20260711.1",
+            },
+        ))
+
+    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    async def play(*_args, **_kwargs):
+        play_calls.append(True)
+        return {"status": "completed", "playback": {"audio_emitted": True}}
+
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        post_host_event=lambda _sid, _token, payload: host_events.append(payload),
+        **_relay_contract(),
+    )
+
+    with pytest.raises(RuntimeError, match="acknowledgement"):
+        await run_and_consume(object(), _relay_pi_session("driver"))
+
+    assert play_calls == []
+    assert host_events[-1]["phase"] == "sweep_failed"
+
+
+@pytest.mark.asyncio
+async def test_stale_comparison_set_link_refuses_before_playback(monkeypatch):
+    from jasper.web import correction_crossover_backend as be
+
+    _fake_relay_transport(monkeypatch)
+    play_calls = []
+    host_events = []
+
+    async def play(*_args, **_kwargs):
+        play_calls.append(True)
+        return {"status": "completed", "playback": {"audio_emitted": True}}
+
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        post_host_event=lambda _sid, _token, payload: host_events.append(payload),
+        current_comparison_set=lambda: {
+            **_COMPARISON_SET,
+            "comparison_set_id": "9" * 32,
+        },
+        **_relay_contract(),
+    )
+
+    with pytest.raises(ValueError, match="level changed"):
+        await run_and_consume(object(), _relay_pi_session("driver"))
+
+    assert play_calls == []
+    assert host_events[-1]["phase"] == "sweep_failed"
 
 
 def test_capture_sweep_played_reads_the_nested_playback_shape():

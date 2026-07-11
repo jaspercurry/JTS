@@ -1683,11 +1683,38 @@ def _acoustic_measurements(
     from jasper.active_speaker.commissioning_capture import (
         record_driver_acoustic_capture,
     )
+    from jasper.active_speaker.capture_geometry import (
+        DRIVER_PLACEMENT_POLICY_ID,
+        SUMMED_PLACEMENT_POLICY_ID,
+        normalized_placement_proof,
+    )
+    from jasper.active_speaker.measurement import (
+        active_driver_targets,
+        active_summed_targets,
+        start_active_comparison_set,
+    )
     from jasper.active_speaker.staging import compile_preset_from_crossover_preview
 
     preset, issues, _gates = compile_preset_from_crossover_preview(topology, dict(preview))
     assert preset is not None, issues
     state_path = tmp_path / "measurements.json"
+    comparison_set = start_active_comparison_set(
+        topology,
+        profile_context_id="protected-profile",
+        setup_sha256="a" * 64,
+        device_sha256="b" * 64,
+        calibration_id="",
+        locked_main_volume_db=-12.0,
+        state_path=state_path,
+        now="2026-06-19T12:00:30Z",
+    )
+    driver_targets = {
+        target["role"]: target for target in active_driver_targets(topology)
+    }
+    page = {
+        "capture_protocol_version": 2,
+        "capture_page_build": "20260711.1",
+    }
 
     for role, kind, output_index, gain_db in (
         ("woofer", "lowpass", 0, -tweeter_hotter_db),
@@ -1706,6 +1733,16 @@ def _acoustic_measurements(
             sweep_meta=meta,
             playback_id=playback_id,
             test_level_dbfs=-40.0,
+            placement_proof=normalized_placement_proof(
+                policy_id=DRIVER_PLACEMENT_POLICY_ID,
+                acknowledgement_binding=f"binding-{role}-abcdefghijkl",
+                relay_session_id=f"relay-{role}",
+                capture_page=page,
+                speaker_group_id="mono",
+                role=role,
+                target_fingerprint=driver_targets[role]["target_fingerprint"],
+                comparison_set=comparison_set,
+            ),
             safe_session=_safe_session(
                 role=role, output_index=output_index, playback_id=playback_id
             ),
@@ -1745,6 +1782,18 @@ def _acoustic_measurements(
             "polarity": "normal",
             "delay_ms": 0.0,
             "summed_test_id": "summed-playback-audible",
+            "placement_proof": normalized_placement_proof(
+                policy_id=SUMMED_PLACEMENT_POLICY_ID,
+                acknowledgement_binding="binding-summed-abcdefghijkl",
+                relay_session_id="relay-summed",
+                capture_page=page,
+                speaker_group_id="mono",
+                role="summed",
+                target_fingerprint=active_summed_targets(topology)[0][
+                    "group_fingerprint"
+                ],
+                comparison_set=comparison_set,
+            ),
         },
         state_path=state_path,
         now="2026-06-19T12:03:00Z",
@@ -2055,13 +2104,15 @@ def test_automatic_tuning_refuses_incomparable_excitation(tmp_path: Path) -> Non
     assert payload["status"] == "blocked"
     assert payload["automatic_candidate"] == {
         "ready": False,
-        "reason": "automatic_crossover_excitation_incomparable",
+        "reason": "automatic_crossover_measurements_incomparable",
         "detail": (
-            "Repeat the driver sweeps so their verified excitation can be compared."
+            "Repeat the driver sweeps in one guided run so microphone placement, "
+            "level, and excitation can be compared."
         ),
         "required_group_ids": ["mono"],
         "measured_group_ids": [],
         "summed_group_ids": ["mono"],
+        "measurement_comparable": False,
         "excitation_comparable": False,
     }
 

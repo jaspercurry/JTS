@@ -14,7 +14,10 @@
 
 import assert from "node:assert/strict";
 
-import { renderScreen } from "../../capture-page/js/render.js";
+import {
+  acceptedAcknowledgement,
+  renderScreen,
+} from "../../capture-page/js/render.js";
 import { THEME_ACCENT_VARS, DEFAULT_THEME } from "../../capture-page/js/theme.js";
 
 let passed = 0;
@@ -69,6 +72,7 @@ function makeDoc() {
         (this._listeners[ev] = this._listeners[ev] || []).push(fn);
       },
       dispatch(ev) {
+        if (node.disabled && ev === "click") return;
         for (const fn of this._listeners[ev] || []) fn({ preventDefault() {}, target: node });
       },
     };
@@ -245,11 +249,72 @@ function testUnknownButtonActionNotWired() {
   ok();
 }
 
+function testAcknowledgementGatesStartAndRendersInertText() {
+  const doc = makeDoc();
+  const root = doc.createElement("div");
+  let begun = 0;
+  const spec = {
+    acknowledgement: {
+      schema_version: 1,
+      id: "driver_same_distance_v1",
+      binding_id: "binding_abcdefghijklmnop",
+      label: "<img onerror=alert(1)> Mic is 3 cm from the woofer",
+    },
+    ui: {
+      screen: [
+        { type: "heading", text: "Measure the woofer" },
+        { type: "steps", items: ["Position the microphone", "Keep it still"] },
+        { type: "level_meter", id: "capture_level" },
+        { type: "button", label: "Start", action: "begin_capture" },
+      ],
+    },
+  };
+  const refs = renderScreen(root, spec, {
+    doc,
+    handlers: { begin_capture: () => (begun += 1) },
+  });
+
+  assert.ok(refs.acknowledgement, "acknowledgement ref returned");
+  assert.equal(
+    root.children.map((child) => child.tagName).join(","),
+    "H1,OL,DIV,LABEL,BUTTON",
+    "placement acknowledgement is the final instruction immediately before Start",
+  );
+  const label = root.children[3];
+  assert.equal(label.tagName, "LABEL");
+  assert.equal(
+    label.children[1].textContent,
+    "<img onerror=alert(1)> Mic is 3 cm from the woofer",
+  );
+  assert.deepEqual(doc._innerHTMLWrites, [], "ack label remains inert text");
+  const start = refs.buttons[0].el;
+  assert.equal(start.disabled, true, "Start is initially disabled");
+  assert.throws(
+    () => acceptedAcknowledgement(spec, refs),
+    /confirm the microphone placement/,
+  );
+  start.dispatch("click");
+  assert.equal(begun, 0, "disabled Start does not arm in a real browser");
+  refs.acknowledgement.el.checked = true;
+  refs.acknowledgement.el.dispatch("change");
+  assert.equal(start.disabled, false, "checking acknowledgement enables Start");
+  assert.deepEqual(acceptedAcknowledgement(spec, refs), {
+    schema_version: 1,
+    id: "driver_same_distance_v1",
+    binding_id: "binding_abcdefghijklmnop",
+    accepted: true,
+  });
+  start.dispatch("click");
+  assert.equal(begun, 1);
+  ok();
+}
+
 const tests = [
   testHostilePayloadIsInert,
   testRawCssThemeRejected,
   testHappyPathStructure,
   testUnknownButtonActionNotWired,
+  testAcknowledgementGatesStartAndRendersInertText,
 ];
 
 let failure = null;

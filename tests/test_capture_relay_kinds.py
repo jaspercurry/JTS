@@ -96,6 +96,43 @@ def test_server_driven_copy_names_the_driver():
     assert headings and "woofer" in headings[0]["text"]
 
 
+def test_crossover_driver_requires_explicit_bound_placement_acknowledgement():
+    binding = "placement_abcdefghijklmnopqrstuv"
+    spec = build_crossover_sweep_spec(
+        driver_label="Woofer driver",
+        driver_role="woofer",
+        acknowledgement_binding=binding,
+    )
+
+    assert spec.capture_protocol_version == 2
+    assert spec.acknowledgement is not None
+    assert spec.acknowledgement.id == "driver_same_distance_v1"
+    assert spec.acknowledgement.binding_id == binding
+    assert "3 cm" in spec.acknowledgement.label
+    assert "woofer" in spec.acknowledgement.label
+    steps = next(item for item in spec.screen if item["type"] == "steps")
+    assert "3 cm" in steps["items"][0]
+    assert "same distance" in steps["items"][0]
+    button = next(item for item in spec.screen if item["type"] == "button")
+    assert "positioned" in button["label"]
+    round_tripped = CaptureSpec.from_dict(spec.to_dict())
+    assert round_tripped.acknowledgement == spec.acknowledgement
+
+
+def test_crossover_summed_capture_has_distinct_position_acknowledgement():
+    spec = build_crossover_sweep_spec(
+        driver_label="summed crossover",
+        driver_role="summed",
+        acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
+    )
+
+    assert spec.acknowledgement is not None
+    assert spec.acknowledgement.id == "summed_listening_position_v1"
+    assert "listening position" in spec.acknowledgement.label
+    steps = next(item for item in spec.screen if item["type"] == "steps")
+    assert "listening position" in steps["items"][0]
+
+
 def test_crossover_sweep_stimulus_single_sourced_from_the_kernel():
     # CRITICAL CORRECTNESS (P7): the crossover_sweep spec must advertise the SAME
     # sweep length the active-crossover flow actually plays — there must be ONE
