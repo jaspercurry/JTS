@@ -429,6 +429,7 @@ def test_crossover_envelope_requires_protected_setup_first():
 
 
 def test_crossover_apply_requires_explicit_owner(monkeypatch):
+    from jasper.active_speaker import safe_playback
     from jasper.web import correction_crossover_backend as backend
 
     seen = {}
@@ -438,6 +439,15 @@ def test_crossover_apply_requires_explicit_owner(monkeypatch):
         return {"status": "applied", "issues": []}
 
     monkeypatch.setattr(backend, "apply_profile", fake_apply_profile)
+    monkeypatch.setattr(
+        safe_playback,
+        "stop_safe_playback_session",
+        lambda **kwargs: {
+            "status": "idle",
+            "session_id": None,
+            "last_action": kwargs["reason"],
+        },
+    )
 
     def run_async(awaitable, *, timeout):
         import asyncio
@@ -455,6 +465,123 @@ def test_crossover_apply_requires_explicit_owner(monkeypatch):
     assert status == 200
     assert payload["status"] == "applied"
     assert seen["owner"] == "automatic"
+
+
+@pytest.mark.parametrize(
+    "tuning_owner",
+    ["manual", "automatic"],
+)
+def test_explicit_crossover_apply_releases_room_correction_lock(
+    tmp_path, monkeypatch, tuning_owner
+):
+    """The terminal explicit apply closes commissioning's durable SSOT lock."""
+    import json
+    import time
+
+    from jasper.web import active_speaker_flow, correction_crossover_backend
+    from jasper.web import balance_flow, correction_setup, sync_flow
+
+    state_path = tmp_path / "safe-playback.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "artifact_schema_version": 1,
+                "kind": "jts_active_speaker_safe_playback_session",
+                "status": "armed",
+                "session_id": "safe-1",
+                "created_at": "2026-07-11T11:00:00Z",
+                "expires_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 120)
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE", str(state_path)
+    )
+    assert active_speaker_flow.active_phase() == "commissioning"
+
+    async def fake_apply_profile(*, tuning_owner, camilla_factory):
+        return {"status": "applied", "issues": []}
+
+    monkeypatch.setattr(
+        correction_crossover_backend, "apply_profile", fake_apply_profile
+    )
+    payload, status = flow.handle_apply(
+        {"tuning_owner": tuning_owner},
+        lambda awaitable, *, timeout: _run_coro(awaitable),
+        lambda: object(),
+    )
+
+    assert status == 200
+    assert payload["commissioning_session"] == {
+        "status": "stopped",
+        "session_id": "safe-1",
+        "last_action": "crossover_profile_applied",
+    }
+    assert active_speaker_flow.active_phase() is None
+
+    monkeypatch.setattr(balance_flow, "active_phase", lambda: None)
+    monkeypatch.setattr(sync_flow, "active_phase", lambda: None)
+    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    monkeypatch.setattr(correction_setup, "_session", None)
+    assert correction_setup._reserve_start_slot() is None
+    correction_setup._clear_start_slot()
+
+
+def test_failed_crossover_apply_preserves_commissioning_session(monkeypatch):
+    from jasper.active_speaker import safe_playback
+    from jasper.web import correction_crossover_backend as backend
+
+    async def fake_apply_profile(*, tuning_owner, camilla_factory):
+        return {"status": "blocked", "issues": [{"code": "missing_evidence"}]}
+
+    monkeypatch.setattr(backend, "apply_profile", fake_apply_profile)
+    monkeypatch.setattr(
+        safe_playback,
+        "stop_safe_playback_session",
+        lambda **kwargs: pytest.fail("blocked apply must keep commissioning armed"),
+    )
+
+    payload, status = flow.handle_apply(
+        {"tuning_owner": "automatic"},
+        lambda awaitable, *, timeout: _run_coro(awaitable),
+        lambda: object(),
+    )
+
+    assert status == 409
+    assert payload["status"] == "blocked"
+
+
+def test_crossover_apply_close_failure_is_truthful_and_retryable(monkeypatch):
+    from jasper.active_speaker import safe_playback
+    from jasper.web import correction_crossover_backend as backend
+
+    async def fake_apply_profile(*, tuning_owner, camilla_factory):
+        return {"status": "applied", "issues": []}
+
+    monkeypatch.setattr(backend, "apply_profile", fake_apply_profile)
+
+    def fail_close(**kwargs):
+        raise OSError("read-only state filesystem")
+
+    monkeypatch.setattr(safe_playback, "stop_safe_playback_session", fail_close)
+
+    payload, status = flow.handle_apply(
+        {"tuning_owner": "automatic"},
+        lambda awaitable, *, timeout: _run_coro(awaitable),
+        lambda: object(),
+    )
+
+    assert status == 409
+    assert payload["status"] == "applied"
+    assert payload["commissioning_session"] == {
+        "status": "close_failed",
+        "last_action": "crossover_profile_applied",
+    }
+    assert payload["issues"][0]["code"] == "crossover_commissioning_close_failed"
+    assert payload["issues"][0]["severity"] == "blocker"
 
 
 def test_crossover_envelope_walks_level_drivers_summed_apply_room():
