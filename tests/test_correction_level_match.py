@@ -720,6 +720,34 @@ async def test_session_run_level_match_stores_geometry_lock(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_room_session_accepts_stable_bounded_low_level(tmp_path):
+    """A quiet external amp can proceed only with explicit degraded evidence."""
+    sess = _make_session(tmp_path)
+    chain = FakeChain(gain_db=-5.0, start_vol=-30.0, nf=-60.0)
+    clock = Clock()
+
+    outcome = await sess.run_level_match(
+        MicGeometry.LISTENING_POSITION.value,
+        get_main_volume_db=chain.get_vol,
+        set_main_volume_db=chain.set_vol,
+        play_continuous_tone=chain.tone,
+        cancel_tone=chain.cancel_tone,
+        read_status=chain.read_status,
+        post_host_event=chain.post_host_event,
+        noise_floor_dbfs=chain.nf,
+        clock=clock.now,
+        sleep=clock.sleep,
+    )
+
+    assert outcome.ramp.state is RampState.LOCKED
+    assert outcome.ramp.lock_kind is RampLockKind.BOUNDED_LOW_LEVEL
+    assert outcome.ramp.window_shortfall_db > 0.0
+    assert outcome.ramp.settled_snr_db >= MeasurementRamp.trust_margin_db
+    assert outcome.ramp.restored is True
+    assert chain._vol == pytest.approx(-30.0)
+
+
+@pytest.mark.asyncio
 async def test_session_level_restore_is_retryable_and_exact_once(tmp_path):
     sess = _make_session(tmp_path)
     chain = FakeChain(gain_db=10.0, start_vol=-30.0)

@@ -84,7 +84,11 @@ The product is three tiers:
   verification, and active-crossover adapters reassert the target only inside
   the serialized `measurement_window()` that owns playback, then restore it in
   that window's `finally` before renderers resume. The shared ensure/restore
-  transition lock makes concurrent cleanup idempotent and retryable.
+  transition lock makes concurrent cleanup idempotent and retryable. Room and
+  active-crossover adapters may accept the kernel's explicitly degraded
+  `bounded_low_level` result only after its unchanged AGC, clip, liveness, SNR,
+  spread, and shortfall gates pass; the relay establishes the SNR floor from a
+  short rolling ambient median rather than one microphone-startup block.
 - `active_speaker/driver_acoustics.py` **imports**
   `jasper.audio_measurement.{sweep, deconv, analysis, quality}` and the `DRIVER`
   quality profile — it reuses the shared DSP verbatim.

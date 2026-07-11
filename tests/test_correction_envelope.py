@@ -22,6 +22,7 @@ wiring (`/envelope`) is a thin `build_envelope_logged` call over
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from jasper.correction import envelope
 from jasper.correction.session import CurveJSON, SessionState
@@ -92,14 +93,21 @@ def _relay_session(
     *,
     level_state: str = "locked",
     restored: bool = False,
+    lock_kind: str | None = None,
+    window_shortfall_db: float | None = None,
 ) -> _FakeSession:
     sess = _FakeSession(state)
     sess.capture_transport = "relay"
+    ramp = {"state": level_state, "restored": restored}
+    if lock_kind is not None:
+        ramp["lock_kind"] = lock_kind
+    if window_shortfall_db is not None:
+        ramp["window_shortfall_db"] = window_shortfall_db
     sess.level_match_snapshot = lambda: {
         "running": False,
         "locks": {},
         "last": {
-            "ramp": {"state": level_state, "restored": restored},
+            "ramp": ramp,
         },
     }
     return sess
@@ -458,6 +466,45 @@ def test_uncalibrated_mic_nudge_present_and_non_blocking():
     assert "continue" in n["text"].lower()
     # A nudge NEVER removes the forward action.
     assert env["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}
+
+
+def test_room_bounded_low_level_surfaces_shortfall_without_blocking_sweep():
+    sess = _relay_session(
+        SessionState.NEEDS_NOISE_CAPTURE,
+        restored=True,
+        lock_kind="bounded_low_level",
+        window_shortfall_db=11.88,
+    )
+
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "mic"
+    assert env["next_action"] == {
+        "endpoint": "/relay/capture",
+        "label": "Measure this position",
+    }
+    nudge = env["nudges"][0]
+    assert nudge["code"] == "bounded_low_measurement_level"
+    assert nudge["severity"] == "warn"
+    assert "11.9 dB below" in nudge["text"]
+    assert "verify each sweep" in nudge["text"]
+
+
+@pytest.mark.parametrize("shortfall", [0.0, -1.0, float("nan"), float("inf")])
+def test_room_bounded_low_level_ignores_invalid_shortfall(shortfall):
+    sess = _relay_session(
+        SessionState.NEEDS_NOISE_CAPTURE,
+        restored=True,
+        lock_kind="bounded_low_level",
+        window_shortfall_db=shortfall,
+    )
+
+    env = envelope.build_envelope(sess)
+
+    assert all(
+        nudge["code"] != "bounded_low_measurement_level"
+        for nudge in env["nudges"]
+    )
 
 
 def test_low_confidence_findings_map_to_nudges():

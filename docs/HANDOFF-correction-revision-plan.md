@@ -170,12 +170,19 @@ one-shot host-event round trip.
   sweep waveforms, not envelope series.
 - **Stop-ahead** the instant the settled mic level enters the **−20…−12 dBFS**
   window with clip margin — never blast up to find it. If the ramp maxes out
-  without reaching the window (amp too quiet), stop and tell the user to raise the
-  analog amp; never exceed the 0 dB ceiling to compensate.
+  without reaching the window (amp too quiet), the shared default stops and
+  tells the user to raise the analog amp; never exceed the 0 dB ceiling to
+  compensate. A geometry owner may explicitly accept `bounded_low_level` only
+  after fresh cap evidence passes the same frozen-AGC, no-clip, liveness,
+  noise-margin, stability-spread, and maximum-shortfall guards. Room and active
+  crossover now opt in; the result remains labeled degraded and downstream
+  sweep quality still decides whether it is usable.
 - **Failure and margin rules** (the previous draft left these unspecified):
-  (a) a reading is only trustable once it clears **noise_floor + ~10 dB**
-  (reuse the phone's existing `noise_floor` event — below that the RMS is
-  ambient-dominated and the early ramp shape is meaningless); (b)
+  (a) a reading is only trustable once it clears **noise_floor + ~10 dB**. The
+  relay adapter derives that floor from a two-second rolling median of ten
+  finite 200 ms pre-tone samples, never the first USB-mic startup block; below the
+  margin the RMS is ambient-dominated and the early ramp shape is meaningless;
+  (b)
   `clip=true` on any sample is an **immediate abort**, not a data point; (c)
   `agc_frozen=false` (iOS has historically ignored the constraint request)
   **degrades to the existing manual-lock UX** with a nudge and disables the

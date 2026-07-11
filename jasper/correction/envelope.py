@@ -41,6 +41,7 @@ right display points (the coupling note in
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 import numpy as np
@@ -457,6 +458,10 @@ def _nudges(session: Any) -> list[dict[str, str]]:
     """
     nudges: list[dict[str, str]] = []
     seen: set[str] = set()
+    level_nudge = _bounded_low_level_nudge(session)
+    if level_nudge is not None:
+        nudges.append(level_nudge)
+        seen.add(level_nudge["code"])
     report = getattr(session, "confidence_report", None)
     findings = report.get("findings") if isinstance(report, dict) else None
     if isinstance(findings, list):
@@ -495,6 +500,32 @@ def _nudges(session: Any) -> list[dict[str, str]]:
     if design_nudge is not None and design_nudge["code"] not in seen:
         nudges.append(design_nudge)
     return nudges
+
+
+def _bounded_low_level_nudge(session: Any) -> dict[str, str] | None:
+    """Surface a safe-but-quiet room level lock without blocking the sweep."""
+    level = _level_match_snapshot(session)
+    last = level.get("last") if isinstance(level, dict) else None
+    ramp = last.get("ramp") if isinstance(last, dict) else None
+    if not isinstance(ramp, dict) or ramp.get("lock_kind") != "bounded_low_level":
+        return None
+    shortfall = ramp.get("window_shortfall_db")
+    if (
+        not isinstance(shortfall, (int, float))
+        or isinstance(shortfall, bool)
+        or not math.isfinite(float(shortfall))
+        or float(shortfall) <= 0.0
+    ):
+        return None
+    return {
+        "code": "bounded_low_measurement_level",
+        "severity": "warn",
+        "text": (
+            "The microphone level is stable and safe but lower than preferred "
+            f"({float(shortfall):.1f} dB below the preferred window). JTS will "
+            "verify each sweep before using it."
+        ),
+    }
 
 
 def _crossover_region_nudge(session: Any) -> dict[str, str] | None:
