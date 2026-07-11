@@ -284,7 +284,7 @@ def route_latency_gate_status(
     if p95_ms is None:
         issues.append("p95_missing")
     elif p95_ms > ROUTE_LATENCY_P95_BUDGET_MS:
-        issues.append("p95_exceeds_40ms")
+        issues.append("p95_exceeds_48ms")
     if 95 not in certified:
         issues.append("p95_uncertified")
 

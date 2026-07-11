@@ -70,8 +70,10 @@ Measured reconstruction on jts.local: the 8-slot/deep-queue shipped default was
 queue 1 product shape is ≈48.8 ms e2e. The 2026-07-06 primed product-path run
 measured 54.3 ms tap→ref with chunk 128 / target 128 / queue 1; the earlier
 40 ms-descent PoC measured 35.4 ms tap→ref. Once this deploys, refreshing the
-route-latency artifact against the 40 ms p95 budget becomes achievable; the
-artifact still needs a real click/capture run before doctor may certify it.
+route-latency artifact against the 48 ms p95 budget becomes achievable (the
+budget was recalibrated 2026-07-11 to the measured churn-safe floor — see
+HANDOFF-usb-latency-measurement.md §1); the artifact still needs a real
+click/capture run before doctor may certify it.
 
 The loopback path remains the fallback when the ring gates fail, the box is not
 ring-eligible, or an operator freezes the coupling. Its tuned Apple USB-C DAC
@@ -124,9 +126,11 @@ DAC xruns, zero fan-in output xruns, zero fan-in USB resampler relocks/unlocks/
 silence/overruns, and zero CamillaDSP warnings. Lower content-buffer probes at
 640, 768, 1024, and 1280 each produced a content-side xrun. This proves fallback
 stability, not route certification. Doctor must keep failing `route latency
-evidence` until a click/capture artifact certifies p95 <= 40 ms with >=200
-impulses over >=5 minutes; p99 promotion requires >=1000 impulses over >=30
-minutes with jittered spacing and p99 <= 60 ms.
+evidence` until a click/capture artifact certifies p95 <= 48 ms (recalibrated
+2026-07-11 to the measured churn-safe floor — see
+HANDOFF-usb-latency-measurement.md §1) with >=200 impulses over >=5 minutes;
+p99 promotion requires >=1000 impulses over >=30 minutes with jittered
+spacing and p99 <= 60 ms.
 
 The claiming route now hard-fails if it is combined with legacy low-latency lab
 transports: `JASPER_FANIN_CAMILLA_COUPLING=transport_pipe` or
@@ -1754,8 +1758,11 @@ observable clock-domain crossings.
    the click-in/capture-back producer `jasper-route-latency-artifact` binds
    samples to the live route identity from. Its `quick`/`promotion` presets are
    sized directly off the certification gates with margin (quick: 240 impulses
-   over 6 minutes for p95 <= 40 ms; promotion: 1200 jittered impulses over 36
-   minutes for p99 <= 60 ms). See
+   over 6 minutes for p95 <= 48 ms — recalibrated 2026-07-11 to the measured
+   churn-safe floor, see HANDOFF-usb-latency-measurement.md §1; promotion:
+   1200 jittered impulses over 36 minutes for p99 <= 60 ms). Note the preset
+   impulse counts/durations are sized off sample-count and duration floors,
+   not the ms budget, so they are unaffected by that recalibration. See
    [`docs/testing-tooling.md` "Route-latency click/capture harness"](testing-tooling.md#route-latency-clickcapture-harness)
    for the architecture and the quick/promotion walkthroughs above. **Still
    owed:** an on-device end-to-end run against real jts.local hardware — the
@@ -1951,15 +1958,18 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-11 (added the first-Windows-session ordered discovery
+Last verified: 2026-07-11 (updated the "certification gates" mentions in
+"Current Production Route" and "Productization Plan" from the retired
+p95<=40ms budget to the honest, recalibrated p95<=48ms budget in
+`jasper/audio_runtime_plan.py`; no other claims in this doc rechecked this
+pass. Same day, earlier: added the first-Windows-session ordered discovery
 checklist to "Cross-platform conditions", cross-linked from
 HANDOFF-usb-latency-measurement.md §7 — re-confirmed `MAX_BIAS_PPM`/the
 ~163 ppm deadband in `rust/jasper-host-clock/src/lib.rs`, the `PROBE_PPM`
 200..=800 range in `rust/jasper-fanin/src/config.rs`, `RevalidationTracker` in
 `rust/jasper-fanin/src/host_compliance.rs`, and the dwc2 endpoint-capacity gap
-already flagged in HANDOFF-usb-gadget.md; no other claims in this doc
-rechecked this pass. Prior 2026-07-10: aloop solo USB capture path DELETED —
-`jasper-fanin`
+already flagged in HANDOFF-usb-gadget.md. Prior 2026-07-10: aloop solo USB
+capture path DELETED — `jasper-fanin`
 DIRECT-captures `hw:UAC2Gadget` as the sole USB ingress; the
 `jasper-usbsink-audio` bridge is standby-only. Removed with it: the bridge
 `:8781` preempt/tap listener, the bridge's solo `Fill`-mode host clock

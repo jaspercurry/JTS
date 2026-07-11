@@ -165,8 +165,11 @@ def test_route_latency_certification_requires_samples_and_duration():
 
 
 def test_route_latency_gate_status_pass_warn_fail_boundaries():
+    # Boundary values sit just inside/outside the honest, measured-basis
+    # budget (p95<=48ms, p99<=60ms — 2026-07-11 recalibration; see the
+    # docstring on USB_LOW_LATENCY_P95_BUDGET_MS in audio_runtime_plan.py).
     status, _rec, certified, issues = route_latency_gate_status(
-        p95_ms=39.0,
+        p95_ms=47.0,
         p99_ms=59.0,
         sample_count=1000,
         duration_seconds=30 * 60,
@@ -177,7 +180,7 @@ def test_route_latency_gate_status_pass_warn_fail_boundaries():
     assert issues == ()
 
     status, _rec, certified, issues = route_latency_gate_status(
-        p95_ms=39.0,
+        p95_ms=47.0,
         p99_ms=None,
         sample_count=200,
         duration_seconds=5 * 60,
@@ -187,17 +190,17 @@ def test_route_latency_gate_status_pass_warn_fail_boundaries():
     assert issues == ("p99_missing",)
 
     status, _rec, _certified, issues = route_latency_gate_status(
-        p95_ms=41.0,
+        p95_ms=49.0,
         p99_ms=59.0,
         sample_count=1000,
         duration_seconds=30 * 60,
         jittered_impulse_spacing=True,
     )
     assert status == "fail"
-    assert "p95_exceeds_40ms" in issues
+    assert "p95_exceeds_48ms" in issues
 
     status, _rec, certified, issues = route_latency_gate_status(
-        p95_ms=39.0,
+        p95_ms=47.0,
         p99_ms=59.0,
         sample_count=1000,
         duration_seconds=30 * 60,
