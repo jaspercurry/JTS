@@ -189,6 +189,41 @@ Parallel specialist agents, each sweeping the whole tree on one axis:
 - **Doc-vs-code drift** — take each load-bearing claim in the mapped canonical
   docs and **check it against the code**; stale `Last verified:` footers.
 
+### Phase 2.5 — Scenario-owned flow reviews (the cross-boundary lens)
+
+**Why this exists.** Phase 1 tiles the tree by file/subsystem and Phase 2 sweeps
+single axes. Both are blind, by construction, to bugs that live in the *seam
+between* files — a failure that is only visible when you follow one request
+across the process/authority/hardware boundaries it crosses. The 2026-07-11 run
+proved the gap: two real, same-day-fixed production bugs (a silent HTTP-200 on a
+polkit-denied unit toggle; a cargo-mtime staging trap shipping stale binaries)
+each sat in files that were opened and passed, because no tile owned the whole
+flow and no single-axis lens swept it.
+
+**The method.** Between the cross-cutting lenses (Phase 2) and adversarial
+verification (Phase 3), run a small set of **scenario agents**, each of which
+owns one end-to-end flow and follows the data/authority/control across every
+file and process it touches — explicitly ignoring tile boundaries. Each returns:
+the flow's happy path, every failure branch, and what happens at each boundary
+crossing (does an error surface, get swallowed, or lie?).
+
+Seed scenarios for JTS (adapt per tree):
+- **web request → restart broker → polkit → systemd** (does a denied privileged
+  action surface, or return 200 and lie?)
+- **install staging → compiler/build cache → deployed binary** (can a changed
+  source ship stale? mtime/hash freshness traps)
+- **renderer → fan-in → CamillaDSP → outputd → DAC** (sample-rate, gain-ceiling,
+  and single-writer invariants across the whole chain)
+- **measurement → volume coordinator → volume restoration** (races between a
+  measurement window and the reconciler)
+- **wake event → multi-speaker arbitration → exactly one responder** (winner
+  election under real concurrency)
+- **hardware disappears → daemon degrades → hardware returns → recovery** (does
+  every resource self-heal without operator intervention?)
+
+A scenario finding is weighted higher than a per-file finding: it is, by
+definition, the class the tiled read cannot catch.
+
 ### Phase 3 — Adversarial verification
 
 Every Phase 1–2 candidate goes to an independent skeptic that re-reads the
@@ -293,6 +328,18 @@ Every hit is a **suspect, not a verdict** — Phase 3 verification decides.
 5. Completeness-critic output (gaps / next round).
 6. A short, specific "what's genuinely strong" — earned, not flattering.
 
+**Immutable snapshot vs live ledger (do not mix them).** The Phase-4 report is a
+*frozen historical artifact*: findings with stable ids, evidence, and the
+completeness-critic verdict, pinned to the audited SHA + the re-verification
+date. It must NOT accumulate live status. Current disposition — open / fixed /
+mooted / deferred, the owning PR, and any required runtime validation — lives in
+a *separate ledger* keyed on the same stable finding ids. Two failure modes this
+prevents: (a) already-fixed findings continuing to read as active work; (b)
+private artifact links and local absolute paths leaking into a repo doc. Sanitize
+both: repo-relative paths only, no session/artifact URLs, no `\n`-escaped blobs
+pasted from a transcript (parse transcript JSONL properly — never string-read it
+into a committed file).
+
 ---
 
 ## Kickoff prompt (paste this to start)
@@ -378,4 +425,4 @@ agent count. This is the run-it-when-you're-done audit, not a per-PR check.
 
 ---
 
-Last verified: 2026-06-22
+Last verified: 2026-07-11
