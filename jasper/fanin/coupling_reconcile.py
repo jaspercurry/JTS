@@ -375,16 +375,17 @@ def _restart_fanin_coordinated(
     Ring B writer: outputd's reader is DAC-clocked -- an absent writer yields paced
     silence, not a busy-spin -- so only the camilla side needs coordination.)
 
-    LIMITATION: this only coordinates DELIBERATE Python-side fan-in restarts (the
+    SCOPE: this coordinates DELIBERATE Python-side fan-in restarts (the
     reconciler's own, plus out-of-module callers routed through
     :func:`coordinated_fanin_restart` — jasper.fanin.buffer_reconcile's
-    adaptive-buffer restart uses that entry point). An UNCOORDINATED fan-in death
-    (a crash / OOM-kill / an external ``systemctl restart jasper-fanin``) still
-    detaches the writer with camilla live and reproduces the spin/SIGKILL. The
-    root-cause fix is the ring-ioplug capture-reader pacing (it
-    must block, not busy-spin, when the writer is absent) -- landing separately in
-    ``c/jts-ring-ioplug/``. See ``docs/HANDOFF-usb-low-latency.md`` (USB DIRECT
-    combo section).
+    adaptive-buffer restart uses that entry point). Since the ring-ioplug
+    capture-reader pacing fix (PR #1271, ``c/jts-ring-ioplug/``), RTTIME safety
+    no longer depends on this coordination: an UNCOORDINATED fan-in death (a
+    crash / OOM-kill / an external ``systemctl restart jasper-fanin``) degrades
+    to <=2 s of paced silence while camilla blocks on the reader's timerfd —
+    no spin, no SIGKILL. The coordination is kept for the gap-free UX (a clean
+    camilla stop/start beats a silence window plus resync). See
+    ``docs/HANDOFF-usb-low-latency.md`` (USB DIRECT combo section).
     """
     if coupling == COUPLING_LOOPBACK:
         # snd-aloop decouples fan-in from camilla — a plain restart is safe.
@@ -447,7 +448,7 @@ def coordinated_fanin_restart(
     reason: str,
     *,
     phase: str,
-    env_path: str | Path = FANIN_ENV_PATH,
+    env_path: str | os.PathLike = FANIN_ENV_PATH,
 ) -> tuple[bool, str]:
     """CamillaDSP-coordinated fan-in restart for OUT-OF-MODULE callers. (ok, detail).
 
@@ -2441,7 +2442,7 @@ def _sync_process_env_for_emit(
         os.environ.pop(OUTPUTD_RING_SLOTS_ENV_VAR, None)
 
 
-def read_persisted_coupling(env_path: str | Path = FANIN_ENV_PATH) -> str:
+def read_persisted_coupling(env_path: str | os.PathLike = FANIN_ENV_PATH) -> str:
     """The coupling the daemons will read on their next start (resolved,
     fail-safe to loopback). Doctor + observability use this to compare the
     persisted intent against the live fan-in transport."""
