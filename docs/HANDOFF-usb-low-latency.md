@@ -1616,20 +1616,14 @@ the step then read `step_slope_ppm=-1397.6`, `response_ratio=-9.5` ⇒
 2.97) were the same contamination landing luckily inside the pass band. So the
 probe now opens in an **await-lock** wait, commanding neutral, and does not
 begin the baseline until the lane reports LOCKED AND that lock has held
-continuously for a 2 s settle. The two daemons map LOCKED differently by
-construction:
-- **fan-in (combo)**: resampler `locked_state`. The fan-in warmup ramp is a
-  genuine 0 → held-target fill climb that must complete before baselining, so a
-  live lock signal is the right gate.
-- **usbsink solo**: simply `playing` (settle-only). usbsink's only
-  start-of-session contaminant is the sub-second gadget-ring prime + one-time
-  capture-backlog slurp, which the 2 s settle covers. It is deliberately **NOT**
-  a live `fill >= target` gate: nothing steers the ring toward target while the
-  probe holds neutral (the DLL servo that pins fill only runs post-probe in L0),
-  so a host slower than our DAC keeps the ring at its underflow floor for the
-  whole session — a fill-level gate would leave the probe stuck in await-lock
-  forever and the feature silently inert. `fill_frames` is still published for
-  telemetry/the slope falsifier; it just does not gate the probe.
+continuously for a 2 s settle. LOCKED is the fan-in resampler's `locked_state`
+(`build_obs` in `rust/jasper-fanin/src/host_clock.rs` feeds it to the shared
+ladder as both `playing` and `locked`): the fan-in warmup ramp is a genuine
+0 → held-target fill climb that must complete before baselining, so a live
+lock signal is the right gate. (The deleted usbsink solo adapter instead
+mapped LOCKED to bare `playing` — a settle-only wait, deliberately not a
+fill-level gate, since nothing steered its gadget ring toward target while
+the probe held neutral; removed with the aloop solo path, 2026-07-10.)
 
 If the lane un-locks mid-baseline (or mid-step), the in-flight measurement is
 discarded and the wait restarts — a warmup re-entry is not a compliance
@@ -1965,7 +1959,12 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-11 (updated the "certification gates" mentions in
+Last verified: 2026-07-11 (de-staled the await-lock LOCKED-mapping passage in
+"The probe does NOT baseline at the session edge": its "two daemons map LOCKED
+differently" bullets still presented the deleted usbsink-solo settle-only
+(`playing`) gate as a live parallel branch to fan-in's `locked_state` — missed
+by the 2026-07-10 deletion sweep; now combo-only prose with a deleted-solo
+note. Same day, earlier: updated the "certification gates" mentions in
 "Current Production Route" and "Productization Plan" from the retired
 p95<=40ms budget to the honest, recalibrated p95<=48ms budget in
 `jasper/audio_runtime_plan.py`; no other claims in this doc rechecked this
