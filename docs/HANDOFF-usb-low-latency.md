@@ -297,6 +297,39 @@ is standby-only), so the one live arming literal is
 `JASPER_FANIN_USB_DIRECT=enabled`; anything else fails safe to the idle aloop
 fallback (`hw:Loopback,1,3`, unwritten → USB silent, no crash).
 
+#### Combo re-arm is CamillaDSP-coordinated (RTTIME-SIGKILL fix)
+
+A combo arm/disarm (the `/sources/` USB toggle, and the runtime-fallback disarm)
+whose coupling does not move takes the reconciler's confirm path and then forces a
+bare **fan-in restart** so the new combo takes effect. On a live ring/pipe coupling
+(`shm_ring` / `transport_pipe`) that bare restart was collaterally **SIGKILLing
+CamillaDSP**: camilladsp captures Ring A through the `jts_ring_capture` ioplug, and
+when fan-in's ring *writer* detaches the ioplug capture reader busy-spins ~100% of a
+core; camilladsp (`SCHED_FIFO`, `LimitRTTIME=200000` us in
+`jasper-camilla.service`) then hits the kernel `RLIMIT_RTTIME` hard SIGKILL
+~213 ms later → `Restart=always` start-limit → `OnFailure=jasper-camilla-recover`
+→ a full core-graph bounce (confirmed on jts.local by four timing fingerprints incl.
+a controlled repro). `jasper.fanin.coupling_reconcile._restart_fanin_coordinated`
+fixes this by **pausing CamillaDSP with a clean SIGTERM before** the fan-in restart
+and **resuming it after** fan-in is back up (the `Type=notify` blocking broker
+restart returns only once fan-in re-signals `READY=1`, so its ring writer is
+re-attached) — mirroring the fan-in → camilla order `deploy/bin/jasper-camilla-recover`
+already proves works. camilladsp then exits cleanly on SIGTERM: no start-limit, no
+OnFailure, no core-graph bounce — one intentional brief camilla restart replacing
+the kill cascade. Loopback keeps its plain restart (snd-aloop decouples the two).
+This uses the existing broker/polkit grants (`jasper-camilla.service` is already a
+`MANAGED_UNITS` member; `manage-units` covers stop/start) — no new grant.
+
+**LIMITATION — this only coordinates the reconciler's OWN fan-in restarts.** An
+*uncoordinated* fan-in death (a crash / OOM-kill / an external `systemctl restart
+jasper-fanin` — or `jasper.fanin.buffer_reconcile`'s adaptive-buffer fan-in
+restart, default-OFF behind `JASPER_FANIN_ADAPTIVE_BUFFER`, which must be
+coordinated or coupling-gated before that flag is enabled on a shm_ring box)
+still detaches the ring writer with camilla live and reproduces the
+spin/SIGKILL. The root-cause fix is the **ring-ioplug capture-reader pacing** — the
+reader must *block* (not busy-spin) when the writer is absent — a separate scheduled
+follow-up (`c/jts-ring-ioplug/`).
+
 ### Flag matrix (C6)
 
 > **Post-deletion (2026-07-10):** the bridge is standby-only, so

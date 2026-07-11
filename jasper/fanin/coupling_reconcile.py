@@ -119,6 +119,7 @@ USBSINK_ENV_PATH = "/var/lib/jasper/usbsink.env"
 FANIN_UNIT = "jasper-fanin.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 USBSINK_UNIT = "jasper-usbsink.service"
+CAMILLA_UNIT = "jasper-camilla.service"
 ACTIVE_LEADER_TRANSPORT_BLOCK_REASON = "active_leader_transport_pipe_coupling_unsupported"
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
@@ -183,8 +184,17 @@ class FaninRingSlotsResolution:
     error: str = ""
 
 
-def _restart_unit(unit: str, *, reason: str, timeout: float) -> tuple[bool, str]:
-    """Restart a systemd unit through the broker. (ok, detail).
+def _restart_unit(
+    unit: str, *, verb: str = "restart", reason: str, timeout: float
+) -> tuple[bool, str]:
+    """Drive a systemd unit through the broker with a closed verb. (ok, detail).
+
+    ``verb`` is one of the broker's fixed vocabulary (``restart`` / ``stop`` /
+    ``start`` / ...); ``no_block=False`` so the call returns only after systemd
+    reports the transition complete — for a ``Type=notify`` unit like jasper-fanin
+    that means the daemon has re-signalled ``READY=1`` (its ring/pipe writer is
+    re-attached), which is the "wait for fan-in up" step the camilla coordination
+    below relies on.
 
     Guarded lazy import (mirrors buffer_reconcile SF-2): a missing/broken
     control package degrades to a reported failure, never an exception out of
@@ -195,7 +205,7 @@ def _restart_unit(unit: str, *, reason: str, timeout: float) -> tuple[bool, str]
     except ImportError as e:  # pragma: no cover - control pkg always present in prod
         return False, f"restart_broker unavailable: {e}"
     resp = restart_broker.manage_units(
-        unit, verb="restart", reason=reason, no_block=False, timeout=timeout,
+        unit, verb=verb, reason=reason, no_block=False, timeout=timeout,
     )
     if resp.get("ok"):
         return True, ""
@@ -205,6 +215,29 @@ def _restart_unit(unit: str, *, reason: str, timeout: float) -> tuple[bool, str]
 def _restart_fanin(reason: str) -> tuple[bool, str]:
     """Restart jasper-fanin through the broker. (ok, detail)."""
     return _restart_unit(FANIN_UNIT, reason=reason, timeout=8.0)
+
+
+def _stop_camilla(reason: str) -> tuple[bool, str]:
+    """Stop jasper-camilla through the broker. (ok, detail).
+
+    Used to pause CamillaDSP with a clean SIGTERM BEFORE a coordinated fan-in
+    restart so it exits cleanly instead of hitting the RLIMIT_RTTIME SIGKILL its
+    ring-ioplug capture reader triggers when fan-in's writer detaches (see
+    :func:`_restart_fanin_coordinated`). ``jasper-camilla.service`` is already a
+    broker ``MANAGED_UNITS`` member (and polkit-granted for ``manage-units``, which
+    covers stop/start) — no new grant is needed for this.
+    """
+    return _restart_unit(CAMILLA_UNIT, verb="stop", reason=reason, timeout=8.0)
+
+
+def _start_camilla(reason: str) -> tuple[bool, str]:
+    """Start jasper-camilla through the broker after fan-in is back up. (ok, detail).
+
+    Mirrors the fan-in -> camilla order ``jasper-camilla-recover`` already proves
+    works: fan-in's ring/pipe writer must be re-attached before CamillaDSP re-opens
+    its capture, so this runs AFTER the ``Type=notify`` fan-in restart has returned.
+    """
+    return _restart_unit(CAMILLA_UNIT, verb="start", reason=reason, timeout=8.0)
 
 
 def _restart_outputd(reason: str) -> tuple[bool, str]:
@@ -261,6 +294,139 @@ def _reconcile_camilla(coupling: str, *, reason: str) -> tuple[bool, str]:
     ):
         return True, str(status)
     return False, str(payload.get("reason") or status or "unknown")
+
+
+@dataclass(frozen=True)
+class _CoordinatedFaninRestart:
+    """Outcome of a CamillaDSP-coordinated fan-in restart.
+
+    ``fanin_restarted`` is whether fan-in actually restarted; ``coordinated`` is
+    whether camilla was paused/resumed around it (False on loopback, where the
+    coordination is skipped). ``camilla_stopped`` / ``camilla_started`` record the
+    pause/resume outcomes for the log + result. ``ok`` is True only when every step
+    the chosen path needed succeeded.
+    """
+
+    ok: bool
+    fanin_restarted: bool
+    coordinated: bool
+    camilla_stopped: bool
+    camilla_started: bool
+    detail: str = ""
+
+
+def _restart_fanin_coordinated(
+    do_restart: DaemonOp,
+    do_stop_camilla: DaemonOp,
+    do_start_camilla: DaemonOp,
+    *,
+    coupling: str,
+    reason: str,
+    phase: str,
+) -> _CoordinatedFaninRestart:
+    """Restart fan-in without collaterally SIGKILLing CamillaDSP.
+
+    THE BUG (evidence-confirmed on jts.local, four timing fingerprints incl. a
+    controlled repro): while a fan-in-written ring/pipe coupling is live
+    (``shm_ring`` / ``transport_pipe``), CamillaDSP captures the transport via the
+    ``jts_ring_capture`` ioplug. A bare fan-in *process* restart detaches the ring
+    WRITER; the ioplug capture reader then busy-spins ~100% of a core, and
+    camilladsp (``SCHED_FIFO``, ``LimitRTTIME=200000`` us in
+    ``jasper-camilla.service``) hits the kernel ``RLIMIT_RTTIME`` hard SIGKILL
+    ~213 ms later -> ``Restart=always`` start-limit -> ``OnFailure=
+    jasper-camilla-recover`` -> a full core-graph bounce.
+
+    So this pauses CamillaDSP with a clean SIGTERM FIRST, restarts fan-in, waits
+    for it to come back (the ``Type=notify`` blocking broker restart returns only
+    after fan-in re-attaches its ring writer + ``sd_notify`` READY=1 — that is the
+    "wait fan-in up" step), then resumes CamillaDSP -- mirroring the fan-in ->
+    camilla order ``deploy/bin/jasper-camilla-recover`` already proves works.
+    camilladsp then exits cleanly on SIGTERM instead of an RTTIME-SIGKILL: no
+    start-limit, no OnFailure, no core-graph bounce -- one intentional brief camilla
+    restart replacing today's kill cascade.
+
+    On LOOPBACK the coupling keeps a snd-aloop buffer between fan-in and CamillaDSP,
+    so a fan-in restart does NOT spin the ioplug (camilla reads silence from the
+    loopback, not a detached ring). The coordination is skipped there
+    (``coupling == loopback``) so an ordinary loopback combo toggle keeps its single
+    lightweight fan-in restart with no camilla glitch.
+
+    FAILURE HONESTY: if CamillaDSP cannot be STOPPED it may still be running on the
+    ring, so we do NOT restart fan-in (restarting it is exactly what SIGKILLs a
+    running camilla) -- we ensure camilla is running (a ``start`` is a no-op if it
+    never stopped) and abort, ``ok=False``. If the fan-in restart fails AFTER camilla
+    was stopped, we STILL start camilla back -- never leave the DSP stopped forever
+    (the chosen safe direction). Either way ``OnFailure=jasper-camilla-recover``
+    stays the backstop for a resume that also fails; nothing here disables it.
+
+    (Stopping camilla is safe for jasper-outputd even though camilla is outputd's
+    Ring B writer: outputd's reader is DAC-clocked -- an absent writer yields paced
+    silence, not a busy-spin -- so only the camilla side needs coordination.)
+
+    LIMITATION: this only coordinates the reconciler's OWN fan-in restarts. An
+    UNCOORDINATED fan-in death (a crash / OOM-kill / an external ``systemctl restart
+    jasper-fanin`` / jasper.fanin.buffer_reconcile's adaptive-buffer restart, which
+    is default-OFF behind JASPER_FANIN_ADAPTIVE_BUFFER and must be coordinated or
+    coupling-gated before that flag is enabled on a shm_ring box) still detaches
+    the writer with camilla live and reproduces the spin/SIGKILL. The root-cause fix is the ring-ioplug capture-reader pacing (it
+    must block, not busy-spin, when the writer is absent) -- a separate scheduled
+    follow-up. See ``docs/HANDOFF-usb-low-latency.md`` (USB DIRECT combo section).
+    """
+    if coupling == COUPLING_LOOPBACK:
+        # snd-aloop decouples fan-in from camilla — a plain restart is safe.
+        fan_ok, fan_detail = do_restart()
+        return _CoordinatedFaninRestart(
+            ok=fan_ok, fanin_restarted=fan_ok, coordinated=False,
+            camilla_stopped=False, camilla_started=False, detail=fan_detail,
+        )
+
+    stop_ok, stop_detail = do_stop_camilla()
+    if not stop_ok:
+        # Camilla could not be paused -> it may still be on the ring. Do NOT restart
+        # fan-in (that is what SIGKILLs it). Ensure camilla is running and abort.
+        start_ok, start_detail = do_start_camilla()
+        log_event(
+            logger, "fanin.coupling_reconcile", result="camilla_pause_failed",
+            reason=reason, phase=phase, coupling=coupling,
+            detail=stop_detail or None, camilla_started=start_ok,
+            level=logging.WARNING,
+        )
+        return _CoordinatedFaninRestart(
+            ok=False, fanin_restarted=False, coordinated=True,
+            camilla_stopped=False, camilla_started=start_ok,
+            detail=(
+                f"camilla pause failed ({stop_detail}); aborted fan-in restart to "
+                "avoid an RTTIME-SIGKILL of a running CamillaDSP"
+                + ("" if start_ok else f"; camilla start-back failed ({start_detail})")
+            ),
+        )
+
+    log_event(
+        logger, "fanin.coupling_reconcile", result="camilla_paused_for_fanin_restart",
+        reason=reason, phase=phase, coupling=coupling,
+    )
+    fan_ok, fan_detail = do_restart()
+    # ALWAYS resume camilla, even if the fan-in restart failed -- never leave the DSP
+    # stopped forever (OnFailure/recover is the backstop if this resume also fails).
+    start_ok, start_detail = do_start_camilla()
+    log_event(
+        logger, "fanin.coupling_reconcile",
+        result="camilla_resumed_after_fanin_restart" if start_ok
+        else "camilla_resume_failed",
+        reason=reason, phase=phase, coupling=coupling,
+        fanin_restarted=fan_ok, detail=start_detail or None,
+        level=logging.INFO if start_ok else logging.WARNING,
+    )
+    detail = "; ".join(
+        d for d in (
+            "" if fan_ok else f"fan-in restart failed ({fan_detail})",
+            "" if start_ok else f"camilla resume failed ({start_detail})",
+        ) if d
+    )
+    return _CoordinatedFaninRestart(
+        ok=fan_ok and start_ok, fanin_restarted=fan_ok, coordinated=True,
+        camilla_stopped=True, camilla_started=start_ok, detail=detail,
+    )
 
 
 def reconcile_coupling(
@@ -572,6 +738,8 @@ def reconcile_auto(
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
     restart_usbsink: "DaemonOp | None" = None,
+    stop_camilla: "DaemonOp | None" = None,
+    start_camilla: "DaemonOp | None" = None,
     reconcile_camilla=None,
     active_leader_check: "Callable[[], bool] | None" = None,
 ) -> AutoResult:
@@ -610,14 +778,19 @@ def reconcile_auto(
        longer guards a gadget-capture race, because the standby-only bridge never
        opens ``hw:UAC2Gadget`` — fan-in's DIRECT capture is the sole gadget owner. A
        combo-only change that took the no-bounce confirm path also issues one extra
-       fan-in restart.
+       fan-in restart — and on a live ring/pipe coupling (``shm_ring`` /
+       ``transport_pipe``) that restart is CamillaDSP-coordinated
+       (:func:`_restart_fanin_coordinated`): camilla is paused before, resumed after,
+       so the fan-in restart can't RTTIME-SIGKILL it. On loopback the plain restart
+       is kept (snd-aloop decouples the two).
 
     NO-OP on an ineligible / fanin-less box: jts3 (roleful) / jts5 (composite)
     resolve loopback with the combo off (no gadget intent) and converge with zero
     churn; jts4 (streambox, no fan-in stack) sees the coupling reconcile no-op.
-    ``gadget_present`` / ``usb_intent_enabled`` / ``restart_*`` / ``reconcile_camilla``
-    / ``active_leader_check`` are injectable for tests; ``gadget_present=None`` reads
-    the live boot config and ``usb_intent_enabled=None`` reads the live unit state.
+    ``gadget_present`` / ``usb_intent_enabled`` / ``restart_*`` / ``stop_camilla`` /
+    ``start_camilla`` / ``reconcile_camilla`` / ``active_leader_check`` are injectable
+    for tests; ``gadget_present=None`` reads the live boot config and
+    ``usb_intent_enabled=None`` reads the live unit state.
     """
     from jasper.fanin.combo_health import fallback_active as read_fallback_active
     from jasper.fanin.coupling_auto import (
@@ -804,20 +977,32 @@ def reconcile_auto(
 
     # If the fan-in combo changed but the coupling reconcile did NOT restart fan-in
     # (a combo-only change on an already-at-desired-coupling box takes the no-bounce
-    # confirm path), the new combo won't be live until fan-in restarts. Issue one.
+    # confirm path), the new combo won't be live until fan-in restarts. Issue one —
+    # CamillaDSP-coordinated when a ring/pipe coupling is live so it can't RTTIME-
+    # SIGKILL camilla (see _restart_fanin_coordinated). This is the combo-arm,
+    # combo-disarm, AND runtime-fallback-disarm restart (all funnel here). The
+    # active coupling is re-read from the just-written fanin.env so a block-forced
+    # loopback is honoured (skip the pause) even when decision.coupling was shm_ring.
     restarted_for_combo = False
     if apply and combo_changed and not coupling_result.restarted_fanin:
         do_restart = restart_fanin or (lambda: _restart_fanin(reason=reason))
-        fan_ok, fan_detail = do_restart()
-        restarted_for_combo = fan_ok
+        do_stop_camilla = stop_camilla or (lambda: _stop_camilla(reason=reason))
+        do_start_camilla = start_camilla or (lambda: _start_camilla(reason=reason))
+        active_coupling = read_persisted_coupling(env_path)
+        coord = _restart_fanin_coordinated(
+            do_restart, do_stop_camilla, do_start_camilla,
+            coupling=active_coupling, reason=reason, phase="auto_usb_combo",
+        )
+        restarted_for_combo = coord.fanin_restarted
         log_event(
             logger, "fanin.coupling_reconcile",
-            result="auto_usb_combo_fanin_restarted" if fan_ok
+            result="auto_usb_combo_fanin_restarted" if coord.ok
             else "auto_usb_combo_fanin_restart_failed",
-            reason=reason, detail=fan_detail or None,
-            level=logging.INFO if fan_ok else logging.WARNING,
+            reason=reason, coupling=active_coupling,
+            camilla_coordinated=coord.coordinated, detail=coord.detail or None,
+            level=logging.INFO if coord.ok else logging.WARNING,
         )
-        if not fan_ok:
+        if not coord.ok:
             return AutoResult(
                 ok=False, owned=True, coupling=decision.coupling,
                 gadget_present=gadget, usb_intent_enabled=usb_intent,
@@ -825,8 +1010,9 @@ def reconcile_auto(
                 fallback_active=decision.fallback_active,
                 usb_combo_changed=combo_changed,
                 usbsink_standby_changed=standby_changed, reason=decision.reason,
-                coupling_result=coupling_result, restarted_fanin_for_combo=False,
-                restarted_usbsink=restarted_usbsink, detail=fan_detail,
+                coupling_result=coupling_result,
+                restarted_fanin_for_combo=restarted_for_combo,
+                restarted_usbsink=restarted_usbsink, detail=coord.detail,
             )
 
     # Step 4c — on DISARM, if the standby key changed, restart usbsink so it re-reads
