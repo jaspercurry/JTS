@@ -610,12 +610,24 @@ impl RevalidationTracker {
                 ladder_l2,
             });
 
-            // (2) EarlyUnlock CHURN discriminator. The arming window spans the
-            // primed lock's first `early_window_periods` render periods AND its
-            // immediate lock-loss period (the falling edge), where the underfill
-            // unlock that ended the lock lands.
+            // (2) EarlyUnlock CHURN discriminator. A strike ARMS only on the
+            // FALLING edge (`unlock_for_underfill` bumps `unlock_count` in the same
+            // period it sets `locked=false`, so the churn evidence lives on the
+            // lock-loss period), and only when that falling edge lands within the
+            // primed lock's first `early_window_periods` render periods. The gate is
+            // `falling_edge`, NOT `locked || falling_edge`: during a genuinely-locked
+            // period `unlock_advanced` is always false (unlock_count == baseline
+            // until the lock drops), so the `locked ||` disjunct never enabled a
+            // real arm — its ONLY effect was the phantom re-arm this fixes. A fresh
+            // rising edge reads `periods_since_lock` / `unlock_baseline_at_lock` from
+            // the PRIOR lock (both reset later, at (3)); under `locked ||`, a prior
+            // lock whose strike armed-then-expired would re-arm a phantom strike on
+            // the next lock's rising edge (stale window still open, the prior lock's
+            // terminal unlock still above the stale baseline), letting a later
+            // genuine churn cycle fail to confirm — an under-detection of real host
+            // non-compliance.
             let within_early_window =
-                (locked || falling_edge) && self.periods_since_lock <= self.early_window_periods;
+                falling_edge && self.periods_since_lock <= self.early_window_periods;
             let unlock_advanced = unlock_count > self.unlock_baseline_at_lock;
 
             // CONFIRM first: a relock (rising edge) while a strike is armed within
@@ -1623,6 +1635,53 @@ mod tests {
             "a relock just outside the confirmation horizon must not revoke"
         );
         assert!(relock.rising_edge);
+    }
+
+    #[test]
+    fn tracker_expired_strike_does_not_phantom_rearm_on_next_lock() {
+        // DA-0041 REGRESSION: Lock A arms an early-window strike that then EXPIRES
+        // with no relock (terminal stream end). Lock B's fresh rising edge must NOT
+        // re-arm a phantom strike off Lock A's stale `periods_since_lock` /
+        // `unlock_baseline_at_lock` (both are only reset AFTER the revalidation read,
+        // in the same step). The bug was the `locked ||` disjunct in
+        // `within_early_window`: on Lock B's rising edge `locked==true`, the stale
+        // window was still open, and Lock A's terminal unlock still sat above the
+        // stale baseline, so the ARM predicate fired against dead state. That phantom
+        // strike could later swallow Lock B's own genuine churn cycle (the inherited
+        // clock expires before the real relock), under-detecting real host
+        // non-compliance.
+        let mut t = primed_tracker();
+        // Lock A: settle, then an underfill unlock arms a strike inside the window.
+        for _ in 0..3 {
+            let (l, u, p, l2) = ok_lock(0);
+            assert_eq!(t.step(l, u, p, l2, true).revoke, None);
+        }
+        assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        assert!(
+            t.pending_strike_armed(),
+            "Lock A's underfill armed a strike"
+        );
+        // No relock: the strike expires one period past the confirmation horizon.
+        for _ in 0..CONFIRM {
+            assert_eq!(t.step(false, 1, 1, false, true).revoke, None);
+        }
+        assert!(
+            !t.pending_strike_armed(),
+            "Lock A's strike expired with no relock"
+        );
+        // Lock B: a genuinely-fresh rising edge (unlock_count unchanged from A's
+        // terminal). It must neither revoke nor RE-ARM a phantom strike.
+        let relock = t.step(true, 1, 1, false, true);
+        assert_eq!(
+            relock.revoke, None,
+            "a fresh lock after an expired strike must not revoke"
+        );
+        assert!(relock.rising_edge);
+        assert!(
+            !t.pending_strike_armed(),
+            "the fresh lock's rising edge must NOT phantom-re-arm off the prior \
+             lock's stale window/baseline (DA-0041)"
+        );
     }
 
     #[test]
