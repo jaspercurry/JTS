@@ -310,7 +310,10 @@ This uses the existing broker/polkit grants (`jasper-camilla.service` is already
 
 **LIMITATION — this only coordinates the reconciler's OWN fan-in restarts.** An
 *uncoordinated* fan-in death (a crash / OOM-kill / an external `systemctl restart
-jasper-fanin`) still detaches the ring writer with camilla live and reproduces the
+jasper-fanin` — or `jasper.fanin.buffer_reconcile`'s adaptive-buffer fan-in
+restart, default-OFF behind `JASPER_FANIN_ADAPTIVE_BUFFER`, which must be
+coordinated or coupling-gated before that flag is enabled on a shm_ring box)
+still detaches the ring writer with camilla live and reproduces the
 spin/SIGKILL. The root-cause fix is the **ring-ioplug capture-reader pacing** — the
 reader must *block* (not busy-spin) when the writer is absent — a separate scheduled
 follow-up (`c/jts-ring-ioplug/`).

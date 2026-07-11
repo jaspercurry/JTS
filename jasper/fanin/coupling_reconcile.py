@@ -359,10 +359,16 @@ def _restart_fanin_coordinated(
     (the chosen safe direction). Either way ``OnFailure=jasper-camilla-recover``
     stays the backstop for a resume that also fails; nothing here disables it.
 
+    (Stopping camilla is safe for jasper-outputd even though camilla is outputd's
+    Ring B writer: outputd's reader is DAC-clocked -- an absent writer yields paced
+    silence, not a busy-spin -- so only the camilla side needs coordination.)
+
     LIMITATION: this only coordinates the reconciler's OWN fan-in restarts. An
     UNCOORDINATED fan-in death (a crash / OOM-kill / an external ``systemctl restart
-    jasper-fanin``) still detaches the writer with camilla live and reproduces the
-    spin/SIGKILL. The root-cause fix is the ring-ioplug capture-reader pacing (it
+    jasper-fanin`` / jasper.fanin.buffer_reconcile's adaptive-buffer restart, which
+    is default-OFF behind JASPER_FANIN_ADAPTIVE_BUFFER and must be coordinated or
+    coupling-gated before that flag is enabled on a shm_ring box) still detaches
+    the writer with camilla live and reproduces the spin/SIGKILL. The root-cause fix is the ring-ioplug capture-reader pacing (it
     must block, not busy-spin, when the writer is absent) -- a separate scheduled
     follow-up. See ``docs/HANDOFF-usb-low-latency.md`` (USB DIRECT combo section).
     """
