@@ -193,8 +193,9 @@
   Relay room level setup temporarily suspends the local browser's 120-second
   upload watchdog while the human completes mic permission, calibration,
   placement, and auto-level, then restores a fresh bound for the actual room
-  capture. The level page returns directly to `/correction/room/` for the sweep
-  step.
+  capture. Every room-relay completion page (level, position sweep, and verify)
+  returns directly to `/correction/room/`; `/correction/` remains only the
+  legacy local-microphone preflight.
 - 🧪 **Phone-mic capture relay path (fresh-install default,
   on-device-pending).** As of 2026-07-02 fresh installs default to an
   alternative capture transport that moves the room capture setup/recording page
@@ -228,7 +229,7 @@
   Pi publishes `sweep_complete` through the relay. The Pi also includes a
   local `return_url` in each relay spec, so once the phone upload finishes the
   capture page shows a **Back to speaker** CTA to the originating local
-  management page (for example `http://jts5.local/correction/`). The live
+  management page (for example `http://jts5.local/correction/room/`). The live
   `getUserMedia`/CSP/Wake-Lock path + the adapter's background sweep playback
   still need on-device validation. Single source of truth for the design,
   deploy, and remaining work:

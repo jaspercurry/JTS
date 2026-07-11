@@ -153,6 +153,7 @@ _relay_capture: dict[str, Any] | None = None
 # Bound the foreground relay registration so a slow/unreachable relay fails fast
 # rather than hanging the request thread for RelayClient's 15 s default.
 _RELAY_REGISTER_TIMEOUT_S = 10.0
+_ROOM_RELAY_RETURN_PATH = "/correction/room/"
 # Require a short rolling ambient window before the Pi starts the level tone.
 # A single USB-mic startup block is too noisy to become the trust-floor SSOT;
 # ten 200 ms samples gives a stable two-second median while keeping setup
@@ -2480,7 +2481,7 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     relay = _run_relay_capture(
         kind,
         relay_base,
-        return_url=_request_local_return_url(handler, "/correction/"),
+        return_url=_request_local_return_url(handler, _ROOM_RELAY_RETURN_PATH),
     )
     return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
 
@@ -2612,7 +2613,7 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             run_and_consume=_run_and_consume,
         ),
         relay_base,
-        return_url=_request_local_return_url(handler, "/correction/"),
+        return_url=_request_local_return_url(handler, _ROOM_RELAY_RETURN_PATH),
     )
     return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
 
@@ -3119,7 +3120,7 @@ def _handle_relay_level_match(handler: BaseHTTPRequestHandler) -> dict[str, Any]
     relay = _run_relay_capture(
         RelayCaptureKind(label="level_ramp:room", open=_open, run_and_consume=_run),
         relay_base,
-        return_url=_request_local_return_url(handler, "/correction/room/"),
+        return_url=_request_local_return_url(handler, _ROOM_RELAY_RETURN_PATH),
     )
     return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
 

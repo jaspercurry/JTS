@@ -277,6 +277,51 @@ def test_room_level_match_returns_to_relay_native_room_page(monkeypatch):
     assert lifecycle == ["suspend", "resume"]
 
 
+def test_room_sweep_and_verify_return_to_relay_native_room_page(monkeypatch):
+    from jasper.correction.session import SessionState
+
+    session = SimpleNamespace(
+        session_id="room-session",
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+        current_position=0,
+        total_positions=1,
+        input_device={"label": "UMIK-2"},
+        mic_calibration=None,
+        level_match_snapshot=lambda: {"last": {"ramp": {"state": "locked"}}},
+    )
+    seen = []
+    monkeypatch.setattr(
+        correction_setup,
+        "_require_relay_base",
+        lambda: "https://relay.jasper.tech",
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
+
+    def fake_run(kind, relay_base, *, return_url):
+        seen.append((kind.label, relay_base, return_url))
+        return {"tap_link": "https://capture.jasper.tech/#redacted"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
+    handler = SimpleNamespace(headers={"Host": "jts3.local"})
+
+    correction_setup._handle_relay_capture(handler)
+    session.state = SessionState.APPLIED
+    correction_setup._handle_relay_verify(handler)
+
+    assert seen == [
+        (
+            "room_sweep",
+            "https://relay.jasper.tech",
+            "http://jts3.local/correction/room/",
+        ),
+        (
+            "room_verify",
+            "https://relay.jasper.tech",
+            "http://jts3.local/correction/room/",
+        ),
+    ]
+
+
 def test_render_page_delegates_correction_when_bonded_follower(monkeypatch):
     monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
     monkeypatch.setattr(
