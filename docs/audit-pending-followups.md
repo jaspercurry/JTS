@@ -80,12 +80,13 @@ barge-in.
 
 ### Lower wake refractory from 5 s → 2-3 s
 
-`WAKE_REFRACTORY_SEC = 5.0`. Mature open-source projects cluster around
-2-3 s. Our 5 s value is defensive against TTS playback tail bleed —
-without AEC, dropping to 3 s would cause more music/TTS-tail false
-fires. With working AEC the bleed is cancelled and a shorter refractory
-is fine. The comment block in `voice_daemon.py:WAKE_REFRACTORY_SEC`
-already calls out this dependency.
+**Done — overshot the target.** `WAKE_REFRACTORY_SEC` was 5.0 when this
+entry was written; the value has since dropped through 0.7 s (May 2026)
+to the current 0.2 s, well past the 2-3 s this entry proposed. The
+comment block above `WAKE_REFRACTORY_SEC` in `voice_daemon.py` traces
+the full 5 s → 10 s → 0.7 s → 0.2 s history and why each step was safe
+once the TtsPlayout drain primitive started anchoring turn-end on
+samples actually queued.
 
 ### Multi-trigger ducking (wake / listening / TTS playback)
 
@@ -430,9 +431,12 @@ slow generation day.
 Specifically, OpenAI sends a chain of intermediate events between
 the daemon's `response.create` and the first `response.output_audio.delta`
 — `response.created`, `response.output_item.added`,
-`response.content_part.added`, transcript deltas — and the daemon
-currently dispatches them but **does not** advance the idle anchor on
-them. So on a slow-generation day, the WebSocket is alive and
+`response.content_part.added` — and the daemon currently dispatches
+most of them but **does not** advance the idle anchor on them.
+(Transcript-delta events are no longer in this gap: commit `51289cfd`,
+2026-06-05, added a `_note_activity()` call to
+`_on_assistant_text_delta`.) So on a slow-generation day, the WebSocket
+is alive and
 actively receiving server events, but `last_activity_at` hasn't
 moved since turn-start. At a tight timeout (the prod-pre-#187
 case of 10 s) the watchdog fires mid-flight even though the server
@@ -517,3 +521,7 @@ state machine + test coverage of each phase + per-provider event
 mapping. C is ~20 LOC of config plumbing. None are urgent. If
 production data ever points at the bug, A first; only escalate to
 B if A's "any event resets" turns out too coarse.
+
+---
+
+Last verified: 2026-07-11

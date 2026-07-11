@@ -44,9 +44,11 @@ DEFAULT_TIMEOUT_SEC = 60.0
 # a runaway response to ~$0.025 at list rates. Shared by the paid
 # /correction/ endpoints and the live harness so the two cannot drift.
 TUNING_LLM_MAX_OUTPUT_TOKENS = 2500
-# Model-facing cap on a proposed correction filter set — the widest
-# shipped strategy's max_filters. The deterministic validator re-checks
-# against the ACTIVE strategy's (possibly tighter) cap.
+# Model-facing cap on a proposed correction filter set — the default
+# ("balanced") shipped strategy's max_filters, NOT the widest ("assertive"
+# ships max_filters=8). The deterministic validator re-checks against the
+# ACTIVE strategy's cap, so a household on "assertive" is under-capped
+# here relative to what apply-time would actually allow.
 _CORRECTION_PEQ_MAX_ITEMS = 5
 
 Transport = Callable[[str, Mapping[str, str], bytes, float], tuple[int, bytes]]

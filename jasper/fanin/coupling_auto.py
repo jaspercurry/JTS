@@ -122,7 +122,9 @@ USB_COMBO_ENV_VARS = (USB_DIRECT_ENV_VAR, HOST_CLOCK_ENV_VAR, CUSHION_DECAY_ENV_
 USBSINK_STANDBY_ENV_VAR = "JASPER_USBSINK_AUDIO_STANDBY"
 USBSINK_STANDBY_ON_VALUE = "1"
 # usbsink.env — where the standby key is written (jasper-usbsink.service's own
-# EnvironmentFile). Reused from the daemon-owned constant so the two never drift.
+# EnvironmentFile). Independently declared here and in
+# jasper.fanin.coupling_reconcile; kept from drifting by
+# test_usbsink_env_path_agrees_between_coupling_writers, not by import.
 USBSINK_ENV_PATH = "/var/lib/jasper/usbsink.env"
 
 # The USB gadget-stack presence signal: the dtoverlay that puts the Pi's USB-C

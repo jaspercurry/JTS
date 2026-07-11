@@ -21,7 +21,10 @@ Module layout:
   - roles.py        /var/lib/jasper/bt_roles.json — minimal persistence
                     of {mac: handler_id} so a re-connecting device gets
                     routed back to the right place
-  - handlers/       per-class behaviour (HID / A2DP-sink / GATT / default)
+  - avrcp.py        AVRCP transport controls (play/pause/next/etc.) for
+                    connected A2DP-sink devices
+  - handlers/       per-class behaviour (HID / A2DP-sink / default —
+                    GATT-only peripherals fall through to default)
 
 The web layer (jasper.web.bluetooth_setup) is a thin HTTP+SSE shell on
 top of this — all bluez talk happens here.

@@ -1553,7 +1553,14 @@ Recording-day audit tooling:
 - −1b (Tang 2020 verification): DONE 2026-05-25. Findings folded
   into Phase 1c. See v4 changelog entry.
 
-**Phase 0a (offline harness): not started.** Gated on Phase −1.
+**Phase 0a (offline harness): scoring + review shipped, AEC
+process() extraction still open.** `jasper-wake-score` (scoring
+runner over a pre-recorded corpus) and `jasper-wake-review`
+(listening-review package builder) are built and tested (PR #306).
+The callable `(raw_mic_pcm, ref_pcm, aec_config) → processed_pcm`
+extraction from `jasper-aec-bridge`'s engine internals — the piece
+that would let the harness reprocess raw captures through arbitrary
+AEC configs offline — has not been built.
 
 **Phase 0b (gold corpus capture): tooling READY, recording PENDING.**
 Multiple 2026-05-27/28 tuning pilots are recorded and useful as

@@ -217,9 +217,9 @@ def default_token_path_for(name: str) -> str:
 
 def save_token(token_path: str, *, refresh_token: str, scopes: list[str] | None = None,
                token_uri: str = GOOGLE_TOKEN_URI) -> None:
-    """Persist a token JSON at mode 0600. Refuses to write a payload
-    without a refresh_token — that's the only field that's actually
-    durable, and a file without it is useless to load_credentials."""
+    """Persist a token JSON at mode 0640 (group-readable). Refuses to write
+    a payload without a refresh_token — that's the only field that's
+    actually durable, and a file without it is useless to load_credentials."""
     if not refresh_token:
         raise ValueError("refusing to save token without a refresh_token")
     payload = {

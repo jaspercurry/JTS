@@ -289,8 +289,13 @@ def reconcile_coupling(
     - DISARM (-> loopback): reconcile camilla, restart fan-in, then restart
       outputd. A camilla failure still proceeds to both restarts and reports
       ``ok=False``.
-    - CONFIRM (env already at desired): re-run only the camilla reconcile to
-      self-heal a drifted loaded config, WITHOUT bouncing fan-in.
+    - CONFIRM (env already at desired): on the happy path, re-run only the
+      camilla reconcile to self-heal a drifted loaded config, WITHOUT
+      bouncing fan-in. Two exceptions still bounce: an incoherent shm_ring
+      box (stale ring slots/files) escalates to the full ``_arm_ring``
+      ordered bounce; and for ``transport_pipe``, a failed activation gate
+      (``_run_transport_pipe_gate``) recovers to loopback, which also
+      bounces fan-in and outputd.
 
     ``apply=False`` writes the env only (no daemon ops) — for staging/migration.
     ``mark_operator_choice=True`` (the explicit CLI/HTTP paths) additionally stamps
@@ -1443,9 +1448,11 @@ def ring_geometry_ready(outputd_text: str) -> tuple[bool, str]:
 
     match = ring_geometry_matches_outputd(_resolved_outputd_period_frames(outputd_text))
     if match.ok:
-        # TODO(#1169): if shm_ring later permits operator chunk/target overrides,
+        # TODO: if shm_ring later permits operator chunk/target overrides,
         # feed the resolved emitted values through jasper.ring_negotiation.accept()
-        # here so arm-time refusal uses the same CamillaDSP/ioplug reason.
+        # here so arm-time refusal uses the same CamillaDSP/ioplug reason. (Not
+        # #1169 — that PR was ring geometry coherence / zombie capture handle /
+        # reconcile storm / %-escaping, unrelated to chunk/target overrides.)
         return True, (
             "ring slot geometry matches "
             f"(conf.d period_frames={match.conf_period_frames} == outputd "

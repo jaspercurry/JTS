@@ -548,8 +548,8 @@ daemon's internal IPC.
 ### Diagnostics — UDP `:5514`
 
 Satellites fire diagnostic log lines as one-line UTF-8 datagrams to
-port 5514. Listener is in
-[`jasper/control/server.py:558`](../jasper/control/server.py:558);
+port 5514. Listener is `run_dial_log_listener` in
+[`jasper/control/server.py`](../jasper/control/server.py);
 log lines are re-emitted as `journalctl -u jasper-control` records
 tagged with the satellite's IP. **Fire-and-forget — UDP loss is
 acceptable.** This pattern lets satellites debug even when their HTTP
@@ -585,7 +585,9 @@ update it as code lands.
 ### Wire format
 
 - **Codec:** raw PCM, 16 kHz int16 mono — same shape `MicCapture`
-  produces today ([audio_io.py:28](../jasper/audio_io.py:28)).
+  produces today (`MicCapture.OUTPUT_RATE` /
+  `MicCapture.OUTPUT_FRAME_SAMPLES` in
+  [`jasper/audio_io.py`](../jasper/audio_io.py)).
 - **Frame size:** 1280 samples (80 ms) — matches openWakeWord's expected
   frame size and the existing `MicCapture.OUTPUT_FRAME_SAMPLES`.
 - **Transport:** UDP datagrams to a fixed Pi-side port, one frame per
@@ -603,7 +605,8 @@ update it as code lands.
 ### Pi-side integration
 
 The voice daemon currently has a single audio source bound at startup
-([voice_daemon.py:1367](../jasper/voice_daemon.py:1367)). Multi-source
+(`self._mic = mic` in `WakeLoop.__init__`,
+[`jasper/voice_daemon.py`](../jasper/voice_daemon.py)). Multi-source
 support requires extending `WakeLoop` to accept N sources and run
 arbitration as described above. Sketch:
 
@@ -837,25 +840,26 @@ Decision tree:
 
 ### Test harness shape (Pi-side scaffolding)
 
-Sketch — not yet built. Lives in `jasper/cli/satellite_phase1_3_*.py`
-and `jasper/satellites/`:
+Built. Lives in [`jasper/cli/satellite_validation.py`](../jasper/cli/satellite_validation.py)
+(692 lines), run as
+`sudo /opt/jasper/.venv/bin/python -m jasper.cli.satellite_validation
+<subcommand>` with four subcommands:
 
-- **Corpus generator**: pre-render a 50+-utterance "Hey Jarvis"
-  corpus with Piper TTS using multiple voices and varied prosody.
-  Cache to disk; regenerate only on `--regen-corpus`.
-- **SPL calibration helper**: integrates with the user's UMIK-1/
-  UMIK-2 + REW workflow (or a sounddevice-based recorder if
-  simpler) to confirm playback levels at the listener position
-  before each test condition.
-- **Test runner**: plays the corpus through the JTS main speaker at
-  calibrated SPL while the satellite under test is mounted at one
-  of the test distances. Records wake events + confidence scores
-  via the satellite's UDP/HTTP path. Runs Whisper or Gemini STT on
-  the captured post-wake audio and computes WER vs. ground-truth.
-- **Output**: `phase1_3/{date}/{condition}.csv` with columns
-  `utterance_id, wake_fired, score, wake_latency_ms, wer,
-  snr_estimate`. Plus `summary.md` with FRR / FAR / WER mean / p50
-  / p90 per condition.
+- **`gen-corpus`**: renders `corpus.wav` + a manifest via Gemini TTS
+  across multiple voices, cached to disk and only regenerated on
+  `--regen`.
+- **`calibrate-spl`**: plays pink noise and has the operator read the
+  level off a phone SPL meter, predicting the main-volume dB needed
+  to hit a target SPL.
+- **`run`**: plays the corpus through the JTS main speaker at
+  calibrated SPL while capturing both the chip mic and the satellite
+  mic in parallel, scores each utterance through the wake model, and
+  runs Gemini STT + WER on the post-wake audio. Writes
+  `phase1_3/{date}/{condition}.csv` with columns `utterance_id, text,
+  voice, mic, wake_fired, max_score, wake_latency_ms, transcription,
+  wer, rms_dbfs`.
+- **`summarize`**: aggregates a date directory's CSVs into
+  `summary.md` with FRR / FAR / WER stats per condition.
 
 The PCM streaming infra needs to land first before this harness can
 run end-to-end (the satellite has to be able to deliver post-wake

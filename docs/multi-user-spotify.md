@@ -456,3 +456,5 @@ jasper/tools/spotify.py               spotify_play / spotify_queue (router-aware
 deploy/nginx-jasper.conf              /spotify/ + /voice/ + /dial/ proxy (HTTP only)
 deploy/jasper-web.service             systemd unit for jasper-web
 ```
+
+Last verified: 2026-07-11

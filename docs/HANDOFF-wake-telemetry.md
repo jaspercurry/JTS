@@ -38,8 +38,8 @@ Companion docs:
   current tuning. Read its "Open work streams — option C" section
   before working on this subsystem.
 - `NEXT_SESSION_PROMPT.md` at repo root — earlier scoping of this
-  same problem. Superseded by this doc; delete that file when PR 3
-  lands (the telemetry that makes the synthetic test obsolete).
+  same problem, superseded by this doc. Already deleted once PR 3
+  (the telemetry that made the synthetic test obsolete) landed.
 
 ---
 

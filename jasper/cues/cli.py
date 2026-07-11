@@ -16,11 +16,14 @@ Subcommands:
                                 JASPER_VOICE_PROVIDER, so install-
                                 time regen and runtime synthesis
                                 agree on which file is canonical.
-  play <slug>                — play a cached cue locally for testing.
-                                Uses TtsPlayout the same way the
-                                daemon does. Useful when you change
-                                a template and want to hear the new
-                                phrasing before deploying.
+  play <slug>                — play a cached cue for testing by routing
+                                through the running jasper-voice daemon's
+                                control socket (jasper-control's
+                                /cue/play HTTP endpoint), so it plays
+                                through the same audio chain and ducking
+                                as a real failure-triggered cue. Useful
+                                when you change a template and want to
+                                hear the new phrasing before deploying.
 
 Designed to be run interactively or from `install.sh` post-install.
 """
@@ -50,9 +53,9 @@ def _make_manager(*, tts_playout=None) -> AudioCueManager:
     for a given (provider, voice, model, text).
 
     `tts_playout` is optional — `list` and `regenerate` don't need
-    audio output, so they pass None. `play` constructs a TtsPlayout
-    inside an `async with` block (so its underlying ALSA stream
-    actually opens) and passes it in here.
+    audio output, so they pass None. `play` doesn't call this factory
+    at all: it routes through jasper-control's /cue/play HTTP endpoint
+    instead of building a local TtsPlayout (see `_cmd_play`).
 
     Config.from_env() requires the active provider's API key; if
     it's missing we still want `list` (which only reads disk) to

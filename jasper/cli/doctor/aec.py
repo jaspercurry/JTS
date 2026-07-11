@@ -452,11 +452,13 @@ _AEC_MIC_MUSIC_THRESHOLD = 1500  # RMS
 # music is 1000+ RMS.
 _AEC_REF_SILENT_THRESHOLD = 50
 
-# Drift warning rate that flags as abnormal. The 2026-05-15 dsnoop
-# rate-lock state produced ~190 drift warnings/min (~955 in 5 min);
-# healthy ops have ~3 per 5 min from clock skew tolerated by the
-# bridge.
-_AEC_DRIFT_WARN_THRESHOLD = 30  # in 5 min
+# Drift warning rate that flags as abnormal. The check reads a 90-second
+# journal window (see "Use a 90-second window, not 5 minutes" below), not
+# 5 minutes. The 2026-05-15 dsnoop rate-lock state produced ~190 drift
+# warnings/min — hundreds in any 90 s slice; healthy ops have ~5 per 90 s
+# from clock skew tolerated by the bridge (see the warn message below,
+# which repeats this baseline for the operator).
+_AEC_DRIFT_WARN_THRESHOLD = 30  # in 90 s
 
 def _assess_aec_bridge_output(
     journal_text: str,

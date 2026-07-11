@@ -5,7 +5,7 @@
 """Shared acoustic-measurement kernel.
 
 The pure measurement primitives that every JTS tuning layer reuses — room
-correction, active-crossover commissioning, and the upcoming level ramp — live
+correction, active-crossover commissioning, and the level ramp — live
 here rather than under any one layer's package. Extracted verbatim from
 ``jasper.correction`` (which used to be their home and still consumes them); the
 DSP math is unchanged.
@@ -24,6 +24,9 @@ Modules:
   - :mod:`~jasper.audio_measurement.quality_model` — the parameterized
     :class:`QualityModel` profiles (``ROOM`` / ``DRIVER`` / ``RAMP``) that
     replace the previously-forked capture-quality constants.
+  - :mod:`~jasper.audio_measurement.ramp` — the settle-based level-match
+    ``RampController`` (muted-at-floor → audible gain ramp → audible-evidence
+    confirmation) that drives main-volume-affecting playback.
 
 Layer-specific logic — PEQ design, targets, correction strategy, the
 active-speaker verdicts, the web flows — stays in its owning package and

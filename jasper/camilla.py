@@ -470,9 +470,14 @@ def crossover_controller() -> CamillaController:
     and ``cli.active_speaker._camilla_controller`` — so a low-level controller
     handle never trips ``Config``'s voice-provider validation.
 
-    INERT today: camilla#2 (``jasper-camilla-crossover.service``) is not yet
-    enabled, so nothing constructs this controller in production. It ships now
-    so the later reconciler PR has a typed handle ready."""
+    Constructed in production by the live pair-balance-trim path
+    (:func:`jasper.multiroom.runtime_balance._active_endpoint_camilla`, when
+    ``cfg.role == "leader"``), reached from ``apply_local_trim`` /
+    ``apply_live_grouping_trim`` in ``jasper/control/server.py``.
+    ``jasper-camilla-crossover.service`` itself is not boot-enabled — the
+    multiroom reconciler arms/tears it down per-reconcile
+    (``_systemctl_crossover_unit`` in ``jasper/multiroom/reconcile.py``) as an
+    active-speaker leader gains or loses that role."""
     host = os.environ.get("JASPER_CAMILLA2_HOST", "127.0.0.1")
     port = int(os.environ.get("JASPER_CAMILLA2_PORT", "1235"))
     return CamillaController(host, port)

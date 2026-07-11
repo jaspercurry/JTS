@@ -17,10 +17,14 @@ Lifecycle:
 A TTS backend (`GeminiTTSGenerator` / `OpenAITTSGenerator` /
 `GrokTTSGenerator`) is an injectable interface so tests can swap in
 a deterministic fake without hitting the network. The factory at
-`jasper.voice_daemon._build_cues_manager` picks one to match the
+`jasper.cues.factory.build_cue_tts_backend` picks one to match the
 active `JASPER_VOICE_PROVIDER` so cue audio comes from the same
 provider that drives the live conversation — no Gemini round-trips
-when the user is on OpenAI Realtime, and vice versa.
+when the user is on OpenAI Realtime, and vice versa. It's called from
+`jasper.voice.daemon_main._build_cues_manager`, which builds the whole
+`AudioCueManager` (`jasper.voice_daemon._build_cues_manager` is a
+delegating shim kept for backward compatibility, not a production
+call site).
 """
 from __future__ import annotations
 

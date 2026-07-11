@@ -38,11 +38,14 @@ Public surface — re-exported from this package:
   - GroupingConfig            — frozen resolved-config dataclass
   - load_config / is_enabled  — pure loader over /var/lib/jasper/grouping.env
 
-Module layout:
-
-  config.py     pure  — GroupingConfig dataclass + env-file loader
-  reconcile.py  mixed — pure plan()/argv builders + a thin systemctl main()
-  state.py      pure  — fresh-read JSON-able snapshot for /state
+This docstring describes the package's original 3-module shape
+(config.py/reconcile.py/state.py); it has since grown to 17 modules
+(leader/follower/member config, channel splitting, cascade timing,
+airplay latency, sync measurement, snapcast RPC, TTS routing, and
+more) across multiple shipped phases. See
+`docs/HANDOFF-multiroom.md` "Implementation status" for the current
+module map and phase-by-phase history rather than an enumeration
+here.
 """
 from __future__ import annotations
 
