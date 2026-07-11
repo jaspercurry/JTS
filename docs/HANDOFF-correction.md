@@ -14,9 +14,9 @@
   `MeasurementRamp` kernel lives in
   [`jasper/audio_measurement/ramp.py`](../jasper/audio_measurement/ramp.py)
   (quiet-start staircase → pre-window freeze → buffered settle read →
-  mid-window jump → k-confirm lock; dynamic cap is strictly the lower of
-  `original+12`, the configured absolute ceiling (default −3 dB), and 0 dB —
-  there is no floor
+  mid-window jump → k-confirm lock; the shared dynamic cap is strictly the
+  lower of `original+12`, the configured absolute ceiling (default −3 dB),
+  and 0 dB — there is no floor
   that can jump a quiet listening setting upward; clip/trust/feed-liveness/
   derived safety timeout; exact — never cap-clamped — restore of the user's
   pre-ramp volume). `MAXED_OUT` is a failed attempt, stores no lock, restores
@@ -26,7 +26,10 @@
   into `bounded_low_level`: at the cap they may store an explicitly degraded
   lock after fresh post-latency samples prove frozen AGC, live delivery, no
   clipping, the existing noise-floor margin, <=1.5 dB spread, and <=20 dB
-  preferred-window shortfall. The owning flow surfaces the shortfall and
+  preferred-window shortfall. Room's listening-position owner allows a
+  +15 dB rise up to the unchanged 0 dB hard ceiling because its measurement
+  stimulus is already −12 dBFS; crossover/near-field keeps the shared +12/−3
+  cap. The owning flow surfaces the shortfall and
   downstream sweep-quality gates still decide whether the evidence is usable.
   The
   correction adapter
@@ -47,7 +50,10 @@
   shipped phone flow refuses *before playing a tone* when the browser cannot
   prove AGC is disabled. The relay validates the selected mic/calibration once,
   freezes a compact setup binding, and waits for a token-scoped rolling ambient
-  median (ten finite 200 ms samples / two seconds) before the tone starts; one
+  median (ten finite 200 ms samples / two seconds) before the tone starts. A
+  failed ramp exposes received/finite/trusted/drop counts plus maximum observed
+  RMS, peak, and signal-over-noise margin, so `no_usable_samples` identifies the
+  exact admission gate instead of hiding behind a generic error; one
   USB startup block can never become the noise-floor source of truth. It fails
   closed on every CamillaDSP gain write. A successful lock retains the
   target but restores the user's original listening volume immediately. Each

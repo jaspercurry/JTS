@@ -194,10 +194,14 @@ one-shot host-event round trip.
   jump toward the **window midpoint**; (e)
   `RampController` preserves `AutolevelController`'s quiet-start, bounded-rise,
   timeout, clipping-abort, and graceful-stop safety shape. Its relay-ramp
-  **dynamic cap** is the lower of `original + 12 dB` and **−3 dBFS**
-  `main_volume`, with no upward floor for a quiet listening setting. It remains
+  **shared dynamic cap** is the lower of `original + 12 dB` and **−3 dBFS**
+  `main_volume`, with no upward floor for a quiet listening setting. Room's
+  listening-position owner uses +15 dB / 0 dB because its stimulus is already
+  −12 dBFS; crossover/near-field keeps the shared cap. It remains
   tighter than, and is not to be confused with, the independent 0 dB hard
-  ceiling above.
+  ceiling above. Terminal ramp snapshots expose sample-admission counts and
+  maximum observed RMS/peak, trust threshold, and trust deficit so a zero-
+  trusted failure identifies noise, AGC, non-finite input, or feed loss.
 - **Lock**, scoped **per mic-geometry step, not blanket per-session.**
   Near-field (Layer A, phone at the baffle) and listening-position (Layer B)
   differ by roughly 15–25 dB at the mic for the same played level — a

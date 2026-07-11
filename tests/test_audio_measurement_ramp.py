@@ -954,7 +954,7 @@ async def test_clip_at_cap_aborts_before_bounded_lock():
 
 
 @pytest.mark.asyncio
-async def test_all_untrusted_samples_is_error_not_maxed_out():
+async def test_all_untrusted_samples_is_error_not_maxed_out(caplog):
     # Noise floor so high nothing is ever trusted: the old kernel called this
     # MAXED_OUT ("raise your amp") and stored a lock — affirmatively wrong.
     cfg = MeasurementRamp(
@@ -965,8 +965,89 @@ async def test_all_untrusted_samples_is_error_not_maxed_out():
     assert data.state == RampState.ERROR
     assert data.error == "no usable phone samples"
     assert data.trusted_sample_count == 0
+    assert data.observed_sample_count > 0
+    assert data.finite_sample_count == data.observed_sample_count
+    assert data.below_noise_sample_count == data.observed_sample_count
+    assert data.agc_rejected_sample_count == 0
+    assert data.nonfinite_sample_count == 0
+    assert data.max_observed_rms_dbfs is not None
+    assert data.max_observed_peak_dbfs is not None
+    assert data.max_signal_over_noise_db is not None
+    assert data.max_signal_over_noise_db < cfg.trust_margin_db
+    snap = data.snapshot()
+    assert snap["observed_sample_count"] == data.observed_sample_count
+    assert snap["max_signal_over_noise_db"] == round(
+        data.max_signal_over_noise_db, 2
+    )
+    assert snap["trust_margin_db"] == cfg.trust_margin_db
+    assert snap["trust_threshold_dbfs"] == -14.0
+    assert snap["trust_deficit_db"] > 0.0
+    terminal = next(
+        message
+        for message in caplog.messages
+        if "event=ramp_error" in message and "reason=no_usable_samples" in message
+    )
+    assert "observed_samples=" in terminal
+    assert "below_noise_samples=" in terminal
+    assert "max_signal_over_noise_db=" in terminal
+    assert "trust_threshold_dbfs=" in terminal
+    assert "trust_deficit_db=" in terminal
     # Restored, not held at the cap.
     assert chain.commanded[-1] == pytest.approx(-40.0)
+
+
+@pytest.mark.asyncio
+async def test_jts3_room_cap_clears_trust_without_weakening_shared_margin():
+    """Pin the 2026-07-11 JTS3 UMIK listening-position regression."""
+    original = -15.15
+    noise_floor = -41.3
+    measured_gain = -31.88 - (-3.15)
+    common = {
+        "settle_hold_s": 0.5,
+        "max_loop_latency_s": 0.5,
+        "safety_timeout_s": 90.0,
+        "allow_bounded_low_level": True,
+    }
+
+    shared = MeasurementRamp(**common)
+    assert shared.trust_margin_db == 10.0
+    assert shared.dynamic_cap(original) == pytest.approx(-3.15)
+    default_chain = ChainModel(
+        gain_db=measured_gain,
+        start_vol=original,
+        noise_floor_dbfs=noise_floor,
+    )
+    _, default_data, _ = await _run(
+        default_chain,
+        shared,
+        original=original,
+    )
+    assert default_data.state is RampState.ERROR
+    assert default_data.trusted_sample_count == 0
+    assert default_data.trust_deficit_db == pytest.approx(0.58)
+    assert default_chain.commanded[-1] == pytest.approx(original)
+
+    room = MeasurementRamp(
+        **common,
+        cap_bump_db=15.0,
+        cap_ceil_db=0.0,
+    )
+    assert room.trust_margin_db == shared.trust_margin_db
+    assert room.dynamic_cap(original) == pytest.approx(-0.15)
+    room_chain = ChainModel(
+        gain_db=measured_gain,
+        start_vol=original,
+        noise_floor_dbfs=noise_floor,
+    )
+    _, room_data, _ = await _run(room_chain, room, original=original)
+    assert room_data.state is RampState.LOCKED
+    assert room_data.lock_kind is RampLockKind.BOUNDED_LOW_LEVEL
+    assert room_data.max_signal_over_noise_db >= room.trust_margin_db
+    assert room_data.trust_deficit_db == 0.0
+    # The kernel holds the reusable lock target for its owning flow; the room
+    # MeasurementSession adapter owns the immediate exact restore (pinned in
+    # test_room_session_jts3_evidence_locks_and_restores_exactly).
+    assert room_chain.commanded[-1] == pytest.approx(room.dynamic_cap(original))
 
 
 @pytest.mark.asyncio
@@ -979,6 +1060,8 @@ async def test_agc_unfrozen_never_trusted_and_never_maxed_out():
     assert data.agc_frozen is False
     assert data.state == RampState.ERROR  # zero trusted evidence
     assert data.state != RampState.LOCKED
+    assert data.agc_rejected_sample_count > 0
+    assert data.below_noise_sample_count == 0
     assert chain.commanded[-1] == pytest.approx(-40.0)
 
 
