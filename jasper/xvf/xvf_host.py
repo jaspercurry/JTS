@@ -36,7 +36,17 @@ ValueKind = Literal["char", "float", "int32", "radians", "uint8", "uint16", "uin
 
 CONTROL_SUCCESS = 0
 CONTROL_RETRY = 64
-DEFAULT_TIMEOUT_MS = 100_000
+# Per-transfer USB control timeout. These are SMALL vendor control
+# reads/writes (VERSION, AEC_HPFONOFF, beam config, …) that complete in
+# milliseconds; DFU firmware writes go through external `dfu-util`, never
+# this path. The chip's "I'm still processing" is signalled at the
+# application layer via CONTROL_RETRY + the MAX_READ_ATTEMPTS loop below,
+# NOT by a long transport timeout. Keep this well under systemd's default
+# unit-start timeout (~90 s / DefaultTimeoutStartSec): jasper-aec-init is a
+# boot-blocking Type=oneshot that gates the bridge + camilla, so a single
+# wedged transfer at the old 100 s default could outlast unit start and
+# stall boot audio. 5 s is >1000× a normal transfer yet ~18× under 90 s.
+DEFAULT_TIMEOUT_MS = 5_000
 MAX_READ_ATTEMPTS = 100
 DEFAULT_USB_VID = 0x2886
 LEGACY_USB_PID = 0x001A
