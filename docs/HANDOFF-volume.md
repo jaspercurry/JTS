@@ -463,8 +463,15 @@ self-healing property no matter how the drift was introduced.
 
 **Gates** (all must pass for a write to land):
 
-1. `_voice_session_active=False` — the Ducker owns camilla during
-   a session.
+1. No voice session or correction measurement is active. The Ducker owns
+   Camilla during a voice session (`_voice_session_active`). During
+   `MEASURE_PAUSE`, `_measurement_active` narrowly disables this voice-process
+   reconciler so it cannot replace a measurement ramp's requested volume with
+   persisted `listening_level` while the ramp state machine still believes its
+   own value is live. This is not a cross-daemon Camilla lock and does not block
+   emergency user mute/attenuation. Long relay setup windows renew
+   `MEASURE_PAUSE` every 60 seconds; if the correction process dies, the voice
+   daemon's 120-second timer still releases the guard.
 2. Active source uses camilla-as-master (idle / AirPlay / USBSINK).
    Push-mode sources pin camilla at 0 dB by design, except for the
    explicit 0% content-mute floor.
@@ -673,4 +680,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-07-01 (TTS loudness safety note checked against `jasper.audio_io`, `jasper-tts-protocol`, and `tests/test_audio_safety_pins.py`; prior 2026-06-30 pass covered duck-deferred push-guard clear and live/persisted guard recovery against `jasper.volume_coordinator`, `jasper.volume_diagnostics`, and focused pytest; prior 2026-06-26 pass covered reconciler mute-intent semantics against `VolumeCoordinator.maybe_reconcile_camilla` and `tests/test_volume_coordinator.py::test_reconcile_preserves_toggle_mute_restore_level`; prior 2026-06-22 pass covered volume floor calibration against `jasper.volume_curve`, `/sound/` settings, and the focused volume/sound pytest suite; prior 2026-06-21 pass covered gain-chain ledger against `jasper.control.gain_chain`, `jasper.control.state_aggregate`, and JTS3 `/state.audio.gain_chain`; prior 2026-06-17 pass covered librespot state-file reader mode against `jasper-librespot-event`, prior 2026-06-14 pass covered active-speaker baseline `volume_limit` guard against `camilla_yaml.py`, and prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)
+Last verified: 2026-07-11 (measurement-scoped voice-reconciler guard checked against a synchronized JTS3 UMIK/Camilla run, renewable `MEASURE_PAUSE`, in-flight race coverage, STATUS observability, and focused coordinator/voice tests; prior 2026-07-01 pass covered TTS loudness safety; prior 2026-06-30 pass covered duck-deferred push-guard recovery; prior 2026-06-26 pass covered reconciler mute intent; prior 2026-06-22 pass covered volume-floor calibration; prior 2026-06-21 pass covered the gain-chain ledger; prior 2026-06-17 pass covered librespot state; prior 2026-06-14 pass covered active-speaker `volume_limit`; prior 2026-06-08 pass covered mute, source sync, push guards, mux, and fan-in TTS ceiling)

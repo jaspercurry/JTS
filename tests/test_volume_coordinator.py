@@ -16,6 +16,7 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime, timezone
 
@@ -1430,6 +1431,93 @@ async def test_reconcile_noop_during_voice_session(tmp_path):
     coord.note_voice_session(True)
     await coord.maybe_reconcile_camilla()
     assert cam.set_calls == []
+
+
+async def test_reconcile_noop_during_measurement(tmp_path):
+    """The 1 Hz resilience writer must not fight correction's ramp lease."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-3.15)
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+        spotify_router=None,
+    )
+    coord._level = 70
+    persistence.save_listening_level(70, mark_user_change=True)
+    await coord.note_measurement_active(True)
+
+    await coord.maybe_reconcile_camilla()
+
+    assert cam.set_calls == []
+
+
+async def test_reconcile_in_flight_stops_when_measurement_begins(tmp_path):
+    """MEASURE_PAUSE may race a tick already awaiting Camilla readback."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-3.15)
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+        spotify_router=None,
+    )
+    coord._level = 70
+    persistence.save_listening_level(70, mark_user_change=True)
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+
+    async def blocked_read():
+        read_started.set()
+        await release_read.wait()
+        return -3.15, False
+
+    coord._read_camilla_volume_and_mute = blocked_read
+    reconcile = asyncio.create_task(coord.maybe_reconcile_camilla())
+    await read_started.wait()
+    await coord.note_measurement_active(True)
+    release_read.set()
+    await reconcile
+
+    assert cam.set_calls == []
+
+
+async def test_measurement_pause_waits_for_in_flight_reconcile_write(tmp_path):
+    """Pause acknowledges only after an older Camilla write has finished."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-3.15)
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+        spotify_router=None,
+    )
+    coord._level = 70
+    persistence.save_listening_level(70, mark_user_change=True)
+    write_started = asyncio.Event()
+    release_write = asyncio.Event()
+    original_set = cam.set_volume_db
+
+    async def blocked_set(db, *, best_effort=False):
+        write_started.set()
+        await release_write.wait()
+        return await original_set(db, best_effort=best_effort)
+
+    cam.set_volume_db = blocked_set
+    reconcile = asyncio.create_task(coord.maybe_reconcile_camilla())
+    await write_started.wait()
+    pause = asyncio.create_task(coord.note_measurement_active(True))
+    await asyncio.sleep(0)
+    assert not pause.done()
+
+    release_write.set()
+    await reconcile
+    await pause
+    writes_at_acquire = len(cam.set_calls)
+    await coord.maybe_reconcile_camilla()
+
+    assert writes_at_acquire == 1
+    assert len(cam.set_calls) == writes_at_acquire
 
 
 async def test_reconcile_noop_when_push_mode_source_active(tmp_path):

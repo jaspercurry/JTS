@@ -92,6 +92,61 @@ async def test_pause_and_resume_renderers(monkeypatch):
     assert pause_idx < resume_idx
 
 
+@pytest.mark.asyncio
+async def test_long_window_renews_voice_measurement_lease(monkeypatch):
+    """Human relay setup may exceed the voice daemon's 120 s safety timer."""
+    uds_calls: list[str] = []
+
+    async def fake_uds(path, cmd, **kw):
+        uds_calls.append(cmd)
+        if cmd == "STATUS":
+            return {"state": "WAKE"}
+        return {"result": "ok"}
+
+    monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.01)
+
+    async with measurement_window(skip_renderer_pause=True):
+        await asyncio.sleep(0.035)
+
+    assert uds_calls.count("MEASURE_PAUSE") >= 2
+    assert uds_calls[-1] == "MEASURE_RESUME"
+
+
+@pytest.mark.asyncio
+async def test_lease_refresh_failure_retries_and_still_restores(monkeypatch):
+    """A malformed/empty renewal cannot strand voice or renderers paused."""
+    uds_calls: list[str] = []
+    systemctl_calls: list[tuple[str, str]] = []
+    pause_calls = 0
+
+    async def fake_uds(path, cmd, **kw):
+        nonlocal pause_calls
+        uds_calls.append(cmd)
+        if cmd == "STATUS":
+            return {"state": "WAKE"}
+        if cmd == "MEASURE_PAUSE":
+            pause_calls += 1
+            if pause_calls == 2:
+                raise RuntimeError("empty response")
+        return {"result": "ok"}
+
+    async def fake_systemctl(action, service):
+        systemctl_calls.append((action, service))
+
+    monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
+    monkeypatch.setattr(coordinator, "_systemctl", fake_systemctl)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.01)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_RETRY_SEC", 0.005)
+
+    async with measurement_window(renderers_to_pause=("renderer.service",)):
+        await asyncio.sleep(0.03)
+
+    assert pause_calls >= 3
+    assert "MEASURE_RESUME" in uds_calls
+    assert ("start", "renderer.service") in systemctl_calls
+
+
 def test_default_renderer_pause_list_covers_music_sources():
     """Correction sweeps need the fan-in music chain silent. Keep this
     list in sync when a playback source gets added."""

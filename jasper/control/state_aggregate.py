@@ -1279,6 +1279,7 @@ async def _get_state(
             "usage_tracking_degraded": (voice_st or {}).get("usage_tracking_degraded"),
             "connection_paused": (voice_st or {}).get("connection_paused"),
             "mic_muted": (voice_st or {}).get("mic_muted"),
+            "measurement_active": (voice_st or {}).get("measurement_active"),
             "music_dbfs": (voice_st or {}).get("music_dbfs"),
             # Runtime-armed wake-leg tokens from jasper-voice's
             # session_status. jasper-doctor's check_wake_legs cross-checks

@@ -252,6 +252,16 @@ class VolumeCoordinator:
         # request coordinators in jasper-control always read False
         # and rely on `_duck_active_probe` instead.
         self._voice_session_active: bool = False
+        # Correction-measurement gate for the voice daemon's own 1 Hz
+        # reconciler. This is intentionally narrow: it does not turn this
+        # process-local flag into a cross-daemon Camilla lock or block an
+        # emergency user mute. It prevents the observed writer from replacing
+        # a ramp value with persisted listening_level mid-measurement.
+        self._measurement_active: bool = False
+        # Serializes the final reconciler write with MEASURE_PAUSE acquisition.
+        # Pause does not acknowledge until an already-started write has landed;
+        # after the flag flips, no new reconcile write may enter this lock.
+        self._reconcile_write_lock = asyncio.Lock()
         # Cross-daemon duck-active signal. jasper-control's per-
         # request coordinators set this to a UDS-probing callable
         # that asks jasper-voice's `session_status` whether the
@@ -1218,6 +1228,11 @@ class VolumeCoordinator:
         write; listening_level still persists)."""
         self._voice_session_active = bool(active)
 
+    async def note_measurement_active(self, active: bool) -> None:
+        """Pause/resume this process's 1 Hz Camilla drift reconciler."""
+        async with self._reconcile_write_lock:
+            self._measurement_active = bool(active)
+
     async def get_camilla_target_db(self) -> float:
         """The absolute camilla.main_volume that should be in effect
         right now, ignoring any active duck. Used by `Ducker.restore()`
@@ -1270,12 +1285,9 @@ class VolumeCoordinator:
 
         Gates (all must pass for a write to land):
 
-        1. `_voice_session_active=False` — during a session the
-           Ducker owns camilla; reconciling would clobber the duck.
-           This is the in-process flag set by `note_voice_session`
-           on jasper-voice's long-lived coordinator. (jasper-control
-           never runs this reconciler — it doesn't host the
-           observer.)
+        1. No voice session or correction measurement is active. The Ducker
+           owns camilla during a voice session; the ramp owns it during a
+           measurement. Reconciling would clobber either transient owner.
         2. Active source is camilla-as-master (idle / AirPlay /
            USBSINK). For push-mode sources (Spotify / Bluetooth)
            camilla is pinned at 0 dB by design and listening_level
@@ -1294,7 +1306,7 @@ class VolumeCoordinator:
         is visible in journalctl. Failures are logged at WARN and
         non-fatal — the observer keeps ticking.
         """
-        if self._voice_session_active:
+        if self._voice_session_active or self._measurement_active:
             return
         try:
             source = await self._active_source()
@@ -1310,6 +1322,11 @@ class VolumeCoordinator:
         expected_db = percent_to_db(expected_level)
         expected_mute = self._main_mute_for_level(expected_level)
         current_db, current_mute = await self._read_camilla_volume_and_mute()
+        # MEASURE_PAUSE can arrive while the Camilla read above is in flight.
+        # Re-check at the write boundary so an already-running observer tick
+        # cannot cross into the ramp after measurement has taken ownership.
+        if self._measurement_active:
+            return
         if current_db is None:
             # Camilla restart blip; next tick retries.
             return
@@ -1325,30 +1342,39 @@ class VolumeCoordinator:
             # or some other deep attenuation we don't own). Leave it.
             # The loud direction intentionally does not skip.
             return
-        # Converge.
-        log_event(
-            logger,
-            "volume.reconciled",
-            # `level` collides with log_event's level= param → fields=.
-            fields={
-                "source": source.value,
-                "level": f"{expected_level}%",
-                "current_db": f"{current_db:.2f}",
-                "expected_db": f"{expected_db:.2f}",
-                "drift_db": f"{drift:+.2f}",
-                "current_mute": "unknown" if current_mute is None else str(current_mute).lower(),
-                "expected_mute": str(expected_mute).lower(),
-            },
-        )
-        try:
-            ok = await self._write_camilla_db_with_mute(
-                expected_db,
-                context="reconcile",
+        # Converge. The lock closes the last race with MEASURE_PAUSE: lease
+        # acquisition waits for an already-running Camilla write to finish,
+        # while a write arriving after acquisition sees the flag and exits.
+        async with self._reconcile_write_lock:
+            if self._measurement_active:
+                return
+            log_event(
+                logger,
+                "volume.reconciled",
+                # `level` collides with log_event's level= param → fields=.
+                fields={
+                    "source": source.value,
+                    "level": f"{expected_level}%",
+                    "current_db": f"{current_db:.2f}",
+                    "expected_db": f"{expected_db:.2f}",
+                    "drift_db": f"{drift:+.2f}",
+                    "current_mute": (
+                        "unknown"
+                        if current_mute is None
+                        else str(current_mute).lower()
+                    ),
+                    "expected_mute": str(expected_mute).lower(),
+                },
             )
-            if ok:
-                self._persistence.save_now(expected_db)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("reconcile write failed (will retry): %s", e)
+            try:
+                ok = await self._write_camilla_db_with_mute(
+                    expected_db,
+                    context="reconcile",
+                )
+                if ok:
+                    self._persistence.save_now(expected_db)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("reconcile write failed (will retry): %s", e)
 
     async def _active_source(self) -> Source:
         """Pick the active source. Multiple-source-active is rare

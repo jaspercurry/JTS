@@ -1082,9 +1082,16 @@ in feedback (2026-05-09).
   pause `WakeLoop` (block on the event before pulling the next
   audio chunk); pause outputd's content loudness meter so sweeps do
   not become assistant loudness baselines; cancel any active
-  `Ducker.duck()` and skip future ones;
+  `Ducker.duck()` and skip future ones; pause the voice daemon's 1 Hz Camilla
+  drift reconciler so it cannot overwrite the quiet-start/ramp/restore
+  transaction;
   return JSON `{"result": "ok"}`.
-- `MEASURE_RESUME` → clear the event, restart trackers, return JSON.
+- While the measurement window remains open, the coordinator repeats
+  idempotent `MEASURE_PAUSE` every 60 seconds to renew the voice daemon's
+  120-second crash-recovery timer. A dead coordinator stops renewing, so the
+  speaker still self-recovers.
+- `MEASURE_RESUME` → clear the event and reconcile guard, restart trackers,
+  return JSON.
 
 The HTTP coordinator at `jasper/correction/coordinator.py` is an
 async context manager:
@@ -2122,8 +2129,9 @@ Internal:
 
 ---
 
-Last verified: 2026-07-11 (JTS3 UMIK-2 on-device level-ramp evidence and the
-12 dB / −3 dB dynamic-cap defaults; prior 2026-07-10 Jasper relay
+Last verified: 2026-07-11 (JTS3 UMIK-2 on-device level-ramp evidence,
+renewable measurement-scoped voice-reconciler guard, and the 12 dB / −3 dB
+dynamic-cap defaults; prior 2026-07-10 Jasper relay
 room/crossover sequential flow,
 ambient-baselined automatic level, exact bounded gain leases, mic/calibration
 binding, safe applied manual-or-automatic Layer-A room prerequisite, explicit
