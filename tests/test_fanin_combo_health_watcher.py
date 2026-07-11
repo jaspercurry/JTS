@@ -9,8 +9,17 @@ the reconcile disarm are injected."""
 
 from __future__ import annotations
 
+import pytest
+
 from jasper.fanin import combo_health as ch
 from jasper.fanin import coupling_reconcile as cr
+
+
+@pytest.fixture(autouse=True)
+def _entry_lock_in_tmp(tmp_path, monkeypatch):
+    """Keep every main() invocation's entry flock inside the test tmp dir —
+    never the real /run path — so parallel test workers can't contend."""
+    monkeypatch.setattr(cr, "ENTRY_LOCK_PATH", str(tmp_path / "entry.lock"))
 
 
 def _status(*, source="direct", health="capturing", reopens=0, card_gen_reopens=0):
@@ -175,8 +184,6 @@ def test_cli_auto_clears_fallback_marker(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_health_and_auto_mutually_exclusive(monkeypatch, capsys):
-    import pytest
-
     with pytest.raises(SystemExit):
         cr.main(["--auto", "--health"])
     err = capsys.readouterr().err

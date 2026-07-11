@@ -351,7 +351,25 @@ _RUNTIME_STATE_UNITS = (
     "bluealsa.service",
     "bluealsa-aplay.service",
     "bt-agent.service",
+    # The fan-in coupling-reconcile oneshots (#1233 follow-up): a failed pass
+    # (e.g. an arm-abort — env written, fan-in restart aborted because camilla
+    # would not stop) parks the unit in `failed` with the evidence only in
+    # `systemctl --failed` + the journal; tracking them here makes it
+    # doctor-visible.
+    "jasper-fanin-coupling-auto.service",
+    "jasper-fanin-combo-health.service",
 )
+
+# Type=oneshot members of the tracked set: `activating` is their NORMAL
+# in-flight state (a reconcile pass running right now), not the stuck-start
+# instability it signals on the long-running daemons above — only a real
+# `failed` end-state should flag them. A genuinely wedged (stuck-activating)
+# oneshot is still caught: its unit's TimeoutStartSec (60s on both) fires and
+# moves it to `failed`, which this check then surfaces on the next run.
+_ONESHOT_RUNTIME_STATE_UNITS = frozenset({
+    "jasper-fanin-coupling-auto.service",
+    "jasper-fanin-combo-health.service",
+})
 
 def _service_runtime_states() -> dict[str, dict[str, object]] | None:
     try:

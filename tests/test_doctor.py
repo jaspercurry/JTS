@@ -206,6 +206,66 @@ def test_check_service_runtime_state_warns_on_restart_count(monkeypatch):
     assert "jasper-voice.service NRestarts=2" in r.detail
 
 
+def test_runtime_state_units_track_coupling_reconciler_oneshots():
+    """#1233 follow-up: a failed coupling-reconcile oneshot (e.g. an arm-abort —
+    env written, fan-in restart aborted because camilla would not stop) parks
+    the unit in `failed` with the evidence only in `systemctl --failed` + the
+    journal. Both entry units must be in the doctor's tracked set so that state
+    surfaces in one-shot diagnostics."""
+    assert "jasper-fanin-coupling-auto.service" in doctor._RUNTIME_STATE_UNITS
+    assert "jasper-fanin-combo-health.service" in doctor._RUNTIME_STATE_UNITS
+
+
+def test_check_service_runtime_state_fails_on_failed_coupling_oneshot(monkeypatch):
+    class FakeRun:
+        stdout = (
+            "Id=jasper-fanin-combo-health.service\n"
+            "LoadState=loaded\n"
+            "ActiveState=failed\n"
+            "SubState=failed\n"
+            "Result=exit-code\n"
+            "NRestarts=0\n"
+        )
+
+    monkeypatch.setattr(doctor._shared, "_run", lambda *a, **kw: FakeRun())
+
+    r = doctor.check_service_runtime_state()
+
+    assert r.status == "fail"
+    assert "jasper-fanin-combo-health.service state=failed/failed" in r.detail
+
+
+def test_check_service_runtime_state_ignores_in_flight_oneshot(monkeypatch):
+    """`activating` is a oneshot's NORMAL mid-run state (a reconcile pass in
+    flight), not the stuck-start instability it signals on long-running
+    daemons — a tick the doctor happens to race must not read as a failure,
+    while a daemon stuck in activating still does."""
+    class FakeRun:
+        stdout = (
+            "Id=jasper-fanin-coupling-auto.service\n"
+            "LoadState=loaded\n"
+            "ActiveState=activating\n"
+            "SubState=start\n"
+            "Result=success\n"
+            "NRestarts=0\n"
+            "\n"
+            "Id=jasper-fanin.service\n"
+            "LoadState=loaded\n"
+            "ActiveState=activating\n"
+            "SubState=start\n"
+            "Result=success\n"
+            "NRestarts=0\n"
+        )
+
+    monkeypatch.setattr(doctor._shared, "_run", lambda *a, **kw: FakeRun())
+
+    r = doctor.check_service_runtime_state()
+
+    assert r.status == "fail"
+    assert "jasper-fanin.service state=activating/start" in r.detail
+    assert "jasper-fanin-coupling-auto.service" not in r.detail
+
+
 # -------------------------------------------------- active WiFi connection
 
 

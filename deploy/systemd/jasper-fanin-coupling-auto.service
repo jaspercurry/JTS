@@ -10,6 +10,12 @@
 #
 # A no-op on an already-resolved box (the confirm path bounces no daemon), so
 # the steady-state boot cost is one short reconcile with zero audio churn.
+#
+# Concurrency: this unit has NO systemd ordering against the sibling
+# jasper-fanin-combo-health.service (or install.sh's direct CLI run). The
+# reconcile CLI itself serializes every entry verb behind an advisory flock
+# (/run/jasper-fanin-coupling.lock) with a bounded wait, and aborts loudly
+# (unit lands `failed`, doctor-visible) on contention.
 [Unit]
 Description=Resolve the default fan-in coupling + USB combo (P3/P4 default-flip)
 Documentation=file:/opt/jasper/docs/HANDOFF-audio-graph-consolidation.md
@@ -19,9 +25,22 @@ Documentation=file:/opt/jasper/docs/HANDOFF-audio-graph-consolidation.md
 After=jasper-fanin.service jasper-outputd.service jasper-camilla.service jasper-control.service
 Wants=jasper-fanin.service jasper-outputd.service jasper-camilla.service
 
+# A contention-aborted --auto parks this unit failed (doctor-visible via
+# check_service_runtime_state). Nothing retries it automatically — recovery
+# is event-driven: next boot, deploy (install.sh runs --auto), a /sources/
+# toggle (broker start), or a manual `systemctl start` per the doctor's
+# remediation text. Restart=on-failure would be wrong here: a legitimate
+# arm failure (rolled back to loopback) also exits 1 and would retry-loop.
 [Service]
 Type=oneshot
-TimeoutStartSec=60
+# Worst-case pass under the entry lock (review #1252 tally): <=10s lock wait
+# + usbsink restart 8s + outputd 8s + coordinated fan-in restart (camilla
+# stop 8s + fanin 8s + camilla start 8s) + camilla reconcile + a possible
+# audio-hardware-reconcile kick 15s ~= 75s+. 120s gives honest headroom: a
+# systemd kill mid-sequence between camilla-stop and camilla-start leaves
+# CamillaDSP cleanly stopped, which OnFailure=jasper-camilla-recover does
+# NOT catch (clean stop != failed) — so the timeout must outlast the pass.
+TimeoutStartSec=120
 # Same env chain the coupling reconciler CLI hydrates internally
 # (load_env_files); listed here too so the unit environment carries the
 # operator marker + combo state for logging context.

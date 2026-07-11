@@ -365,6 +365,20 @@ zombie-handle reopen are prerequisites). What it does:
 - **Revert lever.** `JASPER_FANIN_COUPLING_CHOICE=operator` (written by the
   explicit reconciler CLI path) freezes the box — the auto pass never overrides
   an operator choice. `/state.audio_graph.coupling.choice` reports operator-vs-auto.
+- **Entry serialization.** Every reconcile entry verb (`--auto`, `--health`,
+  explicit CLI) runs under one advisory flock
+  (`/run/jasper-fanin-coupling.lock`, `_acquire_entry_lock` in
+  `coupling_reconcile.py`) — the two oneshot units have no systemd ordering
+  between them, and install.sh / the operator CLI run the same verbs, so
+  without it two concurrent passes could interleave their ordered daemon
+  transitions (worst case reproducing the camilla RTTIME-SIGKILL cascade #1233
+  fixed). Bounded 10 s wait; nothing touches env or daemons on contention.
+  Loudness is verb-specific: `--auto` / explicit (a requested *change*) abort at
+  ERROR with exit 1 → the oneshot lands `failed`, which
+  `check_service_runtime_state` now tracks; the periodic `--health` watcher
+  stands down at WARNING with exit 0 (a reconcile in flight is when it has
+  nothing to observe — failing its unit on every deploy-arm collision would be a
+  false doctor positive).
 
 **Finding G resolved: Ring-A slot default is 2.** The production default is now
 `DEFAULT_FANIN_RING_SLOTS = 2` and the packaged `jts_ring_capture` conf.d block

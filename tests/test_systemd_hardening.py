@@ -43,6 +43,11 @@ ACCESSORY_RECONCILERS = {
     ),
 }
 
+# Per-unit TimeoutStartSec overrides; anything absent expects the 60s default.
+RECONCILE_ONESHOT_TIMEOUTS = {
+    "jasper-fanin-coupling-auto": "120",
+}
+
 RECONCILE_ONESHOTS = {
     "jasper-aec-reconcile": ROOT / "deploy/systemd/jasper-aec-reconcile.service",
     "jasper-accessory-reconcile": (
@@ -184,9 +189,17 @@ def test_reconcile_oneshots_have_bounded_start_timeout(unit, path):
     blocking child sneaks in; timeout turns that into an observable failure."""
     pairs = set(_directives(path))
     assert ("Type", "oneshot") in pairs
-    assert ("TimeoutStartSec", "60") in pairs, (
+    # jasper-fanin-coupling-auto holds the #1252 entry lock across its full
+    # pass (worst case ~75s+: <=10s lock wait + usbsink/outputd restarts + the
+    # coordinated camilla stop->fanin->start sequence + a possible 15s
+    # audio-hardware-reconcile kick); a kill mid-sequence leaves CamillaDSP
+    # cleanly stopped where OnFailure cannot catch it, so its timeout must
+    # outlast the pass (review #1252 SF-1). The other reconcilers keep 60.
+    expected_timeout = RECONCILE_ONESHOT_TIMEOUTS.get(unit, "60")
+    assert ("TimeoutStartSec", expected_timeout) in pairs, (
         f"{unit}: reconcile oneshots need a finite start timeout so startup "
-        "dependency mistakes fail visibly instead of wedging voice offline."
+        f"dependency mistakes fail visibly instead of wedging voice offline "
+        f"(expected TimeoutStartSec={expected_timeout})."
     )
 
 

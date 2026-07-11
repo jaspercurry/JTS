@@ -68,15 +68,17 @@ daemon (a brief all-source glitch), which is why it is change-gated, not polled.
 
 from __future__ import annotations
 
+import fcntl
 import logging
 from collections.abc import Callable
 import json
 import os
 import socket
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import IO, cast
 
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_runtime_plan import RouteMode, RuntimeEnvAction, fanin_coupling_action
@@ -128,6 +130,16 @@ AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 ACTIVE_LEADER_TRANSPORT_BLOCK_REASON = "active_leader_transport_pipe_coupling_unsupported"
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
+
+# Cross-invocation serialization of the reconcile ENTRY verbs (#1233 follow-up).
+# NOT under /run/jasper — that is jasper-voice's RuntimeDirectory, reaped on
+# every voice stop; a reaped+recreated lock file would hand a second holder a
+# fresh inode and defeat the exclusion exactly during deploys. Top-level /run is
+# root-only tmpfs and every entry path runs as root (both oneshot units,
+# install.sh, the sudo CLI). See :func:`_acquire_entry_lock`.
+ENTRY_LOCK_PATH = "/run/jasper-fanin-coupling.lock"
+ENTRY_LOCK_TIMEOUT_SECONDS = 10.0
+ENTRY_LOCK_POLL_SECONDS = 0.2
 
 # Activation gate for the experimental end-to-end pipe topology. The defaults
 # are intentionally short enough for an operator CLI, but long enough to catch
@@ -2942,6 +2954,102 @@ def read_persisted_coupling(env_path: str | Path = FANIN_ENV_PATH) -> str:
     return resolve_coupling(read_value(text, COUPLING_ENV_VAR))
 
 
+@dataclass(frozen=True)
+class EntryLock:
+    """Outcome of the entry-verb lock acquisition.
+
+    ``outcome`` is ``acquired`` (``fh`` holds the advisory flock — the caller
+    keeps it open for the WHOLE pass and closes it after), ``contended``
+    (another reconcile pass held the lock past the bounded wait — the caller
+    must abort loudly before touching env or daemons), or ``unavailable`` (the
+    lock file could not be opened — fail-open: proceed unserialized rather than
+    brick the reconcile; already logged at WARNING inside the helper).
+    ``detail`` carries the holder pid / open error for the log line.
+    """
+
+    outcome: str
+    fh: "IO[str] | None" = None
+    detail: str = ""
+
+
+def _acquire_entry_lock(
+    path: str | Path = ENTRY_LOCK_PATH,
+    *,
+    timeout_seconds: float = ENTRY_LOCK_TIMEOUT_SECONDS,
+    poll_seconds: float = ENTRY_LOCK_POLL_SECONDS,
+) -> EntryLock:
+    """Serialize the reconcile entry verbs (``--auto`` / ``--health`` / explicit)
+    behind one advisory flock.
+
+    WHY (#1233 adversarial review): ``jasper-fanin-coupling-auto.service``
+    (``--auto``) and ``jasper-fanin-combo-health.service`` (``--health``) are
+    independent ``Type=oneshot`` units with NO systemd ordering between them,
+    and install.sh / the operator CLI run the same verbs directly. Two
+    concurrent passes can interleave their ordered daemon transitions — worst
+    case, one pass's coordinated camilla stop -> fan-in restart -> camilla
+    start sequence (:func:`_restart_fanin_coordinated`) interleaved with the
+    other's bare fan-in restart reproduces exactly the RTTIME-SIGKILL cascade
+    #1233 fixed. One flock held for the whole pass makes the sequences atomic
+    with respect to each other. systemd already serializes concurrent starts of
+    the SAME unit; this lock covers the cross-unit and unit-vs-CLI pairs.
+
+    Bounded wait, never open-ended: contention past ``timeout_seconds`` returns
+    ``contended`` and the caller reacts before any env write or daemon op (no
+    partial state to unwind). Loudness is verb-specific
+    (:func:`_handle_entry_lock_contention`): ``--auto`` / explicit abort with
+    exit 1 (oneshot parks ``failed`` → doctor-visible); the periodic ``--health``
+    watcher stands down with exit 0 (a reconcile in flight is when it has nothing
+    to observe). The wait absorbs the common fast holder (a healthy ``--health``
+    tick, a confirm-path ``--auto``); a genuinely long transition in flight is
+    the case that SHOULD abort/skip rather than stack.
+
+    Fail-open on an unopenable lock file (missing /run on a dev host, a
+    non-root probe): a broken lock path must not brick reconciles — proceed
+    unserialized at WARNING. The holder stamps its pid into the file so the
+    contention log can name it.
+    """
+    p = Path(path)
+    try:
+        fd = os.open(p, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fh: IO[str] = os.fdopen(fd, "r+", encoding="utf-8")
+        except Exception:  # noqa: BLE001 - never leak the fd on a fdopen failure
+            os.close(fd)
+            raise
+    except OSError as e:
+        log_event(
+            logger, "fanin.coupling_reconcile", result="entry_lock_unavailable",
+            lock_path=str(p), error=e, level=logging.WARNING,
+        )
+        return EntryLock(outcome="unavailable", detail=str(e))
+    deadline = time.monotonic() + max(timeout_seconds, 0.0)
+    while True:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                try:
+                    fh.seek(0)
+                    holder = fh.read(64).strip()
+                except OSError:
+                    holder = ""
+                fh.close()
+                return EntryLock(
+                    outcome="contended",
+                    detail=f"held by pid {holder or 'unknown'}",
+                )
+            time.sleep(poll_seconds)
+    try:
+        fh.seek(0)
+        fh.truncate()
+        fh.write(f"{os.getpid()}\n")
+        fh.flush()
+    except OSError:
+        pass  # pid stamp is diagnostic only — never fail an acquired lock on it
+    return EntryLock(outcome="acquired", fh=fh)
+
+
 def main(argv: "list[str] | None" = None) -> int:
     """CLI: ``jasper-fanin-coupling-reconcile <loopback|transport_pipe|shm_ring>``
     (explicit operator choice), ``--auto`` (P3/P4 default resolution), or
@@ -2953,6 +3061,9 @@ def main(argv: "list[str] | None" = None) -> int:
     ``--health`` polls fan-in's direct-capture health and disarms the combo (leaving
     USB audio unavailable — no solo fallback) when it is broken at runtime for >= 2
     consecutive ticks.
+
+    Every verb runs under the shared entry flock (:func:`_acquire_entry_lock`)
+    so two passes can never interleave their ordered daemon transitions.
     """
     import argparse
 
@@ -3018,6 +3129,59 @@ def main(argv: "list[str] | None" = None) -> int:
         )
     if not any(_modes):
         parser.error("give an explicit coupling choice, --auto, or --health")
+
+    # Serialize the WHOLE pass against the sibling entry verbs (the two oneshot
+    # units + install.sh / operator CLI runs) — see _acquire_entry_lock. On
+    # contention past the bounded wait, do NOT touch env or daemons; the verb
+    # decides how loud (below).
+    lock = _acquire_entry_lock(
+        ENTRY_LOCK_PATH,
+        timeout_seconds=ENTRY_LOCK_TIMEOUT_SECONDS,
+        poll_seconds=ENTRY_LOCK_POLL_SECONDS,
+    )
+    if lock.outcome == "contended":
+        return _handle_entry_lock_contention(args, detail=lock.detail)
+    try:
+        return _run_entry_verb(args)
+    finally:
+        if lock.fh is not None:
+            lock.fh.close()
+
+
+def _handle_entry_lock_contention(args, *, detail: str = "") -> int:
+    """Report entry-lock contention, choosing loudness by verb.
+
+    ``--auto`` / an explicit coupling wanted to APPLY a change and could not, so
+    they abort LOUDLY — ERROR + exit 1, which parks the oneshot ``failed`` and
+    surfaces through ``check_service_runtime_state`` in the doctor. The periodic
+    ``--health`` watcher is different: a reconcile already in flight is exactly
+    when it has nothing to observe, so it STANDS DOWN — WARNING + exit 0. Failing
+    its unit on every collision with a deploy's ``--auto`` arm would be a false
+    doctor positive (install.sh runs ``--auto`` while the health timer ticks
+    every ~3 min). A real ``--health`` DISARM failure still exits 1: that path
+    acquires the lock and does work, so it never reaches here.
+    """
+    health = bool(args.health)
+    log_event(
+        logger, "fanin.coupling_reconcile",
+        result="entry_lock_contended_health_skip" if health
+        else "entry_lock_contended",
+        reason=args.reason, lock_path=ENTRY_LOCK_PATH,
+        timeout_seconds=ENTRY_LOCK_TIMEOUT_SECONDS,
+        detail=detail or None, level=logging.WARNING if health else logging.ERROR,
+    )
+    print(
+        "fan-in coupling reconcile: another reconcile pass holds "
+        f"{ENTRY_LOCK_PATH} ({detail or 'unknown holder'}); "
+        + ("skipped this health-watcher tick" if health else "aborted")
+        + f" after {ENTRY_LOCK_TIMEOUT_SECONDS:g}s without touching env or daemons.",
+        file=sys.stderr,
+    )
+    return 0 if health else 1
+
+
+def _run_entry_verb(args) -> int:
+    """Body of :func:`main` after arg validation — runs UNDER the entry lock."""
     # Hydrate os.environ from the wizard-owned env files (same set the daemons
     # load) BEFORE reconciling, so the camilla reconcile this triggers emits with
     # the persisted JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} etc. — not their
