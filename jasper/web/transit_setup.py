@@ -69,6 +69,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .. import google_routes, location_state, transit
 from ..bus import parse_bus_stops
 from ..transit import geocode as geocode_mod
+from ..transit.base import scrub_secrets
 from ..log_event import log_event
 from ._common import (
     begin_request,
@@ -372,7 +373,9 @@ def _apply_save(
                 {"JASPER_MTA_BUSTIME_KEY": new_key},
             )
         except Exception as e:  # noqa: BLE001
-            logger.warning("bus credential probe raised: %r", e)
+            # scrub_secrets: an unanticipated httpx error repr carries the
+            # full URL with ?key=<BusTime key>; never let it reach the log.
+            logger.warning("bus credential probe raised: %s", scrub_secrets(repr(e)))
             errors = {"JASPER_MTA_BUSTIME_KEY": "probe failed"}
         if errors:
             return current, (
@@ -749,8 +752,12 @@ def _bus_card_html(
     except transit.TransitError as e:
         error = str(e)
     except Exception as e:  # noqa: BLE001
-        logger.warning("bus stops fetch raised: %r", e)
-        error = f"unexpected error: {e}"
+        # scrub_secrets: an httpx error repr carries the full URL with
+        # ?key=<BusTime key>; scrub before it reaches the log OR the
+        # html.escape()-d error banner served on the household LAN.
+        safe = scrub_secrets(repr(e))
+        logger.warning("bus stops fetch raised: %s", safe)
+        error = f"unexpected error: {safe}"
 
     # SIRI-probe each candidate stop in parallel to enumerate the
     # routes ACTUALLY dispatching there. OBA's static `routes` field
@@ -969,8 +976,12 @@ def _citibike_card_html(
     except transit.TransitError as e:
         error = str(e)
     except Exception as e:  # noqa: BLE001
-        logger.warning("citibike stops fetch raised: %r", e)
-        error = f"unexpected error: {e}"
+        # Citi Bike is keyless (no live secret), but mirror the bus path's
+        # scrub discipline so an error repr with any URL is masked
+        # consistently in the log and the LAN-served error banner.
+        safe = scrub_secrets(repr(e))
+        logger.warning("citibike stops fetch raised: %s", safe)
+        error = f"unexpected error: {safe}"
 
     # Lazy-import via the runtime module — same cycle-break rationale
     # as in jasper.transit.providers.citibike (`jasper.citibike`'s
