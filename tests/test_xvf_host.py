@@ -329,6 +329,21 @@ def test_read_rejects_write_only_commands() -> None:
     assert fake.calls == []
 
 
+def test_control_timeout_stays_under_systemd_unit_start_default() -> None:
+    """jasper-aec-init is a boot-blocking Type=oneshot with no
+    TimeoutStartSec override, so systemd's ~90 s DefaultTimeoutStartSec
+    bounds unit start. A single wedged control transfer must not outlast
+    that (the old 100 s default could). Keep a comfortable margin — these
+    are millisecond-scale vendor control transfers, not DFU flashes."""
+    systemd_default_start_ms = 90_000
+    assert xvf_host.DEFAULT_TIMEOUT_MS < systemd_default_start_ms
+    # Margin: at least ~2× headroom below the systemd ceiling.
+    assert xvf_host.DEFAULT_TIMEOUT_MS <= systemd_default_start_ms // 2
+    # Still generous for a real small control transfer.
+    assert xvf_host.DEFAULT_TIMEOUT_MS >= 1_000
+    assert xvf_host.ReSpeaker.TIMEOUT == xvf_host.DEFAULT_TIMEOUT_MS
+
+
 def test_find_reports_missing_usb_dependency(monkeypatch) -> None:
     monkeypatch.setattr(xvf_host.sys, "platform", "linux")
     monkeypatch.setattr(xvf_host, "usb", None)

@@ -1142,6 +1142,78 @@ async def test_function_call_round_trip():
         await conn.stop()
 
 
+async def test_unserializable_tool_result_does_not_kill_the_turn():
+    """A tool returning a non-JSON-serializable payload must NOT crash
+    the dispatch (which would escalate to _receive_loop's broad except
+    and force a full session reconnect). The send is now guarded: it
+    emits a synthetic error function_call_output for the same call_id,
+    fires the round's response.create, and the connection is unchanged.
+    """
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+
+    @tool()
+    def broken_tool() -> dict:
+        """Returns something that can't be JSON-encoded."""
+        return {"bad": object()}
+    registry.register(broken_tool)
+
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+
+        sess.feed({
+            "type": "response.done",
+            "response": {
+                "id": "resp_1",
+                "usage": {"input_tokens": 10, "output_tokens": 4},
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_bad",
+                        "name": "broken_tool",
+                        "arguments": "{}",
+                    },
+                ],
+            },
+        })
+
+        # A function_call_output for call_bad is still sent (with an
+        # error output), and response.create still fires — the turn is
+        # not silently dropped.
+        await _wait_until(
+            lambda: any(
+                e.get("type") == "conversation.item.create"
+                and e.get("item", {}).get("type") == "function_call_output"
+                and e.get("item", {}).get("call_id") == "call_bad"
+                for e in sess.sent
+            ),
+            timeout=2.0,
+        )
+        item_create = next(
+            e for e in sess.sent
+            if e.get("type") == "conversation.item.create"
+            and e.get("item", {}).get("type") == "function_call_output"
+        )
+        # Output is a valid JSON string carrying an error, not a crash.
+        parsed = json.loads(item_create["item"]["output"])
+        assert "error" in parsed
+
+        await _wait_until(
+            lambda: any(e.get("type") == "response.create" for e in sess.sent),
+            timeout=2.0,
+        )
+
+        # Crucially: no reconnect happened — still exactly one connection.
+        assert len(factory.conns) == 1
+        assert not sess.closed
+
+        await turn.release()
+    finally:
+        await conn.stop()
+
+
 async def test_response_create_fired_only_once_per_tool_round_with_multiple_calls():
     """If the model emits multiple function_call items in one response
     (parallel_tool_calls), the dispatcher must send the

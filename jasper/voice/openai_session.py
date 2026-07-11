@@ -2208,14 +2208,41 @@ class OpenAIRealtimeConnection:
 
         if self._conn is not None and call_id:
             t_send = _time.monotonic()
-            await self._send_event({
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": json.dumps(payload),
-                },
-            })
+            # Serialize + wire-send guarded like the sibling sends
+            # (send_audio, end_input, …). A tool returning a payload that
+            # is not JSON-serializable would otherwise raise out of this
+            # unguarded send, propagate to _receive_loop's broad except,
+            # and force a full session reconnect. Contain it to this one
+            # tool: emit a synthetic error output so the server still sees
+            # a function_call_output for the call_id, and let the turn's
+            # single response.create proceed.
+            try:
+                output = json.dumps(payload)
+            except (TypeError, ValueError) as e:
+                logger.warning(
+                    "tool %s: result not JSON-serializable (%s: %s); "
+                    "sending error output instead of reconnecting",
+                    name, type(e).__name__, e,
+                )
+                output = json.dumps(
+                    {"error": f"tool result not serializable: {type(e).__name__}"}
+                )
+            try:
+                await self._send_event({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": output,
+                    },
+                })
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "tool %s: could not send function_call_output (%s: %s); "
+                    "next turn may be confused",
+                    name, type(e).__name__, e,
+                )
+                return
             send_ms = (_time.monotonic() - t_send) * 1000
             total_ms = (_time.monotonic() - t0) * 1000
             logger.info(
