@@ -42,6 +42,7 @@ _HARNESSES = [
     "capture_level_events_test.mjs",
     "capture_setup_store_test.mjs",
     "capture_protocol_test.mjs",
+    "capture_transport_integrity_test.mjs",
 ]
 
 
@@ -78,9 +79,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260711.2",
+        "capture_page_build": "20260711.3",
     }
-    assert "main.js?v=20260711-2" in index_html
+    assert "main.js?v=20260711-3" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh

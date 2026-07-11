@@ -18,6 +18,11 @@ they communicate only through the relay.
 
 The page **holds the microphone and the E2E `content_key`** (in its URL
 fragment). The `capture_spec` it renders arrives across the **untrusted relay**.
+The Pi binds the exact spec bytes to that fragment with HMAC-SHA-256, and
+protocol-v2 phone events are likewise authenticated before the Pi interprets
+page identity, acknowledgement, or `armed`; see
+[`js/transport-integrity.js`](js/transport-integrity.js). The relay may deny
+service, but it cannot silently rewrite those controls.
 So the page renders that spec as **DATA, never code** ([`js/render.js`](js/render.js)):
 a closed component vocabulary mapped to fixed element tags, all text via
 `textContent`, theme as allowlisted *tokens* mapped to fixed CSS, and button
@@ -35,11 +40,12 @@ sanitizes it again before rendering a plain navigation link to the local Pi page
 | `js/render.js` | Fixed DATA renderer (the security boundary) | `capture_render_test.mjs` |
 | `js/theme.js` | Theme token → fixed CSS value allowlist | (via render) |
 | `js/crypto.js` | AES-256-GCM encrypt + plaintext SHA-256 integrity | `capture_crypto_test.mjs` |
+| `js/transport-integrity.js` | Fragment-key-derived spec + phone-event HMAC | `capture_transport_integrity_test.mjs` |
 | `js/relay-client.js` | Phone-side relay requests (upload_token) | `capture_relay_client_test.mjs` |
 | `js/capture-protocol.js` | Public-page/Pi protocol compatibility (including the one legacy-v1 mapping) | `capture_protocol_test.mjs` |
 | `js/setup-store.js` | Privacy-bounded frozen setup reuse (sliding 20-minute idle, fixed 2-hour absolute expiry) | `capture_setup_store_test.mjs` |
 | `js/return-url.js` | Sanitized local-Pi return URL for the done CTA | `capture_return_url_test.mjs` |
-| `js/fragment.js` | Parse `#s=&u=&k=` (key never leaves the fragment) | `capture_fragment_test.mjs` |
+| `js/fragment.js` | Parse `#s=&u=&k=&a=` (key/spec MAC never leave the fragment) | `capture_fragment_test.mjs` |
 | `js/constraints.js` | Realized-constraints verify/degrade per the spec's per-kind policy | `capture_constraints_test.mjs` |
 | `js/wakelock.js` | Screen Wake Lock + `visibilitychange` abort | `capture_wakelock_test.mjs` |
 | `js/level-events.js` | Batched phone-side mic-level events for the level-match ramp | `capture_level_events_test.mjs` |

@@ -6,7 +6,7 @@
 // they are unit-testable in node (tests/js/capture_fragment_test.mjs).
 //
 // The Pi delivers the session handle in the URL FRAGMENT:
-//   https://capture.jasper.tech/#s=<session_id>&u=<upload_token>&k=<base64url key>
+//   https://capture.jasper.tech/#s=<session_id>&u=<upload_token>&k=<base64url key>&a=<spec MAC>
 // The fragment is the one part of the URL browsers never transmit to a server,
 // which is exactly why the E2E content_key (`k`) rides there — the relay never
 // receives it. `s` and `u` also ride the fragment so the relay logs never see
@@ -26,6 +26,7 @@ export function parseFragment(hash) {
   const sessionId = params.get("s") || "";
   const uploadToken = params.get("u") || "";
   const contentKeyB64 = params.get("k") || "";
+  const specMac = params.get("a") || "";
   if (!sessionId || !uploadToken || !contentKeyB64) {
     throw new FragmentError(
       "This measurement link is incomplete or expired. Start again from your speaker.",
@@ -36,7 +37,10 @@ export function parseFragment(hash) {
   if (!/^[A-Za-z0-9_-]{43,44}=?$/.test(contentKeyB64)) {
     throw new FragmentError("This measurement link is malformed. Start again from your speaker.");
   }
-  return { sessionId, uploadToken, contentKeyB64 };
+  if (specMac && !/^[A-Za-z0-9_-]{43}$/.test(specMac)) {
+    throw new FragmentError("This measurement link is malformed. Start again from your speaker.");
+  }
+  return { sessionId, uploadToken, contentKeyB64, specMac };
 }
 
 // Page half of the plan's "dual size cap" (§8): the page refuses to upload a

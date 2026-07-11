@@ -12,12 +12,12 @@
 // relay.
 
 import { RELAY_BASE } from "./config.js";
-import { parseFragment, withinUploadCap } from "./fragment.js";
+import { parseFragment, withinUploadCap } from "./fragment.js?v=20260711-3";
 import {
   acceptedAcknowledgement,
   renderScreen,
 } from "./render.js?v=20260711-1";
-import { RelayClient } from "./relay-client.js";
+import { RelayClient } from "./relay-client.js?v=20260711-3";
 import { importContentKey, encryptWav } from "./crypto.js";
 import { constraintDecision, verifyRealizedConstraints } from "./constraints.js";
 import { safeReturnUrl } from "./return-url.js";
@@ -25,8 +25,10 @@ import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
 import { runLevelRampProtocol } from "./level-events.js";
 import {
   assertCaptureProtocolCompatible,
+  requiredCaptureProtocol,
   validateCapturePageIdentity,
 } from "./capture-protocol.js";
+import { verifyAndParseCaptureSpec } from "./transport-integrity.js?v=20260711-3";
 import {
   loadBoundSetup,
   refreshBoundSetup,
@@ -1063,13 +1065,21 @@ async function boot() {
   let spec;
   try {
     setStatus("Connecting to your speaker…", "info");
-    const [pageIdentity, fetchedSpec] = await Promise.all([
+    const [pageIdentity, specText] = await Promise.all([
       loadCapturePageIdentity(),
-      client.fetchSpec(),
+      client.fetchSpecText(),
     ]);
-    spec = fetchedSpec;
+    const verified = await verifyAndParseCaptureSpec(specText, {
+      contentKeyB64: handle.contentKeyB64,
+      sessionId: handle.sessionId,
+      specMac: handle.specMac,
+    });
+    spec = verified.spec;
     assertCaptureProtocolCompatible(spec, pageIdentity);
     client.setCapturePageIdentity(pageIdentity);
+    client.setTransportIntegrity(verified.integrity, {
+      required: Number(requiredCaptureProtocol(spec)) >= 2,
+    });
   } catch (err) {
     setStatus(
       String(err && err.message || "").includes("incompatible")

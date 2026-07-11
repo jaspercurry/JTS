@@ -29,6 +29,7 @@ from jasper.capture_relay.cues import (
     MEASUREMENT_FAILED_CUE_SLUG,
     RELAY_UNREACHABLE_CUE_SLUG,
 )
+from jasper.capture_relay.integrity import authenticated_phone_event
 from jasper.capture_relay.session import (
     CaptureAborted,
     CaptureFailed,
@@ -131,6 +132,8 @@ class FakeRelayBackend:
         setup=None,
         acknowledgement=None,
         capture_page=None,
+        auth_session=None,
+        sequence=1,
     ):
         event = {
             "armed": True,
@@ -144,7 +147,16 @@ class FakeRelayBackend:
             event["setup"] = setup
         if acknowledgement is not None:
             event["acknowledgement"] = acknowledgement
-        self.sessions[sid]["event"] = event
+        self.sessions[sid]["event"] = (
+            authenticated_phone_event(
+                auth_session.content_key,
+                auth_session.session_id,
+                event,
+                sequence=sequence,
+            )
+            if auth_session is not None
+            else event
+        )
 
     def phone_setup_validate(self, sid, setup, *, token="setup-token"):
         self.sessions[sid]["event"] = {
@@ -204,6 +216,7 @@ def test_tap_link_carries_handle_in_fragment():
     assert params["s"] == session.session_id
     assert params["u"] == session.upload_token
     assert params["k"] == crypto.content_key_to_b64url(session.content_key)
+    assert params["a"]
 
 
 def test_register_stores_opaque_spec_string():
@@ -275,6 +288,7 @@ def test_required_acknowledgement_is_verified_before_stimulus():
             "binding_id": "wrong_binding_abcdefghijkl",
             "accepted": True,
         },
+        auth_session=session,
     )
     armed_calls = []
 
@@ -309,6 +323,8 @@ def test_required_acknowledgement_is_verified_before_stimulus():
             "binding_id": binding,
             "accepted": True,
         },
+        auth_session=session,
+        sequence=2,
     )
     result = run_capture(
         client,
@@ -377,6 +393,7 @@ def test_invalid_placement_acknowledgement_never_reaches_playback(
             "capture_page_build": "20260711.1",
         },
         acknowledgement=acknowledgement,
+        auth_session=session,
     )
     armed_calls = []
 
@@ -393,6 +410,79 @@ def test_invalid_placement_acknowledgement_never_reaches_playback(
     assert armed_calls == []
     assert backend.sessions[session.session_id]["host_event"]["phase"] == (
         "sweep_failed"
+    )
+
+
+@pytest.mark.parametrize("failure_mode", ["unsigned", "tampered", "other-session"])
+def test_protocol_two_control_integrity_fails_before_playback(failure_mode):
+    backend = FakeRelayBackend()
+    binding = "placement_abcdefghijklmnopqrstuv"
+    session = mint_session(
+        build_crossover_sweep_spec(
+            driver_label="Woofer driver",
+            driver_role="woofer",
+            acknowledgement_binding=binding,
+        ),
+        relay_base="https://relay.test",
+        capture_origin="capture.test",
+    )
+    client = RelayClient("https://relay.test", transport=backend)
+    register_session(client, session)
+    page_v2 = {
+        **_CAPTURE_PAGE,
+        "capture_protocol_version": 2,
+        "supported_capture_protocol_versions": [1, 2],
+        "capture_page_build": "20260711.3",
+    }
+    acknowledgement = {
+        "schema_version": 1,
+        "id": "driver_same_distance_v1",
+        "binding_id": binding,
+        "accepted": True,
+    }
+    if failure_mode == "unsigned":
+        backend.phone_arm(
+            session.session_id,
+            capture_page=page_v2,
+            acknowledgement=acknowledgement,
+        )
+    elif failure_mode == "other-session":
+        other = mint_session(
+            session.spec,
+            relay_base="https://relay.test",
+            capture_origin="capture.test",
+        )
+        backend.phone_arm(
+            session.session_id,
+            capture_page=page_v2,
+            acknowledgement=acknowledgement,
+            auth_session=other,
+        )
+    else:
+        backend.phone_arm(
+            session.session_id,
+            capture_page=page_v2,
+            acknowledgement=acknowledgement,
+            auth_session=session,
+        )
+        envelope = backend.sessions[session.session_id]["event"][
+            "authenticated_event"
+        ]
+        envelope["payload"] = envelope["payload"].replace("\"armed\":true", "\"armed\":false")
+
+    armed_calls = []
+    with pytest.raises(CaptureFailed, match="control integrity"):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: armed_calls.append(True),
+            poll_interval_s=0.0,
+            timeout_s=5.0,
+            sleep=lambda _s: None,
+        )
+    assert armed_calls == []
+    assert backend.sessions[session.session_id]["host_event"]["phase"] == (
+        "capture_incompatible"
     )
 
 

@@ -28,6 +28,9 @@ export class RelayClient {
     this.sessionId = sessionId;
     this.uploadToken = uploadToken;
     this.capturePageIdentity = null;
+    this.transportIntegrity = null;
+    this.authenticatedEventsRequired = false;
+    this._eventSequence = 0;
     this._fetch = fetchImpl || ((...a) => globalThis.fetch(...a));
   }
 
@@ -43,6 +46,17 @@ export class RelayClient {
       ) ? identity.supported_capture_protocol_versions.map(Number) : [],
       capture_page_build: String(identity.capture_page_build || ""),
     });
+  }
+
+  setTransportIntegrity(integrity, { required = false } = {}) {
+    if (
+      !integrity ||
+      typeof integrity.authenticatePhoneEvent !== "function"
+    ) {
+      throw new Error("capture transport integrity helper required");
+    }
+    this.transportIntegrity = integrity;
+    this.authenticatedEventsRequired = Boolean(required);
   }
 
   _url(suffix) {
@@ -67,14 +81,19 @@ export class RelayClient {
     );
   }
 
-  // Fetch the opaque spec and parse it HERE (the relay never parsed it).
-  async fetchSpec() {
+  // Fetch the exact opaque spec bytes. Integrity is checked before JSON parsing
+  // by the page orchestrator; the relay never parses this string.
+  async fetchSpecText() {
     const res = await this._fetch(this._url("/spec"), {
       method: "GET",
       headers: this._authHeaders(),
     });
     if (!res.ok) throw await this._failure(res);
-    return res.json();
+    return res.text();
+  }
+
+  async fetchSpec() {
+    return JSON.parse(await this.fetchSpecText());
   }
 
   // Drop a relay-control event (e.g. {armed:true}) the Pi polls for.
@@ -82,10 +101,22 @@ export class RelayClient {
     if (!this.capturePageIdentity) {
       throw new Error("capture page compatibility was not established");
     }
+    const payload = { ...event, capture_page: this.capturePageIdentity };
+    let body = payload;
+    if (this.authenticatedEventsRequired) {
+      if (!this.transportIntegrity) {
+        throw new Error("authenticated capture events are not configured");
+      }
+      this._eventSequence += 1;
+      body = await this.transportIntegrity.authenticatePhoneEvent(
+        payload,
+        this._eventSequence,
+      );
+    }
     const res = await this._fetch(this._url("/event"), {
       method: "POST",
       headers: this._authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ ...event, capture_page: this.capturePageIdentity }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) throw await this._failure(res);
     return res.json();

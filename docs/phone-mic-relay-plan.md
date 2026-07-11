@@ -388,7 +388,7 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
 
 `content_key` (AES-256-GCM) is minted by the **Pi** and delivered to the phone
 **only in the URL fragment** of the tap-link
-(`https://capture.jasper.tech/#s=<id>&u=<upload_token>&k=<base64url(content_key)>`).
+(`https://capture.jasper.tech/#s=<id>&u=<upload_token>&k=<base64url(content_key)>&a=<spec_mac>`).
 The fragment is the one part of a URL that **browsers never transmit to any
 server** — so the key reaches the page's JavaScript (which uses it to encrypt the
 WAV) while the relay, which only ever sees what is *sent* in requests, **never
@@ -403,12 +403,32 @@ calibration file text. This metadata is bounded, token-gated, TTL-limited, and
 deleted after pull, but it is not end-to-end encrypted by the WAV `content_key`.
 Do not put room audio or long-lived secrets in control events.
 
-### Tokens gate the channel, not the integrity of the content
+### End-to-end control integrity (the relay is not an authority)
 
 `upload_token` / `pull_token` authenticate *who may access* a session. They do
 **not** prove the *content* was not swapped — a compromised relay passes its own
-token check **and** serves whatever content it likes. This is the crux of the next
-point.
+token check **and** serves whatever content it likes. JTS therefore derives a
+separate HMAC-SHA-256 key from the fragment-only `content_key`:
+
+- The Pi MACs the **exact opaque capture-spec bytes**, bound to `session_id`, and
+  puts that tag in the phone-link fragment as `a=`. The page verifies the tag
+  before parsing or rendering the spec. The relay can withhold the spec, but it
+  cannot change instructions, protocol, acknowledgement binding, or return URL
+  without a visible integrity failure.
+- Protocol-v2 phone events are one relay-opaque authenticated envelope. The MAC
+  covers the exact JSON payload, a monotonic sequence, and `session_id`. The Pi
+  verifies that envelope **before** reading page identity, setup, device,
+  acknowledgement, abort, or `armed`; relay edits and prior-session replay fail
+  before a host callback can play audio.
+- Protocol 1 remains readable for old Pi/page pairs, but raw protocol-1 events
+  cannot satisfy a protocol-v2 session or create v2 crossover evidence. New Pi
+  links carry the spec MAC for every kind, including protocol 1.
+
+The matching reusable implementations are
+`capture-page/js/transport-integrity.js` and
+`jasper/capture_relay/integrity.py`. The Worker remains byte-opaque and holds no
+new secret. This is integrity/authenticity, not metadata confidentiality: the
+relay can still see bounded control-event JSON.
 
 ### Why the UI is DATA, not CODE (the load-bearing rule)
 
@@ -600,8 +620,9 @@ pairing proof, not a guess based on the Pages dashboard.
 4. **Pi**: register, render tap-link, poll, apply phone setup, publish host
    progress, pull, decrypt, verify, feed existing analysis; wire `{armed}` →
    stimulus playback.
-5. **E2E encryption** (WebCrypto on the phone / AES-GCM on the Pi) + **integrity**
-   (length + SHA-256).
+5. **E2E encryption** (WebCrypto on the phone / AES-GCM on the Pi), WAV
+   **integrity** (length + SHA-256), and fragment-key-derived HMAC integrity for
+   the exact spec plus protocol-v2 phone control events.
 6. **Measurement-validity gates**: realized-constraints verify + device-capability
    fallback; **alignment-confidence** check; per-kind clock-drift handling.
 7. **Failure states**; relay-unreachable messaging; **Screen Wake Lock** +
@@ -641,10 +662,15 @@ pairing proof, not a guess based on the Pages dashboard.
 - The **UI renders only from data** (no executable markup path): a payload
   containing `<script>` / `onerror=` / `javascript:` is rendered inert (escaped
   text), never executed. A regression test asserts this.
+- A relay-modified spec, raw/modified protocol-v2 event, or authenticated event
+  replayed from another session fails before `on_armed` can play a stimulus.
 
 ---
 
-Last updated: 2026-07-10 — the level stage now preflights and freezes microphone,
+Last updated: 2026-07-11 — capture specs are now MAC-bound to their fragment
+links and protocol-v2 phone events are authenticated end to end before any
+correctness-critical field can reach playback; protocol 1 remains compatible
+but cannot satisfy v2 evidence. The level stage now preflights and freezes microphone,
 calibration, and room-count setup once; successful leveling restores listening
 volume immediately, sweeps assert the retained target only inside their guarded
 playback windows, and later room links are capture-only with compact binding and
