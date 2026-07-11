@@ -2837,6 +2837,19 @@ def main(argv: "list[str] | None" = None) -> int:
     """
     import argparse
 
+    # This CLI is the systemd-oneshot entrypoint (jasper-fanin-coupling-auto /
+    # jasper-fanin-combo-health), so its journal is where the module's INFO-level
+    # ``event=`` lines land — the #1233 camilla pause/resume evidence,
+    # auto_resolved, the --health ``recovered`` transition. Without a configured
+    # handler the root logger falls back to Python's lastResort handler
+    # (WARNING+), silently dropping all of them. The --health healthy-tick
+    # journal-quiet guarantee is unaffected: a quiet tick emits no log_event at
+    # all (decide_health_tick returns transition=""), not a below-threshold one.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     parser = argparse.ArgumentParser(
         prog="jasper-fanin-coupling-reconcile",
         description="Arm/disarm the fan-in -> CamillaDSP coupling in order.",
