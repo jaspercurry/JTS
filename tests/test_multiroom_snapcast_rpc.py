@@ -274,6 +274,47 @@ def test_probe_cache_caches_failures_too():
     assert len(calls) == 1  # the failure was served from cache
 
 
+def test_probe_cache_does_not_hold_lock_across_rpc():
+    """Concurrent callers on a cold cache must both be able to enter the
+    (blocking) RPC — the reader must NOT hold the lock across the network
+    call, or a hung snapserver serializes /state + /rooms.json behind one
+    in-flight probe."""
+    import threading
+
+    from jasper.multiroom.snapcast_rpc import _ProbeCache
+
+    both_in_rpc = threading.Barrier(2, timeout=2.0)
+    entered: list[str] = []
+
+    def slow_transport(method, params=None, *, url=None):
+        entered.append(method)
+        # If the RPC ran UNDER the cache lock, the second caller could never
+        # reach here concurrently and this barrier would time out (raising
+        # BrokenBarrierError, captured below → the test fails).
+        both_in_rpc.wait()
+        return _status([_group("g", "jts", [_client("jts")])])
+
+    cache = _ProbeCache(ttl_sec=60.0)
+    results: list[object] = []
+    errors: list[Exception] = []
+
+    def worker():
+        try:
+            results.append(cache.read(transport=slow_transport, now=lambda: 0.0))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(3.0)
+
+    assert not errors, errors  # barrier held → both were inside the RPC at once
+    assert len(entered) == 2
+    assert all(r is not None for r in results)
+
+
 def test_probe_cache_returns_defensive_copies():
     """A caller mutating the returned rows must not poison the cache for
     other callers in the same TTL window."""

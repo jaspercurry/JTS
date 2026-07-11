@@ -230,18 +230,31 @@ class _ProbeCache:
     ) -> list[dict[str, Any]] | None:
         with self._lock:
             t = now()
-            if self._at is None or (t - self._at) >= self._ttl:
-                self._value = read_stream_clients(url=url, transport=transport)
-                self._at = t
-            # Defensive copy: the cached rows are handed to every caller
-            # in the TTL window — a caller mutating a row must never
-            # poison the cache for the others. Today's one consumer
-            # (derive_grouping_runtime) is pure, but that is a contract
-            # this copy makes unnecessary to rely on. Cheap: a bond has
-            # a handful of clients.
-            if self._value is None:
-                return None
-            return [dict(row) for row in self._value]
+            if self._at is not None and (t - self._at) < self._ttl:
+                return self._copy_locked()
+        # Stale (or cold): probe OUTSIDE the lock so a HUNG-accepting
+        # snapserver (up to _RPC_TIMEOUT_SEC per call) cannot serialize
+        # concurrent /state + /rooms.json callers behind one in-flight
+        # RPC — the reader must not hold the lock across the network call.
+        # A rare double-probe on a cold window is harmless (mirrors
+        # airplay_latency.cached_notified_frames). Failures are cached too
+        # (self._value = None), so a down server is not re-probed per poll.
+        fetched = read_stream_clients(url=url, transport=transport)
+        at = now()
+        with self._lock:
+            self._value = fetched
+            self._at = at
+            return self._copy_locked()
+
+    def _copy_locked(self) -> list[dict[str, Any]] | None:
+        # Defensive copy: the cached rows are handed to every caller in the
+        # TTL window — a caller mutating a row must never poison the cache
+        # for the others. Today's one consumer (derive_grouping_runtime) is
+        # pure, but that is a contract this copy makes unnecessary to rely
+        # on. Cheap: a bond has a handful of clients. Caller holds the lock.
+        if self._value is None:
+            return None
+        return [dict(row) for row in self._value]
 
 
 _probe_cache = _ProbeCache()
