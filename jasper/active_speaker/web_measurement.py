@@ -380,6 +380,7 @@ def record_driver_capture(
         sweep_meta=capture_sweep_meta(raw),
         playback_id=_playback_id(raw),
         test_level_dbfs=raw.get("test_level_dbfs"),
+        excitation=_mapping_value(raw.get("excitation")),
         has_mic_calibration=(
             bool(raw.get("has_mic_calibration")) or calibration_curve is not None
         ),
@@ -397,6 +398,10 @@ def record_driver_capture(
         group_id=group_id,
         role=role,
         verdict=payload.get("verdict"),
+        excitation_source=(payload.get("excitation") or {}).get("gain_source"),
+        effective_peak_dbfs=(payload.get("excitation") or {}).get(
+            "effective_peak_dbfs"
+        ),
     )
     return payload
 
@@ -426,6 +431,7 @@ def record_summed_capture(
         crossover_fc_hz=raw.get("crossover_fc_hz"),
         summed_test_id=_summed_test_id(raw),
         playback_id=_playback_id(raw),
+        excitation=_mapping_value(raw.get("excitation")),
         polarity=raw.get("polarity"),
         delay_ms=raw.get("delay_ms"),
         delay_target_role=raw.get("delay_target_role"),
@@ -445,5 +451,7 @@ def record_summed_capture(
         status="recorded" if payload.get("recorded") else "not_recorded",
         group_id=group_id,
         verdict=payload.get("verdict"),
+        excitation_source=(payload.get("excitation") or {}).get("gain_source"),
+        excitation_scope=(payload.get("excitation") or {}).get("scope"),
     )
     return payload

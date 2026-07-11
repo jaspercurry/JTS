@@ -2820,10 +2820,14 @@ async def _run_relay_level_match(
                     )
                 await asyncio.sleep(0.1)
 
+            from jasper.audio_measurement.excitation import (
+                AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+            )
+
             tone_wav = playback._ensure_tone_wav(
                 freq_hz=1000.0,
                 duration_s=90.0,
-                dbfs=-12.0,
+                dbfs=AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
                 sample_rate=48000,
             )
             player = playback.TonePlayer(tone_wav)
@@ -2986,6 +2990,7 @@ def _handle_crossover_relay_level_match(
     from jasper.correction.level_match import MicGeometry
 
     from . import correction_crossover_backend as backend
+    from . import correction_crossover_flow
 
     relay_base = _require_relay_base()
     status = backend.status_payload()
@@ -3000,6 +3005,14 @@ def _handle_crossover_relay_level_match(
     blocking = _crossover_blocking_phase()
     if blocking is not None:
         raise ValueError(f"another measurement is in progress ({blocking})")
+    status = correction_crossover_flow.ensure_automatic_measurement_profile(
+        status,
+        _run_async,
+        _camilla,
+        status_loader=backend.status_payload,
+    )
+    raw_setup = status.get("setup")
+    setup = raw_setup if isinstance(raw_setup, dict) else {}
     raw_setup_profile = setup.get("protected_profile")
     setup_profile = raw_setup_profile if isinstance(raw_setup_profile, dict) else {}
     context_id = str(setup_profile.get("source_fingerprint") or "") or None

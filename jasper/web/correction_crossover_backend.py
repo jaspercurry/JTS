@@ -50,6 +50,7 @@ class CrossoverLevelLease:
         self.input_device = None
 
     async def run_level_match(self, geometry: str, **ports: Any) -> Any:
+        from jasper.audio_measurement.ramp import MeasurementRamp
         from jasper.correction.level_match import LevelMatchSession
 
         # The correction session adapter supplies these scheduler ports itself;
@@ -77,6 +78,7 @@ class CrossoverLevelLease:
         run = LevelMatchSession(
             session_id=self.session_id,
             store=self.level_lock_store,
+            config=MeasurementRamp.from_env(allow_bounded_low_level=True),
         )
         self._running = run
         try:

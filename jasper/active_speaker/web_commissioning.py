@@ -95,8 +95,13 @@ SUMMED_COMMISSION_TONE_BACKEND = "correction_substream_summed_tone"
 SUMMED_COMMISSION_SPEECH_BACKEND = "correction_substream_summed_speech"
 DRIVER_CAPTURE_SWEEP_BACKEND = "correction_substream_driver_sweep"
 SUMMED_CAPTURE_SWEEP_BACKEND = "correction_substream_summed_sweep"
+AUTOMATIC_EXCITATION_GAIN_SOURCE = "applied_baseline_recomposition_snapshot"
 DEFAULT_MEASUREMENT_SWEEP_DIR = Path("/var/lib/jasper/active_speaker_sweeps")
 MEASUREMENT_SWEEP_DIR_ENV = "JASPER_ACTIVE_SPEAKER_SWEEP_DIR"
+DEFAULT_AUTOMATIC_SUMMED_CONFIG_PATH = Path(
+    "/var/lib/camilladsp/configs/active_speaker_automatic_summed_measurement.yml"
+)
+AUTOMATIC_SUMMED_CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_SUMMED_MEASUREMENT_CONFIG"
 COMMISSION_TONE_MUX_SOCKET = os.environ.get(
     "JASPER_MUX_CONTROL_SOCKET", "/run/jasper-mux/control.sock",
 )
@@ -1217,6 +1222,173 @@ async def _rollback_summed_commissioning_config(
     )
 
 
+async def _load_applied_summed_measurement_config(
+    *,
+    topology: OutputTopology,
+    camilla_factory: CamillaFactory,
+) -> dict[str, Any]:
+    """Load a transient full Layer-A graph strictly from its applied snapshot."""
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+        recompose_applied_baseline_yaml,
+    )
+    from jasper.dsp_apply import validate_camilla_config
+
+    applied = _dict_value(load_applied_baseline_profile_state())
+    excitation = automatic_summed_excitation(topology, applied)
+    if excitation.get("status") != "ready":
+        return {
+            "status": "blocked",
+            "load": {
+                "status": "blocked",
+                "issues": [_issue(
+                    str(excitation.get("reason")),
+                    str(excitation.get("detail")),
+                )],
+            },
+            "excitation": excitation,
+        }
+    target = Path(
+        os.environ.get(AUTOMATIC_SUMMED_CONFIG_PATH_ENV)
+        or DEFAULT_AUTOMATIC_SUMMED_CONFIG_PATH
+    )
+    _yaml, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        out_path=target,
+    )
+    if issues:
+        return {
+            "status": "blocked",
+            "load": {"status": "blocked", "issues": issues},
+            "excitation": excitation,
+        }
+    validation = validate_camilla_config(target)
+    if not validation.ok_to_apply:
+        return {
+            "status": "blocked",
+            "load": {
+                "status": "blocked",
+                "issues": [_issue(
+                    "automatic_summed_config_validation_failed",
+                    "the applied crossover measurement graph failed validation",
+                )],
+            },
+            "validation": validation.to_dict(),
+            "excitation": excitation,
+        }
+    cam = camilla_factory()
+    previous = await cam.get_config_file_path(best_effort=False)
+    if not previous:
+        return {
+            "status": "blocked",
+            "load": {
+                "status": "blocked",
+                "issues": [_issue(
+                    "automatic_summed_rollback_anchor_missing",
+                    "the current DSP graph could not be saved for rollback",
+                )],
+            },
+            "validation": validation.to_dict(),
+            "excitation": excitation,
+        }
+
+    async def _restore_previous_after_failed_load() -> dict[str, Any]:
+        try:
+            restored = await cam.set_config_file_path(
+                str(previous), best_effort=False
+            )
+        except _COMMISSION_OPERATION_ERRORS as exc:
+            return {"status": "failed", "error": str(exc)}
+        return {
+            "status": "rolled_back" if restored is True else "failed",
+            "config_path": str(previous),
+        }
+
+    def _failed_load_payload(
+        *,
+        message: str,
+        rollback: dict[str, Any],
+        failure_mode: str,
+    ) -> dict[str, Any]:
+        issues = [_issue(
+            "automatic_summed_config_load_failed",
+            message,
+        )]
+        if rollback.get("status") != "rolled_back":
+            rollback_issue = _issue(
+                "automatic_summed_config_rollback_failed",
+                (
+                    "JTS could not restore the prior DSP graph after the "
+                    "measurement graph failed to load. Stop measuring and "
+                    "reapply the speaker profile before playing audio."
+                ),
+            )
+            # Lead with the hardware-safety action: playback_issue_text and the
+            # wizard render the first blocker as the operator-facing refusal.
+            issues.insert(0, rollback_issue)
+            log_event(
+                logger,
+                "active_speaker.automatic_summed_config_rollback",
+                level=logging.WARNING,
+                status="failed",
+                failure_mode=failure_mode,
+                previous_config_path=str(previous),
+                error=rollback.get("error"),
+            )
+        return {
+            "status": "blocked",
+            "load": {"status": "blocked", "issues": issues},
+            "validation": validation.to_dict(),
+            "excitation": excitation,
+            "rollback": rollback,
+        }
+
+    try:
+        loaded = await cam.set_config_file_path(str(target), best_effort=False)
+    except _COMMISSION_OPERATION_ERRORS as exc:
+        rollback = await _restore_previous_after_failed_load()
+        return _failed_load_payload(
+            message=f"the applied crossover measurement graph did not load: {exc}",
+            rollback=rollback,
+            failure_mode="load_exception",
+        )
+    if loaded is not True:
+        rollback = await _restore_previous_after_failed_load()
+        return _failed_load_payload(
+            message="the applied crossover measurement graph did not load",
+            rollback=rollback,
+            failure_mode="load_returned_false",
+        )
+    return {
+        "status": "loaded",
+        "load": {
+            "status": "loaded",
+            "config_path": str(target),
+            "previous_config_path": str(previous),
+            "rollback_available": True,
+            "graph_source": AUTOMATIC_EXCITATION_GAIN_SOURCE,
+        },
+        "validation": validation.to_dict(),
+        "excitation": excitation,
+    }
+
+
+async def _rollback_applied_summed_measurement_config(
+    load_payload: dict[str, Any],
+    *,
+    camilla_factory: CamillaFactory,
+) -> dict[str, Any]:
+    previous = _dict_value(load_payload.get("load")).get("previous_config_path")
+    if not previous:
+        raise RuntimeError("automatic summed measurement has no rollback anchor")
+    cam = camilla_factory()
+    restored = await cam.set_config_file_path(str(previous), best_effort=False)
+    if restored is not True:
+        raise RuntimeError("automatic summed measurement rollback was rejected")
+    return {"status": "rolled_back", "config_path": str(previous)}
+
+
 def _summed_playback_with_issue(
     playback: dict[str, Any],
     *,
@@ -1299,6 +1471,190 @@ def _refused_capture_sweep(reason: str, message: str) -> dict[str, Any]:
     }
 
 
+def automatic_driver_excitation(
+    topology: OutputTopology,
+    role: str,
+    *,
+    applied_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve automatic driver excitation from the immutable applied Layer A.
+
+    Manual floor-confirmation gains are intentionally not inputs. They prove
+    that the operator heard the intended driver, but their quiet discovery
+    floor (-20/-60 dB in legacy records) is not an acoustic measurement level.
+    The automatic level tone calibrated the protected applied graph, so an
+    isolated ESS must use that same graph's role gain.
+    """
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+    from jasper.audio_measurement.excitation import (
+        AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+    )
+
+    loaded_profile = (
+        applied_profile
+        if applied_profile is not None
+        else load_applied_baseline_profile_state()
+    )
+    profile = _dict_value(loaded_profile)
+    validated = validated_applied_measurement_snapshot(topology, profile)
+    if validated.get("status") != "ready":
+        return validated
+    snapshot = _dict_value(validated.get("snapshot"))
+    corrections = snapshot.get("corrections")
+    role_values = (
+        corrections.get(role)
+        if isinstance(corrections, dict)
+        else None
+    )
+    role_gain_db = (
+        _finite(role_values.get("gain_db"))
+        if isinstance(role_values, dict)
+        else None
+    )
+    if role_gain_db is None:
+        return {
+            "status": "blocked",
+            "reason": "automatic_crossover_applied_excitation_unavailable",
+            "detail": (
+                f"the protected applied speaker profile has no safe gain for {role}; "
+                "reapply the crossover before measuring"
+            ),
+        }
+    return {
+        "status": "ready",
+        "schema_version": 1,
+        "scope": "sweep_plus_role_varying_commission_gain",
+        "sweep_peak_dbfs": AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+        "commissioning_gain_db": role_gain_db,
+        "effective_peak_dbfs": (
+            AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS + role_gain_db
+        ),
+        "gain_source": AUTOMATIC_EXCITATION_GAIN_SOURCE,
+        "baseline_id": str(profile.get("baseline_id") or ""),
+        "topology_id": topology.topology_id,
+        "role": role,
+    }
+
+
+def automatic_summed_excitation(
+    topology: OutputTopology,
+    applied_profile: dict[str, Any],
+) -> dict[str, Any]:
+    """Describe the immutable full Layer-A graph used by a summed ESS."""
+    from jasper.audio_measurement.excitation import (
+        AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+    )
+
+    validated = validated_applied_measurement_snapshot(topology, applied_profile)
+    if validated.get("status") != "ready":
+        return validated
+    snapshot = _dict_value(validated.get("snapshot"))
+    corrections = _dict_value(snapshot.get("corrections"))
+    normalized: dict[str, dict[str, Any]] = {}
+    for role, raw in corrections.items():
+        gain = _finite(raw.get("gain_db")) if isinstance(raw, dict) else None
+        delay = _finite(raw.get("delay_ms")) if isinstance(raw, dict) else None
+        inverted = raw.get("inverted") if isinstance(raw, dict) else None
+        if gain is None or delay is None or not isinstance(inverted, bool):
+            return {
+                "status": "blocked",
+                "reason": "automatic_crossover_applied_excitation_unavailable",
+                "detail": f"the applied crossover has no safe correction for {role}",
+            }
+        normalized[str(role)] = {
+            "gain_db": gain,
+            "delay_ms": delay,
+            "inverted": inverted,
+            "effective_peak_dbfs": (
+                AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS + gain
+            ),
+        }
+    return {
+        "status": "ready",
+        "schema_version": 1,
+        "scope": "sweep_plus_applied_full_layer_a_graph",
+        "sweep_peak_dbfs": AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+        "gain_source": AUTOMATIC_EXCITATION_GAIN_SOURCE,
+        "baseline_id": str(applied_profile.get("baseline_id") or ""),
+        "topology_id": topology.topology_id,
+        "corrections": normalized,
+    }
+
+
+def validated_applied_measurement_snapshot(
+    topology: OutputTopology,
+    applied_profile: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the canonical full applied snapshot or its stable refusal."""
+    from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+    from jasper.active_speaker.crossover_contract import crossover_snapshot_state
+
+    state = crossover_snapshot_state(
+        applied_profile,
+        expected_topology_id=topology.topology_id,
+        expected_topology_fingerprint=topology_config_fingerprint(topology),
+        expected_domain="full",
+    )
+    if state.get("valid") is not True:
+        return {
+            "status": "blocked",
+            "reason": str(
+                state.get("reason")
+                or "automatic_crossover_applied_excitation_unavailable"
+            ),
+            "detail": str(
+                state.get("detail")
+                or "reapply the protected crossover before measuring"
+            ),
+        }
+    return {
+        "status": "ready",
+        "snapshot": applied_profile.get("recomposition_snapshot"),
+        "snapshot_state": state,
+    }
+
+
+def _played_excitation_ledger(
+    planned: dict[str, Any],
+    sweep_meta: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind planned applied gain to the actual generated sweep metadata."""
+    actual_peak = _finite(sweep_meta.get("amplitude_dbfs"))
+    planned_peak = _finite(planned.get("sweep_peak_dbfs"))
+    scope = planned.get("scope")
+    gain = _finite(planned.get("commissioning_gain_db"))
+    if (
+        planned.get("status") != "ready"
+        or actual_peak is None
+        or planned_peak is None
+        or abs(actual_peak - planned_peak) > 1e-6
+        or (
+            scope == "sweep_plus_role_varying_commission_gain"
+            and gain is None
+        )
+        or scope
+        not in {
+            "sweep_plus_role_varying_commission_gain",
+            "sweep_plus_applied_full_layer_a_graph",
+        }
+    ):
+        raise RuntimeError(
+            "automatic crossover sweep excitation does not match the level tone"
+        )
+    ledger = {
+        key: value
+        for key, value in {
+            **planned,
+            "status": None,
+            "sweep_peak_dbfs": actual_peak,
+        }.items()
+        if value is not None
+    }
+    if gain is not None:
+        ledger["effective_peak_dbfs"] = actual_peak + gain
+    return ledger
+
+
 async def _load_driver_commissioning_config_for_level(
     *,
     topology: OutputTopology,
@@ -1358,6 +1714,8 @@ async def _play_capture_sweep(
     level_dbfs: float,
     load_payload: dict[str, Any],
     camilla_factory: CamillaFactory,
+    planned_excitation: dict[str, Any] | None = None,
+    rollback_capture_config: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     from jasper.correction.playback import play_sweep
 
@@ -1367,6 +1725,11 @@ async def _play_capture_sweep(
     rollback_issue: dict[str, str] | None = None
     try:
         wav_path, sweep_meta = _measurement_sweep_wav_path()
+        excitation = (
+            _played_excitation_ledger(planned_excitation, sweep_meta)
+            if isinstance(planned_excitation, dict)
+            else None
+        )
         duration_s = float(sweep_meta.get("duration_s") or 6.0)
         fanin_gate = _commission_tone_select_fanin_lane()
         await play_sweep(
@@ -1382,6 +1745,7 @@ async def _play_capture_sweep(
             "confirmable": True,
             "target": target,
             "sweep_meta": sweep_meta,
+            "excitation": excitation,
             "tone": {"level_dbfs": level_dbfs},
             "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
             "commissioning_load": load_payload,
@@ -1397,6 +1761,7 @@ async def _play_capture_sweep(
             "confirmable": False,
             "target": target,
             "sweep_meta": sweep_meta,
+            "excitation": None,
             "tone": {"level_dbfs": level_dbfs},
             "audio_device": {"pcm": COMMISSION_TONE_ALSA_DEVICE},
             "commissioning_load": load_payload,
@@ -1407,8 +1772,12 @@ async def _play_capture_sweep(
         if fanin_gate is not None:
             _commission_tone_release_fanin_lane(reason="capture_sweep")
         try:
-            rollback = await _rollback_summed_commissioning_config(
-                camilla_factory=camilla_factory,
+            rollback = await (
+                rollback_capture_config()
+                if rollback_capture_config is not None
+                else _rollback_summed_commissioning_config(
+                    camilla_factory=camilla_factory,
+                )
             )
         except _COMMISSION_OPERATION_ERRORS as exc:
             log_event(
@@ -1478,9 +1847,22 @@ async def play_driver_capture_sweep(
             "the driver confirmation expired; play and confirm the driver again",
         )
 
-    level = _finite(latest.get("test_level_dbfs"))
-    if level is None:
-        level = clamp_test_level_dbfs(None)
+    planned_excitation = automatic_driver_excitation(topology, role)
+    if planned_excitation.get("status") != "ready":
+        return _refused_capture_sweep(
+            str(
+                planned_excitation.get("reason")
+                or "automatic_crossover_applied_excitation_unavailable"
+            ),
+            str(
+                planned_excitation.get("detail")
+                or "reapply the crossover before measuring"
+            ),
+        )
+    # The by-ear record's test_level_dbfs is identity/floor evidence only. The
+    # automatic sweep uses the protected applied role gain that the -12 dBFS
+    # level tone calibrated.
+    level = float(planned_excitation["commissioning_gain_db"])
     startup_gate_level = calibration_level_payload(requested_level_dbfs=level)
     preset, crossover_preview = resolve_commission_inputs()
     load_payload = await _load_driver_commissioning_config_for_level(
@@ -1517,6 +1899,7 @@ async def play_driver_capture_sweep(
         level_dbfs=level,
         load_payload=load_payload,
         camilla_factory=camilla_factory,
+        planned_excitation=planned_excitation,
     )
     playback["floor_confirmation"] = latest.get("floor_confirmation")
     log_event(
@@ -1526,6 +1909,10 @@ async def play_driver_capture_sweep(
         group_id=speaker_group_id,
         role=role,
         audio_emitted=bool(playback.get("audio_emitted")),
+        excitation_source=(playback.get("excitation") or {}).get("gain_source"),
+        effective_peak_dbfs=(playback.get("excitation") or {}).get(
+            "effective_peak_dbfs"
+        ),
     )
     return {
         "status": playback.get("status"),
@@ -1533,6 +1920,7 @@ async def play_driver_capture_sweep(
         "playback_id": playback.get("playback_id"),
         "test_level_dbfs": level,
         "sweep_meta": playback.get("sweep_meta"),
+        "excitation": playback.get("excitation"),
         "commission": commission_status_payload(),
     }
 
@@ -1582,19 +1970,14 @@ async def play_summed_capture_sweep(
     if safe_session.get("status") != "armed":
         arm_safe_playback_session(_SUMMED_TEST_ARM_REPORT)
 
-    tone = _dict_value(latest.get("tone"))
-    level = _finite(tone.get("level_dbfs"))
-    if level is None:
-        level = clamp_test_level_dbfs(None)
-    startup_gate_level = calibration_level_payload(requested_level_dbfs=level)
-    preset, crossover_preview = resolve_commission_inputs()
-    load_payload = await _load_summed_commissioning_config(
+    # The manual combined-listening level proves that the intended outputs were
+    # heard. It is not an automatic acoustic level: old JTS3 artifacts can be
+    # around -80 dBFS. The automatic path instead loads the exact applied full
+    # Layer-A graph and drives it with the shared -12 dBFS ESS at the locked main
+    # volume. Per-role gain/delay/polarity stay owned by that immutable graph.
+    level = 0.0
+    load_payload = await _load_applied_summed_measurement_config(
         topology=topology,
-        speaker_group_id=speaker_group_id,
-        level_dbfs=level,
-        startup_gate_calibration_level=startup_gate_level,
-        preset=preset,
-        crossover_preview=crossover_preview,
         camilla_factory=camilla_factory,
     )
     load_state = _dict_value(load_payload.get("load"))
@@ -1614,6 +1997,14 @@ async def play_summed_capture_sweep(
             "commission": commission_status_payload(),
         }
 
+    planned_excitation = _dict_value(load_payload.get("excitation"))
+
+    async def _rollback() -> dict[str, Any]:
+        return await _rollback_applied_summed_measurement_config(
+            load_payload,
+            camilla_factory=camilla_factory,
+        )
+
     playback = await _play_capture_sweep(
         backend=SUMMED_CAPTURE_SWEEP_BACKEND,
         target={"speaker_group_id": speaker_group_id, "role": "summed"},
@@ -1621,6 +2012,8 @@ async def play_summed_capture_sweep(
         level_dbfs=level,
         load_payload=load_payload,
         camilla_factory=camilla_factory,
+        planned_excitation=planned_excitation,
+        rollback_capture_config=_rollback,
     )
     playback["summed_test_id"] = str(summed_test_id)
     log_event(
@@ -1629,6 +2022,8 @@ async def play_summed_capture_sweep(
         status=playback.get("status"),
         group_id=speaker_group_id,
         audio_emitted=bool(playback.get("audio_emitted")),
+        excitation_source=(playback.get("excitation") or {}).get("gain_source"),
+        excitation_scope=(playback.get("excitation") or {}).get("scope"),
     )
     return {
         "status": playback.get("status"),
@@ -1637,6 +2032,7 @@ async def play_summed_capture_sweep(
         "summed_test_id": str(summed_test_id),
         "test_level_dbfs": level,
         "sweep_meta": playback.get("sweep_meta"),
+        "excitation": playback.get("excitation"),
         "commission": commission_status_payload(),
     }
 

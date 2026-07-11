@@ -21,6 +21,13 @@
   derived safety timeout; exact — never cap-clamped — restore of the user's
   pre-ramp volume). `MAXED_OUT` is a failed attempt, stores no lock, restores
   immediately, and asks the household to raise the external amplifier. The
+  shared kernel defaults to that fail-closed policy. Only the active-crossover
+  near-field lease opts into `bounded_low_level`: at the cap it may store an
+  explicitly degraded lock after fresh post-latency samples prove frozen AGC,
+  live delivery, no clipping, the existing noise-floor margin, <=1.5 dB spread,
+  and <=20 dB preferred-window shortfall. Room correction does not opt in. The
+  crossover envelope surfaces the shortfall and downstream sweep-quality gates
+  still decide whether the evidence is usable. The
   correction adapter
   ([`jasper/correction/level_match.py`](../jasper/correction/level_match.py))
   adds the per-geometry `MeasurementLevelLock` store, the raw-band
@@ -194,7 +201,10 @@
   is optional: mic/calibration, automatic level, driver and summed captures run
   sequentially, then an explicit apply replaces the manual crossover. Legacy
   applied profiles offer **Keep current manual crossover** or **Tune
-  automatically** instead of forcing the user into a microphone flow.
+  automatically** instead of forcing the user into a microphone flow. Starting
+  automatic level matching transparently runs the same exact-preservation apply
+  when `manual_preservation.ready` is true, so a legacy speaker reaches the mic
+  relay in one intent; unsafe preservation refuses before relay registration.
   `/correction/bass/` is a READ-ONLY bass-management display (P5): it
   renders the live bass-management state (crossover corner, its owner —
   active-speaker local vs wireless sub, sub-present, mains-HP status) from
@@ -1635,12 +1645,16 @@ not before this doc lands.
 2. **camillagui-backend version pinning.** v0.7.x tracks CamillaDSP
    3.0.x. We'll pin to a specific tag at Phase 3 start to insulate
    against upstream churn. **Decision needed by Phase 3.**
-3. **Sweep level for compromised analog volumes.** If the user's
-   amp is at very low or very high gain, -12 dBFS digital might
-   be too quiet (poor SNR) or too loud (damage risk). Phase 1
-   ships -12 dBFS hardcoded; Phase 2 adds the calibration step
-   from the brief (play 1 kHz tone, ask user to set comfortable
-   loudness, persist as the measurement reference level).
+3. **Sweep level for compromised analog volumes — resolved.** The phone-backed
+   level check measures a 1 kHz tone while the bounded controller raises JTS's
+   main volume and locks the measurement reference. Tone and ESS source peaks
+   share `AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS` (−12 dBFS). Automatic
+   crossover ESS adds the current immutable applied Layer-A role gain; it never
+   inherits a quiet by-ear driver-test floor. A missing/stale applied snapshot
+   or mismatched played-excitation ledger fails closed. The combined crossover
+   ESS uses a transient validated recompose of the entire applied Layer-A graph,
+   not the old combined listening-test level, and restores the prior DSP graph
+   afterward.
 4. **What does the openWakeWord pause actually look like?**
    ([jasper/voice_daemon.py](../jasper/voice_daemon.py) is large;
    need to grep `openwakeword` and identify the right gate point.)

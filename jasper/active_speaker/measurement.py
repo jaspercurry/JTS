@@ -993,6 +993,11 @@ def record_summed_validation(
             if isinstance(raw.get("acoustic"), Mapping)
             else None
         ),
+        "excitation": (
+            dict(raw["excitation"])
+            if isinstance(raw.get("excitation"), Mapping)
+            else None
+        ),
         "polarity": _text(raw.get("polarity"), max_chars=40) or "normal",
         "delay_ms": _finite_float(raw.get("delay_ms")),
         "delay_target_role": (

@@ -56,11 +56,13 @@ overshoot — ``step_db + ramp_rate × max_loop_latency_s``, the step-quantizati
 term included. A ``clip=true`` sample is an immediate abort; readings that are
 non-finite, AGC-compressed, or below ``noise_floor + trust_margin`` are never
 trusted; a feed that goes silent aborts (a vanished phone also has no clip
-protection); ``MAXED_OUT`` requires at least one trusted sample ever and is a
-failed attempt that restores rather than manufacturing a measurement lock (a
-phone that never produced a usable sample is an ERROR, not a "raise your amp"
-verdict); the safety timeout is derived from the config's own
-worst-case walk so a quiet amp reaches ``MAXED_OUT`` before it; and every stop
+protection). At the cap, the kernel normally returns ``MAXED_OUT`` and restores.
+The sole exception is an explicitly labeled ``bounded_low_level`` lock after a
+fresh post-latency tail proves a known noise floor, the existing SNR trust
+margin, frozen AGC, no clipping, live delivery, consecutive samples, and
+bounded spread; it never claims the normal target window was reached. A phone
+that never produced a usable sample is an ERROR, not a low-level verdict. The
+safety timeout is derived from the config's own worst-case walk; and every stop
 fades down before the tone is killed. Restoring the user's own pre-ramp volume
 is exempt from the dynamic cap (it is not a ramp command) and honors only the
 0 dB hard ceiling.
@@ -76,6 +78,7 @@ a fake volume setter, and a fake mic-sample source (:class:`LevelSample`
 batches on any schedule, including the relay's real sparse cadence). No
 CamillaDSP, no ``aplay``, no relay.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -184,6 +187,22 @@ class RampState(Enum):
     ABORTED = "aborted"
     CANCELLED = "cancelled"
     ERROR = "error"
+
+
+class RampLockKind(str, Enum):
+    """Why a terminal ``LOCKED`` result is usable.
+
+    ``BOUNDED_LOW_LEVEL`` is deliberately distinct from the ordinary
+    in-window lock: it records that the hard/dynamic gain bound was honored and
+    the live mic evidence was trustworthy and stable, but the measured level
+    still fell short of the preferred window.  Downstream code may proceed
+    while preserving that degraded evidence instead of pretending the normal
+    target was reached.
+    """
+
+    IN_WINDOW = "in_window"
+    BOUNDED_LOW_LEVEL = "bounded_low_level"
+    MANUAL = "manual"
 
 
 TERMINAL_STATES = frozenset(
@@ -300,6 +319,15 @@ class MeasurementRamp:
     # re-jump from CONFIRMING evidence.
     max_jumps: int = 2
 
+    # At the hard/dynamic cap, a below-window result may be accepted only as an
+    # explicitly degraded bounded-low lock.  The final ``confirm_k`` trusted,
+    # post-latency samples must fit inside this peak-to-peak spread.  This is a
+    # stability policy, not permission to weaken the existing noise-floor,
+    # AGC, clipping, liveness, cap, or timeout guards.
+    allow_bounded_low_level: bool = False
+    bounded_low_max_spread_db: float = 1.5
+    bounded_low_max_shortfall_db: float = 20.0
+
     # Feed liveness: if NO samples at all (trusted or not) arrive for this long
     # after the tone starts, the phone is gone — abort and restore (a vanished
     # phone also has no clip protection).
@@ -331,9 +359,7 @@ class MeasurementRamp:
     pre_window_db: float | None = None
 
     def __post_init__(self) -> None:
-        if not math.isfinite(self.cap_bump_db) or not math.isfinite(
-            self.cap_ceil_db
-        ):
+        if not math.isfinite(self.cap_bump_db) or not math.isfinite(self.cap_ceil_db):
             raise ValueError("cap_bump_db and cap_ceil_db must be finite")
         if self.window_high_dbfs <= self.window_low_dbfs:
             raise ValueError(
@@ -360,6 +386,18 @@ class MeasurementRamp:
             raise ValueError("settle_min_samples must be >= 1")
         if self.max_jumps < 1:
             raise ValueError("max_jumps must be >= 1")
+        if (
+            not math.isfinite(self.bounded_low_max_spread_db)
+            or self.bounded_low_max_spread_db < 0
+        ):
+            raise ValueError("bounded_low_max_spread_db must be finite and >= 0")
+        if (
+            not math.isfinite(self.bounded_low_max_shortfall_db)
+            or self.bounded_low_max_shortfall_db <= 0
+        ):
+            raise ValueError(
+                "bounded_low_max_shortfall_db must be finite and > 0"
+            )
         if self.feed_timeout_s <= 0:
             raise ValueError("feed_timeout_s must be positive")
         if self.safety_timeout_s is not None and self.safety_timeout_s <= 0:
@@ -518,16 +556,20 @@ class RampData:
     current_main_volume_db: float = -50.0
     original_main_volume_db: float | None = None
     locked_main_volume_db: float | None = None
+    lock_kind: RampLockKind | None = None
     cap_db: float | None = None
     # The recovered chain gain G = settled_mic_dbfs - v_held (dB). Persisted into
     # the geometry lock so the drift check has the mapping. None until a settle.
     gain_map_db: float | None = None
     settled_mic_dbfs: float | None = None
+    settled_snr_db: float | None = None
+    window_shortfall_db: float | None = None
+    settled_spread_db: float | None = None
     noise_floor_dbfs: float | None = None
     agc_frozen: bool = True
-    # Count of trusted samples ever accepted — MAXED_OUT is only a legitimate
-    # "raise your amp" verdict when this is nonzero (a phone that never produced
-    # a usable sample is an ERROR, not an amp diagnosis).
+    # Count of trusted samples ever accepted. Reaching the cap may begin a
+    # bounded-low evidence hold only when this is nonzero; a phone that never
+    # produced a usable sample is an ERROR, not an acoustic diagnosis.
     trusted_sample_count: int = 0
     error: str | None = None
     # Idempotency guard for terminal-state listening-level restore.
@@ -542,9 +584,13 @@ class RampData:
             "current_main_volume_db": r(self.current_main_volume_db),
             "original_main_volume_db": r(self.original_main_volume_db),
             "locked_main_volume_db": r(self.locked_main_volume_db),
+            "lock_kind": self.lock_kind.value if self.lock_kind is not None else None,
             "cap_db": r(self.cap_db),
             "gain_map_db": r(self.gain_map_db),
             "settled_mic_dbfs": r(self.settled_mic_dbfs),
+            "settled_snr_db": r(self.settled_snr_db),
+            "window_shortfall_db": r(self.window_shortfall_db),
+            "settled_spread_db": r(self.settled_spread_db),
             "noise_floor_dbfs": r(self.noise_floor_dbfs),
             "agc_frozen": self.agc_frozen,
             "trusted_sample_count": self.trusted_sample_count,
@@ -581,6 +627,10 @@ class _LoopVars:
     confirm_in_streak: int = 0
     confirm_out_buf: list[float] = field(default_factory=list)
     jumps_used: int = 0
+    # True only when SETTLING was entered because the safe cap was reached
+    # below the pre-window.  It routes the stable evidence to the explicitly
+    # degraded bounded-low policy instead of fabricating a normal window lock.
+    bounded_low_candidate: bool = False
 
 
 class RampController:
@@ -868,6 +918,7 @@ class RampController:
                 if self._lock_requested:
                     # Manual lock: trust the user, lock where we are.
                     d.locked_main_volume_db = d.current_main_volume_db
+                    d.lock_kind = RampLockKind.MANUAL
                     return await _terminal(
                         RampState.LOCKED,
                         final_db=d.current_main_volume_db,
@@ -965,6 +1016,7 @@ class RampController:
                 d.state = RampState.SETTLING
                 v.settle_start = now
                 v.settle_buf = []
+                v.bounded_low_candidate = False
                 log_event(
                     logger,
                     "ramp_pre_window",
@@ -975,22 +1027,24 @@ class RampController:
             elif now - v.last_step_time >= cfg.step_interval_s:
                 v.last_step_time = now
                 if self._at_cap():
-                    # Reached the cap without ever crossing the pre-window.
                     if d.trusted_sample_count > 0:
-                        # Amp genuinely too quiet. This is diagnostic evidence,
-                        # not a measurement lock: restore the listening level
-                        # and require the flow to ask for an analog-gain change.
-                        return await _terminal(
-                            RampState.MAXED_OUT,
-                            final_db=d.original_main_volume_db,
-                            error=(
-                                "safe cap reached below target window; raise "
-                                "the external amplifier and retry"
-                            ),
-                            event="ramp_maxed_out",
-                            level=logging.WARNING,
-                            reason="cap_reached_below_pre_window",
+                        # Reached the cap without crossing the pre-window. Hold
+                        # the volume fixed and collect fresh post-latency
+                        # evidence. A bounded-low lock is possible only after
+                        # the same settle + confirmation discipline as the
+                        # normal path; historical climb samples are not enough.
+                        d.state = RampState.SETTLING
+                        v.settle_start = now
+                        v.settle_buf = []
+                        v.bounded_low_candidate = True
+                        log_event(
+                            logger,
+                            "ramp_cap_settling",
+                            session=self.session_id,
+                            at_db=f"{d.current_main_volume_db:.1f}",
+                            reason="below_pre_window",
                         )
+                        return None
                     # Zero usable evidence the mic ever heard the speaker:
                     # NOT an amp diagnosis — error out and restore.
                     return await _terminal(
@@ -1008,9 +1062,7 @@ class RampController:
             v.settle_buf.extend(settled_stream)
             hold_elapsed = now - v.settle_start >= cfg.settle_hold_s
             if hold_elapsed and len(v.settle_buf) >= cfg.settle_min_samples:
-                settled = float(statistics.median(v.settle_buf))
-                d.settled_mic_dbfs = settled
-                d.gain_map_db = settled - d.current_main_volume_db
+                settled = self._record_settled_evidence(d, cfg, v.settle_buf)
                 log_event(
                     logger,
                     "ramp_settled",
@@ -1021,6 +1073,16 @@ class RampController:
                     samples=len(v.settle_buf),
                 )
                 if cfg.window_low_dbfs <= settled <= cfg.window_high_dbfs:
+                    self._enter_confirming(v)
+                    d.state = RampState.CONFIRMING
+                elif (
+                    v.bounded_low_candidate
+                    and settled < cfg.window_low_dbfs
+                    and self._at_cap()
+                ):
+                    # Already pinned at the allowed cap: do not manufacture a
+                    # jump or an in-window lock. Confirm a fresh stable tail and
+                    # label the result explicitly if the bounded policy passes.
                     self._enter_confirming(v)
                     d.state = RampState.CONFIRMING
                 else:
@@ -1040,6 +1102,7 @@ class RampController:
                     v.confirm_in_streak = 0
             if v.confirm_in_streak >= cfg.confirm_k:
                 d.locked_main_volume_db = d.current_main_volume_db
+                d.lock_kind = RampLockKind.IN_WINDOW
                 return await _terminal(
                     RampState.LOCKED,
                     final_db=d.current_main_volume_db,
@@ -1051,7 +1114,7 @@ class RampController:
                         else ""
                     ),
                 )
-            if len(v.confirm_out_buf) >= cfg.confirm_k:
+            if len(v.confirm_out_buf) >= cfg.confirm_k and settled_stream:
                 below = all(x < cfg.window_low_dbfs for x in v.confirm_out_buf)
                 above = all(x > cfg.window_high_dbfs for x in v.confirm_out_buf)
                 if not (below or above):
@@ -1059,12 +1122,25 @@ class RampController:
                     # keep collecting (the safety timeout is the backstop).
                     v.confirm_out_buf = []
                     return None
-                evidence = float(statistics.median(v.confirm_out_buf))
-                d.settled_mic_dbfs = evidence
-                d.gain_map_db = evidence - d.current_main_volume_db
+                evidence_values = v.confirm_out_buf[-cfg.confirm_k :]
+                evidence = self._record_settled_evidence(d, cfg, evidence_values)
                 if below and self._at_cap():
-                    # Consistently below the window while pinned at the cap:
-                    # the amp is too quiet — with real trusted evidence.
+                    if self._bounded_low_level_is_usable(d, cfg):
+                        d.locked_main_volume_db = d.current_main_volume_db
+                        d.lock_kind = RampLockKind.BOUNDED_LOW_LEVEL
+                        return await _terminal(
+                            RampState.LOCKED,
+                            final_db=d.current_main_volume_db,
+                            event="ramp_locked",
+                            trigger=RampLockKind.BOUNDED_LOW_LEVEL.value,
+                            settled_mic_dbfs=f"{evidence:.1f}",
+                            snr_db=f"{d.settled_snr_db:.1f}",
+                            shortfall_db=f"{d.window_shortfall_db:.1f}",
+                            spread_db=f"{d.settled_spread_db:.1f}",
+                        )
+                    # The cap was genuinely reached, but the bounded-low
+                    # contract was not proven. Preserve the evidence and
+                    # restore; never masquerade as a normal lock.
                     return await _terminal(
                         RampState.MAXED_OUT,
                         final_db=d.original_main_volume_db,
@@ -1074,7 +1150,23 @@ class RampController:
                         ),
                         event="ramp_maxed_out",
                         level=logging.WARNING,
-                        reason="cap_reached_below_window",
+                        reason="bounded_low_evidence_insufficient",
+                        settled_mic_dbfs=f"{evidence:.1f}",
+                        snr_db=(
+                            f"{d.settled_snr_db:.1f}"
+                            if d.settled_snr_db is not None
+                            else ""
+                        ),
+                        shortfall_db=(
+                            f"{d.window_shortfall_db:.1f}"
+                            if d.window_shortfall_db is not None
+                            else ""
+                        ),
+                        spread_db=(
+                            f"{d.settled_spread_db:.1f}"
+                            if d.settled_spread_db is not None
+                            else ""
+                        ),
                     )
                 if v.jumps_used < cfg.max_jumps:
                     await self._apply_jump(d, v, cfg, evidence, _set)
@@ -1084,6 +1176,42 @@ class RampController:
                 # than oscillating.
                 v.confirm_out_buf = []
         return None
+
+    @staticmethod
+    def _record_settled_evidence(
+        d: RampData,
+        cfg: MeasurementRamp,
+        values: list[float],
+    ) -> float:
+        """Persist the actual mic evidence used for a lock/verdict."""
+        settled = float(statistics.median(values))
+        d.settled_mic_dbfs = settled
+        d.gain_map_db = settled - d.current_main_volume_db
+        d.settled_spread_db = max(values) - min(values)
+        d.settled_snr_db = (
+            settled - d.noise_floor_dbfs if d.noise_floor_dbfs is not None else None
+        )
+        d.window_shortfall_db = max(0.0, cfg.window_low_dbfs - settled)
+        return settled
+
+    @staticmethod
+    def _bounded_low_level_is_usable(
+        d: RampData,
+        cfg: MeasurementRamp,
+    ) -> bool:
+        """Whether cap evidence satisfies the degraded lock contract."""
+        return bool(
+            cfg.allow_bounded_low_level
+            and d.agc_frozen
+            and d.noise_floor_dbfs is not None
+            and d.settled_snr_db is not None
+            and d.settled_snr_db >= cfg.trust_margin_db
+            and d.window_shortfall_db is not None
+            and d.window_shortfall_db > 0.0
+            and d.window_shortfall_db <= cfg.bounded_low_max_shortfall_db
+            and d.settled_spread_db is not None
+            and d.settled_spread_db <= cfg.bounded_low_max_spread_db
+        )
 
     def _enter_confirming(self, v: _LoopVars) -> None:
         v.confirm_in_streak = 0

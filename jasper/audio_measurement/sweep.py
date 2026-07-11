@@ -33,6 +33,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .excitation import AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,7 +67,7 @@ def synchronized_swept_sine(
     f2: float = 20000.0,
     duration_approx_s: float = 10.0,
     sample_rate: int = 48000,
-    amplitude_dbfs: float = -12.0,
+    amplitude_dbfs: float = AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 ) -> tuple[np.ndarray, SweepMeta]:
     """Generate a synchronized exponential swept-sine.
 

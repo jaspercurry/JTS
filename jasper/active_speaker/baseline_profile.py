@@ -99,7 +99,7 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _topology_config_fingerprint(topology: OutputTopology) -> str:
+def topology_config_fingerprint(topology: OutputTopology) -> str:
     """Fingerprint only topology fields that determine emitted DSP config."""
     return _fingerprint({
         key: value
@@ -132,7 +132,7 @@ def _source_payload(
     # if this key is ever renamed without updating the exclusion here.
     source = {
         "topology_id": topology.topology_id,
-        "topology_fingerprint": _topology_config_fingerprint(topology),
+        "topology_fingerprint": topology_config_fingerprint(topology),
         "design_draft_updated_at": design_draft.get("updated_at"),
         "crossover_preview_updated_at": crossover_preview.get("updated_at"),
         "crossover_preview_fingerprint": (
@@ -187,8 +187,9 @@ def _effective_excitation_dbfs(record: Any) -> float | None:
     generated sweep peak + the role-varying commissioning gain = the effective
     digital drive (the remaining commissioning gains are common and cancel).
     We recompute the total instead of trusting a loose scalar, which makes the
-    evidence independently auditable and lets captures made at different safe
-    by-ear levels be normalized onto one common 0 dB reference.
+    evidence independently auditable and lets captures made through different
+    applied role trims be normalized onto one common 0 dB reference. The quiet
+    by-ear identity-test level is not acoustic measurement evidence.
     """
     if not isinstance(record, Mapping):
         return None
@@ -1372,7 +1373,7 @@ def recompose_applied_baseline_yaml(
     if (
         snapshot.get("topology_id") != topology.topology_id
         or snapshot.get("topology_fingerprint")
-        != _topology_config_fingerprint(topology)
+        != topology_config_fingerprint(topology)
     ):
         return None, [_issue(
             "blocker",
