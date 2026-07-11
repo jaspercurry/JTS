@@ -2706,12 +2706,26 @@ def _disarm(
     ``jasper-audio-hardware-reconcile`` AFTER the ordered disarm so the route's
     outputd content-buffer floor — which that reconciler unsets while the
     bridge is shm_ring (#1231) — re-emits promptly instead of waiting for the
-    next udev/boot/deploy/outputd-failure event; the hardware reconciler
-    restarts outputd itself when the re-emit changes outputd.env, so the daemon
-    picks the floor up. Best-effort: a failed kick is logged and carried in
-    ``detail`` but does not fail the disarm — the interim compile-default
-    content buffer is a LARGER cushion than the floor (fail-safe), and the next
-    hardware-reconcile event still converges it.
+    next udev/boot/deploy/outputd-failure event. Best-effort: a failed kick is
+    logged and carried in ``detail`` but does not fail the disarm — the
+    interim compile-default content buffer is a LARGER cushion than the floor
+    (fail-safe), and the next hardware-reconcile event still converges it.
+
+    Disclosure (post-#1251 audit): the kicked pass's only delta is
+    outputd.env (the floor re-emit), but ``restart_audio_if_needed`` in
+    ``deploy/bin/jasper-audio-hardware-reconcile`` (~lines 795-798) handles
+    ANY outputd.env change the same way regardless of cause — a blocking
+    ``systemctl stop jasper-voice``, then ``--no-block restart
+    jasper-outputd`` and ``--no-block restart jasper-aec-reconcile``. So
+    every shm_ring -> direct disarm (including a household ``/sources/`` USB
+    toggle-off) deterministically costs ~10-15 s of wake deafness,
+    self-healed by the standard aec-reconcile -> voice-restart pattern (the
+    restarted reconciler detects the mic and restarts jasper-voice). It also
+    means outputd is double-bounced: this function's own blocking restart
+    above, then the kicked pass's no-block restart seconds later — inherent
+    to single-writer floor ownership (the hardware reconciler is the only
+    writer of the floor key). See issue #1257 for a floor-only optimization
+    that would skip the voice stop.
     """
     cam_ok, cam_detail = do_reconcile(COUPLING_LOOPBACK)
     fan_ok, fan_detail = do_restart()
@@ -2755,7 +2769,17 @@ def _recover_to_loopback(
 ) -> bool:
     """ARM-failure recovery: force the whole box back to loopback (env + camilla
     Alsa + fan-in loopback + outputd ALSA). Returns True iff the recovery fully
-    succeeded."""
+    succeeded.
+
+    Unlike :func:`_disarm`, this takes no ``kick_hardware_reconcile`` and so
+    never kicks ``jasper-audio-hardware-reconcile`` — including on the one
+    route here that can be leaving a LIVE shm_ring bridge (the CONFIRM path's
+    ring self-heal escalating to :func:`_arm_ring`, which then fails its own
+    preflight). Intentional: a box already mid-failure-recovery gets the
+    larger fail-safe cushion and less daemon churn instead of another
+    oneshot; the content-buffer floor re-emit just waits for the next
+    udev/boot/deploy event on this path, same as before #1251.
+    """
     del reason
     try:
         existing = Path(fanin_path).read_text(encoding="utf-8")
