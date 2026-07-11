@@ -2684,7 +2684,9 @@ grep dwc2,dr_mode=peripheral /boot/firmware/config.txt
 
 # Service active but no audio?
 curl -s http://jts.local:8780/state | jq '.renderers.usbsink'
-# Expect: {playing, preempted, host_connected, rms_dbfs, updated_at}
+# Expect: {combo, playing, preempted, muted, host_connected, rms_dbfs, updated_at}
+# combo=true is the sole shape today; playing/rms_dbfs are read live off
+# fan-in's DIRECT lane (the standby bridge's own counters are frozen).
 
 # Direct daemon state file:
 cat /run/jasper-usbsink/state.json | jq
