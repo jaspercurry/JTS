@@ -531,6 +531,14 @@ class MeasurementSession:
     def _cancel_capture_timeout(self) -> None:
         self._state_guard.cancel_capture_timeout()
 
+    def suspend_capture_timeout(self) -> None:
+        """Pause the local upload watchdog during human-paced relay setup."""
+        self._state_guard.cancel_capture_timeout()
+
+    def resume_capture_timeout(self) -> None:
+        """Restore the watchdog for the session's current capture state."""
+        self._state_guard.on_transition(self.state)
+
     async def _set_state(self, state: SessionState, **extra: Any) -> None:
         prev = self.state
         self.state = state

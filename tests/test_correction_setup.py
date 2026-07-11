@@ -225,6 +225,58 @@ def test_relay_capture_return_url_falls_back_to_configured_hostname(monkeypatch)
     )
 
 
+def test_room_level_match_returns_to_relay_native_room_page(monkeypatch):
+    import asyncio
+
+    from jasper.correction.session import SessionState
+
+    lifecycle = []
+    session = SimpleNamespace(
+        session_id="room-session",
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+        suspend_capture_timeout=lambda: lifecycle.append("suspend"),
+        resume_capture_timeout=lambda: lifecycle.append("resume"),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        correction_setup,
+        "_require_relay_base",
+        lambda: "https://relay.jasper.tech",
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_get_or_create_session",
+        lambda: session,
+    )
+
+    def fake_run(kind, relay_base, *, return_url):
+        seen.update({
+            "kind": kind,
+            "relay_base": relay_base,
+            "return_url": return_url,
+        })
+        return {"tap_link": "https://capture.jasper.tech/#redacted"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_relay_level_match",
+        lambda *args, **kwargs: asyncio.sleep(0),
+    )
+
+    payload = correction_setup._handle_relay_level_match(
+        SimpleNamespace(headers={"Host": "jts3.local"})
+    )
+
+    assert payload["session_id"] == "room-session"
+    assert seen["kind"].label == "level_ramp:room"
+    assert seen["relay_base"] == "https://relay.jasper.tech"
+    assert seen["return_url"] == "http://jts3.local/correction/room/"
+
+    asyncio.run(seen["kind"].run_and_consume(object(), object()))
+    assert lifecycle == ["suspend", "resume"]
+
+
 def test_render_page_delegates_correction_when_bonded_follower(monkeypatch):
     monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
     monkeypatch.setattr(

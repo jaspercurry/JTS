@@ -190,6 +190,11 @@
   implements this contract is `capture_page_build=20260711.4`, supporting
   protocols 1 and 2; publish it
   before deploying a Pi that emits v2 specs.
+  Relay room level setup temporarily suspends the local browser's 120-second
+  upload watchdog while the human completes mic permission, calibration,
+  placement, and auto-level, then restores a fresh bound for the actual room
+  capture. The level page returns directly to `/correction/room/` for the sweep
+  step.
 - 🧪 **Phone-mic capture relay path (fresh-install default,
   on-device-pending).** As of 2026-07-02 fresh installs default to an
   alternative capture transport that moves the room capture setup/recording page

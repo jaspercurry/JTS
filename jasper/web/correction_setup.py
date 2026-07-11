@@ -3097,19 +3097,29 @@ def _handle_relay_level_match(handler: BaseHTTPRequestHandler) -> dict[str, Any]
         )
 
     async def _run(client: RelayClient, pi_session: PiCaptureSession) -> None:
-        await _run_relay_level_match(
-            sess,
-            client,
-            pi_session,
-            geometry=MicGeometry.LISTENING_POSITION.value,
-            run_token=run_token,
-            setup_binding_id=setup_binding_id,
-        )
+        # NEEDS_NOISE_CAPTURE normally has a short local-browser upload
+        # watchdog. Relay mic permission, calibration, placement, and gradual
+        # level matching are deliberately human-paced, so pause that watchdog
+        # only for this sub-flow. Restore a fresh bound afterward; the relay
+        # capture adapter remains bounded and an abandoned next capture still
+        # self-recovers without operator cleanup.
+        sess.suspend_capture_timeout()
+        try:
+            await _run_relay_level_match(
+                sess,
+                client,
+                pi_session,
+                geometry=MicGeometry.LISTENING_POSITION.value,
+                run_token=run_token,
+                setup_binding_id=setup_binding_id,
+            )
+        finally:
+            sess.resume_capture_timeout()
 
     relay = _run_relay_capture(
         RelayCaptureKind(label="level_ramp:room", open=_open, run_and_consume=_run),
         relay_base,
-        return_url=_request_local_return_url(handler, "/correction/"),
+        return_url=_request_local_return_url(handler, "/correction/room/"),
     )
     return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
 

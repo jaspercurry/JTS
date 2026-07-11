@@ -705,6 +705,30 @@ async def test_needs_noise_capture_times_out_to_failed(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_relay_level_setup_can_suspend_and_resume_capture_watchdog(
+    tmp_path: Path,
+):
+    # Relay level setup is deliberately human-paced (permission,
+    # mic/calibration, placement, then auto-level). Pause the local upload
+    # watchdog for that sub-flow, then restore a fresh bound so an abandoned
+    # room capture still self-recovers.
+    sess = _make_session(tmp_path)
+    sess.capture_timeout_sec = 0.05
+
+    await sess.begin_noise_capture()
+    assert sess.state == SessionState.NEEDS_NOISE_CAPTURE
+    sess.suspend_capture_timeout()
+    await asyncio.sleep(0.25)
+    assert sess.state == SessionState.NEEDS_NOISE_CAPTURE
+    assert sess.error is None
+
+    sess.resume_capture_timeout()
+    await asyncio.sleep(0.25)
+    assert sess.state == SessionState.FAILED
+    assert "capture" in (sess.error or "").lower()
+
+
+@pytest.mark.asyncio
 async def test_needs_noise_capture_times_out_on_later_positions_too(tmp_path: Path):
     # The watchdog arms via _set_state on BOTH entries to needs_noise_capture:
     # the first from IDLE (above) and later positions from needs_next_position.
