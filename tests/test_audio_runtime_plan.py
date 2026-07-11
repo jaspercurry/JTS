@@ -571,7 +571,10 @@ def test_usb_low_latency_route_requires_rust_fanin_resampler_and_reference():
     assert profile.fanin_input_resampler_required is True
     assert profile.camilla_required is True
     assert profile.outputd_final_reference_required is True
-    assert profile.p95_budget_ms == 40.0
+    # Pinned to the honest, measured-basis budget (2026-07-11 recalibration —
+    # see the docstring on USB_LOW_LATENCY_P95_BUDGET_MS in audio_runtime_plan.py).
+    # A silent loosening or tightening of these constants should fail this test.
+    assert profile.p95_budget_ms == 48.0
     assert profile.p99_budget_ms == 60.0
     assert by_key[FANIN_INPUT_RESAMPLER_KEY].value == "enabled"
     assert by_key[FANIN_INPUT_RESAMPLER_LANE_KEY].value == "usbsink"

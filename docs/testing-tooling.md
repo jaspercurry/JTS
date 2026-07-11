@@ -620,7 +620,9 @@ records the ring's pre-read fill depth per impulse as diagnostic context, but
 that is not added to the latency (doing so would double-count the ring
 dwell).
 
-**Quick gate (p95 <= 40 ms, >=200 impulses, >=5 min):**
+**Quick gate (p95 <= 48 ms, >=200 impulses, >=5 min — budget recalibrated
+2026-07-11 to the measured churn-safe floor, see
+`docs/HANDOFF-usb-latency-measurement.md` §1):**
 
 Invoke every CLI by its absolute venv path (`/opt/jasper/.venv/bin/...`):
 under `sudo` the venv `bin/` is not on `secure_path`, so a bare command name

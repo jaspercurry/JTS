@@ -1706,6 +1706,7 @@ def check_route_latency_evidence() -> CheckResult:
     from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
     from jasper.audio_validation import (
         ROUTE_LATENCY_MIC_ID,
+        ROUTE_LATENCY_P95_BUDGET_MS,
         ROUTE_LATENCY_PROFILE,
         ROUTE_LATENCY_STALE_AFTER,
         artifact_directory,
@@ -1769,8 +1770,8 @@ def check_route_latency_evidence() -> CheckResult:
         "fail",
         detail + "; Run route-latency validation for usb_low_latency_48k; "
         "p95 must be "
-        "<=40 ms with >=200 impulses over >=5 minutes, and promotion p99 "
-        "requires >=1000 impulses over >=30 minutes.",
+        f"<={ROUTE_LATENCY_P95_BUDGET_MS:g} ms with >=200 impulses over >=5 minutes, "
+        "and promotion p99 requires >=1000 impulses over >=30 minutes.",
     )
 
 
