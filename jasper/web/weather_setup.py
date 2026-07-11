@@ -49,7 +49,6 @@ from ._common import (
     send_see_other,
     guard_read_request,
     guard_mutating_request,
-    write_env_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,17 +131,27 @@ def _seed_transit_from_weather_if_missing(
     loc = location_state.parse_weather_location(weather_state)
     if loc is None:
         return False
-    transit_state = read_env_file(transit_path)
-    if location_state.parse_transit_location(transit_state) is not None:
-        return False
-    new_transit = dict(transit_state)
-    new_transit.update(location_state.transit_env_for_location(loc))
-    write_env_file(
-        transit_path,
-        new_transit,
-        mode=location_state.TRANSIT_FILE_MODE,
+    # transit.env is also written by transit_setup's own save/geocode/cities/
+    # clear. Take the shared flock and re-read transit INSIDE the lock: the
+    # "transit already has coords → skip" decision and the write must be one
+    # atomic step, or a concurrent transit save can be clobbered (or this seed
+    # can overwrite coords the user just entered). Symmetric with the
+    # transit->weather seed (DA-0036).
+    seeded = False
+
+    def _seed_transform(transit_state: dict[str, str]) -> dict[str, str] | None:
+        nonlocal seeded
+        if location_state.parse_transit_location(transit_state) is not None:
+            return transit_state  # already has coords — no-op under the lock
+        new_transit = dict(transit_state)
+        new_transit.update(location_state.transit_env_for_location(loc))
+        seeded = True
+        return new_transit
+
+    locked_transform_env_file(
+        transit_path, _seed_transform, mode=location_state.TRANSIT_FILE_MODE,
     )
-    return True
+    return seeded
 
 
 def _state_without_owned_keys(current: dict[str, str]) -> dict[str, str]:

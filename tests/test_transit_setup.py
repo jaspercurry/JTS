@@ -164,6 +164,91 @@ def test_seed_weather_from_transit_only_when_weather_missing(tmp_path):
     assert _common.read_env_file(str(weather_path))["JASPER_WEATHER_LAT"] == "1.000"
 
 
+def test_seed_transit_skips_atomically_when_coords_present(tmp_path):
+    """The weather->transit seed's check-then-act must be atomic: when transit
+    already has coords, the seed neither overwrites them nor drops a foreign
+    key. Symmetric with the transit->weather seed (DA-0036); the seed reads
+    transit INSIDE the shared flock."""
+    from jasper.web import weather_setup
+
+    tp = str(tmp_path / "transit.env")
+    _common.write_env_file(tp, {
+        transit_setup.LAT_ENV: "40.646",
+        transit_setup.LON_ENV: "-73.994",
+        transit_setup.DISPLAY_NAME_ENV: "Sunset Park",
+        "FOO": "bar",
+    }, mode=transit_setup.TRANSIT_FILE_MODE)
+
+    weather_state = {
+        "JASPER_WEATHER_LAT": "9.000",
+        "JASPER_WEATHER_LON": "9.000",
+        "JASPER_WEATHER_DISPLAY_NAME": "Elsewhere",
+    }
+    seeded = weather_setup._seed_transit_from_weather_if_missing(
+        weather_state, transit_path=tp,
+    )
+    assert seeded is False
+    saved = _common.read_env_file(tp)
+    assert saved[transit_setup.LAT_ENV] == "40.646"  # not overwritten
+    assert saved["FOO"] == "bar"  # foreign key preserved
+
+
+def test_concurrent_transit_save_and_weather_seed_dont_lose_keys(tmp_path):
+    """Two concurrent writers of transit.env — a transit save routed through
+    _locked_apply and the weather->transit seed — must not clobber each other
+    under the shared flock. The foreign key and one consistent coord set both
+    survive. Symmetric with the weather.env concurrency test (DA-0036)."""
+    tp = str(tmp_path / "transit.env")
+    # Start with only a foreign key: no coords, so the seed is eligible.
+    _common.write_env_file(tp, {"FOO": "bar"}, mode=transit_setup.TRANSIT_FILE_MODE)
+
+    # A transit save that writes an explicit coord set (as _handle_geocode
+    # would after resolving an address).
+    london = {
+        transit_setup.LAT_ENV: "51.500",
+        transit_setup.LON_ENV: "-0.100",
+        transit_setup.DISPLAY_NAME_ENV: "London",
+    }
+
+    def transit_save():
+        current = _common.read_env_file(tp)
+        new = dict(current)
+        new.update(london)
+        transit_setup._locked_apply(tp, current, new)
+
+    from jasper.web import weather_setup
+    brooklyn_weather = {
+        "JASPER_WEATHER_LAT": "40.700",
+        "JASPER_WEATHER_LON": "-74.000",
+        "JASPER_WEATHER_DISPLAY_NAME": "Brooklyn",
+    }
+
+    def weather_seed():
+        weather_setup._seed_transit_from_weather_if_missing(
+            brooklyn_weather, transit_path=tp,
+        )
+
+    threads = [threading.Thread(target=fn)
+               for fn in (transit_save, weather_seed) * 4]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5.0)
+
+    saved = _common.read_env_file(tp)
+    # The foreign key survives every interleaving (neither writer owns it and
+    # _locked_apply preserves non-diffed keys under the lock).
+    assert saved["FOO"] == "bar"
+    # Coords are always ONE consistent pair (London-from-save or
+    # Brooklyn-from-seed), never a torn/lost-update mix.
+    lat = saved.get(transit_setup.LAT_ENV)
+    assert lat in {"51.500", "40.700"}
+    if lat == "51.500":
+        assert saved[transit_setup.LON_ENV] == "-0.100"
+    else:
+        assert saved[transit_setup.LON_ENV] == "-74.000"
+
+
 # ---------- Save action ----------------------------------------------------
 
 

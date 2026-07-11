@@ -141,6 +141,33 @@ def _load_state(path: str = TRANSIT_FILE) -> dict[str, str]:
     return read_env_file(path)
 
 
+def _locked_apply(state_path: str, current: dict[str, str], new: dict[str, str]) -> None:
+    """Serialize a transit.env read-modify-write under the shared flock.
+
+    transit.env has two writers in one jasper-web process: these wizard
+    handlers and weather_setup's _seed_transit_from_weather_if_missing. An
+    unlocked read-then-whole-file-replace can lose a concurrent write. Rather
+    than replay the handler's pre-lock snapshot verbatim, replay only the
+    (``current`` -> ``new``) diff onto the file as re-read INSIDE the lock:
+    keys ``new`` changed are applied, keys it dropped are removed, and every
+    other key — foreign keys, or a key a concurrent writer just set — is
+    preserved. Deletes the file when the merged result is empty (parity with
+    the old ``write``/``delete_env_file`` branch). Symmetric with the
+    weather.env fix (DA-0036) and shares its advisory flock semantics.
+    """
+    changed = {k: v for k, v in new.items() if current.get(k) != v}
+    dropped = [k for k in current if k not in new]
+
+    def _transform(locked: dict[str, str]) -> dict[str, str] | None:
+        result = dict(locked)
+        for k in dropped:
+            result.pop(k, None)
+        result.update(changed)
+        return result or None
+
+    locked_transform_env_file(state_path, _transform, mode=TRANSIT_FILE_MODE)
+
+
 def _seed_weather_from_transit_if_missing(
     transit_state: dict[str, str],
     *,
@@ -1521,7 +1548,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=err)
                 return
             try:
-                write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
+                _locked_apply(cfg["state_path"], current, new)
                 _seed_weather_from_transit_if_missing(
                     new, weather_path=cfg["weather_path"],
                 )
@@ -1544,13 +1571,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=routes_err)
                 return
             try:
+                _locked_apply(cfg["state_path"], current, new)
                 if new:
-                    write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
                     _seed_weather_from_transit_if_missing(
                         new, weather_path=cfg["weather_path"],
                     )
-                else:
-                    delete_env_file(cfg["state_path"])
                 if routes_new:
                     write_env_file(
                         cfg["routes_secret_path"],
@@ -1578,7 +1603,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # coords; a hand-crafted coords-less POST just persists the toggle,
             # which is harmless.)
             try:
-                write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
+                _locked_apply(cfg["state_path"], current, new)
             except OSError as e:
                 logger.exception("could not write transit.env after cities save")
                 send_see_other(self, "./", flash=f"Could not save: {e}")
@@ -1602,7 +1627,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # delete. Deleting would drop the key back to ABSENT, which reads as
             # "all packs eligible" and would wrongly re-enable every city.
             try:
-                write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
+                _locked_apply(cfg["state_path"], current, new)
                 delete_env_file(cfg["routes_secret_path"])
             except OSError as e:
                 logger.exception("could not write transit.env after clear")
