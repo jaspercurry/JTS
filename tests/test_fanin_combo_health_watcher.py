@@ -197,3 +197,55 @@ def test_cli_health_dispatches_to_run_health_check(monkeypatch, capsys):
     rc = cr.main(["--health", "--reason", "systemd"])
     assert rc == 0
     assert seen["health"] == 1
+
+
+def test_cli_health_recovered_transition_reaches_configured_handler(
+    tmp_path, monkeypatch, capsys
+):
+    """'Only real transitions log' requires the INFO ``recovered`` line to
+    actually emit: pre-fix, main() configured no logging handler, so the root
+    logger's lastResort fallback (WARNING+) silently dropped it from the
+    jasper-fanin-combo-health.service journal (observed on jts.local build
+    41886ab8, 2026-07-11). Drive the REAL run_health_check through
+    ``main(["--health"])`` across a broken->healthy tick pair and assert the
+    recovered ``event=`` line reaches the handler main() configures."""
+    import logging
+
+    import jasper.env_load as env_load
+
+    monkeypatch.setattr(env_load, "load_env_files", lambda: None)
+    # Tick 1 (direct call): broken — seeds consecutive_broken=1 in tick state.
+    _run(tmp_path, _status(health="broken"))
+
+    # Tick 2 goes through the CLI with the real run_health_check wired to the
+    # injected tmp paths/status: healthy sample + broken prev = 'recovered'.
+    real = cr.run_health_check
+
+    def _wired(**kw):
+        return real(
+            reason=kw.get("reason", "t"),
+            apply=kw.get("apply", True),
+            tick_state_path=str(tmp_path / "tick.json"),
+            marker_path=str(tmp_path / "fallback.json"),
+            read_fanin_status=lambda: (_status(health="capturing"), ""),
+            run_reconcile=lambda: _fake_auto(),
+        )
+
+    monkeypatch.setattr(cr, "run_health_check", _wired)
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    # Fresh-interpreter shape: no root handler until main() configures one.
+    root.handlers.clear()
+    try:
+        rc = cr.main(["--health", "--reason", "systemd"])
+    finally:
+        for h in root.handlers[:]:
+            if h not in saved_handlers:
+                root.removeHandler(h)
+                h.close()
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "event=fanin.combo_health" in err
+    assert "result=recovered" in err

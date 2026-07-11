@@ -714,6 +714,52 @@ def test_cli_main_reports_transport_gate(monkeypatch, capsys):
     assert "transport_gate=True" in capsys.readouterr().out
 
 
+def test_cli_main_configures_info_logging(monkeypatch, capsys):
+    """main() must install an INFO-capable root handler: the #1233 camilla
+    pause/resume evidence, auto_resolved, and the --health recovered transition
+    are INFO-level ``event=`` lines, and without basicConfig the root logger
+    falls back to Python's lastResort handler (WARNING+), silently dropping
+    them from the oneshot units' journals (observed on jts.local build
+    41886ab8, 2026-07-11)."""
+    import logging
+
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.log_event import log_event
+
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cr,
+        "reconcile_coupling",
+        lambda *a, **k: cr.CouplingResult(
+            ok=True, desired="loopback", changed=False, direction="confirm"
+        ),
+    )
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    # Simulate the fresh CLI interpreter: no root handler yet. (Under pytest the
+    # capture plugin's own root handlers would make basicConfig a silent no-op.)
+    root.handlers.clear()
+    try:
+        assert cr.main(["loopback"]) == 0
+        assert root.handlers, "main() must configure a root handler (basicConfig)"
+        assert root.getEffectiveLevel() <= logging.INFO
+        # The exact line that was silently dropped pre-fix now reaches a handler.
+        log_event(
+            cr.logger, "fanin.coupling_reconcile",
+            result="camilla_paused_for_fanin_restart", reason="test",
+        )
+    finally:
+        for h in root.handlers[:]:
+            if h not in saved_handlers:
+                root.removeHandler(h)
+                h.close()
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
+    err = capsys.readouterr().err
+    assert "event=fanin.coupling_reconcile" in err
+    assert "result=camilla_paused_for_fanin_restart" in err
+
+
 def test_cli_explicit_choice_stamps_operator_marker(tmp_path):
     """The explicit positional path writes JASPER_FANIN_COUPLING_CHOICE=operator so
     a later --auto pass treats this coupling as an operator choice (the revert
