@@ -1723,7 +1723,7 @@ async def _load_driver_commissioning_config_for_level(
         payload["startup_setup"] = startup_setup
         payload["measurement_transaction"] = transaction
         return payload
-    except BaseException as operation_error:
+    except BaseException as operation_error:  # noqa: BLE001
         # The startup-anchor call may already have replaced production with the
         # all-muted graph. No exception, including task cancellation, may escape
         # this automatic path until the persisted production config from entry
