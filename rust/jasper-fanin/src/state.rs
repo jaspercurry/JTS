@@ -16,7 +16,8 @@
 //!   `MUTE <label>\n` / `UNMUTE <label>\n` → drop / restore one lane's
 //!     contribution to the sum WITHOUT gating its capture telemetry
 //!     (`frames_read` / `rms_dbfs`). mux's latest-source-wins arbitration
-//!     primitive on a combo/direct box, where the port-8781 preempt is a no-op.
+//!     primitive for the USB lane — the only USB-silencing mechanism now that
+//!     the standby jasper-usbsink bridge owns no audio path of its own to mute.
 //!
 //! Other input is rejected with `{"error": "unknown command"}`.
 //!

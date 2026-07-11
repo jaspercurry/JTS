@@ -1499,6 +1499,45 @@ consecutive_failures}`.
 - Both react slowly, which is why the outer loop's bandwidth must stay this
   low rather than matching the inner loop's.
 
+**First Windows session — ordered discovery checklist.** Nothing above has
+been measured against a real Windows box: every constant here (the ~163 ppm
+deadband, the ±1000 ppm `MAX_BIAS_PPM` window, the `PROBE_PPM` floor) is
+research-sourced (Microsoft Q&A / community reports), and all settle/churn
+tuning was validated only against one +600 ppm Mac. Each item below gates the
+next, so a first session should work through them in order and capture
+artifacts rather than try to certify pass/fail in one pass:
+
+1. **Enumeration.** Does the composite NCM+UAC2 gadget enumerate as UAC2 on
+   `usbaudio2.sys` at all, versus "device cannot be started"
+   ([raspberrypi/linux#4587](https://github.com/raspberrypi/linux/issues/4587)
+   reports that failure for a similar `f_uac2` gadget)? Does Windows' alt-setting
+   negotiation hit the dwc2 endpoint budget that
+   [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) "dwc2 endpoint capacity"
+   flags as unverified on BCM2712? Capture a USBView/descriptor dump as the
+   session artifact.
+2. **Feedback endpoint compliance.** Confirm the descriptor Windows sees
+   carries the 16.16 feedback format at `bInterval=1` and the
+   `wMaxPacketSize` `usbaudio2.sys` enforces.
+3. **Compliance probe.** Does the default `PROBE_PPM=300` pass real
+   `usbaudio2.sys` feedback behavior above the ~163 ppm deadband, or does it
+   need the 500–600 mitigation already noted above?
+4. **Clock envelope.** Measure the actual box's crystal offset/jitter and
+   confirm the settle/lock logic (tuned on the +600 ppm Mac) converges; log
+   host-clock events for the whole session.
+5. **Churn discriminator.** Does WASAPI shared-mode's ~10 ms engine and its
+   session start/stop pattern false-strike the `EarlyUnlock`
+   `RevalidationTracker` (`rust/jasper-fanin/src/host_compliance.rs`), which
+   is calibrated to CoreAudio's seconds-after-last-client teardown?
+6. **Volume.** Does Windows map its slider onto the UAC2 feature unit so
+   `jasper/usbsink/volume_bridge.py`'s `PCM Capture Volume` polling observes
+   it?
+
+Treat the session as discovery with captured artifacts (descriptor dump,
+host-clock event log, strike telemetry) — not certification. Cross-linked
+from [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md)
+§7 "Windows host validation (deferred)"; this section is the single source of
+truth for the checklist.
+
 **Per-session probe rationale**: the host OS or the playing application can
 change between sessions (a Mac unplugged and a Windows box plugged in later;
 an app that opens the endpoint in a mode that pins the rate). Compliance is
@@ -1867,7 +1906,15 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-10 (aloop solo USB capture path DELETED — `jasper-fanin`
+Last verified: 2026-07-11 (added the first-Windows-session ordered discovery
+checklist to "Cross-platform conditions", cross-linked from
+HANDOFF-usb-latency-measurement.md §7 — re-confirmed `MAX_BIAS_PPM`/the
+~163 ppm deadband in `rust/jasper-host-clock/src/lib.rs`, the `PROBE_PPM`
+200..=800 range in `rust/jasper-fanin/src/config.rs`, `RevalidationTracker` in
+`rust/jasper-fanin/src/host_compliance.rs`, and the dwc2 endpoint-capacity gap
+already flagged in HANDOFF-usb-gadget.md; no other claims in this doc
+rechecked this pass. Prior 2026-07-10: aloop solo USB capture path DELETED —
+`jasper-fanin`
 DIRECT-captures `hw:UAC2Gadget` as the sole USB ingress; the
 `jasper-usbsink-audio` bridge is standby-only. Removed with it: the bridge
 `:8781` preempt/tap listener, the bridge's solo `Fill`-mode host clock

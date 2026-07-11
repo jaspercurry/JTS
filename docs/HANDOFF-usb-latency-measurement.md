@@ -7,8 +7,12 @@ them, and the host/bench setup to reproduce it. For the *design* narrative
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) — this doc links to it
 rather than restating it.
 
-`Last verified: 2026-07-07` (jts.local live probes, combo mux liveness patch,
-2-slot ring geometry).
+`Last verified: 2026-07-11` (§7 gained "Documented leads (not scheduled)",
+"Rejected paths (do not re-chase)", and "Windows host validation (deferred)"
+subsections; claims re-verified against `rust/jasper-fanin/src/config.rs`,
+`mixer.rs`, `host_compliance.rs`, and `jasper/fanin/coupling_reconcile.py`.
+Prior 2026-07-07: jts.local live probes, combo mux liveness patch, 2-slot
+ring geometry).
 
 ---
 
@@ -389,6 +393,105 @@ near-term targets — together they'd make the box *reliably* deliver ~40 ms
 tap→ref / ~53 ms full-chain from the first click, instead of only in steady
 state. #3 and #4 are larger and lower-priority; #4 is the research frontier for
 ever pushing below the current churn-safe floor.
+
+### Documented leads (not scheduled)
+
+Ideas from a 2026-07-11 architecture review that are solid but not committed
+to a build — recorded so they aren't re-derived from scratch, not because
+they're queued:
+
+- **`EarlyUnlock` revoke-policy tolerance** (ladder item 1 above). Aligning
+  the one-strike `RevokeReason::EarlyUnlock` to the two-strike `ProbeFail`
+  ladder, or shortening `confirm_horizon_periods` instead of deleting the
+  proof outright, would let every session start at the ~40 ms floor
+  immediately instead of paying the ~43 ms cold ceiling for ~2.5 min — the
+  largest user-perceivable win that needs no new clock-recovery machinery.
+  **Pickup trigger:** a week of real jts.local `revoked_reason_last` / strike
+  telemetry showing confirmed `EarlyUnlock` revokes on the known-compliant
+  Mac dominating cold-start descents — evidence the one-strike policy is
+  punishing a compliant host, not genuine churn. Until then: instrument,
+  don't redesign.
+- **DAC-side buffer/queue depth trim** (ladder item 2 above). `~2–3` ms
+  recoverable by reducing `JASPER_OUTPUTD_DAC_BUFFER_FRAMES` / the outputd
+  URB queue depth, bounded by the underrun floor — a measured trim, no new
+  design. **Pickup trigger:** after a fresh `jasper-route-latency-artifact`
+  run re-pins the current baseline, validated with an overnight soak showing
+  zero outputd underruns. Don't trim while the measurement basis is stale —
+  a regression would be invisible.
+- **Resampler bypass on proven-compliant hosts** (ladder item 3 above).
+  `~1–3` ms at steady state once a host's compliance proof persists
+  reliably. **Pickup trigger:** after the `EarlyUnlock` item above ships —
+  proof persistence is its prerequisite — gated behind the same
+  `host_compliance` machinery and fail-safe to the resampled path.
+- **Clock recovery below the ~13.8 ms cushion** (ladder item 4 above): a
+  timestamp-based DLL or driving the UAC2 feedback endpoint as the primary
+  rate actuator, per the prior-art survey already cited there. **Pickup
+  trigger:** either a deliberate sub-35 ms product target is set, or the
+  first Windows validation session (below) forces feedback-endpoint work
+  anyway (`usbaudio2.sys` is feedback-driven) — do both in one design pass
+  rather than twice.
+- **Retire `jasper-usbsink-audio`'s duplicated state surface.** The
+  standby-only bridge still publishes a `state.json` whose `playing` /
+  `rms_dbfs` are frozen idle values (see AGENTS.md's USB Audio Input
+  section); live USB truth already comes from fan-in STATUS
+  (`usbsink_direct_frames_read` / `usbsink_direct_rms_dbfs`). Deriving
+  `/state.renderers.usbsink` fully from fan-in + sysfs `host_connected`, and
+  dropping the coupling reconciler's self-described "possibly droppable"
+  standby-env restart of the bridge (`_restart_usbsink` in
+  `jasper/fanin/coupling_reconcile.py`), would leave one USB state surface
+  instead of two. **Pickup trigger:** ride along the next time `/state`, the
+  `/sources/` wizard, or a doctor usbsink check is touched anyway — not
+  standalone urgency.
+
+### Rejected paths (do not re-chase)
+
+- **Chasing the 34.71 ms lab recipe** (resampler target 256 + cushion 256,
+  host-clock DLL and cushion-decay off). Not a regression to recover — see §1
+  "explained, not a regression": this was the pre-productization
+  free-running recipe, and directly-observed churn on jts.local's +600 ppm
+  Mac (held fill descending to 644 then snapping back to the 2048 ceiling)
+  is exactly why PR #1173 shipped target 512 / floor 576. Re-deriving it
+  re-imports the instability the productization fixed.
+- **Tightening the cushion floor 576 → 544** (0.67 ms). A deliberate,
+  documented pad, not an oversight: `DEFAULT_CUSHION_DECAY_FLOOR_FRAMES` in
+  `rust/jasper-fanin/src/config.rs` pins 576 as the hardware-validated
+  jts.local gate value; 544 is only the theoretical arm-guard minimum
+  (`max(target, minimum_safe_fill) + 32`) and was never proven stable on
+  hardware. Sub-ms, explicitly out of scope.
+- **Replacing `jasper-resampler` with a rate-matcher.** Already tried and
+  proven wrong during the USB-drop root-cause investigation — the drop was a
+  consumer-overflow bug, not clock drift, so a rate-matcher would not have
+  fixed it. Re-chasing it re-litigates a closed diagnosis.
+- **Deleting the lane-7 aloop mirror** to "finish" the aloop removal. It
+  earns its keep: `RingOutput.mirror` (`rust/jasper-fanin/src/mixer.rs`) is a
+  non-blocking diagnostic side-tap on `hw:Loopback,0,7` — `Option<PCM>`,
+  never the pacer, the ring runs without it — feeding the AEC fallback
+  dsnoop and aloop diagnostics. Removing it saves zero latency and breaks
+  the software-AEC fallback reference path.
+- **PipeWire / topology re-architecture** of the AEC or reference path.
+  Standing constraint (AGENTS.md: swap the engine, not the topology; full
+  rationale in `docs/HANDOFF-aec.md`). Nothing in this review produced
+  overwhelming evidence against it.
+- **Writing Windows-specific code before a hardware session.** Every
+  Windows-aware constant in the tree today (the ~163 ppm deadband, the
+  ±1000 ppm `MAX_BIAS_PPM` window, the UAC2 gadget's feedback-format
+  assumptions) is research-sourced, never measured against this gadget, and
+  all settle/churn tuning was validated only against one +600 ppm Mac. Code
+  written now would be guess-calibrated twice — once wrong, once again after
+  the first real trace. See "Windows host validation (deferred)" below: the
+  first Windows session is discovery, code comes after it.
+
+### Windows host validation (deferred)
+
+Readiness: plausibly-compatible-by-construction, validated nowhere. Every
+Windows-aware constant in `rust/jasper-host-clock` (the ~163 ppm deadband,
+the ±1000 ppm `MAX_BIAS_PPM` window, the `PROBE_PPM` floor) is
+research-sourced and tuned only against one +600 ppm Mac. The ordered
+discovery checklist for the first Windows session — enumeration → feedback-
+endpoint compliance → compliance probe → clock envelope → churn discriminator
+→ volume, each gating the next — lives in
+[HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) "Cross-platform
+conditions"; that section is the single source of truth, this is a pointer.
 
 ---
 

@@ -962,8 +962,8 @@ pub struct Input {
     /// the SUM stage (`lane_mix_contributes`) and skips this lane's contribution
     /// when set — WITHOUT touching this lane's capture, `frames_read`, or
     /// `rms_dbfs_x100` telemetry, which are accounted BEFORE the gate. This is
-    /// mux's latest-source-wins arbitration primitive on a combo/direct box,
-    /// where the port-8781 preempt is a no-op (the standby bridge emits nothing).
+    /// mux's latest-source-wins arbitration primitive for the USB lane — the
+    /// only USB-silencing mechanism now that the standby bridge emits nothing.
     /// NOT persisted: a fan-in restart comes up unmuted and mux reasserts.
     /// Default `false` (contribute).
     muted: Arc<AtomicBool>,
@@ -2336,9 +2336,9 @@ fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool 
 /// Pure per-lane MIX-contribution decision: a lane's freshly-read samples enter
 /// the sum this period iff it is selected AND not muted.
 ///
-/// The mute is mux's latest-source-wins arbitration primitive on a combo/direct
-/// box (the port-8781 preempt is a no-op there — the standby jasper-usbsink
-/// bridge emits nothing, so fan-in must silence the USB lane itself). It is
+/// The mute is mux's latest-source-wins arbitration primitive for the USB
+/// lane — the only USB-silencing mechanism (the standby jasper-usbsink bridge
+/// emits nothing, so fan-in must silence the USB lane itself). It is
 /// applied at the SUM ONLY: the caller stores this lane's `rms_dbfs_x100` and
 /// bumps `frames_read` BEFORE consulting this gate, so a muted lane still
 /// reports its true captured level and liveness to STATUS. mux depends on that
