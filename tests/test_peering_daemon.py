@@ -327,6 +327,26 @@ async def test_known_peers_prunes_stale_entries(daemon_setup):
     assert "newcomer" in d._known_peers
 
 
+# ---------- fail-open timeout margin (DA-0020) ----------
+
+
+def test_arbitrate_rpc_timeout_strictly_above_max_arb_window():
+    """DA-0020: the fail-open ARBITRATE RPC timeout must sit strictly
+    ABOVE the widest configured arb window (the clamp ceiling), not
+    merely equal it. The state machine only emits StartSession/StandDown
+    when the arb-window timer fires; a timeout equal to the window max
+    (the old hardcoded 0.5 s == 500 ms clamp) could race the real
+    decision at the window boundary and fail open with a stale WIN."""
+    from jasper.peering.config import MAX_ARB_WINDOW_MS
+
+    assert daemon_mod.ARBITRATE_RPC_TIMEOUT_SEC > MAX_ARB_WINDOW_MS / 1000.0
+    # And the margin is the one we intend — a real, non-zero gap.
+    assert daemon_mod.ARBITRATE_RPC_MARGIN_SEC > 0.0
+    assert daemon_mod.ARBITRATE_RPC_TIMEOUT_SEC == (
+        MAX_ARB_WINDOW_MS / 1000.0 + daemon_mod.ARBITRATE_RPC_MARGIN_SEC
+    )
+
+
 async def test_stop_resolves_pending_decision_as_win(monkeypatch, daemon_setup):
     """If stop() is called mid-arbitration (e.g. systemd restart), the
     pending RPC should resolve as WIN so the voice caller doesn't
