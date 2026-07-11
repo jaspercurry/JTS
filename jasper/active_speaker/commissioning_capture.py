@@ -147,6 +147,7 @@ def record_driver_acoustic_capture(
     sweep_meta: Mapping[str, Any],
     playback_id: str | None = None,
     test_level_dbfs: float | None = None,
+    excitation: Mapping[str, Any] | None = None,
     has_mic_calibration: bool = False,
     calibration: "CalibrationCurve | None" = None,
     notes: str | None = None,
@@ -197,20 +198,54 @@ def record_driver_acoustic_capture(
         }
     sweep_peak_dbfs = _finite_float(sweep_meta.get("amplitude_dbfs"))
     commissioning_gain_db = _finite_float(test_level_dbfs)
-    excitation = None
+    excitation_ledger = None
+    if excitation and (
+        sweep_peak_dbfs is None or commissioning_gain_db is None
+    ):
+        raise ValueError(
+            "driver capture excitation has no authoritative played level"
+        )
     if sweep_peak_dbfs is not None and commissioning_gain_db is not None:
         # This is the comparison-critical gain ledger for the isolated-driver
         # capture: the generated sweep peak plus the only role-varying graph
         # gain. Other commissioning gains are common to every driver and cancel.
         # Baseline matching normalizes every capture by this exact ledger, so a
         # per-driver protected level can never masquerade as sensitivity.
-        excitation = {
+        excitation_ledger = {
             "schema_version": 1,
             "scope": "sweep_plus_role_varying_commission_gain",
             "sweep_peak_dbfs": sweep_peak_dbfs,
             "commissioning_gain_db": commissioning_gain_db,
             "effective_peak_dbfs": sweep_peak_dbfs + commissioning_gain_db,
         }
+        if excitation:
+            supplied_peak = _finite_float(excitation.get("sweep_peak_dbfs"))
+            supplied_gain = _finite_float(excitation.get("commissioning_gain_db"))
+            supplied_effective = _finite_float(excitation.get("effective_peak_dbfs"))
+            if (
+                excitation.get("schema_version") != 1
+                or excitation.get("scope")
+                != "sweep_plus_role_varying_commission_gain"
+                or supplied_peak is None
+                or supplied_gain is None
+                or supplied_effective is None
+                or excitation.get("role") not in (None, role)
+                or excitation.get("topology_id")
+                not in (None, topology.topology_id)
+                or abs(supplied_peak - sweep_peak_dbfs) > 1e-6
+                or abs(supplied_gain - commissioning_gain_db) > 1e-6
+                or abs(
+                    supplied_effective
+                    - (sweep_peak_dbfs + commissioning_gain_db)
+                )
+                > 1e-6
+            ):
+                raise ValueError(
+                    "driver capture excitation does not match the played sweep"
+                )
+            for key in ("gain_source", "baseline_id", "topology_id", "role"):
+                if excitation.get(key) is not None:
+                    excitation_ledger[key] = excitation[key]
     raw = {
         "speaker_group_id": speaker_group_id,
         "role": role,
@@ -220,7 +255,7 @@ def record_driver_acoustic_capture(
         "acoustic": acoustic,
         "playback_id": playback_id,
         "test_level_dbfs": test_level_dbfs,
-        "excitation": excitation,
+        "excitation": excitation_ledger,
         "notes": notes,
     }
     measurement = record(
@@ -238,6 +273,7 @@ def record_driver_acoustic_capture(
         "skipped_reason": None,
         "passband_hz": list(passband),
         "acoustic": acoustic,
+        "excitation": excitation_ledger,
         "measurement": measurement,
     }
 
@@ -253,6 +289,7 @@ def record_summed_acoustic_capture(
     null_threshold_db: float = DEFAULT_NULL_THRESHOLD_DB,
     summed_test_id: str | None = None,
     playback_id: str | None = None,
+    excitation: Mapping[str, Any] | None = None,
     polarity: str | None = None,
     delay_ms: float | None = None,
     delay_target_role: str | None = None,
@@ -313,6 +350,69 @@ def record_summed_acoustic_capture(
             "acoustic": acoustic,
             "measurement": None,
         }
+    excitation_ledger = None
+    if excitation:
+        sweep_peak = _finite_float(sweep_meta.get("amplitude_dbfs"))
+        declared_peak = _finite_float(excitation.get("sweep_peak_dbfs"))
+        corrections = excitation.get("corrections")
+        if (
+            excitation.get("schema_version") != 1
+            or excitation.get("scope")
+            != "sweep_plus_applied_full_layer_a_graph"
+            or sweep_peak is None
+            or declared_peak is None
+            or abs(sweep_peak - declared_peak) > 1e-6
+            or excitation.get("topology_id")
+            not in (None, topology.topology_id)
+            or not isinstance(corrections, Mapping)
+            or not corrections
+        ):
+            raise ValueError(
+                "summed capture excitation does not match the played graph"
+            )
+        normalized_corrections: dict[str, dict[str, Any]] = {}
+        for role, values in corrections.items():
+            gain = (
+                _finite_float(values.get("gain_db"))
+                if isinstance(values, Mapping)
+                else None
+            )
+            delay = (
+                _finite_float(values.get("delay_ms"))
+                if isinstance(values, Mapping)
+                else None
+            )
+            effective = (
+                _finite_float(values.get("effective_peak_dbfs"))
+                if isinstance(values, Mapping)
+                else None
+            )
+            inverted = values.get("inverted") if isinstance(values, Mapping) else None
+            if (
+                gain is None
+                or delay is None
+                or effective is None
+                or not isinstance(inverted, bool)
+                or abs(effective - (sweep_peak + gain)) > 1e-6
+            ):
+                raise ValueError(
+                    "summed capture excitation does not match the played graph"
+                )
+            normalized_corrections[str(role)] = {
+                "gain_db": gain,
+                "delay_ms": delay,
+                "inverted": inverted,
+                "effective_peak_dbfs": effective,
+            }
+        excitation_ledger = {
+            "schema_version": 1,
+            "scope": "sweep_plus_applied_full_layer_a_graph",
+            "sweep_peak_dbfs": sweep_peak,
+            "gain_source": excitation.get("gain_source"),
+            "baseline_id": excitation.get("baseline_id"),
+            "topology_id": excitation.get("topology_id"),
+            "corrections": normalized_corrections,
+        }
     raw = {
         "speaker_group_id": speaker_group_id,
         "outcome": outcome,
@@ -321,6 +421,7 @@ def record_summed_acoustic_capture(
         "acoustic": acoustic,
         "summed_test_id": summed_test_id,
         "playback_id": playback_id,
+        "excitation": excitation_ledger,
         "polarity": polarity,
         "delay_ms": delay_ms,
         "delay_target_role": delay_target_role,
@@ -340,6 +441,7 @@ def record_summed_acoustic_capture(
         "skipped_reason": None,
         "crossover_fc_hz": fc,
         "acoustic": acoustic,
+        "excitation": excitation_ledger,
         "measurement": measurement,
     }
 

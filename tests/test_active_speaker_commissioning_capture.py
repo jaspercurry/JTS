@@ -254,6 +254,76 @@ def test_present_without_floor_confirmation_is_not_captured(tmp_path: Path):
     assert any(issue["severity"] == "blocker" for issue in record["issues"])
 
 
+def test_driver_capture_persists_verified_played_excitation(tmp_path: Path):
+    seen: dict = {}
+    ledger = {
+        "schema_version": 1,
+        "scope": "sweep_plus_role_varying_commission_gain",
+        "sweep_peak_dbfs": -12.0,
+        "commissioning_gain_db": -9.0,
+        "effective_peak_dbfs": -21.0,
+        "gain_source": "applied_baseline_recomposition_snapshot",
+        "baseline_id": "baseline-1",
+        "topology_id": _topology().topology_id,
+        "role": "woofer",
+    }
+
+    def spy_record(_topology, raw, **_kwargs):
+        seen.update(raw)
+        return {"driver_measurements": [dict(raw)]}
+
+    out = record_driver_acoustic_capture(
+        _topology(),
+        _two_way(),
+        speaker_group_id="mono",
+        role="woofer",
+        captured_wav=tmp_path / "cap.wav",
+        sweep_meta={"sample_rate": 48000, "n_samples": 4096, "amplitude_dbfs": -12.0},
+        playback_id="pb1",
+        test_level_dbfs=-9.0,
+        excitation=ledger,
+        analyze=lambda *a, **k: _driver_result("present", present=True),
+        record=spy_record,
+    )
+
+    assert out["recorded"] is True
+    assert out["excitation"] == ledger
+    assert seen["observed_mic_dbfs"] == -32.0
+    assert seen["excitation"] == ledger
+
+
+def test_driver_capture_rejects_excitation_that_does_not_match_played_sweep(
+    tmp_path: Path,
+):
+    with pytest.raises(
+        ValueError,
+        match="excitation does not match the played sweep",
+    ):
+        record_driver_acoustic_capture(
+            _topology(),
+            _two_way(),
+            speaker_group_id="mono",
+            role="woofer",
+            captured_wav=tmp_path / "cap.wav",
+            sweep_meta={
+                "sample_rate": 48000,
+                "n_samples": 4096,
+                "amplitude_dbfs": -18.0,
+            },
+            test_level_dbfs=-9.0,
+            excitation={
+                "schema_version": 1,
+                "scope": "sweep_plus_role_varying_commission_gain",
+                "sweep_peak_dbfs": -12.0,
+                "commissioning_gain_db": -9.0,
+                "effective_peak_dbfs": -21.0,
+                "role": "woofer",
+                "topology_id": _topology().topology_id,
+            },
+            analyze=lambda *a, **k: _driver_result("present", present=True),
+        )
+
+
 # --- summed-crossover wire ---------------------------------------------------
 
 
@@ -282,6 +352,54 @@ def test_summed_blend_ok_calls_record_with_outcome_and_acoustic():
     assert seen["raw"]["observed_mic_dbfs"] == -34.0
     assert seen["raw"]["summed_test_id"] == "st1"
     assert seen["raw"]["acoustic"]["verdict"] == "blend_ok"
+
+
+def test_summed_capture_persists_verified_full_graph_excitation():
+    seen = {}
+    ledger = {
+        "schema_version": 1,
+        "scope": "sweep_plus_applied_full_layer_a_graph",
+        "sweep_peak_dbfs": -12.0,
+        "gain_source": "applied_baseline_recomposition_snapshot",
+        "baseline_id": "baseline-full",
+        "topology_id": _topology().topology_id,
+        "corrections": {
+            "woofer": {
+                "gain_db": -9.0,
+                "delay_ms": 0.25,
+                "inverted": False,
+                "effective_peak_dbfs": -21.0,
+            },
+            "tweeter": {
+                "gain_db": -3.0,
+                "delay_ms": 0.0,
+                "inverted": True,
+                "effective_peak_dbfs": -15.0,
+            },
+        },
+    }
+
+    def record(_topology_value, raw, **_kwargs):
+        seen.update(raw)
+        return {"summed_validations": [dict(raw)]}
+
+    out = record_summed_acoustic_capture(
+        _topology(),
+        _two_way(),
+        speaker_group_id="mono",
+        captured_wav="cap.wav",
+        sweep_meta={
+            "sample_rate": 48000,
+            "n_samples": 4096,
+            "amplitude_dbfs": -12.0,
+        },
+        excitation=ledger,
+        analyze=lambda *a, **k: _summed_result("blend_ok"),
+        record=record,
+    )
+
+    assert out["excitation"] == ledger
+    assert seen["excitation"] == ledger
 
 
 def test_summed_polarity_problem_maps_through():
@@ -356,9 +474,15 @@ def test_record_summed_validation_persists_acoustic_block(tmp_path: Path):
             "outcome": "blend_ok",
             "observed_mic_dbfs": -34.0,
             "acoustic": _summed_result("blend_ok").to_dict(),
+            "excitation": {
+                "schema_version": 1,
+                "scope": "sweep_plus_applied_full_layer_a_graph",
+                "sweep_peak_dbfs": -12.0,
+            },
         },
         state_path=tmp_path / "measurements.json",
     )
     record = state["summed_validations"][-1]
     assert record["acoustic"]["verdict"] == "blend_ok"
     assert record["acoustic"]["kind"] == "jts_active_speaker_summed_acoustics"
+    assert record["excitation"]["sweep_peak_dbfs"] == -12.0

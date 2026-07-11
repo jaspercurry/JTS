@@ -393,6 +393,97 @@ def capture_sweep_played(payload: Any) -> bool:
     )
 
 
+def ensure_automatic_measurement_profile(
+    status: dict[str, Any],
+    run_async: AsyncRunner,
+    camilla_factory: CamillaFactory,
+    *,
+    status_loader: Callable[[], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Migrate a safe legacy manual graph before automatic measurement.
+
+    A pre-snapshot manual profile is a valid playback anchor, but it cannot be
+    the source of truth for per-role automatic excitation. ``Tune
+    automatically`` is one sequential intent, so this boundary performs the
+    existing manual-preservation transaction when—and only when—the setup
+    contract proves the current source is an exact match. Unsafe preservation
+    fails before relay registration or audio.
+    """
+    from . import correction_crossover_backend as backend
+
+    setup = status.get("setup")
+    setup = setup if isinstance(setup, dict) else {}
+    applied = setup.get("applied_crossover")
+    applied = applied if isinstance(applied, dict) else {}
+    if applied.get("valid") is True:
+        return status
+
+    reason = str(applied.get("reason") or "")
+    preservation = setup.get("manual_preservation")
+    preservation = preservation if isinstance(preservation, dict) else {}
+    if reason == "active_applied_profile_snapshot_missing":
+        if preservation.get("ready") is not True:
+            detail = str(
+                preservation.get("detail")
+                or applied.get("detail")
+                or "the current manual crossover cannot be preserved safely"
+            )
+            log_event(
+                logger,
+                "correction.crossover_legacy_profile_autopreserve",
+                status="refused",
+                reason=preservation.get("reason") or reason,
+            )
+            raise ValueError(detail)
+        payload = run_async(
+            backend.apply_profile(
+                tuning_owner="manual",
+                camilla_factory=camilla_factory,
+            ),
+            timeout=30.0,
+        )
+        if payload.get("status") != "applied":
+            detail = playback_issue_text(
+                payload,
+                "the current manual crossover could not be preserved safely",
+            )
+            log_event(
+                logger,
+                "correction.crossover_legacy_profile_autopreserve",
+                status="failed",
+                reason=detail,
+            )
+            raise ValueError(detail)
+        loader = status_loader or backend.status_payload
+        status = loader()
+        setup = status.get("setup")
+        setup = setup if isinstance(setup, dict) else {}
+        applied = setup.get("applied_crossover")
+        applied = applied if isinstance(applied, dict) else {}
+        log_event(
+            logger,
+            "correction.crossover_legacy_profile_autopreserve",
+            status="applied" if applied.get("valid") is True else "failed",
+            owner=applied.get("owner"),
+        )
+
+    if setup.get("status") != "ready":
+        raise ValueError(
+            str(
+                setup.get("detail")
+                or "the protected crossover setup is no longer ready"
+            )
+        )
+    if applied.get("valid") is not True:
+        raise ValueError(
+            str(
+                applied.get("detail")
+                or "apply a protected crossover profile before measuring it"
+            )
+        )
+    return status
+
+
 def build_crossover_relay_run_and_consume(
     raw: dict[str, Any],
     run_async: AsyncRunner,
@@ -538,6 +629,7 @@ def build_crossover_relay_run_and_consume(
             "speaker_group_id": group_id,
             "sweep_meta": played.get("sweep_meta"),
             "playback_id": played.get("playback_id"),
+            "excitation": played.get("excitation"),
         }
         for key in ("calibration_id", "measurement_mode"):
             value = raw.get(key)
@@ -559,6 +651,12 @@ def build_crossover_relay_run_and_consume(
             group_id=group_id,
             role=role or None,
             recorded=bool(record_payload.get("recorded")),
+            excitation_source=(record_raw.get("excitation") or {}).get(
+                "gain_source"
+            ),
+            effective_peak_dbfs=(record_raw.get("excitation") or {}).get(
+                "effective_peak_dbfs"
+            ),
         )
 
     return _run_and_consume

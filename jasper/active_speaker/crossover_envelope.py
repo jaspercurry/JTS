@@ -171,6 +171,9 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         if not _usable_summed_acoustic(_summed_record(status, target))
     ]
     level_ready, level_state, level_running = _level_state(status)
+    level_last = _mapping(_mapping(status.get("level_match")).get("last"))
+    level_ramp = _mapping(level_last.get("ramp"))
+    level_lock_kind = str(level_ramp.get("lock_kind") or "")
     setup_ready = _setup_ready(status)
     setup_contract = _mapping(status.get("setup"))
     applied_contract = _mapping(setup_contract.get("applied_crossover"))
@@ -204,6 +207,21 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "text": (
                 "The microphone was still too quiet at the safe software limit. "
                 "Raise the external amplifier a little, then retry."
+            ),
+        })
+    elif level_ready and level_lock_kind == "bounded_low_level":
+        shortfall = level_ramp.get("window_shortfall_db")
+        shortfall_text = (
+            f" ({float(shortfall):.1f} dB below the preferred window)"
+            if isinstance(shortfall, (int, float))
+            else ""
+        )
+        nudges.append({
+            "code": "bounded_low_measurement_level",
+            "severity": "warn",
+            "text": (
+                "The microphone level is stable and safe but lower than preferred"
+                f"{shortfall_text}. JTS will verify each sweep before using it."
             ),
         })
 

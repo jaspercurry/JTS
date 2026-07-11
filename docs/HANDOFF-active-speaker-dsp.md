@@ -500,11 +500,16 @@
 > interim estimate. Manual apply keeps operator ownership (operator pin >
 > measured > estimate > datasheet); only the explicit automatic-replacement
 > action makes measured data override the prior pin. Each capture owns a
-> sweep-peak + commissioning-gain ledger; exact
-> ledger normalization compares drivers at a common effective excitation even
-> when protection requires different raw sweep levels. Missing or invalid
-> excitation evidence fails closed instead of treating playback gain as driver
-> sensitivity.
+> sweep-peak + commissioning-gain ledger. The automatic level tone and ESS use
+> one −12 dBFS source-peak constant; the ESS role gain comes from the current
+> immutable applied Layer-A snapshot, never the quiet by-ear identity-test
+> level. Exact ledger normalization compares drivers at a common effective
+> excitation. A stale/missing applied snapshot or mismatched excitation evidence
+> fails closed before playback/recording instead of treating playback gain as
+> driver sensitivity. The automatic combined ESS likewise loads a transient,
+> validated recompose of the complete applied Layer-A snapshot (per-role gain,
+> delay, and polarity), never the legacy combined by-ear gain, then rolls back
+> to the prior DSP graph.
 > Magnitude only — never a phase/delay decision. Fail-closed: a
 > silent/clipped/low-SNR/missing capture keeps the datasheet trim and marks the
 > baseline `provisional` (`corrections_source`, `level_match`, and `provisional`
@@ -541,7 +546,11 @@
 > correction continues against that applied anchor while newer measurements are
 > only candidates. Applied legacy profiles without a recomposition snapshot offer
 > **Keep current manual crossover** (preserving its exact applied corrections) or
-> **Tune automatically**. Automatic measurements create a candidate and only the
+> **Tune automatically**. The latter automatically performs that same exact
+> preservation transaction at level-match start when
+> `manual_preservation.ready` is true, then refreshes the applied snapshot before
+> relay registration; an unsafe/stale source refuses before audio. Automatic
+> measurements create a candidate and only the
 > explicit **Replace manual crossover with automatic tuning** action changes the
 > owner. The frozen view preserves its `provisional` quality flag. Near-field automatic leveling
 > restores normal listening volume immediately and reasserts its retained target
@@ -1722,8 +1731,9 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-10 (room readiness, applied Layer-A snapshot, and relay
-crossover flow; prior 2026-06-24 room-correction start/apply/reset on solo active
+Last verified: 2026-07-11 (automatic excitation SSOT, room readiness, applied
+Layer-A snapshot, and relay crossover flow; prior 2026-06-24 room-correction
+start/apply/reset on solo active
 baselines checked against `jasper.web.correction_setup`,
 `jasper.sound.graph_carrier`, `jasper.active_speaker.camilla_yaml`,
 `jasper.active_speaker.baseline_profile`, and

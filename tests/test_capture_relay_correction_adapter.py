@@ -575,7 +575,13 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
 
     monkeypatch.setattr(correction_setup, "_camilla", lambda: Cam())
     monkeypatch.setattr(coordinator, "measurement_window", window)
-    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_kwargs: "tone.wav")
+    tone_kwargs = {}
+
+    def ensure_tone_wav(**kwargs):
+        tone_kwargs.update(kwargs)
+        return "tone.wav"
+
+    monkeypatch.setattr(playback, "_ensure_tone_wav", ensure_tone_wav)
     monkeypatch.setattr(playback, "TonePlayer", lambda _path: Tone())
     monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
 
@@ -606,6 +612,11 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     assert sess.noise_floor_db == -52.0
     assert sess.input_device["label"] == "USB measurement mic"
     assert writes == [(-41.0, False)]
+    from jasper.audio_measurement.excitation import (
+        AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+    )
+
+    assert tone_kwargs["dbfs"] == AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
 
 
 @pytest.mark.asyncio
@@ -786,3 +797,126 @@ async def test_relay_level_stale_page_never_starts_tone_and_reaches_phone(
     terminal = host_events[-1]["ramp"]
     assert terminal["state"] == "error"
     assert "incompatible" in terminal["error"]
+
+
+def _legacy_crossover_level_status(*, preservation_ready: bool) -> dict:
+    return {
+        "active": True,
+        "setup": {
+            "status": "ready",
+            "protected_profile": {"source_fingerprint": "source-1"},
+            "applied_crossover": {
+                "valid": False,
+                "reason": "active_applied_profile_snapshot_missing",
+                "detail": "the applied manual crossover has no snapshot",
+            },
+            "manual_preservation": {
+                "ready": preservation_ready,
+                "reason": (
+                    None
+                    if preservation_ready
+                    else "manual_crossover_source_changed"
+                ),
+                "detail": (
+                    "The currently applied manual crossover can be preserved exactly."
+                    if preservation_ready
+                    else "Saved crossover inputs changed; apply them again."
+                ),
+            },
+        },
+    }
+
+
+def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
+    monkeypatch,
+):
+    import asyncio
+
+    from jasper.web import correction_crossover_backend as backend
+    from jasper.web import correction_setup
+
+    legacy = _legacy_crossover_level_status(preservation_ready=True)
+    current = {
+        **legacy,
+        "setup": {
+            **legacy["setup"],
+            "applied_crossover": {
+                "valid": True,
+                "owner": "manual",
+                "reason": None,
+            },
+        },
+    }
+    statuses = iter((legacy, current))
+    monkeypatch.setattr(backend, "status_payload", lambda: next(statuses))
+    applied = {}
+
+    async def apply_profile(*, tuning_owner, camilla_factory):
+        applied["owner"] = tuning_owner
+        applied["camilla_factory"] = camilla_factory
+        return {"status": "applied", "issues": []}
+
+    monkeypatch.setattr(backend, "apply_profile", apply_profile)
+    monkeypatch.setattr(backend, "level_lease", lambda: SimpleNamespace(
+        level_match_snapshot=lambda: {"running": False}
+    ))
+    monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda coro, *, timeout: asyncio.run(coro),
+    )
+    registered = {}
+
+    def run_relay(kind, relay_base, *, return_url):
+        registered.update(
+            label=kind.label,
+            relay_base=relay_base,
+            return_url=return_url,
+        )
+        return {"url": "https://capture.jasper.tech/session"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", run_relay)
+    monkeypatch.setattr(
+        correction_setup,
+        "_request_local_return_url",
+        lambda *_args: "https://jts.local/correction/crossover/",
+    )
+
+    payload = correction_setup._handle_crossover_relay_level_match(object())
+
+    assert applied["owner"] == "manual"
+    assert registered == {
+        "label": "level_ramp:crossover",
+        "relay_base": "relay",
+        "return_url": "https://jts.local/correction/crossover/",
+    }
+    assert payload["relay"]["url"].startswith("https://capture.jasper.tech/")
+
+
+def test_crossover_level_start_refuses_unsafe_legacy_preservation(monkeypatch):
+    from jasper.web import correction_crossover_backend as backend
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        backend,
+        "status_payload",
+        lambda: _legacy_crossover_level_status(preservation_ready=False),
+    )
+    monkeypatch.setattr(
+        backend,
+        "apply_profile",
+        lambda **_kwargs: pytest.fail("unsafe preservation must not apply"),
+    )
+    monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_relay_capture",
+        lambda *_args, **_kwargs: pytest.fail("must fail before relay registration"),
+    )
+
+    with pytest.raises(ValueError, match="Saved crossover inputs changed"):
+        correction_setup._handle_crossover_relay_level_match(object())

@@ -45,6 +45,9 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 # quality_model holds only pure-data threshold profiles (no numpy/scipy), so it
 # is safe to import at module top even though the rest of the measurement kernel
 # stays lazily imported to keep the socket-activated /sound/ wizard light.
+from jasper.audio_measurement.excitation import (
+    AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+)
 from jasper.audio_measurement.quality_model import DRIVER
 
 if TYPE_CHECKING:
@@ -57,9 +60,9 @@ DEFAULT_F1_HZ = 20.0
 DEFAULT_F2_HZ = 20000.0
 DEFAULT_DURATION_S = 6.0
 DEFAULT_SAMPLE_RATE = 48000
-# Conservative digital amplitude; the caller may lower it. This is signal
-# amplitude only — acoustic level is governed by the volume/DSP chain.
-DEFAULT_AMPLITUDE_DBFS = -18.0
+# The level tone and ESS share one source peak. Acoustic level is then governed
+# by the locked main volume and the applied per-role baseline gain.
+DEFAULT_AMPLITUDE_DBFS = AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
 
 # Frequency window we trust for a phone-mic + speaker sweep. Below ~40 Hz and
 # above ~18 kHz, room modes, mic roll-off, and sweep fade dominate.

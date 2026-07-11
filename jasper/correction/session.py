@@ -56,6 +56,9 @@ from jasper.audio_measurement import (
     sweep,
 )
 from jasper.audio_measurement.calibration import CalibrationRecord
+from jasper.audio_measurement.excitation import (
+    AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+)
 from jasper.audio_measurement.quality_model import ROOM as ROOM_QUALITY
 from jasper.audio_measurement.ramp import RECOVERABLE_ERRORS, RampState
 
@@ -205,7 +208,7 @@ class SessionConfig:
     f2_hz: float = 20000.0
     duration_s: float = 10.0
     sample_rate: int = 48000
-    amplitude_dbfs: float = -12.0
+    amplitude_dbfs: float = AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
 
     peq_f_low: float = 20.0
     peq_f_high: float = 350.0

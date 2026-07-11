@@ -52,11 +52,13 @@ P3b wiring notes (deliberate, so they are not forgotten):
     ``min_read_interval_s``, but a sync 15 s-timeout HTTP call inside the
     kernel's event loop is still the wrong shape; poll on a thread, share a
     dict). Same for ``post_host_event``.
-  * MAXED_OUT UI copy must branch on ``ramp.agc_frozen`` (exposed in the
-    snapshot): with ``agc_frozen=False`` the level evidence is AGC-compressed
-    and "raise your analog amp" may be wrong — surface the degrade nudge
-    instead.
+  * A cap result satisfying the kernel's strict evidence policy is stored as an
+    explicitly labeled ``bounded_low_level`` lock, never a normal in-window
+    lock. A cap result without that proof stays MAXED_OUT, whose UI copy must
+    branch on ``ramp.agc_frozen``: with ``agc_frozen=False`` the evidence is
+    AGC-compressed and "raise your analog amp" may be wrong.
 """
+
 from __future__ import annotations
 
 import logging
@@ -73,6 +75,7 @@ from jasper.audio_measurement.ramp import (
     MeasurementRamp,
     RampController,
     RampData,
+    RampLockKind,
     RampState,
 )
 from jasper.log_event import log_event
@@ -82,7 +85,14 @@ logger = logging.getLogger(__name__)
 # Failures a relay/status reader can realistically raise. RelayError subclasses
 # RuntimeError; json decode errors are ValueError; a buggy injected reader adds
 # Type/Attribute/LookupError. Named (not blind) per the lint contract.
-_FEED_ERRORS = (OSError, RuntimeError, ValueError, TypeError, AttributeError, LookupError)
+_FEED_ERRORS = (
+    OSError,
+    RuntimeError,
+    ValueError,
+    TypeError,
+    AttributeError,
+    LookupError,
+)
 
 
 def _env_float(name: str, default: float, *, lo: float, hi: float) -> float:
@@ -125,8 +135,11 @@ class MeasurementLevelLock:
     is the recovered chain gain ``G`` (``settled_mic_dbfs - main_volume_db``);
     together they say "at this geometry, this volume put the mic at
     ``main_volume_db + gain_map_db`` dBFS". ``noise_floor_dbfs`` is the phone's
-    pre-ramp floor (context for the trust gate). ``agc_frozen`` records whether
-    the reference is trustworthy (a ``False`` here means the lock came from the
+    pre-ramp floor (context for the trust gate). ``lock_kind`` distinguishes an
+    ordinary in-window lock, a manual lock, and the evidence-backed bounded-low
+    cap policy. The settled SNR, preferred-window shortfall, and sample spread
+    keep that degraded decision observable. ``agc_frozen`` records whether the
+    reference is trustworthy (a ``False`` here means the lock came from the
     degraded manual-lock path and the drift rule is disabled for it).
     """
 
@@ -135,6 +148,10 @@ class MeasurementLevelLock:
     gain_map_db: float | None
     settled_mic_dbfs: float | None
     noise_floor_dbfs: float | None
+    lock_kind: RampLockKind = RampLockKind.IN_WINDOW
+    settled_snr_db: float | None = None
+    window_shortfall_db: float | None = None
+    settled_spread_db: float | None = None
     agc_frozen: bool = True
     schema_version: int = LEVEL_EVENT_SCHEMA_VERSION
 
@@ -142,6 +159,7 @@ class MeasurementLevelLock:
         return {
             "schema_version": self.schema_version,
             "geometry": self.geometry,
+            "lock_kind": self.lock_kind.value,
             "main_volume_db": round(self.main_volume_db, 2),
             "gain_map_db": (
                 round(self.gain_map_db, 2) if self.gain_map_db is not None else None
@@ -156,12 +174,27 @@ class MeasurementLevelLock:
                 if self.noise_floor_dbfs is not None
                 else None
             ),
+            "settled_snr_db": (
+                round(self.settled_snr_db, 2)
+                if self.settled_snr_db is not None
+                else None
+            ),
+            "window_shortfall_db": (
+                round(self.window_shortfall_db, 2)
+                if self.window_shortfall_db is not None
+                else None
+            ),
+            "settled_spread_db": (
+                round(self.settled_spread_db, 2)
+                if self.settled_spread_db is not None
+                else None
+            ),
             "agc_frozen": self.agc_frozen,
         }
 
     @classmethod
     def from_ramp(cls, geometry: str, data: RampData) -> MeasurementLevelLock:
-        """Build a lock from a terminal (LOCKED / MAXED_OUT) ramp result."""
+        """Build a lock from a terminal ``LOCKED`` ramp result."""
         volume = (
             data.locked_main_volume_db
             if data.locked_main_volume_db is not None
@@ -170,9 +203,13 @@ class MeasurementLevelLock:
         return cls(
             geometry=geometry,
             main_volume_db=float(volume),
+            lock_kind=data.lock_kind or RampLockKind.IN_WINDOW,
             gain_map_db=data.gain_map_db,
             settled_mic_dbfs=data.settled_mic_dbfs,
             noise_floor_dbfs=data.noise_floor_dbfs,
+            settled_snr_db=data.settled_snr_db,
+            window_shortfall_db=data.window_shortfall_db,
+            settled_spread_db=data.settled_spread_db,
             agc_frozen=data.agc_frozen,
         )
 
@@ -195,6 +232,7 @@ class LevelLockStore:
             "level_lock_stored",
             geometry=lock.geometry,
             main_volume_db=f"{lock.main_volume_db:.1f}",
+            lock_kind=lock.lock_kind.value,
             gain_map_db=(
                 f"{lock.gain_map_db:.1f}" if lock.gain_map_db is not None else ""
             ),
@@ -234,9 +272,7 @@ class DriftResult:
         return {
             "verdict": self.verdict.value,
             "mean_shift_db": (
-                round(self.mean_shift_db, 2)
-                if self.mean_shift_db is not None
-                else None
+                round(self.mean_shift_db, 2) if self.mean_shift_db is not None else None
             ),
             "max_band_deviation_db": (
                 round(self.max_band_deviation_db, 2)
@@ -442,9 +478,7 @@ def parse_level_batch(
     return out
 
 
-def phone_reported_abort(
-    event: dict[str, Any], *, run_token: str = ""
-) -> str | None:
+def phone_reported_abort(event: dict[str, Any], *, run_token: str = "") -> str | None:
     """Return the phone's abort reason if its event superset carries one.
 
     The phone's level batch carries its own abort state (the race-note superset),
@@ -597,9 +631,7 @@ class RelayLevelFeed:
         if self._post_host_event is None:
             return
         try:
-            self._post_host_event(
-                {"ramp": {key: value, "run_token": self.run_token}}
-            )
+            self._post_host_event({"ramp": {key: value, "run_token": self.run_token}})
         except _FEED_ERRORS:
             logger.warning("ramp host-event post failed (%s)", key, exc_info=True)
 
@@ -638,10 +670,14 @@ class LevelMatchOutcome:
 
     @property
     def locked(self) -> bool:
-        # MAXED_OUT means the safe digital ceiling was reached while the mic was
-        # still below the measurement window.  That is actionable evidence
-        # (raise the external amplifier and retry), not a usable level lock.
+        # A bounded-low result is LOCKED but explicitly labeled in lock_kind;
+        # MAXED_OUT remains a failed attempt and never creates a lock.
         return self.ramp.state is RampState.LOCKED
+
+    @property
+    def bounded_low_level(self) -> bool:
+        """True only for the evidence-backed degraded cap lock."""
+        return self.ramp.lock_kind is RampLockKind.BOUNDED_LOW_LEVEL
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -704,13 +740,14 @@ class LevelMatchSession:
         Waits (bounded) for the phone's ``armed`` superset before any volume or
         tone change — a premature call must not burn a full tone climb against a
         phone nobody tapped Start on. Only a terminal LOCKED stores a
-        :class:`MeasurementLevelLock` under the geometry key. MAXED_OUT means the
-        safe digital ceiling was insufficient and stores no lock; the flow asks
-        the household to raise the external amplifier and retry. ABORTED /
-        CANCELLED / ERROR likewise store nothing and restore the original
-        listening level. A phone-reported abort seen in the feed cancels the ramp
-        cleanly. ``run_token`` must match the token minted into this run's
-        ``build_level_ramp_spec`` so the feed is scoped to this run.
+        :class:`MeasurementLevelLock` under the geometry key. A trustworthy,
+        stable cap result may lock as explicitly degraded
+        ``bounded_low_level`` evidence; an insufficient cap result remains
+        MAXED_OUT and stores no lock. ABORTED / CANCELLED / ERROR likewise store
+        nothing and restore the original listening level. A phone-reported abort
+        seen in the feed cancels the ramp cleanly. ``run_token`` must match the
+        token minted into this run's ``build_level_ramp_spec`` so the feed is
+        scoped to this run.
         """
         feed = RelayLevelFeed(
             read_status=read_status,
@@ -798,6 +835,7 @@ class LevelMatchSession:
             session=self.session_id,
             geometry=geometry,
             state=data.state.value,
+            lock_kind=(data.lock_kind.value if data.lock_kind is not None else ""),
             locked_db=(
                 f"{data.locked_main_volume_db:.1f}"
                 if data.locked_main_volume_db is not None

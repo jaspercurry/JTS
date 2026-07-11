@@ -647,6 +647,37 @@ def test_crossover_envelope_maxed_out_is_retry_not_a_lock():
     assert env["nudges"][0]["code"] == "external_amplifier_too_low"
 
 
+def test_crossover_envelope_surfaces_bounded_low_lock_without_blocking_sweeps():
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["level_match"] = {
+        "running": False,
+        "valid": True,
+        "last": {
+            "ramp": {
+                "state": "locked",
+                "lock_kind": "bounded_low_level",
+                "window_shortfall_db": 13.07,
+            }
+        },
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "driver"
+    assert env["next_action"]["id"] == "measure_driver"
+    assert env["nudges"] == [{
+        "code": "bounded_low_measurement_level",
+        "severity": "warn",
+        "text": (
+            "The microphone level is stable and safe but lower than preferred "
+            "(13.1 dB below the preferred window). JTS will verify each sweep "
+            "before using it."
+        ),
+    }]
+
+
 # --- phone-mic relay transport (P7) -------------------------------------------
 
 
@@ -729,7 +760,7 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
                         "captured": True,
                         "audio_emitted": True,
                         "summed_test_id": "sum-9",
-                        "tone": {"level_dbfs": -72.0},
+                        "tone": {"level_dbfs": -80.8},
                         "issues": [],
                     },
                 },
@@ -740,16 +771,74 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
     monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
     monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
     monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    if kind == "driver":
+        monkeypatch.setattr(
+            web,
+            "automatic_driver_excitation",
+            lambda _topology, role: {
+                "status": "ready",
+                "schema_version": 1,
+                "scope": "sweep_plus_role_varying_commission_gain",
+                "sweep_peak_dbfs": -12.0,
+                "commissioning_gain_db": -9.0,
+                "effective_peak_dbfs": -21.0,
+                "gain_source": web.AUTOMATIC_EXCITATION_GAIN_SOURCE,
+                "baseline_id": "baseline-1",
+                "topology_id": "topology-1",
+                "role": role,
+            },
+        )
 
     async def _loaded(**kwargs):
         return {"load": {"status": "loaded"}}
 
-    async def _rolled_back(**kwargs):
+    async def _rolled_back(*args, **kwargs):
         return {"status": "rolled_back"}
+
+    async def _loaded_applied_summed(**kwargs):
+        return {
+            "load": {
+                "status": "loaded",
+                "previous_config_path": "/tmp/previous.yml",
+            },
+            "excitation": {
+                "status": "ready",
+                "schema_version": 1,
+                "scope": "sweep_plus_applied_full_layer_a_graph",
+                "sweep_peak_dbfs": -12.0,
+                "gain_source": web.AUTOMATIC_EXCITATION_GAIN_SOURCE,
+                "baseline_id": "baseline-1",
+                "topology_id": "topology-1",
+                "corrections": {
+                    "woofer": {
+                        "gain_db": -9.0,
+                        "delay_ms": 0.25,
+                        "inverted": False,
+                        "effective_peak_dbfs": -21.0,
+                    },
+                    "tweeter": {
+                        "gain_db": -3.0,
+                        "delay_ms": 0.0,
+                        "inverted": True,
+                        "effective_peak_dbfs": -15.0,
+                    },
+                },
+            },
+        }
 
     monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", _loaded)
     monkeypatch.setattr(web, "_load_summed_commissioning_config", _loaded)
+    monkeypatch.setattr(
+        web,
+        "_load_applied_summed_measurement_config",
+        _loaded_applied_summed,
+    )
     monkeypatch.setattr(web, "_rollback_summed_commissioning_config", _rolled_back)
+    monkeypatch.setattr(
+        web,
+        "_rollback_applied_summed_measurement_config",
+        _rolled_back,
+    )
     monkeypatch.setattr(
         web, "_commission_tone_select_fanin_lane", lambda: {"status": "ok"}
     )
@@ -813,11 +902,25 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
     assert record_calls["wav"] == b"phone-wav-bytes"
     assert raw["role"] == "woofer"
     assert raw["playback_id"]
-    assert raw["test_level_dbfs"] == -72.0  # top-level, as the JS reads it
+    # The old by-ear -72 dB floor record is identity evidence only. The played
+    # automatic sweep uses the protected applied role gain.
+    assert raw["test_level_dbfs"] == -9.0
+    assert raw["excitation"] == {
+        "schema_version": 1,
+        "scope": "sweep_plus_role_varying_commission_gain",
+        "sweep_peak_dbfs": -12.0,
+        "commissioning_gain_db": -9.0,
+        "effective_peak_dbfs": -21.0,
+        "gain_source": "applied_baseline_recomposition_snapshot",
+        "baseline_id": "baseline-1",
+        "topology_id": "topology-1",
+        "role": "woofer",
+    }
     meta = raw["sweep_meta"]
     assert meta["sample_rate"] == 48000
     assert meta["duration_s"] > 0  # real synchronized-sine meta, not a stub
     assert {"f1", "f2", "n_samples", "amplitude_dbfs"} <= set(meta)
+    assert meta["amplitude_dbfs"] == -12.0
     assert purged["done"] is True
     assert host_events == ["sweep_started", "sweep_complete"]
 
@@ -852,6 +955,11 @@ async def test_crossover_relay_consume_feeds_real_summed_play_payload(
     raw = record_calls["raw"]
     assert raw["summed_test_id"] == "sum-9"
     assert raw["sweep_meta"]["sample_rate"] == 48000
+    assert raw["excitation"]["scope"] == (
+        "sweep_plus_applied_full_layer_a_graph"
+    )
+    assert raw["excitation"]["sweep_peak_dbfs"] == -12.0
+    assert raw["excitation"]["corrections"]["tweeter"]["inverted"] is True
     assert "role" not in raw
 
 

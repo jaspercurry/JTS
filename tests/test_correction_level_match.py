@@ -13,6 +13,7 @@ reload), the armed gate (no tone until the phone armed), the latched
 journal-spam warnings, and the terminal host event re-posted until the relay
 echoes it back.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,6 +24,7 @@ import pytest
 from jasper.audio_measurement.ramp import (
     LEVEL_EVENT_SCHEMA_VERSION,
     MeasurementRamp,
+    RampLockKind,
     RampState,
 )
 from jasper.correction.level_match import (
@@ -432,7 +434,9 @@ class FakeChain:
 
 def _session(store=None, **cfg_kw):
     cfg = MeasurementRamp(**{**FAST, **cfg_kw})
-    return LevelMatchSession(session_id="s", store=store or LevelLockStore(), config=cfg)
+    return LevelMatchSession(
+        session_id="s", store=store or LevelLockStore(), config=cfg
+    )
 
 
 async def _run_geometry(sess, chain, geometry, *, clock=None, **kw):
@@ -459,6 +463,7 @@ async def test_level_match_session_locks_and_stores_geometry_lock():
     chain = FakeChain(gain_db=10.0, start_vol=-30.0)
     outcome = await _run_geometry(sess, chain, MicGeometry.LISTENING_POSITION.value)
     assert outcome.ramp.state == RampState.LOCKED
+    assert outcome.ramp.lock_kind is RampLockKind.IN_WINDOW
     assert outcome.locked
     lock = store.get(MicGeometry.LISTENING_POSITION.value)
     assert lock is not None
@@ -474,11 +479,10 @@ async def test_level_match_session_locks_and_stores_geometry_lock():
 async def test_level_match_maxed_out_restores_and_stores_no_lock():
     store = LevelLockStore()
     sess = _session(store, cap_bump_db=6.0, cap_ceil_db=-6.0)
-    chain = FakeChain(gain_db=2.0, start_vol=-30.0)
+    # Unknown ambient floor cannot satisfy the bounded-low evidence contract.
+    chain = FakeChain(gain_db=2.0, start_vol=-30.0, nf=None)
 
-    outcome = await _run_geometry(
-        sess, chain, MicGeometry.LISTENING_POSITION.value
-    )
+    outcome = await _run_geometry(sess, chain, MicGeometry.LISTENING_POSITION.value)
 
     assert outcome.ramp.state == RampState.MAXED_OUT
     assert outcome.locked is False
@@ -486,6 +490,37 @@ async def test_level_match_maxed_out_restores_and_stores_no_lock():
     assert outcome.ramp.locked_main_volume_db is None
     assert chain._vol == -30.0
     assert store.get(MicGeometry.LISTENING_POSITION.value) is None
+
+
+@pytest.mark.asyncio
+async def test_level_match_persists_bounded_low_evidence_in_lock_snapshot():
+    store = LevelLockStore()
+    sess = _session(store, allow_bounded_low_level=True)
+    original = -15.15
+    cap = sess.config.dynamic_cap(original)
+    chain = FakeChain(
+        gain_db=-33.07 - cap,
+        start_vol=original,
+        nf=-44.53,
+    )
+
+    outcome = await _run_geometry(sess, chain, MicGeometry.NEAR_FIELD_DRIVER.value)
+
+    assert outcome.locked is True
+    assert outcome.bounded_low_level is True
+    assert outcome.ramp.lock_kind is RampLockKind.BOUNDED_LOW_LEVEL
+    lock = store.get(MicGeometry.NEAR_FIELD_DRIVER.value)
+    assert lock is not None
+    assert lock.lock_kind is RampLockKind.BOUNDED_LOW_LEVEL
+    snapshot = outcome.snapshot()
+    assert snapshot["ramp"]["lock_kind"] == "bounded_low_level"
+    assert snapshot["ramp"]["settled_mic_dbfs"] == -33.07
+    assert snapshot["ramp"]["settled_snr_db"] == 11.46
+    assert snapshot["ramp"]["window_shortfall_db"] == 13.07
+    assert snapshot["lock"]["lock_kind"] == "bounded_low_level"
+    assert snapshot["lock"]["settled_mic_dbfs"] == -33.07
+    assert snapshot["lock"]["settled_snr_db"] == 11.46
+    assert snapshot["lock"]["window_shortfall_db"] == 13.07
 
 
 @pytest.mark.asyncio
@@ -879,6 +914,43 @@ async def test_crossover_lease_restores_then_scopes_target_to_sweep_window():
     assert await lease.restore_level_match_volume(chain.set_vol) is True
     assert chain._vol == pytest.approx(-30.0)
     assert outcome.ramp.restored is True
+
+
+@pytest.mark.asyncio
+async def test_crossover_lease_accepts_and_reasserts_bounded_low_lock():
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease()
+    original = -15.15
+    config = MeasurementRamp()
+    cap = config.dynamic_cap(original)
+    chain = FakeChain(
+        gain_db=-33.07 - cap,
+        start_vol=original,
+        nf=-44.53,
+    )
+    clock = Clock()
+
+    outcome = await lease.run_level_match(
+        MicGeometry.NEAR_FIELD_DRIVER.value,
+        get_main_volume_db=chain.get_vol,
+        set_main_volume_db=chain.set_vol,
+        play_continuous_tone=chain.tone,
+        cancel_tone=chain.cancel_tone,
+        read_status=chain.read_status,
+        post_host_event=chain.post_host_event,
+        noise_floor_dbfs=chain.nf,
+        clock=clock.now,
+        sleep=clock.sleep,
+        wait_for_armed=False,
+        context_id="profile-bounded",
+    )
+
+    assert outcome.bounded_low_level is True
+    assert outcome.ramp.restored is True
+    assert chain._vol == pytest.approx(original)
+    assert await lease.ensure_level_match_volume(chain.set_vol) is True
+    assert chain._vol == pytest.approx(cap)
 
 
 @pytest.mark.asyncio

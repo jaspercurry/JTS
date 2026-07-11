@@ -33,6 +33,7 @@ The safety proof the panel probes:
   * cancel/timeout/clip restore the user's own volume EXACTLY (no cap clamp);
   * the tone-player contract (play-until-cancelled) is enforced.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -47,6 +48,7 @@ from jasper.audio_measurement.ramp import (
     LevelSample,
     MeasurementRamp,
     RampController,
+    RampLockKind,
     RampState,
 )
 
@@ -346,9 +348,7 @@ def test_dynamic_cap_matches_relay_level_defaults():
         (-45.0, 3.0, -12.0),
     ],
 )
-def test_dynamic_cap_never_exceeds_bump_or_absolute_ceiling(
-    original, bump, ceiling
-):
+def test_dynamic_cap_never_exceeds_bump_or_absolute_ceiling(original, bump, ceiling):
     cfg = MeasurementRamp(cap_bump_db=bump, cap_ceil_db=ceiling)
     cap = cfg.dynamic_cap(original)
     assert cap <= original + bump
@@ -415,6 +415,17 @@ def test_from_env_confirm_k_floor_is_two(monkeypatch):
     assert MeasurementRamp.from_env().confirm_k == 2
 
 
+def test_bounded_low_stability_threshold_must_be_finite_and_nonnegative():
+    with pytest.raises(ValueError, match="bounded_low_max_spread_db"):
+        MeasurementRamp(bounded_low_max_spread_db=-0.1)
+    with pytest.raises(ValueError, match="bounded_low_max_spread_db"):
+        MeasurementRamp(bounded_low_max_spread_db=float("nan"))
+    with pytest.raises(ValueError, match="bounded_low_max_shortfall_db"):
+        MeasurementRamp(bounded_low_max_shortfall_db=0.0)
+    with pytest.raises(ValueError, match="bounded_low_max_shortfall_db"):
+        MeasurementRamp(bounded_low_max_shortfall_db=float("inf"))
+
+
 # --- THE BLOCKER REGRESSION: sparse/misphased feeds MUST LOCK -----------------
 #
 # These encode the panel's exact failing schedules against the shipped kernel:
@@ -472,9 +483,7 @@ async def test_sparse_feed_no_ratchet_past_window_top():
     # there is no bounce: the implied mic level never exceeds window_high.
     clock = FakeClock()
     cfg = MeasurementRamp()
-    chain = SparseChain(
-        clock=clock, gain_db=18.0, start_vol=-40.0, batch_interval=0.75
-    )
+    chain = SparseChain(clock=clock, gain_db=18.0, start_vol=-40.0, batch_interval=0.75)
     controller, data, tone = await _run(chain, cfg, clock=clock, original=-40.0)
     assert data.state == RampState.LOCKED
     max_implied_mic = max(v + chain.gain_db for v in chain.commanded)
@@ -511,7 +520,10 @@ async def test_sparse_down_jump_locks_loud_amp():
     clock = FakeClock()
     cfg = MeasurementRamp()
     chain = SparseChain(
-        clock=clock, gain_db=40.0, start_vol=-30.0, batch_interval=0.5,
+        clock=clock,
+        gain_db=40.0,
+        start_vol=-30.0,
+        batch_interval=0.5,
         transport_lag=0.5,
     )
     controller, data, tone = await _run(chain, cfg, clock=clock, original=-30.0)
@@ -525,39 +537,54 @@ async def test_sparse_down_jump_locks_loud_amp():
 
 
 @pytest.mark.asyncio
-async def test_sparse_confirming_maxed_out_quiet_amp():
+async def test_sparse_confirming_accepts_explicit_bounded_low_lock():
     # gain -2 with cap -24: the jump target clamps at the cap and the confirm
-    # stream reads consistently below the window → MAXED_OUT via CONFIRMING
-    # (the review: this terminal existed only via CLIMBING in tests).
+    # stream reads consistently below the window. Stable trusted post-latency
+    # evidence may proceed, but only as an explicitly degraded lock.
     clock = FakeClock()
-    cfg = MeasurementRamp(cap_bump_db=6.0, cap_ceil_db=-6.0)
+    cfg = MeasurementRamp(
+        cap_bump_db=6.0,
+        cap_ceil_db=-6.0,
+        allow_bounded_low_level=True,
+    )
     chain = SparseChain(
-        clock=clock, gain_db=-2.0, start_vol=-30.0, batch_interval=0.5,
+        clock=clock,
+        gain_db=-2.0,
+        start_vol=-30.0,
+        batch_interval=0.5,
         transport_lag=0.5,
     )
     controller, data, tone = await _run(chain, cfg, clock=clock, original=-30.0)
-    assert data.state == RampState.MAXED_OUT
+    assert data.state == RampState.LOCKED
+    assert data.lock_kind is RampLockKind.BOUNDED_LOW_LEVEL
     assert data.trusted_sample_count > 0  # evidence-gated
     cap = cfg.dynamic_cap(-30.0)
-    assert data.locked_main_volume_db is None
-    assert data.current_main_volume_db == pytest.approx(-30.0)
-    assert data.error is not None and "external amplifier" in data.error
+    assert data.locked_main_volume_db == pytest.approx(cap)
+    assert data.settled_mic_dbfs == pytest.approx(-26.0)
+    assert data.settled_snr_db == pytest.approx(54.0)
+    assert data.window_shortfall_db == pytest.approx(6.0)
+    assert data.settled_spread_db == pytest.approx(0.0)
     for vol in chain.commanded:
         assert vol <= cap + 1e-9
 
 
 @pytest.mark.asyncio
-async def test_sparse_quiet_amp_reaches_maxed_out_not_timeout():
+async def test_sparse_quiet_amp_reaches_bounded_lock_not_timeout():
     # The review's SF1.0 repro: gain=-14/original=-14 (cap -8) died at the old
     # fixed 25 s timeout mid-climb. The derived timeout must let it reach the
-    # actionable MAXED_OUT verdict.
+    # bounded-low verdict.
     clock = FakeClock()
-    cfg = MeasurementRamp(cap_bump_db=6.0, cap_ceil_db=-6.0)
+    cfg = MeasurementRamp(
+        cap_bump_db=6.0,
+        cap_ceil_db=-6.0,
+        allow_bounded_low_level=True,
+    )
     chain = SparseChain(
         clock=clock, gain_db=-14.0, start_vol=-14.0, batch_interval=0.75
     )
     controller, data, tone = await _run(chain, cfg, clock=clock, original=-14.0)
-    assert data.state == RampState.MAXED_OUT
+    assert data.state == RampState.LOCKED
+    assert data.lock_kind is RampLockKind.BOUNDED_LOW_LEVEL
     assert data.error is None or "timeout" not in data.error
 
 
@@ -620,9 +647,7 @@ async def test_no_commanded_volume_exceeds_caps(gain_db, original):
 async def test_hard_ceiling_belt_holds_in_loosest_config():
     # Pin the 0 dB belt itself (review nit): the loosest constructible cap
     # (cap_ceil_db=0, huge bump) must still never command above 0 dB.
-    cfg = MeasurementRamp(
-        cap_ceil_db=0.0, cap_bump_db=60.0, **FAST
-    )
+    cfg = MeasurementRamp(cap_ceil_db=0.0, cap_bump_db=60.0, **FAST)
     chain = ChainModel(gain_db=-5.0, start_vol=-30.0)
     controller, data, tone = await _run(chain, cfg, original=-30.0)
     for vol in chain.commanded:
@@ -754,20 +779,178 @@ async def test_timeout_restores_original_exactly_above_cap():
 
 
 @pytest.mark.asyncio
-async def test_maxed_out_when_amp_too_quiet_has_evidence():
-    cfg = MeasurementRamp(**FAST)
-    # Gain so negative that even at the cap the mic never reaches the window,
-    # but readings clear the trust floor → genuine MAXED_OUT.
-    chain = ChainModel(gain_db=-30.0, start_vol=-40.0, noise_floor_dbfs=-90.0)
-    controller, data, tone = await _run(chain, cfg, original=-40.0)
-    assert data.state == RampState.MAXED_OUT
+async def test_jts3_level_evidence_locks_only_as_bounded_low():
+    cfg = MeasurementRamp(**FAST, allow_bounded_low_level=True)
+    # Hardware evidence reproduced from JTS3: cap ~= -3.15 dB, stable UMIK
+    # median ~= -33.07 dBFS, floor ~= -44.53 dBFS (11.46 dB SNR).
+    original = -15.15
+    cap = cfg.dynamic_cap(original)
+    chain = ChainModel(
+        gain_db=-33.07 - cap,
+        start_vol=original,
+        noise_floor_dbfs=-44.53,
+    )
+    controller, data, tone = await _run(chain, cfg, original=original)
+    assert data.state == RampState.LOCKED
+    assert data.lock_kind is RampLockKind.BOUNDED_LOW_LEVEL
     assert data.trusted_sample_count > 0
-    cap = cfg.dynamic_cap(-40.0)
-    assert data.locked_main_volume_db is None
-    assert data.current_main_volume_db == pytest.approx(-40.0)
-    assert data.error is not None and "external amplifier" in data.error
+    assert data.locked_main_volume_db == pytest.approx(cap)
+    assert data.settled_mic_dbfs == pytest.approx(-33.07)
+    assert data.settled_snr_db == pytest.approx(11.46)
+    assert data.window_shortfall_db == pytest.approx(13.07)
+    snap = data.snapshot()
+    assert snap["lock_kind"] == "bounded_low_level"
+    assert snap["settled_mic_dbfs"] == -33.07
+    assert snap["settled_snr_db"] == 11.46
+    assert snap["window_shortfall_db"] == 13.07
+    assert snap["settled_spread_db"] == 0.0
     for vol in chain.commanded:
         assert vol <= cap + 1e-9
+
+
+@pytest.mark.asyncio
+async def test_bounded_low_requires_known_noise_floor():
+    cfg = MeasurementRamp(**FAST, allow_bounded_low_level=True)
+    chain = ChainModel(
+        gain_db=-30.0,
+        start_vol=-15.0,
+        noise_floor_dbfs=None,
+    )
+    controller, data, tone = await _run(chain, cfg, original=-15.0)
+    assert data.state == RampState.MAXED_OUT
+    assert data.lock_kind is None
+    assert data.locked_main_volume_db is None
+    assert data.settled_snr_db is None
+    assert chain.commanded[-1] == pytest.approx(-15.0)
+
+
+@pytest.mark.asyncio
+async def test_bounded_low_is_opt_in_not_shared_room_policy():
+    cfg = MeasurementRamp(**FAST)
+    chain = ChainModel(
+        gain_db=-30.0,
+        start_vol=-15.0,
+        noise_floor_dbfs=-45.0,
+    )
+    controller, data, tone = await _run(chain, cfg, original=-15.0)
+    assert data.state == RampState.MAXED_OUT
+    assert data.lock_kind is None
+
+
+@pytest.mark.asyncio
+async def test_bounded_low_rejects_signal_beyond_absolute_shortfall_limit():
+    cfg = MeasurementRamp(
+        **FAST,
+        allow_bounded_low_level=True,
+        bounded_low_max_shortfall_db=20.0,
+    )
+    chain = ChainModel(
+        gain_db=-80.0 - cfg.dynamic_cap(-15.0),
+        start_vol=-15.0,
+        noise_floor_dbfs=-90.0,
+    )
+    controller, data, tone = await _run(chain, cfg, original=-15.0)
+    assert data.state == RampState.MAXED_OUT
+    assert data.settled_snr_db == pytest.approx(10.0)
+    assert data.window_shortfall_db == pytest.approx(60.0)
+    assert data.lock_kind is None
+
+
+@pytest.mark.asyncio
+async def test_unstable_cap_evidence_never_bounded_locks():
+    cfg = MeasurementRamp(
+        **FAST,
+        allow_bounded_low_level=True,
+        bounded_low_max_spread_db=1.5,
+    )
+
+    class UnstableChain(ChainModel):
+        async def next_samples(self):
+            samples = await super().next_samples()
+            sample = samples[0]
+            wobble = 3.0 if self._seq % 2 == 0 else 0.0
+            return [
+                LevelSample(
+                    seq=sample.seq,
+                    t_client_ms=sample.t_client_ms,
+                    rms_dbfs=sample.rms_dbfs + wobble,
+                    peak_dbfs=sample.peak_dbfs + wobble,
+                    clip=False,
+                    agc_frozen=True,
+                )
+            ]
+
+    chain = UnstableChain(
+        gain_db=-30.0,
+        start_vol=-15.0,
+        noise_floor_dbfs=-45.0,
+    )
+    controller, data, tone = await _run(chain, cfg, original=-15.0)
+    assert data.state == RampState.MAXED_OUT
+    assert data.lock_kind is None
+    assert data.settled_spread_db == pytest.approx(3.0)
+    assert data.locked_main_volume_db is None
+
+
+@pytest.mark.asyncio
+async def test_sparse_cap_evidence_loses_feed_instead_of_locking():
+    clock = FakeClock()
+    cfg = MeasurementRamp(
+        **FAST,
+        allow_bounded_low_level=True,
+        feed_timeout_s=1.0,
+    )
+    cap = cfg.dynamic_cap(-15.0)
+
+    class OnePostLatencyCapSample(ChainModel):
+        def __init__(self):
+            super().__init__(
+                gain_db=-30.0,
+                start_vol=-15.0,
+                noise_floor_dbfs=-45.0,
+            )
+            self.cap_at = None
+            self.emitted_at_cap = False
+
+        async def set_vol(self, db):
+            await super().set_vol(db)
+            if math.isclose(db, cap, abs_tol=1e-9) and self.cap_at is None:
+                self.cap_at = clock.now()
+
+        async def next_samples(self):
+            if self.cap_at is None:
+                return await super().next_samples()
+            if (
+                not self.emitted_at_cap
+                and clock.now() - self.cap_at >= cfg.max_loop_latency_s
+            ):
+                self.emitted_at_cap = True
+                return await super().next_samples()
+            return []
+
+    chain = OnePostLatencyCapSample()
+    controller, data, tone = await _run(chain, cfg, clock=clock, original=-15.0)
+    assert data.state == RampState.ABORTED
+    assert data.lock_kind is None
+    assert data.error is not None and "phone feed lost" in data.error
+    assert chain.commanded[-1] == pytest.approx(-15.0)
+
+
+@pytest.mark.asyncio
+async def test_clip_at_cap_aborts_before_bounded_lock():
+    cfg = MeasurementRamp(**FAST, allow_bounded_low_level=True)
+    cap = cfg.dynamic_cap(-15.0)
+    chain = ChainModel(
+        gain_db=-30.0,
+        start_vol=-15.0,
+        noise_floor_dbfs=-45.0,
+        clip_at_vol=cap,
+    )
+    controller, data, tone = await _run(chain, cfg, original=-15.0)
+    assert data.state == RampState.ABORTED
+    assert data.lock_kind is None
+    assert data.error == "clip detected"
+    assert chain.commanded[-1] == pytest.approx(-15.0)
 
 
 @pytest.mark.asyncio
@@ -940,10 +1123,9 @@ async def test_quiet_start_before_tone_and_fade_before_kill():
 async def test_manual_lock_trusts_the_user():
     cfg = MeasurementRamp(settle_hold_s=5.0, max_loop_latency_s=2.0)
     chain = ChainModel(gain_db=2.0, start_vol=-40.0)
-    controller, data, tone = await _run(
-        chain, cfg, original=-40.0, manual_lock_after=3
-    )
+    controller, data, tone = await _run(chain, cfg, original=-40.0, manual_lock_after=3)
     assert data.state == RampState.LOCKED
+    assert data.lock_kind is RampLockKind.MANUAL
     assert data.locked_main_volume_db is not None
     cap = cfg.dynamic_cap(-40.0)
     for vol in chain.commanded:
