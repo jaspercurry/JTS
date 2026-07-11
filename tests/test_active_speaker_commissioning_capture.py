@@ -254,6 +254,37 @@ def test_present_without_floor_confirmation_is_not_captured(tmp_path: Path):
     assert any(issue["severity"] == "blocker" for issue in record["issues"])
 
 
+def test_present_uses_durable_floor_confirmation_after_session_expiry(
+    tmp_path: Path,
+):
+    confirmation = {
+        "accepted": True,
+        "playback_id": "pb1",
+        "target": {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "output_index": 0,
+        },
+    }
+    out = record_driver_acoustic_capture(
+        _topology(),
+        _two_way(),
+        speaker_group_id="mono",
+        role="woofer",
+        captured_wav=tmp_path / "cap.wav",
+        sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+        playback_id="pb1",
+        safe_session=None,
+        durable_floor_confirmation=confirmation,
+        state_path=tmp_path / "measurements.json",
+        analyze=lambda *a, **k: _driver_result("present", present=True),
+    )
+
+    record = out["measurement"]["driver_measurements"][-1]
+    assert record["captured"] is True
+    assert record["floor_confirmation"] == confirmation
+
+
 def test_driver_capture_persists_verified_played_excitation(tmp_path: Path):
     seen: dict = {}
     ledger = {

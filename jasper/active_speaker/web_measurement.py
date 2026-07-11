@@ -363,14 +363,39 @@ def record_driver_capture(
     from jasper.active_speaker.commissioning_capture import (
         record_driver_acoustic_capture,
     )
-    from jasper.active_speaker.safe_playback import load_safe_playback_state
-
+    from jasper.active_speaker.measurement import (
+        current_driver_floor_evidence,
+        load_measurement_state,
+    )
     topology = load_output_topology()
+    group_id = str(raw.get("speaker_group_id") or "").strip()
+    role = str(raw.get("role") or "").strip().lower()
+    floor_evidence = current_driver_floor_evidence(
+        topology,
+        load_measurement_state(topology),
+        speaker_group_id=group_id,
+        role=role,
+    )
+    if floor_evidence.get("valid") is not True:
+        log_event(
+            logger,
+            "active_speaker.web_driver_capture",
+            level=logging.WARNING,
+            status="refused",
+            group_id=group_id,
+            role=role,
+            floor_evidence_source=floor_evidence.get("source"),
+            reason=floor_evidence.get("reason"),
+        )
+        raise ValueError(
+            str(
+                floor_evidence.get("detail")
+                or "confirm this driver again before recording mic evidence"
+            )
+        )
     preset = capture_preset(topology)
     wav_path = capture_wav_path(raw, kind="driver", wav_bytes=wav_bytes)
     calibration_curve, calibration_id, measurement_mode = capture_calibration(raw)
-    group_id = str(raw.get("speaker_group_id") or "").strip()
-    role = str(raw.get("role") or "").strip().lower()
     payload = record_driver_acoustic_capture(
         topology,
         preset,
@@ -387,7 +412,8 @@ def record_driver_capture(
         calibration=calibration_curve,
         notes=raw.get("notes"),
         calibration_level=load_calibration_level_state(),
-        safe_session=load_safe_playback_state(),
+        safe_session=None,
+        durable_floor_confirmation=floor_evidence.get("confirmation"),
     )
     payload["measurement_mode"] = measurement_mode
     payload["calibration_id"] = calibration_id
@@ -402,6 +428,7 @@ def record_driver_capture(
         effective_peak_dbfs=(payload.get("excitation") or {}).get(
             "effective_peak_dbfs"
         ),
+        floor_evidence_source=floor_evidence.get("source"),
     )
     return payload
 

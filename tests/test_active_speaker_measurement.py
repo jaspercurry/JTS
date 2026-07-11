@@ -6,10 +6,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from jasper.active_speaker.measurement import (
     active_driver_targets,
     active_summed_targets,
     confirmed_driver_roles,
+    current_driver_floor_evidence,
     load_measurement_state,
     record_driver_measurement,
     record_summed_test_artifact,
@@ -335,6 +338,88 @@ def test_confirmed_driver_roles_are_current_topology_captured_roles(
         speaker_group_id="mono",
         state_path=state_path,
     ) == ["woofer"]
+
+
+def _current_woofer_floor_state(tmp_path: Path):
+    topology = _topology()
+    state = record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": "heard_correct_driver",
+            "playback_id": "playback-woofer",
+            "observed_mic_dbfs": -42.0,
+        },
+        safe_session=_safe_session(
+            role="woofer",
+            output_index=0,
+            playback_id="playback-woofer",
+        ),
+        state_path=tmp_path / "measurements.json",
+    )
+    return topology, state
+
+
+def test_current_driver_floor_evidence_accepts_exact_current_target(
+    tmp_path: Path,
+) -> None:
+    topology, state = _current_woofer_floor_state(tmp_path)
+
+    evidence = current_driver_floor_evidence(
+        topology,
+        state,
+        speaker_group_id="mono",
+        role="woofer",
+    )
+
+    assert evidence["valid"] is True
+    assert evidence["source"] == "durable_current_driver_measurement"
+    assert evidence["playback_id"] == "playback-woofer"
+
+
+def test_current_driver_floor_evidence_rejects_forged_matching_output(
+    tmp_path: Path,
+) -> None:
+    topology, state = _current_woofer_floor_state(tmp_path)
+    record = state["summary"]["latest_driver_measurements"]["mono:woofer"]
+    # Reproducer: both the record and embedded confirmation agree on 999, but
+    # the current topology owns output 0. Agreement with oneself is not enough.
+    record["output_index"] = 999
+    record["floor_confirmation"]["target"]["output_index"] = 999
+
+    evidence = current_driver_floor_evidence(
+        topology,
+        state,
+        speaker_group_id="mono",
+        role="woofer",
+    )
+
+    assert evidence["valid"] is False
+    assert evidence["reason"] == "driver_floor_confirmation_invalid"
+
+
+@pytest.mark.parametrize(
+    "malformed_issues",
+    [{}, [None], [{}], [{"severity": "mystery"}]],
+)
+def test_current_driver_floor_evidence_rejects_malformed_issues_container(
+    tmp_path: Path,
+    malformed_issues,
+) -> None:
+    topology, state = _current_woofer_floor_state(tmp_path)
+    record = state["summary"]["latest_driver_measurements"]["mono:woofer"]
+    record["issues"] = malformed_issues
+
+    evidence = current_driver_floor_evidence(
+        topology,
+        state,
+        speaker_group_id="mono",
+        role="woofer",
+    )
+
+    assert evidence["valid"] is False
+    assert evidence["reason"] == "driver_floor_confirmation_invalid"
 
 
 def test_latest_wrong_driver_result_removes_confirmed_driver_role(
