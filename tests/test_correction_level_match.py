@@ -473,7 +473,7 @@ async def test_level_match_session_locks_and_stores_geometry_lock():
 @pytest.mark.asyncio
 async def test_level_match_maxed_out_restores_and_stores_no_lock():
     store = LevelLockStore()
-    sess = _session(store)
+    sess = _session(store, cap_bump_db=6.0, cap_ceil_db=-6.0)
     chain = FakeChain(gain_db=2.0, start_vol=-30.0)
 
     outcome = await _run_geometry(

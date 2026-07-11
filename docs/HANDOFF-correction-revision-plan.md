@@ -180,17 +180,17 @@ one-shot host-event round trip.
   `agc_frozen=false` (iOS has historically ignored the constraint request)
   **degrades to the existing manual-lock UX** with a nudge and disables the
   drift rule below — never silently trust an AGC-compressed level as a
-  reference map; (d) the quantitative overshoot guard is
-  `ramp_rate × max_loop_latency < half the window width`, and the ramp aims
-  at the **window bottom** (−20 dBFS), not the center — at 1 dB/0.5 s with
-  ~2 s of loop latency the played level is already ~4 dB past the newest
-  report, which eats half of an 8 dB window if you aim for the middle; (e)
-  `RampController` preserves `AutolevelController`'s existing safety
-  semantics rather than loosening them: the **dynamic cap**
-  (`original + 6` clamped to **[−20, −6] dBFS** `main_volume`) is the
-  operative bound — tighter than, and not to be confused with, the 0 dB
-  hard ceiling above — plus the existing safety timeout and
-  graceful-fade-before-tone-kill.
+  reference map; (d) the quantitative overshoot guard includes the first
+  crossing step: `step_db + ramp_rate × max_loop_latency < half the window
+  width`. The coarse staircase stops that full overshoot distance below the
+  window bottom, freezes for a settled read, and only then makes one computed
+  jump toward the **window midpoint**; (e)
+  `RampController` preserves `AutolevelController`'s quiet-start, bounded-rise,
+  timeout, clipping-abort, and graceful-stop safety shape. Its relay-ramp
+  **dynamic cap** is the lower of `original + 12 dB` and **−3 dBFS**
+  `main_volume`, with no upward floor for a quiet listening setting. It remains
+  tighter than, and is not to be confused with, the independent 0 dB hard
+  ceiling above.
 - **Lock**, scoped **per mic-geometry step, not blanket per-session.**
   Near-field (Layer A, phone at the baffle) and listening-position (Layer B)
   differ by roughly 15–25 dB at the mic for the same played level — a
@@ -626,4 +626,4 @@ Follows the JTS orchestrator pattern (memory: `orchestrator-pattern-default`).
   comparison basis, confirmatory re-measure before revert) now in P4's bullet
   in §4.
 
-Last verified: 2026-07-06
+Last verified: 2026-07-11

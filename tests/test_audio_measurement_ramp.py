@@ -324,14 +324,15 @@ def test_settle_hold_must_cover_loop_latency():
         MeasurementRamp(settle_hold_s=1.0, max_loop_latency_s=2.0)
 
 
-def test_dynamic_cap_matches_autolevel_semantics():
+def test_dynamic_cap_matches_relay_level_defaults():
     cfg = MeasurementRamp()
     # The cap may be limited by the absolute ceiling, but never floored upward
     # beyond original+bump.
-    assert cfg.dynamic_cap(-20.0) == -14.0
-    assert cfg.dynamic_cap(-10.0) == -6.0
-    assert cfg.dynamic_cap(-5.0) == -6.0
-    assert cfg.dynamic_cap(-45.0) == -39.0
+    assert cfg.dynamic_cap(-20.0) == -8.0
+    assert cfg.dynamic_cap(-15.2) == pytest.approx(-3.2)
+    assert cfg.dynamic_cap(-10.0) == -3.0
+    assert cfg.dynamic_cap(-5.0) == -3.0
+    assert cfg.dynamic_cap(-45.0) == -33.0
 
 
 @pytest.mark.parametrize(
@@ -381,9 +382,28 @@ def test_from_env_cross_field_conflict_falls_back(monkeypatch):
 def test_from_env_valid_values_apply(monkeypatch):
     monkeypatch.setenv("JASPER_RAMP_TRUST_MARGIN_DB", "14")
     monkeypatch.setenv("JASPER_RAMP_FEED_TIMEOUT_S", "12")
+    monkeypatch.setenv("JASPER_RAMP_CAP_BUMP_DB", "9")
+    monkeypatch.setenv("JASPER_RAMP_CAP_CEIL_DB", "-4")
     cfg = MeasurementRamp.from_env()
     assert cfg.trust_margin_db == 14.0
     assert cfg.feed_timeout_s == 12.0
+    assert cfg.cap_bump_db == 9.0
+    assert cfg.cap_ceil_db == -4.0
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "field"),
+    [
+        ("JASPER_RAMP_CAP_BUMP_DB", "-0.1", "cap_bump_db"),
+        ("JASPER_RAMP_CAP_BUMP_DB", "25", "cap_bump_db"),
+        ("JASPER_RAMP_CAP_CEIL_DB", "-30.1", "cap_ceil_db"),
+        ("JASPER_RAMP_CAP_CEIL_DB", "0.1", "cap_ceil_db"),
+    ],
+)
+def test_from_env_cap_bounds_fall_back(key, value, field, monkeypatch):
+    monkeypatch.setenv(key, value)
+    cfg = MeasurementRamp.from_env()
+    assert getattr(cfg, field) == getattr(MeasurementRamp, field)
 
 
 def test_from_env_confirm_k_floor_is_two(monkeypatch):
@@ -510,7 +530,7 @@ async def test_sparse_confirming_maxed_out_quiet_amp():
     # stream reads consistently below the window → MAXED_OUT via CONFIRMING
     # (the review: this terminal existed only via CLIMBING in tests).
     clock = FakeClock()
-    cfg = MeasurementRamp()
+    cfg = MeasurementRamp(cap_bump_db=6.0, cap_ceil_db=-6.0)
     chain = SparseChain(
         clock=clock, gain_db=-2.0, start_vol=-30.0, batch_interval=0.5,
         transport_lag=0.5,
@@ -532,7 +552,7 @@ async def test_sparse_quiet_amp_reaches_maxed_out_not_timeout():
     # fixed 25 s timeout mid-climb. The derived timeout must let it reach the
     # actionable MAXED_OUT verdict.
     clock = FakeClock()
-    cfg = MeasurementRamp()
+    cfg = MeasurementRamp(cap_bump_db=6.0, cap_ceil_db=-6.0)
     chain = SparseChain(
         clock=clock, gain_db=-14.0, start_vol=-14.0, batch_interval=0.75
     )

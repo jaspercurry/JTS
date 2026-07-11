@@ -320,10 +320,10 @@ class MeasurementRamp:
     # is the OPERATIVE ceiling — tighter than HARD_CEILING_DBFS. ``cap_floor_db``
     # remains in the config for API/env compatibility with the legacy ramp, but
     # is deliberately NOT applied: flooring a quiet listener's cap upward can
-    # turn a promised +6 dB maximum rise into a much larger, unsafe jump.
-    cap_bump_db: float = 6.0
+    # turn a promised +12 dB maximum rise into a much larger, unsafe jump.
+    cap_bump_db: float = 12.0
     cap_floor_db: float = -20.0
-    cap_ceil_db: float = -6.0
+    cap_ceil_db: float = -3.0
 
     # Derived pre-window: the coarse staircase stops here. Defaulted from the
     # window bottom minus the worst-case in-flight overshoot in __post_init__
@@ -432,7 +432,7 @@ class MeasurementRamp:
 
         The cap is always ``<= original + bump`` and ``<= cap_ceil_db``.  The
         old ``max(cap_floor_db, ...)`` formula violated the first invariant for
-        quiet listening levels (for example, ``-45 + 6`` became ``-20``).
+        quiet listening levels (for example, ``-45 + 12`` became ``-20``).
         """
         requested = original_db + self.cap_bump_db
         if not math.isfinite(requested):
@@ -488,6 +488,12 @@ class MeasurementRamp:
             ),
             "feed_timeout_s": _env_float(
                 "JASPER_RAMP_FEED_TIMEOUT_S", cls.feed_timeout_s, lo=2.0, hi=60.0
+            ),
+            "cap_bump_db": _env_float(
+                "JASPER_RAMP_CAP_BUMP_DB", cls.cap_bump_db, lo=0.0, hi=24.0
+            ),
+            "cap_ceil_db": _env_float(
+                "JASPER_RAMP_CAP_CEIL_DB", cls.cap_ceil_db, lo=-30.0, hi=0.0
             ),
         }
         merged = {**env_values, **overrides}
