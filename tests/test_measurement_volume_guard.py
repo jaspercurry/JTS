@@ -170,6 +170,65 @@ async def test_normalized_pair_volumes_restores_after_partial_snapcast_failure(
     assert camilla.sets == [-12.0, -31.5]
 
 
+async def test_restore_attempts_all_clients_when_a_middle_client_fails(
+    monkeypatch, caplog,
+):
+    """A restore-phase RPC failure on one client must not leave later clients
+    stuck at the calibration volume — every client is still attempted."""
+    import logging
+
+    import jasper.multiroom.snapcast_rpc as snapcast_rpc
+
+    rows = [
+        _row(
+            "jts", client_id="cid-left", group_id="gid-left",
+            percent=42, muted=True, group_muted=False,
+        ),
+        _row(
+            "jts3", client_id="cid-right", group_id="gid-right",
+            percent=17, muted=False, group_muted=True,
+        ),
+    ]
+    volume_calls = []
+
+    def set_client_volume(client_id, *, percent, muted):
+        volume_calls.append((client_id, percent, muted))
+        # Fail ONLY the first client's RESTORE write (percent==42). If the
+        # loop aborted here, cid-right would never be restored.
+        if client_id == "cid-left" and percent == 42:
+            return False
+        return True
+
+    monkeypatch.setattr(snapcast_rpc, "read_stream_clients", lambda: rows)
+    monkeypatch.setattr(
+        snapcast_rpc, "set_group_mute", lambda group_id, muted: True,
+    )
+    monkeypatch.setattr(snapcast_rpc, "set_client_volume", set_client_volume)
+
+    camilla = FakeCamilla()
+    # The finally swallows restore errors (a failed restore must not mask the
+    # measurement result), so no exception propagates out of the guard.
+    with caplog.at_level(logging.ERROR):
+        async with normalized_pair_volumes(
+            hostname="jts.local",
+            members=_members(),
+            camilla=camilla,
+        ):
+            pass
+
+    # Restore phase = the calls with the ORIGINAL percents. cid-right (17) is
+    # attempted despite cid-left (42) failing first.
+    assert ("cid-left", 42, True) in volume_calls
+    assert ("cid-right", 17, False) in volume_calls
+    # camilla restore still runs after the snapcast best-effort restore.
+    assert camilla.sets == [-12.0, -31.5]
+    # The per-client failure is logged, not silently dropped.
+    assert any(
+        "cid" in r.getMessage() or "jts" in r.getMessage()
+        for r in caplog.records if r.levelno >= logging.ERROR
+    )
+
+
 async def test_normalized_pair_volumes_fails_when_snapcast_client_missing(
     monkeypatch,
 ):

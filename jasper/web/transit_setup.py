@@ -67,6 +67,7 @@ from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import google_routes, location_state, transit
+from ..atomic_io import locked_transform_env_file
 from ..bus import parse_bus_stops
 from ..transit import geocode as geocode_mod
 from ..transit.base import scrub_secrets
@@ -141,6 +142,33 @@ def _load_state(path: str = TRANSIT_FILE) -> dict[str, str]:
     return read_env_file(path)
 
 
+def _locked_apply(state_path: str, current: dict[str, str], new: dict[str, str]) -> None:
+    """Serialize a transit.env read-modify-write under the shared flock.
+
+    transit.env has two writers in one jasper-web process: these wizard
+    handlers and weather_setup's _seed_transit_from_weather_if_missing. An
+    unlocked read-then-whole-file-replace can lose a concurrent write. Rather
+    than replay the handler's pre-lock snapshot verbatim, replay only the
+    (``current`` -> ``new``) diff onto the file as re-read INSIDE the lock:
+    keys ``new`` changed are applied, keys it dropped are removed, and every
+    other key — foreign keys, or a key a concurrent writer just set — is
+    preserved. Deletes the file when the merged result is empty (parity with
+    the old ``write``/``delete_env_file`` branch). Symmetric with the
+    weather.env fix (DA-0036) and shares its advisory flock semantics.
+    """
+    changed = {k: v for k, v in new.items() if current.get(k) != v}
+    dropped = [k for k in current if k not in new]
+
+    def _transform(locked: dict[str, str]) -> dict[str, str] | None:
+        result = dict(locked)
+        for k in dropped:
+            result.pop(k, None)
+        result.update(changed)
+        return result or None
+
+    locked_transform_env_file(state_path, _transform, mode=TRANSIT_FILE_MODE)
+
+
 def _seed_weather_from_transit_if_missing(
     transit_state: dict[str, str],
     *,
@@ -154,22 +182,33 @@ def _seed_weather_from_transit_if_missing(
     loc = location_state.parse_transit_location(transit_state)
     if loc is None:
         return False
-    weather_state = read_env_file(weather_path)
-    if location_state.parse_weather_location(weather_state) is not None:
-        return False
-    units = (
-        weather_state.get(location_state.WEATHER_UNITS_ENV, "").strip()
-        or os.environ.get(location_state.WEATHER_UNITS_ENV, "").strip()
-        or None
+    # weather.env is also written by weather_setup's own save/clear. Take the
+    # shared flock and re-read weather INSIDE the lock: the
+    # "weather already has coords → skip" decision and the write must be one
+    # atomic step, or a concurrent weather save can be clobbered (or this seed
+    # can overwrite coords the user just entered).
+    seeded = False
+
+    def _seed_transform(weather_state: dict[str, str]) -> dict[str, str] | None:
+        nonlocal seeded
+        if location_state.parse_weather_location(weather_state) is not None:
+            return weather_state  # already has coords — no-op under the lock
+        units = (
+            weather_state.get(location_state.WEATHER_UNITS_ENV, "").strip()
+            or os.environ.get(location_state.WEATHER_UNITS_ENV, "").strip()
+            or None
+        )
+        new_weather = dict(weather_state)
+        new_weather.update(
+            location_state.weather_env_for_location(loc, units=units)
+        )
+        seeded = True
+        return new_weather
+
+    locked_transform_env_file(
+        weather_path, _seed_transform, mode=location_state.WEATHER_FILE_MODE,
     )
-    new_weather = dict(weather_state)
-    new_weather.update(location_state.weather_env_for_location(loc, units=units))
-    write_env_file(
-        weather_path,
-        new_weather,
-        mode=location_state.WEATHER_FILE_MODE,
-    )
-    return True
+    return seeded
 
 
 def _value_for(state: dict[str, str], env_var: str, default: str = "") -> str:
@@ -1520,7 +1559,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=err)
                 return
             try:
-                write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
+                _locked_apply(cfg["state_path"], current, new)
                 _seed_weather_from_transit_if_missing(
                     new, weather_path=cfg["weather_path"],
                 )
@@ -1543,13 +1582,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=routes_err)
                 return
             try:
+                _locked_apply(cfg["state_path"], current, new)
                 if new:
-                    write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
                     _seed_weather_from_transit_if_missing(
                         new, weather_path=cfg["weather_path"],
                     )
-                else:
-                    delete_env_file(cfg["state_path"])
                 if routes_new:
                     write_env_file(
                         cfg["routes_secret_path"],
@@ -1577,7 +1614,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # coords; a hand-crafted coords-less POST just persists the toggle,
             # which is harmless.)
             try:
-                write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
+                _locked_apply(cfg["state_path"], current, new)
             except OSError as e:
                 logger.exception("could not write transit.env after cities save")
                 send_see_other(self, "./", flash=f"Could not save: {e}")
@@ -1601,7 +1638,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # delete. Deleting would drop the key back to ABSENT, which reads as
             # "all packs eligible" and would wrongly re-enable every city.
             try:
-                write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
+                _locked_apply(cfg["state_path"], current, new)
                 delete_env_file(cfg["routes_secret_path"])
             except OSError as e:
                 logger.exception("could not write transit.env after clear")

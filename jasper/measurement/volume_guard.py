@@ -187,34 +187,57 @@ async def _set_snapcast_snapshot(
     percent: int | None = None,
     muted: bool | None = None,
     group_muted: bool | None = None,
+    best_effort: bool = False,
 ) -> None:
+    """Apply a volume/mute state to every snapcast client.
+
+    ``best_effort`` is the restore contract: a mid-list client RPC failure
+    must NOT abort the loop, or later clients stay stuck at the calibration
+    volume (100%, unmuted) instead of the household levels. In that mode each
+    client is attempted, per-client failures are logged and collected, and a
+    single combined error is raised only after every client has been tried.
+    The normalize path leaves ``best_effort`` false so it still fails fast
+    before the measurement runs.
+    """
     from jasper.multiroom.snapcast_rpc import set_client_volume, set_group_mute
 
+    errors: list[str] = []
     for client in clients:
-        want_group_muted = (
-            client.group_muted if group_muted is None else bool(group_muted)
-        )
-        ok = await asyncio.to_thread(
-            set_group_mute, client.group_id, want_group_muted,
-        )
-        if not ok:
-            raise VolumeGuardError(
-                f"could not set snapcast group mute for {client.name}"
+        try:
+            want_group_muted = (
+                client.group_muted if group_muted is None else bool(group_muted)
             )
-        want_percent = (
-            client.volume_percent if percent is None else int(percent)
-        )
-        want_muted = client.muted if muted is None else bool(muted)
-        ok = await asyncio.to_thread(
-            set_client_volume,
-            client.client_id,
-            percent=want_percent,
-            muted=want_muted,
-        )
-        if not ok:
-            raise VolumeGuardError(
-                f"could not set snapcast volume for {client.name}"
+            ok = await asyncio.to_thread(
+                set_group_mute, client.group_id, want_group_muted,
             )
+            if not ok:
+                raise VolumeGuardError(
+                    f"could not set snapcast group mute for {client.name}"
+                )
+            want_percent = (
+                client.volume_percent if percent is None else int(percent)
+            )
+            want_muted = client.muted if muted is None else bool(muted)
+            ok = await asyncio.to_thread(
+                set_client_volume,
+                client.client_id,
+                percent=want_percent,
+                muted=want_muted,
+            )
+            if not ok:
+                raise VolumeGuardError(
+                    f"could not set snapcast volume for {client.name}"
+                )
+        except (VolumeGuardError, OSError, TimeoutError, ValueError) as e:
+            if not best_effort:
+                raise
+            errors.append(f"{client.name}:{e}")
+            logger.error(
+                "snapcast client %s could not be restored: %s",
+                client.name, e,
+            )
+    if errors:
+        raise VolumeGuardError("; ".join(errors))
 
 
 def _camilla() -> Any:
@@ -270,7 +293,9 @@ async def normalized_pair_volumes(
     finally:
         restore_errors: list[str] = []
         try:
-            await _set_snapcast_snapshot(snapshot.snapcast_clients)
+            await _set_snapcast_snapshot(
+                snapshot.snapcast_clients, best_effort=True,
+            )
         except (OSError, RuntimeError, TimeoutError, ValueError) as e:
             restore_errors.append(f"snapcast:{e}")
         try:

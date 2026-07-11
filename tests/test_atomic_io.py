@@ -144,3 +144,79 @@ def test_bare_filename_uses_cwd(tmp_path, monkeypatch):
     atomic_write_text("bare.txt", "x")
     assert (tmp_path / "bare.txt").read_text(encoding="utf-8") == "x"
     assert [p.name for p in tmp_path.iterdir()] == ["bare.txt"]
+
+
+def test_locked_transform_replaces_and_can_drop_keys(tmp_path):
+    from jasper.atomic_io import locked_transform_env_file
+
+    path = tmp_path / "weather.env"
+    path.write_text("A=1\nB=2\nC=3\n", encoding="utf-8")
+
+    def transform(cur):
+        # drop B, keep A, change C, add D
+        return {"A": cur["A"], "C": "changed", "D": "new"}
+
+    result = locked_transform_env_file(path, transform)
+    assert result == {"A": "1", "C": "changed", "D": "new"}
+    text = path.read_text(encoding="utf-8")
+    assert "B=" not in text  # a merge-only helper could not drop this
+    assert "A=1" in text and "C=changed" in text and "D=new" in text
+
+
+def test_locked_transform_none_deletes_file(tmp_path):
+    from jasper.atomic_io import locked_transform_env_file
+
+    path = tmp_path / "weather.env"
+    path.write_text("A=1\n", encoding="utf-8")
+    assert locked_transform_env_file(path, lambda cur: None) is None
+    assert not path.exists()
+
+
+def test_locked_transform_absent_file_is_empty_dict(tmp_path):
+    from jasper.atomic_io import locked_transform_env_file
+
+    path = tmp_path / "weather.env"
+    seen = {}
+
+    def transform(cur):
+        seen["cur"] = dict(cur)
+        return {"X": "1"}
+
+    locked_transform_env_file(path, transform)
+    assert seen["cur"] == {}  # missing file -> empty parsed dict
+    assert path.read_text(encoding="utf-8") == "X=1\n"
+
+
+def test_locked_transform_serializes_concurrent_read_modify_writes(tmp_path):
+    """N threads each add a distinct key via a read-modify-write with a sleep
+    between the (internal) read and write. The shared flock must serialize
+    them so NO update is lost — this is the exact two-writer shape weather.env
+    faces from weather_setup + transit_setup."""
+    import threading
+    import time
+
+    from jasper.atomic_io import locked_transform_env_file
+
+    path = tmp_path / "weather.env"
+    path.write_text("", encoding="utf-8")
+    n = 12
+
+    def add_key(i):
+        def transform(cur):
+            result = dict(cur)
+            # Sleep INSIDE the critical section: an unlocked read-modify-write
+            # would interleave here and lose updates; the flock must not.
+            time.sleep(0.005)
+            result[f"K{i}"] = str(i)
+            return result
+        locked_transform_env_file(path, transform)
+
+    threads = [threading.Thread(target=add_key, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5.0)
+
+    from jasper.atomic_io import _parse_env_text
+    final = _parse_env_text(path.read_text(encoding="utf-8"))
+    assert final == {f"K{i}": str(i) for i in range(n)}  # nothing lost

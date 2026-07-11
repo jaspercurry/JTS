@@ -147,6 +147,13 @@ async def _start_playback(wav_path: str):
     )
 
 
+def _terminate_proc(proc: Any) -> None:
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        pass
+
+
 async def _watch_playback(proc) -> None:
     await proc.wait()
     with _lock:
@@ -214,7 +221,26 @@ def handle_play(run_async: Callable, schedule: Callable) -> tuple[dict, int]:
         log_event(logger, "sync.play_spawn_failed", level=logging.ERROR, exc_info=True)
         return {"ok": False, "error": f"playback failed: {e}"}, \
             HTTPStatus.INTERNAL_SERVER_ERROR
+    # Re-validate under the lock after the spawn: the pre-spawn check released
+    # the lock, so two concurrent /sync/play calls could both pass it and both
+    # spawn overlapping aplay markers into one delay measurement. The loser
+    # kills its just-spawned proc instead of recording it (mirrors
+    # balance_flow.handle_ramp's post-spawn re-check).
     with _lock:
+        abort_error = ""
+        if _state["phase"] != "measuring":
+            abort_error = f"no active sync session (phase {_state['phase']})"
+        elif _state["playback"] is not None:
+            abort_error = "sync marker already playing"
+        if abort_error:
+            _terminate_proc(proc)
+            log_event(
+                logger,
+                "sync.play_start_aborted",
+                reason=abort_error,
+                level=logging.WARNING,
+            )
+            return {"ok": False, "error": abort_error}, HTTPStatus.CONFLICT
         _state["playback"] = {"proc": proc}
     schedule(_watch_playback(proc))
     log_event(logger, "sync.marker_started")
