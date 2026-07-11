@@ -17,6 +17,7 @@ and times out cleanly when it doesn't.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -282,6 +283,58 @@ async def test_autolevel_cancel_restores_main_volume(tmp_path):
     assert sess.autolevel.status == AutolevelStatus.CANCELLED
     # Last `set` call should be the restoration to ORIG.
     assert set_history[-1] == ORIG
+
+
+@pytest.mark.asyncio
+async def test_autolevel_graceful_stop_logs_setter_failures(caplog):
+    """_graceful_stop's fade-down loop and its final lock-value set must
+    LOG set_main_volume_db failures rather than swallowing them silently
+    (AGENTS.md no-silent-failure). A CamillaDSP write that fails during
+    stop can strand the speaker at the measurement level; the operator
+    needs a journal line to know why."""
+    controller = AutolevelController(session_id="stop-logs")
+    stop_phase = {"on": False}
+
+    async def fake_get_vol():
+        return -10.0
+
+    async def fake_set_vol(db):
+        # Succeed during the ramp; fail every set once we enter the
+        # graceful-stop phase (fade-down sets + the final lock-value set).
+        if stop_phase["on"]:
+            raise RuntimeError("camilla write failed during graceful stop")
+
+    player = _StubTonePlayer()
+
+    async def _signal_lock():
+        # Wait past run()'s ~0.1 s pre-ramp startup sleep plus several
+        # 0.05 s ramp steps, so current_main_volume_db is comfortably
+        # above fade_down_to_db (-40) and the fade-down loop runs.
+        await asyncio.sleep(0.3)
+        stop_phase["on"] = True
+        await controller.lock()
+
+    asyncio.create_task(_signal_lock())
+    with caplog.at_level(logging.WARNING):
+        await controller.run(
+            get_main_volume_db=fake_get_vol,
+            set_main_volume_db=fake_set_vol,
+            play_continuous_tone=player.play,
+            cancel_tone=player.cancel,
+            start_db=-40.0,
+            end_db=0.0,
+            step_db=1.0,
+            step_interval_s=0.05,
+        )
+
+    assert controller.data.status == AutolevelStatus.LOCKED
+    messages = [r.message for r in caplog.records]
+    # Final lock-value set failure is now observable.
+    assert any("final set_main_volume_db" in m for m in messages), messages
+    # Fade-down set failure is now observable.
+    assert any("fade-down set_main_volume_db" in m for m in messages), messages
+    # Tone was still cancelled despite the setter failures.
+    assert player.cancelled
 
 
 @pytest.mark.asyncio

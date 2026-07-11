@@ -183,6 +183,14 @@ class AutolevelController:
                     try:
                         await set_main_volume_db(cur)
                     except Exception:  # noqa: BLE001
+                        # Best-effort quieting; log and stop fading rather
+                        # than silently swallowing the setter failure.
+                        logger.warning(
+                            "autolevel: fade-down set_main_volume_db(%.1f) "
+                            "failed (session=%s) — stopping fade, will still "
+                            "attempt tone cancel + final lock-value set",
+                            cur, self.session_id, exc_info=True,
+                        )
                         break
                     await asyncio.sleep(fade_step_s)
             finally:
@@ -197,7 +205,17 @@ class AutolevelController:
                         await set_main_volume_db(lock_value_db)
                         al.current_main_volume_db = lock_value_db
                     except Exception:  # noqa: BLE001
-                        pass
+                        # The final volume set is the one that actually
+                        # leaves the speaker at its intended level (lock or
+                        # restored listening level). A silent failure here
+                        # can strand the speaker at the measurement volume —
+                        # per AGENTS.md no-silent-failure, make it observable.
+                        logger.warning(
+                            "autolevel: final set_main_volume_db(%.1f) failed "
+                            "(session=%s) — speaker may remain at the "
+                            "measurement level until /reset",
+                            lock_value_db, self.session_id, exc_info=True,
+                        )
 
         try:
             al.original_main_volume_db = float(await get_main_volume_db())
