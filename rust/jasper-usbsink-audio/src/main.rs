@@ -56,13 +56,6 @@ const MIN_RING_PERIODS: usize = 2;
 const MAX_RING_PERIODS: usize = 3;
 const STATE_INTERVAL: Duration = Duration::from_millis(1000);
 const WATCHDOG_INTERVAL: Duration = Duration::from_millis(5000);
-// The -60 dBFS "playing" gate. The standby bridge no longer computes `playing`
-// (fan-in's DIRECT lane owns it — see jasper.source_state.USBSINK_PLAYING_RMS_DBFS),
-// so this constant is no longer applied here; it is retained as the Rust-side
-// anchor for the cross-language drift pin in
-// tests/test_usbsink_playing_rms_contract.py, which greps this exact line.
-#[allow(dead_code)]
-const PLAYING_RMS_DBFS: f64 = -60.0;
 static STATE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
@@ -486,15 +479,6 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn playing_rms_gate_pins_minus_60_dbfs() {
-        // The Rust-side anchor for the cross-language "playing" gate. The combo
-        // path applies this in Python (jasper.source_state.USBSINK_PLAYING_RMS_DBFS);
-        // tests/test_usbsink_playing_rms_contract.py pins the two equal. This
-        // assertion documents the value from the Rust side.
-        assert_eq!(PLAYING_RMS_DBFS, -60.0);
-    }
 
     #[test]
     fn config_validation_rejects_non_48k_non_stereo_and_bad_ring() {

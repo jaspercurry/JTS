@@ -134,12 +134,14 @@ def _usbsink_preempt_disabled() -> bool:
     """Env-var escape hatch for the USB-sink preempt mechanism.
 
     Set JASPER_USBSINK_PREEMPT=disabled in /etc/jasper/jasper.env to
-    short-circuit `_usbsink_set_preempt` — mux no longer tells the
-    daemon to silence its output when another source wins. USB then
-    behaves like an unsupported source (audio briefly mixes when a new
-    source starts). Operator escape hatch for cases where
-    the localhost HTTP POST is causing unexpected disruption, without
-    requiring a redeploy or daemon restart. Default: enabled.
+    short-circuit `_usbsink_set_preempt` — mux stops MUTE/UNMUTE-ing the
+    fan-in usbsink lane when another source wins (the only USB-silencing
+    primitive; jasper-fanin DIRECT-captures the gadget and the jasper-usbsink
+    bridge is a standby-only daemon with no audio of its own to silence).
+    USB then behaves like an unsupported source (audio briefly mixes when a
+    new source starts). Operator escape hatch for cases where the lane mute
+    is causing unexpected disruption, without requiring a redeploy or daemon
+    restart. Default: enabled.
 
     Mirrors JASPER_AIRPLAY_METADATA_GATE / JASPER_MUX_SPOTIFY_PREEMPT_RESTART
     / JASPER_SHAIRPORT_SUPERVISOR.

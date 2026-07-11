@@ -48,12 +48,13 @@ USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
 
 # The RMS level (dBFS) at or below which the USB lane is treated as NOT playing —
 # so a host streaming digital silence (a muted Zoom, an idle tab) does not seize
-# the speaker. Applied here to fan-in's DIRECT-capture lane (the live USB path).
-# The Rust bridge is standby-only and no longer computes `playing`, but it retains
-# the same `PLAYING_RMS_DBFS = -60.0` constant in
-# rust/jasper-usbsink-audio/src/main.rs as the cross-language anchor; the two are
-# pinned equal by tests/test_usbsink_playing_rms_contract.py (a drift guard). If
-# you change one, change both.
+# the speaker. Applied against fan-in's reported per-lane rms_dbfs for the
+# DIRECT-capture lane (the live USB path). This is the single definition of the
+# gate: the Rust jasper-usbsink-audio daemon is standby-only and never computes
+# a `playing` value of its own, so its former `PLAYING_RMS_DBFS` anchor constant
+# (and the cross-language drift guard that pinned it to this value) were deleted
+# 2026-07-11. tests/test_usbsink_playing_rms_contract.py now pins that
+# `jasper.mux` imports this constant rather than re-declaring its own copy.
 USBSINK_PLAYING_RMS_DBFS = -60.0
 
 
@@ -292,12 +293,11 @@ def usbsink_direct_audible(
     """Whether fan-in's USB DIRECT lane is emitting audible content right now.
 
     ``True`` / ``False`` from the direct lane's most-recent-period ``rms_dbfs``
-    vs the shared :data:`USBSINK_PLAYING_RMS_DBFS` threshold (the solo bridge's
-    -60 dBFS ``playing`` gate). ``None`` when there is no direct lane or no
-    numeric level to compare (older fan-in) — callers pick the fail-soft
-    direction. This is the instantaneous *level* half of combo liveness; mux
-    pairs it with the frames-advanced *liveness* half (see
-    ``jasper.mux.step_combo_liveness``)."""
+    vs the shared :data:`USBSINK_PLAYING_RMS_DBFS` threshold. ``None`` when
+    there is no direct lane or no numeric level to compare (older fan-in) —
+    callers pick the fail-soft direction. This is the instantaneous *level*
+    half of combo liveness; mux pairs it with the frames-advanced *liveness*
+    half (see ``jasper.mux.step_combo_liveness``)."""
     rms = usbsink_direct_rms_dbfs(fanin_status)
     if rms is None:
         return None

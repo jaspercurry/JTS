@@ -2,54 +2,41 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Cross-language drift guard for the USB "playing" RMS gate.
+"""Drift guard for the USB "playing" RMS gate.
 
 A host is treated as "playing" only when its audio level is above a shared
 threshold — so a Mac streaming digital silence (a muted Zoom, an idle tab) does
-NOT seize the speaker. That threshold lives in TWO languages:
+NOT seize the speaker. The gate is Python-only now: `jasper.source_state.
+USBSINK_PLAYING_RMS_DBFS` is applied to fan-in's DIRECT-capture lane's reported
+`rms_dbfs` (the live USB path), gating mux's combo-liveness check
+(`usbsink_direct_audible` / `step_combo_liveness`) and the `/state` renderer
+level.
 
-  1. the combo path     jasper/source_state.py  USBSINK_PLAYING_RMS_DBFS
-     — applied to fan-in's DIRECT-capture lane (the live USB path); gates mux's
-       combo-liveness (frames-advanced AND audible) and the /state renderer level.
-  2. the Rust anchor    rust/jasper-usbsink-audio/src/main.rs  PLAYING_RMS_DBFS
-     — the standby-only bridge no longer computes ``playing`` (fan-in does), but
-       it retains this constant as the Rust-side anchor so the two definitions
-       cannot silently drift apart.
-
-They can't share code across the Rust/Python boundary, so this test pins the two
-constants equal. If a future change re-derives the gate in Rust and drifts from
-Python (or vice versa), this fails first. Mirrors
-tests/test_wifi_profile_hardening_contract.py. See AGENTS.md.
+The Rust `jasper-usbsink-audio` daemon is standby-only (see main.rs) and opens
+no PCM, so it never computes a `playing` value of its own to drift from. It
+used to carry a `PLAYING_RMS_DBFS` anchor constant purely so this test could
+pin the two languages equal; that constant and the cross-language pin were
+deleted 2026-07-11 once there was no Rust-side gate left to guard against
+drifting. `jasper.mux` imports `USBSINK_PLAYING_RMS_DBFS` from
+`jasper.source_state` rather than declaring its own value, so the remaining
+single-source-of-truth risk is Python-internal: a future edit could give
+`jasper.mux` a local literal instead of importing the shared constant. This
+test pins that instead of a cross-language pair. See AGENTS.md.
 """
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
-from jasper.source_state import USBSINK_PLAYING_RMS_DBFS
-
-ROOT = Path(__file__).resolve().parents[1]
-USBSINK_BRIDGE_MAIN = ROOT / "rust" / "jasper-usbsink-audio" / "src" / "main.rs"
-
-# `const PLAYING_RMS_DBFS: f64 = -60.0;`
-_RUST_CONST_RE = re.compile(
-    r"const\s+PLAYING_RMS_DBFS\s*:\s*f64\s*=\s*(-?\d+(?:\.\d+)?)\s*;"
-)
+from jasper import mux, source_state
 
 
-def _rust_playing_rms_dbfs() -> float:
-    text = USBSINK_BRIDGE_MAIN.read_text()
-    match = _RUST_CONST_RE.search(text)
-    assert match is not None, (
-        "PLAYING_RMS_DBFS not found in the usbsink bridge — the drift guard can no "
-        "longer locate the Rust anchor (was it renamed or removed?)."
-    )
-    return float(match.group(1))
+def test_usbsink_playing_rms_dbfs_is_a_single_shared_definition():
+    """`jasper.mux` must import the threshold, not re-declare its own copy.
+
+    Identity (`is`), not just equality — a future edit that gives mux.py a
+    local literal instead of importing `source_state.USBSINK_PLAYING_RMS_DBFS`
+    would silently fork the gate even if the value still matched today."""
+    assert mux.USBSINK_PLAYING_RMS_DBFS is source_state.USBSINK_PLAYING_RMS_DBFS
 
 
-def test_python_and_rust_playing_rms_thresholds_match():
-    assert USBSINK_PLAYING_RMS_DBFS == _rust_playing_rms_dbfs(), (
-        "The Rust anchor (PLAYING_RMS_DBFS) and the combo path (Python "
-        "USBSINK_PLAYING_RMS_DBFS) must agree, or the two definitions of what "
-        "counts as USB 'playing' silently drift apart. Change both."
-    )
+def test_usbsink_playing_rms_dbfs_value():
+    """Pin the actual threshold so a change to it is deliberate, not accidental."""
+    assert source_state.USBSINK_PLAYING_RMS_DBFS == -60.0

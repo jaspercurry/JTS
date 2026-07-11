@@ -200,8 +200,9 @@ def _build_usbsink_renderer_state(
     ``rms_dbfs`` = that live level. Both fall back to ``null`` only when the
     fan-in STATUS is unavailable or predates the per-lane level (older build).
     This is a single-snapshot *level* read (no temporal frames-advanced
-    hysteresis — that lives in mux); it matches the solo box's own /state, which
-    reads the bridge's per-period ``playing`` flag with no hysteresis either.
+    hysteresis — that lives in mux), preserving the no-hysteresis /state
+    contract the now-deleted solo bridge used to provide (it read its own
+    per-period ``playing`` flag directly, with no hysteresis either).
     Consumers read USB *selection* from ``source_selection`` / ``active_source``
     (mux). ``host_connected`` stays valid (the standby bridge still derives it
     from ``/sys/class/udc``), as do ``preempted`` / ``updated_at``.
@@ -475,7 +476,8 @@ def _combo_fallback_state(*, fanin_text: str) -> dict[str, Any]:
 
     - ``"fallback"`` — the runtime watcher disarmed the combo after a sustained
       direct-capture break; the ``fallback`` sub-dict carries the marker's
-      ``reason`` + ``at_epoch``. The box is on the aloop bridge until the next
+      ``reason`` + ``at_epoch``. There is no aloop solo bridge to fall back to
+      (deleted 2026-07-10) — USB audio is UNAVAILABLE until the next
       ``--auto`` clear-event (boot/deploy/toggle) re-attempts.
     - ``"armed"`` — the combo is armed in the resolved ``fanin.env``
       (``JASPER_FANIN_USB_DIRECT=enabled``) and no fallback marker is present.

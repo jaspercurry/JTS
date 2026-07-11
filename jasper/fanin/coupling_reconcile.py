@@ -213,11 +213,19 @@ def _restart_outputd(reason: str) -> tuple[bool, str]:
 
 
 def _restart_usbsink(reason: str) -> tuple[bool, str]:
-    """Restart jasper-usbsink through the broker so it re-reads its standby env.
+    """Restart jasper-usbsink through the broker after a standby-env write.
 
-    The bridge reads ``JASPER_USBSINK_AUDIO_STANDBY`` only at startup, so a combo
-    arm/disarm that flips the standby key in usbsink.env needs a restart to take
-    effect. Returns (ok, detail).
+    The standby-only daemon does not read ``JASPER_USBSINK_AUDIO_STANDBY`` (or
+    anything else in usbsink.env) at runtime — it always runs the same standby
+    loop and hardcodes ``"standby":true`` into ``state.json`` regardless (see
+    rust/jasper-usbsink-audio/src/main.rs), and it never opens
+    ``hw:UAC2Gadget``. So this restart has no verified functional effect
+    anymore; it is env-file / unit-state hygiene left over from the one-time
+    migration off an old solo ``=0`` (callers gate it on ``standby_changed`` —
+    see :func:`coupling_auto.usbsink_standby_actions`), so a live daemon's env
+    file doesn't sit out of sync with what was just written. Possibly droppable
+    now that the daemon has nothing STANDBY-conditional left to pick up — kept
+    as-is this round; a follow-up could remove it. Returns (ok, detail).
     """
     return _restart_unit(USBSINK_UNIT, reason=reason, timeout=8.0)
 
