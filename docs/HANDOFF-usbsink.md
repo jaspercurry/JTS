@@ -1020,9 +1020,12 @@ direct-lane liveness counter from fan-in `STATUS`, preferring
 and `usbsink_direct_rms_dbfs()` / `usbsink_direct_audible()` read the
 direct lane's live per-period level (`rms_dbfs`, added to every fan-in
 `STATUS` input lane) and compare it against the shared
-`USBSINK_PLAYING_RMS_DBFS` gate (`-60.0` dBFS, pinned equal to the solo
-bridge's `PLAYING_RMS_DBFS` by `tests/test_usbsink_playing_rms_contract.py`).
-That level gate is what makes combo == solo: the fan-in DIRECT lane keeps
+`USBSINK_PLAYING_RMS_DBFS` gate (`-60.0` dBFS — the single definition, in
+`jasper/source_state.py`; the solo bridge's Rust `PLAYING_RMS_DBFS` anchor
+was deleted 2026-07-11 with the solo path, and
+`tests/test_usbsink_playing_rms_contract.py` now pins the mux ↔ source_state
+identity + value of that one Python constant).
+The level gate exists because the fan-in DIRECT lane keeps
 clocking silence frames when the host is connected but muted (a muted Zoom,
 an idle tab), so **frames-advanced alone would seize the speaker on
 silence**, where a solo box reads `playing=false`.

@@ -307,8 +307,10 @@ combo box — it derives combo USB playing from fan-in's DIRECT lane instead:
   liveness counter (`usbsink_direct_frames_read`) AND its live per-period level
   (`usbsink_direct_rms_dbfs`), and `step_combo_liveness` gates playing on
   frames-advanced **AND** level above the shared `-60` dBFS
-  `USBSINK_PLAYING_RMS_DBFS` (the same gate as the solo bridge's
-  `PLAYING_RMS_DBFS`, pinned by `test_usbsink_playing_rms_contract.py`).
+  `USBSINK_PLAYING_RMS_DBFS` (the single Python-side definition in
+  `jasper/source_state.py` — the solo bridge's Rust anchor was deleted
+  2026-07-11; `test_usbsink_playing_rms_contract.py` pins the
+  mux ↔ source_state identity + value).
   Latest-source-wins auto preemption fires on a real USB start, and — the point
   of the level gate — a host connected but streaming digital silence (a muted
   Zoom, an idle tab) reads `playing:false`, so it does **not** seize the speaker
