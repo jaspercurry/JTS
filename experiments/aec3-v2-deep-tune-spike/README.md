@@ -230,7 +230,7 @@ When ready to move BEST_A to the Pi:
    `jasper_aec3/src/aec3_binding.cpp`. Set BEST_A as constructor
    defaults.
 3. Expose the new knobs as env vars in `jasper/cli/aec_bridge.py`
-   (e.g., `JASPER_AEC_ERLE_MAX_L`, `JASPER_AEC_NORMAL_MAX_DEC_LF`).
+   (e.g., `JASPER_AEC_ERLE_MAX_L`, `JASPER_AEC_MAX_DEC_LF`).
 4. `install.sh` adds `meson` + `ninja` to apt deps. Native build
    on Pi 5 takes ~3-5 min.
 5. Cross-compile risk: the v2.1 static-vendor pattern isn't widely

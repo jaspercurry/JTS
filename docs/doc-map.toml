@@ -210,6 +210,9 @@ code = [
   "deploy/systemd/bluealsa-aplay.service.d/**",
   "rust/jasper-fanin/**",
   "rust/jasper-outputd/**",
+  "jasper/fanin/**",
+  "c/jts-ring-ioplug/**",
+  "jasper/bluetooth/**",
 ]
 docs = [
   "docs/audio-paths.md",
@@ -328,6 +331,7 @@ docs = [
   # layer.
   "docs/research-tool-plan.md",
   "docs/conversation-history-plan.md",
+  "docs/audit-pending-followups.md",
   "tests/voice_eval/README.md",
 ]
 requires_docs_when = [
@@ -649,6 +653,7 @@ code = [
   "jasper/active_speaker/**",
   "jasper/correction/**",
   "jasper/measurement/**",
+  "jasper/audio_measurement/**",
   "jasper/calibration_agent/**",
   "jasper/web/correction_setup.py",
   "deploy/jasper-correction-web.*",
@@ -786,6 +791,7 @@ safety = "hardware-risk"
 code = [
   "jasper/multiroom/**",
   "jasper/local_sources/**",
+  "jasper/install_profile.py",
   "jasper/tts_routing.py",
   "jasper/web/rooms_setup.py",
   "jasper/control/grouping_supervisor.py",

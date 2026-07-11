@@ -1,5 +1,16 @@
 # HANDOFF: Mic quality v2 — DTLN-aec spike, wake-word path, calibration wizard
 
+> **Status: historical.** Snapshot from the 2026-05-22/23 DTLN-aec
+> spike, written as a pickup brief for the session that followed
+> PR #191 (wake-telemetry). Preserved for primary-source
+> archaeology — specific facts (env defaults like the refractory
+> window, `jasper.env` config shapes, "what's currently deployed"
+> snapshots) will drift over time. Read this for the narrative, not
+> for current state. Current operational truth for the shipped wake
+> legs and AEC engine lives in
+> [HANDOFF-aec.md](HANDOFF-aec.md) and
+> [HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md).
+
 **Audience:** fresh Claude / Codex session picking up the mic-quality work
 after the wake-telemetry subsystem (PR #191) landed on main.
 
@@ -949,6 +960,12 @@ not a number.
 2. Expose to Python via the existing `Aec3(...)` kwargs.
 3. Add new env vars: `JASPER_AEC_RS_SNR_THRESHOLD`, `JASPER_AEC_RS_HOLD_MS`,
    `JASPER_AEC_RS_SUBBAND_NEAREND`, `JASPER_AEC_RS_HIGH_BANDS_MAX_GAIN`.
+   (This phase later shipped as `JASPER_AEC_DND_SNR_THRESHOLD` and
+   `JASPER_AEC_DND_HOLD_DURATION`, plus the `JASPER_AEC_NEAREND_MASK_HF_*`
+   family for near-end subband suppression — see
+   `jasper/cli/aec_bridge.py`. No high-bands-max-gain env var shipped;
+   upstream webrtc hard-clamps that field to 1.0, so it was never
+   exposed.)
 4. Re-run tearing analysis. Target: `hf_CV` delta vs AEC OFF drops below
    +0.05.
 

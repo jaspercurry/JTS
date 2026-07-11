@@ -1,5 +1,13 @@
 # AEC-DIAG-04 Timing Results
 
+> **Status: historical.** Snapshot from 2026-06-18, a timing-only
+> experiment on the outputd/chip-ref/XVF3800 chip-AEC path using a
+> temporarily-deployed build. Preserved for primary-source
+> archaeology — specific facts (installed build IDs, temporary
+> binary paths, timing numbers) will drift over time. Read this for
+> the narrative, not for current state. Current operational truth
+> lives in [HANDOFF-aec.md](HANDOFF-aec.md).
+
 Date: 2026-06-18
 Scope: timing-only experiment for the outputd/chip-ref/XVF3800 chip-AEC path.
 Constraint: no permanent production changes. Reference content was held constant

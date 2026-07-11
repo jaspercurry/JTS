@@ -2367,7 +2367,8 @@ keeps capturing lane 7 — all 8 loopback substreams are allocated, and PR-2's
 TTS socket flip makes lane 7 music-only by construction, so Increment 1's
 fanin music tap is NOT used by this design. KNOWN GAP (standing doctor
 warn): TTS rides the synced stream until PR-2 (outputd TTS mixer + per-member
-socket flip + the inv-B auto-unwind supervisor). Increment 4 folded into the
+socket flip + the inv-B auto-unwind supervisor) (pre-PR-2, resolved — see
+SS0). Increment 4 folded into the
 Increment 5 bring-up: acoustic L/R validation happens on the real path.
 Earlier 2026-06-11 (INCREMENT 3 BUILT — the outputd `dac_content` FIFO
 reader, `rust/jasper-outputd/src/dac_content.rs`. The round-trip lane's receiving
@@ -2756,7 +2757,9 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-06-26 (`/rooms/` backend-owned stereo-pair intent,
+Last verified: 2026-07-11 (SS2 KNOWN GAP note on TTS-rides-synced-stream
+annotated as pre-PR-2/resolved, cross-checked against SS0's PR-2-built
+status). Prior 2026-06-26 pass: `/rooms/` backend-owned stereo-pair intent,
 primary subwoofer-control hiding, ±24 dB UI balance range (reverted from ±6 dB after PR #1034; verified against `deploy/assets/rooms/js/grouping-view.js` `BALANCE_MIN_DB`/`BALANCE_MAX_DB`), and fresh
 pair/unbond trim reset rechecked against `jasper/web/rooms_setup.py`,
 `deploy/assets/rooms/js/main.js`, `deploy/assets/rooms/js/grouping-view.js`,

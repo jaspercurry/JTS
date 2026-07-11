@@ -1035,7 +1035,12 @@ but inactive.
 ### Phase 3 — opt-in activation (daemon runs in parallel with dmix)
 
 - Add a feature flag: `JASPER_AUDIO_TOPOLOGY=fanin` in
-  `/etc/jasper/jasper.env`. Default `dmix` (current).
+  `/etc/jasper/jasper.env`. Default `dmix` (current). (This flag is
+  retired — Phase 4 below deleted the dmix path and the flag along
+  with it; `jasper/cli/doctor/audio.py` calls it "the retired
+  dmix/fanin switcher" and `env-migrations.sh`'s
+  `retire_audio_topology_switch()` strips any leftover state file on
+  every install. Kept here only as build-history narrative.)
 - When `=fanin`: jasper-fanin starts; renderers point at per-renderer
   substreams; `pcm.jasper_capture` dsnoop targets substream 7.
 - When `=dmix`: existing topology, unchanged.
