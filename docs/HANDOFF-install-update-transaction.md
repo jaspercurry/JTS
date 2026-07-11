@@ -175,14 +175,23 @@ box after this ships. Pinned by `tests/test_rust_build_cache_staging.py`.
 parked** one (`inactive` → not flagged) in `check_service_runtime_state`.
 That is the mechanism for "broken vs intentionally idle."
 
-Today, with no mic attached, the AEC reconciler doesn't yet park voice
-cleanly — jasper-voice crash-loops until systemd start-limits it, so the
-doctor reports it `fail` (problem #6). That's why `surface_system_health`
-is **advisory, not a gate**: gating on doctor `fail` would mis-fire on a
-correctly-no-mic box. Once **Workstream C** makes the reconciler park
-voice cleanly (doctor → not-a-fail), the deploy gate can tighten to "any
-doctor core-fail blocks." The seam is intentional and documented; B does
-not reclassify hardware expectations — that's C's job.
+**Workstream C shipped 2026-06-21** (#924, `f662622c`). With no mic
+attached, the AEC reconciler now writes `/var/lib/jasper/voice-input-absent`
+and `jasper-voice.service`'s `ConditionPathExists=!…` makes systemd skip the
+start cleanly — the unit reads `inactive`, not `failed`/`activating`, so
+`check_service_runtime_state` no longer flags a correctly-no-mic box. The
+old crash-loop-until-start-limit behavior (problem #6) is gone.
+
+`surface_system_health` nonetheless stays **advisory, not a gate**, but the
+reason has moved: the mic-specific misfire is fixed, yet the broader
+broken-vs-idle reclassification of *other* missing-hardware daemons (absent
+XVF, a renderer whose hardware isn't present) is still the hot-plug
+workstream's job. Until every missing-hardware daemon reads as "idle, not
+broken," gating on any doctor `fail` would still mis-fire, so the deploy
+wrapper surfaces `jasper-doctor` rather than gating on it. When that
+reclassification is complete the gate can tighten to "any doctor core-fail
+blocks." The seam is intentional and documented; B does not reclassify
+hardware expectations — that's C's (and the hot-plug workstream's) job.
 
 ## Rollback / resume / A-B — what we built and why not more
 
@@ -263,10 +272,15 @@ sourced bash helpers). Confirm on a Pi:
   victims, so `report_oom_collateral` classifies them. (Pi OS Trixie is
   cgroup-v2; older kernels without `*_memcg` fall back to comm-only.)
 - `jasper-doctor`'s post-reconcile report on a no-mic box reads as
-  expected once Workstream C lands.
+  expected: Workstream C (#924, 2026-06-21) parks voice cleanly, so the
+  box shows voice `inactive`/parked rather than a crash-loop `fail`.
 - A deliberately-failed install (e.g. inject a failing step) leaves the
   prior manifest and does not restart daemons.
 
 ---
 
-Last verified: 2026-07-07
+Last verified: 2026-07-11 (broken-vs-idle seam re-verified against
+`jasper-voice.service`'s `ConditionPathExists`, the doctor's
+`check_service_runtime_state`, and the deploy wrapper's advisory
+`surface_system_health` — Workstream C confirmed shipped #924; other
+sections not re-verified this pass)

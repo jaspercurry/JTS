@@ -1,13 +1,19 @@
 # Barge-in build prompts — per-window execution plan
 
-> **Status: execution artifact (current).** This is the *execution layer* for
-> building robust barge-in: the step sequencing plus copy-paste prompts, one per
-> fresh agent context window. The **spec** is
-> [HANDOFF-barge-in.md](HANDOFF-barge-in.md) (current state, blockers, the
-> provider-pack capability seam, the numbered implementation plan); this file
-> just tells you how to drive it. Each prompt is self-contained for a fresh
-> window and points the agent back at the spec. **Retire this file once barge-in
-> has shipped** (through step 7, default-on). Run each window on **Opus 4.8**.
+> **Status: historical.** Snapshot from 2026-06-21 when barge-in was
+> being built step-by-step. **Every agent-buildable step (1–5) has since
+> shipped, default-OFF** — step 2 core spine (#913), step 3 capability
+> seam (#911), step 4 OpenAI pack (#934), step 5 Gemini pack
+> (`52df5deb`), and the fan-in playout ledger (step 1); integrated-review
+> remediation followed in #949. **Do not run the copy-paste prompts
+> below** — they would rebuild already-landed code. What remains is not
+> agent-buildable in a fresh window: step 6 (Grok verify — a paid eval
+> trial you run), step 7 (AEC threshold + flip defaults on — on-hardware),
+> and step 8 (bonded/multiroom — deferred). Current operational truth,
+> the live blocker list, and the remaining-step status live in
+> [HANDOFF-barge-in.md](HANDOFF-barge-in.md) "Current state" and its
+> Implementation plan. Read this file for the narrative of how the build
+> was sequenced, not for current state.
 
 The numbering here matches the "Implementation plan" table in
 [HANDOFF-barge-in.md](HANDOFF-barge-in.md).

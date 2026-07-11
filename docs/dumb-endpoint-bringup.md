@@ -1,15 +1,25 @@
 # Dumb endpoint bring-up: Raspberry Pi Zero 2 W
 
-> **Note: the "endpoint" install tier was removed.** There are now
-> exactly two install profiles — `full` and `streambox`. The legacy
-> `endpoint` / `satellite` tokens are still accepted and map to
-> `streambox`, so a field box auto-migrates on its next deploy. "Endpoint
-> behaviour" (a box that just plays a bonded channel) is now the runtime
-> multiroom **follower** role on any full/streambox box, not a separate
-> install tier. Sections below that describe an `endpoint` install
-> profile/tier are superseded by the streambox profile + follower role;
-> current operational truth lives in
-> [`HANDOFF-multiroom.md`](HANDOFF-multiroom.md).
+> **Status: historical.** Snapshot from mid-2026, before the install-tier
+> consolidation. It predates the removal of the separate "endpoint" /
+> "satellite" install tier (#707/#716) — there are now exactly **two**
+> install profiles, `full` and `streambox`. The legacy `endpoint` /
+> `satellite` tokens are still accepted and map to `streambox`
+> (`jasper/install_profile.py`, `_LEGACY_STREAMBOX_ALIASES`), so a field
+> box auto-migrates on its next deploy. "Endpoint behaviour" (a box that
+> just plays a bonded channel) is now the runtime multiroom **follower**
+> role on any full/streambox box, not an install tier.
+>
+> **Do not trust the following specifics below — they describe the dead
+> tier:** the `--satellite-only` install flag (it does not exist), any
+> `JASPER_INSTALL_PROFILE=endpoint` / persisted "satellite-only" profile,
+> and the precedence rule that "an actively bonded follower stays
+> satellite-only." Follower role is chosen at runtime by the multiroom
+> reconciler regardless of install profile. Read this doc for the Pi
+> Zero 2 W bring-up narrative, not for current install-profile state.
+> Current operational truth lives in `jasper/install_profile.py` (the
+> two-profile model) and [`HANDOFF-multiroom.md`](HANDOFF-multiroom.md)
+> (the follower role).
 
 This is the operator runbook for bringing up a cheap JTS endpoint such
 as `jts4`: a Raspberry Pi Zero 2 W that can be a synchronized satellite

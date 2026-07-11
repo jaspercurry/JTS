@@ -150,65 +150,6 @@ and `main_volume_db` near `0.0`. A safe degraded failure shows
 `carrier="camilla_guard"` and `push_guard_active=true`; that is quieter
 than intended but protects against a loud transient.
 
-### `/state` gain-chain ledger
-
-`/state.audio.volume_policy` answers "which volume carrier owns the user
-knob?" The adjacent `/state.audio.gain_chain` answers "what gain stages are
-currently affecting the audible path, and what single number can we trust?"
-
-The headline field is `common_static_gain_db`: the sum of scalar gain stages
-that apply to common program audio right now. It intentionally excludes
-per-driver calibration, dynamic duckers, limiters, and source-owned volume
-whose dB value is not observable. Those stages still appear in `stages`, but
-with `included_in_common_total=false`, `dynamic=true`, `nonlinear=true`, or a
-warning when appropriate. This keeps the single number useful without turning
-the ledger into another hidden volume knob.
-
-The ledger is built in `jasper.control.gain_chain` from state that other
-owners already expose:
-
-- `volume_policy` / Camilla `main_volume` for the user-visible knob or push
-  guard fallback.
-- The active CamillaDSP config path for actual `Gain`, `Limiter`,
-  `devices.volume_limit`, and active-speaker fold-down stages.
-- Sound-profile state only as a fallback when the active config does not
-  expose `sound_preamp`; the loaded DSP graph wins to avoid double-counting.
-- `jasper-fanin` STATUS for active TTS program ducking and assistant-loudness
-  normalization.
-- `jasper-outputd` STATUS for bonded/multiroom DAC-content trims.
-
-Important stage semantics:
-
-- `active_baseline_headroom` is emitted by the active-speaker baseline config
-  and is currently `0.0 dB` by default. Active preference boosts should not
-  move this stage; only explicit output trim or match-loudness attenuation
-  should. If it ever appears as attenuation, it is visible in this ledger and
-  included in `common_static_gain_db`.
-- `active_mono_fold_down` reports `gain_db=0.0` in the common total even though
-  each L/R source feed is `-6 dB`; correlated mono sums back to unity, while
-  hard-panned content is quieter. The per-source gains are listed in
-  `details.source_gains_db`.
-- Driver calibration such as `as_tweeter_baseline_gain` is visible but not
-  part of the common program total because each output channel can differ.
-- Limiters and TTS ducks are visible as dynamic/nonlinear stages. If a daemon
-  does not expose the exact dB value, the ledger marks that stage as unknown
-  instead of inventing a number.
-
-The snapshot is read-only and is logged with
-`event=audio.gain_chain.snapshot` only when its fingerprint changes, so
-polling `/state` does not spam the journal. On a deployed speaker, inspect it
-with:
-
-```sh
-curl -s http://jts.local:8780/state | jq .audio.gain_chain
-journalctl -u jasper-control.service | grep 'event=audio.gain_chain.snapshot'
-```
-
-If you add, remove, or reinterpret an audio gain stage, update this section and
-`tests/test_gain_chain.py` in the same change. If the gain stage lives outside
-the volume coordinator, make sure `docs/doc-map.toml` routes that code path to
-this handoff so future agents find the ledger contract.
-
 ### Inbound observation
 
 A 1 Hz poller (`jasper.volume_observers.VolumeObserver`) reads each
@@ -680,4 +621,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-07-11 (measurement-scoped voice-reconciler guard checked against a synchronized JTS3 UMIK/Camilla run, renewable `MEASURE_PAUSE`, in-flight race coverage, STATUS observability, and focused coordinator/voice tests; prior 2026-07-01 pass covered TTS loudness safety; prior 2026-06-30 pass covered duck-deferred push-guard recovery; prior 2026-06-26 pass covered reconciler mute intent; prior 2026-06-22 pass covered volume-floor calibration; prior 2026-06-21 pass covered the gain-chain ledger; prior 2026-06-17 pass covered librespot state; prior 2026-06-14 pass covered active-speaker `volume_limit`; prior 2026-06-08 pass covered mute, source sync, push guards, mux, and fan-in TTS ceiling)
+Last verified: 2026-07-11 (measurement-scoped voice-reconciler guard checked against a synchronized JTS3 UMIK/Camilla run, renewable `MEASURE_PAUSE`, in-flight race coverage, STATUS observability, and focused coordinator/voice tests; prior 2026-07-01 pass covered TTS loudness safety; prior 2026-06-30 pass covered duck-deferred push-guard recovery; prior 2026-06-26 pass covered reconciler mute intent; prior 2026-06-22 pass covered volume-floor calibration; prior 2026-06-17 pass covered librespot state; prior 2026-06-14 pass covered active-speaker `volume_limit`; prior 2026-06-08 pass covered mute, source sync, push guards, mux, and fan-in TTS ceiling)
