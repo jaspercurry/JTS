@@ -191,10 +191,15 @@ class AudioCueManager:
         Returns the list of slugs that were newly written.
 
         Raises ValueError on an unknown slug; raises RuntimeError if
-        no TTS backend was configured. Per-cue exceptions DURING
-        synthesis (network errors, TTS API failures) are surfaced —
-        callers in non-blocking contexts (startup background task)
-        catch them and log."""
+        no TTS backend was configured.
+
+        Per-cue synthesis failures (network errors, TTS API failures)
+        are ISOLATED: a single cue that exhausts its retries is logged
+        at WARNING and skipped, so its siblings still get a chance to
+        generate on the same pass. Gemini TTS failures are often
+        text-specific rather than a categorical outage, so aborting the
+        whole batch on the first bad cue would needlessly leave later,
+        healthy cues uncached (and thus silent at play time)."""
         if self._backend is None:
             raise RuntimeError(
                 "AudioCueManager has no TTS backend — can't regenerate. "
@@ -209,19 +214,40 @@ class AudioCueManager:
             cues = CUES
 
         written: list[str] = []
+        failed: list[str] = []
         for cue in cues:
             if not force and self.is_cached(cue):
                 logger.debug("cue %s already cached, skipping", cue.slug)
                 continue
-            write_cue(
-                cue, self._hostname, self._voice,
-                self._sounds_dir, self._backend,
-            )
-            prune_stale(
-                self._sounds_dir, cue,
-                cue_hash(cue, self._hostname, self._voice, self._model),
-            )
+            try:
+                write_cue(
+                    cue, self._hostname, self._voice,
+                    self._sounds_dir, self._backend,
+                )
+                prune_stale(
+                    self._sounds_dir, cue,
+                    cue_hash(cue, self._hostname, self._voice, self._model),
+                )
+            except Exception as e:  # noqa: BLE001
+                failed.append(cue.slug)
+                log_event(
+                    logger,
+                    "cue.regenerate_failed",
+                    result="skipped_cue",
+                    slug=cue.slug,
+                    exc_type=type(e).__name__,
+                    err=str(e),
+                    level=logging.WARNING,
+                )
+                continue
             written.append(cue.slug)
+        if failed:
+            logger.warning(
+                "cue regenerate: %d/%d cue(s) failed and were skipped "
+                "(%s); siblings still generated. Stale/any-cached fallback "
+                "keeps failed cues audible where a prior WAV exists.",
+                len(failed), len(cues), ", ".join(failed),
+            )
         return written
 
     # --- playback ---

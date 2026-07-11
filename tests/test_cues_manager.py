@@ -175,6 +175,50 @@ def test_regenerate_after_hostname_change_writes_new_file_and_prunes(tmp_path):
     assert not (tmp_path / old_file).exists()
 
 
+class _FailOnFirstBackend:
+    """Raises on the first synthesise call, then succeeds — models a
+    text-specific TTS failure that should NOT abort the whole batch."""
+
+    def __init__(self, samples_24k: int = 240) -> None:
+        self._pcm = b"\x00\x00" * samples_24k
+        self.calls: list[str] = []
+
+    def synthesise(self, text: str) -> TTSResult:
+        self.calls.append(text)
+        if len(self.calls) == 1:
+            raise RuntimeError("simulated TTS failure on first cue")
+        return TTSResult(pcm_24k=self._pcm)
+
+
+def test_regenerate_isolates_per_cue_failure(tmp_path, caplog):
+    """One cue's exhausted-retry synthesis failure must not abort the
+    batch — every sibling cue still gets synthesised on the same pass."""
+    backend = _FailOnFirstBackend()
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path),
+        hostname="jts.local",
+        voice="Aoede",
+        backend=backend,
+    )
+    import logging as _logging
+    with caplog.at_level(_logging.WARNING):
+        written = mgr.regenerate()
+
+    # The failing cue is the first CUES entry; all the rest succeeded.
+    failed_slug = CUES[0].slug
+    assert failed_slug not in written
+    assert set(written) == {c.slug for c in CUES if c.slug != failed_slug}
+    assert len(written) == len(CUES) - 1
+
+    # Failed cue is not on disk; a sibling is.
+    assert not mgr.is_cached(CUES[0])
+    assert mgr.is_cached(CUES[1])
+
+    # Failure is observable, not swallowed silently.
+    assert any("cue.regenerate_failed" in r.message or failed_slug in r.message
+               for r in caplog.records)
+
+
 # --- introspection ---
 
 
