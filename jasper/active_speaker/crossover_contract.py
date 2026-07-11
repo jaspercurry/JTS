@@ -182,6 +182,7 @@ def automatic_candidate_readiness(
     required_group_ids: Iterable[str],
     level_match: Mapping[str, Any] | None,
     measurement_summary: Mapping[str, Any] | None,
+    active_comparison_set: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return whether current acoustic evidence can produce an automatic profile."""
     required = {str(group_id) for group_id in required_group_ids if str(group_id)}
@@ -206,6 +207,11 @@ def automatic_candidate_readiness(
         else measured_count >= len(required)
     )
     latest_summed = _mapping(summary.get("latest_summed_validations"))
+    from .capture_geometry import (
+        SUMMED_PLACEMENT_POLICY_ID,
+        capture_proof_valid,
+    )
+
     summed_ready: set[str] = set()
     for group_id, record in latest_summed.items():
         record = _mapping(record)
@@ -215,6 +221,14 @@ def automatic_candidate_readiness(
             and acoustic.get("verdict") == "blend_ok"
             and record.get("mic_clipping") is not True
             and acoustic.get("mic_clipping") is not True
+            and capture_proof_valid(
+                record,
+                active_comparison_set,
+                policy_id=SUMMED_PLACEMENT_POLICY_ID,
+                role="summed",
+                speaker_group_id=str(group_id),
+                target_fingerprint=str(record.get("group_fingerprint") or ""),
+            )
         ):
             summed_ready.add(str(group_id))
 
@@ -222,8 +236,11 @@ def automatic_candidate_readiness(
         reason = "automatic_crossover_not_applicable"
         detail = "This topology has no active crossover groups to tune."
     elif incomparable:
-        reason = "automatic_crossover_excitation_incomparable"
-        detail = "Repeat the driver sweeps so their verified excitation can be compared."
+        reason = "automatic_crossover_measurements_incomparable"
+        detail = (
+            "Repeat the driver sweeps in one guided run so microphone placement, "
+            "level, and excitation can be compared."
+        )
     elif level_match.get("applied") is not True or not driver_groups_ready:
         reason = "automatic_crossover_measurements_incomplete"
         detail = "Finish usable driver sweeps before applying automatic tuning."
@@ -241,5 +258,7 @@ def automatic_candidate_readiness(
         "required_group_ids": sorted(required),
         "measured_group_ids": sorted(measured_ids),
         "summed_group_ids": sorted(summed_ready),
+        "measurement_comparable": not incomparable,
+        # Compatibility alias for existing status consumers.
         "excitation_comparable": not incomparable,
     }

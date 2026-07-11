@@ -231,6 +231,12 @@ def _measured_level_trims(
     that group, and if no group qualifies the caller keeps the datasheet trim and
     marks the config provisional. Magnitude only: never a phase/delay decision.
     """
+    from .capture_geometry import (
+        DRIVER_PLACEMENT_POLICY_ID,
+        capture_proof_valid,
+    )
+
+    active_comparison_set = measurements.get("active_comparison_set")
     latest = measurements.get("latest_by_target")
     if not isinstance(latest, Mapping):
         summary = measurements.get("summary")
@@ -271,6 +277,24 @@ def _measured_level_trims(
             # Operator-only floor checks prove routing but are not attempted as
             # acoustic level evidence, so do not diagnose their intentionally
             # absent analyzer ledger as malformed.
+            continue
+        placement_invalid_roles = [
+            role
+            for role in roles
+            if not capture_proof_valid(
+                group_records.get(role),
+                active_comparison_set,
+                policy_id=DRIVER_PLACEMENT_POLICY_ID,
+                role=role,
+                speaker_group_id=group_id,
+            )
+        ]
+        if placement_invalid_roles:
+            incomparable_groups.append({
+                "speaker_group_id": group_id,
+                "reason": "placement_or_comparison_set_missing_or_invalid",
+                "roles": placement_invalid_roles,
+            })
             continue
         excitation_by_role = {
             role: _effective_excitation_dbfs(group_records.get(role))
@@ -336,7 +360,13 @@ def _measured_level_trims(
             if item.get("speaker_group_id")
         }),
         "deltas": deltas,
-        "comparison": "gain_ledger_normalized",
+        "comparison": "placement_attested_gain_ledger_normalized",
+        "placement_policy": DRIVER_PLACEMENT_POLICY_ID,
+        "active_comparison_set_id": (
+            active_comparison_set.get("comparison_set_id")
+            if isinstance(active_comparison_set, Mapping)
+            else None
+        ),
         "incomparable_groups": incomparable_groups,
     }
     if not per_group_trims:
@@ -437,11 +467,11 @@ def _derive_corrections(
     if level_match.get("incomparable_groups"):
         issues.append(_issue(
             "warning",
-            "driver_measurement_excitation_incomparable",
+            "driver_measurement_comparison_incomparable",
             (
-                "saved driver captures have missing or invalid excitation "
-                "evidence; JTS kept the safe estimated trim and needs a new "
-                "guided driver capture"
+                "saved driver captures do not share verified placement, "
+                "microphone, level, and excitation evidence; JTS kept the safe "
+                "existing or estimated trim and needs new guided captures"
             ),
         ))
     if tuning_owner == "manual" and pinned_gain_roles and measured_trims:
@@ -1173,6 +1203,7 @@ def build_baseline_profile_candidate(
         ),
         level_match=correction_meta["level_match"],
         measurement_summary=summary,
+        active_comparison_set=measurements.get("active_comparison_set"),
     )
     if tuning_owner == "automatic" and not automatic_candidate["ready"]:
         issues.append(_issue(

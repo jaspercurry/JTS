@@ -222,6 +222,7 @@ def _base_state(path: Path) -> dict[str, Any]:
         "latest_by_target": {},
         "latest_summed_tests": {},
         "latest_summed_by_group": {},
+        "active_comparison_set": None,
         "summary": {},
         "issues": [],
     }
@@ -259,6 +260,61 @@ def _normalise_state(raw: Any, path: Path) -> dict[str, Any]:
         limit=MAX_SUMMED_RECORDS,
     )
     return state
+
+
+def clear_active_comparison_set(
+    topology: OutputTopology,
+    *,
+    state_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Invalidate prior automatic evidence before a new level run starts."""
+
+    path = measurement_state_path(state_path)
+    state = load_measurement_state(topology, state_path=path)
+    persisted = _normalise_state(state, path)
+    persisted["active_comparison_set"] = None
+    persisted["updated_at"] = _utc_now()
+    out = _with_summary(topology, persisted)
+    _write_state(path, out)
+    return out
+
+
+def start_active_comparison_set(
+    topology: OutputTopology,
+    *,
+    profile_context_id: str,
+    setup_sha256: str,
+    device_sha256: str,
+    calibration_id: str,
+    locked_main_volume_db: float,
+    state_path: str | Path | None = None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Persist the one mic/level context all automatic captures must share."""
+
+    from .capture_geometry import COMPARISON_SET_SCHEMA_VERSION
+
+    path = measurement_state_path(state_path)
+    state = load_measurement_state(topology, state_path=path)
+    created_at = now or _utc_now()
+    core = {
+        "schema_version": COMPARISON_SET_SCHEMA_VERSION,
+        "comparison_set_id": uuid.uuid4().hex,
+        "created_at": created_at,
+        "topology_id": topology.topology_id,
+        "profile_context_id": str(profile_context_id),
+        "setup_sha256": str(setup_sha256),
+        "device_sha256": str(device_sha256),
+        "calibration_id": str(calibration_id or ""),
+        "locked_main_volume_db": float(locked_main_volume_db),
+    }
+    comparison_set = {**core, "fingerprint": _fingerprint(core)}
+    persisted = _normalise_state(state, path)
+    persisted["active_comparison_set"] = comparison_set
+    persisted["updated_at"] = created_at
+    out = _with_summary(topology, persisted)
+    _write_state(path, out)
+    return comparison_set
 
 
 def _latest_by_key(
@@ -856,6 +912,14 @@ def record_driver_measurement(
             if isinstance(raw.get("excitation"), Mapping)
             else None
         ),
+        # Server-normalized relay acknowledgement + comparison-set binding.
+        # Operator-only and legacy acoustic records intentionally leave this
+        # absent and cannot drive a new automatic crossover.
+        "placement_proof": (
+            dict(raw["placement_proof"])
+            if isinstance(raw.get("placement_proof"), Mapping)
+            else None
+        ),
         "playback_id": _text(raw.get("playback_id"), max_chars=120),
         "floor_confirmation": dict(
             durable_floor_confirmation or _safe_floor_result(safe_session) or {}
@@ -1099,6 +1163,11 @@ def record_summed_validation(
         "excitation": (
             dict(raw["excitation"])
             if isinstance(raw.get("excitation"), Mapping)
+            else None
+        ),
+        "placement_proof": (
+            dict(raw["placement_proof"])
+            if isinstance(raw.get("placement_proof"), Mapping)
             else None
         ),
         "polarity": _text(raw.get("polarity"), max_chars=40) or "normal",

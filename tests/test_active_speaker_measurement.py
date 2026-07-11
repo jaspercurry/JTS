@@ -11,12 +11,14 @@ import pytest
 from jasper.active_speaker.measurement import (
     active_driver_targets,
     active_summed_targets,
+    clear_active_comparison_set,
     confirmed_driver_roles,
     current_driver_floor_evidence,
     load_measurement_state,
     record_driver_measurement,
     record_summed_test_artifact,
     record_summed_validation,
+    start_active_comparison_set,
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
@@ -806,3 +808,29 @@ def test_measurements_do_not_carry_across_output_topology_changes(
     assert "stale_measurement_evidence_ignored" in {
         issue["code"] for issue in payload["issues"]
     }
+
+
+def test_new_level_run_invalidates_prior_comparison_set(tmp_path: Path) -> None:
+    state_path = tmp_path / "measurements.json"
+    topology = _topology()
+    comparison_set = start_active_comparison_set(
+        topology,
+        profile_context_id="protected-profile",
+        setup_sha256="a" * 64,
+        device_sha256="b" * 64,
+        calibration_id="",
+        locked_main_volume_db=-12.0,
+        state_path=state_path,
+        now="2026-07-11T12:00:00Z",
+    )
+
+    assert load_measurement_state(topology, state_path=state_path)[
+        "active_comparison_set"
+    ] == comparison_set
+
+    cleared = clear_active_comparison_set(topology, state_path=state_path)
+
+    assert cleared["active_comparison_set"] is None
+    assert load_measurement_state(topology, state_path=state_path)[
+        "active_comparison_set"
+    ] is None

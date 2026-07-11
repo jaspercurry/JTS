@@ -13,7 +13,10 @@
 
 import { RELAY_BASE } from "./config.js";
 import { parseFragment, withinUploadCap } from "./fragment.js";
-import { renderScreen } from "./render.js";
+import {
+  acceptedAcknowledgement,
+  renderScreen,
+} from "./render.js?v=20260711-1";
 import { RelayClient } from "./relay-client.js";
 import { importContentKey, encryptWav } from "./crypto.js";
 import { constraintDecision, verifyRealizedConstraints } from "./constraints.js";
@@ -903,6 +906,13 @@ async function waitForSweepComplete(client, spec, isAborted) {
 // The whole capture leg, behind the single Start tap.
 async function onStart(ctx) {
   const { spec, client, contentKeyB64 } = ctx;
+  let acknowledgement = null;
+  try {
+    acknowledgement = acceptedAcknowledgement(spec, ctx.captureRefs);
+  } catch {
+    setStatus("Confirm the microphone placement before starting.", "error");
+    return;
+  }
   let recorder = null;
   let wakeLock = null;
   let disposeWatch = () => {};
@@ -993,6 +1003,7 @@ async function onStart(ctx) {
       device: captureDevice,
       noise_floor: noise,
       setup: setupWirePayload(),
+      acknowledgement,
     });
 
     // Record until the Pi reports that the real sweep finished, then keep a
@@ -1140,7 +1151,12 @@ async function boot() {
       },
     });
     void buildMicPicker(screenEl);
-    setStatus("Ready. Stand at your listening position and tap Start.", "info");
+    setStatus(
+      spec.acknowledgement
+        ? "Ready. Follow the placement steps, confirm them, then start."
+        : "Ready. Stand at your listening position and tap Start.",
+      "info",
+    );
   }
 }
 

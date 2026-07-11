@@ -944,11 +944,31 @@ def _legacy_crossover_level_status(*, preservation_ready: bool) -> dict:
 
 def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
     monkeypatch,
+    tmp_path,
 ):
     import asyncio
 
     from jasper.web import correction_crossover_backend as backend
     from jasper.web import correction_setup
+    from jasper.active_speaker.measurement import (
+        load_measurement_state,
+        start_active_comparison_set,
+    )
+    from jasper.output_topology import load_output_topology
+
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
+        str(tmp_path / "measurements.json"),
+    )
+    topology = load_output_topology()
+    prior_set = start_active_comparison_set(
+        topology,
+        profile_context_id="old-profile",
+        setup_sha256="a" * 64,
+        device_sha256="b" * 64,
+        calibration_id="",
+        locked_main_volume_db=-12.0,
+    )
 
     legacy = _legacy_crossover_level_status(preservation_ready=True)
     current = {
@@ -1008,6 +1028,7 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
         "relay_base": "relay",
         "return_url": "https://jts.local/correction/crossover/",
     }
+    assert load_measurement_state(topology)["active_comparison_set"] == prior_set
     assert payload["relay"]["url"].startswith("https://capture.jasper.tech/")
 
 

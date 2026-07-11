@@ -40,6 +40,7 @@ from jasper.capture_relay.session import (
     run_capture,
 )
 from jasper.capture_relay.spec import build_room_sweep_spec
+from jasper.capture_relay.spec import build_crossover_sweep_spec
 
 _CAPTURE_PAGE = {
     "schema_version": 1,
@@ -121,14 +122,28 @@ class FakeRelayBackend:
         return jr(404, {"error": "not_found"})
 
     # --- phone simulation ---
-    def phone_arm(self, sid, device=None, *, noise_floor=None, setup=None):
-        event = {"armed": True, "capture_page": dict(_CAPTURE_PAGE)}
+    def phone_arm(
+        self,
+        sid,
+        device=None,
+        *,
+        noise_floor=None,
+        setup=None,
+        acknowledgement=None,
+        capture_page=None,
+    ):
+        event = {
+            "armed": True,
+            "capture_page": dict(capture_page or _CAPTURE_PAGE),
+        }
         if device is not None:
             event["device"] = device
         if noise_floor is not None:
             event["noise_floor"] = noise_floor
         if setup is not None:
             event["setup"] = setup
+        if acknowledgement is not None:
+            event["acknowledgement"] = acknowledgement
         self.sessions[sid]["event"] = event
 
     def phone_setup_validate(self, sid, setup, *, token="setup-token"):
@@ -229,6 +244,156 @@ def test_full_round_trip_returns_decrypted_wav():
     assert result.wav == wav  # bit-identical, decrypted + verified
     assert result.device is None  # phone reported no device this time
     assert armed_calls == [True]  # on_armed fired exactly once
+
+
+def test_required_acknowledgement_is_verified_before_stimulus():
+    backend = FakeRelayBackend()
+    binding = "placement_abcdefghijklmnopqrstuv"
+    session = mint_session(
+        build_crossover_sweep_spec(
+            driver_label="Woofer driver",
+            driver_role="woofer",
+            acknowledgement_binding=binding,
+        ),
+        relay_base="https://relay.test",
+        capture_origin="capture.test",
+    )
+    client = RelayClient("https://relay.test", transport=backend)
+    register_session(client, session)
+    page_v2 = {
+        **_CAPTURE_PAGE,
+        "capture_protocol_version": 2,
+        "supported_capture_protocol_versions": [1, 2],
+        "capture_page_build": "20260711.1",
+    }
+    backend.phone_arm(
+        session.session_id,
+        capture_page=page_v2,
+        acknowledgement={
+            "schema_version": 1,
+            "id": "driver_same_distance_v1",
+            "binding_id": "wrong_binding_abcdefghijkl",
+            "accepted": True,
+        },
+    )
+    armed_calls = []
+
+    with pytest.raises(CaptureFailed, match="acknowledgement"):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: armed_calls.append(True),
+            poll_interval_s=0.0,
+            timeout_s=5.0,
+            sleep=lambda _s: None,
+        )
+
+    assert armed_calls == []
+    assert backend.sessions[session.session_id]["host_event"] == {
+        "phase": "sweep_failed",
+        "error": "Confirm the microphone placement before starting the sweep.",
+    }
+
+    wav = b"RIFF" + bytes(range(64))
+
+    def on_armed():
+        armed_calls.append(True)
+        backend.phone_upload(session.session_id, session.content_key, wav)
+
+    backend.phone_arm(
+        session.session_id,
+        capture_page=page_v2,
+        acknowledgement={
+            "schema_version": 1,
+            "id": "driver_same_distance_v1",
+            "binding_id": binding,
+            "accepted": True,
+        },
+    )
+    result = run_capture(
+        client,
+        session,
+        on_armed=on_armed,
+        poll_interval_s=0.0,
+        timeout_s=5.0,
+        sleep=lambda _s: None,
+    )
+    assert result.wav == wav
+    assert armed_calls == [True]
+
+
+@pytest.mark.parametrize(
+    "acknowledgement",
+    [
+        None,
+        {
+            "schema_version": 1,
+            "id": "wrong_policy_v1",
+            "binding_id": "placement_abcdefghijklmnopqrstuv",
+            "accepted": True,
+        },
+        {
+            "schema_version": 1,
+            "id": "driver_same_distance_v1",
+            "binding_id": "placement_from_prior_session_xyz",
+            "accepted": True,
+        },
+        {
+            "schema_version": 1,
+            "id": "driver_same_distance_v1",
+            "binding_id": "placement_abcdefghijklmnopqrstuv",
+            "accepted": False,
+        },
+        {
+            "schema_version": 9,
+            "id": "driver_same_distance_v1",
+            "binding_id": "placement_abcdefghijklmnopqrstuv",
+            "accepted": True,
+        },
+    ],
+    ids=["missing", "wrong-id", "prior-session-binding", "not-accepted", "schema"],
+)
+def test_invalid_placement_acknowledgement_never_reaches_playback(
+    acknowledgement,
+):
+    backend = FakeRelayBackend()
+    session = mint_session(
+        build_crossover_sweep_spec(
+            driver_label="Woofer driver",
+            driver_role="woofer",
+            acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
+        ),
+        relay_base="https://relay.test",
+        capture_origin="capture.test",
+    )
+    client = RelayClient("https://relay.test", transport=backend)
+    register_session(client, session)
+    backend.phone_arm(
+        session.session_id,
+        capture_page={
+            **_CAPTURE_PAGE,
+            "capture_protocol_version": 2,
+            "supported_capture_protocol_versions": [1, 2],
+            "capture_page_build": "20260711.1",
+        },
+        acknowledgement=acknowledgement,
+    )
+    armed_calls = []
+
+    with pytest.raises(CaptureFailed, match="acknowledgement"):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: armed_calls.append(True),
+            poll_interval_s=0.0,
+            timeout_s=5.0,
+            sleep=lambda _s: None,
+        )
+
+    assert armed_calls == []
+    assert backend.sessions[session.session_id]["host_event"]["phase"] == (
+        "sweep_failed"
+    )
 
 
 def test_stale_capture_page_fails_before_stimulus_and_publishes_reason(caplog):

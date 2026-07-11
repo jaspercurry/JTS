@@ -542,6 +542,9 @@ def build_crossover_relay_run_and_consume(
     validate_capture: Callable[[Any], None] | None = None,
     prepare_play: Callable[[], Any] | None = None,
     restore_play: Callable[[], Any] | None = None,
+    comparison_set: Mapping[str, Any] | None = None,
+    target_fingerprint: str = "",
+    current_comparison_set: Callable[[], Mapping[str, Any]] | None = None,
 ) -> Callable[[Any, Any], Any]:
     """Return the relay ``run_and_consume(client, pi_session)`` coroutine.
 
@@ -571,6 +574,7 @@ def build_crossover_relay_run_and_consume(
     # Stash the play response between on_armed (poll thread) and the post-capture
     # record so the record carries the exact sweep the Pi played.
     played: dict[str, Any] = {}
+    placement_proof: dict[str, Any] = {}
 
     async def _play() -> dict[str, Any]:
         from jasper.correction import coordinator
@@ -633,25 +637,82 @@ def build_crossover_relay_run_and_consume(
     async def _run_and_consume(client: Any, pi_session: Any) -> None:
         import asyncio
 
-        from jasper.capture_relay.session import purge, run_capture
+        from jasper.capture_relay.session import (
+            purge,
+            run_capture,
+            validate_capture_acknowledgement,
+        )
 
-        def _on_armed(_state: Any = None) -> None:
+        def _on_armed(state: Any) -> None:
             # Called from run_capture's poll thread. `run_async` posts the play
             # coroutine back to the correction event loop (run_coroutine_threadsafe)
             # and blocks THIS thread — never the loop — until the sweep finishes.
-            _post_phase(pi_session.session_id, pi_session.pull_token, "sweep_started")
-            payload = run_async(_play(), timeout=45.0)
-            if not capture_sweep_played(payload):
-                reason = playback_issue_text(
-                    payload,
-                    "the crossover capture sweep did not play — "
-                    "confirm the driver first",
+            try:
+                if current_comparison_set is not None:
+                    current = current_comparison_set()
+                    expected = comparison_set or {}
+                    if (
+                        current.get("comparison_set_id")
+                        != expected.get("comparison_set_id")
+                        or current.get("fingerprint")
+                        != expected.get("fingerprint")
+                    ):
+                        raise ValueError(
+                            "the crossover measurement level changed after this "
+                            "link was created; run the level check again"
+                        )
+                acknowledgement = validate_capture_acknowledgement(
+                    state,
+                    pi_session.spec,
                 )
-                _post_failed(pi_session.session_id, pi_session.pull_token, reason)
-                raise ValueError(reason)
-            played.clear()
-            played.update(payload)
-            _post_phase(pi_session.session_id, pi_session.pull_token, "sweep_complete")
+                required = pi_session.spec.acknowledgement
+                if acknowledgement is None or required is None:
+                    raise ValueError(
+                        "confirm the microphone placement before starting the sweep"
+                    )
+                from jasper.active_speaker.capture_geometry import (
+                    normalized_placement_proof,
+                )
+
+                placement_proof.clear()
+                placement_proof.update(
+                    normalized_placement_proof(
+                        policy_id=required.id,
+                        acknowledgement_binding=required.binding_id,
+                        relay_session_id=pi_session.session_id,
+                        capture_page=state.capture_page,
+                        speaker_group_id=group_id,
+                        role=role if kind == "driver" else "summed",
+                        target_fingerprint=target_fingerprint,
+                        comparison_set=comparison_set or {},
+                    )
+                )
+                _post_phase(
+                    pi_session.session_id,
+                    pi_session.pull_token,
+                    "sweep_started",
+                )
+                payload = run_async(_play(), timeout=45.0)
+                if not capture_sweep_played(payload):
+                    raise ValueError(playback_issue_text(
+                        payload,
+                        "the crossover capture sweep did not play — "
+                        "confirm the driver first",
+                    ))
+                played.clear()
+                played.update(payload)
+                _post_phase(
+                    pi_session.session_id,
+                    pi_session.pull_token,
+                    "sweep_complete",
+                )
+            except (RuntimeError, OSError, ValueError) as exc:
+                _post_failed(
+                    pi_session.session_id,
+                    pi_session.pull_token,
+                    str(exc),
+                )
+                raise
 
         # run_capture blocks until the phone finishes recording, so it MUST run
         # off the correction event loop (mirrors the room flow's
@@ -686,12 +747,20 @@ def build_crossover_relay_run_and_consume(
         if kind == "driver":
             record_raw["role"] = role
             record_raw["test_level_dbfs"] = played.get("test_level_dbfs")
-            record_payload = backend.record_driver_capture(record_raw, result.wav)
+            record_payload = backend.record_driver_capture(
+                record_raw,
+                result.wav,
+                placement_proof=placement_proof,
+            )
         else:
             record_raw["summed_test_id"] = played.get("summed_test_id") or played.get(
                 "playback_id"
             )
-            record_payload = backend.record_summed_capture(record_raw, result.wav)
+            record_payload = backend.record_summed_capture(
+                record_raw,
+                result.wav,
+                placement_proof=placement_proof,
+            )
         log_event(
             logger,
             "correction.crossover_relay_recorded",
@@ -705,6 +774,9 @@ def build_crossover_relay_run_and_consume(
             effective_peak_dbfs=(record_raw.get("excitation") or {}).get(
                 "effective_peak_dbfs"
             ),
+            placement_schema=placement_proof.get("schema_version"),
+            placement_policy=placement_proof.get("policy_id"),
+            comparison_set_id=placement_proof.get("comparison_set_id"),
         )
 
     return _run_and_consume

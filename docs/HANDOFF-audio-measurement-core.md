@@ -314,6 +314,16 @@ one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
    [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js).
    Placement copy lives on the page (`active-speaker-ui.js`
    `NEARFIELD_LEVEL_MATCH_GUIDANCE`).
+   The correction-native relay flow strengthens that advice into a comparable
+   measurement contract: 3 cm from the microphone capsule to the named driver's
+   radiating-surface center (horn mouth for a compression driver), on-axis, with
+   the same distance for every driver. Capture protocol v2 renders an explicit
+   acknowledgement and the Pi verifies its per-link binding before playback.
+   The resulting server-owned placement proof is tied to one durable comparison
+   set created by the near-field level check (profile + mic/setup + calibration +
+   locked common volume). Legacy, mixed-set, or geometry-less records cannot
+   refine or automatically replace a crossover; they remain available as
+   historical/by-ear routing evidence.
 2. **Overlap-band level.** `driver_acoustics.analyze_driver_capture(overlap_fcs=…)`
    records, per crossover Fc the driver touches, the deconvolved magnitude **at
    Fc** (the 1/24-octave-smoothed point, not a linear-bin band mean which would

@@ -2990,7 +2990,13 @@ def _handle_crossover_relay_level_match(
     """POST /crossover/level-match: acquire the near-field Layer-A gain lease."""
     from jasper.capture_relay import correction_adapter
     from jasper.capture_relay.spec import build_level_ramp_spec
+    from jasper.active_speaker.measurement import (
+        clear_active_comparison_set,
+        start_active_comparison_set,
+    )
+    from jasper.active_speaker.capture_geometry import DRIVER_PLACEMENT_POLICY_ID
     from jasper.correction.level_match import MicGeometry
+    from jasper.output_topology import load_output_topology
 
     from . import correction_crossover_backend as backend
     from . import correction_crossover_flow
@@ -3026,6 +3032,7 @@ def _handle_crossover_relay_level_match(
         )
 
     lease = backend.level_lease()
+    topology = load_output_topology()
     run_token = secrets.token_urlsafe(18)
     setup_binding_id = context_id
 
@@ -3049,6 +3056,17 @@ def _handle_crossover_relay_level_match(
         )
 
     async def _run(client: RelayClient, pi_session: PiCaptureSession) -> None:
+        # `_run_relay_capture` has acquired the global relay slot before this
+        # callback starts. Invalidating here means a rejected second Start can
+        # never erase the still-valid comparison set owned by the first flow.
+        lease.invalidate_comparison_context()
+        clear_active_comparison_set(topology)
+        log_event(
+            logger,
+            "correction.crossover_comparison_set_invalidated",
+            reason="new_level_match_started",
+            topology_id=topology.topology_id,
+        )
         await _run_relay_level_match(
             lease,
             client,
@@ -3058,6 +3076,39 @@ def _handle_crossover_relay_level_match(
             setup_binding_id=setup_binding_id,
         )
         lease.context_id = context_id
+        binding = getattr(lease, "relay_setup_binding", None)
+        identity = _relay_level_identity(lease)
+        ramp = (lease.level_match_snapshot().get("last") or {}).get("ramp") or {}
+        locked_main_volume_db = ramp.get("locked_main_volume_db")
+        if (
+            binding is None
+            or not getattr(binding, "sha256", "")
+            or not identity.device_key
+            or not isinstance(locked_main_volume_db, (int, float))
+        ):
+            raise ValueError(
+                "the level check did not produce a complete microphone and "
+                "volume binding; run it again"
+            )
+        comparison_set = start_active_comparison_set(
+            topology,
+            profile_context_id=context_id,
+            setup_sha256=str(binding.sha256),
+            device_sha256=hashlib.sha256(
+                identity.device_key.encode("utf-8")
+            ).hexdigest(),
+            calibration_id=identity.calibration_id,
+            locked_main_volume_db=float(locked_main_volume_db),
+        )
+        log_event(
+            logger,
+            "correction.crossover_comparison_set_started",
+            topology_id=topology.topology_id,
+            comparison_set_id=comparison_set["comparison_set_id"],
+            geometry_policy=DRIVER_PLACEMENT_POLICY_ID,
+            calibrated=bool(identity.calibration_id),
+            locked_main_volume_db=f"{float(locked_main_volume_db):.2f}",
+        )
 
     relay = _run_relay_capture(
         RelayCaptureKind(
@@ -3142,6 +3193,8 @@ def _handle_crossover_relay_capture(
     another measurement silently corrupts both captures)."""
     from jasper.capture_relay import correction_adapter
     from jasper.capture_relay.spec import build_crossover_sweep_spec
+    from jasper.active_speaker.measurement import load_measurement_state
+    from jasper.output_topology import load_output_topology
 
     from . import correction_crossover_flow
     from . import correction_crossover_backend
@@ -3200,6 +3253,49 @@ def _handle_crossover_relay_capture(
     else:
         raw["measurement_mode"] = "magnitude_only"
     kind_id = correction_crossover_flow.relay_kind_from_raw(raw)
+    from jasper.active_speaker.capture_geometry import comparison_set_valid
+
+    measurements = status.get("measurements")
+    comparison_set = (
+        measurements.get("active_comparison_set")
+        if isinstance(measurements, dict)
+        else None
+    )
+    if not isinstance(comparison_set, dict) or not comparison_set_valid(
+        comparison_set
+    ):
+        raise ValueError(
+            "the automatic crossover measurement set is no longer active; "
+            "run the near-field level check again"
+        )
+    targets_raw = status.get("targets")
+    targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
+    target_rows = targets.get("drivers" if kind_id == "driver" else "summed") or []
+    requested_group = str(raw.get("speaker_group_id") or "")
+    requested_role = str(raw.get("role") or "").lower()
+    target = next(
+        (
+            item
+            for item in target_rows
+            if isinstance(item, dict)
+            and str(item.get("speaker_group_id") or "") == requested_group
+            and (
+                kind_id != "driver"
+                or str(item.get("role") or "").lower() == requested_role
+            )
+        ),
+        None,
+    )
+    if not isinstance(target, dict):
+        raise ValueError("the requested crossover measurement target is not active")
+    raw["speaker_group_id"] = str(target.get("speaker_group_id") or "")
+    if kind_id == "driver":
+        raw["role"] = str(target.get("role") or "").lower()
+        target_fingerprint = str(target.get("target_fingerprint") or "")
+    else:
+        raw.pop("role", None)
+        target_fingerprint = str(target.get("group_fingerprint") or "")
+    acknowledgement_binding = secrets.token_urlsafe(24)
     driver_label = correction_crossover_flow.relay_driver_label(raw)
 
     def _open(
@@ -3210,7 +3306,11 @@ def _handle_crossover_relay_capture(
     ) -> RelayCapture:
         return correction_adapter.open_capture(
             client,
-            build_crossover_sweep_spec(driver_label=driver_label),
+            build_crossover_sweep_spec(
+                driver_label=driver_label,
+                driver_role=str(raw.get("role") or "summed"),
+                acknowledgement_binding=acknowledgement_binding,
+            ),
             relay_base=base,
             capture_origin=capture_origin,
             return_url=return_url,
@@ -3250,6 +3350,14 @@ def _handle_crossover_relay_capture(
         ),
         restore_play=lambda: lease.restore_level_match_volume(
             lambda db: _camilla().set_volume_db(db, best_effort=False)
+        ),
+        comparison_set=comparison_set,
+        target_fingerprint=target_fingerprint,
+        current_comparison_set=lambda: (
+            load_measurement_state(load_output_topology()).get(
+                "active_comparison_set"
+            )
+            or {}
         ),
     )
 

@@ -156,6 +156,26 @@
   on real drivers are not exercised hardware-free (same status as the
   room/sync relay). Design of record:
   [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §4 P7.
+  The first JTS3 H2 attempt exposed and closed a comparison-validity bug:
+  the migrated relay screen had weakened the canonical per-driver placement
+  from the same ~2–5 cm near-field geometry to merely “close to the speaker
+  baffle,” so incomparable woofer/tweeter captures could replace a manual trim.
+  Driver captures now use one fixed 3 cm capsule-to-radiating-surface geometry,
+  name the exact driver/horn target, and require a role-specific acknowledgement
+  before the Pi may play. The acknowledgement is capture-protocol v2 data,
+  bound to the relay session and verified before `on_armed`; a normalized
+  server-owned proof is persisted with the record. A successful crossover level
+  check also starts one durable comparison set binding the protected profile,
+  setup digest, microphone identity hash, calibration, and locked main volume.
+  Every driver and summed capture must belong to that same set. Starting a new
+  level check invalidates the prior set, and legacy/mixed-set records remain
+  historical but cannot produce or apply a new automatic crossover. Manual
+  crossover preservation/application is unchanged; an applied automatic profile
+  exposes **Tune crossover automatically again**, which starts a fresh set and
+  keeps the current safe profile live until the updated profile is explicitly
+  applied. The public page release that
+  implements this contract is `capture_page_build=20260711.1`, supporting
+  protocols 1 and 2; publish it before deploying a Pi that emits v2 specs.
 - 🧪 **Phone-mic capture relay path (fresh-install default,
   on-device-pending).** As of 2026-07-02 fresh installs default to an
   alternative capture transport that moves the room capture setup/recording page
@@ -2176,7 +2196,9 @@ Internal:
 
 ---
 
-Last verified: 2026-07-11 (JTS3 UMIK-2 on-device level-ramp evidence,
+Last verified: 2026-07-11 (JTS3 crossover placement/comparison-set contract and
+capture-page protocol v2 reviewed against the relay, persistence, envelope, and
+baseline-apply paths; prior JTS3 UMIK-2 on-device level-ramp evidence,
 renewable measurement-scoped voice-reconciler guard, and the 12 dB / −3 dB
 dynamic-cap defaults; prior 2026-07-10 Jasper relay
 room/crossover sequential flow,

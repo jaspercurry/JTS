@@ -148,6 +148,7 @@ def record_driver_acoustic_capture(
     playback_id: str | None = None,
     test_level_dbfs: float | None = None,
     excitation: Mapping[str, Any] | None = None,
+    placement_proof: Mapping[str, Any] | None = None,
     has_mic_calibration: bool = False,
     calibration: "CalibrationCurve | None" = None,
     notes: str | None = None,
@@ -257,6 +258,7 @@ def record_driver_acoustic_capture(
         "playback_id": playback_id,
         "test_level_dbfs": test_level_dbfs,
         "excitation": excitation_ledger,
+        "placement_proof": dict(placement_proof) if placement_proof else None,
         "notes": notes,
     }
     measurement = record(
@@ -276,6 +278,7 @@ def record_driver_acoustic_capture(
         "passband_hz": list(passband),
         "acoustic": acoustic,
         "excitation": excitation_ledger,
+        "placement_proof": dict(placement_proof) if placement_proof else None,
         "measurement": measurement,
     }
 
@@ -292,6 +295,7 @@ def record_summed_acoustic_capture(
     summed_test_id: str | None = None,
     playback_id: str | None = None,
     excitation: Mapping[str, Any] | None = None,
+    placement_proof: Mapping[str, Any] | None = None,
     polarity: str | None = None,
     delay_ms: float | None = None,
     delay_target_role: str | None = None,
@@ -424,6 +428,7 @@ def record_summed_acoustic_capture(
         "summed_test_id": summed_test_id,
         "playback_id": playback_id,
         "excitation": excitation_ledger,
+        "placement_proof": dict(placement_proof) if placement_proof else None,
         "polarity": polarity,
         "delay_ms": delay_ms,
         "delay_target_role": delay_target_role,
@@ -444,6 +449,7 @@ def record_summed_acoustic_capture(
         "crossover_fc_hz": fc,
         "acoustic": acoustic,
         "excitation": excitation_ledger,
+        "placement_proof": dict(placement_proof) if placement_proof else None,
         "measurement": measurement,
     }
 

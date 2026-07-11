@@ -70,6 +70,23 @@
         --cap-accent: oklch(0.72 0.045 150);
         font-family: var(--cap-font);
       }
+      .cap-acknowledgement {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.7rem;
+        margin: 1rem 0;
+        padding: 0.9rem 1rem;
+        border: 1px solid color-mix(in srgb, var(--cap-accent) 35%, transparent);
+        border-radius: 0.8rem;
+        background: rgba(255, 255, 255, 0.55);
+        line-height: 1.35;
+      }
+      .cap-acknowledgement input {
+        width: 1.25rem;
+        height: 1.25rem;
+        margin-top: 0.05rem;
+        flex: 0 0 auto;
+      }
       .cap-heading {
         font-size: 1.5rem;
         line-height: 1.2;
@@ -184,6 +201,6 @@
         the link from your speaker.
       </noscript>
     </main>
-    <script type="module" src="./js/main.js?v=20260710-1"></script>
+    <script type="module" src="./js/main.js?v=20260711-1"></script>
   </body>
 </html>

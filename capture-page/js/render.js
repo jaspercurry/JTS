@@ -106,13 +106,65 @@ export function renderScreen(rootEl, spec, options = {}) {
   rootEl.style.setProperty("--cap-accent", theme.accentVar);
   rootEl.style.setProperty("--cap-font", theme.fontVar);
 
-  const refs = { buttons: [], levelMeters: [] };
+  const refs = { buttons: [], levelMeters: [], acknowledgement: null };
+  const acknowledgement = spec && typeof spec.acknowledgement === "object"
+    ? spec.acknowledgement
+    : null;
+  let acknowledgementNode = null;
+  if (acknowledgement) {
+    const label = el(doc, "label", "cap-acknowledgement");
+    const checkbox = el(doc, "input");
+    checkbox.type = "checkbox";
+    checkbox.checked = false;
+    const text = el(doc, "span");
+    setText(text, acknowledgement.label);
+    label.appendChild(checkbox);
+    label.appendChild(text);
+    acknowledgementNode = label;
+    refs.acknowledgement = {
+      id: String(acknowledgement.id || ""),
+      bindingId: String(acknowledgement.binding_id || ""),
+      el: checkbox,
+    };
+  }
   const screen = Array.isArray(ui.screen) ? ui.screen : [];
   for (const component of screen) {
     const node = renderComponent(component, doc, handlers, refs);
+    if (
+      acknowledgementNode &&
+      component && component.type === "button" &&
+      component.action === "begin_capture"
+    ) {
+      rootEl.appendChild(acknowledgementNode);
+      acknowledgementNode = null;
+    }
     if (node) rootEl.appendChild(node);
   }
+  if (acknowledgementNode) rootEl.appendChild(acknowledgementNode);
+  if (refs.acknowledgement) {
+    const gated = refs.buttons.filter((entry) => entry.action === "begin_capture");
+    for (const entry of gated) entry.el.disabled = true;
+    refs.acknowledgement.el.addEventListener("change", () => {
+      for (const entry of gated) {
+        entry.el.disabled = !refs.acknowledgement.el.checked;
+      }
+    });
+  }
   return refs;
+}
+
+export function acceptedAcknowledgement(spec, refs) {
+  if (!spec || !spec.acknowledgement) return null;
+  const acknowledgement = refs && refs.acknowledgement;
+  if (!acknowledgement || !acknowledgement.el.checked) {
+    throw new Error("confirm the microphone placement before starting");
+  }
+  return {
+    schema_version: 1,
+    id: acknowledgement.id,
+    binding_id: acknowledgement.bindingId,
+    accepted: true,
+  };
 }
 
 export const _internal = { COMPONENT_TYPES, BUTTON_ACTIONS };

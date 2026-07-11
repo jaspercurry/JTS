@@ -46,6 +46,7 @@ SCHEMA_VERSION = 1
 # changes (for example, setup binding or a level stream) require a matching
 # public page before the Pi is allowed to play a tone.
 CAPTURE_PROTOCOL_VERSION = 1
+SUPPORTED_CAPTURE_PROTOCOL_VERSIONS = (1, 2)
 
 # The capture/upload contract mirrors the existing Pi backend so a relay-pulled
 # WAV drops into the same analysis as today's same-origin upload
@@ -199,6 +200,42 @@ class CaptureValidity:
         )
 
 
+@dataclass(frozen=True)
+class CaptureAcknowledgement:
+    """Required operator acknowledgement before a capture may arm playback."""
+
+    id: str
+    binding_id: str
+    label: str
+    schema_version: int = 1
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "id": self.id,
+            "binding_id": self.binding_id,
+            "label": self.label,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> CaptureAcknowledgement:
+        allowed = {"schema_version", "id", "binding_id", "label"}
+        extra = set(data) - allowed
+        if extra:
+            raise CaptureSpecError(
+                f"acknowledgement has unknown keys: {sorted(extra)}"
+            )
+        for key in ("id", "binding_id", "label"):
+            if not isinstance(data.get(key), str):
+                raise CaptureSpecError(f"acknowledgement.{key} must be a string")
+        return cls(
+            schema_version=_as_int(data, "schema_version", default=1),
+            id=str(data.get("id") or ""),
+            binding_id=str(data.get("binding_id") or ""),
+            label=str(data.get("label") or ""),
+        )
+
+
 # --- Server-driven-UI builders (data, never markup) ---------------------------
 
 
@@ -265,6 +302,7 @@ class CaptureSpec:
     # Whether the guided setup asks for the room position count. Crossover level
     # matching uses the same setup flow without that room-only question.
     setup_collect_positions: bool = False
+    acknowledgement: CaptureAcknowledgement | None = None
     # Optional per-run nonce (additive, empty for kinds that don't use it). The
     # level_ramp flow mints one per ramp run; the phone echoes it in every
     # level_batch so the Pi's feed can distinguish THIS run's events from a
@@ -309,6 +347,9 @@ class CaptureSpec:
             "setup_validation": self.setup_validation,
             "setup_binding_id": self.setup_binding_id,
             "setup_collect_positions": self.setup_collect_positions,
+            "acknowledgement": (
+                self.acknowledgement.to_dict() if self.acknowledgement else None
+            ),
             "run_token": self.run_token,
             "output": {"format": self.output_format},
             "max_upload_bytes": self.max_upload_bytes,
@@ -338,6 +379,11 @@ class CaptureSpec:
             raise CaptureSpecError("calibration_models must be a list")
         setup_validation = data.get("setup_validation", False)
         stimulus_raw = data.get("stimulus")
+        acknowledgement_raw = data.get("acknowledgement")
+        if acknowledgement_raw is not None and not isinstance(
+            acknowledgement_raw, Mapping
+        ):
+            raise CaptureSpecError("acknowledgement must be an object or null")
         spec = cls(
             kind=str(data.get("kind", "")),
             duration_ms=_as_int(data, "duration_ms"),
@@ -373,6 +419,11 @@ class CaptureSpec:
             setup_collect_positions=_as_bool(
                 data, "setup_collect_positions", default=False
             ),
+            acknowledgement=(
+                CaptureAcknowledgement.from_dict(acknowledgement_raw)
+                if isinstance(acknowledgement_raw, Mapping)
+                else None
+            ),
             run_token=str(data.get("run_token") or ""),
             capture_protocol_version=_as_int(
                 data,
@@ -395,10 +446,11 @@ class CaptureSpec:
         """Strict, loud validation. Returns self so callers can chain."""
         if not self.kind or not isinstance(self.kind, str):
             raise CaptureSpecError("kind must be a non-empty string")
-        if self.capture_protocol_version != CAPTURE_PROTOCOL_VERSION:
+        if self.capture_protocol_version not in SUPPORTED_CAPTURE_PROTOCOL_VERSIONS:
             raise CaptureSpecError(
-                "capture_protocol_version must be "
-                f"{CAPTURE_PROTOCOL_VERSION}, got {self.capture_protocol_version}"
+                "capture_protocol_version must be one of "
+                f"{SUPPORTED_CAPTURE_PROTOCOL_VERSIONS}, "
+                f"got {self.capture_protocol_version}"
             )
         # NB: kinds are deliberately NOT enumerated — a new kind needs no schema
         # change. We validate the *shape*, never the *vocabulary* of kind.
@@ -437,6 +489,10 @@ class CaptureSpec:
         if not isinstance(self.setup_collect_positions, bool):
             raise CaptureSpecError("setup_collect_positions must be a boolean")
         _validate_run_token(self.run_token)
+        _validate_acknowledgement(
+            self.acknowledgement,
+            capture_protocol_version=self.capture_protocol_version,
+        )
         if self.setup_binding_id and not re.fullmatch(
             r"[A-Za-z0-9_-]{12,160}", self.setup_binding_id
         ):
@@ -466,6 +522,14 @@ class CaptureSpec:
         _validate_calibration_models(self.calibration_models)
         _validate_theme(self.theme)
         _validate_screen(self.screen)
+        if self.acknowledgement is not None and not any(
+            component.get("type") == "button"
+            and component.get("action") == "begin_capture"
+            for component in self.screen
+        ):
+            raise CaptureSpecError(
+                "acknowledgement requires a begin_capture button"
+            )
         _validate_return_url(self.return_url)
         return self
 
@@ -599,6 +663,25 @@ def _validate_run_token(run_token: str) -> None:
         raise CaptureSpecError(
             "run_token must be <= 64 URL-safe characters (alnum, '-', '_')"
         )
+
+
+def _validate_acknowledgement(
+    acknowledgement: CaptureAcknowledgement | None,
+    *,
+    capture_protocol_version: int,
+) -> None:
+    if acknowledgement is None:
+        return
+    if capture_protocol_version < 2:
+        raise CaptureSpecError("acknowledgement requires capture protocol 2")
+    if acknowledgement.schema_version != 1:
+        raise CaptureSpecError("acknowledgement.schema_version must be 1")
+    if not re.fullmatch(r"[a-z][a-z0-9_]{2,63}", acknowledgement.id):
+        raise CaptureSpecError("acknowledgement.id is invalid")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,96}", acknowledgement.binding_id):
+        raise CaptureSpecError("acknowledgement.binding_id is invalid")
+    if not acknowledgement.label or len(acknowledgement.label) > 360:
+        raise CaptureSpecError("acknowledgement.label must be 1..360 characters")
 
 
 def _validate_return_url(return_url: str) -> None:
@@ -859,6 +942,8 @@ def build_sync_marker_spec(
 def build_crossover_sweep_spec(
     *,
     driver_label: str = "driver",
+    driver_role: str = "driver",
+    acknowledgement_binding: str = "",
     stimulus_duration_ms: int | None = None,
     pre_roll_ms: int = 800,
     post_roll_ms: int = 700,
@@ -902,7 +987,44 @@ def build_crossover_sweep_spec(
         pre_roll_ms + stimulus_duration_ms + post_roll_ms,
         int(hard_timeout_ms),
     )
+    from jasper.active_speaker.capture_geometry import (
+        DRIVER_PLACEMENT_POLICY_ID,
+        SUMMED_PLACEMENT_POLICY_ID,
+        driver_placement_instruction,
+        placement_acknowledgement_label,
+        summed_acknowledgement_label,
+        summed_placement_instruction,
+    )
+
     seconds = round(stimulus_duration_ms / 1000)
+    is_driver = str(driver_role or "").strip().lower() not in {"", "summed"}
+    placement_instruction = (
+        driver_placement_instruction(driver_role)
+        if is_driver
+        else summed_placement_instruction()
+    )
+    button_label = (
+        f"I’ve positioned the mic — measure {driver_label}"
+        if is_driver
+        else "I’ve moved the mic — measure the combined drivers"
+    )
+    acknowledgement = (
+        CaptureAcknowledgement(
+            id=(
+                DRIVER_PLACEMENT_POLICY_ID
+                if is_driver
+                else SUMMED_PLACEMENT_POLICY_ID
+            ),
+            binding_id=acknowledgement_binding,
+            label=(
+                placement_acknowledgement_label(driver_role)
+                if is_driver
+                else summed_acknowledgement_label()
+            ),
+        )
+        if acknowledgement_binding
+        else None
+    )
     return CaptureSpec(
         kind="crossover_sweep",
         duration_ms=duration_ms,
@@ -923,16 +1045,18 @@ def build_crossover_sweep_spec(
             ui_heading(f"Crossover — {driver_label}"),
             ui_steps(
                 [
-                    "Hold the phone close to the speaker baffle",
+                    placement_instruction,
                     f"Tap Start, then stay quiet for about {seconds} seconds",
                     "Keep the phone still until the sweep finishes",
                 ]
             ),
             ui_level_meter("mic"),
-            ui_button("Start", action="begin_capture"),
+            ui_button(button_label, action="begin_capture"),
             ui_note("Keep the screen on — leaving this page stops the recording."),
         ),
         max_upload_bytes=max_upload_bytes,
+        acknowledgement=acknowledgement,
+        capture_protocol_version=2 if acknowledgement else CAPTURE_PROTOCOL_VERSION,
     ).validate()
 
 

@@ -122,7 +122,7 @@ def test_to_dict_from_dict_round_trip_is_stable():
 def test_capture_protocol_version_is_explicit_and_strict():
     payload = build_room_sweep_spec().to_dict()
     assert payload["capture_protocol_version"] == CAPTURE_PROTOCOL_VERSION
-    payload["capture_protocol_version"] = CAPTURE_PROTOCOL_VERSION + 1
+    payload["capture_protocol_version"] = 99
     with pytest.raises(CaptureSpecError, match="capture_protocol_version"):
         CaptureSpec.from_dict(payload)
 

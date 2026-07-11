@@ -356,6 +356,8 @@ def status_payload() -> dict[str, Any]:
 def record_driver_capture(
     raw: Mapping[str, Any],
     wav_bytes: bytes | None = None,
+    *,
+    placement_proof: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Analyze one browser WAV and record per-driver acoustic evidence."""
 
@@ -406,6 +408,7 @@ def record_driver_capture(
         playback_id=_playback_id(raw),
         test_level_dbfs=raw.get("test_level_dbfs"),
         excitation=_mapping_value(raw.get("excitation")),
+        placement_proof=placement_proof,
         has_mic_calibration=(
             bool(raw.get("has_mic_calibration")) or calibration_curve is not None
         ),
@@ -428,6 +431,10 @@ def record_driver_capture(
         effective_peak_dbfs=(payload.get("excitation") or {}).get(
             "effective_peak_dbfs"
         ),
+        placement_schema=(payload.get("placement_proof") or {}).get(
+            "schema_version"
+        ),
+        placement_policy=(payload.get("placement_proof") or {}).get("policy_id"),
         floor_evidence_source=floor_evidence.get("source"),
     )
     return payload
@@ -436,6 +443,8 @@ def record_driver_capture(
 def record_summed_capture(
     raw: Mapping[str, Any],
     wav_bytes: bytes | None = None,
+    *,
+    placement_proof: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Analyze one browser WAV and record summed-crossover evidence."""
 
@@ -459,6 +468,7 @@ def record_summed_capture(
         summed_test_id=_summed_test_id(raw),
         playback_id=_playback_id(raw),
         excitation=_mapping_value(raw.get("excitation")),
+        placement_proof=placement_proof,
         polarity=raw.get("polarity"),
         delay_ms=raw.get("delay_ms"),
         delay_target_role=raw.get("delay_target_role"),
@@ -480,5 +490,9 @@ def record_summed_capture(
         verdict=payload.get("verdict"),
         excitation_source=(payload.get("excitation") or {}).get("gain_source"),
         excitation_scope=(payload.get("excitation") or {}).get("scope"),
+        placement_schema=(payload.get("placement_proof") or {}).get(
+            "schema_version"
+        ),
+        placement_policy=(payload.get("placement_proof") or {}).get("policy_id"),
     )
     return payload

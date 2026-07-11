@@ -146,6 +146,7 @@ class PollState:
     setup_validate: bool = False
     setup_token: str = ""
     capture_page: dict | None = None
+    acknowledgement: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -191,6 +192,11 @@ def classify_status(status_payload: dict) -> PollState:
         if isinstance(event.get("capture_page"), dict)
         else None
     )
+    acknowledgement = (
+        event.get("acknowledgement")
+        if isinstance(event.get("acknowledgement"), dict)
+        else None
+    )
     ready = status_payload.get("state") == "ready"
     integrity = status_payload.get("integrity")
     return PollState(
@@ -206,6 +212,7 @@ def classify_status(status_payload: dict) -> PollState:
         setup_validate=setup_validate,
         setup_token=setup_token,
         capture_page=capture_page,
+        acknowledgement=acknowledgement,
     )
 
 
@@ -238,6 +245,38 @@ def validate_capture_page(
             f"observed {protocol!r}, build {build!r})"
         )
     return observed
+
+
+def validate_capture_acknowledgement(
+    state: PollState,
+    spec: CaptureSpec,
+) -> dict | None:
+    """Verify a spec-bound operator acknowledgement before host playback."""
+
+    required = spec.acknowledgement
+    if required is None:
+        return None
+    observed = state.acknowledgement or {}
+    valid = (
+        observed.get("schema_version") == required.schema_version
+        and observed.get("accepted") is True
+        and isinstance(observed.get("id"), str)
+        and isinstance(observed.get("binding_id"), str)
+        and secrets.compare_digest(observed.get("id", ""), required.id)
+        and secrets.compare_digest(
+            observed.get("binding_id", ""),
+            required.binding_id,
+        )
+    )
+    if not valid:
+        raise CaptureFailed(
+            "required microphone-placement acknowledgement is missing or stale"
+        )
+    return {
+        "schema_version": required.schema_version,
+        "id": required.id,
+        "accepted": True,
+    }
 
 
 def _call_state_callback(callback: Callable[..., None], state: PollState) -> None:
@@ -422,7 +461,48 @@ def _poll_until_capture(
             _call_state_callback(on_setup, state)
 
         if state.armed and not armed_fired:
+            try:
+                validate_capture_acknowledgement(state, session.spec)
+            except CaptureFailed:
+                log_event(
+                    logger,
+                    "capture_relay.acknowledgement_refused",
+                    level=logging.WARNING,
+                    session_id=session.session_id,
+                    kind=session.spec.kind,
+                    policy=(
+                        session.spec.acknowledgement.id
+                        if session.spec.acknowledgement
+                        else None
+                    ),
+                )
+                try:
+                    client.post_host_event(
+                        session.session_id,
+                        session.pull_token,
+                        {
+                            "phase": "sweep_failed",
+                            "error": (
+                                "Confirm the microphone placement before "
+                                "starting the sweep."
+                            ),
+                        },
+                    )
+                except (OSError, RelayError):
+                    logger.warning(
+                        "could not publish acknowledgement refusal",
+                        exc_info=True,
+                    )
+                raise
             armed_fired = True
+            if session.spec.acknowledgement is not None:
+                log_event(
+                    logger,
+                    "capture_relay.acknowledgement_verified",
+                    session_id=session.session_id,
+                    kind=session.spec.kind,
+                    policy=session.spec.acknowledgement.id,
+                )
             log_event(logger, "capture_relay.armed", session_id=session.session_id)
             _call_state_callback(on_armed, state)
 
