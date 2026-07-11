@@ -114,10 +114,12 @@ pub const DEFAULT_REFRACTORY_MS: u64 = 250;
 /// default leaves generous headroom while bounding a runaway file.
 pub const DEFAULT_MAX_EVENTS: u64 = 4000;
 
-/// Hard ceiling on `max_events` a `POST /tap/arm` may request. The 8781 listener
-/// is unauthenticated (loopback by default, but `JASPER_USBSINK_PREEMPT_HOST`
-/// can widen it), and each JSONL line is ~100 bytes on a tmpfs the unit caps at
-/// `MemoryMax=64M`. Without a ceiling a caller (or an operator typo of
+/// Hard ceiling on `max_events` a `TAP_ARM` request may set. The arm body
+/// arrives as `TAP_ARM {json}` over fan-in's local control UDS
+/// (`/run/jasper-fanin/control.sock`), gated only by socket-file
+/// permissions (no TCP port, no auth token), and each JSONL line is ~100
+/// bytes on a tmpfs the unit caps at `MemoryMax=64M`. Without a ceiling a
+/// caller (or an operator typo of
 /// `10^18`) could grow the file until the memcg OOM-kills the audio daemon.
 /// 100_000 events ≈ 10 MB — ample for any real run (a promotion run is ~1100
 /// impulses), safely under the memcg cap. Requests above this are rejected at
@@ -128,7 +130,7 @@ pub const MAX_EVENTS_CEILING: u64 = 100_000;
 /// run with margin; a forgotten tap disarms itself and stops all cost.
 pub const DEFAULT_AUTO_DISARM_MIN: u64 = 45;
 
-/// Hard ceiling on `auto_disarm_min` a `POST /tap/arm` may request (24 h). The
+/// Hard ceiling on `auto_disarm_min` a `TAP_ARM` request may set (24 h). The
 /// whole point of auto-disarm is that a forgotten tap costs nothing; a caller
 /// asking for a multi-year horizon defeats that. A day is far longer than any
 /// legitimate measurement window and keeps the self-healing guarantee real.
@@ -212,12 +214,12 @@ impl Default for TapConfig {
 }
 
 impl TapConfig {
-    /// Parse a `POST /tap/arm` body onto defaults. All fields optional; unknown
+    /// Parse a `TAP_ARM {json}` body onto defaults. All fields optional; unknown
     /// keys ignored. Mirrors `parse_preempt_silenced`'s `serde_json::from_str`
     /// shape. Rejects non-finite / non-positive numeric knobs so a bad request
     /// can never install a detector that never fires or never releases, and
     /// rejects any `path` outside [`TAP_PATH_DIR`] (see [`path_is_allowed`]) so
-    /// the unauthenticated arm endpoint can't be used to truncate an arbitrary
+    /// the unauthenticated arm command can't be used to truncate an arbitrary
     /// root-owned file.
     pub fn from_arm_body(body: &str) -> Option<Self> {
         let value: Value = serde_json::from_str(body.trim()).ok()?;

@@ -473,9 +473,13 @@ def write_env_file(path: str, values: dict[str, str], *, mode: int = 0o600) -> N
     leave jasper-voice with a partial config and a real-world impact
     (silent failure cue, lost session). Routes through the canonical
     ``jasper.atomic_io.atomic_write_text`` (unique-temp-file + ``os.replace``),
-    which is also race-safe across concurrent wizard writers — the
-    ``ThreadingHTTPServer`` runs ``/save``/``/cities``/``/clear`` on separate
-    threads against the same file with no lock."""
+    which prevents torn reads by concurrent readers but does NOT protect
+    against a lost-update race between two writers that each read the old
+    file, change different keys, and then publish whole-file replacements —
+    the ``ThreadingHTTPServer`` runs ``/save``/``/cities``/``/clear`` on
+    separate threads against the same file with no lock. Callers that need
+    cross-writer read-modify-write safety should use
+    ``jasper.atomic_io.locked_update_env_file`` instead."""
     lines: list[str] = []
     for key, val in values.items():
         # KEY=VALUE without quoting, matching systemd's EnvironmentFile

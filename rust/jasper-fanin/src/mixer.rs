@@ -3197,9 +3197,8 @@ impl DirectTapHook {
     /// - `converted`: the S16 slice just narrowed from S32 (this read only).
     /// - `read_frames`: frames in this read.
     /// - `read_ns`: `CLOCK_MONOTONIC` ns taken immediately after `readi`.
-    /// - `ring_fill_periods` / `period_frames`: the lane resampler fill BEFORE
-    ///   `push_input`, recorded (as frames) for the JSONL diagnostic field.
-    #[allow(clippy::too_many_arguments)]
+    /// - `ring_fill_frames`: the lane resampler fill BEFORE `push_input`,
+    ///   recorded (as frames) for the JSONL diagnostic field.
     fn tap_over_read(
         &mut self,
         converted: &[i16],

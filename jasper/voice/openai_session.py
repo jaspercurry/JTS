@@ -127,10 +127,11 @@ DEFAULT_INITIAL_CONNECT_BUDGET_SEC = 600.0
 # via ``JASPER_OPENAI_REASONING_EFFORT`` if needed.
 DEFAULT_REASONING_EFFORT = "low"
 
-# Default sampling temperature. OpenAI Realtime accepts 0.6 – 1.2 with
-# 0.8 default; we pin to 0.7 — a touch more deterministic than the SDK
-# default, matching the Gemini adapter's 0.3 spirit (tight responses,
-# low creative drift).
+# Inert: ``temperature`` was removed from the Realtime 2 session-create
+# schema (see ``_build_session_payload``'s docstring) — the model has its
+# own defaults now. The constructor param / ``self._temperature`` field
+# below are dead but kept to avoid an API-signature change in this pass;
+# nothing reads them.
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_NOISE_REDUCTION = "off"
 # ``auto`` is resolved by voice.input_policy before production constructs

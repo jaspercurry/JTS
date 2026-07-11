@@ -7,7 +7,7 @@
 //! This binary is intentionally outside the product output path. It opens
 //! two serial-pinned Apple USB-C DAC ALSA hardware PCMs, writes silence
 //! first, then optional low-level test periods, and aborts both outputs on
-//! xrun, disconnect, delay divergence, or write mismatch.
+//! xrun, disconnect, or delay divergence.
 
 use std::env;
 use std::fs;

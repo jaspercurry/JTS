@@ -10,7 +10,7 @@ the same page. This page is canonical. The page title is "Speakers".
 
 Two parts:
 
-1. DIRECTORY + bond-forming (per docs/HANDOFF-multiroom.md §6): see every
+1. DIRECTORY + bond-forming (per docs/HANDOFF-multiroom.md §8): see every
    JTS speaker on the LAN, click through to configure each on its own web
    UI, see this speaker's grouping status (incl. the runtime-degraded health
    from §0), and **create a stereo pair in one flow** — pick one speaker to
@@ -30,7 +30,7 @@ Two parts:
 Room is NOT edited here. Room lives in the speaker-identity home
 (/speaker/); the self card shows it (read via identity.read_identity)
 and links there to change name + room. Adding a room editor here would
-reopen the two-homes drift docs/HANDOFF-multiroom.md §6 just closed.
+reopen the two-homes drift docs/HANDOFF-multiroom.md §8 just closed.
 
 Discovery uses the ALWAYS-ON `_jasper-control._tcp` mDNS service
 (advertised unconditionally by deploy/avahi/jasper-control.service,
@@ -267,8 +267,9 @@ def _local_web_host(hostname: str) -> str:
 
 def _peer_label(props: dict, server: str, full_name: str) -> str:
     """Pick the directory label for a discovered speaker, best-first:
-      1. an explicit `name=` TXT record (none on `_jasper-control._tcp`
-         today, but honoured so a future advertisement Just Works),
+      1. an explicit `name=` TXT record (advertised today on
+         `_jasper-control._tcp`, rendered by `jasper.control_advert`;
+         this is the primary path in production),
       2. the resolved SRV hostname (`jts3.local.` -> `jts3`),
       3. the raw mDNS instance name as a last resort.
     Without this, the default instance name (`"JTS jasper-control on jts"`)
@@ -295,10 +296,11 @@ def _discover_speakers(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict]:
     stripped instance name) and defaulting the port to jasper-control's.
 
     Self is NOT filtered here (the caller does it against _self_addresses so
-    the filter stays testable). `room` is "" until TXT records are added to
-    the avahi advertisement — today the service carries only type + port, so
-    a discovered instance yields name + address + port and the page falls
-    back to the SRV hostname as the label."""
+    the filter stays testable). `room` is "" until a `room=` TXT record is
+    added to the avahi advertisement — `name=` and `peer_id=` already exist
+    on `_jasper-control._tcp` today, so a discovered instance yields
+    name (from the TXT record) + address + port; the SRV-hostname fallback
+    in `_peer_label` only fires if `name=` is ever absent."""
     out: list[dict] = []
     for svc in browse_once(CONTROL_MDNS_TYPE, timeout=timeout):
         # browse_once drops address-less instances, so svc.addresses is

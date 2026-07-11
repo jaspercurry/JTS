@@ -2,14 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Emit the canonical cross-language resampler fixture as machine-readable
-//! lines, so the Python contract test (`tests/test_resampler_contract.py`) can
-//! shell out to it for the *Rust* reference output and compare it against the
-//! C++/usbsink `jasper_resampler.RateResampler` to ≤1 LSB.
+//! Developer-run tool to regenerate the `GOLDEN_*` constants pinned by
+//! `golden_vector_is_stable` in `jasper_resampler::golden` — this crate's
+//! own regression test that the resampler's output has not silently
+//! changed. There is no cross-language contract test or C++ binding in
+//! this repo; this is a Rust-only primitive.
 //!
 //! The fixture (input signal + ratios) is defined ONCE in
-//! `jasper_resampler::golden`, so this example, the in-crate golden test, and
-//! the C++ side cannot drift apart.
+//! `jasper_resampler::golden`, so this example and the in-crate golden
+//! test cannot drift apart.
 //!
 //! Output format (stable; parse by prefix):
 //!

@@ -6,10 +6,9 @@ description = "JTS host-slaved USB clock: the daemon-agnostic ladder + probe + s
 license = "Apache-2.0"
 repository = "https://github.com/jaspercurry/JTS"
 authors = ["Jasper Curry <jaspercurry@gmail.com>"]
-# MSRV: uses `map_or` (not `is_none_or`, stable 1.82) so this crate — and the
-# feature-gated `AlsaPitchCtl` actuator — compiles under the pinned 1.85.0 CI
-# toolchain with clippy's `incompatible_msrv` lint honoring 1.75. Same floor as
-# both consumers (jasper-usbsink-audio, jasper-fanin).
+# MSRV: 1.75 to match both consumers (jasper-usbsink-audio, jasper-fanin) —
+# this crate compiles under the pinned 1.85.0 CI toolchain with clippy's
+# `incompatible_msrv` lint honoring 1.75.
 rust-version = "1.75"
 
 [dependencies]

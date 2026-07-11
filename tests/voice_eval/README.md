@@ -24,11 +24,19 @@ not the audio plumbing. Plumbing has its own surface in
 These tests make **paid** LLM API calls. Approximate per-turn cost
 as of 2026-05:
 
-| Provider | Per turn | pass^3 (1 scenario) | Full suite (4 scenarios) |
-|---|---|---|---|
-| OpenAI Realtime (`gpt-realtime-2`) | ~$0.20 | ~$0.60 | ~$2.40 |
-| Gemini Live (3.1-flash-live-preview) | ~$0.025 | ~$0.075 | ~$0.30 |
-| xAI Grok Voice Agent | ~$0.05 | ~$0.15 | ~$0.60 |
+| Provider | Per turn | pass^3 (1 scenario) |
+|---|---|---|
+| OpenAI Realtime (`gpt-realtime-2`) | ~$0.20 | ~$0.60 |
+| Gemini Live (3.1-flash-live-preview) | ~$0.025 | ~$0.075 |
+| xAI Grok Voice Agent | ~$0.05 | ~$0.15 |
+
+The regression suite has grown well past its original 4-scenario V1
+baseline (19 scenario files as of 2026-07, each with its own `PASS_K`
+and turn count — some intentionally 1 turn, others up to 15). There is
+no fixed "full suite" number worth quoting here because it goes stale
+every time a scenario is added; before running the full suite, sum
+`PASS_K × turns-per-trial` across `tests/voice_eval/regression/*.py`
+and multiply by the per-turn cost above.
 
 **Rules — apply every time you run this:**
 
@@ -219,19 +227,20 @@ test_subway.py                  oracles.py
 VoiceEvalHarness                Subway Now (independent path)
   │
   ├─ tts.synth() ── audio_cache/ (SHA-256 cached)
-  ├─ traced_registry() wraps each tool fn → emits to ContextVar
+  ├─ traced_registry() wraps each tool fn → emits to a module-level global
   ├─ LiveConnection (real Gemini / OpenAI / Grok session)
   │   ├─ acquire_turn() → send_audio() → end_input() → audio_out()
   │   └─ adapter emits text_out events on text deltas (native transcripts)
   └─ writes transcripts_out/*.md + traces_out/*.jsonl
 ```
 
-Production code paths are not touched. The `jasper.voice.trace`
-module is a brand-new file the daemon doesn't actively use — its
-helpers (`emit`, `traced_registry`) are no-ops when no trace is
-active. The adapters now emit `text_out` events when they see
-transcript deltas, but those emissions are also no-ops in
-production (no trace is set). Zero production overhead.
+Production code paths are not touched by the harness itself. The
+`jasper.voice.trace` module's `emit()` is called from production code
+(`jasper/voice/openai_session.py`'s `_dispatch_event`, inherited by the
+Grok adapter) on every transcript-delta event, but its helpers (`emit`,
+`traced_registry`) are no-ops when no trace is active — a trace is only
+set active during voice-eval harness runs, never in live sessions. Zero
+production overhead.
 
 ---
 

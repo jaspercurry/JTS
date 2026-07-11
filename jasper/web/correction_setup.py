@@ -20,33 +20,10 @@ Architecture (per docs/HANDOFF-correction.md):
     stdlib, plenty fast for state transitions that take seconds.
   - Background asyncio loop in a daemon thread bridges the sync HTTP
     handlers to the async session methods.
-  - HTTP routes (after nginx strips the /correction/ prefix):
-      GET  /                room correction page render
-      GET  /room            room correction page render
-      GET  /crossover       active-crossover measurement page render
-      GET  /crossover/status
-      GET  /bass            bass-management display page render
-      GET  /bass/status     read-only bass-management state JSON
-      GET  /healthz         liveness
-      GET  /status          session snapshot JSON
-      GET  /envelope        server-computed screen envelope (dumb-frontend)
-      GET  /sessions        recent measurement bundle summaries
-      GET  /session-report  read-only evidence packet for one bundle
-      POST /start           reset DSP, create session, request noise capture
-      POST /upload-noise    body = pre-sweep noise WAV, then play sweep
-      POST /upload-capture  body = WAV bytes, runs analysis pipeline
-      POST /repeat-position optional same-seat repeat sweep
-      POST /apply           write YAML, reload CamillaDSP
-      POST /reset           roll back to the topology-safe reset graph
-      POST /session/delete  delete one historical measurement bundle
-      POST /crossover/driver-test safe per-driver audible test
-      POST /crossover/driver-confirm operator ACK for the active driver test
-      POST /crossover/driver-abort stop/re-mute the active driver test
-      POST /crossover/summed-test safe combined-driver audible test
-      POST /crossover/driver-capture-sweep play the driver mic-capture sweep
-      POST /crossover/summed-capture-sweep play the summed mic-capture sweep
-      POST /crossover/driver-capture analyze + record one active-driver WAV
-      POST /crossover/summed-capture analyze + record one summed-crossover WAV
+  - HTTP routes (after nginx strips the /correction/ prefix): the full,
+    maintained route list lives in docs/HANDOFF-correction.md (this
+    module now serves far more routes than fit a comment table, and
+    that doc is the source of truth kept in sync with do_GET/_POST_ROUTES).
 
 Why a separate service from jasper-web (Spotify + voice settings):
 the correction flow eventually imports numpy/scipy through

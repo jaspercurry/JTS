@@ -42,10 +42,11 @@
 # YAML/CLI parsing here.
 #
 # Usage (on the Pi):
-#   sudo /opt/jasper/.venv/bin/python \
-#     scripts/ring-proto/make-camilla-ring-config.py --help
-#   (this .sh wrapper is what arm.sh calls; see the module docstring in
-#   the embedded Python below for the exact fields it writes)
+#   sudo bash scripts/ring-proto/make-camilla-ring-config.sh [--ring-a|--ring-b]
+#   (this is what arm.sh calls; the "Python" above is an inline heredoc
+#   embedded in this .sh file, invoked over SSH — there is no separate
+#   .py file. See the embedded Python's module docstring below for the
+#   exact fields it writes.)
 #
 # Output config: /var/lib/camilladsp/ring_proto.yml (mode 0644, same
 # ownership convention as every other CamillaDSP config under

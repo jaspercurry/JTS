@@ -6,7 +6,9 @@
 
 Providers parse their own env keys from a plain mapping. A missing key
 returns no client; a broken provider is fault-isolated so one adapter can
-never take down the rest of the daemon when Phase 2 wires this in.
+never take down the rest of the daemon. Voice tool registration and
+daemon wiring live in ``jasper/voice/daemon_main.py`` and
+``jasper/tools/research.py``.
 """
 from __future__ import annotations
 

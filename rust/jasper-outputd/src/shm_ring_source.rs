@@ -2,8 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! PROTOTYPE (latency/ring-proto-shm) content source: the SHM ping-pong ring
-//! reader half of Ring B.
+//! Ring B content source: the SHM ping-pong ring reader half of Ring B.
+//! Shipped default on eligible stereo topologies (P4 LANDED — see
+//! docs/HANDOFF-audio-graph-consolidation.md); off elsewhere by resolved
+//! policy.
 //!
 //! CamillaDSP writes its post-DSP S16LE stereo program into a 2-slot SHM
 //! ping-pong ring through a custom ALSA ioplug (`c/jts-ring-ioplug/`, the
@@ -17,8 +19,10 @@
 //! construction, so the only "drop" is the attach-time resync `jasper_ring`
 //! already performs.
 //!
-//! Flag-gated: only constructed when `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`.
-//! `None` (the default) leaves the DAC loop byte-identical to today.
+//! Flag-gated: only constructed when `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`
+//! (the coupling reconciler resolves this by default on eligible stereo
+//! topologies; `None` on other topologies leaves the DAC loop
+//! byte-identical to the pre-ring behavior).
 
 use std::io;
 

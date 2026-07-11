@@ -2,10 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper-doctor's env loading, provider-aware key
-check, and ALSA mic-card lookup. Hardware-side checks (sounddevice,
-systemctl, arecord, etc) are exercised on the Pi via
-``jasper-doctor`` itself; this file pins the pure-python helpers."""
+"""Unit tests for jasper-doctor: env loading, provider-aware key check,
+ALSA mic-card lookup, and the individual ``@doctor_check`` functions
+(grouping, crossover, subwoofer, dongle/DAC hardware, Bluetooth pairing
+policy, openWakeWord asset checks, and more). Hardware I/O (subprocess,
+systemctl, sounddevice, sockets) is mocked here so these run without a
+Pi; genuinely hardware-dependent behavior is still verified live via
+``jasper-doctor`` on the Pi itself."""
 from __future__ import annotations
 
 import asyncio

@@ -6,8 +6,10 @@
 
 The voice-eval harness records what happened during a turn — every tool
 call (with args and result), every audio chunk in/out, session
-open/close — by setting a `TurnTrace` on a `ContextVar` for the
-duration of the turn, and reading it back when the turn ends.
+open/close — by setting a `TurnTrace` on a module-level "active trace"
+global for the duration of the turn, and reading it back when the turn
+ends. (See the comment above `_active_trace` for why this is a module
+global rather than a `ContextVar`.)
 
 The schema is intentionally simple and provider-agnostic so the same
 shape can be emitted by either the synthetic test path or the live
@@ -15,10 +17,15 @@ daemon path. Production trace ingestion (taking real user sessions
 and converting them into regression scenarios) is V2; the schema is
 ready for it today.
 
-This module is only imported by test code today. Importing it adds
-zero overhead and zero behaviour change to the daemon — the
-`ContextVar` defaults to `None`, the emit helpers no-op when nothing
-is listening, and the `traced_registry` wrapper is opt-in.
+Importing this module adds zero overhead and zero behaviour change to
+the daemon when no trace is active — the module global defaults to
+`None`, the emit helpers no-op when nothing is listening, and the
+`traced_registry` wrapper is opt-in. In production, `emit()` is called
+directly from `jasper/voice/openai_session.py`'s `_dispatch_event` on
+every `response.audio_transcript.delta` /
+`response.output_audio_transcript.delta` / `response.output_text.delta`
+event (inherited by the Grok adapter too) — it is not test-only, though
+it stays a no-op there unless a trace has been set active.
 """
 from __future__ import annotations
 

@@ -5,7 +5,11 @@
 //! Configuration loaded from `JASPER_FANIN_*` environment variables.
 //!
 //! Source of truth for defaults: `docs/HANDOFF-fan-in-daemon.md`
-//! "Configuration" section. If you change a default here, update the
+//! "Configuration" section for the original knobs, plus
+//! `docs/HANDOFF-usb-low-latency.md` for the camilla_coupling/ring/
+//! cushion-decay/host-compliance/auto-trim/usb-direct/host-clock knobs
+//! (each field's own comment below points at the doc that actually
+//! documents it). If you change a default here, update the matching
 //! HANDOFF too — the doc is what operators read.
 //!
 //! All knobs have sensible defaults so a fresh deploy works without

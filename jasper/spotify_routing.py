@@ -10,7 +10,7 @@ Three real-world cases:
 1. User is currently AirPlaying Spotify from their phone to the Pi:
    the renderer reports aplactive=1; currentsong has the AirPlay
    metadata; Spotify Web API also reports something is_playing. If
-   the AirPlay track and the Spotify track match (by title + artist),
+   the AirPlay track and the Spotify track match (by title),
    the AirPlay session IS Spotify — target the active Spotify device
    (the phone) so the song change rides the existing AirPlay stream.
    The user's iPhone hardware volume buttons keep working.
