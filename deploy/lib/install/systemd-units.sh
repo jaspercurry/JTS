@@ -502,6 +502,19 @@ reload_audio_recovery_udev_rules_for_install() {
     pin_attached_apple_dongle_power_control
 }
 
+install_nginx_recovery_dropin() {
+    # nginx is the package-owned management front door. This drop-in gives it
+    # Restart=always + OOMScoreAdjust=-450 so a transient OOM cannot leave
+    # http://<speaker>.local dark until someone SSHes in. Both install profiles
+    # must call this: jasper-doctor's check_oom_score_adj expects -450 on nginx
+    # regardless of profile, and without Restart=always an OOM-killed nginx
+    # stays down.
+    install -d -m 0755 "${SYSTEMD_DIR}/nginx.service.d"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/nginx.service.d/jts-recovery.conf" \
+        "${SYSTEMD_DIR}/nginx.service.d/jts-recovery.conf"
+}
+
 install_streambox_audio_slices() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jts-audio.slice" \
@@ -511,13 +524,7 @@ install_streambox_audio_slices() {
         "${REPO_DIR}/deploy/systemd/ssh.service.d/oom-protection.conf" \
         "${SYSTEMD_DIR}/ssh.service.d/oom-protection.conf"
 
-    # nginx is the package-owned management front door. Give it local
-    # recovery semantics and a moderate OOM bias so a transient OOM cannot
-    # leave http://<speaker>.local dark until someone SSHes in.
-    install -d -m 0755 "${SYSTEMD_DIR}/nginx.service.d"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/nginx.service.d/jts-recovery.conf" \
-        "${SYSTEMD_DIR}/nginx.service.d/jts-recovery.conf"
+    install_nginx_recovery_dropin
 }
 
 park_audio_clients_for_core_graph_restart() {
@@ -1146,6 +1153,10 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/ssh.service.d/oom-protection.conf" \
         "${SYSTEMD_DIR}/ssh.service.d/oom-protection.conf"
+
+    # nginx recovery drop-in — full-profile parity with the streambox path
+    # (see install_nginx_recovery_dropin for the rationale).
+    install_nginx_recovery_dropin
 
     # Stage 2 audio-protection slices: MemorySwapMax=0 on jts-audio.slice
     # (camilla + shairport-sync + librespot + bluealsa-aplay) and
