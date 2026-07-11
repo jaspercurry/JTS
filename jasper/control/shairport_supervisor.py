@@ -290,10 +290,10 @@ class ShairportSupervisor:
         dead/inactive unit cannot be protecting a listener, so it
         bypasses the gate and lets the restart path recover it.
 
-        A *deliberately disabled* unit never reaches this gate:
-        `_tick` idles on `is_shairport_unit_disabled()` before the
-        failure counter can arm, so the unit_inactive bypass only
-        fires for a unit the household wants running.
+        A *deliberately disabled* unit is diverted before this gate:
+        each failing tick checks `is_shairport_unit_disabled()` before
+        the counter can arm, so the unit_inactive bypass is reached
+        only after the tick confirms the unit is not deliberately off.
         """
         playing = await mpris.shairport_playing(timeout=2.0)
         if playing is None:
@@ -323,18 +323,23 @@ class ShairportSupervisor:
         except Exception:  # noqa: BLE001 — fail-open, keep supervising
             return False
 
-    async def is_shairport_unit_active(self) -> bool | None:
-        """Return systemd's shairport unit liveness.
+    async def _systemctl_query(
+        self, verb: str,
+    ) -> tuple[int | None, str] | None:
+        """Run `systemctl <verb> shairport-sync.service` and return
+        `(returncode, stripped-stdout)`, or `None` when the command
+        can't be run to completion — a spawn error or a 2 s timeout,
+        after which the child is killed and reaped.
 
-        ``False`` is load-bearing: a dead/failed shairport process must
-        bypass the MPRIS "unknown means active" fail-safe, because the
-        DBus probe returns unknown precisely when there is no live
-        process to disrupt. Unknown systemctl failures still fail safe
-        to None so the caller preserves the active-session guard.
+        Shared spawn/timeout/kill scaffolding for the `is-active` and
+        `is-enabled` reads. Each caller owns its own result mapping so
+        the load-bearing fail-safe semantics stay local to the method
+        that documents them (is-active fails safe to None, is-enabled
+        to False — opposite directions, deliberately not unified here).
         """
         try:
             proc = await asyncio.create_subprocess_exec(
-                "systemctl", "is-active", "shairport-sync.service",
+                "systemctl", verb, "shairport-sync.service",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -350,12 +355,26 @@ class ShairportSupervisor:
             with contextlib.suppress(Exception):
                 await proc.wait()
             return None
-        status = stdout.decode("utf-8", "replace").strip()
-        if proc.returncode == 0 and status == "active":
+        return proc.returncode, stdout.decode("utf-8", "replace").strip()
+
+    async def is_shairport_unit_active(self) -> bool | None:
+        """Return systemd's shairport unit liveness.
+
+        ``False`` is load-bearing: a dead/failed shairport process must
+        bypass the MPRIS "unknown means active" fail-safe, because the
+        DBus probe returns unknown precisely when there is no live
+        process to disrupt. Unknown systemctl failures still fail safe
+        to None so the caller preserves the active-session guard.
+        """
+        result = await self._systemctl_query("is-active")
+        if result is None:
+            return None
+        returncode, status = result
+        if returncode == 0 and status == "active":
             return True
         if status in {"inactive", "failed", "deactivating", "dead"}:
             return False
-        if proc.returncode != 0 and status:
+        if returncode != 0 and status:
             return False
         return None
 
@@ -373,25 +392,10 @@ class ShairportSupervisor:
         tick_crash handler: loud, and the aborted tick restarts
         nothing.
         """
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "systemctl", "is-enabled", "shairport-sync.service",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        except OSError:
+        result = await self._systemctl_query("is-enabled")
+        if result is None:
             return False
-        try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=2.0,
-            )
-        except asyncio.TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-            return False
-        state = stdout.decode("utf-8", "replace").strip()
+        _returncode, state = result
         return state in {"disabled", "masked", "masked-runtime"}
 
     async def restart_shairport(self) -> None:

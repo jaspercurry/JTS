@@ -53,8 +53,12 @@ class _FakeSupervisor(ShairportSupervisor):
         # Hermetic default: unit is enabled, so failing probes count
         # toward a wedge exactly as before the disabled-idle guard.
         self.unit_disabled_result: bool = False
+        # Counts enablement reads so a test can pin that the healthy
+        # path never spawns the is-enabled subprocess.
+        self.disabled_checks = 0
 
     async def is_shairport_unit_disabled(self) -> bool:
+        self.disabled_checks += 1
         return self.unit_disabled_result
 
     async def probe(self) -> bool:
@@ -90,6 +94,18 @@ async def test_healthy_probe_keeps_counter_zero():
     assert sup.consecutive_failures == 0
     assert sup.restart_calls == 0
     assert sup.last_probe_ok is True
+
+
+async def test_healthy_probe_never_reads_enablement():
+    """The is-enabled subprocess runs only on a failing probe. A
+    working box must not spawn `systemctl is-enabled` every 30 s tick,
+    so the enablement read stays behind the `if ok: return` fast path.
+    """
+    sup = _FakeSupervisor()
+    sup.probe_results = [True, True, True]
+    for _ in range(3):
+        await sup._tick()
+    assert sup.disabled_checks == 0
 
 
 async def test_one_failure_does_not_trigger_restart():
