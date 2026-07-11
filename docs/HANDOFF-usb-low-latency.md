@@ -373,9 +373,14 @@ does the per-wake service work (timerfd drain + wall-clock-paced silence arm) in
 `pointer` callback (every consumer calls `pointer` via `snd_pcm_avail_update`),
 serves an armed silence period as a delivery commitment (never discarded — the
 old discard minted permanent phantom `avail`, the poll-less spin state), bounds
-out-of-range occupancy in every avail path, and carries a bounded starvation nap
-in `transfer` as defense in depth (`starved_naps` in the capture close log;
-should stay 0). Validated on jts.local 2026-07-11: six uncoordinated
+out-of-range occupancy in every avail path, **self-heals an out-of-range
+occupancy on the per-wake tick** (a reader that stalled past the 2 s liveness
+window while the writer free-ran — e.g. an operator `gdb`/`SIGSTOP` on camilla —
+would otherwise sit permanently silent, since at `avail == 0` alsa-lib never
+calls `transfer` and only `consume` resynced; `reader_resyncs` counts it), and
+carries a bounded starvation nap in `transfer` as defense in depth
+(`starved_naps` in the capture close log; ~0 in steady state, a handful only
+across a recovery transient). Validated on jts.local 2026-07-11: six uncoordinated
 `systemctl restart jasper-fanin` plus one `kill -9` under a live camilla — zero
 RTTIME kills (previously one kill per restart), paced silence confirmed
 (`silence_periods` > 0 at close for the first time; the `arecord` cold-probe

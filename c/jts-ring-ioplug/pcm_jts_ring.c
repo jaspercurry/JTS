@@ -554,10 +554,20 @@ static void capture_service_tick(jts_ring_pcm_t *p) {
         (void)r; // TFD_NONBLOCK: EAGAIN when no expiration is pending — fine
     }
     if (!p->opened) return;
+    // SELF-HEAL an out-of-range occupancy here, on the per-wake tick — not only
+    // in consume. The avail paths correctly report 0 readable on an out-of-range
+    // W - R (the occupancy clamp below), but at avail 0 alsa-lib never calls
+    // transfer, so consume's own resync never runs and the local read_seq stays
+    // frozen: a permanent-silence wedge with a LIVE writer (e.g. camilla's
+    // capture thread stalled > the 2 s liveness window while fanin free-ran, then
+    // resumed from the poll-blocked resting state). The tick fires on every wake
+    // regardless of avail, so running the resync here gives the reader an
+    // avail-visible recovery path; occupancy then reflects only fresh publishes
+    // and avail reopens. reader_resyncs counts it (observability / doctor).
+    jts_ring_reader_resync_if_overrun(&p->reader);
     int writer_live = jts_ring_reader_writer_is_live(&p->reader);
-    // Bounded occupancy (see jts_ring_capture_occupancy_bounded): an
-    // out-of-range W - R will resolve to a consume resync (0 readable), so the
-    // emptiness check must treat it as empty or the arm never fires.
+    // Bounded occupancy (see jts_ring_capture_occupancy_bounded): defense in
+    // depth in case the resync above raced a further writer advance.
     uint64_t occ = jts_ring_capture_occupancy_bounded(
         jts_ring_reader_occupancy_slots(&p->reader), p->n_slots);
     int real_empty = (occ == 0) && (p->stage_frames == 0);
@@ -761,8 +771,13 @@ static int jts_ring_capture_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delay
     // app = readable = in-ring unread + destage remainder. Honest occupancy-
     // derived, same rationale as the playback delay (a live consumer's rate
     // controller reads it; the writer-dead silence path is governed by the avail
-    // GATE, not this value).
-    uint64_t slots = p->opened ? jts_ring_reader_occupancy_slots(&p->reader) : 0;
+    // GATE, not this value). Bounded like every other avail/readable path so an
+    // out-of-range occupancy reports the resync outcome (0), not a garbage-huge
+    // delay to camilla's rate controller.
+    uint64_t slots = p->opened
+                         ? jts_ring_capture_occupancy_bounded(
+                               jts_ring_reader_occupancy_slots(&p->reader), p->n_slots)
+                         : 0;
     snd_pcm_sframes_t delay =
         (snd_pcm_sframes_t)(slots * p->period_frames + p->stage_frames);
     if (delayp) *delayp = delay;

@@ -1347,6 +1347,10 @@ static cap_model_t cap_model_new(const jts_ring_geometry_t *g) {
 // exactly as the plugin does — an out-of-range W - R resolves to a consume
 // resync (nothing readable), so it must count as empty here too.
 static void cap_model_poll_arm(cap_model_t *m, jts_ring_reader_t *r) {
+    // Mirror capture_service_tick's first step: self-heal an out-of-range
+    // occupancy so the reader recovers on a wake even when avail is 0 (alsa-lib
+    // never calls transfer there, so consume's own resync cannot run).
+    jts_ring_reader_resync_if_overrun(r);
     int writer_live = jts_ring_reader_writer_is_live(r);
     uint64_t occ = jts_ring_capture_occupancy_bounded(
         jts_ring_reader_occupancy_slots(r), (uint32_t)(m->buffer_size / m->period));
@@ -1382,13 +1386,16 @@ static void cap_model_pointer_tick(cap_model_t *m, jts_ring_reader_t *r) {
 }
 
 // ALSA capture avail off the ACCUMULATED hw_ptr: hw_ptr - appl_ptr (readable).
-// PURE pointer read (no arming) — mirrors the plugin, whose `pointer` callback
-// never arms; only `poll_revents` (cap_model_poll_arm) does. The ALSA rw loop's
-// order is: an initial `pointer` read (baseline, pending==0) BEFORE the first
-// `poll_revents`, so the first avail read establishes hw_ptr==0 and armed silence
-// only ever shows up as a POSITIVE delta on a later read. Getting this order
-// right is exactly what avoids the first-read-seed swallowing a front-loaded
-// readable (the wedge the earlier "avail always arms first" model hit).
+// PURE pointer read (no service work) in the MODEL. The real plugin's `pointer`
+// runs capture_service_tick (drain + arm + resync), but the model deliberately
+// keeps this call pure and drives the service work through cap_model_poll_arm
+// (cap_model_poll_then_avail) so the ALSA rw-loop ordering the silence tests
+// depend on is preserved: an initial `pointer` read (baseline, pending==0)
+// BEFORE the first arming, so the first avail read establishes hw_ptr==0 and
+// armed silence only ever shows up as a POSITIVE delta on a later read. This
+// stays faithful because neither arming nor a resync can fire at baseline
+// (writer live, occupancy 0); a real plugin pointer at baseline is likewise a
+// no-op service tick.
 static uint64_t cap_model_avail(cap_model_t *m, jts_ring_reader_t *r) {
     cap_model_pointer_tick(m, r);
     uint64_t readable =
@@ -1924,12 +1931,15 @@ static void test_capture_avail_implies_deliverable(void) {
 static void test_capture_occupancy_clamp_prevents_phantom_avail(void) {
     // A transient out-of-range occupancy (W - local R > n_slots — a wedged
     // reader whose heartbeat staled while the writer free-ran, or u64 garbage)
-    // resolves in the refill path as a consume DEFENSIVE RESYNC: nothing is
-    // served. The avail paths must therefore report it as 0 readable — an
-    // unbounded report would ratchet the forward-only reported position and
-    // mint permanent phantom avail (same RTTIME-spin debt class as the armed-
-    // silence discard). jts_ring_capture_occupancy_bounded is the shared bound;
-    // the pointer core applies it internally.
+    // must (1) be REPORTED as 0 readable — an unbounded report would ratchet the
+    // forward-only reported position and mint permanent phantom avail (same
+    // RTTIME-spin debt class as the armed-silence discard) — AND (2) SELF-HEAL
+    // on the per-wake service tick, NOT only when transfer runs. The wedge SF-A
+    // (2026-07-11 review) is the second half: at avail 0 alsa-lib never calls
+    // transfer, so if the resync lived only in consume the reader would sit
+    // permanently silent with a live writer. jts_ring_reader_resync_if_overrun
+    // in capture_service_tick (modeled here in cap_model_poll_arm) gives it an
+    // avail-visible recovery path.
     CHECK(jts_ring_capture_occupancy_bounded(0, 4) == 0, "bounded: 0 -> 0");
     CHECK(jts_ring_capture_occupancy_bounded(4, 4) == 4, "bounded: n_slots passes");
     CHECK(jts_ring_capture_occupancy_bounded(5, 4) == 0, "bounded: n_slots+1 -> 0 (resync outcome)");
@@ -1953,24 +1963,29 @@ static void test_capture_occupancy_clamp_prevents_phantom_avail(void) {
     // Wedge the reader (stale heartbeat, local read_seq frozen at 0) and let
     // the writer fill + free-run: header read_seq advances on the reader's
     // behalf, but the reader's LOCAL mirror does not — its raw occupancy view
-    // goes out of range.
+    // goes out of range. The writer STAYS ALIVE (it is fan-in, camilla's pacer).
     atomic_store_explicit(&h->reader_heartbeat_ns, 1, memory_order_relaxed);
     for (uint32_t i = 0; i < g.n_slots + 3; i++) jts_ring_writer_publish(&w, s);
-    uint64_t raw_occ = jts_ring_reader_occupancy_slots(&r);
-    CHECK(raw_occ > (uint64_t)g.n_slots, "precondition: raw local occupancy out of range");
+    CHECK(jts_ring_reader_occupancy_slots(&r) > (uint64_t)g.n_slots,
+          "precondition: raw local occupancy out of range");
 
-    // The avail path must NOT report the garbage as readable...
-    uint64_t avail = cap_model_avail(&m, &r);
+    // (1) The garbage is reported as 0 readable — never phantom avail.
+    uint64_t avail = cap_model_poll_then_avail(&m, &r);
     CHECK(avail == 0, "out-of-range occupancy reports 0 readable (no phantom avail)");
-    // ...and the refill path resolves it the same way: defensive resync, block.
-    CHECK(cap_model_read_period(&m, &r, out) == 0,
-          "refill resyncs and blocks — consistent with the 0 report");
-    CHECK(r.reader_resyncs == 1, "consume took the defensive resync");
-    // After the resync the views agree again: a fresh publish flows normally.
+    // (2) SELF-HEAL: that same wake resynced the reader WITHOUT any transfer at
+    // avail 0. This is the SF-A fix — recovery through an avail-visible flow, not
+    // a read alsa-lib would never issue.
+    CHECK(r.reader_resyncs == 1, "the per-wake service tick self-healed via resync");
+    CHECK(jts_ring_reader_occupancy_slots(&r) == 0, "local read_seq caught up to the tip");
+
+    // With the mirror healed and the writer still alive, fresh publishes reopen
+    // avail over the next wakes and delivery resumes — no read was ever issued at
+    // avail 0, and reader_resyncs does NOT climb further (steady state).
     jts_ring_writer_publish(&w, s);
-    for (int tick = 0; tick < 3; tick++) avail = cap_model_avail(&m, &r);
+    for (int tick = 0; tick < 3; tick++) avail = cap_model_poll_then_avail(&m, &r);
     CHECK(avail == g.period_frames, "post-resync: honest readable resumes");
     CHECK(cap_model_read_period(&m, &r, out) == 1, "post-resync: delivery resumes");
+    CHECK(r.reader_resyncs == 1, "no repeated resync once healed (not a resync loop)");
 
     free(s);
     free(out);

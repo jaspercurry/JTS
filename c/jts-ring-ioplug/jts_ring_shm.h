@@ -291,6 +291,22 @@ int jts_ring_reader_open(const char *path, const jts_ring_geometry_t *expected,
 // read_seq with Release) or JTS_RING_SLOT_EMPTY (zero-filled `out`).
 jts_ring_slot_read_t jts_ring_reader_consume(jts_ring_reader_t *r, int16_t *out);
 
+// Self-heal an out-of-range occupancy: if W - R > n_slots (a correct writer
+// never lets this happen, but a reader that wedged past the liveness window
+// while the writer free-ran drop-oldest can observe it on resume), fast-forward
+// the local read_seq to the tip and publish it (Release), counting one
+// reader_resync. Returns 1 iff a resync happened. This is the SAME operation
+// jts_ring_reader_consume performs defensively — extracted so the CAPTURE
+// ioplug's per-wake service tick can run it too. Without a proactive resync the
+// reader is stuck: the avail paths correctly report 0 readable on an out-of-
+// range occupancy (jts_ring_capture_occupancy_bounded), but at avail 0 alsa-lib
+// never calls transfer, so consume never runs, so the local read_seq never
+// catches up — a permanent-silence wedge with a LIVE writer. Running it from the
+// tick (which fires on every wake, avail 0 or not) gives the reader an
+// avail-visible recovery path. Never discards readable data: it only fires once
+// the writer has already lapped the reader (those slots are unreadable anyway).
+int jts_ring_reader_resync_if_overrun(jts_ring_reader_t *r);
+
 // Frames of buffering readable right now (W - R) * period_frames, for the
 // capture ioplug's avail/pointer honesty. Reads read_seq from the local mirror
 // (the reader owns it) and write_seq with Acquire.

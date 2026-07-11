@@ -716,6 +716,23 @@ int jts_ring_reader_open(const char *path, const jts_ring_geometry_t *expected,
     return 0;
 }
 
+int jts_ring_reader_resync_if_overrun(jts_ring_reader_t *r) {
+    jts_ring_header_t *h = rdr_hdr(r);
+    uint64_t wseq = atomic_load_explicit(&h->write_seq, memory_order_acquire);
+    uint64_t rr = r->read_seq;
+    // A correct writer never lets W - R exceed n_slots. If it somehow did (a
+    // wedged reader whose read_seq fell far behind while the writer free-ran
+    // drop-oldest), fast-forward to the tip and count it — never read a slot the
+    // writer may be mid-overwriting. Mirrors the Rust reader.
+    if (wseq - rr > (uint64_t)r->geometry.n_slots) {
+        r->read_seq = wseq;
+        atomic_store_explicit(&h->read_seq, wseq, memory_order_release);
+        r->reader_resyncs++;
+        return 1;
+    }
+    return 0;
+}
+
 jts_ring_slot_read_t jts_ring_reader_consume(jts_ring_reader_t *r, int16_t *out) {
     jts_ring_header_t *h = rdr_hdr(r);
     uint64_t now = jts_ring_monotonic_ns();
@@ -732,19 +749,12 @@ jts_ring_slot_read_t jts_ring_reader_consume(jts_ring_reader_t *r, int16_t *out)
         r->epoch_resets++;
     }
 
+    // Defensive resync (shared with the capture ioplug's per-wake service tick):
+    // fast-forward past an out-of-range occupancy before reading a slot.
+    jts_ring_reader_resync_if_overrun(r);
+
     uint64_t wseq = atomic_load_explicit(&h->write_seq, memory_order_acquire);
     uint64_t rr = r->read_seq;
-
-    // Defensive: a correct writer never lets W - R exceed n_slots. If it somehow
-    // did (a wedged reader whose read_seq fell far behind while the writer
-    // free-ran drop-oldest), fast-forward to the tip and count it — never read a
-    // slot the writer may be mid-overwriting. Mirrors the Rust reader.
-    if (wseq - rr > (uint64_t)r->geometry.n_slots) {
-        rr = wseq;
-        r->read_seq = rr;
-        atomic_store_explicit(&h->read_seq, rr, memory_order_release);
-        r->reader_resyncs++;
-    }
 
     if (wseq == rr) {
         // Empty: zero-fill, split startup priming from steady-state slips.
