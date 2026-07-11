@@ -956,9 +956,11 @@ reference. Currently:
   follower-409 narrowing, the local-vs-wireless subwoofer split, the
   fail-closed/clock-domain safety story, and the safest-first slice plan.
 - [`active-crossover-information-design.md`](docs/active-crossover-information-design.md)
-  — Working product-design note for the active crossover setup flow:
-  first-time user journey, card hierarchy, warning-vs-blocker language,
-  no-audio preview expectations, and quiet-first-test copy principles.
+  — **Product and architecture design of record** for the active crossover
+  builder: first-class manual control, calibrated-microphone automatic tuning,
+  one shared crossover model, explicit overwrite/apply/rollback semantics,
+  fixed-axis driver measurement, observability, ownership boundaries, and the
+  simple delivery path from level matching through full crossover design.
 - [`dual-apple-dac-lab.md`](docs/dual-apple-dac-lab.md) —
   Lab-only runbook for validating two Apple USB-C to 3.5 mm adapters
   as one stereo DAC per speaker. Keeps the experiment outside the

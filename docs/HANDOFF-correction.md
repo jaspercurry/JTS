@@ -7,6 +7,11 @@
 > update the Status. The "Things to ignore" sections are deliberate
 > scope discipline, not omissions.
 
+> The crossover builder's user journey, manual/automatic replacement semantics,
+> and parameter ownership are canonical in
+> [`active-crossover-information-design.md`](active-crossover-information-design.md).
+> This handoff owns the HTTPS measurement surface and room-correction behavior.
+
 ## Status
 
 - ✅ **P2 — relay-closed level-match ramp (hardware + software complete).**

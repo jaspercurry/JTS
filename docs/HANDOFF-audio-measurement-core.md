@@ -14,6 +14,9 @@
 > [HANDOFF-correction.md](HANDOFF-correction.md), and
 > [HANDOFF-volume.md](HANDOFF-volume.md). Research backing:
 > [docs/research/2026-06-19-active-crossover-calibration/](research/2026-06-19-active-crossover-calibration/README.md).
+> The manual-or-measured crossover-builder product contract is canonical in
+> [active-crossover-information-design.md](active-crossover-information-design.md);
+> this document owns only the shared measurement architecture and policies.
 
 ---
 
