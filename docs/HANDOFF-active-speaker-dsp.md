@@ -871,7 +871,12 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   id, and accepted embedded confirmation. The automatic post-capture record
   boundary re-runs this check and has no volatile safe-session fallback, so a
   topology change between play and upload rejects the acoustic record. Stale or
-  malformed embedded confirmation still refuses before audio. The ramp's
+  malformed embedded confirmation still refuses before audio. Automatic driver
+  capture is an outer DSP transaction: it may use the all-muted staged graph as
+  the inner commissioning rollback anchor, but it restores the file-backed
+  production config path from entry after success, playback failure, exception,
+  cancellation, or post-anchor load refusal. A transient unsaved inline audition
+  is deliberately not resurrected; the durable production config wins. The ramp's
   `confirmed_roles` remains only ordering memory for woofer-before-tweeter; the
   `/sound/` card treats measurement-backed driver checks as the product truth,
   so stale ramp state alone cannot complete the

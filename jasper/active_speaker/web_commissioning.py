@@ -136,6 +136,11 @@ _PLAYBACK_OPERATION_ERRORS = (
 )
 _COMMISSION_START_ERRORS = _COMMISSION_OPERATION_ERRORS + _MUX_COMMAND_ERRORS
 
+
+class AutomaticDriverConfigRestoreError(RuntimeError):
+    """Automatic driver capture could not restore its entry production config."""
+
+
 _SUMMED_TEST_ARM_REPORT: dict[str, Any] = {
     "status": "ready",
     "load_gate": "ready",
@@ -1656,43 +1661,184 @@ async def _load_driver_commissioning_config_for_level(
     camilla_factory: CamillaFactory,
 ) -> dict[str, Any]:
     cam = camilla_factory()
-    staged = load_staged_startup_config()
-    current_config_path, _ = await read_current_config_path(cam)
-    startup_setup = await _ensure_commission_startup_anchor(
-        group=speaker_group_id,
-        role=role,
-        staged_config=staged,
-        current_config_path=current_config_path,
-        camilla_factory=camilla_factory,
-    )
-    if startup_setup.get("status") == "blocked":
-        return startup_setup
+    entry_config_path, entry_config_error = await read_current_config_path(cam)
+    transaction = {
+        "kind": "automatic_driver_capture",
+        "entry_config_path": entry_config_path,
+        "entry_config_error": entry_config_error,
+        "restored": False,
+    }
+    if not entry_config_path:
+        return {
+            "status": "blocked",
+            "load": {
+                "status": "blocked",
+                "issues": [_issue(
+                    "automatic_driver_entry_config_missing",
+                    (
+                        "JTS could not save the current production DSP config "
+                        "for restoration"
+                    ),
+                )],
+            },
+            "measurement_transaction": transaction,
+        }
+    transaction_payload = {"measurement_transaction": transaction}
+    try:
+        staged = load_staged_startup_config()
+        startup_setup = await _ensure_commission_startup_anchor(
+            group=speaker_group_id,
+            role=role,
+            staged_config=staged,
+            current_config_path=entry_config_path,
+            camilla_factory=camilla_factory,
+        )
+        if startup_setup.get("status") == "blocked":
+            startup_setup["measurement_transaction"] = transaction
+            return startup_setup
 
-    staged = load_staged_startup_config()
-    current_config_path, current_config_error = await read_current_config_path(cam)
-    evidence_path = write_commission_path_safety(
-        topology,
-        staged,
-        current_config_path,
-        current_config_error,
+        staged = load_staged_startup_config()
+        current_config_path, current_config_error = await read_current_config_path(cam)
+        evidence_path = write_commission_path_safety(
+            topology,
+            staged,
+            current_config_path,
+            current_config_error,
+        )
+        load_config, read_running_config, get_current_config_path = commission_seams(cam)
+        payload = await load_driver_commissioning_config(
+            topology,
+            speaker_group_id=speaker_group_id,
+            role=role,
+            calibration_level=startup_gate_calibration_level,
+            load_config=load_config,
+            read_running_config=read_running_config,
+            get_current_config_path=get_current_config_path,
+            preset=preset,
+            crossover_preview=crossover_preview,
+            staged_config=staged,
+            audible_gain_db=level_dbfs,
+            path_safety_evidence_path=evidence_path,
+        )
+        payload["startup_setup"] = startup_setup
+        payload["measurement_transaction"] = transaction
+        return payload
+    except BaseException as operation_error:  # noqa: BLE001
+        # The startup-anchor call may already have replaced production with the
+        # all-muted graph. No exception, including task cancellation, may escape
+        # this automatic path until the persisted production config from entry
+        # is restored. An inline audition is intentionally not resurrected.
+        try:
+            await _restore_automatic_driver_entry_config_resilient(
+                transaction_payload,
+                camilla_factory=camilla_factory,
+            )
+        except AutomaticDriverConfigRestoreError as restore_error:
+            raise restore_error from operation_error
+        raise
+
+
+def _automatic_driver_restore_issue() -> dict[str, str]:
+    return _issue(
+        "automatic_driver_config_restore_failed",
+        (
+            "JTS could not restore the production DSP config from before the "
+            "measurement. Stop measuring and reapply the speaker profile before "
+            "playing audio."
+        ),
     )
-    load_config, read_running_config, get_current_config_path = commission_seams(cam)
-    payload = await load_driver_commissioning_config(
-        topology,
-        speaker_group_id=speaker_group_id,
-        role=role,
-        calibration_level=startup_gate_calibration_level,
-        load_config=load_config,
-        read_running_config=read_running_config,
-        get_current_config_path=get_current_config_path,
-        preset=preset,
-        crossover_preview=crossover_preview,
-        staged_config=staged,
-        audible_gain_db=level_dbfs,
-        path_safety_evidence_path=evidence_path,
+
+
+async def _restore_automatic_driver_entry_config(
+    load_payload: dict[str, Any],
+    *,
+    camilla_factory: CamillaFactory,
+) -> dict[str, Any]:
+    """Idempotently restore automatic capture's entry production config path.
+
+    The file-backed production config is the durable owner. Deliberately do not
+    resurrect a transient ``set_active_config_raw`` audition that happened to be
+    live on entry.
+    """
+    transaction = _dict_value(load_payload.get("measurement_transaction"))
+    entry_path = str(transaction.get("entry_config_path") or "")
+    if transaction.get("restored") is True:
+        return {"status": "already_restored", "config_path": entry_path}
+    if not entry_path:
+        error = "automatic driver capture has no entry production DSP config"
+        log_event(
+            logger,
+            "active_speaker.automatic_driver_config_restore",
+            level=logging.WARNING,
+            status="failed",
+            error=error,
+        )
+        raise AutomaticDriverConfigRestoreError(error)
+
+    inner_rollback: dict[str, Any] | None = None
+    try:
+        inner_rollback = await _rollback_summed_commissioning_config(
+            camilla_factory=camilla_factory,
+        )
+    except _COMMISSION_OPERATION_ERRORS as exc:
+        inner_rollback = {"status": "failed", "error": str(exc)}
+
+    restore_error: str | None
+    try:
+        cam = camilla_factory()
+        restored = await cam.set_config_file_path(entry_path, best_effort=False)
+    except _COMMISSION_OPERATION_ERRORS as exc:
+        restore_error = str(exc)
+    else:
+        restore_error = (
+            None if restored is True else "CamillaDSP rejected the entry graph"
+        )
+    if restore_error is not None:
+        inner_status = (inner_rollback or {}).get("status") or _dict_value(
+            (inner_rollback or {}).get("rollback")
+        ).get("status")
+        log_event(
+            logger,
+            "active_speaker.automatic_driver_config_restore",
+            level=logging.WARNING,
+            status="failed",
+            entry_config_path=entry_path,
+            inner_rollback_status=inner_status,
+            error=restore_error,
+        )
+        raise AutomaticDriverConfigRestoreError(restore_error)
+    transaction["restored"] = True
+    return {
+        "status": "rolled_back",
+        "config_path": entry_path,
+        "inner_rollback": inner_rollback,
+    }
+
+
+async def _restore_automatic_driver_entry_config_resilient(
+    load_payload: dict[str, Any],
+    *,
+    camilla_factory: CamillaFactory,
+) -> dict[str, Any]:
+    """Finish production restoration even while the caller is being cancelled."""
+    restore_task = asyncio.create_task(
+        _restore_automatic_driver_entry_config(
+            load_payload,
+            camilla_factory=camilla_factory,
+        )
     )
-    payload["startup_setup"] = startup_setup
-    return payload
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(restore_task)
+            break
+        except asyncio.CancelledError as exc:
+            # Repeated cancellation requests still cannot cancel the child.
+            # Preserve the latest one and propagate it after restoration.
+            cancellation = exc
+    if cancellation is not None:
+        raise cancellation
+    return result
 
 
 async def _play_capture_sweep(
@@ -1769,24 +1915,33 @@ async def _play_capture_sweep(
                 )
             )
         except _COMMISSION_OPERATION_ERRORS as exc:
-            log_event(
-                logger,
-                "active_speaker.web_capture_sweep",
-                level=logging.WARNING,
-                action="rollback",
-                status="failed",
-                error=str(exc),
-            )
-            rollback_issue = _issue(
-                "capture_sweep_rollback_failed",
-                "measurement sweep played, but JTS could not re-mute the active-speaker test path",
+            if not isinstance(exc, AutomaticDriverConfigRestoreError):
+                log_event(
+                    logger,
+                    "active_speaker.web_capture_sweep",
+                    level=logging.WARNING,
+                    action="rollback",
+                    status="failed",
+                    error=str(exc),
+                )
+            rollback_issue = (
+                _automatic_driver_restore_issue()
+                if isinstance(exc, AutomaticDriverConfigRestoreError)
+                else _issue(
+                    "capture_sweep_rollback_failed",
+                    "measurement sweep played, but JTS could not re-mute the active-speaker test path",
+                )
             )
     if rollback is not None:
         payload["rollback"] = rollback
     if rollback_issue is not None:
         payload["status"] = "failed"
         payload["confirmable"] = False
-        payload["issues"] = [*_dict_items(payload.get("issues")), rollback_issue]
+        payload["issues"] = (
+            [rollback_issue, *_dict_items(payload.get("issues"))]
+            if rollback_issue["code"] == "automatic_driver_config_restore_failed"
+            else [*_dict_items(payload.get("issues")), rollback_issue]
+        )
     return payload
 
 
@@ -1842,17 +1997,19 @@ async def play_driver_capture_sweep(
                 or "reapply the crossover before measuring"
             ),
         )
-    # The by-ear record's test_level_dbfs is identity/floor evidence only. The
-    # automatic sweep uses the protected applied role gain that the -12 dBFS
-    # level tone calibrated.
-    level = float(planned_excitation["commissioning_gain_db"])
-    startup_gate_level = calibration_level_payload(requested_level_dbfs=level)
+    # Four gains have separate owners: the durable by-ear level proves identity
+    # only; the level lease owns Camilla main volume; the applied Layer-A
+    # snapshot owns this isolated role gain; and excitation.py owns the -12 dBFS
+    # ESS source peak. Startup-load authorization is neither an acoustic level
+    # nor a role gain: it must stay at calibration_level.py's quiet floor.
+    commissioning_gain_db = float(planned_excitation["commissioning_gain_db"])
+    startup_gate_level = calibration_level_payload()
     preset, crossover_preview = resolve_commission_inputs()
     load_payload = await _load_driver_commissioning_config_for_level(
         topology=topology,
         speaker_group_id=speaker_group_id,
         role=role,
-        level_dbfs=level,
+        level_dbfs=commissioning_gain_db,
         startup_gate_calibration_level=startup_gate_level,
         preset=preset,
         crossover_preview=crossover_preview,
@@ -1861,28 +2018,50 @@ async def play_driver_capture_sweep(
     load_state = _dict_value(load_payload.get("load"))
     if load_state.get("status") != "loaded":
         load_issues = _dict_items(load_state.get("issues"))
+        restoration: dict[str, Any] | None = None
+        restore_issue: dict[str, str] | None = None
+        transaction = _dict_value(load_payload.get("measurement_transaction"))
+        if transaction.get("entry_config_path"):
+            try:
+                restoration = await _restore_automatic_driver_entry_config_resilient(
+                    load_payload,
+                    camilla_factory=camilla_factory,
+                )
+            except AutomaticDriverConfigRestoreError:
+                restore_issue = _automatic_driver_restore_issue()
+        issues = load_issues or [
+            _issue(
+                "driver_capture_sweep_load_failed",
+                "could not open the confirmed driver path for mic capture",
+            )
+        ]
+        if restore_issue is not None:
+            issues = [restore_issue, *issues]
         return {
             "status": "blocked",
             "reason": "driver_capture_sweep_load_failed",
             "audio_emitted": False,
             "commissioning_load": load_payload,
-            "issues": load_issues or [
-                _issue(
-                    "driver_capture_sweep_load_failed",
-                    "could not open the confirmed driver path for mic capture",
-                )
-            ],
+            "rollback": restoration,
+            "issues": issues,
             "commission": commission_status_payload(),
         }
+
+    async def _restore_entry_graph() -> dict[str, Any]:
+        return await _restore_automatic_driver_entry_config_resilient(
+            load_payload,
+            camilla_factory=camilla_factory,
+        )
 
     playback = await _play_capture_sweep(
         backend=DRIVER_CAPTURE_SWEEP_BACKEND,
         target={"speaker_group_id": speaker_group_id, "role": role},
         playback_id=str(latest.get("playback_id")),
-        level_dbfs=level,
+        level_dbfs=commissioning_gain_db,
         load_payload=load_payload,
         camilla_factory=camilla_factory,
         planned_excitation=planned_excitation,
+        rollback_capture_config=_restore_entry_graph,
     )
     playback["floor_confirmation"] = latest.get("floor_confirmation")
     log_event(
@@ -1903,7 +2082,7 @@ async def play_driver_capture_sweep(
         "status": playback.get("status"),
         "playback": playback,
         "playback_id": playback.get("playback_id"),
-        "test_level_dbfs": level,
+        "test_level_dbfs": commissioning_gain_db,
         "sweep_meta": playback.get("sweep_meta"),
         "excitation": playback.get("excitation"),
         "commission": commission_status_payload(),

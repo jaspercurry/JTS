@@ -901,6 +901,9 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
     async def _rolled_back(*args, **kwargs):
         return {"status": "rolled_back"}
 
+    async def _restored_driver_entry(*args, **kwargs):
+        return {"status": "rolled_back", "config_path": "/tmp/sound_current.yml"}
+
     async def _loaded_applied_summed(**kwargs):
         return {
             "load": {
@@ -940,6 +943,11 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
         _loaded_applied_summed,
     )
     monkeypatch.setattr(web, "_rollback_summed_commissioning_config", _rolled_back)
+    monkeypatch.setattr(
+        web,
+        "_restore_automatic_driver_entry_config",
+        _restored_driver_entry,
+    )
     monkeypatch.setattr(
         web,
         "_rollback_applied_summed_measurement_config",

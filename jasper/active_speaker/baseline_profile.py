@@ -1325,6 +1325,7 @@ def build_baseline_profile_candidate(
             state_target,
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
             mode=0o640,
+            group_from_parent=True,
         )
     return payload
 
@@ -1630,6 +1631,7 @@ async def apply_baseline_profile(
             state_target,
             json.dumps(candidate, indent=2, sort_keys=True) + "\n",
             mode=0o640,
+            group_from_parent=True,
         )
     if not candidate.get("permissions", {}).get("may_apply"):
         return {
@@ -1673,6 +1675,7 @@ async def apply_baseline_profile(
             state_target,
             json.dumps(failed, indent=2, sort_keys=True) + "\n",
             mode=0o640,
+            group_from_parent=True,
         )
         return {
             "status": "apply_failed",
@@ -1698,6 +1701,7 @@ async def apply_baseline_profile(
         state_target,
         json.dumps(applied, indent=2, sort_keys=True) + "\n",
         mode=0o640,
+        group_from_parent=True,
     )
     return {
         "status": "applied",
