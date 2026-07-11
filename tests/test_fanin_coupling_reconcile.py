@@ -2246,6 +2246,36 @@ def test_disarm_kick_failure_is_best_effort(tmp_path, _ring_assets_present):
     assert "broker unavailable" in result.detail
 
 
+def test_blocked_shm_ring_force_disarm_kicks_audio_hardware_reconcile(tmp_path):
+    """The route-block force-disarm (a previously-armed shm_ring box that is now
+    grouping-enabled) leaves the same suppressed-floor state as an ordinary
+    disarm, so its recovery `_disarm` gets the same gated kick — after the
+    ordered camilla -> fanin -> outputd recovery ops."""
+    fanin_env = _write(
+        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
+    )
+    outputd_env = _write(
+        tmp_path / "outputd.env", f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring\n",
+    )
+    calls, ro, rf, rc = _recorder()
+
+    res = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: True,
+        kick_hardware_reconcile=lambda: (calls.append("hw-reconcile"), (True, ""))[1],
+    )
+
+    assert res.direction == "blocked"
+    assert res.recovered is True
+    assert calls == ["camilla:loopback", "fanin", "outputd", "hw-reconcile"]
+    assert read_persisted_coupling(fanin_env) == "loopback"
+
+
 def test_default_kick_targets_audio_hardware_reconcile_via_broker_start(monkeypatch):
     """Pin the default kick's broker contract: blocking ``start`` of the
     audio-hardware reconcile oneshot (mirrors output_topology_reset's kick)."""
@@ -2266,6 +2296,7 @@ def test_default_kick_targets_audio_hardware_reconcile_via_broker_start(monkeypa
     assert seen["units"] == (cr.AUDIO_HARDWARE_RECONCILE_UNIT,)
     assert seen["verb"] == "start"
     assert seen["no_block"] is False
+    assert seen["timeout"] == 15.0
 
 
 def test_audio_hardware_reconcile_unit_is_broker_start_permitted():

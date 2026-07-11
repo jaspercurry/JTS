@@ -157,7 +157,9 @@ class CouplingResult:
     when the persisted env value actually moved. ``direction`` is ``arm`` /
     ``disarm`` / ``confirm`` (env already at desired — camilla re-confirmed, no
     fan-in bounce). ``recovered`` is True when an ARM failure rolled the box back
-    to loopback. ``detail`` carries the first failure's reason for the log/CLI.
+    to loopback. ``detail`` carries the first failure's reason for the log/CLI;
+    it can be non-empty with ``ok=True`` when the disarm's best-effort
+    floor-reemit kick failed (see :func:`_disarm`).
     """
 
     ok: bool
@@ -536,6 +538,7 @@ def reconcile_coupling(
             block_detail=support.detail,
             block_result=support.reason or ACTIVE_LEADER_TRANSPORT_BLOCK_REASON,
             apply=apply,
+            do_kick_hardware=do_kick_hardware,
         )
 
     if action is None:
@@ -1288,6 +1291,7 @@ def _block_unsupported_coupling(
     block_detail: str | None = None,
     block_result: str = ACTIVE_LEADER_TRANSPORT_BLOCK_REASON,
     apply: bool,
+    do_kick_hardware: "DaemonOp | None" = None,
 ) -> CouplingResult:
     """Refuse an unsupported coupling for this route and fail-closed to loopback.
 
@@ -1295,7 +1299,10 @@ def _block_unsupported_coupling(
     ``transport_pipe`` on an active leader, and ``shm_ring`` on any grouping-
     enabled box. Forces fan-in loopback + clears every reconciler-owned outputd
     content-source key (pipe AND Ring B), so a previously-armed box (transport_pipe
-    OR shm_ring) recovers rather than stranding one transport end. ``desired`` is
+    OR shm_ring) recovers rather than stranding one transport end. A force-disarm
+    off a LIVE shm_ring bridge leaves the same suppressed content-buffer floor an
+    ordinary disarm does, so the recovery `_disarm` gets the same gated
+    ``do_kick_hardware`` (see :func:`_leaves_live_shm_ring_bridge`). ``desired`` is
     the coupling the operator asked for — reported back verbatim so ``/state`` /
     logs name the real request, not a hardcoded one. ``block_result`` is the stable
     ``event=`` result token (the route-policy ``support.reason``) so a ring block
@@ -1349,6 +1356,14 @@ def _block_unsupported_coupling(
                 do_reconcile,
                 COUPLING_LOOPBACK,
                 reason,
+                # Same #1231 window as the ordinary disarm: a force-disarmed box
+                # leaving a live shm_ring bridge needs the floor re-emitted.
+                kick_hardware_reconcile=(
+                    do_kick_hardware
+                    if do_kick_hardware is not None
+                    and _leaves_live_shm_ring_bridge(outputd_snapshot.text)
+                    else None
+                ),
             )
             log_event(
                 logger,
@@ -2641,15 +2656,19 @@ def _int_value(value: object) -> int:
 def _leaves_live_shm_ring_bridge(prior_outputd_text: str) -> bool:
     """True when the outputd.env being rewritten carried a LIVE shm_ring bridge.
 
-    This is the exact condition under which ``jasper-audio-hardware-reconcile``
-    SUPPRESSES the route's outputd content-buffer floor (#1231: the key is inert
-    while outputd reads Ring B, so emitting it there is one-knob-two-truths
-    drift — see ``_resolve_outputd_content_buffer_int`` in
-    :mod:`jasper.audio_runtime_plan`). A disarm from this state can land outputd
-    on its compile-default content buffer until the floor re-emits, so the
-    disarm path kicks the hardware reconciler when (and only when) this is
-    True. Uses the same fail-safe resolver as the suppression, so only a
-    genuine ``shm_ring`` matches.
+    A shm_ring bridge is the condition under which
+    ``jasper-audio-hardware-reconcile`` SUPPRESSES the route's outputd
+    content-buffer floor (#1231: the key is inert while outputd reads Ring B, so
+    emitting it there is one-knob-two-truths drift — see
+    ``_resolve_outputd_content_buffer_int`` in :mod:`jasper.audio_runtime_plan`).
+    A disarm from this state can land outputd on its compile-default content
+    buffer until the floor re-emits, so the disarm path kicks the hardware
+    reconciler when this is True. The gate is NECESSARY, not exact: the floor
+    itself only exists on the USB-low-latency route, so on other routes the
+    kicked reconciler converges to a no-op (its daemon restarts are conditional
+    on the env actually changing) — a bounded free convergence sweep. Uses the
+    same fail-safe resolver as the suppression, so only a genuine ``shm_ring``
+    matches.
     """
     return (
         resolve_outputd_content_bridge(
