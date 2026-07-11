@@ -164,8 +164,9 @@ def test_combo_renderer_state_muted_null_on_older_fanin():
 
 
 def test_solo_renderer_state_has_no_muted_field():
-    """The fan-in lane mute is a combo-only mechanism; the solo section (bridge
-    owns capture, :8781 preempt) does not carry a `muted` field."""
+    """The fan-in lane mute is a combo mechanism; the non-combo fallback section
+    (a state blob without standby:true — a not-yet-migrated box or an old binary
+    mid-deploy) does not carry a `muted` field."""
     section = state_aggregate._build_usbsink_renderer_state(
         {"playing": True, "host_connected": True, "rms_dbfs": -12.3},
         _fanin_status("lane"),

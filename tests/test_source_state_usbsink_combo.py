@@ -222,9 +222,10 @@ def test_direct_muted_reads_the_direct_lane_flag():
     assert usbsink_direct_muted(_fanin_status("direct", muted=False)) is False
 
 
-def test_direct_muted_none_for_aloop_lane():
-    # A solo box's aloop lane never carries the fan-in mix mute — that's the
-    # :8781 bridge's job — so the direct-only reader returns None there.
+def test_direct_muted_none_for_non_direct_lane():
+    # The fan-in mix mute is only meaningful on the DIRECT-capture lane; a
+    # non-direct ("lane") usbsink input (USB Audio off / idle fallback) returns
+    # None from the direct-only reader.
     assert usbsink_direct_muted(_fanin_status("lane", muted=True)) is None
 
 

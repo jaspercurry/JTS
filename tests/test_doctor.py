@@ -2830,15 +2830,6 @@ pcm.bluealsa_substream {
         format S16_LE
     }
 }
-pcm.usbsink_substream {
-    type plug
-    slave {
-        pcm "hw:Loopback,0,3"
-        rate 48000
-        channels 2
-        format S16_LE
-    }
-}
 pcm.correction_substream {
     type plug
     slave {

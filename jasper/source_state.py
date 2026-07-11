@@ -46,12 +46,13 @@ _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
 # package into its import graph just to know where the state file is.
 USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
 
-# The RMS level (dBFS) at or below which a lane is treated as NOT playing. This
-# mirrors the solo bridge's `PLAYING_RMS_DBFS` gate in
-# rust/jasper-usbsink-audio/src/main.rs so a combo box (fan-in DIRECT-captures
-# the gadget) reads a host streaming digital silence — a muted Zoom, an idle tab
-# — the same way a solo box does. The two constants are pinned equal by
-# tests/test_usbsink_playing_rms_contract.py (a cross-language drift guard); if
+# The RMS level (dBFS) at or below which the USB lane is treated as NOT playing —
+# so a host streaming digital silence (a muted Zoom, an idle tab) does not seize
+# the speaker. Applied here to fan-in's DIRECT-capture lane (the live USB path).
+# The Rust bridge is standby-only and no longer computes `playing`, but it retains
+# the same `PLAYING_RMS_DBFS = -60.0` constant in
+# rust/jasper-usbsink-audio/src/main.rs as the cross-language anchor; the two are
+# pinned equal by tests/test_usbsink_playing_rms_contract.py (a drift guard). If
 # you change one, change both.
 USBSINK_PLAYING_RMS_DBFS = -60.0
 
@@ -191,13 +192,13 @@ def read_usbsink_state(state_path: str = USBSINK_STATE_PATH) -> dict[str, Any] |
 
 
 def usbsink_bridge_in_standby(state: dict[str, Any] | None) -> bool:
-    """True when the jasper-usbsink bridge is running in USB-DIRECT standby.
+    """True when the jasper-usbsink daemon has published a state.json.
 
-    On a "combo" box (``JASPER_FANIN_USB_DIRECT=enabled``) fan-in
-    DIRECT-captures the gadget and the bridge runs with
-    ``JASPER_USBSINK_AUDIO_STANDBY=1``: it opens no PCM, so its published
-    ``playing`` / ``rms_dbfs`` are frozen idle defaults that describe nothing.
-    The bridge advertises this by publishing ``standby: true``.
+    The daemon is standby-only now: fan-in DIRECT-captures the gadget and the
+    bridge opens no PCM, so its published ``playing`` / ``rms_dbfs`` are frozen
+    idle defaults that describe nothing (it always publishes ``standby: true``).
+    A missing/malformed state (``None``) reads as not-standby — the "USB Audio
+    Input off / daemon not running" fallback for callers.
     """
     return bool(isinstance(state, dict) and state.get("standby"))
 
@@ -310,9 +311,9 @@ def usbsink_direct_muted(
 
     Mirrors :func:`usbsink_direct_rms_dbfs`: a value is returned only when the
     usbsink lane is in direct mode (``source == "direct"``), i.e. fan-in owns the
-    live gadget capture (a "combo" box) — the mode where mux silences USB by
-    muting this fan-in lane instead of POSTing the standby bridge's :8781
-    listener. ``None`` when there is no direct lane, the STATUS is missing /
+    live gadget capture — the fan-in lane MIX-mute is how mux silences USB (the
+    only USB-silencing primitive now that the aloop bridge is standby-only).
+    ``None`` when there is no direct lane, the STATUS is missing /
     malformed, or the lane predates the per-lane ``muted`` flag (older fan-in
     build). This is the mute STATE, separate from the ``rms_dbfs`` /
     ``frames_read`` telemetry the lane keeps reporting PRE-mute (so mux still

@@ -1126,11 +1126,14 @@ def check_fanin_asound_wiring() -> CheckResult:
             f"front end. Re-run deploy/install.sh.",
         )
 
+    # No usbsink_substream write alias: USB audio is DIRECT-captured by jasper-fanin
+    # from hw:UAC2Gadget (the aloop solo bridge that wrote hw:Loopback,0,3 was
+    # removed 2026-07-10). fan-in still READS the pair-3 capture side as the usbsink
+    # lane's idle fallback — see _FANIN_EXPECTED_INPUTS above — but nothing writes it.
     expected_aliases = {
         "librespot_substream": "hw:Loopback,0,0",
         "shairport_substream": "hw:Loopback,0,1",
         "bluealsa_substream": "hw:Loopback,0,2",
-        "usbsink_substream": "hw:Loopback,0,3",
         "correction_substream": "hw:Loopback,0,4",
     }
     missing: list[str] = []

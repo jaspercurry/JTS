@@ -2608,8 +2608,13 @@ Fourth music source. The user plugs a computer into the Pi's USB-C
 port (via the 8086 Consultancy USB-C/PWR Splitter; the splitter
 provides external power so the Pi stays alive even with a host
 attached). JTS exposes itself to the host as a UAC2 audio output
-device; the daemon bridges captured audio into `usbsink_substream`,
-its private fan-in lane, so it joins the existing CamillaDSP chain.
+device; **jasper-fanin DIRECT-captures `hw:UAC2Gadget` itself** into its
+usbsink input lane, so USB audio joins the existing CamillaDSP chain with
+one fewer hop. The `jasper-usbsink` daemon is **standby-only** — it opens no
+PCM; it exists to carry the household's USB-audio INTENT (its enabled/disabled
+state) and drive the gadget lifecycle. (The old aloop "solo" path — a separate
+usbsink bridge capturing the gadget → `usbsink_substream` → fan-in — was
+removed 2026-07-10; the combo direct-capture path is the sole USB pipeline.)
 
 Off by default. Toggle at `http://jts.local/sources/`. **Requires a
 one-time install + reboot** for the `dtoverlay=dwc2,dr_mode=peripheral`
@@ -2658,13 +2663,14 @@ behavior. See HANDOFF-usbsink.md §3.2 for the rationale.
 
 **Source arbitration**: Auto mode is latest-source-wins via
 `jasper-mux`. When another source starts while USB is playing in auto
-mode, mux POSTs `silenced=true` to `http://127.0.0.1:8781/preempt`
-and the daemon silences its output. In manual source-selection mode,
-fanin's selected-input gate is the arbiter instead; mux releases any
-USB preempt so choosing a source does not turn other sources on/off.
-When auto mode resumes and all other sources go idle, mux releases the
-preempt so a fresh host transition (pause-then-play on Mac) can
-re-take the speaker.
+mode, mux **MUTEs the fan-in usbsink lane** at its mix stage (the only
+USB-silencing primitive — fan-in owns the capture; the standby daemon emits
+nothing). In manual source-selection mode, fanin's selected-input gate is the
+arbiter instead; mux releases any USB mute so choosing a source does not turn
+other sources on/off. When auto mode resumes and all other sources go idle, mux
+UNMUTEs the lane so a fresh host transition (pause-then-play on Mac) can re-take
+the speaker. The lane keeps reporting its pre-mute frames/level, so a muted-but-
+streaming host still reads as "playing" (no mute→release→mute flap).
 
 **Debugging quick reference**:
 
@@ -2718,11 +2724,11 @@ them to the same value — the tools will both break.
 
 **Escape hatch**: `JASPER_USBSINK_PREEMPT=disabled` in
 `/etc/jasper/jasper.env` (case-insensitive, exact literal `disabled`)
-turns off the mux's preempt-via-POST mechanism. USB then behaves like
+turns off the mux's fan-in-lane-MUTE preempt. USB then behaves like
 Bluetooth — when a new source starts, audio briefly mixes until the
-host stops on its own. Useful if the localhost HTTP POST is ever
-found to be causing unexpected disruption; lets an operator degrade
-to graceful-mix without a redeploy or daemon restart. Restart
+host stops on its own. Useful if the lane mute is ever found to be
+causing unexpected disruption; lets an operator degrade to
+graceful-mix without a redeploy or daemon restart. Restart
 `jasper-control` after editing for the change to take effect.
 Mirrors `JASPER_AIRPLAY_METADATA_GATE` / `JASPER_MUX_SPOTIFY_PREEMPT_RESTART`
 / `JASPER_SHAIRPORT_SUPERVISOR`.

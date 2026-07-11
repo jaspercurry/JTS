@@ -55,11 +55,14 @@ def test_asoundrc_has_no_legacy_renderer_dmix():
 
 def test_asoundrc_declares_private_renderer_lanes():
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
+    # No usbsink_substream: USB audio is DIRECT-captured by jasper-fanin from
+    # hw:UAC2Gadget (the aloop solo write lane hw:Loopback,0,3 was removed
+    # 2026-07-10). Pair 3's capture side is still read by fan-in as the usbsink
+    # lane's idle fallback, but nothing writes the alias.
     aliases = {
         "librespot_substream": "hw:Loopback,0,0",
         "shairport_substream": "hw:Loopback,0,1",
         "bluealsa_substream": "hw:Loopback,0,2",
-        "usbsink_substream": "hw:Loopback,0,3",
         "correction_substream": "hw:Loopback,0,4",
     }
     seen: set[str] = set()
@@ -98,8 +101,11 @@ def test_renderer_units_use_private_lanes():
     assert "audio_topology.env" not in bluealsa
     assert "jasper_renderer_in" not in bluealsa
 
+    # USB is NOT a loopback-writing renderer anymore: the standby-only usbsink
+    # daemon opens no playback (fan-in DIRECT-captures the gadget). Pin the deletion.
     usbsink = (REPO / "deploy" / "systemd" / "jasper-usbsink.service").read_text()
-    assert "JASPER_USBSINK_PLAYBACK_DEVICE=usbsink_substream" in usbsink
+    assert "usbsink_substream" not in usbsink
+    assert "JASPER_USBSINK_PLAYBACK_DEVICE" not in usbsink
     assert "audio_topology.env" not in usbsink
 
 

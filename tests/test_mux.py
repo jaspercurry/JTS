@@ -344,9 +344,9 @@ def test_mux_service_can_write_state_dir():
 
 
 def _stub_usbsink_preempt(mux: Mux):
-    """Replace the HTTP-POST helper so tests can assert the calls
-    without binding 127.0.0.1:8781. Returns the mock so callers can
-    inspect call args."""
+    """Replace the USB-preempt helper so tests can assert the calls
+    without touching the fan-in control socket. Returns the mock so callers
+    can inspect call args."""
     mux._usbsink_set_preempt = AsyncMock(
         side_effect=lambda silenced, *, reason: setattr(
             mux, "_usbsink_preempted", bool(silenced),
@@ -573,63 +573,50 @@ async def test_combo_usb_survives_single_fanin_status_miss(
     assert mux._winner is Source.USBSINK
 
 
-@pytest.mark.asyncio
-async def test_solo_box_never_takes_combo_path(mux, patched_probes, monkeypatch):
-    _stub_pauses(mux)
-    _stub_usbsink_preempt(mux)
-    monkeypatch.setattr(
-        "jasper.mux.read_usbsink_state",
-        lambda *a, **k: {"playing": True, "host_connected": True},
-    )
-    fanin_probe = AsyncMock(return_value=None)
-    mux._fanin_status_best_effort = fanin_probe
-    _stub_probes(patched_probes, usbsink=True)
+# ----------------------------------------------------------------------
+# USB preempt transport. jasper-fanin DIRECT-captures the gadget and the
+# jasper-usbsink daemon is standby-only (it owns no audio path), so mux silences
+# USB by MUTE/UNMUTE of the fan-in usbsink lane at its mix stage — the only
+# USB-silencing primitive. (The old :8781 solo-bridge POST path was removed with
+# the aloop solo capture path.)
+# ----------------------------------------------------------------------
 
-    await mux._tick()
-    assert mux._winner is Source.USBSINK
-    assert mux._usbsink_combo_box is False
-    assert mux._status_payload()["usbsink"]["combo"] is False
-    fanin_probe.assert_not_awaited()
+
+def _make_mux_mute_stubbed(tmp_path):
+    """Real Mux with the fan-in lane-mute transport stubbed so
+    `_usbsink_set_preempt` / the reassertion run for real but touch no socket.
+    Returns (mux, fanin_lane_mute_mock)."""
+    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
+    fanin_mute = AsyncMock(return_value={})
+    m._fanin_lane_mute = fanin_mute
+    return m, fanin_mute
 
 
 # ----------------------------------------------------------------------
 # Escape-hatch env var. JASPER_USBSINK_PREEMPT=disabled short-circuits
-# the preempt POST so mux still tracks state but never asks the daemon
+# the fan-in lane MUTE so mux still tracks state but never asks fan-in
 # to silence — degrades to Bluetooth-style "brief mixing on preempt"
 # behaviour without requiring a redeploy.
 # ----------------------------------------------------------------------
 
 
-def _make_real_mux_http_stubbed(tmp_path):
-    """Build a real Mux with httpx stubbed, for tests that exercise
-    `_usbsink_set_preempt`'s real implementation directly (vs. going
-    through _pause which the existing tests stub out)."""
-    from unittest.mock import AsyncMock as _AsyncMock
-    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
-    fake_http = _AsyncMock()
-    # Default to a 200 OK so the POST path completes normally.
-    fake_http.post.return_value.status_code = 200
-    m._http = fake_http
-    return m, fake_http
-
-
 @pytest.mark.asyncio
-async def test_usbsink_set_preempt_skips_post_when_env_disabled(
+async def test_usbsink_set_preempt_skips_mute_when_env_disabled(
     monkeypatch, tmp_path,
 ):
     """With the escape hatch set, _usbsink_set_preempt updates the
-    tracked flag but does NOT POST to the daemon. Exercises the
+    tracked flag but does NOT MUTE the fan-in lane. Exercises the
     method directly — bypasses _pause which the other tests stub."""
     monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m, fake_http = _make_real_mux_http_stubbed(tmp_path)
+    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
 
     await m._usbsink_set_preempt(True, reason="test_escape_hatch")
 
     # State updated optimistically — mux's view of the world matches
-    # what it would have been if the POST had succeeded.
+    # what it would have been if the mute had succeeded.
     assert m._usbsink_preempted is True
-    # But no HTTP POST happened.
-    fake_http.post.assert_not_awaited()
+    # But no fan-in mute happened.
+    fanin_mute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -637,16 +624,16 @@ async def test_usbsink_set_preempt_unsilencing_also_skips_when_env_disabled(
     monkeypatch, tmp_path,
 ):
     """The escape hatch covers both directions — silence AND unsilence
-    skip the POST. Otherwise an operator enabling the escape hatch
+    skip the mute. Otherwise an operator enabling the escape hatch
     mid-flight (with USB already silenced) would never get unsilenced."""
     monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m, fake_http = _make_real_mux_http_stubbed(tmp_path)
+    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
     m._usbsink_preempted = True  # Pretend we were preempted before
 
     await m._usbsink_set_preempt(False, reason="test_release")
 
     assert m._usbsink_preempted is False
-    fake_http.post.assert_not_awaited()
+    fanin_mute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -661,11 +648,11 @@ async def test_usbsink_set_preempt_disabled_value_must_be_literal(
     in jasper.source_state._airplay_metadata_gate_disabled."""
     for val in ("1", "true", "off", "yes", "enabled", ""):
         monkeypatch.setenv("JASPER_USBSINK_PREEMPT", val)
-        m, fake_http = _make_real_mux_http_stubbed(tmp_path)
+        m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
 
         await m._usbsink_set_preempt(True, reason=f"val_{val}")
 
-        assert fake_http.post.await_count == 1, (
+        assert fanin_mute.await_count == 1, (
             f"JASPER_USBSINK_PREEMPT={val!r} should NOT trigger the "
             "escape hatch; only the literal 'disabled' (case-insensitive)."
         )
@@ -680,92 +667,58 @@ async def test_usbsink_set_preempt_disabled_case_insensitive(
     escape hatches."""
     for val in ("disabled", "DISABLED", "Disabled", "  disabled  "):
         monkeypatch.setenv("JASPER_USBSINK_PREEMPT", val)
-        m, fake_http = _make_real_mux_http_stubbed(tmp_path)
+        m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
 
         await m._usbsink_set_preempt(True, reason=f"val_{val!r}")
 
-        assert fake_http.post.await_count == 0, (
+        assert fanin_mute.await_count == 0, (
             f"JASPER_USBSINK_PREEMPT={val!r} should trigger the "
             "escape hatch (case-insensitive, whitespace-stripped)."
         )
 
 
 # ----------------------------------------------------------------------
-# Combo-box preempt transport. On a combo/direct box (JASPER_FANIN_USB_DIRECT)
-# jasper-fanin captures the gadget directly and the jasper-usbsink bridge is in
-# standby, so the :8781 preempt POST silences nothing. mux instead MUTE/UNMUTEs
-# the fan-in usbsink lane at its mix stage. Solo boxes keep the :8781 path.
+# Fan-in lane-mute preempt transport (the sole USB-silencing primitive).
 # ----------------------------------------------------------------------
 
 
-def _make_combo_mux_transports_stubbed(tmp_path):
-    """Real Mux flagged as a combo box, with BOTH preempt transports stubbed so
-    `_usbsink_set_preempt` / the reassertion run for real but touch no socket or
-    HTTP. Returns (mux, fanin_lane_mute_mock, fake_http)."""
-    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
-    m._usbsink_combo_box = True
-    fanin_mute = AsyncMock(return_value={})
-    m._fanin_lane_mute = fanin_mute
-    fake_http = AsyncMock()
-    fake_http.post.return_value.status_code = 200
-    m._http = fake_http
-    return m, fanin_mute, fake_http
-
-
 @pytest.mark.asyncio
-async def test_combo_preempt_mutes_fanin_lane_not_8781(tmp_path):
-    """Combo box: silencing USB is a fan-in lane MUTE, never a :8781 POST."""
-    m, fanin_mute, fake_http = _make_combo_mux_transports_stubbed(tmp_path)
+async def test_preempt_mutes_fanin_lane(tmp_path):
+    """Silencing USB is a fan-in lane MUTE at its mix stage."""
+    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
     await m._usbsink_set_preempt(True, reason="preempted_by_winner")
     fanin_mute.assert_awaited_once_with("usbsink", True)
-    fake_http.post.assert_not_awaited()
     assert m._usbsink_preempted is True
 
 
 @pytest.mark.asyncio
-async def test_combo_release_unmutes_fanin_lane(tmp_path):
-    """Combo release mirrors the existing release: UNMUTE the fan-in lane so a
-    fresh host pause-then-play can retake the speaker."""
-    m, fanin_mute, fake_http = _make_combo_mux_transports_stubbed(tmp_path)
+async def test_release_unmutes_fanin_lane(tmp_path):
+    """Release UNMUTEs the fan-in lane so a fresh host pause-then-play can
+    retake the speaker."""
+    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
     m._usbsink_preempted = True
     await m._usbsink_set_preempt(False, reason="all_others_idle")
     fanin_mute.assert_awaited_once_with("usbsink", False)
-    fake_http.post.assert_not_awaited()
     assert m._usbsink_preempted is False
 
 
 @pytest.mark.asyncio
-async def test_solo_box_preempt_still_posts_8781(tmp_path):
-    """Solo box (bridge not in standby): the :8781 POST path is unchanged and
-    the fan-in lane mute is NOT used. Its deletion is a follow-up PR."""
-    m, fake_http = _make_real_mux_http_stubbed(tmp_path)
-    m._usbsink_combo_box = False
-    fanin_mute = AsyncMock(return_value={})
-    m._fanin_lane_mute = fanin_mute
-    await m._usbsink_set_preempt(True, reason="preempted_by_winner")
-    fake_http.post.assert_awaited_once()
-    fanin_mute.assert_not_awaited()
-    assert m._usbsink_preempted is True
-
-
-@pytest.mark.asyncio
-async def test_combo_escape_hatch_never_mutes(monkeypatch, tmp_path):
-    """JASPER_USBSINK_PREEMPT=disabled degrades the combo path to graceful mix
-    identically to the :8781 path: mux tracks state but issues no mute."""
+async def test_escape_hatch_never_mutes(monkeypatch, tmp_path):
+    """JASPER_USBSINK_PREEMPT=disabled degrades to graceful mix: mux tracks
+    state but issues no mute."""
     monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m, fanin_mute, fake_http = _make_combo_mux_transports_stubbed(tmp_path)
+    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
     await m._usbsink_set_preempt(True, reason="preempted_by_winner")
     assert m._usbsink_preempted is True  # tracked optimistically
     fanin_mute.assert_not_awaited()
-    fake_http.post.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_combo_mute_failure_is_bounded_and_retried(tmp_path, caplog):
-    """A failed fan-in mute degrades exactly like a failed :8781 POST: WARN,
-    graceful mixing, tracked flag NOT advanced so the next tick re-attempts
-    (1 Hz, no retry storm, no silent failure)."""
-    m, fanin_mute, _ = _make_combo_mux_transports_stubbed(tmp_path)
+async def test_mute_failure_is_bounded_and_retried(tmp_path, caplog):
+    """A failed fan-in mute degrades gracefully: WARN, graceful mixing, tracked
+    flag NOT advanced so the next tick re-attempts (1 Hz, no retry storm, no
+    silent failure)."""
+    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
     fanin_mute.side_effect = RuntimeError("fanin socket gone")
     with caplog.at_level(logging.WARNING):
         await m._usbsink_set_preempt(True, reason="preempted_by_winner")
@@ -778,53 +731,44 @@ async def test_combo_mute_failure_is_bounded_and_retried(tmp_path, caplog):
 
 
 @pytest.mark.asyncio
-async def test_reassert_mute_reissues_while_combo_preempted(tmp_path):
+async def test_reassert_mute_reissues_while_preempted(tmp_path):
     """fan-in does not persist the mute (restarts unmuted), so mux reasserts it
     each tick while preempted — the next tick re-mutes a restarted fan-in."""
-    m, fanin_mute, _ = _make_combo_mux_transports_stubbed(tmp_path)
+    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
     m._usbsink_preempted = True
     await m._reassert_usbsink_preempt_mute()
     fanin_mute.assert_awaited_once_with("usbsink", True)
 
 
 @pytest.mark.asyncio
-async def test_reassert_mute_noops_off_the_combo_preempt_path(
+async def test_reassert_mute_noops_when_not_preempted_or_escaped(
     monkeypatch, tmp_path,
 ):
-    """Reassertion is a no-op when USB isn't preempted, on a solo box (the
-    :8781 bridge persists its own state), and under the escape hatch."""
+    """Reassertion is a no-op when USB isn't preempted and under the escape
+    hatch."""
     # Not preempted.
-    m, fanin_mute, _ = _make_combo_mux_transports_stubbed(tmp_path)
+    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
     m._usbsink_preempted = False
     await m._reassert_usbsink_preempt_mute()
     fanin_mute.assert_not_awaited()
 
-    # Solo box, even while preempted.
-    m2, fanin_mute2, _ = _make_combo_mux_transports_stubbed(tmp_path)
-    m2._usbsink_combo_box = False
+    # Escape hatch active.
+    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
+    m2, fanin_mute2 = _make_mux_mute_stubbed(tmp_path)
     m2._usbsink_preempted = True
     await m2._reassert_usbsink_preempt_mute()
     fanin_mute2.assert_not_awaited()
 
-    # Escape hatch active.
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m3, fanin_mute3, _ = _make_combo_mux_transports_stubbed(tmp_path)
-    m3._usbsink_preempted = True
-    await m3._reassert_usbsink_preempt_mute()
-    fanin_mute3.assert_not_awaited()
-
 
 @pytest.mark.asyncio
-async def test_tick_combo_preempt_reaches_fanin_mute(
+async def test_tick_preempt_reaches_fanin_mute(
     mux, patched_probes, monkeypatch,
 ):
-    """End-to-end through _tick: on a combo box, AirPlay preempting a playing
-    USB source drives a fan-in lane MUTE (not a :8781 POST) via the real _pause
-    path — proving the wiring, not just the transport method in isolation."""
+    """End-to-end through _tick: AirPlay preempting a playing USB source drives a
+    fan-in lane MUTE via the real _pause path — proving the wiring, not just the
+    transport method in isolation."""
     fanin_mute = AsyncMock(return_value={})
     mux._fanin_lane_mute = fanin_mute
-    fake_post = AsyncMock(return_value=SimpleNamespace(status_code=200))
-    mux._http.post = fake_post
     _stub_probes(patched_probes, usbsink=False, airplay=False)
     _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
 
@@ -836,12 +780,11 @@ async def test_tick_combo_preempt_reaches_fanin_mute(
     await mux._tick()  # AirPlay wins → USB preempted via fan-in mute
     assert mux._winner is Source.AIRPLAY
     fanin_mute.assert_any_await("usbsink", True)
-    fake_post.assert_not_awaited()
     assert mux._usbsink_preempted is True
 
 
 @pytest.mark.asyncio
-async def test_tick_combo_muted_host_stays_playing_for_liveness(
+async def test_tick_muted_host_stays_playing_for_liveness(
     mux, patched_probes, monkeypatch,
 ):
     """The telemetry-decoupling invariant at the mux level: while USB is
@@ -849,7 +792,6 @@ async def test_tick_combo_muted_host_stays_playing_for_liveness(
     frames, so mux keeps seeing the host as "playing". If mute zeroed the
     telemetry, mux would see USB "stop", release, and flap."""
     mux._fanin_lane_mute = AsyncMock(return_value={})
-    mux._http.post = AsyncMock(return_value=SimpleNamespace(status_code=200))
     _stub_probes(patched_probes, usbsink=False, airplay=False)
     # Frames keep advancing across every tick — a streaming (even if muted) host.
     _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000, 192_000])

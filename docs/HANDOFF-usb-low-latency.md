@@ -14,13 +14,14 @@ claim only through measured route-latency evidence.
 
 ## Current Production Route (2026-07-06)
 
-`usb_low_latency_48k` is the claiming profile. On a solo, ring-eligible USB
-combo box, the product default is the shm-ring path:
+`usb_low_latency_48k` is the claiming profile. On a ring-eligible USB gadget
+box, the product default is the shm-ring path. Since the aloop solo capture
+path was deleted (2026-07-10), `jasper-fanin` DIRECT-captures the gadget as the
+sole USB ingress — no `jasper-usbsink-audio` bridge hop, no `usbsink_substream`:
 
 ```
 UAC2 gadget capture
-  → jasper-usbsink-audio (Rust, 256 frames / 3 periods, S32_LE→S16_LE high-word truncation)
-  → usbsink_substream
+  → jasper-fanin DIRECT capture (hw:UAC2Gadget, period 256 / buffer 768, S32_LE→S16_LE high-word truncation)
   → jasper-fanin USB input resampler (target 512 + warm-up cushion 2048, ring 4096)
   → Ring A program.ring (jts_ring_capture, 2 slots × 128 frames)
   → CamillaDSP protection/correction (chunk 128 / target 128 / queue 1, rate_adjust off)
@@ -167,10 +168,11 @@ sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
   --confirm-route-health-ok
 ```
 
-`run` defaults to `--tap-transport auto`, so on a **USB combo box** it arms the
-fan-in DIRECT-capture tap (the shipping ingress) and on a solo/aloop box the
-usbsink bridge tap — see "Harness support (`--tap-transport`)" under "Impulse tap
-moves to fan-in (C4)" below. It prints the chosen tap first, e.g.
+`run` defaults to `--tap-transport auto`. Since the aloop solo path (and its
+bridge `:8781` tap) were deleted (2026-07-10), the fan-in DIRECT-capture tap is
+the sole ingress, so `auto` always resolves to `fanin` — see "Harness support
+(`--tap-transport`)" under "Impulse tap moves to fan-in (C4)" below. It prints
+the chosen tap first, e.g.
 `tap transport=fanin path=/run/jasper-fanin/impulse-tap.jsonl (...)`.
 
 Or drive `jasper-route-latency-artifact` directly once a samples file already
@@ -246,11 +248,14 @@ deltas and decide.
 > `JASPER_FANIN_HOST_CLOCK` + `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` = `enabled`)
 > into `/var/lib/jasper/fanin.env` AND `JASPER_USBSINK_AUDIO_STANDBY=1` into
 > `/var/lib/jasper/usbsink.env`, then restarts jasper-usbsink so the bridge stands
-> down and stops holding `hw:UAC2Gadget`. Off a combo box it writes the EXPLICIT off
-> values (`disabled` / `0`, not unset — a stale `enabled` in `/etc/jasper/jasper.env`
-> loads first and would otherwise win). Both halves MUST arm together: arming only
-> the fan-in half leaves fan-in and the still-live bridge fighting over the gadget
-> capture, and USB audio goes silent or crash-loops. The prose below still describes
+> down. Since the aloop solo path was deleted (2026-07-10) that STANDBY value is
+> written **unconditionally** `1` (armed or not) — the daemon is standby-only and
+> never captures `hw:UAC2Gadget`, so disarming does NOT promote a bridge capture.
+> Off a combo box it writes the EXPLICIT fan-in off value
+> (`JASPER_FANIN_USB_DIRECT=disabled`, not unset — a stale `enabled` in
+> `/etc/jasper/jasper.env` loads first and would otherwise win); disarming that way
+> leaves USB audio unavailable (there is no aloop solo capture to fall back to). The
+> prose below still describes
 > HOW the combo works and its safety matrix; where it says "DEFAULT-OFF / hand-armed"
 > read that as the pre-P3 posture. **To revert:** set
 > `JASPER_FANIN_COUPLING_CHOICE=operator` and set the combo keys to their off values
@@ -262,7 +267,8 @@ deltas and decide.
 usbsink **bridge hop + the snd-aloop cable** (~25 ms measured) from the USB path:
 fan-in captures `hw:UAC2Gadget` **directly** and narrows S32→S16 itself, feeding
 the SAME per-input `LaneResampler` the aloop path used. The bridge drops to
-state/HTTP-only standby (opens NO PCM, leaving the gadget free), so the DSP /
+state/watchdog-only standby (opens NO PCM and — since 2026-07-10 — has no
+`:8781` HTTP listener, leaving the gadget free), so the DSP /
 crossover / correction / protection chain downstream of fan-in is unchanged. The
 one deliberate exception is source arbitration + renderer-state truth — see the
 arbitration caveat below the flag matrix.
@@ -274,17 +280,23 @@ UAC2 gadget capture
   → fan-in output → CamillaDSP → outputd  (unchanged)
 ```
 
-Both halves are DEFAULT-OFF and fail-safe (only the exact literals arm them:
-`JASPER_FANIN_USB_DIRECT=enabled`, `JASPER_USBSINK_AUDIO_STANDBY=1`).
+`JASPER_USBSINK_AUDIO_STANDBY` is now written UNCONDITIONALLY to `1` (the daemon
+is standby-only), so the one live arming literal is
+`JASPER_FANIN_USB_DIRECT=enabled`; anything else fails safe to the idle aloop
+fallback (`hw:Loopback,1,3`, unwritten → USB silent, no crash).
 
 ### Flag matrix (C6)
 
+> **Post-deletion (2026-07-10):** the bridge is standby-only, so
+> `JASPER_USBSINK_AUDIO_STANDBY` is written UNCONDITIONALLY to `1` and is no
+> longer a mode selector — the only live axis is `JASPER_FANIN_USB_DIRECT`. The
+> old off/off "bridge bridges gadget→aloop" lane (and its byte-identical
+> fallback) is gone; there is no aloop solo capture anymore.
+
 | `FANIN_USB_DIRECT` | `USBSINK_STANDBY` | Result |
 |---|---|---|
-| off (default) | off (default) | **Today's lane** — byte-identical. Bridge bridges gadget→aloop; fan-in reads aloop. |
-| `enabled` | `1` | **PoC target.** Fan-in captures the gadget directly; bridge is state/HTTP-only. The bridge hop + aloop cable (~25 ms) are gone. |
-| `enabled` | off | Misconfig, **safe**: the bridge holds `hw:UAC2Gadget`, so fan-in's direct open fails → the lane goes silent-idle with a 2 s reopen retry (`/state` fan-in `usbsink.direct.present=false`, `retries` grows, one transition log). USB source is SILENT (the direct lane never opens its aloop PCM). Recover by fixing the flags — no crash. |
-| off | `1` | Misconfig, **safe**: the bridge doesn't bridge; fan-in reads an unfed aloop substream → silence via EAGAIN. Observable: bridge `standby:true` while fan-in lane `source:"lane"`. |
+| `enabled` | `1` (always) | **Armed combo (product default).** Fan-in DIRECT-captures `hw:UAC2Gadget`; the bridge is standby-only (state/watchdog, no PCM). This is the sole USB pipeline. |
+| off (`disabled`) | `1` (always) | **Combo disarmed → USB unavailable.** Fan-in's `usbsink` lane falls back to the idle aloop (`hw:Loopback,1,3`), which nobody writes → USB source is SILENT until an `--auto` pass re-arms direct capture. No crash; observable as fan-in lane `source:"lane"`. |
 
 **Visibility gap — now CLOSED (combo silence gate).** In standby the bridge
 still writes `playing:false` on its OWN `state.json` (no audio loop; pinned by
@@ -331,12 +343,11 @@ already structurally sound. Crucially the mute is applied at the SUM only:
 the direct lane keeps reporting its pre-mute `frames_read` / `rms_dbfs`, so
 mux's combo-liveness gate still sees a muted-but-streaming host as active (no
 mute→"stopped"→release flap; pinned by
-`lane_mix_contributes_mute_overrides_selection`). Solo boxes keep the :8781
-path unchanged; its deletion follows the aloop-capture-path deletion. This PR
-is the **prerequisite for that deletion**: once every box is direct-capture,
-the :8781 preempt has no bridge to talk to, and fan-in `MUTE`/`UNMUTE`
-becomes the **load-bearing** arbitration primitive — the only preempt
-transport left, rather than a belt-and-suspenders layer over SELECT. On a
+`lane_mix_contributes_mute_overrides_selection`). **Since 2026-07-10 the `:8781`
+preempt path is deleted** (with the aloop solo capture): every box is
+direct-capture, so fan-in `MUTE`/`UNMUTE` is now the **load-bearing**
+arbitration primitive — the only preempt transport left, rather than a
+belt-and-suspenders layer over SELECT. On a
 combo box, `JASPER_USBSINK_PREEMPT=disabled` skips the `MUTE` call, but the
 losing USB lane still stays excluded from the sum by the SELECT gate — no
 audible layering is expected even with the escape hatch active. The
@@ -348,14 +359,15 @@ for real layering.
 
 The Stage 1 host-slaved USB clock (steer the gadget's `Capture Pitch 1000000`
 ctl so the host tracks the DAC clock, closing the standing rate offset at its
-source) has **one home per mode**, decided by the invariant *the daemon that
-owns the gadget capture owns the pitch ctl*:
+source) follows the invariant *the daemon that owns the gadget capture owns the
+pitch ctl*. Since the aloop solo path was deleted (2026-07-10) there is only one
+owner:
 
-- **solo (aloop) mode** — the usbsink bridge owns `hw:UAC2Gadget`, so it drives
-  the ladder: `JASPER_USBSINK_HOST_CLOCK=enabled` (see "Host-slaved USB clock
-  (Stage 1)" below).
-- **combo (USB DIRECT) mode** — fan-in owns the capture, so a dedicated
-  `fanin-host-clock` thread drives it: `JASPER_FANIN_HOST_CLOCK=enabled`.
+- **combo (USB DIRECT) mode — the only mode** — fan-in owns the capture, so a
+  dedicated `fanin-host-clock` thread drives it: `JASPER_FANIN_HOST_CLOCK=enabled`.
+- ~~**solo (aloop) mode**~~ — deleted with the bridge's `host_clock.rs`,
+  `JASPER_USBSINK_HOST_CLOCK`, and the `check_usbsink_host_clock` doctor check.
+  The "Host-slaved USB clock (Stage 1)" section below is archaeology of it.
 
 Both run the **same** shared ladder/probe/servo (`rust/jasper-host-clock`,
 one servo core; the per-daemon differences are the `event=` log prefix —
@@ -451,9 +463,9 @@ not a live signal.
 
 | `FANIN_HOST_CLOCK` | `FANIN_USB_DIRECT` | Result |
 |---|---|---|
-| off (default) | any | **Inert.** No `fanin-host-clock` thread; `/state` fan-in `host_clock.enabled=false`. In solo mode usbsink owns the clock (its own flag). |
+| off (default) | any | **Inert.** No `fanin-host-clock` thread; `/state` fan-in `host_clock.enabled=false`. |
 | `enabled` | `enabled` | **Combo target.** fan-in owns the gadget capture and steers `Capture Pitch`; per-session probe → L0 pins the DIRECT lane fill at target. `/state.audio_graph.fanin.host_clock` carries the ladder/DLL/probe block. |
-| `enabled` | off | **Inert, warned.** One `event=fanin.host_clock.noop reason=usb_direct_off`; zero ctl writes ever — in aloop mode the usbsink bridge owns the clock. No thread spawned. |
+| `enabled` | off | **Inert, warned.** One `event=fanin.host_clock.noop reason=usb_direct_off`; zero ctl writes ever (fan-in owns the ctl only when it owns the direct capture). No thread spawned. |
 | `enabled` | `enabled`, but no direct-lane resampler | **Inert, warned.** One `event=fanin.host_clock.noop reason=no_direct_resampler` (resampler construction fell back to none — fail-soft). No thread. |
 
 **Double-enable misconfig (R5):** `JASPER_FANIN_HOST_CLOCK=enabled` +
@@ -465,38 +477,38 @@ command once. usbsink self-recovers via its own probe / L2 machinery, and audio
 is unaffected either way. Fix by putting the bridge in standby
 (`JASPER_USBSINK_AUDIO_STANDBY=1`) — the intended combo posture.
 
-**Neutrality belt-and-braces — BOTH belts are owner-gated (the epsilon-desync
-class is symmetric).** Each USB-clock owner carries a `ExecStopPost` that resets
-the pitch to `1000000` on SIGKILL / OOM / watchdog abort, and **each gates on
-being the current owner** so it never stomps the *other* daemon's live command
-(which would desync that daemon's >10 ppm write-suppression epsilon — it believes
-its last written value is still live and won't rewrite until real drift crosses
-the gate, leaving the host un-slaved for minutes):
+> **Post-deletion (2026-07-10).** With the aloop solo path gone, the usbsink
+> daemon is standby-only: it never opens `hw:UAC2Gadget` or the pitch ctl, so
+> **its `ExecStopPost` pitch-neutralize belt was DELETED entirely** (it existed
+> only for the deleted solo path where THIS daemon drove the pitch). Fan-in is the
+> sole owner of the gadget + its pitch ctl in combo mode, and the only unit that
+> carries a neutralize belt. The two-owner framing below is now archaeology.
 
-| Unit | Belt gate | Fires when… | Would-desync-if-unconditional |
-|---|---|---|---|
-| `jasper-fanin.service` | `$JASPER_FANIN_HOST_CLOCK = enabled` **AND** `$JASPER_FANIN_USB_DIRECT = enabled` | fan-in owns the ctl (combo mode) | a **solo-mode** usbsink L0 command (fan-in restarts every deploy) |
-| `jasper-usbsink.service` | `$JASPER_USBSINK_AUDIO_STANDBY != 1` | usbsink owns the ctl (solo/aloop mode) | a **combo-mode** fan-in L0 command while usbsink stands by (deploy try-restarts usbsink on binary change; operators restart it) |
+**Neutrality belt-and-braces — fan-in is the sole pitch-ctl owner.** In combo mode
+fan-in owns `hw:UAC2Gadget` and drives the host-clock ladder, so it carries an
+`ExecStopPost` that resets the pitch to `1000000` on SIGKILL / OOM / watchdog abort.
+It **gates on being the current owner** so it never fires on a box where it is NOT
+the writer (which would leave a stale command); the usbsink daemon carries no belt
+because it never writes the ctl.
 
-Both gates are load-bearing and mirror each other: the owner is exactly the
-daemon holding `hw:UAC2Gadget`, and only the owner ever writes the ctl. Both
-target the same element by (iface, name), never numid.
+| Unit | Belt gate | Fires when… |
+|---|---|---|
+| `jasper-fanin.service` | `$JASPER_FANIN_HOST_CLOCK = enabled` **AND** `$JASPER_FANIN_USB_DIRECT = enabled` | fan-in owns the ctl (combo mode) |
+| ~~`jasper-usbsink.service`~~ | *(removed 2026-07-10)* | standby-only daemon never owns the ctl — no belt |
 
 - **fan-in's belt requires BOTH flags** (F2): fan-in owns the ctl only when
   `HOST_CLOCK` **and** `USB_DIRECT` are enabled (it resolves
   `host_clock_enabled && !usb_direct_off` and issues zero ctl writes with only
   `HOST_CLOCK` set — `noop reason=usb_direct_off`). Gating on `HOST_CLOCK` alone
   would fire the belt on a part-rolled-back combo box (unset `USB_DIRECT`, left
-  `HOST_CLOCK=enabled`) while solo usbsink's DLL is the live writer — the same
-  every-deploy desync the gate exists to prevent.
-- **usbsink stays fully hands-off in standby** (F1): in standby usbsink opens
-  no ctl and skips even its one-shot startup/exit neutralize (`owns_host_clock_ctl()`
-  = `!audio_standby`). A clean stop/start cycle of the standby daemon — a deploy
-  try-restart on binary change, or an operator restart — therefore never resets
-  fan-in's live combo command. The `SIGKILL != 1` ExecStopPost belt is the
-  belt-and-braces for the un-clean paths only. Before F1, standby's neutralizes
-  still stomped fan-in's command on every clean cycle; before F2 only fan-in's
-  belt was gated (usbsink's unconditional belt was the reverse leak on SIGKILL).
+  `HOST_CLOCK=enabled`).
+- **usbsink is fully hands-off** (F1, now structural): the standby-only daemon
+  opens no ctl and has no host clock (`owns_host_clock_ctl()` and the whole solo
+  pitch ladder were deleted). A clean or unclean stop/start of the standby daemon
+  never touches fan-in's live combo command — there is no belt and no actuator to
+  stomp it. (Historically, before the solo path was removed, usbsink DID drive the
+  pitch and needed its own `STANDBY != 1`-gated belt; that is the archaeology the
+  table row above marks removed.)
 
 Combo host-clock telemetry:
 
@@ -594,8 +606,8 @@ In direct mode the certified route's ingress is fan-in's `hw:UAC2Gadget`
 capture, so the impulse tap is **relocated into fan-in** (ported verbatim from
 `jasper-usbsink-audio`: same JSONL schema, same detector, same arm validation).
 It runs inline in the direct read over the converted S16 slice, before the
-resampler. **The bridge's own tap is DEAD in direct mode** (the bridge is in
-standby and opens no capture), so the fan-in JSONL is the ONLY ingress evidence.
+resampler. **The bridge's own tap is DELETED** (2026-07-10, with the bridge
+`:8781` listener), so the fan-in JSONL is the ONLY ingress evidence.
 
 - Path: `/run/jasper-fanin/impulse-tap.jsonl` (the JSONL schema is unchanged:
   `{"monotonic_ns","frame_index","ring_fill_frames","peak"}`).
@@ -604,15 +616,16 @@ standby and opens no capture), so the fan-in JSONL is the ONLY ingress evidence.
   `"tap":{armed,events_written,events_dropped,threshold,refractory_ms,max_events,auto_disarm_at_epoch_ms,path}`.
 
 **Harness support (`--tap-transport`).** The harness arms this tap natively —
-`run` / `capture` / `arm` / `disarm` default to `--tap-transport auto`, which
-reads fan-in `STATUS` and picks the fan-in DIRECT-capture tap whenever an input
-lane reports `source:"direct"` (combo mode), else the usbsink bridge tap on
-`:8781`. So the end-to-end `run` walkthrough above measures the shipping route on
-a combo box **with no extra flags** — this closes the earlier gap where `run`
-armed the (standby, never-firing) usbsink tap and recorded zero detections. `run`
+`run` / `capture` / `arm` / `disarm` default to `--tap-transport auto`. Since the
+aloop solo path and its bridge `:8781` tap were deleted (2026-07-10), the fan-in
+DIRECT-capture tap is the only ingress, so `auto` always resolves to the fan-in
+tap (there is no usbsink bridge tap to fall back to). This measures the shipping
+route on any gadget box **with no extra flags**, closing the earlier gap where
+`auto` could arm the standby, never-firing usbsink tap and record zero
+detections. `run`
 prints the chosen ingress up front
-(`tap transport=fanin path=/run/jasper-fanin/impulse-tap.jsonl (...)`). Force
-either side with `--tap-transport fanin|usbsink` (fan-in socket overridable via
+(`tap transport=fanin path=/run/jasper-fanin/impulse-tap.jsonl (...)`). Force the
+fan-in tap explicitly with `--tap-transport fanin` (fan-in socket overridable via
 `--tap-socket`, default `/run/jasper-fanin/control.sock`). The combo-box tap
 target is pinned to the fan-in `DEFAULT_TAP_PATH` by
 `tests/test_route_latency_tap_transport.py`. Selection lives in
@@ -954,14 +967,30 @@ floor. The real remaining levers are:
 
 ## Host-slaved USB clock (Stage 1)
 
+> **Removed 2026-07-10 — this is the DELETED bridge (solo/`Fill`-mode) host
+> clock.** The `jasper-usbsink-audio` host clock — `host_clock.rs`,
+> `JASPER_USBSINK_HOST_CLOCK*`, the `Capture Pitch 1000000` `Fill`-mode ladder,
+> the `jasper-usbsink.service` `ExecStopPost` pitch-neutralize belt, the
+> `/state.audio_graph.rust_bridge.host_clock` telemetry, and the
+> `check_usbsink_host_clock` doctor check — was deleted with the aloop solo
+> capture path. The SURVIVING host clock is the combo/fan-in one
+> (`JASPER_FANIN_HOST_CLOCK`, `rust/jasper-fanin/src/host_clock.rs` + the shared
+> `jasper-host-clock` crate, `ObsMode::Correction`, surfaced at
+> `/state.audio_graph.fanin.host_clock`) — see "Host-slaved USB clock in combo
+> mode (fan-in owns the ctl)" above. Everything in this section is archaeology of
+> the deleted `Fill`-mode ladder; the control-theory contrast (`Fill` vs
+> `Correction`) still explains why the surviving combo servo uses a pure integral.
+
 Default-**OFF** mechanism + telemetry + evidence, landed alongside the Stage 0
 click/capture harness above. It commands the HOST's USB audio clock instead of
 only reconciling the offset in software on our side — a structurally different
 lever from the fan-in USB input resampler, which absorbs the same standing
-rate offset in the digital domain. Source:
-[`rust/jasper-usbsink-audio/src/host_clock.rs`](../rust/jasper-usbsink-audio/src/host_clock.rs)
-(the module docstring there is the authoritative derivation; this section is
-the operational summary).
+rate offset in the digital domain. The usbsink `host_clock.rs` module that once
+held this derivation was deleted with the aloop solo path (2026-07-10); the
+authoritative derivation now lives in the shared crate
+[`rust/jasper-host-clock/src/lib.rs`](../rust/jasper-host-clock/src/lib.rs),
+which fan-in consumes for the surviving combo-mode servo. This section is the
+operational summary of the deleted `Fill`-mode variant.
 
 ### Mechanism
 
@@ -1535,6 +1564,14 @@ functional difference from `L0_LOCKED` beyond the doctor/telemetry surfacing.
 
 ### Pitch neutrality — the safety invariant
 
+> **Removed 2026-07-10 (archaeology).** This whole four-layer usbsink pitch-
+> neutrality scheme was DELETED with the aloop solo path — the standby-only
+> usbsink daemon opens no ctl and has no host clock, so it has no startup/exit
+> neutralize, no ladder, and no `ExecStopPost` belt. The surviving neutrality
+> invariant is fan-in's alone (combo mode; see "Neutrality belt-and-braces —
+> fan-in is the sole pitch-ctl owner" above). The text below describes the
+> deleted solo behavior for historical context only.
+
 A host must never be left slaved to a stale command by a crashed or stopped
 daemon. Enforced in four layers, all gated on usbsink OWNING the ctl
 (`owns_host_clock_ctl()` = `!audio_standby` — in combo standby fan-in owns it,
@@ -1828,7 +1865,20 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-10 ("Arbitration mechanism" section corrected — auto
+Last verified: 2026-07-10 (aloop solo USB capture path DELETED — `jasper-fanin`
+DIRECT-captures `hw:UAC2Gadget` as the sole USB ingress; the
+`jasper-usbsink-audio` bridge is standby-only. Removed with it: the bridge
+`:8781` preempt/tap listener, the bridge's solo `Fill`-mode host clock
+(`JASPER_USBSINK_HOST_CLOCK*`, `rust/jasper-usbsink-audio/src/host_clock.rs`, the
+`ExecStopPost` pitch belt, `/state.audio_graph.rust_bridge.host_clock`, and
+`check_usbsink_host_clock`), and the `usbsink_substream` write alias. Updated the
+Current Production Route ingress, the STANDBY/USB_DIRECT flag matrix (STANDBY now
+always `1`), the `--tap-transport` prose (`auto` == fan-in, the only ingress),
+the combo host-clock "one home per mode" + fan-in flag matrix + neutrality-belt
+notes, and added a removed-callout atop the Stage-1 (bridge) host-clock section.
+The surviving combo host clock (`JASPER_FANIN_HOST_CLOCK`, `jasper-fanin`
+`Correction` mode) is unchanged. Prior 2026-07-10: "Arbitration mechanism"
+section corrected — auto
 mode has single-SELECTed the winner since `414adcd0` (2026-05-27), which
 already excluded a non-winner USB lane from fan-in's sum with no exemption for
 the DIRECT lane, so a genuinely multi-source gadget box never actually layered

@@ -2,38 +2,34 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Client for the Rust ingress tap's arm/disarm/status HTTP surface + its
+"""Client for the fan-in DIRECT-capture ingress tap's arm/disarm surface + its
 JSONL event log.
 
-The tap lives inside ``jasper-usbsink-audio`` (Rust; out of this package's
-scope) on its existing ``127.0.0.1:8781`` listener, extending the same
-hand-rolled HTTP handler that already serves ``GET /status`` and the
-preempt endpoints. This module is the harness's *only* interface to that
-process: it never imports Rust code or touches the crate directly, only
-speaks the pinned HTTP + JSONL contract.
+The USB ingress tap lives in ``jasper-fanin`` (Rust; ``rust/jasper-fanin/src/
+impulse_tap.rs``): fan-in DIRECT-captures ``hw:UAC2Gadget`` and taps the impulse
+there, armed over its control UDS with plaintext line verbs. This module never
+imports Rust code — it only speaks the pinned control-socket + JSONL contract.
 
-Pinned contract (see the Stage 0 architecture brief for the authoritative
-version):
+The historical usbsink-bridge HTTP tap (``127.0.0.1:8781``) was removed with the
+aloop solo capture path (2026-07-10): the jasper-usbsink daemon is standby-only
+and opens no capture, so it has no tap to arm.
 
-* ``POST /tap/arm`` — body ``{"threshold":..,"hysteresis":..,
+Pinned contract (matches ``TapConfig::from_arm_body`` / the tap verb serializers
+in the Rust fan-in crate):
+
+* ``TAP_ARM {json}`` — body ``{"threshold":..,"hysteresis":..,
   "refractory_ms":..,"max_events":..,"auto_disarm_min":..,"path":..}``
   (all optional). Truncates the JSONL, resets counters, arms the detector.
-* ``POST /tap/disarm`` — clears armed state.
-* ``GET /tap`` — current armed state + counters + path.
+  Reply ``OK armed path=<path>`` or ``ERR <reason>``.
+* ``TAP_DISARM`` — clears armed state. Reply
+  ``OK disarmed events_written=N events_dropped=M``.
 * JSONL event schema (one object per line):
   ``{"monotonic_ns":..,"frame_index":..,"ring_fill_frames":..,"peak":..}``.
-
-Uses stdlib ``urllib.request`` rather than ``requests`` — this is a single
-localhost JSON round-trip, not a general HTTP client need, and keeping this
-module import-cheap (no third-party import at module load) matters for a
-CLI that most operators invoke for a quick `arm`/`disarm` one-liner.
 """
 from __future__ import annotations
 
 import json
 import socket
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -41,20 +37,11 @@ from typing import Protocol, runtime_checkable
 from jasper.route_latency.pairing import TapEvent
 
 
-DEFAULT_TAP_HOST = "127.0.0.1"
-DEFAULT_TAP_PORT = 8781
-DEFAULT_TAP_PATH = "/run/jasper-usbsink/impulse-tap.jsonl"
-DEFAULT_HTTP_TIMEOUT_SECONDS = 5.0
-
-# The fan-in DIRECT-capture tap (the combo-box ingress). On a USB combo box
-# (JASPER_FANIN_USB_DIRECT=enabled) the certified route's ingress is fan-in's
-# hw:UAC2Gadget DIRECT capture, so the impulse tap lives in jasper-fanin, NOT the
-# usbsink bridge — the bridge stands down and opens no capture, so its :8781 tap
-# never fires. fan-in exposes the tap over its control UDS with plaintext verbs
-# (not HTTP). These MUST match the Rust side: DEFAULT_TAP_PATH / the control
-# socket in rust/jasper-fanin/src/impulse_tap.rs + config.rs. FANIN_CONTROL_SOCKET
-# is the SAME socket jasper.route_latency.status_socket reads STATUS from
-# (FANIN_STATUS_SOCKET); pinned equal by the tap-transport contract test.
+# The fan-in DIRECT-capture tap (the only USB ingress tap). fan-in exposes it over
+# its control UDS with plaintext verbs. These MUST match the Rust side: the control
+# socket + default JSONL path in rust/jasper-fanin/src/impulse_tap.rs + config.rs.
+# FANIN_CONTROL_SOCKET is the SAME socket jasper.route_latency.status_socket reads
+# STATUS from (FANIN_STATUS_SOCKET); pinned equal by the tap-transport contract test.
 FANIN_CONTROL_SOCKET = "/run/jasper-fanin/control.sock"
 FANIN_DEFAULT_TAP_PATH = "/run/jasper-fanin/impulse-tap.jsonl"
 DEFAULT_FANIN_TAP_TIMEOUT_SECONDS = 5.0
@@ -108,103 +95,18 @@ class TapArmParams:
         return body
 
 
-@dataclass(frozen=True)
-class TapStatus:
-    """Parsed ``GET /tap`` response."""
-
-    armed: bool
-    events_written: int
-    events_dropped: int
-    path: str
-    raw: dict[str, object]
-
-
-def _coerce_int(value: object) -> int:
-    """Best-effort int coercion for a JSON-decoded value of unknown shape.
-
-    A malformed/missing counter becomes 0 rather than raising — a status
-    read is diagnostics, not a contract the harness should crash on.
-    """
-
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, (int, float, str)):
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
-    return 0
-
-
 @runtime_checkable
 class TapArmer(Protocol):
-    """The arm/disarm surface both tap transports satisfy.
+    """The arm/disarm surface the tap client satisfies.
 
-    Two implementations speak two different wires to two different daemons —
-    :class:`TapClient` (usbsink bridge, HTTP :8781) and :class:`FaninTapClient`
-    (fan-in DIRECT-capture tap, control UDS) — so the harness can drive whichever
-    tap is actually live on the box behind one interface. ``arm`` raises
+    :class:`FaninTapClient` (fan-in DIRECT-capture tap, control UDS) is the sole
+    implementation since the usbsink-bridge HTTP tap was removed. ``arm`` raises
     :class:`TapClientError` on any failure (a run with a tap that never armed
     produces zero ingress evidence — the "refuse to certify" case)."""
 
     def arm(self, params: TapArmParams | None = None) -> dict[str, object]: ...
 
     def disarm(self) -> dict[str, object]: ...
-
-
-class TapClient:
-    """Thin HTTP client for the Rust tap's arm/disarm/status endpoints."""
-
-    def __init__(
-        self,
-        *,
-        host: str = DEFAULT_TAP_HOST,
-        port: int = DEFAULT_TAP_PORT,
-        timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
-    ) -> None:
-        self._base_url = f"http://{host}:{port}"
-        self._timeout_seconds = timeout_seconds
-
-    def _request(self, method: str, path: str, body: dict[str, object] | None = None) -> dict[str, object]:
-        data = json.dumps(body).encode("utf-8") if body is not None else None
-        request = urllib.request.Request(
-            f"{self._base_url}{path}",
-            data=data,
-            method=method,
-            headers={"Content-Type": "application/json"} if data is not None else {},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
-                payload = response.read()
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            raise TapClientError(
-                f"{method} {path} failed against {self._base_url} — is "
-                "jasper-usbsink-audio running with the 8781 listener? "
-                f"({e})"
-            ) from e
-        try:
-            parsed = json.loads(payload.decode("utf-8"))
-        except json.JSONDecodeError as e:
-            raise TapClientError(f"{method} {path} returned invalid JSON: {e}") from e
-        if not isinstance(parsed, dict):
-            raise TapClientError(f"{method} {path} response root is not an object")
-        return parsed
-
-    def arm(self, params: TapArmParams | None = None) -> dict[str, object]:
-        return self._request("POST", "/tap/arm", (params or TapArmParams()).to_body())
-
-    def disarm(self) -> dict[str, object]:
-        return self._request("POST", "/tap/disarm")
-
-    def status(self) -> TapStatus:
-        raw = self._request("GET", "/tap")
-        return TapStatus(
-            armed=bool(raw.get("armed", False)),
-            events_written=_coerce_int(raw.get("events_written")),
-            events_dropped=_coerce_int(raw.get("events_dropped")),
-            path=str(raw.get("path", "")),
-            raw=raw,
-        )
 
 
 def _coerce_int_or_str(value: str) -> object:
@@ -220,9 +122,7 @@ def _coerce_int_or_str(value: str) -> object:
 def parse_tap_socket_reply(reply: str) -> dict[str, object]:
     """Parse a fan-in tap control-socket reply line into a dict.
 
-    The fan-in tap replies plaintext (unlike the usbsink HTTP tap's JSON), so
-    this normalizes both replies into a dict the caller can treat like the HTTP
-    one:
+    The fan-in tap replies plaintext, so this normalizes the reply into a dict:
 
     * ``OK armed path=<p>`` -> ``{"ok": True, "status": "armed", "path": <p>}``
     * ``OK disarmed events_written=N events_dropped=M`` ->
@@ -252,25 +152,21 @@ def parse_tap_socket_reply(reply: str) -> dict[str, object]:
 class FaninTapClient:
     """Arm/disarm the fan-in DIRECT-capture impulse tap over its control UDS.
 
-    The combo-box counterpart to :class:`TapClient`. On a USB combo box the
-    certified route's ingress is fan-in's ``hw:UAC2Gadget`` DIRECT capture, and
-    the impulse tap lives in ``jasper-fanin`` (``rust/jasper-fanin/src/
-    impulse_tap.rs``), NOT the usbsink bridge (which stands down and opens no
-    capture, so its :8781 HTTP tap never fires — arming it against known-good
-    combo audio records zero detections, the reported bug). fan-in exposes the
-    tap over its existing control socket as plaintext line verbs, not HTTP:
+    The sole USB ingress tap. fan-in DIRECT-captures ``hw:UAC2Gadget`` and the
+    impulse tap lives in ``jasper-fanin`` (``rust/jasper-fanin/src/
+    impulse_tap.rs``); the old usbsink-bridge HTTP tap (:8781) was removed with the
+    aloop solo path. fan-in exposes the tap over its existing control socket as
+    plaintext line verbs, not HTTP:
 
-    * ``TAP_ARM {json}\\n`` — the SAME JSON body / validation / ceilings /
-      ``/run/jasper-fanin/`` path-constraint as the usbsink HTTP ``/tap/arm``
-      (both parse ``TapConfig::from_arm_body``); reply is a plaintext line
-      ``OK armed path=<path>`` or ``ERR <reason>``.
+    * ``TAP_ARM {json}\\n`` — JSON body / validation / ceilings /
+      ``/run/jasper-fanin/`` path-constraint parsed by ``TapConfig::from_arm_body``;
+      reply is a plaintext line ``OK armed path=<path>`` or ``ERR <reason>``.
     * ``TAP_DISARM\\n`` — reply ``OK disarmed events_written=N events_dropped=M``.
 
     Speaks the same ``AF_UNIX`` mechanic :mod:`jasper.route_latency.status_socket`
     uses for ``STATUS`` — connect, send one line, read the reply to EOF (fan-in
-    writes the reply then drops the stream) — but with the tap verbs and a
-    plaintext reply it parses via :func:`parse_tap_socket_reply`. Satisfies
-    :class:`TapArmer` so the harness drives it exactly like the HTTP client.
+    writes the reply then drops the stream) — with the tap verbs and a plaintext
+    reply it parses via :func:`parse_tap_socket_reply`. Satisfies :class:`TapArmer`.
     """
 
     def __init__(
@@ -359,18 +255,12 @@ def read_tap_events(path: Path) -> list[TapEvent]:
 
 __all__ = [
     "DEFAULT_FANIN_TAP_TIMEOUT_SECONDS",
-    "DEFAULT_HTTP_TIMEOUT_SECONDS",
-    "DEFAULT_TAP_HOST",
-    "DEFAULT_TAP_PATH",
-    "DEFAULT_TAP_PORT",
     "FANIN_CONTROL_SOCKET",
     "FANIN_DEFAULT_TAP_PATH",
     "FaninTapClient",
     "TapArmParams",
     "TapArmer",
-    "TapClient",
     "TapClientError",
-    "TapStatus",
     "parse_tap_socket_reply",
     "read_tap_events",
 ]

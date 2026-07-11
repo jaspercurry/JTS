@@ -24,15 +24,16 @@ is eligible":
   is added on every install to carry the always-on USB management network, so it
   is present fleet-wide (jts3/jts5 included) even where USB audio is never used —
   gating on it alone would arm the combo on the whole fleet. Both signals present
-  → the combo is BOTH ends: ``JASPER_FANIN_USB_DIRECT`` + ``JASPER_FANIN_HOST_CLOCK``
+  → arm the fan-in half: ``JASPER_FANIN_USB_DIRECT`` + ``JASPER_FANIN_HOST_CLOCK``
   + ``JASPER_FANIN_RESAMPLER_CUSHION_DECAY`` = ``enabled`` in fanin.env (fan-in owns
-  the gadget capture) AND ``JASPER_USBSINK_AUDIO_STANDBY=1`` in usbsink.env (the
-  usbsink bridge stands down so it stops holding ``hw:UAC2Gadget``). Arming only the
-  fan-in half would leave both daemons fighting over the gadget capture and USB
-  audio would go silent or crash-loop, so the two halves MUST arm together. Off a
-  combo box the keys are written to their EXPLICIT off values
-  (``disabled`` / ``0``), NOT unset — an unset key lets a stale ``enabled`` in
-  ``/etc/jasper/jasper.env`` (loaded before the reconciler-owned files) win.
+  the gadget capture). Off a combo box the three fan-in keys are written to their
+  EXPLICIT off value (``disabled``), NOT unset — an unset key lets a stale
+  ``enabled`` in ``/etc/jasper/jasper.env`` (loaded before the reconciler-owned
+  files) win. The usbsink-bridge half (``JASPER_USBSINK_AUDIO_STANDBY``) is
+  written unconditionally to ``1``: the jasper-usbsink daemon is standby-only now
+  (the aloop capture path was deleted), so it never holds ``hw:UAC2Gadget``
+  regardless — armed means USB flows through fan-in's DIRECT lane, disarmed means
+  USB audio is simply UNAVAILABLE (there is no solo fallback to promote).
 
 This module owns the pure DECISION only. The reconciler
 (:mod:`jasper.fanin.coupling_reconcile`) owns the env I/O and the daemon
@@ -106,17 +107,20 @@ USB_COMBO_DISABLED_VALUE = "disabled"
 # emitted actions are stable across runs.
 USB_COMBO_ENV_VARS = (USB_DIRECT_ENV_VAR, HOST_CLOCK_ENV_VAR, CUSHION_DECAY_ENV_VAR)
 
-# The usbsink-bridge STANDBY half of the combo. Read by the usbsink daemon (Rust:
-# rust/jasper-usbsink-audio/src/main.rs; only the exact literal ``1`` arms it) and
-# by the jasper-usbsink.service ExecStopPost gate. It lives in usbsink.env (loaded
-# by jasper-usbsink.service AFTER jasper.env), a DIFFERENT file from the three
-# fan-in keys, so the reconciler owns writes to BOTH fanin.env and usbsink.env for
-# a coherent combo. Combo on → ``1`` (bridge stands down, releasing hw:UAC2Gadget
-# so fan-in can open it directly); combo off → EXPLICIT ``0`` (same jasper.env
-# precedence reasoning as the fan-in keys above).
+# The usbsink-bridge STANDBY half of the combo. Since the single-USB-pipeline
+# convergence (2026-07-10) the jasper-usbsink daemon is standby-ONLY — its aloop
+# capture/delivery path was deleted, so it opens no PCM and never holds
+# hw:UAC2Gadget regardless of this key's value. The key is now written
+# unconditionally to ``1`` (single-writer discipline + migration + downstream
+# narration): whether or not the combo is armed, the bridge is always in standby
+# and USB audio flows ONLY through fan-in's DIRECT capture. It lives in
+# usbsink.env (loaded by jasper-usbsink.service AFTER jasper.env), a DIFFERENT
+# file from the three fan-in keys, so the reconciler owns writes to BOTH
+# fanin.env and usbsink.env. (The daemon no longer reads this key to gate
+# behavior; it is retained for one release for a clean migration and for the
+# state/doctor surfaces that narrate "standby".)
 USBSINK_STANDBY_ENV_VAR = "JASPER_USBSINK_AUDIO_STANDBY"
 USBSINK_STANDBY_ON_VALUE = "1"
-USBSINK_STANDBY_OFF_VALUE = "0"
 # usbsink.env — where the standby key is written (jasper-usbsink.service's own
 # EnvironmentFile). Reused from the daemon-owned constant so the two never drift.
 USBSINK_ENV_PATH = "/var/lib/jasper/usbsink.env"
@@ -175,8 +179,8 @@ class AutoCouplingDecision:
     ``usb_combo_actions`` is the reconciler-owned set of ``fanin.env`` actions for
     the three fan-in combo keys (``enabled`` when armed, explicit ``disabled``
     otherwise); and ``usbsink_standby_actions`` is the reconciler-owned
-    ``usbsink.env`` action for the bridge-standby half (``1`` when armed, explicit
-    ``0`` otherwise — a DIFFERENT file, hence a separate action list). ``reason`` is
+    ``usbsink.env`` action for the bridge-standby half (always ``1`` — the daemon is
+    standby-only; a DIFFERENT file, hence a separate action list). ``reason`` is
     a stable, log-friendly explanation of the coupling decision; ``gate_details``
     carries the per-gate detail for the journal.
     """
@@ -222,17 +226,19 @@ def usb_combo_actions(*, armed: bool) -> tuple[RuntimeEnvAction, ...]:
     return tuple(RuntimeEnvAction("set", key, value) for key in USB_COMBO_ENV_VARS)
 
 
-def usbsink_standby_actions(*, armed: bool) -> tuple[RuntimeEnvAction, ...]:
+def usbsink_standby_actions() -> tuple[RuntimeEnvAction, ...]:
     """The reconciler-owned ``usbsink.env`` action for the bridge-standby half.
 
-    Armed → ``JASPER_USBSINK_AUDIO_STANDBY=1`` (the bridge stands down and releases
-    ``hw:UAC2Gadget`` so fan-in's direct capture can open it). NOT armed → EXPLICIT
-    ``0`` (bridge owns the gadget in solo/aloop mode; same jasper.env-precedence
-    reasoning as the fan-in keys). Returned as its own list because this key lands
-    in usbsink.env, a different file from the three fan-in keys.
+    ALWAYS ``JASPER_USBSINK_AUDIO_STANDBY=1`` — armed or not. The jasper-usbsink
+    daemon is standby-only now (the aloop capture/delivery path was deleted), so it
+    never holds ``hw:UAC2Gadget`` and disarming the combo must NOT try to promote a
+    bridge capture that no longer exists: disarm simply leaves USB audio
+    UNAVAILABLE until the direct lane recovers. Written explicitly (not unset) to
+    hold the single-writer line and keep the state/doctor "standby" narration
+    coherent. Returned as its own list because this key lands in usbsink.env, a
+    different file from the three fan-in keys.
     """
-    value = USBSINK_STANDBY_ON_VALUE if armed else USBSINK_STANDBY_OFF_VALUE
-    return (RuntimeEnvAction("set", USBSINK_STANDBY_ENV_VAR, value),)
+    return (RuntimeEnvAction("set", USBSINK_STANDBY_ENV_VAR, USBSINK_STANDBY_ON_VALUE),)
 
 
 # A ring gate is a zero-arg callable returning (ok, detail) — the same shape the
@@ -268,11 +274,13 @@ def resolve_auto_decision(
     ``fallback_active`` is the runtime-fallback flap guard (defect 2026-07-10): a
     combo-eligible box whose live capture broke at runtime carries the fallback
     marker (:mod:`jasper.fanin.combo_health`), which forces the combo OFF here even
-    though ``gadget_present AND usb_intent_enabled`` — the box lands on the
-    aloop-bridge solo state and stays there until an ``--auto`` clear-event
-    (boot/deploy/toggle) drops the marker and re-attempts. It does NOT touch the
-    ring coupling decision (a broken USB capture is not a reason to disarm the
-    ring).
+    though ``gadget_present AND usb_intent_enabled``. Since the aloop solo path was
+    deleted there is NO fallback capture to promote — the box is simply left with
+    USB audio UNAVAILABLE (the direct lane disarmed, the bridge in standby), which
+    the doctor + ``/state`` surface LOUDLY, and it re-attempts on the next
+    ``--auto`` clear-event (boot/deploy/toggle) that drops the marker. It does NOT
+    touch the ring coupling decision (a broken USB capture is not a reason to
+    disarm the ring).
 
     ``ring_gates`` is an ordered ``(name, gate)`` tuple; each gate is the same
     ``() -> (ok, detail)`` callable the reconciler's arm preflights use. Injected
@@ -319,7 +327,7 @@ def resolve_auto_decision(
         owned=True,
         coupling=coupling,
         usb_combo_actions=usb_combo_actions(armed=armed),
-        usbsink_standby_actions=usbsink_standby_actions(armed=armed),
+        usbsink_standby_actions=usbsink_standby_actions(),
         combo_armed=armed,
         gadget_present=gadget_present,
         usb_intent_enabled=usb_intent_enabled,

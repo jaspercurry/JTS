@@ -2,29 +2,28 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pin the Python-side contract with the Rust ingress tap
-(`rust/jasper-usbsink-audio`) that this package does NOT own or edit.
+"""Pin the Python-side contract with the Rust ingress tap that this package
+does NOT own or edit.
 
-The tap lives in Rust; this file's job is to pin the two halves of the
-boundary this package's Python code actually consumes:
+Since the single-USB-pipeline convergence (2026-07-10) the ONE ingress tap lives
+in `jasper-fanin` (`rust/jasper-fanin/src/impulse_tap.rs`): fan-in DIRECT-captures
+`hw:UAC2Gadget` and taps the impulse there. The old usbsink-bridge HTTP tap
+(`127.0.0.1:8781`) was removed with the aloop solo capture path, so its
+`TapClient` + arm/disarm HTTP contract are gone.
+
+This file pins the two halves of the boundary this package's Python code still
+consumes:
 
   * the JSONL event schema (`jasper.route_latency.tap_client.read_tap_events`
-    must parse exactly the pinned shape, including malformed-tail
-    tolerance for a file read mid-write by the Rust publisher thread), and
-  * the HTTP arm/disarm/status request/response shapes
-    (`jasper.route_latency.tap_client.TapClient` speaks exactly the pinned
-    verbs/paths/bodies).
-
-This is NOT a test of the Rust implementation (out of scope — the other
-implementer owns `rust/jasper-usbsink-audio/**`); it is a test that OUR
-side of the interface matches the documented contract, using a tiny local
-HTTP stub to stand in for the real Rust listener.
+    must parse exactly the pinned shape — the SAME shape the fan-in tap emits,
+    including malformed-tail tolerance for a file read mid-write), and
+  * the state.json health-counter leaf names the route-health verdict reads out of
+    the usbsink + fanin + outputd Rust status serializers (a Rust-side rename must
+    fail loudly here, not silently make the verdict vacuous).
 """
 from __future__ import annotations
 
-import http.server
 import json
-import threading
 from pathlib import Path
 
 import pytest
@@ -34,10 +33,7 @@ from jasper.cli.route_latency_harness import (
     KNOWN_HEALTH_COUNTER_SUFFIXES,
 )
 from jasper.route_latency.tap_client import (
-    DEFAULT_TAP_PATH,
     TapArmParams,
-    TapClient,
-    TapClientError,
     read_tap_events,
 )
 
@@ -56,7 +52,7 @@ _OUTPUTD_STATE_RS = _REPO / "rust" / "jasper-outputd" / "src" / "state.rs"
 def test_read_tap_events_parses_byte_exact_rust_emitted_line(tmp_path):
     # This exact string is asserted verbatim by the Rust crate's own
     # `tap_event_jsonl_shape_is_stable` test
-    # (rust/jasper-usbsink-audio/src/impulse_tap.rs) — a cross-language wire
+    # (rust/jasper-fanin/src/impulse_tap.rs) — a cross-language wire
     # fixture, not a paraphrase. If either side's serialization format ever
     # drifts (spacing, key order, float precision), one of the two pinned
     # tests should catch it.
@@ -80,7 +76,8 @@ def test_read_tap_events_parses_negative_i128_monotonic_ns(tmp_path):
     # Rust's monotonic_ns is i128 (can be negative in principle, e.g. very
     # early boot); Python's arbitrary-precision int must round-trip it
     # exactly. Fixture matches Rust's own
-    # `tap_event_jsonl_round_trips_through_serde` test.
+    # `tap_event_jsonl_round_trips_through_serde` test
+    # (rust/jasper-fanin/src/impulse_tap.rs).
     path = tmp_path / "impulse-tap.jsonl"
     path.write_text(
         '{"monotonic_ns":-42,"frame_index":7,"ring_fill_frames":0,"peak":0.500000}\n',
@@ -160,11 +157,6 @@ def test_read_tap_events_skips_lines_missing_required_fields(tmp_path):
     assert [e.monotonic_ns for e in events] == [1, 3]
 
 
-def test_default_tap_path_is_under_run_jasper_usbsink():
-    # Pinned per the contract: tmpfs, same dir as state.json.
-    assert DEFAULT_TAP_PATH == "/run/jasper-usbsink/impulse-tap.jsonl"
-
-
 # --------------------------------------------------------------------------
 # Health-counter names: the harness's route-health verdict
 # (`RouteHealthReport.would_justify_route_health_ok`, which
@@ -240,126 +232,10 @@ def test_known_health_counter_suffixes_exist_in_fanin_status_json():
 
 
 # --------------------------------------------------------------------------
-# HTTP contract: POST /tap/arm, POST /tap/disarm, GET /tap — using a tiny
-# local stub server standing in for the Rust listener's documented shapes.
+# TapArmParams body serialization (the arm-request shape both the Rust fan-in
+# tap and the harness agree on). The usbsink HTTP TapClient tests were deleted
+# with the :8781 listener.
 # --------------------------------------------------------------------------
-
-
-class _StubTapHandler(http.server.BaseHTTPRequestHandler):
-    """Minimal stand-in for the Rust 8781 listener's /tap/* routes."""
-
-    armed = False
-    last_arm_body: dict | None = None
-
-    def _send_json(self, status: int, payload: dict) -> None:
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler naming
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        raw = self.rfile.read(length) if length else b""
-        if self.path == "/tap/arm":
-            _StubTapHandler.armed = True
-            _StubTapHandler.last_arm_body = json.loads(raw) if raw else {}
-            self._send_json(200, {"ok": True, "armed": True, "path": "/run/jasper-usbsink/impulse-tap.jsonl"})
-        elif self.path == "/tap/disarm":
-            _StubTapHandler.armed = False
-            self._send_json(200, {"ok": True, "armed": False, "events_written": 42, "events_dropped": 1})
-        else:
-            self._send_json(404, {"ok": False})
-
-    def do_GET(self):  # noqa: N802
-        if self.path == "/tap":
-            self._send_json(
-                200,
-                {
-                    "armed": _StubTapHandler.armed,
-                    "events_written": 7,
-                    "events_dropped": 0,
-                    "threshold": 0.2,
-                    "refractory_ms": 250,
-                    "max_events": 4000,
-                    "path": "/run/jasper-usbsink/impulse-tap.jsonl",
-                },
-            )
-        else:
-            self._send_json(404, {"ok": False})
-
-    def log_message(self, format, *args):  # noqa: A002 - stdlib override
-        pass  # silence test-run noise
-
-
-@pytest.fixture
-def stub_tap_server():
-    server = http.server.HTTPServer(("127.0.0.1", 0), _StubTapHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield server.server_address
-    finally:
-        server.shutdown()
-        thread.join(timeout=2.0)
-
-
-def test_tap_client_arm_posts_expected_body(stub_tap_server):
-    host, port = stub_tap_server
-    client = TapClient(host=host, port=port)
-
-    response = client.arm(TapArmParams(threshold=0.3, hysteresis=0.1, refractory_ms=200, max_events=1000, auto_disarm_min=30))
-
-    assert response["ok"] is True
-    assert response["armed"] is True
-    assert _StubTapHandler.last_arm_body == {
-        "threshold": 0.3,
-        "hysteresis": 0.1,
-        "refractory_ms": 200,
-        "max_events": 1000,
-        "auto_disarm_min": 30,
-    }
-
-
-def test_tap_client_arm_with_no_params_sends_empty_body(stub_tap_server):
-    host, port = stub_tap_server
-    client = TapClient(host=host, port=port)
-
-    client.arm()
-
-    assert _StubTapHandler.last_arm_body == {}
-
-
-def test_tap_client_disarm_returns_counters(stub_tap_server):
-    host, port = stub_tap_server
-    client = TapClient(host=host, port=port)
-
-    response = client.disarm()
-
-    assert response["armed"] is False
-    assert response["events_written"] == 42
-    assert response["events_dropped"] == 1
-
-
-def test_tap_client_status_parses_get_tap_response(stub_tap_server):
-    host, port = stub_tap_server
-    client = TapClient(host=host, port=port)
-
-    status = client.status()
-
-    assert status.events_written == 7
-    assert status.events_dropped == 0
-    assert status.path == "/run/jasper-usbsink/impulse-tap.jsonl"
-
-
-def test_tap_client_raises_on_unreachable_host():
-    # Port 1 is privileged/unlikely-bound; a genuinely closed port makes
-    # this deterministic across CI hosts without relying on timing.
-    client = TapClient(host="127.0.0.1", port=1, timeout_seconds=0.5)
-
-    with pytest.raises(TapClientError, match="8781 listener"):
-        client.arm()
 
 
 def test_tap_arm_params_to_body_omits_unset_fields():
@@ -385,7 +261,7 @@ def test_tap_arm_params_to_body_empty_when_all_unset():
 # CLI-produced JSON string matches the shape the Rust source's own tests pin.
 # --------------------------------------------------------------------------
 
-_USBSINK_IMPULSE_TAP_RS = _REPO / "rust" / "jasper-usbsink-audio" / "src" / "impulse_tap.rs"
+_FANIN_IMPULSE_TAP_RS = _REPO / "rust" / "jasper-fanin" / "src" / "impulse_tap.rs"
 
 
 def test_arm_body_serializes_float_typed_int_knobs_as_json_integers():
@@ -435,7 +311,7 @@ def test_cli_produced_arm_body_matches_rust_integral_float_fixture():
     # (arm_body_accepts_integral_float_u64_knobs). The CLI now emits the
     # native-int shape; assert the Rust fixture that accepts it still exists, so
     # a Rust-side regression that dropped either acceptance path fails here too.
-    rust_src = _USBSINK_IMPULSE_TAP_RS.read_text(encoding="utf-8")
+    rust_src = _FANIN_IMPULSE_TAP_RS.read_text(encoding="utf-8")
     assert "fn arm_body_overrides_all_fields" in rust_src, (
         "Rust fixture pinning acceptance of the CLI's native-int arm body is "
         "gone — the B1 wire contract is unpinned on the Rust side."

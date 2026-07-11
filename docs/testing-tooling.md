@@ -591,18 +591,17 @@ full quick/promotion end-to-end walkthrough and current route status.
 
 **Architecture in one paragraph.** A host (Mac/Windows, no special
 software) plays a generated click-track WAV into the JTS USB audio device.
-A default-off ingress tap inside `jasper-usbsink-audio` (Rust; armed/disarmed
-over its existing `127.0.0.1:8781` HTTP listener) timestamps each click the
-instant it lands in the claiming route's own capture stream, binding the
-measurement to route identity by construction. On a **USB combo box**
-(`JASPER_FANIN_USB_DIRECT=enabled`, the shipped default on an eligible gadget
-box) the route's ingress is instead fan-in's own `hw:UAC2Gadget` DIRECT
-capture, so the equivalent tap lives in `jasper-fanin` and is armed over its
-control UDS (`TAP_ARM` verb, `/run/jasper-fanin/impulse-tap.jsonl`); the usbsink
-bridge stands down and its `:8781` tap never fires. The harness picks the live
-one automatically — `--tap-transport auto` (default) reads fan-in `STATUS` and
-arms the fan-in tap when a lane reports `source:"direct"`, else the usbsink tap
-(force either with `--tap-transport fanin|usbsink`). See
+A default-off ingress tap inside `jasper-fanin`'s own `hw:UAC2Gadget` DIRECT
+capture — armed/disarmed over fan-in's control UDS (`TAP_ARM` verb,
+`/run/jasper-fanin/impulse-tap.jsonl`) — timestamps each click the instant it
+lands in the claiming route's own capture stream, binding the measurement to
+route identity by construction. Since the aloop solo path was deleted
+(2026-07-10), fan-in DIRECT capture is the sole USB ingress, so the fan-in tap
+is the only ingress tap: the old `jasper-usbsink-audio` bridge tap on
+`127.0.0.1:8781` is gone. The harness arms it automatically — `--tap-transport
+auto` (default) reads fan-in `STATUS` and always resolves to the fan-in tap
+(there is no usbsink bridge tap to fall back to); force it explicitly with
+`--tap-transport fanin`. See
 [`docs/HANDOFF-usb-low-latency.md`](HANDOFF-usb-low-latency.md) "Harness support
 (`--tap-transport`)". This harness separately reads
 the AEC bridge's always-on `raw0` leg on localhost UDP `:9879` (an
@@ -644,8 +643,9 @@ sudo /opt/jasper/.venv/bin/jasper-route-latency-harness capture \
 
 # 3. Analyze the captured evidence and emit an artifact-feedable samples file.
 #    Point --tap-events at the JSONL that `capture` printed it armed: the fan-in
-#    path on a USB combo box (shown here), the usbsink default
-#    (/run/jasper-usbsink/impulse-tap.jsonl) in solo/aloop mode. The `run`
+#    DIRECT-capture path (/run/jasper-fanin/impulse-tap.jsonl) — the sole ingress
+#    tap since the aloop solo path (and its /run/jasper-usbsink tap) were deleted
+#    2026-07-10. The `run`
 #    one-shot below threads this automatically — only the split capture/analyze
 #    flow needs the flag, since `analyze` runs offline with no tap to probe.
 /opt/jasper/.venv/bin/jasper-route-latency-harness analyze \

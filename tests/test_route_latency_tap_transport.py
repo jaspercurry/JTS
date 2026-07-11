@@ -4,17 +4,14 @@
 
 """Pin the route-latency harness's tap-transport selection + the fan-in tap wire.
 
-The harness has two ingress taps because the USB route has two shapes: the
-usbsink bridge tap (HTTP :8781) in solo/aloop mode, and the fan-in DIRECT-capture
-tap (control-UDS ``TAP_ARM`` verb) in USB *combo* mode. On a combo box the
-usbsink bridge is in standby and opens no capture, so its :8781 tap never fires —
-arming it against known-good combo audio records ZERO detections (the reported
-bug). These tests pin:
+There is ONE USB ingress tap now: the fan-in DIRECT-capture tap (control-UDS
+``TAP_ARM`` verb). fan-in DIRECT-captures ``hw:UAC2Gadget`` and taps the impulse
+there. The old usbsink-bridge HTTP tap (:8781) was removed with the aloop solo
+capture path (2026-07-10), so ``--tap-transport`` always resolves to the fan-in
+tap (``auto`` == ``fanin``). These tests pin:
 
-* the pure transport DECISION (``fanin_direct_lane_active`` /
-  ``resolve_tap_transport``) and the ``build_resolved_tap`` composition,
-  including the **headline guard**: a combo box's ``auto`` resolution targets the
-  fan-in ``DEFAULT_TAP_PATH``, never the stale usbsink path;
+* the transport resolution (``resolve_tap_transport`` / ``build_resolved_tap``)
+  always targeting the fan-in tap + its ``FANIN_DEFAULT_TAP_PATH``;
 * the ``FaninTapClient`` wire — ``TAP_ARM {json}`` / ``TAP_DISARM`` + plaintext
   ``OK …`` / ``ERR …`` replies — against a tiny in-process AF_UNIX stand-in for
   jasper-fanin's control socket (mirrors ``test_route_latency_status_socket.py``);
@@ -34,20 +31,19 @@ from pathlib import Path
 import pytest
 
 from jasper.cli import route_latency_harness as harness
+from jasper.fanin.status import FANIN_INPUT_SOURCE_DIRECT
 from jasper.route_latency import tap_transport as tt
+from jasper.route_latency.pairing import MicDetection
 from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
 from jasper.route_latency.tap_client import (
-    DEFAULT_TAP_PATH,
     FANIN_CONTROL_SOCKET,
     FANIN_DEFAULT_TAP_PATH,
     FaninTapClient,
     TapArmer,
     TapArmParams,
-    TapClient,
     TapClientError,
     parse_tap_socket_reply,
 )
-from jasper.route_latency.pairing import MicDetection
 
 _REPO = Path(__file__).resolve().parents[1]
 _FANIN_IMPULSE_TAP_RS = _REPO / "rust" / "jasper-fanin" / "src" / "impulse_tap.rs"
@@ -199,112 +195,39 @@ def test_empty_arm_params_serialize_to_empty_body(short_sock_path):
     assert stub.received == "TAP_ARM {}\n"
 
 
-# --------------------------------------------------------------------------
-# Both transports satisfy the shared TapArmer interface
-# --------------------------------------------------------------------------
-
-
-def test_both_tap_clients_satisfy_tap_armer_protocol():
-    assert isinstance(TapClient(), TapArmer)
+def test_fanin_tap_client_satisfies_tap_armer_protocol():
     assert isinstance(FaninTapClient(), TapArmer)
 
 
 # --------------------------------------------------------------------------
-# Pure transport decision
+# Transport resolution — fan-in only
 # --------------------------------------------------------------------------
 
 
-def _fanin_status(*sources: str) -> dict:
-    return {"inputs": [{"label": f"in{i}", "source": s} for i, s in enumerate(sources)]}
+def test_resolve_tap_transport_always_fanin():
+    # There is one USB ingress tap now; auto/fanin/unknown all resolve to it.
+    assert tt.resolve_tap_transport("auto") == tt.TAP_TRANSPORT_FANIN
+    assert tt.resolve_tap_transport("fanin") == tt.TAP_TRANSPORT_FANIN
+    assert tt.resolve_tap_transport("anything-else") == tt.TAP_TRANSPORT_FANIN
 
 
-def test_fanin_direct_lane_active_true_only_when_a_direct_lane_present():
-    assert tt.fanin_direct_lane_active(_fanin_status("lane", "direct")) is True
-    assert tt.fanin_direct_lane_active(_fanin_status("lane", "lane")) is False
-    assert tt.fanin_direct_lane_active(_fanin_status()) is False
+def test_transports_are_auto_and_fanin_only():
+    # The usbsink transport option was removed with the :8781 bridge tap.
+    assert tt.TAP_TRANSPORTS == (tt.TAP_TRANSPORT_AUTO, tt.TAP_TRANSPORT_FANIN)
 
 
-def test_fanin_direct_lane_active_fail_safe_on_none_or_malformed():
-    assert tt.fanin_direct_lane_active(None) is False
-    assert tt.fanin_direct_lane_active({"inputs": "not-a-list"}) is False
-    assert tt.fanin_direct_lane_active({}) is False
+def test_build_resolved_tap_always_targets_the_fanin_default_path():
+    for choice in (tt.TAP_TRANSPORT_AUTO, tt.TAP_TRANSPORT_FANIN):
+        resolved = tt.build_resolved_tap(transport_choice=choice, explicit_tap_path=None)
+        assert resolved.transport == tt.TAP_TRANSPORT_FANIN
+        assert isinstance(resolved.client, FaninTapClient)
+        assert resolved.tap_path == FANIN_DEFAULT_TAP_PATH
 
 
-def test_probe_fanin_direct_active_fails_safe_when_socket_unreachable(short_sock_path):
-    # The live combo probe must return False (not raise) when fan-in STATUS is
-    # unreachable — nothing is bound at short_sock_path — so `auto` fails safe to
-    # the usbsink tap rather than forcing the fan-in tap on an unprovable box.
-    assert tt.probe_fanin_direct_active(short_sock_path) is False
-
-
-def test_auto_fails_safe_to_usbsink_when_probe_cannot_prove_combo(short_sock_path):
-    resolved = tt.build_resolved_tap(transport_choice="auto", explicit_tap_path=None, fanin_socket=short_sock_path)
-    assert resolved.transport == tt.TAP_TRANSPORT_USBSINK
-    assert resolved.tap_path == DEFAULT_TAP_PATH
-
-
-def test_resolve_tap_transport_auto_follows_combo_signal():
-    assert tt.resolve_tap_transport("auto", combo_active=True) == tt.TAP_TRANSPORT_FANIN
-    assert tt.resolve_tap_transport("auto", combo_active=False) == tt.TAP_TRANSPORT_USBSINK
-
-
-def test_resolve_tap_transport_explicit_choice_passes_through():
-    # Explicit forcing ignores the combo signal entirely (either direction).
-    assert tt.resolve_tap_transport("fanin", combo_active=False) == tt.TAP_TRANSPORT_FANIN
-    assert tt.resolve_tap_transport("usbsink", combo_active=True) == tt.TAP_TRANSPORT_USBSINK
-
-
-# --------------------------------------------------------------------------
-# build_resolved_tap — the composition + the headline pinning guard
-# --------------------------------------------------------------------------
-
-
-def test_combo_box_auto_targets_the_fanin_default_tap_path():
-    """THE guard the fix exists for: on a combo box (fan-in STATUS shows a
-    direct lane), auto resolution arms the fan-in tap and reads back the fan-in
-    DEFAULT_TAP_PATH — never the stale usbsink path."""
-
-    resolved = tt.build_resolved_tap(
-        transport_choice="auto",
-        explicit_tap_path=None,
-        combo_probe=lambda: True,
-    )
-    assert resolved.transport == tt.TAP_TRANSPORT_FANIN
-    assert isinstance(resolved.client, FaninTapClient)
-    assert resolved.tap_path == FANIN_DEFAULT_TAP_PATH
-    assert resolved.tap_path != DEFAULT_TAP_PATH  # not the usbsink path
-    assert "direct" in resolved.reason
-
-
-def test_non_combo_box_auto_targets_the_usbsink_tap():
-    resolved = tt.build_resolved_tap(
-        transport_choice="auto",
-        explicit_tap_path=None,
-        combo_probe=lambda: False,
-    )
-    assert resolved.transport == tt.TAP_TRANSPORT_USBSINK
-    assert isinstance(resolved.client, TapClient)
-    assert resolved.tap_path == DEFAULT_TAP_PATH
-
-
-def test_explicit_transport_never_probes():
-    def _boom() -> bool:
-        raise AssertionError("combo probe must not run for an explicit transport")
-
-    fan = tt.build_resolved_tap(transport_choice="fanin", explicit_tap_path=None, combo_probe=_boom)
-    assert fan.transport == tt.TAP_TRANSPORT_FANIN
-    assert fan.tap_path == FANIN_DEFAULT_TAP_PATH
-    usb = tt.build_resolved_tap(transport_choice="usbsink", explicit_tap_path=None, combo_probe=_boom)
-    assert usb.transport == tt.TAP_TRANSPORT_USBSINK
-    assert usb.tap_path == DEFAULT_TAP_PATH
-
-
-def test_explicit_tap_path_override_honored_on_both_transports():
+def test_explicit_tap_path_override_honored():
     override = "/run/jasper-fanin/run-7.jsonl"
-    fan = tt.build_resolved_tap(transport_choice="fanin", explicit_tap_path=override, combo_probe=lambda: True)
-    assert fan.tap_path == override
-    usb = tt.build_resolved_tap(transport_choice="usbsink", explicit_tap_path=override, combo_probe=lambda: False)
-    assert usb.tap_path == override
+    resolved = tt.build_resolved_tap(transport_choice="fanin", explicit_tap_path=override)
+    assert resolved.tap_path == override
 
 
 # --------------------------------------------------------------------------
@@ -320,8 +243,8 @@ def test_fanin_tap_path_matches_rust_impulse_tap_default():
 
 
 def test_fanin_control_socket_is_the_same_socket_as_status():
-    # One socket serves both STATUS (the combo probe) and TAP_ARM (the arm). If
-    # they ever diverged, the probe would read one socket and arm another.
+    # One socket serves both STATUS (combo detection) and TAP_ARM (the arm). If
+    # they ever diverged, a reader would read one socket and arm another.
     assert FANIN_CONTROL_SOCKET == FANIN_STATUS_SOCKET
     # …and it lives in the Rust tap's allowed dir (TAP_PATH_DIR).
     rust = _FANIN_IMPULSE_TAP_RS.read_text(encoding="utf-8")
@@ -331,23 +254,22 @@ def test_fanin_control_socket_is_the_same_socket_as_status():
 
 
 def test_fanin_direct_source_marker_matches_rust_state_serializer():
-    # state.rs renders `source:"direct"` on the USB DIRECT lane; the probe keys
-    # off exactly that literal.
+    # state.rs renders `source:"direct"` on the USB DIRECT lane; the combo
+    # detection (jasper.fanin.status) keys off exactly that literal.
     rust = _FANIN_STATE_RS.read_text(encoding="utf-8")
     assert '"source"' in rust
-    assert f'if input.is_direct {{ "{tt.FANIN_DIRECT_SOURCE}" }} else {{ "lane" }}' in rust
+    assert f'if input.is_direct {{ "{FANIN_INPUT_SOURCE_DIRECT}" }} else {{ "lane" }}' in rust
 
 
 # --------------------------------------------------------------------------
-# Harness integration: `run` measures the shipping route on a combo box
+# Harness integration: `run` measures the shipping route (the fan-in tap)
 # --------------------------------------------------------------------------
 
 
 def test_run_reads_back_the_resolved_fanin_tap_path(tmp_path, monkeypatch):
-    """End-to-end wiring guard: on a combo box, `run` points analyze at the
-    resolved fan-in tap path. Tap events are written ONLY to a tmp fan-in path;
-    if `run` still read the usbsink default (the bug), it would find zero events
-    and fail — so a written samples file proves the fix."""
+    """End-to-end wiring guard: `run` points analyze at the resolved fan-in tap
+    path. Tap events are written ONLY to a tmp fan-in path; a written samples file
+    proves `run` read back the resolved path."""
 
     schedule = harness.click_track.build_schedule("quick", seed=3)
     schedule_path = tmp_path / "schedule.json"
@@ -372,7 +294,7 @@ def test_run_reads_back_the_resolved_fanin_tap_path(tmp_path, monkeypatch):
         def disarm(self):
             return {"ok": True, "status": "disarmed"}
 
-    # Resolve to the fan-in transport with the tmp tap path (simulate a combo box).
+    # Resolve to the fan-in transport with the tmp tap path.
     monkeypatch.setattr(
         harness,
         "build_resolved_tap",
@@ -380,7 +302,7 @@ def test_run_reads_back_the_resolved_fanin_tap_path(tmp_path, monkeypatch):
             transport="fanin",
             client=_StubTapClient(),
             tap_path=str(fanin_tap),
-            reason="combo box (stubbed)",
+            reason="fan-in tap (stubbed)",
         ),
     )
     monkeypatch.setattr(harness, "snapshot_route_health", lambda: {})
@@ -417,7 +339,7 @@ def test_resolve_tap_is_cached_and_announces_transport(tmp_path, monkeypatch, ca
             transport="fanin",
             client=object(),
             tap_path=FANIN_DEFAULT_TAP_PATH,
-            reason="combo box (stubbed)",
+            reason="fan-in tap (stubbed)",
         )
 
     monkeypatch.setattr(harness, "build_resolved_tap", _fake_build)
@@ -425,7 +347,7 @@ def test_resolve_tap_is_cached_and_announces_transport(tmp_path, monkeypatch, ca
     import argparse
 
     args = argparse.Namespace(
-        tap_transport="auto", tap_host="127.0.0.1", tap_port=8781,
+        tap_transport="auto",
         tap_socket=FANIN_CONTROL_SOCKET, tap_path=None,
     )
     first = harness._resolve_tap(args)

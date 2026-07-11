@@ -185,8 +185,11 @@ def _build_usbsink_renderer_state(
 ) -> dict[str, Any] | None:
     """Build the ``/state.renderers.usbsink`` section from the bridge state blob.
 
-    Solo boxes: the bridge owns the gadget capture and its RMS-gated ``playing``
-    / ``rms_dbfs`` are the truth — surface them verbatim (``combo`` false).
+    The bridge is standby-only now, so the ``combo`` path is the norm: the bridge's
+    own ``playing`` / ``rms_dbfs`` are meaningless (it opens no PCM) and fan-in's
+    DIRECT lane is the truth. The ``combo`` false branch below is a defensive
+    fallback for a state blob without ``standby: true`` (a not-yet-migrated box or
+    an old binary mid-deploy) — it surfaces the blob verbatim.
 
     Combo boxes: the bridge is in standby (see :func:`_usbsink_in_combo_mode`),
     so *the bridge's own* ``playing`` / ``rms_dbfs`` are meaningless. But fan-in's
@@ -340,13 +343,11 @@ def _audio_graph_state(
                 if isinstance(usbsink_raw, dict)
                 else None
             ),
-            # Stage 1 host-slaved USB clock (default-OFF). The Rust bridge
-            # emits this block unconditionally (also when the feature is
-            # disabled), so pre-Stage-1 builds and a missing/unreadable
-            # state file are the only ways this comes through as None — a
-            # definite "no evidence yet" rather than a guessed default.
-            # See docs/HANDOFF-usb-low-latency.md "Host-slaved USB clock
-            # (Stage 1)" for field semantics.
+            # The standby-only bridge no longer emits a host_clock block (the solo
+            # host-slaved clock was deleted with the aloop path), so this is now
+            # always None here — the LIVE combo host clock is fan-in's, surfaced as
+            # ``fanin.host_clock`` below. Kept as an explicit None for /state shape
+            # stability. See docs/HANDOFF-usb-low-latency.md.
             "host_clock": (
                 usbsink_raw.get("host_clock")
                 if isinstance(usbsink_raw, dict)
