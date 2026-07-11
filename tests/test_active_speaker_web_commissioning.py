@@ -59,6 +59,36 @@ def _durable_driver_record(
     }
 
 
+def _driver_comparison_set(topology):
+    from jasper.active_speaker.capture_geometry import comparison_set_fingerprint
+
+    core = {
+        "schema_version": 2,
+        "comparison_set_id": "1" * 32,
+        "created_at": "2026-07-11T12:00:00Z",
+        "topology_id": topology.topology_id,
+        "profile_context_id": "profile-1",
+        "setup_sha256": "2" * 64,
+        "device_sha256": "3" * 64,
+        "calibration_id": "",
+        "driver_level_locks": {
+            target["target_id"]: {
+                "target_id": target["target_id"],
+                "speaker_group_id": target["speaker_group_id"],
+                "role": target["role"],
+                "tone_frequency_hz": (
+                    250.0 if target["role"] == "woofer" else 6250.0
+                ),
+                "tone_peak_dbfs": -12.0,
+                "commissioning_gain_db": 0.0,
+                "locked_main_volume_db": -4.0,
+            }
+            for target in active_driver_targets(topology)
+        },
+    }
+    return {**core, "fingerprint": comparison_set_fingerprint(core)}
+
+
 def test_driver_capture_sweep_requires_confirmed_driver(monkeypatch):
     monkeypatch.setattr(web, "load_output_topology", _topology)
     monkeypatch.setattr(web, "load_measurement_state", lambda topology: {})
@@ -79,6 +109,7 @@ def test_driver_capture_sweep_accepts_durable_confirmation_after_session_expiry(
 ):
     topology = _topology()
     measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
                 "mono:woofer": _durable_driver_record(topology),
@@ -271,6 +302,84 @@ def test_automatic_driver_excitation_uses_current_applied_snapshot():
     }
 
 
+def test_automatic_driver_excitation_includes_driver_level_lock():
+    topology = _topology()
+    payload = web.automatic_driver_excitation(
+        topology,
+        "woofer",
+        applied_profile=_applied_excitation_profile(
+            topology=topology,
+            gain_db=-9.5,
+        ),
+        locked_main_volume_db=-4.0,
+    )
+
+    assert payload["scope"] == "sweep_plus_role_gain_and_driver_level_lock"
+    assert payload["locked_main_volume_db"] == -4.0
+    assert payload["effective_peak_dbfs"] == -25.5
+
+
+def test_driver_level_match_loads_isolated_path_and_restores_entry_graph(monkeypatch):
+    topology = _topology()
+    prepared_load = {
+        "load": {"status": "loaded"},
+        "measurement_transaction": {
+            "entry_config_path": "/var/lib/camilladsp/configs/current.yml",
+            "restored": False,
+        },
+    }
+    load_call = {}
+    restored = []
+    frozen_applied = {"baseline_id": "frozen-applied"}
+    excitation_call = {}
+
+    monkeypatch.setattr(
+        web,
+        "automatic_driver_excitation",
+        lambda *_args, **kwargs: (
+            excitation_call.update(kwargs)
+            or {"status": "ready", "commissioning_gain_db": -9.0}
+        ),
+    )
+    async def load(**kwargs):
+        load_call.update(kwargs)
+        return prepared_load
+
+    async def restore(payload, *, camilla_factory):
+        restored.append((payload, camilla_factory))
+        return {"status": "rolled_back"}
+
+    monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", load)
+    monkeypatch.setattr(
+        web, "_restore_automatic_driver_entry_config_resilient", restore
+    )
+    camilla_factory = lambda: object()
+
+    prepared = asyncio.run(
+        web.prepare_automatic_driver_level_match(
+            topology,
+            speaker_group_id="mono",
+            role="woofer",
+            preset=object(),
+            applied_profile=frozen_applied,
+            camilla_factory=camilla_factory,
+        )
+    )
+    assert load_call["speaker_group_id"] == "mono"
+    assert load_call["role"] == "woofer"
+    assert load_call["level_dbfs"] == -9.0
+    assert excitation_call["applied_profile"] is frozen_applied
+    assert prepared["load"] == prepared_load
+
+    result = asyncio.run(
+        web.restore_automatic_driver_level_match(
+            prepared, camilla_factory=camilla_factory
+        )
+    )
+    assert result == {"status": "rolled_back"}
+    assert restored == [(prepared_load, camilla_factory)]
+
+
 @pytest.mark.parametrize(
     ("applied_profile", "reason"),
     [
@@ -349,6 +458,7 @@ def test_driver_capture_sweep_never_reuses_legacy_floor_level(
 ):
     topology = _topology()
     measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
                 "mono:woofer": _durable_driver_record(
@@ -665,6 +775,7 @@ def test_automatic_driver_load_failure_restores_entry_graph(
 ):
     topology = _topology()
     measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
                 "mono:woofer": _durable_driver_record(topology),
@@ -748,6 +859,7 @@ def test_driver_capture_sweep_refuses_before_loading_when_applied_gain_is_stale(
 ):
     topology = _topology()
     measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
                 "mono:woofer": _durable_driver_record(
@@ -786,6 +898,58 @@ def test_driver_capture_sweep_refuses_before_loading_when_applied_gain_is_stale(
     assert payload["status"] == "refused"
     assert payload["audio_emitted"] is False
     assert payload["reason"] == "active_applied_profile_snapshot_topology_stale"
+
+
+def test_driver_capture_sweep_uses_frozen_applied_preset_not_mutable_draft(
+    monkeypatch,
+):
+    topology = _topology()
+    measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+        },
+    }
+    applied = _applied_excitation_profile(topology=topology, gain_db=-9.0)
+    mutable = _two_way_preset()
+    mutable["crossover_regions"][0]["fc_hz"] = 4000.0
+
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(
+        web,
+        "resolve_commission_inputs",
+        lambda: pytest.fail("automatic sweep must not read mutable draft inputs"),
+    )
+    loaded = {}
+
+    async def capture_load(**kwargs):
+        loaded.update(kwargs)
+        return {
+            "load": {"status": "blocked", "issues": []},
+            "measurement_transaction": {},
+        }
+
+    monkeypatch.setattr(
+        web,
+        "_load_driver_commissioning_config_for_level",
+        capture_load,
+    )
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+            applied_profile=applied,
+        )
+    )
+
+    assert payload["status"] == "blocked"
+    assert loaded["preset"].crossover_regions[0].fc_hz == 1600.0
+    assert loaded["crossover_preview"] is None
+    assert mutable["crossover_regions"][0]["fc_hz"] == 4000.0
 
 
 def test_automatic_measurement_source_peak_is_one_shared_default():

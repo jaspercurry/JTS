@@ -28,6 +28,7 @@ import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from jasper.capture_relay.client import RelayClient, RelayError
 from jasper.capture_relay.cues import classify_failure_cue
@@ -35,6 +36,11 @@ from jasper.capture_relay.crypto import (
     content_key_to_b64url,
     decrypt_and_verify,
     generate_content_key,
+)
+from jasper.capture_relay.integrity import (
+    CaptureIntegrityError,
+    capture_spec_mac,
+    verify_authenticated_phone_event,
 )
 from jasper.capture_relay.spec import CaptureSpec
 from jasper.log_event import log_event
@@ -84,8 +90,16 @@ class PiCaptureSession:
         session id and upload token, keeping them out of any relay log.
         """
         key_b64 = content_key_to_b64url(self.content_key)
+        spec_mac = capture_spec_mac(
+            self.content_key,
+            self.session_id,
+            self.capture_spec_json(),
+        )
         origin = self.capture_origin.rstrip("/")
-        return f"https://{origin}/#s={self.session_id}&u={self.upload_token}&k={key_b64}"
+        return (
+            f"https://{origin}/#s={self.session_id}&u={self.upload_token}"
+            f"&k={key_b64}&a={spec_mac}"
+        )
 
     def capture_spec_json(self) -> str:
         return json.dumps(self.spec.to_dict(), separators=(",", ":"))
@@ -164,6 +178,37 @@ class CaptureResult:
     device: dict | None = None
     noise_floor: dict | None = None
     setup: dict | None = None
+
+
+class PhoneEventVerifier:
+    """Verify the relay's mutable phone-event slot before host code reads it."""
+
+    def __init__(self, session: PiCaptureSession) -> None:
+        self._session = session
+        self._sequence = 0
+        self._event: dict[str, Any] | None = None
+
+    def verify(self, relay_event: Any) -> dict[str, Any] | None:
+        if relay_event is None:
+            return None
+        if self._session.spec.capture_protocol_version < 2:
+            return dict(relay_event) if isinstance(relay_event, dict) else None
+        verified, sequence = verify_authenticated_phone_event(
+            self._session.content_key,
+            self._session.session_id,
+            relay_event,
+        )
+        if sequence < self._sequence or (
+            sequence == self._sequence
+            and self._event is not None
+            and verified != self._event
+        ):
+            raise CaptureIntegrityError(
+                "authenticated phone event sequence moved backwards"
+            )
+        self._sequence = sequence
+        self._event = verified
+        return verified
 
 
 def classify_status(status_payload: dict) -> PollState:
@@ -383,8 +428,40 @@ def _poll_until_capture(
     capture_setup: dict | None = None
     setup_tokens_seen: set[str] = set()
     page_compatible = False
+    event_verifier = PhoneEventVerifier(session)
     while True:
         status = client.status(session.session_id, session.pull_token)
+        relay_event = status.get("event") if isinstance(status, dict) else None
+        if session.spec.capture_protocol_version >= 2 and relay_event is not None:
+            try:
+                verified_event = event_verifier.verify(relay_event)
+            except CaptureIntegrityError as exc:
+                log_event(
+                    logger,
+                    "capture_relay.phone_event_integrity_failed",
+                    level=logging.WARNING,
+                    session_id=session.session_id,
+                    kind=session.spec.kind,
+                    reason=str(exc),
+                )
+                try:
+                    client.post_host_event(
+                        session.session_id,
+                        session.pull_token,
+                        {
+                            "phase": "capture_incompatible",
+                            "error": "capture control integrity check failed",
+                        },
+                    )
+                except (OSError, RelayError):
+                    logger.warning(
+                        "could not publish capture integrity failure",
+                        exc_info=True,
+                    )
+                raise CaptureFailed(
+                    "capture control integrity check failed"
+                ) from exc
+            status = {**status, "event": verified_event}
         state = classify_status(status)
         if state.device is not None:
             capture_device = state.device  # phone-reported mic; persists to ready

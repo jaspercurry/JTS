@@ -35,6 +35,9 @@ function res(status, body, { isJson = true } = {}) {
       if (!isJson) throw new Error("not json");
       return body;
     },
+    async text() {
+      return typeof body === "string" ? body : JSON.stringify(body);
+    },
   };
 }
 
@@ -85,6 +88,25 @@ async function testPostEvent() {
       capture_page_build: "20260710.1",
     },
   });
+  ok();
+}
+
+async function testProtocolTwoPostEventUsesAuthenticatedEnvelope() {
+  const f = mockFetch(() => res(200, { ok: true }));
+  const client = makeClient(f);
+  const seen = [];
+  client.setTransportIntegrity({
+    async authenticatePhoneEvent(payload, sequence) {
+      seen.push({ payload, sequence });
+      return { authenticated_event: { sequence, payload: JSON.stringify(payload), mac: "tag" } };
+    },
+  }, { required: true });
+  await client.postEvent({ armed: true });
+  const posted = JSON.parse(f.calls[0].init.body);
+  assert.equal(posted.authenticated_event.sequence, 1);
+  assert.equal(posted.authenticated_event.mac, "tag");
+  assert.equal(seen[0].payload.armed, true);
+  assert.equal(seen[0].payload.capture_page.capture_protocol_version, 1);
   ok();
 }
 
@@ -151,6 +173,7 @@ async function testConstructorValidates() {
 const tests = [
   testFetchSpec,
   testPostEvent,
+  testProtocolTwoPostEventUsesAuthenticatedEnvelope,
   testFetchPhoneStatus,
   testPutBlob,
   testErrorThrowsRelayError,

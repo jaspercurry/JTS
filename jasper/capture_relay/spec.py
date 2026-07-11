@@ -1148,6 +1148,7 @@ def build_level_ramp_spec(
         setup_binding_id=(setup_binding_id or (f"level-{run_token}" if run_token else "")),
         setup_collect_positions=setup_collect_positions,
         max_upload_bytes=max_upload_bytes,
+        capture_protocol_version=2,
     ).validate()
 
 

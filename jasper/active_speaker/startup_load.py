@@ -40,7 +40,11 @@ from jasper.dsp_apply import (
 from jasper.output_topology import OutputTopology, channel_identity_report
 
 from ._common import gate as _gate, issue as _issue
-from .camilla_yaml import COMMISSIONING_HEADROOM_DB, STARTUP_MUTE_GAIN_DB
+from .camilla_yaml import (
+    COMMISSIONING_FILTER_MODE,
+    COMMISSIONING_HEADROOM_DB,
+    STARTUP_MUTE_GAIN_DB,
+)
 from .calibration_level import (
     MIN_TEST_LEVEL_DBFS,
     load_calibration_level_state,
@@ -1406,6 +1410,7 @@ def build_driver_commission_load_preflight(
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
+    filter_mode: str = COMMISSIONING_FILTER_MODE,
     path_safety_evidence_path: str | Path | None = None,
     current_config_path: str | Path | None = None,
     config_dir: str | Path | None = None,
@@ -1447,6 +1452,7 @@ def build_driver_commission_load_preflight(
         crossover_preview=crossover_preview,
         playback_device=playback_device,
         audible_gain_db=audible_gain_db,
+        filter_mode=filter_mode,
         config_dir=config_dir,
         config_path=config_path,
         validate=validate,
@@ -1552,6 +1558,7 @@ async def load_driver_commissioning_config(
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
+    filter_mode: str = COMMISSIONING_FILTER_MODE,
     path_safety_evidence_path: str | Path | None = None,
     staged_config: dict[str, Any] | None = None,
     config_dir: str | Path | None = None,
@@ -1618,6 +1625,7 @@ async def load_driver_commissioning_config(
         crossover_preview=crossover_preview,
         playback_device=playback_device,
         audible_gain_db=audible_gain_db,
+        filter_mode=filter_mode,
         path_safety_evidence_path=path_safety_evidence_path,
         current_config_path=prior_config_path,
         config_dir=config_dir,
@@ -1732,6 +1740,7 @@ async def load_driver_commissioning_config(
             crossover_preview=crossover_preview,
             playback_device=playback_device,
             audible_gain_db=audible_gain_db,
+            filter_mode=filter_mode,
             config_dir=config_dir,
             config_path=config_path,
             run_config_check=False,
@@ -1768,6 +1777,12 @@ async def load_driver_commissioning_config(
             muted_outputs=live_evidence.get("muted_outputs", []),
             tweeter_outputs=live_evidence.get("tweeter_outputs", []),
             protective_hp_hz=live_evidence.get("protective_highpass_hz"),
+            tweeter_highpass_name=str(
+                live_evidence.get("tweeter_highpass_name") or ""
+            ),
+            tweeter_highpass_order=int(
+                live_evidence.get("tweeter_highpass_order") or 4
+            ),
             expected_headroom_db=COMMISSIONING_HEADROOM_DB,
         )
         captured["live"] = live

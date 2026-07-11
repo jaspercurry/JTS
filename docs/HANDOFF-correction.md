@@ -116,8 +116,9 @@
   on-device pending H2).** The Layer-A commissioning *flow* now rides
   the shared substrate. After protected speaker setup, one server envelope
   exposes the real product choice: keep/edit the applied manual crossover and
-  continue to Room, or enter automatic tuning (mic/calibration + near-field
-  level → each driver sweep → summed proof → explicit replacement apply) and
+  continue to Room, or enter automatic driver level matching (mic/calibration +
+  one near-field level per driver → each driver sweep → explicit trim replacement)
+  and
   then continue to Room. The browser is a thin
   renderer/dispatcher: it has no local recorder and reads one envelope snapshot,
   so relay state and the one next action cannot disagree. `POST
@@ -165,21 +166,29 @@
   before the Pi may play. The acknowledgement is capture-protocol v2 data,
   bound to the relay session and verified before `on_armed`; a normalized
   server-owned proof is persisted with the record. A successful crossover level
-  check also starts one durable comparison set binding the protected profile,
-  setup digest, microphone identity hash, calibration, and locked main volume.
-  Every driver and summed capture must belong to that same set. Starting a new
-  level check invalidates the prior set, and legacy/mixed-set records remain
+  sequence starts one durable comparison set binding the protected profile,
+  setup digest, microphone identity hash, calibration, and one passband-safe
+  digital-volume lock per driver. Every driver capture must belong to that same
+  set. Optional summed diagnostics may reference it but do not gate the first
+  product apply. Starting a new sequence invalidates the prior set, and
+  legacy/mixed-set records remain
   historical but cannot produce or apply a new automatic crossover. Manual
   crossover preservation/application is unchanged; an applied automatic profile
-  exposes **Tune crossover automatically again**, which starts a fresh set and
+  exposes **Level-match drivers again**, which starts a fresh set and
   keeps the current safe profile live until the updated profile is explicitly
   applied. The level-check screen renders the Pi-owned geometry steps after
-  microphone setup. Crossover level matching binds its tone frequency to the
-  applied preset and names the canonical 3 cm position for the driver whose
-  protected passband contains that tone (woofer on a normal 2-way, midrange on
-  the supported 3-way) instead of referring to instructions on another page. The
-  public page release that implements this contract is
-  `capture_page_build=20260711.2`, supporting protocols 1 and 2; publish it
+  microphone setup. Crossover level matching walks every active driver in order,
+  binds each tone frequency to that driver's protected applied-preset passband,
+  and names the canonical 3 cm position for that exact radiator instead of
+  referring to instructions on another page. The driver ESS playback graph and
+  its analysis preset are both frozen from that same immutable applied snapshot;
+  mutable `/sound/` draft edits cannot change an in-flight measurement. The
+  explicit crossover apply route is also refused while the shared relay slot is
+  starting or awaiting the phone, so graph apply cannot race measurement
+  playback or its rollback. The
+  public page release that
+  implements this contract is `capture_page_build=20260711.3`, supporting
+  protocols 1 and 2; publish it
   before deploying a Pi that emits v2 specs.
 - 🧪 **Phone-mic capture relay path (fresh-install default,
   on-device-pending).** As of 2026-07-02 fresh installs default to an
@@ -226,14 +235,15 @@
   `deploy/assets/correction/js/main.js` intact. `/correction/crossover/`
   is a correction-native active-crossover microphone surface: correction
   web modules own HTTPS/browser routing, while
-  `jasper.active_speaker.web_commissioning` owns safe driver/summed
+  `jasper.active_speaker.web_commissioning` owns safe driver and optional summed
   playback orchestration and `jasper.active_speaker.web_measurement`
   owns bounded browser WAV evidence plus acoustic-analysis recording.
   This page is also the ownership boundary between manual and automatic
   crossover tuning. A safe applied manual crossover is a valid Layer-A
   prerequisite for Room and remains editable under `/sound/`. Automatic tuning
-  is optional: mic/calibration, automatic level, driver and summed captures run
-  sequentially, then an explicit apply replaces the manual crossover. Legacy
+  is optional: mic/calibration, driver-specific automatic levels, and driver
+  captures run sequentially, then an explicit apply replaces manual attenuation
+  trims while preserving crossover frequency and slope. Legacy
   applied profiles offer **Keep current manual crossover** or **Tune
   automatically** instead of forcing the user into a microphone flow. Starting
   automatic level matching transparently runs the same exact-preservation apply
@@ -2201,8 +2211,9 @@ Internal:
 
 ---
 
-Last verified: 2026-07-11 (JTS3 crossover placement/comparison-set contract and
-capture-page protocol v2 reviewed against the relay, persistence, envelope, and
+Last verified: 2026-07-11 (driver-specific crossover level sequence,
+authenticated capture-page protocol v2 control data, and the placement/
+comparison-set contract reviewed against the relay, persistence, envelope, and
 baseline-apply paths; prior JTS3 UMIK-2 on-device level-ramp evidence,
 renewable measurement-scoped voice-reconciler guard, and the 12 dB / −3 dB
 dynamic-cap defaults; prior 2026-07-10 Jasper relay

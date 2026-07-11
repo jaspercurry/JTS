@@ -235,6 +235,15 @@ def _get_relay_capture_for(*kind_prefixes: str) -> dict[str, Any] | None:
     return relay if any(kind.startswith(prefix) for prefix in kind_prefixes) else None
 
 
+def _active_relay_phase() -> str | None:
+    """Return the in-flight global relay phase that excludes DSP apply."""
+
+    relay = _get_relay_capture()
+    if relay is None or relay.get("status") not in {"starting", "awaiting_phone"}:
+        return None
+    return f"relay:{str(relay.get('kind') or 'measurement')}"
+
+
 def _begin_relay_capture() -> bool:
     """Atomically claim the single relay-capture slot. Returns False if one is
     already in flight (so a double-tap can't spawn two relay sessions + a file
@@ -1256,14 +1265,13 @@ def _setup_digest(setup: dict[str, Any]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _bind_relay_setup(
-    owner: Any,
+def _validated_relay_setup_binding(
     setup: dict[str, Any],
     identity: dict[str, Any] | None,
     *,
     expected_binding_id: str,
 ) -> _RelaySetupBinding:
-    """Validate the full one-time setup and freeze its compact identity."""
+    """Validate a full setup without mutating the current measurement owner."""
     if not isinstance(identity, dict):
         raise ValueError("the phone did not provide a setup identity")
     binding_id = str(identity.get("binding_id") or "")
@@ -1274,7 +1282,22 @@ def _bind_relay_setup(
         raise ValueError("the phone setup identity is malformed")
     if not secrets.compare_digest(digest, _setup_digest(setup)):
         raise ValueError("the phone setup identity does not match its contents")
-    binding = _RelaySetupBinding(binding_id=binding_id, sha256=digest)
+    return _RelaySetupBinding(binding_id=binding_id, sha256=digest)
+
+
+def _bind_relay_setup(
+    owner: Any,
+    setup: dict[str, Any],
+    identity: dict[str, Any] | None,
+    *,
+    expected_binding_id: str,
+) -> _RelaySetupBinding:
+    """Validate the full one-time setup and freeze its compact identity."""
+    binding = _validated_relay_setup_binding(
+        setup,
+        identity,
+        expected_binding_id=expected_binding_id,
+    )
     owner.relay_setup_binding = binding
     return binding
 
@@ -1306,15 +1329,19 @@ def _assert_relay_setup_binding(
         raise ValueError("the microphone setup changed; run the level check again")
 
 
-def _relay_level_identity(sess: Any) -> _RelayLevelIdentity:
-    device = dict(getattr(sess, "input_device", None) or {})
-    device_key = str(
-        device.get("actual_device_id_hash")
-        or device.get("device_id_hash")
-        or device.get("label")
-        or device.get("browser_label")
+def _relay_device_key(device: dict[str, Any] | None) -> str:
+    values = dict(device or {})
+    return str(
+        values.get("actual_device_id_hash")
+        or values.get("device_id_hash")
+        or values.get("label")
+        or values.get("browser_label")
         or ""
     ).casefold()
+
+
+def _relay_level_identity(sess: Any) -> _RelayLevelIdentity:
+    device = dict(getattr(sess, "input_device", None) or {})
     return _RelayLevelIdentity(
         calibration_id=str(
             getattr(
@@ -1322,7 +1349,7 @@ def _relay_level_identity(sess: Any) -> _RelayLevelIdentity:
             )
             or ""
         ),
-        device_key=device_key,
+        device_key=_relay_device_key(device),
     )
 
 
@@ -1342,13 +1369,7 @@ def _assert_relay_level_identity(
     if device is None:
         return
     actual = _sanitize_input_device(device) or {}
-    actual_key = str(
-        actual.get("actual_device_id_hash")
-        or actual.get("device_id_hash")
-        or actual.get("label")
-        or actual.get("browser_label")
-        or ""
-    ).casefold()
+    actual_key = _relay_device_key(actual)
     if expected.device_key and not actual_key:
         raise ValueError(
             "the phone did not identify the microphone used for the sweep; "
@@ -2591,6 +2612,10 @@ async def _run_relay_level_match(
     run_token: str,
     setup_binding_id: str = "",
     tone_frequency_hz: float = 1000.0,
+    prepare_tone: Callable[[], Any] | None = None,
+    restore_tone: Callable[[Any], Any] | None = None,
+    expected_level_identity: _RelayLevelIdentity | None = None,
+    reuse_noise_floor: bool = True,
 ) -> None:
     """Run one relay-fed level match without blocking the correction loop.
 
@@ -2599,12 +2624,15 @@ async def _run_relay_level_match(
     host-event queue.  The ramp never performs a blocking relay request from its
     control loop and never gains a direct reference to the relay client.
     """
-    from jasper.capture_relay.session import purge
+    from jasper.capture_relay.integrity import CaptureIntegrityError
+    from jasper.capture_relay.session import CaptureFailed, PhoneEventVerifier, purge
     from jasper.correction import coordinator, playback
 
     cached_status: dict[str, Any] = {}
     outbound: list[dict[str, Any]] = []
     stop_pump = asyncio.Event()
+    pump_error: list[RuntimeError] = []
+    event_verifier = PhoneEventVerifier(pi_session)
 
     def _read_status() -> dict[str, Any]:
         return dict(cached_status)
@@ -2630,11 +2658,42 @@ async def _run_relay_level_match(
                     pi_session.pull_token,
                 )
                 if isinstance(fresh, dict):
+                    verified_event = event_verifier.verify(fresh.get("event"))
+                    fresh = {**fresh, "event": verified_event}
                     cached_status.clear()
                     cached_status.update(fresh)
                 if unhealthy:
                     unhealthy = False
                     logger.info("relay status pump recovered during level match")
+            except CaptureIntegrityError as exc:
+                log_event(
+                    logger,
+                    "capture_relay.phone_event_integrity_failed",
+                    level=logging.WARNING,
+                    session_id=pi_session.session_id,
+                    kind=pi_session.spec.kind,
+                    reason=str(exc),
+                )
+                try:
+                    await asyncio.to_thread(
+                        client.post_host_event,
+                        pi_session.session_id,
+                        pi_session.pull_token,
+                        {
+                            "phase": "capture_incompatible",
+                            "error": "capture control integrity check failed",
+                        },
+                    )
+                except (OSError, RuntimeError, ValueError):
+                    logger.warning(
+                        "could not publish level-match integrity failure",
+                        exc_info=True,
+                    )
+                pump_error.append(
+                    CaptureFailed("capture control integrity check failed")
+                )
+                stop_pump.set()
+                return
             except (OSError, RuntimeError, ValueError):
                 if not unhealthy:
                     unhealthy = True
@@ -2661,7 +2720,11 @@ async def _run_relay_level_match(
             # deduplicated token-scoped ambient window so ordinary room noise
             # cannot satisfy the tone target and repeated relay polls cannot
             # manufacture sample count.
-            initial_noise_floor = getattr(sess, "noise_floor_db", None)
+            initial_noise_floor = (
+                getattr(sess, "noise_floor_db", None)
+                if reuse_noise_floor
+                else None
+            )
             ambient_samples: dict[tuple[int, int], float] = {}
             # The relay runner starts when the link is minted, not when the
             # household opens it. Give the sequential setup + Start tap a
@@ -2669,6 +2732,8 @@ async def _run_relay_level_match(
             # acoustic safety timeout once samples begin.
             deadline = asyncio.get_running_loop().time() + 480.0
             while True:
+                if pump_error:
+                    raise pump_error[0]
                 event = cached_status.get("event")
                 if isinstance(event, dict) and not page_compatible and any(
                     key in event
@@ -2717,15 +2782,35 @@ async def _run_relay_level_match(
                             if not isinstance(setup, dict):
                                 raise ValueError("the phone setup is missing")
                             if setup_binding_id:
-                                _bind_relay_setup(
-                                    sess,
+                                candidate_binding = _validated_relay_setup_binding(
                                     setup,
                                     event.get("setup_identity"),
                                     expected_binding_id=setup_binding_id,
                                 )
-                            _apply_relay_setup_to_session(sess, setup)
+                                existing_binding = getattr(
+                                    sess, "relay_setup_binding", None
+                                )
+                                if (
+                                    existing_binding is not None
+                                    and candidate_binding != existing_binding
+                                ):
+                                    raise ValueError(
+                                        "the microphone setup changed; run the "
+                                        "level check again"
+                                    )
+                                if existing_binding is None:
+                                    previous_calibration = getattr(
+                                        sess, "mic_calibration", None
+                                    )
+                                    try:
+                                        _apply_relay_setup_to_session(sess, setup)
+                                    except (RuntimeError, ValueError):
+                                        sess.mic_calibration = previous_calibration
+                                        raise
+                                    sess.relay_setup_binding = candidate_binding
+                            else:
+                                _apply_relay_setup_to_session(sess, setup)
                         except (RuntimeError, ValueError) as exc:
-                            sess.relay_setup_binding = None
                             response = {
                                 "phase": "setup_validation_failed",
                                 "setup_token": setup_token,
@@ -2784,7 +2869,26 @@ async def _run_relay_level_match(
                             _apply_relay_setup_to_session(sess, setup)
                         device = context.get("device")
                         if isinstance(device, dict):
-                            sess.input_device = _sanitize_input_device(device)
+                            candidate_device = _sanitize_input_device(device)
+                            if (
+                                expected_level_identity is not None
+                                and _relay_device_key(candidate_device)
+                                != expected_level_identity.device_key
+                            ):
+                                raise ValueError(
+                                    "the microphone changed between driver level "
+                                    "checks; use the same microphone"
+                                )
+                            sess.input_device = candidate_device
+                    if (
+                        expected_level_identity is not None
+                        and _relay_level_identity(sess).calibration_id
+                        != expected_level_identity.calibration_id
+                    ):
+                        raise ValueError(
+                            "the microphone calibration changed between driver "
+                            "level checks; run the level check again"
+                        )
                     mismatch = _relay_device_calibration_block(
                         getattr(sess, "mic_calibration", None),
                         getattr(sess, "input_device", None),
@@ -2828,34 +2932,45 @@ async def _run_relay_level_match(
                 AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
             )
 
-            tone_wav = playback._ensure_tone_wav(
-                freq_hz=tone_frequency_hz,
-                duration_s=90.0,
-                dbfs=AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
-                sample_rate=48000,
-            )
-            player = playback.TonePlayer(tone_wav)
+            prepared_tone = await prepare_tone() if prepare_tone is not None else None
+            try:
+                tone_wav = playback._ensure_tone_wav(
+                    freq_hz=tone_frequency_hz,
+                    duration_s=90.0,
+                    dbfs=AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+                    sample_rate=48000,
+                )
+                player = playback.TonePlayer(tone_wav)
 
-            async def _get_volume() -> float:
-                value = await cam.get_volume_db(best_effort=False)
-                return float(value) if value is not None else 0.0
+                async def _get_volume() -> float:
+                    value = await cam.get_volume_db(best_effort=False)
+                    if value is None:
+                        raise RuntimeError(
+                            "CamillaDSP did not report the measurement volume"
+                        )
+                    return float(value)
 
-            async def _set_volume(db: float) -> None:
-                applied = await cam.set_volume_db(db, best_effort=False)
-                if applied is False:
-                    raise RuntimeError("CamillaDSP rejected the measurement volume")
+                async def _set_volume(db: float) -> None:
+                    applied = await cam.set_volume_db(db, best_effort=False)
+                    if applied is False:
+                        raise RuntimeError(
+                            "CamillaDSP rejected the measurement volume"
+                        )
 
-            outcome = await sess.run_level_match(
-                geometry,
-                get_main_volume_db=_get_volume,
-                set_main_volume_db=_set_volume,
-                play_continuous_tone=player.play,
-                cancel_tone=player.cancel,
-                read_status=_read_status,
-                post_host_event=_queue_host_event,
-                noise_floor_dbfs=initial_noise_floor,
-                run_token=run_token,
-            )
+                outcome = await sess.run_level_match(
+                    geometry,
+                    get_main_volume_db=_get_volume,
+                    set_main_volume_db=_set_volume,
+                    play_continuous_tone=player.play,
+                    cancel_tone=player.cancel,
+                    read_status=_read_status,
+                    post_host_event=_queue_host_event,
+                    noise_floor_dbfs=initial_noise_floor,
+                    run_token=run_token,
+                )
+            finally:
+                if restore_tone is not None and prepared_tone is not None:
+                    await restore_tone(prepared_tone)
 
         if not outcome.locked:
             detail = outcome.ramp.error or "safe measurement level was not reached"
@@ -2999,7 +3114,7 @@ def _handle_crossover_relay_level_match(
         DRIVER_PLACEMENT_POLICY_ID,
         crossover_level_reference,
     )
-    from jasper.correction.level_match import MicGeometry
+    from jasper.active_speaker import web_commissioning
     from jasper.output_topology import load_output_topology
 
     from . import correction_crossover_backend as backend
@@ -3036,11 +3151,12 @@ def _handle_crossover_relay_level_match(
         )
 
     applied_profile = status.get("applied_profile")
-    recomposition = (
-        applied_profile.get("recomposition_snapshot")
-        if isinstance(applied_profile, dict)
-        else None
-    )
+    if not isinstance(applied_profile, dict):
+        raise ValueError(
+            "the applied crossover snapshot is unavailable; reapply it before "
+            "level matching"
+        )
+    recomposition = applied_profile.get("recomposition_snapshot")
     preset_payload = (
         recomposition.get("preset") if isinstance(recomposition, dict) else None
     )
@@ -3049,10 +3165,70 @@ def _handle_crossover_relay_level_match(
             "the applied crossover has no protected preset snapshot; reapply it "
             "before level matching"
         )
-    level_reference = crossover_level_reference(preset_payload)
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
 
+    preset = ActiveSpeakerPreset.from_mapping(preset_payload)
     lease = backend.level_lease()
     topology = load_output_topology()
+    target_rows = (status.get("targets") or {}).get("drivers") or []
+    level_targets: list[dict[str, Any]] = []
+    for raw_target in target_rows:
+        if not isinstance(raw_target, dict):
+            continue
+        group_id = str(raw_target.get("speaker_group_id") or "").strip()
+        role = str(raw_target.get("role") or "").strip().lower()
+        reference = crossover_level_reference(
+            preset_payload,
+            speaker_group_id=group_id,
+            role=role,
+        )
+        excitation = web_commissioning.automatic_driver_excitation(
+            topology,
+            role,
+            applied_profile=applied_profile,
+        )
+        commissioning_gain_db = excitation.get("commissioning_gain_db")
+        target_fingerprint = str(raw_target.get("target_fingerprint") or "")
+        if not target_fingerprint:
+            raise ValueError(
+                "the protected driver has no stable target identity; reapply "
+                "the crossover before level matching"
+            )
+        if (
+            excitation.get("status") != "ready"
+            or not isinstance(commissioning_gain_db, (int, float))
+        ):
+            raise ValueError(
+                str(
+                    excitation.get("detail")
+                    or "the protected driver gain is unavailable; reapply the "
+                    "crossover before level matching"
+                )
+            )
+        level_targets.append(
+            {
+                "target_id": reference.target_id,
+                "speaker_group_id": reference.speaker_group_id,
+                "role": reference.role,
+                "geometry": reference.geometry,
+                "tone_frequency_hz": reference.tone_frequency_hz,
+                "placement_instruction": reference.placement_instruction,
+                "commissioning_gain_db": float(commissioning_gain_db),
+                "target_fingerprint": target_fingerprint,
+            }
+        )
+    if not level_targets:
+        raise ValueError("this speaker has no active drivers to level match")
+
+    prior = lease.level_match_snapshot(current_context_id=context_id)
+    continuing = (
+        prior.get("context_id") == context_id
+        and prior.get("targets") == level_targets
+        and prior.get("ready") is not True
+        and isinstance(prior.get("next_target"), dict)
+    )
+    target = dict(prior["next_target"]) if continuing else level_targets[0]
+    expected_level_identity = _relay_level_identity(lease) if continuing else None
     run_token = secrets.token_urlsafe(18)
     setup_binding_id = context_id
 
@@ -3065,9 +3241,9 @@ def _handle_crossover_relay_level_match(
         return correction_adapter.open_capture(
             client,
             build_level_ramp_spec(
-                geometry_label=f"{level_reference.role} measurement position",
-                placement_instruction=level_reference.placement_instruction,
-                tone_frequency_hz=level_reference.tone_frequency_hz,
+                geometry_label=f"{target['role']} measurement position",
+                placement_instruction=str(target["placement_instruction"]),
+                tone_frequency_hz=float(target["tone_frequency_hz"]),
                 run_token=run_token,
                 setup_binding_id=setup_binding_id,
                 setup_collect_positions=False,
@@ -3077,37 +3253,94 @@ def _handle_crossover_relay_level_match(
             return_url=return_url,
         )
 
+    async def _prepare_driver_tone() -> dict[str, Any]:
+        current_topology = load_output_topology()
+        correction_crossover_flow.validate_current_level_target_context(
+            backend.status_payload(),
+            current_topology_id=current_topology.topology_id,
+            expected_topology_id=topology.topology_id,
+            expected_profile_context_id=context_id,
+            speaker_group_id=str(target["speaker_group_id"]),
+            role=str(target["role"]),
+            expected_target_fingerprint=str(target["target_fingerprint"]),
+        )
+        return await web_commissioning.prepare_automatic_driver_level_match(
+            topology,
+            speaker_group_id=str(target["speaker_group_id"]),
+            role=str(target["role"]),
+            preset=preset,
+            applied_profile=applied_profile,
+            camilla_factory=_camilla,
+        )
+
+    async def _restore_driver_tone(prepared: dict[str, Any]) -> dict[str, Any]:
+        return await web_commissioning.restore_automatic_driver_level_match(
+            prepared,
+            camilla_factory=_camilla,
+        )
+
     async def _run(client: RelayClient, pi_session: PiCaptureSession) -> None:
         # `_run_relay_capture` has acquired the global relay slot before this
-        # callback starts. Invalidating here means a rejected second Start can
-        # never erase the still-valid comparison set owned by the first flow.
-        lease.invalidate_comparison_context()
-        clear_active_comparison_set(topology)
-        log_event(
-            logger,
-            "correction.crossover_comparison_set_invalidated",
-            reason="new_level_match_started",
-            topology_id=topology.topology_id,
-        )
+        # callback starts. A continuation preserves earlier driver locks; a
+        # complete retune invalidates only after this run owns the slot.
+        if not continuing:
+            lease.invalidate_comparison_context()
+            clear_active_comparison_set(topology)
+            log_event(
+                logger,
+                "correction.crossover_comparison_set_invalidated",
+                reason="new_level_match_started",
+                topology_id=topology.topology_id,
+            )
+        lease.configure_targets(level_targets)
         await _run_relay_level_match(
             lease,
             client,
             pi_session,
-            geometry=MicGeometry.NEAR_FIELD_DRIVER.value,
+            geometry=str(target["geometry"]),
             run_token=run_token,
             setup_binding_id=setup_binding_id,
-            tone_frequency_hz=level_reference.tone_frequency_hz,
+            tone_frequency_hz=float(target["tone_frequency_hz"]),
+            prepare_tone=_prepare_driver_tone,
+            restore_tone=_restore_driver_tone,
+            expected_level_identity=expected_level_identity,
+            reuse_noise_floor=False,
         )
-        lease.context_id = context_id
         binding = getattr(lease, "relay_setup_binding", None)
         identity = _relay_level_identity(lease)
-        ramp = (lease.level_match_snapshot().get("last") or {}).get("ramp") or {}
-        locked_main_volume_db = ramp.get("locked_main_volume_db")
         if (
             binding is None
             or not getattr(binding, "sha256", "")
             or not identity.device_key
-            or not isinstance(locked_main_volume_db, (int, float))
+        ):
+            raise ValueError(
+                "the level check did not produce a complete microphone binding; "
+                "run it again"
+            )
+        lease.context_id = context_id
+        level_snapshot = lease.level_match_snapshot(current_context_id=context_id)
+        if level_snapshot.get("ready") is not True:
+            next_target = level_snapshot.get("next_target")
+            log_event(
+                logger,
+                "correction.crossover_driver_level_locked",
+                topology_id=topology.topology_id,
+                target_id=target["target_id"],
+                next_target_id=(
+                    next_target.get("target_id")
+                    if isinstance(next_target, dict)
+                    else None
+                ),
+                completed=len(level_snapshot.get("driver_level_locks") or {}),
+                total=len(level_targets),
+            )
+            return
+        driver_level_locks = lease.driver_level_locks()
+        if (
+            binding is None
+            or not getattr(binding, "sha256", "")
+            or not identity.device_key
+            or len(driver_level_locks) != len(level_targets)
         ):
             raise ValueError(
                 "the level check did not produce a complete microphone and "
@@ -3121,7 +3354,7 @@ def _handle_crossover_relay_level_match(
                 identity.device_key.encode("utf-8")
             ).hexdigest(),
             calibration_id=identity.calibration_id,
-            locked_main_volume_db=float(locked_main_volume_db),
+            driver_level_locks=driver_level_locks,
         )
         log_event(
             logger,
@@ -3129,10 +3362,8 @@ def _handle_crossover_relay_level_match(
             topology_id=topology.topology_id,
             comparison_set_id=comparison_set["comparison_set_id"],
             geometry_policy=DRIVER_PLACEMENT_POLICY_ID,
-            level_reference_role=level_reference.role,
-            level_tone_frequency_hz=f"{level_reference.tone_frequency_hz:.1f}",
             calibrated=bool(identity.calibration_id),
-            locked_main_volume_db=f"{float(locked_main_volume_db):.2f}",
+            driver_locks=len(driver_level_locks),
         )
 
     relay = _run_relay_capture(
@@ -3218,7 +3449,6 @@ def _handle_crossover_relay_capture(
     another measurement silently corrupts both captures)."""
     from jasper.capture_relay import correction_adapter
     from jasper.capture_relay.spec import build_crossover_sweep_spec
-    from jasper.active_speaker.measurement import load_measurement_state
     from jasper.output_topology import load_output_topology
 
     from . import correction_crossover_flow
@@ -3234,6 +3464,13 @@ def _handle_crossover_relay_capture(
     raw = _read_json_body(handler)
     lease = correction_crossover_backend.level_lease()
     status = correction_crossover_backend.status_payload()
+    applied_profile = status.get("applied_profile")
+    if not isinstance(applied_profile, dict):
+        raise ValueError(
+            "the applied crossover snapshot is unavailable; reapply it before "
+            "measuring"
+        )
+    topology = load_output_topology()
     setup = status.get("setup") if isinstance(status, dict) else None
     if (
         not status.get("active")
@@ -3250,8 +3487,27 @@ def _handle_crossover_relay_capture(
             "protected speaker setup is no longer ready; finish it before "
             "capturing the crossover"
         )
+    protected_profile = (
+        setup.get("protected_profile") if isinstance(setup, dict) else None
+    )
+    profile_context_id = (
+        str(protected_profile.get("source_fingerprint") or "")
+        if isinstance(protected_profile, dict)
+        else ""
+    )
+    applied_crossover = (
+        setup.get("applied_crossover") if isinstance(setup, dict) else None
+    )
     level = status.get("level_match") if isinstance(status, dict) else None
-    if isinstance(level, dict) and level.get("valid") is False:
+    if (
+        not profile_context_id
+        or not isinstance(applied_crossover, dict)
+        or applied_crossover.get("valid") is not True
+        or not isinstance(level, dict)
+        or level.get("valid") is not True
+        or level.get("ready") is not True
+        or str(level.get("context_id") or "") != profile_context_id
+    ):
         _run_async(
             lease.restore_level_match_volume(
                 lambda db: _camilla().set_volume_db(db, best_effort=False)
@@ -3262,14 +3518,6 @@ def _handle_crossover_relay_capture(
             "speaker setup changed after level matching; run the crossover "
             "level check again"
         )
-    level = lease.level_match_snapshot()
-    last = level.get("last") if isinstance(level, dict) else None
-    ramp = last.get("ramp") if isinstance(last, dict) else None
-    if not (
-        isinstance(ramp, dict)
-        and ramp.get("state") == "locked"
-    ):
-        raise ValueError("run the near-field automatic level check before capturing")
     calibration = getattr(lease, "mic_calibration", None)
     level_identity = _relay_level_identity(lease)
     if calibration is not None:
@@ -3288,6 +3536,10 @@ def _handle_crossover_relay_capture(
     )
     if not isinstance(comparison_set, dict) or not comparison_set_valid(
         comparison_set
+    ) or (
+        str(comparison_set.get("topology_id") or "") != topology.topology_id
+        or str(comparison_set.get("profile_context_id") or "")
+        != profile_context_id
     ):
         raise ValueError(
             "the automatic crossover measurement set is no longer active; "
@@ -3362,6 +3614,55 @@ def _handle_crossover_relay_capture(
             lease, level_identity, device=result.device
         )
 
+    async def _get_capture_volume() -> Any:
+        return await _camilla().get_volume_db(best_effort=False)
+
+    async def _set_capture_volume(db: float) -> Any:
+        return await _camilla().set_volume_db(db, best_effort=False)
+
+    async def _prepare_capture_play() -> bool:
+        if kind_id == "driver":
+            return await lease.acquire_driver_sweep_volume(
+                str(raw["speaker_group_id"]),
+                str(raw["role"]),
+                _get_capture_volume,
+                _set_capture_volume,
+            )
+        return await lease.acquire_summed_sweep_volume(
+            _get_capture_volume,
+            _set_capture_volume,
+        )
+
+    async def _restore_capture_play() -> None:
+        if await lease.restore_sweep_volume(_set_capture_volume):
+            return
+        emergency_safe = await lease.emergency_lower_sweep_volume(
+            _set_capture_volume
+        )
+        if emergency_safe:
+            raise RuntimeError(
+                "JTS could not restore the listening volume after measurement; "
+                "it lowered output to a safe fallback. Set your volume again."
+            )
+        raise RuntimeError(
+            "JTS could not restore or lower the measurement volume. Stop playback "
+            "and reapply the speaker profile before listening."
+        )
+
+    def _validate_current_context() -> None:
+        current_topology = load_output_topology()
+        correction_crossover_flow.validate_current_capture_context(
+            correction_crossover_backend.status_payload(),
+            current_topology_id=current_topology.topology_id,
+            expected_topology_id=topology.topology_id,
+            expected_profile_context_id=profile_context_id,
+            expected_comparison_set=comparison_set,
+            kind=kind_id,
+            speaker_group_id=str(raw["speaker_group_id"]),
+            role=str(raw.get("role") or ""),
+            expected_target_fingerprint=target_fingerprint,
+        )
+
     base_run_and_consume = correction_crossover_flow.build_crossover_relay_run_and_consume(
         raw,
         _run_async,
@@ -3370,26 +3671,22 @@ def _handle_crossover_relay_capture(
         # Server-side probe, re-evaluated fresh when the phone actually arms.
         blocking_phase=_crossover_blocking_phase,
         validate_capture=_validate_capture,
-        prepare_play=lambda: lease.ensure_level_match_volume(
-            lambda db: _camilla().set_volume_db(db, best_effort=False)
-        ),
-        restore_play=lambda: lease.restore_level_match_volume(
-            lambda db: _camilla().set_volume_db(db, best_effort=False)
-        ),
+        prepare_play=_prepare_capture_play,
+        restore_play=_restore_capture_play,
         comparison_set=comparison_set,
-        target_fingerprint=target_fingerprint,
-        current_comparison_set=lambda: (
-            load_measurement_state(load_output_topology()).get(
-                "active_comparison_set"
-            )
-            or {}
+        applied_profile=(
+            applied_profile if isinstance(applied_profile, dict) else None
         ),
+        target_fingerprint=target_fingerprint,
+        validate_current_context=_validate_current_context,
     )
 
     async def run_and_consume(client: RelayClient, pi_session: PiCaptureSession) -> None:
         try:
             await base_run_and_consume(client, pi_session)
         finally:
+            if lease.sweep_volume_active:
+                await _restore_capture_play()
             # Idempotent backstop for failures before the armed/play window.
             await lease.restore_level_match_volume(
                 lambda db: _camilla().set_volume_db(db, best_effort=False)
@@ -4396,6 +4693,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         raw,
                         _run_async,
                         _camilla,
+                        blocking_phase=_active_relay_phase(),
                     )
                     self._send_json(payload, status=int(status))
                     return

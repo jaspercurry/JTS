@@ -12,12 +12,12 @@
 // relay.
 
 import { RELAY_BASE } from "./config.js";
-import { parseFragment, withinUploadCap } from "./fragment.js";
+import { parseFragment, withinUploadCap } from "./fragment.js?v=20260711-3";
 import {
   acceptedAcknowledgement,
   renderScreen,
 } from "./render.js?v=20260711-1";
-import { RelayClient } from "./relay-client.js";
+import { RelayClient } from "./relay-client.js?v=20260711-3";
 import { importContentKey, encryptWav } from "./crypto.js";
 import { constraintDecision, verifyRealizedConstraints } from "./constraints.js";
 import { safeReturnUrl } from "./return-url.js";
@@ -25,8 +25,10 @@ import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
 import { runLevelRampProtocol } from "./level-events.js";
 import {
   assertCaptureProtocolCompatible,
+  requiredCaptureProtocol,
   validateCapturePageIdentity,
 } from "./capture-protocol.js";
+import { verifyAndParseCaptureSpec } from "./transport-integrity.js?v=20260711-3";
 import {
   loadBoundSetup,
   refreshBoundSetup,
@@ -156,6 +158,31 @@ function captureFailureMessage(err) {
     );
   }
   return `Measurement failed: ${message}. Tap Start to try again.`;
+}
+
+function relayBootFailureMessage(err) {
+  const message = String(err && err.message || "");
+  const status = Number(err && err.status);
+  if (
+    [401, 403, 404].includes(status) ||
+    message.includes("capture spec integrity") ||
+    message.includes("capture spec is invalid")
+  ) {
+    return (
+      "This authenticated measurement link is invalid, expired, or from an " +
+      "older speaker version. Return to the speaker page and create a new link."
+    );
+  }
+  if (message.includes("incompatible")) {
+    return (
+      `${message}. Return to the speaker and update it or publish the matching ` +
+      "capture page before trying again."
+    );
+  }
+  return (
+    "Can't reach the measurement relay. New measurements need an internet " +
+    "connection; any correction already applied to your speaker still works."
+  );
 }
 
 async function waitForSetupValidation(ctx, token) {
@@ -1063,21 +1090,23 @@ async function boot() {
   let spec;
   try {
     setStatus("Connecting to your speaker…", "info");
-    const [pageIdentity, fetchedSpec] = await Promise.all([
+    const [pageIdentity, specText] = await Promise.all([
       loadCapturePageIdentity(),
-      client.fetchSpec(),
+      client.fetchSpecText(),
     ]);
-    spec = fetchedSpec;
+    const verified = await verifyAndParseCaptureSpec(specText, {
+      contentKeyB64: handle.contentKeyB64,
+      sessionId: handle.sessionId,
+      specMac: handle.specMac,
+    });
+    spec = verified.spec;
     assertCaptureProtocolCompatible(spec, pageIdentity);
     client.setCapturePageIdentity(pageIdentity);
+    client.setTransportIntegrity(verified.integrity, {
+      required: Number(requiredCaptureProtocol(spec)) >= 2,
+    });
   } catch (err) {
-    setStatus(
-      String(err && err.message || "").includes("incompatible")
-        ? `${err.message}. Return to the speaker and update it or publish the matching capture page before trying again.`
-        : "Can't reach the measurement relay. New measurements need an internet " +
-          "connection; any correction already applied to your speaker still works.",
-      "error",
-    );
+    setStatus(relayBootFailureMessage(err), "error");
     return;
   }
 
@@ -1202,4 +1231,4 @@ if (typeof document !== "undefined" && typeof window !== "undefined") {
   }
 }
 
-export { boot, onStart, onLevelRampStart };
+export { boot, onStart, onLevelRampStart, relayBootFailureMessage };

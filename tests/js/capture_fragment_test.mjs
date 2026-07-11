@@ -27,10 +27,12 @@ function k() {
 }
 
 function testParsesFullFragment() {
-  const f = parseFragment(`#s=sess-1&u=up-token&k=${k()}`);
+  const mac = "m".repeat(43);
+  const f = parseFragment(`#s=sess-1&u=up-token&k=${k()}&a=${mac}`);
   assert.equal(f.sessionId, "sess-1");
   assert.equal(f.uploadToken, "up-token");
   assert.equal(f.contentKeyB64, k());
+  assert.equal(f.specMac, mac);
   ok();
 }
 
@@ -50,6 +52,7 @@ function testRejectsMissingParts() {
 function testRejectsMalformedKey() {
   assert.throws(() => parseFragment("#s=a&u=b&k=short"), FragmentError);
   assert.throws(() => parseFragment("#s=a&u=b&k=has spaces and+slashes/=="), FragmentError);
+  assert.throws(() => parseFragment(`#s=a&u=b&k=${k()}&a=short`), FragmentError);
   ok();
 }
 

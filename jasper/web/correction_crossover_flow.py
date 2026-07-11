@@ -149,6 +149,8 @@ def handle_apply(
     raw: Mapping[str, Any],
     run_async: AsyncRunner,
     camilla_factory: CamillaFactory,
+    *,
+    blocking_phase: str | None = None,
 ) -> tuple[dict[str, Any], HTTPStatus]:
     """Compile and atomically apply the explicitly selected profile owner."""
     from . import correction_crossover_backend as backend
@@ -159,6 +161,13 @@ def handle_apply(
             "status": "refused",
             "error": "Choose manual or automatic crossover tuning before applying.",
         }, HTTPStatus.BAD_REQUEST
+    if blocking_phase is not None:
+        return {
+            "status": "refused",
+            "reason": "measurement_in_progress",
+            "blocking_phase": blocking_phase,
+            "next_step": "Finish the active measurement before applying the crossover.",
+        }, HTTPStatus.CONFLICT
     payload = run_async(
         backend.apply_profile(
             tuning_owner=tuning_owner,
@@ -532,6 +541,163 @@ def ensure_automatic_measurement_profile(
     return status
 
 
+def validate_current_capture_context(
+    status: Mapping[str, Any],
+    *,
+    current_topology_id: str,
+    expected_topology_id: str,
+    expected_profile_context_id: str,
+    expected_comparison_set: Mapping[str, Any],
+    kind: str,
+    speaker_group_id: str,
+    role: str = "",
+    expected_target_fingerprint: str,
+) -> None:
+    """Reject a stale relay link before it can emit a crossover sweep.
+
+    The POST-time checks make the link understandable; this arm-time check is
+    the safety boundary.  Every mutable identity that defines comparable
+    acoustic evidence is read again immediately before playback.
+    """
+    from jasper.active_speaker.capture_geometry import comparison_set_valid
+
+    if current_topology_id != expected_topology_id:
+        raise ValueError(
+            "the speaker topology changed after this link was created; "
+            "run the crossover level check again"
+        )
+    setup = status.get("setup")
+    setup = setup if isinstance(setup, Mapping) else {}
+    applied = setup.get("applied_crossover")
+    applied = applied if isinstance(applied, Mapping) else {}
+    protected = setup.get("protected_profile")
+    protected = protected if isinstance(protected, Mapping) else {}
+    if (
+        setup.get("status") != "ready"
+        or applied.get("valid") is not True
+        or str(protected.get("source_fingerprint") or "")
+        != expected_profile_context_id
+    ):
+        raise ValueError(
+            "the protected crossover setup changed after this link was created; "
+            "run the crossover level check again"
+        )
+    level = status.get("level_match")
+    level = level if isinstance(level, Mapping) else {}
+    if (
+        level.get("valid") is not True
+        or level.get("ready") is not True
+        or str(level.get("context_id") or "") != expected_profile_context_id
+    ):
+        raise ValueError(
+            "the crossover measurement level changed after this link was created; "
+            "run the level check again"
+        )
+    measurements = status.get("measurements")
+    measurements = measurements if isinstance(measurements, Mapping) else {}
+    current_set = measurements.get("active_comparison_set")
+    expected_set = dict(expected_comparison_set)
+    if (
+        not isinstance(current_set, Mapping)
+        or not comparison_set_valid(current_set)
+        or str(current_set.get("topology_id") or "") != expected_topology_id
+        or str(current_set.get("profile_context_id") or "")
+        != expected_profile_context_id
+        or current_set.get("comparison_set_id")
+        != expected_set.get("comparison_set_id")
+        or current_set.get("fingerprint") != expected_set.get("fingerprint")
+    ):
+        raise ValueError(
+            "the crossover comparison set changed after this link was created; "
+            "run the level check again"
+        )
+    targets = status.get("targets")
+    targets = targets if isinstance(targets, Mapping) else {}
+    rows = targets.get("drivers" if kind == "driver" else "summed")
+    rows = rows if isinstance(rows, list) else []
+    target = next(
+        (
+            item
+            for item in rows
+            if isinstance(item, Mapping)
+            and str(item.get("speaker_group_id") or "") == speaker_group_id
+            and (
+                kind != "driver"
+                or str(item.get("role") or "").lower() == role.lower()
+            )
+        ),
+        None,
+    )
+    fingerprint_key = "target_fingerprint" if kind == "driver" else "group_fingerprint"
+    if (
+        not isinstance(target, Mapping)
+        or str(target.get(fingerprint_key) or "") != expected_target_fingerprint
+    ):
+        raise ValueError(
+            "the crossover measurement target changed after this link was created; "
+            "create a new capture link"
+        )
+
+
+def validate_current_level_target_context(
+    status: Mapping[str, Any],
+    *,
+    current_topology_id: str,
+    expected_topology_id: str,
+    expected_profile_context_id: str,
+    speaker_group_id: str,
+    role: str,
+    expected_target_fingerprint: str,
+) -> None:
+    """Reject a stale driver-level link before its isolated tone can load."""
+
+    if current_topology_id != expected_topology_id:
+        raise ValueError(
+            "the speaker topology changed after this link was created; "
+            "start driver level matching again"
+        )
+    setup = status.get("setup")
+    setup = setup if isinstance(setup, Mapping) else {}
+    protected = setup.get("protected_profile")
+    protected = protected if isinstance(protected, Mapping) else {}
+    applied = setup.get("applied_crossover")
+    applied = applied if isinstance(applied, Mapping) else {}
+    if (
+        setup.get("status") != "ready"
+        or applied.get("valid") is not True
+        or str(protected.get("source_fingerprint") or "")
+        != expected_profile_context_id
+    ):
+        raise ValueError(
+            "the protected crossover setup changed after this link was created; "
+            "start driver level matching again"
+        )
+    targets = status.get("targets")
+    targets = targets if isinstance(targets, Mapping) else {}
+    rows = targets.get("drivers")
+    rows = rows if isinstance(rows, list) else []
+    target = next(
+        (
+            item
+            for item in rows
+            if isinstance(item, Mapping)
+            and str(item.get("speaker_group_id") or "") == speaker_group_id
+            and str(item.get("role") or "").lower() == role.lower()
+        ),
+        None,
+    )
+    if (
+        not expected_target_fingerprint
+        or not isinstance(target, Mapping)
+        or str(target.get("target_fingerprint") or "")
+        != expected_target_fingerprint
+    ):
+        raise ValueError(
+            "the driver level target changed after this link was created; "
+            "create a new level-check link"
+        )
+
+
 def build_crossover_relay_run_and_consume(
     raw: dict[str, Any],
     run_async: AsyncRunner,
@@ -543,8 +709,10 @@ def build_crossover_relay_run_and_consume(
     prepare_play: Callable[[], Any] | None = None,
     restore_play: Callable[[], Any] | None = None,
     comparison_set: Mapping[str, Any] | None = None,
+    applied_profile: Mapping[str, Any] | None = None,
     target_fingerprint: str = "",
     current_comparison_set: Callable[[], Mapping[str, Any]] | None = None,
+    validate_current_context: Callable[[], None] | None = None,
 ) -> Callable[[Any, Any], Any]:
     """Return the relay ``run_and_consume(client, pi_session)`` coroutine.
 
@@ -575,6 +743,15 @@ def build_crossover_relay_run_and_consume(
     # record so the record carries the exact sweep the Pi played.
     played: dict[str, Any] = {}
     placement_proof: dict[str, Any] = {}
+    frozen_driver_preset: Any = None
+    if kind == "driver" and isinstance(applied_profile, Mapping):
+        snapshot = applied_profile.get("recomposition_snapshot")
+        snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+        preset_raw = snapshot.get("preset")
+        if isinstance(preset_raw, dict):
+            from jasper.active_speaker.profile import ActiveSpeakerPreset
+
+            frozen_driver_preset = ActiveSpeakerPreset.from_mapping(preset_raw)
 
     async def _play() -> dict[str, Any]:
         from jasper.correction import coordinator
@@ -596,6 +773,11 @@ def build_crossover_relay_run_and_consume(
                         {"speaker_group_id": group_id, "role": role},
                         camilla_factory=camilla_factory,
                         blocking_phase=phase,
+                        applied_profile=(
+                            dict(applied_profile)
+                            if isinstance(applied_profile, Mapping)
+                            else None
+                        ),
                     )
                 return await backend.play_summed_capture_sweep(
                     {"speaker_group_id": group_id},
@@ -605,7 +787,11 @@ def build_crossover_relay_run_and_consume(
             finally:
                 # Restore before measurement_window resumes household audio.
                 if restore_play is not None:
-                    await restore_play()
+                    restored = await restore_play()
+                    if restored is False:
+                        raise RuntimeError(
+                            "the crossover measurement volume was not restored"
+                        )
 
     def _post_phase(session_id: str, pull_token: str, phase: str, **extra: Any) -> None:
         """Post a REQUIRED progress event; failures propagate.
@@ -648,7 +834,9 @@ def build_crossover_relay_run_and_consume(
             # coroutine back to the correction event loop (run_coroutine_threadsafe)
             # and blocks THIS thread — never the loop — until the sweep finishes.
             try:
-                if current_comparison_set is not None:
+                if validate_current_context is not None:
+                    validate_current_context()
+                elif current_comparison_set is not None:
                     current = current_comparison_set()
                     expected = comparison_set or {}
                     if (
@@ -740,6 +928,11 @@ def build_crossover_relay_run_and_consume(
             "playback_id": played.get("playback_id"),
             "excitation": played.get("excitation"),
         }
+        noise_floor = getattr(result, "noise_floor", None)
+        if isinstance(noise_floor, Mapping):
+            noise_floor_dbfs = noise_floor.get("rms_dbfs")
+            if isinstance(noise_floor_dbfs, (int, float)):
+                record_raw["noise_floor_dbfs"] = float(noise_floor_dbfs)
         for key in ("calibration_id", "measurement_mode"):
             value = raw.get(key)
             if value:
@@ -747,10 +940,15 @@ def build_crossover_relay_run_and_consume(
         if kind == "driver":
             record_raw["role"] = role
             record_raw["test_level_dbfs"] = played.get("test_level_dbfs")
+            record_kwargs: dict[str, Any] = {
+                "placement_proof": placement_proof,
+            }
+            if frozen_driver_preset is not None:
+                record_kwargs["preset"] = frozen_driver_preset
             record_payload = backend.record_driver_capture(
                 record_raw,
                 result.wav,
-                placement_proof=placement_proof,
+                **record_kwargs,
             )
         else:
             record_raw["summed_test_id"] = played.get("summed_test_id") or played.get(

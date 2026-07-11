@@ -334,18 +334,20 @@ one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
 3. **Trim chain → override.** `baseline_profile._measured_level_trims` reads those
    overlap levels from measurement state, requires BOTH drivers of EVERY
    crossover in a group to be `present` + `usable`, and requires the capture
-   ledger (generated sweep peak + commissioning gain) to normalize both captures
-   to one effective excitation. The automatic level tone and ESS share the
+   ledger (generated sweep peak + applied role gain + that driver's locked main
+   volume) to normalize both captures to one effective excitation. The
+   automatic level tone and ESS share the
    `AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS` −12 dBFS source peak; each isolated
-   driver uses its gain from the current immutable applied Layer-A snapshot.
+   driver gets a preset-derived passband-safe tone, its own gradual level ramp,
+   and its gain from the current immutable applied Layer-A snapshot. Playback
+   and overlap analysis use the same frozen preset; neither resolves the mutable
+   design draft after the relay link has been created.
    The quiet −20/−60 dB by-ear record proves driver identity only and is never
    reused as an acoustic capture level. A missing, stale, or mismatched applied
-   snapshot/ledger blocks before playback or recording. The automatic summed
-   ESS follows the same rule: it recomposes and validates the entire immutable
-   applied Layer-A graph (every role gain, delay, and polarity) instead of
-   inheriting the old combined listening-test level, records that full-graph
-   provenance, and restores the prior DSP graph after playback. It then
-   chains the deltas into a
+   snapshot/ledger blocks before playback or recording. The first product slice
+   stops after per-driver level matching; summed response remains an optional
+   diagnostic until every crossover region has its own validation contract. It
+   then chains the deltas into a
    per-driver attenuation (quietest driver = 0 dB reference), averages usable
    groups, and clamps to the −60 dB floor. `_derive_corrections` then applies it
    **over** research/UI/datasheet estimates. A manual apply preserves the

@@ -813,13 +813,25 @@ def test_measurements_do_not_carry_across_output_topology_changes(
 def test_new_level_run_invalidates_prior_comparison_set(tmp_path: Path) -> None:
     state_path = tmp_path / "measurements.json"
     topology = _topology()
+    driver_level_locks = {
+        target["target_id"]: {
+            "target_id": target["target_id"],
+            "speaker_group_id": target["speaker_group_id"],
+            "role": target["role"],
+            "tone_frequency_hz": 250.0 if target["role"] == "woofer" else 6250.0,
+            "tone_peak_dbfs": -12.0,
+            "commissioning_gain_db": 0.0,
+            "locked_main_volume_db": -12.0,
+        }
+        for target in active_driver_targets(topology)
+    }
     comparison_set = start_active_comparison_set(
         topology,
         profile_context_id="protected-profile",
         setup_sha256="a" * 64,
         device_sha256="b" * 64,
         calibration_id="",
-        locked_main_volume_db=-12.0,
+        driver_level_locks=driver_level_locks,
         state_path=state_path,
         now="2026-07-11T12:00:00Z",
     )

@@ -252,8 +252,12 @@ def capture_sweep_meta(raw: Mapping[str, Any]) -> dict[str, Any]:
     return dict(sweep_meta)
 
 
-def capture_preset(topology: Any) -> Any:
+def capture_preset(topology: Any, frozen_preset: Any = None) -> Any:
     """Resolve the active-speaker preset used to analyze browser captures."""
+
+    if frozen_preset is not None:
+        frozen_preset.validate()
+        return frozen_preset
 
     from jasper.active_speaker.commission_wiring import resolve_commission_inputs
     from jasper.active_speaker.tone_plan import load_active_speaker_preset
@@ -358,6 +362,7 @@ def record_driver_capture(
     wav_bytes: bytes | None = None,
     *,
     placement_proof: Mapping[str, Any] | None = None,
+    preset: Any = None,
 ) -> dict[str, Any]:
     """Analyze one browser WAV and record per-driver acoustic evidence."""
 
@@ -395,7 +400,7 @@ def record_driver_capture(
                 or "confirm this driver again before recording mic evidence"
             )
         )
-    preset = capture_preset(topology)
+    preset = capture_preset(topology, preset)
     wav_path = capture_wav_path(raw, kind="driver", wav_bytes=wav_bytes)
     calibration_curve, calibration_id, measurement_mode = capture_calibration(raw)
     payload = record_driver_acoustic_capture(
@@ -414,6 +419,7 @@ def record_driver_capture(
         ),
         calibration=calibration_curve,
         notes=raw.get("notes"),
+        noise_floor_dbfs=raw.get("noise_floor_dbfs"),
         calibration_level=load_calibration_level_state(),
         safe_session=None,
         durable_floor_confirmation=floor_evidence.get("confirmation"),
@@ -478,6 +484,7 @@ def record_summed_capture(
         ),
         calibration=calibration_curve,
         notes=raw.get("notes"),
+        noise_floor_dbfs=raw.get("noise_floor_dbfs"),
         calibration_level=load_calibration_level_state(),
     )
     payload["measurement_mode"] = measurement_mode
@@ -494,5 +501,6 @@ def record_summed_capture(
             "schema_version"
         ),
         placement_policy=(payload.get("placement_proof") or {}).get("policy_id"),
+        noise_floor_dbfs=(payload.get("acoustic") or {}).get("noise_floor_dbfs"),
     )
     return payload

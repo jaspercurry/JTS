@@ -996,11 +996,25 @@ async def test_crossover_lease_restores_then_scopes_target_to_sweep_window():
     assert outcome.ramp.restored is True
     assert chain._vol == pytest.approx(-30.0)
     assert lease.context_id == "profile-a"
-    assert await lease.ensure_level_match_volume(chain.set_vol) is True
+    lease.configure_targets([{
+        "target_id": "mono:woofer",
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "geometry": "near_field_driver:mono:woofer",
+        "tone_frequency_hz": 250.0,
+        "commissioning_gain_db": 0.0,
+    }])
+    lease._outcomes["near_field_driver:mono:woofer"] = lease._outcomes.pop(
+        MicGeometry.NEAR_FIELD_DRIVER.value
+    )
+    chain._vol = -27.0
+    assert await lease.acquire_driver_sweep_volume(
+        "mono", "woofer", chain.get_vol, chain.set_vol
+    ) is True
     assert chain._vol == pytest.approx(outcome.ramp.locked_main_volume_db)
-    assert outcome.ramp.restored is False
-    assert await lease.restore_level_match_volume(chain.set_vol) is True
-    assert chain._vol == pytest.approx(-30.0)
+    assert outcome.ramp.restored is True
+    assert await lease.restore_sweep_volume(chain.set_vol) is True
+    assert chain._vol == pytest.approx(-27.0)
     assert outcome.ramp.restored is True
 
 
@@ -1037,8 +1051,15 @@ async def test_crossover_lease_accepts_and_reasserts_bounded_low_lock():
     assert outcome.bounded_low_level is True
     assert outcome.ramp.restored is True
     assert chain._vol == pytest.approx(original)
-    assert await lease.ensure_level_match_volume(chain.set_vol) is True
+    lease._outcomes["near_field_driver:mono:woofer"] = lease._outcomes.pop(
+        MicGeometry.NEAR_FIELD_DRIVER.value
+    )
+    assert await lease.acquire_driver_sweep_volume(
+        "mono", "woofer", chain.get_vol, chain.set_vol
+    ) is True
     assert chain._vol == pytest.approx(cap)
+    assert await lease.restore_sweep_volume(chain.set_vol) is True
+    assert chain._vol == pytest.approx(original)
 
 
 @pytest.mark.asyncio

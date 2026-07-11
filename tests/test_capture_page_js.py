@@ -42,6 +42,7 @@ _HARNESSES = [
     "capture_level_events_test.mjs",
     "capture_setup_store_test.mjs",
     "capture_protocol_test.mjs",
+    "capture_transport_integrity_test.mjs",
 ]
 
 
@@ -69,6 +70,17 @@ def test_capture_page_expired_link_message_points_back_to_speaker():
     assert "Return to the speaker page" in main_js
 
 
+def test_capture_page_distinguishes_invalid_link_from_network_failure():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "function relayBootFailureMessage(err)" in main_js
+    assert "[401, 403, 404].includes(status)" in main_js
+    assert 'message.includes("capture spec integrity")' in main_js
+    assert "This authenticated measurement link is invalid" in main_js
+    assert "Can't reach the measurement relay" in main_js
+    assert "setStatus(relayBootFailureMessage(err), \"error\")" in main_js
+
+
 def test_capture_page_version_contract_is_published_and_cache_busted():
     version = json.loads((_REPO / "capture-page/version.json").read_text())
     index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
@@ -78,9 +90,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260711.2",
+        "capture_page_build": "20260711.3",
     }
-    assert "main.js?v=20260711-2" in index_html
+    assert "main.js?v=20260711-3" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh

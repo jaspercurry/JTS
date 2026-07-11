@@ -45,6 +45,7 @@ from jasper.active_speaker.commission_wiring import (
     resolve_commission_inputs,
     write_commission_path_safety,
 )
+from jasper.active_speaker.camilla_yaml import APPLIED_RESPONSE_FILTER_MODE
 from jasper.active_speaker.measurement import (
     confirmed_driver_roles,
     current_driver_floor_evidence,
@@ -52,6 +53,7 @@ from jasper.active_speaker.measurement import (
     record_driver_measurement,
     record_summed_test_artifact,
 )
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.safe_playback import (
     arm_safe_playback_session,
     load_safe_playback_state,
@@ -584,7 +586,7 @@ def _commission_tone_payload(
     fanin_gate: dict[str, Any] | None = None,
     signal_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload = {
+    payload: dict[str, Any] = {
         "status": status,
         "backend": COMMISSION_TONE_BACKEND,
         "playback_id": playback_id,
@@ -1470,6 +1472,7 @@ def automatic_driver_excitation(
     role: str,
     *,
     applied_profile: dict[str, Any] | None = None,
+    locked_main_volume_db: float | None = None,
 ) -> dict[str, Any]:
     """Resolve automatic driver excitation from the immutable applied Layer A.
 
@@ -1514,10 +1517,14 @@ def automatic_driver_excitation(
                 "reapply the crossover before measuring"
             ),
         }
-    return {
+    payload: dict[str, Any] = {
         "status": "ready",
         "schema_version": 1,
-        "scope": "sweep_plus_role_varying_commission_gain",
+        "scope": (
+            "sweep_plus_role_gain_and_driver_level_lock"
+            if locked_main_volume_db is not None
+            else "sweep_plus_role_varying_commission_gain"
+        ),
         "sweep_peak_dbfs": AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
         "commissioning_gain_db": role_gain_db,
         "effective_peak_dbfs": (
@@ -1528,6 +1535,10 @@ def automatic_driver_excitation(
         "topology_id": topology.topology_id,
         "role": role,
     }
+    if locked_main_volume_db is not None:
+        payload["locked_main_volume_db"] = float(locked_main_volume_db)
+        payload["effective_peak_dbfs"] += float(locked_main_volume_db)
+    return payload
 
 
 def automatic_summed_excitation(
@@ -1617,18 +1628,24 @@ def _played_excitation_ledger(
     planned_peak = _finite(planned.get("sweep_peak_dbfs"))
     scope = planned.get("scope")
     gain = _finite(planned.get("commissioning_gain_db"))
+    main_gain = _finite(planned.get("locked_main_volume_db"))
     if (
         planned.get("status") != "ready"
         or actual_peak is None
         or planned_peak is None
         or abs(actual_peak - planned_peak) > 1e-6
         or (
-            scope == "sweep_plus_role_varying_commission_gain"
+            scope in {
+                "sweep_plus_role_varying_commission_gain",
+                "sweep_plus_role_gain_and_driver_level_lock",
+            }
             and gain is None
         )
+        or (scope == "sweep_plus_role_gain_and_driver_level_lock" and main_gain is None)
         or scope
         not in {
             "sweep_plus_role_varying_commission_gain",
+            "sweep_plus_role_gain_and_driver_level_lock",
             "sweep_plus_applied_full_layer_a_graph",
         }
     ):
@@ -1645,7 +1662,7 @@ def _played_excitation_ledger(
         if value is not None
     }
     if gain is not None:
-        ledger["effective_peak_dbfs"] = actual_peak + gain
+        ledger["effective_peak_dbfs"] = actual_peak + gain + (main_gain or 0.0)
     return ledger
 
 
@@ -1718,6 +1735,7 @@ async def _load_driver_commissioning_config_for_level(
             crossover_preview=crossover_preview,
             staged_config=staged,
             audible_gain_db=level_dbfs,
+            filter_mode=APPLIED_RESPONSE_FILTER_MODE,
             path_safety_evidence_path=evidence_path,
         )
         payload["startup_setup"] = startup_setup
@@ -1841,6 +1859,55 @@ async def _restore_automatic_driver_entry_config_resilient(
     return result
 
 
+async def prepare_automatic_driver_level_match(
+    topology: OutputTopology,
+    *,
+    speaker_group_id: str,
+    role: str,
+    preset: ActiveSpeakerPreset,
+    applied_profile: dict[str, Any],
+    camilla_factory: CamillaFactory,
+    crossover_preview: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Load one protected isolated driver path for its level-match tone."""
+
+    excitation = automatic_driver_excitation(
+        topology,
+        role,
+        applied_profile=applied_profile,
+    )
+    if excitation.get("status") != "ready":
+        raise RuntimeError(str(excitation.get("detail") or excitation.get("reason")))
+    load_payload = await _load_driver_commissioning_config_for_level(
+        topology=topology,
+        speaker_group_id=speaker_group_id,
+        role=role,
+        level_dbfs=float(excitation["commissioning_gain_db"]),
+        startup_gate_calibration_level=calibration_level_payload(),
+        preset=preset,
+        crossover_preview=crossover_preview,
+        camilla_factory=camilla_factory,
+    )
+    if _dict_value(load_payload.get("load")).get("status") != "loaded":
+        transaction = _dict_value(load_payload.get("measurement_transaction"))
+        if transaction.get("entry_config_path"):
+            await _restore_automatic_driver_entry_config_resilient(
+                load_payload, camilla_factory=camilla_factory
+            )
+        raise RuntimeError("could not load the protected isolated driver path")
+    return {"load": load_payload, "excitation": excitation}
+
+
+async def restore_automatic_driver_level_match(
+    prepared: dict[str, Any], *, camilla_factory: CamillaFactory
+) -> dict[str, Any]:
+    """Restore the exact production graph saved before a driver level tone."""
+
+    return await _restore_automatic_driver_entry_config_resilient(
+        _dict_value(prepared.get("load")), camilla_factory=camilla_factory
+    )
+
+
 async def _play_capture_sweep(
     *,
     backend: str,
@@ -1950,6 +2017,7 @@ async def play_driver_capture_sweep(
     *,
     camilla_factory: CamillaFactory,
     blocking_phase: str | None = None,
+    applied_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Play the analyzer sweep through one already-confirmed driver path."""
 
@@ -1985,7 +2053,32 @@ async def play_driver_capture_sweep(
         )
     latest = _dict_value(floor_evidence.get("record"))
 
-    planned_excitation = automatic_driver_excitation(topology, role)
+    from .capture_geometry import driver_level_lock
+
+    comparison_set = _dict_value(measurements.get("active_comparison_set"))
+    level_lock = driver_level_lock(comparison_set, speaker_group_id, role)
+    if level_lock is None:
+        return _refused_capture_sweep(
+            "automatic_crossover_driver_level_missing",
+            "run the protected level check for this driver before recording it",
+        )
+    if applied_profile is None:
+        from jasper.active_speaker.baseline_profile import (
+            load_applied_baseline_profile_state,
+        )
+
+        applied_profile = load_applied_baseline_profile_state()
+    applied_profile = _dict_value(applied_profile)
+    validated_snapshot = validated_applied_measurement_snapshot(
+        topology,
+        applied_profile,
+    )
+    planned_excitation = automatic_driver_excitation(
+        topology,
+        role,
+        applied_profile=applied_profile,
+        locked_main_volume_db=float(level_lock["locked_main_volume_db"]),
+    )
     if planned_excitation.get("status") != "ready":
         return _refused_capture_sweep(
             str(
@@ -2004,7 +2097,22 @@ async def play_driver_capture_sweep(
     # nor a role gain: it must stay at calibration_level.py's quiet floor.
     commissioning_gain_db = float(planned_excitation["commissioning_gain_db"])
     startup_gate_level = calibration_level_payload()
-    preset, crossover_preview = resolve_commission_inputs()
+    snapshot = _dict_value(validated_snapshot.get("snapshot"))
+    preset_raw = snapshot.get("preset")
+    if validated_snapshot.get("status") != "ready" or not isinstance(
+        preset_raw, dict
+    ):
+        return _refused_capture_sweep(
+            str(
+                validated_snapshot.get("reason")
+                or "automatic_crossover_applied_excitation_unavailable"
+            ),
+            str(
+                validated_snapshot.get("detail")
+                or "reapply the crossover before measuring"
+            ),
+        )
+    preset = ActiveSpeakerPreset.from_mapping(preset_raw)
     load_payload = await _load_driver_commissioning_config_for_level(
         topology=topology,
         speaker_group_id=speaker_group_id,
@@ -2012,7 +2120,7 @@ async def play_driver_capture_sweep(
         level_dbfs=commissioning_gain_db,
         startup_gate_calibration_level=startup_gate_level,
         preset=preset,
-        crossover_preview=crossover_preview,
+        crossover_preview=None,
         camilla_factory=camilla_factory,
     )
     load_state = _dict_value(load_payload.get("load"))

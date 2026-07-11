@@ -244,12 +244,12 @@ def automatic_candidate_readiness(
     elif level_match.get("applied") is not True or not driver_groups_ready:
         reason = "automatic_crossover_measurements_incomplete"
         detail = "Finish usable driver sweeps before applying automatic tuning."
-    elif not required.issubset(summed_ready):
-        reason = "automatic_crossover_summed_measurement_incomplete"
-        detail = "Finish the combined-crossover sweep before applying automatic tuning."
     else:
         reason = None
-        detail = "The automatic crossover candidate has complete usable acoustic evidence."
+        detail = (
+            "The automatic driver-level candidate has complete usable acoustic "
+            "evidence. Crossover frequency and slope remain operator-owned."
+        )
 
     return {
         "ready": reason is None,

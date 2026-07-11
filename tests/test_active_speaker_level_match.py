@@ -48,16 +48,31 @@ def _overlap(fc: float, level_db: float, *, usable: bool = True) -> dict:
 
 def _measurements(*driver_specs) -> dict:
     """Build a measurements dict from (group, role, verdict, [overlap, ...])."""
+    from jasper.active_speaker.capture_geometry import comparison_set_fingerprint
+
     comparison_set = {
-        "schema_version": 1,
+        "schema_version": 2,
         "comparison_set_id": "1" * 32,
-        "fingerprint": "2" * 64,
+        "created_at": "2026-07-11T12:00:00Z",
+        "topology_id": "test-topology",
         "profile_context_id": "protected-profile",
         "setup_sha256": "3" * 64,
         "device_sha256": "4" * 64,
         "calibration_id": "",
-        "locked_main_volume_db": -12.0,
+        "driver_level_locks": {
+            f"{group}:{role}": {
+                "target_id": f"{group}:{role}",
+                "speaker_group_id": group,
+                "role": role,
+                "tone_frequency_hz": 1000.0,
+                "tone_peak_dbfs": -12.0,
+                "commissioning_gain_db": -40.0,
+                "locked_main_volume_db": -12.0,
+            }
+            for group, role, _verdict, _overlaps in driver_specs
+        },
     }
+    comparison_set["fingerprint"] = comparison_set_fingerprint(comparison_set)
     latest: dict = {}
     for group, role, verdict, overlaps in driver_specs:
         latest[f"{group}:{role}"] = {

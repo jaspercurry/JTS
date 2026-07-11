@@ -197,15 +197,28 @@ def _effective_excitation_dbfs(record: Any) -> float | None:
     if (
         not isinstance(ledger, Mapping)
         or ledger.get("schema_version") != 1
-        or ledger.get("scope") != "sweep_plus_role_varying_commission_gain"
+        or ledger.get("scope") not in {
+            "sweep_plus_role_varying_commission_gain",
+            "sweep_plus_role_gain_and_driver_level_lock",
+        }
     ):
         return None
     sweep_peak = _finite_float(ledger.get("sweep_peak_dbfs"))
     commissioning_gain = _finite_float(ledger.get("commissioning_gain_db"))
+    locked_main_volume = (
+        _finite_float(ledger.get("locked_main_volume_db"))
+        if ledger.get("scope") == "sweep_plus_role_gain_and_driver_level_lock"
+        else 0.0
+    )
     declared_effective = _finite_float(ledger.get("effective_peak_dbfs"))
-    if sweep_peak is None or commissioning_gain is None or declared_effective is None:
+    if (
+        sweep_peak is None
+        or commissioning_gain is None
+        or locked_main_volume is None
+        or declared_effective is None
+    ):
         return None
-    computed = sweep_peak + commissioning_gain
+    computed = sweep_peak + commissioning_gain + locked_main_volume
     if abs(computed - declared_effective) > _EXCITATION_MATCH_TOLERANCE_DB:
         return None
     return computed

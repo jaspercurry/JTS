@@ -162,8 +162,9 @@
 > `room_sweep` `hard_timeout_ms` contract — the Pi's `sweep_complete` event is
 > the normal stop). `GET /correction/crossover/envelope`
 > (`active_speaker/crossover_envelope.py`) is a pure sequential screen envelope:
-> protected speaker setup → mic/calibration + automatic near-field level → each
-> driver → summed proof → apply → Room. The browser has no second measurement
+> protected speaker setup → mic/calibration + one automatic near-field level per
+> driver → each driver sweep → apply matched attenuation trims → Room. The
+> browser has no second measurement
 > state machine or local recorder; passive
 > (`full_range_passive`) speakers get `active=False` (no driver/summed targets),
 > so Layer A stays hidden. The acoustic proof (real-driver sweep + phone
@@ -506,10 +507,9 @@
 > level. Exact ledger normalization compares drivers at a common effective
 > excitation. A stale/missing applied snapshot or mismatched excitation evidence
 > fails closed before playback/recording instead of treating playback gain as
-> driver sensitivity. The automatic combined ESS likewise loads a transient,
-> validated recompose of the complete applied Layer-A snapshot (per-role gain,
-> delay, and polarity), never the legacy combined by-ear gain, then rolls back
-> to the prior DSP graph.
+> driver sensitivity. The first automatic product slice preserves the applied
+> crossover frequency, slope, delay, and polarity; it replaces attenuation-only
+> driver trims. Combined ESS remains an optional diagnostic, not an apply gate.
 > Magnitude only — never a phase/delay decision. Fail-closed: a
 > silent/clipped/low-SNR/missing capture keeps the datasheet trim and marks the
 > baseline `provisional` (`corrections_source`, `level_match`, and `provisional`
@@ -551,10 +551,13 @@
 > `manual_preservation.ready` is true, then refreshes the applied snapshot before
 > relay registration; an unsafe/stale source refuses before audio. Automatic
 > measurements create a candidate and only the
-> explicit **Replace manual crossover with automatic tuning** action changes the
+> explicit **Replace manual trims with automatic levels** action changes the
 > owner. The frozen view preserves its `provisional` quality flag. Near-field automatic leveling
 > restores normal listening volume immediately and reasserts its retained target
-> only inside each driver/summed measurement window.
+> only inside that driver's measurement window. If exact restoration is rejected,
+> JTS applies a −60 dB emergency fallback before releasing the measurement window
+> and reports the failure instead of resuming household audio silently at the
+> measurement level.
 
 ## Current Operational Truth
 
@@ -1223,9 +1226,11 @@ A check.
    assembly deviations against the preset envelope.
    The shipped relay wizard uses one fixed 3 cm on-axis capsule distance for
    this comparison, requires an explicit driver-specific placement
-   acknowledgement before playback, and binds every role to the same persisted
-   microphone/level comparison set. Old captures without that proof, or captures
-   from different sets, cannot replace a manual crossover.
+   acknowledgement before playback, and level-matches each role independently
+   with a preset-derived tone inside that driver's protected passband. The
+   resulting per-driver digital-volume locks and the shared microphone identity
+   are persisted in one comparison set. Old captures without that proof, or
+   captures from different sets, cannot replace a manual crossover.
 2. **Null-depth optimization** proves polarity and relative delay at
    each crossover. With the planned crossover active, invert one
    adjacent driver through the mixer and sweep the crossover band.
@@ -1233,11 +1238,10 @@ A check.
    For a healthy LR4 preset, a centered null above roughly 25 dB is a
    strong pass signal; under roughly 20 dB should trigger delay,
    polarity, wiring, or hardware investigation.
-3. **Gated at-position summed measurement** validates the direct
-   summed response through the crossover region. The mic moves to the
-   actual listening position, the wizard runs an ESS sweep with the
-   full crossover engaged, gates before the first reflection, and only
-   trusts the response above the gate-derived low-frequency limit.
+3. **At-position summed measurement** is an optional diagnostic, not part of the
+   first automatic product flow and not an apply gate. A future higher-rigor
+   design must model every crossover region independently before summed evidence
+   may authorize frequency, phase, or delay changes.
 
 Frequency budget:
 
@@ -1749,8 +1753,9 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-11 (relay placement acknowledgement + durable comparable
-capture-set contract, automatic excitation SSOT, room readiness, applied
+Last verified: 2026-07-11 (per-driver protected level tones and gain locks,
+relay placement acknowledgement + durable comparable capture-set contract,
+automatic excitation SSOT, room readiness, applied
 Layer-A snapshot, and relay crossover flow; prior 2026-06-24 room-correction
 start/apply/reset on solo active
 baselines checked against `jasper.web.correction_setup`,

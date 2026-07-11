@@ -36,12 +36,20 @@ _CAPTURE_PAGE = {
 
 
 def _level_pi_session():
+    from dataclasses import replace
+
     from jasper.capture_relay.spec import build_level_ramp_spec
 
     return SimpleNamespace(
         session_id="sid",
         pull_token="pull",
-        spec=build_level_ramp_spec(run_token="test-run-token"),
+        content_key=b"k" * 32,
+        # Most adapter tests exercise host behavior with the legacy plain-event
+        # transport. Dedicated tests below pin the authenticated v2 boundary.
+        spec=replace(
+            build_level_ramp_spec(run_token="test-run-token"),
+            capture_protocol_version=1,
+        ),
     )
 
 
@@ -618,7 +626,8 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
 
     class Session:
-        noise_floor_db = None
+        # A prior driver's floor must not carry into this geometry.
+        noise_floor_db = -20.0
         mic_calibration = None
         input_device = None
         total_positions = 1
@@ -638,6 +647,7 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
         run_token="run-1",
         setup_binding_id=setup_binding_id,
         tone_frequency_hz=875.0,
+        reuse_noise_floor=False,
     )
 
     assert setup_acks == [{"phase": "setup_validated", "setup_token": "setup-1"}]
@@ -732,6 +742,90 @@ async def test_relay_level_mismatched_context_cannot_poison_ambient_floor(
         )
 
     assert sess.noise_floor_db is None
+
+
+@pytest.mark.asyncio
+async def test_relay_driver_level_rejects_changed_microphone_before_tone(
+    monkeypatch,
+):
+    from contextlib import asynccontextmanager
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator
+    from jasper.web import correction_setup
+
+    binding_id = "protected-profile-12345"
+    digest = "a" * 64
+    status = {
+        "event": {
+            "capture_page": dict(_CAPTURE_PAGE),
+            "level_batch": {
+                "schema": 1,
+                "run_token": "run-changed-mic",
+                "armed": True,
+                "samples": [
+                    {"seq": 1, "rms_dbfs": -50.0, "peak_dbfs": -45.0}
+                ],
+                "context": {
+                    "setup": {
+                        "binding": {
+                            "schema": 1,
+                            "binding_id": binding_id,
+                            "sha256": digest,
+                        }
+                    },
+                    "device": {"label": "Different USB mic"},
+                },
+            },
+        }
+    }
+
+    class Client:
+        def status(self, *_args):
+            return status
+
+        def post_host_event(self, *_args):
+            return None
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    class Session:
+        session_id = "active-crossover"
+        noise_floor_db = None
+        mic_calibration = None
+        input_device = {"label": "Original USB mic"}
+        relay_setup_binding = correction_setup._RelaySetupBinding(
+            binding_id=binding_id,
+            sha256=digest,
+        )
+
+    sess = Session()
+    expected = correction_setup._relay_level_identity(sess)
+    prepared = []
+
+    async def prepare_tone():
+        prepared.append(True)
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    with pytest.raises(ValueError, match="microphone changed"):
+        await correction_setup._run_relay_level_match(
+            sess,
+            Client(),
+            _level_pi_session(),
+            geometry="near_field_driver:mono:tweeter",
+            run_token="run-changed-mic",
+            setup_binding_id=binding_id,
+            expected_level_identity=expected,
+            prepare_tone=prepare_tone,
+        )
+
+    assert sess.input_device == {"label": "Original USB mic"}
+    assert prepared == []
 
 
 @pytest.mark.asyncio
@@ -916,6 +1010,105 @@ async def test_relay_level_stale_page_never_starts_tone_and_reaches_phone(
     assert "incompatible" in terminal["error"]
 
 
+@pytest.mark.asyncio
+async def test_relay_level_v2_verifies_and_unwraps_authenticated_events(monkeypatch):
+    from jasper.capture_relay.integrity import authenticated_phone_event
+    from jasper.capture_relay.spec import build_level_ramp_spec
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator
+    from jasper.web import correction_setup
+
+    pi_session = SimpleNamespace(
+        session_id="sid-v2",
+        pull_token="pull",
+        content_key=b"v" * 32,
+        spec=build_level_ramp_spec(run_token="run-v2"),
+    )
+    event = {
+        "capture_page": {
+            "schema_version": 1,
+            "capture_protocol_version": 2,
+            "supported_capture_protocol_versions": [1, 2],
+            "capture_page_build": "20260711.3",
+        },
+        "level_refused": {
+            "schema": 1,
+            "run_token": "run-v2",
+            "reason": "agc_not_proven_off",
+        },
+    }
+
+    class Client:
+        def status(self, *_args):
+            return {
+                "event": authenticated_phone_event(
+                    pi_session.content_key,
+                    pi_session.session_id,
+                    event,
+                    sequence=1,
+                )
+            }
+
+        def post_host_event(self, *_args):
+            return None
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    with pytest.raises(RuntimeError, match="cannot prove automatic microphone gain"):
+        await correction_setup._run_relay_level_match(
+            SimpleNamespace(noise_floor_db=None),
+            Client(),
+            pi_session,
+            geometry="listening_position",
+            run_token="run-v2",
+        )
+
+
+@pytest.mark.asyncio
+async def test_relay_level_v2_refuses_unsigned_event_before_tone(monkeypatch):
+    from jasper.capture_relay.spec import build_level_ramp_spec
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator
+    from jasper.web import correction_setup
+
+    pi_session = SimpleNamespace(
+        session_id="sid-v2-unsigned",
+        pull_token="pull",
+        content_key=b"u" * 32,
+        spec=build_level_ramp_spec(run_token="run-v2-unsigned"),
+    )
+
+    class Client:
+        def status(self, *_args):
+            return {"event": {"level_batch": {"run_token": "run-v2-unsigned"}}}
+
+        def post_host_event(self, *_args):
+            return None
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    with pytest.raises(relay_session.CaptureFailed, match="integrity"):
+        await correction_setup._run_relay_level_match(
+            SimpleNamespace(noise_floor_db=None),
+            Client(),
+            pi_session,
+            geometry="listening_position",
+            run_token="run-v2-unsigned",
+        )
+
+
 def _legacy_crossover_level_status(*, preservation_ready: bool) -> dict:
     return {
         "active": True,
@@ -950,27 +1143,46 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
 ):
     import asyncio
 
-    from jasper.web import correction_crossover_backend as backend
-    from jasper.web import correction_setup
+    from jasper.active_speaker import web_commissioning
     from jasper.active_speaker.measurement import (
+        active_driver_targets,
         load_measurement_state,
         start_active_comparison_set,
     )
-    from jasper.output_topology import load_output_topology
+    import jasper.output_topology as output_topology
+    from jasper.web import correction_crossover_backend as backend
+    from jasper.web import correction_setup
+    from tests.test_active_speaker_measurement import _topology
     from tests.test_active_speaker_profile import _two_way_preset
 
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
         str(tmp_path / "measurements.json"),
     )
-    topology = load_output_topology()
+    topology = _topology()
+    monkeypatch.setattr(output_topology, "load_output_topology", lambda: topology)
+    driver_level_locks = {
+        f"mono:{role}": {
+            "target_id": f"mono:{role}",
+            "speaker_group_id": "mono",
+            "role": role,
+            "tone_frequency_hz": frequency_hz,
+            "tone_peak_dbfs": -12.0,
+            "commissioning_gain_db": gain_db,
+            "locked_main_volume_db": volume_db,
+        }
+        for role, frequency_hz, gain_db, volume_db in (
+            ("woofer", 250.0, -3.0, -10.0),
+            ("tweeter", 6250.0, -18.0, -4.0),
+        )
+    }
     prior_set = start_active_comparison_set(
         topology,
         profile_context_id="old-profile",
         setup_sha256="a" * 64,
         device_sha256="b" * 64,
         calibration_id="",
-        locked_main_volume_db=-12.0,
+        driver_level_locks=driver_level_locks,
     )
 
     legacy = _legacy_crossover_level_status(preservation_ready=True)
@@ -988,6 +1200,9 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
         "applied_profile": {
             "recomposition_snapshot": {"preset": _two_way_preset("mono")},
         },
+            "targets": {
+                "drivers": active_driver_targets(topology)
+            },
     }
     statuses = iter((legacy, current))
     monkeypatch.setattr(backend, "status_payload", lambda: next(statuses))
@@ -999,9 +1214,21 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
         return {"status": "applied", "issues": []}
 
     monkeypatch.setattr(backend, "apply_profile", apply_profile)
-    monkeypatch.setattr(backend, "level_lease", lambda: SimpleNamespace(
-        level_match_snapshot=lambda: {"running": False}
-    ))
+    monkeypatch.setattr(
+        web_commissioning,
+        "automatic_driver_excitation",
+        lambda _topology, role, **_kwargs: {
+            "status": "ready",
+            "commissioning_gain_db": -3.0 if role == "woofer" else -18.0,
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "level_lease",
+        lambda: SimpleNamespace(
+            level_match_snapshot=lambda **_kwargs: {"running": False}
+        ),
+    )
     monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
     monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
@@ -1041,7 +1268,7 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
     assert registered["relay_base"] == "relay"
     assert registered["return_url"] == "https://jts.local/correction/crossover/"
     spec = registered["spec"]
-    assert spec.stimulus.label == "1000 Hz level-match tone"
+    assert spec.stimulus.label == "250 Hz level-match tone"
     assert spec.screen[1]["items"][0].startswith(
         "Move the microphone capsule to 3 cm"
     )

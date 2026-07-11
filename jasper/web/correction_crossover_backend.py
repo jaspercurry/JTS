@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+import math
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from jasper.active_speaker import web_commissioning, web_measurement
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
+EMERGENCY_SWEEP_VOLUME_DB = -60.0
 CamillaFactory = Callable[[], Any]
 
 if TYPE_CHECKING:
@@ -43,11 +45,29 @@ class CrossoverLevelLease:
         self.level_lock_store = LevelLockStore()
         self._running: LevelMatchSession | None = None
         self._last: LevelMatchOutcome | None = None
+        self._active_outcome: LevelMatchOutcome | None = None
+        self._outcomes: dict[str, LevelMatchOutcome] = {}
+        self._targets: dict[str, dict[str, Any]] = {}
         self._restore_lock = asyncio.Lock()
+        self._sweep_entry_volume_db: float | None = None
         self.context_id: str | None = None
         self.noise_floor_db = None
         self.mic_calibration = None
         self.input_device = None
+
+    def configure_targets(self, targets: Sequence[Mapping[str, Any]]) -> None:
+        """Freeze one complete, protected per-driver level plan."""
+
+        normalized = {
+            str(target["target_id"]): dict(target)
+            for target in targets
+            if str(target.get("target_id") or "")
+        }
+        if not normalized:
+            raise ValueError("crossover level plan has no driver targets")
+        if self._targets and self._targets != normalized:
+            raise RuntimeError("crossover level targets changed during measurement")
+        self._targets = normalized
 
     async def run_level_match(self, geometry: str, **ports: Any) -> Any:
         from jasper.audio_measurement.ramp import MeasurementRamp
@@ -87,6 +107,8 @@ class CrossoverLevelLease:
             if self._running is run:
                 self._running = None
         self._last = outcome
+        self._active_outcome = outcome
+        self._outcomes[geometry] = outcome
         if outcome.locked:
             if not callable(set_main_volume_db):
                 raise RuntimeError("crossover level match has no volume restore port")
@@ -108,6 +130,10 @@ class CrossoverLevelLease:
             raise RuntimeError("cannot invalidate a running crossover level match")
         self.level_lock_store = LevelLockStore()
         self._last = None
+        self._active_outcome = None
+        self._outcomes = {}
+        self._targets = {}
+        self._sweep_entry_volume_db = None
         self.context_id = None
         self.noise_floor_db = None
         self.mic_calibration = None
@@ -122,7 +148,7 @@ class CrossoverLevelLease:
         from jasper.audio_measurement.ramp import RampState
 
         async with self._restore_lock:
-            outcome = self._last
+            outcome = self._active_outcome or self._last
             if outcome is None or outcome.ramp.state is not RampState.LOCKED:
                 return False
             ramp = outcome.ramp
@@ -138,6 +164,7 @@ class CrossoverLevelLease:
                 )
                 return False
             ramp.restored = True
+            self._active_outcome = None
             log_event(
                 logger,
                 "correction.crossover_level_volume_restored",
@@ -145,35 +172,177 @@ class CrossoverLevelLease:
             )
             return True
 
-    async def ensure_level_match_volume(self, set_main_volume_db: Any) -> bool:
-        """Reassert the acquired gain immediately before each driver sweep."""
+    async def acquire_driver_sweep_volume(
+        self,
+        speaker_group_id: str,
+        role: str,
+        get_main_volume_db: Any,
+        set_main_volume_db: Any,
+    ) -> bool:
+        """Acquire a sweep-scoped lease at this driver's measured target."""
+
+        geometry = f"near_field_driver:{speaker_group_id}:{role}"
+        return await self._acquire_sweep_volume(
+            self._outcomes.get(geometry), get_main_volume_db, set_main_volume_db
+        )
+
+    async def acquire_summed_sweep_volume(
+        self,
+        get_main_volume_db: Any,
+        set_main_volume_db: Any,
+    ) -> bool:
+        """Use the quietest acquired driver lock for the full summed graph."""
+
+        outcomes = [
+            outcome
+            for outcome in self._outcomes.values()
+            if outcome.ramp.locked_main_volume_db is not None
+        ]
+        if not outcomes:
+            return False
+        safest = min(
+            outcomes,
+            key=lambda outcome: float(outcome.ramp.locked_main_volume_db or 0.0),
+        )
+        return await self._acquire_sweep_volume(
+            safest, get_main_volume_db, set_main_volume_db
+        )
+
+    async def _acquire_sweep_volume(
+        self,
+        outcome: Any,
+        get_main_volume_db: Any,
+        set_main_volume_db: Any,
+    ) -> bool:
         from jasper.audio_measurement.ramp import RampState
 
         async with self._restore_lock:
-            outcome = self._last
+            if self._sweep_entry_volume_db is not None:
+                raise RuntimeError("crossover sweep volume lease is already active")
             if outcome is None or outcome.ramp.state is not RampState.LOCKED:
                 return False
-            ramp = outcome.ramp
-            if ramp.locked_main_volume_db is None:
+            target = outcome.ramp.locked_main_volume_db
+            if (
+                isinstance(target, bool)
+                or not isinstance(target, (int, float))
+                or not math.isfinite(float(target))
+            ):
                 return False
-            if ramp.restored is not True:
-                return True
-            applied = await set_main_volume_db(float(ramp.locked_main_volume_db))
+            entry = await get_main_volume_db()
+            if (
+                isinstance(entry, bool)
+                or not isinstance(entry, (int, float))
+                or not math.isfinite(float(entry))
+            ):
+                return False
+            # Record the restore target before the side effect. If CamillaDSP
+            # applies the volume but its response is lost, the caller's finally
+            # block still has a valid lease to restore.
+            self._sweep_entry_volume_db = float(entry)
+            applied = await set_main_volume_db(float(target))
             if applied is False:
                 log_event(
                     logger,
-                    "correction.crossover_level_volume_reassert_failed",
+                    "correction.crossover_driver_level_volume_reassert_failed",
                     level=logging.ERROR,
-                    to_db=f"{ramp.locked_main_volume_db:.1f}",
+                    to_db=f"{target:.1f}",
                 )
                 return False
-            ramp.restored = False
             log_event(
                 logger,
-                "correction.crossover_level_volume_reasserted",
-                to_db=f"{ramp.locked_main_volume_db:.1f}",
+                "correction.crossover_driver_level_volume_reasserted",
+                to_db=f"{target:.1f}",
             )
             return True
+
+    async def restore_sweep_volume(self, set_main_volume_db: Any) -> bool:
+        """Restore the volume observed immediately before this sweep."""
+
+        async with self._restore_lock:
+            entry = self._sweep_entry_volume_db
+            if entry is None:
+                return False
+            try:
+                applied = await set_main_volume_db(entry)
+            except (OSError, RuntimeError, ValueError):
+                log_event(
+                    logger,
+                    "correction.crossover_sweep_volume_restore_failed",
+                    level=logging.ERROR,
+                    exc_info=True,
+                    to_db=f"{entry:.1f}",
+                )
+                return False
+            if applied is False:
+                log_event(
+                    logger,
+                    "correction.crossover_sweep_volume_restore_failed",
+                    level=logging.ERROR,
+                    to_db=f"{entry:.1f}",
+                )
+                return False
+            self._sweep_entry_volume_db = None
+            log_event(
+                logger,
+                "correction.crossover_sweep_volume_restored",
+                to_db=f"{entry:.1f}",
+            )
+            return True
+
+    @property
+    def sweep_volume_active(self) -> bool:
+        return self._sweep_entry_volume_db is not None
+
+    async def emergency_lower_sweep_volume(self, set_main_volume_db: Any) -> bool:
+        """Fail-safe fallback when the exact pre-sweep volume cannot be restored."""
+
+        async with self._restore_lock:
+            if self._sweep_entry_volume_db is None:
+                return False
+            try:
+                applied = await set_main_volume_db(EMERGENCY_SWEEP_VOLUME_DB)
+            except (OSError, RuntimeError, ValueError):
+                applied = False
+            if applied is False:
+                log_event(
+                    logger,
+                    "correction.crossover_sweep_emergency_volume_failed",
+                    level=logging.CRITICAL,
+                    to_db=f"{EMERGENCY_SWEEP_VOLUME_DB:.1f}",
+                )
+                return False
+            self._sweep_entry_volume_db = None
+            log_event(
+                logger,
+                "correction.crossover_sweep_emergency_volume_applied",
+                level=logging.ERROR,
+                to_db=f"{EMERGENCY_SWEEP_VOLUME_DB:.1f}",
+            )
+            return True
+
+    def driver_level_locks(self) -> dict[str, dict[str, Any]]:
+        """Return complete normalized excitation evidence for durable storage."""
+
+        from jasper.audio_measurement.excitation import (
+            AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+        )
+
+        locks: dict[str, dict[str, Any]] = {}
+        for target_id, target in self._targets.items():
+            outcome = self._outcomes.get(str(target.get("geometry") or ""))
+            locked = outcome.ramp.locked_main_volume_db if outcome is not None else None
+            if locked is None:
+                continue
+            locks[target_id] = {
+                "target_id": target_id,
+                "speaker_group_id": str(target.get("speaker_group_id") or ""),
+                "role": str(target.get("role") or ""),
+                "tone_frequency_hz": float(target["tone_frequency_hz"]),
+                "tone_peak_dbfs": AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+                "commissioning_gain_db": float(target["commissioning_gain_db"]),
+                "locked_main_volume_db": float(locked),
+            }
+        return locks
 
     def level_match_snapshot(
         self, *, current_context_id: str | None = None
@@ -182,12 +351,19 @@ class CrossoverLevelLease:
             current_context_id is None
             or self.context_id == current_context_id
         )
+        locks = self.driver_level_locks()
+        missing = [target_id for target_id in self._targets if target_id not in locks]
         return {
             "running": self._running is not None,
             "locks": self.level_lock_store.snapshot(),
             "last": self._last.snapshot() if self._last is not None else None,
             "context_id": self.context_id,
             "valid": context_valid,
+            "targets": list(self._targets.values()),
+            "driver_level_locks": locks,
+            "missing_targets": missing,
+            "next_target": self._targets.get(missing[0]) if missing else None,
+            "ready": bool(self._targets) and not missing and context_valid,
         }
 
 
@@ -396,6 +572,7 @@ async def play_driver_capture_sweep(
     *,
     camilla_factory: CamillaFactory,
     blocking_phase: str | None = None,
+    applied_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Play a mic-capture sweep through an already-confirmed driver."""
 
@@ -403,6 +580,7 @@ async def play_driver_capture_sweep(
         raw,
         camilla_factory=camilla_factory,
         blocking_phase=blocking_phase,
+        applied_profile=applied_profile,
     )
     log_event(
         logger,
@@ -441,6 +619,7 @@ def record_driver_capture(
     wav_bytes: bytes,
     *,
     placement_proof: Mapping[str, Any] | None = None,
+    preset: Any = None,
 ) -> dict[str, Any]:
     """Analyze one secure browser WAV and record per-driver evidence."""
 
@@ -448,6 +627,7 @@ def record_driver_capture(
         raw,
         wav_bytes,
         placement_proof=placement_proof,
+        preset=preset,
     )
     log_event(
         logger,
