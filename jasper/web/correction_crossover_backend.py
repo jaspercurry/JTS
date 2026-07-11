@@ -52,6 +52,13 @@ class CrossoverLevelLease:
     async def run_level_match(self, geometry: str, **ports: Any) -> Any:
         from jasper.correction.level_match import LevelMatchSession
 
+        # The correction session adapter supplies these scheduler ports itself;
+        # keep the crossover adapter at the same host boundary. Requiring every
+        # web caller to know LevelMatchSession's test seams caused the hardware
+        # path to fail before the ramp could start.
+        loop = asyncio.get_running_loop()
+        ports.setdefault("clock", loop.time)
+        ports.setdefault("sleep", asyncio.sleep)
         if self._running is not None:
             raise RuntimeError("crossover level match already in progress")
         from jasper.audio_measurement.ramp import RampState
