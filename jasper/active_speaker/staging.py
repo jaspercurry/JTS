@@ -30,11 +30,14 @@ from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 from . import graph_safety as gs
 from ._common import gate as _gate, issue as _issue
 from .camilla_yaml import (
+    APPLIED_RESPONSE_FILTER_MODE,
+    COMMISSIONING_FILTER_MODE,
     COMMISSIONING_HEADROOM_DB,
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
     audible_outputs_for_role,
+    crossover_highpass_for_role,
     emit_active_speaker_commissioning_config,
     output_commission_mute_name,
 )
@@ -593,6 +596,7 @@ def driver_commission_audible_evidence(
     preset: ActiveSpeakerPreset,
     audible_outputs: frozenset[int] | set[int],
     expected_headroom_db: float = STARTUP_HEADROOM_DB,
+    filter_mode: str = COMMISSIONING_FILTER_MODE,
 ) -> dict[str, Any]:
     """Per-driver commissioning safety: ONLY the target is audible, and an
     audible tweeter still carries its protective high-pass + limiter.
@@ -645,18 +649,33 @@ def driver_commission_audible_evidence(
     # (2) Protection-while-audible for an audible tweeter.
     tweeter_outputs = audible_outputs_for_role(preset, "tweeter")
     audible_tweeter = audible & set(tweeter_outputs)
-    protective_hp_hz = _protective_hp_hz(preset)
+    if filter_mode == APPLIED_RESPONSE_FILTER_MODE:
+        highpass = crossover_highpass_for_role(preset, "tweeter")
+    else:
+        protective_hz = _protective_hp_hz(preset)
+        highpass = (
+            (
+                protective_tweeter_hp_name("tweeter"),
+                protective_hz,
+                4,
+            )
+            if protective_hz is not None
+            else None
+        )
+    highpass_name = highpass[0] if highpass is not None else ""
+    protective_hp_hz = highpass[1] if highpass is not None else None
+    highpass_order = highpass[2] if highpass is not None else None
     if not audible_tweeter:
         tweeter_protected = True  # vacuous: the tweeter stays muted
     else:
         hp_defined = protective_hp_hz is not None and gs.filter_param_matches(
             view,
-            protective_tweeter_hp_name("tweeter"),
+            highpass_name,
             filter_type="BiquadCombo",
             params={
                 "type": "LinkwitzRileyHighpass",
                 "freq": protective_hp_hz,
-                "order": 4,
+                "order": highpass_order,
             },
         )
         limiter_defined = gs.filter_param_matches(
@@ -669,7 +688,7 @@ def driver_commission_audible_evidence(
             view,
             channels=audible_tweeter,
             required_names=(
-                protective_tweeter_hp_name("tweeter"),
+                highpass_name,
                 driver_limiter_name("tweeter"),
             ),
         )
@@ -692,6 +711,8 @@ def driver_commission_audible_evidence(
         "tweeter_outputs": sorted(int(i) for i in tweeter_outputs),
         "audible_tweeter_outputs": sorted(audible_tweeter),
         "protective_highpass_hz": protective_hp_hz,
+        "tweeter_highpass_name": highpass_name,
+        "tweeter_highpass_order": highpass_order,
         "startup_headroom_db": expected_headroom_db,
         "limiter_clip_limit_db": STARTUP_LIMITER_CLIP_LIMIT_DB,
         "checks": checks,
@@ -722,6 +743,8 @@ def running_commission_evidence(
     muted_outputs: Iterable[int],
     tweeter_outputs: Iterable[int],
     protective_hp_hz: float | None,
+    tweeter_highpass_name: str = "",
+    tweeter_highpass_order: int = 4,
     expected_headroom_db: float = STARTUP_HEADROOM_DB,
 ) -> dict[str, Any]:
     """Per-driver commissioning safety, asserted on the RUNNING CamillaDSP graph.
@@ -773,14 +796,17 @@ def running_commission_evidence(
     if not audible_tweeter:
         tweeter_protected = True
     else:
+        highpass_name = tweeter_highpass_name or protective_tweeter_hp_name(
+            "tweeter"
+        )
         hp_defined = protective_hp_hz is not None and gs.filter_param_matches(
             view,
-            protective_tweeter_hp_name("tweeter"),
+            highpass_name,
             filter_type="BiquadCombo",
             params={
                 "type": "LinkwitzRileyHighpass",
                 "freq": protective_hp_hz,
-                "order": 4,
+                "order": tweeter_highpass_order,
             },
         )
         limiter_defined = gs.filter_param_matches(
@@ -793,7 +819,7 @@ def running_commission_evidence(
             view,
             channels=audible_tweeter,
             required_names=(
-                protective_tweeter_hp_name("tweeter"),
+                highpass_name,
                 driver_limiter_name("tweeter"),
             ),
         )
@@ -1928,6 +1954,7 @@ def prepare_driver_commissioning_config(
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
+    filter_mode: str = COMMISSIONING_FILTER_MODE,
     config_dir: str | Path | None = None,
     config_path: str | Path | None = None,
     run_config_check: bool = True,
@@ -2043,6 +2070,7 @@ def prepare_driver_commissioning_config(
                 startup_headroom_db=COMMISSIONING_HEADROOM_DB,
                 out_path=out_path,
                 baseline_id=f"commission-{_safe_stem(topology.topology_id)}-{role}",
+                filter_mode=filter_mode,
             )
             classification = classify_camilla_config_text(yaml)
             gates.append(_gate(
@@ -2077,6 +2105,7 @@ def prepare_driver_commissioning_config(
                 preset=bound_preset,
                 audible_outputs=audible_outputs,
                 expected_headroom_db=COMMISSIONING_HEADROOM_DB,
+                filter_mode=filter_mode,
             )
             gates.append(_gate(
                 "driver_protection_while_audible",
@@ -2148,6 +2177,7 @@ def prepare_driver_commissioning_config(
             "role": role,
             "audible_outputs": sorted(audible_outputs),
             "audible_gain_db": audible_gain_db,
+            "filter_mode": filter_mode,
         },
         "config": {
             "path": str(out_path),

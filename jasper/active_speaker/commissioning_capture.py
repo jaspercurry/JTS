@@ -146,6 +146,7 @@ def record_driver_acoustic_capture(
     captured_wav: str | Path,
     sweep_meta: Mapping[str, Any],
     playback_id: str | None = None,
+    noise_floor_dbfs: float | None = None,
     test_level_dbfs: float | None = None,
     excitation: Mapping[str, Any] | None = None,
     placement_proof: Mapping[str, Any] | None = None,
@@ -187,6 +188,12 @@ def record_driver_acoustic_capture(
         calibration=calibration,
     )
     acoustic = result.to_dict()
+    normalized_noise_floor = _finite_float(noise_floor_dbfs)
+    if normalized_noise_floor is not None:
+        acoustic["noise_floor_dbfs"] = normalized_noise_floor
+        acoustic["signal_over_noise_db"] = (
+            float(result.observed_mic_dbfs) - normalized_noise_floor
+        )
     outcome = DRIVER_VERDICT_TO_OUTCOME.get(result.verdict)
     if outcome is None:
         return {
@@ -208,6 +215,19 @@ def record_driver_acoustic_capture(
             "driver capture excitation has no authoritative played level"
         )
     if sweep_peak_dbfs is not None and commissioning_gain_db is not None:
+        supplied_scope = excitation.get("scope") if excitation else None
+        locked_main_volume_db = (
+            _finite_float(excitation.get("locked_main_volume_db"))
+            if excitation else None
+        )
+        includes_driver_lock = (
+            supplied_scope == "sweep_plus_role_gain_and_driver_level_lock"
+        )
+        effective_peak_dbfs = (
+            sweep_peak_dbfs
+            + commissioning_gain_db
+            + (locked_main_volume_db or 0.0)
+        )
         # This is the comparison-critical gain ledger for the isolated-driver
         # capture: the generated sweep peak plus the only role-varying graph
         # gain. Other commissioning gains are common to every driver and cancel.
@@ -215,19 +235,25 @@ def record_driver_acoustic_capture(
         # per-driver protected level can never masquerade as sensitivity.
         excitation_ledger = {
             "schema_version": 1,
-            "scope": "sweep_plus_role_varying_commission_gain",
+            "scope": supplied_scope or "sweep_plus_role_varying_commission_gain",
             "sweep_peak_dbfs": sweep_peak_dbfs,
             "commissioning_gain_db": commissioning_gain_db,
-            "effective_peak_dbfs": sweep_peak_dbfs + commissioning_gain_db,
+            "effective_peak_dbfs": effective_peak_dbfs,
         }
+        if includes_driver_lock:
+            if locked_main_volume_db is None:
+                raise ValueError("driver capture excitation has no level lock")
+            excitation_ledger["locked_main_volume_db"] = locked_main_volume_db
         if excitation:
             supplied_peak = _finite_float(excitation.get("sweep_peak_dbfs"))
             supplied_gain = _finite_float(excitation.get("commissioning_gain_db"))
             supplied_effective = _finite_float(excitation.get("effective_peak_dbfs"))
             if (
                 excitation.get("schema_version") != 1
-                or excitation.get("scope")
-                != "sweep_plus_role_varying_commission_gain"
+                or excitation.get("scope") not in {
+                    "sweep_plus_role_varying_commission_gain",
+                    "sweep_plus_role_gain_and_driver_level_lock",
+                }
                 or supplied_peak is None
                 or supplied_gain is None
                 or supplied_effective is None
@@ -238,7 +264,7 @@ def record_driver_acoustic_capture(
                 or abs(supplied_gain - commissioning_gain_db) > 1e-6
                 or abs(
                     supplied_effective
-                    - (sweep_peak_dbfs + commissioning_gain_db)
+                    - effective_peak_dbfs
                 )
                 > 1e-6
             ):
@@ -294,6 +320,7 @@ def record_summed_acoustic_capture(
     null_threshold_db: float = DEFAULT_NULL_THRESHOLD_DB,
     summed_test_id: str | None = None,
     playback_id: str | None = None,
+    noise_floor_dbfs: float | None = None,
     excitation: Mapping[str, Any] | None = None,
     placement_proof: Mapping[str, Any] | None = None,
     polarity: str | None = None,
@@ -345,6 +372,12 @@ def record_summed_acoustic_capture(
         calibration=calibration,
     )
     acoustic = result.to_dict()
+    normalized_noise_floor = _finite_float(noise_floor_dbfs)
+    if normalized_noise_floor is not None:
+        acoustic["noise_floor_dbfs"] = normalized_noise_floor
+        acoustic["signal_over_noise_db"] = (
+            float(result.observed_mic_dbfs) - normalized_noise_floor
+        )
     outcome = SUMMED_VERDICT_TO_OUTCOME.get(result.verdict)
     if outcome is None:
         return {

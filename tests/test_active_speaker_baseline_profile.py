@@ -1698,19 +1698,30 @@ def _acoustic_measurements(
     preset, issues, _gates = compile_preset_from_crossover_preview(topology, dict(preview))
     assert preset is not None, issues
     state_path = tmp_path / "measurements.json"
+    driver_targets = {
+        target["role"]: target for target in active_driver_targets(topology)
+    }
     comparison_set = start_active_comparison_set(
         topology,
         profile_context_id="protected-profile",
         setup_sha256="a" * 64,
         device_sha256="b" * 64,
         calibration_id="",
-        locked_main_volume_db=-12.0,
+        driver_level_locks={
+            target["target_id"]: {
+                "target_id": target["target_id"],
+                "speaker_group_id": target["speaker_group_id"],
+                "role": role,
+                "tone_frequency_hz": 250.0 if role == "woofer" else 6250.0,
+                "tone_peak_dbfs": -12.0,
+                "commissioning_gain_db": 0.0,
+                "locked_main_volume_db": -12.0,
+            }
+            for role, target in driver_targets.items()
+        },
         state_path=state_path,
         now="2026-06-19T12:00:30Z",
     )
-    driver_targets = {
-        target["role"]: target for target in active_driver_targets(topology)
-    }
     page = {
         "capture_protocol_version": 2,
         "capture_page_build": "20260711.1",

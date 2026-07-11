@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker import web_measurement
+from jasper.active_speaker.capture_geometry import comparison_set_fingerprint
 from jasper.web import correction_crossover_backend as backend
 from jasper.web import correction_crossover_flow as flow
 
@@ -38,10 +39,25 @@ def test_request_payload_parses_capture_query():
     }
 
 
+def test_capture_preset_prefers_frozen_applied_snapshot(monkeypatch):
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
+    from jasper.active_speaker import commission_wiring
+    from tests.test_active_speaker_profile import _two_way_preset
+
+    frozen = ActiveSpeakerPreset.from_mapping(_two_way_preset())
+    monkeypatch.setattr(
+        commission_wiring,
+        "resolve_commission_inputs",
+        lambda: pytest.fail("frozen analysis must not read the mutable draft"),
+    )
+
+    assert web_measurement.capture_preset(object(), frozen) is frozen
+
+
 def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_path):
     calls = {}
     topology = object()
-    preset = object()
+    frozen_preset = object()
     wav_path = tmp_path / "driver.wav"
 
     monkeypatch.setattr(
@@ -49,7 +65,11 @@ def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
         "load_output_topology",
         lambda: topology,
     )
-    monkeypatch.setattr(web_measurement, "capture_preset", lambda t: preset)
+    def capture_preset(_topology, supplied=None):
+        calls["analysis_preset"] = supplied
+        return supplied
+
+    monkeypatch.setattr(web_measurement, "capture_preset", capture_preset)
     monkeypatch.setattr(
         web_measurement,
         "capture_wav_path",
@@ -106,12 +126,14 @@ def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
             "has_mic_calibration": True,
         },
         b"wav",
+        preset=frozen_preset,
     )
 
     assert payload["recorded"] is True
     assert payload["calibration_id"] == "cal-1"
     assert payload["measurement_mode"] == {"mode": "phase_aware"}
-    assert calls["args"] == (topology, preset)
+    assert calls["analysis_preset"] is frozen_preset
+    assert calls["args"] == (topology, frozen_preset)
     assert calls["kwargs"]["speaker_group_id"] == "mono"
     assert calls["kwargs"]["role"] == "woofer"
     assert calls["kwargs"]["captured_wav"] == wav_path
@@ -204,7 +226,11 @@ def test_summed_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
         "load_output_topology",
         lambda: topology,
     )
-    monkeypatch.setattr(web_measurement, "capture_preset", lambda t: preset)
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_preset",
+        lambda _topology, _frozen=None: preset,
+    )
     monkeypatch.setattr(
         web_measurement,
         "capture_wav_path",
@@ -372,6 +398,10 @@ def _envelope_status() -> dict:
                 "source_fingerprint": "source-1",
                 "revalidation": {"required": False},
             },
+            "protected_profile": {
+                "status": "ready",
+                "source_fingerprint": "protected-profile",
+            },
             "applied_crossover": {
                 "valid": False,
                 "owner": None,
@@ -406,6 +436,9 @@ def _envelope_status() -> dict:
 def _locked_level(status: dict) -> None:
     status["level_match"] = {
         "running": False,
+        "valid": True,
+        "ready": True,
+        "context_id": "protected-profile",
         # The target remains reusable after the safe lifecycle restores normal
         # listening volume between sweep windows.
         "last": {"ramp": {"state": "locked", "restored": True}},
@@ -413,15 +446,136 @@ def _locked_level(status: dict) -> None:
 
 
 _COMPARISON_SET = {
-    "schema_version": 1,
+    "schema_version": 2,
     "comparison_set_id": "1" * 32,
-    "fingerprint": "2" * 64,
+    "created_at": "2026-07-11T12:00:00+00:00",
+    "topology_id": "topology-1",
     "profile_context_id": "protected-profile",
     "setup_sha256": "3" * 64,
     "device_sha256": "4" * 64,
     "calibration_id": "",
-    "locked_main_volume_db": -12.0,
+    "driver_level_locks": {
+        "mono:woofer": {
+            "target_id": "mono:woofer",
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "tone_frequency_hz": 100.0,
+            "tone_peak_dbfs": -20.0,
+            "commissioning_gain_db": 0.0,
+            "locked_main_volume_db": -12.0,
+        },
+        "mono:tweeter": {
+            "target_id": "mono:tweeter",
+            "speaker_group_id": "mono",
+            "role": "tweeter",
+            "tone_frequency_hz": 1000.0,
+            "tone_peak_dbfs": -20.0,
+            "commissioning_gain_db": -2.0,
+            "locked_main_volume_db": -14.0,
+        },
+    },
 }
+_COMPARISON_SET["fingerprint"] = comparison_set_fingerprint(_COMPARISON_SET)
+
+
+def test_capture_context_revalidates_topology_profile_level_set_and_target():
+    import copy
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "manual",
+        "reason": None,
+    }
+    status["targets"]["drivers"][0]["target_fingerprint"] = "target-woofer"
+    kwargs = {
+        "current_topology_id": _COMPARISON_SET["topology_id"],
+        "expected_topology_id": _COMPARISON_SET["topology_id"],
+        "expected_profile_context_id": _COMPARISON_SET["profile_context_id"],
+        "expected_comparison_set": _COMPARISON_SET,
+        "kind": "driver",
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "expected_target_fingerprint": "target-woofer",
+    }
+
+    flow.validate_current_capture_context(status, **kwargs)
+
+    stale = copy.deepcopy(status)
+    stale["setup"]["protected_profile"]["source_fingerprint"] = "changed"
+    with pytest.raises(ValueError, match="protected crossover setup changed"):
+        flow.validate_current_capture_context(stale, **kwargs)
+
+    stale = copy.deepcopy(status)
+    stale["level_match"]["context_id"] = "changed"
+    with pytest.raises(ValueError, match="measurement level changed"):
+        flow.validate_current_capture_context(stale, **kwargs)
+
+    stale = copy.deepcopy(status)
+    stale["targets"]["drivers"][0]["target_fingerprint"] = "changed"
+    with pytest.raises(ValueError, match="measurement target changed"):
+        flow.validate_current_capture_context(stale, **kwargs)
+
+    with pytest.raises(ValueError, match="topology changed"):
+        flow.validate_current_capture_context(
+            status,
+            **{**kwargs, "current_topology_id": "changed"},
+        )
+
+
+def test_level_target_context_revalidates_before_tone():
+    import copy
+
+    status = _envelope_status()
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "manual",
+        "reason": None,
+    }
+    status["targets"]["drivers"][0]["target_fingerprint"] = "target-woofer"
+    kwargs = {
+        "current_topology_id": "topology-1",
+        "expected_topology_id": "topology-1",
+        "expected_profile_context_id": "protected-profile",
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "expected_target_fingerprint": "target-woofer",
+    }
+
+    flow.validate_current_level_target_context(status, **kwargs)
+
+    changed = copy.deepcopy(status)
+    changed["setup"]["protected_profile"]["source_fingerprint"] = "changed"
+    with pytest.raises(ValueError, match="protected crossover setup changed"):
+        flow.validate_current_level_target_context(changed, **kwargs)
+
+    changed = copy.deepcopy(status)
+    changed["targets"]["drivers"][0]["target_fingerprint"] = "changed"
+    with pytest.raises(ValueError, match="driver level target changed"):
+        flow.validate_current_level_target_context(changed, **kwargs)
+
+
+def test_automatic_candidate_requires_driver_evidence_not_summed_capture():
+    from jasper.active_speaker.crossover_contract import (
+        automatic_candidate_readiness,
+    )
+
+    readiness = automatic_candidate_readiness(
+        required_group_ids=["mono"],
+        level_match={
+            "applied": True,
+            "groups_measured": 1,
+            "measured_group_ids": ["mono"],
+            "incomparable_groups": [],
+        },
+        measurement_summary={},
+        active_comparison_set={},
+    )
+
+    assert readiness["ready"] is True
+    assert readiness["summed_group_ids"] == []
+    assert "frequency and slope remain operator-owned" in readiness["detail"]
 
 
 def _placement_proof(policy: str, role: str) -> dict:
@@ -535,6 +689,27 @@ def test_crossover_apply_requires_explicit_owner(monkeypatch):
     assert status == 200
     assert payload["status"] == "applied"
     assert seen["owner"] == "automatic"
+
+
+def test_crossover_apply_refuses_while_relay_measurement_is_active(monkeypatch):
+    from jasper.web import correction_crossover_backend as backend
+
+    monkeypatch.setattr(
+        backend,
+        "apply_profile",
+        lambda **_kwargs: pytest.fail("apply must not start during measurement"),
+    )
+
+    payload, status = flow.handle_apply(
+        {"tuning_owner": "automatic"},
+        lambda *_args, **_kwargs: pytest.fail("async apply must not run"),
+        lambda: object(),
+        blocking_phase="relay:crossover_sweep:driver",
+    )
+
+    assert status == 409
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "measurement_in_progress"
 
 
 @pytest.mark.parametrize(
@@ -654,7 +829,7 @@ def test_crossover_apply_close_failure_is_truthful_and_retryable(monkeypatch):
     assert payload["issues"][0]["severity"] == "blocker"
 
 
-def test_crossover_envelope_walks_level_drivers_summed_apply_room():
+def test_crossover_envelope_walks_level_drivers_apply_room():
     from jasper.active_speaker import crossover_envelope
     status = _envelope_status()
     env = crossover_envelope.build_crossover_envelope(status)
@@ -681,13 +856,6 @@ def test_crossover_envelope_walks_level_drivers_summed_apply_room():
         "tweeter"
     )
     env = crossover_envelope.build_crossover_envelope(status)
-    assert env["screen"] == "summed"
-    assert env["next_action"]["body"] == {
-        "kind": "summed",
-        "speaker_group_id": "mono",
-    }
-
-    summary["latest_summed_validations"] = {"mono": _summed_acoustic()}
     status["setup"]["automatic_candidate"] = {
         "ready": True,
         "reason": None,
@@ -721,7 +889,7 @@ def test_crossover_envelope_walks_level_drivers_summed_apply_room():
     env = crossover_envelope.build_crossover_envelope(status)
     assert env["screen"] == "done"
     assert env["next_action"]["href"] == "/correction/room/"
-    assert env["progress"] == {"position": 5, "total": 5}
+    assert env["progress"] == {"position": 4, "total": 4}
 
 
 def test_crossover_envelope_uses_applied_anchor_while_candidate_is_incomplete():
@@ -868,7 +1036,7 @@ def test_completed_automatic_measurement_explicitly_replaces_manual_profile():
     assert env["screen"] == "apply"
     assert env["next_action"] == {
         "id": "replace_manual",
-        "label": "Replace manual crossover with automatic tuning",
+            "label": "Replace manual trims with automatic levels",
         "endpoint": "/correction/crossover/apply",
         "body": {"tuning_owner": "automatic"},
     }
@@ -934,7 +1102,7 @@ def test_applied_automatic_snapshot_is_done_without_mutable_measurements():
     assert env["alternate_actions"] == [
         {
             "id": "retune_automatic",
-            "label": "Tune crossover automatically again",
+                "label": "Level-match drivers again",
             "endpoint": "/correction/crossover/level-match",
             "body": {},
         },
@@ -982,7 +1150,7 @@ def test_applied_automatic_profile_can_run_a_fresh_sequential_retune():
     env = crossover_envelope.build_crossover_envelope(status)
 
     assert env["screen"] == "apply"
-    assert env["next_action"]["label"] == "Apply updated automatic crossover"
+    assert env["next_action"]["label"] == "Apply updated driver levels"
 
 
 def test_crossover_envelope_maxed_out_is_retry_not_a_lock():
@@ -1019,6 +1187,8 @@ def test_crossover_envelope_surfaces_bounded_low_lock_without_blocking_sweeps():
     status["level_match"] = {
         "running": False,
         "valid": True,
+        "ready": True,
+        "context_id": "protected-profile",
         "last": {
             "ramp": {
                 "state": "locked",
@@ -1138,7 +1308,19 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
 
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SWEEP_DIR", str(tmp_path / "sweeps"))
     topology = _topology()
+    applied_profile = None
     if kind == "driver":
+        from jasper.active_speaker import baseline_profile
+        from tests.test_active_speaker_web_commissioning import (
+            _applied_excitation_profile,
+        )
+
+        applied_profile = _applied_excitation_profile(topology=topology)
+        monkeypatch.setattr(
+            baseline_profile,
+            "load_applied_baseline_profile_state",
+            lambda: applied_profile,
+        )
         driver_target = next(
             target
             for target in active_driver_targets(topology)
@@ -1185,26 +1367,37 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
                 },
             },
         }
+    measurements["active_comparison_set"] = _COMPARISON_SET
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
     monkeypatch.setattr(web, "load_measurement_state", lambda topology: measurements)
     monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
-    monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
+    monkeypatch.setattr(
+        web,
+        "resolve_commission_inputs",
+        (
+            lambda: pytest.fail("driver sweep must use the applied snapshot")
+            if kind == "driver"
+            else lambda: (object(), None)
+        ),
+    )
     monkeypatch.setattr(web, "commission_status_payload", lambda: {})
     if kind == "driver":
         monkeypatch.setattr(
             web,
             "automatic_driver_excitation",
-            lambda _topology, role: {
+            lambda _topology, role, *, applied_profile=None,
+            locked_main_volume_db=None: {
                 "status": "ready",
                 "schema_version": 1,
-                "scope": "sweep_plus_role_varying_commission_gain",
+                "scope": "sweep_plus_role_gain_and_driver_level_lock",
                 "sweep_peak_dbfs": -12.0,
                 "commissioning_gain_db": -9.0,
-                "effective_peak_dbfs": -21.0,
+                "effective_peak_dbfs": -21.0 + float(locked_main_volume_db or 0.0),
                 "gain_source": web.AUTOMATIC_EXCITATION_GAIN_SOURCE,
                 "baseline_id": "baseline-1",
                 "topology_id": "topology-1",
                 "role": role,
+                "locked_main_volume_db": float(locked_main_volume_db),
             },
         )
 
@@ -1279,6 +1472,7 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
         return None
 
     monkeypatch.setattr(correction_playback, "play_sweep", _fake_play_sweep)
+    return applied_profile
 
 
 @pytest.mark.asyncio
@@ -1294,15 +1488,16 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
     # the flat fake shape the old test used made the drifted guard invisible.
     from jasper.web import correction_crossover_backend as be
 
-    _real_play_boundary(monkeypatch, tmp_path, kind="driver")
+    applied_profile = _real_play_boundary(monkeypatch, tmp_path, kind="driver")
     purged = _fake_relay_transport(monkeypatch)
 
     record_calls = {}
 
-    def fake_record_driver(raw, wav_bytes, *, placement_proof):
+    def fake_record_driver(raw, wav_bytes, *, placement_proof, preset=None):
         record_calls["raw"] = raw
         record_calls["wav"] = wav_bytes
         record_calls["placement_proof"] = placement_proof
+        record_calls["preset"] = preset
         return {"recorded": True}
 
     monkeypatch.setattr(be, "record_driver_capture", fake_record_driver)
@@ -1318,6 +1513,7 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
         lambda: object(),
         post_host_event=post_host_event,
         blocking_phase=lambda: None,
+        applied_profile=applied_profile,
         **_relay_contract(),
     )
     await run_and_consume(object(), _relay_pi_session("driver"))
@@ -1337,15 +1533,17 @@ async def test_crossover_relay_consume_feeds_real_driver_play_payload(
     assert raw["test_level_dbfs"] == -9.0
     assert raw["excitation"] == {
         "schema_version": 1,
-        "scope": "sweep_plus_role_varying_commission_gain",
+        "scope": "sweep_plus_role_gain_and_driver_level_lock",
         "sweep_peak_dbfs": -12.0,
         "commissioning_gain_db": -9.0,
-        "effective_peak_dbfs": -21.0,
+        "effective_peak_dbfs": -33.0,
         "gain_source": "applied_baseline_recomposition_snapshot",
         "baseline_id": "baseline-1",
         "topology_id": "topology-1",
         "role": "woofer",
+        "locked_main_volume_db": -12.0,
     }
+    assert record_calls["preset"].crossover_regions[0].fc_hz == 1600.0
     meta = raw["sweep_meta"]
     assert meta["sample_rate"] == 48000
     assert meta["duration_s"] > 0  # real synchronized-sine meta, not a stub
@@ -1455,6 +1653,57 @@ async def test_crossover_gain_is_scoped_to_the_measurement_window(monkeypatch):
     await run_and_consume(object(), _relay_pi_session("driver", session_id="s"))
 
     assert order == ["window_enter", "prepare", "play", "restore", "window_exit"]
+
+
+@pytest.mark.asyncio
+async def test_crossover_restore_false_fails_before_measurement_window_exits(
+    monkeypatch,
+):
+    from contextlib import asynccontextmanager
+
+    from jasper.correction import coordinator
+    from jasper.web import correction_crossover_backend as be
+
+    _fake_relay_transport(monkeypatch)
+    order = []
+
+    @asynccontextmanager
+    async def window():
+        order.append("window_enter")
+        try:
+            yield
+        finally:
+            order.append("window_exit")
+
+    async def play(*_args, **_kwargs):
+        order.append("play")
+        return {
+            "status": "completed",
+            "playback": {"audio_emitted": True},
+        }
+
+    async def prepare():
+        return True
+
+    async def restore():
+        order.append("restore_rejected")
+        return False
+
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(be, "play_driver_capture_sweep", play)
+    run_and_consume = flow.build_crossover_relay_run_and_consume(
+        {"kind": "driver", "speaker_group_id": "mono", "role": "woofer"},
+        lambda coro, timeout=None: _run_coro(coro),
+        lambda: object(),
+        prepare_play=prepare,
+        restore_play=restore,
+        **_relay_contract(),
+    )
+
+    with pytest.raises(RuntimeError, match="volume was not restored"):
+        await run_and_consume(object(), _relay_pi_session("driver", session_id="s"))
+
+    assert order == ["window_enter", "play", "restore_rejected", "window_exit"]
 
 
 @pytest.mark.asyncio

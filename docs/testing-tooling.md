@@ -29,6 +29,7 @@
 | Diagnose a bridge / AEC issue forensically | [AEC / bridge forensics](#aec--bridge-forensics) |
 | Generate a fixed audio test track for repeatable testing | [Test-track generation](#test-track-generation) |
 | Check live Pi state (services / config / mic / etc.) | [Pi-side diagnostics](#pi-side-diagnostics) |
+| Diagnose one correction level/sweep run with synchronized UMIK audio and speaker gain state | [Correction capture diagnostic](#correction-capture-diagnostic) |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
@@ -846,6 +847,26 @@ Live Pi state without modifying anything:
 | `jasper-active-speaker environment-probe [--config <file.yml>] [--json]` | Read ALSA playback devices and the current/provided CamillaDSP config/statefile shape without playback, reloads, or mutation. Blocks the load gate unless the config is an active startup candidate, `camilladsp --check` passes, and hardware-probe-backed path-safety evidence is provided. Also reports the read-only safe-playback environment block; audible authority lives in the product routes below, not in the probe itself. |
 | `/sound/active-speaker/{environment,safe-playback,commissioning-view,design-draft,channel-identity,calibration-level,stop,commission-state,commission-load,commission-ramp-step,commission-ramp-ack,commission-ramp-abort,summed-test,summed-validation,baseline-profile,baseline-profile/apply}` | Web active-speaker status/session/design/identity/level/test/commissioning surface. `environment`, `safe-playback`, `commissioning-view`, `design-draft`, `channel-identity`, `calibration-level`, `commission-state`, `baseline-profile`, and related status routes are read-only GETs where exposed; `design-draft`, `stop`, `channel-identity`, `calibration-level`, the `commission-*`, summed validation, and baseline apply routes are CSRF-protected POSTs from `/sound/`. Active 2/3-way groups use `commission-load` + `commission-ramp-step`/`ack`/`abort`; each ramp step loads the protected one-driver graph, injects a bounded tone through the commissioning lane, and rolls back on tone failure. Passive/full-range groups have no separate active driver test in the product UI. `design-draft` persists operator driver names, notes, bounded research JSON, and a saved topology snapshot as non-authoritative evidence; it does not load CamillaDSP, apply filters, authorize playback, or emit sound. Generic `aplay` tone playback is explicit lab mode only and requires `JASPER_AUDIO_LAB_TONE_BACKEND=aplay` and `JASPER_AUDIO_LAB_TEST_PCM` pointing at a dedicated non-daemon test PCM. Product outputd/CamillaDSP lanes such as `outputd_active_content_playback`, `outputd_content_capture`, `outputd_active_content_capture`, `outputd_dac`, and `jasper_out` are forbidden as direct test writers. No endpoint changes normal listening volume. |
 | `rust/jasper-dual-dac-lab/target/release/jasper-dual-dac-lab probe` / `run` | Lab-only dual Apple USB-C DAC validator. `probe` is passive. `run` opens two serial-pinned direct `hw:` PCMs, writes silence first, caps level, and aborts both outputs on xrun/suspend/disconnect/delay divergence. Not installed as a product daemon. |
+
+## Correction capture diagnostic
+
+[`scripts/capture-correction-diagnostic.py`](../scripts/capture-correction-diagnostic.py)
+is a laptop-side observer for one browser/relay correction run. It does not
+start a measurement or change gain. It records synchronized UMIK blocks,
+`/state`/crossover timelines, and—when `--ssh-host` is supplied—a bounded
+snapshot of the speaker's persisted gain/DSP files while the correction lane is
+active. The SSH archive runs off the capture loop with a 15-second timeout, so a
+stalled Pi cannot stop mic draining. Raw room audio stays under the gitignored
+`captures/` tree; the directory is `0700` and files are `0600`.
+
+Analyze the bundle with
+[`scripts/analyze-correction-diagnostic.py`](../scripts/analyze-correction-diagnostic.py).
+It reports actual tone/sweep presence, clipping, callback errors, observed
+speaker gain, and the configured target-window shortfall. `--state-only`
+bundles remain valid speaker-state evidence but intentionally report that no raw
+mic analysis was possible. Pass the actual tone frequency and policy thresholds
+to the capture command when they differ from its defaults; those values are
+stored in the manifest and consumed by the analyzer rather than re-guessed.
 
 See [CLAUDE.md](../CLAUDE.md) "Debugging — fetch evidence before
 guessing" for the canonical recipes.

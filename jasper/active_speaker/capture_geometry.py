@@ -13,6 +13,7 @@ compiler.  It records an operator attestation, not a measured distance.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -20,66 +21,61 @@ from typing import Any, Mapping
 
 DRIVER_PLACEMENT_POLICY_ID = "driver_same_distance_v1"
 SUMMED_PLACEMENT_POLICY_ID = "summed_listening_position_v1"
-COMPARISON_SET_SCHEMA_VERSION = 1
+COMPARISON_SET_SCHEMA_VERSION = 2
 PLACEMENT_PROOF_SCHEMA_VERSION = 1
 DRIVER_PLACEMENT_TARGET_CM = 3.0
-CROSSOVER_LEVEL_TONE_FREQUENCY_HZ = 1000.0
 
 
 @dataclass(frozen=True)
 class CrossoverLevelReference:
-    """One bound reference role/frequency/placement for automatic level match."""
+    """One protected driver reference for automatic level match."""
 
+    speaker_group_id: str
     role: str
     tone_frequency_hz: float
     placement_instruction: str
+
+    @property
+    def target_id(self) -> str:
+        return f"{self.speaker_group_id}:{self.role}"
+
+    @property
+    def geometry(self) -> str:
+        return f"near_field_driver:{self.target_id}"
 
 
 def crossover_level_reference(
     preset_payload: Mapping[str, Any],
     *,
-    tone_frequency_hz: float = CROSSOVER_LEVEL_TONE_FREQUENCY_HZ,
+    speaker_group_id: str,
+    role: str,
 ) -> CrossoverLevelReference:
-    """Resolve the driver whose protected passband carries the level tone.
-
-    The full crossover graph plays during level matching. The microphone must
-    therefore be aimed at the radiator whose preset-derived acoustic band
-    contains that exact tone. This chooses the woofer for an ordinary 2-way
-    1 kHz reference and the midrange for the supported 3-way shape; it fails
-    closed if the applied preset cannot prove that relationship.
-    """
+    """Resolve one driver's preset-derived, protection-bounded level tone."""
 
     from .profile import (
         ActiveSpeakerConfigError,
         ActiveSpeakerPreset,
-        crossover_edges_for_role,
-        required_driver_roles,
     )
-
-    try:
-        frequency = float(tone_frequency_hz)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("crossover level tone frequency is invalid") from exc
-    if not math.isfinite(frequency) or frequency <= 0:
-        raise ValueError("crossover level tone frequency is invalid")
     try:
         preset = ActiveSpeakerPreset.from_mapping(dict(preset_payload))
     except ActiveSpeakerConfigError as exc:
         raise ValueError("applied crossover preset is invalid") from exc
 
-    for role in required_driver_roles(preset.way_count):
-        lower_hz, upper_hz = crossover_edges_for_role(preset, role)
-        if lower_hz is not None and frequency < lower_hz:
-            continue
-        if upper_hz is not None and frequency > upper_hz:
-            continue
-        return CrossoverLevelReference(
-            role=role,
-            tone_frequency_hz=frequency,
-            placement_instruction=driver_placement_instruction(role),
-        )
-    raise ValueError(
-        "applied crossover has no driver passband containing the level tone"
+    from .test_signal_plan import driver_test_signal_plan
+
+    group_id = str(speaker_group_id or "").strip()
+    role_id = str(role or "").strip().lower()
+    if not group_id or not role_id:
+        raise ValueError("crossover level target requires a group and driver role")
+    plan = driver_test_signal_plan(preset, role_id)
+    frequency = plan.get("frequency_hz")
+    if plan.get("status") != "ready" or not isinstance(frequency, (int, float)):
+        raise ValueError(f"no protected level tone is available for {role_id}")
+    return CrossoverLevelReference(
+        speaker_group_id=group_id,
+        role=role_id,
+        tone_frequency_hz=float(frequency),
+        placement_instruction=driver_placement_instruction(role_id),
     )
 
 
@@ -134,16 +130,70 @@ def summed_acknowledgement_label() -> str:
     )
 
 
+_COMPARISON_SET_CORE_KEYS = (
+    "schema_version",
+    "comparison_set_id",
+    "created_at",
+    "topology_id",
+    "profile_context_id",
+    "setup_sha256",
+    "device_sha256",
+    "calibration_id",
+    "driver_level_locks",
+)
+
+
+def comparison_set_fingerprint(value: Mapping[str, Any]) -> str:
+    """Fingerprint every immutable comparison-critical field."""
+
+    core = {key: value.get(key) for key in _COMPARISON_SET_CORE_KEYS}
+    raw = json.dumps(core, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _driver_level_lock_valid(target_id: Any, value: Any) -> bool:
+    if not isinstance(target_id, str) or not target_id or not isinstance(value, Mapping):
+        return False
+    numeric = (
+        tone_frequency := value.get("tone_frequency_hz"),
+        value.get("tone_peak_dbfs"),
+        value.get("commissioning_gain_db"),
+        value.get("locked_main_volume_db"),
+    )
+    return bool(
+        value.get("target_id") == target_id
+        and isinstance(value.get("speaker_group_id"), str)
+        and value.get("speaker_group_id")
+        and isinstance(value.get("role"), str)
+        and value.get("role")
+        and target_id
+        == f"{value.get('speaker_group_id')}:{str(value.get('role')).lower()}"
+        and all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(float(item))
+            for item in numeric
+        )
+        and isinstance(tone_frequency, (int, float))
+        and not isinstance(tone_frequency, bool)
+        and float(tone_frequency) > 0
+    )
+
+
 def comparison_set_valid(value: Any) -> bool:
-    """Whether a persisted comparison-set binding has the complete v1 shape."""
+    """Whether a schema-v2 per-driver comparison binding is intact."""
 
     if not isinstance(value, Mapping):
         return False
-    locked = value.get("locked_main_volume_db")
+    locks = value.get("driver_level_locks")
     return bool(
         value.get("schema_version") == COMPARISON_SET_SCHEMA_VERSION
         and isinstance(value.get("comparison_set_id"), str)
         and re.fullmatch(r"[0-9a-f]{32}", value["comparison_set_id"])
+        and isinstance(value.get("created_at"), str)
+        and value.get("created_at")
+        and isinstance(value.get("topology_id"), str)
+        and value.get("topology_id")
         and isinstance(value.get("fingerprint"), str)
         and re.fullmatch(r"[0-9a-f]{64}", value["fingerprint"])
         and isinstance(value.get("profile_context_id"), str)
@@ -153,10 +203,23 @@ def comparison_set_valid(value: Any) -> bool:
         and isinstance(value.get("device_sha256"), str)
         and re.fullmatch(r"[0-9a-f]{64}", value["device_sha256"])
         and isinstance(value.get("calibration_id"), str)
-        and isinstance(locked, (int, float))
-        and not isinstance(locked, bool)
-        and math.isfinite(float(locked))
+        and isinstance(locks, Mapping)
+        and bool(locks)
+        and all(_driver_level_lock_valid(key, lock) for key, lock in locks.items())
+        and value.get("fingerprint") == comparison_set_fingerprint(value)
     )
+
+
+def driver_level_lock(
+    comparison_set: Mapping[str, Any], speaker_group_id: str, role: str
+) -> Mapping[str, Any] | None:
+    """Return one verified driver lock from an intact comparison set."""
+
+    if not comparison_set_valid(comparison_set):
+        return None
+    target_id = f"{speaker_group_id}:{str(role).strip().lower()}"
+    value = comparison_set.get("driver_level_locks", {}).get(target_id)
+    return value if _driver_level_lock_valid(target_id, value) else None
 
 
 def normalized_placement_proof(

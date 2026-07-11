@@ -81,6 +81,7 @@ def test_per_kind_validity_policy_is_the_differentiation():
     from jasper.capture_relay.spec import build_level_ramp_spec
 
     ramp = build_level_ramp_spec(geometry_label="speaker baffle")
+    assert ramp.capture_protocol_version == 2
     assert ramp.validity.clean_capture == "refuse"
     assert ramp.validity.allow_capability_fallback is True
     assert ramp.validity.require_alignment is False
@@ -110,17 +111,33 @@ def test_level_ramp_preserves_exact_pi_owned_placement_instruction():
     assert ramp.stimulus.label == "1000 Hz level-match tone"
 
 
-def test_crossover_level_reference_matches_two_and_three_way_passbands():
+def test_crossover_level_reference_is_driver_specific_and_passband_safe():
     from jasper.active_speaker.capture_geometry import crossover_level_reference
     from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
-    two_way = crossover_level_reference(_two_way_preset("mono"))
-    three_way = crossover_level_reference(_three_way_preset("mono"))
+    two_way = [
+        crossover_level_reference(
+            _two_way_preset("mono"), speaker_group_id="mono", role=role
+        )
+        for role in ("woofer", "tweeter")
+    ]
+    three_way = [
+        crossover_level_reference(
+            _three_way_preset("mono"), speaker_group_id="mono", role=role
+        )
+        for role in ("woofer", "mid", "tweeter")
+    ]
 
-    assert (two_way.role, two_way.tone_frequency_hz) == ("woofer", 1000.0)
-    assert "woofer cone" in two_way.placement_instruction
-    assert (three_way.role, three_way.tone_frequency_hz) == ("mid", 1000.0)
-    assert "midrange cone" in three_way.placement_instruction
+    assert [(item.role, item.tone_frequency_hz) for item in two_way] == [
+        ("woofer", 250.0),
+        ("tweeter", 6250.0),
+    ]
+    assert [(item.role, item.tone_frequency_hz) for item in three_way] == [
+        ("woofer", 120.0),
+        ("mid", 935.4),
+        ("tweeter", 6250.0),
+    ]
+    assert all(item.geometry.startswith("near_field_driver:mono:") for item in two_way)
 
 
 def test_server_driven_copy_names_the_driver():

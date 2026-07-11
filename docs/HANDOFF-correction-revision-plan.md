@@ -207,7 +207,10 @@ one-shot host-event round trip.
   differ by roughly 15–25 dB at the mic for the same played level — a
   listening-position lock reused for a near-field capture blows past the
   window into clip, and the reverse starves listening-position SNR. The flow
-  re-ramps on every geometry transition (cheap once `RampController` exists);
+  re-ramps on every geometry transition (cheap once `RampController` exists).
+  Layer A further treats each physical driver as its own geometry and uses a
+  preset-derived tone inside that driver's protected passband; woofer, mid, and
+  tweeter locks are never interchangeable even at the same 3 cm distance.
   `MeasurementLevelLock` is the lock for the *current* geometry step, not one
   value for the whole session.
 - **Drift check**, split by cause and computed on the right signal: at the

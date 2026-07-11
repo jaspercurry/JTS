@@ -160,6 +160,31 @@ function captureFailureMessage(err) {
   return `Measurement failed: ${message}. Tap Start to try again.`;
 }
 
+function relayBootFailureMessage(err) {
+  const message = String(err && err.message || "");
+  const status = Number(err && err.status);
+  if (
+    [401, 403, 404].includes(status) ||
+    message.includes("capture spec integrity") ||
+    message.includes("capture spec is invalid")
+  ) {
+    return (
+      "This authenticated measurement link is invalid, expired, or from an " +
+      "older speaker version. Return to the speaker page and create a new link."
+    );
+  }
+  if (message.includes("incompatible")) {
+    return (
+      `${message}. Return to the speaker and update it or publish the matching ` +
+      "capture page before trying again."
+    );
+  }
+  return (
+    "Can't reach the measurement relay. New measurements need an internet " +
+    "connection; any correction already applied to your speaker still works."
+  );
+}
+
 async function waitForSetupValidation(ctx, token) {
   const pollMs = Math.max(100, Math.min(1000, Number(ctx.spec.progress_poll_ms) || 250));
   const deadline = Date.now() + 20000;
@@ -1081,13 +1106,7 @@ async function boot() {
       required: Number(requiredCaptureProtocol(spec)) >= 2,
     });
   } catch (err) {
-    setStatus(
-      String(err && err.message || "").includes("incompatible")
-        ? `${err.message}. Return to the speaker and update it or publish the matching capture page before trying again.`
-        : "Can't reach the measurement relay. New measurements need an internet " +
-          "connection; any correction already applied to your speaker still works.",
-      "error",
-    );
+    setStatus(relayBootFailureMessage(err), "error");
     return;
   }
 
@@ -1212,4 +1231,4 @@ if (typeof document !== "undefined" && typeof window !== "undefined") {
   }
 }
 
-export { boot, onStart, onLevelRampStart };
+export { boot, onStart, onLevelRampStart, relayBootFailureMessage };

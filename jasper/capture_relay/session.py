@@ -180,6 +180,37 @@ class CaptureResult:
     setup: dict | None = None
 
 
+class PhoneEventVerifier:
+    """Verify the relay's mutable phone-event slot before host code reads it."""
+
+    def __init__(self, session: PiCaptureSession) -> None:
+        self._session = session
+        self._sequence = 0
+        self._event: dict[str, Any] | None = None
+
+    def verify(self, relay_event: Any) -> dict[str, Any] | None:
+        if relay_event is None:
+            return None
+        if self._session.spec.capture_protocol_version < 2:
+            return dict(relay_event) if isinstance(relay_event, dict) else None
+        verified, sequence = verify_authenticated_phone_event(
+            self._session.content_key,
+            self._session.session_id,
+            relay_event,
+        )
+        if sequence < self._sequence or (
+            sequence == self._sequence
+            and self._event is not None
+            and verified != self._event
+        ):
+            raise CaptureIntegrityError(
+                "authenticated phone event sequence moved backwards"
+            )
+        self._sequence = sequence
+        self._event = verified
+        return verified
+
+
 def classify_status(status_payload: dict) -> PollState:
     """Read the relay status into the signals the Pi acts on."""
     event = status_payload.get("event") if isinstance(status_payload, dict) else None
@@ -397,26 +428,13 @@ def _poll_until_capture(
     capture_setup: dict | None = None
     setup_tokens_seen: set[str] = set()
     page_compatible = False
-    authenticated_sequence = 0
-    authenticated_event: dict[str, Any] | None = None
+    event_verifier = PhoneEventVerifier(session)
     while True:
         status = client.status(session.session_id, session.pull_token)
         relay_event = status.get("event") if isinstance(status, dict) else None
         if session.spec.capture_protocol_version >= 2 and relay_event is not None:
             try:
-                verified_event, sequence = verify_authenticated_phone_event(
-                    session.content_key,
-                    session.session_id,
-                    relay_event,
-                )
-                if sequence < authenticated_sequence or (
-                    sequence == authenticated_sequence
-                    and authenticated_event is not None
-                    and verified_event != authenticated_event
-                ):
-                    raise CaptureIntegrityError(
-                        "authenticated phone event sequence moved backwards"
-                    )
+                verified_event = event_verifier.verify(relay_event)
             except CaptureIntegrityError as exc:
                 log_event(
                     logger,
@@ -443,8 +461,6 @@ def _poll_until_capture(
                 raise CaptureFailed(
                     "capture control integrity check failed"
                 ) from exc
-            authenticated_sequence = max(authenticated_sequence, sequence)
-            authenticated_event = verified_event
             status = {**status, "event": verified_event}
         state = classify_status(status)
         if state.device is not None:

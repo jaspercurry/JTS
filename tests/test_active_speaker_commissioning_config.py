@@ -25,6 +25,7 @@ from jasper.active_speaker import (
     emit_active_speaker_commissioning_config,
 )
 from jasper.active_speaker.environment import classify_camilla_config_text
+from jasper.active_speaker.camilla_yaml import APPLIED_RESPONSE_FILTER_MODE
 from jasper.camilla_emit import MONO_SUM_GAIN_DB
 
 # Reuse the canonical preset fixtures.
@@ -101,6 +102,32 @@ def test_commissioning_config_preserves_production_safety():
         limiter = parsed["filters"][f"as_{role}_startup_limiter"]["parameters"]
         assert limiter["clip_limit"] == -12.0
         assert limiter["soft_clip"] is True
+
+
+def test_applied_response_mode_uses_crossover_hp_not_bringup_hp():
+    preset = _preset(_two_way_preset("mono"))
+    out = emit_active_speaker_commissioning_config(
+        preset,
+        playback_device=ACTIVE_PCM,
+        audible_outputs={1},
+        audible_gain_db=-9.0,
+        filter_mode=APPLIED_RESPONSE_FILTER_MODE,
+    )
+    parsed = yaml_lib.safe_load(out)
+
+    assert "as_tweeter_protective_hp" not in parsed["filters"]
+    hp = parsed["filters"]["as_tweeter_woofer_tweeter_hp"]["parameters"]
+    assert hp == {
+        "type": "LinkwitzRileyHighpass",
+        "freq": 1600.0,
+        "order": 4,
+    }
+    pipeline = str(parsed["pipeline"])
+    assert "as_tweeter_woofer_tweeter_hp" in pipeline
+    assert "as_tweeter_startup_limiter" in pipeline
+    assert parsed["filters"]["as_out1_commission_mute"]["parameters"][
+        "gain"
+    ] == -9.0
 
 
 def test_mono_split_mixer_sums_l_plus_r_clip_safe():

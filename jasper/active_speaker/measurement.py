@@ -286,17 +286,30 @@ def start_active_comparison_set(
     setup_sha256: str,
     device_sha256: str,
     calibration_id: str,
-    locked_main_volume_db: float,
+    driver_level_locks: Mapping[str, Mapping[str, Any]],
     state_path: str | Path | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
-    """Persist the one mic/level context all automatic captures must share."""
+    """Persist the immutable mic and complete per-driver level context."""
 
-    from .capture_geometry import COMPARISON_SET_SCHEMA_VERSION
+    from .capture_geometry import (
+        COMPARISON_SET_SCHEMA_VERSION,
+        comparison_set_fingerprint,
+        comparison_set_valid,
+    )
 
     path = measurement_state_path(state_path)
     state = load_measurement_state(topology, state_path=path)
     created_at = now or _utc_now()
+    expected_target_ids = {
+        target["target_id"] for target in active_driver_targets(topology)
+    }
+    normalized_locks = {
+        str(target_id): dict(lock)
+        for target_id, lock in driver_level_locks.items()
+    }
+    if set(normalized_locks) != expected_target_ids:
+        raise ValueError("driver level locks are incomplete for the active topology")
     core = {
         "schema_version": COMPARISON_SET_SCHEMA_VERSION,
         "comparison_set_id": uuid.uuid4().hex,
@@ -306,9 +319,11 @@ def start_active_comparison_set(
         "setup_sha256": str(setup_sha256),
         "device_sha256": str(device_sha256),
         "calibration_id": str(calibration_id or ""),
-        "locked_main_volume_db": float(locked_main_volume_db),
+        "driver_level_locks": normalized_locks,
     }
-    comparison_set = {**core, "fingerprint": _fingerprint(core)}
+    comparison_set = {**core, "fingerprint": comparison_set_fingerprint(core)}
+    if not comparison_set_valid(comparison_set):
+        raise ValueError("driver level locks are malformed")
     persisted = _normalise_state(state, path)
     persisted["active_comparison_set"] = comparison_set
     persisted["updated_at"] = created_at

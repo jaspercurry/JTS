@@ -73,6 +73,8 @@ STARTUP_HEADROOM_DB = 40.0
 COMMISSIONING_HEADROOM_DB = 0.0
 STARTUP_MUTE_GAIN_DB = -120.0
 STARTUP_LIMITER_CLIP_LIMIT_DB = -12.0
+COMMISSIONING_FILTER_MODE = "protected_startup"
+APPLIED_RESPONSE_FILTER_MODE = "applied_crossover_response"
 BASELINE_HEADROOM_DB = 0.0
 BASELINE_LIMITER_CLIP_LIMIT_DB = -1.0
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
@@ -405,6 +407,23 @@ driver_limiter_name = _driver_limiter_name
 driver_baseline_gain_name = _driver_baseline_gain_name
 driver_baseline_limiter_name = _driver_baseline_limiter_name
 protective_tweeter_hp_name = _protective_tweeter_hp_name
+
+
+def crossover_highpass_for_role(
+    preset: ActiveSpeakerPreset, role: str
+) -> tuple[str, float, int] | None:
+    """Return the applied crossover high-pass protecting ``role``."""
+
+    for region in _ordered_regions(preset):
+        if region.upper_driver == role:
+            return (
+                _crossover_filter_name(role, region, highpass=True),
+                region.fc_hz,
+                region.order,
+            )
+    return None
+
+
 # Local-sub + bass-management aliases (same emitter-owned-spelling contract).
 sub_lowpass_name = _sub_lowpass_name
 sub_baseline_gain_name = _sub_baseline_gain_name
@@ -1092,17 +1111,21 @@ def audible_outputs_for_role(preset: ActiveSpeakerPreset, role: str) -> frozense
 def _commissioning_driver_filter_chain(
     preset: ActiveSpeakerPreset,
     role: str,
+    *,
+    filter_mode: str,
 ) -> list[str]:
     """The startup chain minus the per-role mute.
 
     Commissioning isolates one *physical output* (not a whole role — a stereo
     woofer pair shares a role), so the role-level startup mute is dropped and a
-    per-output mute layer is applied in the pipeline instead. Everything that
-    protects a driver — protective tweeter high-pass, crossover, delay,
-    limiter — is preserved exactly as the running graph has it.
+    per-output mute layer is applied in the pipeline instead. Bring-up retains
+    the dedicated tweeter high-pass; automatic response measurement removes
+    only that extra filter so it measures the applied crossover shoulder.
     """
-    role_mute = _driver_mute_name(role)
-    return [name for name in _driver_filter_chain(preset, role) if name != role_mute]
+    excluded = {_driver_mute_name(role)}
+    if filter_mode == APPLIED_RESPONSE_FILTER_MODE:
+        excluded.add(_protective_tweeter_hp_name(role))
+    return [name for name in _driver_filter_chain(preset, role) if name not in excluded]
 
 
 def _emit_commissioning_filter_definitions(
@@ -1112,6 +1135,7 @@ def _emit_commissioning_filter_definitions(
     limiter_clip_limit_db: float,
     audible_outputs: frozenset[int],
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
+    filter_mode: str = COMMISSIONING_FILTER_MODE,
 ) -> str:
     lines: list[str] = []
     lines.extend(emit_gain_filter("active_startup_headroom", -startup_headroom_db))
@@ -1134,7 +1158,7 @@ def _emit_commissioning_filter_definitions(
     lines.extend(_emit_bass_management_hp_definition(preset))
     for role in required_driver_roles(preset.way_count):
         protective_freq = _protective_tweeter_hp_frequency(preset, role)
-        if protective_freq is not None:
+        if filter_mode == COMMISSIONING_FILTER_MODE and protective_freq is not None:
             lines.extend(emit_linkwitz_riley(
                 _protective_tweeter_hp_name(role),
                 highpass=True,
@@ -1175,7 +1199,11 @@ def _emit_commissioning_filter_definitions(
     return "\n".join(lines)
 
 
-def _emit_commissioning_pipeline(preset: ActiveSpeakerPreset) -> str:
+def _emit_commissioning_pipeline(
+    preset: ActiveSpeakerPreset,
+    *,
+    filter_mode: str = COMMISSIONING_FILTER_MODE,
+) -> str:
     lines = [
         "  - type: Filter",
         "    channels: [0, 1]",
@@ -1185,7 +1213,13 @@ def _emit_commissioning_pipeline(preset: ActiveSpeakerPreset) -> str:
     ]
     for role in required_driver_roles(preset.way_count):
         channels = _channels_for_role(preset, role)
-        chain = ", ".join(_commissioning_driver_filter_chain(preset, role))
+        chain = ", ".join(
+            _commissioning_driver_filter_chain(
+                preset,
+                role,
+                filter_mode=filter_mode,
+            )
+        )
         lines.extend([
             "  - type: Filter",
             f"    channels: [{', '.join(str(ch) for ch in channels)}]",
@@ -1228,6 +1262,7 @@ def emit_active_speaker_commissioning_config(
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
+    filter_mode: str = COMMISSIONING_FILTER_MODE,
 ) -> str:
     """Build the **production** active-speaker graph with a per-output mask.
 
@@ -1247,6 +1282,13 @@ def emit_active_speaker_commissioning_config(
     """
 
     preset.validate()
+    if filter_mode not in {
+        COMMISSIONING_FILTER_MODE,
+        APPLIED_RESPONSE_FILTER_MODE,
+    }:
+        raise ActiveSpeakerConfigError(
+            f"unsupported commissioning filter mode: {filter_mode!r}"
+        )
     playback_device = _yaml_string(playback_device, "playback_device")
     forbidden_token = _forbidden_playback_token(playback_device)
     if forbidden_token:
@@ -1303,13 +1345,18 @@ def emit_active_speaker_commissioning_config(
         limiter_clip_limit_db=limiter_clip_limit_db,
         audible_outputs=audible,
         audible_gain_db=audible_gain_db,
+        filter_mode=filter_mode,
     )
     mixer_yaml = _emit_split_mixer(preset)
-    pipeline_yaml = _emit_commissioning_pipeline(preset)
+    pipeline_yaml = _emit_commissioning_pipeline(
+        preset,
+        filter_mode=filter_mode,
+    )
     metadata_comments = [
         f"# preset_id={preset.preset_id}",
         f"# audible_outputs={sorted(audible)}",
         f"# audible_gain_db={fmt(audible_gain_db)}",
+        f"# filter_mode={filter_mode}",
     ]
     if baseline_id:
         baseline_id = _yaml_string(baseline_id, "baseline_id")
@@ -1322,8 +1369,9 @@ def emit_active_speaker_commissioning_config(
 {metadata_yaml}
 # DO NOT HAND-EDIT. Single-audio-path bring-up: the production graph with a
 # per-output mute mask so one driver at a time is tested through its real
-# crossover/limiter chain. Tweeter paths keep an extra protective high-pass and
-# the software volume ceiling stays 0 dB.
+# crossover/limiter chain. Bring-up uses the extra protective high-pass;
+# automatic response measurement uses the applied crossover high-pass instead.
+# The software volume ceiling stays 0 dB in both modes.
 
 devices:
   samplerate: {sample_rate}
