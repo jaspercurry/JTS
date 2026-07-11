@@ -9,6 +9,45 @@
 # Extracted from install.sh; functions assume install.sh globals and
 # set -euo pipefail from the sourcing shell.
 
+seed_capture_relay_env() {
+    # Existing boxes have a frozen first-install jasper.env. Add the relay keys
+    # if they predate the relay rollout, using the same public Jasper Tech relay
+    # defaults as .env.example. This helper is shared by the full and streambox
+    # profiles so every correction surface gets the same transport contract.
+    # The relay exists because mobile browsers require a publicly trusted HTTPS
+    # secure context for getUserMedia; the phone records on capture.jasper.tech
+    # while the LAN-only Pi pulls encrypted blobs over outbound HTTPS.
+    # Self-hosters can deploy the same Cloudflare code from relay/ and
+    # capture-page/ (see their README files) and override these via deploy env or
+    # by editing /etc/jasper/jasper.env. Existing non-empty custom values are
+    # preserved. To keep the on-Pi fallback, set
+    # JASPER_CAPTURE_RELAY_BASE=disabled (or off/0/none).
+    if [[ -n "${JASPER_CAPTURE_RELAY_BASE:-}" ]]; then
+        set_jasper_env_value JASPER_CAPTURE_RELAY_BASE "${JASPER_CAPTURE_RELAY_BASE}"
+        echo "  capture relay: configured from deploy environment"
+    elif ! grep -qE '^JASPER_CAPTURE_RELAY_BASE=[[:space:]]*[^[:space:]]' "${ENV_DIR}/jasper.env"; then
+        set_jasper_env_value JASPER_CAPTURE_RELAY_BASE "https://relay.jasper.tech"
+        echo "  capture relay: using Jasper Tech public relay"
+    fi
+    if [[ -n "${JASPER_CAPTURE_ORIGIN:-}" ]]; then
+        set_jasper_env_value JASPER_CAPTURE_ORIGIN "${JASPER_CAPTURE_ORIGIN}"
+        echo "  capture origin: configured from deploy environment"
+    elif ! grep -qE '^JASPER_CAPTURE_ORIGIN=[[:space:]]*[^[:space:]]' "${ENV_DIR}/jasper.env"; then
+        set_jasper_env_value JASPER_CAPTURE_ORIGIN "capture.jasper.tech"
+        echo "  capture origin: using capture.jasper.tech"
+    fi
+    if [[ -n "${JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN:-}" ]]; then
+        set_jasper_env_value \
+            JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN \
+            "${JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN}"
+        echo "  capture relay registration token: configured from deploy environment"
+    elif ! grep -qE '^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=' "${ENV_DIR}/jasper.env"; then
+        printf 'JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=\n' >> "${ENV_DIR}/jasper.env"
+        echo "  capture relay registration token: unset"
+    fi
+    chmod 0640 "${ENV_DIR}/jasper.env"
+}
+
 install_jasper() {
     install -d -m 0755 "${INSTALL_DIR}"
     ensure_state_dir
@@ -227,42 +266,7 @@ install_jasper() {
         echo "starting jasper-voice — there is no default."
         echo
     fi
-    # Existing boxes have a frozen first-install jasper.env. Add the relay keys
-    # if they predate the relay rollout, using the same public Jasper Tech relay
-    # defaults as .env.example. The relay exists because mobile browsers require
-    # a publicly trusted HTTPS secure context for getUserMedia; the phone records
-    # on capture.jasper.tech while the LAN-only Pi pulls encrypted blobs over
-    # outbound HTTPS. Self-hosters can deploy the same Cloudflare code from
-    # relay/ and capture-page/ (see their README files) and override these via
-    # deploy env or by editing /etc/jasper/jasper.env. Existing non-empty custom
-    # values are preserved; missing/blank legacy values are migrated to the public
-    # defaults so an updated Pi does not silently fall back to the local HTTPS
-    # mic path. To intentionally keep the old on-Pi fallback across installs, set
-    # JASPER_CAPTURE_RELAY_BASE=disabled (or off/0/none).
-    if [[ -n "${JASPER_CAPTURE_RELAY_BASE:-}" ]]; then
-        set_jasper_env_value JASPER_CAPTURE_RELAY_BASE "${JASPER_CAPTURE_RELAY_BASE}"
-        echo "  capture relay: configured from deploy environment"
-    elif ! grep -qE '^JASPER_CAPTURE_RELAY_BASE=[[:space:]]*[^[:space:]]' "${ENV_DIR}/jasper.env"; then
-        set_jasper_env_value JASPER_CAPTURE_RELAY_BASE "https://relay.jasper.tech"
-        echo "  capture relay: using Jasper Tech public relay"
-    fi
-    if [[ -n "${JASPER_CAPTURE_ORIGIN:-}" ]]; then
-        set_jasper_env_value JASPER_CAPTURE_ORIGIN "${JASPER_CAPTURE_ORIGIN}"
-        echo "  capture origin: configured from deploy environment"
-    elif ! grep -qE '^JASPER_CAPTURE_ORIGIN=[[:space:]]*[^[:space:]]' "${ENV_DIR}/jasper.env"; then
-        set_jasper_env_value JASPER_CAPTURE_ORIGIN "capture.jasper.tech"
-        echo "  capture origin: using capture.jasper.tech"
-    fi
-    if [[ -n "${JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN:-}" ]]; then
-        set_jasper_env_value \
-            JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN \
-            "${JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN}"
-        echo "  capture relay registration token: configured from deploy environment"
-    elif ! grep -qE '^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=' "${ENV_DIR}/jasper.env"; then
-        printf 'JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=\n' >> "${ENV_DIR}/jasper.env"
-        echo "  capture relay registration token: unset"
-    fi
-    chmod 0640 "${ENV_DIR}/jasper.env"
+    seed_capture_relay_env
     sed -i \
         -e '/^JASPER_SPOTIFY_DEVICE_NAME=/d' \
         -e '/^JASPER_AIRPLAY_DEVICE_NAME=/d' \
@@ -412,6 +416,7 @@ EOF
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  streambox env: refreshed streambox defaults"
     fi
+    seed_capture_relay_env
 
     if [[ ! -e "${STATE_DIR}/speaker_name.env" ]]; then
         printf 'JASPER_SPEAKER_NAME="JTS"\n' > "${STATE_DIR}/speaker_name.env"

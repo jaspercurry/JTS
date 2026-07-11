@@ -5,11 +5,18 @@
 """Guards for phone-mic relay deploy defaults."""
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _shell_function_body(source: str, name: str) -> str:
+    match = re.search(rf"^{name}\(\) \{{\n(?P<body>.*?)^\}}$", source, re.MULTILINE | re.DOTALL)
+    assert match is not None, f"missing shell function {name}"
+    return match.group("body")
 
 
 def _env_example_values() -> dict[str, str]:
@@ -53,6 +60,20 @@ def test_existing_box_install_migration_seeds_public_relay_when_missing() -> Non
     assert "grep -qE '^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN='" in install
     assert "set_jasper_env_value" in install
     assert "JASPER_CAPTURE_RELAY_BASE=disabled" in install
+
+
+def test_full_and_streambox_installs_share_capture_relay_env_seed() -> None:
+    install = (ROOT / "deploy/lib/install/python-runtime.sh").read_text(
+        encoding="utf-8"
+    )
+    helper = _shell_function_body(install, "seed_capture_relay_env")
+    assert "JASPER_CAPTURE_RELAY_BASE" in helper
+    assert "JASPER_CAPTURE_ORIGIN" in helper
+    assert "JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN" in helper
+    assert "seed_capture_relay_env" in _shell_function_body(install, "install_jasper")
+    assert "seed_capture_relay_env" in _shell_function_body(
+        install, "install_streambox_jasper"
+    )
 
 
 def test_existing_box_blank_relay_values_count_as_missing_for_migration(
