@@ -9,8 +9,8 @@
 
 ## Status
 
-- 🧪 **P2 — relay-closed level-match ramp (hardware-free complete,
-  on-device pending).** The settle-based `RampController` /
+- ✅ **P2 — relay-closed level-match ramp (hardware + software complete).**
+  The settle-based `RampController` /
   `MeasurementRamp` kernel lives in
   [`jasper/audio_measurement/ramp.py`](../jasper/audio_measurement/ramp.py)
   (quiet-start staircase → pre-window freeze → buffered settle read →
@@ -21,13 +21,14 @@
   derived safety timeout; exact — never cap-clamped — restore of the user's
   pre-ramp volume). `MAXED_OUT` is a failed attempt, stores no lock, restores
   immediately, and asks the household to raise the external amplifier. The
-  shared kernel defaults to that fail-closed policy. Only the active-crossover
-  near-field lease opts into `bounded_low_level`: at the cap it may store an
-  explicitly degraded lock after fresh post-latency samples prove frozen AGC,
-  live delivery, no clipping, the existing noise-floor margin, <=1.5 dB spread,
-  and <=20 dB preferred-window shortfall. Room correction does not opt in. The
-  crossover envelope surfaces the shortfall and downstream sweep-quality gates
-  still decide whether the evidence is usable. The
+  shared kernel defaults to that fail-closed policy. The active-crossover
+  near-field lease and the room/verification listening-position session opt
+  into `bounded_low_level`: at the cap they may store an explicitly degraded
+  lock after fresh post-latency samples prove frozen AGC, live delivery, no
+  clipping, the existing noise-floor margin, <=1.5 dB spread, and <=20 dB
+  preferred-window shortfall. The owning flow surfaces the shortfall and
+  downstream sweep-quality gates still decide whether the evidence is usable.
+  The
   correction adapter
   ([`jasper/correction/level_match.py`](../jasper/correction/level_match.py))
   adds the per-geometry `MeasurementLevelLock` store, the raw-band
@@ -45,8 +46,10 @@
   manual controller seams remain available to trusted adapters, while the
   shipped phone flow refuses *before playing a tone* when the browser cannot
   prove AGC is disabled. The relay validates the selected mic/calibration once,
-  freezes a compact setup binding, samples a token-scoped ambient batch, and
-  fails closed on every CamillaDSP gain write. A successful lock retains the
+  freezes a compact setup binding, and waits for a token-scoped rolling ambient
+  median (ten finite 200 ms samples / two seconds) before the tone starts; one
+  USB startup block can never become the noise-floor source of truth. It fails
+  closed on every CamillaDSP gain write. A successful lock retains the
   target but restores the user's original listening volume immediately. Each
   room/verify/crossover sweep reasserts the target only inside
   `measurement_window()` and restores the original in that window's `finally`,

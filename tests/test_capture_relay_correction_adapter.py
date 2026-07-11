@@ -529,6 +529,14 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
                     {"seq": 1, "rms_dbfs": -54.0, "peak_dbfs": -49.0},
                     {"seq": 2, "rms_dbfs": -50.0, "peak_dbfs": -46.0},
                     {"seq": 3, "rms_dbfs": -52.0, "peak_dbfs": -47.0},
+                    *[
+                        {
+                            "seq": seq,
+                            "rms_dbfs": -52.0,
+                            "peak_dbfs": -47.0,
+                        }
+                        for seq in range(4, 11)
+                    ],
                 ],
                 "context": {
                     "setup": {"binding": identity},
@@ -539,16 +547,40 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     }
     current_status = {"value": setup_status}
     setup_acks = []
+    ambient_index = 0
+    ambient_reads: dict[int, int] = {}
 
     class Client:
         def status(self, *_args):
-            return current_status["value"]
+            nonlocal ambient_index
+            value = current_status["value"]
+            if value == "ambient":
+                sample = batch_status["event"]["level_batch"]["samples"][
+                    ambient_index
+                ]
+                seq = int(sample["seq"])
+                ambient_reads[seq] = ambient_reads.get(seq, 0) + 1
+                # Repeat every singleton event once. A broken accumulator that
+                # counts polls instead of unique client samples would unlock on
+                # seq 5 and derive the wrong floor.
+                if ambient_reads[seq] >= 2 and ambient_index < 9:
+                    ambient_index += 1
+                return {
+                    "event": {
+                        **batch_status["event"],
+                        "level_batch": {
+                            **batch_status["event"]["level_batch"],
+                            "samples": [sample],
+                        },
+                    }
+                }
+            return value
 
         def post_host_event(self, *_args):
             payload = _args[-1]
             if payload.get("phase") == "setup_validated":
                 setup_acks.append(payload)
-                current_status["value"] = batch_status
+                current_status["value"] = "ambient"
             return None
 
     writes = []
@@ -608,6 +640,9 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     )
 
     assert setup_acks == [{"phase": "setup_validated", "setup_token": "setup-1"}]
+    assert set(ambient_reads) == set(range(1, 11))
+    assert all(ambient_reads[seq] >= 2 for seq in range(1, 10))
+    assert ambient_reads[10] >= 1
     assert sess.total_positions == 3
     assert sess.noise_floor_db == -52.0
     assert sess.input_device["label"] == "USB measurement mic"
@@ -617,6 +652,84 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     )
 
     assert tone_kwargs["dbfs"] == AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
+
+
+@pytest.mark.asyncio
+async def test_relay_level_mismatched_context_cannot_poison_ambient_floor(
+    monkeypatch,
+):
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator
+    from jasper.web import correction_setup
+
+    expected_id = "room-session-12345"
+    good_digest = "a" * 64
+    bad_claim = {
+        "schema": 1,
+        "binding_id": expected_id,
+        "sha256": "b" * 64,
+    }
+    status = {
+        "event": {
+            "capture_page": dict(_CAPTURE_PAGE),
+            "level_batch": {
+                "schema": 1,
+                "run_token": "run-poison",
+                "armed": True,
+                "samples": [
+                    {
+                        "seq": seq,
+                        "t_client_ms": seq * 200,
+                        "rms_dbfs": -42.0,
+                        "peak_dbfs": -36.0,
+                    }
+                    for seq in range(1, 11)
+                ],
+                "context": {
+                    "setup": {"binding": bad_claim},
+                    "device": {"label": "USB measurement mic"},
+                },
+            },
+        },
+    }
+
+    class Client:
+        def status(self, *_args):
+            return status
+
+        def post_host_event(self, *_args):
+            return None
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    class Session:
+        session_id = "room-1"
+        noise_floor_db = None
+        mic_calibration = None
+        input_device = None
+        relay_setup_binding = correction_setup._RelaySetupBinding(
+            binding_id=expected_id,
+            sha256=good_digest,
+        )
+
+    sess = Session()
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    with pytest.raises(ValueError, match="microphone setup changed"):
+        await correction_setup._run_relay_level_match(
+            sess,
+            Client(),
+            _level_pi_session(),
+            geometry="listening_position",
+            run_token="run-poison",
+            setup_binding_id=expected_id,
+        )
+
+    assert sess.noise_floor_db is None
 
 
 @pytest.mark.asyncio
@@ -672,7 +785,9 @@ async def test_relay_level_adapter_fails_closed_when_volume_write_is_rejected(
     monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
 
     class Session:
-        noise_floor_db = None
+        # This test targets the strict Camilla write boundary; ambient-window
+        # admission is covered by the preceding adapter test.
+        noise_floor_db = -55.0
         mic_calibration = None
         input_device = None
 

@@ -60,7 +60,11 @@ from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
 from jasper.audio_measurement.quality_model import ROOM as ROOM_QUALITY
-from jasper.audio_measurement.ramp import RECOVERABLE_ERRORS, RampState
+from jasper.audio_measurement.ramp import (
+    RECOVERABLE_ERRORS,
+    MeasurementRamp,
+    RampState,
+)
 
 from . import (
     acceptance,
@@ -2510,6 +2514,14 @@ class MeasurementSession:
         session = LevelMatchSession(
             session_id=self.session_id,
             store=self.level_lock_store,
+            # A room sweep has substantial deconvolution/averaging gain and its
+            # downstream quality model still rejects unusable captures.  When
+            # the external amplifier leaves a stable, AGC-off listening-position
+            # tone below the preferred window at the safe cap, retain that
+            # evidence as an explicitly degraded lock instead of dead-ending the
+            # room flow.  The shared ramp keeps the same clip, SNR, spread,
+            # liveness, timeout, and exact-volume-restore guards.
+            config=MeasurementRamp.from_env(allow_bounded_low_level=True),
         )
         self._level_match_session = session
         try:

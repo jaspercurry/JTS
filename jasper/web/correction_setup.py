@@ -176,6 +176,11 @@ _relay_capture: dict[str, Any] | None = None
 # Bound the foreground relay registration so a slow/unreachable relay fails fast
 # rather than hanging the request thread for RelayClient's 15 s default.
 _RELAY_REGISTER_TIMEOUT_S = 10.0
+# Require a short rolling ambient window before the Pi starts the level tone.
+# A single USB-mic startup block is too noisy to become the trust-floor SSOT;
+# ten 200 ms samples gives a stable two-second median while keeping setup
+# bounded and well inside the relay's rolling three-second sample window.
+_RELAY_LEVEL_AMBIENT_MIN_SAMPLES = 10
 
 # Mutating routes this handler accepts. Module-scoped so route membership is
 # pinnable by a test (deleting a line would otherwise 404 a route silently).
@@ -2674,11 +2679,12 @@ async def _run_relay_level_match(
         async with coordinator.measurement_window():
             from jasper.correction.level_match import parse_level_batch
 
-            # The phone starts its meter before the Pi starts the tone. Use the
-            # first token-scoped batch as the ambient baseline so ordinary room
-            # noise cannot satisfy the tone target when the session had no older
-            # noise-floor evidence.
+            # The phone starts its meter before the Pi starts the tone. Build a
+            # deduplicated token-scoped ambient window so ordinary room noise
+            # cannot satisfy the tone target and repeated relay polls cannot
+            # manufacture sample count.
             initial_noise_floor = getattr(sess, "noise_floor_db", None)
+            ambient_samples: dict[tuple[int, int], float] = {}
             # The relay runner starts when the link is minted, not when the
             # household opens it. Give the sequential setup + Start tap a
             # human-scale bounded window; the ramp itself owns its much shorter
@@ -2782,12 +2788,6 @@ async def _run_relay_level_match(
                     run_token=run_token,
                 )
                 if samples:
-                    if initial_noise_floor is None:
-                        ordered = sorted(
-                            float(sample.rms_dbfs) for sample in samples
-                        )
-                        initial_noise_floor = ordered[len(ordered) // 2]
-                        sess.noise_floor_db = initial_noise_floor
                     batch = (
                         event.get("level_batch") if isinstance(event, dict) else None
                     )
@@ -2813,6 +2813,32 @@ async def _run_relay_level_match(
                     )
                     if mismatch is not None:
                         raise ValueError(mismatch)
+                    if initial_noise_floor is None:
+                        for sample in samples:
+                            value = float(sample.rms_dbfs)
+                            if math.isfinite(value):
+                                ambient_samples.setdefault(
+                                    (int(sample.seq), int(sample.t_client_ms)),
+                                    value,
+                                )
+                        if (
+                            len(ambient_samples)
+                            < _RELAY_LEVEL_AMBIENT_MIN_SAMPLES
+                        ):
+                            await asyncio.sleep(0.1)
+                            continue
+                        ordered = sorted(ambient_samples.values())
+                        initial_noise_floor = ordered[len(ordered) // 2]
+                        sess.noise_floor_db = initial_noise_floor
+                        log_event(
+                            logger,
+                            "correction.level_match_ambient_baseline",
+                            session_id=getattr(sess, "session_id", None),
+                            geometry=geometry,
+                            sample_count=len(ordered),
+                            rms_dbfs=f"{initial_noise_floor:.1f}",
+                            spread_db=f"{ordered[-1] - ordered[0]:.1f}",
+                        )
                     break
                 if asyncio.get_running_loop().time() >= deadline:
                     raise RuntimeError(
