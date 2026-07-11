@@ -47,8 +47,8 @@
 #     script has already restarted it would be a park (exit 78) that
 #     this script would then have to notice and roll back anyway.
 #   - outputd is not already running a mutually-exclusive content
-#     source (local_content_pipe, dac_content round-trip FIFO, or an
-#     already-armed rate_match bridge).
+#     source (dac_content round-trip FIFO, or an already-armed
+#     rate_match bridge).
 #   - the multi-room round-trip lane is not active
 #     (JASPER_OUTPUTD_DAC_CONTENT_FIFO unset) — a bonded/grouping
 #     speaker is out of scope for this prototype.
@@ -220,7 +220,6 @@ sink="$(resolved_env_get JASPER_OUTPUTD_SINK)"
 active_channels="$(resolved_env_get JASPER_OUTPUTD_ACTIVE_CHANNELS)"
 active_lane="$(resolved_env_get JASPER_OUTPUTD_ACTIVE_LANE)"
 dac_content_fifo="$(resolved_env_get JASPER_OUTPUTD_DAC_CONTENT_FIFO)"
-local_content_pipe="$(resolved_env_get JASPER_OUTPUTD_LOCAL_CONTENT_PIPE)"
 existing_bridge="$(resolved_env_get JASPER_OUTPUTD_CONTENT_BRIDGE)"
 
 sink="${sink:-single_alsa}"
@@ -251,13 +250,6 @@ if [[ -n "${dac_content_fifo}" ]]; then
     echo "error: JASPER_OUTPUTD_DAC_CONTENT_FIFO is set on ${PI_HOST} — this box" \
         "is bonded into a multi-room group. Ring B is out of scope for grouped" \
         "speakers; disband the group (or pick a non-grouped lab box) first." >&2
-    echo "No changes made." >&2
-    exit 1
-fi
-if [[ -n "${local_content_pipe}" ]]; then
-    echo "error: JASPER_OUTPUTD_LOCAL_CONTENT_PIPE is set on ${PI_HOST} — that" \
-        "content source is mutually exclusive with the SHM ring. Unset it" \
-        "first (or pick a different lab box)." >&2
     echo "No changes made." >&2
     exit 1
 fi

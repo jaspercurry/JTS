@@ -63,7 +63,6 @@ use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S16LE};
 use jasper_resampler::{rms_dbfs_i16, RMS_DBFS_FLOOR};
 
 use crate::config::{Config, Coupling, RING_SLOT_FRAMES};
-use crate::fifo::{FifoWriteOutcome, FifoWriter};
 use crate::impulse_tap::{ImpulseDetector, TapConfig, TapEvent, TapState};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
 use crate::tts::{TtsInput, TtsMixer};
@@ -619,14 +618,11 @@ fn auto_trim_decision(
 
 /// The final-output transport. `Alsa` (the default) writes the snd-aloop
 /// substream and is paced by the blocking ALSA `writei` — byte-identical to the
-/// pre-coupling daemon. `Fifo` is the writer primitive used by the public
-/// `transport_pipe` mode: it writes a bounded named pipe that CamillaDSP
-/// RawFile-captures. `Ring` is the Ring A (PROTOTYPE) SPSC SHM ring writer;
+/// pre-coupling daemon. `Ring` is the Ring A (PROTOTYPE) SPSC SHM ring writer;
 /// CamillaDSP reads it via a capture-direction ioplug. Each is the sole timing
 /// owner of the fan-in work loop in its mode; only one is ever active.
 enum Output {
     Alsa(PCM),
-    Fifo(FifoWriter),
     /// The SPSC SHM ring writer plus its lossy aloop MIRROR PCM. The blocking
     /// ring publish (bounded, on a full-ring-with-live-reader) is the pacer; the
     /// mirror is a `write_music_only`-shaped non-blocking side-tap so the AEC
@@ -701,10 +697,9 @@ pub struct Mixer {
     /// (consumer behind) or xrun. A growing value means the snapserver
     /// consumer is behind; surfaced via STATUS, NEVER escalated (inv-1).
     pub music_output_drops: Arc<AtomicU64>,
-    /// Coupling transport + (under `transport_pipe`) the shared pipe observability
-    /// counters, cloned for the STATUS endpoint. `None` of the pipe fields under
-    /// `Loopback` (the default), so STATUS reports `transport=loopback` with no
-    /// pipe block — byte-identical to the pre-coupling snapshot.
+    /// Coupling transport echo, cloned for the STATUS endpoint. Under `Loopback`
+    /// (the default) STATUS reports `transport=loopback` with no ring block —
+    /// byte-identical to the pre-coupling snapshot.
     pub coupling: CouplingObservability,
     /// DEFAULT-OFF one-shot AUTO-TRIM (`JASPER_FANIN_AUTO_TRIM=enabled`). When
     /// set, the work loop schedules ONE trim per lane ~`AUTO_TRIM_DELAY_SECONDS`
@@ -821,25 +816,13 @@ struct AutoTrimLaneState {
 }
 
 /// Coupling transport echo + the shared observability block for the STATUS
-/// endpoint. Under `Loopback` (default), both `pipe` and `ring` are `None` and
-/// STATUS reports only `transport:"loopback"`. Under `transport_pipe`, `pipe`
-/// carries the pipe counters; under `shm_ring`, `ring` carries the ring
-/// counters. At most one of `pipe`/`ring` is ever `Some`.
+/// endpoint. Under `Loopback` (default), `ring` is `None` and STATUS reports
+/// only `transport:"loopback"`. Under `shm_ring`, `ring` carries the ring
+/// counters.
 #[derive(Clone)]
 pub struct CouplingObservability {
     pub transport: &'static str,
-    pub pipe: Option<PipeObservability>,
     pub ring: Option<RingObservability>,
-}
-
-/// The shared pipe counters (cloned Arcs from the live `FifoWriter`).
-#[derive(Clone)]
-pub struct PipeObservability {
-    pub path: String,
-    pub requested_pipe_bytes: u32,
-    pub reopen_count: Arc<AtomicU64>,
-    pub dropped_periods: Arc<AtomicU64>,
-    pub actual_pipe_bytes: Arc<AtomicU64>,
 }
 
 /// The live SPSC ring counters the mixer step updates each period (from the
@@ -1216,9 +1199,9 @@ impl Mixer {
         }
 
         // Final-output transport. Loopback (default) opens the ALSA snd-aloop
-        // substream — byte-identical to today. Fifo ensures + lazily opens the
-        // bounded named pipe CamillaDSP RawFile-captures (the lower-latency
-        // coupling). Exactly one is active.
+        // substream — byte-identical to today. ShmRing (Ring A, PROTOTYPE)
+        // publishes an SPSC ping-pong SHM ring CamillaDSP reads via an ioplug.
+        // Exactly one is active.
         let (output, coupling) = match config.camilla_coupling {
             Coupling::Loopback => {
                 let pcm = open_output(&config.output_pcm, config)
@@ -1231,40 +1214,6 @@ impl Mixer {
                     Output::Alsa(pcm),
                     CouplingObservability {
                         transport: "loopback",
-                        pipe: None,
-                        ring: None,
-                    },
-                )
-            }
-            Coupling::TransportPipe => {
-                // The pipe is created here (producer owns it); the write end is
-                // opened reader-first lazily on the first period so startup is
-                // never gated on CamillaDSP being up.
-                let writer = FifoWriter::new(
-                    &config.camilla_pipe_path,
-                    config.period_frames,
-                    config.camilla_pipe_bytes,
-                )
-                .with_context(|| {
-                    format!("ensuring fan-in→camilla pipe {}", config.camilla_pipe_path)
-                })?;
-                info!(
-                    "event=fanin.output.opened transport=transport_pipe path={} period_frames={} requested_pipe_bytes={}",
-                    config.camilla_pipe_path, config.period_frames, config.camilla_pipe_bytes,
-                );
-                // Capture the shared counters before the writer moves into Output.
-                let (reopen_count, dropped_periods, actual_pipe_bytes) = writer.observability();
-                (
-                    Output::Fifo(writer),
-                    CouplingObservability {
-                        transport: "transport_pipe",
-                        pipe: Some(PipeObservability {
-                            path: config.camilla_pipe_path.clone(),
-                            requested_pipe_bytes: config.camilla_pipe_bytes,
-                            reopen_count,
-                            dropped_periods,
-                            actual_pipe_bytes,
-                        }),
                         ring: None,
                     },
                 )
@@ -1338,7 +1287,6 @@ impl Mixer {
                     }),
                     CouplingObservability {
                         transport: "shm_ring",
-                        pipe: None,
                         ring: Some(observability),
                     },
                 )
@@ -1536,9 +1484,9 @@ impl Mixer {
     /// Transient errors (xruns) are handled inside `step()` without
     /// escalation.
     pub fn run(&mut self, shutdown: &AtomicBool, heartbeat: &Heartbeat) -> Result<()> {
-        // Prime + start is ALSA-specific. The FIFO transport has no kernel ring
-        // to prime and no PREPARED→RUNNING transition; its write end opens
-        // reader-first lazily inside step() and paces on the pipe.
+        // Prime + start is ALSA-specific. The SHM ring transport has no kernel
+        // ring to prime and no PREPARED→RUNNING transition; it publishes into
+        // the SPSC ring inside step() and paces on the ring.
         if let Output::Alsa(pcm) = &self.output {
             // Prime the output: write one period of zeros so the kernel
             // ring is non-empty when CamillaDSP / AEC bridge start reading.
@@ -1744,11 +1692,6 @@ impl Mixer {
         // 5. Write to output (blocks; paces the loop). Dispatch on transport:
         //    - Alsa: blocking writei, returns when the loopback ring has room
         //      (DAC-paced via the dsnoop consumer). Counts every period.
-        //    - Fifo: blocking pipe write, returns when the pipe has room
-        //      (DAC-paced via CamillaDSP's RawFile capture). A reader-gone /
-        //      no-reader turn returns Waited (the bounded reopen-wait already
-        //      slept), dropping this period; we still return Ok so run() bumps
-        //      the heartbeat — the loop is alive and bounded, never wedged.
         //    - Ring: publish period_frames/128 slots into the SHM ring. The
         //      blocking-on-full publish (bounded, live reader) is the pacer;
         //      reader-absent self-paces (one period's sleep per dropped publish)
@@ -1767,25 +1710,10 @@ impl Mixer {
                 self.frames_written
                     .fetch_add(self.period_frames as u64, Ordering::Relaxed);
             }
-            Output::Fifo(writer) => {
-                match writer.write_period(&self.output_buf) {
-                    FifoWriteOutcome::Wrote => {
-                        self.frames_written
-                            .fetch_add(self.period_frames as u64, Ordering::Relaxed);
-                    }
-                    FifoWriteOutcome::Waited => {
-                        // No reader / reader-gone: the writer already waited a
-                        // bounded REOPEN_WAIT. Drop this period (CamillaDSP is
-                        // reloading or not yet up) — do NOT count frames. The
-                        // loop stays alive; the heartbeat is bumped by run().
-                    }
-                }
-            }
             Output::Ring(ring) => {
                 // Count only frames that actually ENTERED the ring — a
-                // fully-dropped period (reader absent / stuck) adds nothing,
-                // matching the Fifo arm's Waited (which deliberately doesn't
-                // count). `drops` disambiguates, so the top-line counter stays
+                // fully-dropped period (reader absent / stuck) adds nothing.
+                // `drops` disambiguates, so the top-line counter stays
                 // honest rather than optimistic.
                 let published_frames =
                     write_ring_period(ring, &self.output_buf, self.period_frames);
@@ -2173,7 +2101,7 @@ impl Mixer {
 /// slots, then mirror the same period to the lossy aloop side-tap. Returns the
 /// number of frames that actually ENTERED the ring this period (published slots
 /// × `RING_SLOT_FRAMES`) so the caller counts only real throughput — a
-/// fully-dropped period returns 0, matching the Fifo arm's `Waited`.
+/// fully-dropped period returns 0.
 ///
 /// **Pacing (the Ring A contract).** Each `RingWriter::publish` BLOCKS (bounded:
 /// 32 ticks × the clamped `min(period/4, 2 ms)` sleep — with the pinned 128-frame

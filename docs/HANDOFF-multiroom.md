@@ -869,18 +869,18 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   stays bonded so the next reconcile re-applies the bond when snapserver
   is healthy; `event=camilla_pipe_guard.*` + the `leader pipe` doctor
   check surface the degraded state.
-  **Second dead-pipe class — transport_pipe CAPTURE pipe (2026-06):** the same
-  guard also inspects the statefile config's RawFile CAPTURE source. The
-  local transport_pipe lane captures from a named pipe under `/run`
-  (`/run/jasper-fanin/camilla.pipe`); if fan-in reverts off its pipe mode the
-  pipe disappears, and a camilla restart that reloads the persisted config
-  crash-loops on the absent capture pipe. When the config's capture filename is
-  a `/run` pipe that does not exist, the guard re-points the statefile to the
-  base config too (`event=camilla_pipe_guard.repaired
-  reason=capture_pipe_absent`). (The lean-lane variant of this class — capturing
-  `/run/jasper-usbsink/lean.pipe`, with `restore_buffered_config` as its runtime
-  sibling — was deleted in the USB dead-pipeline sweep; the guard's generic
-  `/run`-pipe repair still covers the surviving transport_pipe case.)
+  **Second dead-pipe class — transport_pipe CAPTURE pipe — REMOVED 2026-07-11.**
+  The guard also inspected the statefile config's RawFile CAPTURE source: the
+  local transport_pipe lane captured from a named pipe under `/run`
+  (`/run/jasper-fanin/camilla.pipe`), and a camilla restart that reloaded the
+  persisted config would crash-loop on the absent capture pipe
+  (`event=camilla_pipe_guard.repaired reason=capture_pipe_absent`). Both
+  consumers of that capture-pipe branch are now gone — the lean-lane variant
+  (`/run/jasper-usbsink/lean.pipe`, with `restore_buffered_config` as its runtime
+  sibling) was deleted in the USB dead-pipeline sweep, and transport_pipe itself
+  was deleted 2026-07-11 — so the guard's `/run` capture-pipe repair is now
+  **vestigial**. The guard's remaining live job is the Snapcast bonded
+  PLAYBACK-pipe protection described above; that half stays.
   **PR-2 (built 2026-06-11):** outputd grew a TTS server
   (`rust/jasper-outputd/src/tts.rs`) speaking fanin's exact newline-framed
   wire protocol (GAIN / PREPARE_ASSISTANT / SEGMENT_* / AUDIO /

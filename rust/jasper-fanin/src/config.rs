@@ -168,33 +168,17 @@ pub struct Config {
     pub assistant_loudness: AssistantLoudnessConfig,
 
     /// fan-in → CamillaDSP coupling transport. `Loopback` (the default) writes
-    /// the ALSA snd-aloop substream `output_pcm` exactly as today;
-    /// CamillaDSP dsnoop-captures it — byte-identical to the pre-coupling
-    /// daemon. `TransportPipe` writes a bounded named pipe
-    /// (`camilla_pipe_path`) instead, which CamillaDSP RawFile-captures as the
-    /// first half of the end-to-end DAC-paced pipe topology. `ShmRing` (Ring A,
-    /// PROTOTYPE) publishes an SPSC ping-pong SHM ring (`ring_path`, `ring_slots`)
-    /// that CamillaDSP reads via a capture-direction ioplug. The Python config
-    /// generator (`jasper.fanin_coupling`) is the cross-language source of truth;
-    /// this normalization MUST agree with `resolve_coupling` there.
-    /// Env: `JASPER_FANIN_CAMILLA_COUPLING` (`loopback` | `transport_pipe` |
-    /// `shm_ring`).
+    /// the ALSA snd-aloop substream `output_pcm` exactly as today; CamillaDSP
+    /// dsnoop-captures it — byte-identical to the pre-coupling daemon. `ShmRing`
+    /// (Ring A, PROTOTYPE) publishes an SPSC ping-pong SHM ring (`ring_path`,
+    /// `ring_slots`) that CamillaDSP reads via a capture-direction ioplug. The
+    /// Python config generator (`jasper.fanin_coupling`) is the cross-language
+    /// source of truth; this normalization MUST agree with `resolve_coupling`
+    /// there. Env: `JASPER_FANIN_CAMILLA_COUPLING` (`loopback` | `shm_ring`).
     pub camilla_coupling: Coupling,
 
-    /// The shared-capture named pipe written under `Coupling::TransportPipe`.
-    /// Unused for `Loopback`. Default `/run/jasper-fanin/camilla.pipe`. Env:
-    /// `JASPER_FANIN_CAMILLA_PIPE`. DISTINCT from the lean lane's pipe.
-    pub camilla_pipe_path: String,
-
-    /// Requested write-end pipe buffer size, in bytes, for `F_SETPIPE_SZ` under
-    /// `Coupling::TransportPipe`. The kernel rounds up to a power-of-two ≥ page size. A
-    /// small buffer (default 8192 ≈ 3-4 S32 periods) keeps the pipe DAC-paced —
-    /// it is the named-pipe equivalent of the snd-aloop output ring depth.
-    /// Env: `JASPER_FANIN_CAMILLA_PIPE_BYTES`. Swept during the soak.
-    pub camilla_pipe_bytes: u32,
-
     /// The SPSC SHM ring file written under `Coupling::ShmRing` (Ring A). Unused
-    /// for `Loopback`/`TransportPipe`. Default `/dev/shm/jts-ring/program.ring`
+    /// for `Loopback`. Default `/dev/shm/jts-ring/program.ring`
     /// (the owned tmpfs root, so a magic-invalid file is reclaimable). Env:
     /// `JASPER_FANIN_RING_PATH`. Python `fanin_coupling.resolve_ring_path` uses
     /// the same default.
@@ -407,15 +391,13 @@ impl Config {
 }
 
 /// fan-in → CamillaDSP coupling transport. Mirrors `jasper.fanin_coupling`'s
-/// `loopback` / `transport_pipe` / `shm_ring` selector. Fail-SAFE: an
+/// `loopback` / `shm_ring` selector. Fail-SAFE: an
 /// unset/unrecognized env value resolves to `Loopback` (the
 /// byte-identical-to-today path).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Coupling {
     /// ALSA snd-aloop substream output; CamillaDSP dsnoop-captures it. Default.
     Loopback,
-    /// Bounded named-pipe output; CamillaDSP RawFile-captures it.
-    TransportPipe,
     /// SPSC ping-pong SHM ring output (Ring A, PROTOTYPE); CamillaDSP reads it
     /// via a capture-direction ioplug.
     ShmRing,
@@ -427,7 +409,6 @@ impl Coupling {
     /// so the daemon and the emitted config can never disagree on the transport.
     fn from_env_value(raw: Option<&str>) -> Self {
         match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-            Some("transport_pipe") => Coupling::TransportPipe,
             Some("shm_ring") => Coupling::ShmRing,
             _ => Coupling::Loopback,
         }
@@ -513,11 +494,6 @@ impl Config {
                 .ok()
                 .as_deref(),
         );
-        let camilla_pipe_path = env_str(
-            "JASPER_FANIN_CAMILLA_PIPE",
-            "/run/jasper-fanin/camilla.pipe",
-        );
-        let camilla_pipe_bytes = env_u32("JASPER_FANIN_CAMILLA_PIPE_BYTES", 8192)?;
 
         // Ring A (shm_ring) knobs. Parsed unconditionally (sane defaults) but
         // only USED under Coupling::ShmRing. Path default matches Python's
@@ -897,8 +873,6 @@ impl Config {
                 )?,
             },
             camilla_coupling,
-            camilla_pipe_path,
-            camilla_pipe_bytes,
             ring_path,
             ring_slots,
             input_resampler_enabled,
@@ -2320,21 +2294,7 @@ mod tests {
         with_env(&[("JASPER_FANIN_CAMILLA_COUPLING", None)], || {
             let cfg = Config::from_env().expect("defaults must parse");
             assert_eq!(cfg.camilla_coupling, Coupling::Loopback);
-            // Pipe knobs still have sane defaults but are unused under Loopback.
-            assert_eq!(cfg.camilla_pipe_path, "/run/jasper-fanin/camilla.pipe");
-            assert_eq!(cfg.camilla_pipe_bytes, 8192);
         });
-    }
-
-    #[test]
-    fn coupling_parses_transport_pipe_case_insensitively() {
-        with_env(
-            &[("JASPER_FANIN_CAMILLA_COUPLING", Some(" Transport_Pipe "))],
-            || {
-                let cfg = Config::from_env().expect("transport_pipe coupling must parse");
-                assert_eq!(cfg.camilla_coupling, Coupling::TransportPipe);
-            },
-        );
     }
 
     #[test]
@@ -2359,37 +2319,12 @@ mod tests {
     }
 
     #[test]
-    fn pipe_path_and_pipe_bytes_override() {
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("transport_pipe")),
-                ("JASPER_FANIN_CAMILLA_PIPE", Some("/run/custom.pipe")),
-                ("JASPER_FANIN_CAMILLA_PIPE_BYTES", Some("16384")),
-            ],
-            || {
-                let cfg = Config::from_env().expect("pipe overrides must parse");
-                assert_eq!(cfg.camilla_coupling, Coupling::TransportPipe);
-                assert_eq!(cfg.camilla_pipe_path, "/run/custom.pipe");
-                assert_eq!(cfg.camilla_pipe_bytes, 16384);
-            },
-        );
-    }
-
-    #[test]
     fn coupling_from_env_value_normalization() {
         // Direct unit test of the normalization, independent of the env plumbing.
         assert_eq!(Coupling::from_env_value(None), Coupling::Loopback);
         assert_eq!(Coupling::from_env_value(Some("")), Coupling::Loopback);
         assert_eq!(Coupling::from_env_value(Some("  ")), Coupling::Loopback);
         assert_eq!(Coupling::from_env_value(Some("pipe")), Coupling::Loopback);
-        assert_eq!(
-            Coupling::from_env_value(Some("transport_pipe")),
-            Coupling::TransportPipe
-        );
-        assert_eq!(
-            Coupling::from_env_value(Some("TRANSPORT_PIPE")),
-            Coupling::TransportPipe
-        );
         assert_eq!(
             Coupling::from_env_value(Some("loopback")),
             Coupling::Loopback

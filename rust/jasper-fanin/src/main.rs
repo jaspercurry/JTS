@@ -26,7 +26,6 @@
 //! clicks, add ramping in the mixer with tests and doctor visibility.
 
 mod config;
-mod fifo;
 mod host_clock;
 mod host_compliance;
 mod impulse_tap;

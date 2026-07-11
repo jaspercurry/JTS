@@ -141,13 +141,12 @@ pub const DEFAULT_TAP_PATH: &str = "/run/jasper-fanin/impulse-tap.jsonl";
 
 /// Basenames fan-in itself owns inside [`TAP_PATH_DIR`]; a `TAP_ARM` may NOT
 /// target them even though they are in-directory. `control.sock` is the daemon's
-/// own UDS (truncating it would corrupt the live control plane), `tts.sock` is
-/// the pre-DSP TTS ingress socket, and `camilla.pipe` is the coupling pipe under
-/// `transport_pipe` — clobbering any of them would break a live audio surface.
-/// Kept in sync by hand with the config defaults in `config.rs`
-/// (`control_socket_path` / `tts_socket_path` / `camilla_pipe_path`), all of
+/// own UDS (truncating it would corrupt the live control plane) and `tts.sock` is
+/// the pre-DSP TTS ingress socket — clobbering either would break a live audio
+/// surface. Kept in sync by hand with the config defaults in `config.rs`
+/// (`control_socket_path` / `tts_socket_path`), both of
 /// which live under this same dir; a pin test in `state.rs` ties them together.
-pub const RESERVED_TAP_DIR_BASENAMES: &[&str] = &["control.sock", "tts.sock", "camilla.pipe"];
+pub const RESERVED_TAP_DIR_BASENAMES: &[&str] = &["control.sock", "tts.sock"];
 
 /// One ingress detection, serialized as a single JSONL line by the publisher.
 ///
@@ -323,7 +322,7 @@ fn positive_u64_capped(value: &Value, ceiling: u64) -> Option<u64> {
 ///   subdirs the daemon would then `create_dir_all` as root);
 /// - the file-name is not one of the daemon's own reserved basenames
 ///   ([`RESERVED_TAP_DIR_BASENAMES`]), so the tap can't clobber `control.sock` /
-///   `tts.sock` / `camilla.pipe`.
+///   `tts.sock`.
 ///
 /// This scopes the unauthenticated arm endpoint's file write to a directory
 /// that already belongs to the daemon (see [`TAP_PATH_DIR`]).
@@ -1098,11 +1097,10 @@ mod tests {
     #[test]
     fn arm_body_rejects_reserved_daemon_basenames() {
         // The tap must not be armable at fan-in's own files (truncating
-        // control.sock / tts.sock / camilla.pipe).
+        // control.sock / tts.sock).
         for evil in [
             r#"{"path":"/run/jasper-fanin/control.sock"}"#,
             r#"{"path":"/run/jasper-fanin/tts.sock"}"#,
-            r#"{"path":"/run/jasper-fanin/camilla.pipe"}"#,
         ] {
             assert!(
                 TapConfig::from_arm_body(evil).is_none(),

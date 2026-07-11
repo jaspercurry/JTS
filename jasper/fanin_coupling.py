@@ -5,50 +5,39 @@
 """fan-in → CamillaDSP coupling selector (``JASPER_FANIN_CAMILLA_COUPLING``).
 
 The single source of truth for HOW the fan-in mixer's summed program reaches
-CamillaDSP's capture. Three transports:
+CamillaDSP's capture. Two transports:
 
 - ``loopback`` — fan-in writes the ALSA snd-aloop substream
   (``hw:Loopback,0,7``); CamillaDSP captures ``plug:jasper_capture`` (a dsnoop
   on ``hw:Loopback,1,7``). With the flag unset or set to ``loopback``, both the
   fan-in daemon and the emitted CamillaDSP capture block stay on the historical
-  snd-aloop topology.
+  snd-aloop topology. This is the fail-safe rung of the ladder.
 
-- ``transport_pipe`` — fan-in writes a bounded named pipe into CamillaDSP
-  ``RawFile`` capture, and CamillaDSP writes its post-DSP stereo program to a
-  second pipe read by jasper-outputd. CamillaDSP ``enable_rate_adjust`` is off
-  and no async resampler is emitted: the pipes are transport only, with the
-  outputd blocking DAC write as the single pace root.
+- ``shm_ring`` — the end-to-end SHM-ring path (Ring A + Ring B); see the ring
+  vocabulary below and :mod:`jasper.fanin.coupling_reconcile` for the ordered
+  transition. This is the hardware-validated product default the ``--auto``
+  reconciler resolves eligible solo boxes to.
 
 This module is import-cheap (stdlib only) so socket-activated web surfaces and
 the config emitters can resolve the coupling without pulling in NumPy/SciPy.
 
-**Format split (load-bearing).** fan-in mixes and outputs S16_LE internally
-(``mixer.rs`` ``FORMAT = Format::S16LE``). The shared CamillaDSP capture format
-is S32_LE (``DEFAULT_CAPTURE_FORMAT``; the ``plug:`` widens the loopback's S16
-to S32 today). So under ``transport_pipe`` the fan-in writer MUST widen each i16
-sample to i32 before writing the pipe, and the emitted RawFile capture declares
-S32_LE. The wire format is pinned here as :data:`PIPE_WIRE_FORMAT` so the Rust
-producer and the Python config consumer can never disagree.
-
-The CamillaDSP -> outputd local pipe is also S32_LE, even though ordinary ALSA
-playback remains S16_LE. JTS has 16 KiB kernel pages, so a FIFO cannot shrink
-below 16 KiB; S32_LE stereo halves that floor from 4096 frames (~85 ms) to 2048
-frames (~43 ms). outputd down-converts to i16 at the final DAC write boundary.
-
-This coupling keeps the FULL fan-in mixer (all renderer lanes, TTS, ducking,
-music-only tap) and changes the local program transport on both sides of
-Camilla. It is one point on the convergence toward a single low-latency
-transport; the adaptive fan-in output-buffer shrink
-(``JASPER_FANIN_ADAPTIVE_BUFFER``) is the other. Both remain feature-gated
-until the measured endgame lets one supersede the rest.
+**Removed 2026-07-11 — the ``transport_pipe`` coupling.** A third transport
+(fan-in → bounded named pipe → CamillaDSP ``RawFile`` capture → File playback
+pipe → outputd) was a default-off lab path for low latency. It was never
+selected by ``--auto`` (which resolves only ``shm_ring`` / ``loopback``) and was
+hardware-demoted 2026-07-01 (the 16 KiB Pi kernel page floor made its FIFOs too
+deep); ``shm_ring`` now ships as the frame-bounded default that replaced its
+diagnostic value. It has been deleted (fan-in ``Output::Fifo`` + ``fifo.rs``,
+outputd ``local_content_pipe``, the reconciler arm/gate branches, doctor
+validation, and the ``JASPER_FANIN_CAMILLA_PIPE`` /
+``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` env keys). A persisted
+``JASPER_FANIN_CAMILLA_COUPLING=transport_pipe`` now FAILS SAFE to ``loopback``
+via :func:`resolve_coupling`, and the ``--auto`` reconciler converges it loudly
+(see :func:`coupling_value_removed` and
+``jasper.fanin.coupling_reconcile.reconcile_auto``).
 """
 
 from __future__ import annotations
-
-from jasper.camilla_config_contract import (
-    DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE,
-    DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT,
-)
 
 # Environment selector. Read at config-emit time and at fan-in daemon startup.
 COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
@@ -56,7 +45,6 @@ COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
 # The accepted transports. ``loopback`` is the default and the
 # byte-identical-to-today path.
 COUPLING_LOOPBACK = "loopback"
-COUPLING_TRANSPORT_PIPE = "transport_pipe"
 # Ring A: fan-in writes an SPSC SHM ring (``jasper_ring::RingWriter``) that
 # CamillaDSP reads via a CAPTURE direction of the ``jts_ring`` ioplug. Same SHM
 # contract v1 as Ring B; roles flipped. The product auto reconciler now resolves
@@ -66,28 +54,12 @@ COUPLING_TRANSPORT_PIPE = "transport_pipe"
 COUPLING_SHM_RING = "shm_ring"
 # The recognized coupling tokens. Public so other planners (e.g.
 # ``jasper.audio_runtime_plan``) can reuse this SSOT instead of re-listing the
-# tokens and drifting when a new lab coupling lands (Ring A's ``shm_ring`` was
-# exactly that drift: the plan kept an independent {loopback, transport_pipe}
-# set and false-warned on the new flag). ``_VALID_COUPLINGS`` stays as the
-# backward-compatible private alias.
-VALID_COUPLINGS = frozenset(
-    {COUPLING_LOOPBACK, COUPLING_TRANSPORT_PIPE, COUPLING_SHM_RING}
-)
+# tokens and drifting when a new lab coupling lands. Any value NOT in this set
+# (a typo, or the removed ``transport_pipe``) fails safe to loopback — see
+# :func:`resolve_coupling` and :func:`coupling_value_removed`.
+# ``_VALID_COUPLINGS`` stays as the backward-compatible private alias.
+VALID_COUPLINGS = frozenset({COUPLING_LOOPBACK, COUPLING_SHM_RING})
 _VALID_COUPLINGS = VALID_COUPLINGS
-
-# The shared-capture named pipe written by fan-in under ``transport_pipe`` and
-# RawFile-read by CamillaDSP. Lives under the fan-in daemon's own /run dir
-# (tmpfs, recreated each boot) so the producer owns it. Overridable via
-# ``JASPER_FANIN_CAMILLA_PIPE`` for the soak.
-PIPE_PATH_ENV_VAR = "JASPER_FANIN_CAMILLA_PIPE"
-DEFAULT_FANIN_CAMILLA_PIPE = "/run/jasper-fanin/camilla.pipe"
-OUTPUTD_PIPE_PATH_ENV_VAR = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
-
-# Wire format on the pipe. fan-in mixes S16 internally but widens to S32_LE on
-# the wire so the RawFile capture matches the SHARED capture format (S32_LE), the
-# same width the proven usbsink lean writer emits. Pinned here so producer and
-# consumer can never drift.
-PIPE_WIRE_FORMAT = "S32_LE"
 
 # Ring A (``shm_ring``) SHM ring file + slot-count env vars. fan-in creates the
 # ring at ``JASPER_FANIN_RING_PATH`` with ``JASPER_FANIN_RING_SLOTS`` slots; the
@@ -109,8 +81,8 @@ RING_CAMILLA_QUEUELIMIT = 1
 RING_CAMILLA_ENABLE_RATE_ADJUST = False
 
 # Ring A capture device + wire format. fan-in is S16 native and the SHM ring
-# carries S16LE with NO widening (unlike ``transport_pipe``'s S32 FIFO-page
-# floor, an SHM ring has none). CamillaDSP captures it as an ALSA device named
+# carries S16LE with NO widening (an SHM ring has no kernel page-size floor).
+# CamillaDSP captures it as an ALSA device named
 # by the ioplug conf.d block (``deploy/alsa/conf.d/60-jts-ring.conf``, shipped
 # inert by P1). Pinned here so the hand generator
 # (``make-camilla-ring-config.sh`` capture-swap mode) and the Rust writer stay
@@ -125,8 +97,8 @@ RING_WIRE_FORMAT = "S16_LE"
 # stereo program to Ring B (content.ring) via the ``jts_ring_playback`` ioplug,
 # which jasper-outputd reads one slot per DAC period. Both rings flip together or
 # not at all (the coupling reconciler is the single writer of the pair; a partial
-# flip is fail-closed to loopback/direct). This mirrors ``transport_pipe``, which
-# is likewise a dual-boundary coupling (RawFile capture pipe + File playback pipe).
+# flip is fail-closed to loopback/direct). It is a dual-boundary coupling (Ring A
+# capture + Ring B playback).
 #
 # The env keys below are read by the Rust ``jasper-outputd`` daemon
 # (``rust/jasper-outputd/src/config.rs``): ``JASPER_OUTPUTD_CONTENT_BRIDGE`` +
@@ -154,11 +126,12 @@ def resolve_coupling(raw: str | None) -> str:
     """Normalize a raw ``JASPER_FANIN_CAMILLA_COUPLING`` value to a transport.
 
     Fail-SAFE to ``loopback`` (the byte-identical-to-today path) on unset, empty,
-    or any unrecognized value — a typo in the env file must never silently flip
-    the shared realtime capture to a transport the operator did not intend, nor
-    crash a config emit. The Rust daemon applies the same normalization so both
-    sides agree on every recognized token (``loopback`` / ``transport_pipe`` /
-    ``shm_ring``). Case-insensitive; surrounding whitespace ignored.
+    or any unrecognized value — a typo in the env file, or the REMOVED
+    ``transport_pipe`` token on a migrating box, must never silently flip the
+    shared realtime capture to a transport the operator did not intend, nor crash
+    a config emit. The Rust daemon applies the same normalization so both sides
+    agree on every recognized token (``loopback`` / ``shm_ring``).
+    Case-insensitive; surrounding whitespace ignored.
     """
     if raw is None:
         return COUPLING_LOOPBACK
@@ -168,9 +141,20 @@ def resolve_coupling(raw: str | None) -> str:
     return COUPLING_LOOPBACK
 
 
-def is_transport_pipe_coupling(raw: str | None) -> bool:
-    """True iff the resolved coupling is ``transport_pipe``."""
-    return resolve_coupling(raw) == COUPLING_TRANSPORT_PIPE
+def coupling_value_removed(raw: str | None) -> bool:
+    """True iff a persisted coupling value is present but NOT a recognized token.
+
+    Catches both a typo and the REMOVED ``transport_pipe`` coupling (deleted
+    2026-07-11). Such a value fails safe to ``loopback`` in :func:`resolve_coupling`;
+    the ``--auto`` reconciler uses this predicate to converge the box to loopback
+    with a loud ``event=…result=removed_coupling_failsafe`` line (so a migrating
+    box never silently keeps a deleted mode), and the doctor surfaces it. An
+    unset / empty value is NOT "removed" — it is the ordinary loopback default.
+    """
+    if raw is None:
+        return False
+    value = raw.strip().lower()
+    return bool(value) and value not in _VALID_COUPLINGS
 
 
 def is_shm_ring_coupling(raw: str | None) -> bool:
@@ -255,9 +239,8 @@ def outputd_content_bridge_for_coupling(raw: str | None) -> str:
 
     ``shm_ring`` -> ``shm_ring`` (Ring B), everything else -> ``direct``. This is
     the pairing the coupling reconciler enforces so the two ends never split:
-    fan-in on Ring A implies outputd on Ring B. The transport_pipe coupling owns a
-    DIFFERENT outputd key (``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE``), so it maps to
-    ``direct`` here — its content source is the local pipe, not the content bridge.
+    fan-in on Ring A implies outputd on Ring B. ``loopback`` maps to ``direct``
+    (outputd reads the snd-aloop content lane, not the content bridge).
     """
     return (
         OUTPUTD_CONTENT_BRIDGE_SHM_RING
@@ -319,7 +302,7 @@ def ring_pair_is_coherent(
     """True iff the fan-in coupling and outputd content bridge are a coherent pair.
 
     The two must flip together: both ring (``shm_ring`` + ``shm_ring``) or neither
-    (``loopback``/``transport_pipe`` + ``direct``). A PARTIAL flip — one end on the
+    (``loopback`` + ``direct``). A PARTIAL flip — one end on the
     ring and the other on ALSA/direct — is fail-closed everywhere (the reconciler,
     the artifact binder, the doctor) because it strands one ring end (a silent
     audio outage: outputd reads a ring nobody writes, or CamillaDSP writes a ring
@@ -329,27 +312,19 @@ def ring_pair_is_coherent(
     bridge = resolve_outputd_content_bridge(content_bridge_raw)
     if coupling == COUPLING_SHM_RING:
         return bridge == OUTPUTD_CONTENT_BRIDGE_SHM_RING
-    # loopback / transport_pipe never pair with the Ring B bridge.
+    # loopback never pairs with the Ring B bridge.
     return bridge == OUTPUTD_CONTENT_BRIDGE_DIRECT
 
 
-def capture_kwargs_for_coupling(
-    raw: str | None,
-    *,
-    pipe_path: str | None = None,
-    outputd_pipe_path: str | None = None,
-) -> dict[str, object]:
+def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
     """Return the ``emit_sound_config`` capture kwargs for the resolved coupling.
 
     - ``loopback`` (default): returns ``{}`` so the caller's existing
       ``capture_device`` / ``capture_format`` defaults emit the dsnoop ALSA
       capture — **byte-identical** to today. This empty-dict contract is what
-      keeps every existing caller unchanged when the flag is unset.
-
-    - ``transport_pipe``: returns the dual-pipe kwargs — ``capture_pipe_path``
-      for fan-in -> Camilla RawFile, ``playback_pipe_path`` for Camilla ->
-      outputd File playback, ``enable_rate_adjust=False``, and
-      ``transport_paced_pipe=True``. No Camilla async resampler is emitted.
+      keeps every existing caller unchanged when the flag is unset. Any
+      unrecognized value (a typo, or the removed ``transport_pipe``) resolves to
+      ``loopback`` here too.
 
     - ``shm_ring`` (Ring A + Ring B): returns the FULL end-to-end ring topology
       kwargs — the CamillaDSP capture device ``jts_ring_capture`` (Ring A, fan-in
@@ -358,8 +333,7 @@ def capture_kwargs_for_coupling(
       outputd are S16 native, no widening). The two rings are ONE coupling: an
       armed box's ``/sound/`` save must emit a config whose capture is the ring
       AND whose playback is the ring — a half-ring config (ring capture + ALSA
-      loopback playback, or vice versa) would strand one end. Like
-      ``transport_pipe`` (which likewise sets BOTH boundaries), these kwargs flow
+      loopback playback, or vice versa) would strand one end. These kwargs flow
       through :func:`coupling_capture_kwargs_from_env` into the product emitters
       (``/sound/``, ``/correction/``,
       ``audio_runtime_plan.apply_capture_precedence``) — but only when the
@@ -374,10 +348,6 @@ def capture_kwargs_for_coupling(
       CamillaDSP geometry: chunk 128 / target 128 / queue 1 / rate_adjust off.
       Those values are coupled to the 2-slot Ring A default; chunk 256 would span
       the entire 2-slot buffer.
-
-    ``pipe_path`` overrides the capture pipe path (the env override is resolved by
-    :func:`resolve_pipe_path`; pass its result here so the emitted config and the
-    daemon point at the same pipe).
     """
     resolved = resolve_coupling(raw)
     if resolved == COUPLING_SHM_RING:
@@ -391,38 +361,7 @@ def capture_kwargs_for_coupling(
             "queuelimit": RING_CAMILLA_QUEUELIMIT,
             "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
         }
-    if resolved != COUPLING_TRANSPORT_PIPE:
-        return {}
-    return {
-        "capture_pipe_path": pipe_path or DEFAULT_FANIN_CAMILLA_PIPE,
-        "playback_pipe_path": outputd_pipe_path or DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE,
-        "resampler_type": None,
-        "resampler_profile": None,
-        "enable_rate_adjust": False,
-        "transport_paced_pipe": True,
-        "playback_format": DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT,
-    }
-
-
-def resolve_pipe_path(raw_path: str | None) -> str:
-    """Resolve the shared-capture pipe path from a raw env value.
-
-    Empty / unset → :data:`DEFAULT_FANIN_CAMILLA_PIPE`. Trims whitespace. The
-    Rust daemon resolves ``JASPER_FANIN_CAMILLA_PIPE`` the same way so the
-    producer and the RawFile-capture consumer always name the same pipe.
-    """
-    if raw_path is None:
-        return DEFAULT_FANIN_CAMILLA_PIPE
-    value = raw_path.strip()
-    return value or DEFAULT_FANIN_CAMILLA_PIPE
-
-
-def resolve_outputd_pipe_path(raw_path: str | None) -> str:
-    """Resolve the Camilla -> outputd local content pipe path."""
-    if raw_path is None:
-        return DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
-    value = raw_path.strip()
-    return value or DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
+    return {}
 
 
 def coupling_capture_kwargs_from_env(
@@ -431,11 +370,9 @@ def coupling_capture_kwargs_from_env(
     """Resolve the live ``emit_sound_config`` capture kwargs from the process env.
 
     The one call shape a config emitter uses to thread the SHARED fan-in→Camilla
-    coupling into a live re-emit: reads :data:`COUPLING_ENV_VAR` +
-    :data:`PIPE_PATH_ENV_VAR` together so the emitted RawFile-capture config names
-    the SAME pipe the Rust ``FifoWriter`` writes (the path env is resolved by
-    :func:`resolve_pipe_path` on BOTH sides). Returns ``{}`` for the default
-    ``loopback`` coupling (byte-identical to today).
+    coupling into a live re-emit. Returns ``{}`` for the default ``loopback``
+    coupling (byte-identical to today) and the full ring topology kwargs for
+    ``shm_ring``.
 
     **Coupling token is resolved FILE-FRESH on the live-env path** (``env`` is
     ``None``). The wizard processes that call this — jasper-web (``/sound/``) and
@@ -449,11 +386,9 @@ def coupling_capture_kwargs_from_env(
     capture/playback config and silently revert CamillaDSP off the rings (a silent
     audio outage: outputd reads Ring B while CamillaDSP writes the loopback lane).
     So on the live path we consult the persisted ``fanin.env`` for the coupling
-    token — the same SSOT the daemons and the reconciler read — while the pipe /
-    ring path OVERRIDES still come from the live env (an explicit
-    ``JASPER_FANIN_CAMILLA_PIPE`` set in the process env keeps winning). An
-    EnvironmentFile flip still takes effect on the next regeneration without a code
-    edit; the persisted file is just the authoritative source for WHICH coupling.
+    token — the same SSOT the daemons and the reconciler read. An EnvironmentFile
+    flip still takes effect on the next regeneration without a code edit; the
+    persisted file is just the authoritative source for WHICH coupling.
 
     An EXPLICIT ``env`` mapping is treated as authoritative (no file fallback) for
     a caller that wants the env it hands in, not a disk read. Today that is unit
@@ -463,30 +398,15 @@ def coupling_capture_kwargs_from_env(
     reconciler pre-syncs ``os.environ`` + the files and then leans on the
     ``env is None`` file-fresh read above.
     """
-    import os
-
     if env is None:
-        # Live-env path: file-fresh coupling token (SSOT), live-env path overrides.
+        # Live-env path: file-fresh coupling token (SSOT).
         # Lazy import — jasper.fanin.coupling_reconcile imports THIS module, so a
         # top-level import would be circular (mirrors every other in-tree caller).
         from jasper.fanin.coupling_reconcile import read_persisted_coupling
 
-        source = os.environ
-        return capture_kwargs_for_coupling(
-            read_persisted_coupling(),
-            pipe_path=resolve_pipe_path(source.get(PIPE_PATH_ENV_VAR)),
-            outputd_pipe_path=resolve_outputd_pipe_path(
-                source.get(OUTPUTD_PIPE_PATH_ENV_VAR)
-            ),
-        )
+        return capture_kwargs_for_coupling(read_persisted_coupling())
 
-    return capture_kwargs_for_coupling(
-        env.get(COUPLING_ENV_VAR),
-        pipe_path=resolve_pipe_path(env.get(PIPE_PATH_ENV_VAR)),
-        outputd_pipe_path=resolve_outputd_pipe_path(
-            env.get(OUTPUTD_PIPE_PATH_ENV_VAR)
-        ),
-    )
+    return capture_kwargs_for_coupling(env.get(COUPLING_ENV_VAR))
 
 
 def member_kwargs_are_pipe_sink(member_kwargs: dict[str, object] | None) -> bool:
@@ -495,10 +415,9 @@ def member_kwargs_are_pipe_sink(member_kwargs: dict[str, object] | None) -> bool
     A bonded/grouped member (active-leader program bake, or a passive grouping
     follower leader) writes CamillaDSP's playback to the Snapcast pipe with
     ``enable_rate_adjust=False`` (snapclient is the sole rate-tracker — the
-    multiroom inv-5). That is mutually exclusive with the local transport-pipe
-    topology, which also wants to own Camilla's playback pipe. So when this is
-    True, the local coupling must be a no-op for that emit (the grouped topology
-    is the Distributed-Active track's concern, not this solo-speaker latency hop).
+    multiroom inv-5). So when this is True, the local coupling must be a no-op for
+    that emit (the grouped topology is the Distributed-Active track's concern, not
+    this solo-speaker latency hop).
     The solo defaults (``enable_rate_adjust`` truthy / absent, no
     ``playback_pipe_path``) return False → coupling applies. Mirrors
     ``jasper.multiroom.member_config``'s leader-vs-solo distinction without

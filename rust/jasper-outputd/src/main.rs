@@ -30,7 +30,6 @@ use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
 use jasper_outputd::content_bridge::ContentBridge;
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::dac_content::DacContentSource;
-use jasper_outputd::local_content_pipe::{LocalContentPipe, LOCAL_CONTENT_PIPE_FORMAT};
 use jasper_outputd::shm_ring_source::ShmRingSource;
 use jasper_outputd::state::{ChipRefWrite, OutputdState, StateServer};
 use jasper_outputd::tts::{spawn_tts_server, tts_channels, TtsBridge};
@@ -279,20 +278,8 @@ impl RuntimeAlsaSink {
     }
 }
 
-fn state_counters(
-    sink: &RuntimeAlsaSink,
-    local_content_pipe: Option<&LocalContentPipe>,
-) -> IoCounters {
-    let mut counters = sink.counters();
-    if let Some(pipe) = local_content_pipe {
-        let metrics = pipe.metrics();
-        counters.content_frames_read = metrics.frames_read;
-        counters.content_empty_period_count = metrics.empty_periods;
-        counters.content_partial_period_count = metrics.partial_periods;
-        counters.content_eagain_count = 0;
-        counters.content_xrun_count = 0;
-    }
-    counters
+fn state_counters(sink: &RuntimeAlsaSink) -> IoCounters {
+    sink.counters()
 }
 
 fn run_alsa(
@@ -315,32 +302,6 @@ fn run_alsa(
     let mut content_buf = vec![0i16; content_period_samples];
     let mut content_read_buf = vec![0i16; content_period_samples];
     let mut reference_buf = vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)];
-    let mut local_content_pipe = match config.local_content_pipe.as_deref() {
-        Some(path) => {
-            eprintln!(
-                "event=outputd.local_content_pipe.enabled pipe={} format={} channels={} sample_rate={} period_frames={} requested_pipe_bytes={}",
-                path,
-                LOCAL_CONTENT_PIPE_FORMAT,
-                config.content_channels,
-                config.sample_rate,
-                config.period_frames,
-                config.local_content_pipe_bytes,
-            );
-            Some(
-                LocalContentPipe::new(
-                    path,
-                    config.period_frames,
-                    config.content_channels,
-                    config.local_content_pipe_bytes,
-                )
-                .with_context(|| format!("opening local content pipe {path}"))?,
-            )
-        }
-        None => None,
-    };
-    if let Some(src) = local_content_pipe.as_ref() {
-        state.mark_local_content_pipe(src.metrics());
-    }
     let mut content_bridge = match config.content_bridge_mode {
         ContentBridgeMode::Direct | ContentBridgeMode::ShmRing => None,
         ContentBridgeMode::RateMatch => {
@@ -504,16 +465,7 @@ fn run_alsa(
             }
         }
         if !served_from_fifo {
-            if let Some(src) = local_content_pipe.as_mut() {
-                if let Err(e) = src.read_period(&mut content_buf) {
-                    eprintln!(
-                        "event=outputd.local_content_pipe.read_failed pipe={} detail={e}",
-                        src.path(),
-                    );
-                    content_buf.fill(0);
-                }
-                state.mark_local_content_pipe(src.metrics());
-            } else if let Some(src) = shm_ring.as_mut() {
+            if let Some(src) = shm_ring.as_mut() {
                 // PROTOTYPE: try-read one slot from the SHM ping-pong ring;
                 // empty -> silence (read_period zero-fills). Never blocks, never
                 // errors at runtime (a ring fault degrades to silence + counters
@@ -586,7 +538,7 @@ fn run_alsa(
             ref_outputs.publish(core.output_period(), reference_sequence);
             period_clipped_samples = report.clipped_samples;
             state.mark_period(
-                state_counters(&sink, local_content_pipe.as_ref()),
+                state_counters(&sink),
                 reference_sequence,
                 report.clipped_samples,
             );
@@ -626,11 +578,7 @@ fn run_alsa(
             }
             reference_sequence = next_reference_sequence;
             period_clipped_samples = clipped;
-            state.mark_period(
-                state_counters(&sink, local_content_pipe.as_ref()),
-                reference_sequence,
-                clipped,
-            );
+            state.mark_period(state_counters(&sink), reference_sequence, clipped);
         }
         if once {
             eprintln!(
@@ -1492,8 +1440,6 @@ mod tests {
                 max_adjust_ppm: 500,
             },
             shm_ring: None,
-            local_content_pipe: None,
-            local_content_pipe_bytes: 8192,
             chip_ref_pcm: Some("test-unavailable-chip-ref".to_string()),
             chip_ref_sample_rate: 16_000,
             chip_ref_period_frames: 320,

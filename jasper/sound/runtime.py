@@ -277,11 +277,11 @@ async def reconcile_current_dsp(
 
         if (
             not force
-            # Under transport_pipe the shared graph must flip loopback->dual-pipe
-            # even on a flat profile. This noop used to fire before topology
-            # differences were considered, which can strand endpoints on
-            # different transports. When coupling kwargs are set, fall through to
-            # the YAML diff below so the arm actually applies.
+            # A non-loopback coupling (shm_ring) must flip the shared graph even on
+            # a flat profile. This noop used to fire before topology differences
+            # were considered, which can strand endpoints on different transports.
+            # When coupling kwargs are set, fall through to the YAML diff below so
+            # the arm actually applies.
             and not coupling_capture_kwargs
             and carrier.kind == "base_flat"
             and sound_filter_count == 0

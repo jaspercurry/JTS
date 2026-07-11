@@ -65,8 +65,6 @@ from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
-    COUPLING_TRANSPORT_PIPE,
-    OUTPUTD_PIPE_PATH_ENV_VAR,
     RING_CAMILLA_CHUNKSIZE,
     RING_CAMILLA_QUEUELIMIT,
     RING_CAMILLA_TARGET_LEVEL,
@@ -95,26 +93,6 @@ def test_plan_uses_dac_profile_floor_as_intended_source():
     assert plan.setting("JASPER_OUTPUTD_DAC_BUFFER_FRAMES").value == 256
     assert plan.setting("JASPER_CAMILLA_TARGET_LEVEL").source_kind == "device_profile"
     assert plan.warnings == ()
-
-
-def test_transport_pipe_plan_uses_effective_camilla_file_target():
-    plan = build_audio_runtime_plan(
-        profile_id=APPLE_USB_C_DONGLE_ID,
-        route_mode="solo",
-        fanin_env={COUPLING_ENV_VAR: COUPLING_TRANSPORT_PIPE},
-        outputd_env={
-            "JASPER_CAMILLA_CHUNKSIZE": "256",
-            "JASPER_CAMILLA_TARGET_LEVEL": "1536",
-            "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE": "/run/jasper-outputd/content.pipe",
-        },
-    )
-
-    target = plan.setting("JASPER_CAMILLA_TARGET_LEVEL")
-    assert target.value == 512
-    assert target.source_kind == "route_policy"
-    assert target.generated_value == "1536"
-    assert "transport_pipe" in target.source
-    assert any("2 x chunksize" in warning for warning in target.warnings)
 
 
 def test_shm_ring_plan_uses_effective_ring_camilla_geometry():
@@ -616,18 +594,15 @@ def test_usb_low_latency_route_identity_carries_planned_bridge_and_resampler():
     assert identity["uac2_gadget_attrs"]["c_sync"] == "async"
 
 
-def test_usb_low_latency_route_rejects_legacy_low_latency_lab_paths():
+def test_usb_low_latency_route_rejects_legacy_rate_match_bridge():
+    # The deferred lab `rate_match` outputd bridge (a partial flip without a
+    # matching shm_ring coupling) is rejected on the production low-latency route.
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        fanin_env={COUPLING_ENV_VAR: COUPLING_TRANSPORT_PIPE},
         outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "rate_match"},
         route_mode="solo",
     )
 
-    assert any(
-        "requires JASPER_FANIN_CAMILLA_COUPLING=loopback" in error
-        for error in plan.errors
-    )
     assert any(
         "requires JASPER_OUTPUTD_CONTENT_BRIDGE=direct" in error
         for error in plan.errors
@@ -690,41 +665,21 @@ def test_bitperfect_route_is_declared_but_inactive_and_aec_degraded():
     assert "inactive" in profile.blocking_reason
 
 
-def test_fanin_coupling_capture_kwargs_explicit_intent_beats_env(monkeypatch):
-    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
-    monkeypatch.setenv("JASPER_FANIN_CAMILLA_PIPE", "/run/custom.pipe")
-    monkeypatch.setenv("JASPER_OUTPUTD_LOCAL_CONTENT_PIPE", "/run/outputd.pipe")
-
-    kwargs = fanin_coupling_capture_kwargs(COUPLING_TRANSPORT_PIPE)
-
-    assert kwargs["capture_pipe_path"] == "/run/custom.pipe"
-    assert kwargs["playback_pipe_path"] == "/run/outputd.pipe"
-    assert kwargs["resampler_type"] is None
-    assert kwargs["enable_rate_adjust"] is False
-    assert kwargs["transport_paced_pipe"] is True
-    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", COUPLING_TRANSPORT_PIPE)
-    assert fanin_coupling_capture_kwargs("loopback") == {}
-
-
 def test_fanin_coupling_capture_kwargs_none_reads_coupling_file_fresh(monkeypatch):
     # DEFECT 1: coupling=None resolves the TOKEN from the persisted fanin.env SSOT
-    # (read_persisted_coupling), NOT from os.environ. os.environ here says
-    # transport_pipe, but the file-fresh SSOT drives the result. Pipe PATH overrides
-    # still come from the live env (the persisted file names WHICH coupling only).
-    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "transport_pipe")  # stale
-    monkeypatch.setenv("JASPER_FANIN_CAMILLA_PIPE", "/run/custom.pipe")
-    monkeypatch.setenv("JASPER_OUTPUTD_LOCAL_CONTENT_PIPE", "/run/outputd.pipe")
+    # (read_persisted_coupling), NOT from os.environ. os.environ here says loopback
+    # (stale), but the file-fresh SSOT drives the result.
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")  # stale os.environ
 
-    # SSOT says transport_pipe -> pipe kwargs, honoring the live PATH overrides.
+    # SSOT says shm_ring -> ring kwargs, even though os.environ says loopback.
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda *a, **k: "transport_pipe",
+        lambda *a, **k: "shm_ring",
     )
     kwargs = fanin_coupling_capture_kwargs(None)
-    assert kwargs["capture_pipe_path"] == "/run/custom.pipe"
-    assert kwargs["playback_pipe_path"] == "/run/outputd.pipe"
+    assert kwargs["capture_device"] == "jts_ring_capture"
 
-    # SSOT says loopback -> {}, even though os.environ still says transport_pipe.
+    # SSOT says loopback -> {}, the byte-identical-to-today path.
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
         lambda *a, **k: "loopback",
@@ -766,11 +721,12 @@ def test_capture_precedence_applies_fanin_coupling_when_no_stronger_capture():
 
 
 def test_capture_precedence_grouped_sink_blocks_fanin_coupling():
+    # A shm_ring coupling names its own ring capture/playback devices; a grouped
+    # pipe sink must override them entirely (the local coupling is a no-op).
     coupling = {
-        "capture_pipe_path": "/run/jasper-fanin/camilla.pipe",
-        "playback_pipe_path": "/run/jasper-outputd/content.pipe",
+        "capture_device": "jts_ring_capture",
+        "playback_device": "jts_ring_playback",
         "enable_rate_adjust": False,
-        "transport_paced_pipe": True,
     }
     grouped = {"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False}
 
@@ -781,8 +737,8 @@ def test_capture_precedence_grouped_sink_blocks_fanin_coupling():
     )
     # A grouped/bonded pipe SINK owns playback; the local coupling is a no-op.
     assert grouped_result["playback_pipe_path"] == "/run/snapfifo"
-    assert "capture_pipe_path" not in grouped_result
-    assert "transport_paced_pipe" not in grouped_result
+    assert "capture_device" not in grouped_result
+    assert "playback_device" not in grouped_result
 
 
 def test_fanin_output_buffer_target_resolves_lab_override():
@@ -816,7 +772,7 @@ def test_fanin_output_buffer_target_uses_runtime_override():
 
 def test_fanin_coupling_is_transition_owned_not_lab_overrideable():
     plan = build_audio_runtime_plan(
-        overrides={COUPLING_ENV_VAR: COUPLING_TRANSPORT_PIPE},
+        overrides={COUPLING_ENV_VAR: COUPLING_SHM_RING},
         route_mode="solo",
         override_label="/var/lib/jasper/audio_runtime_overrides.json",
     )
@@ -861,17 +817,7 @@ def test_plan_valid_couplings_is_fanin_coupling_ssot():
 
     assert audio_runtime_plan._VALID_COUPLINGS is VALID_COUPLINGS
     assert COUPLING_SHM_RING in VALID_COUPLINGS
-    assert COUPLING_TRANSPORT_PIPE in VALID_COUPLINGS
     assert COUPLING_LOOPBACK in VALID_COUPLINGS
-
-
-def test_transport_pipe_route_policy_blocks_active_leader_but_allows_solo():
-    blocked = coupling_supported_for_route(COUPLING_TRANSPORT_PIPE, "active_leader")
-    solo = coupling_supported_for_route(COUPLING_TRANSPORT_PIPE, "solo")
-
-    assert blocked.supported is False
-    assert blocked.reason == "fanin_transport_pipe_coupling_unsupported"
-    assert solo.supported is True
 
 
 def test_shm_ring_route_policy_blocks_every_grouping_enabled_mode():
@@ -895,14 +841,6 @@ def test_shm_ring_route_policy_allows_solo_and_unknown():
         assert support.supported is True, mode
 
 
-def test_transport_pipe_still_allowed_for_follower_and_invalid_grouping():
-    # The shm_ring block must NOT accidentally widen the transport_pipe block:
-    # transport_pipe is only refused for active_leader (its documented gap), so a
-    # follower/invalid box keeps the existing transport_pipe support verdict.
-    for mode in ("active_follower", "invalid_grouping", "solo", "unknown"):
-        assert coupling_supported_for_route(COUPLING_TRANSPORT_PIPE, mode).supported
-
-
 def test_fanin_coupling_action_blocks_shm_ring_for_grouped_route():
     action, support = fanin_coupling_action(COUPLING_SHM_RING, "active_follower")
 
@@ -912,43 +850,28 @@ def test_fanin_coupling_action_blocks_shm_ring_for_grouped_route():
 
 
 def test_fanin_coupling_action_sets_supported_coupling():
-    action, support = fanin_coupling_action(COUPLING_TRANSPORT_PIPE, "solo")
+    action, support = fanin_coupling_action(COUPLING_SHM_RING, "solo")
 
     assert support.supported is True
     assert action is not None
     assert (action.action, action.key, action.value) == (
         "set",
         "JASPER_FANIN_CAMILLA_COUPLING",
-        COUPLING_TRANSPORT_PIPE,
+        COUPLING_SHM_RING,
     )
 
 
-def test_fanin_coupling_action_blocks_unsupported_route():
-    action, support = fanin_coupling_action(COUPLING_TRANSPORT_PIPE, "active_leader")
-
-    assert action is None
-    assert support.supported is False
-    assert support.reason == "fanin_transport_pipe_coupling_unsupported"
-
-
-def test_transport_topology_reports_loopback_and_transport_pipe_geometry():
+def test_transport_topology_removed_transport_pipe_falls_back_to_loopback():
+    # The removed transport_pipe coupling fails safe to the loopback topology.
     loopback = transport_topology_for_coupling("loopback").to_dict()
-    pipe = transport_topology_for_coupling(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env={"JASPER_FANIN_CAMILLA_PIPE": "/run/custom-capture.pipe"},
-        outputd_env={"JASPER_OUTPUTD_LOCAL_CONTENT_PIPE": "/run/custom-output.pipe"},
-    ).to_dict()
+    removed = transport_topology_for_coupling("transport_pipe").to_dict()
 
     assert loopback["name"] == "loopback"
     assert loopback["outputd_content_source"] == "alsa"
     assert loopback["fanin_to_camilla"]["transport"] == "alsa_loopback"
-    assert pipe["name"] == COUPLING_TRANSPORT_PIPE
-    assert pipe["outputd_content_source"] == "local_pipe"
-    assert pipe["fanin_to_camilla"]["path"] == "/run/custom-capture.pipe"
-    assert pipe["camilla_to_outputd"]["path"] == "/run/custom-output.pipe"
-    assert pipe["camilla_to_outputd"]["format"] == "S32_LE"
-    assert pipe["camilla"]["enable_rate_adjust"] is False
-    assert pipe["camilla"]["capture_resampler"] is None
+    assert removed["name"] == "loopback"
+    assert removed["outputd_content_source"] == "alsa"
+    assert removed["fanin_to_camilla"]["transport"] == "alsa_loopback"
 
 
 def test_loopback_topology_derives_outputd_reader_from_camilla_writer():
@@ -1034,49 +957,16 @@ def test_output_endpoint_evidence_marks_non_output_graph_unknown(tmp_path):
 
 def test_runtime_plan_to_dict_exposes_topology_and_correction_latency_gate():
     plan = build_audio_runtime_plan(
-        fanin_env={COUPLING_ENV_VAR: COUPLING_TRANSPORT_PIPE},
-        outputd_env={"JASPER_OUTPUTD_LOCAL_CONTENT_PIPE": "/run/content.pipe"},
+        fanin_env={COUPLING_ENV_VAR: COUPLING_LOOPBACK},
         route_mode="solo",
     )
     payload = plan.to_dict()
 
-    assert payload["transport_topology"]["name"] == COUPLING_TRANSPORT_PIPE
-    assert payload["transport_topology"]["camilla_to_outputd"]["path"] == "/run/content.pipe"
+    assert payload["transport_topology"]["name"] == COUPLING_LOOPBACK
     assert payload["correction_latency_eligibility"]["eligible"] is True
     assert (
         payload["correction_latency_eligibility"]["minimum_phase_or_iir"]
         is True
-    )
-
-
-def test_transport_pipe_plan_warns_when_outputd_pipe_env_missing():
-    plan = build_audio_runtime_plan(
-        fanin_env={COUPLING_ENV_VAR: COUPLING_TRANSPORT_PIPE},
-        outputd_env={},
-        outputd_env_label="/var/lib/jasper/outputd.env",
-        route_mode="solo",
-    )
-
-    assert any(
-        OUTPUTD_PIPE_PATH_ENV_VAR in warning
-        and "jasper-fanin-coupling-reconcile transport_pipe" in warning
-        for warning in plan.warnings
-    )
-
-
-def test_loopback_plan_warns_on_stale_outputd_pipe_env():
-    plan = build_audio_runtime_plan(
-        fanin_env={COUPLING_ENV_VAR: COUPLING_LOOPBACK},
-        outputd_env={OUTPUTD_PIPE_PATH_ENV_VAR: "/run/jasper-outputd/content.pipe"},
-        outputd_env_label="/var/lib/jasper/outputd.env",
-        route_mode="solo",
-    )
-
-    assert any(
-        "stale" in warning
-        and OUTPUTD_PIPE_PATH_ENV_VAR in warning
-        and "jasper-fanin-coupling-reconcile loopback" in warning
-        for warning in plan.warnings
     )
 
 
@@ -1128,7 +1018,7 @@ def test_correction_latency_gate_reads_active_fir_metadata(tmp_path):
     assert verdict.blocking_reason == "fir_group_delay_exceeds_low_latency_budget"
 
 
-def test_transport_pipe_plan_errors_on_high_latency_fir(tmp_path):
+def test_low_latency_route_plan_errors_on_high_latency_fir(tmp_path):
     fir_dir = tmp_path / "fir"
     fir_dir.mkdir()
     (fir_dir / "linear.json").write_text(json.dumps({
@@ -1146,8 +1036,7 @@ def test_transport_pipe_plan_errors_on_high_latency_fir(tmp_path):
     )
 
     plan = build_audio_runtime_plan(
-        fanin_env={COUPLING_ENV_VAR: COUPLING_TRANSPORT_PIPE},
-        outputd_env={OUTPUTD_PIPE_PATH_ENV_VAR: "/run/jasper-outputd/content.pipe"},
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
         route_mode="solo",
         correction_config_path=str(config),
     )

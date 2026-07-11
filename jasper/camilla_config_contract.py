@@ -47,7 +47,6 @@ def outputd_capture_device_for_playback(playback_device: object) -> str | None:
     return _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE.get(str(playback_device or ""))
 
 
-DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT = "S32_LE"
 DEFAULT_SAMPLE_RATE = 48000
 DEFAULT_CHUNKSIZE = 1024
 DEFAULT_TARGET_LEVEL = 2048
@@ -258,10 +257,6 @@ def ensure_volume_limit_db(value: float) -> float:
 # one definition (no copy-paste twin, no cross-package private import).
 DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE = "AsyncSinc"
 DEFAULT_FILE_CAPTURE_RESAMPLER_PROFILE = "Balanced"
-# Local low-latency content pipe: CamillaDSP's File playback writes the post-DSP
-# stereo program here and jasper-outputd reads it once per DAC period before the
-# blocking DAC write. This is distinct from the multiroom SnapFIFO.
-DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE = "/run/jasper-outputd/content.pipe"
 # CamillaDSP v4 async (ratio-adjustable) resampler types — the ONLY ones that
 # can carry enable_rate_adjust on a clockless File capture. Synchronous cannot.
 ASYNC_RESAMPLER_TYPES = frozenset({"AsyncSinc", "AsyncPoly"})

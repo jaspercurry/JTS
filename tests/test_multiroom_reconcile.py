@@ -530,30 +530,15 @@ def test_outputd_grouping_env_active_endpoint_clears_dac_content():
     FIFO lane."""
     from jasper.multiroom.reconcile import (
         OUTPUTD_DAC_CONTENT_FIFO_ENV,
-        OUTPUTD_LOCAL_CONTENT_PIPE_ENV,
         OUTPUTD_TTS_SOCKET_ENV,
         outputd_grouping_env,
     )
 
     active = outputd_grouping_env(_follower(), active_endpoint=True)
     assert active[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""  # cleared (no dac_content)
-    assert active[OUTPUTD_LOCAL_CONTENT_PIPE_ENV] == ""
     assert active[OUTPUTD_TTS_SOCKET_ENV] == ""
     dumb = outputd_grouping_env(_follower(), active_endpoint=False)
     assert dumb[OUTPUTD_DAC_CONTENT_FIFO_ENV] != ""  # dumb member arms the lane
-    assert dumb[OUTPUTD_LOCAL_CONTENT_PIPE_ENV] == ""
-
-
-def test_outputd_grouping_env_omits_local_pipe_when_grouping_inactive():
-    """The grouping env is layered after outputd.env, so it must not clear the
-    solo transport-pipe source when grouping is off or invalid."""
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_LOCAL_CONTENT_PIPE_ENV,
-        outputd_grouping_env,
-    )
-
-    assert OUTPUTD_LOCAL_CONTENT_PIPE_ENV not in outputd_grouping_env(_disabled())
-    assert OUTPUTD_LOCAL_CONTENT_PIPE_ENV not in outputd_grouping_env(_invalid())
 
 
 def test_outputd_grouping_env_emits_sub_corner_only_for_sub():

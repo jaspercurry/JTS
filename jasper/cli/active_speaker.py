@@ -832,7 +832,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--coupling",
         default=None,
         help=(
-            "persisted fan-in coupling (loopback|transport_pipe|shm_ring); when "
+            "persisted fan-in coupling (loopback|shm_ring); when "
             "omitted, read from fanin.env. Ring-armed selects --ring-flat-config."
         ),
     )

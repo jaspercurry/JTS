@@ -22,9 +22,6 @@ pub const DEFAULT_DAC_BUFFER_FRAMES: u32 = 3072;
 pub const DEFAULT_CONTENT_BRIDGE_RING_FRAMES: u32 = 16_384;
 pub const DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES: u32 = 4096;
 pub const DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM: u32 = 500;
-pub const DEFAULT_LOCAL_CONTENT_PIPE: &str = "/run/jasper-outputd/content.pipe";
-pub const DEFAULT_LOCAL_CONTENT_PIPE_BYTES: u32 = 8192;
-pub const MAX_LOCAL_CONTENT_PIPE_BYTES: u32 = 65_536;
 pub const MAX_CONTENT_BRIDGE_RING_FRAMES: u32 = 262_144;
 pub const MAX_CONTENT_BRIDGE_TARGET_FRAMES: u32 = 65_536;
 pub const DEFAULT_CHIP_REF_SAMPLE_RATE: u32 = 16_000;
@@ -151,15 +148,6 @@ pub struct Config {
     /// `content_bridge_mode == ShmRing`; `None` (the default) is byte-identical
     /// to today. See `ShmRingConfig`.
     pub shm_ring: Option<ShmRingConfig>,
-    /// OPTIONAL local low-latency content pipe. When set, outputd reads
-    /// CamillaDSP's post-DSP S32_LE stereo program from this FIFO at the DAC
-    /// cadence instead of reading `content_pcm` from snd-aloop. This is the
-    /// Camilla -> outputd half of the end-to-end transport-pipe topology.
-    pub local_content_pipe: Option<String>,
-    /// Requested kernel FIFO capacity for `local_content_pipe` (bytes). This
-    /// is a latency budget, not a throughput cache: outputd reads once per DAC
-    /// period and asks Linux to keep the Camilla->outputd pipe bounded.
-    pub local_content_pipe_bytes: u32,
     pub chip_ref_pcm: Option<String>,
     pub chip_ref_sample_rate: u32,
     pub chip_ref_period_frames: u32,
@@ -419,11 +407,6 @@ impl Config {
         // the supported mode" — rather than "the one unsupported mode that
         // exists today" — makes a future sink / bridge mode fail CLOSED
         // (loud at startup) instead of silently mis-sizing content_buf.
-        let local_content_pipe = env_optional("JASPER_OUTPUTD_LOCAL_CONTENT_PIPE");
-        let local_content_pipe_bytes = env_u32(
-            "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE_BYTES",
-            DEFAULT_LOCAL_CONTENT_PIPE_BYTES,
-        )?;
         let dac_content_fifo = env_optional("JASPER_OUTPUTD_DAC_CONTENT_FIFO");
         let dac_content_trim_db = env_f32("JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB", 0.0)?;
         if dac_content_trim_db > 0.0 {
@@ -559,55 +542,6 @@ impl Config {
                  voice rides fanin, upstream of the crossover, instead)"
             );
         }
-        if local_content_pipe.is_some() {
-            let min_pipe_bytes = period_frames
-                .saturating_mul(u32::from(content_channels))
-                .saturating_mul(std::mem::size_of::<i32>() as u32);
-            if local_content_pipe_bytes < min_pipe_bytes {
-                anyhow::bail!(
-                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE_BYTES={} must be >= one local-pipe period ({} bytes)",
-                    local_content_pipe_bytes,
-                    min_pipe_bytes
-                );
-            }
-            if local_content_pipe_bytes > MAX_LOCAL_CONTENT_PIPE_BYTES {
-                anyhow::bail!(
-                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE_BYTES={} must be <= {} (the local pipe is a low-latency transport, not a staging buffer)",
-                    local_content_pipe_bytes,
-                    MAX_LOCAL_CONTENT_PIPE_BYTES
-                );
-            }
-            if content_bridge_mode != ContentBridgeMode::Direct {
-                anyhow::bail!(
-                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE requires \
-                     JASPER_OUTPUTD_CONTENT_BRIDGE=direct (the local pipe is \
-                     already the content source; do not insert another \
-                     content-source policy)"
-                );
-            }
-            if dac_content_fifo.is_some() {
-                anyhow::bail!(
-                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE and \
-                     JASPER_OUTPUTD_DAC_CONTENT_FIFO are mutually exclusive \
-                     content sources"
-                );
-            }
-            if tts_socket_path.is_some() {
-                anyhow::bail!(
-                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE is incompatible with \
-                     JASPER_OUTPUTD_TTS_SOCKET; solo TTS must enter through \
-                     fan-in so it stays in the single pre-Camilla program pipe"
-                );
-            }
-            if !is_full_range_stereo_lr_sink {
-                anyhow::bail!(
-                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE requires a full-range \
-                     stereo L/R sink: JASPER_OUTPUTD_SINK=single_alsa, \
-                     JASPER_OUTPUTD_ACTIVE_CHANNELS=2, and \
-                     JASPER_OUTPUTD_ACTIVE_LANE unset"
-                );
-            }
-        }
         // The dumb round-trip dac_content ChannelPick lane is the third
         // stereo-L/R-only feature: it must never run on an active-crossover
         // lane, where picking a full-range channel straight to the DAC would
@@ -666,8 +600,6 @@ impl Config {
             content_bridge_mode,
             content_bridge,
             shm_ring,
-            local_content_pipe,
-            local_content_pipe_bytes,
             chip_ref_pcm: env_optional("JASPER_OUTPUTD_CHIP_REF_PCM"),
             chip_ref_sample_rate,
             chip_ref_period_frames,
@@ -927,11 +859,6 @@ mod tests {
                     max_adjust_ppm: DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
                 }
             );
-            assert!(cfg.local_content_pipe.is_none());
-            assert_eq!(
-                cfg.local_content_pipe_bytes,
-                DEFAULT_LOCAL_CONTENT_PIPE_BYTES
-            );
             assert_eq!(cfg.chip_ref_sample_rate, DEFAULT_CHIP_REF_SAMPLE_RATE);
             assert_eq!(cfg.chip_ref_period_frames, DEFAULT_CHIP_REF_PERIOD_FRAMES);
             assert_eq!(cfg.chip_ref_buffer_frames, DEFAULT_CHIP_REF_BUFFER_FRAMES);
@@ -968,105 +895,6 @@ mod tests {
                 );
                 assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
                 assert_eq!(cfg.dac_content_highpass_hz, None);
-            },
-        );
-    }
-
-    #[test]
-    fn parses_local_content_pipe() {
-        with_env(
-            &[(
-                "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE",
-                Some("/run/jasper-outputd/content.pipe"),
-            )],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(
-                    cfg.local_content_pipe.as_deref(),
-                    Some("/run/jasper-outputd/content.pipe")
-                );
-                assert_eq!(
-                    cfg.local_content_pipe_bytes,
-                    DEFAULT_LOCAL_CONTENT_PIPE_BYTES
-                );
-            },
-        );
-        with_env(
-            &[
-                (
-                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE",
-                    Some("/run/jasper-outputd/content.pipe"),
-                ),
-                ("JASPER_OUTPUTD_LOCAL_CONTENT_PIPE_BYTES", Some("16384")),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.local_content_pipe_bytes, 16_384);
-            },
-        );
-    }
-
-    #[test]
-    fn local_content_pipe_rejects_unbounded_latency_budget() {
-        with_env(
-            &[
-                (
-                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE",
-                    Some("/run/jasper-outputd/content.pipe"),
-                ),
-                ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("256")),
-                ("JASPER_OUTPUTD_LOCAL_CONTENT_PIPE_BYTES", Some("512")),
-            ],
-            || {
-                let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("one local-pipe period"), "{err}");
-            },
-        );
-        with_env(
-            &[
-                (
-                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE",
-                    Some("/run/jasper-outputd/content.pipe"),
-                ),
-                ("JASPER_OUTPUTD_LOCAL_CONTENT_PIPE_BYTES", Some("262144")),
-            ],
-            || {
-                let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("low-latency transport"), "{err}");
-            },
-        );
-    }
-
-    #[test]
-    fn local_content_pipe_rejects_other_content_sources() {
-        with_env(
-            &[
-                (
-                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE",
-                    Some("/run/jasper-outputd/content.pipe"),
-                ),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
-            ],
-            || {
-                let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"), "{err}");
-                assert!(
-                    err.contains("JASPER_OUTPUTD_CONTENT_BRIDGE=direct"),
-                    "{err}"
-                );
-            },
-        );
-        with_env(
-            &[
-                (
-                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE",
-                    Some("/run/jasper-outputd/content.pipe"),
-                ),
-                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
-            ],
-            || {
-                let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("mutually exclusive"), "{err}");
             },
         );
     }
@@ -1954,22 +1782,8 @@ mod tests {
 
     #[test]
     fn shm_ring_is_mutually_exclusive_with_other_content_sources() {
-        // local_content_pipe requires CONTENT_BRIDGE=direct, so pairing it with
+        // dac_content_fifo requires CONTENT_BRIDGE=direct, so pairing it with
         // shm_ring fails loud (naming the required Direct mode).
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
-                (
-                    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE",
-                    Some("/run/jasper-outputd/content.pipe"),
-                ),
-            ],
-            || {
-                let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("CONTENT_BRIDGE=direct"), "{err}");
-            },
-        );
-        // dac_content_fifo likewise requires direct.
         with_env(
             &[
                 ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),

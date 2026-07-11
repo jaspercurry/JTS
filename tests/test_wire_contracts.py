@@ -328,6 +328,14 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # deploy/bin/jasper-outputd-failure-reconcile, not by the Rust daemon.
     "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper retry marker path; script-only",
     "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper retry marker window; script-only",
+    # The removed transport_pipe coupling's env keys (deleted 2026-07-11). The
+    # Rust local_content_pipe path was deleted with the coupling, so neither is
+    # Rust-read anymore. JASPER_FANIN_CAMILLA_PIPE survives ONLY in the
+    # fanin_coupling removal docstring; JASPER_OUTPUTD_LOCAL_CONTENT_PIPE survives
+    # as the reconciler's legacy migration-sweep UNSET target
+    # (_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV) so a migrating box converges clean.
+    "JASPER_FANIN_CAMILLA_PIPE": "removed transport_pipe coupling; named only in the removal docstring, not Rust-read",
+    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE": "removed transport_pipe coupling; reconciler migration-sweep unset target, not Rust-read",
 }
 
 # Script-local variables that *name the env file path itself* (e.g.

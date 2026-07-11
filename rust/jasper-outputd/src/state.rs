@@ -25,7 +25,6 @@ use crate::config::Config;
 use crate::content_bridge::ContentBridgeMetrics;
 use crate::dac_clock::DacClockObserver;
 use crate::dac_content::DacContentMetrics;
-use crate::local_content_pipe::{LocalContentPipeMetrics, LOCAL_CONTENT_PIPE_FORMAT};
 use crate::tts::TtsMetrics;
 use jasper_clock::DllSnapshot;
 use jasper_ring::RingMetrics;
@@ -97,22 +96,6 @@ pub struct OutputdState {
     // per period by `mark_content_bridge` and read only by the state server —
     // mirrors the `sro_estimator` / `dac_clock` pattern.
     content_bridge_rate_diff: Mutex<DllSnapshot>,
-    local_content_pipe: Option<String>,
-    local_content_pipe_requested_pipe_bytes: AtomicU64,
-    local_content_pipe_max_queued_bytes: AtomicU64,
-    local_content_pipe_open: AtomicBool,
-    local_content_pipe_open_failures: AtomicU64,
-    local_content_pipe_read_failures: AtomicU64,
-    local_content_pipe_reopen_count: AtomicU64,
-    local_content_pipe_startup_empty_periods: AtomicU64,
-    local_content_pipe_empty_periods: AtomicU64,
-    local_content_pipe_partial_periods: AtomicU64,
-    local_content_pipe_misaligned_bytes: AtomicU64,
-    local_content_pipe_available_bytes: AtomicU64,
-    local_content_pipe_actual_pipe_bytes: AtomicU64,
-    local_content_pipe_stale_drop_events: AtomicU64,
-    local_content_pipe_stale_drop_bytes: AtomicU64,
-    local_content_pipe_stale_drop_frames: AtomicU64,
     // PROTOTYPE (latency/ring-proto-shm): SHM ping-pong ring reader health.
     // `shm_ring_path` is Some iff JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring; the
     // block is enabled:false with no further fields otherwise (default-off,
@@ -291,26 +274,6 @@ impl OutputdState {
             content_bridge_lock_count: AtomicU64::new(0),
             content_bridge_unlock_count: AtomicU64::new(0),
             content_bridge_rate_diff: Mutex::new(DllSnapshot::idle()),
-            local_content_pipe: config.local_content_pipe.clone(),
-            local_content_pipe_requested_pipe_bytes: AtomicU64::new(
-                config.local_content_pipe_bytes as u64,
-            ),
-            local_content_pipe_max_queued_bytes: AtomicU64::new(
-                config.local_content_pipe_bytes as u64,
-            ),
-            local_content_pipe_open: AtomicBool::new(false),
-            local_content_pipe_open_failures: AtomicU64::new(0),
-            local_content_pipe_read_failures: AtomicU64::new(0),
-            local_content_pipe_reopen_count: AtomicU64::new(0),
-            local_content_pipe_startup_empty_periods: AtomicU64::new(0),
-            local_content_pipe_empty_periods: AtomicU64::new(0),
-            local_content_pipe_partial_periods: AtomicU64::new(0),
-            local_content_pipe_misaligned_bytes: AtomicU64::new(0),
-            local_content_pipe_available_bytes: AtomicU64::new(0),
-            local_content_pipe_actual_pipe_bytes: AtomicU64::new(0),
-            local_content_pipe_stale_drop_events: AtomicU64::new(0),
-            local_content_pipe_stale_drop_bytes: AtomicU64::new(0),
-            local_content_pipe_stale_drop_frames: AtomicU64::new(0),
             // PROTOTYPE SHM ring reader health.
             shm_ring_path: config.shm_ring.as_ref().map(|r| r.path.clone()),
             shm_ring_slots: AtomicU64::new(
@@ -708,39 +671,6 @@ impl OutputdState {
             .store(metrics.read_failures, Ordering::Relaxed);
     }
 
-    pub fn mark_local_content_pipe(&self, metrics: LocalContentPipeMetrics) {
-        self.local_content_pipe_open
-            .store(metrics.open, Ordering::Relaxed);
-        self.local_content_pipe_requested_pipe_bytes
-            .store(metrics.requested_pipe_bytes, Ordering::Relaxed);
-        self.local_content_pipe_max_queued_bytes
-            .store(metrics.max_queued_bytes, Ordering::Relaxed);
-        self.local_content_pipe_open_failures
-            .store(metrics.open_failures, Ordering::Relaxed);
-        self.local_content_pipe_read_failures
-            .store(metrics.read_failures, Ordering::Relaxed);
-        self.local_content_pipe_reopen_count
-            .store(metrics.reopen_count, Ordering::Relaxed);
-        self.local_content_pipe_startup_empty_periods
-            .store(metrics.startup_empty_periods, Ordering::Relaxed);
-        self.local_content_pipe_empty_periods
-            .store(metrics.empty_periods, Ordering::Relaxed);
-        self.local_content_pipe_partial_periods
-            .store(metrics.partial_periods, Ordering::Relaxed);
-        self.local_content_pipe_misaligned_bytes
-            .store(metrics.misaligned_bytes, Ordering::Relaxed);
-        self.local_content_pipe_available_bytes
-            .store(metrics.available_bytes, Ordering::Relaxed);
-        self.local_content_pipe_actual_pipe_bytes
-            .store(metrics.actual_pipe_bytes, Ordering::Relaxed);
-        self.local_content_pipe_stale_drop_events
-            .store(metrics.stale_drop_events, Ordering::Relaxed);
-        self.local_content_pipe_stale_drop_bytes
-            .store(metrics.stale_drop_bytes, Ordering::Relaxed);
-        self.local_content_pipe_stale_drop_frames
-            .store(metrics.stale_drop_frames, Ordering::Relaxed);
-    }
-
     /// PROTOTYPE (latency/ring-proto-shm): publish the SHM ring reader's
     /// per-period metrics for `/state.shm_ring`. No-op cost when the ring is
     /// unconfigured (the caller only calls this in the ShmRing arm).
@@ -840,9 +770,7 @@ impl OutputdState {
         push_kv_str(
             &mut buf,
             "source",
-            if self.local_content_pipe.is_some() {
-                "local_pipe"
-            } else if self.shm_ring_path.is_some() {
+            if self.shm_ring_path.is_some() {
                 "shm_ring"
             } else {
                 "alsa"
@@ -901,119 +829,6 @@ impl OutputdState {
             rate_per_hour(content_xrun_count, uptime_ms),
             3,
         );
-        if let Some(pipe) = self.local_content_pipe.as_deref() {
-            buf.push(',');
-            buf.push_str(r#""local_pipe":{"#);
-            push_kv_bool(&mut buf, "enabled", self.local_content_pipe.is_some());
-            buf.push(',');
-            push_kv_str(&mut buf, "path", pipe);
-            buf.push(',');
-            push_kv_str(&mut buf, "format", LOCAL_CONTENT_PIPE_FORMAT);
-            buf.push(',');
-            push_kv_bool(
-                &mut buf,
-                "open",
-                self.local_content_pipe_open.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "requested_pipe_bytes",
-                self.local_content_pipe_requested_pipe_bytes
-                    .load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "max_queued_bytes",
-                self.local_content_pipe_max_queued_bytes
-                    .load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "available_bytes",
-                self.local_content_pipe_available_bytes
-                    .load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "actual_pipe_bytes",
-                self.local_content_pipe_actual_pipe_bytes
-                    .load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "reopen_count",
-                self.local_content_pipe_reopen_count.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "startup_empty_periods",
-                self.local_content_pipe_startup_empty_periods
-                    .load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "empty_periods",
-                self.local_content_pipe_empty_periods
-                    .load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "partial_periods",
-                self.local_content_pipe_partial_periods
-                    .load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "misaligned_bytes",
-                self.local_content_pipe_misaligned_bytes
-                    .load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "stale_drop_events",
-                self.local_content_pipe_stale_drop_events
-                    .load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "stale_drop_bytes",
-                self.local_content_pipe_stale_drop_bytes
-                    .load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "stale_drop_frames",
-                self.local_content_pipe_stale_drop_frames
-                    .load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "open_failures",
-                self.local_content_pipe_open_failures
-                    .load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "read_failures",
-                self.local_content_pipe_read_failures
-                    .load(Ordering::Relaxed),
-            );
-            buf.push('}');
-        }
         // Ring B honesty contract (latency/ring-proto-shm): under the shm_ring
         // content source, outputd reads the post-DSP program from an n-slot SHM
         // ping-pong ring, NOT an ALSA capture PCM — so `content.buffer_frames`
@@ -2190,8 +2005,6 @@ mod tests {
                 max_adjust_ppm: DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
             },
             shm_ring: None,
-            local_content_pipe: None,
-            local_content_pipe_bytes: 8192,
             chip_ref_pcm: None,
             chip_ref_sample_rate: 16_000,
             chip_ref_period_frames: 320,
@@ -2294,72 +2107,6 @@ mod tests {
             !j.contains(r#""assistant_loudness":"#),
             "duplicate outputd loudness state present in {j}"
         );
-    }
-
-    #[test]
-    fn snapshot_json_reports_local_content_pipe_metrics() {
-        let cfg = Config {
-            local_content_pipe: Some("/run/jasper-outputd/content.pipe".to_string()),
-            ..test_config()
-        };
-        let state = OutputdState::new(&cfg);
-        state.mark_period(
-            IoCounters {
-                content_frames_read: 512,
-                content_empty_period_count: 2,
-                content_partial_period_count: 1,
-                content_eagain_count: 0,
-                dac_frames_written: 512,
-                content_xrun_count: 0,
-                dac_xrun_count: 0,
-            },
-            7,
-            0,
-        );
-        state.mark_local_content_pipe(LocalContentPipeMetrics {
-            enabled: true,
-            open: true,
-            frames_read: 512,
-            requested_pipe_bytes: 4096,
-            max_queued_bytes: 4096,
-            open_failures: 3,
-            read_failures: 4,
-            reopen_count: 5,
-            startup_empty_periods: 8,
-            empty_periods: 2,
-            partial_periods: 1,
-            misaligned_bytes: 6,
-            available_bytes: 128,
-            actual_pipe_bytes: 4096,
-            stale_drop_events: 9,
-            stale_drop_bytes: 1024,
-            stale_drop_frames: 128,
-        });
-
-        let j = state.snapshot_json();
-        for needle in [
-            r#""content":{"source":"local_pipe""#,
-            r#""local_pipe":{"enabled":true"#,
-            r#""path":"/run/jasper-outputd/content.pipe""#,
-            r#""format":"S32_LE""#,
-            r#""open":true"#,
-            r#""requested_pipe_bytes":4096"#,
-            r#""max_queued_bytes":4096"#,
-            r#""available_bytes":128"#,
-            r#""actual_pipe_bytes":4096"#,
-            r#""reopen_count":5"#,
-            r#""startup_empty_periods":8"#,
-            r#""empty_periods":2"#,
-            r#""partial_periods":1"#,
-            r#""misaligned_bytes":6"#,
-            r#""stale_drop_events":9"#,
-            r#""stale_drop_bytes":1024"#,
-            r#""stale_drop_frames":128"#,
-            r#""open_failures":3"#,
-            r#""read_failures":4"#,
-        ] {
-            assert!(j.contains(needle), "missing {needle} in {j}");
-        }
     }
 
     #[test]
