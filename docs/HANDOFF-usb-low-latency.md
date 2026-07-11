@@ -58,7 +58,14 @@ The outputd content-buffer env has no place in this ring-coupled set: under
 PCM, so `JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES` is architecturally inert (its only
 consumer, `configure_pcm`, is skipped). `jasper.audio_runtime_plan` therefore does
 **not** emit it under the ring bridge — the reconciler unsets the key and outputd
-uses its compile-time default. outputd's `/state` publishes the honest Ring B
+uses its compile-time default. When the coupling reconciler later disarms a live
+shm_ring bridge back to `direct` (`_disarm` in
+[`jasper/fanin/coupling_reconcile.py`](../jasper/fanin/coupling_reconcile.py)),
+it kicks `jasper-audio-hardware-reconcile` after the ordered disarm so the
+direct-bridge floor (`1536`) re-emits promptly — without the kick the box would
+sit on outputd's larger compile-default content buffer (fail-safe, but
+route-incoherent) until the next udev/boot/deploy/outputd-failure event, since
+that reconciler has no timer. outputd's `/state` publishes the honest Ring B
 capacity in `content.ring.capacity_frames` (`n_slots × slot_frames`) next to a
 synthetic period-sized `content.buffer_frames`, and `jasper-doctor` validates that
 ring geometry rather than the ALSA `>= 2× period` jitter floor. The `1536` content

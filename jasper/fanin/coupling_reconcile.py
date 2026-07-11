@@ -98,6 +98,7 @@ from jasper.fanin_coupling import (
     PIPE_PATH_ENV_VAR,
     OUTPUTD_PIPE_PATH_ENV_VAR,
     resolve_coupling,
+    resolve_outputd_content_bridge,
     resolve_outputd_ring_path,
     resolve_outputd_ring_slots,
     resolve_pipe_path,
@@ -120,6 +121,10 @@ FANIN_UNIT = "jasper-fanin.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 USBSINK_UNIT = "jasper-usbsink.service"
 CAMILLA_UNIT = "jasper-camilla.service"
+# Root oneshot that re-detects output hardware and re-emits the route floor
+# actions (incl. the outputd content-buffer floor) into outputd.env. The disarm
+# path kicks it when leaving a live shm_ring bridge — see _disarm.
+AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 ACTIVE_LEADER_TRANSPORT_BLOCK_REASON = "active_leader_transport_pipe_coupling_unsupported"
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
@@ -243,6 +248,21 @@ def _start_camilla(reason: str) -> tuple[bool, str]:
 def _restart_outputd(reason: str) -> tuple[bool, str]:
     """Restart jasper-outputd through the broker. (ok, detail)."""
     return _restart_unit(OUTPUTD_UNIT, reason=reason, timeout=8.0)
+
+
+def _start_audio_hardware_reconcile(reason: str) -> tuple[bool, str]:
+    """Start the audio-hardware reconciler oneshot through the broker. (ok, detail).
+
+    Blocking, with the same 15 s bound the topology-reset kick uses
+    (``jasper.cli.output_topology_reset._trigger_reconcile``), so the caller
+    returns with the floor actions actually re-emitted, not just requested.
+    ``start`` of this unit is broker-permitted for non-root clients
+    (``START_ONLY_UNITS``) and falls back to direct systemctl for a broker-less
+    root shell — the same reach every other daemon op here has.
+    """
+    return _restart_unit(
+        AUDIO_HARDWARE_RECONCILE_UNIT, verb="start", reason=reason, timeout=15.0
+    )
 
 
 def _restart_usbsink(reason: str) -> tuple[bool, str]:
@@ -441,6 +461,7 @@ def reconcile_coupling(
     restart_outputd: "DaemonOp | None" = None,
     reconcile_camilla=None,
     validate_transport_pipe: "DaemonOp | None" = None,
+    kick_hardware_reconcile: "DaemonOp | None" = None,
     active_leader_check: "Callable[[], bool] | None" = None,
 ) -> CouplingResult:
     """Make the live fan-in->Camilla coupling match ``desired_raw``, in order.
@@ -454,7 +475,13 @@ def reconcile_coupling(
       (``recovered=True``) and report ``ok=False``.
     - DISARM (-> loopback): reconcile camilla, restart fan-in, then restart
       outputd. A camilla failure still proceeds to both restarts and reports
-      ``ok=False``.
+      ``ok=False``. When the box is leaving a LIVE shm_ring outputd bridge, the
+      disarm additionally kicks ``jasper-audio-hardware-reconcile`` after the
+      ordered ops (#1231 follow-up): that reconciler suppresses the route's
+      outputd content-buffer floor while the bridge is shm_ring (the key is
+      inert there), so without the kick a disarmed box sits on outputd's
+      compile-default buffer until the next udev/boot/deploy event. Best-effort
+      — see :func:`_disarm`.
     - CONFIRM (env already at desired): on the happy path, re-run only the
       camilla reconcile to self-heal a drifted loaded config, WITHOUT
       bouncing fan-in. Two exceptions still bounce: an incoherent shm_ring
@@ -470,12 +497,15 @@ def reconcile_coupling(
     an explicit operator choice and never overrides it (the revert lever). The
     ``--auto`` pass itself passes False so it leaves the marker absent (its writes
     stay auto-owned). ``restart_fanin`` / ``restart_outputd`` / ``reconcile_camilla``
-    / ``active_leader_check`` are injectable for tests (default to the real broker +
-    reconcile_current_dsp + grouping-state reader); the camilla hook takes the
-    resolved coupling string.
+    / ``kick_hardware_reconcile`` / ``active_leader_check`` are injectable for tests
+    (default to the real broker + reconcile_current_dsp + grouping-state reader);
+    the camilla hook takes the resolved coupling string.
     """
     do_restart = restart_fanin or (lambda: _restart_fanin(reason=reason))
     do_restart_outputd = restart_outputd or (lambda: _restart_outputd(reason=reason))
+    do_kick_hardware = kick_hardware_reconcile or (
+        lambda: _start_audio_hardware_reconcile(reason=reason)
+    )
 
     def do_reconcile(coupling: str) -> tuple[bool, str]:
         if reconcile_camilla is not None:
@@ -686,7 +716,22 @@ def reconcile_coupling(
             fanin_snapshot,
             outputd_snapshot,
         )
-    return _disarm(do_restart, do_restart_outputd, do_reconcile, desired, reason)
+    return _disarm(
+        do_restart,
+        do_restart_outputd,
+        do_reconcile,
+        desired,
+        reason,
+        # Kick the floor re-emit only when this disarm is actually leaving a live
+        # shm_ring bridge — the one state in which the hardware reconciler had
+        # suppressed the content-buffer floor (#1231). A transport_pipe or
+        # already-direct disarm never had the floor suppressed, so no kick.
+        kick_hardware_reconcile=(
+            do_kick_hardware
+            if _leaves_live_shm_ring_bridge(outputd_snapshot.text)
+            else None
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -741,6 +786,7 @@ def reconcile_auto(
     stop_camilla: "DaemonOp | None" = None,
     start_camilla: "DaemonOp | None" = None,
     reconcile_camilla=None,
+    kick_hardware_reconcile: "DaemonOp | None" = None,
     active_leader_check: "Callable[[], bool] | None" = None,
 ) -> AutoResult:
     """DEFAULT-RESOLUTION pass (P3/P4): resolve the coupling + USB combo by
@@ -788,9 +834,9 @@ def reconcile_auto(
     resolve loopback with the combo off (no gadget intent) and converge with zero
     churn; jts4 (streambox, no fan-in stack) sees the coupling reconcile no-op.
     ``gadget_present`` / ``usb_intent_enabled`` / ``restart_*`` / ``stop_camilla`` /
-    ``start_camilla`` / ``reconcile_camilla`` / ``active_leader_check`` are injectable
-    for tests; ``gadget_present=None`` reads the live boot config and
-    ``usb_intent_enabled=None`` reads the live unit state.
+    ``start_camilla`` / ``reconcile_camilla`` / ``kick_hardware_reconcile`` /
+    ``active_leader_check`` are injectable for tests; ``gadget_present=None`` reads
+    the live boot config and ``usb_intent_enabled=None`` reads the live unit state.
     """
     from jasper.fanin.combo_health import fallback_active as read_fallback_active
     from jasper.fanin.coupling_auto import (
@@ -972,6 +1018,7 @@ def reconcile_auto(
         restart_fanin=restart_fanin,
         restart_outputd=restart_outputd,
         reconcile_camilla=reconcile_camilla,
+        kick_hardware_reconcile=kick_hardware_reconcile,
         active_leader_check=active_leader_check,
     )
 
@@ -2591,16 +2638,69 @@ def _int_value(value: object) -> int:
     return 0
 
 
-def _disarm(do_restart, do_restart_outputd, do_reconcile, desired, reason) -> CouplingResult:
+def _leaves_live_shm_ring_bridge(prior_outputd_text: str) -> bool:
+    """True when the outputd.env being rewritten carried a LIVE shm_ring bridge.
+
+    This is the exact condition under which ``jasper-audio-hardware-reconcile``
+    SUPPRESSES the route's outputd content-buffer floor (#1231: the key is inert
+    while outputd reads Ring B, so emitting it there is one-knob-two-truths
+    drift — see ``_resolve_outputd_content_buffer_int`` in
+    :mod:`jasper.audio_runtime_plan`). A disarm from this state can land outputd
+    on its compile-default content buffer until the floor re-emits, so the
+    disarm path kicks the hardware reconciler when (and only when) this is
+    True. Uses the same fail-safe resolver as the suppression, so only a
+    genuine ``shm_ring`` matches.
+    """
+    return (
+        resolve_outputd_content_bridge(
+            read_value(prior_outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
+        )
+        == OUTPUTD_CONTENT_BRIDGE_SHM_RING
+    )
+
+
+def _disarm(
+    do_restart,
+    do_restart_outputd,
+    do_reconcile,
+    desired,
+    reason,
+    kick_hardware_reconcile: "DaemonOp | None" = None,
+) -> CouplingResult:
     """Camilla first (off RawFile/File -> Alsa), then fan-in and outputd. Even
-    if the camilla reconcile fails, still restart both endpoints to loopback."""
+    if the camilla reconcile fails, still restart both endpoints to loopback.
+
+    ``kick_hardware_reconcile`` is set only when the box is leaving a live
+    shm_ring outputd bridge (:func:`_leaves_live_shm_ring_bridge`). It starts
+    ``jasper-audio-hardware-reconcile`` AFTER the ordered disarm so the route's
+    outputd content-buffer floor — which that reconciler unsets while the
+    bridge is shm_ring (#1231) — re-emits promptly instead of waiting for the
+    next udev/boot/deploy/outputd-failure event; the hardware reconciler
+    restarts outputd itself when the re-emit changes outputd.env, so the daemon
+    picks the floor up. Best-effort: a failed kick is logged and carried in
+    ``detail`` but does not fail the disarm — the interim compile-default
+    content buffer is a LARGER cushion than the floor (fail-safe), and the next
+    hardware-reconcile event still converges it.
+    """
     cam_ok, cam_detail = do_reconcile(COUPLING_LOOPBACK)
     fan_ok, fan_detail = do_restart()
     out_ok, out_detail = do_restart_outputd()
+    kick_detail = ""
+    if kick_hardware_reconcile is not None:
+        kick_ok, kick_fail = kick_hardware_reconcile()
+        log_event(
+            logger, "fanin.coupling_reconcile",
+            result="disarm_floor_reemit" if kick_ok else "disarm_floor_reemit_failed",
+            desired=desired, reason=reason, detail=kick_fail or None,
+            level=logging.INFO if kick_ok else logging.WARNING,
+        )
+        if not kick_ok:
+            kick_detail = f"audio-hardware reconcile kick failed ({kick_fail})"
     ok = cam_ok and fan_ok and out_ok
     detail = "; ".join(d for d in (cam_detail if not cam_ok else "",
                                    fan_detail if not fan_ok else "",
-                                   out_detail if not out_ok else "") if d)
+                                   out_detail if not out_ok else "",
+                                   kick_detail) if d)
     log_event(
         logger, "fanin.coupling_reconcile",
         result="disarmed" if ok else "disarm_partial",
