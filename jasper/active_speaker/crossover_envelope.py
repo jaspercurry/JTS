@@ -192,9 +192,19 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     applied_comparison_set_id = str(
         applied_level_match.get("active_comparison_set_id") or ""
     )
+    # A retune deliberately clears the old comparison set before the first
+    # driver is measured.  Between per-driver relay sessions neither the relay
+    # nor the ramp is running, so the lease's pending target is the only
+    # authoritative signal that the sequential retune is still in progress.
+    # Do not let the previously applied automatic profile hide that next step.
+    level_sequence_pending = bool(
+        _mapping(_mapping(status.get("level_match")).get("next_target"))
+    )
+    measurement_flow_active = (
+        _relay_active(status) or level_running or level_sequence_pending
+    )
     automatic_remeasure = automatic_applied and (
-        _relay_active(status)
-        or level_running
+        measurement_flow_active
         or bool(
             active_comparison_set_id
             and active_comparison_set_id != applied_comparison_set_id
@@ -252,7 +262,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "href": "/sound/",
         }
         active_step = "speaker_setup"
-    elif legacy_reapply and not (_relay_active(status) or level_running or level_ready):
+    elif legacy_reapply and not (measurement_flow_active or level_ready):
         screen = "choose_tuning"
         if manual_preservation.get("ready") is True:
             verdict = (
@@ -293,7 +303,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             }]
         active_step = "apply"
     elif applied_ready and applied_owner == "manual" and not (
-        _relay_active(status) or level_running or level_ready
+        measurement_flow_active or level_ready
     ):
         screen = "done_manual"
         verdict = "Your manual crossover is applied and ready for room correction."

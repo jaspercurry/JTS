@@ -1153,6 +1153,72 @@ def test_applied_automatic_profile_can_run_a_fresh_sequential_retune():
     assert env["next_action"]["label"] == "Apply updated driver levels"
 
 
+@pytest.mark.parametrize("applied_owner", ["manual", "automatic"])
+def test_applied_profile_keeps_partial_driver_retune_active(applied_owner):
+    """The old applied result must not hide the next driver between relays."""
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["applied_profile"] = {
+        "status": "applied",
+        "tuning_owner": applied_owner,
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "level_match": {
+                "active_comparison_set_id": _COMPARISON_SET[
+                    "comparison_set_id"
+                ],
+            },
+        },
+    }
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": applied_owner,
+        "reason": None,
+    }
+    status["measurements"]["active_comparison_set"] = None
+    status["level_match"] = {
+        "running": False,
+        "valid": True,
+        "ready": False,
+        "targets": [
+            {"target_id": "mono:woofer", "role": "woofer"},
+            {
+                "target_id": "mono:tweeter",
+                "speaker_group_id": "mono",
+                "role": "tweeter",
+                "tone_frequency_hz": 6250.0,
+            },
+        ],
+        "driver_level_locks": {
+            "mono:woofer": {"target_id": "mono:woofer"},
+        },
+        "missing_targets": ["mono:tweeter"],
+        "next_target": {
+            "target_id": "mono:tweeter",
+            "speaker_group_id": "mono",
+            "role": "tweeter",
+            "tone_frequency_hz": 6250.0,
+        },
+        "last": {"ramp": {"state": "locked", "restored": True}},
+    }
+    status["relay"] = {
+        "status": "complete",
+        "kind": "level_ramp:crossover",
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "microphone"
+    assert env["next_action"] == {
+        "id": "level_match",
+        "label": "Set tweeter microphone level",
+        "endpoint": "/correction/crossover/level-match",
+        "body": {},
+    }
+    assert "6250 Hz" in env["verdict_text"]
+
+
 def test_crossover_envelope_maxed_out_is_retry_not_a_lock():
     from jasper.active_speaker import crossover_envelope
 

@@ -362,7 +362,8 @@ def test_sanitize_input_device_hashes_browser_ids():
         "label": "USB measurement mic",
         "browser_label": "Dayton Audio USB",
         "sample_rate": 48000,
-        "channel_count": 1,
+        "source_channel_count": 2,
+        "captured_channel_count": 1,
         "echo_cancellation": False,
         "noise_suppression": False,
         "auto_gain_control": False,
@@ -371,6 +372,9 @@ def test_sanitize_input_device_hashes_browser_ids():
     out = correction_setup._sanitize_input_device(raw)
     assert out["label"] == "USB measurement mic"
     assert out["sample_rate"] == 48000.0
+    assert out["channel_count"] == 1.0
+    assert out["source_channel_count"] == 2.0
+    assert out["captured_channel_count"] == 1.0
     assert out["echo_cancellation"] is False
     assert "ignored" not in out
     assert "raw-device-id" not in str(out)

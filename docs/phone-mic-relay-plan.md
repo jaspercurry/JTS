@@ -480,12 +480,15 @@ number is trustworthy.** An intact-but-invalid measurement is the worst failure
 mode for a tool whose entire job is a trustworthy result.
 
 - **Realized-constraints verification (refuse, per-kind).** After `getUserMedia`,
-  verify the realized settings — actual sample rate, channel count, and that
+  verify the realized settings — actual sample rate, normalized capture channel
+  count, and that
   EC/AGC/NS came back `false` (WebKit has historically *ignored*
   `echoCancellation:false`). AGC/NS silently left on does not corrupt the file in a
   way that looks wrong — it quietly flattens the level differences you are
   measuring. So for kinds that demand clean samples (`room_sweep`) **refuse**
-  rather than warn; let the spec set refuse-vs-warn **per kind**.
+  rather than warn; let the spec set refuse-vs-warn **per kind**. Keep the raw
+  source-track width as diagnostics, but do not confuse a multi-channel USB
+  source with the mono channel-zero artifact produced by `createMonoRecorder`.
 - **Level-ramp AGC is stricter.** Automatic leveling requires explicit realized
   `autoGainControl === false`. Missing/unknown is not treated as false: the phone
   posts a token-scoped refusal and the Pi never starts the tone. A future manual

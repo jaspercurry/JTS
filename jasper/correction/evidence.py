@@ -120,6 +120,8 @@ def _input_identity(payload: dict[str, Any] | None) -> dict[str, Any] | None:
             "actual_device_id_hash",
             "sample_rate",
             "channel_count",
+            "source_channel_count",
+            "captured_channel_count",
             "echo_cancellation",
             "noise_suppression",
             "auto_gain_control",

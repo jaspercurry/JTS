@@ -109,7 +109,7 @@ function testWarnPolicyProceedsLabeled() {
   ok();
 }
 
-function testSampleRateAndChannelMismatchAreDirty() {
+function testSampleRateAndUnnormalizedChannelMismatchAreDirty() {
   const rate = verifyRealizedConstraints(
     { sampleRate: 44100, channelCount: 1 },
     cleanWanted,
@@ -121,6 +121,39 @@ function testSampleRateAndChannelMismatchAreDirty() {
     cleanWanted,
   );
   assert.equal(ch.channelsOk, false);
+  ok();
+}
+
+function testWiderSourceNormalizedToMonoProceeds() {
+  const realized = verifyRealizedConstraints(
+    {
+      echoCancellation: false,
+      autoGainControl: false,
+      noiseSuppression: false,
+      sampleRate: 48000,
+      channelCount: 2,
+    },
+    cleanWanted,
+    1,
+  );
+  assert.equal(realized.sourceChannelCount, 2);
+  assert.equal(realized.capturedChannelCount, 1);
+  assert.equal(realized.channelsOk, true);
+  assert.equal(realized.clean, true);
+  assert.equal(constraintDecision(realized, refuseSpec(true)).action, "proceed");
+  ok();
+}
+
+function testNormalizedCaptureWidthMismatchIsDirty() {
+  const realized = verifyRealizedConstraints(
+    { sampleRate: 48000, channelCount: 1 },
+    cleanWanted,
+    2,
+  );
+  assert.equal(realized.sourceChannelCount, 1);
+  assert.equal(realized.capturedChannelCount, 2);
+  assert.equal(realized.channelsOk, false);
+  assert.equal(realized.clean, false);
   ok();
 }
 
@@ -141,7 +174,9 @@ const tests = [
   testRefuseWithFallbackDegradesNeverDeadEnds,
   testRefuseWithoutFallbackRefuses,
   testWarnPolicyProceedsLabeled,
-  testSampleRateAndChannelMismatchAreDirty,
+  testSampleRateAndUnnormalizedChannelMismatchAreDirty,
+  testWiderSourceNormalizedToMonoProceeds,
+  testNormalizedCaptureWidthMismatchIsDirty,
   testMissingSettingsAreTolerated,
 ];
 
