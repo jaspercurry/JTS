@@ -355,15 +355,40 @@ the kill cascade. Loopback keeps its plain restart (snd-aloop decouples the two)
 This uses the existing broker/polkit grants (`jasper-camilla.service` is already a
 `MANAGED_UNITS` member; `manage-units` covers stop/start) — no new grant.
 
-**LIMITATION — this only coordinates the reconciler's OWN fan-in restarts.** An
-*uncoordinated* fan-in death (a crash / OOM-kill / an external `systemctl restart
-jasper-fanin` — or `jasper.fanin.buffer_reconcile`'s adaptive-buffer fan-in
-restart, default-OFF behind `JASPER_FANIN_ADAPTIVE_BUFFER`, which must be
-coordinated or coupling-gated before that flag is enabled on a shm_ring box)
-still detaches the ring writer with camilla live and reproduces the
-spin/SIGKILL. The root-cause fix is the **ring-ioplug capture-reader pacing** — the
-reader must *block* (not busy-spin) when the writer is absent — a separate scheduled
-follow-up (`c/jts-ring-ioplug/`).
+**Coordination scope.** All DELIBERATE Python-side fan-in restarts are
+coordinated: the reconciler's own restarts, and `jasper.fanin.buffer_reconcile`'s
+adaptive-buffer fan-in restart (default-OFF behind
+`JASPER_FANIN_ADAPTIVE_BUFFER`), which routes through
+`coupling_reconcile.coordinated_fanin_restart(phase="adaptive_buffer")`.
+
+**Root cause fixed (2026-07-11) — the ring-ioplug capture reader now paces
+through writer absence.** The busy-spin's mechanism was NOT the SHM ring: strace
+of the live capture thread showed camilladsp's ALSA backend raw-polls the
+ioplug's poll descriptor and never calls `snd_pcm_poll_descriptors_revents`, so
+the plugin's repeating timerfd was never drained (every poll returned instantly)
+and the writer-dead silence was never armed — the whole pacing design lived in a
+callback this consumer never invokes. `c/jts-ring-ioplug/pcm_jts_ring.c` now
+does the per-wake service work (timerfd drain + wall-clock-paced silence arm) in
+`capture_service_tick()`, called from BOTH `poll_revents` and the capture
+`pointer` callback (every consumer calls `pointer` via `snd_pcm_avail_update`),
+serves an armed silence period as a delivery commitment (never discarded — the
+old discard minted permanent phantom `avail`, the poll-less spin state), bounds
+out-of-range occupancy in every avail path, **self-heals an out-of-range
+occupancy on the per-wake tick** (a reader that stalled past the 2 s liveness
+window while the writer free-ran — e.g. an operator `gdb`/`SIGSTOP` on camilla —
+would otherwise sit permanently silent, since at `avail == 0` alsa-lib never
+calls `transfer` and only `consume` resynced; `reader_resyncs` counts it), and
+carries a bounded starvation nap in `transfer` as defense in depth
+(`starved_naps` in the capture close log; ~0 in steady state, a handful only
+across a recovery transient). Validated on jts.local 2026-07-11: six uncoordinated
+`systemctl restart jasper-fanin` plus one `kill -9` under a live camilla — zero
+RTTIME kills (previously one kill per restart), paced silence confirmed
+(`silence_periods` > 0 at close for the first time; the `arecord` cold-probe
+records 3 s in ~3.5 s wall — the intentionally-slow safe direction). An
+uncoordinated fan-in death now degrades to ≤2 s of capture silence (heartbeat
+staleness window on a crash; immediate on a clean stop) instead of a camilla
+kill cascade — the coordinated restart above remains preferred for deliberate
+restarts because it avoids even that gap being spliced mid-stream.
 
 ### Flag matrix (C6)
 

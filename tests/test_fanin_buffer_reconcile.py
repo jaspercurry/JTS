@@ -7,7 +7,8 @@
 Writes JASPER_FANIN_OUTPUT_BUFFER_FRAMES into the unit's wizard env file and
 restarts the daemon through the broker. The broker is stubbed; the env-file
 upsert is real (tmp file). Floor enforcement, SF-1 rollback on restart failure,
-and SF-2 fail-soft import are pinned here.
+SF-2 fail-soft import, and the CamillaDSP-coordinated restart routing (pause
+camilla around the fan-in bounce on a live ring/pipe coupling) are pinned here.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from jasper.fanin import buffer_reconcile as br
+from jasper.fanin.coupling_reconcile import CAMILLA_UNIT
 
 
 @pytest.fixture
@@ -88,6 +90,93 @@ def test_shrink_no_restart_flag_writes_only(env_path, stub_broker):
     assert r.restarted is False
     assert stub_broker == []
     assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024" in env_path.read_text()
+
+
+# ------------------------------------ CamillaDSP-coordinated restart routing
+#
+# The adaptive restart routes through coupling_reconcile.coordinated_fanin_restart:
+# on a live ring/pipe coupling a bare fan-in restart detaches the ring writer and
+# RTTIME-SIGKILLs camilladsp, so the restart must pause camilla around the bounce.
+# The coupling line lives in the SAME fanin.env this module writes.
+
+def test_shrink_on_shm_ring_coupling_coordinates_camilla(env_path, stub_broker):
+    env_path.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    r = br.set_fanin_output_buffer(
+        1024, reason="adaptive_usb_exclusive", env_path=env_path,
+    )
+    assert r.ok and r.changed and r.restarted
+    # The load-bearing ORDER: stop camilla -> restart fan-in -> start camilla.
+    assert stub_broker == [
+        ((CAMILLA_UNIT,), "stop", "adaptive_usb_exclusive"),
+        ((br.FANIN_UNIT,), "restart", "adaptive_usb_exclusive"),
+        ((CAMILLA_UNIT,), "start", "adaptive_usb_exclusive"),
+    ]
+    # The upsert touched only the buffer key; the coupling line is intact.
+    text = env_path.read_text()
+    assert "JASPER_FANIN_CAMILLA_COUPLING=shm_ring" in text
+    assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024" in text
+
+
+def test_restore_on_shm_ring_coupling_coordinates_camilla(env_path, stub_broker):
+    env_path.write_text(
+        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
+        "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024\n"
+    )
+    r = br.restore_fanin_output_buffer(reason="networked_join", env_path=env_path)
+    assert r.ok and r.changed and r.restarted
+    assert stub_broker == [
+        ((CAMILLA_UNIT,), "stop", "networked_join"),
+        ((br.FANIN_UNIT,), "restart", "networked_join"),
+        ((CAMILLA_UNIT,), "start", "networked_join"),
+    ]
+    text = env_path.read_text()
+    assert "JASPER_FANIN_CAMILLA_COUPLING=shm_ring" in text
+    assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES" not in text
+
+
+def test_shrink_on_loopback_coupling_stays_plain_restart(env_path, stub_broker):
+    # snd-aloop decouples fan-in from camilla: a single plain fan-in restart, NO
+    # camilla stop/start. (An absent coupling key resolves to loopback too — the
+    # tests above this section pin that shape implicitly.)
+    env_path.write_text("JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
+    r = br.set_fanin_output_buffer(1024, reason="x", env_path=env_path)
+    assert r.ok and r.restarted
+    assert stub_broker == [((br.FANIN_UNIT,), "restart", "x")]
+
+
+def test_shrink_camilla_stop_failure_aborts_restart_and_rolls_back(
+    env_path, monkeypatch,
+):
+    """Coordinated failure honesty x SF-1: a failed camilla PAUSE aborts the fan-in
+    restart (restarting is what SIGKILLs a live camilla), camilla is started back,
+    and the env write is rolled back so the file never leads the running daemon."""
+    env_path.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    calls: list[tuple] = []
+
+    def fake_manage(*units, verb="restart", reason="", no_block=True, timeout=5.0):
+        calls.append((units, verb))
+        if verb == "stop":
+            return {"ok": False, "error": "stop refused"}
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units", fake_manage,
+    )
+    r = br.set_fanin_output_buffer(1024, reason="x", env_path=env_path)
+    assert r.ok is False
+    assert r.changed is False
+    assert r.restarted is False
+    assert "aborted fan-in restart" in r.detail
+    # fan-in was NEVER restarted; camilla start-back was attempted after the
+    # failed stop.
+    assert calls == [
+        ((CAMILLA_UNIT,), "stop"),
+        ((CAMILLA_UNIT,), "start"),
+    ]
+    # SF-1 rollback: the buffer override is gone, the coupling line survives.
+    text = env_path.read_text()
+    assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES" not in text
+    assert "JASPER_FANIN_CAMILLA_COUPLING=shm_ring" in text
 
 
 # ------------------------------------------------------------------- floor

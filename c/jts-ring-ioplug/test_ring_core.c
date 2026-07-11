@@ -1340,13 +1340,20 @@ static cap_model_t cap_model_new(const jts_ring_geometry_t *g) {
     return m;
 }
 
-// Mirror jts_ring_capture_poll_revents' arm step: on a (virtual) timer tick, if
-// the writer is dead and the real ring is empty, arm one period of pending
-// silence (bounded to one period). Called by cap_model_avail so every avail read
-// reflects a poll tick, matching the ALSA rw loop's poll-then-pointer cadence.
+// Mirror capture_service_tick's arm step (run by the plugin from BOTH
+// poll_revents and the `pointer` callback): on a (virtual) service tick, if the
+// writer is dead and the real ring is empty, arm one period of pending silence
+// (bounded to one period). The emptiness check uses the BOUNDED occupancy,
+// exactly as the plugin does — an out-of-range W - R resolves to a consume
+// resync (nothing readable), so it must count as empty here too.
 static void cap_model_poll_arm(cap_model_t *m, jts_ring_reader_t *r) {
+    // Mirror capture_service_tick's first step: self-heal an out-of-range
+    // occupancy so the reader recovers on a wake even when avail is 0 (alsa-lib
+    // never calls transfer there, so consume's own resync cannot run).
+    jts_ring_reader_resync_if_overrun(r);
     int writer_live = jts_ring_reader_writer_is_live(r);
-    uint64_t occ = jts_ring_reader_occupancy_slots(r);
+    uint64_t occ = jts_ring_capture_occupancy_bounded(
+        jts_ring_reader_occupancy_slots(r), (uint32_t)(m->buffer_size / m->period));
     int real_empty = (occ == 0) && (m->destage_frames == 0);
     if (!writer_live && real_empty && m->pending_silence_frames < (uint64_t)m->period) {
         m->pending_silence_frames = (uint64_t)m->period;
@@ -1379,13 +1386,16 @@ static void cap_model_pointer_tick(cap_model_t *m, jts_ring_reader_t *r) {
 }
 
 // ALSA capture avail off the ACCUMULATED hw_ptr: hw_ptr - appl_ptr (readable).
-// PURE pointer read (no arming) — mirrors the plugin, whose `pointer` callback
-// never arms; only `poll_revents` (cap_model_poll_arm) does. The ALSA rw loop's
-// order is: an initial `pointer` read (baseline, pending==0) BEFORE the first
-// `poll_revents`, so the first avail read establishes hw_ptr==0 and armed silence
-// only ever shows up as a POSITIVE delta on a later read. Getting this order
-// right is exactly what avoids the first-read-seed swallowing a front-loaded
-// readable (the wedge the earlier "avail always arms first" model hit).
+// PURE pointer read (no service work) in the MODEL. The real plugin's `pointer`
+// runs capture_service_tick (drain + arm + resync), but the model deliberately
+// keeps this call pure and drives the service work through cap_model_poll_arm
+// (cap_model_poll_then_avail) so the ALSA rw-loop ordering the silence tests
+// depend on is preserved: an initial `pointer` read (baseline, pending==0)
+// BEFORE the first arming, so the first avail read establishes hw_ptr==0 and
+// armed silence only ever shows up as a POSITIVE delta on a later read. This
+// stays faithful because neither arming nor a resync can fire at baseline
+// (writer live, occupancy 0); a real plugin pointer at baseline is likewise a
+// no-op service tick.
 static uint64_t cap_model_avail(cap_model_t *m, jts_ring_reader_t *r) {
     cap_model_pointer_tick(m, r);
     uint64_t readable =
@@ -1403,29 +1413,34 @@ static uint64_t cap_model_poll_then_avail(cap_model_t *m, jts_ring_reader_t *r) 
 }
 
 // Model the plugin's capture transfer of ONE period: refill the destage buffer
-// from the ring (real data first, then armed silence), then the app reads a
-// period. Returns 1 if a period was delivered (real or silence), 0 if the app
-// must block (writer alive + ring empty + no armed silence). Mirrors
+// (ARMED silence first — it is a delivery commitment the pointer has already
+// reported readable — then real ring data), then the app reads a period.
+// Returns 1 if a period was delivered (real or silence), 0 if the app must
+// block (writer alive + ring empty + no armed silence). Mirrors
 // capture_refill_destage + the transfer copy loop for one period. Arms silence
-// first (a transfer is preceded by a poll tick in the rw loop) so a writer-dead
-// read fabricates without a separate avail call.
+// first (a transfer is preceded by a service tick in the plugin — poll_revents
+// or the pointer prologue) so a writer-dead read fabricates without a separate
+// avail call.
 static int cap_model_read_period(cap_model_t *m, jts_ring_reader_t *r, int16_t *out) {
     cap_model_poll_arm(m, r);
     if (m->destage_frames == 0) {
-        jts_ring_slot_read_t got = jts_ring_reader_consume(r, out);
-        if (got == JTS_RING_SLOT_FILLED) {
-            m->destage_frames = m->period;
-            // Mirror capture_refill_destage: real data supersedes any silence that
-            // was armed-but-not-yet-consumed, so a stale arm cannot splice a
-            // spurious silence period into live audio on a later brief drain.
-            m->pending_silence_frames = 0;
-        } else if (m->pending_silence_frames >= m->period) {
-            // Armed silence: fabricate a period (out is already zeros), consume the arm.
+        if (m->pending_silence_frames >= m->period) {
+            // Mirror capture_refill_destage: an ARMED period was already
+            // reported to ALSA as readable (hw advanced, forward-only), so it
+            // MUST be served — discarding it would leave permanent phantom
+            // avail (the RTTIME-spin debt). Serve it before any real slot; the
+            // plugin memsets its destage, mirrored here on `out`.
+            memset(out, 0, (size_t)m->period * 2 * sizeof(int16_t));
             m->pending_silence_frames -= m->period;
             m->destage_frames = m->period;
             m->silence_periods++;
         } else {
-            return 0; // writer alive + empty + no armed silence: block
+            jts_ring_slot_read_t got = jts_ring_reader_consume(r, out);
+            if (got == JTS_RING_SLOT_FILLED) {
+                m->destage_frames = m->period;
+            } else {
+                return 0; // writer alive + empty + no armed silence: block
+            }
         }
     }
     // Deliver a period from the destage buffer.
@@ -1772,18 +1787,23 @@ static void test_capture_silence_pacing_never_faster_than_realtime(void) {
           "silence pacing actually advances (not wedged)");
 }
 
-static void test_capture_stale_armed_silence_discarded_on_writer_return(void) {
-    // Finding 1 (silence-invariant at writer-return). The poll tick ARMS one period
-    // of pending silence whenever the writer is dead and the ring is empty. That arm
-    // is CONSUMED lazily, on a later transfer. If the writer PUBLISHES a real slot
-    // AFTER the arm but BEFORE it is consumed, the arm is stale: real data wins on
-    // the next transfer, but the (uncleared) pending frames would then survive and
-    // splice a SPURIOUS silence period into live audio the next time the ring
-    // momentarily drains between two paced real slots. The fix clears
-    // pending_silence_frames when a real slot is consumed; this test reproduces the
-    // exact arm-then-writer-returns ordering and proves no stale silence is emitted.
+static void test_capture_armed_silence_commitment_no_phantom_avail(void) {
+    // The RTTIME-spin debt regression (2026-07-11 camilla SIGKILL diagnosis).
+    // Once the service tick ARMS a period of silence, the pointer REPORTS it to
+    // ALSA as readable — and the reported position is forward-only by design
+    // (the alias clamp). The pre-fix refill DISCARDED an armed-but-unconsumed
+    // period when the writer's first slot raced in, leaving hw_ptr one period
+    // ahead of anything the refill could ever serve: PERMANENT phantom avail.
+    // ALSA's rw loop only poll-waits at avail == 0, so every genuinely-empty
+    // moment then became a hot 0-frame-transfer spin — on camilla's SCHED_FIFO
+    // capture thread, the RLIMIT_RTTIME SIGKILL. The fixed contract: an armed
+    // period is a delivery COMMITMENT, served BEFORE real data (it belongs to
+    // the silence gap that just ended), so the books stay exact and the one
+    // extra ~2.7 ms of zeros lands contiguous with the gap — never spliced into
+    // steady-state music later (the concern that motivated the old discard;
+    // pinned in step 5).
     char path[256];
-    tmp_path(path, sizeof(path), "cap-stale-silence");
+    tmp_path(path, sizeof(path), "cap-armed-commitment");
     jts_ring_geometry_t g = proto_geometry();
     g.n_slots = 4;
     jts_ring_writer_t w;
@@ -1796,36 +1816,176 @@ static void test_capture_stale_armed_silence_discarded_on_writer_return(void) {
     int16_t *out = calloc(n, sizeof(int16_t));
     jts_ring_header_t *h = (jts_ring_header_t *)w.base;
 
-    // 1. Writer DIES and the ring is empty: a poll tick ARMS one period of silence
-    // WITHOUT consuming it (mirrors the ALSA rw loop's poll-before-transfer).
+    // Seed the pointer baseline (ALSA's first read establishes last_hw).
+    (void)cap_model_avail(&m, &r);
+
+    // 1. Writer DIES and the ring is empty: a service tick ARMS one period and
+    // the pointer REPORTS it (avail opens) — armed but not yet consumed, exactly
+    // the rw loop's poll-before-transfer window.
     atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
-    cap_model_poll_arm(&m, &r);
+    uint64_t avail = cap_model_poll_then_avail(&m, &r);
     CHECK(m.pending_silence_frames == g.period_frames, "silence armed while writer dead");
+    CHECK(avail == g.period_frames, "armed period REPORTED readable (hw advanced)");
     CHECK(m.silence_periods == 0, "armed but not yet consumed");
 
-    // 2. Writer RETURNS (fresh heartbeat) and PUBLISHES a real slot BEFORE the armed
-    // silence is consumed — the stale-arm race window.
+    // 2. Writer RETURNS (fresh heartbeat) and PUBLISHES a real slot BEFORE the
+    // armed silence is consumed — the race that used to mint the debt.
     atomic_store_explicit(&h->writer_heartbeat_ns, jts_ring_monotonic_ns(),
                           memory_order_relaxed);
     mark_slot(s, n, 1717);
     CHECK(jts_ring_writer_publish(&w, s) == JTS_RING_PUBLISH_OK, "writer publishes a real slot");
 
-    // 3. The app reads: real data must win AND the stale arm must be discarded.
-    uint64_t sil_before = m.silence_periods;
-    CHECK(cap_model_read_period(&m, &r, out) == 1, "read the real slot");
-    CHECK(m.silence_periods == sil_before, "no silence fabricated on the real read");
-    CHECK(memcmp(out, s, n * sizeof(int16_t)) == 0, "real audio, not zeros");
-    CHECK(m.pending_silence_frames == 0,
-          "stale armed silence CLEARED by the real consume (the finding-1 fix)");
+    // 3. First read serves the COMMITTED silence period (zeros), not the real slot.
+    CHECK(cap_model_read_period(&m, &r, out) == 1, "read the committed silence period");
+    CHECK(m.silence_periods == 1, "the armed period was SERVED, not discarded");
+    int all_zero = 1;
+    for (size_t i = 0; i < n; i++) if (out[i] != 0) all_zero = 0;
+    CHECK(all_zero, "committed period is zeros");
+    CHECK(m.pending_silence_frames == 0, "commitment consumed");
 
-    // 4. The ring is now empty again with the writer STILL ALIVE (the brief drain
-    // between two paced real slots). WITHOUT the fix, the stale 128 frames from
-    // step 1 would fire the pending>=period branch and inject a silence period here.
-    // WITH the fix, pending is 0, so the app correctly BLOCKS (that block is the
-    // pacing) and NO silence is emitted into the live stream.
+    // 4. Second read serves the real slot, payload intact.
+    CHECK(cap_model_read_period(&m, &r, out) == 1, "read the real slot");
+    CHECK(memcmp(out, s, n * sizeof(int16_t)) == 0, "real audio intact after the boundary");
+
+    // 5. THE DEBT REGRESSION: everything reported was delivered, so avail must
+    // return to EXACTLY 0 — and stay 0 across service ticks (writer alive: no
+    // new arms, no spurious silence in live audio). With the old discard, hw
+    // sat one period ahead of appl forever: avail pinned at period_frames with
+    // read_period returning 0 — the poll-less spin precondition.
+    for (int tick = 0; tick < 6; tick++) avail = cap_model_poll_then_avail(&m, &r);
+    CHECK(avail == 0, "books exact after the boundary: avail 0, no phantom debt");
     CHECK(cap_model_read_period(&m, &r, out) == 0,
           "empty + writer alive: BLOCK (pacing) — no spurious silence spliced in");
-    CHECK(m.silence_periods == sil_before, "still no fabricated silence in live audio");
+    CHECK(m.silence_periods == 1, "no fabricated silence in steady-state live audio");
+
+    free(s);
+    free(out);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_capture_avail_implies_deliverable(void) {
+    // The spin-precondition invariant, swept across a full writer death /
+    // silence free-run / reattach cycle: whenever the reported avail is > 0,
+    // the transfer path MUST be able to deliver at least one period. An
+    // avail > 0 / deliver-nothing divergence is the state alsa-lib's rw loop
+    // cannot escape without spinning (it only poll-waits at avail == 0) — the
+    // RLIMIT_RTTIME SIGKILL class. The plugin additionally carries a bounded
+    // starvation nap as defense in depth, but the invariant itself must hold.
+    char path[256];
+    tmp_path(path, sizeof(path), "cap-avail-deliverable");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+    cap_model_t m = cap_model_new(&g);
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+    jts_ring_header_t *h = (jts_ring_header_t *)w.base;
+    (void)cap_model_avail(&m, &r);
+
+    // Scripted sequence covering: live publishes, mid-drain writer death,
+    // silence free-run, an arm racing the writer's return, and live resume.
+    for (int step = 0; step < 24; step++) {
+        switch (step) {
+            case 0: case 1: case 2:
+                jts_ring_writer_publish(&w, s); // live publishes
+                break;
+            case 5: // writer dies mid-drain (slots may remain)
+                atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
+                break;
+            case 14: // writer returns AND publishes into the armed window
+                atomic_store_explicit(&h->writer_heartbeat_ns, jts_ring_monotonic_ns(),
+                                      memory_order_relaxed);
+                jts_ring_writer_publish(&w, s);
+                break;
+            case 18: case 19:
+                jts_ring_writer_publish(&w, s); // live steady state again
+                break;
+            default:
+                break;
+        }
+        uint64_t avail = cap_model_poll_then_avail(&m, &r);
+        if (avail > 0) {
+            CHECK(cap_model_read_period(&m, &r, out) == 1,
+                  "avail > 0 implies a period is deliverable (no poll-less spin state)");
+        } else {
+            // avail == 0 is the legitimate block: alsa-lib poll-waits here, and
+            // nothing may be armed-but-unreported (a commitment must be visible).
+            CHECK(m.pending_silence_frames == 0,
+                  "avail == 0 implies no invisible armed commitment");
+        }
+    }
+
+    free(s);
+    free(out);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w);
+    unlink(path);
+}
+
+static void test_capture_occupancy_clamp_prevents_phantom_avail(void) {
+    // A transient out-of-range occupancy (W - local R > n_slots — a wedged
+    // reader whose heartbeat staled while the writer free-ran, or u64 garbage)
+    // must (1) be REPORTED as 0 readable — an unbounded report would ratchet the
+    // forward-only reported position and mint permanent phantom avail (same
+    // RTTIME-spin debt class as the armed-silence discard) — AND (2) SELF-HEAL
+    // on the per-wake service tick, NOT only when transfer runs. The wedge SF-A
+    // (2026-07-11 review) is the second half: at avail 0 alsa-lib never calls
+    // transfer, so if the resync lived only in consume the reader would sit
+    // permanently silent with a live writer. jts_ring_reader_resync_if_overrun
+    // in capture_service_tick (modeled here in cap_model_poll_arm) gives it an
+    // avail-visible recovery path.
+    CHECK(jts_ring_capture_occupancy_bounded(0, 4) == 0, "bounded: 0 -> 0");
+    CHECK(jts_ring_capture_occupancy_bounded(4, 4) == 4, "bounded: n_slots passes");
+    CHECK(jts_ring_capture_occupancy_bounded(5, 4) == 0, "bounded: n_slots+1 -> 0 (resync outcome)");
+    CHECK(jts_ring_capture_occupancy_bounded(UINT64_MAX, 4) == 0, "bounded: underflow garbage -> 0");
+
+    char path[256];
+    tmp_path(path, sizeof(path), "cap-occ-clamp");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "writer open");
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "reader open");
+    cap_model_t m = cap_model_new(&g);
+    size_t n = w.samples_per_slot;
+    int16_t *s = calloc(n, sizeof(int16_t));
+    int16_t *out = calloc(n, sizeof(int16_t));
+    jts_ring_header_t *h = (jts_ring_header_t *)w.base;
+    (void)cap_model_avail(&m, &r);
+
+    // Wedge the reader (stale heartbeat, local read_seq frozen at 0) and let
+    // the writer fill + free-run: header read_seq advances on the reader's
+    // behalf, but the reader's LOCAL mirror does not — its raw occupancy view
+    // goes out of range. The writer STAYS ALIVE (it is fan-in, camilla's pacer).
+    atomic_store_explicit(&h->reader_heartbeat_ns, 1, memory_order_relaxed);
+    for (uint32_t i = 0; i < g.n_slots + 3; i++) jts_ring_writer_publish(&w, s);
+    CHECK(jts_ring_reader_occupancy_slots(&r) > (uint64_t)g.n_slots,
+          "precondition: raw local occupancy out of range");
+
+    // (1) The garbage is reported as 0 readable — never phantom avail.
+    uint64_t avail = cap_model_poll_then_avail(&m, &r);
+    CHECK(avail == 0, "out-of-range occupancy reports 0 readable (no phantom avail)");
+    // (2) SELF-HEAL: that same wake resynced the reader WITHOUT any transfer at
+    // avail 0. This is the SF-A fix — recovery through an avail-visible flow, not
+    // a read alsa-lib would never issue.
+    CHECK(r.reader_resyncs == 1, "the per-wake service tick self-healed via resync");
+    CHECK(jts_ring_reader_occupancy_slots(&r) == 0, "local read_seq caught up to the tip");
+
+    // With the mirror healed and the writer still alive, fresh publishes reopen
+    // avail over the next wakes and delivery resumes — no read was ever issued at
+    // avail 0, and reader_resyncs does NOT climb further (steady state).
+    jts_ring_writer_publish(&w, s);
+    for (int tick = 0; tick < 3; tick++) avail = cap_model_poll_then_avail(&m, &r);
+    CHECK(avail == g.period_frames, "post-resync: honest readable resumes");
+    CHECK(cap_model_read_period(&m, &r, out) == 1, "post-resync: delivery resumes");
+    CHECK(r.reader_resyncs == 1, "no repeated resync once healed (not a resync loop)");
 
     free(s);
     free(out);
@@ -1917,7 +2077,9 @@ int main(void) {
     test_capture_alias_dead_to_live_recovery();
     test_capture_silence_mode_entry_exit();
     test_capture_silence_pacing_never_faster_than_realtime();
-    test_capture_stale_armed_silence_discarded_on_writer_return();
+    test_capture_armed_silence_commitment_no_phantom_avail();
+    test_capture_avail_implies_deliverable();
+    test_capture_occupancy_clamp_prevents_phantom_avail();
     test_capture_destage_partial_reads();
 
     if (g_failures == 0) {

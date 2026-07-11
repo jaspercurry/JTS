@@ -291,6 +291,22 @@ int jts_ring_reader_open(const char *path, const jts_ring_geometry_t *expected,
 // read_seq with Release) or JTS_RING_SLOT_EMPTY (zero-filled `out`).
 jts_ring_slot_read_t jts_ring_reader_consume(jts_ring_reader_t *r, int16_t *out);
 
+// Self-heal an out-of-range occupancy: if W - R > n_slots (a correct writer
+// never lets this happen, but a reader that wedged past the liveness window
+// while the writer free-ran drop-oldest can observe it on resume), fast-forward
+// the local read_seq to the tip and publish it (Release), counting one
+// reader_resync. Returns 1 iff a resync happened. This is the SAME operation
+// jts_ring_reader_consume performs defensively — extracted so the CAPTURE
+// ioplug's per-wake service tick can run it too. Without a proactive resync the
+// reader is stuck: the avail paths correctly report 0 readable on an out-of-
+// range occupancy (jts_ring_capture_occupancy_bounded), but at avail 0 alsa-lib
+// never calls transfer, so consume never runs, so the local read_seq never
+// catches up — a permanent-silence wedge with a LIVE writer. Running it from the
+// tick (which fires on every wake, avail 0 or not) gives the reader an
+// avail-visible recovery path. Never discards readable data: it only fires once
+// the writer has already lapped the reader (those slots are unreadable anyway).
+int jts_ring_reader_resync_if_overrun(jts_ring_reader_t *r);
+
 // Frames of buffering readable right now (W - R) * period_frames, for the
 // capture ioplug's avail/pointer honesty. Reads read_seq from the local mirror
 // (the reader owns it) and write_seq with Acquire.
@@ -471,6 +487,23 @@ typedef struct {
     uint64_t buffer_size;    // n_slots * period_frames (== ALSA buffer)
 } jts_ring_capture_pointer_inputs_t;
 
+// Bound a raw capture occupancy (write_seq - local read_seq) to what the reader
+// will actually SERVE. A correct writer never lets W - R exceed n_slots, and
+// jts_ring_reader_consume resolves an out-of-range value by resyncing to the
+// tip (readable collapses to 0) rather than reading slots the writer may be
+// mid-overwriting. The avail/readable paths (pointer core, poll readable, the
+// silence-arm emptiness check) MUST apply the same resolution BEFORE reporting,
+// or a transient garbage occupancy (a wedged-then-resumed reader racing the
+// writer's free-run, or a u64 underflow) gets ratcheted into `last_reported`
+// (forward-only by design — the alias clamp) and becomes PERMANENT phantom
+// avail: ALSA then grants `transfer` frames the refill path cannot serve, and
+// its rw loop spins hot on a 0-frame transfer without ever polling (the
+// RLIMIT_RTTIME SIGKILL class). Shared here so the host test pins it.
+static inline uint64_t jts_ring_capture_occupancy_bounded(uint64_t occupancy_slots,
+                                                          uint32_t n_slots) {
+    return (occupancy_slots > (uint64_t)n_slots) ? 0 : occupancy_slots;
+}
+
 // Compute the RAW (pre-modulo) capture hw_ptr to report to ALSA, advancing/
 // clamping `st->last_reported`. The caller returns `result % buffer_size`. Pure:
 // no ALSA, no atomics — the caller samples occupancy/destage/pending-silence and
@@ -478,6 +511,14 @@ typedef struct {
 static inline uint64_t
 jts_ring_capture_pointer_report(jts_ring_pointer_state_t *st,
                                 const jts_ring_capture_pointer_inputs_t *in) {
+    // 0. Bound the occupancy to what consume will actually serve (see
+    // jts_ring_capture_occupancy_bounded): an out-of-range W - R resolves to a
+    // resync-to-tip (0 readable) in the refill path, so reporting it as
+    // readable here would mint phantom avail the forward-only clamp below can
+    // never take back.
+    uint64_t occupancy = jts_ring_capture_occupancy_bounded(
+        in->occupancy_slots,
+        (in->period_frames > 0) ? (uint32_t)(in->buffer_size / in->period_frames) : 0);
     // 1. Readable = what the app can consume right now:
     //   - In-ring unread slots (occupancy*period) + the sub-slot destage
     //     remainder are readable whether the writer is live or dead (already-
@@ -495,7 +536,7 @@ jts_ring_capture_pointer_report(jts_ring_pointer_state_t *st,
     //     is not itself time-aware, but the value it reads is, so it stays pure.
     //   - WRITER-ALIVE + empty: occupancy 0 + destage 0 + pending 0 -> readable 0
     //     -> avail 0 -> camilla blocks in poll = the pacing.
-    uint64_t readable = in->occupancy_slots * (uint64_t)in->period_frames +
+    uint64_t readable = occupancy * (uint64_t)in->period_frames +
                         in->destage_frames + in->pending_silence_frames;
     // Honest capture hw_ptr = appl + readable (frames available to be captured).
     uint64_t honest = in->appl_frames + readable;

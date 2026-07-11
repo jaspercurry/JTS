@@ -39,10 +39,20 @@ buffer size never gets ahead of the running daemon — a later natural restart
 actually running. We return ``ok=False`` so the caller falls back to the full
 buffer.
 
-SF-2 (guarded lazy import). The ``jasper.control.restart_broker`` import is
-guarded; a missing/broken control package degrades to a reported restart
-failure (``ok=False``) instead of raising out of ``set_fanin_output_buffer``
-and defeating the caller's fail-safe ladder.
+SF-2 (guarded lazy import). The restart routes through
+:func:`jasper.fanin.coupling_reconcile.coordinated_fanin_restart`, whose broker
+access keeps the guarded lazy ``jasper.control.restart_broker`` import; a
+missing/broken control package degrades to a reported restart failure
+(``ok=False``) instead of raising out of ``set_fanin_output_buffer`` and
+defeating the caller's fail-safe ladder.
+
+COORDINATION. On a live ring/pipe coupling (``shm_ring`` / ``transport_pipe``)
+a bare fan-in restart detaches the ring writer under CamillaDSP and
+RTTIME-SIGKILLs it (see ``_restart_fanin_coordinated`` in
+:mod:`jasper.fanin.coupling_reconcile`), so the restart here is
+CamillaDSP-coordinated: stop camilla -> restart fan-in -> start camilla, read
+fresh from the SAME env file this module writes. Loopback keeps its single
+plain fan-in restart.
 
 KNOWN LIMITATION (documented, not fixed here). Restarting jasper-fanin is more
 disruptive than the usbsink FIFO arm: fanin is the SHARED summing daemon that
@@ -89,6 +99,7 @@ from jasper.audio_runtime_plan import (
 )
 from jasper.audio_runtime_overrides import load_runtime_overrides, runtime_overrides_path
 from jasper.env_file import read_value, remove, upsert
+from jasper.fanin.coupling_reconcile import coordinated_fanin_restart
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -182,28 +193,31 @@ def read_output_buffer(path: str | os.PathLike = FANIN_ENV_PATH) -> int | None:
         return None
 
 
-def _restart_fanin(reason: str) -> tuple[bool, str]:
-    """Restart the fanin daemon through the broker. Returns (ok, detail).
+def _restart_fanin(reason: str, *, env_path: str | os.PathLike) -> tuple[bool, str]:
+    """Restart the fanin daemon, CamillaDSP-coordinated. Returns (ok, detail).
 
-    SF-2: the lazy import is guarded so a missing/broken control package
-    degrades to a reported restart failure (ok=False) instead of raising out of
-    ``set_fanin_output_buffer`` and defeating the caller's fail-safe ladder
-    (which relies on the BufferResult, not an exception, to keep/restore the
-    full buffer)."""
-    try:
-        from jasper.control import restart_broker
-    except ImportError as e:
-        return False, f"restart_broker unavailable: {e}"
+    Routes through ``coordinated_fanin_restart`` so an adaptive-buffer restart
+    on a live ring/pipe coupling pauses camilla around the fan-in bounce
+    (stop -> restart -> start) instead of RTTIME-SIGKILLing it; loopback stays a
+    plain broker restart. ``env_path`` is the same fanin.env this module just
+    wrote — the coupling line lives in that file and the helper re-reads it
+    fresh. (A restore that UNLINKED the file is safe: the unlink only happens
+    when the buffer line was the file's sole key, so the coupling key was
+    already absent and the missing-file loopback fail-safe is the same answer
+    it would have read before.) ``ok`` is "fan-in restarted", exactly what
+    SF-1's rollback keys off:
+    a camilla-resume failure after a successful fan-in restart does NOT roll the
+    env back (the daemon IS running the new value; OnFailure recovery owns the
+    resume).
 
-    # timeout 8.0 (vs the broker default 5.0): fan-in is the shared summing
-    # daemon and its restart is heavier than a leaf renderer's, so give it more
-    # headroom before we declare the restart failed and roll back.
-    resp = restart_broker.manage_units(
-        FANIN_UNIT, verb="restart", reason=reason, no_block=False, timeout=8.0,
+    SF-2: the broker's lazy import stays guarded inside the coordinated helper,
+    so a missing/broken control package degrades to a reported restart failure
+    (ok=False) instead of raising out of ``set_fanin_output_buffer`` and
+    defeating the caller's fail-safe ladder (which relies on the BufferResult,
+    not an exception, to keep/restore the full buffer)."""
+    return coordinated_fanin_restart(
+        reason, phase="adaptive_buffer", env_path=env_path,
     )
-    if resp.get("ok"):
-        return True, ""
-    return False, str(resp.get("error") or f"rc={resp.get('rc')}")
 
 
 def _apply(
@@ -269,7 +283,7 @@ def _apply(
             ok=True, changed=True, restarted=False, frames=reported,
         )
 
-    restarted, detail = _restart_fanin(reason=reason)
+    restarted, detail = _restart_fanin(reason=reason, env_path=path)
     if not restarted:
         # SF-1: the env now carries the new value but the daemon did NOT restart
         # into it, so the persisted file is AHEAD of the running daemon. A later

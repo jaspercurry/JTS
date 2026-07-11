@@ -110,6 +110,22 @@
 // poll_revents reports POLLOUT iff the ring currently has space. ALSA's
 // mmap/rw loop tolerates this (it re-polls); it is a poll, not a precise
 // wakeup. The productization is the futex wait noted above.
+//
+// CONSUMER REALITY (2026-07-11, the camilla RTTIME-SIGKILL diagnosis): do NOT
+// assume poll_revents runs. CamillaDSP 4.x's ALSA backend raw-polls the fds
+// snd_pcm_poll_descriptors hands out and never calls
+// snd_pcm_poll_descriptors_revents — strace of the live capture thread showed
+// zero read()s of the timerfd across 23k syscalls. Any behavior that lives
+// ONLY in poll_revents (draining the timerfd, arming writer-dead silence) is
+// dead code for that consumer: the repeating timerfd stays readable forever,
+// every ppoll returns instantly, and on a fanin (writer) detach the capture
+// loop degenerates into a hot avail/ppoll spin with no silence ever armed —
+// ~200 ms of unbroken SCHED_FIFO CPU and the kernel's RLIMIT_RTTIME SIGKILL
+// (jasper-camilla.service, LimitRTTIME=200000). The capture path therefore
+// does its per-wake service work (timerfd drain + wall-clock-gated silence
+// arm) in capture_service_tick(), called from BOTH poll_revents (snd_pcm_wait
+// consumers: arecord) and the `pointer` callback (raw-poll consumers: every
+// wake calls snd_pcm_avail_update, and avail_update always calls `pointer`).
 
 #include "jts_ring_shm.h"
 
@@ -155,17 +171,26 @@ typedef struct {
     // pointer callbacks derive the honest hw_ptr from this ± in-flight/readable.
     snd_pcm_uframes_t appl_frames;
     // CAPTURE writer-dead silence (the "virtual writer"). When the writer is
-    // heartbeat-dead and the real ring is empty, the poll tick ARMS one period of
-    // pending silence (wall-clock paced, exactly as a live writer would publish
-    // one slot per period), bounded so avail never runs away. The pointer adds
-    // `pending_silence_frames` to `readable` so avail opens; the transfer callback
-    // consumes it (zeros to the app, appl advances, pending decrements) and bumps
-    // `silence_periods` (observability, logged at close). Decoupling the
-    // fabrication (poll, time-paced) from the pointer (pure) is what makes a
-    // COLD-START dead-writer ring (the `arecord` resolvability probe with no
-    // fanin) advance hw and terminate, not just the mid-stream fanin-restart case.
+    // heartbeat-dead and the real ring is empty, the per-wake service tick
+    // (capture_service_tick — run from BOTH poll_revents and the `pointer`
+    // callback, see the "CONSUMER REALITY" banner) ARMS one period of pending
+    // silence (wall-clock paced, exactly as a live writer would publish one
+    // slot per period), bounded so avail never runs away. The pointer report
+    // adds `pending_silence_frames` to `readable` so avail opens; the transfer
+    // callback consumes it (zeros to the app, appl advances, pending
+    // decrements) and bumps `silence_periods` (observability, logged at
+    // close). Decoupling the fabrication (service tick, time-paced) from the
+    // report core (pure) is what makes a COLD-START dead-writer ring (the
+    // `arecord` resolvability probe with no fanin) advance hw and terminate,
+    // not just the mid-stream fanin-restart case.
     uint64_t pending_silence_frames; // armed-but-unconsumed fabricated silence
     uint64_t silence_periods;        // total fabricated-silence periods (observability)
+    // Starvation-nap backstop (observability, logged at close): transfer calls
+    // that could deliver NOTHING despite ALSA's avail gate granting frames — an
+    // avail-vs-deliverable divergence. Each such call bounded-sleeps one tick so
+    // alsa-lib's rw loop (which only poll-waits at avail == 0) is paced instead
+    // of spinning an RT thread into the RLIMIT_RTTIME SIGKILL. Should stay 0.
+    uint64_t transfer_starved_naps;
     // Wall-clock pacing for the writer-dead silence: a new period is armed only
     // after one period of REAL time has elapsed since the last (CLOCK_MONOTONIC),
     // so silence flows at ~48 kHz instead of as-fast-as-the-app-asks. Without this
@@ -189,13 +214,19 @@ static const unsigned int JTS_RING_CHANNELS = 2;
 
 // ---- helpers ----
 
-static void arm_timer(jts_ring_pcm_t *p) {
-    if (p->timer_fd < 0) return;
-    // period/4, clamped to [0.25 ms, 2 ms]. Repeating.
-    uint64_t period_ns = (uint64_t)p->period_frames * 1000000000ull / JTS_RING_RATE;
+// One poll/pacing tick: period/4, clamped to [0.25 ms, 2 ms]. Shared by the
+// timerfd cadence, the playback drain wait, and the capture starvation nap.
+static uint64_t tick_ns_for(uint32_t period_frames) {
+    uint64_t period_ns = (uint64_t)period_frames * 1000000000ull / JTS_RING_RATE;
     uint64_t tick_ns = period_ns / 4;
     if (tick_ns < 250000ull) tick_ns = 250000ull;
     if (tick_ns > 2000000ull) tick_ns = 2000000ull;
+    return tick_ns;
+}
+
+static void arm_timer(jts_ring_pcm_t *p) {
+    if (p->timer_fd < 0) return;
+    uint64_t tick_ns = tick_ns_for(p->period_frames); // repeating
     struct itimerspec its;
     its.it_interval.tv_sec = 0;
     its.it_interval.tv_nsec = (long)tick_ns;
@@ -418,11 +449,7 @@ static int jts_ring_drain(snd_pcm_ioplug_t *io) {
     // occupancy read is the only progress signal we need — no can_accept /
     // liveness branch, which would only distinguish two cases that both resolve
     // to "stop when drained or when the budget runs out."
-    uint64_t period_ns = (uint64_t)p->period_frames * 1000000000ull / JTS_RING_RATE;
-    uint64_t tick_ns = period_ns / 4;
-    if (tick_ns < 250000ull) tick_ns = 250000ull;
-    if (tick_ns > 2000000ull) tick_ns = 2000000ull;
-    struct timespec nap = {.tv_sec = 0, .tv_nsec = (long)tick_ns};
+    struct timespec nap = {.tv_sec = 0, .tv_nsec = (long)tick_ns_for(p->period_frames)};
     int max_ticks = (int)p->n_slots * 8; // ~2 ring-depths of real time, bounded
     for (int i = 0; i < max_ticks; i++) {
         if (jts_ring_writer_occupancy_slots(&p->writer) == 0) break; // fully drained
@@ -445,13 +472,14 @@ static int jts_ring_close(snd_pcm_ioplug_t *io) {
         if (io->stream == SND_PCM_STREAM_CAPTURE) {
             SNDERR("jts_ring: closing (capture) frames_read_slots=%llu "
                    "silence_periods=%llu empty_reads=%llu startup_empty_reads=%llu "
-                   "reader_resyncs=%llu epoch_resets=%llu",
+                   "reader_resyncs=%llu epoch_resets=%llu starved_naps=%llu",
                    (unsigned long long)p->reader.frames_read_slots,
                    (unsigned long long)p->silence_periods,
                    (unsigned long long)p->reader.empty_reads,
                    (unsigned long long)p->reader.startup_empty_reads,
                    (unsigned long long)p->reader.reader_resyncs,
-                   (unsigned long long)p->reader.epoch_resets);
+                   (unsigned long long)p->reader.epoch_resets,
+                   (unsigned long long)p->transfer_starved_naps);
             jts_ring_reader_close(&p->reader);
         } else {
             SNDERR("jts_ring: closing published_slots=%llu drop_no_reader=%llu full_waits=%llu",
@@ -481,6 +509,81 @@ static int jts_ring_close(snd_pcm_ioplug_t *io) {
 // restart instead of flapping into capture-error/prepare; real audio resumes
 // seamlessly on writer reattach (epoch observed, silence stops).
 // ============================================================================
+
+// The capture per-wake SERVICE TICK: drain the timerfd and arm the writer-dead
+// silence. This is the load-bearing seam of the RTTIME-SIGKILL fix (see the
+// "CONSUMER REALITY" banner above): it MUST run on every consumer wake, and the
+// only callback every consumer exercises per wake is `pointer` (via
+// snd_pcm_avail_update). poll_revents calls it too, so snd_pcm_wait consumers
+// keep the exact prior behavior.
+//
+//   - DRAIN: the repeating timerfd is level-readable until read. A raw-poll
+//     consumer that never calls poll_revents otherwise sees every poll return
+//     instantly, forever — the busy-spin. Draining here means its next poll
+//     genuinely sleeps (<= one tick), which both paces the loop and resets the
+//     kernel's RLIMIT_RTTIME accounting (a voluntary sleep).
+//   - ARM SILENCE (the virtual writer), WALL-CLOCK PACED. If the writer is
+//     heartbeat-dead and the real ring is empty, arm one period of pending
+//     silence — but only once one period of REAL time (CLOCK_MONOTONIC) has
+//     elapsed since the last fabrication, so silence flows at ~48 kHz. This
+//     pacing is load-bearing: without it an unpaced consumer (arecord, which
+//     re-polls immediately) drains fabricated silence at multiples of realtime,
+//     so a writer that returns mid-capture finds its whole audio window already
+//     consumed as silence and gets no live reader (drop_no_reader). Bounded to
+//     <= one period so avail never runs away. This is also what makes a
+//     COLD-START dead-writer ring (the `arecord` resolvability probe with no
+//     fanin) advance hw and terminate — just at realtime pace.
+//
+//     PACING ERROR IS INTENTIONALLY IN THE SAFE (SLOW) DIRECTION. `now` is only
+//     sampled on a wake (the timerfd's period/4 cadence plus scheduler jitter;
+//     a raw poller's avail_update calls add wakes but never remove them), and
+//     `last_silence_ns = now` re-anchors to that wake rather than to the ideal
+//     period boundary, so the observed silence rate runs slightly SLOW of
+//     realtime (measured ~14% on the tick-only path: 4 s of silence ~= 4.66 s
+//     wall). That is the SAFE direction: slightly-slow silence makes the
+//     consumer block marginally longer and NEVER over-drains, so a returning
+//     writer's real audio is never pre-consumed as silence (the fast direction
+//     would). It is warn-only (`stop_on_rate_change` is unset). Do NOT "fix"
+//     this by advancing last_silence_ns past `now` to catch up — that pushes
+//     the error toward the UNSAFE fast direction and can re-open the
+//     pre-consumed-audio drop.
+static void capture_service_tick(jts_ring_pcm_t *p) {
+    if (p->timer_fd >= 0) {
+        uint64_t expirations = 0;
+        ssize_t r = read(p->timer_fd, &expirations, sizeof(expirations));
+        (void)r; // TFD_NONBLOCK: EAGAIN when no expiration is pending — fine
+    }
+    if (!p->opened) return;
+    // SELF-HEAL an out-of-range occupancy here, on the per-wake tick — not only
+    // in consume. The avail paths correctly report 0 readable on an out-of-range
+    // W - R (the occupancy clamp below), but at avail 0 alsa-lib never calls
+    // transfer, so consume's own resync never runs and the local read_seq stays
+    // frozen: a permanent-silence wedge with a LIVE writer (e.g. camilla's
+    // capture thread stalled > the 2 s liveness window while fanin free-ran, then
+    // resumed from the poll-blocked resting state). The tick fires on every wake
+    // regardless of avail, so running the resync here gives the reader an
+    // avail-visible recovery path; occupancy then reflects only fresh publishes
+    // and avail reopens. reader_resyncs counts it (observability / doctor).
+    jts_ring_reader_resync_if_overrun(&p->reader);
+    int writer_live = jts_ring_reader_writer_is_live(&p->reader);
+    // Bounded occupancy (see jts_ring_capture_occupancy_bounded): defense in
+    // depth in case the resync above raced a further writer advance.
+    uint64_t occ = jts_ring_capture_occupancy_bounded(
+        jts_ring_reader_occupancy_slots(&p->reader), p->n_slots);
+    int real_empty = (occ == 0) && (p->stage_frames == 0);
+    if (!writer_live && real_empty &&
+        p->pending_silence_frames < (uint64_t)p->period_frames) {
+        uint64_t now = jts_ring_monotonic_ns();
+        uint64_t period_ns = (uint64_t)p->period_frames * 1000000000ull / JTS_RING_RATE;
+        // First silence period after real data (last_silence_ns == 0) arms
+        // immediately so the gate opens without a period of dead air; each
+        // subsequent one waits a full period of realtime.
+        if (p->last_silence_ns == 0 || now - p->last_silence_ns >= period_ns) {
+            p->pending_silence_frames = (uint64_t)p->period_frames;
+            p->last_silence_ns = now;
+        }
+    }
+}
 
 static int jts_ring_capture_prepare(snd_pcm_ioplug_t *io) {
     jts_ring_pcm_t *p = io->private_data;
@@ -516,6 +619,7 @@ static int jts_ring_capture_prepare(snd_pcm_ioplug_t *io) {
     p->appl_frames = 0;
     p->pending_silence_frames = 0;
     p->silence_periods = 0;
+    p->transfer_starved_naps = 0;
     p->last_silence_ns = 0;
     p->ptr_state.last_reported = 0;
     return 0;
@@ -523,6 +627,14 @@ static int jts_ring_capture_prepare(snd_pcm_ioplug_t *io) {
 
 static snd_pcm_sframes_t jts_ring_capture_pointer(snd_pcm_ioplug_t *io) {
     jts_ring_pcm_t *p = io->private_data;
+    // Per-wake service work FIRST (timerfd drain + wall-clock-gated silence
+    // arm) so a freshly-armed period is included in this same report and the
+    // consumer's next poll actually sleeps. `pointer` is the one callback every
+    // consumer runs per wake (snd_pcm_avail_update), including the raw-poll
+    // CamillaDSP backend that never calls poll_revents — see the "CONSUMER
+    // REALITY" banner. The shared report core below stays pure; this is the
+    // impure plugin-side prologue that feeds it.
+    capture_service_tick(p);
     // Capture hw_ptr advances on the WRITER's PUBLISH: hw = appl_frames +
     // readable, so ALSA's capture avail = hw - appl = readable. The three-part
     // discipline lives in the shared jts_ring_capture_pointer_report (see the
@@ -551,40 +663,48 @@ static snd_pcm_sframes_t jts_ring_capture_pointer(snd_pcm_ioplug_t *io) {
     return (snd_pcm_sframes_t)(reported % io->buffer_size);
 }
 
-// Refill the destage buffer with one slot when it is empty. Real ring data takes
-// priority (a writer that came back is served before any pending silence). On an
-// empty real ring: if silence has been ARMED (pending_silence_frames >= a period,
-// set by the poll tick while the writer is dead) fabricate that period of zeros
-// and CONSUME the pending arm; otherwise return 0 (the caller reports a short read
-// and re-polls — the writer-alive-and-empty pacing block). Returns readable frames
-// now in the destage buffer (period_frames on success, 0 if it must block).
+// Refill the destage buffer with one slot when it is empty. ARMED silence is
+// served FIRST, then real ring data; on an empty ring with nothing armed,
+// return 0 (the caller reports a short read and re-polls — the
+// writer-alive-and-empty pacing block). Returns readable frames now in the
+// destage buffer (period_frames on success, 0 if it must block).
+//
+// WHY silence-first (the phantom-avail debt fix): once the service tick arms a
+// period, the `pointer` callback has already REPORTED it to ALSA as readable —
+// hw_ptr advanced, and the reported position is forward-only by design (the
+// mod-buffer alias clamp). An armed period is therefore a delivery COMMITMENT:
+// the earlier real-data-first version DISCARDED an armed-but-unconsumed period
+// when the writer's first slot raced in, leaving hw_ptr one period ahead of
+// anything this function could ever serve — permanent phantom avail. ALSA's rw
+// loop only poll-waits at avail == 0, so from then on every genuinely-empty
+// moment became a hot 0-frame-transfer spin (the RLIMIT_RTTIME SIGKILL class).
+// Serving the armed period first keeps the books exact, and stays sonically
+// correct: arming requires a dead writer AND an empty ring, so the one armed
+// period belongs to the silence gap that just ended — at most one extra
+// 128-frame period (~2.7 ms) of zeros before resumed audio, never a splice
+// into steady-state music (the concern that motivated the discard).
 static size_t capture_refill_destage(jts_ring_pcm_t *p) {
     if (p->stage_frames > 0) return p->stage_frames; // still draining a slot
+    if (p->pending_silence_frames >= p->period_frames) {
+        // Fabricate the committed period. Zero the destage explicitly: the
+        // consume-empty path used to do this as a side effect, but silence is
+        // now served before consume runs, and the buffer still holds the
+        // previous slot's audio.
+        memset(p->stage, 0,
+               p->stage_capacity_frames * JTS_RING_CHANNELS * sizeof(int16_t));
+        p->pending_silence_frames -= p->period_frames;
+        p->stage_frames = p->stage_capacity_frames;
+        p->silence_periods++;
+        return p->stage_frames;
+    }
     jts_ring_slot_read_t got = jts_ring_reader_consume(&p->reader, p->stage);
     if (got == JTS_RING_SLOT_FILLED) {
         p->stage_frames = p->stage_capacity_frames;
         // Real data flowed: reset the silence pacing clock so a later writer-death
         // gap arms its FIRST silence period immediately (no dead-air lag), then
-        // paces subsequent ones from that point.
+        // paces subsequent ones from that point. (pending_silence_frames is
+        // necessarily 0 here — an armed period was served by the branch above.)
         p->last_silence_ns = 0;
-        // Discard any silence that was ARMED but not yet CONSUMED. The poll tick
-        // arms one period of pending silence when the writer is dead + the ring is
-        // empty; if the writer then publishes a real slot BEFORE that armed period
-        // is consumed, the arm is stale. Leaving it set would splice a spurious
-        // silence period into live audio the next time the ring momentarily drains
-        // between two paced real slots (real data wins here, so the pending frames
-        // would otherwise survive until an empty read fired the pending>=period
-        // branch below). Real data supersedes any pending silence — clear it.
-        p->pending_silence_frames = 0;
-        return p->stage_frames;
-    }
-    // Empty real ring. If a silence period has been armed (writer dead, poll tick
-    // advanced pending_silence_frames), deliver it: p->stage is already zeros from
-    // reader_consume's empty-fill. Consume one period of the pending arm.
-    if (p->pending_silence_frames >= p->period_frames) {
-        p->pending_silence_frames -= p->period_frames;
-        p->stage_frames = p->stage_capacity_frames;
-        p->silence_periods++;
         return p->stage_frames;
     }
     return 0; // writer alive + empty (no armed silence): block (short read), re-poll
@@ -619,6 +739,28 @@ static snd_pcm_sframes_t jts_ring_capture_transfer(snd_pcm_ioplug_t *io,
         p->stage_frames -= take;
         delivered += take;
     }
+    // STARVATION BACKSTOP (defense in depth; should be unreachable). ALSA only
+    // calls `transfer` when its avail gate granted frames, and after the
+    // occupancy clamp + silence-first refill above, avail > 0 always implies
+    // refill can serve — so a zero-delivery call means the reported position
+    // and the deliverable state have diverged. alsa-lib's rw loop treats a
+    // 0-frame transfer as "try again" and only poll-waits at avail == 0, so
+    // left alone it re-enters here in a tight loop — on CamillaDSP's SCHED_FIFO
+    // capture thread that is the RLIMIT_RTTIME SIGKILL. Convert any residual
+    // divergence into a bounded, RTTIME-resetting nap per call: the loop then
+    // runs at the poll cadence (~1500/s) until real data or an armed period
+    // resolves it. Counted + logged (close line; first occurrence at SNDERR) so
+    // it cannot become a silent failure mode.
+    if (delivered == 0 && size > 0) {
+        p->transfer_starved_naps++;
+        if (p->transfer_starved_naps == 1) {
+            SNDERR("jts_ring: capture transfer starved with avail granted "
+                   "(avail/deliverable divergence) — pacing with bounded naps");
+        }
+        struct timespec nap = {.tv_sec = 0,
+                               .tv_nsec = (long)tick_ns_for(p->period_frames)};
+        nanosleep(&nap, NULL);
+    }
     p->appl_frames += delivered;
     return (snd_pcm_sframes_t)delivered;
 }
@@ -629,8 +771,13 @@ static int jts_ring_capture_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delay
     // app = readable = in-ring unread + destage remainder. Honest occupancy-
     // derived, same rationale as the playback delay (a live consumer's rate
     // controller reads it; the writer-dead silence path is governed by the avail
-    // GATE, not this value).
-    uint64_t slots = p->opened ? jts_ring_reader_occupancy_slots(&p->reader) : 0;
+    // GATE, not this value). Bounded like every other avail/readable path so an
+    // out-of-range occupancy reports the resync outcome (0), not a garbage-huge
+    // delay to camilla's rate controller.
+    uint64_t slots = p->opened
+                         ? jts_ring_capture_occupancy_bounded(
+                               jts_ring_reader_occupancy_slots(&p->reader), p->n_slots)
+                         : 0;
     snd_pcm_sframes_t delay =
         (snd_pcm_sframes_t)(slots * p->period_frames + p->stage_frames);
     if (delayp) *delayp = delay;
@@ -640,56 +787,21 @@ static int jts_ring_capture_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delay
 static int jts_ring_capture_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfd,
                                          unsigned int nfds, unsigned short *revents) {
     jts_ring_pcm_t *p = io->private_data;
+    (void)pfd;
+    (void)nfds;
     *revents = 0;
-    if (nfds >= 1 && (pfd[0].revents & POLLIN)) {
-        uint64_t expirations = 0;
-        ssize_t r = read(p->timer_fd, &expirations, sizeof(expirations));
-        (void)r;
-    }
-    // ARM SILENCE (the virtual writer), WALL-CLOCK PACED. If the writer is dead
-    // and the real ring is empty, arm one period of pending silence — but only
-    // once one period of REAL time (CLOCK_MONOTONIC) has elapsed since the last
-    // fabrication, so silence flows at ~48 kHz. This pacing is load-bearing:
-    // without it an unpaced consumer (arecord, which re-polls immediately) drains
-    // fabricated silence at multiples of realtime, so a writer that returns
-    // mid-capture finds its whole audio window already consumed as silence and
-    // gets no live reader (drop_no_reader). Bounded to <= one period so avail
-    // never runs away. This is also what makes a COLD-START dead-writer ring (the
-    // `arecord` resolvability probe with no fanin) advance hw and terminate — just
-    // at realtime pace.
-    //
-    // PACING ERROR IS INTENTIONALLY IN THE SAFE (SLOW) DIRECTION. `now` is only
-    // sampled on a timerfd tick (arm_timer's period/4 cadence, plus scheduler
-    // jitter), and `last_silence_ns = now` re-anchors to that tick rather than to
-    // the ideal period boundary, so the observed silence rate runs ~14% SLOW of
-    // realtime (measured: 4 s of silence ~= 4.66 s wall). That is the SAFE
-    // direction: slightly-slow silence makes the consumer block marginally longer
-    // and NEVER over-drains, so a returning writer's real audio is never
-    // pre-consumed as silence (the fast direction would). It is warn-only
-    // (`stop_on_rate_change` is unset). The honest-prototype timerfd poll (Q8) is
-    // approximate on purpose; the FUTEX_WAIT productization removes the tick
-    // quantization and the drift with it. Do NOT "fix" this by advancing
-    // last_silence_ns past `now` to catch up — that pushes the error toward the
-    // UNSAFE fast direction and can re-open the pre-consumed-audio drop.
-    if (p->opened) {
-        int writer_live = jts_ring_reader_writer_is_live(&p->reader);
-        uint64_t occ = jts_ring_reader_occupancy_slots(&p->reader);
-        int real_empty = (occ == 0) && (p->stage_frames == 0);
-        if (!writer_live && real_empty &&
-            p->pending_silence_frames < (uint64_t)p->period_frames) {
-            uint64_t now = jts_ring_monotonic_ns();
-            uint64_t period_ns = (uint64_t)p->period_frames * 1000000000ull / JTS_RING_RATE;
-            // First silence period after real data (last_silence_ns == 0) arms
-            // immediately so the gate opens without a period of dead air; each
-            // subsequent one waits a full period of realtime.
-            if (p->last_silence_ns == 0 || now - p->last_silence_ns >= period_ns) {
-                p->pending_silence_frames = (uint64_t)p->period_frames;
-                p->last_silence_ns = now;
-            }
-        }
-    }
+    // Timerfd drain + wall-clock-gated silence arm. Shared with the `pointer`
+    // callback (capture_service_tick) so both the snd_pcm_wait consumer flow
+    // (poll -> THIS demangle) and the raw-poll consumer flow (poll ->
+    // avail_update -> pointer) get the identical per-wake service work — see
+    // the "CONSUMER REALITY" banner for why poll_revents alone was dead code
+    // for CamillaDSP. The drain no longer keys on pfd[0].revents: the tick may
+    // already have been consumed by an interleaved pointer call, and a spare
+    // nonblocking read is free.
+    capture_service_tick(p);
     // Report POLLIN (readable) iff the app can consume a frame right now:
-    //   - a slot is in the ring (occupancy > 0), OR
+    //   - a slot is in the ring (occupancy > 0, bounded — an out-of-range value
+    //     resolves to a consume resync, i.e. nothing readable), OR
     //   - the destage buffer still has unread frames (stage_frames > 0), OR
     //   - a silence period is armed (pending_silence_frames > 0).
     // Empty ring WITH a live writer + no armed silence -> withhold POLLIN: camilla
@@ -700,7 +812,8 @@ static int jts_ring_capture_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pf
     if (!p->opened) {
         readable = 1;
     } else {
-        uint64_t occ = jts_ring_reader_occupancy_slots(&p->reader);
+        uint64_t occ = jts_ring_capture_occupancy_bounded(
+            jts_ring_reader_occupancy_slots(&p->reader), p->n_slots);
         readable = (occ > 0) || (p->stage_frames > 0) || (p->pending_silence_frames > 0);
     }
     if (readable) *revents |= POLLIN;
