@@ -45,6 +45,8 @@ import json
 import logging
 import os
 import re
+import secrets
+import time
 import urllib.parse
 import urllib.request
 from http import HTTPStatus
@@ -682,6 +684,35 @@ def _management_html(
 # ----------------------------------------------------------------------
 
 
+# ----------------------------------------------------------------------
+# OAuth CSRF state — nonce-keyed pending-flow store.
+# ----------------------------------------------------------------------
+# The OAuth `state` param round-trips through Google unchanged and is the
+# only defence against a login-CSRF (an attacker forging a /callback that
+# links THEIR Google account under a known label). It must be
+# unguessable, single-use, and time-bounded — a raw account name is none
+# of those. Mirrors jasper.web.spotify_setup's `_PENDING_FLOWS`: the nonce
+# is Google's `state`, and the callback looks it up to recover the account
+# name AND the PKCE code_verifier (which the callback's fresh Flow can't
+# regenerate). Per-process is fine — jasper-web is one unfarmed unit.
+#
+#   {nonce: (account_name, code_verifier, created_monotonic)}
+_PENDING_FLOWS: dict[str, tuple[str, str, float]] = {}
+_FLOW_TTL_SEC = 600.0  # 10 min, matches Google's auth-code lifetime
+
+
+def _gc_pending(now: float | None = None) -> None:
+    if now is None:
+        now = time.monotonic()
+    expired = [k for k, (_, _, t) in _PENDING_FLOWS.items() if now - t > _FLOW_TTL_SEC]
+    for k in expired:
+        _PENDING_FLOWS.pop(k, None)
+
+
+def _new_nonce() -> str:
+    return secrets.token_urlsafe(16)
+
+
 def _build_flow(cfg: dict[str, Any], *, state: str | None = None):
     """Construct a google_auth_oauthlib Flow with our Web-application
     client config. Imported lazily so the module is importable in
@@ -783,7 +814,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if not guard_read_request(self, allow_cross_site_navigation=True):
                     return
                 code = qs.get("code", [""])[0]
-                state = qs.get("state", [""])[0]  # account name
+                state = qs.get("state", [""])[0]  # CSRF nonce
                 err = qs.get("error", [""])[0]
                 if err:
                     self._redirect(
@@ -798,8 +829,20 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         "./?msg=Credentials+were+cleared+mid-flow.+Start+over."
                     )
                     return
+                # Validate the CSRF nonce: pop-once, and reject an unknown
+                # or expired one so a forged callback can't link an
+                # attacker's account under a guessed label.
+                _gc_pending()
+                entry = _PENDING_FLOWS.pop(state, None)
+                if entry is None:
+                    self._redirect(
+                        "./?msg=That+authorization+expired+or+wasn't+started"
+                        "+from+this+speaker.+Start+over."
+                    )
+                    return
+                account_name, verifier, _created = entry
                 try:
-                    self._exchange_code(state, code)
+                    self._exchange_code(account_name, code, verifier)
                 except Exception as e:  # noqa: BLE001
                     logger.exception("oauth exchange failed")
                     self._redirect(
@@ -810,7 +853,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # No account name / token in the line — personal data + secret.
                 log_event(logger, "google.link", client=self.address_string())
                 self._redirect(
-                    f"./?msg=Linked+{urllib.parse.quote(state)}+successfully"
+                    f"./?msg=Linked+{urllib.parse.quote(account_name)}+successfully"
                 )
                 return
 
@@ -929,8 +972,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             token_path = default_token_path_for(name)
             registry.add_or_update(GoogleAccount(name=name, token_path=token_path))
             registry.save()
+            # Generate a CSRF nonce; it's Google's `state` and the callback
+            # looks it up to recover the account name + PKCE verifier.
+            _gc_pending()
+            nonce = _new_nonce()
             try:
-                flow = _build_flow(cfg, state=name)
+                flow = _build_flow(cfg, state=nonce)
                 # `prompt='consent'` forces Google to issue a refresh
                 # token even if the user has already consented — the
                 # one we get on first consent is the only one we'll
@@ -949,11 +996,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             # google-auth-oauthlib defaults autogenerate_code_verifier=True,
             # so authorization_url() generated a PKCE verifier and stored
-            # it on this Flow instance. The /callback handler will build a
+            # it on this Flow instance. The /callback handler builds a
             # fresh Flow (no shared state across requests), so the verifier
-            # has to ride along in `cfg`, keyed by the account name (which
-            # is also the OAuth `state` param Google round-trips back).
-            cfg.setdefault("pending_verifiers", {})[name] = flow.code_verifier
+            # has to ride along, keyed by the nonce Google round-trips back.
+            _PENDING_FLOWS[nonce] = (name, flow.code_verifier, time.monotonic())
             self._redirect(auth_url)
 
         def _handle_remove(self, form: dict[str, str]) -> None:
@@ -992,17 +1038,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             else:
                 self._redirect("./?msg=Account+not+found")
 
-        def _exchange_code(self, account_name: str, code: str) -> None:
+        def _exchange_code(
+            self, account_name: str, code: str, verifier: str | None,
+        ) -> None:
             registry = GoogleRegistry.load(cfg["registry_path"])
             account = registry.get(account_name)
             if account is None:
                 raise RuntimeError(f"unknown account: {account_name}")
             flow = _build_flow(cfg, state=account_name)
-            # Restore the PKCE verifier that /start stashed in cfg. Pop
-            # so a redo (user clicks Continue again) doesn't reuse a
-            # stale verifier — the next /start will create a new one.
-            pending = cfg.get("pending_verifiers", {})
-            verifier = pending.pop(account_name, None)
+            # Restore the PKCE verifier that /start stashed under the nonce
+            # (the callback already popped the pending entry, so a redo
+            # can't reuse it — the next /start creates a fresh nonce).
             if verifier is not None:
                 flow.code_verifier = verifier
             flow.fetch_token(code=code)

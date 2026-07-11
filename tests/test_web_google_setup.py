@@ -368,14 +368,21 @@ def test_start_redirects_to_google_authorize(patched_common):
         authorization_url=lambda **k: ("https://accounts.google.com/o/oauth2/auth?x=1", "jasper"),
         code_verifier="verifier123",
     )
+    google_setup._PENDING_FLOWS.clear()
     with mock.patch.object(google_setup.GoogleRegistry, "load", return_value=fake_registry), \
          mock.patch.object(google_setup, "default_token_path_for", return_value="/tok"), \
          mock.patch.object(google_setup, "_build_flow", return_value=fake_flow):
         fake.do_POST()
-    # Redirected to the Google authorize URL; PKCE verifier stashed in cfg.
+    # Redirected to the Google authorize URL; the PKCE verifier + account
+    # name are stashed under an unguessable CSRF nonce (not the account name).
     loc = patched_common.send_see_other.call_args.args[1]
     assert loc.startswith("https://accounts.google.com/o/oauth2/auth")
-    assert cfg["pending_verifiers"]["jasper"] == "verifier123"
+    pending = list(google_setup._PENDING_FLOWS.items())
+    assert len(pending) == 1
+    nonce, (name, verifier, _created) = pending[0]
+    assert nonce != "jasper"  # not the predictable account name
+    assert len(nonce) >= 16  # token_urlsafe(16) → unguessable
+    assert (name, verifier) == ("jasper", "verifier123")
 
 
 def test_start_rejects_bad_name(patched_common):
@@ -419,15 +426,35 @@ def test_remove_deletes_account_and_token(patched_common, tmp_path):
 
 def test_callback_exchanges_code_and_restarts(patched_common):
     cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
-    fake = _make_bound_handler(cfg, "/callback?code=abc&state=jasper")
-    with mock.patch.object(fake, "_exchange_code") as ex:
+    # Seed a pending flow as /start would: nonce → (account, verifier, ts).
+    google_setup._PENDING_FLOWS.clear()
+    google_setup._PENDING_FLOWS["nonce123"] = ("jasper", "verifier123", 0.0)
+    fake = _make_bound_handler(cfg, "/callback?code=abc&state=nonce123")
+    with mock.patch.object(fake, "_exchange_code") as ex, \
+         mock.patch.object(google_setup, "_gc_pending"):  # don't expire our 0.0 ts
         fake.do_GET()
         assert ex.called
-        assert ex.call_args.args == ("jasper", "abc")
+        # Nonce resolved to the account name + stashed PKCE verifier.
+        assert ex.call_args.args == ("jasper", "abc", "verifier123")
+    # Nonce consumed (single-use).
+    assert "nonce123" not in google_setup._PENDING_FLOWS
     assert patched_common.restart_voice_daemon.called
     # Redirected back to / with a success flash (via the _redirect shim, so the
     # "Linked …" text is in the flash kwarg, and the URL is the cleaned "./").
     assert "Linked" in _flash(patched_common.send_see_other)
+
+
+def test_callback_rejects_unknown_state_without_exchange(patched_common):
+    # CSRF guard: a forged callback with a state that was never issued
+    # (or already consumed / expired) must not run the token exchange.
+    cfg = _cfg(client_id=GOOD_CLIENT_ID, client_secret="secret")
+    google_setup._PENDING_FLOWS.clear()
+    fake = _make_bound_handler(cfg, "/callback?code=abc&state=forged")
+    with mock.patch.object(fake, "_exchange_code") as ex:
+        fake.do_GET()
+        assert not ex.called
+    assert not patched_common.restart_voice_daemon.called
+    assert "expired" in _flash(patched_common.send_see_other)
 
 
 def test_callback_with_error_redirects_without_exchange(patched_common):
