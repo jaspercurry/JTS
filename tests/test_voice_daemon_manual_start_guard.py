@@ -114,6 +114,58 @@ async def test_manual_start_refused_when_measurement_active(caplog):
     assert "reason=measurement_active" in caplog.text
 
 
+async def test_measurement_pause_and_resume_transfer_volume_ownership():
+    """The voice-side gate and volume-owner lease change together."""
+    wl = _make_wake_loop()
+    ownership: list[bool] = []
+
+    async def note_measurement_active(active):
+        ownership.append(bool(active))
+
+    wl._volume_coordinator = types.SimpleNamespace(
+        note_measurement_active=note_measurement_active
+    )
+
+    assert await wl.measurement_pause() == "ok"
+    assert wl._measurement_active.is_set()
+    assert ownership == [True]
+
+    assert await wl.measurement_resume() == "ok"
+    assert not wl._measurement_active.is_set()
+    assert ownership == [True, False]
+    assert wl.session_status()["measurement_active"] is False
+
+
+async def test_measurement_auto_clear_releases_reconcile_guard(monkeypatch):
+    """A crashed correction owner cannot strand the guard active."""
+    wl = _make_wake_loop()
+    ownership: list[bool] = []
+
+    async def note_measurement_active(active):
+        ownership.append(bool(active))
+
+    wl._volume_coordinator = types.SimpleNamespace(
+        note_measurement_active=note_measurement_active
+    )
+    timer_started = asyncio.Event()
+    release_timer = asyncio.Event()
+
+    async def fake_sleep(seconds):
+        assert seconds == 120.0
+        timer_started.set()
+        await release_timer.wait()
+
+    monkeypatch.setattr("jasper.voice_daemon.asyncio.sleep", fake_sleep)
+
+    assert await wl.measurement_pause() == "ok"
+    await timer_started.wait()
+    release_timer.set()
+    await wl._measurement_safety_task
+
+    assert ownership == [True, False]
+    assert not wl._measurement_active.is_set()
+
+
 async def test_manual_start_begins_turn_when_unguarded():
     # Control: with both stop-listening gates clear (and spend/connection
     # allowed), manual_session_start proceeds normally — proving the new

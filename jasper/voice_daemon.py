@@ -1188,6 +1188,9 @@ class WakeLoop:
             def note_voice_session(self, *_args, **_kwargs) -> None:
                 return None
 
+            async def note_measurement_active(self, *_args, **_kwargs) -> None:
+                return None
+
         class _TestVad:
             def predict(self, _frame) -> float:
                 return 0.0
@@ -2238,7 +2241,7 @@ class WakeLoop:
         """
         if self._state is State.SESSION:
             return "BUSY"
-        self._measurement_active.set()
+        await self._set_measurement_active(True, trigger="pause")
         self._content_activity.pause()
         await self._tts.pause_content_meter()
 
@@ -2264,7 +2267,7 @@ class WakeLoop:
                     "coordinator likely crashed without sending "
                     "MEASURE_RESUME"
                 )
-                self._measurement_active.clear()
+                await self._set_measurement_active(False, trigger="auto_clear")
                 self._content_activity.resume()
                 await self._tts.resume_content_meter()
 
@@ -2416,7 +2419,7 @@ class WakeLoop:
         Idempotent — calling twice (or before any PAUSE) is harmless.
         Always returns "ok".
         """
-        self._measurement_active.clear()
+        await self._set_measurement_active(False, trigger="resume")
         self._content_activity.resume()
         await self._tts.resume_content_meter()
         if self._measurement_safety_task is not None:
@@ -2424,6 +2427,22 @@ class WakeLoop:
                 self._measurement_safety_task.cancel()
             self._measurement_safety_task = None
         return "ok"
+
+    async def _set_measurement_active(self, active: bool, *, trigger: str) -> None:
+        """Update the voice gate and reconcile guard as one state change."""
+        changed = self._measurement_active.is_set() != bool(active)
+        if active:
+            self._measurement_active.set()
+        else:
+            self._measurement_active.clear()
+        await self._volume_coordinator.note_measurement_active(active)
+        if changed:
+            log_event(
+                logger,
+                "measurement.reconcile_guard",
+                active=str(bool(active)).lower(),
+                trigger=trigger,
+            )
 
     def _read_music_dbfs(self) -> float | None:
         """Most-recent playback RMS in dBFS, or None when unavailable.
@@ -3626,6 +3645,7 @@ class WakeLoop:
             "usage_tracking_degraded": self._usage_store.write_degraded,
             "connection_paused": self._connection.is_paused(),
             "mic_muted": self._mic_muted,
+            "measurement_active": self._measurement_active.is_set(),
             "duck_active": self._ducker.is_ducked,
             "assistant_output": {
                 "active": self._output_gate.is_active,

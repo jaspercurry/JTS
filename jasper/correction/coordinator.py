@@ -41,9 +41,10 @@ What does NOT get paused:
 Robustness:
   - Restoration runs in `finally` — exceptions don't strand the
     speaker in "everything stopped" state.
-  - The voice-daemon RESUME has a server-side 2-minute auto-clear
-    safety timer (see voice_daemon.py), so even a coordinator crash
-    (kill -9) is recovered automatically.
+  - The voice-daemon RESUME has a server-side 2-minute auto-clear safety timer
+    (see voice_daemon.py). A healthy long-running window renews that lease every
+    minute; a coordinator crash (kill -9) stops renewal and still recovers
+    automatically.
   - A precondition check refuses to start if a voice session is
     currently active — yanking an in-flight session is worse than
     asking the user to wait or end it first.
@@ -70,6 +71,11 @@ DEFAULT_RENDERERS_TO_PAUSE: tuple[str, ...] = (
 )
 
 DEFAULT_VOICE_SOCKET_PATH = "/run/jasper/voice.sock"
+# Refresh the voice-side 120 s crash-recovery timer while a valid measurement
+# window remains open. A relay setup may wait up to eight minutes for a human;
+# renewal preserves that legitimate window without weakening crash recovery.
+MEASUREMENT_LEASE_REFRESH_SEC = 60.0
+MEASUREMENT_LEASE_RETRY_SEC = 5.0
 
 # Mutual-exclusion flag for measurement_window(). Only one window may be open
 # at a time: a second concurrent window would let whichever exits FIRST send
@@ -200,6 +206,7 @@ async def measurement_window(
 
     paused_services: list[str] = []
     voice_paused = False
+    lease_refresh_task: asyncio.Task[None] | None = None
 
     try:
         # Precondition: no active voice session. Inside the try so the
@@ -220,6 +227,42 @@ async def measurement_window(
                 )
                 if resp.get("result") == "ok":
                     voice_paused = True
+
+                    async def _refresh_voice_lease() -> None:
+                        delay = MEASUREMENT_LEASE_REFRESH_SEC
+                        while True:
+                            await asyncio.sleep(delay)
+                            try:
+                                renewal = await _voice_uds_command(
+                                    voice_socket_path,
+                                    "MEASURE_PAUSE",
+                                    timeout=3.0,
+                                )
+                            except (
+                                FileNotFoundError,
+                                OSError,
+                                asyncio.TimeoutError,
+                                RuntimeError,
+                                ValueError,
+                            ) as exc:
+                                logger.warning(
+                                    "measurement lease refresh failed: %s",
+                                    exc,
+                                )
+                                delay = MEASUREMENT_LEASE_RETRY_SEC
+                                continue
+                            if renewal.get("result") != "ok":
+                                logger.warning(
+                                    "measurement lease refresh returned non-ok: %s",
+                                    renewal,
+                                )
+                                delay = MEASUREMENT_LEASE_RETRY_SEC
+                            else:
+                                delay = MEASUREMENT_LEASE_REFRESH_SEC
+
+                    lease_refresh_task = asyncio.create_task(
+                        _refresh_voice_lease()
+                    )
                 else:
                     logger.warning(
                         "MEASURE_PAUSE returned non-ok: %s — proceeding "
@@ -251,6 +294,16 @@ async def measurement_window(
         # (e.g. systemctl missing). The inner finally gives both: serialized
         # against the restore, and never leaked.
         try:
+            if lease_refresh_task is not None:
+                lease_refresh_task.cancel()
+                try:
+                    await lease_refresh_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:  # noqa: BLE001
+                    # Renewal is resilience-only. Never let a dead background
+                    # task bypass MEASURE_RESUME or renderer restoration.
+                    logger.exception("measurement lease refresh task failed")
             # Restore voice FIRST so wake events can resume the moment the
             # user is ready to interact, even before the renderers have
             # fully come back. Then restart the renderers — they spin up
