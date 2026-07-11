@@ -65,7 +65,30 @@ it kicks `jasper-audio-hardware-reconcile` after the ordered disarm so the
 direct-bridge floor (`1536`) re-emits promptly — without the kick the box would
 sit on outputd's larger compile-default content buffer (fail-safe, but
 route-incoherent) until the next udev/boot/deploy/outputd-failure event, since
-that reconciler has no timer. outputd's `/state` publishes the honest Ring B
+that reconciler has no timer.
+
+**Disclosure (post-#1251 audit, 2026-07-11):** the kicked reconciler pass's
+only delta on this path is outputd.env (the floor re-emit), but
+`restart_audio_if_needed` in `deploy/bin/jasper-audio-hardware-reconcile`
+(~lines 795-798) treats every outputd.env change identically regardless of
+cause: a blocking `systemctl stop jasper-voice`, then `--no-block restart
+jasper-outputd` and `--no-block restart jasper-aec-reconcile`. So every
+shm_ring→direct disarm — including a household `/sources/` USB toggle-off —
+deterministically costs ~10-15 s of wake deafness, self-healed by the
+standard aec-reconcile → voice-restart pattern (the restarted reconciler
+detects the mic and restarts `jasper-voice`); this cost was not disclosed in
+the original PR #1251. The disarm path also double-bounces outputd:
+`_disarm`'s own blocking restart lands first, then the kicked pass's
+`--no-block` restart lands again seconds later — inherent to single-writer
+floor ownership (the hardware reconciler is the only writer of the floor
+key). A floor-only optimization that would skip the voice stop is filed as
+issue #1257. `_recover_to_loopback` (the ARM-failure rollback path) is the
+one shm_ring→direct transition that intentionally skips the kick — a
+just-failed box gets the larger fail-safe cushion and less daemon churn
+instead, and the floor re-emit simply waits for the next udev/boot/deploy
+event on that path.
+
+outputd's `/state` publishes the honest Ring B
 capacity in `content.ring.capacity_frames` (`n_slots × slot_frames`) next to a
 synthetic period-sized `content.buffer_frames`, and `jasper-doctor` validates that
 ring geometry rather than the ALSA `>= 2× period` jitter floor. The `1536` content
@@ -1959,7 +1982,11 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-11 (de-staled the await-lock LOCKED-mapping passage in
+Last verified: 2026-07-11 (fix-forward from the #1251 post-merge audit:
+truthed the "Current Production Route" disarm-kick paragraph above with the
+voice-stop cost, the outputd double-bounce, and the `_recover_to_loopback`
+no-kick exception; cross-referenced issue #1257. Same day, earlier: de-staled
+the await-lock LOCKED-mapping passage in
 "The probe does NOT baseline at the session edge": its "two daemons map LOCKED
 differently" bullets still presented the deleted usbsink-solo settle-only
 (`playing`) gate as a live parallel branch to fan-in's `locked_state` — missed
