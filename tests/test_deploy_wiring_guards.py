@@ -351,6 +351,45 @@ def test_package_owned_recovery_dropins_are_installed():
         assert rel in install_text
 
 
+_SYSTEMD_UNITS_FRAGMENT = _DEPLOY / "lib" / "install" / "systemd-units.sh"
+
+
+def _install_function_body(source: str, name: str) -> str:
+    """Extract a bash function body from an install fragment. Functions
+    there open with `name() {` at column 0 and close with a `}` alone at
+    column 0."""
+    pattern = r"^" + re.escape(name) + r"\(\) \{\n(.*?)\n\}$"
+    m = re.search(pattern, source, re.S | re.M)
+    assert m, f"function {name} not found in systemd-units.sh"
+    return m.group(1)
+
+
+def test_nginx_recovery_dropin_installed_on_both_profiles():
+    """The nginx recovery drop-in (Restart=always + OOMScoreAdjust=-450)
+    shipped 2026-06-29 on the streambox path only. Full-profile boxes ran
+    an unprotected nginx (an OOM-killed nginx stayed dead) with a
+    permanently-warning doctor check — check_oom_score_adj expects -450 on
+    nginx regardless of profile, and its "re-run install.sh" remediation
+    could never fix it there. The whole-text check above cannot catch a
+    per-profile gap, so pin that the shared helper installs the drop-in
+    and that BOTH profile entry points reach it."""
+    source = _SYSTEMD_UNITS_FRAGMENT.read_text(encoding="utf-8")
+    helper = _install_function_body(source, "install_nginx_recovery_dropin")
+    assert "deploy/systemd/nginx.service.d/jts-recovery.conf" in helper
+
+    # Full profile calls the helper directly.
+    assert "install_nginx_recovery_dropin" in _install_function_body(
+        source, "install_systemd_units"
+    )
+    # Streambox profile reaches it via install_streambox_audio_slices.
+    assert "install_nginx_recovery_dropin" in _install_function_body(
+        source, "install_streambox_audio_slices"
+    )
+    assert "install_streambox_audio_slices" in _install_function_body(
+        source, "install_streambox_systemd_units"
+    )
+
+
 def test_legacy_ad_hoc_recovery_window_dropins_are_removed():
     install_text = "\n".join(
         p.read_text(encoding="utf-8") for p in _INSTALL_SCRIPTS
