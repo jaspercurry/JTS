@@ -913,6 +913,34 @@ def test_entry_lock_fails_open_when_unopenable(tmp_path, caplog):
     assert "entry_lock_unavailable" in caplog.text
 
 
+def test_cli_proceeds_unserialized_when_lock_unavailable(monkeypatch, tmp_path):
+    """The fail-open SAFETY PROPERTY at the level it actually lives: an
+    unopenable lock file must NOT brick the reconcile — main() runs the verb
+    unserialized (returning its real result), never fails closed. Pins
+    _acquire_entry_lock's 'must not brick reconciles' claim end-to-end through
+    main(), not just at the helper."""
+    from jasper.fanin import coupling_reconcile as cr
+
+    # A lock path whose parent dir does not exist -> os.open raises -> unavailable.
+    monkeypatch.setattr(cr, "ENTRY_LOCK_PATH", str(tmp_path / "no-such-dir" / "l.lock"))
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    ran = {"auto": 0}
+
+    def fake_auto(*a, **k):
+        ran["auto"] += 1
+        return cr.AutoResult(
+            ok=True, owned=True, coupling="loopback", gadget_present=False,
+            usb_combo_changed=False, reason="",
+        )
+
+    monkeypatch.setattr(cr, "reconcile_auto", fake_auto)
+
+    rc = cr.main(["--auto"])
+
+    assert rc == 0  # verb ran and succeeded despite no lock
+    assert ran["auto"] == 1
+
+
 @pytest.mark.parametrize("argv", [["--auto"], ["--health"], ["loopback"]])
 def test_cli_verbs_run_under_entry_lock(monkeypatch, tmp_path, argv):
     """Every entry verb (--auto / --health / explicit) must HOLD the shared
