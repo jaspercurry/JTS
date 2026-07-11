@@ -31,7 +31,7 @@ as of 2026-05:
 | xAI Grok Voice Agent | ~$0.05 | ~$0.15 |
 
 The regression suite has grown well past its original 4-scenario V1
-baseline (19 scenario files as of 2026-07, each with its own `PASS_K`
+baseline (18 scenario files as of 2026-07, each with its own `PASS_K`
 and turn count — some intentionally 1 turn, others up to 15). There is
 no fixed "full suite" number worth quoting here because it goes stale
 every time a scenario is added; before running the full suite, sum

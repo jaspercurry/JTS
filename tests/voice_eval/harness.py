@@ -21,7 +21,7 @@ This module makes paid LLM API calls. Per-turn cost as of 2026-05:
   - xAI Grok Voice Agent:                 ~$0.05 / turn
 
 A `pass^k` scenario = K turns. The suite has grown well past its
-original 4-scenario V1 baseline (19 scenario files as of 2026-07, each
+original 4-scenario V1 baseline (18 scenario files as of 2026-07, each
 with its own PASS_K and turn count) — there is no fixed total worth
 hardcoding here since it goes stale on every new scenario. Before
 running the full suite, sum PASS_K x turns-per-trial across
