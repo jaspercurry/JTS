@@ -31,6 +31,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import location_state
+from ..atomic_io import locked_transform_env_file
 from ..transit import geocode as geocode_mod
 from ..log_event import log_event
 from ._common import (
@@ -39,7 +40,6 @@ from ._common import (
     canonical_header,
     canonical_page,
     csrf_field_html,
-    delete_env_file,
     read_env_file,
     read_form,
     reject_csrf,
@@ -421,8 +421,25 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
             if err is not None:
                 send_see_other(self, "./", flash=err)
                 return
+            # weather.env has two writers in this process: this save/clear
+            # and transit_setup's _seed_weather_from_transit_if_missing. Both
+            # read-then-replace, so an unlocked write can lose a concurrent
+            # location write. Recompute the owned keys under the shared flock,
+            # preserving whatever non-owned keys the in-lock file carries.
+            owned = _owned_env_keys()
+            owned_values = {k: v for k, v in new.items() if k in owned}
+
+            def _save_transform(current_locked: dict[str, str]) -> dict[str, str]:
+                result = {
+                    k: v for k, v in current_locked.items() if k not in owned
+                }
+                result.update(owned_values)
+                return result
+
             try:
-                write_env_file(cfg["state_path"], new, mode=WEATHER_FILE_MODE)
+                locked_transform_env_file(
+                    cfg["state_path"], _save_transform, mode=WEATHER_FILE_MODE,
+                )
                 _seed_transit_from_weather_if_missing(
                     new, transit_path=cfg["transit_path"],
                 )
@@ -436,13 +453,23 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
             send_see_other(self, "./", flash="Saved. Voice daemon restarting.")
 
         def _handle_clear(self) -> None:
-            current = _load_state(cfg["state_path"])
-            new = _state_without_owned_keys(current)
+            owned = _owned_env_keys()
+
+            def _clear_transform(
+                current_locked: dict[str, str],
+            ) -> dict[str, str] | None:
+                remaining = {
+                    k: v for k, v in current_locked.items() if k not in owned
+                }
+                # None => delete the file (parity with delete_env_file when
+                # nothing non-owned remains); serialized under the same flock
+                # as the transit seed writer.
+                return remaining or None
+
             try:
-                if new:
-                    write_env_file(cfg["state_path"], new, mode=WEATHER_FILE_MODE)
-                else:
-                    delete_env_file(cfg["state_path"])
+                locked_transform_env_file(
+                    cfg["state_path"], _clear_transform, mode=WEATHER_FILE_MODE,
+                )
             except OSError as e:
                 logger.exception("could not clear weather.env")
                 send_see_other(self, "./", flash=f"Could not save: {e}")

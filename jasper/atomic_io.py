@@ -39,10 +39,15 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Mapping
+from typing import Callable
 
 import fcntl
 
-__all__ = ["atomic_write_text", "locked_update_env_file"]
+__all__ = [
+    "atomic_write_text",
+    "locked_transform_env_file",
+    "locked_update_env_file",
+]
 
 
 def atomic_write_text(
@@ -146,5 +151,49 @@ def locked_update_env_file(
             state.update(dict(updates))
             atomic_write_text(fspath, _format_env_text(state), mode=mode)
             return dict(state)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def locked_transform_env_file(
+    path: str | os.PathLike,
+    transform: Callable[[dict[str, str]], "dict[str, str] | None"],
+    *,
+    mode: int = 0o644,
+) -> dict[str, str] | None:
+    """Serialize a full read-transform-write (or delete) of an EnvironmentFile.
+
+    Like :func:`locked_update_env_file`, but for writers that must DROP keys
+    or DELETE the file — a merge-only ``updates`` mapping cannot express
+    either. ``transform`` receives the current parsed dict (empty when the
+    file is absent) and returns the COMPLETE new dict to write, or ``None`` to
+    delete the file; returning the input unchanged is a no-op the caller can
+    use for a read-decide-skip (its read then runs under the lock, closing the
+    check-then-act race). Holds the SAME advisory flock as
+    ``locked_update_env_file`` on the same path, so both helpers mutually
+    exclude writers of one file. Returns the written dict, or ``None`` when the
+    file was deleted or left absent.
+    """
+    fspath = os.fspath(path)
+    parent = os.path.dirname(fspath) or "."
+    os.makedirs(parent, exist_ok=True)
+    lock_path = _env_lock_path(fspath)
+    with open(lock_path, "a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                with open(fspath, encoding="utf-8") as existing:
+                    state = _parse_env_text(existing.read())
+            except FileNotFoundError:
+                state = {}
+            new_state = transform(dict(state))
+            if new_state is None:
+                try:
+                    os.unlink(fspath)
+                except FileNotFoundError:
+                    pass
+                return None
+            atomic_write_text(fspath, _format_env_text(new_state), mode=mode)
+            return dict(new_state)
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)

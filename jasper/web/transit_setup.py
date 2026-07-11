@@ -67,6 +67,7 @@ from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import google_routes, location_state, transit
+from ..atomic_io import locked_transform_env_file
 from ..bus import parse_bus_stops
 from ..transit import geocode as geocode_mod
 from ..log_event import log_event
@@ -153,22 +154,33 @@ def _seed_weather_from_transit_if_missing(
     loc = location_state.parse_transit_location(transit_state)
     if loc is None:
         return False
-    weather_state = read_env_file(weather_path)
-    if location_state.parse_weather_location(weather_state) is not None:
-        return False
-    units = (
-        weather_state.get(location_state.WEATHER_UNITS_ENV, "").strip()
-        or os.environ.get(location_state.WEATHER_UNITS_ENV, "").strip()
-        or None
+    # weather.env is also written by weather_setup's own save/clear. Take the
+    # shared flock and re-read weather INSIDE the lock: the
+    # "weather already has coords → skip" decision and the write must be one
+    # atomic step, or a concurrent weather save can be clobbered (or this seed
+    # can overwrite coords the user just entered).
+    seeded = False
+
+    def _seed_transform(weather_state: dict[str, str]) -> dict[str, str] | None:
+        nonlocal seeded
+        if location_state.parse_weather_location(weather_state) is not None:
+            return weather_state  # already has coords — no-op under the lock
+        units = (
+            weather_state.get(location_state.WEATHER_UNITS_ENV, "").strip()
+            or os.environ.get(location_state.WEATHER_UNITS_ENV, "").strip()
+            or None
+        )
+        new_weather = dict(weather_state)
+        new_weather.update(
+            location_state.weather_env_for_location(loc, units=units)
+        )
+        seeded = True
+        return new_weather
+
+    locked_transform_env_file(
+        weather_path, _seed_transform, mode=location_state.WEATHER_FILE_MODE,
     )
-    new_weather = dict(weather_state)
-    new_weather.update(location_state.weather_env_for_location(loc, units=units))
-    write_env_file(
-        weather_path,
-        new_weather,
-        mode=location_state.WEATHER_FILE_MODE,
-    )
-    return True
+    return seeded
 
 
 def _value_for(state: dict[str, str], env_var: str, default: str = "") -> str:

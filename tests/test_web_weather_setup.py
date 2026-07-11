@@ -295,3 +295,96 @@ def test_get_mints_csrf_cookie(live_server):
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_seed_weather_skips_atomically_when_coords_present(tmp_path):
+    """The transit->weather seed's check-then-act must be atomic: when weather
+    already has coords, the seed neither overwrites them nor drops a foreign
+    key. Pins the DA-0036 race fix (seed reads weather INSIDE the flock)."""
+    from jasper.web import transit_setup
+
+    wp = str(tmp_path / "weather.env")
+    _common.write_env_file(wp, {
+        ls.WEATHER_LAT_ENV: "1.000",
+        ls.WEATHER_LON_ENV: "2.000",
+        ls.WEATHER_DISPLAY_NAME_ENV: "Home",
+        "FOO": "bar",
+    }, mode=ls.WEATHER_FILE_MODE)
+
+    transit_state = {
+        ls.TRANSIT_LAT_ENV: "9.000",
+        ls.TRANSIT_LON_ENV: "9.000",
+        ls.TRANSIT_DISPLAY_NAME_ENV: "Elsewhere",
+    }
+    seeded = transit_setup._seed_weather_from_transit_if_missing(
+        transit_state, weather_path=wp,
+    )
+    assert seeded is False
+    saved = _common.read_env_file(wp)
+    assert saved[ls.WEATHER_LAT_ENV] == "1.000"  # not overwritten
+    assert saved["FOO"] == "bar"  # foreign key preserved
+
+
+def test_concurrent_weather_save_and_transit_seed_dont_lose_keys(tmp_path):
+    """Two concurrent writers of weather.env (a weather /save-shaped owned-key
+    replace + the transit seed) must not clobber each other under the shared
+    flock — the foreign key and one consistent coord set both survive."""
+    import threading
+
+    from jasper.atomic_io import locked_transform_env_file
+    from jasper.web import transit_setup
+
+    wp = str(tmp_path / "weather.env")
+    # Start with only a foreign key: no coords, so the seed is eligible.
+    _common.write_env_file(wp, {"FOO": "bar"}, mode=ls.WEATHER_FILE_MODE)
+
+    owned = weather_setup._owned_env_keys()
+    # A realistic weather /save always carries a location (a location-less save
+    # errors before writing), so its owned replacement is a full coord set.
+    london = {
+        ls.WEATHER_LAT_ENV: "51.500",
+        ls.WEATHER_LON_ENV: "-0.100",
+        ls.WEATHER_DISPLAY_NAME_ENV: "London",
+        ls.WEATHER_DEFAULT_LOCATION_ENV: "London",
+        ls.WEATHER_UNITS_ENV: "fahrenheit",
+    }
+
+    def weather_save():
+        # Owned-key replace that must preserve in-lock non-owned keys, exactly
+        # like weather_setup._handle_save's transform.
+        def transform(cur):
+            result = {k: v for k, v in cur.items() if k not in owned}
+            result.update(london)
+            return result
+        locked_transform_env_file(wp, transform, mode=ls.WEATHER_FILE_MODE)
+
+    brooklyn = {
+        ls.TRANSIT_LAT_ENV: "40.700",
+        ls.TRANSIT_LON_ENV: "-74.000",
+        ls.TRANSIT_DISPLAY_NAME_ENV: "Brooklyn",
+    }
+
+    def transit_seed():
+        transit_setup._seed_weather_from_transit_if_missing(
+            brooklyn, weather_path=wp,
+        )
+
+    threads = [threading.Thread(target=fn)
+               for fn in (weather_save, transit_seed) * 4]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5.0)
+
+    saved = _common.read_env_file(wp)
+    # The foreign key survives every interleaving (it was never owned by
+    # either writer, and both preserve non-owned keys under the lock).
+    assert saved["FOO"] == "bar"
+    # Whoever wrote last wins, but the coords are always ONE consistent pair
+    # (London-from-save or Brooklyn-from-seed), never a torn/lost-update mix.
+    lat = saved.get(ls.WEATHER_LAT_ENV)
+    assert lat in {"51.500", "40.700"}
+    if lat == "51.500":
+        assert saved[ls.WEATHER_LON_ENV] == "-0.100"
+    else:
+        assert saved[ls.WEATHER_LON_ENV] == "-74.000"
