@@ -574,6 +574,548 @@ Combo host-clock telemetry:
 curl -s http://jts.local:8780/state | jq .audio_graph.fanin.host_clock
 ```
 
+### Per-session probe and the await-lock gate
+
+**Per-session probe rationale**: the host OS or the playing application can
+change between sessions (a Mac unplugged and a Windows box plugged in later;
+an app that opens the endpoint in a mode that pins the rate). Compliance is
+therefore re-measured on every `(host_connected && playing)` edge rather than
+trusted once at boot — a probe commands a bounded step (default +300 ppm for
+a 4 s baseline + 6 s step window) and measures the observable's response (the
+fill-slope in `Fill` mode, the resampler-correction mean in `Correction` mode —
+see "Observable mode" above); a response under half the commanded step demotes
+straight to `L2_FALLBACK` (neutral pitch) without ever entering `L0_LOCKED`.
+
+**The probe does NOT baseline at the session edge — it waits for the lane to
+leave its warmup ramp first.** A session begins the instant audio starts
+flowing, but at that instant the lane is still filling: the fan-in resampler's
+held target ramps from empty (0 → held target) and the gadget ring primes.
+Baselining THEN measures that one-time warmup fill ramp as if it were the
+host's natural rate slope — hardware-diagnosed on jts.local 2026-07-03, where
+the 4 s baseline read `baseline_slope_ppm=1460.6` (the ramp, not clock drift),
+the step then read `step_slope_ppm=-1397.6`, `response_ratio=-9.5` ⇒
+`probe_fail` ⇒ `l2_fallback` for the whole stream. Prior "passes" (ratios 0.78,
+2.97) were the same contamination landing luckily inside the pass band. So the
+probe now opens in an **await-lock** wait, commanding neutral, and does not
+begin the baseline until the lane reports LOCKED AND that lock has held
+continuously for a 2 s settle. LOCKED is the fan-in resampler's `locked_state`
+(`build_obs` in `rust/jasper-fanin/src/host_clock.rs` feeds it to the shared
+ladder as both `playing` and `locked`): the fan-in warmup ramp is a genuine
+0 → held-target fill climb that must complete before baselining, so a live
+lock signal is the right gate. (The deleted usbsink solo adapter instead
+mapped LOCKED to bare `playing` — a settle-only wait, deliberately not a
+fill-level gate, since nothing steered its gadget ring toward target while
+the probe held neutral; removed with the aloop solo path, 2026-07-10.)
+
+If the lane un-locks mid-baseline (or mid-step), the in-flight measurement is
+discarded and the wait restarts — a warmup re-entry is not a compliance
+failure, so this does not demote to L2.
+`/state.…​.host_clock.probe.waiting_for_lock` is `true` only while a LIVE
+session's probe is holding in await-lock (it is `false` between sessions — the
+ladder rests in `probing`/await-lock while idle, but `session_active` gates the
+flag so an enabled-but-idle box does not read as an active-session claim). The
+journal marks the wait with `event=<prefix>.host_clock_probe_wait
+reason=await_lock|lock_lost` and the actual baseline start with
+`event=<prefix>.host_clock_probe_start`. A session that ends while still in
+await-lock (never baselined) logs `event=<prefix>.host_clock_probe_result
+result=await_lock_ended` — distinct from `result=aborted`, which is reserved
+for a real baseline/step measurement cut short.
+
+### Ladder states
+
+`DISABLED -> PROBING (await-lock -> baseline -> step) -> L0_LOCKED <-> L1_WARN`,
+with any state falling to `L2_FALLBACK` on non-compliance evidence (probe
+failure, or a sustained saturated-command + adverse-slope condition
+mid-stream). The **await-lock** sub-phase holds neutral from the session rising
+edge until the lane leaves its warmup ramp (locked for the 2 s settle), so the
+baseline measures clock drift rather than the fill ramp; lock loss in any later
+sub-phase returns to await-lock (no demotion). `L2_FALLBACK` only re-attempts
+`PROBING` at the next idle boundary (stream stop / host disconnect) — it does
+not free-run a demonstrably non-compliant host mid-session. `L1_WARN` is a
+locked-but-watch state (unusually high sustained commanded ppm) with no
+functional difference from `L0_LOCKED` beyond the doctor/telemetry surfacing.
+
+### Host-compliance persistence — prime at floor (DEFAULT-OFF, rides the decay flag)
+
+The cushion decay's ~2.5-min descent (held-target ceiling → floor) is otherwise
+paid at EVERY session start, because priming always begins at the full ceiling.
+Host-compliance persistence removes that recurring cost: once a session **proves**
+the host and the decay has **landed at the floor cleanly**, the proof is written to
+`/var/lib/jasper/fanin/host_compliance.json`, and every subsequent session (whether
+across a reboot OR later in the SAME daemon lifetime) primes the resampler AT the
+decay floor — the descent is skipped. There is **no new top-level flag**: this
+extends `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` (it is inert on a decay-off box).
+Path override: `JASPER_FANIN_HOST_COMPLIANCE_PATH`.
+
+> **The prime is PER-SESSION, not construction-only (fixed 2026-07-03).** The
+> common real-world case is a Mac that sleeps nightly and wakes to a NEW session
+> with the fan-in daemon up for months. That every-morning session must prime at
+> the floor, not pay the ~110 s descent again. The prime is therefore seeded at
+> BOTH lane construction AND at every session boundary: the session-end snap-back
+> (`snap_decay_back_honoring_proof`) re-primes at the floor when a live, unrevoked
+> proof is present, and at the ceiling otherwise. See "Prime-at-floor" and
+> "session-boundary snap" below. (Before this fix the prime ran only in
+> `Mixer::new`; session B in one daemon lifetime silently descended from the
+> ceiling — hardware-diagnosed on jts.local, two sessions in one daemon lifetime.)
+
+Schema (v1, atomic tempfile+rename, world-readable 0644):
+`{schema, proved_at_epoch_s, probe_response_ratio, floor_frames, consecutive_failures}`.
+
+**Write condition (the FULL proof, not just a probe pass).** Written once per
+session, when ALL hold together for a settle window (the same
+`CUSHION_DECAY_STABILITY_MS` the decay warm-up uses): the decay has reached
+`at_floor` (descent complete) AND the DLL has held `l0_locked` AND the resampler's
+unlock count has NOT advanced across the window (zero churn). Any disqualifier
+re-arms the window. Owned by the pure `ComplianceProof` state machine in
+`rust/jasper-fanin/src/host_compliance.rs`, ticked once per render
+period by `mixer::step`.
+
+**Prime-at-floor (per session).** The prime is seeded at the floor
+(`CushionDecay::prime_at_floor`) at TWO points: (1) at lane build time
+(`build_host_compliance_state` → `resampler.prime_decay_at_floor`) if a valid proof
+is on disk whose `floor_frames` equals the live decay floor (a floor retune between
+sessions invalidates it — descend normally); and (2) at every **session boundary**
+within the daemon lifetime, via `snap_decay_back_honoring_proof` — the primitive
+`reset()` (idle/host-pause/device-loss/xrun-recovery — the aloop and usb-direct
+xrun-recovery paths `recover_resampler_input_xrun` / `recover_direct_xrun` call it
+too) and `unlock_for_underfill()` (starvation = the natural session end, e.g. the
+Mac stops streaming) both call. In both cases the held target starts at the floor
+and a `floor_prime_pending` latch holds it there across the not-yet-locked prime
+periods so `try_lock` seats the cursor AT the floor (the deep-prefill arm). The
+ceiling is unchanged, so a REVOKE still snaps all the way back to it.
+
+**Session-boundary snap destination (the single source of truth).** At a session
+boundary the snap goes to the FLOOR iff a live, unrevoked proof is present, else the
+CEILING. The "is the proof live" signal is the SAME `flag_present` atomic the mixer
+sets on a valid load / successful write (`on_written`) and CLEARS on a revoke
+(`on_revoked`) — read at snap time by `LaneResampler::live_proof_present`. There is
+no second copy of "is the proof valid": a revoke clears `flag_present` before any
+subsequent snap, so the very next session boundary after a revoke lands at the
+ceiling; a clean floor session lands at the floor. The **unconditional** ceiling
+snap (`snap_decay_back` via `snap_decay_to_ceiling`) is reserved for the
+revalidation-failure escape below — it always re-acquires deep. The same
+`flag_present` also drives the per-lock `floor_primed` the revalidation tracker
+re-samples at each rising edge (below), so the snap destination and the
+revalidation gate can never disagree.
+
+**Revalidation triggers (one strike for evidence, two for a probe measurement).**
+The servo's per-session probe (the #1142 post-lock `AwaitLock` gate) runs on EVERY
+session start — that IS the revalidation. For a floor-primed session, three
+triggers can revoke the proof: a LIVE probe FAIL, a DLL demotion to L2, and a
+CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
+`RevalidationTracker` (`host_compliance.rs`), driven each render period by
+`mixer::service_host_compliance` from the resampler's live `is_locked()` /
+`unlock_count()`.
+
+> **Two-strike probe fail (jts.local 2026-07-03).** A probe FAIL is a
+> MEASUREMENT, not proof the host changed — the lock-gated probe can spuriously
+> fail if it runs while the resampler's correction is railed (the 2026-07-03
+> false-fail: a floor-primed session whose held target snapped to the ceiling
+> post-lock railed at −500 ppm while the DLL rebuilt the fill, so a probe reading
+> against that rail would see baseline ≈ step ≈ −500 → response_ratio ≈ 0 → FAIL).
+> The rail's exact mechanism — the post-lock `NotL0` snap — is now root-FIXED by the
+> prime-aware hold (see the floor-prime bullet), so that specific rail no longer
+> occurs. (An earlier CORRECTION-mode unrailed-settle guard also targeted this, but
+> was REMOVED 2026-07-05 — it deadlocked beyond-authority hosts whose correction
+> rails steady-state; see the settle-guard bullet in the productization section.)
+> Even so,
+> costing the household the ~2.5-min
+> descent on ONE ambiguous read is the wrong trade. So a probe fail is
+> handled by the pure `classify_strike` (`PROBE_FAIL_STRIKE_LIMIT = 2`): the FIRST
+> fail RETAINS the proof, persisting an incremented `consecutive_failures` (and
+> leaving `flag_present` TRUE), and only the SECOND consecutive fail — two
+> independent sessions disagreeing with the proof, which IS a host change worth
+> distrusting — deletes it. A probe PASS resets the counter to 0 (persisted, via
+> `on_pass_reset` on a live pass at L0, and also naturally via the clean
+> descent-settle re-write's `on_written`). **`DllDemotion` and a confirmed
+> `EarlyUnlock` churn cycle stay ONE-strike** — they are direct positive evidence
+> the floor itself is failing on this host, not an ambiguous probe read. The mixer
+> emits `event=fanin.host_compliance.strike_retained` (proof kept, counter bumped),
+> `.revoked` (deleted), and `.pass_reset` (counter cleared) as distinct events.
+>
+> **The current session ALWAYS snaps back to the ceiling on any strike** (retained
+> or delete) and re-descends — so the audible behaviour of the session that took
+> the strike is identical to today either way; only the on-disk proof and the NEXT
+> session's prime differ. In the steady state the on-disk `consecutive_failures`
+> is 0 (a healthy proof) or the file is absent (revoked); it transiently reads 1
+> between a first spurious probe fail and the next session's pass/second-fail.
+>
+> **Interaction with the #1154 snap SSOT (intended semantics — state it
+> explicitly).** A counter=1 (retained-strike) session keeps `flag_present == true`,
+> so its NEXT session's session-boundary snap still lands at the FLOOR and it primes
+> at the floor again. This is the point of the two-strike design: one bad
+> measurement must NOT cost the floor. `flag_present` is only cleared on an actual
+> REVOKE (delete) — the second consecutive fail, a DLL demotion, or a confirmed
+> churn — after which the next snap lands at the ceiling and the session descends +
+> re-proves, exactly as before. STATUS surfaces the counter as
+> `resampler.compliance.consecutive_failures`.
+
+**Guarding the railed-acquisition failure mode.** The 2026-07-03 rail is
+root-fixed by the prime-aware `NotL0` hold (above), so the probe no longer
+baselines against that snap rail. Floor-prime seating below is
+defense-in-depth for an exotic geometry and a no-op on default boxes. (An
+unrailed-settle guard also lived here briefly but was REMOVED 2026-07-05 — it
+deadlocked beyond-authority hosts; see the settle-guard bullet in the
+productization section.)
+
+- **Floor-prime seating (`lane_resampler::try_lock`) — DEFENSE-IN-DEPTH for an
+  exotic geometry, NOT the fix for the observed rail.** When a lane is floor-primed,
+  `try_lock` gates OFF the shallow bounded-prime fall-through so the lock can only
+  seat AT the full floor depth (`floor + kernel radius + 1`). **In default geometry
+  this is a no-op.** The fall-through arm requires `fill >=
+  fallthrough_prefill_frames()` while the deep arm (checked first) requires `fill >=
+  floor + radius + 1`; whenever `floor <= fallthrough − radius − 1` (~1024 fr at the
+  default period 256 / target 512) the deep arm is the ONLY arm a floor-primed lane
+  can reach, so the fall-through was already unreachable while primed. jts.local
+  (target 512, period 256, floor 576, ceiling 2560) has deep-prefill 593 and
+  fallthrough 1041, so a floor-primed lock ALWAYS seated exactly at the floor (593
+  fr) via the deep arm — **at the parent commit too**. The gate only bites when the
+  operator raises the decay floor above ~1024 (the geometry where the fall-through
+  prefill sits below the floor prefill); there it stops a shallow seat that would
+  rail while the fill built up to the higher floor, and its regression test
+  (`floor_primed_lock_does_not_seat_shallow_via_fallthrough`) constructs exactly
+  that geometry (floor 1100). COST: **zero vs the parent in default geometry** (the
+  deep seat was already the only reachable path — byte-identical seat, lock-error,
+  and first-audio latency); only the exotic deep-floor case pays `floor −
+  minimum_safe` extra buffered frames before first audio. **Honesty:** in that same
+  exotic geometry, a trickle producer stalled with fill in `[fallthrough_prefill,
+  floor_prefill)` previously locked (railed but AUDIBLE) and now primes SILENTLY
+  with no bound and no cue — the fall-through's slow-producer guard IS load-bearing
+  at that depth. STATUS's fill / `held_target_frames` gauges expose it; acceptable
+  for the operator-set deep-floor case. NON-PRIMED (ceiling) sessions are unchanged —
+  `is_floor_primed()` is false, so the deep prefill is the full ceiling and the
+  fall-through still fires on the bounded-prime expiry exactly as before.
+
+  > **The observed jts.local rail's true cause — PINNED and FIXED (the prime-aware
+  > `NotL0` hold).** The false-fail sat at baseline≈step≈−500 ppm FLAT for ≥19 s
+  > (through the 4 s baseline AND the 15 s step). A floor-height held target (576)
+  > cannot produce that — from the deepest shallow seat the underfill-unlock
+  > threshold (`minimum_safe_fill` ≈274) bounds the deficit at (576−274)=302 fr, so
+  > the rail could last at most 302/(48000·5e-4)≈12.6 s and would SHRINK as the fill
+  > builds, never reading −500.0 flat through the step tail. A ≥19 s exact rail
+  > requires a CEILING-SCALE held target (~2560) relative to the fill during the
+  > probe — i.e. something RAISED the held target AFTER lock. It was the decay's
+  > `snap_back`: a floor-primed lock seats AT the floor, but at session start the
+  > outer ladder is NECESSARILY still Probing (`dll_l0_locked == false`; l0 arrives
+  > only after the ~21 s probe), so the FIRST locked `tick_decay` cleared the prime
+  > latch and took the `NotL0` branch — snapping the held target floor→ceiling and
+  > railing the DLL to rebuild the fill 576→~2560 for ~40 s. Race-dependent: a probe
+  > that completed before the first snap saw a quiescent baseline (the 2026-07-03
+  > primed-session PASS, baseline −9.6). **FIX:** while a floor prime is live for the
+  > session, `CushionDecay::tick`'s `NotL0` branch HOLDS the held target at the floor
+  > (frozen_reason `prime_hold`) instead of snapping to the ceiling — a floor prime
+  > is a deliberate divergence the `NotL0` branch must respect. The prime-hold ends
+  > when (a) the ladder reaches l0 (normal `at_floor`/warm-up accounting resumes),
+  > (b) any revocation fires (`snap_decay_to_ceiling` wins, latch cleared), or (c)
+  > the session ends (boundary snap re-primes at the floor if the proof is still
+  > live, else the ceiling). The old ARMED+frozen(`NotL0`) == disabled invariant
+  > (#1145) STILL HOLDS for the UNPRIMED case and is scoped explicitly; the primed
+  > case is a documented, tested divergence. The two-strike ProbeFail (#1160) and the
+  > churn discriminator (#1156) remain the safety net for a genuinely bad host riding
+  > the held floor during Probing. Pinned by
+  > `primed_notl0_lock_holds_floor_until_l0_arrives` (decay level) and
+  > `primed_notl0_probe_window_stays_quiescent_no_rail` (LaneResampler level — the
+  > ≥19 s −500 ppm rail is impossible by construction), both-ways mutation-guarded.
+
+- **Unrailed-settle guard (`jasper-host-clock`, CORRECTION mode) — REMOVED
+  2026-07-05 (`settle_regime_ok` reverts to `obs.locked` in both modes).** This
+  guard briefly required the smoothed correction to be UNRAILED (below
+  `CORRECTION_SETTLE_RAIL_GUARD_PPM = 450`) before the settle window could accrue.
+  Hardware on jts.local falsified it: the Mac host runs ~+600 ppm fast — BEYOND the
+  lane's ±500 ppm inner authority — so under the NEUTRAL pitch AwaitLock commands
+  the correction rails at +500 STEADY-STATE and can only come off the rail with the
+  servo's pitch help. The guard waited for the unrail; the unrail needed the pitch
+  authority the guard withheld — a deadlock. Two consecutive sessions sat in
+  `ProbePhase::AwaitLock` for 6+ min (`correction_mean_ppm` pinned 500.0,
+  `pitch_ppm_commanded` 0.0, no compliance proof written). Lock-only settle is
+  correct because the probe steps AWAY from the nearer rail (a railed baseline stays
+  measurable — an earlier jts.local session probed `baseline=500 → step=258`,
+  `response_ratio=0.807` PASS) and a STEADY-STATE clipped rail is fail-biased, never
+  pass-biased (a stationary clipped baseline understates demand, so a truly
+  non-compliant host reads `ratio≈0 → FAIL`; for a stationary rail, removing the
+  guard cannot manufacture a false PASS). A DECAYING transient rail is the one case
+  that can INFLATE the ratio (its observable slews toward the step direction as it
+  decays, mimicking a compliant response) — but that is a latent class the 450 guard
+  never closed either (it only delayed baselining until the smoothed correction fell
+  below 450; a slow decay keeps moving through the step window regardless). The
+  transient the guard was built for (the 2026-07-03 `NotL0` snap-back rail, below)
+  was root-fixed by the prime-aware `NotL0` hold, so it no longer exists. Transient-
+  decay false passes are closed by root-fixing transient causes (#1161) plus the
+  two-strike ProbeFail (#1160) and churn discriminator (#1156) — the standing safety
+  net for a genuinely bad host, NOT the settle gate. Pinned by
+  `correction_probe_settle_accrues_at_the_rail`
+  + `beyond_authority_railed_host_probes_pass_then_fail` in the `jasper-host-clock`
+  crate.
+
+**The EarlyUnlock churn discriminator — a relock is required (#1156, hardware-diagnosed
+on jts.local 2026-07-03).** The underfill-unlock trigger is TWO-PHASE, not a bare
+falling-edge revoke. This is the fix for a false-revocation that #1154 shipped: EVERY
+session end presents as an underfill unlock — when the host stops streaming, deliveries
+stop and the cursor-relative fill drains below `minimum_safe_fill` within *milliseconds*,
+long before any idle classification. So the earlier "any early-window underfill unlock
+revokes on the falling edge" rule burned the proof on EVERY session shorter than the
+60 s window. macOS makes that the COMMON case: CoreAudio stops the UAC2 device stream
+seconds after the last client, so a notification ding / a preview / a short clip is a
+sub-60 s session that always ends this way — the proof would be revoked forever and the
+next session would always re-descend from the ceiling, defeating the whole feature. The
+discriminator distinguishes **churn** (the host is STILL delivering yet the floor cannot
+hold — the lane unlocks *and relocks*) from a **terminal stream-end** (the host stopped —
+the lane unlocks and never relocks):
+
+- An early-window underfill unlock **ARMS a pending strike** (records the strike and
+  resets the tick-clock `periods_since_arm`) — it does NOT revoke.
+- The strike **CONFIRMS** (revoke `EarlyUnlock`) only if a **RELOCK** (rising edge)
+  arrives within `HOST_COMPLIANCE_CHURN_CONFIRM_SECS` (5 s, converted to render periods
+  and compared purely in ticks — never a wall clock). Unlock→relock cycling is the
+  evidence: the host is present and the floor is genuinely failing.
+- If no relock arrives within the horizon, the pending strike **EXPIRES harmlessly**
+  (the stream died — no churn); the next lock is armed clean. This is a bound, NOT an
+  absolute "never survives a session" — see the accepted-residual note below.
+
+A churn STORM (many unlock/relock cycles) revokes on the FIRST confirmed cycle: the
+confirming relock clears `flag_present` (via `on_revoked`), and the tracker latches
+`floor_primed = floor_primed_now && revoke.is_none()`, so the relocked session is no
+longer floor-primed and does not revalidate again — exactly one revoke.
+
+**This INVERTS the old "won't self-heal a periodic-stall host" caveat.** The earlier
+version of this doc noted that a floor-fatal-but-ceiling-survivable stall spaced >60 s
+apart would never trip the (window-bounded) underfill trigger, so the lane ran shallow
+with one dropout per stall and the proof never self-revoked. Under the discriminator a
+periodic stall on a host that *keeps streaming* — stall → underfill unlock (arm) → the
+host recovers and delivers again → relock within a second or two (well inside the 5 s
+horizon) → CONFIRM — now **does** revoke and revert to the ceiling. That is correct: a
+present-but-stalling host IS churn worth revoking. Two profiles still never revoke on the
+underfill path: (1) the one this fix is FOR — a session that simply ended (the host
+stopped; no relock at all); and (2) a host that stalls **longer than the 5 s horizon** and
+then resumes — the strike expires before the resume-relock arrives, so that relock finds no
+armed strike. (2) is acceptable, not a gap: a >5 s delivery stall underruns at ANY fill
+depth (the deepest cushion buys only tens of ms), so revoking would not have prevented the
+dropout — the proof gains nothing from tripping. Persistent non-compliance on such a host
+is still caught by the per-session live probe FAIL and mid-stream `saturated_slope`
+DllDemotion, which revert the proof regardless, as before.
+
+**Accepted residual: a quick restart inside the horizon is indistinguishable from
+churn.** The strike "expires harmlessly" only when nothing relocks within the horizon.
+It is NOT an absolute "never survives a session": a strike survives into any relock that
+arrives ≤ `HOST_COMPLIANCE_CHURN_CONFIRM_SECS` (~5 s) after the arming unlock, and the
+tracker has no signal to tell a genuinely-new stream's first lock apart from a churn
+relock — both present as "an armed strike, then a rising edge inside the horizon." So the
+ordinary human timeline *ding at t=0 → CoreAudio stops the device stream at t≈2 s (arm)
+→ start music at t≈4–6 s → gadget stream restarts and the lane relocks* CONFIRMS the
+prior (compliant) session's strike: **one spurious revoke**, self-healing — that session
+runs from the ceiling and re-proves over the ~2.5-min descent, and the next session primes
+at the floor again. This is the accepted cost of the horizon, not a bug: the horizon can't
+shrink much below ~2× the bounded-prime fall-through (`max_prime_periods` ≈ 1 s) without
+missing genuine bursty-host churn, and the tracker cannot distinguish a Δ≤5 s restart from
+churn. Anyone debugging a `revoked reason=early_unlock` line that fired shortly after a
+quick stop-then-play should read it as this residual, not a discriminator bug. (It is
+mechanically the same as the churn test — a new stream starting inside the window IS a
+confirmed cycle from the tracker's point of view.)
+
+**Three correctness details the tracker encodes.** (1) The arming underfill is evaluated
+on the lock-LOSS edge, because `unlock_for_underfill` sets `locked=false` in the SAME
+render period it bumps `unlock_count` — so the period that carries the churn evidence is
+the one where `locked` is already false (a `locked`-only window gate would make the arm
+unreachable). Arming is gated on the unlock count actually ADVANCING, so an idle `reset()`
+(host pause — `unlock_count` unchanged) does not arm, and a subsequent resume-relock is a
+clean new session, not a confirmed churn. (2) A probe FAIL only revokes when it is LIVE —
+the servo leaves `probe_result=Fail` across a session boundary, so a fresh lock on a new
+compliant host reads the stale FAIL until its own probe runs; the tracker gates on the
+ladder sitting at L2 (which always accompanies a live fail) so a stale carryover FAIL
+(ladder back in `Probing`, `ladder_l2=false`) is ignored. (3) The revoke-before-relock
+ORDERING is pinned (interaction with #1154's snap-destination SSOT): on the relock that
+CONFIRMS a churn strike, `step` latches `floor_primed=false` even though `floor_primed_now`
+is still true, because the mixer clears `flag_present` right after `step` returns. This
+makes the revoke "win" the relocked lock's floor consideration — lock B is not
+floor-primed, so it does not run a redundant second strike, and the very next
+session-boundary snap lands at the ceiling, matching the flag the mixer is about to clear.
+
+Because the prime is per-session, `floor_primed` is **re-sampled per lock** from the live
+`flag_present` at each rising edge (the mixer passes it into `RevalidationTracker::step`):
+a session B that primed at the floor off session A's fresh proof runs the revalidation
+exactly as a construction-time prime would; the session after a revoke (proof cleared) is
+NOT floor-primed and descends + re-proves without it. The per-lock revoke latch likewise
+resets on every fresh lock, so a re-proven session can strike again if the host later
+misbehaves — both are per-lock, not per-daemon-lifetime. On any strike the mixer snaps the
+held target back to the full ceiling via the **unconditional** escape
+(`snap_decay_to_ceiling`, distinct from the proof-honouring session-boundary snap). What it
+does to the FILE then depends on `classify_strike`: a DELETE revoke (DLL demotion, confirmed
+churn, or the SECOND consecutive probe fail) clears `flag_present`, removes the file, and
+logs `event=fanin.host_compliance.revoked reason=…`; a RETAIN strike (the FIRST probe fail)
+persists a bumped `consecutive_failures`, LEAVES `flag_present` true (so the next session
+still primes), and logs `event=fanin.host_compliance.strike_retained`. The normal descent
+then re-proves and re-writes (clearing the counter). **USB re-enumeration / a new host / a
+new port need NO special handling** — a new session simply re-probes, and the probe verdict
+revalidates; that is the new-machine/new-port answer. A missing/corrupt/stale file means
+"no proof" (descend as today) — fail toward today's behaviour, never a crash.
+
+**Session-start is content-agnostic — calibration runs on pure silence.** macOS
+holds the UAC2 output stream open and always-streaming even with no audio playing
+(silent frames). Every gate this feature depends on is **fill/rate-based, never
+RMS-gated**: the resampler's lock is `ring.fill_frames() >= prefill` (a byte-count,
+`lane_resampler::try_lock`); the servo probe/L0 run on the fill slope
+(solo) or the resampler's correction ppm (combo), not amplitude; and the write
+condition reads `decay_at_floor` / `dll_l0_locked` / `unlock_count`. The usbsink
+`rms_dbfs` gauge feeds ONLY the STATUS `playing` flag / metering, never audio flow
+or the lock/probe. So the whole prove→persist→prime→revalidate cycle exercises on a
+silent-but-streaming host; the on-device validation run proves it on hardware.
+
+**Cold-start validation protocol (jts.local, Apple dongle, decay armed).**
+1. Arm decay (`JASPER_FANIN_RESAMPLER_CUSHION_DECAY=enabled`) + combo host-clock,
+   delete any existing `host_compliance.json`, restart fan-in.
+2. Start the Mac USB output (music OR just an open silent stream — the
+   silence-fact means either works). Watch
+   `curl -s http://jts.local:8780/state | jq '.audio_graph.fanin.inputs[]|select(.resampler).resampler.compliance'`
+   and `journalctl -u jasper-fanin | grep host_compliance`.
+3. Confirm the descent runs (~2.5 min, `decay.frozen_reason` walks
+   `warmup→""(decaying)→at_floor`), then `event=fanin.host_compliance.written` and
+   `compliance.flag_present=true`, `proved_at` set.
+4. **Per-session win (SAME daemon lifetime):** stop + restart the Mac stream (a new
+   session, fan-in still up). This is the every-morning-wake case. The
+   session-boundary re-prime is SILENT in the journal (the resampler is log-free by
+   design) — verify it from `/state` instead: the held target sits at the floor from
+   the first lock (`resampler.held_target_frames` == the floor, `decay.frozen_reason`
+   == `at_floor`) with no 2.5-min descent, `compliance.flag_present` stays `true`, the
+   probe passes, and no revoke fires. Measure e2e latency — expect the settled floor
+   number (~46.1), not the ceiling. (`event=fanin.host_compliance.prime_at_floor` is
+   the CONSTRUCTION-time signal — it fires once at daemon start when a boot proof is
+   loaded, step 4b below — not on a within-lifetime session boundary.)
+4b. **Cold-start win (across a reboot):** restart fan-in (or reboot) with the proof
+   on disk. Confirm `event=fanin.host_compliance.prime_at_floor` at startup, the held
+   target at the floor from the first lock, the probe passes, and no revoke fires.
+4c. **CONFIRM ON-DEVICE — the prime-aware `NotL0` hold holds the floor (root cause
+   FIXED; this is the on-device confirmation of the hardware-free proof).**
+   During a floor-primed session's FIRST ~30 s, poll `/state` at high cadence
+   (e.g. every 200 ms:
+   `curl -s http://jts.local:8780/state | jq '.audio_graph.fanin.inputs[]|select(.resampler).resampler|{held_target_frames,decay:.decay.frozen_reason}'`)
+   and grab the fan-in journal for the same window. The floor-prime bullet above
+   pins the observed −500-ppm rail as the decay's `NotL0` snap on the FIRST locked
+   tick (ladder still Probing, `dll_l0=false`) having raised the held target
+   floor→ceiling — now fixed by the prime-aware hold. The EXPECTED (fixed) signature:
+   `decay.frozen_reason` stays `prime_hold` (then `at_floor` once l0 arrives) and
+   `held_target_frames` HOLDS at the floor (576) through the whole settle window,
+   with `correction_ppm` quiescent (nowhere near the ±500 rail). The REGRESSION
+   signature (should be impossible now): `frozen_reason` transitions to `not_l0`,
+   `held_target_frames` JUMPS toward the ceiling (2560), and `correction_ppm` rails
+   at ±500 while it rebuilds — if that ever appears, the prime-aware hold has
+   regressed (the `primed_notl0_*` tests would already be red) — capture the trace
+   and re-diagnose. The latency win the feature exists to deliver (no ceiling rebuild
+   + re-descent on a primed session) now lands from the first lock.
+5. **Silence check:** repeat step 4 with the Mac output OPEN but PLAYING NOTHING
+   (pure silence). The lane must still lock, the probe still run, and the prime
+   still hold — proving the calibration is content-agnostic.
+6. **Revocation check (two-strike probe fail):** with a proof present, force a
+   probe FAIL (e.g. a non-compliant host / a `PROBE_PPM` under the Windows deadband
+   on a Windows box, or unplug-replug to a different machine). The FIRST fail emits
+   `event=fanin.host_compliance.strike_retained`, snaps the held target back to the
+   ceiling for that session, but KEEPS the file (now `consecutive_failures=1`) — so
+   the next session still primes at the floor. A SECOND consecutive fail emits
+   `event=fanin.host_compliance.revoked reason=probe_fail`, deletes the file, and
+   the next session descends from the ceiling. A `DllDemotion` /
+   `reason=early_unlock` revoke deletes on the FIRST strike (one-strike, unchanged).
+   A probe PASS between fails emits `event=fanin.host_compliance.pass_reset` and
+   clears the counter back to 0.
+
+State machine + I/O: `rust/jasper-fanin/src/host_compliance.rs`; two-strike policy:
+`classify_strike` / `PROBE_FAIL_STRIKE_LIMIT`; floor-prime seating:
+`lane_resampler::try_lock` (`is_floor_primed()`); pre-probe settle gate:
+`jasper-host-clock` `settle_regime_ok` (lock-only in both modes — the
+CORRECTION-mode rail guard was removed 2026-07-05, see the settle-guard bullet
+above); mixer wiring: `mixer::service_host_compliance`; STATUS:
+`resampler.compliance {flag_present, proved_at, revoked_reason_last,
+consecutive_failures}`.
+
+### Cascade soak falsifier and cushion-decay interaction (combo)
+
+**The falsifier**: `fill_variance` (EW variance of the gadget fill) and
+`fill_slope_ppm` are published on every enabled tick precisely so a soak can
+detect a cascade limit-cycle — a two-controller oscillation shows up as periodic
+fill variance the counters make visible. In combo (`Correction`) mode
+`correction_ppm` is the additional limit-cycle tell: a fighting cascade shows
+periodic correction ppm even though the servo's L0 target is `correction → 0`.
+Watch all three across a soak before trusting L0 lock long-term; if any shows
+periodicity, the remediation is mode-specific — widen the bandwidth separation in
+`Fill` mode, LOWER `CORRECTION_INTEGRAL_GAIN` in `Correction` mode, or leave the
+feature off.
+
+**Cascade interaction with cushion decay (holds under the integral law).** The
+DEFAULT-OFF post-lock cushion decay gates on the servo's REVERSE signals —
+`ladder_l0` (decay only steps while `l0_locked`) and `commanded_milli_ppm` (the
+`|commanded_ppm| > 400` cascade-stability freeze guard). Both signals keep their
+exact meaning under the correction-observable servo: `commanded_ppm` is still the
+pitch command (same units, same ±1000 clamp), so the 400-ppm guard still freezes
+decay while the servo is working hard, and the stability gate still reads `l0`
+exactly as before. With the pure-integral `Correction` law a settled L0 genuinely
+sits at a small, STEADY `commanded_ppm` (the feed-forward that cancels the crystal
+offset) with the correction relaxed to ~0 — verified against the real inner loop
+across the crystal/lag/noise/3600 s matrix, NOT the limit cycle the earlier DLL
+law produced — so it is well inside the guard and decay proceeds normally once the
+post-lock warm-up window elapses. (Under the pre-fix DLL law this paragraph was
+false: the composite loop railed `commanded_ppm` ±350 ppm on a ~21 s period, so
+the freeze guard flapped twice per cycle and decay never advanced.)
+
+### Cross-platform conditions
+
+- **macOS**: honors asynchronous feedback well — the gold path for this
+  feature.
+- **Windows** (`usbaudio2.sys`): honors feedback dynamically but with a
+  ~163 ppm reaction deadband, and IGNORES commanded values outside roughly
+  nominal ±1 sample/interval — hence the servo's ±1000 ppm total-command clamp
+  (`MAX_BIAS_PPM` in the shared `jasper-host-clock` crate; derivation in the
+  Stage-1 "Mechanism" archaeology below) sits
+  inside that validity window with margin, not at the wider hardware range.
+  That same deadband floors `JASPER_FANIN_HOST_CLOCK_PROBE_PPM` at 200
+  (config-rejected below that — the deleted usbsink-solo
+  `JASPER_USBSINK_HOST_CLOCK_PROBE_PPM` sibling carried the identical
+  floor): a probe at or under ~163 ppm would measure
+  near-zero response on a compliant Windows host and falsely fail every
+  session. Even the default 300 leaves modest margin against a full-deadband
+  subtraction ((300−163)/300 ≈ 0.46 vs the 0.5 pass ratio), so a Windows lab
+  box that demotes spuriously should raise `PROBE_PPM` toward 500–600. Windows
+  validation is deferred (macOS is the shipping-gold target); this is the
+  caveat to keep in mind when it happens.
+- Both react slowly, which is why the outer loop's bandwidth must stay this
+  low rather than matching the inner loop's.
+
+**First Windows session — ordered discovery checklist.** Nothing above has
+been measured against a real Windows box: every constant here (the ~163 ppm
+deadband, the ±1000 ppm `MAX_BIAS_PPM` window, the `PROBE_PPM` floor) is
+research-sourced (Microsoft Q&A / community reports), and all settle/churn
+tuning was validated only against one +600 ppm Mac. Each item below gates the
+next, so a first session should work through them in order and capture
+artifacts rather than try to certify pass/fail in one pass:
+
+1. **Enumeration.** Does the composite NCM+UAC2 gadget enumerate as UAC2 on
+   `usbaudio2.sys` at all, versus "device cannot be started"
+   ([raspberrypi/linux#4587](https://github.com/raspberrypi/linux/issues/4587)
+   reports that failure for a similar `f_uac2` gadget)? Does Windows' alt-setting
+   negotiation hit the dwc2 endpoint budget that
+   [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) "dwc2 endpoint capacity"
+   flags as unverified on BCM2712? Capture a USBView/descriptor dump as the
+   session artifact.
+2. **Feedback endpoint compliance.** Confirm the descriptor Windows sees
+   carries the 16.16 feedback format at `bInterval=1` and the
+   `wMaxPacketSize` `usbaudio2.sys` enforces.
+3. **Compliance probe.** Does the default `PROBE_PPM=300` pass real
+   `usbaudio2.sys` feedback behavior above the ~163 ppm deadband, or does it
+   need the 500–600 mitigation already noted above?
+4. **Clock envelope.** Measure the actual box's crystal offset/jitter and
+   confirm the settle/lock logic (tuned on the +600 ppm Mac) converges; log
+   host-clock events for the whole session.
+5. **Churn discriminator.** Does WASAPI shared-mode's ~10 ms engine and its
+   session start/stop pattern false-strike the `EarlyUnlock`
+   `RevalidationTracker` (`rust/jasper-fanin/src/host_compliance.rs`), which
+   is calibrated to CoreAudio's seconds-after-last-client teardown?
+6. **Volume.** Does Windows map its slider onto the UAC2 feature unit so
+   `jasper/usbsink/volume_bridge.py`'s `PCM Capture Volume` polling observes
+   it?
+
+Treat the session as discovery with captured artifacts (descriptor dump,
+host-clock event log, strike telemetry) — not certification. Cross-linked
+from [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md)
+§7 "Windows host validation (deferred)"; this section is the single source of
+truth for the checklist.
+
 ### Observability
 
 - Fan-in STATUS (`/run/jasper-fanin/control.sock` `STATUS`, surfaced on `/state`):
@@ -1025,19 +1567,30 @@ floor. The real remaining levers are:
 
 ## Host-slaved USB clock (Stage 1)
 
-> **Removed 2026-07-10 — this is the DELETED bridge (solo/`Fill`-mode) host
-> clock.** The `jasper-usbsink-audio` host clock — `host_clock.rs`,
+> **Reframed 2026-07-11 — the live shared-crate servo docs moved up; this
+> section is now genuinely archaeology of the deleted usbsink-solo
+> `Fill`-mode daemon.** The host-clock behavior that is STILL LIVE — the
+> per-session probe + await-lock gate, the host-compliance floor-prime
+> persistence, the ladder states, the cross-platform host conditions, and the
+> soak falsifier / cushion-decay cascade interaction — is shared-crate
+> (`rust/jasper-host-clock`) behavior fan-in consumes in combo mode, so it was
+> RELOCATED up into the combo section ("USB DIRECT (combo mode)"). Live
+> behavior must not be single-sourced under an archaeology header (the
+> single-source-of-truth rule), and those subsections were describing the
+> surviving combo servo, not the deleted one. What remains BELOW is the deleted
+> `jasper-usbsink-audio` solo host clock — `host_clock.rs`,
 > `JASPER_USBSINK_HOST_CLOCK*`, the `Capture Pitch 1000000` `Fill`-mode ladder,
 > the `jasper-usbsink.service` `ExecStopPost` pitch-neutralize belt, the
 > `/state.audio_graph.rust_bridge.host_clock` telemetry, and the
-> `check_usbsink_host_clock` doctor check — was deleted with the aloop solo
-> capture path. The SURVIVING host clock is the combo/fan-in one
+> `check_usbsink_host_clock` doctor check — all deleted 2026-07-10 with the
+> aloop solo capture path. It is kept for its mechanism, cascade tuning, and
+> enabling/state/tunable surfaces because the `Fill`-vs-`Correction`
+> control-theory contrast still explains why the surviving combo servo uses a
+> pure integral. The SURVIVING host clock is the combo/fan-in one
 > (`JASPER_FANIN_HOST_CLOCK`, `rust/jasper-fanin/src/host_clock.rs` + the shared
 > `jasper-host-clock` crate, `ObsMode::Correction`, surfaced at
 > `/state.audio_graph.fanin.host_clock`) — see "Host-slaved USB clock in combo
-> mode (fan-in owns the ctl)" above. Everything in this section is archaeology of
-> the deleted `Fill`-mode ladder; the control-theory contrast (`Fill` vs
-> `Correction`) still explains why the surviving combo servo uses a pure integral.
+> mode (fan-in owns the ctl)" above.
 
 Default-**OFF** mechanism + telemetry + evidence, landed alongside the Stage 0
 click/capture harness above. It commands the HOST's USB audio clock instead of
@@ -1047,8 +1600,12 @@ rate offset in the digital domain. The usbsink `host_clock.rs` module that once
 held this derivation was deleted with the aloop solo path (2026-07-10); the
 authoritative derivation now lives in the shared crate
 [`rust/jasper-host-clock/src/lib.rs`](../rust/jasper-host-clock/src/lib.rs),
-which fan-in consumes for the surviving combo-mode servo. This section is the
-operational summary of the deleted `Fill`-mode variant.
+which fan-in consumes for the surviving combo-mode servo. The live operational
+surfaces of that shared servo — the per-session probe / await-lock gate, the
+host-compliance floor-prime persistence, the ladder states, the cross-platform
+host conditions, and the soak falsifier / cushion-decay interaction — now live
+in the combo section above ("USB DIRECT (combo mode)"); what remains here is the
+deleted `Fill`-mode variant's mechanism and control-theory, kept as archaeology.
 
 ### Mechanism
 
@@ -1119,540 +1676,6 @@ phase measures the raw host offset and seeds the commanded bias with
 `-baseline_obs` on entering `L0_LOCKED` (feed-forward), so coarse correction is
 immediate and the slow outer law only trims the residual.
 
-**The falsifier**: `fill_variance` (EW variance of the gadget fill) and
-`fill_slope_ppm` are published on every enabled tick precisely so a soak can
-detect a cascade limit-cycle — a two-controller oscillation shows up as periodic
-fill variance the counters make visible. In combo (`Correction`) mode
-`correction_ppm` is the additional limit-cycle tell: a fighting cascade shows
-periodic correction ppm even though the servo's L0 target is `correction → 0`.
-Watch all three across a soak before trusting L0 lock long-term; if any shows
-periodicity, the remediation is mode-specific — widen the bandwidth separation in
-`Fill` mode, LOWER `CORRECTION_INTEGRAL_GAIN` in `Correction` mode, or leave the
-feature off.
-
-**Cascade interaction with cushion decay (holds under the integral law).** The
-DEFAULT-OFF post-lock cushion decay gates on the servo's REVERSE signals —
-`ladder_l0` (decay only steps while `l0_locked`) and `commanded_milli_ppm` (the
-`|commanded_ppm| > 400` cascade-stability freeze guard). Both signals keep their
-exact meaning under the correction-observable servo: `commanded_ppm` is still the
-pitch command (same units, same ±1000 clamp), so the 400-ppm guard still freezes
-decay while the servo is working hard, and the stability gate still reads `l0`
-exactly as before. With the pure-integral `Correction` law a settled L0 genuinely
-sits at a small, STEADY `commanded_ppm` (the feed-forward that cancels the crystal
-offset) with the correction relaxed to ~0 — verified against the real inner loop
-across the crystal/lag/noise/3600 s matrix, NOT the limit cycle the earlier DLL
-law produced — so it is well inside the guard and decay proceeds normally once the
-post-lock warm-up window elapses. (Under the pre-fix DLL law this paragraph was
-false: the composite loop railed `commanded_ppm` ±350 ppm on a ~21 s period, so
-the freeze guard flapped twice per cycle and decay never advanced.)
-
-### Host-compliance persistence — prime at floor (DEFAULT-OFF, rides the decay flag)
-
-The cushion decay's ~2.5-min descent (held-target ceiling → floor) is otherwise
-paid at EVERY session start, because priming always begins at the full ceiling.
-Host-compliance persistence removes that recurring cost: once a session **proves**
-the host and the decay has **landed at the floor cleanly**, the proof is written to
-`/var/lib/jasper/fanin/host_compliance.json`, and every subsequent session (whether
-across a reboot OR later in the SAME daemon lifetime) primes the resampler AT the
-decay floor — the descent is skipped. There is **no new top-level flag**: this
-extends `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` (it is inert on a decay-off box).
-Path override: `JASPER_FANIN_HOST_COMPLIANCE_PATH`.
-
-> **The prime is PER-SESSION, not construction-only (fixed 2026-07-03).** The
-> common real-world case is a Mac that sleeps nightly and wakes to a NEW session
-> with the fan-in daemon up for months. That every-morning session must prime at
-> the floor, not pay the ~110 s descent again. The prime is therefore seeded at
-> BOTH lane construction AND at every session boundary: the session-end snap-back
-> (`snap_decay_back_honoring_proof`) re-primes at the floor when a live, unrevoked
-> proof is present, and at the ceiling otherwise. See "Prime-at-floor" and
-> "session-boundary snap" below. (Before this fix the prime ran only in
-> `Mixer::new`; session B in one daemon lifetime silently descended from the
-> ceiling — hardware-diagnosed on jts.local, two sessions in one daemon lifetime.)
-
-Schema (v1, atomic tempfile+rename, world-readable 0644):
-`{schema, proved_at_epoch_s, probe_response_ratio, floor_frames, consecutive_failures}`.
-
-**Write condition (the FULL proof, not just a probe pass).** Written once per
-session, when ALL hold together for a settle window (the same
-`CUSHION_DECAY_STABILITY_MS` the decay warm-up uses): the decay has reached
-`at_floor` (descent complete) AND the DLL has held `l0_locked` AND the resampler's
-unlock count has NOT advanced across the window (zero churn). Any disqualifier
-re-arms the window. Owned by the pure `ComplianceProof` state machine in
-`rust/jasper-fanin/src/host_compliance.rs`, ticked once per render
-period by `mixer::step`.
-
-**Prime-at-floor (per session).** The prime is seeded at the floor
-(`CushionDecay::prime_at_floor`) at TWO points: (1) at lane build time
-(`build_host_compliance_state` → `resampler.prime_decay_at_floor`) if a valid proof
-is on disk whose `floor_frames` equals the live decay floor (a floor retune between
-sessions invalidates it — descend normally); and (2) at every **session boundary**
-within the daemon lifetime, via `snap_decay_back_honoring_proof` — the primitive
-`reset()` (idle/host-pause/device-loss/xrun-recovery — the aloop and usb-direct
-xrun-recovery paths `recover_resampler_input_xrun` / `recover_direct_xrun` call it
-too) and `unlock_for_underfill()` (starvation = the natural session end, e.g. the
-Mac stops streaming) both call. In both cases the held target starts at the floor
-and a `floor_prime_pending` latch holds it there across the not-yet-locked prime
-periods so `try_lock` seats the cursor AT the floor (the deep-prefill arm). The
-ceiling is unchanged, so a REVOKE still snaps all the way back to it.
-
-**Session-boundary snap destination (the single source of truth).** At a session
-boundary the snap goes to the FLOOR iff a live, unrevoked proof is present, else the
-CEILING. The "is the proof live" signal is the SAME `flag_present` atomic the mixer
-sets on a valid load / successful write (`on_written`) and CLEARS on a revoke
-(`on_revoked`) — read at snap time by `LaneResampler::live_proof_present`. There is
-no second copy of "is the proof valid": a revoke clears `flag_present` before any
-subsequent snap, so the very next session boundary after a revoke lands at the
-ceiling; a clean floor session lands at the floor. The **unconditional** ceiling
-snap (`snap_decay_back` via `snap_decay_to_ceiling`) is reserved for the
-revalidation-failure escape below — it always re-acquires deep. The same
-`flag_present` also drives the per-lock `floor_primed` the revalidation tracker
-re-samples at each rising edge (below), so the snap destination and the
-revalidation gate can never disagree.
-
-**Revalidation triggers (one strike for evidence, two for a probe measurement).**
-The servo's per-session probe (the #1142 post-lock `AwaitLock` gate) runs on EVERY
-session start — that IS the revalidation. For a floor-primed session, three
-triggers can revoke the proof: a LIVE probe FAIL, a DLL demotion to L2, and a
-CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
-`RevalidationTracker` (`host_compliance.rs`), driven each render period by
-`mixer::service_host_compliance` from the resampler's live `is_locked()` /
-`unlock_count()`.
-
-> **Two-strike probe fail (jts.local 2026-07-03).** A probe FAIL is a
-> MEASUREMENT, not proof the host changed — the lock-gated probe can spuriously
-> fail if it runs while the resampler's correction is railed (the 2026-07-03
-> false-fail: a floor-primed session whose held target snapped to the ceiling
-> post-lock railed at −500 ppm while the DLL rebuilt the fill, so a probe reading
-> against that rail would see baseline ≈ step ≈ −500 → response_ratio ≈ 0 → FAIL).
-> The rail's exact mechanism — the post-lock `NotL0` snap — is now root-FIXED by the
-> prime-aware hold (see the floor-prime bullet), so that specific rail no longer
-> occurs. (An earlier CORRECTION-mode unrailed-settle guard also targeted this, but
-> was REMOVED 2026-07-05 — it deadlocked beyond-authority hosts whose correction
-> rails steady-state; see the settle-guard bullet in the productization section.)
-> Even so,
-> costing the household the ~2.5-min
-> descent on ONE ambiguous read is the wrong trade. So a probe fail is
-> handled by the pure `classify_strike` (`PROBE_FAIL_STRIKE_LIMIT = 2`): the FIRST
-> fail RETAINS the proof, persisting an incremented `consecutive_failures` (and
-> leaving `flag_present` TRUE), and only the SECOND consecutive fail — two
-> independent sessions disagreeing with the proof, which IS a host change worth
-> distrusting — deletes it. A probe PASS resets the counter to 0 (persisted, via
-> `on_pass_reset` on a live pass at L0, and also naturally via the clean
-> descent-settle re-write's `on_written`). **`DllDemotion` and a confirmed
-> `EarlyUnlock` churn cycle stay ONE-strike** — they are direct positive evidence
-> the floor itself is failing on this host, not an ambiguous probe read. The mixer
-> emits `event=fanin.host_compliance.strike_retained` (proof kept, counter bumped),
-> `.revoked` (deleted), and `.pass_reset` (counter cleared) as distinct events.
->
-> **The current session ALWAYS snaps back to the ceiling on any strike** (retained
-> or delete) and re-descends — so the audible behaviour of the session that took
-> the strike is identical to today either way; only the on-disk proof and the NEXT
-> session's prime differ. In the steady state the on-disk `consecutive_failures`
-> is 0 (a healthy proof) or the file is absent (revoked); it transiently reads 1
-> between a first spurious probe fail and the next session's pass/second-fail.
->
-> **Interaction with the #1154 snap SSOT (intended semantics — state it
-> explicitly).** A counter=1 (retained-strike) session keeps `flag_present == true`,
-> so its NEXT session's session-boundary snap still lands at the FLOOR and it primes
-> at the floor again. This is the point of the two-strike design: one bad
-> measurement must NOT cost the floor. `flag_present` is only cleared on an actual
-> REVOKE (delete) — the second consecutive fail, a DLL demotion, or a confirmed
-> churn — after which the next snap lands at the ceiling and the session descends +
-> re-proves, exactly as before. STATUS surfaces the counter as
-> `resampler.compliance.consecutive_failures`.
-
-**Guarding the railed-acquisition failure mode.** The 2026-07-03 rail is
-root-fixed by the prime-aware `NotL0` hold (above), so the probe no longer
-baselines against that snap rail. Floor-prime seating below is
-defense-in-depth for an exotic geometry and a no-op on default boxes. (An
-unrailed-settle guard also lived here briefly but was REMOVED 2026-07-05 — it
-deadlocked beyond-authority hosts; see the settle-guard bullet in the
-productization section.)
-
-- **Floor-prime seating (`lane_resampler::try_lock`) — DEFENSE-IN-DEPTH for an
-  exotic geometry, NOT the fix for the observed rail.** When a lane is floor-primed,
-  `try_lock` gates OFF the shallow bounded-prime fall-through so the lock can only
-  seat AT the full floor depth (`floor + kernel radius + 1`). **In default geometry
-  this is a no-op.** The fall-through arm requires `fill >=
-  fallthrough_prefill_frames()` while the deep arm (checked first) requires `fill >=
-  floor + radius + 1`; whenever `floor <= fallthrough − radius − 1` (~1024 fr at the
-  default period 256 / target 512) the deep arm is the ONLY arm a floor-primed lane
-  can reach, so the fall-through was already unreachable while primed. jts.local
-  (target 512, period 256, floor 576, ceiling 2560) has deep-prefill 593 and
-  fallthrough 1041, so a floor-primed lock ALWAYS seated exactly at the floor (593
-  fr) via the deep arm — **at the parent commit too**. The gate only bites when the
-  operator raises the decay floor above ~1024 (the geometry where the fall-through
-  prefill sits below the floor prefill); there it stops a shallow seat that would
-  rail while the fill built up to the higher floor, and its regression test
-  (`floor_primed_lock_does_not_seat_shallow_via_fallthrough`) constructs exactly
-  that geometry (floor 1100). COST: **zero vs the parent in default geometry** (the
-  deep seat was already the only reachable path — byte-identical seat, lock-error,
-  and first-audio latency); only the exotic deep-floor case pays `floor −
-  minimum_safe` extra buffered frames before first audio. **Honesty:** in that same
-  exotic geometry, a trickle producer stalled with fill in `[fallthrough_prefill,
-  floor_prefill)` previously locked (railed but AUDIBLE) and now primes SILENTLY
-  with no bound and no cue — the fall-through's slow-producer guard IS load-bearing
-  at that depth. STATUS's fill / `held_target_frames` gauges expose it; acceptable
-  for the operator-set deep-floor case. NON-PRIMED (ceiling) sessions are unchanged —
-  `is_floor_primed()` is false, so the deep prefill is the full ceiling and the
-  fall-through still fires on the bounded-prime expiry exactly as before.
-
-  > **The observed jts.local rail's true cause — PINNED and FIXED (the prime-aware
-  > `NotL0` hold).** The false-fail sat at baseline≈step≈−500 ppm FLAT for ≥19 s
-  > (through the 4 s baseline AND the 15 s step). A floor-height held target (576)
-  > cannot produce that — from the deepest shallow seat the underfill-unlock
-  > threshold (`minimum_safe_fill` ≈274) bounds the deficit at (576−274)=302 fr, so
-  > the rail could last at most 302/(48000·5e-4)≈12.6 s and would SHRINK as the fill
-  > builds, never reading −500.0 flat through the step tail. A ≥19 s exact rail
-  > requires a CEILING-SCALE held target (~2560) relative to the fill during the
-  > probe — i.e. something RAISED the held target AFTER lock. It was the decay's
-  > `snap_back`: a floor-primed lock seats AT the floor, but at session start the
-  > outer ladder is NECESSARILY still Probing (`dll_l0_locked == false`; l0 arrives
-  > only after the ~21 s probe), so the FIRST locked `tick_decay` cleared the prime
-  > latch and took the `NotL0` branch — snapping the held target floor→ceiling and
-  > railing the DLL to rebuild the fill 576→~2560 for ~40 s. Race-dependent: a probe
-  > that completed before the first snap saw a quiescent baseline (the 2026-07-03
-  > primed-session PASS, baseline −9.6). **FIX:** while a floor prime is live for the
-  > session, `CushionDecay::tick`'s `NotL0` branch HOLDS the held target at the floor
-  > (frozen_reason `prime_hold`) instead of snapping to the ceiling — a floor prime
-  > is a deliberate divergence the `NotL0` branch must respect. The prime-hold ends
-  > when (a) the ladder reaches l0 (normal `at_floor`/warm-up accounting resumes),
-  > (b) any revocation fires (`snap_decay_to_ceiling` wins, latch cleared), or (c)
-  > the session ends (boundary snap re-primes at the floor if the proof is still
-  > live, else the ceiling). The old ARMED+frozen(`NotL0`) == disabled invariant
-  > (#1145) STILL HOLDS for the UNPRIMED case and is scoped explicitly; the primed
-  > case is a documented, tested divergence. The two-strike ProbeFail (#1160) and the
-  > churn discriminator (#1156) remain the safety net for a genuinely bad host riding
-  > the held floor during Probing. Pinned by
-  > `primed_notl0_lock_holds_floor_until_l0_arrives` (decay level) and
-  > `primed_notl0_probe_window_stays_quiescent_no_rail` (LaneResampler level — the
-  > ≥19 s −500 ppm rail is impossible by construction), both-ways mutation-guarded.
-
-- **Unrailed-settle guard (`jasper-host-clock`, CORRECTION mode) — REMOVED
-  2026-07-05 (`settle_regime_ok` reverts to `obs.locked` in both modes).** This
-  guard briefly required the smoothed correction to be UNRAILED (below
-  `CORRECTION_SETTLE_RAIL_GUARD_PPM = 450`) before the settle window could accrue.
-  Hardware on jts.local falsified it: the Mac host runs ~+600 ppm fast — BEYOND the
-  lane's ±500 ppm inner authority — so under the NEUTRAL pitch AwaitLock commands
-  the correction rails at +500 STEADY-STATE and can only come off the rail with the
-  servo's pitch help. The guard waited for the unrail; the unrail needed the pitch
-  authority the guard withheld — a deadlock. Two consecutive sessions sat in
-  `ProbePhase::AwaitLock` for 6+ min (`correction_mean_ppm` pinned 500.0,
-  `pitch_ppm_commanded` 0.0, no compliance proof written). Lock-only settle is
-  correct because the probe steps AWAY from the nearer rail (a railed baseline stays
-  measurable — an earlier jts.local session probed `baseline=500 → step=258`,
-  `response_ratio=0.807` PASS) and a STEADY-STATE clipped rail is fail-biased, never
-  pass-biased (a stationary clipped baseline understates demand, so a truly
-  non-compliant host reads `ratio≈0 → FAIL`; for a stationary rail, removing the
-  guard cannot manufacture a false PASS). A DECAYING transient rail is the one case
-  that can INFLATE the ratio (its observable slews toward the step direction as it
-  decays, mimicking a compliant response) — but that is a latent class the 450 guard
-  never closed either (it only delayed baselining until the smoothed correction fell
-  below 450; a slow decay keeps moving through the step window regardless). The
-  transient the guard was built for (the 2026-07-03 `NotL0` snap-back rail, below)
-  was root-fixed by the prime-aware `NotL0` hold, so it no longer exists. Transient-
-  decay false passes are closed by root-fixing transient causes (#1161) plus the
-  two-strike ProbeFail (#1160) and churn discriminator (#1156) — the standing safety
-  net for a genuinely bad host, NOT the settle gate. Pinned by
-  `correction_probe_settle_accrues_at_the_rail`
-  + `beyond_authority_railed_host_probes_pass_then_fail` in the `jasper-host-clock`
-  crate.
-
-**The EarlyUnlock churn discriminator — a relock is required (#1156, hardware-diagnosed
-on jts.local 2026-07-03).** The underfill-unlock trigger is TWO-PHASE, not a bare
-falling-edge revoke. This is the fix for a false-revocation that #1154 shipped: EVERY
-session end presents as an underfill unlock — when the host stops streaming, deliveries
-stop and the cursor-relative fill drains below `minimum_safe_fill` within *milliseconds*,
-long before any idle classification. So the earlier "any early-window underfill unlock
-revokes on the falling edge" rule burned the proof on EVERY session shorter than the
-60 s window. macOS makes that the COMMON case: CoreAudio stops the UAC2 device stream
-seconds after the last client, so a notification ding / a preview / a short clip is a
-sub-60 s session that always ends this way — the proof would be revoked forever and the
-next session would always re-descend from the ceiling, defeating the whole feature. The
-discriminator distinguishes **churn** (the host is STILL delivering yet the floor cannot
-hold — the lane unlocks *and relocks*) from a **terminal stream-end** (the host stopped —
-the lane unlocks and never relocks):
-
-- An early-window underfill unlock **ARMS a pending strike** (records the strike and
-  resets the tick-clock `periods_since_arm`) — it does NOT revoke.
-- The strike **CONFIRMS** (revoke `EarlyUnlock`) only if a **RELOCK** (rising edge)
-  arrives within `HOST_COMPLIANCE_CHURN_CONFIRM_SECS` (5 s, converted to render periods
-  and compared purely in ticks — never a wall clock). Unlock→relock cycling is the
-  evidence: the host is present and the floor is genuinely failing.
-- If no relock arrives within the horizon, the pending strike **EXPIRES harmlessly**
-  (the stream died — no churn); the next lock is armed clean. This is a bound, NOT an
-  absolute "never survives a session" — see the accepted-residual note below.
-
-A churn STORM (many unlock/relock cycles) revokes on the FIRST confirmed cycle: the
-confirming relock clears `flag_present` (via `on_revoked`), and the tracker latches
-`floor_primed = floor_primed_now && revoke.is_none()`, so the relocked session is no
-longer floor-primed and does not revalidate again — exactly one revoke.
-
-**This INVERTS the old "won't self-heal a periodic-stall host" caveat.** The earlier
-version of this doc noted that a floor-fatal-but-ceiling-survivable stall spaced >60 s
-apart would never trip the (window-bounded) underfill trigger, so the lane ran shallow
-with one dropout per stall and the proof never self-revoked. Under the discriminator a
-periodic stall on a host that *keeps streaming* — stall → underfill unlock (arm) → the
-host recovers and delivers again → relock within a second or two (well inside the 5 s
-horizon) → CONFIRM — now **does** revoke and revert to the ceiling. That is correct: a
-present-but-stalling host IS churn worth revoking. Two profiles still never revoke on the
-underfill path: (1) the one this fix is FOR — a session that simply ended (the host
-stopped; no relock at all); and (2) a host that stalls **longer than the 5 s horizon** and
-then resumes — the strike expires before the resume-relock arrives, so that relock finds no
-armed strike. (2) is acceptable, not a gap: a >5 s delivery stall underruns at ANY fill
-depth (the deepest cushion buys only tens of ms), so revoking would not have prevented the
-dropout — the proof gains nothing from tripping. Persistent non-compliance on such a host
-is still caught by the per-session live probe FAIL and mid-stream `saturated_slope`
-DllDemotion, which revert the proof regardless, as before.
-
-**Accepted residual: a quick restart inside the horizon is indistinguishable from
-churn.** The strike "expires harmlessly" only when nothing relocks within the horizon.
-It is NOT an absolute "never survives a session": a strike survives into any relock that
-arrives ≤ `HOST_COMPLIANCE_CHURN_CONFIRM_SECS` (~5 s) after the arming unlock, and the
-tracker has no signal to tell a genuinely-new stream's first lock apart from a churn
-relock — both present as "an armed strike, then a rising edge inside the horizon." So the
-ordinary human timeline *ding at t=0 → CoreAudio stops the device stream at t≈2 s (arm)
-→ start music at t≈4–6 s → gadget stream restarts and the lane relocks* CONFIRMS the
-prior (compliant) session's strike: **one spurious revoke**, self-healing — that session
-runs from the ceiling and re-proves over the ~2.5-min descent, and the next session primes
-at the floor again. This is the accepted cost of the horizon, not a bug: the horizon can't
-shrink much below ~2× the bounded-prime fall-through (`max_prime_periods` ≈ 1 s) without
-missing genuine bursty-host churn, and the tracker cannot distinguish a Δ≤5 s restart from
-churn. Anyone debugging a `revoked reason=early_unlock` line that fired shortly after a
-quick stop-then-play should read it as this residual, not a discriminator bug. (It is
-mechanically the same as the churn test — a new stream starting inside the window IS a
-confirmed cycle from the tracker's point of view.)
-
-**Three correctness details the tracker encodes.** (1) The arming underfill is evaluated
-on the lock-LOSS edge, because `unlock_for_underfill` sets `locked=false` in the SAME
-render period it bumps `unlock_count` — so the period that carries the churn evidence is
-the one where `locked` is already false (a `locked`-only window gate would make the arm
-unreachable). Arming is gated on the unlock count actually ADVANCING, so an idle `reset()`
-(host pause — `unlock_count` unchanged) does not arm, and a subsequent resume-relock is a
-clean new session, not a confirmed churn. (2) A probe FAIL only revokes when it is LIVE —
-the servo leaves `probe_result=Fail` across a session boundary, so a fresh lock on a new
-compliant host reads the stale FAIL until its own probe runs; the tracker gates on the
-ladder sitting at L2 (which always accompanies a live fail) so a stale carryover FAIL
-(ladder back in `Probing`, `ladder_l2=false`) is ignored. (3) The revoke-before-relock
-ORDERING is pinned (interaction with #1154's snap-destination SSOT): on the relock that
-CONFIRMS a churn strike, `step` latches `floor_primed=false` even though `floor_primed_now`
-is still true, because the mixer clears `flag_present` right after `step` returns. This
-makes the revoke "win" the relocked lock's floor consideration — lock B is not
-floor-primed, so it does not run a redundant second strike, and the very next
-session-boundary snap lands at the ceiling, matching the flag the mixer is about to clear.
-
-Because the prime is per-session, `floor_primed` is **re-sampled per lock** from the live
-`flag_present` at each rising edge (the mixer passes it into `RevalidationTracker::step`):
-a session B that primed at the floor off session A's fresh proof runs the revalidation
-exactly as a construction-time prime would; the session after a revoke (proof cleared) is
-NOT floor-primed and descends + re-proves without it. The per-lock revoke latch likewise
-resets on every fresh lock, so a re-proven session can strike again if the host later
-misbehaves — both are per-lock, not per-daemon-lifetime. On any strike the mixer snaps the
-held target back to the full ceiling via the **unconditional** escape
-(`snap_decay_to_ceiling`, distinct from the proof-honouring session-boundary snap). What it
-does to the FILE then depends on `classify_strike`: a DELETE revoke (DLL demotion, confirmed
-churn, or the SECOND consecutive probe fail) clears `flag_present`, removes the file, and
-logs `event=fanin.host_compliance.revoked reason=…`; a RETAIN strike (the FIRST probe fail)
-persists a bumped `consecutive_failures`, LEAVES `flag_present` true (so the next session
-still primes), and logs `event=fanin.host_compliance.strike_retained`. The normal descent
-then re-proves and re-writes (clearing the counter). **USB re-enumeration / a new host / a
-new port need NO special handling** — a new session simply re-probes, and the probe verdict
-revalidates; that is the new-machine/new-port answer. A missing/corrupt/stale file means
-"no proof" (descend as today) — fail toward today's behaviour, never a crash.
-
-**Session-start is content-agnostic — calibration runs on pure silence.** macOS
-holds the UAC2 output stream open and always-streaming even with no audio playing
-(silent frames). Every gate this feature depends on is **fill/rate-based, never
-RMS-gated**: the resampler's lock is `ring.fill_frames() >= prefill` (a byte-count,
-`lane_resampler::try_lock`); the servo probe/L0 run on the fill slope
-(solo) or the resampler's correction ppm (combo), not amplitude; and the write
-condition reads `decay_at_floor` / `dll_l0_locked` / `unlock_count`. The usbsink
-`rms_dbfs` gauge feeds ONLY the STATUS `playing` flag / metering, never audio flow
-or the lock/probe. So the whole prove→persist→prime→revalidate cycle exercises on a
-silent-but-streaming host; the on-device validation run proves it on hardware.
-
-**Cold-start validation protocol (jts.local, Apple dongle, decay armed).**
-1. Arm decay (`JASPER_FANIN_RESAMPLER_CUSHION_DECAY=enabled`) + combo host-clock,
-   delete any existing `host_compliance.json`, restart fan-in.
-2. Start the Mac USB output (music OR just an open silent stream — the
-   silence-fact means either works). Watch
-   `curl -s http://jts.local:8780/state | jq '.audio_graph.fanin.inputs[]|select(.resampler).resampler.compliance'`
-   and `journalctl -u jasper-fanin | grep host_compliance`.
-3. Confirm the descent runs (~2.5 min, `decay.frozen_reason` walks
-   `warmup→""(decaying)→at_floor`), then `event=fanin.host_compliance.written` and
-   `compliance.flag_present=true`, `proved_at` set.
-4. **Per-session win (SAME daemon lifetime):** stop + restart the Mac stream (a new
-   session, fan-in still up). This is the every-morning-wake case. The
-   session-boundary re-prime is SILENT in the journal (the resampler is log-free by
-   design) — verify it from `/state` instead: the held target sits at the floor from
-   the first lock (`resampler.held_target_frames` == the floor, `decay.frozen_reason`
-   == `at_floor`) with no 2.5-min descent, `compliance.flag_present` stays `true`, the
-   probe passes, and no revoke fires. Measure e2e latency — expect the settled floor
-   number (~46.1), not the ceiling. (`event=fanin.host_compliance.prime_at_floor` is
-   the CONSTRUCTION-time signal — it fires once at daemon start when a boot proof is
-   loaded, step 4b below — not on a within-lifetime session boundary.)
-4b. **Cold-start win (across a reboot):** restart fan-in (or reboot) with the proof
-   on disk. Confirm `event=fanin.host_compliance.prime_at_floor` at startup, the held
-   target at the floor from the first lock, the probe passes, and no revoke fires.
-4c. **CONFIRM ON-DEVICE — the prime-aware `NotL0` hold holds the floor (root cause
-   FIXED; this is the on-device confirmation of the hardware-free proof).**
-   During a floor-primed session's FIRST ~30 s, poll `/state` at high cadence
-   (e.g. every 200 ms:
-   `curl -s http://jts.local:8780/state | jq '.audio_graph.fanin.inputs[]|select(.resampler).resampler|{held_target_frames,decay:.decay.frozen_reason}'`)
-   and grab the fan-in journal for the same window. The floor-prime bullet above
-   pins the observed −500-ppm rail as the decay's `NotL0` snap on the FIRST locked
-   tick (ladder still Probing, `dll_l0=false`) having raised the held target
-   floor→ceiling — now fixed by the prime-aware hold. The EXPECTED (fixed) signature:
-   `decay.frozen_reason` stays `prime_hold` (then `at_floor` once l0 arrives) and
-   `held_target_frames` HOLDS at the floor (576) through the whole settle window,
-   with `correction_ppm` quiescent (nowhere near the ±500 rail). The REGRESSION
-   signature (should be impossible now): `frozen_reason` transitions to `not_l0`,
-   `held_target_frames` JUMPS toward the ceiling (2560), and `correction_ppm` rails
-   at ±500 while it rebuilds — if that ever appears, the prime-aware hold has
-   regressed (the `primed_notl0_*` tests would already be red) — capture the trace
-   and re-diagnose. The latency win the feature exists to deliver (no ceiling rebuild
-   + re-descent on a primed session) now lands from the first lock.
-5. **Silence check:** repeat step 4 with the Mac output OPEN but PLAYING NOTHING
-   (pure silence). The lane must still lock, the probe still run, and the prime
-   still hold — proving the calibration is content-agnostic.
-6. **Revocation check (two-strike probe fail):** with a proof present, force a
-   probe FAIL (e.g. a non-compliant host / a `PROBE_PPM` under the Windows deadband
-   on a Windows box, or unplug-replug to a different machine). The FIRST fail emits
-   `event=fanin.host_compliance.strike_retained`, snaps the held target back to the
-   ceiling for that session, but KEEPS the file (now `consecutive_failures=1`) — so
-   the next session still primes at the floor. A SECOND consecutive fail emits
-   `event=fanin.host_compliance.revoked reason=probe_fail`, deletes the file, and
-   the next session descends from the ceiling. A `DllDemotion` /
-   `reason=early_unlock` revoke deletes on the FIRST strike (one-strike, unchanged).
-   A probe PASS between fails emits `event=fanin.host_compliance.pass_reset` and
-   clears the counter back to 0.
-
-State machine + I/O: `rust/jasper-fanin/src/host_compliance.rs`; two-strike policy:
-`classify_strike` / `PROBE_FAIL_STRIKE_LIMIT`; floor-prime seating:
-`lane_resampler::try_lock` (`is_floor_primed()`); pre-probe settle gate:
-`jasper-host-clock` `settle_regime_ok` (lock-only in both modes — the
-CORRECTION-mode rail guard was removed 2026-07-05, see the settle-guard bullet
-above); mixer wiring: `mixer::service_host_compliance`; STATUS:
-`resampler.compliance {flag_present, proved_at, revoked_reason_last,
-consecutive_failures}`.
-
-### Cross-platform conditions
-
-- **macOS**: honors asynchronous feedback well — the gold path for this
-  feature.
-- **Windows** (`usbaudio2.sys`): honors feedback dynamically but with a
-  ~163 ppm reaction deadband, and IGNORES commanded values outside roughly
-  nominal ±1 sample/interval — hence the ±1000 ppm servo clamp above sits
-  inside that validity window with margin, not at the wider hardware range.
-  That same deadband floors `JASPER_USBSINK_HOST_CLOCK_PROBE_PPM` at 200
-  (config-rejected below that): a probe at or under ~163 ppm would measure
-  near-zero response on a compliant Windows host and falsely fail every
-  session. Even the default 300 leaves modest margin against a full-deadband
-  subtraction ((300−163)/300 ≈ 0.46 vs the 0.5 pass ratio), so a Windows lab
-  box that demotes spuriously should raise `PROBE_PPM` toward 500–600. Windows
-  validation is deferred (macOS is the shipping-gold target); this is the
-  caveat to keep in mind when it happens.
-- Both react slowly, which is why the outer loop's bandwidth must stay this
-  low rather than matching the inner loop's.
-
-**First Windows session — ordered discovery checklist.** Nothing above has
-been measured against a real Windows box: every constant here (the ~163 ppm
-deadband, the ±1000 ppm `MAX_BIAS_PPM` window, the `PROBE_PPM` floor) is
-research-sourced (Microsoft Q&A / community reports), and all settle/churn
-tuning was validated only against one +600 ppm Mac. Each item below gates the
-next, so a first session should work through them in order and capture
-artifacts rather than try to certify pass/fail in one pass:
-
-1. **Enumeration.** Does the composite NCM+UAC2 gadget enumerate as UAC2 on
-   `usbaudio2.sys` at all, versus "device cannot be started"
-   ([raspberrypi/linux#4587](https://github.com/raspberrypi/linux/issues/4587)
-   reports that failure for a similar `f_uac2` gadget)? Does Windows' alt-setting
-   negotiation hit the dwc2 endpoint budget that
-   [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) "dwc2 endpoint capacity"
-   flags as unverified on BCM2712? Capture a USBView/descriptor dump as the
-   session artifact.
-2. **Feedback endpoint compliance.** Confirm the descriptor Windows sees
-   carries the 16.16 feedback format at `bInterval=1` and the
-   `wMaxPacketSize` `usbaudio2.sys` enforces.
-3. **Compliance probe.** Does the default `PROBE_PPM=300` pass real
-   `usbaudio2.sys` feedback behavior above the ~163 ppm deadband, or does it
-   need the 500–600 mitigation already noted above?
-4. **Clock envelope.** Measure the actual box's crystal offset/jitter and
-   confirm the settle/lock logic (tuned on the +600 ppm Mac) converges; log
-   host-clock events for the whole session.
-5. **Churn discriminator.** Does WASAPI shared-mode's ~10 ms engine and its
-   session start/stop pattern false-strike the `EarlyUnlock`
-   `RevalidationTracker` (`rust/jasper-fanin/src/host_compliance.rs`), which
-   is calibrated to CoreAudio's seconds-after-last-client teardown?
-6. **Volume.** Does Windows map its slider onto the UAC2 feature unit so
-   `jasper/usbsink/volume_bridge.py`'s `PCM Capture Volume` polling observes
-   it?
-
-Treat the session as discovery with captured artifacts (descriptor dump,
-host-clock event log, strike telemetry) — not certification. Cross-linked
-from [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md)
-§7 "Windows host validation (deferred)"; this section is the single source of
-truth for the checklist.
-
-**Per-session probe rationale**: the host OS or the playing application can
-change between sessions (a Mac unplugged and a Windows box plugged in later;
-an app that opens the endpoint in a mode that pins the rate). Compliance is
-therefore re-measured on every `(host_connected && playing)` edge rather than
-trusted once at boot — a probe commands a bounded step (default +300 ppm for
-a 4 s baseline + 6 s step window) and measures the observable's response (the
-fill-slope in `Fill` mode, the resampler-correction mean in `Correction` mode —
-see "Observable mode" above); a response under half the commanded step demotes
-straight to `L2_FALLBACK` (neutral pitch) without ever entering `L0_LOCKED`.
-
-**The probe does NOT baseline at the session edge — it waits for the lane to
-leave its warmup ramp first.** A session begins the instant audio starts
-flowing, but at that instant the lane is still filling: the fan-in resampler's
-held target ramps from empty (0 → held target) and the gadget ring primes.
-Baselining THEN measures that one-time warmup fill ramp as if it were the
-host's natural rate slope — hardware-diagnosed on jts.local 2026-07-03, where
-the 4 s baseline read `baseline_slope_ppm=1460.6` (the ramp, not clock drift),
-the step then read `step_slope_ppm=-1397.6`, `response_ratio=-9.5` ⇒
-`probe_fail` ⇒ `l2_fallback` for the whole stream. Prior "passes" (ratios 0.78,
-2.97) were the same contamination landing luckily inside the pass band. So the
-probe now opens in an **await-lock** wait, commanding neutral, and does not
-begin the baseline until the lane reports LOCKED AND that lock has held
-continuously for a 2 s settle. LOCKED is the fan-in resampler's `locked_state`
-(`build_obs` in `rust/jasper-fanin/src/host_clock.rs` feeds it to the shared
-ladder as both `playing` and `locked`): the fan-in warmup ramp is a genuine
-0 → held-target fill climb that must complete before baselining, so a live
-lock signal is the right gate. (The deleted usbsink solo adapter instead
-mapped LOCKED to bare `playing` — a settle-only wait, deliberately not a
-fill-level gate, since nothing steered its gadget ring toward target while
-the probe held neutral; removed with the aloop solo path, 2026-07-10.)
-
-If the lane un-locks mid-baseline (or mid-step), the in-flight measurement is
-discarded and the wait restarts — a warmup re-entry is not a compliance
-failure, so this does not demote to L2.
-`/state.…​.host_clock.probe.waiting_for_lock` is `true` only while a LIVE
-session's probe is holding in await-lock (it is `false` between sessions — the
-ladder rests in `probing`/await-lock while idle, but `session_active` gates the
-flag so an enabled-but-idle box does not read as an active-session claim). The
-journal marks the wait with `event=<prefix>.host_clock_probe_wait
-reason=await_lock|lock_lost` and the actual baseline start with
-`event=<prefix>.host_clock_probe_start`. A session that ends while still in
-await-lock (never baselined) logs `event=<prefix>.host_clock_probe_result
-result=await_lock_ended` — distinct from `result=aborted`, which is reserved
-for a real baseline/step measurement cut short.
-
-### Ladder states
-
-`DISABLED -> PROBING (await-lock -> baseline -> step) -> L0_LOCKED <-> L1_WARN`,
-with any state falling to `L2_FALLBACK` on non-compliance evidence (probe
-failure, or a sustained saturated-command + adverse-slope condition
-mid-stream). The **await-lock** sub-phase holds neutral from the session rising
-edge until the lane leaves its warmup ramp (locked for the 2 s settle), so the
-baseline measures clock drift rather than the fill ramp; lock loss in any later
-sub-phase returns to await-lock (no demotion). `L2_FALLBACK` only re-attempts
-`PROBING` at the next idle boundary (stream stop / host disconnect) — it does
-not free-run a demonstrably non-compliant host mid-session. `L1_WARN` is a
-locked-but-watch state (unusually high sustained commanded ppm) with no
-functional difference from `L0_LOCKED` beyond the doctor/telemetry surfacing.
-
 ### Pitch neutrality — the safety invariant
 
 > **Removed 2026-07-10 (archaeology).** This whole four-layer usbsink pitch-
@@ -1687,6 +1710,12 @@ neutralizing at all would reset fan-in's live command behind its back.
 
 ### Enabling on a lab box
 
+> **Removed 2026-07-10 (archaeology).** These are the DELETED usbsink-solo
+> daemon's enable/tunable surfaces — `JASPER_USBSINK_HOST_CLOCK*` no longer
+> parses anywhere. To enable the surviving combo servo, set
+> `JASPER_FANIN_HOST_CLOCK=enabled` (see the `HOST_CLOCK × USB_DIRECT` flag
+> matrix in the combo section above).
+
 ```sh
 printf 'JASPER_USBSINK_HOST_CLOCK=enabled\n' | sudo tee -a /etc/jasper/jasper.env
 sudo systemctl restart jasper-usbsink
@@ -1703,6 +1732,11 @@ clamp (±1000 ppm), write epsilon/cadence (10 ppm / <=1 Hz), tick interval
 see `host_clock.rs`'s pinned-constants block.
 
 ### What evidence `/state` gives
+
+> **Removed 2026-07-10 (archaeology).** `/state.audio_graph.rust_bridge.host_clock`
+> and the `check_usbsink_host_clock` doctor check were deleted with the solo
+> path; the live combo telemetry is `/state.audio_graph.fanin.host_clock` (see
+> "Combo host-clock telemetry" in the combo section above).
 
 ```sh
 curl -s http://jts.local:8780/state | jq .audio_graph.rust_bridge.host_clock
