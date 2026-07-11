@@ -231,6 +231,121 @@ def test_smaller_foreign_epoch_replaces_local():
     assert m.current_epoch == smaller_epoch
 
 
+# ---------- ACTIVE session must not be clobbered (DA-0021) ----------
+
+
+def test_active_session_not_clobbered_by_unrelated_foreign_claim():
+    """DA-0021: a foreign CLAIM for an *unrelated* epoch — a different
+    wake elsewhere in the house, since the multicast group is shared
+    household-wide — must NOT tear down our live ACTIVE session.
+
+    Before the ACTIVE guard, ANY foreign claim forced SUPPRESSED. That
+    silently clobbered the live session's bookkeeping: the heartbeat
+    timer stopped rescheduling and the real session's END broadcast was
+    dropped by _on_voice_ended's ACTIVE guard.
+    """
+    m = _make("alice")
+    m.handle(LocalWake(score=0.8, snr_db=20.0, rms_dbfs=-20.0, can_serve=True, now=1.0))
+    m.handle(TimerFired(timer_id=TIMER_ARB_WINDOW, now=1.15))
+    epoch = m.current_epoch
+    m.handle(VoiceSessionStarted(epoch=epoch, now=1.2))
+    assert m.state is PeerState.ACTIVE
+
+    # A second person wakes a different speaker in another room; that
+    # speaker's CLAIM reaches us over the shared multicast group.
+    actions = m.handle(PeerClaim(epoch="ep-other-room", peer_id="bob", now=2.0))
+    assert actions == []                       # no stand-down, no timers
+    assert m.state is PeerState.ACTIVE         # our session is untouched
+    assert m.current_epoch == epoch            # still tracking our own
+
+    # Our session later ends on its own terms — the END broadcast that
+    # the old clobber silently dropped must still fire.
+    end_actions = m.handle(VoiceSessionEnded(epoch=epoch, reason="silence", now=10.0))
+    assert any(
+        isinstance(a, BroadcastEnd) and a.epoch == epoch for a in end_actions
+    )
+    assert m.state is PeerState.IDLE
+
+
+def test_active_session_keeps_heartbeating_through_unrelated_claim():
+    """Companion to the above: the heartbeat-send loop keeps running
+    through an unrelated foreign claim. The old clobber-to-SUPPRESSED
+    made the next heartbeat tick hit _send_heartbeat_and_reschedule's
+    `state is not ACTIVE` guard and silently stop the loop."""
+    m = _make("alice")
+    m.handle(LocalWake(score=0.8, snr_db=20.0, rms_dbfs=-20.0, can_serve=True, now=1.0))
+    m.handle(TimerFired(timer_id=TIMER_ARB_WINDOW, now=1.15))
+    epoch = m.current_epoch
+    m.handle(VoiceSessionStarted(epoch=epoch, now=1.2))
+
+    m.handle(PeerClaim(epoch="ep-other-room", peer_id="bob", now=2.0))
+
+    hb = m.handle(TimerFired(timer_id=TIMER_HEARTBEAT_SEND, now=2.2))
+    assert any(isinstance(a, BroadcastHeartbeat) for a in hb)
+    assert any(
+        isinstance(a, ScheduleTimer) and a.timer_id == TIMER_HEARTBEAT_SEND
+        for a in hb
+    )
+
+
+# ---------- README invariant: exactly one winner per wake event ----------
+
+
+def test_wake_propagation_picks_exactly_one_winner_and_suppresses_rest():
+    """Guard for README's 'peering picks exactly one winner per wake
+    event so they [don't] all answer at once.'
+
+    Scenario: one speaker physically hears the wake and multicasts its
+    WAKE; the other N-1 speakers adopt the foreign epoch from the
+    multicast (they never local-waked) and, when their arb window
+    closes, rank the single report and concede. Exactly one peer
+    reaches WINNER; every other peer is SUPPRESSED.
+
+    This is the *single physical waker* case, which the state machine
+    enforces. The concurrent *multi-waker* race (several speakers
+    local-wake on the same utterance) is a separate, reported
+    enforcement gap — see the audit report / items_skipped — so it is
+    deliberately NOT asserted here as green.
+    """
+    peers = {pid: _make(pid) for pid in ("alice", "bob", "carol", "dave")}
+    t = 1.0
+
+    # alice hears the wake and broadcasts it.
+    acts = peers["alice"].handle(
+        LocalWake(score=0.82, snr_db=20.0, rms_dbfs=-20.0, can_serve=True, now=t)
+    )
+    wake = next(a for a in acts if isinstance(a, BroadcastWake))
+
+    # The other speakers see alice's WAKE over multicast while IDLE and
+    # adopt the foreign epoch (no local report of their own).
+    for pid in ("bob", "carol", "dave"):
+        peers[pid].handle(PeerWake(epoch=wake.epoch, report=wake.report, now=t + 0.01))
+
+    # Every arb window closes.
+    claims: list[tuple[str, str]] = []
+    for pid, m in peers.items():
+        for a in m.handle(TimerFired(timer_id=TIMER_ARB_WINDOW, now=t + 0.15)):
+            if isinstance(a, BroadcastClaim):
+                claims.append((pid, a.epoch))
+
+    # Exactly one peer claimed, and it is the one that heard the wake.
+    assert claims == [("alice", wake.epoch)]
+
+    # The winner's CLAIM reaches everyone (an IDLE peer that never saw
+    # the WAKE would suppress on it too).
+    for pid, m in peers.items():
+        if pid != "alice":
+            m.handle(PeerClaim(epoch=wake.epoch, peer_id="alice", now=t + 0.16))
+
+    winners = [
+        pid for pid, m in peers.items()
+        if m.state in (PeerState.WINNER, PeerState.ACTIVE)
+    ]
+    suppressed = [pid for pid, m in peers.items() if m.state is PeerState.SUPPRESSED]
+    assert winners == ["alice"]
+    assert sorted(suppressed) == ["bob", "carol", "dave"]
+
+
 # ---------- helpers ----------
 
 

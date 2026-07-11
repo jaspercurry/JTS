@@ -35,6 +35,7 @@ from .config import (
     DEFAULT_HEARTBEAT_INTERVAL_SEC,
     DEFAULT_HEARTBEAT_TIMEOUT_SEC,
     HELLO_INTERVAL_SEC,
+    MAX_ARB_WINDOW_MS,
     PEERING_UDS_PATH,
     PeeringConfig,
 )
@@ -79,12 +80,21 @@ from .transport import (
 logger = logging.getLogger(__name__)
 
 
-# Hard timeout for an ARBITRATE RPC. Should be modestly higher than
-# the configured arb window so the state machine has time to emit
-# StartSession/StandDown. On timeout we fail open (WIN) — voice was
-# going to proceed anyway in single-device mode, so a wedged peering
-# daemon shouldn't silence the speaker.
-ARBITRATE_RPC_TIMEOUT_SEC = 0.5
+# Hard timeout for an ARBITRATE RPC. On timeout we fail open (WIN) —
+# voice was going to proceed anyway in single-device mode, so a wedged
+# peering daemon shouldn't silence the speaker.
+#
+# It must sit strictly ABOVE the widest configured arb window
+# (MAX_ARB_WINDOW_MS, the clamp ceiling), not merely equal it: the
+# state machine only emits StartSession/StandDown when the arb-window
+# timer fires, so a timeout equal to the window max could fire the
+# fail-open WIN in the same tick as (or ahead of) the real decision —
+# a race between a stale fail-open WIN and the real StartSession/
+# StandDown. The fixed margin guarantees the real decision always
+# wins that race even at the maximum window. (Previously a hardcoded
+# 0.5 s == the 500 ms clamp ceiling, leaving zero margin — DA-0020.)
+ARBITRATE_RPC_MARGIN_SEC = 0.15
+ARBITRATE_RPC_TIMEOUT_SEC = MAX_ARB_WINDOW_MS / 1000.0 + ARBITRATE_RPC_MARGIN_SEC
 
 
 class PeeringDaemon:

@@ -58,6 +58,16 @@ MULTICAST_TTL = 1
 # it alone.
 DEFAULT_ARB_WINDOW_MS = 150
 
+# Safe clamp bounds for the arbitration window. A value outside this
+# range is clamped (never rejected — fail-safe). MAX_ARB_WINDOW_MS is
+# the ceiling the fail-open ARBITRATE RPC timeout must stay strictly
+# above (see ARBITRATE_RPC_TIMEOUT_SEC in daemon.py): the timeout has
+# to leave the state machine room to emit StartSession/StandDown even
+# at the widest configured window, or a fail-open WIN could race the
+# real decision at the window boundary.
+MIN_ARB_WINDOW_MS = 50
+MAX_ARB_WINDOW_MS = 500
+
 # A locally-detected wake at or above this score breaks an in-flight
 # foreign session (re-enters arbitration). Below this, the local peer
 # stays suppressed. 0.85 is high enough that "real, deliberate wake at
@@ -309,7 +319,7 @@ def load_config(
     arb_window_ms = _parse_int(
         src.get("JASPER_PEER_ARB_WINDOW_MS", ""),
         default=DEFAULT_ARB_WINDOW_MS,
-        lo=50, hi=500,
+        lo=MIN_ARB_WINDOW_MS, hi=MAX_ARB_WINDOW_MS,
     )
     break_threshold = _parse_float(
         src.get("JASPER_PEER_BREAK_THRESHOLD", ""),
