@@ -245,10 +245,13 @@ well into "wake-word during music plausible" territory, but at
 high SPL the wake-word still sometimes misses. This section tracks
 what's left on the menu, ordered by expected leverage / effort.
 
-The current production config (set 2026-05-08): `JASPER_AEC_AGC2=0`,
-`JASPER_AEC_REF_GAIN_DB=25`, `JASPER_AEC_MIC_GAIN_DB=6`. See
-[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) "Tuning findings" for
-the full sweep matrix and reasoning.
+The current production config (`JASPER_AEC_REF_GAIN_DB` retuned to
+`0` on 2026-05-16 after the bridge switched to the chip's ASR beam
+— the old `25` value now hard-clips the reference; see
+`.env.example`'s `JASPER_AEC_REF_GAIN_DB` comment): `JASPER_AEC_AGC2=0`,
+`JASPER_AEC_REF_GAIN_DB=0`, `JASPER_AEC_MIC_GAIN_DB=6`. See
+[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) "Software-AEC tuning
+(2026-05-16)" for the full sweep matrix and reasoning.
 
 **Related (but distinct): robust barge-in.** Cleanly interrupting
 the assistant mid-utterance during loud music is a separate
@@ -263,16 +266,13 @@ in that HANDOFF are explicitly a costing record, not a roadmap.
 
 ### Tier 1 — cheap experiments (≤30 min each)
 
-- **Chip's beamformed ASR channel as bridge input.** We currently
-  consume channel 2 (raw mic 0, BYPASS) for clean linear input to
-  AEC3. Switching to channel 1 (ASR — post-BF + NS + AGC, tuned for
-  speech) gives 6–10 dB of directional speaker rejection from the
-  on-chip beamformer for free, before AEC3. Trade-off: chip's AGC
-  introduces non-linearity that AEC3's linear filter can't fully
-  model. Risk: chip's auto-DoA might aim its beam *at* the speakers
-  (loudest source) — measurable in seconds and revertable. Effort:
-  one-line change to `MIC_CHANNEL_INDEX` (or env-configurable),
-  plus a sweep run.
+- **Chip's beamformed ASR channel as bridge input — shipped
+  2026-05-15.** `MIC_CHANNEL_INDEX` now defaults to channel 1 (the
+  ASR beam, post-BF + NS + AGC) instead of channel 2 (raw mic 0,
+  BYPASS); see [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) "Why we
+  switched to channel 1 (ASR beam) on 2026-05-15". `REF_GAIN_DB` was
+  retuned to `0` alongside it (see above) since the two knobs are
+  coupled.
 - **Soft-clip the REF_GAIN path.** Currently `np.clip` hard-clips at
   `JASPER_AEC_REF_GAIN_DB ≥ 25` and injects distortion. Replacing
   with `tanh` soft-limiting (~10 lines NumPy) lets us push to +30
@@ -515,12 +515,15 @@ Drift detection: 6 new doctor checks
 
 ### T5.1 — `StartLimitAction=reboot` (shipped PR #286)
 
-Added to 4 critical units: `jasper-camilla`, `jasper-aec-bridge`,
-`jasper-voice`, `jasper-control`. When restart-burst limits are
-exceeded, systemd cleanly reboots (NOT `reboot-force` — must sync
-zram dirty pages on 1 GB Pi). Per-unit burst/interval preserve
-existing transient-tolerance (jasper-voice keeps 20/300; others
-use 4/300 proposal default).
+Added to 3 critical units: `jasper-aec-bridge`, `jasper-voice`,
+`jasper-control`. When restart-burst limits are exceeded, systemd
+cleanly reboots (NOT `reboot-force` — must sync zram dirty pages on
+1 GB Pi). Per-unit burst/interval preserve existing
+transient-tolerance (jasper-voice keeps 20/300; aec-bridge and
+control use 4/300). `jasper-camilla` deliberately does not carry the
+direct T5.1 `StartLimitAction=reboot` ladder — it escalates via its
+narrower `OnFailure=jasper-camilla-recover.service` hardware-topology
+recovery contract instead (`StartLimitAction=none`, burst 5/60).
 
 ### T5.2 — `SystemSupervisor` (shipped PR #287)
 
