@@ -26,6 +26,8 @@ from email.message import Message
 from io import BytesIO
 from typing import Any
 
+import pytest
+
 from jasper.web import home_assistant_setup as ha
 
 
@@ -304,6 +306,39 @@ def test_post_unknown_route_404s():
     h = _make_request("/nope", body=b"")
     h.do_POST()
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
+
+
+@pytest.mark.parametrize("route", ["/discover", "/ready", "/verify"])
+def test_read_only_post_routes_pass_through_read_guard(route, monkeypatch):
+    # DNS-rebinding defence: these read-only POST routes must consult
+    # guard_read_request() and abort the work (no HA probe, no state
+    # leak) when it rejects. The guard sends its own rejection response.
+    called = {"discover": 0, "ready": 0, "verify": 0}
+    monkeypatch.setattr(ha, "discover_sync", lambda *a, **k: called.__setitem__("discover", 1) or [])
+    monkeypatch.setattr(ha, "ready_sync", lambda *a, **k: called.__setitem__("ready", 1) or {})
+    monkeypatch.setattr(ha, "verify_sync", lambda *a, **k: called.__setitem__("verify", 1) or {})
+    monkeypatch.setattr(ha, "read_env_file", lambda path: {})
+    monkeypatch.setattr(ha, "guard_read_request", lambda handler, **k: False)
+    h = _make_request(route, body=b"")
+    h.do_POST()
+    assert called == {"discover": 0, "ready": 0, "verify": 0}
+
+
+@pytest.mark.parametrize(
+    "route,fake,payload_key",
+    [
+        ("/discover", "discover_sync", "instances"),
+        ("/ready", "ready_sync", None),
+        ("/verify", "verify_sync", None),
+    ],
+)
+def test_read_only_post_routes_run_when_guard_allows(route, fake, payload_key, monkeypatch):
+    monkeypatch.setattr(ha, fake, lambda *a, **k: {"ok": True} if payload_key is None else [])
+    monkeypatch.setattr(ha, "read_env_file", lambda path: {})
+    monkeypatch.setattr(ha, "guard_read_request", lambda handler, **k: True)
+    h = _make_request(route, body=b"")
+    h.do_POST()
+    assert h.status == 200
 
 
 def test_post_save_url_only_advances_to_partial(monkeypatch):

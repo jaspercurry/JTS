@@ -791,8 +791,25 @@ def _connect_wifi_command(
     return cmd
 
 
-def _readable_nmcli_error(proc: subprocess.CompletedProcess[str]) -> str:
+def _scrub_psk(text: str, password: str | None) -> str:
+    """Mask the household PSK out of nmcli output before it is logged or
+    returned to the browser. Ports deploy/bin/jasper-wifi-guardian's
+    scrub_psk: (1) replace the literal PSK, (2) replace `password <arg>`
+    echo-back (nmcli can quote the PSK back verbatim in error text, and
+    the PSK rode this same nmcli's argv)."""
+    if password:
+        text = text.replace(password, "***")
+    return re.sub(r"password\s+\S+", "password ***", text)
+
+
+def _readable_nmcli_error(
+    proc: subprocess.CompletedProcess[str], password: str | None = None,
+) -> str:
     err = (proc.stderr or proc.stdout or "").strip() or "Connection failed"
+    # Scrub any echoed PSK BEFORE trimming/returning — nmcli can echo the
+    # submitted password back in error text (argv, "password 'PSK'"), and
+    # this string is both logged and shipped to the browser as the error.
+    err = _scrub_psk(err, password)
     # Trim nmcli's "Error: " prefix and the verbose "Connection activation
     # failed: (NN) " wrapper so the message that lands in the UI is
     # actually readable.
@@ -1016,7 +1033,7 @@ def connect_new(
 
     cmd = _connect_wifi_command(ssid, password, hidden=hidden)
     proc = _run_nmcli_secret(cmd, timeout=_CONNECT_TIMEOUT)
-    err = _readable_nmcli_error(proc)
+    err = _readable_nmcli_error(proc, password)
 
     # Manual entry has two useful recovery modes:
     #   1. true hidden SSIDs (`hidden yes` is required), and
@@ -1037,7 +1054,7 @@ def connect_new(
             proc = hidden_proc
         else:
             proc = hidden_proc
-            err = _readable_nmcli_error(hidden_proc)
+            err = _readable_nmcli_error(hidden_proc, password)
 
     if proc.returncode == 0:
         _harden_wifi_profile(ssid)

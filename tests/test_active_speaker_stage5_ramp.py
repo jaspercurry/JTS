@@ -948,3 +948,18 @@ def test_ramp_running_graph_carries_the_new_audible_gain(monkeypatch, tmp_path):
     woofer_mute = running["filters"]["as_out0_commission_mute"]["parameters"]
     assert woofer_mute["mute"] is False
     assert woofer_mute["gain"] == MIN_TEST_LEVEL_DBFS
+
+
+def test_record_ramp_state_writes_group_readable_mode(tmp_path):
+    # The ramp state file is read by non-root jasper-web and written by
+    # the root commissioning path, so it must be group-readable (0o640),
+    # matching every sibling active_speaker state writer.
+    import stat as _stat
+
+    from jasper.active_speaker.commission_ramp import _record_ramp_state
+
+    path = tmp_path / "ramp.json"
+    _record_ramp_state({"status": "ramping"}, state_path=path)
+    assert path.exists()
+    mode = _stat.S_IMODE(path.stat().st_mode)
+    assert mode == 0o640

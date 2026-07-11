@@ -641,12 +641,31 @@ def restart_voice_daemon() -> None:
     restart_systemd_units("jasper-voice")
 
 
+# Upper bound on a wizard form body. Every wizard POST here is a small
+# urlencoded form (a handful of short fields); the largest realistic body
+# is a pasted token or SSID list, far under this. nginx caps uploads at 1m
+# in production, but that's a proxy mitigation, not a code guard — a direct
+# hit on the socket-activated wizard (no nginx) must still be bounded so a
+# bogus Content-Length can't make the handler allocate an unbounded read.
+MAX_FORM_BODY_BYTES = 1024 * 1024
+
+
 def read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
     """Parse a urlencoded form body off a stdlib BaseHTTPRequestHandler
     request into a single-value dict. Empty values are preserved (so
-    we can detect "user pasted nothing" vs "field absent")."""
-    length = int(handler.headers.get("Content-Length") or "0")
-    raw = handler.rfile.read(length).decode("utf-8") if length else ""
+    we can detect "user pasted nothing" vs "field absent").
+
+    Returns {} on a missing/non-numeric Content-Length or a body larger
+    than MAX_FORM_BODY_BYTES — callers then see an empty form, which the
+    CSRF/validation guards reject cleanly, rather than the handler
+    crashing on a bad header or over-reading a hostile body."""
+    try:
+        length = int(handler.headers.get("Content-Length") or "0")
+    except (TypeError, ValueError):
+        return {}
+    if length <= 0 or length > MAX_FORM_BODY_BYTES:
+        return {}
+    raw = handler.rfile.read(length).decode("utf-8", errors="replace")
     return {
         k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()
     }

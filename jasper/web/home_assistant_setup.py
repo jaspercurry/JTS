@@ -1065,7 +1065,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path == "/discover":
-                # Read-only network probe — no state change, no CSRF.
+                # Read-only network probe — no state change, no CSRF. Still
+                # guard the read: without it a DNS-rebinding origin could
+                # trigger the LAN scan. (Mirrors spotify_setup's read-only
+                # /playlist-preview POST, which also guard_read_request()s.)
+                if not guard_read_request(self):
+                    return
                 instances = discover_sync(cfg.get("discovery_timeout", DISCOVERY_TIMEOUT_SEC))
                 self._send_json({"instances": instances})
                 return
@@ -1073,7 +1078,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # Lightweight readiness — one HA call. Used by the
                 # connected-state JS to poll for "is the daemon back
                 # up + HA still reachable" without re-fetching the
-                # agent list on every iteration.
+                # agent list on every iteration. Read-only; guard the
+                # read so a DNS-rebinding origin can't probe HA state.
+                if not guard_read_request(self):
+                    return
                 state = read_env_file(cfg["state_path"])
                 self._send_json(ready_sync(
                     state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),
@@ -1084,7 +1092,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # /verify uses whatever URL+token are saved (no form
                 # body) — the "Test connection" button and the agent
                 # picker's on-load fetch both call this against the
-                # persisted state. Read-only; no CSRF needed.
+                # persisted state. Read-only; no CSRF needed, but guard
+                # the read: the response leaks the configured HA URL,
+                # instance name, version, and agent list, so a
+                # DNS-rebinding origin must not be able to fetch it.
+                if not guard_read_request(self):
+                    return
                 state = read_env_file(cfg["state_path"])
                 result = verify_sync(
                     state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),

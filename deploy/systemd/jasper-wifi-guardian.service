@@ -22,6 +22,11 @@ Type=oneshot
 ExecStart=/usr/local/sbin/jasper-wifi-guardian --reason systemd
 StandardOutput=journal
 StandardError=journal
+# Private /tmp: the recovery path captures nmcli stderr (which can echo
+# the household PSK) to a temp file. Matches the ~20 other JTS units and
+# the sibling reconcilers (jasper-accessory-reconcile, jasper-grouping-
+# reconcile-trailing) so that file is never in the process-wide /tmp.
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

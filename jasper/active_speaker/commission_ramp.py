@@ -206,6 +206,10 @@ def _record_ramp_state(
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # Match the sibling active_speaker state writers (calibration_level,
+    # staging, startup_load, path_safety): root-owned writer, non-root
+    # jasper-web reads these, so the file needs group-read.
+    os.chmod(tmp, 0o640)
     os.replace(tmp, path)
     return payload
 

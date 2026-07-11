@@ -535,3 +535,69 @@ def test_post_cities_rejects_bad_csrf(tmp_path, monkeypatch):
     _bound_handler(tmp_path, h).do_POST()
     assert h.status == int(http.HTTPStatus.FORBIDDEN)
     assert restarts == []
+
+
+# ---- Secret scrubbing on broad-except paths (DA-0035) ---------------------
+# An unanticipated (non-TransitError) exception whose repr embeds the live
+# BusTime key in a ?key=... URL must be scrubbed before it reaches either the
+# journal OR the html.escape()-d error banner served on the household LAN.
+
+from types import SimpleNamespace
+
+_SECRET_KEY = "SUPERSECRETBUSKEY123"
+_LEAKY_URL = f"https://bustime.mta.info/api/siri?key={_SECRET_KEY}&stop=1"
+
+
+def _fake_bus_provider(exc: Exception) -> SimpleNamespace:
+    def _raise(*a, **k):
+        raise exc
+
+    return SimpleNamespace(
+        label="MTA Bus",
+        credentials=[SimpleNamespace(label="BusTime key", placeholder="key", help_url="http://x")],
+        find_stops_near=_raise,
+        validate_credentials=_raise,
+    )
+
+
+def test_bus_card_scrubs_key_from_error_banner():
+    provider = _fake_bus_provider(RuntimeError(f"boom {_LEAKY_URL}"))
+    state = {**NYC_STATE, "JASPER_MTA_BUSTIME_KEY": _SECRET_KEY}
+    html_out = transit_setup._bus_card_html(provider, state)
+    assert _SECRET_KEY not in html_out
+    assert "key=***" in html_out
+
+
+def test_bus_card_scrubs_key_from_log(caplog):
+    provider = _fake_bus_provider(RuntimeError(f"boom {_LEAKY_URL}"))
+    state = {**NYC_STATE, "JASPER_MTA_BUSTIME_KEY": _SECRET_KEY}
+    with caplog.at_level("WARNING"):
+        transit_setup._bus_card_html(provider, state)
+    assert _SECRET_KEY not in caplog.text
+    assert "bus stops fetch raised" in caplog.text
+
+
+def test_apply_save_scrubs_key_from_probe_log(caplog):
+    provider = _fake_bus_provider(RuntimeError(f"boom {_LEAKY_URL}"))
+    form = {"nyc_bus_key": _SECRET_KEY}
+    with caplog.at_level("WARNING"):
+        _current, error = transit_setup._apply_save(form, {}, bus_provider=provider)
+    assert _SECRET_KEY not in caplog.text
+    # The user-facing error is a generic "probe failed", never the raw key.
+    assert error and _SECRET_KEY not in error
+
+
+def test_citibike_card_scrubs_url_from_error_banner(monkeypatch):
+    # Keyless, but mirrors the bus scrub discipline: any URL in an error
+    # repr is masked in the banner.
+    def _raise(*a, **k):
+        raise RuntimeError(f"boom {_LEAKY_URL}")
+
+    provider = SimpleNamespace(
+        label="Citi Bike",
+        credentials=[],
+        find_stops_near=_raise,
+    )
+    html_out = transit_setup._citibike_card_html(provider, NYC_STATE)
+    assert _SECRET_KEY not in html_out
+    assert "key=***" in html_out

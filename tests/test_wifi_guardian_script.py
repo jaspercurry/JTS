@@ -761,3 +761,27 @@ def test_run_guardian_surfaces_persistent_spawn_failure(tmp_path, monkeypatch):
     with pytest.raises(BlockingIOError):
         _run_guardian(tmp_path, stash_contents=None)
     assert calls["n"] == _SPAWN_RETRIES + 1  # bounded attempts, then raise
+
+
+# ----- DA-0006: recreate-path stderr temp file is private -----
+
+
+def test_guardian_recreate_stderr_uses_private_mktemp():
+    """The recreate path captures nmcli stderr (which can echo the PSK).
+    It must use mktemp (0600) with an EXIT-trap cleanup, never a plain
+    `2>/tmp/wifi-guardian.stderr.$$` redirect (shell-default ~0644 in the
+    process-wide /tmp, left behind if the oneshot is killed mid-run)."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "2>/tmp/wifi-guardian.stderr" not in text
+    assert "/tmp/wifi-guardian.stderr.$$" not in text
+    assert "mktemp" in text
+    assert 'trap ' in text and 'rm -f "$stderr_tmp"' in text
+
+
+def test_guardian_unit_sets_private_tmp():
+    """PrivateTmp=true isolates the recreate-path stderr temp file from
+    the process-wide /tmp any local user shares."""
+    unit = (ROOT / "deploy/systemd/jasper-wifi-guardian.service").read_text(
+        encoding="utf-8"
+    )
+    assert "PrivateTmp=true" in unit
