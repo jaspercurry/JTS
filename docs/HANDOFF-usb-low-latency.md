@@ -427,9 +427,9 @@ owner:
   `JASPER_USBSINK_HOST_CLOCK`, and the `check_usbsink_host_clock` doctor check.
   The "Host-slaved USB clock (Stage 1)" section below is archaeology of it.
 
-Both run the **same** shared ladder/probe/servo (`rust/jasper-host-clock`,
-one servo core; the per-daemon differences are the `event=` log prefix —
-`usbsink_audio` vs `fanin` — which `JASPER_*` keys each parses, and the
+Both ran the **same** shared ladder/probe/servo (`rust/jasper-host-clock`,
+one servo core; the per-daemon differences were the `event=` log prefix —
+`usbsink_audio` vs `fanin` — which `JASPER_*` keys each parsed, and the
 **observable mode** below). Combo mode pins the DIRECT lane's resampler fill at
 target, removing the standby-mode drift wander (the ~9 ms "standby gap" measured
 below). The setpoint is the resampler's HELD target
@@ -442,9 +442,10 @@ the inner rate controller, so the outer loop never fights the inner integrator
 #### Observable mode — fill slope (solo) vs resampler correction (combo)
 
 The one servo core runs on **two different observables**, chosen by a TYPED
-`ObsMode` on the shared `HostClockConfig` (never inferred): usbsink solo passes
-`ObsMode::Fill`, fan-in combo passes `ObsMode::Correction`. This is the fix for
-the hardware-diagnosed combo-mode defect (jts.local 2026-07-03).
+`ObsMode` on the shared `HostClockConfig` (never inferred): the deleted usbsink
+solo passed `ObsMode::Fill`; fan-in combo (the survivor) passes
+`ObsMode::Correction`. This is the fix for the hardware-diagnosed combo-mode
+defect (jts.local 2026-07-03).
 
 - **`Fill` (usbsink solo, aloop).** No rate-matching stage sits between the
   gadget ring and playback, so the gadget FILL slope is a faithful readout of the

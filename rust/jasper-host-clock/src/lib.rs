@@ -454,14 +454,16 @@ pub struct HostClockConfig {
 
 impl HostClockConfig {
     /// A hard-disabled config with default tunables, for the given daemon
-    /// `log_prefix`. In a mode where the audio loop that feeds the DLL never
-    /// runs — today that's fan-in with USB DIRECT off; the deleted usbsink
-    /// solo daemon (removed 2026-07-10, #1209) was the other example before
-    /// it stopped depending on this crate entirely — there is no fill source,
-    /// so the feature is forced off; the startup + exit pitch neutralize
-    /// still run against this config (both are unconditional and never leave
-    /// the host slaved), so a crashed predecessor is still healed. Never
-    /// fails.
+    /// `log_prefix` — the crate's canonical inert/neutralize-only shape for a
+    /// mode where the audio loop that feeds the DLL never runs (no fill
+    /// source, so the feature is forced off; the startup + exit pitch
+    /// neutralize still run against this config — both are unconditional and
+    /// never leave the host slaved — so a crashed predecessor is still
+    /// healed). No production caller constructs it today: the deleted usbsink
+    /// daemon (removed 2026-07-10, #1209) built it in STANDBY before it
+    /// stopped depending on this crate, and fan-in renders its disabled
+    /// `/state` fragment via its own `build_config(false, …)` so the
+    /// setpoint/knob fields match its enabled shape. Never fails.
     pub fn disabled(log_prefix: &'static str) -> Self {
         Self {
             enabled: false,
@@ -469,15 +471,12 @@ impl HostClockConfig {
             probe_ppm: 300.0,
             probe_step_secs: 6,
             // A disabled ladder never probes or servos, so the observable mode
-            // is moot; default to `Fill`. Not a live-caller default — the
-            // Fill-mode solo daemon was deleted 2026-07-10 (#1209) — it is kept
-            // because the byte-exact disabled `state.json` fragment pins
-            // `"obs_mode":"fill"` (see `host_clock_fragment_shape_is_stable`
-            // below); flipping it to `Correction` would be status-contract
-            // churn for no behavioural gain. A daemon that runs in
-            // `Correction` mode (fan-in) builds its own enabled config with
-            // the right mode — this ctor is only the inert/neutralize-only
-            // shape.
+            // is moot; `Fill` stays as the inert original default purely to
+            // avoid churn — nothing pins it. (The byte-exact disabled-fragment
+            // test builds its config by hand from the test helpers, not via
+            // this ctor, and fan-in's real disabled fragment comes from its
+            // Correction-mode `build_config(false, …)`, so the live disabled
+            // `/state` block renders `"obs_mode":"correction"`.)
             obs_mode: ObsMode::Fill,
             log_prefix,
         }
