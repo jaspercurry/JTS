@@ -94,7 +94,11 @@ function applyProps(el, props) {
   }
 }
 
-function appendChildren(el, children) {
+// Exported so callers that build a parent element separately (e.g. the
+// /rooms/ bond-card summary) can append an array that may contain nested
+// arrays — this recurses/flattens them, which native Element.append() does
+// not (it stringifies a nested array rather than descending into it).
+export function appendChildren(el, children) {
   for (const c of children) {
     if (c == null || c === false) continue;
     if (Array.isArray(c)) appendChildren(el, c);

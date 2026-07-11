@@ -43,7 +43,7 @@
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { localWebHost } from "/assets/shared/js/local-web-host.js";
-import { h, svg } from "/assets/shared/js/dom.js";
+import { h, svg, appendChildren } from "/assets/shared/js/dom.js";
 import { createPairBalanceController } from "./pair-balance-controller.js";
 import {
   BALANCE_MAX_DB,

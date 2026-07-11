@@ -2666,6 +2666,25 @@ _GROUPING_VIEW_TEST = _REPO / "tests" / "js" / "rooms_grouping_view_test.mjs"
 _PAIR_BALANCE_CONTROLLER_TEST = (
     _REPO / "tests" / "js" / "rooms_pair_balance_controller_test.mjs"
 )
+_DOM_APPEND_CHILDREN_TEST = _REPO / "tests" / "js" / "dom_test.mjs"
+
+
+def test_dom_append_children_export_via_node():
+    """main.js's bond-card summary calls appendChildren(currentSummary,
+    summarize(g)); appendChildren must stay exported from the shared dom.js and
+    flatten summarize()'s nested-array fallback (native Element.append() would
+    stringify it). Un-exporting it reintroduced a ReferenceError on every
+    bonded poll. Skips when node isn't on PATH."""
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    proc = subprocess.run(
+        [_NODE, str(_DOM_APPEND_CHILDREN_TEST)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout.strip().splitlines()[-1])["ok"] is True
 
 
 def test_grouping_view_pure_helpers_via_node():
