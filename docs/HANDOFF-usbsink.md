@@ -1444,7 +1444,7 @@ the same size as the AEC bridge subsystem.
 | Mux POST to preempt endpoint fails | httpx exception in `Mux._pause(USBSINK)` | Logs warning; USB audio continues mixing briefly. Documented limitation (matches Bluetooth's behavior, but rarer because the local HTTP path is more reliable than DBus). |
 | Two USB hosts plugged in simultaneously (impossible by UAC2 spec) | Splitter physically prevents this | Hardware-enforced; nothing to do |
 | Sample rate negotiation failure (host requests 44.1k, gadget descriptor only offers 48k) | sounddevice opens at the descriptor's rate; host resamples its own output | No issue — host always resamples to the device's reported rate. Documented in BRINGUP.md so users know JTS doesn't do 192k. |
-| **Combo direct-capture breaks at runtime** (the UAC2 gadget is rebuilt underneath fan-in's open `hw:UAC2Gadget` handle — a UDC rebind / usbsink stop-start under a live stream — leaving the handle deaf, the flowing→dead "zombie" signature) | fan-in self-heals within ~1-2 s via a bounded reopen. If the self-heal is NOT restoring durable flow, `jasper-fanin-combo-health.timer` (~3 min) catches it: fan-in exports `direct.health` in STATUS and the watcher acts on the `reopens`/`card_gen_reopens` self-heal counters climbing across ticks. | After **2 consecutive broken ticks (~6 min)** the combo is disarmed (the reconciler disarms it exactly as it arms it), which now leaves **USB audio unavailable** — there is no aloop solo capture to fall back to since 2026-07-10 — and writes a fallback marker; doctor + `/state` surface it loudly and it recovers on the next boot/deploy/`/sources/` toggle. See **"Runtime fallback"** below. |
+| **Combo direct-capture breaks at runtime** (the UAC2 gadget is rebuilt underneath fan-in's open `hw:UAC2Gadget` handle — a UDC rebind / usbsink stop-start under a live stream — leaving the handle deaf, the flowing→dead "zombie" signature) | fan-in self-heals within ~1-2 s via a bounded reopen. If the self-heal is NOT restoring durable flow, `jasper-fanin-combo-health.timer` (~3 min) catches it: fan-in exports `direct.health` in STATUS and the watcher acts on the `reopens`/`card_gen_reopens` self-heal counters climbing across ticks **while the lane is actively `capturing`** (an idle host's routine re-enumeration churn does not count — defect 2026-07-11). | After **2 consecutive broken ticks (~6 min)** the combo is disarmed (the reconciler disarms it exactly as it arms it), which now leaves **USB audio unavailable** — there is no aloop solo capture to fall back to since 2026-07-10 — and writes a fallback marker; doctor + `/state` surface it loudly and it recovers on the next boot/deploy/`/sources/` toggle. See **"Runtime fallback"** below. |
 
 ### Runtime fallback — combo → USB-unavailable on capture break
 
@@ -1471,12 +1471,26 @@ classifies the direct lane, exported as `direct.health` in the STATUS
   false-positive.
 
 Because `"broken"` is instantaneous (the self-heal reopen resets the zombie streak
-the moment it trips), the **durable** cross-tick signal the watcher acts on is the
-cumulative `reopens` (zombie) / `card_gen_reopens` (dead-handle liveness probe)
-counters **climbing between ticks** — the gadget is repeatedly dying under a live
-stream. Idle/no-host can't move those counters, and a physical unplug/replug moves
-`opens`/`retries`, **not** these — so the signal is idle- AND unplug-immune by
-construction.
+the moment it trips, so a ~3-min poll rarely lands on it), the **durable**
+cross-tick signal the watcher acts on is the cumulative `reopens` (zombie) /
+`card_gen_reopens` (dead-handle liveness probe) counters **climbing between
+ticks** — BUT **only while the lane is simultaneously `health=="capturing"`**.
+
+> **The `capturing` gate is load-bearing (defect 2026-07-11).** The earlier claim
+> that "idle/no-host can't move those counters" was **wrong**, and it false-disarmed
+> an idle jts.local twice in one day. A Mac left connected as the default output
+> streams **digital silence**, and the UAC2 gadget routinely **re-enumerates** (host
+> sleep/wake, USB autosuspend, a `/sources/` toggle). Each rebuild is a normal
+> fan-in self-heal that bumps `card_gen_reopens` (function rebuilt, no frames
+> flowed) or `reopens` (silence flowed, then went deaf) — while `health` reads
+> `"idle"` the whole time. Counting those raw climbs as brokenness violated the
+> binding invariant (*an idle or unplugged host must NEVER trip the fallback —
+> `Broken` requires flowing→dead*). A **real** break of an actively-playing stream
+> re-establishes capture within milliseconds of each self-heal reopen, so the
+> ~3-min poll reads `"capturing"`; gating the counter delta on `capturing`
+> preserves that real detection while rejecting idle churn. A physical unplug/replug
+> moves `opens`/`retries`, **not** `reopens`/`card_gen_reopens`, so the signal stays
+> unplug-immune by construction as well.
 
 **The watcher (Pi side).** `jasper-fanin-combo-health.timer` fires
 `jasper-fanin-coupling-reconcile --health` every ~3 min (a oneshot; no resident
@@ -1485,8 +1499,8 @@ daemon — mirrors `jasper-wifi-recover`). Pure policy in
 in `run_health_check` (`jasper/fanin/coupling_reconcile.py`). Healthy ticks produce
 **no** output (journal-quiet); only real transitions log
 (`event=fanin.combo_health.*`). A tick is "broken" on `health=="broken"` OR a
-reopen-counter delta; the tick state persists to
-`/var/lib/jasper/combo_health_tick.json`.
+reopen-counter delta **while `health=="capturing"`** (see the gate above); the tick
+state persists to `/var/lib/jasper/combo_health_tick.json`.
 
 **The action.** After brokenness **sustained across 2 consecutive ticks (~6 min)**,
 the reconciler — the single writer — disarms the combo exactly the way it arms it
@@ -1510,8 +1524,12 @@ that ever *sets* it.)
 - `/state.audio_graph.coupling.combo` → `{state: "armed"|"fallback"|"disarmed",
   fallback: {reason, at_epoch} | null}`.
 - `jasper-doctor`'s `check_usb_combo_fallback` cross-checks the usbsink INTENT
-  (`is-enabled`) vs the resolved `fanin.env` armed state vs the marker, and flags a
-  `jasper-usbsink.service` parked in the `failed` state.
+  (`is-enabled`) vs the resolved `fanin.env` armed state vs the marker, flags a
+  `jasper-usbsink.service` parked in the `failed` state, and (defect 2026-07-11)
+  warns when the combo is armed but the watcher's `combo_health_tick.json`
+  `consecutive_broken` count is non-zero — surfacing an in-progress genuine break
+  BEFORE it disarms, so the repeated broken-tick WARNs no longer go unnoticed until
+  an unexplained disarm.
 - `journalctl -u jasper-fanin-combo-health | grep event=fanin.combo_health`.
 
 **Unit hardening (rider).** `jasper-usbsink.service` gained
@@ -2031,8 +2049,11 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-07-11 (Executive Summary's gadget-setup owner
-corrected from the deleted `jasper-usbsink-init.service` to
+Last verified: 2026-07-11 (§6 runtime-fallback brokenness definition
+corrected — the durable `reopens`/`card_gen_reopens` counter signal is now gated on
+`health=="capturing"`; the prior "idle can't move those counters" claim was wrong
+and false-disarmed an idle jts.local twice in one day. Also: Executive Summary's
+gadget-setup owner corrected from the deleted `jasper-usbsink-init.service` to
 `jasper-usbgadget.service`, matching the top callout and §4.1's own
 historical notice for the same fact). Prior 2026-07-10 pass: aloop solo USB capture path DELETED — the
 `jasper-usbsink-audio` bridge is standby-only and captures nothing; `jasper-fanin`

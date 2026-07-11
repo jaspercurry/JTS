@@ -903,7 +903,9 @@ def run_health_check(
     2. Advance the consecutive-broken accounting (pure
        :func:`~jasper.fanin.combo_health.decide_health_tick`): a tick is broken on
        fan-in's own ``health=="broken"`` OR the self-heal reopen counters climbing
-       since the last tick — idle/no-host can never trip either.
+       since the last tick WHILE the lane is actively ``health=="capturing"`` — an
+       idle/no-host lane (whose counters still churn on routine gadget
+       re-enumeration) can never trip either (defect 2026-07-11).
     3. On brokenness SUSTAINED across ``FALLBACK_CONSECUTIVE_TICKS`` (~6 min): write
        the fallback marker (timestamp + reason) and delegate to
        :func:`reconcile_auto`, which — reading the marker we just wrote — forces the

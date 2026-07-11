@@ -24,13 +24,24 @@ THE SIGNAL. fan-in exports a per-direct-lane ``health`` in STATUS
 ``"idle"`` / ``"broken"``. ``"broken"`` is the flowing→dead zombie signature ONLY
 — an idle or unplugged host reads ``"idle"`` and can NEVER trip the fallback (the
 binding constraint). Because ``"broken"`` is instantaneous (the self-heal reopen
-resets the zombie streak the moment it trips), the DURABLE cross-tick signal the
-watcher acts on is the cumulative ``reopens`` / ``card_gen_reopens`` self-heal
-counters CLIMBING between ticks: the gadget is repeatedly dying under a live
-stream. Idle/no-host can't move those counters (the zombie latch is frames-flowed
-gated; the liveness probe fires only on ENODEV/Disconnected), and a physical
-unplug/replug moves ``opens``/``retries``, NOT ``reopens``/``card_gen_reopens`` —
-so this signal is idle-immune AND physical-unplug-immune by construction.
+resets the zombie streak the moment it trips, so a ~3-min poll rarely lands on
+it), the DURABLE cross-tick signal the watcher acts on is the cumulative
+``reopens`` / ``card_gen_reopens`` self-heal counters CLIMBING between ticks — BUT
+only while the lane is simultaneously ``health=="capturing"``. That gate is
+load-bearing (defect 2026-07-11): the counters climb on a purely IDLE box too. A
+Mac left connected as the default output streams digital silence, and the UAC2
+gadget routinely re-enumerates (host sleep/wake, USB autosuspend, a ``/sources/``
+toggle) — each rebuild a NORMAL fan-in self-heal that bumps ``card_gen_reopens``
+(function rebuilt, no frames flowed) or ``reopens`` (silence had flowed, then went
+deaf) while ``health`` reads ``idle`` the whole time. Counting those raw climbs as
+brokenness disarmed an idle jts.local TWICE in one day with zero user action. A
+REAL break of an actively-playing stream re-establishes capture within
+milliseconds of each self-heal reopen, so the ~3-min poll reads ``capturing`` —
+gating the counter delta on ``capturing`` preserves the real detection while
+rejecting the idle churn. (The prior "idle can't move those counters" claim was
+wrong: a silence-streaming Mac makes frames flow, so the zombie latch DOES fire on
+idle.) A physical unplug/replug moves ``opens``/``retries``, NOT
+``reopens``/``card_gen_reopens``, so the signal stays physical-unplug-immune too.
 
 THE ACTION. On brokenness SUSTAINED across ``FALLBACK_CONSECUTIVE_TICKS`` (>= 2,
 ~6 min), the reconciler — the single writer — DISARMS the combo exactly the way it
@@ -173,23 +184,49 @@ def _as_int(raw: Any) -> int:
 def sample_is_broken(
     cur: DirectHealthSample, prev: DirectHealthSample | None
 ) -> bool:
-    """True when THIS tick shows a runtime capture break.
+    """True when THIS tick shows a runtime capture break of an ACTIVE stream.
 
     Two independent signatures, either sufficient:
 
     1. ``health == "broken"`` — fan-in's own instantaneous flowing→dead
-       classification (rare to catch at a poll, but free to honor).
+       classification (rare to catch at a ~3-min poll, but free to honor). It is
+       already the zombie signature — frames flowed, then the handle went deaf —
+       so it needs no further gating.
     2. The self-heal reopen counters CLIMBED since the previous tick
-       (``reopens`` or ``card_gen_reopens`` up) — the durable signal: the gadget
-       is repeatedly dying underneath a live stream. Idle/no-host cannot move
-       these; a physical unplug/replug moves ``opens``/``retries``, not these.
+       (``reopens`` or ``card_gen_reopens`` up) **AND the lane is actively
+       CAPTURING at this tick** (``health == "capturing"``). The counter climb is
+       the durable proxy for a break the instantaneous ``health`` usually misses
+       (a self-heal reopen resets the zombie streak within one period, so a poll
+       rarely lands on ``"broken"``); the ``capturing`` gate is what keeps the
+       proxy honest.
+
+    Why the ``capturing`` gate (defect 2026-07-11). The binding invariant, drilled
+    on hardware, is that an idle or unplugged host must NEVER trip the fallback —
+    ``Broken`` requires flowing→dead. But the reopen counters ALSO climb on a
+    purely idle box: a Mac left connected as the default output streams digital
+    silence, and the UAC2 gadget routinely re-enumerates (host sleep/wake, USB
+    autosuspend, a ``/sources/`` toggle). Each rebuild is a NORMAL fan-in self-heal
+    that bumps ``card_gen_reopens`` (function rebuilt, no frames flowed) or
+    ``reopens`` (silence had flowed, then went deaf) — with ``health`` reading
+    ``"idle"`` the whole time (the lane is not actively capturing). The pre-fix
+    code counted ANY counter climb as brokenness regardless of ``health`` and
+    disarmed an idle jts.local twice in one day (2026-07-11) with zero user action.
+    A REAL break of an actively-playing stream re-establishes capture within
+    milliseconds of each self-heal reopen, so the ~3-min poll reads ``"capturing"``
+    — the gate keeps that detection while rejecting the idle churn.
 
     A fan-in RESTART resets the cumulative counters to 0, making ``cur < prev``
-    (so the delta path reads NOT broken) — a restart never false-trips the
-    fallback; the next tick re-establishes the baseline.
+    (so the delta path reads NOT broken even while capturing) — a restart never
+    false-trips the fallback; the next tick re-establishes the baseline.
     """
     if cur.health == DIRECT_HEALTH_BROKEN:
         return True
+    # Durable reopen-churn signal — trusted ONLY while the lane is actively
+    # capturing (see the invariant above). An idle/absent lane whose reopen
+    # counters climbed is routine re-enumeration self-heal (silence-streaming Mac,
+    # host sleep/wake, USB autosuspend, a /sources/ toggle), not a capture break.
+    if cur.health != DIRECT_HEALTH_CAPTURING:
+        return False
     if prev is not None and (
         cur.reopens > prev.reopens or cur.card_gen_reopens > prev.card_gen_reopens
     ):

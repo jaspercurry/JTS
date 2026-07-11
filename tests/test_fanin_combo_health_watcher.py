@@ -88,14 +88,35 @@ def test_sustained_broken_disarms_and_writes_marker(tmp_path):
     assert ch.read_tick_state(str(tmp_path / "tick.json")).consecutive_broken == 0
 
 
-def test_reopen_churn_disarms_across_two_ticks(tmp_path):
-    # Two consecutive ticks with the zombie reopen counter climbing = sustained.
-    _run(tmp_path, _status(health="idle", reopens=1))  # baseline (no prev)
-    r2, _ = _run(tmp_path, _status(health="idle", reopens=2))  # churn -> broken 1
+def test_capturing_reopen_churn_disarms_across_two_ticks(tmp_path):
+    # Two consecutive ticks with the zombie reopen counter climbing WHILE the lane
+    # is actively capturing = a sustained real break of a live stream -> disarm.
+    _run(tmp_path, _status(health="capturing", reopens=1))  # baseline (no prev)
+    r2, _ = _run(tmp_path, _status(health="capturing", reopens=2))  # churn -> broken 1
     assert r2.broken is True and r2.disarmed is False
-    r3, calls = _run(tmp_path, _status(health="idle", reopens=3))  # churn -> disarm
+    r3, calls = _run(tmp_path, _status(health="capturing", reopens=3))  # churn -> disarm
     assert r3.disarmed is True
     assert calls["reconcile"] == 1
+
+
+def test_idle_reopen_churn_never_disarms(tmp_path):
+    # Defect 2026-07-11 regression: replays the exact jts.local false-positive
+    # shape — an IDLE box (health=idle throughout: a silence-streaming Mac + routine
+    # UAC2 re-enumeration self-heal) whose reopen counters churn upward tick after
+    # tick. The pre-fix watcher disarmed after 2 such ticks; the binding invariant
+    # is that an idle host must NEVER trip the fallback, so NONE of these disarm.
+    marker = str(tmp_path / "fallback.json")
+    _run(tmp_path, _status(health="idle", reopens=0, card_gen_reopens=1))  # baseline
+    # liveness-probe card_gen climbs 1->2 (the 19:11 disarm cause) — must NOT break.
+    r, calls = _run(tmp_path, _status(health="idle", reopens=0, card_gen_reopens=2))
+    assert r.broken is False and r.disarmed is False
+    # zombie reopens climb repeatedly (the 07:48 disarm cause) — must NOT break.
+    for n in (3, 5, 7, 9):
+        r, calls = _run(tmp_path, _status(health="idle", reopens=n, card_gen_reopens=2))
+        assert r.broken is False and r.disarmed is False
+    assert calls["reconcile"] == 0
+    # No marker ever written — USB audio stays available on the idle box.
+    assert ch.fallback_active(marker) is False
 
 
 def test_disarm_failure_surfaces_not_ok(tmp_path):

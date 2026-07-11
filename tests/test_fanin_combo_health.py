@@ -77,12 +77,35 @@ def test_idle_and_capturing_are_never_broken_without_churn():
                                        card_gen_reopens=2), prev) is False
 
 
-def test_broken_on_reopen_churn_across_ticks():
-    prev = _sample(reopens=5, card_gen_reopens=2)
-    # zombie reopen climbed -> broken.
-    assert ch.sample_is_broken(_sample(reopens=6, card_gen_reopens=2), prev) is True
-    # liveness-probe reopen climbed -> broken.
-    assert ch.sample_is_broken(_sample(reopens=5, card_gen_reopens=3), prev) is True
+def test_broken_on_reopen_churn_while_capturing():
+    # A reopen-counter climb is a real break ONLY while the lane is actively
+    # capturing: a break of a live, actively-playing stream re-establishes capture
+    # within ms of each self-heal reopen, so the ~3-min poll reads "capturing".
+    prev = _sample(health="capturing", reopens=5, card_gen_reopens=2)
+    # zombie reopen climbed while capturing -> broken.
+    assert ch.sample_is_broken(
+        _sample(health="capturing", reopens=6, card_gen_reopens=2), prev) is True
+    # liveness-probe reopen climbed while capturing -> broken.
+    assert ch.sample_is_broken(
+        _sample(health="capturing", reopens=5, card_gen_reopens=3), prev) is True
+
+
+def test_idle_reopen_churn_is_never_broken():
+    # Defect 2026-07-11: the reopen counters climb on a purely IDLE box too — a Mac
+    # left connected as the default output streams digital silence, and the UAC2
+    # gadget routinely re-enumerates (host sleep/wake, USB autosuspend, a /sources/
+    # toggle), each rebuild a normal self-heal that bumps the counters. The binding
+    # invariant is that an idle/unplugged host must NEVER trip the fallback, so a
+    # counter climb while health="idle" must read NOT broken. These are the two
+    # exact journal shapes that false-disarmed jts.local.
+    # 07:48 disarm cause: health=idle, zombie reopens 7->9 (card_gen flat).
+    prev_zombie = _sample(health="idle", reopens=7, card_gen_reopens=0, frames_read=9559273)
+    assert ch.sample_is_broken(
+        _sample(health="idle", reopens=9, card_gen_reopens=0), prev_zombie) is False
+    # 19:11 disarm cause: health=idle, liveness-probe card_gen 1->2 (reopens 0).
+    prev_cardgen = _sample(health="idle", reopens=0, card_gen_reopens=1, frames_read=0)
+    assert ch.sample_is_broken(
+        _sample(health="idle", reopens=0, card_gen_reopens=2), prev_cardgen) is False
 
 
 def test_fanin_restart_counter_reset_is_not_broken():

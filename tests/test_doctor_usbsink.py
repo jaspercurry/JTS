@@ -1065,9 +1065,16 @@ def test_unit_main_start_epoch_none_when_never_started(monkeypatch):
 
 
 def _setup_combo(monkeypatch, tmp_path, *, failed=False, marker=None,
-                 gadget=True, intent=True, armed=False):
+                 gadget=True, intent=True, armed=False, pending=0):
     monkeypatch.setattr(doctor.usbsink, "_systemd_is_failed", lambda unit: failed)
     monkeypatch.setattr(_ch, "read_fallback_marker", lambda *a, **k: marker)
+    # Pin the tick-state read deterministic (default clean) so the armed-OK path
+    # doesn't read a stray /var/lib/jasper file; pending>0 exercises the
+    # in-progress-break warn (defect 2026-07-11).
+    monkeypatch.setattr(
+        _ch, "read_tick_state",
+        lambda *a, **k: _ch.TickState(consecutive_broken=pending, sample=None),
+    )
     monkeypatch.setattr(_ca, "read_boot_config_gadget_present", lambda *a, **k: gadget)
 
     def _fake_run(cmd, timeout=5.0):
@@ -1112,6 +1119,17 @@ def test_combo_fallback_armed_coherent_is_ok(monkeypatch, tmp_path):
     r = doctor.usbsink.check_usb_combo_fallback()
     assert r.status == "ok"
     assert "combo armed" in r.detail
+
+
+def test_combo_fallback_armed_with_pending_break_is_warn(monkeypatch, tmp_path):
+    # Defect 2026-07-11 observability: an in-progress genuine break (consecutive
+    # broken count > 0) is surfaced as a warn BEFORE it disarms, so the repeated
+    # broken-tick WARNs no longer go unnoticed until an unexplained disarm.
+    _setup_combo(monkeypatch, tmp_path, intent=True, armed=True, pending=1)
+    r = doctor.usbsink.check_usb_combo_fallback()
+    assert r.status == "warn"
+    assert "consecutive broken tick" in r.detail
+    assert "in progress" in r.detail
 
 
 def test_combo_fallback_disarmed_off_is_ok(monkeypatch, tmp_path):
