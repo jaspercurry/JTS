@@ -304,13 +304,18 @@ def _auto(
     camilla_ok=True,
     usbsink_ok=True,
     leader=False,
+    fanin_ok=True,
+    camilla_stop_ok=True,
+    camilla_start_ok=True,
 ):
     """Run reconcile_auto with recorded daemon ops.
 
     ``usb_intent`` defaults to ``gadget`` so a test that says "gadget on" gets the
     combo armed unless it opts out — matching the common jts.local case (gadget
     present AND USB audio on). ``usbsink`` is the usbsink.env tmp path (defaults to a
-    sibling of ``fanin``)."""
+    sibling of ``fanin``). ``camilla_stop``/``camilla_start`` are the coordinated
+    combo-restart pause/resume ops (record ``camilla_stop``/``camilla_start`` in
+    ``restarts``) so the RTTIME-SIGKILL coordination can be exercised hardware-free."""
     if usb_intent is None:
         usb_intent = gadget
     if usbsink is None:
@@ -318,7 +323,7 @@ def _auto(
 
     def rf():
         restarts.append("fanin")
-        return (True, "")
+        return (fanin_ok, "" if fanin_ok else "fanin restart failed")
 
     def ro():
         restarts.append("outputd")
@@ -327,6 +332,14 @@ def _auto(
     def ru():
         restarts.append("usbsink")
         return (usbsink_ok, "" if usbsink_ok else "usbsink restart failed")
+
+    def rsc():
+        restarts.append("camilla_stop")
+        return (camilla_stop_ok, "" if camilla_stop_ok else "camilla stop failed")
+
+    def rstc():
+        restarts.append("camilla_start")
+        return (camilla_start_ok, "" if camilla_start_ok else "camilla start failed")
 
     def rc(coupling):
         restarts.append(f"camilla:{coupling}")
@@ -342,6 +355,8 @@ def _auto(
         restart_fanin=rf,
         restart_outputd=ro,
         restart_usbsink=ru,
+        stop_camilla=rsc,
+        start_camilla=rstc,
         reconcile_camilla=rc,
         active_leader_check=lambda: leader,
     )
@@ -589,6 +604,136 @@ def test_auto_combo_only_change_forces_fanin_restart(tmp_path, monkeypatch):
     # Arming standby restarted usbsink BEFORE the combo fan-in restart.
     assert r.restarted_usbsink is True
     assert restarts.index("usbsink") < restarts.index("fanin")
+    # LOOPBACK skips the camilla coordination (snd-aloop decouples the two): the
+    # combo fan-in restart does NOT pause/resume camilla.
+    assert "camilla_stop" not in restarts
+    assert "camilla_start" not in restarts
+
+
+def _armed_shm_ring_outputd() -> str:
+    """The outputd.env an ALREADY-armed shm_ring box carries. With this present a
+    subsequent reconcile sees NO outputd move, so the coupling stays put and the
+    reconcile takes the lightweight CONFIRM path (not _arm_ring) — the shape that
+    makes the combo force a bare fan-in restart the coordination must wrap."""
+    return cr._apply_actions("", cr._outputd_actions(COUPLING_SHM_RING, ""))[0]
+
+
+def test_auto_combo_change_on_ring_pauses_camilla_around_fanin_restart(
+    tmp_path, monkeypatch
+):
+    """RTTIME-SIGKILL fix — the load-bearing sequence. On a LIVE shm_ring box a
+    combo-only change takes the confirm path (no arm bounce) and the combo forces a
+    fan-in restart; that restart MUST pause CamillaDSP first and resume it after, so
+    the ioplug capture reader can't busy-spin the SCHED_FIFO daemon into a SIGKILL."""
+    fanin = tmp_path / "fanin.env"
+    outputd = tmp_path / "outputd.env"
+    usbsink = tmp_path / "usbsink.env"
+    # Already shm_ring (the live-ring coupling) + standby already 1, so the ONLY
+    # change is the combo fan-in keys -> confirm path -> combo-forced fan-in restart.
+    fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    outputd.write_text(_armed_shm_ring_outputd())
+    usbsink.write_text(f"{ca.USBSINK_STANDBY_ENV_VAR}=1\n")
+    _stub_ring_gates(monkeypatch, eligible=True)
+    restarts: list[str] = []
+    r = _auto(fanin, outputd, gadget=True, usbsink=usbsink, restarts=restarts)
+    assert r.coupling == COUPLING_SHM_RING
+    assert r.usb_combo_changed is True
+    assert r.restarted_fanin_for_combo is True
+    assert r.ok is True
+    # The confirm path did NOT reconcile-bounce fan-in; the ONE fan-in restart is the
+    # combo's, and it is wrapped: camilla stopped BEFORE, started AFTER.
+    assert restarts.count("fanin") == 1
+    assert "camilla_stop" in restarts and "camilla_start" in restarts
+    assert restarts.index("camilla_stop") < restarts.index("fanin")
+    assert restarts.index("fanin") < restarts.index("camilla_start")
+
+
+def test_auto_fallback_disarm_on_live_ring_pauses_camilla(tmp_path, monkeypatch):
+    """The realistic runtime-fallback disarm path: an ALREADY-armed shm_ring box
+    (coupling stays shm_ring, only the combo turns off) hits the confirm path, so the
+    combo-off fan-in restart is the one that must be camilla-coordinated. (The
+    fallback watcher delegates to reconcile_auto with fallback_active=True.)"""
+    fanin = tmp_path / "fanin.env"
+    outputd = tmp_path / "outputd.env"
+    usbsink = tmp_path / "usbsink.env"
+    # Live ring + combo currently armed; standby already 1.
+    fanin.write_text(
+        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
+        f"{ca.USB_DIRECT_ENV_VAR}=enabled\n{ca.HOST_CLOCK_ENV_VAR}=enabled\n"
+        f"{ca.CUSHION_DECAY_ENV_VAR}=enabled\n"
+    )
+    outputd.write_text(_armed_shm_ring_outputd())
+    usbsink.write_text(f"{ca.USBSINK_STANDBY_ENV_VAR}=1\n")
+    _stub_ring_gates(monkeypatch, eligible=True)
+    restarts: list[str] = []
+    r = cr.reconcile_auto(
+        reason="health",
+        env_path=fanin,
+        outputd_env_path=outputd,
+        usbsink_env_path=usbsink,
+        gadget_present=True,
+        usb_intent_enabled=True,
+        fallback_active=True,  # marker forces combo off, coupling stays shm_ring
+        restart_fanin=lambda: (restarts.append("fanin"), (True, ""))[1],
+        restart_outputd=lambda: (restarts.append("outputd"), (True, ""))[1],
+        restart_usbsink=lambda: (restarts.append("usbsink"), (True, ""))[1],
+        stop_camilla=lambda: (restarts.append("camilla_stop"), (True, ""))[1],
+        start_camilla=lambda: (restarts.append("camilla_start"), (True, ""))[1],
+        reconcile_camilla=lambda coupling: (True, "reconciled"),
+        active_leader_check=lambda: False,
+    )
+    assert r.combo_armed is False
+    assert r.usb_combo_changed is True
+    assert r.coupling == COUPLING_SHM_RING
+    # fan-in restarts to release the gadget, camilla-coordinated (stop -> fan-in -> start).
+    assert restarts.count("fanin") == 1
+    assert restarts.index("camilla_stop") < restarts.index("fanin")
+    assert restarts.index("fanin") < restarts.index("camilla_start")
+
+
+def test_auto_ring_combo_camilla_stop_failure_aborts_fanin_restart(tmp_path, monkeypatch):
+    """Failure honesty: if camilla can't be paused on a live ring, the combo fan-in
+    restart is ABORTED (restarting fan-in with camilla live is what SIGKILLs it),
+    surfaced ok=False, and camilla is started back — never left stopped-forever."""
+    fanin = tmp_path / "fanin.env"
+    outputd = tmp_path / "outputd.env"
+    usbsink = tmp_path / "usbsink.env"
+    fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    outputd.write_text(_armed_shm_ring_outputd())
+    usbsink.write_text(f"{ca.USBSINK_STANDBY_ENV_VAR}=1\n")
+    _stub_ring_gates(monkeypatch, eligible=True)
+    restarts: list[str] = []
+    r = _auto(
+        fanin, outputd, gadget=True, usbsink=usbsink, restarts=restarts,
+        camilla_stop_ok=False,
+    )
+    assert r.ok is False
+    assert r.restarted_fanin_for_combo is False
+    assert "fanin" not in restarts  # fan-in restart was aborted
+    assert "camilla_stop" in restarts and "camilla_start" in restarts  # start-back tried
+    assert "aborted fan-in restart" in (r.detail or "")
+
+
+def test_auto_ring_combo_fanin_restart_failure_still_resumes_camilla(tmp_path, monkeypatch):
+    """Failure honesty: if the combo fan-in restart fails AFTER camilla was stopped,
+    camilla is STILL resumed (start called) — never left stopped-forever — and the
+    failure is surfaced ok=False."""
+    fanin = tmp_path / "fanin.env"
+    outputd = tmp_path / "outputd.env"
+    usbsink = tmp_path / "usbsink.env"
+    fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    outputd.write_text(_armed_shm_ring_outputd())
+    usbsink.write_text(f"{ca.USBSINK_STANDBY_ENV_VAR}=1\n")
+    _stub_ring_gates(monkeypatch, eligible=True)
+    restarts: list[str] = []
+    r = _auto(
+        fanin, outputd, gadget=True, usbsink=usbsink, restarts=restarts,
+        fanin_ok=False,
+    )
+    assert r.ok is False
+    assert r.restarted_fanin_for_combo is False
+    assert restarts.index("camilla_stop") < restarts.index("fanin")
+    assert restarts.index("fanin") < restarts.index("camilla_start")
 
 
 def test_auto_usbsink_restart_failure_is_not_ok(tmp_path, monkeypatch):

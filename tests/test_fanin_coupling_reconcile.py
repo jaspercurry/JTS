@@ -2218,3 +2218,128 @@ def test_ring_armed_box_that_becomes_grouped_recovers_to_loopback(
     assert "JASPER_OUTPUTD_SHM_RING" not in outputd_text
     # The operator's own outputd line survives the recovery.
     assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_text
+
+
+# ---------------------------------------------------------------------------
+# CamillaDSP-coordinated fan-in restart (RTTIME-SIGKILL fix).
+#
+# While a fan-in-written ring/pipe coupling is live, a bare fan-in *process*
+# restart detaches the ring writer; camilladsp's ioplug capture reader busy-spins
+# and the SCHED_FIFO+LimitRTTIME unit is hard SIGKILLed ~213 ms later, cascading
+# into OnFailure=jasper-camilla-recover. _restart_fanin_coordinated pauses camilla
+# (clean SIGTERM) first and resumes it after fan-in is back — mirroring the
+# fan-in -> camilla order jasper-camilla-recover proves works.
+# ---------------------------------------------------------------------------
+
+
+def _coord_ops(*, fanin_ok=True, stop_ok=True, start_ok=True):
+    """Recording (calls, do_restart, do_stop_camilla, do_start_camilla) hooks."""
+    calls: list[str] = []
+
+    def do_restart() -> tuple[bool, str]:
+        calls.append("fanin")
+        return (fanin_ok, "" if fanin_ok else "fanin restart failed")
+
+    def do_stop_camilla() -> tuple[bool, str]:
+        calls.append("camilla_stop")
+        return (stop_ok, "" if stop_ok else "camilla stop failed")
+
+    def do_start_camilla() -> tuple[bool, str]:
+        calls.append("camilla_start")
+        return (start_ok, "" if start_ok else "camilla start failed")
+
+    return calls, do_restart, do_stop_camilla, do_start_camilla
+
+
+def _coordinated(coupling, calls_ops, **kw):
+    from jasper.fanin.coupling_reconcile import _restart_fanin_coordinated
+
+    _calls, do_restart, do_stop, do_start = calls_ops
+    return _restart_fanin_coordinated(
+        do_restart, do_stop, do_start,
+        coupling=coupling, reason="t", phase="test", **kw,
+    )
+
+
+def test_coordinated_loopback_is_a_plain_restart_no_camilla_pause():
+    """On loopback the snd-aloop buffer decouples fan-in from camilla, so the
+    coordination is skipped: a single plain fan-in restart, NO camilla stop/start."""
+    ops = _coord_ops()
+    calls = ops[0]
+    r = _coordinated(COUPLING_LOOPBACK, ops)
+    assert calls == ["fanin"]
+    assert r.ok is True
+    assert r.fanin_restarted is True
+    assert r.coordinated is False
+    assert r.camilla_stopped is False and r.camilla_started is False
+
+
+@pytest.mark.parametrize("coupling", [COUPLING_SHM_RING, COUPLING_TRANSPORT_PIPE])
+def test_coordinated_ring_pauses_before_and_resumes_after(coupling):
+    """The load-bearing order: camilla is STOPPED before the fan-in restart and
+    STARTED after it — exactly the fan-in -> camilla order the recover script proves."""
+    ops = _coord_ops()
+    calls = ops[0]
+    r = _coordinated(coupling, ops)
+    assert calls == ["camilla_stop", "fanin", "camilla_start"]
+    assert r.ok is True
+    assert r.coordinated is True
+    assert r.fanin_restarted is True
+    assert r.camilla_stopped is True and r.camilla_started is True
+
+
+def test_coordinated_stop_failure_aborts_fanin_restart_and_keeps_camilla_running():
+    """Safe direction #1: if camilla can't be paused it may still be on the ring, so
+    we must NOT restart fan-in (that is what SIGKILLs it). Abort, surface ok=False,
+    and ensure camilla is running (start-back) — never leave it stopped-forever."""
+    ops = _coord_ops(stop_ok=False)
+    calls = ops[0]
+    r = _coordinated(COUPLING_SHM_RING, ops)
+    # fan-in was NOT restarted; camilla start-back WAS attempted after the failed stop.
+    assert "fanin" not in calls
+    assert calls == ["camilla_stop", "camilla_start"]
+    assert r.ok is False
+    assert r.fanin_restarted is False
+    assert r.camilla_stopped is False
+    assert r.camilla_started is True
+    assert "aborted fan-in restart" in r.detail
+
+
+def test_coordinated_fanin_failure_still_resumes_camilla():
+    """Safe direction #2: if the fan-in restart fails AFTER camilla was stopped, we
+    STILL start camilla back — never leave the DSP stopped-forever."""
+    ops = _coord_ops(fanin_ok=False)
+    calls = ops[0]
+    r = _coordinated(COUPLING_SHM_RING, ops)
+    # camilla was resumed even though fan-in failed.
+    assert calls == ["camilla_stop", "fanin", "camilla_start"]
+    assert r.ok is False
+    assert r.fanin_restarted is False
+    assert r.camilla_started is True
+    assert "fan-in restart failed" in r.detail
+
+
+def test_coordinated_resume_failure_is_surfaced():
+    """A failed camilla RESUME is surfaced (ok=False, detail) so the operator/doctor
+    sees the DSP is down; OnFailure=jasper-camilla-recover remains the backstop."""
+    ops = _coord_ops(start_ok=False)
+    r = _coordinated(COUPLING_SHM_RING, ops)
+    assert r.ok is False
+    assert r.fanin_restarted is True
+    assert r.camilla_started is False
+    assert "camilla resume failed" in r.detail
+
+
+def test_camilla_stop_start_are_broker_authorized():
+    """Contract pin (AGENTS.md 'pin promises with tests'): the coordinated restart
+    stops+starts jasper-camilla through the broker, so pin that the broker + polkit
+    already authorize exactly that. If someone drops jasper-camilla from MANAGED_UNITS
+    or removes the stop/start verbs, THIS fails loudly instead of silently re-opening
+    the RTTIME-SIGKILL cascade on jts.local. No NEW grant was needed for this PR."""
+    from jasper.control import restart_broker as rb
+
+    assert "jasper-camilla.service" in rb.MANAGED_UNITS
+    assert "stop" in rb.ALLOWED_VERBS
+    assert "start" in rb.ALLOWED_VERBS
+    assert rb._unit_allowed_for_verb("jasper-camilla.service", "stop") is True
+    assert rb._unit_allowed_for_verb("jasper-camilla.service", "start") is True
