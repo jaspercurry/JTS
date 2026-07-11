@@ -441,17 +441,9 @@ the leader-pipe liveness check cannot disagree. The dangerous direction (a flat
 *Alsa*-sink graph reaching the DAC) is **not** exempted — the existing tweeter
 block still fires.
 
-**Fan-in transport_pipe is blocked for active leaders (2026-06-30).** The
-Stage-7 `JASPER_FANIN_CAMILLA_COUPLING=transport_pipe` path is a solo/shared
-latency experiment, not the grouped active-leader transport topology. camilla#1's
-program bake is already a `File` playback sink to `SNAPFIFO` with
-`enable_rate_adjust: false`; it keeps the ALSA fan-in loopback capture until a
-separate grouped transport-pipe clock contract exists. `precheck_active_leader`
-refuses an active-leader bond if the persisted fan-in coupling is
-`transport_pipe`, and the coupling reconciler refuses or reverts a transport_pipe
-arm while the box is already an active leader. This prevents the split-brain
-where fan-in/Camilla/outputd local pipes are armed while camilla#1 still belongs
-to the grouped Snapcast program-bake topology.
+> **Removed 2026-07-11.** The transport_pipe coupling (and its active-leader
+> block) was deleted; only loopback + shm_ring couplings remain, and shm_ring is
+> already blocked for grouped boxes.
 
 **Sequencing — isolate the new clock topology from the 2-instance bring-up.**
 Because the music-only path *is* the validated follower seam, the on-device gates

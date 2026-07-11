@@ -30,9 +30,10 @@ def _usb_plan():
 
 
 def _usb_plan_with_legacy_transport_error():
+    # The deferred lab `rate_match` outputd bridge (a partial flip without a
+    # matching shm_ring coupling) makes the USB low-latency plan error.
     return build_audio_runtime_plan(
         base_env={"JASPER_AUDIO_ROUTE_PROFILE": "usb_low_latency_48k"},
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "transport_pipe"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"},
         profile_id="apple_usb_c_dongle",
         route_mode="solo",
@@ -137,7 +138,7 @@ def test_build_artifact_refuses_runtime_plan_errors(monkeypatch):
             route_health_ok=True,
         )
     except ValueError as e:
-        assert "requires JASPER_FANIN_CAMILLA_COUPLING=loopback" in str(e)
+        assert "requires JASPER_OUTPUTD_CONTENT_BRIDGE=direct" in str(e)
     else:  # pragma: no cover - explicit assertion message
         raise AssertionError("runtime-plan errors did not block artifact build")
 

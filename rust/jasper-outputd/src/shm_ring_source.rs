@@ -13,11 +13,10 @@
 //! once per DAC period to try-consume exactly one slot, zero-filling on empty.
 //! It NEVER blocks — the DAC blocking write is the pacer.
 //!
-//! This is a sibling of `local_content_pipe` (same "optional content source,
-//! empty->silence, metrics into /state" shape), NOT a repeat of it: there is no
-//! FIFO and no stale-drop heuristic — the ring is a bounded 2-slot queue by
-//! construction, so the only "drop" is the attach-time resync `jasper_ring`
-//! already performs.
+//! This is an "optional content source, empty->silence, metrics into /state"
+//! reader: there is no FIFO and no stale-drop heuristic — the ring is a bounded
+//! 2-slot queue by construction, so the only "drop" is the attach-time resync
+//! `jasper_ring` already performs.
 //!
 //! Flag-gated: only constructed when `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`
 //! (the coupling reconciler resolves this by default on eligible stereo

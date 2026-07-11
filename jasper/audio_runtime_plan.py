@@ -35,7 +35,6 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CHUNKSIZE,
-    DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
@@ -48,10 +47,7 @@ from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
-    COUPLING_TRANSPORT_PIPE,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
-    PIPE_PATH_ENV_VAR,
-    OUTPUTD_PIPE_PATH_ENV_VAR,
     RING_CAMILLA_CHUNKSIZE,
     RING_CAMILLA_ENABLE_RATE_ADJUST,
     RING_CAMILLA_QUEUELIMIT,
@@ -62,8 +58,6 @@ from jasper.fanin_coupling import (
     member_kwargs_are_pipe_sink,
     resolve_coupling,
     resolve_outputd_content_bridge,
-    resolve_pipe_path,
-    resolve_outputd_pipe_path,
     ring_pair_is_coherent,
 )
 
@@ -192,25 +186,15 @@ _VALID_ROUTE_MODES = {
 }
 
 # Reuse fanin_coupling's SSOT so the plan recognizes every coupling the
-# resolver does — including the Ring A ``shm_ring`` product transport. Before
-# this the plan kept an independent {loopback, transport_pipe} set and
-# false-warned "not recognized; resolved to loopback" whenever the ring
-# transport was set, even though ``resolve_coupling`` correctly returned
-# ``shm_ring``.
+# resolver does — including the Ring A ``shm_ring`` product transport. The plan
+# does not keep an independent coupling set (that would drift from the resolver
+# and false-warn on a new transport).
 _VALID_COUPLINGS = VALID_COUPLINGS
 _VALID_AUDIO_ROUTE_PROFILES = {
     ROUTE_CORRECTED_48K,
     ROUTE_USB_LOW_LATENCY_48K,
     ROUTE_BITPERFECT_DECLARED,
 }
-
-_ACTIVE_LEADER_TRANSPORT_PIPE_REASON = "fanin_transport_pipe_coupling_unsupported"
-_ACTIVE_LEADER_TRANSPORT_PIPE_DETAIL = (
-    "JASPER_FANIN_CAMILLA_COUPLING=transport_pipe is not supported while this box is an "
-    "active multiroom leader; camilla#1's grouped program bake still captures "
-    "the ALSA fan-in loopback. Keep the coupling on loopback until the grouped "
-    "transport-pipe topology is designed."
-)
 
 # The route modes that mean "grouping is enabled" (leader/follower = enabled +
 # valid + role; invalid_grouping = enabled + config error). ``shm_ring`` is
@@ -248,10 +232,9 @@ class EmitSoundConfigKwargs(TypedDict, total=False):
     resampler_type: str | None
     resampler_profile: str | None
     enable_rate_adjust: bool
-    transport_paced_pipe: bool
     # Ring (shm_ring) coupling names its CamillaDSP capture/playback devices via
     # ALSA ioplug devices (jts_ring_capture / jts_ring_playback), so BOTH device
-    # and format ride the coupling kwargs — unlike transport_pipe (pipe paths).
+    # and format ride the coupling kwargs.
     capture_device: str
     capture_format: str
     playback_device: str
@@ -507,18 +490,6 @@ class AudioRuntimePlan:
         out: list[str] = []
         if not self.coupling_support.supported:
             out.append(self.coupling_support.detail)
-        try:
-            coupling = str(self.setting(COUPLING_ENV_VAR).value)
-        except KeyError:
-            coupling = COUPLING_LOOPBACK
-        if (
-            coupling == COUPLING_TRANSPORT_PIPE
-            and not self.correction_latency_eligibility.eligible
-        ):
-            out.append(
-                "transport_pipe low-latency mode is blocked by correction "
-                f"latency: {self.correction_latency_eligibility.blocking_reason}"
-            )
         if (
             self.route_profile.low_latency_claim
             and not self.correction_latency_eligibility.eligible
@@ -669,17 +640,15 @@ def outputd_env_buffer_pair_error(
 def coupling_supported_for_route(coupling: str, route_mode: RouteMode) -> CouplingSupport:
     """Return whether ``coupling`` is supported for ``route_mode``.
 
-    Two blocked combinations, both because a non-loopback coupling assumes a
+    One blocked combination, because a non-loopback coupling assumes a
     solo-speaker content path that a grouped camilla#1 graph does not have:
 
-    - ``transport_pipe`` + ``active_leader`` (the grouped leader still bakes the
-      ALSA fan-in loopback).
     - ``shm_ring`` + any grouping-enabled mode (leader/follower/invalid) — the ring
       is solo-stereo-only until ring v2 (P8); arming it on a bonded box would
       strand the leader's local output. This is the symmetric half of the
       multiroom reconciler's "ring-armed box cannot bond" gate.
 
-    Keeping these in a route-policy function makes grouped coupling support a
+    Keeping this in a route-policy function makes grouped coupling support a
     deliberate support-matrix change instead of another scattered conditional.
     ``solo`` / ``unknown`` never block: solo = grouping off, unknown = a transient
     indeterminate read that must not refuse a legitimate solo arm.
@@ -687,14 +656,6 @@ def coupling_supported_for_route(coupling: str, route_mode: RouteMode) -> Coupli
 
     normalized = resolve_coupling(coupling)
     mode = route_mode if route_mode in _VALID_ROUTE_MODES else "unknown"
-    if normalized == COUPLING_TRANSPORT_PIPE and mode == "active_leader":
-        return CouplingSupport(
-            coupling=normalized,
-            route_mode=mode,  # type: ignore[arg-type]
-            supported=False,
-            reason=_ACTIVE_LEADER_TRANSPORT_PIPE_REASON,
-            detail=_ACTIVE_LEADER_TRANSPORT_PIPE_DETAIL,
-        )
     if normalized == COUPLING_SHM_RING and mode in _GROUPING_ENABLED_ROUTE_MODES:
         return CouplingSupport(
             coupling=normalized,
@@ -1100,8 +1061,9 @@ def _route_policy_errors(
     # measured to reduce route latency (the
     # ring-proto train), so the artifact binder must accept it — the earlier
     # blanket "requires loopback + direct" would turn a ring-armed box's shipped
-    # low-latency claim permanently red (gap 8). transport_pipe / rate_match stay
-    # rejected (deferred lab transports that failed the 2026-07-02 USB tuning).
+    # low-latency claim permanently red (gap 8). The outputd rate_match content
+    # bridge stays rejected (a deferred lab transport that failed the 2026-07-02
+    # USB tuning).
     if normalized_coupling == COUPLING_SHM_RING and ring_pair_is_coherent(
         normalized_coupling, raw_bridge
     ):
@@ -1259,7 +1221,6 @@ def build_audio_runtime_plan(
         profile_id=profile_id,
     )
     camilla_target_setting = _effective_camilla_target_setting(
-        chunksize_setting=camilla_chunksize_setting,
         target_setting=camilla_target_setting,
         coupling=str(coupling_setting.value),
     )
@@ -1349,11 +1310,7 @@ def build_audio_runtime_plan(
         correction_latency=correction_latency,
         camilla_config_hash=camilla_config_hash,
     )
-    combined_plan_warnings = tuple(plan_warnings) + _transport_pipe_env_warnings(
-        coupling=str(coupling_setting.value),
-        outputd_env=outputd_values,
-        outputd_env_label=outputd_env_label,
-    ) + route_profile.warnings
+    combined_plan_warnings = tuple(plan_warnings) + route_profile.warnings
     return AudioRuntimePlan(
         profile_id=profile_id or "unknown",
         profile_label=profile.label if profile is not None else "unknown",
@@ -1438,37 +1395,6 @@ def transport_topology_for_coupling(
                 "capture_resampler": None,
             },
             outputd_content_source="shm_ring",
-        )
-    if normalized == COUPLING_TRANSPORT_PIPE:
-        capture_pipe = resolve_pipe_path(fanin_values.get(PIPE_PATH_ENV_VAR))
-        output_pipe = resolve_outputd_pipe_path(
-            outputd_values.get(OUTPUTD_PIPE_PATH_ENV_VAR)
-        )
-        return TransportTopology(
-            name=COUPLING_TRANSPORT_PIPE,
-            fanin_to_camilla={
-                "transport": "pipe",
-                "path": capture_pipe,
-                "writer": "jasper-fanin",
-                "camilla_capture_type": "RawFile",
-                "format": DEFAULT_CAPTURE_FORMAT,
-                "channels": 2,
-                "sample_rate": DEFAULT_SAMPLE_RATE,
-            },
-            camilla_to_outputd={
-                "transport": "local_pipe",
-                "path": output_pipe,
-                "camilla_playback_type": "File",
-                "reader": "jasper-outputd",
-                "format": DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE_FORMAT,
-                "channels": 2,
-                "sample_rate": DEFAULT_SAMPLE_RATE,
-            },
-            camilla={
-                "enable_rate_adjust": False,
-                "capture_resampler": None,
-            },
-            outputd_content_source="local_pipe",
         )
     loopback_playback = camilla_playback_device or DEFAULT_PLAYBACK_DEVICE
     loopback_capture = (
@@ -1645,34 +1571,6 @@ def output_endpoint_evidence_from_statefiles(
         errors=tuple(errors),
         endpoint_recognized=False,
     )
-
-
-def _transport_pipe_env_warnings(
-    *,
-    coupling: str,
-    outputd_env: Mapping[str, str],
-    outputd_env_label: str,
-) -> tuple[str, ...]:
-    """Return warnings when outputd's generated env contradicts coupling intent."""
-
-    raw_outputd_pipe = str(outputd_env.get(OUTPUTD_PIPE_PATH_ENV_VAR, "")).strip()
-    if coupling == COUPLING_TRANSPORT_PIPE:
-        if raw_outputd_pipe:
-            return ()
-        return (
-            f"{COUPLING_ENV_VAR}=transport_pipe requires "
-            f"{OUTPUTD_PIPE_PATH_ENV_VAR} in {outputd_env_label}; "
-            "run jasper-fanin-coupling-reconcile transport_pipe so outputd "
-            "reads the same Camilla playback pipe the graph emits",
-        )
-    if raw_outputd_pipe:
-        return (
-            f"stale {OUTPUTD_PIPE_PATH_ENV_VAR} in {outputd_env_label} while "
-            f"{COUPLING_ENV_VAR}={coupling}; run "
-            "jasper-fanin-coupling-reconcile loopback to return outputd to ALSA "
-            "content capture",
-        )
-    return ()
 
 
 def correction_latency_eligibility(
@@ -1910,8 +1808,7 @@ def fanin_coupling_capture_kwargs(
     ``coupling=None`` means read the live env, matching ordinary sound/correction
     emits. An explicit coupling is used by the coupling reconciler immediately
     after it rewrites ``fanin.env``; process env may still be stale, so the
-    explicit value wins while the FIFO path still comes from the supplied/live
-    env.
+    explicit value wins.
 
     **Coupling TOKEN is resolved FILE-FRESH on the live path** (``coupling is
     None`` AND ``env is None``): we delegate to
@@ -1943,16 +1840,9 @@ def fanin_coupling_capture_kwargs(
             EmitSoundConfigKwargs,
             coupling_capture_kwargs_from_env(None if env is None else dict(env)),
         )
-    source = os.environ if env is None else env
     return cast(
         EmitSoundConfigKwargs,
-        capture_kwargs_for_coupling(
-            coupling,
-            pipe_path=resolve_pipe_path(source.get(PIPE_PATH_ENV_VAR)),
-            outputd_pipe_path=resolve_outputd_pipe_path(
-                source.get(OUTPUTD_PIPE_PATH_ENV_VAR)
-            ),
-        ),
+        capture_kwargs_for_coupling(coupling),
     )
 
 
@@ -2362,20 +2252,16 @@ def _coherent_outputd_content_buffer_setting(
 
 def _effective_camilla_target_setting(
     *,
-    chunksize_setting: RuntimeSetting,
     target_setting: RuntimeSetting,
     coupling: str,
 ) -> RuntimeSetting:
     """Return the Camilla target that generated YAML actually emits.
 
     In the ordinary ALSA loopback topology, CamillaDSP's target_level is a real
-    playback-buffer latency/stability knob. In the local transport-pipe topology
-    (`RawFile` capture + `File` playback), outputd's DAC loop is the pace root
-    and Camilla target_level is only schema padding; `emit_sound_config` clamps
-    it to 2 x chunksize. Under shm_ring, the emitter uses the validated ring
-    geometry (target 128) instead of the loopback DAC floor. Keep the route
-    plan/hash on those same effective values so latency artifacts match the
-    loaded graph instead of the generated env floor used by loopback profiles.
+    playback-buffer latency/stability knob. Under shm_ring, the emitter uses the
+    validated ring geometry (target 128) instead of the loopback DAC floor. Keep
+    the route plan/hash on those same effective values so latency artifacts match
+    the loaded graph instead of the generated env floor used by loopback profiles.
     """
 
     normalized = resolve_coupling(coupling)
@@ -2404,34 +2290,7 @@ def _effective_camilla_target_setting(
             operator_value=target_setting.operator_value,
             warnings=tuple(warnings),
         )
-    if normalized != COUPLING_TRANSPORT_PIPE:
-        return target_setting
-    try:
-        chunksize = int(chunksize_setting.value)
-    except (TypeError, ValueError):
-        return target_setting
-    effective = max(chunksize, chunksize * 2)
-    if target_setting.value == effective and target_setting.source_kind == "route_policy":
-        return target_setting
-    warnings = list(target_setting.warnings)
-    if target_setting.value != effective:
-        warnings.append(
-            "JASPER_CAMILLA_TARGET_LEVEL effective value is "
-            f"{effective} under transport_pipe (=2 x chunksize); "
-            f"{target_setting.value} from {target_setting.source} is the "
-            "loopback/hardware-floor value, not the File/RawFile runtime value"
-        )
-    return RuntimeSetting(
-        key=target_setting.key,
-        value=effective,
-        source_kind="route_policy",
-        source="transport_pipe File/RawFile schema floor",
-        unit=target_setting.unit,
-        override_value=target_setting.override_value,
-        generated_value=target_setting.generated_value,
-        operator_value=target_setting.operator_value,
-        warnings=tuple(warnings),
-    )
+    return target_setting
 
 
 def _effective_camilla_chunksize_setting(

@@ -26,6 +26,11 @@ genuinely requires it.
 
 ## 2026-07-01 checkpoint: FIFO is not the endgame
 
+> **Removed 2026-07-11.** The transport_pipe coupling and its code (fifo.rs,
+> local_content_pipe.rs, reconciler branches, env keys) were deleted; shm_ring
+> is the shipped frame-bounded default. A persisted transport_pipe value fails
+> safe to loopback. The section below is preserved as archaeology.
+
 The `transport_pipe` lab path proved the right *clock question* and the wrong
 transport primitive. On `jts.local`, `getconf PAGESIZE` reports **16384** on the
 Pi 5 `rpi-2712` kernel. Linux pipe/FIFO capacity cannot shrink below one page,
@@ -182,8 +187,8 @@ n_slots×128 frames with fan-in blocking-on-full as the transitively DAC-paced
 writer; falsifiable target ≈ −25..35 ms plus the variance the hysteretic aloop
 carried. Certification note: the route-latency artifact binder correctly
 accepts the coherent Ring A + Ring B pair for `usb_low_latency_48k`; it still
-rejects partial ring flips and deferred lab transports (`transport_pipe`,
-`rate_match`).
+rejects partial ring flips and deferred lab transports (~~`transport_pipe`~~,
+`rate_match`) *(transport_pipe removed 2026-07-11)*.
 
 ## The chain, and where latency lives
 
@@ -265,7 +270,10 @@ deleted in the USB dead-pipeline sweep — see the callout below.)
 > `lean_capture_kwargs`, `DEFAULT_LEAN_CAPTURE_FIFO`, and the `JASPER_LEAN_LANE`
 > env / the `fifo` value of `JASPER_USBSINK_OUTPUT_MODE`. The text below is
 > archaeology of the design. The `jasper-camilla-pipe-guard` dangling-capture
-> floor survives — it now guards the live `transport_pipe` capture pipe.
+> floor survives, but after the 2026-07-11 transport_pipe deletion its
+> capture-pipe branch has no live consumer (both the lean lane and
+> transport_pipe are gone); it stays for its Snapcast PLAYBACK-pipe protection,
+> so the capture-pipe half is now vestigial.
 
 The lean lane is the low-latency music path for a **single, exclusive, wired**
 source (USB audio input): the source writes a named pipe, CamillaDSP
@@ -301,7 +309,7 @@ because no test ran `camilladsp --check` (the string tests asserted the wrong
 validated on jts5 / CamillaDSP 4.1.3: with fan-in writing the pipe, `--check` on
 the RawFile config returns **"Config is valid."** The ordered transition is now
 owned by a reconciler ([`jasper.fanin.coupling_reconcile`](../jasper/fanin/coupling_reconcile.py),
-CLI `jasper-fanin-coupling-reconcile <loopback|transport_pipe>`):
+CLI `jasper-fanin-coupling-reconcile <loopback|shm_ring>`):
 
 1. **Ordered dual-pipe arm — BUILT.** On ARM the reconciler writes fanin.env +
    outputd.env, restarts outputd first so the local content-pipe reader exists,
@@ -348,6 +356,9 @@ leave-lean), the next restart cannot crash-loop.
 **Test gap:** the string tests assert `type: RawFile` (+ `File` absent); the real
 `camilladsp --check` gate runs on-device (the deploy's sound reconcile, now
 env-hydrated so it sees the persisted coupling — [`jasper.cli.sound`](../jasper/cli/sound.py)).
+> **Removed 2026-07-11.** transport_pipe was deleted; shm_ring is the shipped
+> frame-bounded default. The 2026-07-01 result below is archaeology.
+
 **2026-07-01 result:** do **not** flip the default to `transport_pipe`. The
 ordered dual-pipe arm and activation gate are useful safety work, but hardware
 testing on the Pi 5 showed the page-sized FIFO floor and CamillaDSP's continuous
@@ -372,7 +383,7 @@ the path: `DEFAULT_LEAN_CAPTURE_FIFO` (`/run/jasper-usbsink/lean.pipe`).
 | 4b-iv | the **live** lane-switch: re-emit the lean config through the carrier (preserving room PEQs + trim, `jasper.sound.runtime.apply_lean_capture_config`), arm the usbsink FIFO output at runtime (`jasper.usbsink.output_mode_reconcile` → writes `JASPER_USBSINK_OUTPUT_MODE` to `/var/lib/jasper/usbsink.env` + restarts via the broker), and swap/restore via mux `_tick` (shared source-route decision → `Mux._enter_lean`/`_leave_lean` ladders, fail-loud → buffered) | removed 2026-07-10, see callout above |
 | 5 | shairport-sync built `--with-pipe` (capable binary; runtime AirPlay pipe lane is future, #1318-gated) | shipped, dormant |
 | 6 | `jasper-doctor` DAC USB sync-mode advisory (clock-coherence signal, *not* the chip-AEC gate) | shipped |
-| 7 | **fan-in → CamillaDSP transport-pipe coupling** (`JASPER_FANIN_CAMILLA_COUPLING=transport_pipe`) — the shared-path dual-pipe lab: fan-in writes S32_LE to Camilla RawFile capture, Camilla writes S32_LE File playback to outputd's local pipe; transport ([`jasper-fanin/src/fifo.rs`](../rust/jasper-fanin/src/fifo.rs), [`jasper-outputd/src/local_content_pipe.rs`](../rust/jasper-outputd/src/local_content_pipe.rs)) + flag ([`jasper-fanin/src/config.rs`](../rust/jasper-fanin/src/config.rs) `Coupling`) + generator helper ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)) | shipped, default-OFF; dual-pipe `RawFile`/`File` contract fixed + tests; ordered arm/disarm reconciler (`jasper-fanin-coupling-reconcile`) + doctor drift check; **hardware-demoted as the low-latency endgame on 2026-07-01 because the 16 KiB pipe floor and continuous File-playback fill add too much latency** |
+| 7 | ~~**fan-in → CamillaDSP transport-pipe coupling**~~ (`JASPER_FANIN_CAMILLA_COUPLING=transport_pipe`) — the shared-path dual-pipe lab: fan-in writes S32_LE to Camilla RawFile capture, Camilla writes S32_LE File playback to outputd's local pipe; transport (`jasper-fanin/src/fifo.rs`, `jasper-outputd/src/local_content_pipe.rs`) + flag (`jasper-fanin/src/config.rs` `Coupling`) + generator helper (`jasper.fanin_coupling`) | **REMOVED 2026-07-11** — deleted (`fifo.rs`, `local_content_pipe.rs`, `config.rs` `Coupling`, reconciler branches, env keys); superseded by shm_ring, fails safe to loopback |
 
 **Going live is soak-gated.** `JASPER_LEAN_LANE` is opt-IN
 (`=enabled`), default-OFF, and is an *experiment knob* until a **24 h on-device
@@ -455,6 +466,11 @@ calibration pass.
 
 ## Stage 7 — fan-in → CamillaDSP transport-pipe coupling (demoted lab path)
 
+> **Removed 2026-07-11.** The transport_pipe coupling and its code (fifo.rs,
+> local_content_pipe.rs, reconciler branches, env keys) were deleted; shm_ring
+> is the shipped frame-bounded default. A persisted transport_pipe value fails
+> safe to loopback. The section below is preserved as archaeology.
+
 The lean lane (Stage 4) bypasses the fan-in **mixer** entirely for a single
 exclusive wired source. The transport-pipe coupling was built as the attempted
 convergence path for the **shared** mixer: the FULL fan-in mixer keeps running
@@ -529,10 +545,9 @@ disable the `jasper_ref`/`jasper_capture` dsnoop diagnostic fallback — accepta
 (fallback/diagnostic only), but worth knowing during the soak.
 
 **What's built vs learned.** Built and proven default-inert: the Rust transport
-([`fifo.rs`](../rust/jasper-fanin/src/fifo.rs),
-[`local_content_pipe.rs`](../rust/jasper-outputd/src/local_content_pipe.rs)), the `Coupling` flag with
+(`fifo.rs`, `local_content_pipe.rs` — both deleted 2026-07-11), the `Coupling` flag with
 fail-safe normalization matching Python ([`config.rs`](../rust/jasper-fanin/src/config.rs)),
-the generator helper that returns the dual-pipe kwargs under `transport_pipe`
+the generator helper that returned the dual-pipe kwargs under `transport_pipe`
 and `{}` (byte-identical) under `loopback`
 ([`jasper.fanin_coupling`](../jasper/fanin_coupling.py)).
 **Live-armed (flag-gated; hardware-demoted, not default-bound):**
@@ -609,7 +624,8 @@ that measurement exists, do not treat the offset as the bonded fix.
 
 ---
 
-Last verified: 2026-07-10 (scoped to the resilience/routing-policy claims
+Last verified: 2026-07-11 (transport_pipe coupling DELETED; otherwise scoped to
+the resilience/routing-policy claims
 below, NOT to the latency numbers the banner above marks superseded — for
 current measured latency see
 [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md).

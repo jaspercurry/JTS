@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Ordered arm/disarm of the fan-in -> CamillaDSP transport-pipe coupling."""
+"""Ordered arm/disarm of the fan-in -> CamillaDSP coupling."""
 
 from __future__ import annotations
 
@@ -10,22 +10,22 @@ from pathlib import Path
 
 import pytest
 
-from jasper.camilla_config_contract import DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
 from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
     FANIN_ENV_PATH,
     OUTPUTD_ENV_PATH,
+    _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV,
+    _outputd_actions,
     read_persisted_coupling,
+    reconcile_auto,
     reconcile_coupling,
-    validate_transport_pipe_status_window,
 )
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
-    COUPLING_TRANSPORT_PIPE,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
-    OUTPUTD_PIPE_PATH_ENV_VAR,
+    OUTPUTD_RING_PATH_ENV_VAR,
     OUTPUTD_RING_SLOTS_ENV_VAR,
 )
 
@@ -77,14 +77,6 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
-def _outputd_value(path: Path) -> str | None:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    return read_value(text, OUTPUTD_PIPE_PATH_ENV_VAR)
-
-
 def _reconcile(
     desired: str | None,
     *,
@@ -95,7 +87,6 @@ def _reconcile(
     reconcile_camilla,
     **kwargs,
 ):
-    kwargs.setdefault("validate_transport_pipe", lambda: (True, "gate ok"))
     # Keep tests hermetic: never let the disarm path's default hardware-reconcile
     # kick reach the real restart broker. Kick-behaviour tests inject their own.
     kwargs.setdefault("kick_hardware_reconcile", lambda: (True, ""))
@@ -111,100 +102,6 @@ def _reconcile(
     )
 
 
-def _transport_fanin_status(
-    *,
-    xrun_count: int = 0,
-    catchup_events: int = 0,
-    dropped_periods: int = 0,
-    usb_frames_read: int = 0,
-    usb_resampler_input_frames: int | None = None,
-    usb_resampler_armed: bool = True,
-    usb_resampler_locked: bool = False,
-    usb_resampler_fill_frames: int = 512,
-    usb_resampler_target_frames: int = 512,
-    usb_resampler_unlock_count: int = 0,
-    usb_resampler_overrun_frames: int = 0,
-) -> dict[str, object]:
-    usb_input: dict[str, object] = {
-        "label": "usbsink",
-        "frames_read": usb_frames_read,
-        "xrun_count": xrun_count,
-        "catchup_events": catchup_events,
-    }
-    if usb_resampler_input_frames is not None:
-        usb_input["resampler"] = {
-            "armed": usb_resampler_armed,
-            "locked": usb_resampler_locked,
-            "input_frames": usb_resampler_input_frames,
-            "fill_frames": usb_resampler_fill_frames,
-            "target_fill_frames": usb_resampler_target_frames,
-            "unlock_count": usb_resampler_unlock_count,
-            "overrun_frames": usb_resampler_overrun_frames,
-        }
-    return {
-        "output": {
-            "transport": "transport_pipe",
-            "period_frames": 256,
-            "xrun_count": 0,
-            "pipe": {
-                "actual_pipe_bytes": 8192,
-                "dropped_periods": dropped_periods,
-            },
-        },
-        "inputs": [usb_input],
-    }
-
-
-def _transport_outputd_status(
-    *,
-    available_bytes: int = 1024,
-    empty_periods: int = 0,
-    partial_periods: int = 0,
-    dac_xruns: int = 0,
-    local_pipe_format: str = "S32_LE",
-) -> dict[str, object]:
-    return {
-        "content": {
-            "source": "local_pipe",
-            "channels": 2,
-            "period_frames": 256,
-            "empty_periods": empty_periods,
-            "partial_periods": partial_periods,
-            "xrun_count": 0,
-            "local_pipe": {
-                "open": True,
-                "format": local_pipe_format,
-                "actual_pipe_bytes": 8192,
-                "available_bytes": available_bytes,
-            },
-        },
-        "dac": {
-            "period_frames": 256,
-            "xrun_count": dac_xruns,
-        },
-    }
-
-
-def test_arm_orders_outputd_then_fanin_then_camilla_and_writes_both_envs(tmp_path):
-    fanin_env = tmp_path / "fanin.env"
-    outputd_env = tmp_path / "outputd.env"
-    calls, ro, rf, rc = _recorder()
-
-    res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert res.ok and res.direction == "arm" and res.changed
-    assert calls == ["outputd", "fanin", "camilla:transport_pipe"]
-    assert read_persisted_coupling(fanin_env) == COUPLING_TRANSPORT_PIPE
-    assert _outputd_value(outputd_env) == DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
-
-
 def test_coupling_reconciler_gets_env_action_from_runtime_plan():
     import jasper.fanin.coupling_reconcile as cr
 
@@ -213,300 +110,16 @@ def test_coupling_reconciler_gets_env_action_from_runtime_plan():
     assert "fanin_coupling_action" in source
 
 
-def test_transport_pipe_refused_for_active_leader_keeps_loopback(tmp_path):
-    fanin_env = tmp_path / "fanin.env"
-    outputd_env = tmp_path / "outputd.env"
-    calls, ro, rf, rc = _recorder()
-
-    res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-        active_leader_check=lambda: True,
-    )
-
-    assert res.ok is False
-    assert res.direction == "blocked"
-    assert res.changed is False
-    assert calls == []
-    assert read_persisted_coupling(fanin_env) == "loopback"
-    assert _outputd_value(outputd_env) is None
-
-
-def test_existing_transport_pipe_recovers_to_loopback_for_active_leader(tmp_path):
-    fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_TRANSPORT_PIPE}\n",
-    )
-    outputd_env = _write(
-        tmp_path / "outputd.env",
-        f"{OUTPUTD_PIPE_PATH_ENV_VAR}={DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE}\n",
-    )
-    calls, ro, rf, rc = _recorder()
-
-    res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-        active_leader_check=lambda: True,
-    )
-
-    assert res.ok is False
-    assert res.direction == "blocked"
-    assert res.changed is True
-    assert res.recovered is True
-    assert calls == ["camilla:loopback", "fanin", "outputd"]
-    assert read_persisted_coupling(fanin_env) == "loopback"
-    assert _outputd_value(outputd_env) is None
-
-
-def test_disarm_orders_camilla_before_fanin_before_outputd(tmp_path):
-    fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_TRANSPORT_PIPE}\n",
-    )
-    outputd_env = _write(
-        tmp_path / "outputd.env",
-        f"{OUTPUTD_PIPE_PATH_ENV_VAR}={DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE}\n",
-    )
-    calls, ro, rf, rc = _recorder()
-
-    res = _reconcile(
-        "loopback",
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert res.ok and res.direction == "disarm" and res.changed
-    assert calls == ["camilla:loopback", "fanin", "outputd"]
-    assert read_persisted_coupling(fanin_env) == "loopback"
-    assert _outputd_value(outputd_env) is None
-
-
-def test_confirm_when_already_desired_skips_daemon_restarts(tmp_path):
-    fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_TRANSPORT_PIPE}\n",
-    )
-    outputd_env = _write(
-        tmp_path / "outputd.env",
-        f"{OUTPUTD_PIPE_PATH_ENV_VAR}={DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE}\n",
-    )
-    calls, ro, rf, rc = _recorder()
-
-    res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert res.ok and res.direction == "confirm" and not res.changed
-    assert calls == ["camilla:transport_pipe"]
-
-
-def test_transport_confirm_repairs_missing_outputd_pipe_env(tmp_path):
-    fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_TRANSPORT_PIPE}\n",
-    )
-    outputd_env = tmp_path / "outputd.env"
-    calls, ro, rf, rc = _recorder()
-
-    res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert res.ok and res.direction == "arm" and res.changed
-    assert calls == ["outputd", "fanin", "camilla:transport_pipe"]
-    assert _outputd_value(outputd_env) == DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
-
-
-def test_arm_outputd_failure_recovers_to_loopback(tmp_path):
-    fanin_env = tmp_path / "fanin.env"
-    outputd_env = tmp_path / "outputd.env"
-    calls, ro, rf, rc = _recorder(outputd_ok=False)
-
-    res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert res.ok is False
-    assert calls == ["outputd", "camilla:loopback", "fanin", "outputd"]
-    assert read_persisted_coupling(fanin_env) == "loopback"
-    assert _outputd_value(outputd_env) is None
-
-
-def test_arm_fanin_failure_recovers_to_loopback(tmp_path):
-    fanin_env = tmp_path / "fanin.env"
-    outputd_env = tmp_path / "outputd.env"
-    calls, ro, rf, rc = _recorder(fanin_ok=False)
-
-    res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert res.ok is False
-    assert calls == ["outputd", "fanin", "camilla:loopback", "fanin", "outputd"]
-    assert read_persisted_coupling(fanin_env) == "loopback"
-    assert _outputd_value(outputd_env) is None
-
-
-def test_arm_camilla_failure_recovers_to_loopback(tmp_path):
-    fanin_env = tmp_path / "fanin.env"
-    outputd_env = tmp_path / "outputd.env"
-    calls, ro, rf, rc = _recorder(camilla_fail_for=COUPLING_TRANSPORT_PIPE)
-
-    res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert res.ok is False
-    assert calls == [
-        "outputd",
-        "fanin",
-        "camilla:transport_pipe",
-        "camilla:loopback",
-        "fanin",
-        "outputd",
-    ]
-    assert read_persisted_coupling(fanin_env) == "loopback"
-    assert _outputd_value(outputd_env) is None
-
-
-def test_arm_transport_pipe_gate_failure_recovers_to_loopback(tmp_path):
-    fanin_env = tmp_path / "fanin.env"
-    outputd_env = tmp_path / "outputd.env"
-    calls, ro, rf, rc = _recorder()
-
-    res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-        validate_transport_pipe=lambda: (False, "fan-in catchup climbed"),
-    )
-
-    assert res.ok is False
-    assert res.direction == "arm"
-    assert res.recovered is True
-    assert res.validated_transport_pipe is False
-    assert "fan-in catchup climbed" in res.detail
-    assert calls == [
-        "outputd",
-        "fanin",
-        "camilla:transport_pipe",
-        "camilla:loopback",
-        "fanin",
-        "outputd",
-    ]
-    assert read_persisted_coupling(fanin_env) == "loopback"
-    assert _outputd_value(outputd_env) is None
-
-
-def test_transport_pipe_gate_exception_recovers_to_loopback(tmp_path):
-    fanin_env = tmp_path / "fanin.env"
-    outputd_env = tmp_path / "outputd.env"
-    calls, ro, rf, rc = _recorder()
-
-    def gate_raises():
-        raise RuntimeError("socket parser bug")
-
-    res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-        validate_transport_pipe=gate_raises,
-    )
-
-    assert res.ok is False
-    assert res.recovered is True
-    assert "activation gate raised: socket parser bug" in res.detail
-    assert calls == [
-        "outputd",
-        "fanin",
-        "camilla:transport_pipe",
-        "camilla:loopback",
-        "fanin",
-        "outputd",
-    ]
-    assert read_persisted_coupling(fanin_env) == "loopback"
-    assert _outputd_value(outputd_env) is None
-
-
-def test_confirm_transport_pipe_gate_failure_recovers_to_loopback(tmp_path):
-    fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_TRANSPORT_PIPE}\n",
-    )
-    outputd_env = _write(
-        tmp_path / "outputd.env",
-        f"{OUTPUTD_PIPE_PATH_ENV_VAR}={DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE}\n",
-    )
-    calls, ro, rf, rc = _recorder()
-
-    res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-        validate_transport_pipe=lambda: (False, "outputd pipe queued latency"),
-    )
-
-    assert res.ok is False
-    assert res.direction == "confirm"
-    assert res.changed is True
-    assert res.recovered is True
-    assert calls == [
-        "camilla:transport_pipe",
-        "camilla:loopback",
-        "fanin",
-        "outputd",
-    ]
-    assert read_persisted_coupling(fanin_env) == "loopback"
-    assert _outputd_value(outputd_env) is None
-
-
 def test_disarm_camilla_failure_still_restarts_fanin_and_outputd(tmp_path):
+    # Disarm FROM a shm_ring-armed box: even when the camilla reconcile to loopback
+    # fails, the disarm still restarts fan-in + outputd (never leave them stranded
+    # on the ring).
     fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_TRANSPORT_PIPE}\n",
+        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
     )
     outputd_env = _write(
         tmp_path / "outputd.env",
-        f"{OUTPUTD_PIPE_PATH_ENV_VAR}={DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE}\n",
+        f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring\n",
     )
     calls, ro, rf, rc = _recorder(camilla_fail_for="loopback")
 
@@ -526,12 +139,14 @@ def test_disarm_camilla_failure_still_restarts_fanin_and_outputd(tmp_path):
 
 
 def test_old_fifo_literal_failsafe_to_loopback(tmp_path):
+    # A removed/unknown literal (the old "fifo", or the deleted transport_pipe)
+    # persisted in fanin.env fails safe to a loopback disarm.
     fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_TRANSPORT_PIPE}\n",
+        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
     )
     outputd_env = _write(
         tmp_path / "outputd.env",
-        f"{OUTPUTD_PIPE_PATH_ENV_VAR}={DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE}\n",
+        f"JASPER_OUTPUTD_SINK=dual_apple\n{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring\n",
     )
     calls, ro, rf, rc = _recorder()
 
@@ -547,28 +162,10 @@ def test_old_fifo_literal_failsafe_to_loopback(tmp_path):
     assert res.desired == "loopback" and res.direction == "disarm"
     assert calls == ["camilla:loopback", "fanin", "outputd"]
     assert read_persisted_coupling(fanin_env) == "loopback"
-    assert _outputd_value(outputd_env) is None
-
-
-def test_no_apply_writes_both_envs_only(tmp_path):
-    fanin_env = tmp_path / "fanin.env"
-    outputd_env = tmp_path / "outputd.env"
-    calls, ro, rf, rc = _recorder()
-
-    res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        apply=False,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert res.ok and res.changed and calls == []
-    assert res.direction == "arm"  # transport_pipe is an arm
-    assert read_persisted_coupling(fanin_env) == COUPLING_TRANSPORT_PIPE
-    assert _outputd_value(outputd_env) == DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE
+    # The stale ring bridge key is cleared; the operator's own line survives.
+    outputd_text = outputd_env.read_text()
+    assert read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
+    assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_text
 
 
 def test_no_apply_shm_ring_is_arm_direction(tmp_path):
@@ -597,11 +194,11 @@ def test_no_apply_shm_ring_is_arm_direction(tmp_path):
 def test_no_apply_loopback_is_disarm_direction(tmp_path):
     # The complement: a --no-apply loopback write is a disarm.
     fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_TRANSPORT_PIPE}\n"
+        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n"
     )
     outputd_env = _write(
         tmp_path / "outputd.env",
-        f"{OUTPUTD_PIPE_PATH_ENV_VAR}={DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE}\n",
+        f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring\n",
     )
     calls, ro, rf, rc = _recorder()
 
@@ -619,7 +216,9 @@ def test_no_apply_loopback_is_disarm_direction(tmp_path):
     assert res.direction == "disarm"
 
 
-def test_arm_preserves_coexisting_keys_and_custom_outputd_pipe(tmp_path):
+def test_arm_preserves_coexisting_keys_and_custom_outputd_ring_path(
+    tmp_path, _ring_assets_present
+):
     fanin_env = _write(
         tmp_path / "fanin.env",
         "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536\n# operator note\n",
@@ -627,17 +226,18 @@ def test_arm_preserves_coexisting_keys_and_custom_outputd_pipe(tmp_path):
     outputd_env = _write(
         tmp_path / "outputd.env",
         "JASPER_CAMILLA_CHUNKSIZE=256\n"
-        f"{OUTPUTD_PIPE_PATH_ENV_VAR}=/run/custom/content.pipe\n",
+        f"{OUTPUTD_RING_PATH_ENV_VAR}=/run/custom/content.ring\n",
     )
     _, ro, rf, rc = _recorder()
 
     _reconcile(
-        COUPLING_TRANSPORT_PIPE,
+        COUPLING_SHM_RING,
         fanin_env=fanin_env,
         outputd_env=outputd_env,
         restart_outputd=ro,
         restart_fanin=rf,
         reconcile_camilla=rc,
+        active_leader_check=lambda: False,
     )
 
     fanin_body = fanin_env.read_text(encoding="utf-8")
@@ -645,7 +245,8 @@ def test_arm_preserves_coexisting_keys_and_custom_outputd_pipe(tmp_path):
     assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536" in fanin_body
     assert "# operator note" in fanin_body
     assert "JASPER_CAMILLA_CHUNKSIZE=256" in outputd_body
-    assert _outputd_value(outputd_env) == "/run/custom/content.pipe"
+    # The shm_ring arm preserves the operator's custom Ring B path.
+    assert read_value(outputd_body, OUTPUTD_RING_PATH_ENV_VAR) == "/run/custom/content.ring"
 
 
 def test_env_write_failure_aborts_before_daemon_ops(tmp_path, monkeypatch):
@@ -658,12 +259,13 @@ def test_env_write_failure_aborts_before_daemon_ops(tmp_path, monkeypatch):
 
     monkeypatch.setattr("jasper.fanin.coupling_reconcile.atomic_write_text", boom)
     res = _reconcile(
-        COUPLING_TRANSPORT_PIPE,
+        COUPLING_SHM_RING,
         fanin_env=fanin_env,
         outputd_env=outputd_env,
         restart_outputd=ro,
         restart_fanin=rf,
         reconcile_camilla=rc,
+        active_leader_check=lambda: False,
     )
 
     assert res.ok is False and res.direction == "error" and calls == []
@@ -700,27 +302,6 @@ def test_cli_main_hydrates_env_files_before_reconciling(monkeypatch):
     rc = cr.main(["loopback"])
     assert rc == 0
     assert order == ["hydrate", "reconcile"]
-
-
-def test_cli_main_reports_transport_gate(monkeypatch, capsys):
-    from jasper.fanin import coupling_reconcile as cr
-
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
-
-    def fake_reconcile(*a, **k):
-        return cr.CouplingResult(
-            ok=True,
-            desired=COUPLING_TRANSPORT_PIPE,
-            changed=True,
-            direction="arm",
-            validated_transport_pipe=True,
-        )
-
-    monkeypatch.setattr(cr, "reconcile_coupling", fake_reconcile)
-    rc = cr.main([COUPLING_TRANSPORT_PIPE])
-
-    assert rc == 0
-    assert "transport_gate=True" in capsys.readouterr().out
 
 
 def test_cli_main_configures_info_logging(monkeypatch, capsys):
@@ -1066,245 +647,6 @@ def test_cli_health_stands_down_on_entry_lock_contention(
     err = capsys.readouterr().err
     assert "skipped this health-watcher tick" in err
     assert "entry_lock_contended_health_skip" in caplog.text
-
-
-def test_transport_pipe_status_gate_accepts_stable_window():
-    fanin_samples = [
-        _transport_fanin_status(),
-        _transport_fanin_status(xrun_count=1, catchup_events=2),
-    ]
-    outputd_samples = [
-        _transport_outputd_status(),
-        _transport_outputd_status(empty_periods=2, partial_periods=1),
-    ]
-
-    ok, detail = validate_transport_pipe_status_window(
-        warmup_seconds=0,
-        window_seconds=0,
-        read_fanin_status=lambda: (fanin_samples.pop(0), ""),
-        read_outputd_status=lambda: (outputd_samples.pop(0), ""),
-    )
-
-    assert ok is True
-    assert "activation gate ok" in detail
-
-
-def test_transport_pipe_status_gate_rejects_fanin_counter_runaway():
-    fanin_samples = [
-        _transport_fanin_status(),
-        _transport_fanin_status(xrun_count=20, catchup_events=40),
-    ]
-    outputd_samples = [
-        _transport_outputd_status(),
-        _transport_outputd_status(),
-    ]
-
-    ok, detail = validate_transport_pipe_status_window(
-        warmup_seconds=0,
-        window_seconds=0,
-        read_fanin_status=lambda: (fanin_samples.pop(0), ""),
-        read_outputd_status=lambda: (outputd_samples.pop(0), ""),
-    )
-
-    assert ok is False
-    assert "fan-in input usbsink xrun_count delta=20" in detail
-    assert "fan-in input usbsink catchup_events delta=40" in detail
-
-
-def test_transport_pipe_status_gate_rejects_outputd_queued_latency():
-    fanin_samples = [
-        _transport_fanin_status(),
-        _transport_fanin_status(),
-    ]
-    outputd_samples = [
-        _transport_outputd_status(),
-        _transport_outputd_status(available_bytes=32_768),
-    ]
-
-    ok, detail = validate_transport_pipe_status_window(
-        warmup_seconds=0,
-        window_seconds=0,
-        read_fanin_status=lambda: (fanin_samples.pop(0), ""),
-        read_outputd_status=lambda: (outputd_samples.pop(0), ""),
-    )
-
-    assert ok is False
-    assert "hidden queued latency" in detail
-
-
-def test_transport_pipe_status_gate_rejects_outputd_local_pipe_format_mismatch():
-    fanin_samples = [
-        _transport_fanin_status(),
-        _transport_fanin_status(),
-    ]
-    outputd_samples = [
-        _transport_outputd_status(local_pipe_format="S16_LE"),
-        _transport_outputd_status(local_pipe_format="S16_LE"),
-    ]
-
-    ok, detail = validate_transport_pipe_status_window(
-        warmup_seconds=0,
-        window_seconds=0,
-        read_fanin_status=lambda: (fanin_samples.pop(0), ""),
-        read_outputd_status=lambda: (outputd_samples.pop(0), ""),
-    )
-
-    assert ok is False
-    assert "local content pipe format mismatch" in detail
-
-
-def test_transport_pipe_status_gate_accepts_active_usb_locked_resampler():
-    fanin_samples = [
-        _transport_fanin_status(
-            usb_frames_read=1_000,
-            usb_resampler_input_frames=1_000,
-            usb_resampler_locked=True,
-            usb_resampler_fill_frames=512,
-        ),
-        _transport_fanin_status(
-            usb_frames_read=8_680,
-            usb_resampler_input_frames=8_680,
-            usb_resampler_locked=True,
-            usb_resampler_fill_frames=540,
-        ),
-    ]
-    outputd_samples = [_transport_outputd_status(), _transport_outputd_status()]
-
-    ok, detail = validate_transport_pipe_status_window(
-        warmup_seconds=0,
-        window_seconds=0,
-        read_fanin_status=lambda: (fanin_samples.pop(0), ""),
-        read_outputd_status=lambda: (outputd_samples.pop(0), ""),
-    )
-
-    assert ok is True
-    assert "activation gate ok" in detail
-
-
-def test_transport_pipe_status_gate_rejects_active_usb_unlocked_resampler():
-    fanin_samples = [
-        _transport_fanin_status(
-            usb_frames_read=1_000,
-            usb_resampler_input_frames=1_000,
-            usb_resampler_locked=False,
-        ),
-        _transport_fanin_status(
-            usb_frames_read=8_680,
-            usb_resampler_input_frames=8_680,
-            usb_resampler_locked=False,
-        ),
-    ]
-    outputd_samples = [_transport_outputd_status(), _transport_outputd_status()]
-
-    ok, detail = validate_transport_pipe_status_window(
-        warmup_seconds=0,
-        window_seconds=0,
-        read_fanin_status=lambda: (fanin_samples.pop(0), ""),
-        read_outputd_status=lambda: (outputd_samples.pop(0), ""),
-    )
-
-    assert ok is False
-    assert "fan-in input usbsink resampler not locked" in detail
-
-
-def test_transport_pipe_status_gate_rejects_active_usb_missing_resampler():
-    fanin_samples = [
-        _transport_fanin_status(usb_frames_read=1_000),
-        _transport_fanin_status(usb_frames_read=8_680),
-    ]
-    outputd_samples = [_transport_outputd_status(), _transport_outputd_status()]
-
-    ok, detail = validate_transport_pipe_status_window(
-        warmup_seconds=0,
-        window_seconds=0,
-        read_fanin_status=lambda: (fanin_samples.pop(0), ""),
-        read_outputd_status=lambda: (outputd_samples.pop(0), ""),
-    )
-
-    assert ok is False
-    assert "fan-in input usbsink resampler missing" in detail
-
-
-def test_transport_pipe_status_gate_rejects_active_usb_resampler_unlock():
-    fanin_samples = [
-        _transport_fanin_status(
-            usb_frames_read=1_000,
-            usb_resampler_input_frames=1_000,
-            usb_resampler_locked=True,
-            usb_resampler_unlock_count=0,
-        ),
-        _transport_fanin_status(
-            usb_frames_read=8_680,
-            usb_resampler_input_frames=8_680,
-            usb_resampler_locked=True,
-            usb_resampler_unlock_count=1,
-        ),
-    ]
-    outputd_samples = [_transport_outputd_status(), _transport_outputd_status()]
-
-    ok, detail = validate_transport_pipe_status_window(
-        warmup_seconds=0,
-        window_seconds=0,
-        read_fanin_status=lambda: (fanin_samples.pop(0), ""),
-        read_outputd_status=lambda: (outputd_samples.pop(0), ""),
-    )
-
-    assert ok is False
-    assert "fan-in input usbsink resampler unlock_count delta=1" in detail
-
-
-def test_transport_pipe_status_gate_rejects_active_usb_resampler_fill_drift():
-    fanin_samples = [
-        _transport_fanin_status(
-            usb_frames_read=1_000,
-            usb_resampler_input_frames=1_000,
-            usb_resampler_locked=True,
-            usb_resampler_fill_frames=512,
-            usb_resampler_target_frames=512,
-        ),
-        _transport_fanin_status(
-            usb_frames_read=8_680,
-            usb_resampler_input_frames=8_680,
-            usb_resampler_locked=True,
-            usb_resampler_fill_frames=2_000,
-            usb_resampler_target_frames=512,
-        ),
-    ]
-    outputd_samples = [_transport_outputd_status(), _transport_outputd_status()]
-
-    ok, detail = validate_transport_pipe_status_window(
-        warmup_seconds=0,
-        window_seconds=0,
-        read_fanin_status=lambda: (fanin_samples.pop(0), ""),
-        read_outputd_status=lambda: (outputd_samples.pop(0), ""),
-    )
-
-    assert ok is False
-    assert "fan-in input usbsink resampler fill_frames=2000" in detail
-
-
-def test_transport_pipe_status_gate_allows_idle_usb_unlocked_resampler():
-    fanin_samples = [
-        _transport_fanin_status(
-            usb_resampler_input_frames=1_000,
-            usb_resampler_locked=False,
-        ),
-        _transport_fanin_status(
-            usb_resampler_input_frames=1_000,
-            usb_resampler_locked=False,
-        ),
-    ]
-    outputd_samples = [_transport_outputd_status(), _transport_outputd_status()]
-
-    ok, detail = validate_transport_pipe_status_window(
-        warmup_seconds=0,
-        window_seconds=0,
-        read_fanin_status=lambda: (fanin_samples.pop(0), ""),
-        read_outputd_status=lambda: (outputd_samples.pop(0), ""),
-    )
-
-    assert ok is True
-    assert "activation gate ok" in detail
 
 
 # --- shm_ring coupling (Ring A + Ring B, P2) ---------------------------------
@@ -2403,17 +1745,16 @@ def test_disarm_shm_ring_kicks_audio_hardware_reconcile_after_outputd(
     assert calls == ["camilla:loopback", "fanin", "outputd", "hw-reconcile"]
 
 
-def test_disarm_from_transport_pipe_does_not_kick_hardware_reconcile(tmp_path):
-    """The floor is only suppressed under a shm_ring bridge; a transport_pipe (or
-    already-direct) disarm never had it suppressed, so no kick — the disarm keeps
-    its existing blast radius."""
+def test_disarm_without_live_shm_ring_bridge_does_not_kick_hardware_reconcile(tmp_path):
+    """The floor is only suppressed under a LIVE shm_ring outputd bridge; an
+    already-direct disarm (outputd not on shm_ring) never had it suppressed, so no
+    kick — the disarm keeps its existing blast radius."""
+    # fan-in resolves shm_ring but outputd is direct (no CONTENT_BRIDGE=shm_ring):
+    # disarming to loopback moves the coupling, but leaves no live ring bridge.
     fanin_env = _write(
-        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_TRANSPORT_PIPE}\n",
+        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
     )
-    outputd_env = _write(
-        tmp_path / "outputd.env",
-        f"{OUTPUTD_PIPE_PATH_ENV_VAR}={DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE}\n",
-    )
+    outputd_env = _write(tmp_path / "outputd.env", "")
     calls, ro, rf, rc = _recorder()
 
     res = _reconcile(
@@ -2717,7 +2058,7 @@ def test_coordinated_loopback_is_a_plain_restart_no_camilla_pause():
     assert r.camilla_stopped is False and r.camilla_started is False
 
 
-@pytest.mark.parametrize("coupling", [COUPLING_SHM_RING, COUPLING_TRANSPORT_PIPE])
+@pytest.mark.parametrize("coupling", [COUPLING_SHM_RING])
 def test_coordinated_ring_pauses_before_and_resumes_after(coupling):
     """The load-bearing order: camilla is STOPPED before the fan-in restart and
     STARTED after it — exactly the fan-in -> camilla order the recover script proves."""
@@ -2786,3 +2127,64 @@ def test_camilla_stop_start_are_broker_authorized():
     assert "start" in rb.ALLOWED_VERBS
     assert rb._unit_allowed_for_verb("jasper-camilla.service", "stop") is True
     assert rb._unit_allowed_for_verb("jasper-camilla.service", "start") is True
+
+
+# --- removed transport_pipe migration (fail-safe to loopback) ----------------
+
+
+def test_reconcile_auto_removed_coupling_fails_safe_ignoring_operator_marker(
+    tmp_path, caplog
+):
+    """A persisted REMOVED coupling value (the deleted transport_pipe, or a typo) is
+    NOT a valid operator choice — the mode the operator picked no longer exists. The
+    --auto pass converges the box to loopback LOUDLY, IGNORING the operator marker,
+    so a migrating box never silently keeps a deleted mode."""
+    import logging
+
+    fanin_env = _write(
+        tmp_path / "fanin.env",
+        f"{COUPLING_ENV_VAR}=transport_pipe\n"
+        "JASPER_FANIN_COUPLING_CHOICE=operator\n",
+    )
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    with caplog.at_level(logging.WARNING, logger="jasper.fanin.coupling_reconcile"):
+        result = reconcile_auto(
+            reason="t",
+            env_path=fanin_env,
+            outputd_env_path=outputd_env,
+            usbsink_env_path=tmp_path / "usbsink.env",
+            gadget_present=False,
+            usb_intent_enabled=False,
+            fallback_active=False,
+            restart_fanin=rf,
+            restart_outputd=ro,
+            reconcile_camilla=rc,
+            kick_hardware_reconcile=lambda: (True, ""),
+            active_leader_check=lambda: False,
+        )
+
+    # The operator marker was IGNORED because the persisted mode is removed.
+    assert result.owned is True
+    assert result.coupling == COUPLING_LOOPBACK
+    assert "failed safe to loopback" in result.reason
+    # fanin.env now names loopback — the file stops lying about a deleted mode.
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    # Loud WARNING event so the migration is never silent.
+    assert "removed_coupling_failsafe" in caplog.text
+
+
+def test_outputd_actions_unset_legacy_local_content_pipe(tmp_path):
+    """Both the loopback AND shm_ring outputd-action branches sweep the legacy
+    JASPER_OUTPUTD_LOCAL_CONTENT_PIPE key (the removed transport_pipe coupling's
+    outputd content source) so a migrating box converges clean."""
+    for coupling in (COUPLING_LOOPBACK, COUPLING_SHM_RING):
+        actions = _outputd_actions(coupling, "")
+        sweeps = [
+            a
+            for a in actions
+            if a.action == "unset" and a.key == _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV
+        ]
+        assert sweeps, f"{coupling} branch must unset {_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV}"
+    assert _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV == "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"

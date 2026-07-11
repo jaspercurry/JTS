@@ -97,19 +97,18 @@ pub struct PairedCompositeSink {
 impl AlsaBackend {
     pub fn new(config: &Config) -> Result<Self> {
         // The content ALSA PCM is NOT opened when a non-ALSA content source
-        // owns the program: the local FIFO pipe, OR (PROTOTYPE) the SHM ring.
-        // Both feed `content_buf` directly in the run loop; opening snd-aloop
-        // here would leave an unread capture lane. A synthetic NegotiatedPcm
-        // stands in for the /state contract, with `buffer_frames = period_frames`:
-        // there is no ALSA capture ring here, so this is a period-sized stand-in,
-        // NOT a real jitter buffer. The honest buffering depth of each non-ALSA
-        // source is reported separately in /state so no consumer is misled:
-        // the local pipe's byte capacity rides `content.local_pipe`, and the SHM
-        // ring's TRUE capacity (n_slots x period) rides `content.ring.capacity_frames`
-        // (see OutputdState::snapshot_json). jasper-doctor validates those instead
-        // of applying the ALSA ">= 2x period" floor to this synthetic.
-        let skip_content_pcm = config.local_content_pipe.is_some()
-            || config.content_bridge_mode == crate::config::ContentBridgeMode::ShmRing;
+        // owns the program: (PROTOTYPE) the SHM ring. It feeds `content_buf`
+        // directly in the run loop; opening snd-aloop here would leave an unread
+        // capture lane. A synthetic NegotiatedPcm stands in for the /state
+        // contract, with `buffer_frames = period_frames`: there is no ALSA capture
+        // ring here, so this is a period-sized stand-in, NOT a real jitter buffer.
+        // The honest buffering depth of the non-ALSA source is reported separately
+        // in /state so no consumer is misled: the SHM ring's TRUE capacity
+        // (n_slots x period) rides `content.ring.capacity_frames` (see
+        // OutputdState::snapshot_json). jasper-doctor validates that instead of
+        // applying the ALSA ">= 2x period" floor to this synthetic.
+        let skip_content_pcm =
+            config.content_bridge_mode == crate::config::ContentBridgeMode::ShmRing;
         let (content, content_negotiated) = if skip_content_pcm {
             (
                 None,
@@ -163,9 +162,7 @@ impl AlsaBackend {
         eprintln!(
             "event=outputd.alsa.opened content_pcm={} content_source={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={}",
             config.content_pcm,
-            if config.local_content_pipe.is_some() {
-                "local_pipe"
-            } else if config.content_bridge_mode == crate::config::ContentBridgeMode::ShmRing {
+            if config.content_bridge_mode == crate::config::ContentBridgeMode::ShmRing {
                 "shm_ring"
             } else {
                 "alsa"

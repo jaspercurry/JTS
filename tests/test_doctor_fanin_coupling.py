@@ -42,10 +42,6 @@ _ALSA_LOCAL_PIPE_CFG = _ALSA_CFG.replace(
     "/run/jasper-outputd/content.pipe",
 )
 
-_OUTPUTD_PIPE_ENV = (
-    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE=/run/jasper-outputd/content.pipe\n"
-)
-
 
 def test_capture_parser_reads_rawfile(tmp_path):
     cfg = tmp_path / "c.yml"
@@ -92,18 +88,6 @@ def _run_check(monkeypatch, *, coupling, cfg_text, tmp_path, outputd_env_text=""
     return audio.check_fanin_coupling()
 
 
-def test_check_ok_when_transport_pipe_matches_rawfile(monkeypatch, tmp_path):
-    res = _run_check(
-        monkeypatch,
-        coupling="transport_pipe",
-        cfg_text=_RAWFILE_CFG,
-        tmp_path=tmp_path,
-        outputd_env_text=_OUTPUTD_PIPE_ENV,
-    )
-    assert res.status == "ok" and "RawFile" in res.detail
-    assert "playback=File" in res.detail
-
-
 def test_check_ok_when_loopback_matches_alsa(monkeypatch, tmp_path):
     res = _run_check(monkeypatch, coupling="loopback", cfg_text=_ALSA_CFG, tmp_path=tmp_path)
     assert res.status == "ok"
@@ -132,63 +116,37 @@ def test_check_warns_on_dangerous_drift_loopback_intent_rawfile_loaded(
     assert "jasper-fanin-coupling-reconcile loopback" in res.detail
 
 
-def test_check_warns_on_drift_transport_pipe_intent_alsa_loaded(monkeypatch, tmp_path):
-    res = _run_check(
-        monkeypatch,
-        coupling="transport_pipe",
-        cfg_text=_ALSA_CFG,
-        tmp_path=tmp_path,
-        outputd_env_text=_OUTPUTD_PIPE_ENV,
-    )
-    assert res.status == "warn" and "expected RawFile" in res.detail
-    assert "expected /run/jasper-outputd/content.pipe" in res.detail
-
-
-def test_check_warns_when_transport_pipe_playback_path_drifted(monkeypatch, tmp_path):
-    drifted = _RAWFILE_CFG.replace(
-        "/run/jasper-outputd/content.pipe",
-        "/run/elsewhere/content.pipe",
-    )
-    res = _run_check(
-        monkeypatch,
-        coupling="transport_pipe",
-        cfg_text=drifted,
-        tmp_path=tmp_path,
-        outputd_env_text=_OUTPUTD_PIPE_ENV,
-    )
-    assert res.status == "warn"
-    assert "playback_path=/run/elsewhere/content.pipe" in res.detail
-
-
-def test_check_warns_when_transport_pipe_outputd_env_missing(monkeypatch, tmp_path):
-    res = _run_check(
-        monkeypatch,
-        coupling="transport_pipe",
-        cfg_text=_RAWFILE_CFG,
-        tmp_path=tmp_path,
-    )
-
-    assert res.status == "warn"
-    assert "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE is missing" in res.detail
-
-
-def test_check_warns_when_loopback_outputd_pipe_env_stale(monkeypatch, tmp_path):
-    res = _run_check(
-        monkeypatch,
-        coupling="loopback",
-        cfg_text=_ALSA_CFG,
-        tmp_path=tmp_path,
-        outputd_env_text=_OUTPUTD_PIPE_ENV,
-    )
-
-    assert res.status == "warn"
-    assert "stale JASPER_OUTPUTD_LOCAL_CONTENT_PIPE" in res.detail
-
-
 def test_check_ok_when_no_loaded_capture(monkeypatch, tmp_path):
     res = _run_check(
         monkeypatch, coupling="loopback", cfg_text="filters:\n", tmp_path=tmp_path
     )
+    assert res.status == "ok"
+
+
+# --- check_fanin_coupling_value: persisted coupling value must be recognized --
+
+
+def test_check_fanin_coupling_value_warns_on_removed_transport_pipe(monkeypatch, tmp_path):
+    # A migrating box carrying the REMOVED transport_pipe coupling (or a typo) must
+    # surface a warn until the reconciler converges it to loopback.
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=transport_pipe\n")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+    res = audio.check_fanin_coupling_value()
+    assert res.status == "warn"
+    assert "transport_pipe" in res.detail
+    assert "removed" in res.detail
+
+
+def test_check_fanin_coupling_value_ok_on_recognized_coupling(monkeypatch, tmp_path):
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+    res = audio.check_fanin_coupling_value()
     assert res.status == "ok"
 
 

@@ -162,11 +162,12 @@ HANDOFF-usb-latency-measurement.md §1) with >=200 impulses over >=5 minutes;
 p99 promotion requires >=1000 impulses over >=30 minutes with jittered
 spacing and p99 <= 60 ms.
 
-The claiming route now hard-fails if it is combined with legacy low-latency lab
-transports: `JASPER_FANIN_CAMILLA_COUPLING=transport_pipe` or
-`JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match`. Those paths remain available only as
-default-off diagnostics until they are removed or replaced; they cannot carry
-`usb_low_latency_48k` certification.
+The claiming route now hard-fails if it is combined with the legacy low-latency
+lab transport `JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match`. That path remains
+available only as a default-off diagnostic until it is removed or replaced; it
+cannot carry `usb_low_latency_48k` certification. (The
+`JASPER_FANIN_CAMILLA_COUPLING=transport_pipe` coupling was removed 2026-07-11 —
+a persisted value now fails safe to loopback rather than gating certification.)
 
 The artifact writer is `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact`.
 It does **not** measure audio by itself; the click-in/capture-back harness that
@@ -336,7 +337,7 @@ fallback (`hw:Loopback,1,3`, unwritten → USB silent, no crash).
 A combo arm/disarm (the `/sources/` USB toggle, and the runtime-fallback disarm)
 whose coupling does not move takes the reconciler's confirm path and then forces a
 bare **fan-in restart** so the new combo takes effect. On a live ring/pipe coupling
-(`shm_ring` / `transport_pipe`) that bare restart was collaterally **SIGKILLing
+(`shm_ring`) that bare restart was collaterally **SIGKILLing
 CamillaDSP**: camilladsp captures Ring A through the `jts_ring_capture` ioplug, and
 when fan-in's ring *writer* detaches the ioplug capture reader busy-spins ~100% of a
 core; camilladsp (`SCHED_FIFO`, `LimitRTTIME=200000` us in
@@ -1833,7 +1834,7 @@ speaker remains recoverable.
 |---|---|---|
 | Python/PortAudio USB audio bridge | **DELETED** (USB dead-pipeline sweep) — the Rust `jasper-usbsink-audio` bridge is the sole data plane; only `volume_bridge.py` survives | done |
 | lean FIFO USB-only route (`JASPER_LEAN_LANE`, `USBSINK_OUTPUT_MODE=fifo`, lean RawFile capture) | **DELETED** (USB dead-pipeline sweep) — it was reachable only through the deleted Python bridge (the Rust daemon has no fifo mode) | done |
-| `transport_pipe` fan-in↔Camilla dual FIFO coupling | Failed/default-off lab path for low latency; Pi page size makes it too deep | Remove or quarantine after the new frame-bounded transport replaces its diagnostic value |
+| `transport_pipe` fan-in↔Camilla dual FIFO coupling | **DELETED** (2026-07-11) — the shm_ring SHM-ring pair replaced its diagnostic value as the frame-bounded low-latency default; fan-in Output::Fifo + outputd local_content_pipe + the reconciler arm/gate branches + the JASPER_FANIN_CAMILLA_PIPE/JASPER_OUTPUTD_LOCAL_CONTENT_PIPE env keys are gone | done |
 | outputd `rate_match` content bridge for USB | Rejected for this route; produced content xruns/EAGAIN/partials in tuning | Keep only as a DAC/content clock-slip lab tool, or delete once no active diagnostic depends on it |
 | stale low-latency prose and component estimates | Historical context only | Compress into dated appendices as product docs converge on measured route artifacts |
 

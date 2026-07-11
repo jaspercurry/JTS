@@ -169,15 +169,13 @@ class _StereoHostCarrier:
         self._validate_member_kwargs(member_kwargs)
 
         emit_kwargs = cast(EmitSoundConfigKwargs, dict(member_kwargs))
-        # fanin_coupling_capture_kwargs
-        # (JASPER_FANIN_CAMILLA_COUPLING=transport_pipe) is the local
-        # fan-in -> Camilla -> outputd pipe topology: source-agnostic,
-        # always-on for stereo-host emits, and byte-identical when absent. The
-        # carrier-preserved room PEQs, preference filters, trim, and member
-        # policy all fold in unchanged. PRECEDENCE: a grouped pipe-SINK member
-        # (enable_rate_adjust=False + SnapFIFO playback) is mutually exclusive
-        # with the local outputd playback pipe, so the coupling is a no-op there
-        # too. emit_sound_config owns the dual-pipe fail-loud guards.
+        # fanin_coupling_capture_kwargs (JASPER_FANIN_CAMILLA_COUPLING=shm_ring)
+        # names the shared fan-in -> Camilla -> outputd SHM-ring capture/playback
+        # devices: source-agnostic, and byte-identical when absent (loopback ->
+        # {}). The carrier-preserved room PEQs, preference filters, trim, and
+        # member policy all fold in unchanged. PRECEDENCE: a grouped pipe-SINK
+        # member (enable_rate_adjust=False + SnapFIFO playback) is mutually
+        # exclusive with the local coupling, so the coupling is a no-op there too.
         emit_kwargs = apply_capture_precedence(
             emit_kwargs,
             fanin_coupling_capture_kwargs,
@@ -263,11 +261,11 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
         # fanin_coupling_capture_kwargs is intentionally a NO-OP here: a program
         # bake is a bonded pipe SINK on the synced chain (snapclient owns the
         # rate, enable_rate_adjust=False), which is mutually exclusive with the
-        # local transport_pipe's Camilla -> outputd File playback pipe. The
-        # grouped transport topology is the Distributed-Active track's concern,
-        # not this solo hop; accept the keyword so every call site can pass it
-        # uniformly, but never apply it. (The plan's apply_capture_precedence
-        # helper makes the same grouped-sink choice for stereo-host carriers.)
+        # local (shm_ring) coupling. The grouped transport topology is the
+        # Distributed-Active track's concern, not this solo hop; accept the keyword
+        # so every call site can pass it uniformly, but never apply it. (The plan's
+        # apply_capture_precedence helper makes the same grouped-sink choice for
+        # stereo-host carriers.)
         del fanin_coupling_capture_kwargs
         member_kwargs = self._resolve_member_kwargs(member_kwargs)
         self._validate_member_kwargs(member_kwargs)
@@ -364,17 +362,8 @@ class _ActiveGraphCarrier:
             if room_peqs is None
             else list(room_peqs)
         )
-        if (fanin_coupling_capture_kwargs or {}).get("transport_paced_pipe"):
-            raise CarrierCannotHostEq(
-                "transport_pipe_on_active",
-                "This active-crossover graph cannot host the local dual-pipe "
-                "transport yet. Its output side is not the stereo outputd local "
-                "pipe, so arming it would only move half of the clock chain. "
-                "Your crossover and driver protection are unchanged.",
-            )
         # By here the carrier has proven this is a SOLO active baseline (bonded
-        # members refused above). The end-to-end transport-pipe topology above
-        # is fail-closed until the active output side is designed.
+        # members refused above).
         yaml = _recompose_active_baseline_with_eq(
             profile,
             room_peqs=room_peqs,

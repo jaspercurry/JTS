@@ -3009,7 +3009,6 @@ def _fanin_status_payload(
     output_buffer_frames: int = 1024,
     progress_age_ms: int = 2,
     transport: str = "loopback",
-    pipe_path: str = "/run/jasper-fanin/camilla.pipe",
 ) -> bytes:
     output = {
         "pcm": doctor._FANIN_EXPECTED_OUTPUT_PCM,
@@ -3018,14 +3017,6 @@ def _fanin_status_payload(
         "frames_written": 1234,
         "xrun_count": 0,
     }
-    if transport == "transport_pipe":
-        output["pipe"] = {
-            "path": pipe_path,
-            "requested_pipe_bytes": 65536,
-            "actual_pipe_bytes": 65536,
-            "reopen_count": 1,
-            "dropped_periods": 0,
-        }
     return json.dumps({
         "input_buffer_frames": input_buffer_frames,
         "output": output,
@@ -3073,7 +3064,6 @@ def _outputd_status_payload(
     progress_age_ms: int = 2,
     dual_apple_status: dict | None = None,
     content_source: str = "alsa",
-    local_pipe_path: str = "/run/jasper-outputd/content.pipe",
     shm_ring_slots: int = 2,
     shm_ring_slot_frames: int | None = None,
     shm_ring_capacity_frames: int | None = None,
@@ -3106,27 +3096,6 @@ def _outputd_status_payload(
             "slots": shm_ring_slots,
             "slot_frames": _slot_frames,
             "capacity_frames": _capacity,
-        }
-    if content_source == "local_pipe":
-        content["local_pipe"] = {
-            "enabled": True,
-            "path": local_pipe_path,
-            "format": "S32_LE",
-            "open": True,
-            "requested_pipe_bytes": 8192,
-            "max_queued_bytes": 8192,
-            "available_bytes": 2048,
-            "actual_pipe_bytes": 8192,
-            "reopen_count": 1,
-            "startup_empty_periods": 3,
-            "empty_periods": 2,
-            "partial_periods": 1,
-            "misaligned_bytes": 0,
-            "stale_drop_events": 0,
-            "stale_drop_bytes": 0,
-            "stale_drop_frames": 0,
-            "open_failures": 0,
-            "read_failures": 0,
         }
     payload = {
         "backend": backend,
@@ -3279,28 +3248,11 @@ def test_check_fanin_service_ok_with_expected_status(monkeypatch):
     assert "assistant_loudness_decision=False" in r.detail
 
 
-def test_check_fanin_service_ok_with_transport_pipe_status(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda: "transport_pipe",
-    )
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _fanin_status_payload(transport="transport_pipe"),
-    )
-
-    r = doctor.check_fanin_service()
-
-    assert r.status == "ok"
-    assert "transport=transport_pipe" in r.detail
-
-
 def test_check_fanin_service_fails_on_live_transport_mismatch(monkeypatch):
     _patch_fanin_systemctl(monkeypatch)
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda: "transport_pipe",
+        lambda: "shm_ring",
     )
     _patch_fanin_status_socket(monkeypatch, _fanin_status_payload())
 
@@ -3308,7 +3260,7 @@ def test_check_fanin_service_fails_on_live_transport_mismatch(monkeypatch):
 
     assert r.status == "fail"
     assert "output.transport='loopback'" in r.detail
-    assert "expected 'transport_pipe'" in r.detail
+    assert "expected 'shm_ring'" in r.detail
 
 
 def test_check_fanin_service_reports_pre_dsp_tts_loudness(monkeypatch):
@@ -3448,31 +3400,6 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     assert "content_source=alsa" in r.detail
     assert "content_bridge=direct" in r.detail
     assert "speaker_reference_source=outputd_final_electrical" in r.detail
-
-
-def test_outputd_service_ok_with_transport_pipe_local_source(monkeypatch, tmp_path):
-    env_path = tmp_path / "outputd.env"
-    env_path.write_text(
-        "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE=/run/jasper-outputd/content.pipe\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda: "transport_pipe",
-    )
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _outputd_status_payload(content_source="local_pipe"),
-    )
-
-    r = doctor.check_outputd_service()
-
-    assert r.status == "ok"
-    assert "content_source=local_pipe" in r.detail
-    assert "local_pipe_path=/run/jasper-outputd/content.pipe" in r.detail
-    assert "local_pipe_startup_empty_periods=3" in r.detail
 
 
 def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch, tmp_path):
@@ -3616,141 +3543,11 @@ def test_outputd_service_fails_on_coupling_content_source_mismatch(monkeypatch):
     assert "jasper-fanin-coupling-reconcile" in r.detail
 
 
-def test_outputd_service_allows_period_sized_local_pipe_content_buffer(
-    monkeypatch, tmp_path
-):
-    env_path = tmp_path / "outputd.env"
-    env_path.write_text(
-        "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE=/run/jasper-outputd/content.pipe\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda: "transport_pipe",
-    )
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _outputd_status_payload(
-            content_source="local_pipe",
-            content_buffer_frames=256,
-            dac_buffer_frames=512,
-            period_frames=256,
-        ),
-    )
-
-    r = doctor.check_outputd_service()
-
-    assert r.status == "ok"
-    assert "content_buffer_frames=256" in r.detail
-    assert "content_source=local_pipe" in r.detail
-
-
-def test_outputd_service_fails_transport_pipe_with_unbounded_local_pipe(
-    monkeypatch, tmp_path
-):
-    env_path = tmp_path / "outputd.env"
-    env_path.write_text(
-        "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE=/run/jasper-outputd/content.pipe\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda: "transport_pipe",
-    )
-    payload = json.loads(
-        _outputd_status_payload(
-            content_source="local_pipe",
-            content_buffer_frames=256,
-            dac_buffer_frames=512,
-            period_frames=256,
-        )
-    )
-    payload["content"]["local_pipe"]["requested_pipe_bytes"] = 8192
-    payload["content"]["local_pipe"]["actual_pipe_bytes"] = 262144
-    payload["content"]["local_pipe"]["available_bytes"] = 247808
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
-
-    r = doctor.check_outputd_service()
-
-    assert r.status == "fail"
-    assert "local pipe is not bounded" in r.detail
-    assert "actual_bytes=262144" in r.detail
-
-
-def test_outputd_service_fails_transport_pipe_with_queued_pipe_latency(
-    monkeypatch, tmp_path
-):
-    env_path = tmp_path / "outputd.env"
-    env_path.write_text(
-        "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE=/run/jasper-outputd/content.pipe\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda: "transport_pipe",
-    )
-    payload = json.loads(
-        _outputd_status_payload(
-            content_source="local_pipe",
-            content_buffer_frames=256,
-            dac_buffer_frames=512,
-            period_frames=256,
-        )
-    )
-    payload["content"]["local_pipe"]["requested_pipe_bytes"] = 8192
-    payload["content"]["local_pipe"]["actual_pipe_bytes"] = 16384
-    payload["content"]["local_pipe"]["available_bytes"] = 32768
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
-
-    r = doctor.check_outputd_service()
-
-    assert r.status == "fail"
-    assert "hidden queued latency" in r.detail
-    assert "available_bytes=32768" in r.detail
-
-
-def test_outputd_service_fails_transport_pipe_with_local_pipe_format_mismatch(
-    monkeypatch, tmp_path
-):
-    env_path = tmp_path / "outputd.env"
-    env_path.write_text(
-        "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE=/run/jasper-outputd/content.pipe\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
-    _patch_fanin_systemctl(monkeypatch)
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda: "transport_pipe",
-    )
-    payload = json.loads(
-        _outputd_status_payload(
-            content_source="local_pipe",
-            content_buffer_frames=256,
-            dac_buffer_frames=512,
-            period_frames=256,
-        )
-    )
-    payload["content"]["local_pipe"]["format"] = "S16_LE"
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
-
-    r = doctor.check_outputd_service()
-
-    assert r.status == "fail"
-    assert "local pipe format mismatch" in r.detail
-
-
 def test_outputd_service_fails_on_live_source_mismatch(monkeypatch):
     _patch_fanin_systemctl(monkeypatch)
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda: "transport_pipe",
+        lambda: "shm_ring",
     )
     _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
 
@@ -3758,21 +3555,7 @@ def test_outputd_service_fails_on_live_source_mismatch(monkeypatch):
 
     assert r.status == "fail"
     assert "content.source='alsa'" in r.detail
-    assert "expected 'local_pipe'" in r.detail
-
-
-def test_outputd_service_fails_when_loopback_still_reports_local_pipe(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _outputd_status_payload(content_source="local_pipe"),
-    )
-
-    r = doctor.check_outputd_service()
-
-    assert r.status == "fail"
-    assert "content.source='local_pipe'" in r.detail
-    assert "expected 'alsa'" in r.detail
+    assert "expected 'shm_ring'" in r.detail
 
 
 def test_audio_runtime_plan_doctor_warns_on_shadowed_knob(monkeypatch):
@@ -3796,7 +3579,8 @@ def test_audio_runtime_plan_doctor_warns_on_shadowed_knob(monkeypatch):
 
 def test_audio_runtime_plan_doctor_fails_unsupported_route(monkeypatch):
     plan = audio_runtime_plan.build_audio_runtime_plan(
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "transport_pipe"},
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         route_mode="active_leader",
     )
     monkeypatch.setattr(
@@ -3808,19 +3592,21 @@ def test_audio_runtime_plan_doctor_fails_unsupported_route(monkeypatch):
     r = doctor.check_audio_runtime_plan()
 
     assert r.status == "fail"
-    assert "active multiroom leader" in r.detail
+    assert "shm_ring is not supported while" in r.detail
 
 
 def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
     monkeypatch,
 ):
+    # rate_match is the surviving deferred lab content bridge (transport_pipe was
+    # removed 2026-07-11); a non-direct bridge without a matching shm_ring pair is
+    # a partial flip the USB low-latency route refuses.
     plan = audio_runtime_plan.build_audio_runtime_plan(
         base_env={
             audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "transport_pipe"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"},
         route_mode="solo",
     )
@@ -3833,7 +3619,7 @@ def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
     r = doctor.check_audio_runtime_plan()
 
     assert r.status == "fail"
-    assert "requires JASPER_FANIN_CAMILLA_COUPLING=loopback" in r.detail
+    assert "partial flip" in r.detail
 
 
 def test_route_latency_evidence_skips_non_claiming_route(monkeypatch):
@@ -3857,7 +3643,7 @@ def test_route_latency_evidence_fails_runtime_plan_errors(monkeypatch):
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "transport_pipe"},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"},
         route_mode="solo",
     )
     monkeypatch.setattr(
@@ -4247,7 +4033,6 @@ def test_outputd_service_warns_on_content_bridge_anomalies(monkeypatch):
     assert "underrun_frames=1024" in r.detail
     assert "resync_count=1" in r.detail
     assert "bridge_fill_frames=4096" in r.detail
-
 
 
 def _outputd_aec_clock_payload(

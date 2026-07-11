@@ -28,7 +28,6 @@ pub mod core;
 pub mod dac_content;
 pub mod fake;
 pub mod ledger;
-pub mod local_content_pipe;
 pub mod loudness;
 pub mod mixer;
 pub mod reference;

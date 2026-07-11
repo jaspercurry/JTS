@@ -160,22 +160,23 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     )
 
 
-def test_precheck_refuses_transport_pipe_coupling_before_emit(monkeypatch, tmp_path) -> None:
-    """Local transport-pipe coupling and the active-leader program bake are not
-    yet a supported pair. Refuse before writing either generated config."""
+def test_precheck_refuses_shm_ring_coupling_before_emit(monkeypatch, tmp_path) -> None:
+    """Local shm_ring coupling and the active-leader program bake are not yet a
+    supported pair (the ring is solo-stereo-only until ring v2). Refuse before
+    writing either generated config."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     monkeypatch.setattr(
-        alc, "read_persisted_coupling", lambda *a, **k: "transport_pipe",
+        alc, "read_persisted_coupling", lambda *a, **k: "shm_ring",
     )
 
     with pytest.raises(alc.ActiveLeaderError) as exc:
         asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
 
-    assert exc.value.reason == "fanin_transport_pipe_coupling_unsupported"
+    assert exc.value.reason == "fanin_shm_ring_coupling_unsupported_while_grouped"
     assert not Path(alc.LEADER_BAKE_CONFIG_PATH).exists()
     assert not Path(alc.CROSSOVER_CONFIG_PATH).exists()
 

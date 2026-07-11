@@ -112,9 +112,8 @@ pub struct StateServer {
     output_frames_written: Arc<AtomicU64>,
     output_xrun_count: Arc<AtomicU64>,
     output_delay_frames: Arc<AtomicU64>,
-    /// Coupling transport echo + (under transport_pipe) the shared pipe
-    /// counters. Cloned from the mixer so STATUS reads the same atomics the work
-    /// loop writes.
+    /// Coupling transport echo. Cloned from the mixer so STATUS reads the same
+    /// atomics the work loop writes.
     coupling: CouplingObservability,
     /// Music-only side-output (multi-room sync tap) — shared with the
     /// mixer. `None` pcm = solo speaker (tap disabled).
@@ -1006,44 +1005,9 @@ impl StateServer {
         buf.push(',');
 
         // coupling transport echo. `transport:"loopback"` (default) carries no
-        // pipe block — byte-identical observability to the pre-coupling daemon.
-        // `transport:"transport_pipe"` adds a `pipe` block with the shared-capture pipe
-        // path, the requested + kernel-resolved pipe size, and the reopen /
-        // dropped-period counters (a growing dropped_periods while CamillaDSP is
-        // up means the shared capture is starving — jasper-doctor's actionable
-        // signal). actual_pipe_bytes is 0 when the write end is not currently
-        // open (reader absent / CamillaDSP reloading).
+        // ring block — byte-identical observability to the pre-coupling daemon.
+        // `transport:"shm_ring"` adds a `ring` block (see below).
         push_kv_str(&mut buf, "transport", self.coupling.transport);
-        if let Some(pipe) = &self.coupling.pipe {
-            buf.push(',');
-            buf.push_str(r#""pipe":{"#);
-            push_kv_str(&mut buf, "path", &pipe.path);
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "requested_pipe_bytes",
-                pipe.requested_pipe_bytes as u64,
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "actual_pipe_bytes",
-                pipe.actual_pipe_bytes.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "reopen_count",
-                pipe.reopen_count.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "dropped_periods",
-                pipe.dropped_periods.load(Ordering::Relaxed),
-            );
-            buf.push('}');
-        }
         // Ring A (shm_ring): the SPSC SHM ring counter block. `occupancy` is the
         // live write_seq-read_seq depth; `published` slots reached a live reader;
         // `full_waits` is the bounded live-reader back-pressure count; `drops`
@@ -1504,7 +1468,6 @@ mod tests {
             output_delay_frames: Arc::new(AtomicU64::new(1024)),
             coupling: CouplingObservability {
                 transport: "loopback",
-                pipe: None,
                 ring: None,
             },
             music_output_pcm: Some("hw:Loopback,0,6".to_string()),
@@ -1529,29 +1492,11 @@ mod tests {
         }
     }
 
-    fn make_pipe_test_server() -> StateServer {
-        use crate::mixer::PipeObservability;
-        let mut server = make_test_server();
-        server.coupling = CouplingObservability {
-            transport: "transport_pipe",
-            pipe: Some(PipeObservability {
-                path: "/run/jasper-fanin/camilla.pipe".to_string(),
-                requested_pipe_bytes: 8192,
-                reopen_count: Arc::new(AtomicU64::new(2)),
-                dropped_periods: Arc::new(AtomicU64::new(7)),
-                actual_pipe_bytes: Arc::new(AtomicU64::new(8192)),
-            }),
-            ring: None,
-        };
-        server
-    }
-
     fn make_ring_test_server() -> StateServer {
         use crate::mixer::RingObservability;
         let mut server = make_test_server();
         server.coupling = CouplingObservability {
             transport: "shm_ring",
-            pipe: None,
             ring: Some(RingObservability {
                 path: "/dev/shm/jts-ring/program.ring".to_string(),
                 slots: 8,
@@ -1772,43 +1717,6 @@ mod tests {
         assert!(
             !j.contains(r#""pipe":"#),
             "loopback must emit no pipe block: {j}"
-        );
-    }
-
-    #[test]
-    fn snapshot_json_transport_pipe_reports_pipe_observability() {
-        // transport_pipe: transport + the shared pipe observability counters.
-        let server = make_pipe_test_server();
-        let j = server.snapshot_json();
-        assert!(
-            j.contains(r#""transport":"transport_pipe""#),
-            "missing transport: {j}"
-        );
-        assert!(j.contains(r#""pipe":{"#), "missing pipe block: {j}");
-        assert!(
-            j.contains(r#""path":"/run/jasper-fanin/camilla.pipe""#),
-            "missing pipe path: {j}"
-        );
-        assert!(
-            j.contains(r#""requested_pipe_bytes":8192"#),
-            "missing requested_pipe_bytes: {j}"
-        );
-        assert!(
-            j.contains(r#""actual_pipe_bytes":8192"#),
-            "missing actual_pipe_bytes: {j}"
-        );
-        assert!(
-            j.contains(r#""reopen_count":2"#),
-            "missing reopen_count: {j}"
-        );
-        assert!(
-            j.contains(r#""dropped_periods":7"#),
-            "missing dropped_periods: {j}"
-        );
-        // transport_pipe carries NO ring block.
-        assert!(
-            !j.contains(r#""ring":{"#),
-            "transport_pipe must emit no ring block: {j}"
         );
     }
 
@@ -2421,16 +2329,16 @@ mod tests {
     }
 
     /// Pin the fan-in reserved tap basenames against the config defaults they
-    /// mirror: control.sock / tts.sock / camilla.pipe all live under
+    /// mirror: control.sock / tts.sock all live under
     /// /run/jasper-fanin, and a TAP_ARM must be rejected at each. If a config
     /// default's basename ever changes, this fails loudly (the same
     /// cross-constant discipline the usbsink crate uses for its own files).
     #[test]
     fn reserved_tap_basenames_match_fanin_socket_defaults() {
         use crate::impulse_tap::{path_is_allowed, RESERVED_TAP_DIR_BASENAMES, TAP_PATH_DIR};
-        // The config defaults (control_socket_path / tts_socket_path /
-        // camilla_pipe_path) all resolve under TAP_PATH_DIR with these basenames.
-        for basename in ["control.sock", "tts.sock", "camilla.pipe"] {
+        // The config defaults (control_socket_path / tts_socket_path) all
+        // resolve under TAP_PATH_DIR with these basenames.
+        for basename in ["control.sock", "tts.sock"] {
             let path = std::path::Path::new(TAP_PATH_DIR).join(basename);
             assert!(
                 RESERVED_TAP_DIR_BASENAMES.contains(&basename),

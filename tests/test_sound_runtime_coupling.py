@@ -9,10 +9,9 @@ kwargs resolved from the environment into ``carrier.reemit``.
 These pin the literal call-site wiring — the carrier-level behaviour and the
 env resolver are unit-tested elsewhere (``test_sound_graph_carrier.py`` /
 ``test_fanin_coupling.py``); here we prove the runtime emit path actually passes
-the resolved kwargs, so a coupling=transport_pipe box re-emits the dual-pipe
-RawFile/File topology on every reconcile (the always-on contract) and a default
-box passes ``{}`` (byte-
-identical).
+the resolved kwargs, so a coupling=shm_ring box re-emits the ring
+capture/playback topology on every reconcile (the always-on contract) and a
+default (or removed/typo) box passes ``{}`` (byte-identical loopback).
 
 The ``coupling=None`` CLI/install path (``jasper-sound reconcile-current-dsp``)
 resolves the coupling token FILE-FRESH from the persisted ``fanin.env`` SSOT —
@@ -94,10 +93,10 @@ def _capture_reemit_coupling(
     monkeypatch.setattr(runtime, "output_trim_db", lambda profile, settings: 0.0)
     monkeypatch.setattr(runtime, "load_sound_settings", lambda *a, **k: object())
 
-    # Under transport_pipe the flat-profile noop must be SKIPPED so the apply
-    # actually flips the shared topology loopback->dual-pipe. Spy
+    # Under a non-loopback coupling (shm_ring) the flat-profile noop must be
+    # SKIPPED so the apply actually flips the shared topology. Spy
     # load_profile_config (the apply reconcile delegates to) to prove it's
-    # reached under transport_pipe and NOT reached under loopback.
+    # reached under a coupling and NOT reached under loopback.
     class _ApplyState:
         active_config_path = "applied.yml"
         room_peq_count = 0
@@ -134,30 +133,21 @@ def test_reconcile_default_passes_empty_coupling(monkeypatch, tmp_path):
         monkeypatch, tmp_path, coupling_env=None
     )
     assert seen["fanin_coupling_capture_kwargs"] == {}
-    # Sanity: loopback default still short-circuits on the flat-profile noop —
-    # no apply engine (byte-identical, the topology fix only changes the
-    # transport_pipe path).
+    # Sanity: loopback default still short-circuits on the flat-profile noop
+    # (byte-identical emit — no apply engine).
     assert result["status"] == "skipped"
     assert result["reason"] == "flat_profile_noop"
     assert seen.get("apply_called") is not True
 
 
-def test_reconcile_transport_pipe_passes_dual_pipe_coupling(monkeypatch, tmp_path):
-    # transport_pipe: the reemit gets the dual-pipe kwargs.
-    result, seen = _capture_reemit_coupling(
+def test_reconcile_removed_transport_pipe_fails_safe_to_empty(monkeypatch, tmp_path):
+    # The REMOVED transport_pipe coupling now resolves loopback at the emit
+    # chokepoint, so the reemit gets {} (byte-identical loopback emit) — a
+    # migrating box never arms a deleted transport.
+    _result, seen = _capture_reemit_coupling(
         monkeypatch, tmp_path, coupling_env="transport_pipe"
     )
-    kwargs = seen["fanin_coupling_capture_kwargs"]
-    assert kwargs["capture_pipe_path"].endswith("camilla.pipe")
-    assert kwargs["playback_pipe_path"].endswith("content.pipe")
-    assert kwargs["resampler_type"] is None
-    assert kwargs["enable_rate_adjust"] is False
-    assert kwargs["transport_paced_pipe"] is True
-    # Regression guard: under transport_pipe a flat profile must NOT
-    # short-circuit on flat_profile_noop — the graph transport must flip
-    # loopback->dual-pipe, so the apply actually runs.
-    assert seen.get("apply_called") is True
-    assert result["status"] == "reconciled"
+    assert seen["fanin_coupling_capture_kwargs"] == {}
 
 
 def test_reconcile_unknown_coupling_fails_safe_to_empty(monkeypatch, tmp_path):
@@ -189,52 +179,52 @@ def test_resolver_helper_override_beats_env(monkeypatch):
     from jasper.audio_runtime_plan import fanin_coupling_capture_kwargs
 
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
-    pipe_kwargs = fanin_coupling_capture_kwargs("transport_pipe")
-    assert "capture_pipe_path" in pipe_kwargs
-    assert "playback_pipe_path" in pipe_kwargs
-    assert pipe_kwargs["enable_rate_adjust"] is False
-    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "transport_pipe")
+    ring_kwargs = fanin_coupling_capture_kwargs("shm_ring")
+    assert ring_kwargs["capture_device"] == "jts_ring_capture"
+    assert ring_kwargs["playback_device"] == "jts_ring_playback"
+    assert ring_kwargs["enable_rate_adjust"] is False
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "shm_ring")
     assert fanin_coupling_capture_kwargs("loopback") == {}
     # None resolves the token FILE-FRESH from the persisted SSOT (NOT os.environ):
-    # os.environ says transport_pipe above, but the persisted file drives the
-    # result. This is the DEFECT-1 fix — the CLI/install reconcile-current-dsp
-    # path must not honor a stale os.environ coupling (which on jts.local emitted a
-    # RING config on a loopback box). A transport_pipe persisted file => pipe
-    # kwargs; a loopback persisted file (or read fail-safe) => {}.
+    # os.environ says shm_ring above, but the persisted file drives the result.
+    # This is the DEFECT-1 fix — the CLI/install reconcile-current-dsp path must
+    # not honor a stale os.environ coupling (which on jts.local emitted a RING
+    # config on a loopback box). A shm_ring persisted file => ring kwargs; a
+    # loopback persisted file (or read fail-safe) => {}.
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda *a, **k: "transport_pipe",
+        lambda *a, **k: "shm_ring",
     )
-    assert "capture_pipe_path" in fanin_coupling_capture_kwargs(None)
+    assert "capture_device" in fanin_coupling_capture_kwargs(None)
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
         lambda *a, **k: "loopback",
     )
-    # os.environ still says transport_pipe — the file-fresh loopback wins.
+    # os.environ still says shm_ring — the file-fresh loopback wins.
     assert fanin_coupling_capture_kwargs(None) == {}
 
 
-def test_reconcile_explicit_transport_pipe_override_arms_regardless_of_env(monkeypatch, tmp_path):
-    # coupling="transport_pipe" passed to reconcile_current_dsp emits the dual
-    # pipe topology even when the env says loopback (the reconciler's
+def test_reconcile_explicit_shm_ring_override_arms_regardless_of_env(monkeypatch, tmp_path):
+    # coupling="shm_ring" passed to reconcile_current_dsp emits the ring
+    # topology even when the env says loopback (the reconciler's
     # stale-env-proof path), and the override threads to the durable apply.
     result, seen = _capture_reemit_coupling(
-        monkeypatch, tmp_path, coupling_env="loopback", coupling_override="transport_pipe",
+        monkeypatch, tmp_path, coupling_env="loopback", coupling_override="shm_ring",
     )
     kwargs = seen["fanin_coupling_capture_kwargs"]
-    assert kwargs["capture_pipe_path"].endswith("camilla.pipe")
-    assert kwargs["playback_pipe_path"].endswith("content.pipe")
+    assert kwargs["capture_device"] == "jts_ring_capture"
+    assert kwargs["playback_device"] == "jts_ring_playback"
     assert seen["apply_called"] is True
-    assert seen["apply_coupling"] == "transport_pipe"
+    assert seen["apply_coupling"] == "shm_ring"
     assert result["status"] == "reconciled"
 
 
-def test_reconcile_explicit_loopback_override_beats_transport_pipe_env(monkeypatch, tmp_path):
+def test_reconcile_explicit_loopback_override_beats_shm_ring_env(monkeypatch, tmp_path):
     # coupling="loopback" override emits the ALSA capture even when
-    # env=transport_pipe;
+    # env=shm_ring;
     # the flat profile then correctly short-circuits (loopback is byte-identical).
     result, seen = _capture_reemit_coupling(
-        monkeypatch, tmp_path, coupling_env="transport_pipe", coupling_override="loopback",
+        monkeypatch, tmp_path, coupling_env="shm_ring", coupling_override="loopback",
     )
     assert seen["fanin_coupling_capture_kwargs"] == {}
     assert result["reason"] == "flat_profile_noop"

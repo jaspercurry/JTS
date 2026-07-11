@@ -29,7 +29,11 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_FLAT_FULL_RANGE,
     classify_camilla_graph,
 )
-from jasper.fanin_coupling import capture_kwargs_for_coupling
+from jasper.fanin_coupling import (
+    RING_CAPTURE_DEVICE,
+    RING_PLAYBACK_DEVICE,
+    capture_kwargs_for_coupling,
+)
 from jasper.sound.camilla_yaml import BASE_CONFIG_PATH, emit_sound_config
 from jasper.sound.graph_carrier import (
     CarrierCannotHostEq,
@@ -693,16 +697,14 @@ def test_refusal_payload_is_typed_and_stable(reason_code):
     }
 
 
-# --- transport-pipe coupling threaded through reemit() ---
+# --- shm_ring coupling threaded through reemit() ---
 #
 # The coupling is source/topology-agnostic and always-on while
-# JASPER_FANIN_CAMILLA_COUPLING=transport_pipe, so every stereo-host /
+# JASPER_FANIN_CAMILLA_COUPLING=shm_ring, so every stereo-host /
 # active-baseline carrier applies it. Default (None / {}) is byte-identical.
 # (imports for these tests live in the top-of-file import block.)
 
-_TRANSPORT_PIPE_KWARGS = capture_kwargs_for_coupling("transport_pipe")
-_FANIN_PIPE = _TRANSPORT_PIPE_KWARGS["capture_pipe_path"]
-_OUTPUTD_PIPE = _TRANSPORT_PIPE_KWARGS["playback_pipe_path"]
+_SHM_RING_KWARGS = capture_kwargs_for_coupling("shm_ring")
 
 
 def test_base_flat_loopback_coupling_is_byte_identical(tmp_path):
@@ -733,50 +735,45 @@ def test_base_flat_loopback_coupling_is_byte_identical(tmp_path):
     assert "type: File" not in baseline
 
 
-def test_base_flat_transport_pipe_coupling_emits_dual_pipe(tmp_path):
-    # transport_pipe at the chokepoint: the base-flat (stereo host) reemit flips
-    # capture to RawFile and playback to the outputd local File pipe.
+def test_base_flat_shm_ring_coupling_emits_ring_devices(tmp_path):
+    # shm_ring at the chokepoint: the base-flat (stereo host) reemit flips capture
+    # to the Ring A ioplug device and playback to the Ring B ioplug device.
     carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
     cfg = carrier.reemit(
         SoundProfile(enabled=False),
         profile_id="x",
         member_kwargs={},
-        fanin_coupling_capture_kwargs=_TRANSPORT_PIPE_KWARGS,
+        fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
     ).yaml
-    capture_block = cfg.split("  capture:\n", 1)[1].split("\n  playback:\n", 1)[0]
-    playback_block = cfg.split("  playback:\n", 1)[1].split("\n\nfilters:\n", 1)[0]
-    assert "type: RawFile" in capture_block
-    assert "type: File" in playback_block
-    assert _FANIN_PIPE in cfg
-    assert _OUTPUTD_PIPE in cfg
+    assert f'device: "{RING_CAPTURE_DEVICE}"' in cfg
+    assert f'device: "{RING_PLAYBACK_DEVICE}"' in cfg
     assert 'device: "plug:jasper_capture"' not in cfg
-    assert 'device: "outputd_content_playback"' not in cfg
     assert "type: AsyncSinc" not in cfg
     assert "enable_rate_adjust: false" in cfg
 
 
-def test_transport_pipe_coupling_is_noop_for_grouped_pipe_sink(tmp_path):
+def test_shm_ring_coupling_is_noop_for_grouped_pipe_sink(tmp_path):
     # PRECEDENCE: a grouped/bonded member writes a SnapFIFO playback pipe with
     # enable_rate_adjust=False. That playback pipe already owns the pipe sink, so
-    # the local transport-pipe coupling is a no-op there.
+    # the local shm_ring coupling is a no-op there.
     carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
     cfg = carrier.reemit(
         SoundProfile(enabled=False),
         profile_id="x",
         member_kwargs={"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False},
-        fanin_coupling_capture_kwargs=_TRANSPORT_PIPE_KWARGS,
+        fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
     ).yaml
-    # ALSA capture preserved (no File coupling), pipe SINK still on playback.
+    # ALSA capture preserved (no ring coupling), pipe SINK still on playback.
     assert 'device: "plug:jasper_capture"' in cfg
-    assert _FANIN_PIPE not in cfg
-    assert _OUTPUTD_PIPE not in cfg
+    assert f'device: "{RING_CAPTURE_DEVICE}"' not in cfg
+    assert f'device: "{RING_PLAYBACK_DEVICE}"' not in cfg
     assert "/run/snapfifo" in cfg
 
 
-def test_program_bake_carrier_ignores_transport_pipe_coupling(tmp_path):
+def test_program_bake_carrier_ignores_shm_ring_coupling(tmp_path):
     # The program bake is a bonded pipe sink (rate_adjust=False); the coupling
     # keyword is accepted for call-site uniformity but never applied. The emit
-    # keeps its ALSA capture; no fan-in pipe appears.
+    # keeps its ALSA capture; no ring device appears.
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     path = config_dir / "sound_current.yml"
@@ -787,7 +784,7 @@ def test_program_bake_carrier_ignores_transport_pipe_coupling(tmp_path):
         SoundProfile(enabled=False),
         out_path=config_dir / "out.yml",
         member_kwargs={"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False},
-        fanin_coupling_capture_kwargs=_TRANSPORT_PIPE_KWARGS,
+        fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
     ).yaml
     assert 'device: "plug:jasper_capture"' in cfg
-    assert _FANIN_PIPE not in cfg
+    assert f'device: "{RING_CAPTURE_DEVICE}"' not in cfg

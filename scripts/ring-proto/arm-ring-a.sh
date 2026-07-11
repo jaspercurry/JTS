@@ -40,8 +40,7 @@
 #     (run build-on-pi.sh first).
 #   - jasper-fanin is running and its resolved coupling is NOT already a
 #     non-loopback mode (this script only arms on top of the packaged
-#     loopback default; a transport_pipe or already-armed shm_ring box
-#     is a clean refusal).
+#     loopback default; an already-armed shm_ring box is a clean refusal).
 #   - the SSH host is REACHABLE — an unreachable host is a FAILURE here,
 #     never a skip (a silent skip could leave a partially-armed box).
 #
