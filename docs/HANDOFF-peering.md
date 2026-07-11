@@ -443,6 +443,32 @@ disabled — verified by `test_peer_arbitrate_disabled_returns_win_without_io`).
 Documented honestly so future-you doesn't have to reverse-engineer
 the gaps.
 
+**"Exactly one winner" holds for a single physical waker, not the
+concurrent multi-waker race.** README and §1's headline invariant —
+"picks exactly one winner per wake event" — is enforced by the state
+machine for the case the design targets: *one* speaker physically hears
+the wake, multicasts its WAKE, and the other N−1 speakers adopt that
+foreign epoch (they never local-waked) and concede when their arb
+window closes. That path is guarded green by
+`tests/test_peering_state.py::test_wake_propagation_picks_exactly_one_winner_and_suppresses_rest`.
+What is *not* guaranteed is the concurrent multi-waker race, where two
+or more speakers `_on_local_wake` on the same utterance near-
+simultaneously and each mints its own epoch. Convergence there is
+best-effort, not proven: the epoch-race dedup in `_on_peer_wake`
+(smaller-UUID-wins) and the WINNER→WINNER concede in `_on_peer_claim`
+usually collapse the duplicate epochs before either side goes ACTIVE,
+but nothing enforces that they always do so within the arb window. And
+once a peer reaches ACTIVE, the DA-0021 session-stickiness guard makes
+it deliberately *ignore* a foreign CLAIM (so an unrelated wake in
+another room can't tear down a live conversation) — which means two
+speakers that both crossed into ACTIVE would each keep their own
+session rather than one conceding. So a same-utterance double-wake can,
+in the worst-case timing, leave two speakers answering. Deferred: a
+real fix needs a deterministic tiebreak that binds *before* ACTIVE
+(e.g. a short mandatory claim-quiet-period, or folding near-simultaneous
+distinct epochs by wake-timestamp proximity). Tracked as an audit
+follow-up (`DA-0021` neighborhood); no two-Pi hardware repro yet.
+
 **Per-peer microphone gain calibration.** The ranking function
 assumes openWakeWord confidence is gain-invariant across mics.
 In practice it's *roughly* invariant for identical XVF3800
