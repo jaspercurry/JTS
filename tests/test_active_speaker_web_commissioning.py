@@ -17,6 +17,7 @@ import jasper.active_speaker.playback as active_playback
 import jasper.correction.playback as correction_playback
 from jasper.active_speaker import web_commissioning as web
 from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+from jasper.active_speaker.measurement import active_driver_targets
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
@@ -24,8 +25,41 @@ from tests.test_active_speaker_measurement import _topology
 from tests.test_active_speaker_profile import _two_way_preset
 
 
+def _durable_driver_record(
+    topology,
+    *,
+    role="woofer",
+    playback_id="play-woofer",
+    test_level_dbfs=-72.0,
+):
+    target = next(
+        item for item in active_driver_targets(topology) if item["role"] == role
+    )
+    return {
+        "captured": True,
+        "target_id": target["target_id"],
+        "target_fingerprint": target["target_fingerprint"],
+        "speaker_group_id": target["speaker_group_id"],
+        "role": role,
+        "output_index": target["output_index"],
+        "outcome": "heard_correct_driver",
+        "playback_id": playback_id,
+        "test_level_dbfs": test_level_dbfs,
+        "floor_confirmation": {
+            "accepted": True,
+            "playback_id": playback_id,
+            "target": {
+                "speaker_group_id": target["speaker_group_id"],
+                "role": role,
+                "output_index": target["output_index"],
+            },
+        },
+        "issues": [],
+    }
+
+
 def test_driver_capture_sweep_requires_confirmed_driver(monkeypatch):
-    monkeypatch.setattr(web, "load_output_topology", lambda: object())
+    monkeypatch.setattr(web, "load_output_topology", _topology)
     monkeypatch.setattr(web, "load_measurement_state", lambda topology: {})
 
     payload = asyncio.run(
@@ -39,26 +73,97 @@ def test_driver_capture_sweep_requires_confirmed_driver(monkeypatch):
     assert payload["reason"] == "driver_floor_confirmation_required"
 
 
-def test_driver_capture_sweep_refuses_expired_floor_confirmation(monkeypatch):
+def test_driver_capture_sweep_accepts_durable_confirmation_after_session_expiry(
+    monkeypatch,
+):
+    topology = _topology()
     measurements = {
         "summary": {
             "latest_driver_measurements": {
-                "mono:woofer": {
-                    "captured": True,
-                    "playback_id": "play-woofer",
-                    "test_level_dbfs": -72.0,
-                    "issues": [],
-                },
+                "mono:woofer": _durable_driver_record(topology),
             },
         },
     }
-    monkeypatch.setattr(web, "load_output_topology", lambda: object())
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
     monkeypatch.setattr(web, "load_measurement_state", lambda topology: measurements)
-    monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "idle"})
+    monkeypatch.setattr(
+        web,
+        "load_safe_playback_state",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("durable evidence must not require an armed session")
+        ),
+    )
+    from jasper.active_speaker import baseline_profile
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state",
+        lambda: _applied_excitation_profile(topology=topology),
+    )
+    monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    loaded = {}
+
+    async def blocked_load(**kwargs):
+        loaded.update(kwargs)
+        return {
+            "load": {
+                "status": "blocked",
+                "issues": [{
+                    "severity": "blocker",
+                    "code": "test_stop_after_durable_gate",
+                    "message": "durable gate passed",
+                }],
+            },
+        }
+
     monkeypatch.setattr(
         web,
         "_load_driver_commissioning_config_for_level",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not load")),
+        blocked_load,
+    )
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+        )
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "driver_capture_sweep_load_failed"
+    assert loaded["role"] == "woofer"
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    ["missing", "unaccepted", "playback_mismatch", "target_mismatch"],
+)
+def test_driver_capture_refuses_malformed_durable_floor_confirmation(
+    monkeypatch,
+    malformation,
+):
+    topology = _topology()
+    record = _durable_driver_record(topology)
+    if malformation == "missing":
+        record.pop("floor_confirmation")
+    elif malformation == "unaccepted":
+        record["floor_confirmation"]["accepted"] = False
+    elif malformation == "playback_mismatch":
+        record["floor_confirmation"]["playback_id"] = "another-playback"
+    elif malformation == "target_mismatch":
+        record["floor_confirmation"]["target"]["role"] = "tweeter"
+    measurements = {
+        "summary": {
+            "latest_driver_measurements": {"mono:woofer": record},
+        },
+    }
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(
+        web,
+        "_load_driver_commissioning_config_for_level",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not load")),
     )
 
     payload = asyncio.run(
@@ -69,7 +174,38 @@ def test_driver_capture_sweep_refuses_expired_floor_confirmation(monkeypatch):
     )
 
     assert payload["status"] == "refused"
-    assert payload["reason"] == "driver_floor_confirmation_expired"
+    assert payload["reason"] == "driver_floor_confirmation_invalid"
+    assert payload["audio_emitted"] is False
+
+
+def test_driver_capture_refuses_topology_stale_floor_record(monkeypatch):
+    topology = _topology()
+    # `load_measurement_state(topology)` excludes the old target fingerprint
+    # from latest_driver_measurements and reports it only as stale evidence.
+    measurements = {
+        "summary": {
+            "latest_driver_measurements": {},
+            "stale_driver_record_count": 1,
+        },
+    }
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(
+        web,
+        "_load_driver_commissioning_config_for_level",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not load")),
+    )
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+        )
+    )
+
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "driver_floor_confirmation_required"
+    assert payload["audio_emitted"] is False
 
 
 def _applied_excitation_profile(
@@ -213,12 +349,10 @@ def test_driver_capture_sweep_never_reuses_legacy_floor_level(
     measurements = {
         "summary": {
             "latest_driver_measurements": {
-                "mono:woofer": {
-                    "captured": True,
-                    "playback_id": "play-woofer",
-                    "test_level_dbfs": legacy_floor_dbfs,
-                    "issues": [],
-                },
+                "mono:woofer": _durable_driver_record(
+                    topology,
+                    test_level_dbfs=legacy_floor_dbfs,
+                ),
             },
         },
     }
@@ -286,12 +420,10 @@ def test_driver_capture_sweep_refuses_before_loading_when_applied_gain_is_stale(
     measurements = {
         "summary": {
             "latest_driver_measurements": {
-                "mono:woofer": {
-                    "captured": True,
-                    "playback_id": "play-woofer",
-                    "test_level_dbfs": -60.0,
-                    "issues": [],
-                },
+                "mono:woofer": _durable_driver_record(
+                    topology,
+                    test_level_dbfs=-60.0,
+                ),
             },
         },
     }

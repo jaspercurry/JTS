@@ -153,6 +153,7 @@ def record_driver_acoustic_capture(
     notes: str | None = None,
     calibration_level: Mapping[str, Any] | None = None,
     safe_session: Mapping[str, Any] | None = None,
+    durable_floor_confirmation: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
     now: str | None = None,
     analyze: Callable[..., DriverAcousticResult] = analyze_driver_capture,
@@ -263,6 +264,7 @@ def record_driver_acoustic_capture(
         raw,
         calibration_level=calibration_level,
         safe_session=safe_session,
+        durable_floor_confirmation=durable_floor_confirmation,
         state_path=state_path,
         now=now,
     )

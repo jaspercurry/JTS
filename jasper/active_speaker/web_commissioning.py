@@ -47,6 +47,7 @@ from jasper.active_speaker.commission_wiring import (
 )
 from jasper.active_speaker.measurement import (
     confirmed_driver_roles,
+    current_driver_floor_evidence,
     load_measurement_state,
     record_driver_measurement,
     record_summed_test_artifact,
@@ -1430,18 +1431,6 @@ def _capture_sweep_issue(exc: BaseException) -> dict[str, str]:
     }
 
 
-def _latest_driver_measurement(
-    measurements: dict[str, Any],
-    *,
-    speaker_group_id: str,
-    role: str,
-) -> dict[str, Any] | None:
-    summary = _dict_value(measurements.get("summary"))
-    latest = _dict_value(summary.get("latest_driver_measurements"))
-    record = latest.get(f"{speaker_group_id}:{role}")
-    return record if isinstance(record, dict) else None
-
-
 def _latest_summed_test(
     measurements: dict[str, Any],
     *,
@@ -1825,27 +1814,21 @@ async def play_driver_capture_sweep(
 
     topology = load_output_topology()
     measurements = load_measurement_state(topology)
-    latest = _latest_driver_measurement(
+    floor_evidence = current_driver_floor_evidence(
+        topology,
         measurements,
         speaker_group_id=speaker_group_id,
         role=role,
     )
-    if (
-        latest is None
-        or latest.get("captured") is not True
-        or not latest.get("playback_id")
-        or _has_blocker(latest)
-    ):
+    if floor_evidence.get("valid") is not True:
         return _refused_capture_sweep(
-            "driver_floor_confirmation_required",
-            "confirm this driver by ear before recording mic evidence",
+            str(floor_evidence.get("reason") or "driver_floor_confirmation_invalid"),
+            str(
+                floor_evidence.get("detail")
+                or "confirm this driver again before recording mic evidence"
+            ),
         )
-    safe_session = load_safe_playback_state()
-    if safe_session.get("status") != "armed":
-        return _refused_capture_sweep(
-            "driver_floor_confirmation_expired",
-            "the driver confirmation expired; play and confirm the driver again",
-        )
+    latest = _dict_value(floor_evidence.get("record"))
 
     planned_excitation = automatic_driver_excitation(topology, role)
     if planned_excitation.get("status") != "ready":
@@ -1913,6 +1896,8 @@ async def play_driver_capture_sweep(
         effective_peak_dbfs=(playback.get("excitation") or {}).get(
             "effective_peak_dbfs"
         ),
+        floor_evidence_source=floor_evidence.get("source"),
+        floor_evidence_playback_id=floor_evidence.get("playback_id"),
     )
     return {
         "status": playback.get("status"),

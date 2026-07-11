@@ -408,9 +408,14 @@ def _floor_confirmation_issues(
     raw: Mapping[str, Any],
     target: Mapping[str, Any],
     safe_session: Mapping[str, Any] | None,
+    durable_floor_confirmation: Mapping[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     playback_id = _text(raw.get("playback_id"), max_chars=120)
-    result = _safe_floor_result(safe_session)
+    result = (
+        durable_floor_confirmation
+        if isinstance(durable_floor_confirmation, Mapping)
+        else _safe_floor_result(safe_session)
+    )
     expected_target = _target_signature(target)
     observed_target = playback_target_signature(
         result.get("target") if isinstance(result, Mapping) else None
@@ -422,7 +427,13 @@ def _floor_confirmation_issues(
             "driver_measurement_playback_missing",
             "record a floor-level driver test before this counts as measured",
         ))
-    if not isinstance(safe_session, Mapping) or safe_session.get("status") != "armed":
+    if (
+        durable_floor_confirmation is None
+        and (
+            not isinstance(safe_session, Mapping)
+            or safe_session.get("status") != "armed"
+        )
+    ):
         issues.append(_issue(
             "blocker",
             "driver_measurement_safe_session_missing",
@@ -447,6 +458,90 @@ def _floor_confirmation_issues(
             "driver measurement must match the output target that was just tested",
         ))
     return issues
+
+
+def current_driver_floor_evidence(
+    topology: OutputTopology,
+    measurements: Mapping[str, Any],
+    *,
+    speaker_group_id: str,
+    role: str,
+) -> dict[str, Any]:
+    """Validate durable identity/floor evidence from a current-state summary.
+
+    The summary normally excludes stale records, but this authorization boundary
+    independently resolves the current topology target and compares every
+    identity field before trusting the embedded confirmation.
+    """
+    group_id = str(speaker_group_id or "").strip()
+    role_id = str(role or "").strip().lower()
+    target_id = _target_id(group_id, role_id)
+    target = _target_lookup(topology).get(target_id)
+    summary = measurements.get("summary")
+    latest = summary.get("latest_driver_measurements") if isinstance(summary, Mapping) else None
+    record = latest.get(target_id) if isinstance(latest, Mapping) else None
+    source = "durable_current_driver_measurement"
+
+    def refused(reason: str, detail: str) -> dict[str, Any]:
+        return {
+            "valid": False,
+            "source": source,
+            "reason": reason,
+            "detail": detail,
+            "record": record if isinstance(record, Mapping) else None,
+        }
+
+    if target is None or not isinstance(record, Mapping):
+        return refused(
+            "driver_floor_confirmation_required",
+            "confirm this driver by ear before recording mic evidence",
+        )
+    playback_id = _text(record.get("playback_id"), max_chars=120)
+    record_issues = record.get("issues")
+    issues_well_formed = isinstance(record_issues, list) and all(
+        isinstance(issue, Mapping)
+        and issue.get("severity") in {"warning", "blocker"}
+        for issue in record_issues
+    )
+    issues_blocker_free = issues_well_formed and not any(
+        issue.get("severity") == "blocker" for issue in record_issues
+    )
+    if (
+        record.get("captured") is not True
+        or record.get("outcome") != "heard_correct_driver"
+        or record.get("target_id") != target_id
+        or record.get("target_fingerprint") != target.get("target_fingerprint")
+        or record.get("speaker_group_id") != target.get("speaker_group_id")
+        or record.get("role") != target.get("role")
+        or record.get("output_index") != target.get("output_index")
+        or not playback_id
+        or not issues_blocker_free
+    ):
+        return refused(
+            "driver_floor_confirmation_invalid",
+            "the saved driver confirmation is incomplete; confirm the driver again",
+        )
+    confirmation = record.get("floor_confirmation")
+    confirmation_issues = _floor_confirmation_issues(
+        record,
+        target,
+        None,
+        confirmation if isinstance(confirmation, Mapping) else None,
+    )
+    if confirmation_issues:
+        return refused(
+            "driver_floor_confirmation_invalid",
+            "the saved driver confirmation is malformed; confirm the driver again",
+        )
+    return {
+        "valid": True,
+        "source": source,
+        "reason": None,
+        "detail": "current durable driver identity and floor evidence is accepted",
+        "playback_id": playback_id,
+        "confirmation": dict(confirmation),
+        "record": dict(record),
+    }
 
 
 def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any]:
@@ -664,6 +759,7 @@ def record_driver_measurement(
     *,
     calibration_level: Mapping[str, Any] | None = None,
     safe_session: Mapping[str, Any] | None = None,
+    durable_floor_confirmation: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
@@ -703,7 +799,12 @@ def record_driver_measurement(
             "confirm this DAC output before recording it as measured",
         ))
     if target is not None and outcome == "heard_correct_driver":
-        issues.extend(_floor_confirmation_issues(raw, target, safe_session))
+        issues.extend(_floor_confirmation_issues(
+            raw,
+            target,
+            safe_session,
+            durable_floor_confirmation,
+        ))
     if observed is None:
         issues.append(_issue(
             "warning",
@@ -756,7 +857,9 @@ def record_driver_measurement(
             else None
         ),
         "playback_id": _text(raw.get("playback_id"), max_chars=120),
-        "floor_confirmation": dict(_safe_floor_result(safe_session) or {}),
+        "floor_confirmation": dict(
+            durable_floor_confirmation or _safe_floor_result(safe_session) or {}
+        ),
         "notes": _text(raw.get("notes"), max_chars=1000),
         "issues": issues,
     }

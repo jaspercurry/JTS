@@ -863,7 +863,15 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   operator confirms by ear (`commission-ramp ack`) → `floor_confirmed`; in the
   web flow the ACK also promotes output identity when needed and writes the
   durable `measurement.record_driver_measurement` operator-only driver check
-  used by "Validate and apply", then re-mutes the transient graph. The ramp's
+  used by "Validate and apply", then re-mutes the transient graph. Automatic
+  mic capture may reuse that durable floor proof after the volatile safe session
+  expires, but only through `measurement.current_driver_floor_evidence`: the
+  record must remain captured and blocker-free, then independently exact-match
+  the current topology's target id, fingerprint, group, role, output, playback
+  id, and accepted embedded confirmation. The automatic post-capture record
+  boundary re-runs this check and has no volatile safe-session fallback, so a
+  topology change between play and upload rejects the acoustic record. Stale or
+  malformed embedded confirmation still refuses before audio. The ramp's
   `confirmed_roles` remains only ordering memory for woofer-before-tweeter; the
   `/sound/` card treats measurement-backed driver checks as the product truth,
   so stale ramp state alone cannot complete the

@@ -67,17 +67,27 @@ def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
 
     import jasper.active_speaker.calibration_level as calibration_level
     import jasper.active_speaker.commissioning_capture as capture
-    import jasper.active_speaker.safe_playback as safe_playback
+    import jasper.active_speaker.measurement as measurement
 
     monkeypatch.setattr(
         calibration_level,
         "load_calibration_level_state",
         lambda: {"level": "ok"},
     )
+    monkeypatch.setattr(measurement, "load_measurement_state", lambda _t: {})
+    confirmation = {
+        "accepted": True,
+        "playback_id": "play-1",
+        "target": {"speaker_group_id": "mono", "role": "woofer", "output_index": 0},
+    }
     monkeypatch.setattr(
-        safe_playback,
-        "load_safe_playback_state",
-        lambda: {"status": "armed"},
+        measurement,
+        "current_driver_floor_evidence",
+        lambda *_args, **_kwargs: {
+            "valid": True,
+            "source": "durable_current_driver_measurement",
+            "confirmation": confirmation,
+        },
     )
 
     def fake_record(*args, **kwargs):
@@ -106,6 +116,79 @@ def test_driver_capture_records_through_active_speaker_layer(monkeypatch, tmp_pa
     assert calls["kwargs"]["captured_wav"] == wav_path
     assert calls["kwargs"]["playback_id"] == "play-1"
     assert calls["kwargs"]["calibration"] == "curve"
+    assert calls["kwargs"]["safe_session"] is None
+    assert calls["kwargs"]["durable_floor_confirmation"] == confirmation
+
+
+def test_driver_capture_rejects_post_play_topology_change_even_with_old_session(
+    monkeypatch,
+):
+    from jasper.active_speaker.measurement import active_driver_targets
+    from tests.test_active_speaker_measurement import _topology
+
+    import jasper.active_speaker.measurement as measurement
+    import jasper.active_speaker.safe_playback as safe_playback
+
+    old_topology = _topology(tweeter_output=1)
+    current_topology = _topology(tweeter_output=2)
+    old_target = next(
+        target
+        for target in active_driver_targets(old_topology)
+        if target["role"] == "tweeter"
+    )
+    old_record = {
+        "captured": True,
+        "target_id": "mono:tweeter",
+        "target_fingerprint": old_target["target_fingerprint"],
+        "speaker_group_id": "mono",
+        "role": "tweeter",
+        "output_index": 1,
+        "outcome": "heard_correct_driver",
+        "playback_id": "old-play",
+        "floor_confirmation": {
+            "accepted": True,
+            "playback_id": "old-play",
+            "target": {
+                "speaker_group_id": "mono",
+                "role": "tweeter",
+                "output_index": 1,
+            },
+        },
+        "issues": [],
+    }
+    monkeypatch.setattr(web_measurement, "load_output_topology", lambda: current_topology)
+    monkeypatch.setattr(
+        measurement,
+        "load_measurement_state",
+        lambda _topology: {
+            "summary": {
+                "latest_driver_measurements": {"mono:tweeter": old_record},
+            },
+        },
+    )
+    old_session_reads = []
+    monkeypatch.setattr(
+        safe_playback,
+        "load_safe_playback_state",
+        lambda: old_session_reads.append(True) or {"status": "armed"},
+    )
+    monkeypatch.setattr(
+        web_measurement,
+        "capture_wav_path",
+        lambda *_args, **_kwargs: pytest.fail("must reject before storing the WAV"),
+    )
+
+    with pytest.raises(ValueError, match="incomplete"):
+        backend.record_driver_capture(
+            {
+                "speaker_group_id": "mono",
+                "role": "tweeter",
+                "playback_id": "old-play",
+            },
+            b"wav",
+        )
+
+    assert old_session_reads == []
 
 
 def test_summed_capture_records_through_active_speaker_layer(monkeypatch, tmp_path):
@@ -737,16 +820,39 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
     env-pointed cache dir. Mirrors tests/test_active_speaker_web_commissioning.py."""
     import jasper.correction.playback as correction_playback
     from jasper.active_speaker import web_commissioning as web
+    from jasper.active_speaker.measurement import active_driver_targets
+    from tests.test_active_speaker_measurement import _topology
 
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SWEEP_DIR", str(tmp_path / "sweeps"))
+    topology = _topology()
     if kind == "driver":
+        driver_target = next(
+            target
+            for target in active_driver_targets(topology)
+            if target["role"] == "woofer"
+        )
         measurements = {
             "summary": {
                 "latest_driver_measurements": {
                     "mono:woofer": {
                         "captured": True,
+                        "target_id": "mono:woofer",
+                        "target_fingerprint": driver_target["target_fingerprint"],
+                        "speaker_group_id": "mono",
+                        "role": "woofer",
+                        "output_index": 0,
+                        "outcome": "heard_correct_driver",
                         "playback_id": "play-woofer",
                         "test_level_dbfs": -72.0,
+                        "floor_confirmation": {
+                            "accepted": True,
+                            "playback_id": "play-woofer",
+                            "target": {
+                                "speaker_group_id": "mono",
+                                "role": "woofer",
+                                "output_index": 0,
+                            },
+                        },
                         "issues": [],
                     },
                 },
@@ -766,7 +872,7 @@ def _real_play_boundary(monkeypatch, tmp_path, *, kind):
                 },
             },
         }
-    monkeypatch.setattr(web, "load_output_topology", lambda: object())
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
     monkeypatch.setattr(web, "load_measurement_state", lambda topology: measurements)
     monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
     monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
