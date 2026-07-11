@@ -30,7 +30,14 @@ Type=oneshot
 # Bounded: one STATUS socket read plus, only on a sustained-broken transition, the
 # ordered combo disarm (fan-in + usbsink restart via the broker + a CamillaDSP
 # reconcile). A healthy tick is a single socket read.
-TimeoutStartSec=60
+# Worst-case pass under the entry lock (review #1252 tally): <=10s lock wait
+# + usbsink restart 8s + outputd 8s + coordinated fan-in restart (camilla
+# stop 8s + fanin 8s + camilla start 8s) + camilla reconcile + a possible
+# audio-hardware-reconcile kick 15s ~= 75s+. 120s gives honest headroom: a
+# systemd kill mid-sequence between camilla-stop and camilla-start leaves
+# CamillaDSP cleanly stopped, which OnFailure=jasper-camilla-recover does
+# NOT catch (clean stop != failed) — so the timeout must outlast the pass.
+TimeoutStartSec=120
 # Same env chain the reconciler CLI hydrates internally (load_env_files); listed
 # here too so the unit environment carries the combo state for logging context.
 EnvironmentFile=-/etc/jasper/jasper.env
