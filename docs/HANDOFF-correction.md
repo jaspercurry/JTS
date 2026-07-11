@@ -195,7 +195,9 @@
   placement, and auto-level, then restores a fresh bound for the actual room
   capture. Every room-relay completion page (level, position sweep, and verify)
   returns directly to `/correction/room/`; `/correction/` remains only the
-  legacy local-microphone preflight.
+  legacy local-microphone preflight. Room verification's armed callback is
+  state-aware (a required `state` parameter), so the relay passes the frozen
+  setup binding through the zero-argument compatibility seam before playback.
 - 🧪 **Phone-mic capture relay path (fresh-install default,
   on-device-pending).** As of 2026-07-02 fresh installs default to an
   alternative capture transport that moves the room capture setup/recording page

@@ -2568,7 +2568,7 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                         lambda db: cam.set_volume_db(db, best_effort=False)
                     )
 
-        def _on_armed(state: Any = None) -> None:
+        def _on_armed(state: Any) -> None:
             setup = getattr(state, "setup", None)
             _assert_relay_setup_binding(
                 sess,
