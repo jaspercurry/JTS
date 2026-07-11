@@ -229,24 +229,23 @@ the iPhone/Android AGC-freeze confirmation (H1).
 - **One JSON screen envelope** per step (`{screen, curves{measured,target,
   predicted,verify — server-smoothed}, fill_segments[], headline{before,after,
   delta}, verdict_text, nudges[], next_action, progress}`). Browser is a pure
-  renderer; all smoothing/thresholds/verdicts on the Pi. **Not built yet** —
-  see P3b in §4; today's page computes some of this client-side.
+  renderer; all smoothing/thresholds/verdicts on the Pi. **Shipped — P3b
+  (#1155/#1157);** the `GET /envelope` endpoint (`jasper/correction/envelope.py`)
+  drives the page.
 - **Stepped wizard:** entry → mic + calibration *nudge* → level-match (§3.1) →
   guided N-position sweep with "move the mic" prompts → review vs target → apply
   → verify → **before/after result** → save. Every gate is a sentence + a
-  checkmark; nothing disabled. **Not built yet** — P3b.
+  checkmark; nothing disabled. **Shipped — P3b (#1155/#1157).**
 - **Honest two-tone before/after fill** — a ~40-line extension of the existing
   canvas `drawSpread()`: green where |after−target| < |before−target| (helped),
   amber where a band regressed. Headline one number: "±6 dB → ±2 dB in the bass."
   Never show a raw jagged curve — server-smoothed (variable for design,
-  psychoacoustic for the "what you hear" view). **Shipped in P3a (pending
-  merge)** — rendered into the existing single-page UI, not yet the §3.2
-  screen envelope; P3b relocates it into the envelope, it doesn't rebuild it.
+  psychoacoustic for the "what you hear" view). **Shipped in P3a (#1151)**,
+  then relocated into the §3.2 screen envelope by P3b (#1155/#1157).
 - **Real measured before/after delta** in `verify_metrics` — recompute the
   pre-correction deviation over the *same* 50–350 Hz band from the stored measured
   curve (do not reuse `design.before`, which is over a different band), and stop
-  calling the *predicted* number "improvement." **Shipped in P3a (pending
-  merge)** — same caveat as above.
+  calling the *predicted* number "improvement." **Shipped in P3a (#1151).**
 
 ### 3.3 Bass management — corner/slope/level now, delay/polarity via the null-walk
 
@@ -293,7 +292,7 @@ extend it, don't rebuild it.
   default is a current GPT model (do not doc-pin a model name here; a model
   rename is a config-value change, not a plan-doc edit). The `provider` field
   on `AdvisorModelSettings` is the swap seam for better models later, though
-  today `resolve_model_settings` hard-rejects any `provider != "openai"` —
+  today `resolve_settings` hard-rejects any `provider != "openai"` —
   that's the intended current state, not a gap to close in P6. (Correct the
   design doc's stale "Anthropic-first" mandate to "OpenAI-shipped,
   provider-swappable.")
@@ -330,24 +329,20 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   `jasper/audio_measurement/` (sweep/deconv/analysis/calibration move unchanged;
   add a parameterized `QualityModel(room|driver|ramp)` so forked thresholds
   become profiles) behind characterization tests.
-- **P3a — Room correction: honest before/after (§3.2, shipped once merged).**
+- **P3a — Room correction: honest before/after (§3.2, shipped — #1151).**
   The measured before/after delta and the Pi-computed `fill_segments`,
   rendered into the existing single-page UI; the predicted-vs-measured
-  relabel. This is the piece already built on the `p3a` branch — landing it
-  is a merge, not new design work.
-- **P3b — Room correction: the screen envelope + stepped flow (§3.2, not yet
-  built).** The `{screen, curves{measured,target,predicted,verify}
+  relabel.
+- **P3b — Room correction: the screen envelope + stepped flow (§3.2,
+  shipped — #1155/#1157).** The `{screen, curves{measured,target,predicted,verify}
   ,fill_segments[],headline,verdict_text,nudges[],next_action,progress}` JSON
-  envelope endpoint, the stepped dumb-frontend wizard, and the mic/calibration
-  nudges — genuinely unbuilt (P3a shipped its results into the current
-  single-page UI, not this envelope). Given the current file sizes
-  (`correction_setup.py` ~3,000 lines, `main.js` ~2,500 lines), **decompose
-  into at least two PRs**: (1) the envelope endpoint added *additively*
-  alongside today's payloads, so nothing consuming the old shape breaks; (2)
-  the page migrated to consume the envelope and the legacy client-side
-  computation retired. A one-shot rewrite of both files is exactly the
-  long-lived-branch staleness profile AGENTS.md warns about on this fast
-  `main`.
+  envelope endpoint (`jasper/correction/envelope.py`), the stepped
+  dumb-frontend wizard, and the mic/calibration nudges. It landed as the two
+  PRs the plan called for: (1) the `GET /envelope` endpoint added *additively*
+  alongside the old payloads (#1155); (2) the page migrated to consume the
+  envelope and the legacy client-side computation retired (#1157) — avoiding
+  the one-shot rewrite of both large files that AGENTS.md warns about on this
+  fast `main`.
 - **P2 — Level-match ramp (§3.1)** logic: `RampController` + the relay's
   batched level-event schema + settle-based two-point mapping + SNR-window
   stop + per-geometry lock + drift (on raw magnitudes), all under synthetic

@@ -1,6 +1,12 @@
 # Remote software updates / CI deploy pipeline — design space
 
-**Status (2026-05-15):** Research only. No implementation in flight.
+**Status (2026-05-15, updated 2026-07-11):** Design space for the
+"Check for updates" button, which is **not built**. Stage 1 of the
+recommended path — GitHub Actions CI — **has since shipped**
+(`.github/workflows/tests.yml`, #251, 2026-05-23; now pytest on
+Python 3.11/3.12/3.13 with `ruff`/`mypy`, plus `shell`, `js`, and
+`rust` jobs and the doc-hygiene workflows). The remaining Stages 2–3
+(auto-release + the dashboard button) are still unbuilt research.
 This document captures the option space, the recommended staged
 build-out, the integration points already present in the codebase,
 and the open questions, so the work can be picked up coherently
@@ -42,9 +48,15 @@ developer laptop. The script:
 
 What's missing:
 
-- **CI gate.** There is no `.github/workflows/` directory. Nothing
-  stops a broken commit from rsyncing to the Pi. "Works on my
-  laptop" is the only quality bar.
+- **The deploy path itself has no pre-merge/pre-deploy coupling to
+  CI.** A CI gate now exists — `.github/workflows/tests.yml` runs the
+  hardware-free suite on every PR and push to `main`, and `main` is
+  branch-protected on it (see AGENTS.md "PR workflow on a fast-moving
+  `main`"). What's still missing is the *link* from that green check
+  to the deploy: `deploy-to-pi.sh` rsyncs whatever is in the local
+  working tree, green or not, so "works on my laptop" is still the
+  only bar the deploy itself enforces. Stage 1 of the recommended
+  path below is therefore done; the gap is Stages 2–3.
 - **Out-of-LAN deploy.** The script needs SSH access to
   `jts.local`. If the developer is travelling, no deploy.
 - **Multi-operator deploy.** Anyone wanting to deploy needs an SSH
@@ -106,9 +118,9 @@ button" or "developer-without-a-laptop opens a phone browser" — but
 if the driver is purely "laptop not on LAN", Tailscale is the
 boring win and should be done first.
 
-**My recommendation:** do the CI half (Stage 1 below) regardless,
-because it pays off immediately. Only build the button half once a
-concrete reason a family member or no-laptop scenario justifies it.
+**My recommendation:** the CI half (Stage 1 below) is done and paid
+off immediately. Only build the button half once a concrete reason a
+family member or no-laptop scenario justifies it.
 
 ---
 
@@ -183,9 +195,9 @@ is Y" UI.
   Releases-aware). Neither is required, but they exist if you don't
   want to write the polling/comparison code from scratch.
 
-**Cons.** Requires building CI from scratch (no
-`.github/workflows/` exists today). Adds a "tag release" step
-(manual or auto).
+**Cons.** Adds a "tag release" step (manual or auto) on top of the
+CI that already exists (`tests.yml`); the release-tagging job is the
+new CI construction, not the test suite itself.
 
 **Verdict.** This is the right shape for JTS. Detailed in
 "Recommended path" below.
@@ -265,30 +277,32 @@ which `git checkout previous-tag && install.sh` handles).
 Build it in three independently shippable stages so you can stop at
 any point.
 
-### Stage 1: GitHub Actions CI (no Pi side at all)
+### Stage 1: GitHub Actions CI (no Pi side at all) — **SHIPPED**
 
-Add `.github/workflows/ci.yml`:
+This stage landed as `.github/workflows/tests.yml` (#251,
+2026-05-23) and has since grown. What ships today (see AGENTS.md "PR
+workflow on a fast-moving `main`" for the authoritative description):
 
-- **Triggers.** Every PR and every push to `main`.
+- **Triggers.** Every PR and every push to `main`; `main` is
+  branch-protected on the `pytest` and `rust` checks.
 - **Jobs.**
-  - `pytest` (the existing hardware-free suite per CLAUDE.md
-    "Testing").
-  - Optionally `ruff` / `mypy` if/when added to the project.
-  - Build the `jasper_aec3` pybind11 binding (needs `apt install
-    libwebrtc-audio-processing-dev` on the runner — verify Trixie's
-    v1.3-3 package is reachable on Ubuntu-latest runners; may need
-    a Trixie container).
-  - Build the two ESP32 firmwares via `pio run` on a matrix, using
-    pioarduino (per AGENTS.md "Toolchain — Arduino-ESP32 v3.x via
-    pioarduino").
-- **Artifacts** (optional in Stage 1, required in Stage 2): publish
-  the prebuilt wheel + firmware bins on green.
-- **No deploy step yet.** Just a green check on PRs.
-
-This stage pays for itself immediately. Stop here if you want —
-most of the "is this code good?" value is in this stage alone. The
-[CLAUDE.md](../CLAUDE.md) "PR flow required for main" rule already
-assumes some form of pre-merge validation; CI makes that real.
+  - `pytest` — the hardware-free merge lane (`scripts/test-merge`,
+    voice_eval excluded) across Python 3.11/3.12/3.13, with
+    `ruff check .` and a lenient `mypy` gate in the 3.13 leg.
+  - `shell` (`bash -n` + `shellcheck`), `js`
+    (`scripts/check-js-syntax.sh` + browser-module harnesses), and a
+    pinned-toolchain `rust` job (Rustfmt, Clippy `-D warnings`,
+    `cargo test`).
+  - The doc-hygiene workflows (`docs-impact.yml`, `docs-links.yml`,
+    `doc-freshness.yml`).
+- **Not in CI today.** The `jasper_aec3` pybind11 binding and the
+  ESP32 firmware builds are still built on the Pi / on-demand, not on
+  the runner — a Stage-1 extension worth doing if release artifacts
+  want prebuilt bins (verify Trixie's `libwebrtc-audio-processing-dev`
+  v1.3-3 on Ubuntu-latest / a Trixie container; pioarduino needs
+  Python ≥ 3.10, which runners have).
+- **No deploy step.** CI is still just a green check; the deploy is
+  not gated on it (see "What's missing" above).
 
 ### Stage 2: Auto-release on merge to `main`
 
@@ -372,47 +386,63 @@ idempotency does the heavy lifting.
 Inventory of what exists today that the button can build on (saves
 the next implementer from re-discovering it):
 
-- **`/var/lib/jasper/build.txt`** — written by `install.sh` lines
-  421–427 with `JASPER_GIT_SHA`, `JASPER_GIT_SHA_FULL`,
-  `JASPER_GIT_BRANCH`, `JASPER_INSTALL_AT`. Already the source of
-  truth for "current version".
-- **`jasper/web/system_setup.py`** — 490+ lines, serves
+- **`/var/lib/jasper/build.txt`** — written by `install.sh`'s
+  `write_build_manifest` with `JASPER_GIT_SHA`, `JASPER_GIT_SHA_FULL`,
+  `JASPER_GIT_BRANCH`, `JASPER_INSTALL_AT`. Written **last**, only on
+  a fully-successful install, so the manifest never claims a SHA the
+  box isn't cleanly running (see
+  [HANDOFF-install-update-transaction.md](HANDOFF-install-update-transaction.md)).
+  Already the source of truth for "current version".
+- **`jasper/web/system_setup.py`** — serves
   `http://jts.local/system/`. Software card shows Version (short
   SHA), Branch, Installed (timestamp), Uptime, Voice provider.
-  Existing button pattern: `/restart/voice`, `/restart/audio`,
-  `/reboot` handlers at lines 431–443; client-side `fetch(path,
-  {method: 'POST'})` at line 419. Adding a "Check for updates"
-  button slots straight into this pattern.
+  Existing button pattern: the `/restart/voice`, `/restart/audio`,
+  and `/reboot` handlers proxy to `jasper-control` and the migrated
+  page module POSTs to them; adding a "Check for updates" button
+  slots straight into this pattern. (The page has since been migrated
+  to the canonical design system — its behaviour lives in
+  `deploy/assets/system-status/js/`.)
 - **`jasper/control/`** — `jasper-control` daemon, always-on (not
   socket-activated). Already proxies the restart buttons. The right
   home for the long-running update task.
-- **`jasper/cli/doctor.py`** — `jasper-doctor` CLI, ~20 checks (env
-  file, API keys, ALSA card detection, disk space, systemd units,
-  dongle enumeration). Returns `ok`/`warn`/`fail` per check.
-  Callable as `sudo jasper-doctor --json`. The natural post-deploy
-  healthcheck.
-- **`deploy/install.sh`** (1089 lines) — already idempotent. Writes
-  `build.txt`. The button calls this; doesn't need to reimplement
-  anything it does.
-- **`scripts/deploy-to-pi.sh`** (100 lines) — captures
+- **`jasper/cli/doctor/`** — `jasper-doctor` CLI, now a package of
+  `@doctor_check`-decorated functions (env file, API keys, ALSA card
+  detection, disk space, systemd units, dongle enumeration, and many
+  subsystem probes). Returns `ok`/`warn`/`fail` per check. The
+  natural post-deploy healthcheck.
+- **`deploy/install.sh`** — already idempotent. Writes `build.txt`.
+  The button calls this; doesn't need to reimplement anything it does.
+- **`scripts/deploy-to-pi.sh`** — captures
   `JASPER_DEPLOY_SHA{,_FULL}` and `JASPER_DEPLOY_BRANCH` from
   laptop-side `git rev-parse` before rsync, then passes them via
-  env vars to `install.sh`. The Pi-side updater plays the
-  laptop-side role here: read the SHA from the checked-out tag, set
-  the same env vars before invoking `install.sh`.
+  env vars to `install.sh` (and now enforces the identity /
+  direction / behind-`main` guards described in AGENTS.md). The
+  Pi-side updater plays the laptop-side role here: read the SHA from
+  the checked-out tag, set the same env vars before invoking
+  `install.sh`.
 - **The cue pattern** (per
   [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md))
   for audible failure feedback.
-- **`pyproject.toml`** — pip-editable install at `/opt/jasper`
-  (install.sh line 476). Deps pinned (e.g. `google-genai==1.13.0`,
-  `openai>=2.36.0`, `scipy>=1.13,<2`). `[project.scripts]` block
-  defines CLI entry points like `jasper-doctor`.
-- **No `.github/workflows/`** — CI is greenfield. Stage 1 is pure
-  new construction, no existing workflow to migrate.
+- **`pyproject.toml`** — pip-editable install at `/opt/jasper`. Deps
+  pinned (e.g. `google-genai`, `openai`, `scipy`). `[project.scripts]`
+  block defines CLI entry points like `jasper-doctor`.
+- **`.github/workflows/tests.yml` (and the doc-hygiene workflows)** —
+  CI already exists (Stage 1 shipped). The remaining work extends it
+  with a release-tagging job, it does not build CI from scratch.
 
 ---
 
 ## Failure surface + rollback strategy
+
+> **Cross-reference:** [`install-update-resilience-plan.md`](install-update-resilience-plan.md)
+> (2026-06-21) covers overlapping install/update-resilience ground
+> grounded in a real production incident, and several of the failure
+> modes speculated about below have since been addressed in
+> `install.sh` — notably the "build manifest lied" case (#3/#4): the
+> manifest is now written **once, at the very end**, on success only
+> (`write_build_manifest`), so a mid-install abort leaves the prior
+> good SHA. Read that plan for what already landed; this section is
+> the OTA-button design space on top of it.
 
 The actually-hard part. The five failure modes worth designing for:
 
@@ -552,10 +582,12 @@ implementation:
 
 In rough order, each step independently shippable:
 
-1. **One-week spike** — write `.github/workflows/ci.yml` with just
-   `pytest`. Land it. No releases, no Pi side. Confirms the runner
-   can install JTS's deps.
-2. **Add binding + firmware builds** to CI. Cache aggressively.
+1. ~~**One-week spike** — write `.github/workflows/ci.yml` with just
+   `pytest`.~~ **Done** — `tests.yml` (#251) shipped and has grown to
+   the multi-language matrix described in Stage 1 above.
+2. **Add binding + firmware builds** to CI (still outstanding — the
+   `jasper_aec3` binding and ESP32 firmwares are not built on the
+   runner today). Cache aggressively.
 3. **Auto-release on merge to `main`.** Verify a release shows up
    at `https://github.com/jaspercurry/JTS/releases`.
 4. **Pi-side `jasper-check-updates` CLI** (no UI yet) — reads
@@ -610,5 +642,8 @@ GitHub-side mechanics:
   (unauthenticated, 60 req/hr/IP without a token).
 - `gh release create` for tag-and-publish in CI.
 
-Last verified: 2026-05-27 (research-only status/footer check; no
-implementation in flight)
+Last verified: 2026-07-11 (corrected the stale "no CI" premise —
+`.github/workflows/tests.yml` shipped #251 2026-05-23, Stage 1 done —
+and re-verified LOC/anchors: system_setup.py migrated, install.sh
+`write_build_manifest` writes the manifest last, doctor is now a
+package; OTA button Stages 2–3 remain unbuilt research)
