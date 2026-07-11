@@ -279,10 +279,18 @@ What exists:
 - Content input: on ring-eligible stereo boxes the product default is
   `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`; CamillaDSP writes Ring B through
   `jts_ring_playback`, and outputd reads `/dev/shm/jts-ring/content.ring`
-  one 128-frame slot per DAC period. The legacy/fail-safe `direct` bridge
-  still reads `outputd_content_capture`, backed by snd-aloop substream 6
-  (`hw:Loopback,1,6`), for ring-ineligible, operator-frozen, and active-N-ch
-  paths.
+  one 128-frame slot per DAC period. Under `shm_ring` outputd never opens an
+  ALSA content capture PCM, so STATUS `content.buffer_frames` is a synthetic
+  period-sized stand-in (NOT a jitter buffer); the TRUE Ring B capacity
+  (`n_slots × slot_frames`) is published honestly in
+  `content.ring.capacity_frames`, and `jasper-doctor` validates that ring
+  geometry instead of mis-applying the ALSA `>= 2× period` floor to the
+  synthetic. Because that env is inert here (`configure_pcm` is skipped),
+  `jasper.audio_runtime_plan` does not emit
+  `JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES` under `shm_ring`. The legacy/fail-safe
+  `direct` bridge still reads `outputd_content_capture`, backed by snd-aloop
+  substream 6 (`hw:Loopback,1,6`), for ring-ineligible, operator-frozen, and
+  active-N-ch paths — there the content buffer env is real.
 - Lab bridge: the opt-in `rate_match` mode keeps the DAC as timing owner, drains
   `outputd_content_capture` into an explicit bounded ring, and renders
   DAC-sized periods through a ppm-clamped windowed-sinc rate matcher.

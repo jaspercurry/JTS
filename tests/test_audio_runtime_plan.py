@@ -227,10 +227,15 @@ def test_outputd_latency_floor_actions_set_usb_route_content_buffer():
 
 
 def test_usb_low_latency_without_dac_floor_keeps_outputd_pair_coherent():
+    # Non-ring (loopback/direct) box with no DAC period floor: period stays 1024,
+    # so the route's 1536 content buffer is incoherent (< 2 x period) and the
+    # coherence guard repairs it to the packaged default with a "suppressing"
+    # warning. (The shm_ring bridge takes a different path — the policy is inert
+    # and dropped upstream — covered by test_usb_low_latency_shm_ring_bridge_*.)
     plan = build_audio_runtime_plan(
         profile_id="",
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        outputd_env={},
     )
 
     period = plan.setting(OUTPUTD_PERIOD_KEY).value
@@ -266,6 +271,102 @@ def test_usb_low_latency_with_dac_floor_keeps_shipped_pair():
         == DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
     )
     assert not any("suppressing the low-latency route buffer" in w for w in plan.warnings)
+
+
+def test_usb_low_latency_shm_ring_bridge_drops_inert_content_buffer_policy():
+    """Under the shm_ring content bridge (Ring B), the outputd content buffer is
+    architecturally inert (outputd never opens the content ALSA PCM, so
+    configure_pcm — the only consumer — is skipped). The USB low-latency route
+    MUST NOT emit its 1536 policy there: it was one-knob-two-truths drift against
+    the honest /state ring capacity. The setting falls back to the packaged
+    default instead of the route policy."""
+    plan = build_audio_runtime_plan(
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        outputd_env={
+            OUTPUTD_PERIOD_KEY: "128",
+            OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+        },
+    )
+
+    setting = plan.setting(OUTPUTD_CONTENT_BUFFER_KEY)
+    assert setting.value != DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
+    assert setting.value == DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
+    assert setting.source_kind != "route_policy"
+    # rate_match (a deferred lab bridge that DOES open the content PCM) is NOT
+    # suppressed — only a genuine shm_ring is inert.
+    rate_match_plan = build_audio_runtime_plan(
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        outputd_env={
+            OUTPUTD_PERIOD_KEY: "128",
+            OUTPUTD_CONTENT_BRIDGE_KEY: "rate_match",
+        },
+    )
+    assert (
+        rate_match_plan.setting(OUTPUTD_CONTENT_BUFFER_KEY).value
+        == DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
+    )
+
+
+def test_outputd_floor_actions_shm_ring_bridge_unsets_content_buffer():
+    """Writer-side proof: the reconciler stops EMITTING
+    JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536 under the shm_ring bridge — the
+    action becomes `unset`, so outputd uses its (inert but non-misleading)
+    compile-time default. This path only ever sees outputd.env, which is why the
+    suppression keys on the outputd bridge and not the (invisible-here) coupling."""
+    shm_ring_actions = outputd_latency_floor_actions(
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        outputd_env={
+            OUTPUTD_PERIOD_KEY: "128",
+            OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+        },
+    )
+    by_key = {a.key: a for a in shm_ring_actions}
+    assert by_key[OUTPUTD_CONTENT_BUFFER_KEY].action == "unset"
+
+    # Non-ring (loopback/direct) USB low-latency box still emits the 1536 policy.
+    loopback_actions = outputd_latency_floor_actions(
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        outputd_env={OUTPUTD_PERIOD_KEY: "128"},
+    )
+    loopback_by_key = {a.key: a for a in loopback_actions}
+    assert loopback_by_key[OUTPUTD_CONTENT_BUFFER_KEY].action == "set"
+    assert loopback_by_key[OUTPUTD_CONTENT_BUFFER_KEY].value == "1536"
+
+
+def test_usb_low_latency_route_hash_reflects_shm_ring_content_buffer_drop():
+    """The suppressed content-buffer policy is part of the route identity, so the
+    route_config_hash for a shm_ring USB-low-latency box differs from the loopback
+    one — the intended, minimal-blast-radius consequence (no schema bump; only
+    affected configs' hashes move). A stale route-latency artifact taken before
+    this change is invalidated (config_mismatch), which is correct: it must be
+    re-certified after this ships."""
+    shm_ring_plan = build_audio_runtime_plan(
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
+        outputd_env={
+            OUTPUTD_PERIOD_KEY: "128",
+            OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+        },
+        route_mode="solo",
+    )
+    loopback_plan = build_audio_runtime_plan(
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        outputd_env={OUTPUTD_PERIOD_KEY: "128"},
+        route_mode="solo",
+    )
+    assert shm_ring_plan.route_config_hash != loopback_plan.route_config_hash
+    assert (
+        shm_ring_plan.route_latency_identity()["outputd_config"][
+            OUTPUTD_CONTENT_BUFFER_KEY
+        ]
+        == DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
+    )
 
 
 def test_python_outputd_buffer_contract_matches_rust_validator():

@@ -3014,6 +3014,10 @@ def _outputd_status_payload(
     dual_apple_status: dict | None = None,
     content_source: str = "alsa",
     local_pipe_path: str = "/run/jasper-outputd/content.pipe",
+    shm_ring_slots: int = 2,
+    shm_ring_slot_frames: int | None = None,
+    shm_ring_capacity_frames: int | None = None,
+    shm_ring_occupancy: int = 0,
 ) -> bytes:
     content = {
         "source": content_source,
@@ -3026,6 +3030,23 @@ def _outputd_status_payload(
         "eagain_count": 1,
         "xrun_count": 0,
     }
+    if content_source == "shm_ring":
+        # Ring B: outputd reports the honest capacity contract in content.ring
+        # next to the synthetic content.buffer_frames (period-sized). Full runtime
+        # health rides the top-level shm_ring block. Mirror both here.
+        _slot_frames = (
+            shm_ring_slot_frames if shm_ring_slot_frames is not None else period_frames
+        )
+        _capacity = (
+            shm_ring_capacity_frames
+            if shm_ring_capacity_frames is not None
+            else shm_ring_slots * _slot_frames
+        )
+        content["ring"] = {
+            "slots": shm_ring_slots,
+            "slot_frames": _slot_frames,
+            "capacity_frames": _capacity,
+        }
     if content_source == "local_pipe":
         content["local_pipe"] = {
             "enabled": True,
@@ -3129,6 +3150,23 @@ def _outputd_status_payload(
             "delay_delta_baseline_frames": 0,
             "delay_delta_error_frames": 0,
             "max_delay_delta_frames": 2,
+        }
+    if content_source == "shm_ring":
+        content_ring = content["ring"]
+        payload["shm_ring"] = {
+            "enabled": True,
+            "path": "/dev/shm/jts-ring/content.ring",
+            "attached": True,
+            "slots": content_ring["slots"],
+            "slot_frames": content_ring["slot_frames"],
+            "capacity_frames": content_ring["capacity_frames"],
+            "occupancy": shm_ring_occupancy,
+            "frames_read": 2048,
+            "startup_empty_reads": 4,
+            "empty_reads": 3,
+            "writer_alive": True,
+            "writer_pid": 4242,
+            "writer_heartbeat_age_ms": 12,
         }
     return json.dumps(payload).encode()
 
@@ -3380,10 +3418,13 @@ def test_outputd_service_ok_with_transport_pipe_local_source(monkeypatch, tmp_pa
 def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch, tmp_path):
     """Ring-coupled box: coupling=shm_ring + content.source='shm_ring' is OK.
 
-    Regression for the two-way mapping (transport_pipe -> local_pipe, else
-    'alsa') that predated shm_ring: it false-failed every ring-coupled box —
-    outputd correctly reported source='shm_ring' while the check demanded
-    'alsa' (jts.local, 2026-07-06, first post-default-flip fleet smoke)."""
+    Uses the REAL synthetic content.buffer_frames a shm_ring box publishes
+    (== dac.period_frames, because outputd never opens the content ALSA PCM),
+    NOT the 4096 default that masked the bug. On pre-fix doctor code the generic
+    ">= 2x period" floor rejects it (period < 2*period), so this asserts the new
+    shm_ring branch that exempts the floor and validates the content.ring
+    geometry contract instead (jts.local, 2026-07-06 first post-default-flip
+    smoke, made honest end-to-end)."""
     env_path = tmp_path / "outputd.env"
     env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
@@ -3394,13 +3435,104 @@ def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch, tmp_path):
     )
     _patch_fanin_status_socket(
         monkeypatch,
-        _outputd_status_payload(content_source="shm_ring"),
+        _outputd_status_payload(
+            content_source="shm_ring",
+            # The honest synthetic: content.buffer_frames == period. This is
+            # below the generic 2*period floor and MUST pass only via the
+            # shm_ring geometry branch, not the masking 4096 default.
+            content_buffer_frames=1024,
+            period_frames=1024,
+        ),
     )
 
     r = doctor.check_outputd_service()
 
     assert r.status == "ok"
     assert "content_source=shm_ring" in r.detail
+    assert "shm_ring_slots=2" in r.detail
+    assert "shm_ring_slot_frames=1024" in r.detail
+    assert "shm_ring_capacity_frames=2048" in r.detail
+
+
+def test_outputd_service_fails_shm_ring_missing_ring_geometry(monkeypatch, tmp_path):
+    """shm_ring with no content.ring geometry contract fails loud (a
+    pre-honesty-fix outputd binary, or a corrupt STATUS)."""
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    _patch_fanin_systemctl(monkeypatch)
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda: "shm_ring",
+    )
+    payload = json.loads(
+        _outputd_status_payload(
+            content_source="shm_ring",
+            content_buffer_frames=1024,
+            period_frames=1024,
+        ).decode()
+    )
+    del payload["content"]["ring"]
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "fail"
+    assert "content.ring" in r.detail
+
+
+def test_outputd_service_fails_shm_ring_slot_frames_mismatch(monkeypatch, tmp_path):
+    """The shm_ring branch keeps its teeth: a ring slot that does not match the
+    DAC period is a real geometry break, not an exempted synthetic."""
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    _patch_fanin_systemctl(monkeypatch)
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda: "shm_ring",
+    )
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_status_payload(
+            content_source="shm_ring",
+            content_buffer_frames=1024,
+            period_frames=1024,
+            shm_ring_slot_frames=512,
+        ),
+    )
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "fail"
+    assert "slot_frames" in r.detail
+
+
+def test_outputd_service_fails_shm_ring_capacity_incoherent(monkeypatch, tmp_path):
+    """content.ring.capacity_frames must equal n_slots*slot_frames — a mismatch
+    is dishonest STATUS and fails loud."""
+    env_path = tmp_path / "outputd.env"
+    env_path.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
+    _patch_fanin_systemctl(monkeypatch)
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda: "shm_ring",
+    )
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_status_payload(
+            content_source="shm_ring",
+            content_buffer_frames=1024,
+            period_frames=1024,
+            shm_ring_capacity_frames=9999,
+        ),
+    )
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "fail"
+    assert "capacity_frames" in r.detail
 
 
 def test_outputd_service_fails_on_coupling_content_source_mismatch(monkeypatch):

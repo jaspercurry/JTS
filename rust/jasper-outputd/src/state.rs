@@ -1014,6 +1014,33 @@ impl OutputdState {
             );
             buf.push('}');
         }
+        // Ring B honesty contract (latency/ring-proto-shm): under the shm_ring
+        // content source, outputd reads the post-DSP program from an n-slot SHM
+        // ping-pong ring, NOT an ALSA capture PCM — so `content.buffer_frames`
+        // above is a synthetic period-sized stand-in (AlsaBackend::new never opens
+        // the content PCM). This sub-block reports the TRUE Ring B capacity that
+        // outputd requires of the writer — n_slots x slot_frames — so the synthetic
+        // is clearly labeled and jasper-doctor validates the ring geometry instead
+        // of mis-applying the ALSA ">= 2x period" jitter floor (which a bounded
+        // n-slot queue is not). Full runtime health (occupancy, empty reads, writer
+        // liveness) stays in the top-level `shm_ring` block; this is the buffering
+        // capacity contract that sits next to `content.buffer_frames`.
+        if self.shm_ring_path.is_some() {
+            let slots = self.shm_ring_slots.load(Ordering::Relaxed);
+            let slot_frames = self.shm_ring_slot_frames.load(Ordering::Relaxed);
+            buf.push(',');
+            buf.push_str(r#""ring":{"#);
+            push_kv_u64(&mut buf, "slots", slots);
+            buf.push(',');
+            push_kv_u64(&mut buf, "slot_frames", slot_frames);
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "capacity_frames",
+                slots.saturating_mul(slot_frames),
+            );
+            buf.push('}');
+        }
         buf.push('}');
         buf.push(',');
 
@@ -2456,6 +2483,11 @@ mod tests {
         let j = state.snapshot_json();
         for needle in [
             r#""content":{"source":"shm_ring""#,
+            // Ring B honesty contract: content.ring reports the TRUE Ring B
+            // capacity (n_slots x slot_frames = 2 x 1024 = 2048) next to the
+            // synthetic content.buffer_frames, so no consumer is misled and the
+            // doctor validates ring geometry instead of the ALSA jitter floor.
+            r#""ring":{"slots":2,"slot_frames":1024,"capacity_frames":2048}"#,
             r#""shm_ring":{"enabled":true"#,
             r#""path":"/dev/shm/jts-ring/content.ring""#,
             r#""attached":true"#,
