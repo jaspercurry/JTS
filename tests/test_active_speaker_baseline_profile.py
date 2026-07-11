@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import jasper.active_speaker.baseline_profile as baseline_profile_mod
 from jasper.active_speaker.baseline_profile import (
     _derive_corrections,
     apply_baseline_profile,
@@ -406,6 +407,50 @@ def test_baseline_profile_compiles_durable_camilla_yaml(
         "    parameters: { gain: 0.0000, inverted: false, mute: false }"
     ) in yaml
     assert "as_tweeter_baseline_limiter" in yaml
+
+
+def test_baseline_profile_state_keeps_shared_parent_group(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A root web writer must not hide applied Layer-A state from control."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    calls: list[dict[str, object]] = []
+    real_write = baseline_profile_mod.atomic_write_text
+
+    def recording_write(path, text, *, mode, group_from_parent=False):
+        calls.append({
+            "path": Path(path),
+            "mode": mode,
+            "group_from_parent": group_from_parent,
+        })
+        real_write(
+            path,
+            text,
+            mode=mode,
+            group_from_parent=group_from_parent,
+        )
+
+    monkeypatch.setattr(baseline_profile_mod, "atomic_write_text", recording_write)
+    state_path = tmp_path / "baseline_profile.json"
+    build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=True,
+        state_path=state_path,
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    state_writes = [call for call in calls if call["path"] == state_path]
+    assert state_writes
+    assert all(call["mode"] == 0o640 for call in state_writes)
+    assert all(call["group_from_parent"] is True for call in state_writes)
 
 
 def test_baseline_profile_compiles_with_local_subwoofer(tmp_path: Path) -> None:

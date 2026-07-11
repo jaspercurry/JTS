@@ -18,6 +18,7 @@ import jasper.correction.playback as correction_playback
 from jasper.active_speaker import web_commissioning as web
 from jasper.active_speaker.baseline_profile import topology_config_fingerprint
 from jasper.active_speaker.measurement import active_driver_targets
+from jasper.active_speaker.calibration_level import MIN_TEST_LEVEL_DBFS
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
@@ -342,8 +343,9 @@ def test_automatic_capture_refuses_noncanonical_applied_snapshot(variant, reason
 
 
 @pytest.mark.parametrize("legacy_floor_dbfs", [-20.0, -60.0])
+@pytest.mark.parametrize("applied_gain_db", [-9.0, 0.0])
 def test_driver_capture_sweep_never_reuses_legacy_floor_level(
-    monkeypatch, legacy_floor_dbfs
+    monkeypatch, legacy_floor_dbfs, applied_gain_db
 ):
     topology = _topology()
     measurements = {
@@ -366,7 +368,10 @@ def test_driver_capture_sweep_never_reuses_legacy_floor_level(
     monkeypatch.setattr(
         baseline_profile,
         "load_applied_baseline_profile_state",
-        lambda: _applied_excitation_profile(topology=topology, gain_db=-9.0),
+        lambda: _applied_excitation_profile(
+            topology=topology,
+            gain_db=applied_gain_db,
+        ),
     )
     load_call = {}
 
@@ -404,13 +409,338 @@ def test_driver_capture_sweep_never_reuses_legacy_floor_level(
     )
 
     assert payload["status"] == "completed"
-    assert payload["test_level_dbfs"] == -9.0
-    assert load_call["level_dbfs"] == -9.0
-    assert play_call["level_dbfs"] == -9.0
+    assert payload["test_level_dbfs"] == applied_gain_db
+    assert load_call["level_dbfs"] == applied_gain_db
+    startup_gate = load_call["startup_gate_calibration_level"]
+    assert startup_gate["status"] == "floor"
+    assert startup_gate["test_signal"]["requested_level_dbfs"] == (
+        MIN_TEST_LEVEL_DBFS
+    )
+    assert play_call["level_dbfs"] == applied_gain_db
+    assert play_call["planned_excitation"]["commissioning_gain_db"] == (
+        applied_gain_db
+    )
     assert play_call["planned_excitation"]["gain_source"] == (
         web.AUTOMATIC_EXCITATION_GAIN_SOURCE
     )
     assert payload["test_level_dbfs"] != legacy_floor_dbfs
+
+
+@pytest.mark.parametrize("playback_fails", [False, True])
+def test_automatic_driver_sweep_restores_exact_entry_graph(
+    monkeypatch,
+    playback_fails,
+):
+    entry_path = "/var/lib/camilladsp/configs/sound_current.yml"
+    load_payload = {
+        "load": {"status": "loaded"},
+        "measurement_transaction": {
+            "kind": "automatic_driver_capture",
+            "entry_config_path": entry_path,
+            "restored": False,
+        },
+    }
+    restored_paths = []
+
+    class Cam:
+        async def set_config_file_path(self, path, *, best_effort):
+            restored_paths.append(path)
+            return True
+
+    async def inner_rollback(**_kwargs):
+        return {"status": "rolled_back", "config_path": "/tmp/staged.yml"}
+
+    async def play_sweep(*_args, **_kwargs):
+        if playback_fails:
+            raise RuntimeError("playback failed")
+
+    monkeypatch.setattr(web, "_rollback_summed_commissioning_config", inner_rollback)
+    monkeypatch.setattr(
+        web,
+        "_measurement_sweep_wav_path",
+        lambda: ("/tmp/sweep.wav", {"duration_s": 1.0}),
+    )
+    monkeypatch.setattr(
+        web,
+        "_commission_tone_select_fanin_lane",
+        lambda: {"status": "ok"},
+    )
+    monkeypatch.setattr(
+        web,
+        "_commission_tone_release_fanin_lane",
+        lambda *, reason: {"status": "ok", "reason": reason},
+    )
+    monkeypatch.setattr(correction_playback, "play_sweep", play_sweep)
+
+    async def scenario():
+        async def restore_entry():
+            return await web._restore_automatic_driver_entry_config(
+                load_payload,
+                camilla_factory=Cam,
+            )
+
+        result = await web._play_capture_sweep(
+            backend=web.DRIVER_CAPTURE_SWEEP_BACKEND,
+            target={"speaker_group_id": "mono", "role": "woofer"},
+            playback_id="play-woofer",
+            level_dbfs=0.0,
+            load_payload=load_payload,
+            camilla_factory=Cam,
+            rollback_capture_config=restore_entry,
+        )
+        second_restore = await restore_entry()
+        return result, second_restore
+
+    payload, second_restore = asyncio.run(scenario())
+
+    assert payload["status"] == ("failed" if playback_fails else "completed")
+    assert payload["rollback"]["config_path"] == entry_path
+    assert restored_paths == [entry_path]
+    assert second_restore["status"] == "already_restored"
+
+
+def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch):
+    entry_path = "/var/lib/camilladsp/configs/sound_current.yml"
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            return entry_path
+
+    monkeypatch.setattr(web, "load_staged_startup_config", lambda: {"status": "staged"})
+
+    async def ensure_anchor(**_kwargs):
+        return {"status": "loaded"}
+
+    monkeypatch.setattr(web, "_ensure_commission_startup_anchor", ensure_anchor)
+    monkeypatch.setattr(
+        web,
+        "write_commission_path_safety",
+        lambda *_args, **_kwargs: "/tmp/path-safety.json",
+    )
+    monkeypatch.setattr(
+        web,
+        "commission_seams",
+        lambda _cam: (object(), object(), object()),
+    )
+
+    async def load_driver(*_args, **_kwargs):
+        return {"load": {"status": "loaded"}}
+
+    monkeypatch.setattr(web, "load_driver_commissioning_config", load_driver)
+
+    payload = asyncio.run(
+        web._load_driver_commissioning_config_for_level(
+            topology=_topology(),
+            speaker_group_id="mono",
+            role="woofer",
+            level_dbfs=0.0,
+            startup_gate_calibration_level={"status": "floor"},
+            preset=object(),
+            crossover_preview=None,
+            camilla_factory=Cam,
+        )
+    )
+
+    assert payload["measurement_transaction"] == {
+        "kind": "automatic_driver_capture",
+        "entry_config_path": entry_path,
+        "entry_config_error": None,
+        "restored": False,
+    }
+
+
+@pytest.mark.parametrize("failure_type", [RuntimeError, asyncio.CancelledError])
+def test_automatic_driver_post_anchor_exception_restores_production_config(
+    monkeypatch,
+    failure_type,
+):
+    entry_path = "/var/lib/camilladsp/configs/sound_current.yml"
+    anchor_loaded = False
+    restored_paths = []
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            return entry_path
+
+        async def set_config_file_path(self, path, *, best_effort):
+            restored_paths.append(path)
+            return True
+
+    monkeypatch.setattr(web, "load_staged_startup_config", lambda: {"status": "staged"})
+
+    async def ensure_anchor(**_kwargs):
+        nonlocal anchor_loaded
+        anchor_loaded = True
+        return {"status": "loaded"}
+
+    monkeypatch.setattr(web, "_ensure_commission_startup_anchor", ensure_anchor)
+    monkeypatch.setattr(
+        web,
+        "write_commission_path_safety",
+        lambda *_args, **_kwargs: "/tmp/path-safety.json",
+    )
+    monkeypatch.setattr(
+        web,
+        "commission_seams",
+        lambda _cam: (object(), object(), object()),
+    )
+
+    async def fail_after_anchor(*_args, **_kwargs):
+        raise failure_type("post-anchor failure")
+
+    async def inner_rollback(**_kwargs):
+        return {"status": "rolled_back", "config_path": "/tmp/staged.yml"}
+
+    monkeypatch.setattr(web, "load_driver_commissioning_config", fail_after_anchor)
+    monkeypatch.setattr(web, "_rollback_summed_commissioning_config", inner_rollback)
+
+    async def scenario():
+        return await web._load_driver_commissioning_config_for_level(
+            topology=_topology(),
+            speaker_group_id="mono",
+            role="woofer",
+            level_dbfs=0.0,
+            startup_gate_calibration_level={"status": "floor"},
+            preset=object(),
+            crossover_preview=None,
+            camilla_factory=Cam,
+        )
+
+    with pytest.raises(failure_type, match="post-anchor failure"):
+        asyncio.run(scenario())
+
+    assert anchor_loaded is True
+    assert restored_paths == [entry_path]
+
+
+def test_automatic_driver_restore_normalizes_factory_failure_and_nested_status(
+    monkeypatch,
+):
+    entry_path = "/var/lib/camilladsp/configs/sound_current.yml"
+    load_payload = {
+        "measurement_transaction": {
+            "kind": "automatic_driver_capture",
+            "entry_config_path": entry_path,
+            "restored": False,
+        },
+    }
+
+    async def inner_rollback(**_kwargs):
+        return {"rollback": {"status": "rolled_back"}}
+
+    def failed_factory():
+        raise RuntimeError("controller construction failed")
+
+    log_calls = []
+    monkeypatch.setattr(web, "_rollback_summed_commissioning_config", inner_rollback)
+    monkeypatch.setattr(
+        web,
+        "log_event",
+        lambda *args, **kwargs: log_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(
+        web.AutomaticDriverConfigRestoreError,
+        match="controller construction failed",
+    ):
+        asyncio.run(
+            web._restore_automatic_driver_entry_config(
+                load_payload,
+                camilla_factory=failed_factory,
+            )
+        )
+
+    assert len(log_calls) == 1
+    args, kwargs = log_calls[0]
+    assert args[1] == "active_speaker.automatic_driver_config_restore"
+    assert kwargs["status"] == "failed"
+    assert kwargs["entry_config_path"] == entry_path
+    assert kwargs["inner_rollback_status"] == "rolled_back"
+
+
+@pytest.mark.parametrize("restore_fails", [False, True])
+def test_automatic_driver_load_failure_restores_entry_graph(
+    monkeypatch,
+    restore_fails,
+):
+    topology = _topology()
+    measurements = {
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+        },
+    }
+    entry_path = "/var/lib/camilladsp/configs/sound_current.yml"
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    from jasper.active_speaker import baseline_profile
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state",
+        lambda: _applied_excitation_profile(topology=topology, gain_db=0.0),
+    )
+
+    async def blocked_load(**_kwargs):
+        return {
+            "load": {
+                "status": "blocked",
+                "issues": [{
+                    "severity": "blocker",
+                    "code": "calibration_level_not_at_floor",
+                    "message": "preflight stopped after the startup anchor",
+                }],
+            },
+            "measurement_transaction": {
+                "kind": "automatic_driver_capture",
+                "entry_config_path": entry_path,
+                "restored": False,
+            },
+        }
+
+    async def inner_rollback(**_kwargs):
+        return {"status": "blocked"}
+
+    restored_paths = []
+
+    class Cam:
+        async def set_config_file_path(self, path, *, best_effort):
+            restored_paths.append(path)
+            return not restore_fails
+
+    log_calls = []
+    monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", blocked_load)
+    monkeypatch.setattr(web, "_rollback_summed_commissioning_config", inner_rollback)
+    monkeypatch.setattr(
+        web,
+        "log_event",
+        lambda *args, **kwargs: log_calls.append((args, kwargs)),
+    )
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=Cam,
+        )
+    )
+
+    assert payload["status"] == "blocked"
+    assert restored_paths == [entry_path]
+    if restore_fails:
+        assert payload["issues"][0]["code"] == (
+            "automatic_driver_config_restore_failed"
+        )
+        assert any(
+            args[1] == "active_speaker.automatic_driver_config_restore"
+            and kwargs["status"] == "failed"
+            for args, kwargs in log_calls
+        )
+    else:
+        assert payload["rollback"]["config_path"] == entry_path
+        assert payload["issues"][0]["code"] == "calibration_level_not_at_floor"
 
 
 def test_driver_capture_sweep_refuses_before_loading_when_applied_gain_is_stale(

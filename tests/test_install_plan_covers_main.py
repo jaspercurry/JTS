@@ -107,6 +107,21 @@ def _main_body() -> str:
     return match.group(1)
 
 
+def test_install_repairs_shared_active_speaker_profile_visibility() -> None:
+    """Existing root:root Layer-A state must become readable by /state."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    match = re.search(
+        r"\nwiden_jasper_web_writable_dirs\(\) \{\n(.*?)\n\}",
+        text,
+        re.DOTALL,
+    )
+    assert match is not None
+    body = match.group(1)
+    assert "/var/lib/jasper/active_speaker_baseline_profile.json" in body
+    assert "chgrp jasper /var/lib/jasper/active_speaker_baseline_profile.json" in body
+    assert "chmod 0640 /var/lib/jasper/active_speaker_baseline_profile.json" in body
+
+
 def _defined_functions() -> set[str]:
     sources = [_INSTALL_SH, *sorted(_INSTALL_LIB_DIR.glob("*.sh"))]
     functions: set[str] = set()

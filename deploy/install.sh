@@ -2147,6 +2147,16 @@ widen_jasper_web_writable_dirs() {
         chmod 0660 /var/lib/camilladsp/configs/.dsp_apply.lock 2>/dev/null || true
         find /var/lib/camilladsp/configs -maxdepth 1 -type f -name '*.yml' \
             -exec chgrp jasper {} + -exec chmod 0640 {} + 2>/dev/null || true
+        # Correction-web still runs as root while jasper-control renders the
+        # aggregate /state surface as group jasper. Repair the one Layer-A SSOT
+        # that older root atomic writers published as root:root 0640; future
+        # writes preserve the parent group in baseline_profile.py.
+        if [[ -f /var/lib/jasper/active_speaker_baseline_profile.json ]]; then
+            chgrp jasper /var/lib/jasper/active_speaker_baseline_profile.json \
+                2>/dev/null || true
+            chmod 0640 /var/lib/jasper/active_speaker_baseline_profile.json \
+                2>/dev/null || true
+        fi
         echo "  Widened /etc/bluetooth + /var/lib/camilladsp/configs to root:jasper 2775 (jasper-web writes)"
     fi
 }
