@@ -85,7 +85,7 @@ def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
         "uv pip install --python .venv/bin/python --no-deps openwakeword==0.6.0"
     )
 
-    assert "astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39" in workflow
+    assert "astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990" in workflow
     assert 'version: "0.11.14"' in workflow
     assert sync in workflow
     assert openwakeword in workflow
