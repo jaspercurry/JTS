@@ -4,8 +4,9 @@
 
 """Runtime safety contract for roleful active-speaker CamillaDSP graphs.
 
-This flat graph maps full-range stereo directly to DAC outputs. It is
-illegal when saved output topology assigns any physical output to
+One graph this module must reject (see `_flat_graph_allowed`): a flat
+graph that maps full-range stereo directly to DAC outputs is illegal
+when the saved output topology assigns any physical output to a
 tweeter/protected role.
 
 ``jasper.output_topology`` owns the declarative physical-output contract.

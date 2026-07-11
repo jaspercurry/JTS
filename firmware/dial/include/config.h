@@ -32,7 +32,7 @@
 // debug without keeping the dial USB-tethered to the Pi.
 #define JASPER_LOG_PORT 5514
 
-// Volume per detent. Two detents per dB step is the agreed default;
+// Volume per detent. One detent = 2 dB (VOLUME_STEP_DB is dB-per-detent);
 // retune in firmware if it feels wrong (no Pi-side change needed).
 #define VOLUME_STEP_DB 2.0f
 

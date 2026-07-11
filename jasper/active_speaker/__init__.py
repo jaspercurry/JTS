@@ -6,8 +6,10 @@
 
 This package is intentionally pure Python and import-cheap. It models the
 speaker-baseline layer, emits protected startup templates, and owns the
-guarded startup-load/rollback boundary. It does not emit audio or grant
-playback authority.
+guarded startup-load/rollback boundary. Most of this package does not emit
+audio or grant playback authority — the exception is `web_commissioning`,
+whose safety-gated driver/summed test and capture-sweep flows do launch
+`aplay` / `play_sweep` to produce real hardware audio.
 """
 
 from .profile import (

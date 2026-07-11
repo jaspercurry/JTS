@@ -30,7 +30,11 @@ Renderer support:
             the new winner. Off-switch:
             JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled.
   AirPlay (shairport-sync):
-    detect: MPRIS PlaybackStatus == "Playing"
+    detect: MPRIS PlaybackStatus == "Playing" AND non-empty MPRIS
+            Metadata xesam:title (source_state.airplay_playing) — the
+            metadata corroboration stops mux flapping on macOS's ~30 s
+            AirPlay keepalive cycles, which report Playing with no
+            audio actually reaching the speakers.
     preempt: MPRIS Stop method, falling back to Pause if Stop is not
             available. Stop asks shairport-sync to tear down playback
             instead of leaving a hidden paused AirPlay session behind

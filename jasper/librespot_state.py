@@ -73,8 +73,13 @@ def is_playing(path: str | None = None) -> bool:
 
 def session_active(path: str | None = None) -> bool:
     """True if a Spotify Connect session is open (regardless of
-    play/pause state). Used by the renderer for "is Spotify the
-    target source" decisions."""
+    play/pause state).
+
+    Currently unused: the renderer's "is Spotify the target source"
+    decisions go through `track_uri()` and `source_state.spotify_playing()`
+    instead, and `jasper.control.state_aggregate` re-implements this same
+    `session_active` field lookup inline rather than calling this
+    function."""
     state = read(path)
     return bool(state.get("session_active"))
 

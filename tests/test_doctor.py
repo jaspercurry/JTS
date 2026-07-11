@@ -2274,7 +2274,7 @@ def test_assess_aec_output_drift_warnings_warn():
         "2026-05-16 17:00:00,000 aec-bridge WARNING "
         "drained 7 stale ref frames (drift)"
     )
-    # Threshold is 30 in 5 min; 40 is comfortably over.
+    # Threshold is 30 in 90 s; 40 is comfortably over.
     journal = "\n".join([drift_line] * 40)
     r = doctor._assess_aec_bridge_output(journal)
     assert r.status == "warn"

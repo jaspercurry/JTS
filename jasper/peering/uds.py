@@ -159,7 +159,7 @@ def _parse_json_arg(arg: str) -> dict | None:
     return obj
 
 
-# ---------- Client helper (used by voice_daemon in PR 2) ----------
+# ---------- Client helper (consumed by voice_daemon._peering_send) ----------
 
 
 async def send_request(

@@ -367,7 +367,7 @@ right place. Read this before adding or restructuring docs.
    touching this repo, externalize it.
 
 5. **Code references use function names, not line numbers.** A
-   reference like `jasper/voice_daemon.py` + `build_cue_tts_backend`
+   reference like `jasper/cues/factory.py` + `build_cue_tts_backend`
    survives refactors; `:172` doesn't. Use line numbers only when
    the line itself is the point (a magic number, a specific bug
    location). When a line number is the right call, treat the
@@ -1149,7 +1149,7 @@ dynamic-content cues like timer fire announcements) are baked from
 the **active provider's TTS endpoint** — Gemini 3.1 Flash TTS,
 OpenAI gpt-4o-mini-tts, or xAI Grok TTS — picked by the factory at
 [`build_cue_tts_backend`](jasper/cues/factory.py) (re-exported
-through `jasper.cues` and called from `jasper/voice_daemon.py`).
+through `jasper.cues` and called from `jasper/voice/daemon_main.py`).
 Cues sound in the same voice the assistant uses for live replies.
 Switching providers (env or web wizard) auto-invalidates baked
 WAVs via the cache key (model + voice change → new hash).

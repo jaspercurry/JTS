@@ -490,8 +490,8 @@ def _policy_allows(
 
 def _correction_bounds(advisor_context: dict[str, Any]) -> dict[str, Any]:
     """The live correction-strategy caps a proposed PEQ set is bounded
-    by, falling back to the widest shipped strategy when the packet does
-    not carry them. Keys mirror
+    by, falling back to the default/"balanced" shipped strategy (not the
+    widest) when the packet does not carry them. Keys mirror
     :class:`jasper.correction.strategy.CorrectionStrategy`."""
     correction = advisor_context.get("correction") or {}
     bounds = correction.get("strategy_bounds")

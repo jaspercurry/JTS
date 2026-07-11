@@ -16,10 +16,14 @@ preference choice.
 
 ## What JTS Does Today
 
-`jasper.correction.target` exposes `flat`, `warm`, and `bright`
-targets. The current PEQ designer only acts in the modal/bass region,
-so target differences above that range are mostly visual guidance
-until future FIR/preference layers exist.
+The `/correction/` wizard's `target_choice` accepts four values —
+`flat`, `neutral`, `warm`, `bright` — resolved by
+`jasper.correction.strategy.resolve_target_profile`'s `TARGET_PROFILES`
+(`flat` and `neutral` are both zero-tilt entries; `flat` has no
+`warmth` value, `neutral` is `warmth=0.0` exposed as the middle slider
+position). The current PEQ designer only acts in the modal/bass
+region, so target differences above that range are mostly visual
+guidance until future FIR/preference layers exist.
 
 ## Research Consensus
 

@@ -203,7 +203,8 @@ sudo -E /opt/jasper/.venv/bin/jasper-cues regenerate --force
 # Just one cue.
 sudo -E /opt/jasper/.venv/bin/jasper-cues regenerate --cue spend_cap_reached
 
-# Play a cue locally to preview phrasing.
+# Play a cue through jasper-control's /cue/play endpoint to preview
+# phrasing (routes through the running daemon, not a local TtsPlayout).
 sudo -E /opt/jasper/.venv/bin/jasper-cues play spend_cap_reached
 ```
 

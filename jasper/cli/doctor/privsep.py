@@ -4,8 +4,9 @@
 
 """jasper-doctor checks — privilege-separation read access.
 
-WS1 dropped jasper-control/-web/-mux/-voice/-input to non-root (each runs as
-its own ``jasper-<role>`` user with primary group ``jasper``). A config or
+WS1 dropped jasper-control/-web/-chat-web/-mux/-voice/-input/-wiim-remote-mic
+to non-root (each runs as its own ``jasper-<role>`` user with primary group
+``jasper``). A config or
 state file written ``0600`` root-only is then **unreadable** by the owning
 daemon — and because every one of these reads is fail-soft (a caught
 ``OSError`` mapped to a benign default), a permission failure looks *identical*
@@ -231,10 +232,10 @@ _SPEC_BY_UNIT: dict[str, DaemonReadSpec] = {s.unit: s for s in MANIFEST}
 
 # Non-root jasper-* units deliberately OUT of this check's scope. These run as
 # `jasper-recon` (the reconciler tier — short-lived oneshots/monitors that own
-# their own writes), not the five Tier-A service daemons WS1 dropped. The drift
-# test enumerates every `User=jasper-*` unit and requires each to be either in
-# MANIFEST or here, so a genuinely new non-root daemon can't be added without a
-# conscious scope decision.
+# their own writes), not the Tier-A service daemons in MANIFEST above. The
+# drift test enumerates every `User=jasper-*` unit and requires each to be
+# either in MANIFEST or here, so a genuinely new non-root daemon can't be
+# added without a conscious scope decision.
 OUT_OF_SCOPE_NONROOT_UNITS: frozenset[str] = frozenset(
     {"jasper-dac-init", "jasper-headphone-monitor"}
 )

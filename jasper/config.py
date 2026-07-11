@@ -249,8 +249,11 @@ class Config:
     camilla_port: int
     # camilla#2 — the endpoint-crossover CamillaDSP instance on an active
     # leader (docs/HANDOFF-distributed-active.md "Stage B"). Coexists with
-    # the always-on camilla#1 (camilla_host/port above, :1234). Dormant
-    # until a later reconciler arms jasper-camilla-crossover.service; these
+    # the always-on camilla#1 (camilla_host/port above, :1234).
+    # jasper-camilla-crossover.service is not boot-enabled; the multiroom
+    # reconciler arms/tears it down per-reconcile as a box gains/loses the
+    # active-leader role, and jasper.camilla.crossover_controller() is
+    # constructed live by the pair-balance-trim path on that role. These
     # fields just give code a typed handle to its websocket + statefile.
     camilla2_host: str
     camilla2_port: int

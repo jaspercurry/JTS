@@ -11,10 +11,15 @@ serialize — so the dedup is purely structural, not behavioural. Consumers impo
 them aliased to their existing private names (`from ._common import issue as
 _issue, gate as _gate`) so call sites stay identical.
 
-Deliberately NOT consolidated here: `_finite_float` and `_level_at_floor`. Those
-names collide across modules but encode *different contracts* (return-None vs
-raise vs return-default; dict-arg vs float-arg), so they are distinct functions,
-not duplicates — folding them would silently change validation behaviour.
+Deliberately NOT consolidated here: `_finite_float` and `_level_at_floor`.
+`_level_at_floor` genuinely encodes different contracts across modules
+(return-None vs raise vs return-default; dict-arg vs float-arg), so those
+really are distinct functions. `_finite_float` is not: `calibration_level.py`,
+`baseline_profile.py`, `measurement.py`, `safe_playback.py`, and
+`commissioning_coordinator.py` all share the same body (return `None` on a
+non-finite/unconvertible value), and `driver_protection.py`'s version is the
+same logic with an if/return instead of a ternary — that cluster is
+duplicated, not distinct, and a candidate for future consolidation.
 
 This module is import-cheap (stdlib only), preserving the package's IO-free,
 import-light contract.

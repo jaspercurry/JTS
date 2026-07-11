@@ -4,11 +4,19 @@
 
 """Guarded active-speaker startup config load and rollback.
 
-This is the first active-speaker slice that may reload CamillaDSP. It still
-does not play tones, touch normal listening volume, or authorize playback. The
-module keeps the side-effect boundary deliberately small: validate the staged
+This is the first active-speaker slice that may reload CamillaDSP.
+`load_protected_startup_config`/`rollback_protected_startup_config` still
+do not play tones, touch normal listening volume, or authorize playback —
+they keep the side-effect boundary deliberately small: validate the staged
 muted/protected startup candidate, require path-safety evidence, load through
 the existing DSP apply lifecycle, and persist a rollback target.
+
+The module has since grown a second, guarded lifecycle for per-driver
+commissioning (`load_driver_commissioning_config`,
+`load_summed_commissioning_config`, `rollback_driver_commissioning_config`)
+that swaps the RUNNING graph and is a precondition for the audible
+driver/summed test ramp — see those functions' own docstrings for their
+narrower safety contract.
 """
 
 from __future__ import annotations

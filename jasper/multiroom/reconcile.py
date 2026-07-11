@@ -20,8 +20,9 @@ be running:
 
 Mirrors the jasper-aec-reconcile / jasper-wifi-guardian shape: the
 decision is a PURE, total function (`plan`) that is unit-tested with
-synthetic configs; the systemd-facing `main()` does all the I/O
-(load config, run systemctl) and is validated on hardware, not in pytest.
+synthetic configs. `main()`'s branching/sequencing is also pytest-covered
+(with `_apply` and systemctl faked); only the real systemctl calls inside
+`_apply` itself need hardware validation.
 
 The argv builders (`snapserver_argv`, `snapclient_argv`) are likewise
 pure — they translate a GroupingConfig into a command line so the same

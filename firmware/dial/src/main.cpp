@@ -11,6 +11,10 @@
 // Phase 2 (button click → /transport/toggle) and phase 3 (button hold
 // → /session/start, release → /session/end) layer on top of this
 // without restructuring.
+//
+// The Phase 5 LVGL display subsystem (see scenes.h) is also live here —
+// display_init/scenes_init at boot, scenes_show_volume on every encoder
+// detent, scenes_set_listening on every session start/end.
 
 #include <Arduino.h>
 #include <ArduinoJson.h>

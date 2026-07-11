@@ -270,6 +270,13 @@ Avoid:
 
 ## Current Product Gaps
 
+- Shipped 2026-06-23 (#969): phone-mic capture is mounted under the
+  HTTPS `/crossover/` measurement surface in
+  [`jasper/web/correction_setup.py`](../jasper/web/correction_setup.py)
+  (`driver-capture-sweep`, `summed-capture-sweep`, `driver-capture`,
+  `summed-capture`, etc.), giving browser mic permissions,
+  calibrated-mic guidance, and acoustic proof a single home. This
+  gap list below predates that landing.
 - The driver-info card has historically conflated LLM warnings with
   errors. Warnings should be visually amber/review-oriented; only real safety
   blockers should read as dangerous.
@@ -293,11 +300,6 @@ Avoid:
   changes clear the stale identity evidence. Mic/calibration evidence should
   remain tied to the exact saved output target when it is exposed in the separate
   HTTPS measurement experience.
-- Phone-mic capture exists in backend endpoints and the shared measurement core,
-  but it is no longer part of the core `/sound/` active-crossover path. The next
-  product step is to mount that experience under the HTTPS measurement/correction
-  framework so browser mic permissions, calibrated-mic guidance, and acoustic
-  proof live together.
 - "Raise toward audible" should be product language for a user-controlled level
   slider and a backend-bounded test. Running tones need a playback backend that
   owns the process and can stop immediately; do not fake that interaction with a
@@ -333,4 +335,4 @@ Avoid:
   compiled for inspection, but should not be applied until the outputd handoff
   exists.
 
-Last verified: 2026-06-18
+Last verified: 2026-07-11
