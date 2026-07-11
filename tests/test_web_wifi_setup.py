@@ -179,6 +179,54 @@ def test_connect_new_rolls_back_on_failure(monkeypatch):
     assert "HomeNet" in msg
 
 
+def test_readable_nmcli_error_scrubs_echoed_psk():
+    # nmcli can echo the submitted password back in error text; it must
+    # never survive into the string that is logged AND returned to the
+    # browser. Both scrub patterns: literal PSK and `password <arg>`.
+    psk = "hunter2secret"
+    proc = _completed(
+        ["nmcli"], returncode=4,
+        stderr=f"Error: 802-11-wireless-security.psk: '{psk}' invalid; password {psk}",
+    )
+    msg = wifi_setup._readable_nmcli_error(proc, psk)
+    assert psk not in msg
+    assert "***" in msg
+
+
+def test_readable_nmcli_error_scrubs_password_token_without_literal():
+    # Even if we don't have the literal PSK, `password <arg>` echo is masked.
+    proc = _completed(
+        ["nmcli"], returncode=4, stderr="Error: password abc123def not accepted",
+    )
+    msg = wifi_setup._readable_nmcli_error(proc, None)
+    assert "abc123def" not in msg
+    assert "password ***" in msg
+
+
+def test_connect_new_scrubs_psk_from_returned_message(monkeypatch):
+    psk = "TopSecretWifiPass"
+    monkeypatch.setattr(
+        wifi_setup, "_current_wifi",
+        lambda: {"profileName": "HomeNet", "ssid": "HomeNet"},
+    )
+    monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: False)
+    monkeypatch.setattr(wifi_setup, "_stash_after_connect", lambda *a, **k: None)
+
+    def fake_secret(cmd, *, timeout=10):
+        # nmcli echoes the PSK back in its failure text.
+        return _completed(
+            cmd, returncode=4,
+            stderr=f"Error: secrets were required but not provided: password {psk}",
+        )
+
+    monkeypatch.setattr(wifi_setup, "_run_nmcli_secret", fake_secret)
+    monkeypatch.setattr(wifi_setup, "_run_nmcli", lambda *a, **k: _completed(["nmcli"]))
+
+    ok, msg = wifi_setup.connect_new("MyNet", psk)
+    assert ok is False
+    assert psk not in msg
+
+
 def test_set_radio_passes_on_off(monkeypatch):
     seen = []
 
