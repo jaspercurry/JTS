@@ -881,6 +881,47 @@ async def test_crossover_lease_restores_then_scopes_target_to_sweep_window():
     assert outcome.ramp.restored is True
 
 
+@pytest.mark.asyncio
+async def test_crossover_start_supplies_scheduler_ports(monkeypatch):
+    """The production crossover caller need not inject test scheduler seams."""
+    from types import SimpleNamespace
+
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    seen = {}
+
+    async def fake_run(_session, geometry, *, clock, sleep, **_ports):
+        seen.update(geometry=geometry, clock=clock, sleep=sleep)
+        return SimpleNamespace(locked=False)
+
+    monkeypatch.setattr(LevelMatchSession, "run_for_geometry", fake_run)
+    lease = CrossoverLevelLease()
+
+    async def get_volume():
+        return -30.0
+
+    async def set_volume(_db):
+        return True
+
+    async def play_tone():
+        return None
+
+    await lease.run_level_match(
+        MicGeometry.NEAR_FIELD_DRIVER.value,
+        get_main_volume_db=get_volume,
+        set_main_volume_db=set_volume,
+        play_continuous_tone=play_tone,
+        cancel_tone=lambda: None,
+        read_status=lambda: {},
+        post_host_event=None,
+        noise_floor_dbfs=-60.0,
+    )
+
+    assert seen["geometry"] == MicGeometry.NEAR_FIELD_DRIVER.value
+    assert callable(seen["clock"])
+    assert seen["sleep"] is asyncio.sleep
+
+
 def test_session_level_match_snapshot_empty_before_run(tmp_path):
     sess = _make_session(tmp_path)
     snap = sess.level_match_snapshot()
