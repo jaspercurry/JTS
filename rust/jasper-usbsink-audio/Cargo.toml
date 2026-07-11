@@ -2,32 +2,19 @@
 name = "jasper-usbsink-audio"
 version = "0.1.0"
 edition = "2021"
-description = "JTS USB sink audio bridge: UAC2 gadget capture into the fan-in usbsink ALSA lane."
+description = "JTS USB sink standby daemon: USB-audio intent signal + liveness + state.json (fan-in owns the gadget capture)."
 license = "Apache-2.0"
 repository = "https://github.com/jaspercurry/JTS"
 authors = ["Jasper Curry <jaspercurry@gmail.com>"]
 rust-version = "1.75"
 
 [dependencies]
-# Same mature ALSA wrapper used by jasper-fanin and jasper-outputd. This daemon
-# is intentionally just an ALSA data-plane bridge: capture from the UAC2 gadget,
-# deterministic S32_LE->S16_LE narrowing, bounded period ring, playback into
-# the usbsink loopback lane.
-alsa = { version = "0.11", optional = true }
 anyhow = "1"
-# The shared host-slaved USB clock: ladder + probe + servo + write-gate +
-# (feature-gated) ALSA pitch actuator. The pure ladder/servo compiles under
-# `--no-default-features` (no ALSA); the real `AlsaPitchCtl` is behind the
-# crate's `alsa` feature, enabled here only under this crate's `alsa-runtime`
-# (see [features]). fan-in consumes the SAME crate for combo mode, so the two
-# daemons share byte-identical servo semantics by construction.
-jasper-host-clock = { path = "../jasper-host-clock" }
-# The ONE shared S32→S16 UAC2 narrowing (this crate also holds the windowed-sinc
-# resampler jasper-fanin uses for the direct lane). Pure, no ALSA — compiles
-# under `--no-default-features` on a macOS host. Consuming
-# `s32_high_word_to_s16` / `convert_s32_to_s16` from here (rather than a local
-# copy) makes the bridge's narrowing bit-identical to jasper-fanin's
-# direct-capture narrowing by construction (C2).
+# The shared audio-floor constant (`RMS_DBFS_FLOOR`) the state publisher seeds the
+# idle `rms_dbfs` with. Pure, no ALSA — compiles under `--no-default-features` on a
+# macOS host. (The daemon no longer narrows S32→S16 or captures any audio; the
+# combo direct-capture path in jasper-fanin owns that. jasper-fanin still consumes
+# this crate for the shared narrowing.)
 jasper-resampler = { path = "../jasper-resampler" }
 libc = "0.2"
 log = "0.4"
@@ -38,12 +25,12 @@ signal-hook = { version = "0.4", optional = true }
 
 [features]
 default = ["alsa-runtime"]
-# `alsa-runtime` is the production build: the ALSA data plane plus the shared
-# host-clock crate's `alsa` feature (the real `AlsaPitchCtl`). Under
-# `--no-default-features` the pure host-clock ladder/servo still compiles on a
-# macOS host, and the `#[cfg(feature = "alsa-runtime")]`-gated `AlsaPitchCtl`
-# re-export in host_clock.rs is simply absent.
-alsa-runtime = ["dep:alsa", "dep:sd-notify", "dep:signal-hook", "jasper-host-clock/alsa"]
+# `alsa-runtime` is the production (Linux) build: the systemd `Type=notify`
+# liveness plumbing (sd-notify) and signal handling. Despite the historical name
+# the daemon no longer opens any ALSA PCM — it is a standby-only intent/liveness
+# daemon. Under `--no-default-features` the pure logic + tests still compile on a
+# macOS host (the real `main` is replaced by a `bail!` stub).
+alsa-runtime = ["dep:sd-notify", "dep:signal-hook"]
 
 [profile.release]
 opt-level = 3

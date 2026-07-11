@@ -56,7 +56,7 @@ jasper-usbgadget.service            (NEW — the composite gadget owner)
 jasper-usbnet-dhcp.service          (NEW — device-activated dnsmasq on usb0)
   BindsTo=sys-subsystem-net-devices-usb0.device
 
-jasper-usbsink.service              (audio bridge — unchanged data plane)
+jasper-usbsink.service              (USB-audio intent + gadget lifecycle; standby-only since 2026-07-10 — fan-in DIRECT-captures the audio, this daemon opens no PCM)
   Requires=/PartOf=jasper-usbgadget.service   (repointed from the deleted init unit)
 ```
 
@@ -428,9 +428,9 @@ writing. Each item names the specific claim above it verifies.
    drop to a non-`dnsmasq` user (dnsmasq-base ships no such user) to succeed.
 3. **Audio path unaffected.** With USB audio enabled and playing, hammer
    the web UI over usb0 and confirm no regression in the low-latency
-   route's telemetry (bridge xruns, resampler relocks, host-clock ladder
-   state) — the composite gadget must not perturb the existing
-   low-latency contract.
+   route's telemetry (fan-in direct-capture xruns, resampler relocks,
+   fan-in host-clock ladder state) — the composite gadget must not perturb
+   the existing low-latency contract.
 4. **Host audio device label unchanged.** Confirm the product-string
    change (dropping "USB Audio" from the NIC-facing string) did not alter
    what the host shows as the *audio* device name — that label is owned
@@ -504,4 +504,7 @@ writing. Each item names the specific claim above it verifies.
 
 ---
 
-Last verified: 2026-07-04
+Last verified: 2026-07-10 (light touch: corrected the two audio-data-plane
+mentions — `jasper-usbsink.service` is standby-only since 2026-07-10, fan-in
+DIRECT-captures the gadget audio. Gadget-composition / ncm-network content
+unchanged and not re-verified this pass.)

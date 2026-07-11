@@ -85,10 +85,8 @@ from jasper.route_latency.status_socket import (
     read_status_socket_or_none,
 )
 from jasper.route_latency.tap_client import (
-    DEFAULT_TAP_HOST,
-    DEFAULT_TAP_PATH,
-    DEFAULT_TAP_PORT,
     FANIN_CONTROL_SOCKET,
+    FANIN_DEFAULT_TAP_PATH,
     TapArmParams,
     TapClientError,
     read_tap_events,
@@ -512,11 +510,11 @@ def latency_ms_for_match(match: MatchedImpulse, *, mic_distance_compensation_ms:
     """(t_mic_detect - t_tap_detect) - mic_distance_compensation_ms.
 
     The whole route latency lives in the `t_mic - t_tap` subtraction: the
-    Rust tap timestamps each click at ingress (`run_audio_loop` runs the tap
-    over the just-read period BEFORE `stage_capture_period` pushes it into
-    the ring), and the click's entire physical journey — ring dwell,
+    Rust tap timestamps each click at ingress (jasper-fanin's DIRECT capture
+    runs the tap over the just-read gadget period as it enters the mixer),
+    and the click's entire physical journey — mixer dwell,
     fan-in, CamillaDSP, outputd, DAC, air, mic — then elapses in real time
-    between `t_tap` and `t_mic`. The ring dwell is therefore already inside
+    between `t_tap` and `t_mic`. The capture/mix dwell is therefore already inside
     the subtraction; adding `ring_fill_frames / 48.0` on top would count it
     twice (it inflated every sample by ~10.7 ms at the steady-state fill of
     2 periods).
@@ -632,12 +630,12 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 def _resolve_tap(args: argparse.Namespace) -> ResolvedTap:
     """Resolve (and cache on ``args``) which ingress tap to arm for this box.
 
-    ``--tap-transport auto`` (the default) probes fan-in STATUS and picks the
-    fan-in DIRECT-capture tap on a USB combo box, else the usbsink bridge tap —
-    so ``run`` measures the tap that's actually live instead of the dead usbsink
-    :8781 tap on a combo box. Prints and logs the chosen transport + reason once
-    so a run's ingress target is never a mystery. Cached so ``run`` (capture then
-    analyze) resolves exactly once and analyze reads back the same JSONL path.
+    There is one USB ingress tap now — fan-in's DIRECT capture — so this always
+    resolves to the fan-in tap (the usbsink-bridge :8781 tap was removed with the
+    aloop solo path). ``--tap-transport`` is kept for invocation compatibility.
+    Prints and logs the chosen transport + reason once so a run's ingress target is
+    never a mystery. Cached so ``run`` (capture then analyze) resolves exactly once
+    and analyze reads back the same JSONL path.
     """
 
     cached = getattr(args, "_resolved_tap", None)
@@ -646,8 +644,6 @@ def _resolve_tap(args: argparse.Namespace) -> ResolvedTap:
     resolved = build_resolved_tap(
         transport_choice=args.tap_transport,
         explicit_tap_path=getattr(args, "tap_path", None),
-        tap_host=args.tap_host,
-        tap_port=args.tap_port,
         fanin_socket=args.tap_socket,
     )
     args._resolved_tap = resolved
@@ -1065,24 +1061,20 @@ def _add_tap_connection_args(parser: argparse.ArgumentParser) -> None:
         choices=TAP_TRANSPORTS,
         default=TAP_TRANSPORT_AUTO,
         help=(
-            "Which ingress tap to arm. 'auto' (default) reads fan-in STATUS and "
-            "picks the fan-in DIRECT-capture tap on a USB combo box "
-            "(JASPER_FANIN_USB_DIRECT=enabled) or the usbsink bridge tap "
-            "otherwise; 'fanin' / 'usbsink' force one. On a combo box the usbsink "
-            "bridge tap is dead (bridge in standby), so 'auto' is what makes `run` "
-            "measure the shipping route."
+            "Which ingress tap to arm. There is one USB ingress tap now — fan-in's "
+            "DIRECT capture — so 'auto' (default) and 'fanin' both resolve to it. "
+            "The usbsink-bridge :8781 tap was removed with the aloop solo path. "
+            "Kept for invocation compatibility."
         ),
     )
-    parser.add_argument("--tap-host", default=DEFAULT_TAP_HOST, help=f"usbsink tap HTTP host (usbsink transport only; default: {DEFAULT_TAP_HOST}).")
-    parser.add_argument("--tap-port", type=int, default=DEFAULT_TAP_PORT, help=f"usbsink tap HTTP port (usbsink transport only; default: {DEFAULT_TAP_PORT}).")
-    parser.add_argument("--tap-socket", default=FANIN_CONTROL_SOCKET, help=f"fan-in control socket for the combo tap (fanin transport only; default: {FANIN_CONTROL_SOCKET}).")
+    parser.add_argument("--tap-socket", default=FANIN_CONTROL_SOCKET, help=f"fan-in control socket for the tap (default: {FANIN_CONTROL_SOCKET}).")
 
 
 def _add_tap_arm_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tap-threshold", type=float, default=None, help="Ingress detector threshold (0..1). Rust default 0.2.")
     parser.add_argument("--tap-hysteresis", type=float, default=None, help="Ingress detector hysteresis. Rust default 0.05.")
     parser.add_argument("--tap-refractory-ms", type=float, default=None, help="Ingress refractory window in ms. Rust default 250.")
-    parser.add_argument("--tap-path", default=None, help="Tap JSONL path. Default: the resolved transport's own path (usbsink /run/jasper-usbsink/impulse-tap.jsonl, fan-in /run/jasper-fanin/impulse-tap.jsonl).")
+    parser.add_argument("--tap-path", default=None, help="Tap JSONL path. Default: the fan-in tap's path (/run/jasper-fanin/impulse-tap.jsonl).")
 
 
 def _add_mic_detector_args(parser: argparse.ArgumentParser) -> None:
@@ -1151,7 +1143,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_capture.set_defaults(func=_cmd_capture)
 
     p_analyze = sub.add_parser("analyze", help="Offline step: pair tap/mic evidence, emit samples-JSON.")
-    p_analyze.add_argument("--tap-events", default=DEFAULT_TAP_PATH, help=f"Tap JSONL path (default: {DEFAULT_TAP_PATH}).")
+    p_analyze.add_argument("--tap-events", default=FANIN_DEFAULT_TAP_PATH, help=f"Tap JSONL path (default: {FANIN_DEFAULT_TAP_PATH}).")
     p_analyze.add_argument("--mic-detections", required=True, help="Mic-detections JSONL from `capture`.")
     p_analyze.add_argument("--route-health-snapshot", default=None, help="route-health-snapshot.json from `capture`.")
     p_analyze.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help=f"Output directory (default: {DEFAULT_OUT_DIR}).")

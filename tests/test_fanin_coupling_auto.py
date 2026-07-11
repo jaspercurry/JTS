@@ -117,7 +117,9 @@ def test_decision_eligible_gadget_box_with_intent_resolves_ring_and_combo_on():
 
 def test_decision_gadget_without_usb_intent_does_not_arm_combo():
     """B2: the gadget dtoverlay is fleet-wide; without USB-audio intent the combo
-    stays OFF (explicit disabled/0), even though the ring may still resolve."""
+    stays OFF (fan-in keys explicit disabled). The usbsink standby key is ALWAYS 1
+    now — the daemon is standby-only and disarm does not promote a bridge
+    capture."""
     d = ca.resolve_auto_decision(
         marker_raw=None,
         gadget_present=True,
@@ -131,12 +133,13 @@ def test_decision_gadget_without_usb_intent_does_not_arm_combo():
         ("set", ca.CUSHION_DECAY_ENV_VAR, "disabled"),
     ]
     assert [(a.action, a.key, a.value) for a in d.usbsink_standby_actions] == [
-        ("set", ca.USBSINK_STANDBY_ENV_VAR, "0"),
+        ("set", ca.USBSINK_STANDBY_ENV_VAR, "1"),
     ]
 
 
 def test_decision_usb_intent_without_gadget_does_not_arm_combo():
-    """Intent on but no gadget hardware → combo off (both signals required)."""
+    """Intent on but no gadget hardware → combo off (both signals required).
+    Standby stays 1 (daemon is standby-only)."""
     d = ca.resolve_auto_decision(
         marker_raw=None,
         gadget_present=False,
@@ -145,7 +148,7 @@ def test_decision_usb_intent_without_gadget_does_not_arm_combo():
     )
     assert d.combo_armed is False
     assert all(a.value == "disabled" for a in d.usb_combo_actions)
-    assert d.usbsink_standby_actions[0].value == "0"
+    assert d.usbsink_standby_actions[0].value == "1"
 
 
 def test_decision_first_failing_gate_short_circuits_to_loopback():
@@ -210,15 +213,12 @@ def test_usb_combo_actions_explicit_disabled_when_not_armed():
     assert {a.key for a in acts} == set(ca.USB_COMBO_ENV_VARS)
 
 
-def test_usbsink_standby_actions_on_off():
-    on = ca.usbsink_standby_actions(armed=True)
-    assert [(a.action, a.key, a.value) for a in on] == [
+def test_usbsink_standby_actions_always_one():
+    # The daemon is standby-only, so the standby key is ALWAYS written `1` — armed
+    # or not. Disarming the combo does NOT promote a bridge capture (there is none).
+    acts = ca.usbsink_standby_actions()
+    assert [(a.action, a.key, a.value) for a in acts] == [
         ("set", ca.USBSINK_STANDBY_ENV_VAR, "1")
-    ]
-    off = ca.usbsink_standby_actions(armed=False)
-    # F5: explicit `0` (NOT unset).
-    assert [(a.action, a.key, a.value) for a in off] == [
-        ("set", ca.USBSINK_STANDBY_ENV_VAR, "0")
     ]
 
 
@@ -433,7 +433,7 @@ def test_auto_gadget_present_but_usb_audio_off_does_not_arm_combo(tmp_path, monk
     assert r.combo_armed is False
     text = fanin.read_text()
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "disabled"
-    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "0"
+    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "1"
     # The ring can still resolve (eligible), but the combo is off.
     assert r.coupling == COUPLING_SHM_RING
 
@@ -456,7 +456,7 @@ def test_auto_jts3_roleful_is_loopback_combo_off(tmp_path, monkeypatch):
     # precedence), not left absent.
     text = fanin.read_text()
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "disabled"
-    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "0"
+    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "1"
     assert read_value(text, COUPLING_ENV_VAR) in (None, COUPLING_LOOPBACK)
 
 
@@ -497,10 +497,12 @@ def test_auto_jts4_streambox_no_fanin_stack_exits_clean(tmp_path, monkeypatch):
 
 def test_auto_gadget_lost_clears_stale_combo_keys(tmp_path, monkeypatch):
     """Single-writer discipline: a box that previously had the combo armed but LOST
-    the gadget must have BOTH combo halves driven to their explicit OFF values —
-    fanin keys to `disabled`, usbsink standby to `0` (F5: explicit off, not unset, so
-    a stale jasper.env `enabled` can't win). usbsink is restarted (disarm ordering:
-    after fan-in)."""
+    the gadget has the fan-in combo keys driven to their explicit OFF value
+    (`disabled`, F5: not unset, so a stale jasper.env `enabled` can't win). The
+    usbsink standby key is ALWAYS 1 (daemon is standby-only), so with the box
+    already at STANDBY=1 it does not change and usbsink is NOT restarted — only
+    fan-in restarts to release the gadget. USB audio is left unavailable (no solo
+    fallback to promote)."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
     usbsink = tmp_path / "usbsink.env"
@@ -516,16 +518,18 @@ def test_auto_gadget_lost_clears_stale_combo_keys(tmp_path, monkeypatch):
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=False, usbsink=usbsink, restarts=restarts)
     assert r.usb_combo_changed is True
-    assert r.usbsink_standby_changed is True
+    # Standby was already 1 and stays 1 (always-1 now) → no standby change.
+    assert r.usbsink_standby_changed is False
     text = fanin.read_text()
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "disabled"
     assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "disabled"
     assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "disabled"
-    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "0"
-    # DISARM ordering: usbsink restarted AFTER fan-in released the gadget.
-    assert r.restarted_usbsink is True
-    assert "usbsink" in restarts and "fanin" in restarts
-    assert restarts.index("fanin") < restarts.index("usbsink")
+    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "1"
+    # fan-in restarts to release the gadget; usbsink does NOT (standby unchanged,
+    # and the standby-only daemon never held the gadget anyway).
+    assert r.restarted_usbsink is False
+    assert "fanin" in restarts
+    assert "usbsink" not in restarts
 
 
 def test_auto_is_idempotent_second_pass_writes_nothing(tmp_path, monkeypatch):
@@ -905,8 +909,10 @@ def _ring_gates_ok():
 
 def test_resolve_fallback_active_forces_combo_off_when_eligible():
     """A combo-eligible box (gadget + USB intent) whose live capture broke carries
-    the fallback marker -> combo forced OFF (explicit disabled/0), fallback_active
-    reported, but the ring coupling is UNAFFECTED."""
+    the fallback marker -> combo forced OFF (fan-in keys explicit disabled),
+    fallback_active reported, but the ring coupling is UNAFFECTED. The usbsink
+    standby key stays 1 (daemon standby-only) — the disarm leaves USB audio
+    unavailable, it does NOT promote a bridge capture."""
     d = ca.resolve_auto_decision(
         marker_raw=None,
         gadget_present=True,
@@ -917,10 +923,10 @@ def test_resolve_fallback_active_forces_combo_off_when_eligible():
     assert d.combo_armed is False
     assert d.fallback_active is True
     assert d.coupling == COUPLING_SHM_RING  # ring decision untouched by the fallback
-    # Both combo halves written to their explicit-off values.
+    # fan-in keys written to explicit-off; the standby key stays 1 (always).
     for a in d.usb_combo_actions:
         assert a.value == ca.USB_COMBO_DISABLED_VALUE
-    assert d.usbsink_standby_actions[0].value == ca.USBSINK_STANDBY_OFF_VALUE
+    assert d.usbsink_standby_actions[0].value == ca.USBSINK_STANDBY_ON_VALUE
 
 
 def test_resolve_fallback_on_ineligible_box_is_not_reported():
@@ -939,8 +945,9 @@ def test_resolve_fallback_on_ineligible_box_is_not_reported():
 
 def test_reconcile_auto_fallback_marker_disarms_a_combo_box(tmp_path, monkeypatch):
     """End-to-end: an eligible gadget box (would arm) with fallback_active=True
-    resolves the combo OFF and writes explicit-off env, landing on the aloop bridge
-    state."""
+    resolves the combo OFF (fan-in keys disabled; usbsink standby stays 1), leaving
+    USB audio unavailable (no aloop solo fallback). fan-in restarts to release the
+    gadget; usbsink does not (standby unchanged, daemon standby-only)."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
     usbsink = tmp_path / "usbsink.env"
@@ -970,9 +977,10 @@ def test_reconcile_auto_fallback_marker_disarms_a_combo_box(tmp_path, monkeypatc
     assert r.combo_armed is False
     assert r.fallback_active is True
     assert r.usb_combo_changed is True
-    # Combo env forced to explicit-off on both halves.
+    assert r.usbsink_standby_changed is False  # already 1, stays 1
+    # fan-in keys forced to explicit-off; the standby key stays 1 (always).
     assert read_value(fanin.read_text(), ca.USB_DIRECT_ENV_VAR) == "disabled"
-    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "0"
-    # usbsink restarted LAST on disarm (after fan-in released the gadget).
-    assert "usbsink" in restarts and "fanin" in restarts
-    assert restarts.index("fanin") < restarts.index("usbsink")
+    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "1"
+    # fan-in restarts to release the gadget; usbsink does NOT (standby unchanged).
+    assert "fanin" in restarts
+    assert "usbsink" not in restarts

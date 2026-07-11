@@ -172,12 +172,13 @@ def test_packaged_defaults_do_not_override_operator_or_generated_env():
 
 
 # ----------------------------------------------------------------------
-# Stage 1 host-slaved USB clock (default-OFF): the pitch-neutrality safety
-# invariant needs a belt-and-braces ExecStopPost= reset, because the in-
-# process reset (on clean exit / SIGTERM / demotion / disable) cannot run
-# when the daemon is SIGKILLed, OOM-killed, or watchdog-aborted. A host must
-# never stay slaved to a pitch command from a daemon that is no longer
-# running. See docs/HANDOFF-usb-low-latency.md "Host-slaved USB clock".
+# Standby-only daemon: NO ExecStopPost pitch-neutralize belt.
+# The old aloop solo path had the usbsink daemon drive the gadget's
+# "Capture Pitch 1000000" ctl, with a belt-and-braces ExecStopPost= reset for
+# the SIGKILL/OOM case. That path was deleted (2026-07-10): the daemon is
+# standby-only and never opens the gadget or touches the pitch ctl — jasper-fanin
+# owns both in combo mode. So the unit must carry NO Capture-Pitch ExecStopPost
+# line; one would stomp fan-in's live pitch command on every stop.
 # ----------------------------------------------------------------------
 
 
@@ -195,107 +196,19 @@ def _exec_stop_post_lines(unit_text: str) -> list[str]:
     return values
 
 
-def test_execstoppost_resets_pitch_to_neutral():
+def test_no_execstoppost_pitch_belt_on_standby_only_daemon():
+    # The standby-only daemon must NOT carry a Capture-Pitch ExecStopPost belt:
+    # it never owns the gadget pitch ctl (fan-in does), so neutralizing on stop
+    # would reset fan-in's live L0 command behind its back on every restart.
     body = UNIT_PATH.read_text()
-    matches = [
-        v for v in _exec_stop_post_lines(body)
-        if "Capture Pitch 1000000" in v
-    ]
-    assert matches, (
-        "jasper-usbsink.service must carry an ExecStopPost= that resets the "
-        "gadget's 'Capture Pitch 1000000' ctl to neutral — belt-and-braces "
-        "for the pitch-neutrality safety invariant when the daemon is "
-        "SIGKILLed/OOM-killed and cannot run its own in-process reset."
-    )
-    line = matches[0]
-
-    # `-` prefix: ignore failure when the card is absent (feature disabled,
-    # gadget torn down, or a different capture device) — a missing card
-    # must not fail the stop/restart of the unit itself.
-    assert line.startswith("-"), (
-        f"ExecStopPost pitch reset must be prefixed with '-' to ignore "
-        f"failure when the UAC2Gadget card is absent; got: {line!r}"
-    )
-
-    # Targets the exact ctl this Stage 1 module writes: iface=PCM,
-    # name='Capture Pitch 1000000' (verified live on jts.local kernel
-    # 6.12.75: iface=PCM numid=1, range 750000..1005000).
-    assert "iface=PCM" in line, (
-        f"ExecStopPost pitch reset must target iface=PCM; got: {line!r}"
-    )
-    assert 'name="Capture Pitch 1000000"' in line, (
-        f"ExecStopPost pitch reset must target the 'Capture Pitch 1000000' "
-        f"control by name; got: {line!r}"
-    )
-
-    # Resets to the neutral value (1000000 = unity, no pitch bias). The line is
-    # an `sh -c '... 1000000'` wrapper (review F2 gate below), so the neutral
-    # value is the last token before the closing single quote.
-    assert "1000000'" in line or line.rstrip().endswith("1000000"), (
-        f"ExecStopPost pitch reset must write the neutral value 1000000, "
-        f"not a stale/non-neutral bias; got line: {line!r}"
-    )
-
-    # Card is selected by expanding $JASPER_USBSINK_MIXER_CARD (shell expansion
-    # inside the sh -c wrapper) rather than a hardcoded literal, so an operator
-    # overriding that card in an EnvironmentFile also redirects this
-    # belt-and-braces neutralize (review N3 — no hardcoded card drift between the
-    # daemon and the stop line).
-    assert '"$JASPER_USBSINK_MIXER_CARD"' in line, (
-        f"ExecStopPost pitch reset must target -c $JASPER_USBSINK_MIXER_CARD "
-        f"(shell-expanded), not a hardcoded card literal; got: {line!r}"
-    )
-    # And the unit must declare a packaged default for that variable, or the
-    # expansion would resolve to empty and amixer would fail (harmless with the
-    # `-` prefix, but then the neutralize silently never runs). Default is
-    # UAC2Gadget (NO underscore — see the ALSA two-names note in .env.example).
-    assert 'Environment="JASPER_USBSINK_MIXER_CARD=UAC2Gadget"' in body, (
-        "jasper-usbsink.service must declare a packaged "
-        'Environment="JASPER_USBSINK_MIXER_CARD=UAC2Gadget" default so the '
-        "ExecStopPost ${JASPER_USBSINK_MIXER_CARD} expansion resolves to the "
-        "correct card when no operator override is present."
-    )
-
-    # amixer invoked by absolute path — ExecStopPost= runs outside a login
-    # shell, so a bare command name would not resolve via $PATH.
-    assert "/usr/bin/amixer" in line, (
-        f"ExecStopPost pitch reset must invoke amixer by absolute path; "
-        f"got: {line!r}"
+    pitch_lines = [v for v in _exec_stop_post_lines(body) if "Capture Pitch" in v]
+    assert not pitch_lines, (
+        "jasper-usbsink.service must NOT carry an ExecStopPost= pitch-neutralize "
+        "line — the daemon is standby-only and never owns the gadget pitch ctl; "
+        f"fan-in does. Got: {pitch_lines!r}"
     )
 
 
-def test_execstoppost_pitch_reset_gated_on_not_standby():
-    # Review F2: the belt must NOT be gated on the host-clock feature flag (a
-    # value could only be non-neutral if the feature was enabled and the daemon
-    # died uncleanly, so gating on JASPER_USBSINK_HOST_CLOCK would skip the reset
-    # exactly when it is needed) — but it MUST be gated on NOT-standby.
-    #
-    # In combo mode this bridge runs in standby (JASPER_USBSINK_AUDIO_STANDBY=1)
-    # and does not own the pitch ctl — fan-in does, and commands non-neutral
-    # pitch. An unconditional neutralize here would fire on every stop of this
-    # unit (deploy try-restart, operator restart) and stomp fan-in's live L0
-    # command, desyncing fan-in's >10 ppm write-suppression epsilon → the host
-    # free-runs un-slaved for minutes. So the belt fires only when this bridge is
-    # NOT in standby (i.e. when it is the daemon that actually owns the ctl).
-    body = UNIT_PATH.read_text()
-    matches = [
-        v for v in _exec_stop_post_lines(body)
-        if "Capture Pitch 1000000" in v
-    ]
-    assert matches, "no ExecStopPost pitch-reset line found"
-    line = matches[0]
-    assert "JASPER_USBSINK_HOST_CLOCK" not in line, (
-        "the ExecStopPost pitch-neutrality reset must not be gated on the "
-        "host-clock feature flag — gating there would skip the reset exactly "
-        "when a stale non-neutral value could exist (feature on, unclean death)"
-    )
-    assert '"$JASPER_USBSINK_AUDIO_STANDBY" != "1"' in line, (
-        "the ExecStopPost pitch reset MUST gate on NOT-standby "
-        '([ "$JASPER_USBSINK_AUDIO_STANDBY" != "1" ]) — in combo mode this '
-        "bridge runs in standby and fan-in owns the ctl; an unconditional "
-        "neutralize would stomp fan-in's live L0 command and desync its epsilon "
-        f"gate (review F2). Got: {line!r}"
-    )
 
 
 def test_start_limit_widened_and_never_reboots():

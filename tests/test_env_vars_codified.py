@@ -137,15 +137,14 @@ _UNCODIFIED = {
     #    substream ever collides with the fan-in layout. Not operator config.
     "JASPER_GROUPING_LOOPBACK_CAPTURE",
     "JASPER_GROUPING_LOOPBACK_PLAYBACK",
-    # -- USB-sink internals: localhost wiring between mux and the
-    #    usbsink daemon plus daemon-local knobs. The operator-facing
-    #    members of the family (JASPER_USBSINK_PREEMPT,
-    #    _CAPTURE_DEVICE, _MIXER_CARD) are documented in .env.example
-    #    and are not in this list.
+    # -- USB-sink internals: daemon-local knobs. The operator-facing members of
+    #    the family (JASPER_USBSINK_PREEMPT — the mux fan-in-mute escape hatch,
+    #    _CAPTURE_DEVICE, _MIXER_CARD) are documented in .env.example and are not
+    #    in this list. (The _PREEMPT_HOST/_PREEMPT_PORT HTTP wiring was removed with
+    #    the aloop solo path — the usbsink daemon is standby-only and mux silences
+    #    USB by muting the fan-in lane.)
     "JASPER_USBSINK_CONTROL_URL",
     "JASPER_USBSINK_LOG_LEVEL",
-    "JASPER_USBSINK_PREEMPT_HOST",
-    "JASPER_USBSINK_PREEMPT_PORT",
     # -- Internal timing / safety tunables with code defaults, below
     #    the operator surface. Promote one to .env.example (with the
     #    required prose comment) if it ever becomes household-relevant.

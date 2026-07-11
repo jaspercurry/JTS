@@ -1,10 +1,13 @@
 [Unit]
-Description=Jasper USB sink — audio bridge from UAC2 gadget into the music chain
-# Bridges the host's USB audio output (captured via the ConfigFS UAC2
-# gadget composed by jasper-usbgadget) into the USB-in private
-# snd-aloop lane. jasper-fanin sums it with AirPlay/Spotify/BT before
-# CamillaDSP, so it is just another renderer from the music chain's
-# perspective.
+Description=Jasper USB sink — USB-audio intent signal + standby liveness daemon
+# STANDBY-ONLY since the single-USB-pipeline convergence (2026-07-10). This unit
+# no longer bridges any audio: jasper-fanin DIRECT-captures the ConfigFS UAC2
+# gadget (`hw:UAC2Gadget`) itself and sums it with AirPlay/Spotify/BT before
+# CamillaDSP. This unit exists to (a) carry the household's USB-audio INTENT —
+# its enabled/disabled state is the signal the coupling reconciler and /sources/
+# wizard read — and (b) drive the gadget lifecycle (Requires= composes the uac2
+# function) while publishing a small state.json + satisfying the systemd
+# liveness contract. The old aloop capture/delivery path was deleted.
 #
 # Ships DISABLED. The /sources/ wizard toggles this intent unit. Starting it
 # pulls jasper-usbgadget in via Requires=; the gadget then RECOMPOSES to add
@@ -42,13 +45,10 @@ StartLimitBurst=20
 
 [Service]
 # Tier 1 + 2 of the resilience ladder (see docs/HANDOFF-resilience.md).
-# Type=notify with WatchdogSec=15s: the daemon's diagnostic loop pats
-# the watchdog only when the playback/output callback has shown
-# forward progress recently (sentinel pattern via
-# jasper.watchdog.Heartbeat). Capture may be idle for hours when a host
-# is paused, unplugged, or using another source; output silence is still
-# useful work. If the output callback wedges, pats stop and systemd
-# kills + restarts within WatchdogSec.
+# Type=notify with WatchdogSec=15s: the standby loop pats the watchdog on a 1 s
+# cadence (a progress sentinel < the 15 s window). The daemon opens no PCM, so
+# "progress" is just the standby loop staying alive; if it wedges, pats stop and
+# systemd kills + restarts within WatchdogSec.
 #
 # TimeoutStopSec=5s matches the AEC bridge's shorter SIGTERM grace
 # period. We'd rather hit SIGKILL+restart fast than accumulate wedge
@@ -57,20 +57,13 @@ Type=notify
 WatchdogSec=15s
 TimeoutStopSec=5s
 # Packaged defaults first; operator/generated env files below override them
-# because systemd's later assignments win.
+# because systemd's later assignments win. (The daemon opens no PCM in standby;
+# these describe the route geometry it echoes into state.json.)
 Environment="JASPER_USBSINK_CAPTURE_DEVICE=hw:UAC2Gadget"
-Environment="JASPER_USBSINK_PLAYBACK_DEVICE=usbsink_substream"
 Environment="JASPER_USBSINK_SAMPLE_RATE=48000"
 Environment="JASPER_USBSINK_CHANNELS=2"
-# The ALSA "short" mixer-card name (no underscore — the kernel registers the
-# gadget descriptor's short name here, distinct from the PortAudio-visible
-# "UAC2_Gadget" capture name). Declared as a packaged default so the
-# ExecStopPost pitch-neutralize line below can expand ${JASPER_USBSINK_MIXER_CARD}
-# and an operator overriding the card in an EnvironmentFile also redirects the
-# belt-and-braces neutralize to the right card.
-Environment="JASPER_USBSINK_MIXER_CARD=UAC2Gadget"
-# Pull operator-supplied tunables (capture/playback device overrides,
-# log level) from the same env file the rest of the stack reads.
+# Pull operator-supplied tunables (log level, state path) from the same env file
+# the rest of the stack reads.
 # Leading `-` makes systemd skip silently if the file isn't there.
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/usbsink.env
@@ -101,59 +94,30 @@ ExecCondition=/bin/test -d /sys/kernel/config/usb_gadget/jts-usb-audio/functions
 # into "no such card".
 ExecStartPre=/usr/local/sbin/jasper-usbsink-wait-card 30
 ExecStart=/opt/jasper/bin/jasper-usbsink-audio
-# Stage 1 host-slaved USB clock (default-OFF, see docs/HANDOFF-usb-low-latency.md
-# "Host-slaved USB clock"): belt-and-braces for the pitch-neutrality safety
-# invariant. The daemon itself resets the gadget's "Capture Pitch 1000000" ctl
-# to neutral on every normal exit path, but SIGKILL / OOM-kill / watchdog abort
-# skip that in-process cleanup — a host must never stay slaved to a command
-# from a daemon that is no longer running. `-` ignores failure when the card is
-# absent (disabled bridge, gadget torn down, or a different capture device).
-#
-# The `$JASPER_USBSINK_AUDIO_STANDBY != 1` gate is LOAD-BEARING (review F2, the
-# reverse of fan-in's own gate). In combo mode (JASPER_FANIN_USB_DIRECT=enabled)
-# this bridge runs in STANDBY (JASPER_USBSINK_AUDIO_STANDBY=1) and does NOT own
-# the pitch ctl — fan-in's `fanin-host-clock` thread does, and it actively
-# commands non-neutral pitch. An UNCONDITIONAL neutralize here would fire on
-# every stop of THIS unit (deploy try-restart on binary change, operator
-# restart) and stomp fan-in's live L0 command with 1000000 behind fan-in's
-# back — desyncing fan-in's write-suppression epsilon gate (it believes its
-# last written value is still live and won't rewrite until >10 ppm drift → the
-# host free-runs un-slaved for minutes). So the belt fires ONLY when this bridge
-# is NOT in standby, i.e. when it is the daemon that actually owns the ctl.
-# (Solo/aloop mode has STANDBY unset, so the belt still runs there — the
-# original "died uncleanly with a stale non-neutral value" case it was written
-# for. Mirrors jasper-fanin.service's combo-gated belt: only the owner writes.)
-#
-# The card is $JASPER_USBSINK_MIXER_CARD (default UAC2Gadget, set above) —
-# expanded by the shell from the packaged default or an operator EnvironmentFile
-# override, so this stop line always targets the same card the operator
-# configured, with no hardcoded drift.
-ExecStopPost=-/bin/sh -c '[ "$JASPER_USBSINK_AUDIO_STANDBY" != "1" ] || exit 0; exec /usr/bin/amixer -c "$JASPER_USBSINK_MIXER_CARD" cset iface=PCM,name="Capture Pitch 1000000" 1000000'
+# (No ExecStopPost pitch-neutralize belt: this standby-only daemon never opens
+# the gadget capture and never touches the "Capture Pitch 1000000" ctl —
+# jasper-fanin owns the gadget and its pitch ctl in combo mode. The old belt
+# existed for the deleted solo/aloop path where THIS daemon drove the pitch.)
 Restart=on-failure
 RestartSec=2s
 Nice=-10
-# Join the zram-shielded audio tier. usbsink is a real-time music source whose
-# capture/playback loop runs in Rust on fixed periods; off this slice its pages
-# can swap to zram, and zram-decompression jitter can make a period miss its
-# deadline in bursts -> snd-aloop xruns -> ring drops. jts-audio.slice carries
-# MemorySwapMax=0 (the swap shield) — a
-# MEMORY policy, not a CPU cap, so it respects the no-CPU-caps rule. usbsink was the
-# only music-path daemon left OUTSIDE this slice (diagnosed 2026-06-28 as the dominant
-# cause of the bursty USB-drop tail). OOMScoreAdjust sits below the output chain
-# (outputd -950 / camilla -900 / fanin -800): a killed source restarts and only USB
-# stops, whereas a killed output stops all audio.
+# Stay on the zram-shielded audio tier for OOM-score grouping consistency with the
+# USB path (this daemon no longer runs a real-time capture/playback loop — fan-in's
+# DIRECT capture does — so the swap-shield's period-deadline rationale no longer
+# applies; the grouping + OOMScoreAdjust are what remain relevant). OOMScoreAdjust
+# sits below the output chain (outputd -950 / camilla -900 / fanin -800): a killed
+# source restarts and only USB stops, whereas a killed output stops all audio.
 # Do NOT add CPUSchedulingPolicy=fifo to this unit — that unit-level RT change is what
 # SIGKILL-crash-looped jasper-aec-bridge on 2026-06-27; RT priority, if ever needed,
 # must be elected in-thread AFTER start() completes.
 Slice=jts-audio.slice
 OOMScoreAdjust=-600
-# Memory caps. ~22 MB Pss is the expected resident size when running;
-# 64 MiB hard cap catches any future memory leak before OOM-killer at
-# the cgroup boundary. MemoryHigh is the throttle threshold.
+# Memory caps. The standby daemon is lightweight (no audio buffers); the 64 MiB
+# hard cap catches any future memory leak before the cgroup OOM boundary.
+# MemoryHigh is the throttle threshold.
 MemoryHigh=48M
 MemoryMax=64M
-# Runtime dir for the state file (Phase 3+ will write
-# /run/jasper-usbsink/state.json here). Owned by the service.
+# Runtime dir for the state.json the standby daemon publishes. Owned by the service.
 RuntimeDirectory=jasper-usbsink
 RuntimeDirectoryMode=0755
 

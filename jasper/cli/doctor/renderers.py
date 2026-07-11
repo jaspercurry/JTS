@@ -662,11 +662,13 @@ def _probe_open_as_user(device: str, user: Optional[str]) -> tuple[bool, str]:
         return True, detail
     return False, detail or f"exit={r.returncode}"
 
+# The playback (write-side) renderer lanes that own an snd-aloop substream. USB is
+# NOT here: jasper-fanin DIRECT-captures hw:UAC2Gadget rather than reading an aloop
+# write lane (the usbsink_substream=3 solo bridge was removed 2026-07-10).
 _FANIN_PRIVATE_RENDERER_DEVICES = {
     "librespot_substream": 0,
     "shairport_substream": 1,
     "bluealsa_substream": 2,
-    "usbsink_substream": 3,
 }
 
 def _alsa_busy(detail: str) -> bool:

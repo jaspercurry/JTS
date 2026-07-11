@@ -960,8 +960,8 @@ install_systemd_units() {
     # jasper-usbgadget: composite ConfigFS gadget owner. It carries the
     # always-on USB management network (ncm) AND the wizard-toggled USB audio
     # function (uac2). jasper-usbsink is the disabled-by-default /sources audio
-    # intent unit; the Rust daemon bridges gadget capture into usbsink_substream
-    # and orders After= the gadget owner. jasper-usbnet-dhcp is the scoped,
+    # intent unit; the Rust daemon is standby-only (jasper-fanin DIRECT-captures
+    # the gadget) and orders After= the gadget owner. jasper-usbnet-dhcp is the scoped,
     # device-activated dnsmasq for the USB network. The dtoverlay must be set +
     # Pi rebooted first (handled by set_usb_gadget_mode above). See
     # docs/HANDOFF-usb-gadget.md.

@@ -213,11 +213,19 @@ def _restart_outputd(reason: str) -> tuple[bool, str]:
 
 
 def _restart_usbsink(reason: str) -> tuple[bool, str]:
-    """Restart jasper-usbsink through the broker so it re-reads its standby env.
+    """Restart jasper-usbsink through the broker after a standby-env write.
 
-    The bridge reads ``JASPER_USBSINK_AUDIO_STANDBY`` only at startup, so a combo
-    arm/disarm that flips the standby key in usbsink.env needs a restart to take
-    effect. Returns (ok, detail).
+    The standby-only daemon does not read ``JASPER_USBSINK_AUDIO_STANDBY`` (or
+    anything else in usbsink.env) at runtime — it always runs the same standby
+    loop and hardcodes ``"standby":true`` into ``state.json`` regardless (see
+    rust/jasper-usbsink-audio/src/main.rs), and it never opens
+    ``hw:UAC2Gadget``. So this restart has no verified functional effect
+    anymore; it is env-file / unit-state hygiene left over from the one-time
+    migration off an old solo ``=0`` (callers gate it on ``standby_changed`` —
+    see :func:`coupling_auto.usbsink_standby_actions`), so a live daemon's env
+    file doesn't sit out of sync with what was just written. Possibly droppable
+    now that the daemon has nothing STANDBY-conditional left to pick up — kept
+    as-is this round; a follow-up could remove it. Returns (ok, detail).
     """
     return _restart_unit(USBSINK_UNIT, reason=reason, timeout=8.0)
 
@@ -584,18 +592,20 @@ def reconcile_auto(
        Resolve the USB combo from gadget presence AND the household's USB-audio
        intent (``jasper-usbsink.service`` enabled — defect-B2).
     3. Write BOTH combo halves (reconciler = single writer of each): the three
-       fan-in keys into fanin.env and the ``JASPER_USBSINK_AUDIO_STANDBY`` key into
-       usbsink.env — explicit ``enabled``/``1`` on a combo box, explicit
-       ``disabled``/``0`` off it (never unset — defeats jasper.env precedence,
-       defect-F5). Idempotent — a second pass with the same inputs writes nothing.
+       fan-in keys into fanin.env (explicit ``enabled`` on a combo box, explicit
+       ``disabled`` off it — never unset, defeats jasper.env precedence, defect-F5)
+       and the ``JASPER_USBSINK_AUDIO_STANDBY`` key into usbsink.env (always ``1`` —
+       the jasper-usbsink daemon is standby-only now, so it never captures the
+       gadget regardless; see :func:`coupling_auto.usbsink_standby_actions`).
+       Idempotent — a second pass with the same inputs writes nothing.
     4. Delegate the coupling flip + ordered daemon transition to
        :func:`reconcile_coupling` (``mark_operator_choice=False`` so the marker
-       stays absent — auto-owned). Order the usbsink restart around it so the two
-       gadget-capture owners never both hold ``hw:UAC2Gadget``: on ARM restart
-       usbsink into standby FIRST (it releases the gadget before fan-in opens it
-       directly); on DISARM restart usbsink LAST (after fan-in has released the
-       gadget). A combo-only change that took the no-bounce confirm path also issues
-       one extra fan-in restart.
+       stays absent — auto-owned). A usbsink restart is issued only when the standby
+       key actually changes (a one-time migration off an old solo ``=0``); it no
+       longer guards a gadget-capture race, because the standby-only bridge never
+       opens ``hw:UAC2Gadget`` — fan-in's DIRECT capture is the sole gadget owner. A
+       combo-only change that took the no-bounce confirm path also issues one extra
+       fan-in restart.
 
     NO-OP on an ineligible / fanin-less box: jts3 (roleful) / jts5 (composite)
     resolve loopback with the combo off (no gadget intent) and converge with zero
@@ -715,9 +725,10 @@ def reconcile_auto(
         )
 
     # Step 3b — usbsink standby key (reconciler = single writer of this key in
-    # usbsink.env). The OTHER combo half; without it the fan-in direct capture and
-    # the still-live bridge both hold hw:UAC2Gadget and USB audio goes silent /
-    # crash-loops (defect-B1).
+    # usbsink.env). Always written =1: the jasper-usbsink daemon is standby-only
+    # (its aloop capture path was deleted), so it never holds hw:UAC2Gadget and
+    # fan-in's DIRECT capture is the sole gadget owner. The explicit write holds the
+    # single-writer line and keeps the state/doctor "standby" narration coherent.
     usbsink_after, standby_changed = _apply_actions(
         usbsink_snapshot.text, decision.usbsink_standby_actions
     )
@@ -756,8 +767,9 @@ def reconcile_auto(
     do_restart_usbsink = restart_usbsink or (lambda: _restart_usbsink(reason=reason))
     restarted_usbsink = False
 
-    # Step 4a — on ARM, restart usbsink into standby BEFORE fan-in opens the gadget
-    # directly, so the bridge has released hw:UAC2Gadget first (no EBUSY race).
+    # Step 4a — on ARM, if the standby key actually changed (one-time migration off
+    # an old solo =0), restart usbsink so it re-reads the file. No EBUSY race to
+    # guard: the standby-only bridge never opens hw:UAC2Gadget.
     if apply and standby_changed and decision.combo_armed:
         us_ok, us_detail = do_restart_usbsink()
         restarted_usbsink = us_ok
@@ -812,8 +824,9 @@ def reconcile_auto(
                 restarted_usbsink=restarted_usbsink, detail=fan_detail,
             )
 
-    # Step 4c — on DISARM, restart usbsink LAST (after fan-in has released the
-    # gadget), so the bridge re-opens hw:UAC2Gadget without racing fan-in's release.
+    # Step 4c — on DISARM, if the standby key changed, restart usbsink so it re-reads
+    # the file. The standby-only bridge opens no gadget capture, so a disarm leaves
+    # USB audio UNAVAILABLE (no solo fallback) rather than re-opening hw:UAC2Gadget.
     if apply and standby_changed and not decision.combo_armed:
         us_ok, us_detail = do_restart_usbsink()
         restarted_usbsink = us_ok
@@ -825,10 +838,11 @@ def reconcile_auto(
             level=logging.INFO if us_ok else logging.WARNING,
         )
 
-    # ``ok`` folds in the standby restart: a combo transition that could not restart
-    # usbsink left the two gadget owners in a split state, so surface it as a failure
-    # (the unit exits non-zero; the doctor/operator sees the incoherence) rather than
-    # a silently-broken USB path.
+    # ``ok`` folds in the standby restart: a migration that changed the standby key
+    # but could not restart usbsink leaves the daemon serving a stale env file, so
+    # surface it as a failure (the unit exits non-zero; the doctor/operator sees it)
+    # rather than a silently-inconsistent state. (The bridge is standby-only either
+    # way, so this is a state-file hygiene concern, not an audio-path race.)
     ok = coupling_result.ok and (restarted_usbsink or not standby_changed or not apply)
     return AutoResult(
         ok=ok, owned=True, coupling=decision.coupling,
@@ -888,8 +902,10 @@ def run_health_check(
     3. On brokenness SUSTAINED across ``FALLBACK_CONSECUTIVE_TICKS`` (~6 min): write
        the fallback marker (timestamp + reason) and delegate to
        :func:`reconcile_auto`, which — reading the marker we just wrote — forces the
-       combo OFF the same way it arms it (env writes + ordered restarts), landing
-       the box on the aloop-bridge solo state. The marker then blocks the periodic
+       combo OFF the same way it arms it (env writes + restarts). Since the aloop
+       solo path was deleted there is NO capture to fall back to, so this leaves USB
+       audio UNAVAILABLE (fan-in's DIRECT lane disarmed, the bridge in standby) —
+       the doctor + ``/state`` surface it LOUDLY. The marker then blocks the periodic
        pass from re-arming until the next ``--auto`` clear-event (boot/deploy/toggle).
 
     Injectables (``read_fanin_status`` / ``run_reconcile`` / paths) keep this
@@ -945,7 +961,8 @@ def run_health_check(
             consecutive_broken=decision.next_state.consecutive_broken,
         )
 
-    # SUSTAINED brokenness → fall the combo back to the aloop bridge.
+    # SUSTAINED brokenness → disarm the combo. There is no aloop solo fallback
+    # anymore, so this leaves USB audio unavailable until an --auto clear-event.
     fallback_reason = (
         f"direct capture broke on {decision.next_state.consecutive_broken} "
         f"consecutive ticks (health={sample.health}, reopens={sample.reopens}, "
@@ -2619,8 +2636,9 @@ def main(argv: "list[str] | None" = None) -> int:
     The explicit positional path stamps the operator-choice marker so a later
     ``--auto`` pass never overrides the operator's pick; ``--auto`` resolves the
     coupling + USB combo by eligibility and leaves the marker absent (auto-owned);
-    ``--health`` polls fan-in's direct-capture health and disarms the combo (to the
-    aloop bridge) when it is broken at runtime for >= 2 consecutive ticks.
+    ``--health`` polls fan-in's direct-capture health and disarms the combo (leaving
+    USB audio unavailable — no solo fallback) when it is broken at runtime for >= 2
+    consecutive ticks.
     """
     import argparse
 
@@ -2654,9 +2672,10 @@ def main(argv: "list[str] | None" = None) -> int:
         action="store_true",
         help=(
             "RUNTIME-FALLBACK watcher tick: poll fan-in's USB direct-capture health "
-            "and, if it is broken for >= 2 consecutive ticks, disarm the combo to the "
-            "aloop bridge and write the fallback marker. Journal-quiet on a healthy "
-            "tick. Mutually exclusive with --auto / an explicit coupling."
+            "and, if it is broken for >= 2 consecutive ticks, disarm the combo "
+            "(leaving USB audio unavailable — no solo fallback) and write the "
+            "fallback marker. Journal-quiet on a healthy tick. Mutually exclusive "
+            "with --auto / an explicit coupling."
         ),
     )
     parser.add_argument("--reason", default="cli")
@@ -2701,8 +2720,8 @@ def main(argv: "list[str] | None" = None) -> int:
         # Clear-and-retry: --auto runs on exactly the three fallback-marker
         # clear-events (boot, deploy, /sources/ toggle), so it drops any marker a
         # prior --health disarm wrote and re-attempts the combo from eligibility.
-        # The periodic --health pass never clears the marker, so combo never
-        # oscillates combo<->solo within a boot on its own.
+        # The periodic --health pass never clears the marker, so the combo never
+        # oscillates on/off within a boot on its own.
         from jasper.fanin.combo_health import (
             clear_fallback_marker,
             read_fallback_marker,

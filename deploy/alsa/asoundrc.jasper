@@ -57,7 +57,11 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   librespot          → pcm.librespot_substream   → hw:Loopback,0,0
 #   shairport-sync     → pcm.shairport_substream   → hw:Loopback,0,1
 #   bluealsa-aplay     → pcm.bluealsa_substream    → hw:Loopback,0,2
-#   jasper-usbsink     → pcm.usbsink_substream     → hw:Loopback,0,3
+#   USB (UAC2 gadget)  → jasper-fanin DIRECT-captures hw:UAC2Gadget (no aloop
+#                        write alias — the old jasper-usbsink → pcm.usbsink_substream
+#                        → hw:Loopback,0,3 solo path was removed 2026-07-10;
+#                        fan-in still opens hw:Loopback,1,3 as the usbsink lane's
+#                        idle fallback when USB Audio Input is off)
 #   correction sweeps  → pcm.correction_substream  → hw:Loopback,0,4
 #   active Nch DSP    ← outputd_active_content_*  ← hw:Loopback,0/1,5
 #   passive stereo DSP ← outputd_content_*        ← hw:Loopback,0/1,6
@@ -179,16 +183,6 @@ pcm.bluealsa_substream {
     type plug
     slave {
         pcm "hw:Loopback,0,2"
-        rate 48000
-        channels 2
-        format S16_LE
-    }
-}
-
-pcm.usbsink_substream {
-    type plug
-    slave {
-        pcm "hw:Loopback,0,3"
         rate 48000
         channels 2
         format S16_LE

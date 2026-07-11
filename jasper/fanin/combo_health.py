@@ -34,15 +34,17 @@ so this signal is idle-immune AND physical-unplug-immune by construction.
 
 THE ACTION. On brokenness SUSTAINED across ``FALLBACK_CONSECUTIVE_TICKS`` (>= 2,
 ~6 min), the reconciler — the single writer — DISARMS the combo exactly the way it
-arms it (the same combo env writes + ordered daemon restarts), landing the box on
-the aloop-bridge solo state, and writes a fallback MARKER (timestamp + reason).
+arms it (the same combo env writes + daemon restarts). Since the aloop solo path
+was deleted (2026-07-10) there is NO capture to fall back to, so this leaves USB
+audio UNAVAILABLE until recovery, and writes a fallback MARKER (timestamp +
+reason) the doctor + ``/state`` surface LOUDLY.
 
 FLAP-PROOF. While the marker exists, the periodic ``--health`` pass never re-arms
 (it is disarm-only). The marker — and combo re-arm — is cleared only by an
 ``--auto`` pass, which runs on exactly the three specified clear-events (boot,
 deploy, ``/sources/`` toggle) and clears-and-retries once per event. So combo
-never oscillates combo<->solo within a boot on its own. (See
-``run_health_check`` / ``reconcile_auto`` for where the marker is read/cleared.)
+never oscillates on its own within a boot. (See ``run_health_check`` /
+``reconcile_auto`` for where the marker is read/cleared.)
 """
 
 from __future__ import annotations
@@ -129,8 +131,9 @@ def extract_direct_sample(
     """The direct-lane health sample from fan-in STATUS, or ``None`` when the box
     is NOT running the combo (no ``source:"direct"`` usbsink lane).
 
-    ``None`` is the "nothing to watch" signal: a non-combo box (aloop bridge) or a
-    box the fallback already disarmed. The watcher no-ops silently on ``None``.
+    ``None`` is the "nothing to watch" signal: a box with the combo off (USB Audio
+    Input disabled / no gadget) or one the fallback already disarmed. The watcher
+    no-ops silently on ``None``.
     Fail-soft: a missing/malformed STATUS, absent ``inputs``, or no direct usbsink
     lane all return ``None``.
     """
@@ -343,8 +346,8 @@ def write_fallback_marker(
 ) -> bool:
     """Write the fallback marker atomically. Returns True on success. Best-effort:
     a write failure logs at WARNING and returns False (the disarm still proceeds;
-    the box lands solo — the marker is the flap-guard, and its absence means the
-    next --auto simply re-attempts, which is the safe direction)."""
+    USB audio is left unavailable — the marker is the flap-guard, and its absence
+    means the next --auto simply re-attempts, which is the safe direction)."""
     from jasper.atomic_io import atomic_write_text
 
     marker = FallbackMarker(

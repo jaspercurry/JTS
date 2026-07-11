@@ -260,11 +260,9 @@ from .usbsink import (
     check_usbsink_state,
     check_usbsink_card,
     check_usbsink_low_latency_contract,
-    check_usbsink_host_clock,
     check_usbsink_name,
     check_usbsink_active_libcomposite,
     check_usbgadget_composition,
-    check_usbsink_preempt_port_reachable,
     check_usbsink_env_drift,
 )
 from . import network as network
@@ -582,11 +580,9 @@ __all__ = [
     "check_usbsink_state",
     "check_usbsink_card",
     "check_usbsink_low_latency_contract",
-    "check_usbsink_host_clock",
     "check_usbsink_name",
     "check_usbsink_active_libcomposite",
     "check_usbgadget_composition",
-    "check_usbsink_preempt_port_reachable",
     "check_usbsink_env_drift",
     "_parse_iw_regdom",
     "_format_phy_regdom_detail",

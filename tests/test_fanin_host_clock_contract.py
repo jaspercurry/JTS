@@ -6,9 +6,10 @@
 fan-in's copy of the Stage 1 servo (``rust/jasper-fanin/src/host_clock.rs`` +
 its config knobs in ``rust/jasper-fanin/src/config.rs``).
 
-Twin of ``tests/test_usbsink_host_clock_contract.py``. In combo mode
-(``JASPER_FANIN_USB_DIRECT=enabled`` + ``JASPER_USBSINK_AUDIO_STANDBY=1``)
-fan-in — not the usbsink bridge — owns the ``hw:UAC2Gadget`` capture, so per the
+This is the sole host-clock contract pin: fan-in's DIRECT capture is the only USB
+ingress since the aloop solo path (and its usbsink-bridge host clock) was removed
+2026-07-10. In combo mode (``JASPER_FANIN_USB_DIRECT=enabled``) fan-in owns the
+``hw:UAC2Gadget`` capture, so per the
 invariant *the daemon that owns the gadget capture owns the pitch ctl* it drives
 the host-clock ladder. The ladder/probe/servo itself is the SHARED
 ``rust/jasper-host-clock`` crate (byte-identical to solo mode); this file pins
