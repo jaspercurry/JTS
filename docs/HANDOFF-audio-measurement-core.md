@@ -89,6 +89,11 @@ The product is three tiers:
   `bounded_low_level` result only after its unchanged AGC, clip, liveness, SNR,
   spread, and shortfall gates pass; the relay establishes the SNR floor from a
   short rolling ambient median rather than one microphone-startup block.
+  Room alone allows the listening-position ramp +15 dB of travel up to the
+  unchanged 0 dB hard ceiling because its stimulus is already −12 dBFS;
+  crossover/near-field keeps the shared +12/−3 cap. Ramp snapshots retain
+  compact admission counts plus maximum observed RMS, peak, trust threshold,
+  and trust deficit for an exact zero-trusted-sample diagnosis.
 - `active_speaker/driver_acoustics.py` **imports**
   `jasper.audio_measurement.{sweep, deconv, analysis, quality}` and the `DRIVER`
   quality profile — it reuses the shared DSP verbatim.

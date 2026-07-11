@@ -105,6 +105,13 @@ def _bundles_enabled() -> bool:
 
 
 DBFS_FLOOR = -120.0
+# Room measurements use a deliberately attenuated -12 dBFS stimulus.  Give the
+# listening-position ramp up to 15 dB above the household's current volume and
+# the existing 0 dB hard ceiling; crossover/near-field commissioning retains
+# the shared kernel's tighter +12/-3 dB policy.  Clip detection remains live on
+# every phone sample, and downstream sweep-quality gates remain authoritative.
+ROOM_LEVEL_CAP_BUMP_DB = 15.0
+ROOM_LEVEL_CAP_CEIL_DB = 0.0
 SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
     ("sub_bass", 20.0, 80.0),
     ("bass", 80.0, 160.0),
@@ -2519,9 +2526,16 @@ class MeasurementSession:
             # the external amplifier leaves a stable, AGC-off listening-position
             # tone below the preferred window at the safe cap, retain that
             # evidence as an explicitly degraded lock instead of dead-ending the
-            # room flow.  The shared ramp keeps the same clip, SNR, spread,
-            # liveness, timeout, and exact-volume-restore guards.
-            config=MeasurementRamp.from_env(allow_bounded_low_level=True),
+            # room flow.  The shared ramp keeps the same 10 dB trust, clip,
+            # spread, liveness, timeout, and exact-volume-restore guards.  The
+            # safety argument is that room alone gets more main-volume travel
+            # while the stimulus remains -12 dBFS; downstream capture-quality
+            # findings are additional evidence, not this ramp's backstop.
+            config=MeasurementRamp.from_env(
+                allow_bounded_low_level=True,
+                cap_bump_db=ROOM_LEVEL_CAP_BUMP_DB,
+                cap_ceil_db=ROOM_LEVEL_CAP_CEIL_DB,
+            ),
         )
         self._level_match_session = session
         try:

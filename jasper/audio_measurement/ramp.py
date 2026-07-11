@@ -566,14 +566,39 @@ class RampData:
     window_shortfall_db: float | None = None
     settled_spread_db: float | None = None
     noise_floor_dbfs: float | None = None
+    trust_margin_db: float | None = None
     agc_frozen: bool = True
     # Count of trusted samples ever accepted. Reaching the cap may begin a
     # bounded-low evidence hold only when this is nonzero; a phone that never
     # produced a usable sample is an ERROR, not an acoustic diagnosis.
     trusted_sample_count: int = 0
+    # Admission diagnostics for the full, fresh phone stream.  These counters
+    # explain *why* a live meter produced zero trusted samples without retaining
+    # the high-rate payload or weakening the clip/AGC/noise gates.
+    observed_sample_count: int = 0
+    finite_sample_count: int = 0
+    below_noise_sample_count: int = 0
+    agc_rejected_sample_count: int = 0
+    nonfinite_sample_count: int = 0
+    max_observed_rms_dbfs: float | None = None
+    max_observed_peak_dbfs: float | None = None
+    max_signal_over_noise_db: float | None = None
     error: str | None = None
     # Idempotency guard for terminal-state listening-level restore.
     restored: bool = False
+
+    @property
+    def trust_threshold_dbfs(self) -> float | None:
+        if self.noise_floor_dbfs is None or self.trust_margin_db is None:
+            return None
+        return self.noise_floor_dbfs + self.trust_margin_db
+
+    @property
+    def trust_deficit_db(self) -> float | None:
+        threshold = self.trust_threshold_dbfs
+        if threshold is None or self.max_observed_rms_dbfs is None:
+            return None
+        return max(0.0, threshold - self.max_observed_rms_dbfs)
 
     def snapshot(self) -> dict[str, Any]:
         def r(x: float | None) -> float | None:
@@ -592,8 +617,19 @@ class RampData:
             "window_shortfall_db": r(self.window_shortfall_db),
             "settled_spread_db": r(self.settled_spread_db),
             "noise_floor_dbfs": r(self.noise_floor_dbfs),
+            "trust_margin_db": r(self.trust_margin_db),
+            "trust_threshold_dbfs": r(self.trust_threshold_dbfs),
+            "trust_deficit_db": r(self.trust_deficit_db),
             "agc_frozen": self.agc_frozen,
             "trusted_sample_count": self.trusted_sample_count,
+            "observed_sample_count": self.observed_sample_count,
+            "finite_sample_count": self.finite_sample_count,
+            "below_noise_sample_count": self.below_noise_sample_count,
+            "agc_rejected_sample_count": self.agc_rejected_sample_count,
+            "nonfinite_sample_count": self.nonfinite_sample_count,
+            "max_observed_rms_dbfs": r(self.max_observed_rms_dbfs),
+            "max_observed_peak_dbfs": r(self.max_observed_peak_dbfs),
+            "max_signal_over_noise_db": r(self.max_signal_over_noise_db),
             "error": self.error,
             "restored": self.restored,
         }
@@ -790,6 +826,7 @@ class RampController:
         self.data = d = RampData(
             current_main_volume_db=cfg.start_db,
             noise_floor_dbfs=noise_floor_dbfs,
+            trust_margin_db=cfg.trust_margin_db,
         )
         self._main_volume_setter = set_main_volume_db
         self._lock_requested = False
@@ -896,6 +933,12 @@ class RampController:
                 window=f"[{cfg.window_low_dbfs:.0f},{cfg.window_high_dbfs:.0f}]",
                 rate_db_s=f"{cfg.ramp_rate:.2f}",
                 safety_timeout_s=f"{cfg.safety_timeout:.0f}",
+                trust_margin_db=f"{cfg.trust_margin_db:.1f}",
+                trust_threshold_dbfs=(
+                    f"{d.trust_threshold_dbfs:.1f}"
+                    if d.trust_threshold_dbfs is not None
+                    else ""
+                ),
             )
 
             # Audio-safety order: quiet start BEFORE the tone. ensure_future
@@ -1054,6 +1097,31 @@ class RampController:
                         event="ramp_error",
                         level=logging.WARNING,
                         reason="no_usable_samples",
+                        observed_samples=d.observed_sample_count,
+                        finite_samples=d.finite_sample_count,
+                        below_noise_samples=d.below_noise_sample_count,
+                        agc_rejected_samples=d.agc_rejected_sample_count,
+                        max_rms_dbfs=(
+                            f"{d.max_observed_rms_dbfs:.1f}"
+                            if d.max_observed_rms_dbfs is not None
+                            else ""
+                        ),
+                        max_signal_over_noise_db=(
+                            f"{d.max_signal_over_noise_db:.1f}"
+                            if d.max_signal_over_noise_db is not None
+                            else ""
+                        ),
+                        trust_margin_db=f"{cfg.trust_margin_db:.1f}",
+                        trust_threshold_dbfs=(
+                            f"{d.trust_threshold_dbfs:.1f}"
+                            if d.trust_threshold_dbfs is not None
+                            else ""
+                        ),
+                        trust_deficit_db=(
+                            f"{d.trust_deficit_db:.1f}"
+                            if d.trust_deficit_db is not None
+                            else ""
+                        ),
                     )
                 await _set(d.current_main_volume_db + cfg.step_db)
 
@@ -1270,6 +1338,27 @@ class RampController:
         trusted: list[LevelSample] = []
         floor = d.noise_floor_dbfs
         for s in batch:
+            d.observed_sample_count += 1
+            finite = math.isfinite(s.rms_dbfs) and math.isfinite(s.peak_dbfs)
+            if finite:
+                d.finite_sample_count += 1
+                d.max_observed_rms_dbfs = (
+                    s.rms_dbfs
+                    if d.max_observed_rms_dbfs is None
+                    else max(d.max_observed_rms_dbfs, s.rms_dbfs)
+                )
+                d.max_observed_peak_dbfs = (
+                    s.peak_dbfs
+                    if d.max_observed_peak_dbfs is None
+                    else max(d.max_observed_peak_dbfs, s.peak_dbfs)
+                )
+                if floor is not None:
+                    margin = s.rms_dbfs - floor
+                    d.max_signal_over_noise_db = (
+                        margin
+                        if d.max_signal_over_noise_db is None
+                        else max(d.max_signal_over_noise_db, margin)
+                    )
             if s.clip:
                 d.state = RampState.ABORTED
                 d.error = "clip detected"
@@ -1282,14 +1371,17 @@ class RampController:
                     peak_dbfs=f"{s.peak_dbfs:.1f}",
                 )
                 return trusted
-            if not (math.isfinite(s.rms_dbfs) and math.isfinite(s.peak_dbfs)):
+            if not finite:
+                d.nonfinite_sample_count += 1
                 continue  # hostile/broken payload; liveness only, never trusted
             if not s.agc_frozen:
                 d.agc_frozen = False
+                d.agc_rejected_sample_count += 1
                 # AGC-compressed: usable as a liveness signal but never as a
                 # trusted level. Skip it from the trusted set.
                 continue
             if floor is not None and s.rms_dbfs < floor + cfg.trust_margin_db:
+                d.below_noise_sample_count += 1
                 continue  # ambient-dominated; not trustable
             trusted.append(s)
         return trusted

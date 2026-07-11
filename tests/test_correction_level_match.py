@@ -43,6 +43,30 @@ from jasper.correction.level_match import (
 FAST = dict(settle_hold_s=0.5, max_loop_latency_s=0.5, settle_min_samples=2)
 
 
+def test_room_cap_keeps_attenuated_stimulus_inside_digital_envelope():
+    from jasper.audio_measurement.excitation import (
+        AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+    )
+    from jasper.correction.session import (
+        ROOM_LEVEL_CAP_BUMP_DB,
+        ROOM_LEVEL_CAP_CEIL_DB,
+    )
+
+    shared = MeasurementRamp()
+    room = MeasurementRamp(
+        cap_bump_db=ROOM_LEVEL_CAP_BUMP_DB,
+        cap_ceil_db=ROOM_LEVEL_CAP_CEIL_DB,
+    )
+
+    assert shared.cap_ceil_db == -3.0
+    assert ROOM_LEVEL_CAP_BUMP_DB == 15.0
+    assert room.cap_ceil_db == 0.0
+    assert AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS == -12.0
+    assert (
+        room.cap_ceil_db + AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
+    ) == -12.0
+
+
 # --- level-batch parsing ------------------------------------------------------
 
 
@@ -723,7 +747,7 @@ async def test_session_run_level_match_stores_geometry_lock(tmp_path):
 async def test_room_session_accepts_stable_bounded_low_level(tmp_path):
     """A quiet external amp can proceed only with explicit degraded evidence."""
     sess = _make_session(tmp_path)
-    chain = FakeChain(gain_db=-5.0, start_vol=-30.0, nf=-60.0)
+    chain = FakeChain(gain_db=-10.0, start_vol=-30.0, nf=-60.0)
     clock = Clock()
 
     outcome = await sess.run_level_match(
@@ -741,10 +765,46 @@ async def test_room_session_accepts_stable_bounded_low_level(tmp_path):
 
     assert outcome.ramp.state is RampState.LOCKED
     assert outcome.ramp.lock_kind is RampLockKind.BOUNDED_LOW_LEVEL
+    assert outcome.ramp.cap_db == pytest.approx(-15.0)
     assert outcome.ramp.window_shortfall_db > 0.0
     assert outcome.ramp.settled_snr_db >= MeasurementRamp.trust_margin_db
     assert outcome.ramp.restored is True
     assert chain._vol == pytest.approx(-30.0)
+
+
+@pytest.mark.asyncio
+async def test_room_session_jts3_evidence_locks_and_restores_exactly(tmp_path):
+    """Pin the live UMIK miss at -3.15 dB and room-only raised-cap recovery."""
+    sess = _make_session(tmp_path)
+    original = -15.15
+    chain = FakeChain(
+        gain_db=-31.88 - (-3.15),
+        start_vol=original,
+        nf=-41.3,
+    )
+    clock = Clock()
+
+    outcome = await sess.run_level_match(
+        MicGeometry.LISTENING_POSITION.value,
+        get_main_volume_db=chain.get_vol,
+        set_main_volume_db=chain.set_vol,
+        play_continuous_tone=chain.tone,
+        cancel_tone=chain.cancel_tone,
+        read_status=chain.read_status,
+        post_host_event=chain.post_host_event,
+        noise_floor_dbfs=chain.nf,
+        clock=clock.now,
+        sleep=clock.sleep,
+    )
+
+    assert outcome.ramp.cap_db == pytest.approx(-0.15)
+    assert outcome.ramp.state is RampState.LOCKED
+    assert outcome.ramp.lock_kind is RampLockKind.BOUNDED_LOW_LEVEL
+    assert outcome.ramp.max_signal_over_noise_db >= 10.0
+    assert outcome.ramp.trust_deficit_db == 0.0
+    assert outcome.ramp.restored is True
+    assert chain._vol == pytest.approx(original)
+    assert chain.commanded[-1] == pytest.approx(original)
 
 
 @pytest.mark.asyncio
