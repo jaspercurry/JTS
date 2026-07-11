@@ -366,6 +366,28 @@ class PeeringStateMachine:
         if ev.peer_id == self._p.peer_id:
             return []  # our own multicast loopback — already in WINNER
 
+        # A live local session owns the conversation until it ends on
+        # its own terms (session stickiness — docs/HANDOFF-peering.md §1).
+        # A foreign CLAIM while we're ACTIVE is out of band: it belongs
+        # to a *different* wake elsewhere in the house (the multicast
+        # group is shared household-wide regardless of which wake a
+        # message belongs to), or it's a stray same-epoch race
+        # straggler. Either way it must NOT tear down our live session.
+        # This mirrors _on_peer_wake's "out of band" case (state
+        # WINNER/ACTIVE/SUPPRESSED ignore foreign wakes). Before this
+        # guard, ANY foreign claim unconditionally forced SUPPRESSED,
+        # silently clobbering the ACTIVE session's bookkeeping: the
+        # heartbeat-send timer was never rescheduled and the real
+        # session's END broadcast was dropped by _on_voice_ended's
+        # ACTIVE guard — an unrelated wake in another room tore down a
+        # live conversation (DA-0021).
+        if self._state is PeerState.ACTIVE:
+            logger.debug(
+                "foreign claim (peer=%s epoch=%s) ignored: local session active",
+                ev.peer_id, ev.epoch,
+            )
+            return []
+
         actions: list[Action] = []
 
         # If we were in WINNER for the same epoch, we lost a race —
