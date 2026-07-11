@@ -715,3 +715,50 @@ def test_pair_banner_renders_on_each_wizard_page(monkeypatch):
     for name, page in render_all().items():
         body = page.decode() if isinstance(page, bytes) else page
         assert "stereo pair" not in body, name
+
+
+# ----------------------------------------------------------------------
+# read_form — body bound + malformed Content-Length guard
+# ----------------------------------------------------------------------
+
+
+class _FormHandler:
+    """Minimal handler exposing headers + rfile for read_form()."""
+
+    def __init__(self, body: bytes, content_length: str | None) -> None:
+        self.headers = Message()
+        if content_length is not None:
+            self.headers["Content-Length"] = content_length
+        self.rfile = BytesIO(body)
+
+
+def test_read_form_parses_urlencoded_body():
+    body = b"name=jasper&token="
+    h = _FormHandler(body, str(len(body)))
+    assert _common.read_form(h) == {"name": "jasper", "token": ""}
+
+
+def test_read_form_returns_empty_on_missing_content_length():
+    h = _FormHandler(b"name=x", None)
+    assert _common.read_form(h) == {}
+
+
+def test_read_form_returns_empty_on_non_numeric_content_length():
+    # Previously int("garbage") crashed the handler.
+    h = _FormHandler(b"name=x", "garbage")
+    assert _common.read_form(h) == {}
+
+
+def test_read_form_rejects_oversized_body_without_reading():
+    over = str(_common.MAX_FORM_BODY_BYTES + 1)
+    h = _FormHandler(b"name=x", over)
+    assert _common.read_form(h) == {}
+    # Body was not consumed — the hostile Content-Length never triggered a read.
+    assert h.rfile.tell() == 0
+
+
+def test_read_form_accepts_body_at_the_bound():
+    payload = b"k=" + b"v" * (_common.MAX_FORM_BODY_BYTES - 2)
+    h = _FormHandler(payload, str(len(payload)))
+    parsed = _common.read_form(h)
+    assert parsed["k"] == "v" * (_common.MAX_FORM_BODY_BYTES - 2)
