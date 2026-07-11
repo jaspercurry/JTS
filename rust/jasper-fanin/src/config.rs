@@ -472,8 +472,8 @@ impl Config {
             );
         }
 
-        let sample_rate = env_u32("JASPER_FANIN_SAMPLE_RATE", 48_000)?;
-        let period_frames = env_u32("JASPER_FANIN_PERIOD_FRAMES", 256)?;
+        let sample_rate = env_u32_positive("JASPER_FANIN_SAMPLE_RATE", 48_000)?;
+        let period_frames = env_u32_positive("JASPER_FANIN_PERIOD_FRAMES", 256)?;
         let input_buffer_frames = env_u32_fallback(
             "JASPER_FANIN_INPUT_BUFFER_FRAMES",
             "JASPER_FANIN_BUFFER_FRAMES",
@@ -974,6 +974,32 @@ fn env_u32(name: &str, default: u32) -> Result<u32> {
     }
 }
 
+/// Like `env_u32`, but for a load-bearing GEOMETRY DIMENSION that must be
+/// strictly positive — `sample_rate` and `period_frames`. A parsed `0` is a
+/// legal `u32` yet a nonsensical dimension: the mixer's per-period math divides
+/// by both (`period_frames * 1e9 / sample_rate` at `mixer.rs`'s ShmRing ns/period,
+/// `(avail - target) / period_frames` in `catchup_drain_periods`, and the
+/// ms→periods conversion), all UNGUARDED. Release builds compile out the
+/// `debug_assert!(period_frames > 0)`, so a `0` divides-by-zero and panics; with
+/// `panic = "abort"` + the unit's `Restart=on-failure` that is an infinite
+/// crash-restart loop that takes ALL audio down (and the audible-cue path with
+/// it). Rather than bail — which is its OWN config-parse restart loop — fall back
+/// to the documented default with a WARN breadcrumb (the `JASPER_FANIN_HOST_CLOCK`
+/// ignore idiom), so the speaker keeps playing on a sane geometry. A non-numeric
+/// or negative value still fails loud via `env_u32` (an unambiguous operator typo,
+/// the crate's fail-loud-on-garbage contract); only a valid-but-zero dimension is
+/// recovered here.
+fn env_u32_positive(name: &str, default: u32) -> Result<u32> {
+    let parsed = env_u32(name, default)?;
+    if parsed == 0 {
+        log::warn!(
+            "event=fanin.config_ignored key={name} value=0 reason=dimension_must_be_positive default={default}"
+        );
+        return Ok(default);
+    }
+    Ok(parsed)
+}
+
 fn env_u64(name: &str, default: u64) -> Result<u64> {
     match std::env::var(name) {
         Ok(s) if !s.trim().is_empty() => s
@@ -1189,6 +1215,64 @@ mod tests {
                 assert_eq!(cfg.usb_direct_device, "hw:UAC2Gadget");
             },
         );
+    }
+
+    #[test]
+    fn zero_dimension_falls_back_to_default_not_divide_by_zero() {
+        // DA-0040: `sample_rate` and `period_frames` are load-bearing geometry
+        // dimensions the mixer divides by (period ns/period, catchup-drain
+        // periods, ms→periods) with NO runtime guard in release builds. A
+        // valid-but-zero env value must NOT construct a Config that divides by
+        // zero and panic-aborts into a crash loop — it falls back to the
+        // documented default (warn breadcrumb emitted).
+        with_env(&[("JASPER_FANIN_PERIOD_FRAMES", Some("0"))], || {
+            let cfg = Config::from_env().expect("zero period_frames must not fail to parse");
+            assert_eq!(
+                cfg.period_frames, 256,
+                "period_frames=0 must fall back to the 256 default, never 0"
+            );
+        });
+        with_env(&[("JASPER_FANIN_SAMPLE_RATE", Some("0"))], || {
+            let cfg = Config::from_env().expect("zero sample_rate must not fail to parse");
+            assert_eq!(
+                cfg.sample_rate, 48_000,
+                "sample_rate=0 must fall back to the 48000 default, never 0"
+            );
+        });
+        // Whitespace-wrapped zero is still zero.
+        with_env(&[("JASPER_FANIN_PERIOD_FRAMES", Some("  0 "))], || {
+            let cfg = Config::from_env().expect("parses");
+            assert_eq!(cfg.period_frames, 256);
+        });
+    }
+
+    #[test]
+    fn positive_dimension_passes_valid_values_unchanged() {
+        // DA-0040 must not perturb valid inputs: a legal positive value flows
+        // through env_u32_positive unchanged. (period_frames must stay a whole
+        // multiple of the 128-frame ring slot under the default loopback
+        // coupling only; 512 satisfies it regardless.)
+        with_env(&[("JASPER_FANIN_PERIOD_FRAMES", Some("512"))], || {
+            let cfg = Config::from_env().expect("parses");
+            assert_eq!(cfg.period_frames, 512);
+        });
+        with_env(&[("JASPER_FANIN_SAMPLE_RATE", Some("44100"))], || {
+            let cfg = Config::from_env().expect("parses");
+            assert_eq!(cfg.sample_rate, 44_100);
+        });
+    }
+
+    #[test]
+    fn non_numeric_dimension_still_fails_loud() {
+        // env_u32_positive delegates to env_u32 for parsing, so a garbage
+        // (non-numeric) value still FAILS LOUD — only the valid-but-zero case is
+        // recovered. This pins the boundary: 0 → default+warn, garbage → error.
+        with_env(&[("JASPER_FANIN_PERIOD_FRAMES", Some("garbage"))], || {
+            assert!(
+                Config::from_env().is_err(),
+                "a non-numeric period_frames must still fail loud, not fall back"
+            );
+        });
     }
 
     #[test]
