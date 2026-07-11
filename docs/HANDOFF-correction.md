@@ -198,8 +198,8 @@
   legacy local-microphone preflight. Room verification's armed callback is
   state-aware (a required `state` parameter), so the relay passes the frozen
   setup binding through the zero-argument compatibility seam before playback.
-- 🧪 **Phone-mic capture relay path (fresh-install default,
-  on-device-pending).** As of 2026-07-02 fresh installs default to an
+- ✅ **Phone-mic capture relay path (fresh-install default,
+  JTS3-verified).** As of 2026-07-02 fresh installs default to an
   alternative capture transport that moves the room capture setup/recording page
   to a trusted cloud origin
   (`capture.jasper.tech`) and pulls the WAV back through a stateless
@@ -231,9 +231,13 @@
   Pi publishes `sweep_complete` through the relay. The Pi also includes a
   local `return_url` in each relay spec, so once the phone upload finishes the
   capture page shows a **Back to speaker** CTA to the originating local
-  management page (for example `http://jts5.local/correction/room/`). The live
-  `getUserMedia`/CSP/Wake-Lock path + the adapter's background sweep playback
-  still need on-device validation. Single source of truth for the design,
+  management page (for example `http://jts5.local/correction/room/`). On
+  2026-07-11, JTS3 completed the full UMIK-2 flow on the production relay:
+  guided setup without a calibration file, automatic level lock, protected room
+  sweep, four-filter apply, and post-apply verification to terminal `verified`.
+  The live `getUserMedia`/CSP/Wake-Lock path and adapter playback therefore have
+  on-device evidence; other speaker/browser combinations remain ordinary
+  hardware coverage, not an architectural blocker. Single source of truth for the design,
   deploy, and remaining work:
   [phone-mic-relay-plan.md](phone-mic-relay-plan.md). Do not restate it here.
 - ✅ **HTTPS measurement hub shell.** As of 2026-06-23,
