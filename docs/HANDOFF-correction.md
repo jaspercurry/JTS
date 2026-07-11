@@ -187,7 +187,7 @@
   starting or awaiting the phone, so graph apply cannot race measurement
   playback or its rollback. The
   public page release that
-  implements this contract is `capture_page_build=20260711.3`, supporting
+  implements this contract is `capture_page_build=20260711.4`, supporting
   protocols 1 and 2; publish it
   before deploying a Pi that emits v2 specs.
 - 🧪 **Phone-mic capture relay path (fresh-install default,

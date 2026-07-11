@@ -276,6 +276,11 @@ export async function createMonoRecorder(options = {}) {
       stream: opened.stream,
       sourceNode: sourceNode,
       workletNode: workletNode,
+      // The source track may expose more than one channel (UMIK-2 does in
+      // Chrome), but the worklet above deliberately captures input channel 0.
+      // Make that normalized output contract explicit so callers do not
+      // confuse USB source width with the mono evidence JTS actually records.
+      capturedChannelCount: 1,
       start() {
         workletNode.port.postMessage({type: 'start'});
       },

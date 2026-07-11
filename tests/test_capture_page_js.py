@@ -90,11 +90,13 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260711.3",
+        "capture_page_build": "20260711.4",
     }
-    assert "main.js?v=20260711-3" in index_html
+    assert "main.js?v=20260711-4" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
+    assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
+    assert 'from "./constraints.js?v=20260711-4"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
 
 
@@ -167,6 +169,24 @@ def test_capture_page_level_ramp_uses_meter_protocol_without_wav_upload():
     assert "float32ToWavBlob" not in level_path
     assert "encryptWav" not in level_path
     assert "putBlob" not in level_path
+
+
+def test_capture_page_compares_spec_to_normalized_mono_capture_width():
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    constraints_js = (_REPO / "capture-page/js/constraints.js").read_text(
+        encoding="utf-8",
+    )
+    measurement_js = (
+        _REPO / "deploy/assets/shared/js/measurement-audio.js"
+    ).read_text(encoding="utf-8")
+
+    assert "capturedChannelCount: 1" in measurement_js
+    assert "var ch=inp[0]&&inp[0][0]" in measurement_js
+    assert "recorder.capturedChannelCount" in main_js
+    assert "source_channel_count: realized.sourceChannelCount" in main_js
+    assert "captured_channel_count: realized.capturedChannelCount" in main_js
+    assert "capturedChannelCount = null" in constraints_js
+    assert "checkedChannelCount === wantChannels" in constraints_js
 
 
 def test_capture_page_level_ramp_uses_guided_mic_calibration_setup():

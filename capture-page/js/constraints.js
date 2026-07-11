@@ -27,7 +27,7 @@
 const PROCESSING_FLAGS = ["echoCancellation", "autoGainControl", "noiseSuppression"];
 
 // Compare what getUserMedia actually gave us against the spec.
-export function verifyRealizedConstraints(settings, spec) {
+export function verifyRealizedConstraints(settings, spec, capturedChannelCount = null) {
   const realized = settings && typeof settings === "object" ? settings : {};
   const wanted = (spec && spec.constraints) || {};
 
@@ -36,16 +36,26 @@ export function verifyRealizedConstraints(settings, spec) {
     (flag) => wanted[flag] === false && realized[flag] === true,
   );
 
-  // Sample rate / channel count, when the browser reports them.
+  // Sample rate, when the browser reports it. Channel width is checked against
+  // the recorder's normalized output when available: a USB mic may expose a
+  // multi-channel source track even though createMonoRecorder deterministically
+  // captures channel 0 into mono evidence.
   const wantRate = spec && spec.sample_rate_hz;
   const sampleRateOk =
     !wantRate || !realized.sampleRate || realized.sampleRate === wantRate;
   const wantChannels = (spec && spec.channels) || 1;
+  const normalizedChannels =
+    Number.isInteger(capturedChannelCount) && capturedChannelCount > 0
+      ? capturedChannelCount
+      : null;
+  const checkedChannelCount = normalizedChannels || realized.channelCount;
   const channelsOk =
-    !realized.channelCount || realized.channelCount === wantChannels;
+    !checkedChannelCount || checkedChannelCount === wantChannels;
 
   return {
     settings: realized,
+    sourceChannelCount: realized.channelCount || null,
+    capturedChannelCount: normalizedChannels,
     dirtyFlags,
     sampleRateOk,
     channelsOk,

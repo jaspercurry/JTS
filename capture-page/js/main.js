@@ -19,7 +19,10 @@ import {
 } from "./render.js?v=20260711-1";
 import { RelayClient } from "./relay-client.js?v=20260711-3";
 import { importContentKey, encryptWav } from "./crypto.js";
-import { constraintDecision, verifyRealizedConstraints } from "./constraints.js";
+import {
+  constraintDecision,
+  verifyRealizedConstraints,
+} from "./constraints.js?v=20260711-4";
 import { safeReturnUrl } from "./return-url.js";
 import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
 import { runLevelRampProtocol } from "./level-events.js";
@@ -40,7 +43,7 @@ import {
   delayMs,
   float32ToWavBlob,
   rmsToDbfs,
-} from "./measurement-audio.js?v=20260710-1";
+} from "./measurement-audio.js?v=20260711-4";
 
 const PAGE_VERSION_URL = new URL("../version.json", import.meta.url);
 
@@ -736,13 +739,20 @@ async function captureAmbientNoise(recorder, spec) {
 function inspectRecorder(recorder, spec) {
   const track = recorder.stream.getAudioTracks ? recorder.stream.getAudioTracks()[0] : null;
   const settings = track && track.getSettings ? track.getSettings() : {};
+  const realized = verifyRealizedConstraints(
+    settings,
+    spec,
+    recorder.capturedChannelCount,
+  );
   return {
     track,
     settings,
-    decision: constraintDecision(verifyRealizedConstraints(settings, spec), spec),
+    decision: constraintDecision(realized, spec),
     device: {
       label: (track && track.label) || "",
       device_id: settings.deviceId || "",
+      source_channel_count: realized.sourceChannelCount,
+      captured_channel_count: realized.capturedChannelCount,
     },
   };
 }

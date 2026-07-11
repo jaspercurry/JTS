@@ -1147,6 +1147,10 @@ def _sanitize_input_device(raw: Any) -> dict[str, Any] | None:
     """
     if not isinstance(raw, dict):
         return None
+    source_channel_count = _optional_float(raw.get("source_channel_count"))
+    captured_channel_count = _optional_float(
+        raw.get("captured_channel_count")
+    )
     sanitized = {
         "device_id_hash": _device_id_hash(raw.get("device_id")),
         "requested_device_id_hash": _device_id_hash(
@@ -1156,7 +1160,17 @@ def _sanitize_input_device(raw: Any) -> dict[str, Any] | None:
         "label": _short_text(raw.get("label")),
         "browser_label": _short_text(raw.get("browser_label")),
         "sample_rate": _optional_float(raw.get("sample_rate")),
-        "channel_count": _optional_float(raw.get("channel_count")),
+        # `channel_count` remains the normalized artifact-width contract used
+        # by browser-audio quality checks. Preserve the wider raw USB source
+        # width separately for diagnostics (for example UMIK-2 source=2,
+        # captured=1).
+        "channel_count": (
+            captured_channel_count
+            if captured_channel_count is not None
+            else _optional_float(raw.get("channel_count"))
+        ),
+        "source_channel_count": source_channel_count,
+        "captured_channel_count": captured_channel_count,
         "echo_cancellation": _optional_bool(raw.get("echo_cancellation")),
         "noise_suppression": _optional_bool(raw.get("noise_suppression")),
         "auto_gain_control": _optional_bool(raw.get("auto_gain_control")),
