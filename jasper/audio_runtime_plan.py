@@ -49,6 +49,7 @@ from jasper.fanin_coupling import (
     COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
     COUPLING_TRANSPORT_PIPE,
+    OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     PIPE_PATH_ENV_VAR,
     OUTPUTD_PIPE_PATH_ENV_VAR,
     RING_CAMILLA_CHUNKSIZE,
@@ -60,6 +61,7 @@ from jasper.fanin_coupling import (
     coupling_capture_kwargs_from_env,
     member_kwargs_are_pipe_sink,
     resolve_coupling,
+    resolve_outputd_content_bridge,
     resolve_pipe_path,
     resolve_outputd_pipe_path,
     ring_pair_is_coherent,
@@ -2177,9 +2179,27 @@ def _resolve_outputd_content_buffer_int(
     operator_value, operator_error = _positive_int(operator_raw)
     override_value, override_error = _positive_int(override_raw)
     generated_value, generated_error = _positive_int(generated_raw)
+    # The low-latency route policy for the outputd content buffer is architecturally
+    # INERT under the shm_ring content bridge (Ring B): outputd never opens the
+    # content ALSA PCM, so `configure_pcm` — the only consumer of
+    # JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES — is skipped (alsa_backend.rs). Emitting
+    # 1536 there is one-knob-two-truths drift: the env says 1536 while the honest
+    # /state ring capacity is n_slots x period. Drop the route policy under shm_ring
+    # so the reconciler unsets the key (falling back to outputd's compile-time
+    # default, equally inert but non-misleading). Keyed on the OUTPUTD BRIDGE read
+    # from generated_env (outputd.env) — the value the daemon actually consumes to
+    # decide whether to open the content PCM — NOT the coupling: the writer-side
+    # `outputd_latency_floor_actions` path does not thread fanin.env, so the coupling
+    # is invisible there, but the outputd bridge is always in outputd.env. Uses the
+    # fail-safe resolver so only a genuine `shm_ring` (never `rate_match`, which DOES
+    # open the content PCM, or a garbage value) suppresses the policy.
+    generated_bridge = resolve_outputd_content_bridge(
+        _raw(generated_env, OUTPUTD_CONTENT_BRIDGE_KEY)
+    )
     route_value = (
         DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
         if route.route_id == ROUTE_USB_LOW_LATENCY_48K
+        and generated_bridge != OUTPUTD_CONTENT_BRIDGE_SHM_RING
         else None
     )
     warnings: list[str] = []

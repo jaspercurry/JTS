@@ -100,7 +100,14 @@ impl AlsaBackend {
         // owns the program: the local FIFO pipe, OR (PROTOTYPE) the SHM ring.
         // Both feed `content_buf` directly in the run loop; opening snd-aloop
         // here would leave an unread capture lane. A synthetic NegotiatedPcm
-        // stands in for the /state contract.
+        // stands in for the /state contract, with `buffer_frames = period_frames`:
+        // there is no ALSA capture ring here, so this is a period-sized stand-in,
+        // NOT a real jitter buffer. The honest buffering depth of each non-ALSA
+        // source is reported separately in /state so no consumer is misled:
+        // the local pipe's byte capacity rides `content.local_pipe`, and the SHM
+        // ring's TRUE capacity (n_slots x period) rides `content.ring.capacity_frames`
+        // (see OutputdState::snapshot_json). jasper-doctor validates those instead
+        // of applying the ALSA ">= 2x period" floor to this synthetic.
         let skip_content_pcm = config.local_content_pipe.is_some()
             || config.content_bridge_mode == crate::config::ContentBridgeMode::ShmRing;
         let (content, content_negotiated) = if skip_content_pcm {

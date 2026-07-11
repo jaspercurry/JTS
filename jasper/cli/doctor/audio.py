@@ -2419,6 +2419,7 @@ def check_outputd_service() -> CheckResult:
         )
     from jasper.fanin.coupling_reconcile import read_persisted_coupling
     from jasper.fanin_coupling import (
+        COUPLING_SHM_RING,
         COUPLING_TRANSPORT_PIPE,
         OUTPUTD_PIPE_PATH_ENV_VAR,
         resolve_outputd_pipe_path,
@@ -2482,6 +2483,7 @@ def check_outputd_service() -> CheckResult:
             )
     local_pipe_detail = f"content_source={actual_content_source}"
     local_pipe: dict[str, object] | None = None
+    ring_detail: str = ""
     if coupling == COUPLING_TRANSPORT_PIPE:
         outputd_pipe_raw = str(
             outputd_env.get(OUTPUTD_PIPE_PATH_ENV_VAR) or ""
@@ -2714,6 +2716,75 @@ def check_outputd_service() -> CheckResult:
                 f"available_ms={available_ms:.1f}, "
                 f"budget_frames={max_available_frames}",
             )
+    elif coupling == COUPLING_SHM_RING:
+        # Ring B (SHM ping-pong content ring): outputd reads the post-DSP program
+        # from an n-slot SHM ring, NOT an ALSA capture PCM (AlsaBackend::new never
+        # opens the content PCM under shm_ring). content.buffer_frames is therefore
+        # a synthetic period-sized stand-in, so the generic ">= 2x period" ALSA
+        # jitter-margin floor does not apply — a bounded n-slot queue is not an ALSA
+        # buffer, and every shm_ring box would otherwise structurally fail that floor
+        # (content.buffer_frames == period < 2 x period). Validate the TRUE ring
+        # geometry from content.ring instead (the honesty contract outputd publishes
+        # next to the synthetic; capacity_frames == n_slots x slot_frames).
+        if not isinstance(content_buffer, int) or content_buffer < period_frames:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                f"shm_ring content.buffer_frames={content_buffer!r}; expected >= "
+                f"one period ({period_frames})",
+            )
+        ring = content.get("ring")
+        if not isinstance(ring, dict):
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                "content.source='shm_ring' but STATUS missing content.ring geometry "
+                "contract (n_slots/slot_frames/capacity_frames). Redeploy outputd.",
+            )
+        ring_slots = ring.get("slots")
+        ring_slot_frames = ring.get("slot_frames")
+        ring_capacity = ring.get("capacity_frames")
+        if not isinstance(ring_slots, int) or ring_slots < 2:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                f"shm_ring content.ring.slots={ring_slots!r}; expected >= 2 "
+                "(ping-pong minimum)",
+            )
+        if not isinstance(ring_slot_frames, int) or ring_slot_frames != period_frames:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                f"shm_ring content.ring.slot_frames={ring_slot_frames!r}; expected "
+                f"== dac.period_frames ({period_frames}) — the ring slot must match "
+                "the DAC period.",
+            )
+        expected_capacity = ring_slots * ring_slot_frames
+        if not isinstance(ring_capacity, int) or ring_capacity != expected_capacity:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                f"shm_ring content.ring.capacity_frames={ring_capacity!r}; expected "
+                f"n_slots*slot_frames ({expected_capacity})",
+            )
+        # Runtime health (occupancy/attach) rides the top-level shm_ring block; a
+        # transient empty ring is normal (idle), so surface it in the detail without
+        # gating on it here.
+        shm_ring_block = data.get("shm_ring")
+        ring_occupancy = (
+            shm_ring_block.get("occupancy")
+            if isinstance(shm_ring_block, dict) else None
+        )
+        ring_attached = (
+            bool(shm_ring_block.get("attached", False))
+            if isinstance(shm_ring_block, dict) else None
+        )
+        ring_detail = (
+            f", shm_ring_slots={ring_slots}, shm_ring_slot_frames={ring_slot_frames}"
+            f", shm_ring_capacity_frames={ring_capacity}"
+            f", shm_ring_occupancy={ring_occupancy}"
+            f", shm_ring_attached={ring_attached}"
+        )
     elif not isinstance(content_buffer, int) or content_buffer < period_frames * 2:
         return CheckResult(
             "jasper-outputd",
@@ -2893,6 +2964,7 @@ def check_outputd_service() -> CheckResult:
         f"progress_age_ms={progress_age}"
         f"{active_detail}"
         f"{dual_detail}"
+        f"{ring_detail}"
         f"{transport_detail}",
     )
 

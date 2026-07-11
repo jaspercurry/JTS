@@ -53,6 +53,18 @@ others:
 | CamillaDSP ring `rate_adjust` | off | one-clock blocking chain; the rate-adjust-on Ring A+B lesson packed queues |
 | Ring B `jts_ring_playback` | 2 slots × 128 frames | already minimal; unchanged |
 
+The outputd content-buffer env has no place in this ring-coupled set: under
+`shm_ring` outputd reads Ring B directly and never opens an ALSA content capture
+PCM, so `JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES` is architecturally inert (its only
+consumer, `configure_pcm`, is skipped). `jasper.audio_runtime_plan` therefore does
+**not** emit it under the ring bridge — the reconciler unsets the key and outputd
+uses its compile-time default. outputd's `/state` publishes the honest Ring B
+capacity in `content.ring.capacity_frames` (`n_slots × slot_frames`) next to a
+synthetic period-sized `content.buffer_frames`, and `jasper-doctor` validates that
+ring geometry rather than the ALSA `>= 2× period` jitter floor. The `1536` content
+buffer in the loopback-fallback env block below is a real, consumed value **only**
+on the `direct` bridge, where outputd does open the content capture PCM.
+
 Measured reconstruction on jts.local: the 8-slot/deep-queue shipped default was
 ≈90-95 ms e2e, while the validated 2-slot Ring A plus chunk 128 / target 128 /
 queue 1 product shape is ≈48.8 ms e2e. The 2026-07-06 primed product-path run
