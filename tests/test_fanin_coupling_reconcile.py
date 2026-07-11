@@ -2114,6 +2114,87 @@ def test_coordinated_resume_failure_is_surfaced():
     assert "camilla resume failed" in r.detail
 
 
+def test_coordinated_fanin_restart_helper_reads_persisted_coupling(
+    tmp_path, monkeypatch,
+):
+    """coordinated_fanin_restart — the public entry point for out-of-module
+    deliberate restarts (buffer_reconcile's adaptive-buffer path) — reads the
+    ACTIVE coupling fresh from fanin.env and coordinates camilla only on a
+    ring/pipe coupling; loopback (and the fail-safe absent-file default) keeps
+    the single plain fan-in restart."""
+    from jasper.fanin.coupling_reconcile import coordinated_fanin_restart
+
+    calls: list[tuple] = []
+
+    def fake_manage(*units, verb="restart", reason="", no_block=True, timeout=5.0):
+        calls.append((units[0], verb, reason))
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units", fake_manage,
+    )
+
+    env = tmp_path / "fanin.env"
+    _write(env, f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n")
+    ok, detail = coordinated_fanin_restart(
+        "t", phase="adaptive_buffer", env_path=env,
+    )
+    assert ok is True and detail == ""
+    assert calls == [
+        ("jasper-camilla.service", "stop", "t"),
+        ("jasper-fanin.service", "restart", "t"),
+        ("jasper-camilla.service", "start", "t"),
+    ]
+
+    calls.clear()
+    _write(env, f"{COUPLING_ENV_VAR}={COUPLING_LOOPBACK}\n")
+    ok, _detail = coordinated_fanin_restart(
+        "t", phase="adaptive_buffer", env_path=env,
+    )
+    assert ok is True
+    assert calls == [("jasper-fanin.service", "restart", "t")]
+
+
+def test_coordinated_fanin_restart_helper_ok_is_fanin_restarted(
+    tmp_path, monkeypatch,
+):
+    """The helper's ok is 'fan-in restarted' — the contract a caller's SF-1
+    rollback keys off. A camilla-RESUME failure after a successful fan-in
+    restart is carried in detail but does not flip ok (the daemon IS running
+    the new env; OnFailure=jasper-camilla-recover owns the resume). A camilla
+    STOP failure aborts the restart -> ok=False."""
+    from jasper.fanin.coupling_reconcile import coordinated_fanin_restart
+
+    env = tmp_path / "fanin.env"
+    _write(env, f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n")
+
+    def manage_start_fails(*units, verb="restart", reason="", no_block=True,
+                           timeout=5.0):
+        if verb == "start":
+            return {"ok": False, "error": "start refused"}
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units", manage_start_fails,
+    )
+    ok, detail = coordinated_fanin_restart("t", phase="test", env_path=env)
+    assert ok is True
+    assert "camilla resume failed" in detail
+
+    def manage_stop_fails(*units, verb="restart", reason="", no_block=True,
+                          timeout=5.0):
+        if verb == "stop":
+            return {"ok": False, "error": "stop refused"}
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units", manage_stop_fails,
+    )
+    ok, detail = coordinated_fanin_restart("t", phase="test", env_path=env)
+    assert ok is False
+    assert "aborted fan-in restart" in detail
+
+
 def test_camilla_stop_start_are_broker_authorized():
     """Contract pin (AGENTS.md 'pin promises with tests'): the coordinated restart
     stops+starts jasper-camilla through the broker, so pin that the broker + polkit

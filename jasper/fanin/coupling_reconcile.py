@@ -375,14 +375,16 @@ def _restart_fanin_coordinated(
     Ring B writer: outputd's reader is DAC-clocked -- an absent writer yields paced
     silence, not a busy-spin -- so only the camilla side needs coordination.)
 
-    LIMITATION: this only coordinates the reconciler's OWN fan-in restarts. An
-    UNCOORDINATED fan-in death (a crash / OOM-kill / an external ``systemctl restart
-    jasper-fanin`` / jasper.fanin.buffer_reconcile's adaptive-buffer restart, which
-    is default-OFF behind JASPER_FANIN_ADAPTIVE_BUFFER and must be coordinated or
-    coupling-gated before that flag is enabled on a shm_ring box) still detaches
-    the writer with camilla live and reproduces the spin/SIGKILL. The root-cause fix is the ring-ioplug capture-reader pacing (it
-    must block, not busy-spin, when the writer is absent) -- a separate scheduled
-    follow-up. See ``docs/HANDOFF-usb-low-latency.md`` (USB DIRECT combo section).
+    LIMITATION: this only coordinates DELIBERATE Python-side fan-in restarts (the
+    reconciler's own, plus out-of-module callers routed through
+    :func:`coordinated_fanin_restart` — jasper.fanin.buffer_reconcile's
+    adaptive-buffer restart uses that entry point). An UNCOORDINATED fan-in death
+    (a crash / OOM-kill / an external ``systemctl restart jasper-fanin``) still
+    detaches the writer with camilla live and reproduces the spin/SIGKILL. The
+    root-cause fix is the ring-ioplug capture-reader pacing (it
+    must block, not busy-spin, when the writer is absent) -- landing separately in
+    ``c/jts-ring-ioplug/``. See ``docs/HANDOFF-usb-low-latency.md`` (USB DIRECT
+    combo section).
     """
     if coupling == COUPLING_LOOPBACK:
         # snd-aloop decouples fan-in from camilla — a plain restart is safe.
@@ -439,6 +441,48 @@ def _restart_fanin_coordinated(
         ok=fan_ok and start_ok, fanin_restarted=fan_ok, coordinated=True,
         camilla_stopped=True, camilla_started=start_ok, detail=detail,
     )
+
+
+def coordinated_fanin_restart(
+    reason: str,
+    *,
+    phase: str,
+    env_path: str | Path = FANIN_ENV_PATH,
+) -> tuple[bool, str]:
+    """CamillaDSP-coordinated fan-in restart for OUT-OF-MODULE callers. (ok, detail).
+
+    The public entry point for any deliberate fan-in restart that does not go
+    through :func:`reconcile_coupling` itself (today:
+    ``jasper.fanin.buffer_reconcile``'s adaptive-buffer restart, ``phase=
+    "adaptive_buffer"``). Reads the ACTIVE coupling fresh from ``env_path`` (the
+    daemons' next-start truth, fail-safe to loopback) and dispatches through
+    :func:`_restart_fanin_coordinated` with the standard broker ops, so a caller
+    on a live ring/pipe coupling pauses camilla around the restart instead of
+    RTTIME-SIGKILLing it; loopback keeps its single plain fan-in restart.
+
+    ``ok`` is "fan-in restarted" — the contract a caller's write/rollback ladder
+    keys off (buffer_reconcile's SF-1 rolls its env back only when the daemon did
+    NOT restart into it). A camilla-resume failure after a successful fan-in
+    restart is logged + carried in ``detail`` but does not flip ``ok``: the
+    daemon IS running the new env, and ``OnFailure=jasper-camilla-recover``
+    remains the resume backstop.
+    """
+    coupling = read_persisted_coupling(env_path)
+    coord = _restart_fanin_coordinated(
+        lambda: _restart_fanin(reason=reason),
+        lambda: _stop_camilla(reason=reason),
+        lambda: _start_camilla(reason=reason),
+        coupling=coupling, reason=reason, phase=phase,
+    )
+    log_event(
+        logger, "fanin.coupling_reconcile",
+        result="coordinated_fanin_restarted" if coord.fanin_restarted
+        else "coordinated_fanin_restart_failed",
+        reason=reason, phase=phase, coupling=coupling,
+        camilla_coordinated=coord.coordinated, detail=coord.detail or None,
+        level=logging.INFO if coord.fanin_restarted else logging.WARNING,
+    )
+    return coord.fanin_restarted, coord.detail
 
 
 def reconcile_coupling(
