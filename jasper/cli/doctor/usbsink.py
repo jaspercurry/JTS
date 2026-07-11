@@ -429,9 +429,12 @@ def check_usb_combo_fallback() -> CheckResult:
       StartLimit hardening rider's target: a flap that parked the intent unit; USB
       audio is dead until a restart).
     - ``warn`` — the fallback marker is present (combo disarmed — USB audio
-      unavailable; surfaces the reason + how it recovers), OR intent is on + gadget
-      present but the combo was never armed (the coupling kick did not land — the PR
-      #1197 nit: a failed wizard kick otherwise leaves no durable surface).
+      unavailable; surfaces the reason + how it recovers), OR the combo is armed but
+      the runtime watcher has a non-zero consecutive-broken count (a real
+      direct-capture break in progress, surfaced before it disarms — defect
+      2026-07-11), OR intent is on + gadget present but the combo was never armed
+      (the coupling kick did not land — the PR #1197 nit: a failed wizard kick
+      otherwise leaves no durable surface).
     - ``ok`` — armed coherently, or cleanly disarmed (USB audio off / non-gadget
       box), with no marker and no failed unit.
 
@@ -503,6 +506,27 @@ def check_usb_combo_fallback() -> CheckResult:
             "to reconcile.",
         )
     if armed:
+        # Surface an IN-PROGRESS break before it disarms (defect 2026-07-11): the
+        # repeated broken-tick WARNs only hit the journal, so a genuine break
+        # accumulating toward the 2-tick disarm was invisible to anyone reading
+        # /system/ or the doctor. Post-fix this counter only climbs on a real
+        # capturing-state break (idle churn no longer counts), so >0 is a signal
+        # worth acting on, not noise.
+        from jasper.fanin.combo_health import (
+            FALLBACK_CONSECUTIVE_TICKS,
+            read_tick_state,
+        )
+
+        pending = read_tick_state().consecutive_broken
+        if pending > 0:
+            return CheckResult(
+                "usb combo fallback", "warn",
+                f"combo armed, but the runtime watcher has counted {pending} "
+                "consecutive broken tick(s) — a real direct-capture break is in "
+                f"progress (the combo disarms at {FALLBACK_CONSECUTIVE_TICKS} "
+                "consecutive). Inspect `journalctl -u jasper-fanin-combo-health` "
+                "and `journalctl -u jasper-fanin | grep usb_direct.reopen`.",
+            )
         return CheckResult(
             "usb combo fallback", "ok",
             "combo armed (fan-in direct-captures the gadget; usbsink bridge in "
