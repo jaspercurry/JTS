@@ -322,6 +322,87 @@ def test_room_sweep_and_verify_return_to_relay_native_room_page(monkeypatch):
     ]
 
 
+def test_room_verify_receives_and_checks_frozen_setup(monkeypatch, tmp_path):
+    import asyncio
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction.session import SessionState
+
+    binding_id = "room-session-12345"
+    digest = "a" * 64
+    uploaded = []
+    restored = []
+
+    async def restore_level_match_volume(_set_volume):
+        restored.append(True)
+
+    async def on_verify_capture_uploaded(path):
+        uploaded.append(path.read_bytes())
+
+    session = SimpleNamespace(
+        session_id=binding_id,
+        state=SessionState.APPLIED,
+        input_device={"label": "UMIK-2"},
+        mic_calibration=None,
+        relay_setup_binding=correction_setup._RelaySetupBinding(
+            binding_id=binding_id,
+            sha256=digest,
+        ),
+        level_match_snapshot=lambda: {"last": {"ramp": {"state": "locked"}}},
+        verify_capture_path=lambda: tmp_path / "verify.wav",
+        restore_level_match_volume=restore_level_match_volume,
+        on_verify_capture_uploaded=on_verify_capture_uploaded,
+    )
+    registered = {}
+    monkeypatch.setattr(
+        correction_setup,
+        "_require_relay_base",
+        lambda: "https://relay.jasper.tech",
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(correction_setup, "_maybe_auto_revert", lambda _sess: None)
+
+    def fake_run(kind, _relay_base, *, return_url):
+        registered.update(kind=kind, return_url=return_url)
+        return {"tap_link": "https://capture.jasper.tech/#redacted"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
+
+    def fake_run_capture(_client, _pi_session, *, on_armed):
+        relay_session._call_state_callback(
+            on_armed,
+            SimpleNamespace(
+                setup={
+                    "binding": {
+                        "schema": 1,
+                        "binding_id": binding_id,
+                        "sha256": digest,
+                    }
+                }
+            ),
+        )
+        return SimpleNamespace(wav=b"RIFFverify", device={"label": "UMIK-2"})
+
+    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    def close_playback(coro, *, timeout):
+        assert timeout == 90.0
+        coro.close()
+
+    monkeypatch.setattr(correction_setup, "_run_async", close_playback)
+
+    correction_setup._handle_relay_verify(
+        SimpleNamespace(headers={"Host": "jts3.local"})
+    )
+    asyncio.run(registered["kind"].run_and_consume(object(), object()))
+
+    assert registered["return_url"] == "http://jts3.local/correction/room/"
+    assert uploaded == [b"RIFFverify"]
+    assert restored == [True]
+
+
 def test_render_page_delegates_correction_when_bonded_follower(monkeypatch):
     monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
     monkeypatch.setattr(
