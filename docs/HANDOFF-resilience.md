@@ -218,8 +218,11 @@ Design constraints the supervisor satisfies:
   `resilience.shairport.unit_disabled` in `/state`) instead of
   counting toward a restart. Before this guard the supervisor
   revived a disabled unit ~90 s after the toggle (observed on
-  hardware 2026-07-10) because the unit-inactive gate bypass could
-  not tell "crashed" from "turned off". The enablement check runs
+  hardware 2026-07-10): when MPRIS is unknown *and* systemd reports
+  the unit inactive, the no-active-session gate stands aside
+  (`event=shairport.gate_bypass reason=unit_inactive`) so a crashed
+  unit can be recovered — and that bypass alone could not tell
+  "crashed" from "turned off". The enablement check runs
   only on failing probes, so the healthy path stays
   subprocess-free; re-enabling resumes supervision on the next
   tick. Errors reading enablement fail toward supervising, never

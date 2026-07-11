@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 
 from jasper.control.shairport_supervisor import (
     ShairportSupervisor,
@@ -300,6 +301,40 @@ async def test_reenabled_unit_resumes_wedge_recovery():
         await sup._tick()
     assert sup.restart_calls == 1
     assert sup.snapshot()["unit_disabled"] is False
+
+
+async def test_probe_idle_logs_once_per_disable_edge(caplog):
+    """`_tick` promises the probe_idle line edge-triggers: one line when
+    a disable is first attributed, silence on subsequent disabled ticks
+    (no journal spam against intended state), and a fresh line only
+    after a genuine re-enable → re-disable edge."""
+    sup = _FakeSupervisor(failure_threshold=3)
+    sup.unit_disabled_result = True
+    sup.probe_results = [False] * 5
+    with caplog.at_level(
+        logging.INFO, logger="jasper.control.shairport_supervisor",
+    ):
+        for _ in range(5):
+            await sup._tick()
+        idle_lines = [
+            r for r in caplog.records
+            if "shairport.probe_idle" in r.getMessage()
+        ]
+        assert len(idle_lines) == 1
+
+        # Re-enable (healthy probe clears the flag), then disable again:
+        # the fresh edge logs exactly once more.
+        sup.unit_disabled_result = False
+        sup.probe_results = [True]
+        await sup._tick()
+        sup.unit_disabled_result = True
+        sup.probe_results = [False]
+        await sup._tick()
+        idle_lines = [
+            r for r in caplog.records
+            if "shairport.probe_idle" in r.getMessage()
+        ]
+        assert len(idle_lines) == 2
 
 
 async def test_is_shairport_unit_active_parses_systemctl_statuses(monkeypatch):

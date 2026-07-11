@@ -365,10 +365,13 @@ class ShairportSupervisor:
         /sources/ wizard's AirPlay-off toggle writes.
 
         Deliberate-off is matched on explicit state strings, not the
-        camilla-recover rc!=0 shortcut: every error path (systemctl
-        missing, timeout, not-found, unparseable) resolves False so a
-        broken enablement read degrades to today's behavior — keep
-        supervising — rather than silently turning Tier 3 off.
+        camilla-recover rc!=0 shortcut: the anticipated error paths
+        (systemctl missing, timeout, not-found, unparseable state)
+        resolve False so a broken enablement read degrades to today's
+        behavior — keep supervising — rather than silently turning
+        Tier 3 off. An unexpected exception escapes to `run()`'s
+        tick_crash handler: loud, and the aborted tick restarts
+        nothing.
         """
         try:
             proc = await asyncio.create_subprocess_exec(
