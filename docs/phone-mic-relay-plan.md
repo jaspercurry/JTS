@@ -478,10 +478,13 @@ mode for a tool whose entire job is a trustworthy result.
   here's the fallback"), never a dead-end refuse.
 - **Integrity hash.** The phone sends plaintext length + SHA-256; the Pi verifies
   after decrypt, **before** analysis — any truncation/corruption fails loud.
-- **Alignment confidence.** Cross-correlation alignment confidence is a
-  first-class check: a weak/ambiguous correlation peak fails loud the same way a
-  bad hash does. (Intact-but-misaligned is exactly the failure the byte hash
-  cannot catch.)
+- **Alignment confidence.** Cross-correlation alignment confidence is designed as
+  a first-class check: a weak/ambiguous correlation peak should fail loud the same
+  way a bad hash does. (Intact-but-misaligned is exactly the failure the byte hash
+  cannot catch.) The gate itself (`capture_relay/alignment.py`,
+  `assert_alignment_confident`) is implemented and unit-tested but **not yet wired**
+  into the capture path — no production flow calls it today (alignment-threshold
+  tuning is deferred; see the footer). See §11.
 - **Clock drift (per-kind guidance).** The phone's mic clock and the Pi's playback
   clock are independent crystals that drift (~tens of ppm → ~1 ms over a 10 s
   window). Negligible for magnitude **frequency response** and for **level /
@@ -519,9 +522,11 @@ mode for a tool whose entire job is a trustworthy result.
   internet for voice providers).
 - Mint `session_id` / `content_key` / tokens with a CSPRNG. Build the
   `capture_spec` for the active flow. Register, render the tap-link / QR, poll,
-  pull, decrypt, **verify** (integrity + alignment), then hand the WAV to the
-  **existing** analysis (`correction_setup.py`'s pipeline) — same 48 kHz / mono /
-  32 MB contract as today.
+  pull, decrypt, **verify integrity** (plaintext length + SHA-256), then hand the
+  WAV to the **existing** analysis (`correction_setup.py`'s pipeline) — same 48 kHz
+  / mono / 32 MB contract as today. The cross-correlation **alignment-confidence**
+  gate (`capture_relay/alignment.py`, §9) is built and unit-tested but **not yet
+  wired** into this pull path — the deployed verify step is integrity only.
 - If `stimulus.played_by == "pi"`: start playback when the phone posts
   `{armed:true}`; rely on cross-correlation for alignment (no tight sync).
 
@@ -531,8 +536,10 @@ mode for a tool whose entire job is a trustworthy result.
 
 Every leg surfaces a clear UI state today: link/session expired, relay
 unreachable, upload failed, the Pi never sees `armed` within a timeout,
-decrypt/integrity/alignment fail → explicit message + retry on the phone or
-speaker page, plus `event=capture_relay.*` logs. Audible cues remain a required
+decrypt/integrity fail → explicit message + retry on the phone or
+speaker page, plus `event=capture_relay.*` logs. (The alignment-confidence gate
+that would add a weak-correlation failure to that list is built but not yet
+wired — §9/§11.) Audible cues remain a required
 follow-up for failures where the household must act (`CueDef.play(...)` from the
 cue registry; see [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md)),
 but the current jasper-web relay adapter has no cue bridge. The relay is a shared
