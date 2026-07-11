@@ -90,6 +90,9 @@ def _reconcile(
     **kwargs,
 ):
     kwargs.setdefault("validate_transport_pipe", lambda: (True, "gate ok"))
+    # Keep tests hermetic: never let the disarm path's default hardware-reconcile
+    # kick reach the real restart broker. Kick-behaviour tests inject their own.
+    kwargs.setdefault("kick_hardware_reconcile", lambda: (True, ""))
     return reconcile_coupling(
         desired,
         reason="t",
@@ -2130,6 +2133,181 @@ def test_disarm_shm_ring_clears_ring_bridge_keys(tmp_path, _ring_assets_present)
     assert read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
     assert "JASPER_OUTPUTD_SHM_RING" not in outputd_text
     assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_text
+
+
+def test_disarm_shm_ring_kicks_audio_hardware_reconcile_after_outputd(
+    tmp_path, _ring_assets_present
+):
+    """#1231 follow-up: leaving a LIVE shm_ring bridge kicks
+    jasper-audio-hardware-reconcile AFTER the ordered disarm ops. The hardware
+    reconciler unsets the route's outputd content-buffer floor while the bridge
+    is shm_ring (inert there), so without the kick a disarmed box sits on
+    outputd's compile-default content buffer until the next udev/boot/deploy
+    event — there is no timer for that reconciler."""
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    def kick():
+        calls.append("hw-reconcile")
+        return (True, "")
+
+    _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+        kick_hardware_reconcile=kick,
+    )
+    # ARM never kicks — the floor suppression only matters on the way OUT.
+    assert "hw-reconcile" not in calls
+
+    calls.clear()
+    result = _reconcile(
+        COUPLING_LOOPBACK,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+        kick_hardware_reconcile=kick,
+    )
+    assert result.ok
+    assert result.direction == "disarm"
+    # Kick runs AFTER the ordered disarm (camilla -> fanin -> outputd), so the
+    # hardware reconciler sees the settled direct state and its own conditional
+    # outputd restart picks the re-emitted floor up.
+    assert calls == ["camilla:loopback", "fanin", "outputd", "hw-reconcile"]
+
+
+def test_disarm_from_transport_pipe_does_not_kick_hardware_reconcile(tmp_path):
+    """The floor is only suppressed under a shm_ring bridge; a transport_pipe (or
+    already-direct) disarm never had it suppressed, so no kick — the disarm keeps
+    its existing blast radius."""
+    fanin_env = _write(
+        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_TRANSPORT_PIPE}\n",
+    )
+    outputd_env = _write(
+        tmp_path / "outputd.env",
+        f"{OUTPUTD_PIPE_PATH_ENV_VAR}={DEFAULT_LOCAL_OUTPUTD_CONTENT_PIPE}\n",
+    )
+    calls, ro, rf, rc = _recorder()
+
+    res = _reconcile(
+        "loopback",
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        kick_hardware_reconcile=lambda: (calls.append("hw-reconcile"), (True, ""))[1],
+    )
+
+    assert res.ok and res.direction == "disarm"
+    assert calls == ["camilla:loopback", "fanin", "outputd"]
+
+
+def test_disarm_kick_failure_is_best_effort(tmp_path, _ring_assets_present):
+    """A failed floor-reemit kick must not fail the disarm: the interim
+    compile-default content buffer is a LARGER cushion than the floor
+    (fail-safe) and the next hardware-reconcile event still converges it. The
+    failure is carried in ``detail`` (observable, never silent)."""
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+    _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    result = _reconcile(
+        COUPLING_LOOPBACK,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+        kick_hardware_reconcile=lambda: (False, "broker unavailable"),
+    )
+
+    assert result.ok is True
+    assert result.direction == "disarm"
+    assert "audio-hardware reconcile kick failed" in result.detail
+    assert "broker unavailable" in result.detail
+
+
+def test_blocked_shm_ring_force_disarm_kicks_audio_hardware_reconcile(tmp_path):
+    """The route-block force-disarm (a previously-armed shm_ring box that is now
+    grouping-enabled) leaves the same suppressed-floor state as an ordinary
+    disarm, so its recovery `_disarm` gets the same gated kick — after the
+    ordered camilla -> fanin -> outputd recovery ops."""
+    fanin_env = _write(
+        tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n",
+    )
+    outputd_env = _write(
+        tmp_path / "outputd.env", f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring\n",
+    )
+    calls, ro, rf, rc = _recorder()
+
+    res = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: True,
+        kick_hardware_reconcile=lambda: (calls.append("hw-reconcile"), (True, ""))[1],
+    )
+
+    assert res.direction == "blocked"
+    assert res.recovered is True
+    assert calls == ["camilla:loopback", "fanin", "outputd", "hw-reconcile"]
+    assert read_persisted_coupling(fanin_env) == "loopback"
+
+
+def test_default_kick_targets_audio_hardware_reconcile_via_broker_start(monkeypatch):
+    """Pin the default kick's broker contract: blocking ``start`` of the
+    audio-hardware reconcile oneshot (mirrors output_topology_reset's kick)."""
+    import jasper.fanin.coupling_reconcile as cr
+    from jasper.control import restart_broker
+
+    seen: dict[str, object] = {}
+
+    def fake_manage_units(*units, verb, reason, no_block, timeout):
+        seen.update(units=units, verb=verb, no_block=no_block, timeout=timeout)
+        return {"ok": True}
+
+    monkeypatch.setattr(restart_broker, "manage_units", fake_manage_units)
+
+    ok, detail = cr._start_audio_hardware_reconcile(reason="t")
+
+    assert ok is True and detail == ""
+    assert seen["units"] == (cr.AUDIO_HARDWARE_RECONCILE_UNIT,)
+    assert seen["verb"] == "start"
+    assert seen["no_block"] is False
+    assert seen["timeout"] == 15.0
+
+
+def test_audio_hardware_reconcile_unit_is_broker_start_permitted():
+    """Guard the allowlist lockstep (the jts 2026-06-27 fan-in class): the unit
+    the disarm kick starts must stay ``start``-permitted in the broker."""
+    import jasper.fanin.coupling_reconcile as cr
+    from jasper.control import restart_broker
+
+    assert restart_broker._unit_allowed_for_verb(
+        cr.AUDIO_HARDWARE_RECONCILE_UNIT, "start"
+    )
 
 
 def test_shm_ring_cli_choices_accept_ring(tmp_path, monkeypatch, _ring_assets_present):
