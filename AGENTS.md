@@ -2539,7 +2539,10 @@ probes RTSP `OPTIONS *` on `127.0.0.1:7000` every 30 s; after 3
 consecutive failures, gated on no active session, it restarts
 shairport-sync + nqptp. Detection latency ~90 s. The gate ensures
 live sessions aren't disrupted; a 10-minute rate limit prevents
-restart storms.
+restart storms. A household-disabled unit (AirPlay toggled off at
+`/sources/`, so `systemctl is-enabled` reports disabled) idles the
+supervisor instead of being revived — probing resumes when the
+source is re-enabled.
 
 Manual fix (still works, faster than the 90 s window):
 
