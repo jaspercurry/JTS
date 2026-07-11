@@ -756,7 +756,7 @@ class OpenAIRealtimeTurn:
         ``last_activity_at()`` to decide when to abandon a turn that
         looks stuck; without this reset it measures from turn-start
         across the entire tool dispatch and fires mid-flight at small
-        ``JASPER_IDLE_TIMEOUT_SEC`` values (production: 10 s).
+        ``JASPER_IDLE_TIMEOUT_SEC`` values (production: 20 s).
 
         ``_on_audio_delta`` does NOT call this — chunks arrive on a
         hot path and the loop clock is already read inline for the

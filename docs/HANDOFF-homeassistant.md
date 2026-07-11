@@ -243,17 +243,17 @@ jasper/config.py                    ha_url / ha_token / ha_agent_id / ha_enabled
 jasper/voice_daemon.py              Registry wiring + SYSTEM_INSTRUCTION addition
 jasper/control/server.py            /state.home_assistant + /system/snapshot section
 jasper/web/system_setup.py          /system/ dashboard card
-jasper/cli/doctor.py                check_home_assistant() (skip-if-not-configured)
+jasper/cli/doctor/integrations.py   check_home_assistant() (skip-if-not-configured)
 
 deploy/systemd/jasper-voice.service EnvironmentFile=-/var/lib/jasper-intsecrets/home_assistant.env
 deploy/jasper-web.socket            ListenStream=127.0.0.1:8778
 deploy/nginx-jasper.conf            location /ha/ → 127.0.0.1:8778
 deploy/index.html                   Integrations section has the HA row
 
-tests/test_home_assistant.py        HAClient unit tests (37)
-tests/test_home_assistant_probe.py  probe_status + check_home_assistant (10)
-tests/test_home_assistant_setup.py  Wizard handler tests (35)
-tests/test_tools_home_assistant.py  Tool dispatch + provider-schema (12)
+tests/test_home_assistant.py        HAClient unit tests (54)
+tests/test_home_assistant_probe.py  probe_status + check_home_assistant (19)
+tests/test_home_assistant_setup.py  Wizard handler tests (41)
+tests/test_tools_home_assistant.py  Tool dispatch + provider-schema (32)
 tests/test_control_server.py        /state.home_assistant fail-soft tests (3)
 ```
 

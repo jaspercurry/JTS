@@ -715,10 +715,15 @@ migrate_transit_config() {
 
 # Migrate stale multi-room grouping env vars from /etc/jasper/jasper.env
 # into the wizard-owned /var/lib/jasper/grouping.env. The /grouping
-# wizard (and jasper.multiroom.config) owns every JASPER_GROUPING_* key;
-# an operator who pastes them into jasper.env (CI bootstrap, headless
-# imaging, SSH-driven setup) gets them moved automatically so the wizard
-# file stays the single source of truth — exactly like transit/weather.
+# wizard owns JASPER_GROUPING_* config; an operator who pastes the core
+# bootstrap subset below into jasper.env (CI bootstrap, headless imaging,
+# SSH-driven setup) gets them moved automatically so the wizard file wins
+# on conflicts — like transit/weather. This is NOT the full key set
+# jasper.multiroom.config reads (it also parses ROSTER, PEER_ADDR/NAME,
+# TRIM_DB, CLIENT_LATENCY_MS, LEFT/RIGHT_DELAY_MS, CROSSOVER_HZ,
+# MAINS_HIGHPASS, SUBWOOFER_PRESENT); jasper-grouping-reconcile.service
+# loads jasper.env before grouping.env, so an unmigrated hand-set value
+# among those still reaches the daemon — it just isn't cleaned up here.
 #
 # Grouping is OFF BY DEFAULT on a solo speaker: absence of grouping.env
 # means off (jasper.multiroom.config fail-safes to enabled=False). So we

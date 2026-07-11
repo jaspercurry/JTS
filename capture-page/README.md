@@ -40,6 +40,9 @@ sanitizes it again before rendering a plain navigation link to the local Pi page
 | `js/setup-store.js` | Privacy-bounded frozen setup reuse (sliding 20-minute idle, fixed 2-hour absolute expiry) | `capture_setup_store_test.mjs` |
 | `js/return-url.js` | Sanitized local-Pi return URL for the done CTA | `capture_return_url_test.mjs` |
 | `js/fragment.js` | Parse `#s=&u=&k=` (key never leaves the fragment) | `capture_fragment_test.mjs` |
+| `js/constraints.js` | Realized-constraints verify/degrade per the spec's per-kind policy | `capture_constraints_test.mjs` |
+| `js/wakelock.js` | Screen Wake Lock + `visibilitychange` abort | `capture_wakelock_test.mjs` |
+| `js/level-events.js` | Batched phone-side mic-level events for the level-match ramp | `capture_level_events_test.mjs` |
 | `js/config.js` | `RELAY_BASE` (one relay origin for the fleet) | — |
 | `js/main.js` | Browser orchestration: one tap → record + arm → encrypt → upload | on-device |
 | `index.html` | Static shell + CSP + base styles | `node --check` |
@@ -104,8 +107,10 @@ node tests/js/capture_relay_client_test.mjs  # phone-side relay requests
 node tests/js/capture_fragment_test.mjs      # fragment parse + upload cap
 node tests/js/capture_constraints_test.mjs   # realized-constraints verify/degrade
 node tests/js/capture_wakelock_test.mjs      # Screen Wake Lock + visibility abort
-node tests/js/capture_protocol_test.mjs      # page/Pi release compatibility
+node tests/js/capture_return_url_test.mjs    # sanitized local-Pi return URL
+node tests/js/capture_level_events_test.mjs  # batched phone-side level events
 node tests/js/capture_setup_store_test.mjs   # sliding + absolute setup expiry
+node tests/js/capture_protocol_test.mjs      # page/Pi release compatibility
 ```
 
 All harnesses run in CI through `tests/test_capture_page_js.py` (pytest) and

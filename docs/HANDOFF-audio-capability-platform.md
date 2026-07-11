@@ -569,16 +569,19 @@ Fail behavior:
 
 ## Observability Requirements
 
-Every profile transition should emit stable structured logs:
+Every profile transition should emit stable structured logs. Only
+`voice.input_policy` and `voice.input_policy.warning` are shipped
+today (`jasper/voice/daemon_main.py`); the rest are plan-stage names
+with no code emitting them yet:
 
-- `event=audio_profile.intent`
-- `event=audio_profile.selected`
-- `event=audio_profile.fallback`
-- `event=audio_validation.loaded`
-- `event=audio_validation.stale`
-- `event=audio_profile.apply_failed`
-- `event=voice.input_policy`
-- `event=voice.input_policy.warning`
+- `event=audio_profile.intent` (not yet built)
+- `event=audio_profile.selected` (not yet built)
+- `event=audio_profile.fallback` (not yet built)
+- `event=audio_validation.loaded` (not yet built)
+- `event=audio_validation.stale` (not yet built)
+- `event=audio_profile.apply_failed` (not yet built)
+- `event=voice.input_policy` (shipped)
+- `event=voice.input_policy.warning` (shipped)
 
 Wake events and corpus metadata should include, once fields exist.
 Corpus metadata has the first version of this shape as `audio_context`;

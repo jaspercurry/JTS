@@ -73,8 +73,10 @@ below.
 **Two transports, deliberately separated:**
 
 - **mDNS-SD** answers "is anyone else on the network?" The peering
-  daemon doesn't spin up its multicast socket or state machine until
-  it sees at least one sibling. Discovery is cheap, idempotent, and
+  daemon's multicast socket and state machine come up as soon as
+  `mode=on` (see §9's resource table — the socket is bound whenever
+  peering is on); it's the mDNS advertisement/browsing that gates
+  whether a sibling is ever actually seen. Discovery is cheap, idempotent, and
   uses the same Avahi daemon JTS already runs for `_jasper-control._tcp`.
 - **Multicast UDP** carries the actual arbitration messages
   (`WAKE`, `CLAIM`, `HEART`, `END`, plus periodic `HELLO`). 5
@@ -516,13 +518,14 @@ wizard process went down crash-looping.
 - `test_every_referenced_setup_module_is_imported` — regex: every
   `<name>_setup.X` in `__main__.py` requires `<name>_setup` in the
   import tuple.
-- `test_every_referenced_port_var_is_defined` — regex: every
-  `<name>_port` reference requires a `<name>_port = ...`
-  assignment.
+- `test_wizard_registry_has_unique_routes_envs_and_ports` — the
+  declarative `WIZARD_SPECS` registry replaced the old hand-maintained
+  `<name>_port` locals this test used to check; it now asserts every
+  registered wizard has a unique route/env-var/port.
 - `test_peering_surface_has_no_undefined_names` — invokes `ruff
   check --select=F821` over the whole peering surface
   (`jasper/peering/`, `voice_daemon.py`, `rooms_setup.py`,
-  `__main__.py`, `control/server.py`, `cli/doctor.py`). Catches
+  `__main__.py`, `control/server.py`, `cli/doctor/`). Catches
   the general "name referenced but not defined" pattern.
 
 The pattern-specific tests catch the exact `__main__.py` shape;

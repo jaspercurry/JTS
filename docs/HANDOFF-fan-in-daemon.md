@@ -323,7 +323,6 @@ existing patterns followed.**
 [Unit]
 Description=Jasper renderer fan-in (per-substream → summed music reference)
 After=sound.target
-Requires=sound.target
 
 # StartLimit tuning. Audio-path daemon; transient blip tolerance is
 # tight. Tier 5.1 escalates to clean reboot if we hit the burst.
@@ -361,7 +360,6 @@ EnvironmentFile=/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/fanin.env
 
 ExecStart=/opt/jasper/bin/jasper-fanin
-ExecReload=/bin/kill -HUP $MAINPID
 
 [Install]
 WantedBy=multi-user.target
@@ -449,7 +447,7 @@ manually selected or while the mux has temporarily selected `NONE`.
 following the same 2 s timeout / fail-soft pattern used for the other
 daemons.
 
-### jasper-doctor checks (`jasper/cli/doctor.py`)
+### jasper-doctor checks (`jasper/cli/doctor/audio.py`)
 
 Fan-in checks are in the main doctor run-list:
 
@@ -910,7 +908,9 @@ deploy/
 
 jasper/
   cli/
-    doctor.py                       ← fan-in wiring/service/renderer checks
+    doctor/
+      audio.py                      ← fan-in wiring/service checks
+      renderers.py                  ← renderer device-resolvability checks
   control/
     server.py                       ← add fanin to /state aggregation
 

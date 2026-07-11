@@ -521,7 +521,8 @@ advance the anchor**, not just audio deltas and the final
 equivalent) starts a multi-second round trip (client → tool → response
 2) during which no audio arrives. Forget to reset and the watchdog
 fires mid-dispatch at small `JASPER_IDLE_TIMEOUT_SEC` (production runs
-10 s). Production hit this on 2026-05-21: a weather-tool turn ended
+20 s since PR #187 raised it from a 10 s override — see `jasper/config.py`
+and `.env.example`). Production hit this on 2026-05-21: a weather-tool turn ended
 ~0.6 s after the tool result was sent, with the orphan-response
 warning logging 48 dropped audio tokens.
 

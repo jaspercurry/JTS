@@ -532,11 +532,12 @@ samples to bounded lossy per-consumer ring queues. We add one more
 consumer that writes 48k/S16/stereo into a bounded non-blocking
 FIFO; `snapserver` reads it as a `pipe` input. Tapping *after* the
 clamp is what makes the streamed audio inherit JTS's hardware-safety
-ceiling (§7). **Built but UNWIRED (`SnapfifoSink` — see §0):** the consumer
-exists, but its `main.rs` writer thread + `JASPER_OUTPUTD_SNAPFIFO_PATH` gate
-were removed by 9102e13 (TTS moved to fanin), so it moves no audio today
-(`SNAPFIFO_PRODUCER_WIRED = False`); when re-wired it sits off-by-default behind
-that gate. The FIFO lives at
+ceiling (§7). **Superseded — see §0:** this described a planned outputd-as-
+producer consumer (`SnapfifoSink`); that whole machinery (`snapfifo.rs`,
+`SNAPFIFO_PRODUCER_WIRED`, the reconciler's outputd tap-env write) was
+REMOVED on 2026-06-11 (the "Stranded by this design" cleanup). The
+canonical producer is the leader's CamillaDSP feeding the pipe instead
+(Increments 3–5). The FIFO lives at
 `/run/jasper-snapserver/snapfifo` (snapserver's own `RuntimeDirectory`,
 the reconciler's canonical `SNAPFIFO` — *not* the bare `/run/jasper/`
 of an earlier draft, which would collide with `jasper-voice`'s sockets;
@@ -1061,7 +1062,10 @@ tech blog (open-loop mic measurement → on-device PEQ) · snapcast#715 / #1014
 >    outputd AND there is no follower playback to receive it (the reconciler's
 >    `JASPER_OUTPUTD_SNAPFIFO_PATH` write is inert — `Config::from_env` never
 >    reads it). The real risk is a future dev re-applying the known-good 050d334
->    wiring against today's `main.rs` and shipping the leak. Guarded against:
+>    wiring against today's `main.rs` and shipping the leak. Guarded against
+>    (at investigation time; **superseded 2026-06-11 — see §0**, both
+>    `SnapfifoSink` and the doctor check below were deleted along with the
+>    rest of the retired outputd-as-producer machinery):
 >    a WARNING doc-comment on `SnapfifoSink` + `lib.rs`, and a `jasper-doctor`
 >    `check_grouping_tts_separation` that warns a leader its streaming is behind
 >    this blocker. (Consequence to fix when this lands: the reconciler-written

@@ -644,7 +644,8 @@ reference. Currently:
   the clock-domain decision (digital SRO clock-recovery, *not* a per-period
   `snd_pcm_delay` delay line), the JTS/JTS3/JTS5 hardware test matrix, and
   the YAGNI-gated layered roadmap (Layer 0 observe → classify → compensate).
-  Supersedes the `AEC-DIAG-07` draft's §3 mechanism.
+  Supersedes an earlier (unlanded) production-design draft's
+  per-period delay-line mechanism.
 - [`HANDOFF-mic-quality-v2.md`](docs/HANDOFF-mic-quality-v2.md) —
   Active workstream. The sequencing + lever inventory + decision
   history for getting the mic to work reliably across whisper /

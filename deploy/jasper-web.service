@@ -79,8 +79,10 @@ EnvironmentFile=-/var/lib/jasper/transit.env
 #   /transit/  →  127.0.0.1:8777
 #   /ha/       →  127.0.0.1:8778
 #   /weather/  →  127.0.0.1:8779
+#   /wake-corpus/ → 127.0.0.1:8782
 #   /sound/    →  127.0.0.1:8784
 #   /rooms/    →  127.0.0.1:8785
+#   /tools/    →  127.0.0.1:8786
 # When socket-activated, all fds arrive via LISTEN_FDS and the
 # Python side disambiguates by getsockname()[1] (port). See
 # jasper/web/__main__.py for the wiring.

@@ -11,9 +11,15 @@
 # Bluetooth pairing agent,
 # owns the full systemd unit per renderer.
 #
+# Two install tiers, set via JASPER_INSTALL_PROFILE=full|streambox (default
+# full): the streambox profile is the Zero-2-W-class local-renderer-only tier
+# and skips voice/wake-word/GEMINI-dependent features — see
+# print_streambox_install_plan() below. The pre-reqs listed here are full-tier
+# only.
+#
 # Idempotent: re-running upgrades the venv and re-applies configs.
 #
-# Pre-reqs the operator handles by hand:
+# Pre-reqs the operator handles by hand (full tier):
 #   - Raspberry Pi OS Lite (Trixie, 64-bit) on a Pi 5 (2GB recommended,
 #     1GB also fits). SSH + Wi-Fi pre-configured via Imager.
 #   - Apple USB-C dongle plugged in. Speakers connected and the amp

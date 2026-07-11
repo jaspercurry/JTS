@@ -737,6 +737,11 @@ because the agent has no other reach.
 
 ## Provider selection
 
+> **Superseded by P6** — see the top banner. P6 (2026-07-05) shipped
+> the tuning LLM OpenAI-only via `JASPER_TUNING_LLM_MODEL`; the
+> Anthropic-first design proposed below (`JASPER_CALIBRATION_AGENT_*`,
+> `ANTHROPIC_API_KEY`) was never implemented.
+
 ### The shape of the choice
 
 Today's voice loop runs against one of three real-time speech-to-speech

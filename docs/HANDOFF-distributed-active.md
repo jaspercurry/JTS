@@ -853,9 +853,13 @@ durability soak TODO, boxes reclaimed early):**
 
 **Findings for Slice 3 (operational, hardware-learned):**
 - **Borrowing the DAC reboots a live JTS box.** The essential audio units
-  (`jasper-fanin`/`camilla`/`outputd`/`voice`/`aec-bridge`) carry
+  (`jasper-fanin`/`outputd`/`voice`/`aec-bridge`) carry
   `StartLimitAction=reboot`; stopping them lets a re-trigger fail-loop into a
-  reboot (hit 3× on `jts3`). The bench disarms first via the same `/run`
+  reboot (hit 3× on `jts3`). Camilla is the exception by design —
+  `StartLimitAction=none` routed to the non-rebooting
+  `jasper-camilla-recover` oneshot (a dedicated hardware-topology recovery
+  contract; see `deploy/systemd/jasper-camilla.service`), not the direct
+  T5.1 reboot ladder. The bench disarms first via the same `/run`
   drop-in (`StartLimitAction=none`) that `jasper-bootloop-guard` uses, verifies
   it, then stops. **Slice 3 does NOT have this problem** — the reconciler swaps
   the chain *in place* (no DAC contention); the bench hits it only because it
@@ -950,7 +954,10 @@ tweeter TTS, inv-B-through-Layer-A).
 > PR arms it only when the box is both leader and active. Two B1 safety
 > invariants are pinned by tests: camilla#2 carries **NO
 > `StartLimitAction=reboot`** (it fails closed to silence, never reboots the
-> household speaker, unlike the always-on camilla#1), and its crossover guard
+> household speaker — matching camilla#1, which also uses
+> `StartLimitAction=none` routed to the non-rebooting
+> `jasper-camilla-recover` oneshot rather than the T5.1 reboot ladder), and
+> its crossover guard
 > repairs ONLY to the re-proven **driver-domain (Layer-A-intact) baseline,
 > never flat** (a flat crossover would send full-range to the tweeter). The
 > summer build, the `rate_adjust` OFF + summing topology, the CPU/thermal +

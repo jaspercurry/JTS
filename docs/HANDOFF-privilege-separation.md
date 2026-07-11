@@ -246,7 +246,7 @@ wifi-lockout-risk change you could only happy-path test:
 | jasper-accessory-reconcile | root (oneshot) | `jasper` primary group | **accessory reconciler (LANDED 2026-06-26)** | reads BlueZ paired-device state, writes `/var/lib/jasper/accessory-mics.env`, and owns adapter unit enable/disable; `Group=jasper` gives access to the group-owned state dir while `CapabilityBoundingSet=` stays empty; kept as a narrow root oneshot rather than granting systemctl privilege to `jasper-input` or a wizard |
 | jasper-wiim-remote-mic | `jasper-input` | `bluetooth` | **accessory adapter (LANDED 2026-06-26)** | BlueZ D-Bus GATT client for WiiM Remote 2 voice reports; sends decoded PCM to localhost UDP; no filesystem writes |
 | jasper-control | `jasper-control` | `systemd-journal`, `jasper-intsecrets` | **3b-2 + 4b (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot + a root `jasper-doctor-json` oneshot for /system/diagnostics), fresh HA/Spotify reads via `jasper-intsecrets`, group-readable non-secret config it reads off disk, and `systemd-journal` for journal-based /state cards |
-| jasper-web | `jasper-web` | `bluetooth`, `systemd-journal`, `jasper-secrets`, `jasper-intsecrets` | **3b-3 + 4a/4b (LANDED)** | the big one: a **polkit rule** for NetworkManager (the `/wifi/` wizard), `jasper-secrets`/`jasper-intsecrets` for wizard-owned secret compartments, the `bluetooth` group (BlueZ Alias) + `systemd-journal` (`journalctl -k`), group-writable `/etc/bluetooth` + `camilladsp/configs`; `CAP_NET_ADMIN` withheld and scan repair routed through a start-only root helper — **wifi-lockout** is the worst-case brick, so it was gated on failed-connect-rollback validation under the dropped user |
+| jasper-web | `jasper-web` | `audio`, `bluetooth`, `systemd-journal`, `jasper-secrets`, `jasper-intsecrets` | **3b-3 + 4a/4b (LANDED)** | the big one: a **polkit rule** for NetworkManager (the `/wifi/` wizard), `jasper-secrets`/`jasper-intsecrets` for wizard-owned secret compartments, `audio` (active-speaker commissioning tones write the same-path `correction_substream`), the `bluetooth` group (BlueZ Alias) + `systemd-journal` (`journalctl -k`), group-writable `/etc/bluetooth` + `camilladsp/configs`; `CAP_NET_ADMIN` withheld and scan repair routed through a start-only root helper — **wifi-lockout** is the worst-case brick, so it was gated on failed-connect-rollback validation under the dropped user |
 
 **3b-1 (landed) — voice/mux/input.** The file model is deliberately minimal:
 `/var/lib/jasper` becomes `root:jasper 0770` (group-aware `ensure_state_dir`,
@@ -480,7 +480,9 @@ token gate still 403s an unauthenticated POST.
 
 **3b-3 (LANDED) — web.** `jasper-web` (the wizard HTTP server) drops to a
 non-root `jasper-web` user (primary group `jasper`, supplementary groups
-`bluetooth` + `systemd-journal`) with `CapabilityBoundingSet=` (empty) +
+`audio` (active-speaker commissioning tones write the same-path
+`correction_substream`) + `bluetooth` + `systemd-journal`) with
+`CapabilityBoundingSet=` (empty) +
 `SystemCallFilter=@system-service`. The mechanism for each privileged surface
 was empirically determined on hardware (jts.local, NM 1.52, polkit 126, systemd
 257) via reversible `pkcheck` / `sudo -u jasper-web` / dummy-NM-profile probes

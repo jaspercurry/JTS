@@ -233,19 +233,18 @@ hardware measurement that might say "chip-AEC only").
   **fresh SSOT reader** (`jasper/voice/provider_state.py`-style), not
   `Config.from_env`: jasper-control (which serves `/state`) is not
   restarted on a provider switch, so a `Config`-cached flag goes stale.
-- **Threshold:** reuse `JASPER_VAD_BARGE_IN_THRESHOLD` (already in
-  `config.py`, default 0.5). It is currently **dead config** (read by no
-  runtime code). Its `.env.example` comment was Gemini-specific and
-  described an unbuilt forwarding behaviour; it was rewritten
-  provider-neutral on 2026-06-21 with a "not yet read at runtime" note.
-  PR 2 finalizes the comment when it wires the gate.
+- **Threshold:** `JASPER_VAD_BARGE_IN_THRESHOLD` (`config.py`, default
+  0.5) is wired — `_handle_playback_frame` reads
+  `self._cfg.vad_barge_in_threshold` (`jasper/voice_daemon.py`) to gate
+  the sustained-speech run that fires the local interrupt.
 - **`event=` logs** via `jasper.log_event`: `barge.detected`
   (`leg=`, `silero=`, `sustained_ms=`), `barge.cancel` (`reason=` — the
   OpenAI/Grok pack's `response.cancel`), `barge.truncate`
   (`provider=`, `item_id=`, `audio_end_ms=`), `barge.truncate_skipped`
   (`reason=zero_played_ms` at WARN — the no-op-if-0 guard; `reason=no_item_id`
   at DEBUG), `barge.truncate_failed` (WARN — the truncate wire send errored),
-  `barge.server_only` (server fired but local didn't — false-barge suspect),
+  `barge.server_only` (not yet built, PR 7 — server fired but local
+  didn't — false-barge suspect),
   `barge.flush_failed` (WARN). Reuse the existing `event=tts_flush.playout_ack`.
 - **`/state.voice.barge_in`** *(✅ landed PR-2)*: `enabled` (per active
   provider, read **fresh** in jasper-control's aggregator via
@@ -253,7 +252,8 @@ hardware measurement that might say "chip-AEC only").
   session_status, since the daemon's `Config` is stale on a toggle),
   plus `last_at` / `count_session` / `last_leg` pulled through from the
   daemon's session_status firing counters.
-- **Doctor:** one `@doctor_check` `check_barge_in_config` — warn if a
+- **Doctor:** (not yet built, PR 7) one `@doctor_check`
+  `check_barge_in_config` — warn if a
   provider has barge-in enabled while the active AEC profile is
   `direct_mic` (no reference → guaranteed self-interruption) or the
   feeding leg is AEC-OFF. Plus a **runtime** self-interrupt-loop guard:
