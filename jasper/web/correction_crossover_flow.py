@@ -166,9 +166,57 @@ def handle_apply(
         ),
         timeout=30.0,
     )
-    return payload, (
-        HTTPStatus.OK if payload.get("status") == "applied" else HTTPStatus.CONFLICT
+    if payload.get("status") != "applied":
+        return payload, HTTPStatus.CONFLICT
+
+    # This explicit user action is the terminal owner of commissioning.  The
+    # generic backend is also used mid-flow to preserve a legacy manual graph,
+    # so ending the durable safe-playback session there would release mutual
+    # exclusion before the automatic measurements begin.
+    from jasper.active_speaker.safe_playback import stop_safe_playback_session
+
+    try:
+        closed = stop_safe_playback_session(reason="crossover_profile_applied")
+    except Exception as exc:  # noqa: BLE001 — applied DSP remains truthful
+        issue = {
+            "severity": "blocker",
+            "code": "crossover_commissioning_close_failed",
+            "message": (
+                "The crossover was applied, but its measurement session could "
+                "not be closed. Retry before starting room correction."
+            ),
+        }
+        payload = dict(payload)
+        payload["issues"] = [issue, *(payload.get("issues") or [])]
+        payload["commissioning_session"] = {
+            "status": "close_failed",
+            "last_action": "crossover_profile_applied",
+        }
+        log_event(
+            logger,
+            "correction.crossover_commissioning_session",
+            level=logging.ERROR,
+            exc_info=True,
+            status="close_failed",
+            owner=tuning_owner,
+            reason=type(exc).__name__,
+        )
+        return payload, HTTPStatus.CONFLICT
+
+    payload = dict(payload)
+    payload["commissioning_session"] = {
+        "status": str(closed.get("status") or "unknown"),
+        "session_id": closed.get("session_id"),
+        "last_action": closed.get("last_action"),
+    }
+    log_event(
+        logger,
+        "correction.crossover_commissioning_session",
+        status=payload["commissioning_session"]["status"],
+        owner=tuning_owner,
+        session_id=payload["commissioning_session"]["session_id"],
     )
+    return payload, HTTPStatus.OK
 
 
 def handle_driver_test(
