@@ -14,6 +14,8 @@ the policy contract:
   - Probe success resets the counter
   - Probe exception → counted as a failure
   - Gate exception → fails safe to "active" (no restart)
+  - Deliberately disabled unit (is-enabled=disabled) idles the
+    supervisor — no restart, no counter growth, resumes on re-enable
 
 A separate group exercises the default RTSP probe against a real
 asyncio TCP server.
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 
 from jasper.control.shairport_supervisor import (
     ShairportSupervisor,
@@ -47,6 +50,16 @@ class _FakeSupervisor(ShairportSupervisor):
         self.gate_results: list = []
         self.restart_calls = 0
         self.now: float = 0.0
+        # Hermetic default: unit is enabled, so failing probes count
+        # toward a wedge exactly as before the disabled-idle guard.
+        self.unit_disabled_result: bool = False
+        # Counts enablement reads so a test can pin that the healthy
+        # path never spawns the is-enabled subprocess.
+        self.disabled_checks = 0
+
+    async def is_shairport_unit_disabled(self) -> bool:
+        self.disabled_checks += 1
+        return self.unit_disabled_result
 
     async def probe(self) -> bool:
         result = self.probe_results.pop(0)
@@ -81,6 +94,18 @@ async def test_healthy_probe_keeps_counter_zero():
     assert sup.consecutive_failures == 0
     assert sup.restart_calls == 0
     assert sup.last_probe_ok is True
+
+
+async def test_healthy_probe_never_reads_enablement():
+    """The is-enabled subprocess runs only on a failing probe. A
+    working box must not spawn `systemctl is-enabled` every 30 s tick,
+    so the enablement read stays behind the `if ok: return` fast path.
+    """
+    sup = _FakeSupervisor()
+    sup.probe_results = [True, True, True]
+    for _ in range(3):
+        await sup._tick()
+    assert sup.disabled_checks == 0
 
 
 async def test_one_failure_does_not_trigger_restart():
@@ -215,6 +240,9 @@ async def test_dead_shairport_unit_bypasses_mpris_unknown_and_restarts(
         async def is_shairport_unit_active(self) -> bool | None:
             return False
 
+        async def is_shairport_unit_disabled(self) -> bool:
+            return False  # crashed, not household-disabled
+
         async def restart_shairport(self) -> None:
             self.restart_calls += 1
 
@@ -223,6 +251,106 @@ async def test_dead_shairport_unit_bypasses_mpris_unknown_and_restarts(
         await sup._tick()
     assert sup.restart_calls == 1
     assert sup.suppressed_count == 0
+
+
+async def test_disabled_unit_is_never_restarted(monkeypatch):
+    """The 2026-07-10 regression: AirPlay toggled OFF at /sources/
+    leaves shairport-sync is-enabled=disabled + inactive. MPRIS is
+    unknown and the unit is inactive — byte-for-byte the dead-unit
+    bypass shape above — but the stop is deliberate, so the supervisor
+    must idle instead of reviving a source the household turned off."""
+    async def unknown_mpris(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "jasper.control.shairport_supervisor.mpris.shairport_playing",
+        unknown_mpris,
+    )
+
+    class _DisabledUnitSupervisor(ShairportSupervisor):
+        def __init__(self) -> None:
+            super().__init__(
+                interval_sec=0.0,
+                jitter_sec=0.0,
+                cold_start_sec=0.0,
+                failure_threshold=3,
+            )
+            self.restart_calls = 0
+
+        async def probe(self) -> bool:
+            return False
+
+        async def is_shairport_unit_active(self) -> bool | None:
+            return False
+
+        async def is_shairport_unit_disabled(self) -> bool:
+            return True
+
+        async def restart_shairport(self) -> None:
+            self.restart_calls += 1
+
+    sup = _DisabledUnitSupervisor()
+    for _ in range(6):  # two full thresholds' worth of failing ticks
+        await sup._tick()
+    assert sup.restart_calls == 0
+    assert sup.consecutive_failures == 0
+    assert sup.snapshot()["unit_disabled"] is True
+
+
+async def test_reenabled_unit_resumes_wedge_recovery():
+    """Disable idles the counter without disarming the supervisor: once
+    the unit is enabled again, a real wedge must still count through to
+    a restart from a clean confidence window."""
+    sup = _FakeSupervisor(failure_threshold=3)
+    sup.unit_disabled_result = True
+    sup.probe_results = [False, False]
+    for _ in range(2):
+        await sup._tick()
+    assert sup.restart_calls == 0
+    assert sup.consecutive_failures == 0
+    assert sup.snapshot()["unit_disabled"] is True
+
+    sup.unit_disabled_result = False
+    sup.probe_results = [False, False, False]
+    sup.gate_results = [False]
+    for _ in range(3):
+        await sup._tick()
+    assert sup.restart_calls == 1
+    assert sup.snapshot()["unit_disabled"] is False
+
+
+async def test_probe_idle_logs_once_per_disable_edge(caplog):
+    """`_tick` promises the probe_idle line edge-triggers: one line when
+    a disable is first attributed, silence on subsequent disabled ticks
+    (no journal spam against intended state), and a fresh line only
+    after a genuine re-enable → re-disable edge."""
+    sup = _FakeSupervisor(failure_threshold=3)
+    sup.unit_disabled_result = True
+    sup.probe_results = [False] * 5
+    with caplog.at_level(
+        logging.INFO, logger="jasper.control.shairport_supervisor",
+    ):
+        for _ in range(5):
+            await sup._tick()
+        idle_lines = [
+            r for r in caplog.records
+            if "shairport.probe_idle" in r.getMessage()
+        ]
+        assert len(idle_lines) == 1
+
+        # Re-enable (healthy probe clears the flag), then disable again:
+        # the fresh edge logs exactly once more.
+        sup.unit_disabled_result = False
+        sup.probe_results = [True]
+        await sup._tick()
+        sup.unit_disabled_result = True
+        sup.probe_results = [False]
+        await sup._tick()
+        idle_lines = [
+            r for r in caplog.records
+            if "shairport.probe_idle" in r.getMessage()
+        ]
+        assert len(idle_lines) == 2
 
 
 async def test_is_shairport_unit_active_parses_systemctl_statuses(monkeypatch):
@@ -256,16 +384,67 @@ async def test_is_shairport_unit_active_parses_systemctl_statuses(monkeypatch):
         assert await sup.is_shairport_unit_active() is expected
 
 
+async def test_is_shairport_unit_disabled_parses_systemctl_states(monkeypatch):
+    """Only explicit deliberate-off states idle the supervisor; every
+    other state (or an unreadable one) keeps Tier 3 supervising."""
+    class _Proc:
+        def __init__(self, returncode: int, stdout: bytes) -> None:
+            self.returncode = returncode
+            self._stdout = stdout
+
+        async def communicate(self):
+            return self._stdout, b""
+
+    cases = [
+        (0, b"enabled\n", False),
+        (0, b"enabled-runtime\n", False),
+        (1, b"disabled\n", True),
+        (1, b"masked\n", True),
+        (1, b"masked-runtime\n", True),
+        (0, b"static\n", False),
+        (0, b"alias\n", False),
+        (1, b"", False),  # not-found / unreadable → keep supervising
+    ]
+    sup = ShairportSupervisor()
+
+    for returncode, stdout, expected in cases:
+        async def fake_exec(*args, **kwargs):  # noqa: ARG001
+            return _Proc(returncode, stdout)
+
+        monkeypatch.setattr(
+            "jasper.control.shairport_supervisor.asyncio.create_subprocess_exec",
+            fake_exec,
+        )
+        assert await sup.is_shairport_unit_disabled() is expected
+
+
+async def test_is_shairport_unit_disabled_fails_open_without_systemctl(
+    monkeypatch,
+):
+    """A broken enablement read must degrade to 'keep supervising', not
+    silently park Tier 3 for an enabled unit."""
+    async def boom(*args, **kwargs):
+        raise FileNotFoundError("no such file: systemctl")
+
+    monkeypatch.setattr(
+        "jasper.control.shairport_supervisor.asyncio.create_subprocess_exec",
+        boom,
+    )
+    sup = ShairportSupervisor()
+    assert await sup.is_shairport_unit_disabled() is False
+
+
 async def test_snapshot_keys_and_values():
     sup = _FakeSupervisor()
     sup.probe_results = [True]
     await sup._tick()
     snap = sup.snapshot()
     assert set(snap.keys()) == {
-        "enabled", "parked_by_role", "last_probe_at", "last_probe_ok",
-        "consecutive_failures", "restart_count", "last_restart_at",
-        "suppressed_count",
+        "enabled", "parked_by_role", "unit_disabled", "last_probe_at",
+        "last_probe_ok", "consecutive_failures", "restart_count",
+        "last_restart_at", "suppressed_count",
     }
+    assert snap["unit_disabled"] is False
     assert snap["enabled"] is True
     assert snap["last_probe_ok"] is True
     assert snap["consecutive_failures"] == 0

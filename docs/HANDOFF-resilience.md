@@ -211,6 +211,22 @@ Design constraints the supervisor satisfies:
 - **The gate is the load-bearing safety net.** Probe failure during
   a real listening session is more likely a hiccup than a wedge;
   the gate keeps us from kicking the user.
+- **A deliberate disable is honored.** When the household turns
+  AirPlay off at `/sources/` (`systemctl is-enabled` reports
+  disabled/masked), failing probes idle the supervisor
+  (`event=shairport.probe_idle reason=unit_disabled`, surfaced as
+  `resilience.shairport.unit_disabled` in `/state`) instead of
+  counting toward a restart. Before this guard the supervisor
+  revived a disabled unit ~90 s after the toggle (observed on
+  hardware 2026-07-10): when MPRIS is unknown *and* systemd reports
+  the unit inactive, the no-active-session gate stands aside
+  (`event=shairport.gate_bypass reason=unit_inactive`) so a crashed
+  unit can be recovered — and that bypass alone could not tell
+  "crashed" from "turned off". The enablement check runs
+  only on failing probes, so the healthy path stays
+  subprocess-free; re-enabling resumes supervision on the next
+  tick. Errors reading enablement fail toward supervising, never
+  toward silently parking Tier 3.
 - **Rate limit prevents storms.** One supervisor-driven restart per
   10 minutes. If the wedge persists past that, the underlying issue
   is upstream and our restart isn't the right hammer.

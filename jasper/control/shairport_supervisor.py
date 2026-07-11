@@ -16,6 +16,13 @@ on "no active session", it restarts shairport-sync + nqptp — the same
 units the manual fix already touches. The detection mechanism is
 symmetric with the manual path; no new failure modes introduced.
 
+A deliberately disabled unit is not a wedge: when the household turns
+AirPlay off at /sources/ (`systemctl is-enabled` reports disabled or
+masked), failing probes idle the supervisor instead of counting toward
+a restart — mirroring jasper-camilla-recover's `start-skipped
+reason=disabled_or_absent` idiom. Re-enabling resumes supervision on
+the next tick.
+
 Disable knob: set `JASPER_SHAIRPORT_SUPERVISOR=disabled` in
 `/etc/jasper/jasper.env` and restart `jasper-control`.
 
@@ -96,6 +103,10 @@ class ShairportSupervisor:
         # True while the probe is intentionally idle because this
         # speaker is a bonded follower with shairport parked.
         self.parked_by_role: bool = False
+        # True while failing probes are attributed to a deliberate
+        # household disable (/sources/ AirPlay off) rather than a
+        # wedge. Edge-triggers the shairport.probe_idle log line.
+        self.unit_disabled: bool = False
         # Monotonic clock for rate-limit math — separated from
         # last_restart_at so display and arithmetic don't share
         # a time base. time.monotonic() can't go backwards on NTP
@@ -137,6 +148,7 @@ class ShairportSupervisor:
             self.consecutive_failures = 0
             self.last_probe_ok = None
             self.parked_by_role = True
+            self.unit_disabled = False
             return
         self.parked_by_role = False
         ok = False
@@ -153,7 +165,25 @@ class ShairportSupervisor:
         self.last_probe_ok = ok
         if ok:
             self.consecutive_failures = 0
+            self.unit_disabled = False
             return
+        # A failing probe only counts toward a wedge when the household
+        # wants the unit running. /sources/ turns AirPlay off with
+        # `systemctl disable --now`; counting those refused connections
+        # would end in a restart that revives a deliberately-disabled
+        # source (the 2026-07-10 gate_bypass regression). Checked only
+        # on failure so the healthy path stays subprocess-free.
+        if await self.is_shairport_unit_disabled():
+            if not self.unit_disabled:
+                log_event(
+                    logger,
+                    "shairport.probe_idle",
+                    reason="unit_disabled",
+                )
+            self.unit_disabled = True
+            self.consecutive_failures = 0
+            return
+        self.unit_disabled = False
         self.consecutive_failures += 1
         log_event(
             logger,
@@ -259,6 +289,11 @@ class ShairportSupervisor:
         while systemd still reports shairport-sync live or unknown. A
         dead/inactive unit cannot be protecting a listener, so it
         bypasses the gate and lets the restart path recover it.
+
+        A *deliberately disabled* unit is diverted before this gate:
+        each failing tick checks `is_shairport_unit_disabled()` before
+        the counter can arm, so the unit_inactive bypass is reached
+        only after the tick confirms the unit is not deliberately off.
         """
         playing = await mpris.shairport_playing(timeout=2.0)
         if playing is None:
@@ -288,18 +323,23 @@ class ShairportSupervisor:
         except Exception:  # noqa: BLE001 — fail-open, keep supervising
             return False
 
-    async def is_shairport_unit_active(self) -> bool | None:
-        """Return systemd's shairport unit liveness.
+    async def _systemctl_query(
+        self, verb: str,
+    ) -> tuple[int | None, str] | None:
+        """Run `systemctl <verb> shairport-sync.service` and return
+        `(returncode, stripped-stdout)`, or `None` when the command
+        can't be run to completion — a spawn error or a 2 s timeout,
+        after which the child is killed and reaped.
 
-        ``False`` is load-bearing: a dead/failed shairport process must
-        bypass the MPRIS "unknown means active" fail-safe, because the
-        DBus probe returns unknown precisely when there is no live
-        process to disrupt. Unknown systemctl failures still fail safe
-        to None so the caller preserves the active-session guard.
+        Shared spawn/timeout/kill scaffolding for the `is-active` and
+        `is-enabled` reads. Each caller owns its own result mapping so
+        the load-bearing fail-safe semantics stay local to the method
+        that documents them (is-active fails safe to None, is-enabled
+        to False — opposite directions, deliberately not unified here).
         """
         try:
             proc = await asyncio.create_subprocess_exec(
-                "systemctl", "is-active", "shairport-sync.service",
+                "systemctl", verb, "shairport-sync.service",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -315,14 +355,48 @@ class ShairportSupervisor:
             with contextlib.suppress(Exception):
                 await proc.wait()
             return None
-        status = stdout.decode("utf-8", "replace").strip()
-        if proc.returncode == 0 and status == "active":
+        return proc.returncode, stdout.decode("utf-8", "replace").strip()
+
+    async def is_shairport_unit_active(self) -> bool | None:
+        """Return systemd's shairport unit liveness.
+
+        ``False`` is load-bearing: a dead/failed shairport process must
+        bypass the MPRIS "unknown means active" fail-safe, because the
+        DBus probe returns unknown precisely when there is no live
+        process to disrupt. Unknown systemctl failures still fail safe
+        to None so the caller preserves the active-session guard.
+        """
+        result = await self._systemctl_query("is-active")
+        if result is None:
+            return None
+        returncode, status = result
+        if returncode == 0 and status == "active":
             return True
         if status in {"inactive", "failed", "deactivating", "dead"}:
             return False
-        if proc.returncode != 0 and status:
+        if returncode != 0 and status:
             return False
         return None
+
+    async def is_shairport_unit_disabled(self) -> bool:
+        """True when the unit is deliberately turned off — `systemctl
+        is-enabled` reports disabled or masked, the state the
+        /sources/ wizard's AirPlay-off toggle writes.
+
+        Deliberate-off is matched on explicit state strings, not the
+        camilla-recover rc!=0 shortcut: the anticipated error paths
+        (systemctl missing, timeout, not-found, unparseable state)
+        resolve False so a broken enablement read degrades to today's
+        behavior — keep supervising — rather than silently turning
+        Tier 3 off. An unexpected exception escapes to `run()`'s
+        tick_crash handler: loud, and the aborted tick restarts
+        nothing.
+        """
+        result = await self._systemctl_query("is-enabled")
+        if result is None:
+            return False
+        _returncode, state = result
+        return state in {"disabled", "masked", "masked-runtime"}
 
     async def restart_shairport(self) -> None:
         """`reset-failed` clears StartLimitBurst parking; `--no-block
@@ -354,6 +428,7 @@ class ShairportSupervisor:
         return {
             "enabled": True,
             "parked_by_role": self.parked_by_role,
+            "unit_disabled": self.unit_disabled,
             "last_probe_at": self.last_probe_at,
             "last_probe_ok": self.last_probe_ok,
             "consecutive_failures": self.consecutive_failures,
