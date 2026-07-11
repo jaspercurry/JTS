@@ -227,8 +227,10 @@ operation assumes the splitter-backed path.
 ## Executive summary
 
 The USB gadget feature reuses the existing renderer-into-Loopback
-pattern. A oneshot service `jasper-usbsink-init.service` performs the
-ConfigFS gadget setup at start. The runtime is split deliberately:
+pattern. A oneshot service `jasper-usbgadget.service` performs the
+ConfigFS gadget setup at start (the old audio-only
+`jasper-usbsink-init.service` is deleted — see §4.1). The runtime is
+split deliberately:
 
 1. `jasper-usbsink.service` runs the Rust `jasper-usbsink-audio` binary
    **standby-only** — it carries the USB-audio intent + gadget lifecycle
@@ -2029,7 +2031,10 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-07-10 (aloop solo USB capture path DELETED — the
+Last verified: 2026-07-11 (Executive Summary's gadget-setup owner
+corrected from the deleted `jasper-usbsink-init.service` to
+`jasper-usbgadget.service`, matching the top callout and §4.1's own
+historical notice for the same fact). Prior 2026-07-10 pass: aloop solo USB capture path DELETED — the
 `jasper-usbsink-audio` bridge is standby-only and captures nothing; `jasper-fanin`
 DIRECT-captures `hw:UAC2Gadget` as the SOLE USB pipeline. Removed with it: the
 bridge `:8781` listener + impulse tap, the bridge's solo `host_clock`, the

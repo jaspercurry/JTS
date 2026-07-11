@@ -1882,6 +1882,16 @@ on USB-OUT.
 
 ## What we found about chip-side AEC in our topology
 
+> **Superseded.** The verdict below ("does not work usefully... regardless
+> of configuration") describes the *variants tested at the time this
+> section was written* — none of which fed music to the chip's USB-IN as
+> the AEC reference. That specific variant (Option D) became a positive
+> lab result on 2026-05-29 and now backs the recommended `xvf_chip_aec`
+> input profile — see the TL;DR above and
+> [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md). This section is kept
+> for the investigation history and the still-valid tested-and-rejected
+> variants below.
+
 We pursued the chip-side AEC path first. It would be ideal — zero
 host CPU cost, lowest latency, the chip is purpose-built. The
 investigation took roughly half a session and ultimately concluded
@@ -2023,7 +2033,10 @@ setup on Linux. Found none. We would be the first.
   for re-flashing custom builds). Modifying chip behavior is a
   significant project.
 - Even with the volume-mirror workaround, measured attenuation
-  was ≤2 dB — not useful.
+  was ≤2 dB — not useful. (This was the volume-mirror workaround,
+  not the USB-IN-reference variant — see the superseded callout
+  above; Option D's USB-IN reference measured usefully on
+  2026-05-29 and now ships as the recommended profile.)
 
 ---
 
@@ -2691,8 +2704,13 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-07-09 (wake-corpus chip-AEC capture-plan gating and
-bridge stats schema v2 rechecked against `jasper/cli/aec_bridge.py` and
+Last verified: 2026-07-11 ("What we found about chip-side AEC in our
+topology" section's obsolete verdict corrected with a superseded
+callout — the section previously read as a current negative verdict
+despite the doc's own TL;DR crediting Option D's 2026-05-29 lab result
+as the recommended `xvf_chip_aec` profile). Prior 2026-07-09 pass
+rechecked wake-corpus chip-AEC capture-plan gating and
+bridge stats schema v2 against `jasper/cli/aec_bridge.py` and
 `jasper/wake_corpus/bridge_session.py`. Prior 2026-06-30 pass rechecked
 chip-AEC one-detector default and optional 150/210 beam opt-ins against
 `jasper/audio_profile_state.py`, `deploy/bin/jasper-aec-reconcile`,

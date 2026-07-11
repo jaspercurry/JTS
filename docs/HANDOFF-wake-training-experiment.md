@@ -1071,9 +1071,8 @@ were tripped, REVERT to jarvis_v2 instead of deploying.
 If clear to deploy: update the wake-model registry in
 `jasper/wake_models.py` with the winning entries (either three per-leg
 models OR one union model, decided in Phase 1e). Add per-leg model
-config (probably as env vars `JASPER_WAKE_MODEL_RAW`,
-`JASPER_WAKE_MODEL_AEC`, `JASPER_WAKE_MODEL_DTLN`, or just
-`JASPER_WAKE_MODEL` if union won). Update the existing wake loop in
+config (naming TBD at implementation time — no per-leg model env vars
+exist yet — or just `JASPER_WAKE_MODEL` if union won). Update the existing wake loop in
 `jasper.voice_daemon.WakeLoop` to load the per-leg models. Ship as a
 PR behind a feature flag.
 

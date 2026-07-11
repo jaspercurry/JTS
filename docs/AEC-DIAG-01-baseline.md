@@ -1,5 +1,13 @@
 # AEC-DIAG-01 Baseline
 
+> **Status: historical.** Snapshot from 2026-06-18 diagnosing a
+> suspected chip-AEC regression during the move to an
+> outputd-centered final-reference architecture. Preserved for
+> primary-source archaeology — specific facts (installed build IDs,
+> live-device state, "what's working" lists) will drift over time.
+> Read this for the narrative, not for current state. Current
+> operational truth lives in [HANDOFF-aec.md](HANDOFF-aec.md).
+
 Date: 2026-06-18
 Scope: diagnostic baseline for the suspected chip-AEC regression after moving toward an outputd-centered final-reference architecture.
 Constraint: no production changes. Live device inspection was read-only.

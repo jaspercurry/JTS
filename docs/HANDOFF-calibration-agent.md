@@ -787,7 +787,7 @@ preference (settable in the `/correction/` wizard):
 ```python
 # Effective model resolver
 def pick_model() -> tuple[str, str]:  # (provider, model)
-    pref = config.get("JASPER_CALIBRATION_AGENT_PROVIDER")
+    pref = config.get("JASPER_CALIBRATION_ADVISOR_PROVIDER")
     if pref and key_present(pref):
         return pref, default_model(pref)
     # Fallback: smartest-available, in this priority order
