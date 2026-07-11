@@ -279,22 +279,31 @@ fi
 # stash. Recreate.
 emit recreate_attempt "ssid=$SSID"
 
+# Capture nmcli's stderr in a private temp file. nmcli can echo the PSK
+# back in its error text (scrub_psk exists precisely for that), so the
+# file must never be world-readable. mktemp creates it 0600 (not the
+# shell's ~0644 default from a bare `2>/tmp/foo.$$`), and the unit sets
+# PrivateTmp=true so the whole /tmp is process-private. The trap deletes
+# it even if this oneshot is killed before the explicit rm -f — the exact
+# dirty-shutdown scenario this guardian exists to survive.
+stderr_tmp="$(mktemp "${TMPDIR:-/tmp}/wifi-guardian.stderr.XXXXXX")"
+trap 'rm -f "$stderr_tmp"' EXIT
+
 # nmcli's connect path: pass `password ARG` for keyed networks, omit it
 # for open networks. nmcli reads the security mode from the beacon at
 # connect time (WPA2 vs WPA3/SAE), so the stashed `key_mgmt` only gates
 # whether we pass the password arg at all.
 if [[ -z "$PSK" || "$KEY_MGMT" == "none" ]]; then
-    "$NMCLI" --wait 30 device wifi connect "$SSID" 2>/tmp/wifi-guardian.stderr.$$
+    "$NMCLI" --wait 30 device wifi connect "$SSID" 2>"$stderr_tmp"
     rc=$?
 else
-    "$NMCLI" --wait 30 device wifi connect "$SSID" password "$PSK" 2>/tmp/wifi-guardian.stderr.$$
+    "$NMCLI" --wait 30 device wifi connect "$SSID" password "$PSK" 2>"$stderr_tmp"
     rc=$?
 fi
 
 if [[ $rc -eq 0 ]]; then
     harden_profile "$SSID"
     emit recreate_ok "ssid=$SSID"
-    rm -f /tmp/wifi-guardian.stderr.$$
     exit 0
 fi
 
@@ -304,14 +313,13 @@ fi
 # garbage. Best-effort.
 "$NMCLI" connection delete "$SSID" >/dev/null 2>&1 || true
 
-# Log the nmcli stderr with PSK scrubbed. The stderr file path includes
-# our PID so concurrent runs (which shouldn't happen — oneshot — but
-# defense in depth) don't collide.
+# Log the nmcli stderr with PSK scrubbed. mktemp gave us a unique,
+# 0600 path so concurrent runs (which shouldn't happen — oneshot — but
+# defense in depth) don't collide; the EXIT trap removes it.
 err_line=""
-if [[ -s /tmp/wifi-guardian.stderr.$$ ]]; then
-    err_line="$(scrub_psk < /tmp/wifi-guardian.stderr.$$ | head -1 | tr -d '\n')"
+if [[ -s "$stderr_tmp" ]]; then
+    err_line="$(scrub_psk < "$stderr_tmp" | head -1 | tr -d '\n')"
 fi
-rm -f /tmp/wifi-guardian.stderr.$$
 
 emit recreate_fail "ssid=$SSID rc=$rc err=\"${err_line}\""
 exit "$rc"
