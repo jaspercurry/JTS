@@ -15,7 +15,8 @@
   [`jasper/audio_measurement/ramp.py`](../jasper/audio_measurement/ramp.py)
   (quiet-start staircase → pre-window freeze → buffered settle read →
   mid-window jump → k-confirm lock; dynamic cap is strictly the lower of
-  `original+6`, the configured absolute ceiling, and 0 dB — there is no floor
+  `original+12`, the configured absolute ceiling (default −3 dB), and 0 dB —
+  there is no floor
   that can jump a quiet listening setting upward; clip/trust/feed-liveness/
   derived safety timeout; exact — never cap-clamped — restore of the user's
   pre-ramp volume). `MAXED_OUT` is a failed attempt, stores no lock, restores
@@ -2121,7 +2122,9 @@ Internal:
 
 ---
 
-Last verified: 2026-07-10 (Jasper relay room/crossover sequential flow,
+Last verified: 2026-07-11 (JTS3 UMIK-2 on-device level-ramp evidence and the
+12 dB / −3 dB dynamic-cap defaults; prior 2026-07-10 Jasper relay
+room/crossover sequential flow,
 ambient-baselined automatic level, exact bounded gain leases, mic/calibration
 binding, safe applied manual-or-automatic Layer-A room prerequisite, explicit
 automatic replacement of manual pins, capture-page compatibility handshake,
