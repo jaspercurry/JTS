@@ -201,3 +201,106 @@ def test_relay_run_and_consume_publishes_sweep_complete(monkeypatch):
     assert proc.waited is True  # complete only after playback truly ended
     assert all(e["session_id"] == "sid-1" and e["pull_token"] == "tok-1"
                for e in events)
+
+
+def test_handle_play_aborts_and_kills_proc_when_a_concurrent_play_won(
+    monkeypatch,
+):
+    """Two concurrent /sync/play calls must not both spawn overlapping aplay
+    markers into one delay measurement. The pre-spawn check released the lock,
+    so this pins the post-spawn re-validation: the loser kills its just-spawned
+    proc and returns CONFLICT instead of recording a second playback."""
+    from http import HTTPStatus
+
+    from jasper.web import sync_flow
+
+    with sync_flow._lock:
+        sync_flow._state.update({
+            "phase": "measuring", "error": "", "members": None, "result": None,
+            "recommendation": None, "playback": None, "release_window": None,
+        })
+
+    terminated: list[bool] = []
+
+    class WinnerProc:
+        def terminate(self):
+            return None
+
+    winner_proc = WinnerProc()
+
+    class LoserProc:
+        def terminate(self):
+            terminated.append(True)
+
+    def fake_run_async(coro, *, timeout):
+        coro.close()  # never actually exec aplay
+        # Simulate the concurrent play that won the race between our pre-check
+        # and our post-spawn re-check.
+        with sync_flow._lock:
+            sync_flow._state["playback"] = {"proc": winner_proc}
+        return LoserProc()
+
+    monkeypatch.setattr(sync_flow, "_marker_wav_path", lambda: "/tmp/fake.wav")
+
+    scheduled: list[object] = []
+
+    def fake_schedule(coro):
+        coro.close()
+        scheduled.append(coro)
+
+    try:
+        resp, status = sync_flow.handle_play(fake_run_async, fake_schedule)
+    finally:
+        with sync_flow._lock:
+            sync_flow._reset_locked()
+
+    assert status == HTTPStatus.CONFLICT
+    assert "already playing" in resp["error"]
+    assert terminated == [True]  # loser terminated its just-spawned proc
+    assert scheduled == []  # no watcher scheduled for the aborted proc
+
+
+def test_handle_play_records_playback_on_the_happy_path(monkeypatch):
+    """Sanity: with no concurrent winner, handle_play records the spawned proc
+    and schedules its watcher — the re-validation is a guard, not a block."""
+    from http import HTTPStatus
+
+    from jasper.web import sync_flow
+
+    with sync_flow._lock:
+        sync_flow._state.update({
+            "phase": "measuring", "error": "", "members": None, "result": None,
+            "recommendation": None, "playback": None, "release_window": None,
+        })
+
+    terminated: list[bool] = []
+
+    class OkProc:
+        def terminate(self):
+            terminated.append(True)
+
+    proc = OkProc()
+
+    def fake_run_async(coro, *, timeout):
+        coro.close()
+        return proc
+
+    monkeypatch.setattr(sync_flow, "_marker_wav_path", lambda: "/tmp/fake.wav")
+
+    scheduled: list[object] = []
+
+    def fake_schedule(coro):
+        coro.close()
+        scheduled.append(coro)
+
+    try:
+        resp, status = sync_flow.handle_play(fake_run_async, fake_schedule)
+        assert status == HTTPStatus.OK
+        assert resp == {"ok": True}
+        with sync_flow._lock:
+            assert sync_flow._state["playback"]["proc"] is proc
+        assert len(scheduled) == 1  # watcher scheduled
+        assert terminated == []  # the happy path must not kill its own proc
+    finally:
+        with sync_flow._lock:
+            sync_flow._reset_locked()
