@@ -82,8 +82,9 @@ def main() -> int:
     ap.add_argument(
         "--models-dir",
         type=Path,
-        default=Path("/Users/jaspercurry/Code/JTS/dtln-aec-onnx"),
-        help="directory containing dtln_aec_<size>_{1,2}.onnx",
+        default=Path("dtln-aec-onnx"),
+        help="directory containing dtln_aec_<size>_{1,2}.onnx "
+        "(default: ./dtln-aec-onnx, matching convert-dtln-aec.sh's OUT_DIR default)",
     )
     args = ap.parse_args()
 

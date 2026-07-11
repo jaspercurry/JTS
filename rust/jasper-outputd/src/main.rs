@@ -357,9 +357,11 @@ fn run_alsa(
             )?)
         }
     };
-    // PROTOTYPE (latency/ring-proto-shm): the SHM ping-pong ring content source.
-    // Constructed ONLY under JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring; None (the
-    // default) leaves the loop byte-identical. A geometry/version/size mismatch
+    // Ring B: the SHM ping-pong ring content source. Shipped default on
+    // eligible stereo topologies (P4 LANDED —
+    // docs/HANDOFF-audio-graph-consolidation.md); off elsewhere by resolved
+    // policy. Constructed ONLY under JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring;
+    // None leaves the loop byte-identical. A geometry/version/size mismatch
     // against an existing ring is a hard error here — mapped to the config-class
     // exit 78 so the unit parks (RestartPreventExitStatus=78) instead of
     // reboot-looping on a mismatched writer.

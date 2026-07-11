@@ -63,9 +63,9 @@ daemon_set_mode() {
   #
   # Why we need this: capture_chip_ch() opens hw:CARD=Array,DEV=0 in
   # CAPTURE mode via arecord. UAC2 capture is a single-substream
-  # endpoint — concurrent opens fail with -EBUSY. The production AEC
-  # bridge documents this at jasper/cli/aec_bridge.py:492-495 ("the
-  # bridge already holds the Array card exclusively"). During Phase
+  # endpoint — concurrent opens fail with -EBUSY, and the production
+  # AEC bridge (jasper/cli/aec_bridge.py) normally holds the Array
+  # card's capture side for the whole time it runs. During Phase
   # 4 we run the daemon in --ref-only so its udp_mic_pump thread
   # releases the chip's capture side, letting arecord open it. The
   # ref feeder keeps running so the chip's AEC adaptive filter

@@ -4,10 +4,12 @@
 
 """Async research job scheduler and SQLite persistence.
 
-Hardware-free Phase 1 foundation only: no voice tool registration, no
-daemon wiring, and no audio/cue behavior. The scheduler owns bounded
-background tasks and calls an injected ``on_done`` hook when a job
-reaches a terminal state.
+This module owns the hardware-free scheduling/persistence layer only: no
+voice tool registration and no audio/cue behavior live here. The
+scheduler owns bounded background tasks and calls an injected ``on_done``
+hook when a job reaches a terminal state. Voice wiring (tool registration,
+the ``on_done`` -> wake-loop announcement) lives in
+``jasper/voice/daemon_main.py`` and ``jasper/tools/research.py``.
 """
 from __future__ import annotations
 

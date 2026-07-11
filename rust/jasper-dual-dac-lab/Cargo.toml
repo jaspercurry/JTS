@@ -9,8 +9,10 @@ authors = ["Jasper Curry <jaspercurry@gmail.com>"]
 rust-version = "1.75"
 
 [dependencies]
-# Match jasper-outputd's ALSA wrapper version so lab behavior stays close
-# to the production final-output owner while remaining a separate binary.
+# NOTE: parity with jasper-outputd's ALSA wrapper version no longer holds —
+# jasper-outputd bumped to alsa "0.11" (commit 5aff01dc); this lab-only
+# crate is still on "0.9". Bump here if parity is wanted; low-risk since
+# this binary is lab-only.
 alsa = "0.9"
 anyhow = "1"
 libc = "0.2"

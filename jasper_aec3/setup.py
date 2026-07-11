@@ -92,11 +92,13 @@ _ABSL_MODULES = [
 ]
 
 
-def _absl_via_pkgconfig() -> tuple[list[str], list[str]]:
+def _absl_via_pkgconfig() -> tuple[list[str], list[str], list[str]]:
     """Discover system abseil link flags via pkg-config.
 
-    Returns (library_dirs, library_names) — both already stripped of
-    the leading -L / -l prefixes so they fit setuptools' parameters.
+    Returns (library_dirs, library_names, extra_link) — library_dirs and
+    library_names are already stripped of the leading -L / -l prefixes so
+    they fit setuptools' parameters; extra_link carries any other linker
+    tokens pkg-config emits verbatim (e.g. -Wl,--push-state, -latomic).
     On Pi (Debian Trixie), abseil-cpp is shipped as libabsl-dev and
     meson detects it via pkg-config, so its subproject build isn't
     triggered → no static archives to link directly. We discover the

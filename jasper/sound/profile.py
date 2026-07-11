@@ -886,7 +886,12 @@ def response_preview(
 
 
 def estimate_headroom_db(profile: SoundProfile) -> float:
-    """Digital preamp attenuation needed before preference boosts."""
+    """Peak-boost metric: attenuation that WOULD be needed before preference
+    boosts to avoid clipping. Advisory only — surfaced by doctor / `/state`
+    / the calibration advisor; nothing applies it. The actual applied
+    attenuation is the user-set ``headroom_trim_db`` in
+    jasper/sound/settings.py. See docs/HANDOFF-sound-preferences.md.
+    """
 
     filters = build_sound_filters(profile)
     if not filters:

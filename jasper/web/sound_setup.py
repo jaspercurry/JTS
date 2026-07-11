@@ -17,6 +17,7 @@ URL surface (after nginx strips /sound/):
   GET  /active-speaker/startup-load guarded startup-load/rollback state
   GET  /active-speaker/commission-state per-driver commission + Stage-5 ramp state
   GET  /active-speaker/commissioning-view backend-owned setup view/actions/copy
+  GET  /active-speaker/crossover-alignment preview the L2 crossover-alignment proposal
   GET  /active-speaker/design-draft saved speaker design/research evidence
   GET  /active-speaker/crossover-preview saved no-audio crossover preview
   GET  /active-speaker/measurements saved driver and summed validation evidence

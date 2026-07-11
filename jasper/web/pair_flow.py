@@ -12,6 +12,8 @@ without importing each other's private functions.
 
 from __future__ import annotations
 
+import os
+
 
 def resolve_pair() -> tuple[dict | None, dict | None, str]:
     """Return ``(self_grouping, peer, error)`` for the bonded leader.
@@ -30,7 +32,8 @@ def resolve_pair() -> tuple[dict | None, dict | None, str]:
     own = read_grouping_state()
     bond_id = str(own.get("bond_id") or "").strip()
     if not own.get("enabled") or not bond_id:
-        return None, None, "bond a pair first (jts.local/rooms)"
+        hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
+        return None, None, f"bond a pair first ({hostname}/rooms)"
     if str(own.get("role") or "") != "leader":
         return None, None, "open this page on the pair leader"
 

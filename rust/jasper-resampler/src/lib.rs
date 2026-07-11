@@ -20,17 +20,18 @@
 //!   so successive blocks are phase-continuous (no per-block click).
 //!
 //! [`resample_i16`] is a one-shot convenience over a fresh resampler — the
-//! stateless contract reference that the cross-language C++ binding mirrors.
+//! stateless reference pinned by the in-crate `golden_vector_is_stable` test.
 //!
 //! # Provenance
 //!
 //! The interpolation math (the sinc/window coefficients, the table layout, the
 //! per-frame interpolation, the `i16` rounding) is lifted verbatim from
 //! `jasper-outputd`'s `content_bridge.rs`, which now *consumes* this crate
-//! rather than carrying its own copy. Keeping the math here byte-for-byte is
-//! load-bearing: the daemon path (Rust, via content_bridge) and the
-//! Python/usbsink path (C++ pybind11) must produce bit-identical output, and a
-//! cross-language contract test pins that to ≤1 LSB.
+//! rather than carrying its own copy. This is a Rust-only primitive — there
+//! is no cross-language binding or contract test in this repo (a prior
+//! C++/usbsink mirror + Python contract test were cut; see
+//! docs/RESEARCH-pipewire-low-latency.md). Silent math drift is caught by the
+//! in-crate `golden_vector_is_stable` regression test instead.
 //!
 //! # What this crate is NOT
 //!
@@ -94,10 +95,10 @@ pub fn minimum_safe_fill_frames(period_frames: u32, max_adjust_ppm: f64) -> usiz
 const CUTOFF: f64 = 0.97;
 
 // ---------------------------------------------------------------------------
-// Kernel math — lifted verbatim from content_bridge.rs so the daemon path and
-// the C++ binding agree bit-for-bit. Do not "clean up" the f64 ops, the
-// Blackman-Harris coefficients, the normalization, or the rounding: any change
-// breaks cross-language byte-identity (tests/test_resampler_contract.py).
+// Kernel math — lifted verbatim from content_bridge.rs. Do not "clean up" the
+// f64 ops, the Blackman-Harris coefficients, the normalization, or the
+// rounding: any change is a silent output-drift risk, caught by the in-crate
+// `golden_vector_is_stable` regression test.
 // ---------------------------------------------------------------------------
 
 fn sinc(x: f64) -> f64 {
@@ -714,10 +715,9 @@ impl BlockResampler {
 /// One-shot stateless resample of an interleaved `i16` buffer at a fixed ratio.
 ///
 /// A fresh [`BlockResampler`] is fed the whole buffer once with zero-padded
-/// edges, so this is the *contract reference* the C++/usbsink binding's
-/// stateless `resample_block` mirrors — `tests/test_resampler_contract.py`
-/// pins the two to ≤1 LSB. For streaming use, hold a [`BlockResampler`] instead
-/// (this discards cross-call cursor continuity).
+/// edges. This is the stateless reference pinned by the in-crate
+/// `golden_vector_is_stable` regression test. For streaming use, hold a
+/// [`BlockResampler`] instead (this discards cross-call cursor continuity).
 ///
 /// The internal ring is sized to hold the whole input plus kernel headroom, so
 /// nothing is dropped. Capture-follower semantics apply: `ratio > 1` returns
@@ -1393,21 +1393,21 @@ mod tests {
         );
     }
 
-    /// The committed cross-language golden fixture. A short deterministic stereo
-    /// signal resampled one-shot at ratio 1.0001; the C++ binding must match
-    /// this to ≤1 LSB. Printed (with `--nocapture`) so the fixture for
-    /// `tests/test_resampler_contract.py` can be regenerated if the math is ever
-    /// *intentionally* changed in lockstep on both sides.
+    /// The committed golden fixture. A short deterministic stereo signal
+    /// resampled one-shot at ratio 1.0001, pinned as a regression tripwire
+    /// against silent math drift. Printed (with `--nocapture`) so the fixture
+    /// can be regenerated via `cargo run --example golden_vector` if the math
+    /// is ever *intentionally* changed.
     #[test]
     fn golden_vector_is_stable() {
         let table = SincTable::new();
         // The single canonical fixture input — shared with the `golden_vector`
-        // example and the C++ contract test.
+        // example.
         let input = golden::canonical_input();
         let out = resample_i16(&input, golden::CHANNELS, 1.0001, &table);
         // The fixture is committed as the first/last few samples + length so a
-        // silent math drift fails here AND in the cross-language test. These
-        // values were produced by this exact code; regenerate deliberately.
+        // silent math drift fails here. These values were produced by this
+        // exact code; regenerate deliberately.
         assert_eq!(out.len(), GOLDEN_1_0001_LEN, "golden length drift");
         for (i, &(idx, l, r)) in GOLDEN_1_0001_SPOT.iter().enumerate() {
             let got_l = out[idx * 2];
@@ -1420,11 +1420,8 @@ mod tests {
     }
 
     // Golden fixture for ratio 1.0001 over the 256-frame deterministic input in
-    // `golden_vector_is_stable`. Cross-language contract: the C++ binding's
-    // one-shot resample of the SAME input at the SAME ratio matches these to
-    // ≤1 LSB. The Python contract test re-derives the full input and ratio and
-    // compares element-by-element against the Rust output; these spot values
-    // are the in-crate tripwire so Rust-side drift fails the Rust suite too.
+    // `golden_vector_is_stable`. These spot values are the in-crate tripwire
+    // for silent output drift in this crate's resampler math.
     // 223 output frames × 2 channels interleaved = 446 i16 samples (256 input
     // frames, cursor seated at RADIUS_FRAMES, ratio 1.0001).
     const GOLDEN_1_0001_LEN: usize = 446;

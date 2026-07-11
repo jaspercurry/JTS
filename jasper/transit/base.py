@@ -24,8 +24,11 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
 
-# Provider kind drives wizard UI grouping. Open set — add new values
-# when introducing a new mode (e.g. "tram", "metro", "cable_car").
+# Reserved/forward-looking metadata: declared by every provider (required
+# by the TransitProvider Protocol) but not currently read by the wizard,
+# daemon, or any test — wizard card dispatch is by `p.id`, not `.kind`.
+# Open set — add new values when introducing a new mode (e.g. "tram",
+# "metro", "cable_car") if/when this is wired into real behavior.
 ProviderKind = Literal["subway", "bus", "rail", "ferry", "bike", "metro"]
 
 

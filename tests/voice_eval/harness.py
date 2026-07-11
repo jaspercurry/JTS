@@ -20,9 +20,13 @@ This module makes paid LLM API calls. Per-turn cost as of 2026-05:
   - Gemini Live (3.1-flash-live-preview): ~$0.025 / turn
   - xAI Grok Voice Agent:                 ~$0.05 / turn
 
-A `pass^k` scenario = K turns. The full V1 regression suite is
-4 scenarios × 3 trials = 12 turns. Against OpenAI that's ~$2.40
-per full run. Against Gemini, ~$0.30. Against Grok, ~$0.60.
+A `pass^k` scenario = K turns. The suite has grown well past its
+original 4-scenario V1 baseline (18 scenario files as of 2026-07, each
+with its own PASS_K and turn count) — there is no fixed total worth
+hardcoding here since it goes stale on every new scenario. Before
+running the full suite, sum PASS_K x turns-per-trial across
+tests/voice_eval/regression/*.py and multiply by the per-turn cost
+above.
 
 DO NOT, EVER:
   - Wrap `harness.ask()` in retry loops or `while True`.

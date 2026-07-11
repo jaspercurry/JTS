@@ -35,8 +35,10 @@ the encryption key.
 | `POST /sessions` | optional registration secret | Pi registers `{session_id, capture_spec (opaque string), upload_token, pull_token, ttl_s, max_upload_bytes}`. Tokens stored as SHA-256 hashes. If Worker secret `RELAY_REGISTRATION_TOKEN` is set, the Pi must send matching header `X-JTS-Relay-Registration-Token`. |
 | `GET /sessions/:id/spec` | upload | Phone fetches the opaque spec (served verbatim). |
 | `POST /sessions/:id/event` | upload | Phone posts the relay-control envelope, e.g. `{armed:true}`. |
+| `GET /sessions/:id/phone-status` | upload | Phone polls `{state, host_event, expires_at}` (backs `fetchPhoneStatus` in `capture-page/js/relay-client.js`). |
 | `PUT /sessions/:id/blob` | upload | Phone uploads `IV‖ciphertext` (octet-stream) + `X-Plaintext-Length` / `X-Plaintext-Sha256` integrity headers. |
 | `GET /sessions/:id/status` | pull | Pi polls `{state, size, integrity, event, expires_at}`. |
+| `POST /sessions/:id/host-event` | pull | Pi posts a host-side control event back into the session. |
 | `GET /sessions/:id/blob` | pull | Pi pulls ciphertext (+ integrity headers). Non-destructive. |
 | `DELETE /sessions/:id` | pull | Pi purges after a verified decrypt. |
 
@@ -131,8 +133,10 @@ router is exercised against an in-memory store.
 ## Storage consistency note
 
 R2 gives strong read-after-write consistency per object, which covers the Pi's
-poll loop (it reads `meta/<id>` after the phone wrote it). Phone-side mutations
-(event, blob) are sequential, so the `armed`/`ready` state never races. If a
+poll loop (it reads `meta/<id>` after the phone wrote it) and the phone's
+`phone-status` poll of `host_event` (it reads `meta/<id>` after the Pi wrote it
+via `host-event`). Phone-side mutations (event, blob) are sequential, so the
+`armed`/`ready` state never races. If a
 future build wants to tighten the ~1 s poll latency to real-time, the upgrade is
 Durable Objects / long-poll (plan §5) — layered on this same session/spec
 machinery, no relay-contract change.

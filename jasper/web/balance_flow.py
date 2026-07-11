@@ -373,7 +373,7 @@ def handle_start(
     if members is None:
         return {"ok": False, "error": (
             "pair channels are not one left + one right — repair via "
-            "the swap control on jts.local/rooms"
+            f"the swap control on {hostname}/rooms"
         )}, HTTPStatus.CONFLICT
     # Active-speaker commissioning also measures through the production graph;
     # refuse so the two measurement flows can't run at once (it doesn't hold the

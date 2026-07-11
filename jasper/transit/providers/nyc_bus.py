@@ -17,7 +17,6 @@ Uses three BusTime endpoints:
    OBA `routes` field on `stops-for-location` is GTFS-static-derived
    and lags real-world dispatch (per the BusTime wiki, OBA at MTA
    explicitly excludes real-time data). SIRI is the ground truth.
-   See the v2 design review for the prior art behind this choice.
 
 The SIRI runtime client at `jasper/bus.py` hits the same endpoint
 for live arrivals. Same key is shared per the BusTime wiki.
@@ -238,7 +237,7 @@ class _NycBus:
         GTFS-static-scheduled routes per stop, which lags real-world
         dispatch. A stop the user sees serving B35 + B70 in person
         may show as B35-only in OBA. SIRI reflects what's actually
-        coming. See the v2 design review for the citation chain.
+        coming.
         """
         key = (credentials or {}).get(CREDENTIAL.env_key, "").strip()
         if not key or not stop_id:

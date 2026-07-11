@@ -70,9 +70,12 @@ plumbing. Each numbered item is one logical edit point:
   7. Install migration: add the new provider's env keys to the
      `keys=(...)` array in `migrate_transit_config` (in
      `deploy/install.sh`). This list duplicates
-     `transit.all_env_keys()` — the wizard already learns the same
-     keys from Python, but `install.sh` reads from a bash literal
-     because it runs before Python is available. Drift here is benign
+     `transit.all_env_keys()` plus the co-located Google Routes
+     travel-mode key (`JASPER_TRAVEL_DEFAULT_MODE`, owned by
+     `jasper/google_routes.py`, not any `TransitProvider`) — the
+     wizard already learns the transit-provider keys from Python, but
+     `install.sh` reads from a bash literal because it runs before
+     Python is available. Drift here is benign
      (operator-edited values stay in `jasper.env` instead of migrating
      to `transit.env`), but worth keeping in sync. (`JASPER_TRANSIT_CITIES`
      itself is a pack-level toggle, not a provider env key, so it is NOT

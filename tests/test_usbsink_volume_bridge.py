@@ -245,17 +245,15 @@ def test_read_switch_value_stereo_half_muted_treated_as_muted():
 
 
 def test_read_switch_value_returns_muted_on_unparseable():
-    """Fail-safe: if we can't tell, assume muted. Worse to keep
-    playing audio the user thinks they silenced than to be silent
-    when they wanted sound."""
+    """Two distinct fail-safe layers, pinned here: a totally unparseable
+    amixer read (no ``values=`` at all) fails OPEN (returns False/unmuted)
+    because the regex match fails entirely — that's this test's assertion.
+    The fail-safe-TO-MUTED layer is different: it only kicks in once
+    ``values=`` IS parsed but parses to something other than 'on'."""
     bridge = VolumeBridge()
     with patch("subprocess.run") as run_mock:
         run_mock.return_value = _make_completed_process("garbage")
         assert bridge._read_switch_value(2) is False  # missing values=
-        # Note: this returns False (unmuted) because the regex match
-        # fails entirely. The fail-safe-to-muted only kicks in if
-        # values= IS parsed but parses to something other than 'on'.
-        # The match-failure path is a different defensive layer.
 
 
 # ----------------------------------------------------------------------
