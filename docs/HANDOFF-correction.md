@@ -173,9 +173,14 @@
   crossover preservation/application is unchanged; an applied automatic profile
   exposes **Tune crossover automatically again**, which starts a fresh set and
   keeps the current safe profile live until the updated profile is explicitly
-  applied. The public page release that
-  implements this contract is `capture_page_build=20260711.1`, supporting
-  protocols 1 and 2; publish it before deploying a Pi that emits v2 specs.
+  applied. The level-check screen renders the Pi-owned geometry steps after
+  microphone setup. Crossover level matching binds its tone frequency to the
+  applied preset and names the canonical 3 cm position for the driver whose
+  protected passband contains that tone (woofer on a normal 2-way, midrange on
+  the supported 3-way) instead of referring to instructions on another page. The
+  public page release that implements this contract is
+  `capture_page_build=20260711.2`, supporting protocols 1 and 2; publish it
+  before deploying a Pi that emits v2 specs.
 - 🧪 **Phone-mic capture relay path (fresh-install default,
   on-device-pending).** As of 2026-07-02 fresh installs default to an
   alternative capture transport that moves the room capture setup/recording page

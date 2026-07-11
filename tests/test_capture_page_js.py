@@ -78,9 +78,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260711.1",
+        "capture_page_build": "20260711.2",
     }
-    assert "main.js?v=20260711-1" in index_html
+    assert "main.js?v=20260711-2" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
@@ -165,7 +165,12 @@ def test_capture_page_level_ramp_uses_guided_mic_calibration_setup():
     assert "renderMicChoice(screenEl, ctx, inputs)" in main_js
     assert "renderCalibration(screenEl, ctx)" in main_js
     assert "renderLevelReady(screenEl, ctx)" in main_js
-    assert 'button("Start level check", () => onLevelRampStart(ctx))' in main_js
+    level_ready_start = main_js.index("function renderLevelReady")
+    level_ready_end = main_js.index("function renderBoundRoomReady", level_ready_start)
+    level_ready_path = main_js[level_ready_start:level_ready_end]
+    assert "renderScreen(screenEl, ctx.spec" in level_ready_path
+    assert "onLevelRampStart(ctx)" in level_ready_path
+    assert "Place the microphone as shown" not in level_ready_path
 
     start = main_js.index("async function onLevelRampStart")
     end = main_js.index("async function waitForSweepComplete", start)

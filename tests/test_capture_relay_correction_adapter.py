@@ -637,6 +637,7 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
         geometry="listening_position",
         run_token="run-1",
         setup_binding_id=setup_binding_id,
+        tone_frequency_hz=875.0,
     )
 
     assert setup_acks == [{"phase": "setup_validated", "setup_token": "setup-1"}]
@@ -652,6 +653,7 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     )
 
     assert tone_kwargs["dbfs"] == AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
+    assert tone_kwargs["freq_hz"] == 875.0
 
 
 @pytest.mark.asyncio
@@ -955,6 +957,7 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
         start_active_comparison_set,
     )
     from jasper.output_topology import load_output_topology
+    from tests.test_active_speaker_profile import _two_way_preset
 
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
@@ -975,11 +978,15 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
         **legacy,
         "setup": {
             **legacy["setup"],
+            "protected_profile": {"source_fingerprint": "c" * 64},
             "applied_crossover": {
                 "valid": True,
                 "owner": "manual",
                 "reason": None,
             },
+        },
+        "applied_profile": {
+            "recomposition_snapshot": {"preset": _two_way_preset("mono")},
         },
     }
     statuses = iter((legacy, current))
@@ -1005,12 +1012,19 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
     )
     registered = {}
 
+    def open_capture(_client, spec, **_kwargs):
+        registered["spec"] = spec
+        return object()
+
+    monkeypatch.setattr(adapter, "open_capture", open_capture)
+
     def run_relay(kind, relay_base, *, return_url):
         registered.update(
             label=kind.label,
             relay_base=relay_base,
             return_url=return_url,
         )
+        kind.open(object(), relay_base, "https://capture.jasper.tech", return_url)
         return {"url": "https://capture.jasper.tech/session"}
 
     monkeypatch.setattr(correction_setup, "_run_relay_capture", run_relay)
@@ -1023,11 +1037,15 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
     payload = correction_setup._handle_crossover_relay_level_match(object())
 
     assert applied["owner"] == "manual"
-    assert registered == {
-        "label": "level_ramp:crossover",
-        "relay_base": "relay",
-        "return_url": "https://jts.local/correction/crossover/",
-    }
+    assert registered["label"] == "level_ramp:crossover"
+    assert registered["relay_base"] == "relay"
+    assert registered["return_url"] == "https://jts.local/correction/crossover/"
+    spec = registered["spec"]
+    assert spec.stimulus.label == "1000 Hz level-match tone"
+    assert spec.screen[1]["items"][0].startswith(
+        "Move the microphone capsule to 3 cm"
+    )
+    assert "woofer cone" in spec.screen[1]["items"][0]
     assert load_measurement_state(topology)["active_comparison_set"] == prior_set
     assert payload["relay"]["url"].startswith("https://capture.jasper.tech/")
 
