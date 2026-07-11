@@ -966,12 +966,50 @@ def test_cli_verbs_run_under_entry_lock(monkeypatch, tmp_path, argv):
     again.fh.close()
 
 
-def test_cli_aborts_loudly_on_entry_lock_contention(
+def test_cli_auto_aborts_loudly_on_entry_lock_contention(
     monkeypatch, tmp_path, capsys, caplog
 ):
-    """Contention past the bounded wait aborts BEFORE any env write or daemon
-    op, exits non-zero (the oneshot lands `failed` -> doctor-visible), and says
-    why on stderr + an ERROR event."""
+    """`--auto` (a requested CHANGE) that loses the lock race aborts BEFORE any
+    env write or daemon op, exits non-zero (the oneshot lands `failed` ->
+    doctor-visible), and says why on stderr + an ERROR event."""
+    import logging
+
+    from jasper.fanin import coupling_reconcile as cr
+
+    lock_path = tmp_path / "entry.lock"
+    monkeypatch.setattr(cr, "ENTRY_LOCK_PATH", str(lock_path))
+    monkeypatch.setattr(cr, "ENTRY_LOCK_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(cr, "ENTRY_LOCK_POLL_SECONDS", 0.05)
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cr, "reconcile_auto",
+        lambda *a, **k: pytest.fail("verb ran despite lock contention"),
+    )
+
+    held = cr._acquire_entry_lock(lock_path, timeout_seconds=0.5)
+    assert held.outcome == "acquired"
+    try:
+        with caplog.at_level(
+            logging.ERROR, logger="jasper.fanin.coupling_reconcile"
+        ):
+            rc = cr.main(["--auto"])
+    finally:
+        held.fh.close()
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert str(lock_path) in err and "another reconcile pass" in err
+    assert "entry_lock_contended" in caplog.text
+
+
+def test_cli_health_stands_down_on_entry_lock_contention(
+    monkeypatch, tmp_path, capsys, caplog
+):
+    """The periodic `--health` WATCHER that loses the lock race must NOT fail its
+    unit — a reconcile in flight is exactly when it has nothing to observe. It
+    stands down at WARNING with exit 0 (so a collision with a deploy's `--auto`
+    arm can't spuriously trip check_service_runtime_state), and does not run the
+    watcher body."""
     import logging
 
     from jasper.fanin import coupling_reconcile as cr
@@ -983,23 +1021,23 @@ def test_cli_aborts_loudly_on_entry_lock_contention(
     monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
     monkeypatch.setattr(
         cr, "run_health_check",
-        lambda *a, **k: pytest.fail("verb ran despite lock contention"),
+        lambda *a, **k: pytest.fail("watcher ran despite lock contention"),
     )
 
     held = cr._acquire_entry_lock(lock_path, timeout_seconds=0.5)
     assert held.outcome == "acquired"
     try:
         with caplog.at_level(
-            logging.ERROR, logger="jasper.fanin.coupling_reconcile"
+            logging.WARNING, logger="jasper.fanin.coupling_reconcile"
         ):
             rc = cr.main(["--health"])
     finally:
         held.fh.close()
 
-    assert rc == 1
+    assert rc == 0  # stood down, unit stays healthy
     err = capsys.readouterr().err
-    assert str(lock_path) in err and "another reconcile pass" in err
-    assert "entry_lock_contended" in caplog.text
+    assert "skipped this health-watcher tick" in err
+    assert "entry_lock_contended_health_skip" in caplog.text
 
 
 def test_transport_pipe_status_gate_accepts_stable_window():

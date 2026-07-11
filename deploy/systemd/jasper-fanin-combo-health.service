@@ -12,8 +12,10 @@
 # Concurrency: no systemd ordering exists against the sibling
 # jasper-fanin-coupling-auto.service or a direct operator CLI run. The reconcile
 # CLI serializes every entry verb behind an advisory flock
-# (/run/jasper-fanin-coupling.lock) with a bounded wait, and aborts loudly
-# (unit lands `failed`, doctor-visible) on contention.
+# (/run/jasper-fanin-coupling.lock) with a bounded wait. On contention this
+# --health WATCHER stands down (WARNING, exit 0 — a reconcile in flight is when
+# it has nothing to observe), so a collision with a deploy's --auto arm never
+# spuriously fails this unit. A real disarm failure still exits non-zero.
 [Unit]
 Description=USB combo runtime-fallback health check (disarm to aloop bridge on sustained capture break)
 Documentation=file:/opt/jasper/docs/HANDOFF-usbsink.md

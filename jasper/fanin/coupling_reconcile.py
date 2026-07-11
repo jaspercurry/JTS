@@ -2994,12 +2994,14 @@ def _acquire_entry_lock(
     the SAME unit; this lock covers the cross-unit and unit-vs-CLI pairs.
 
     Bounded wait, never open-ended: contention past ``timeout_seconds`` returns
-    ``contended`` and the caller aborts LOUDLY before any env write or daemon
-    op (aborting pre-work is safe — no partial state; the oneshot then exits
-    non-zero, which ``check_service_runtime_state`` surfaces in the doctor).
-    The wait absorbs the common fast holder (a healthy ``--health`` tick, a
-    confirm-path ``--auto``); a genuinely long transition in flight is the case
-    that SHOULD abort rather than stack.
+    ``contended`` and the caller reacts before any env write or daemon op (no
+    partial state to unwind). Loudness is verb-specific
+    (:func:`_handle_entry_lock_contention`): ``--auto`` / explicit abort with
+    exit 1 (oneshot parks ``failed`` → doctor-visible); the periodic ``--health``
+    watcher stands down with exit 0 (a reconcile in flight is when it has nothing
+    to observe). The wait absorbs the common fast holder (a healthy ``--health``
+    tick, a confirm-path ``--auto``); a genuinely long transition in flight is
+    the case that SHOULD abort/skip rather than stack.
 
     Fail-open on an unopenable lock file (missing /run on a dev host, a
     non-root probe): a broken lock path must not brick reconciles — proceed
@@ -3130,34 +3132,52 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # Serialize the WHOLE pass against the sibling entry verbs (the two oneshot
     # units + install.sh / operator CLI runs) — see _acquire_entry_lock. On
-    # contention past the bounded wait, abort loudly BEFORE any env write or
-    # daemon op; the oneshot then exits non-zero (doctor-visible via
-    # check_service_runtime_state).
+    # contention past the bounded wait, do NOT touch env or daemons; the verb
+    # decides how loud (below).
     lock = _acquire_entry_lock(
         ENTRY_LOCK_PATH,
         timeout_seconds=ENTRY_LOCK_TIMEOUT_SECONDS,
         poll_seconds=ENTRY_LOCK_POLL_SECONDS,
     )
     if lock.outcome == "contended":
-        log_event(
-            logger, "fanin.coupling_reconcile", result="entry_lock_contended",
-            reason=args.reason, lock_path=ENTRY_LOCK_PATH,
-            timeout_seconds=ENTRY_LOCK_TIMEOUT_SECONDS,
-            detail=lock.detail or None, level=logging.ERROR,
-        )
-        print(
-            "coupling reconcile: another reconcile pass holds "
-            f"{ENTRY_LOCK_PATH} ({lock.detail}); aborted after "
-            f"{ENTRY_LOCK_TIMEOUT_SECONDS:g}s without touching env or daemons. "
-            "Retry when the in-flight pass finishes.",
-            file=sys.stderr,
-        )
-        return 1
+        return _handle_entry_lock_contention(args, detail=lock.detail)
     try:
         return _run_entry_verb(args)
     finally:
         if lock.fh is not None:
             lock.fh.close()
+
+
+def _handle_entry_lock_contention(args, *, detail: str = "") -> int:
+    """Report entry-lock contention, choosing loudness by verb.
+
+    ``--auto`` / an explicit coupling wanted to APPLY a change and could not, so
+    they abort LOUDLY — ERROR + exit 1, which parks the oneshot ``failed`` and
+    surfaces through ``check_service_runtime_state`` in the doctor. The periodic
+    ``--health`` watcher is different: a reconcile already in flight is exactly
+    when it has nothing to observe, so it STANDS DOWN — WARNING + exit 0. Failing
+    its unit on every collision with a deploy's ``--auto`` arm would be a false
+    doctor positive (install.sh runs ``--auto`` while the health timer ticks
+    every ~3 min). A real ``--health`` DISARM failure still exits 1: that path
+    acquires the lock and does work, so it never reaches here.
+    """
+    health = bool(args.health)
+    log_event(
+        logger, "fanin.coupling_reconcile",
+        result="entry_lock_contended_health_skip" if health
+        else "entry_lock_contended",
+        reason=args.reason, lock_path=ENTRY_LOCK_PATH,
+        timeout_seconds=ENTRY_LOCK_TIMEOUT_SECONDS,
+        detail=detail or None, level=logging.WARNING if health else logging.ERROR,
+    )
+    print(
+        "fan-in coupling reconcile: another reconcile pass holds "
+        f"{ENTRY_LOCK_PATH} ({detail or 'unknown holder'}); "
+        + ("skipped this health-watcher tick" if health else "aborted")
+        + f" after {ENTRY_LOCK_TIMEOUT_SECONDS:g}s without touching env or daemons.",
+        file=sys.stderr,
+    )
+    return 0 if health else 1
 
 
 def _run_entry_verb(args) -> int:
