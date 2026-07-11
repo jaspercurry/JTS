@@ -17,19 +17,23 @@
 //!
 //! This crate holds the pure, I/O-free ladder/servo ([`HostClock`]) plus the
 //! feature-gated ALSA actuator ([`AlsaPitchCtl`], behind `feature = "alsa"`).
-//! It is the shared home for BOTH USB clock owners:
-//! - **solo (aloop) mode**: `jasper-usbsink-audio` owns the gadget capture and
-//!   drives this from its state publisher (`JASPER_USBSINK_HOST_CLOCK`). This is
-//!   the only consumer at this stack level.
-//! - **combo (USB DIRECT) mode**: once that mode lands, `jasper-fanin` will own
-//!   the gadget capture and drive this from a dedicated thread
-//!   (`JASPER_FANIN_HOST_CLOCK`).
+//! It was built as the shared home for either USB clock owner — whichever
+//! daemon owns the gadget capture drives it:
+//! - **solo (aloop) mode**: `jasper-usbsink-audio` used to own the gadget
+//!   capture and drive this from its state publisher
+//!   (`JASPER_USBSINK_HOST_CLOCK`). That path was deleted 2026-07-10 with the
+//!   aloop solo USB capture path (#1209); `jasper-usbsink-audio` is
+//!   standby-only now and has no dependency on this crate.
+//! - **combo (USB DIRECT) mode**: `jasper-fanin` owns the gadget capture and
+//!   drives this from a dedicated thread (`JASPER_FANIN_HOST_CLOCK`). This is
+//!   the sole live consumer today.
 //!
 //! The invariant pinned across both: **the daemon that owns the gadget capture
-//! owns the pitch ctl.** Only one drives it at a time. Each daemon parses its
-//! own `JASPER_*` env keys and builds a [`HostClockConfig`]; this crate is
-//! parameterized on a single thing that differs between them — the `event=` log
-//! prefix (`usbsink_audio` / `fanin`).
+//! owns the pitch ctl.** Only one drives it at a time. The crate stays
+//! daemon-agnostic on purpose: any future second consumer would parse its own
+//! `JASPER_*` env keys and build a [`HostClockConfig`] the same way fan-in
+//! does, differing only in the `event=` log prefix (fan-in uses `fanin`; the
+//! deleted solo daemon used `usbsink_audio`).
 //!
 //! # What this module does and does NOT touch
 //!
@@ -278,14 +282,19 @@ const OUTER_DLL_PERIOD: f64 = 4800.0;
 const OUTER_DLL_RATE: f64 = 48000.0;
 
 /// Which observable the probe and the L0 servo run on — a TYPED, per-daemon
-/// choice, never inferred from the data. The two USB clock owners feed
-/// structurally different observables:
+/// choice, never inferred from the data. The two USB clock modes feed
+/// structurally different observables (only [`ObsMode::Correction`] has a
+/// live caller today; see below):
 ///
-/// - [`ObsMode::Fill`] — **usbsink solo (aloop) mode.** No rate-matching stage
-///   sits between the gadget ring and playback, so the gadget FILL slope is a
-///   faithful readout of the host-vs-DAC rate error. The probe reads the fill
-///   slope response; the L0 servo drives `fill − target → 0`. This is the
-///   original servo, unchanged.
+/// - [`ObsMode::Fill`] — **the deleted usbsink solo (aloop) mode.** No
+///   rate-matching stage sat between the gadget ring and playback, so the
+///   gadget FILL slope was a faithful readout of the host-vs-DAC rate error;
+///   the probe read the fill slope response and the L0 servo drove
+///   `fill − target → 0`. This is the original servo, unchanged. The solo
+///   caller was deleted 2026-07-10 (#1209, the aloop solo USB capture path);
+///   no production caller passes `Fill` today — it is retained as the
+///   control-theory contrast below (why [`ObsMode::Correction`] needs a pure
+///   integral, not the DLL) and as the servo-sim/test surface.
 /// - [`ObsMode::Correction`] — **fan-in combo (USB DIRECT) mode.** The lane
 ///   resampler (±500 ppm authority) sits between the gadget ring and the mix and
 ///   ABSORBS host-clock drift to hold its fill at the held target. The fill
@@ -307,7 +316,10 @@ const OUTER_DLL_RATE: f64 = 48000.0;
 /// one ladder-demotion machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObsMode {
-    /// Fill-slope observable (usbsink solo). The gadget fill directly reads the
+    /// Fill-slope observable. Passed by the deleted usbsink solo (aloop)
+    /// daemon (removed 2026-07-10, #1209); no live caller passes this today
+    /// — retained as the control-theory contrast and servo-sim/test surface
+    /// (see the [`ObsMode`] docs above). The gadget fill directly reads the
     /// host-vs-DAC rate error; no rate-matching stage flattens it.
     Fill,
     /// Resampler-correction-ppm observable (fan-in combo). A lane resampler
@@ -397,22 +409,27 @@ impl ProbeResult {
 }
 
 /// Validated host-clock configuration. Each consuming daemon parses its OWN
-/// `JASPER_*` env keys and constructs this directly (usbsink's
-/// `JASPER_USBSINK_HOST_CLOCK*`, fan-in's `JASPER_FANIN_HOST_CLOCK*`), so this
-/// crate carries no env parsing — only the validated shape the ladder needs.
+/// `JASPER_*` env keys and constructs this directly — today that's fan-in's
+/// `JASPER_FANIN_HOST_CLOCK*`, the sole live consumer. (The deleted usbsink
+/// solo daemon parsed `JASPER_USBSINK_HOST_CLOCK*` before that path was
+/// removed 2026-07-10, #1209.) This crate carries no env parsing of its own —
+/// only the validated shape the ladder needs — and stays daemon-agnostic on
+/// purpose: a future second consumer would parse its own keys the same way.
 ///
-/// `log_prefix` is the ONE thing that differs between daemons: the `event=`
-/// namespace prefix (`usbsink_audio` / `fanin`). Every structured log line the
-/// ladder emits interpolates it, so the two daemons' journals stay
-/// distinguishable while sharing byte-identical servo semantics.
+/// `log_prefix` is the ONE thing meant to differ between daemons: the
+/// `event=` namespace prefix (`fanin` today; the deleted solo daemon used
+/// `usbsink_audio`). Every structured log line the ladder emits interpolates
+/// it, so each daemon's journal stays distinguishable while sharing
+/// byte-identical servo semantics.
 #[derive(Debug, Clone, Copy)]
 pub struct HostClockConfig {
     /// Whether the feature is armed. When `false` the ladder is inert (only the
     /// one-time startup neutralize runs) — every consuming daemon resolves this
     /// from its own literal-`enabled` gate.
     pub enabled: bool,
-    /// Gadget fill setpoint in frames. usbsink default 384 (1.5 of the 3×256
-    /// ring); fan-in derives it from its resampler's held target.
+    /// Gadget fill setpoint in frames. Fan-in derives it from its resampler's
+    /// held target; the deleted usbsink solo daemon defaulted to 384 (1.5 of
+    /// the 3×256 ring) before that path was removed 2026-07-10, #1209.
     pub target_fill_frames: f64,
     /// Probe step magnitude in ppm. Default 300 (inside ±1000 with margin).
     pub probe_ppm: f64,
@@ -420,34 +437,47 @@ pub struct HostClockConfig {
     /// baseline phase runs first, so the whole probe is `4 + probe_step_secs`
     /// seconds — 10 s at the default, up to 14 s at the max (probe_step_secs 10).
     pub probe_step_secs: u64,
-    /// Which observable the probe + L0 servo run on (see [`ObsMode`]). usbsink
-    /// solo passes [`ObsMode::Fill`]; fan-in combo passes [`ObsMode::Correction`].
-    /// TYPED per daemon, never inferred — the ladder branches on it at the two
-    /// observable-specific points and shares everything else.
+    /// Which observable the probe + L0 servo run on (see [`ObsMode`]). Fan-in
+    /// combo — the sole current consumer — passes [`ObsMode::Correction`]; the
+    /// deleted usbsink solo daemon (removed 2026-07-10, #1209) used to pass
+    /// [`ObsMode::Fill`]. TYPED per daemon, never inferred — the ladder
+    /// branches on it at the two observable-specific points and shares
+    /// everything else.
     pub obs_mode: ObsMode,
-    /// The `event=` namespace prefix for this daemon's ladder log lines
-    /// (`usbsink_audio` / `fanin`). Static because it is a compile-time choice
-    /// per daemon, not runtime config.
+    /// The `event=` namespace prefix for this daemon's ladder log lines.
+    /// `fanin` is the only value passed by a live caller today; `usbsink_audio`
+    /// was the deleted solo daemon's prefix (removed 2026-07-10, #1209) and
+    /// survives only as a test-fixture literal in this crate. Static because
+    /// it is a compile-time choice per daemon, not runtime config.
     pub log_prefix: &'static str,
 }
 
 impl HostClockConfig {
     /// A hard-disabled config with default tunables, for the given daemon
     /// `log_prefix`. In a mode where the audio loop that feeds the DLL never
-    /// runs (usbsink standby; fan-in with direct off), there is no fill source,
-    /// so the feature is forced off; the startup + exit pitch neutralize still
-    /// run against this config (both are unconditional and never leave the host
-    /// slaved), so a crashed predecessor is still healed. Never fails.
+    /// runs — today that's fan-in with USB DIRECT off; the deleted usbsink
+    /// solo daemon (removed 2026-07-10, #1209) was the other example before
+    /// it stopped depending on this crate entirely — there is no fill source,
+    /// so the feature is forced off; the startup + exit pitch neutralize
+    /// still run against this config (both are unconditional and never leave
+    /// the host slaved), so a crashed predecessor is still healed. Never
+    /// fails.
     pub fn disabled(log_prefix: &'static str) -> Self {
         Self {
             enabled: false,
             target_fill_frames: 384.0,
             probe_ppm: 300.0,
             probe_step_secs: 6,
-            // A disabled ladder never probes or servos, so the observable mode is
-            // moot; default to `Fill` (the original behaviour). A daemon that runs
-            // in `Correction` mode (fan-in) builds its own enabled config with the
-            // right mode — this ctor is only the inert/neutralize-only shape.
+            // A disabled ladder never probes or servos, so the observable mode
+            // is moot; default to `Fill`. Not a live-caller default — the
+            // Fill-mode solo daemon was deleted 2026-07-10 (#1209) — it is kept
+            // because the byte-exact disabled `state.json` fragment pins
+            // `"obs_mode":"fill"` (see `host_clock_fragment_shape_is_stable`
+            // below); flipping it to `Correction` would be status-contract
+            // churn for no behavioural gain. A daemon that runs in
+            // `Correction` mode (fan-in) builds its own enabled config with
+            // the right mode — this ctor is only the inert/neutralize-only
+            // shape.
             obs_mode: ObsMode::Fill,
             log_prefix,
         }
@@ -457,8 +487,9 @@ impl HostClockConfig {
 /// The observation the ladder ticks on, sampled once per control tick from the
 /// daemon's existing atomics. No clocks, no I/O — so the ladder is a pure,
 /// fake-time-testable state machine. Each consuming daemon builds this from its
-/// own shared state (usbsink's `SharedState`, fan-in's resampler/direct/trim
-/// atomics); this crate defines only the shape.
+/// own shared state — fan-in's resampler/direct/trim atomics today; the
+/// deleted usbsink solo daemon (removed 2026-07-10, #1209) built it from its
+/// own `SharedState` — this crate defines only the shape.
 #[derive(Debug, Clone, Copy)]
 pub struct Obs {
     pub playing: bool,
@@ -473,15 +504,17 @@ pub struct Obs {
     /// contaminating the probe verdict (hardware-diagnosed on jts.local
     /// 2026-07-03: `baseline_slope_ppm=1460.6` measured the ramp, not clock
     /// drift). So the ladder holds a pre-probe wait, commanding neutral, until
-    /// this signal is true (plus a settle delay). Each daemon maps its own steady
-    /// indicator: fan-in → resampler LOCKED (its warmup ramp is a genuine 0→held
-    /// -target fill climb that must complete before baselining); usbsink solo →
-    /// simply `playing`. usbsink's only start-of-session contaminant is the
+    /// this signal is true (plus a settle delay). Fan-in, the sole current
+    /// consumer, maps this to resampler LOCKED (its warmup ramp is a genuine
+    /// 0→held-target fill climb that must complete before baselining). The
+    /// deleted usbsink solo daemon (removed 2026-07-10, #1209) mapped it to
+    /// simply `playing`, since its only start-of-session contaminant was the
     /// sub-second gadget-ring prime + capture-backlog slurp, which the settle
-    /// delay covers — a live ring-fill gate would DEADLOCK the probe there,
-    /// because nothing steers the ring toward target while the probe holds
-    /// neutral, so a host slower than our DAC keeps the ring at its underflow
-    /// floor forever (see `obs_from_shared` in the usbsink shim).
+    /// delay covered — a live ring-fill gate would have DEADLOCKED the probe
+    /// there, because nothing steers the ring toward target while the probe
+    /// holds neutral, so a host slower than the DAC keeps the ring at its
+    /// underflow floor forever (see `obs_from_shared` in the now-deleted
+    /// usbsink shim).
     pub locked: bool,
     /// Gadget PeriodRing fill in frames (ring_fill_periods × period_frames).
     pub fill_frames: f64,
@@ -491,11 +524,13 @@ pub struct Obs {
     pub playback_frames: u64,
     /// The lane resampler's LIVE correction ppm (its rate-adjustment relative to
     /// nominal, `(ratio − 1) × 1e6`). Meaningful ONLY in [`ObsMode::Correction`]
-    /// (fan-in combo): it is the honest host-vs-DAC rate-error readout when a
-    /// rate-matching stage sits between the gadget ring and the mix. In
-    /// [`ObsMode::Fill`] (usbsink solo) there is no such stage, so this is `0.0`
-    /// and never consulted. Sign convention (see [`ObsMode::Correction`]): the
-    /// resampler feeds `error = fill − target` (capture-follower), so a host
+    /// (fan-in combo, the sole live consumer): it is the honest host-vs-DAC
+    /// rate-error readout when a rate-matching stage sits between the gadget
+    /// ring and the mix. In [`ObsMode::Fill`] — the deleted usbsink solo
+    /// daemon's mode, no production caller today — there is no such stage, so
+    /// this is `0.0` and never consulted. Sign convention (see
+    /// [`ObsMode::Correction`]): the resampler feeds `error = fill − target`
+    /// (capture-follower), so a host
     /// running FAST fills the ring, driving the resampler's correction ppm
     /// POSITIVE (consume faster to hold fill). Commanding the host +ppm (faster)
     /// therefore moves the resampler correction MORE positive; slaving the host to
@@ -794,11 +829,13 @@ impl HostClock {
         self.commanded_ppm
     }
 
-    /// Update the fill setpoint the locked loop disciplines toward. The setpoint
-    /// is normally fixed at construction (usbsink solo mode), but fan-in combo
-    /// mode shares it with the inner resampler's LIVE held target — which the
-    /// DEFAULT-OFF post-lock cushion decay lowers over time — so the servo thread
-    /// re-pins it each tick from the resampler's held-target gauge. This is the
+    /// Update the fill setpoint the locked loop disciplines toward. Fan-in
+    /// combo mode — the sole live caller — shares it with the inner
+    /// resampler's LIVE held target, which the DEFAULT-OFF post-lock cushion
+    /// decay lowers over time, so the servo thread re-pins it each tick from
+    /// the resampler's held-target gauge. (The deleted usbsink solo daemon,
+    /// removed 2026-07-10 #1209, left the setpoint fixed at construction —
+    /// there was no resampler target to track.) This is the
     /// single-source-of-truth wiring: the resampler owns the value; the ladder
     /// only ever reads it. No effect on the ladder state — the next `tick_locked`
     /// simply sees the new `error = fill − target` (a bounded step the DLL
@@ -1521,8 +1558,10 @@ impl HostClock {
 
     /// Render the `host_clock` block for `state.json` (contract §1). Byte-exact
     /// shape pinned by [`tests::host_clock_fragment_shape_is_stable`] and its
-    /// Python twin (`tests/test_usbsink_host_clock_contract.py`; a
-    /// `tests/test_fanin_host_clock_contract.py` twin arrives with combo mode).
+    /// Python twin, `tests/test_fanin_host_clock_contract.py` — the sole
+    /// surviving contract pin now that the usbsink solo daemon and its
+    /// `tests/test_usbsink_host_clock_contract.py` twin were deleted
+    /// 2026-07-10 (#1209).
     pub fn status_fragment(&self) -> String {
         let ratio = match self.response_ratio {
             Some(r) => format!("{r:.4}"),
@@ -3523,10 +3562,10 @@ mod tests {
     // ---- state.json fragment (byte-exact twin fixture) ---------------------
 
     /// BYTE-EXACT contract pin. The disabled default fragment must match this
-    /// string verbatim. Its Python twin
-    /// (`tests/test_usbsink_host_clock_contract.py`; a
-    /// `tests/test_fanin_host_clock_contract.py` twin arrives with combo mode)
-    /// greps this identical literal
+    /// string verbatim. Its Python twin, `tests/test_fanin_host_clock_contract.py`
+    /// — the sole surviving contract pin now that the usbsink solo daemon and
+    /// its `tests/test_usbsink_host_clock_contract.py` twin were deleted
+    /// 2026-07-10 (#1209) — greps this identical literal
     /// out of this source, so the expected value is a RAW string literal
     /// (`r#"..."#`) — the bare (unescaped) `"` bytes appear contiguously in the
     /// source, exactly matching the Python side's bare-quote fixture. Same

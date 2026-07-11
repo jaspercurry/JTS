@@ -9,8 +9,9 @@
 //! gadget capture owns the pitch ctl* — fan-in also drives the host-clock
 //! ladder that steers the gadget's `Capture Pitch 1000000` ctl. The ladder /
 //! probe / servo / write-gate itself is the shared [`jasper_host_clock`] crate
-//! (byte-identical to what the usbsink bridge runs in solo mode); this module
-//! is the thin fan-in-side adapter:
+//! (the same crate the deleted usbsink solo bridge ran before that path was
+//! removed 2026-07-10, #1209 — fan-in is the sole live consumer now); this
+//! module is the thin fan-in-side adapter:
 //!
 //! 1. [`HostClockSignals`] — the Arc atomics the mixer already publishes for the
 //!    USB DIRECT lane (resampler fill gauge / input / output / lock, direct
@@ -20,9 +21,10 @@
 //! 2. [`build_obs`] — maps those atomics onto the shared [`Obs`], including the
 //!    resampler-derived setpoint (see below).
 //! 3. [`HostClockActuator`] — the fan-in pitch-ctl actuator: fail-soft open,
-//!    rate-limited write-error logs, and (unlike usbsink) a session-edge REOPEN
-//!    so a boot-order race that opened the ctl before the gadget bound does not
-//!    leave every write a no-op forever.
+//!    rate-limited write-error logs, and (unlike the deleted usbsink solo
+//!    daemon's actuator) a session-edge REOPEN so a boot-order race that
+//!    opened the ctl before the gadget bound does not leave every write a
+//!    no-op forever.
 //! 4. [`run_host_clock_thread`] — the dedicated `fanin-host-clock` thread: a
 //!    100 ms sleep loop gated to `TICK_INTERVAL_MS`, single-writer by
 //!    construction (the `HostClock` and the ctl handle never leave it), with an
@@ -212,8 +214,10 @@ pub fn build_config(
         // between the gadget ring and the mix and absorbs the host clock, so the
         // fill slope is structurally dead (the resampler flattens it — the
         // hardware defect on jts.local 2026-07-03). The probe reads the
-        // resampler's own correction ppm, and the L0 servo drives it to 0. usbsink
-        // solo, with no such stage, keeps `ObsMode::Fill`.
+        // resampler's own correction ppm, and the L0 servo drives it to 0. The
+        // deleted usbsink solo daemon (removed 2026-07-10, #1209), which had no
+        // such stage, used to pass `ObsMode::Fill`; combo/Correction is the
+        // sole live mode today.
         obs_mode: ObsMode::Correction,
         log_prefix: LOG_PREFIX,
     }
@@ -278,16 +282,18 @@ fn should_log_ctl_error(last: Option<u64>, now_ms: u64) -> bool {
 /// because `alsa::ctl::ElemValue` (inside `AlsaPitchCtl`) is `!Send`, so the ctl
 /// handle can never cross a thread boundary. That is why the actuator is
 /// constructed INSIDE the `fanin-host-clock` thread (from the card string
-/// `main` moves in), mirroring usbsink's in-thread ctl ownership: the handle and
-/// the `HostClock` never leave that thread (single-writer by construction).
+/// `main` moves in) — the handle and the `HostClock` never leave that thread
+/// (single-writer by construction), the same in-thread ctl ownership the
+/// deleted usbsink solo daemon (removed 2026-07-10, #1209) used.
 ///
-/// Fan-in delta from usbsink: **session-edge reopen**. usbsink's gadget-up
-/// `ExecStartPre` guarantees the card exists before the daemon starts, so its
-/// actuator opens once. Fan-in has no such ordering guarantee — a boot-order
-/// race (fan-in up before the gadget function binds) would leave the ctl `None`
-/// and every write a silent no-op forever, so every session would spuriously
-/// probe-fail into L2. So while `None`, we re-attempt the open on session rising
-/// edges, and on a late successful open the thread forces one neutralize before
+/// Fan-in delta from the deleted usbsink solo daemon: **session-edge reopen**.
+/// That daemon's gadget-up `ExecStartPre` guaranteed the card existed before
+/// it started, so its actuator opened once. Fan-in has no such ordering
+/// guarantee — a boot-order race (fan-in up before the gadget function binds)
+/// would leave the ctl `None` and every write a silent no-op forever, so
+/// every session would spuriously probe-fail into L2. So while `None`, we
+/// re-attempt the open on session rising edges, and on a late successful
+/// open the thread forces one neutralize before
 /// any command.
 struct HostClockActuator {
     ctl: Option<AlsaPitchCtl>,
@@ -397,9 +403,12 @@ fn ctl_error_is_device_lost(msg: &str) -> bool {
 ///
 /// Neutrality invariants (C6):
 /// - **startup**: one unconditional `startup_neutralize()` — but ONLY when the
-///   feature is armed (`config.enabled`), so we never stomp an active solo-mode
-///   usbsink DLL. (When disabled the thread should not even be spawned; the
-///   caller enforces that. This guard is belt-and-braces.)
+///   feature is armed (`config.enabled`), so we never stomp a crashed
+///   predecessor's in-flight pitch command. (Originally written to also guard
+///   against stomping an active solo-mode usbsink DLL during the coexistence
+///   window; that daemon was deleted 2026-07-10, #1209, so this is now purely
+///   belt-and-braces against any other predecessor. When disabled the thread
+///   should not even be spawned; the caller enforces that.)
 /// - **exit**: the shutdown flag forces `neutralize_for_exit("shutdown")`.
 /// - **lane absence**: `present=false` / unplug flows through the ladder's
 ///   session-end path, which already forces neutral.
@@ -421,10 +430,12 @@ pub fn run_host_clock_thread(
     let start = Instant::now();
     let now_ms = |start: &Instant| start.elapsed().as_millis() as u64;
 
-    // Startup neutralize: heal a crashed predecessor / stale usbsink handover.
-    // The action is unconditional-of-flag inside the ladder, but we only spawn
-    // this thread when armed, so this only ever runs in combo-with-flag mode —
-    // never stomping an active solo-mode usbsink command.
+    // Startup neutralize: heal a crashed predecessor. The action is
+    // unconditional-of-flag inside the ladder, but we only spawn this thread
+    // when armed, so this only ever runs in combo-with-flag mode. (Also
+    // originally guarded against stomping an active solo-mode usbsink
+    // command during the coexistence window; that daemon was deleted
+    // 2026-07-10, #1209.)
     if let Some(action) = hc.startup_neutralize() {
         actuator.apply(action, now_ms(&start));
         log::info!("event=fanin.host_clock_pitch_reset reason=startup");
