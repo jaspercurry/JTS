@@ -503,13 +503,12 @@ reload_audio_recovery_udev_rules_for_install() {
 }
 
 install_nginx_recovery_dropin() {
-    # nginx is the package-owned management front door. Give it local
-    # recovery semantics and a moderate OOM bias so a transient OOM cannot
-    # leave http://<speaker>.local dark until someone SSHes in. Shared by
-    # BOTH profile paths: jasper-doctor's check_oom_score_adj expects
-    # OOMScoreAdjust=-450 on nginx regardless of profile, and a full box
-    # without this drop-in has no Restart=always — an OOM-killed nginx
-    # stays dead until someone SSHes in.
+    # nginx is the package-owned management front door. This drop-in gives it
+    # Restart=always + OOMScoreAdjust=-450 so a transient OOM cannot leave
+    # http://<speaker>.local dark until someone SSHes in. Both install profiles
+    # must call this: jasper-doctor's check_oom_score_adj expects -450 on nginx
+    # regardless of profile, and without Restart=always an OOM-killed nginx
+    # stays down.
     install -d -m 0755 "${SYSTEMD_DIR}/nginx.service.d"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/nginx.service.d/jts-recovery.conf" \
@@ -1155,10 +1154,8 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/systemd/ssh.service.d/oom-protection.conf" \
         "${SYSTEMD_DIR}/ssh.service.d/oom-protection.conf"
 
-    # nginx recovery drop-in (Restart=always + OOMScoreAdjust=-450) —
-    # previously streambox-only, which left full-profile boxes with an
-    # unprotected nginx and a permanently-warning doctor check whose
-    # "re-run install.sh" remediation could never fix it.
+    # nginx recovery drop-in — full-profile parity with the streambox path
+    # (see install_nginx_recovery_dropin for the rationale).
     install_nginx_recovery_dropin
 
     # Stage 2 audio-protection slices: MemorySwapMax=0 on jts-audio.slice
