@@ -8,6 +8,12 @@
 # jasper-wifi-recover). The combo is re-armed only by the --auto pass
 # (jasper-fanin-coupling-auto.service) on boot/deploy/toggle, so this never
 # oscillates combo<->solo within a boot on its own.
+#
+# Concurrency: no systemd ordering exists against the sibling
+# jasper-fanin-coupling-auto.service or a direct operator CLI run. The reconcile
+# CLI serializes every entry verb behind an advisory flock
+# (/run/jasper-fanin-coupling.lock) with a bounded wait, and aborts loudly
+# (unit lands `failed`, doctor-visible) on contention.
 [Unit]
 Description=USB combo runtime-fallback health check (disarm to aloop bridge on sustained capture break)
 Documentation=file:/opt/jasper/docs/HANDOFF-usbsink.md

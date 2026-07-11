@@ -1500,7 +1500,11 @@ in `run_health_check` (`jasper/fanin/coupling_reconcile.py`). Healthy ticks prod
 **no** output (journal-quiet); only real transitions log
 (`event=fanin.combo_health.*`). A tick is "broken" on `health=="broken"` OR a
 reopen-counter delta **while `health=="capturing"`** (see the gate above); the tick
-state persists to `/var/lib/jasper/combo_health_tick.json`.
+state persists to `/var/lib/jasper/combo_health_tick.json`. Each tick runs under
+the shared reconcile entry flock (`/run/jasper-fanin-coupling.lock`) so it can
+never interleave with a concurrent `--auto` pass or operator CLI run; on
+contention past a bounded 10 s wait the tick aborts loudly (non-zero exit —
+doctor-visible) instead of stacking.
 
 **The action.** After brokenness **sustained across 2 consecutive ticks (~6 min)**,
 the reconciler — the single writer — disarms the combo exactly the way it arms it

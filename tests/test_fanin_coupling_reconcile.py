@@ -38,6 +38,12 @@ def _isolate_base_jasper_env(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
     )
+    # Keep every main() invocation's entry flock inside the test tmp dir — never
+    # the real /run path — so parallel test workers can't contend on one file.
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.ENTRY_LOCK_PATH",
+        str(tmp_path / "entry.lock"),
+    )
 
 
 def _recorder(
@@ -847,6 +853,153 @@ def test_cli_requires_a_choice_or_auto(monkeypatch):
     monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
     with pytest.raises(SystemExit):
         cr.main([])
+
+
+# ------------------------------------------------------------ entry flock
+# #1233 follow-up: jasper-fanin-coupling-auto.service (--auto) and
+# jasper-fanin-combo-health.service (--health) are independent oneshots with no
+# systemd ordering, and install.sh / the operator CLI run the same verbs
+# directly. One shared advisory flock serializes every entry pass so their
+# ordered daemon transitions (camilla stop -> fan-in -> camilla start) can
+# never interleave.
+
+
+def test_entry_lock_acquires_and_stamps_pid(tmp_path):
+    import os
+
+    from jasper.fanin import coupling_reconcile as cr
+
+    lock = cr._acquire_entry_lock(tmp_path / "l.lock", timeout_seconds=0.5)
+    assert lock.outcome == "acquired" and lock.fh is not None
+    # The holder's pid is stamped for the contention log line.
+    assert (tmp_path / "l.lock").read_text().strip() == str(os.getpid())
+    lock.fh.close()
+
+
+def test_entry_lock_bounded_wait_then_contended(tmp_path):
+    """A second acquisition while held must give up within the bounded wait and
+    name the holder — never block open-ended. (flock is per-open-description,
+    so a second open() in the SAME process contends like a second process.)"""
+    import os
+    import time as _time
+
+    from jasper.fanin import coupling_reconcile as cr
+
+    held = cr._acquire_entry_lock(tmp_path / "l.lock", timeout_seconds=0.5)
+    assert held.outcome == "acquired"
+    t0 = _time.monotonic()
+    second = cr._acquire_entry_lock(
+        tmp_path / "l.lock", timeout_seconds=0.3, poll_seconds=0.05
+    )
+    elapsed = _time.monotonic() - t0
+    assert second.outcome == "contended" and second.fh is None
+    assert str(os.getpid()) in second.detail
+    assert elapsed < 5.0  # bounded, not open-ended
+    held.fh.close()
+
+
+def test_entry_lock_fails_open_when_unopenable(tmp_path, caplog):
+    """A broken lock path (no /run on a dev host, non-root probe) must not
+    brick reconciles: fail-open at WARNING, no lock held."""
+    import logging
+
+    from jasper.fanin import coupling_reconcile as cr
+
+    with caplog.at_level(logging.WARNING, logger="jasper.fanin.coupling_reconcile"):
+        lock = cr._acquire_entry_lock(
+            tmp_path / "missing-dir" / "l.lock", timeout_seconds=0.1
+        )
+    assert lock.outcome == "unavailable" and lock.fh is None
+    assert "entry_lock_unavailable" in caplog.text
+
+
+@pytest.mark.parametrize("argv", [["--auto"], ["--health"], ["loopback"]])
+def test_cli_verbs_run_under_entry_lock(monkeypatch, tmp_path, argv):
+    """Every entry verb (--auto / --health / explicit) must HOLD the shared
+    flock for the whole pass, and release it after."""
+    import fcntl
+
+    from jasper.fanin import coupling_reconcile as cr
+
+    lock_path = tmp_path / "entry.lock"
+    monkeypatch.setattr(cr, "ENTRY_LOCK_PATH", str(lock_path))
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+
+    observed: dict[str, bool] = {}
+
+    def probe_lock() -> None:
+        with open(lock_path, "r+", encoding="utf-8") as fh:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                observed["held"] = True
+            else:
+                observed["held"] = False
+
+    def fake_auto(*a, **k):
+        probe_lock()
+        return cr.AutoResult(
+            ok=True, owned=True, coupling="loopback", gadget_present=False,
+            usb_combo_changed=False, reason="",
+        )
+
+    def fake_health(*a, **k):
+        probe_lock()
+        return cr.HealthResult(ok=True, watched=False)
+
+    def fake_reconcile(*a, **k):
+        probe_lock()
+        return cr.CouplingResult(
+            ok=True, desired="loopback", changed=False, direction="confirm",
+        )
+
+    monkeypatch.setattr(cr, "reconcile_auto", fake_auto)
+    monkeypatch.setattr(cr, "run_health_check", fake_health)
+    monkeypatch.setattr(cr, "reconcile_coupling", fake_reconcile)
+
+    rc = cr.main(argv)
+    assert rc == 0
+    assert observed == {"held": True}
+    # ...and released after the pass: a fresh acquire succeeds immediately.
+    again = cr._acquire_entry_lock(lock_path, timeout_seconds=0.2)
+    assert again.outcome == "acquired"
+    again.fh.close()
+
+
+def test_cli_aborts_loudly_on_entry_lock_contention(
+    monkeypatch, tmp_path, capsys, caplog
+):
+    """Contention past the bounded wait aborts BEFORE any env write or daemon
+    op, exits non-zero (the oneshot lands `failed` -> doctor-visible), and says
+    why on stderr + an ERROR event."""
+    import logging
+
+    from jasper.fanin import coupling_reconcile as cr
+
+    lock_path = tmp_path / "entry.lock"
+    monkeypatch.setattr(cr, "ENTRY_LOCK_PATH", str(lock_path))
+    monkeypatch.setattr(cr, "ENTRY_LOCK_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(cr, "ENTRY_LOCK_POLL_SECONDS", 0.05)
+    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cr, "run_health_check",
+        lambda *a, **k: pytest.fail("verb ran despite lock contention"),
+    )
+
+    held = cr._acquire_entry_lock(lock_path, timeout_seconds=0.5)
+    assert held.outcome == "acquired"
+    try:
+        with caplog.at_level(
+            logging.ERROR, logger="jasper.fanin.coupling_reconcile"
+        ):
+            rc = cr.main(["--health"])
+    finally:
+        held.fh.close()
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert str(lock_path) in err and "another reconcile pass" in err
+    assert "entry_lock_contended" in caplog.text
 
 
 def test_transport_pipe_status_gate_accepts_stable_window():

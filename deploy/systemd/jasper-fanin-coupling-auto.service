@@ -10,6 +10,12 @@
 #
 # A no-op on an already-resolved box (the confirm path bounces no daemon), so
 # the steady-state boot cost is one short reconcile with zero audio churn.
+#
+# Concurrency: this unit has NO systemd ordering against the sibling
+# jasper-fanin-combo-health.service (or install.sh's direct CLI run). The
+# reconcile CLI itself serializes every entry verb behind an advisory flock
+# (/run/jasper-fanin-coupling.lock) with a bounded wait, and aborts loudly
+# (unit lands `failed`, doctor-visible) on contention.
 [Unit]
 Description=Resolve the default fan-in coupling + USB combo (P3/P4 default-flip)
 Documentation=file:/opt/jasper/docs/HANDOFF-audio-graph-consolidation.md

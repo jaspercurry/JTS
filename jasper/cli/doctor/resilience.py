@@ -25,6 +25,7 @@ from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
+    _ONESHOT_RUNTIME_STATE_UNITS,
     _RUNTIME_STATE_UNITS,
     _installed_units,
     _service_runtime_states,
@@ -146,7 +147,12 @@ def check_service_runtime_state() -> CheckResult:
             n_restarts = 0
         if active == "failed":
             failed.append(f"{unit} state=failed/{sub or '?'} result={result or '?'}")
-        elif active in {"activating", "deactivating"}:
+        elif (
+            active in {"activating", "deactivating"}
+            and unit not in _ONESHOT_RUNTIME_STATE_UNITS
+        ):
+            # A oneshot sits in `activating` for its whole (normal) run — only
+            # its `failed` end-state is a finding.
             failed.append(f"{unit} state={active}/{sub or '?'}")
         if n_restarts > 0:
             restarted.append(f"{unit} NRestarts={n_restarts}")
