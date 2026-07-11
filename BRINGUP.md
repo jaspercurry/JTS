@@ -985,7 +985,7 @@ fact that the chip is an XVF3800:
 | Board | Firmware | Expected runtime identity |
 |---|---|---|
 | Legacy square/circular XVF3800 USB 4-Mic Array | `respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin` from [`respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb) | `BLD_MSG=ua-io16-6ch-sqr`, USB `2886:001a`, ALSA `Array` |
-| ReSpeaker Flex XVF3800 **LINEAR-4** | `respeaker_flex_usb_l16k6ch_v1.0.0.bin` from [`respeaker/reSpeaker_Flex`](https://github.com/respeaker/reSpeaker_Flex/tree/main/xmos_firmwares/usb) | `BLD_MSG=ua-io16-6ch-lin`, USB `2886:0022`, ALSA `L16K6Ch` |
+| ReSpeaker Flex XVF3800 **LINEAR-4** | `respeaker_flex_usb_l16k6ch_v1.0.1.bin` from [`respeaker/reSpeaker_Flex`](https://github.com/respeaker/reSpeaker_Flex/tree/main/xmos_firmwares/usb) | `BLD_MSG=ua-io16-6ch-lin`, USB `2886:0022`, ALSA `L16K6Ch` |
 
 The old `ua-io16-6ch-sqr` blob will enumerate and expose raw mics on
 a linear board, but its chip processed beams and DoA assume square
@@ -1042,13 +1042,14 @@ sudo apt install -y dfu-util curl
 curl -L -o /tmp/xvf-6ch.bin \
     https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/raw/master/xmos_firmwares/usb/respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin
 
-# Flex LINEAR-4 board, known-good on jts5 as of 2026-06-19:
+# Flex LINEAR-4 board, JTS hash-pinned updater target as of 2026-06-29
+# (prior jts5 hardware verification used v1.0.0 on 2026-06-19):
 #   https://github.com/respeaker/reSpeaker_Flex/tree/main/xmos_firmwares/usb
 curl -L -o /tmp/xvf-flex-linear-6ch.bin \
-    https://github.com/respeaker/reSpeaker_Flex/raw/main/xmos_firmwares/usb/respeaker_flex_usb_l16k6ch_v1.0.0.bin
+    https://github.com/respeaker/reSpeaker_Flex/raw/main/xmos_firmwares/usb/respeaker_flex_usb_l16k6ch_v1.0.1.bin
 sha256sum /tmp/xvf-flex-linear-6ch.bin
-# Expected SHA256 for the jts5-known-good blob:
-#   136727693ce56cb77953a7db76ec51602971793ff43e42939d89217c305e2ac8
+# Expected SHA256:
+#   85743239b4c4b069fb153b4a23f29dde9c29f34768b47601fa92daaaf09f2a99
 
 md5sum /tmp/xvf-6ch.bin
 # Record this hash — if Seeed re-cuts the same filename with new
@@ -1111,10 +1112,13 @@ sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host BLD_MSG
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host BLD_REPO_HASH
 # For v2.0.8 6chl as of 2026-05-15, expect hash:
 #   'a1f70651e992d6f0bcff655b26925d33999b9c2d'
-# For Flex LINEAR-4 v1.0.0 as of 2026-06-19, expect:
+# For Flex LINEAR-4 v1.0.0 (jts5 hardware verification, 2026-06-19),
+# this reported:
 #   '4b339d00721937451ee487759c04e2acb3215793'
-# Newer versions will report different hashes — that's fine, the
-# value is for change-detection, not validation.
+# The current hash-pinned target is v1.0.1 (2026-06-29) — its
+# BLD_REPO_HASH has not yet been recorded from hardware. Newer
+# versions will report different hashes — that's fine, the value is
+# for change-detection, not validation.
 ```
 
 #### Step 5 — bring AEC online

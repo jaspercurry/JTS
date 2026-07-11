@@ -548,6 +548,10 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/install-hardware-tier-and-staleness.md](docs/install-hardware-tier-and-staleness.md) | Maintainers / AI | **Design note + recommendation (Workstream D output).** Findings on making the installer hardware-tier-aware (RAM/CPU/arch detected up front, orthogonal to the full/streambox *profile*) and the version-skew risk question. Bottom line: migrations are convergent so being far behind is not a migration-pile-up risk; it amplifies risk via cold build caches (the OOM-prone WebRTC/Cargo rebuilds) — so stepwise updates are rejected in favor of safe builds (A) + atomic updates (B). Includes the cross-SKU test strategy and the scoped tier-detection/arch-guard PR. |
 | [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Contributor "files to know" register + the original top-five framing (priority list superseded by LAUNCH-READINESS.md) |
 | [docs/REVIEW-google-oss-readiness.md](docs/REVIEW-google-oss-readiness.md) | Maintainers / OSS reviewers | Historical point-in-time OSS-readiness review; not current operational truth |
+| [docs/REVIEW-2026-06-04-deep-dive.md](docs/REVIEW-2026-06-04-deep-dive.md) | Maintainers / OSS reviewers | **Superseded.** 23-agent parallel code-review snapshot of `main` @ `b4417b1`; do not drive work from this doc — see [LAUNCH-READINESS.md](docs/historical/LAUNCH-READINESS.md) |
+| [docs/REVIEW-2026-06-04-big-rocks.md](docs/REVIEW-2026-06-04-big-rocks.md) | Maintainers / OSS reviewers | **Superseded.** Companion to the 2026-06-04 deep-dive: larger structural/architecture items from the same review pass |
+| [docs/REVIEW-2026-06-04-small-wins.md](docs/REVIEW-2026-06-04-small-wins.md) | Maintainers / OSS reviewers | **Superseded.** Companion to the 2026-06-04 deep-dive: contained bug/hygiene/doc-staleness items from the same review pass |
+| [docs/REVIEW-2026-06-12-oss-due-diligence.md](docs/REVIEW-2026-06-12-oss-due-diligence.md) | Maintainers / OSS reviewers | **Superseded.** Staff-engineer-style OSS due-diligence pass against `main` @ `6772b81a`; companion to the 2026-06-04 review series |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
 | [docs/HANDOFF-speaker-output-reference.md](docs/HANDOFF-speaker-output-reference.md) | Audio / voice architects | Chosen direction for a JTS-native output owner, true speaker-output reference, TTS playout ledger, and robust assistant-speech barge-in |
 | [docs/HANDOFF-audio-latency-foundation.md](docs/HANDOFF-audio-latency-foundation.md) | Audio architects | Local-audio-latency work: the lean File-capture lane (Stage 4, default-OFF, soak-gated), USB-input bridge latency, the snapcast bond buffer, the CamillaDSP v4 resampler object schema, chip/software AEC optionality, and the hard rules against re-architecting the topology |
@@ -1121,19 +1125,23 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-correction-web` (HTTPS correction measurement hub) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
 | `jasper-dial-web` (dial onboarding UI) | **Socket-activated** | ~0 idle, ~9 MB when open | n/a idle |
 | `jasper-system-web` (system dashboard at `/system/`) | **Socket-activated** | ~0 idle, ~12 MB when open | n/a idle |
+| `jasper-chat-web` (conversation-history dashboard at `/chat/`) | **Socket-activated** | ~0 idle; not yet measured when open (same stdlib-server shape as `jasper-system-web`, bounded by `MemoryMax=90M`) | n/a idle |
 | Single-card snd-aloop (Loopback) | Loaded at boot | ~0 | ~0 |
 | dsnoop tap on music chain | Always present | ~0 | ~0 |
 
-The five web-wizard daemons are socket-activated — systemd holds
+The six web-wizard daemons are socket-activated — systemd holds
 their ports open and only spawns the daemon when a tab opens any of
-its pages. `jasper-web` alone hosts fourteen URL surfaces (Spotify,
+its pages. `jasper-web` alone hosts fifteen URL surfaces (Spotify,
 voice, Google, AirPlay, Sources, Wake, Wi-Fi, Transit, Home
-Assistant, Weather, Sound, Wake-Corpus, Speaker, Rooms) on fourteen
-loopback ports; the
-other four daemons each host one. All five exit after 10 min of no
-requests, so the resident cost is zero between
-admin sessions. First request after idle takes ~500-800 ms (Python
-startup); invisible during the OAuth round-trip or BT pair flow.
+Assistant, Weather, Sound, Wake-Corpus, Speaker, Rooms, Tools) on
+fifteen loopback ports; the other five daemons each host one. Four of
+the six (`jasper-web`, `jasper-bluetooth-web`, `jasper-correction-web`,
+`jasper-dial-web`) exit after 10 min of no requests; `jasper-system-web`
+and `jasper-chat-web` use a longer 30-min idle timeout since users may
+leave those read-only dashboards open in a tab. Either way the
+resident cost is zero between admin sessions. First request after
+idle takes ~500-800 ms (Python startup); invisible during the OAuth
+round-trip or BT pair flow.
 
 **Total Pss baseline with AEC on**: ~318 MB jasper-* daemons +
 ~80 MB system/OS plumbing + page cache → typically ~770 MB used

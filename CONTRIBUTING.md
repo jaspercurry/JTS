@@ -146,10 +146,11 @@ Two operational notes:
   Python 3.13 matrix leg before the test suite. mypy starts permissive
   and baselined so existing type debt does not block day-one adoption,
   but new unbaselined errors fail the job.
-- **Rust audio-daemon gate** (`cargo build --release --locked` and
-  `cargo test --locked`, plus `cargo fmt --all -- --check` and
+- **Rust audio-daemon gate** (`cargo fmt --all -- --check`, then
   `cargo clippy --release --locked --all-targets -- --no-deps
-  -D warnings`) — required green through the `rust` CI job when
+  -D warnings` (build+lint, no separate `cargo build` step), then
+  `cargo test --release --locked`) — required green through the
+  `rust` CI job when
   Rust-relevant surfaces change, and on every `main` push. Covers the
   production fan-in/outputd daemons and shared protocol crate.
 - **Static JavaScript gate** (`scripts/check-js-syntax.sh`) — CI runs
@@ -172,9 +173,11 @@ Two operational notes:
   explicit instead of always-on CI because most PRs do not affect
   optional dial/satellite hardware and PlatformIO is a large download.
 - **Voice-eval suite** (`pytest tests/voice_eval/regression/`) —
-  opens **paid** real-time LLM sessions (~$0.075/scenario on Gemini,
-  ~$0.60 on OpenAI). Don't run on every PR; nightly at most with
-  an explicit budget. See AGENTS.md "Voice-eval cost discipline."
+  opens **paid** real-time LLM sessions; see
+  [`tests/voice_eval/README.md`](tests/voice_eval/README.md) for the
+  per-scenario cost table by provider. Don't run on every PR; nightly
+  at most with an explicit budget. See AGENTS.md "Voice-eval cost
+  discipline."
 - **Hardware tests** — `sudo /opt/jasper/.venv/bin/jasper-doctor` on
   the Pi after a deploy.
 
