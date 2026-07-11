@@ -1136,12 +1136,19 @@ recapturing.
 
 ### C — Dual-stream wake-word with reference-coherence gating
 
-**What:** Run the wake-word detector on BOTH the AEC ON stream
-(post-bridge UDP output) AND the AEC OFF stream (chip-direct mic,
-no AEC processing). OR the detections. Gate the OR with a
-coherence check: if mic-vs-reference correlation at the detection
-moment is high (AEC's adaptive filter coefficients indicate strong
-self-talk), suppress.
+> **Status: the OR-gate half shipped (PR #191), default-off.** Running
+> the wake-word detector on both the AEC ON stream (post-bridge UDP
+> output) and the AEC OFF stream (chip-direct mic, no AEC processing)
+> and OR-ing the detections is live — `jasper/wake_legs.py` registers
+> the `chip_direct`/`off` leg on UDP `:9877` as a `wake_input=True`
+> production leg alongside `aec3`/`on`, and `WakeLoop` OR-gates fires
+> across every `wake_input` leg with a shared refractory window. What
+> remains open is the coherence-gating refinement below — suppressing
+> an OFF-leg fire when mic-vs-reference correlation is high.
+
+**What (open part):** Gate the OR with a coherence check: if
+mic-vs-reference correlation at the detection moment is high (AEC's
+adaptive filter coefficients indicate strong self-talk), suppress.
 
 **Why on the list:** Test-1 aligned A/B data (in this doc above)
 shows AEC ON and AEC OFF catch *mostly disjoint* sets of Jarvises:
@@ -1704,7 +1711,7 @@ Captured here so future sessions don't repeat the mistakes.
    lines (verifying `ref` is non-zero during music and `attenuation`
    reaches a healthy range) would have surfaced the bug immediately.
    Shipped as `check_aec_bridge_output_health` in
-   `jasper/cli/doctor.py`; its later false-positive mode and fix
+   `jasper/cli/doctor/aec.py`; its later false-positive mode and fix
    are #10 below.
 
 8. **`jasper-aec-init` doesn't re-run after a code deploy.** It's
@@ -1750,7 +1757,7 @@ Captured here so future sessions don't repeat the mistakes.
     AND the silent-ref pattern persists. PR #75's failure was
     sustained `ref = 0` across all windows for days; this check
     still catches that. See `_assess_aec_bridge_output` in
-    `jasper/cli/doctor.py`.
+    `jasper/cli/doctor/aec.py`.
 
     The same investigation produced `jasper-doctor --probe-aec`,
     which actively plays a quiet sine into `correction_substream`
@@ -2285,14 +2292,18 @@ hardware-AEC profile and prepares the chip USB-IN reference path. The older
 manual delay work, but the supported production path is profile-managed
 through the reconciler and `jasper-aec-init`.
 
-### We haven't run the wake-word reliability test
+### What's still unmeasured: live in-person wake attempts
 
 The whole point of AEC is to make wake-word detection work
-during music playback. We've measured RMS attenuation but not
-end-to-end "say 'Hey Jarvis' over loud music, count detections."
-That test requires sitting in front of the speaker and
-listening; it hasn't been done yet. Until it is, "this is
-better than no AEC" is reasoning, not measurement.
+during music playback. The 2026-05-20 forensic sweep (below) DID
+measure end-to-end wake detection over music — captured audio,
+offline-scored against the wake model, with concrete pass/fail
+counts (e.g. "Wake rate: 5/20 vs prev 4/20"). What that sweep
+does NOT cover is a human standing in the room saying "Hey
+Jarvis" live and being interrupted/talked over by playback in
+real time, or per-config false-positive rate against ordinary
+household noise. That test requires sitting in front of the
+speaker and listening; it hasn't been done yet.
 
 ---
 
@@ -2309,8 +2320,9 @@ Files involved in the AEC subsystem:
 - `jasper/cli/aec_tune.py` — calibrator for chip-side
   `AUDIO_MGR_SYS_DELAY` (vestigial; kept for diagnostic use)
 - `jasper/xvf/xvf_host.py` — JTS-owned XVF3800 USB control helper
-- `jasper/cli/doctor.py` — `check_aec_bridge_running`,
-  `check_mic_capture`, `check_xvf_firmware_6ch`
+- `jasper/cli/doctor/aec.py` — `check_aec_bridge_running`,
+  `check_xvf_firmware_6ch`
+- `jasper/cli/doctor/audio.py` — `check_mic_capture`
 - `deploy/alsa/asoundrc.jasper` — defines `pcm.jasper_capture`
   (the dsnoop tap) and `pcm.jasper_out` (dongle dmix)
 - `deploy/modprobe.d/snd-aloop.conf` — single-card music-chain

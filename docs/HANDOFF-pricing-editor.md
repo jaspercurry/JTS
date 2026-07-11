@@ -311,7 +311,7 @@ per-provider price integrations.
   constants, `_OVERRIDE_KEYS`, the `"mini"` hack.
 - `jasper/voice/daemon_main.py` — calls `pricing_for_model(_active_model(cfg), …)`
   + `event=pricing.unpriced` warning.
-- `jasper/cli/doctor.py` — `check_pricing` (warns if rate data fails to
+- `jasper/cli/doctor/voice.py` — `check_pricing` (warns if rate data fails to
   load or the active model is unpriced).
 - `jasper/web/voice_setup.py` — editor: `_pricing_section_html`,
   `_apply_pricing_save`, `POST /pricing`, `as_of` display. Phase 3:

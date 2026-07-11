@@ -18,8 +18,10 @@
 // module doc; this core implements the WRITER half plus the shared create/attach
 // logic.
 //
-// PROTOTYPE, flag-gated: this .so is only loaded via a lab-only asound drop-in;
-// nothing in the product path references it.
+// PRODUCT-INSTALLED, coupling-gated: this .so is shipped on every box via
+// deploy/lib/install/ring-platform.sh's /etc/alsa/conf.d/60-jts-ring.conf, but
+// stays INERT until the coupling reconciler arms shm_ring on a ring-eligible
+// box (see pcm_jts_ring.c's banner and ring-platform.sh for the arm path).
 
 #ifndef JTS_RING_SHM_H
 #define JTS_RING_SHM_H

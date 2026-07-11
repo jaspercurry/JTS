@@ -95,7 +95,7 @@
   didn't happen. The verdict lands on `session.acceptance`, in the envelope
   (schema v2 `verdict` block + outcome-driven `verdict_text` — the only field
   the shipped client renders), in `result.json`/`info.json`/status (bundle
-  schema v4, alongside the `position1` matched-basis curve and
+  schema v5, alongside the `position1` matched-basis curve and
   `auto_revert_outcome`), and in `event=correction_acceptance.{verdict,
   auto_revert,auto_revert_outcome}` logs. Thresholds are env-tunable
   `JASPER_ACCEPT_*` knobs seeded from `spatial.py`'s 4–6 dB std constants —
@@ -1286,20 +1286,30 @@ jasper/
 │   └── web_measurement.py               browser WAV storage + acoustic evidence
 │                                        bridge into measurement state
 │
+├── audio_measurement/                   P1b: shared measurement kernel extracted
+│   │                                    from jasper/correction/ (commit 4001755b)
+│   ├── __init__.py
+│   ├── sweep.py                         NumPy/SciPy synchronized swept-sine
+│   ├── deconv.py                        IR extraction
+│   ├── analysis.py                      smoothing, spatial avg, deviation metrics
+│   ├── calibration.py                   calibration parser + Dayton/miniDSP providers
+│   ├── quality.py                       capture quality gates + issue schema
+│   ├── quality_model.py                 parameterized capture-quality thresholds
+│   │                                    shared across tuning layers
+│   └── ramp.py                          settle-based level-match ramp controller
+│                                        (shared measurement kernel, P2)
+│
 ├── correction/
 │   ├── __init__.py
 │   ├── coordinator.py                   measurement_window() async CM
-│   ├── sweep.py                         NumPy/SciPy synchronized swept-sine
 │   ├── playback.py                      sweep → correction_substream via aplay
-│   ├── deconv.py                        IR extraction
-│   ├── analysis.py                      smoothing, spatial avg, deviation metrics
 │   ├── peq.py                           greedy PEQ design (≤5 filters, cuts)
 │   ├── target.py                        Harman / flat / house-curve interpolant
-│   ├── calibration.py                   calibration parser + Dayton/miniDSP providers
-│   ├── quality.py                       capture quality gates + issue schema
 │   ├── bundles.py                       debug-bundle listing / validation helpers
 │   ├── bundle_tools.py                  inspect/replay/export helpers for bundles
 │   ├── runtime_integrity.py             Pi/runtime health evidence around sweeps
+│   ├── runtime_safety.py                runtime graph safety re-checked against the
+│   │                                    saved output topology contract
 │   ├── acoustic_quality.py              SNR/repeatability/direct-arrival trust evidence
 │   ├── replay_artifacts.py              compact derived IR/response artifacts
 │   ├── artifacts.py                     per-session bundle writer / manifest owner
@@ -1308,6 +1318,20 @@ jasper/
 │   ├── state_guard.py                   capture watchdog + reset-busy guard
 │   ├── fir_runtime.py                   FIR coefficient inspect/stage substrate
 │   ├── evidence.py                      deterministic human/agent evidence packet
+│   ├── acceptance.py                    deterministic verify-acceptance verdict (P4)
+│   ├── browser_audio.py                 browser audio-path preflight report
+│   ├── confidence.py                    deterministic confidence report for measurements
+│   ├── envelope.py                      server-computed screen envelope (dumb-frontend
+│   │                                    / smart-backend contract)
+│   ├── interop.py                       REW-compatible export (delimited freq-response
+│   │                                    text, mono WAV impulse responses)
+│   ├── level_match.py                   correction-side adapter for the relay-closed
+│   │                                    level-match ramp (P2); pure math lives in
+│   │                                    audio_measurement.ramp
+│   ├── spatial.py                       shared spatial-spread helpers for
+│   │                                    multi-position measurements
+│   ├── strategy.py                      correction strategy and target-profile
+│   │                                    orchestration (raw math -> product policy)
 │   └── session.py                       measurement state machine + DSP orchestration
 │                                        (delegates auto-level ramping, state guards,
 │                                        and status serialization)
@@ -1822,7 +1846,7 @@ sessions/<session_id>/
 │                    runtime_integrity summary,
 │                    bundle_schema_version
 ├── artifact_manifest.json
-│                    bundle schema v3 integrity manifest: relative
+│                    bundle schema v5 integrity manifest: relative
 │                    paths, artifact kinds, schema versions, SHA-256,
 │                    byte sizes, generator provenance, dependencies,
 │                    sensitivity class, and recomputability
@@ -1914,9 +1938,9 @@ Current versions:
 
 | Artifact | Version field | Current value | Compatibility expectation |
 |---|---:|---:|---|
-| `info.json` | `bundle_schema_version` | `3` | Required for bundle identity/state. New optional summaries may appear; older bundles may omit newer fields. |
-| `result.json` | `bundle_schema_version` | `3` | Optional until a session reaches `ready` / `applied` / `verified`. Consumers must tolerate absence on failed or in-flight bundles. |
-| `artifact_manifest.json` | `manifest_schema_version` | `1` | Required for new schema-v3 bundles. Legacy bundles without it may be inspected but are lower trust. |
+| `info.json` | `bundle_schema_version` | `5` | Required for bundle identity/state. New optional summaries may appear; older bundles may omit newer fields. |
+| `result.json` | `bundle_schema_version` | `5` | Optional until a session reaches `ready` / `applied` / `verified`. Consumers must tolerate absence on failed or in-flight bundles. |
+| `artifact_manifest.json` | `manifest_schema_version` | `1` | Required for new schema-v5 bundles. Legacy bundles without it may be inspected but are lower trust. |
 | `runtime_integrity.json` | `artifact_schema_version` | `1` | Optional derived evidence. Missing means runtime evidence unavailable, not that the sweep was healthy. |
 | `acoustic_quality.json` | `artifact_schema_version` | `1` | Optional derived evidence. Missing means SNR/repeatability evidence unavailable, not invalid. |
 | `analysis/<capture>_response.json` | `artifact_schema_version` | `1` | Optional derived replay artifact. Recomputable from raw capture WAV, sweep metadata, calibration, and deconvolution settings. |

@@ -2,10 +2,11 @@
 
 > **Status: design-of-record (living draft).** This is the canonical
 > plan for making XVF3800 chip-AEC work across *any* output DAC. It
-> supersedes the dynamic-aligner mechanism proposed in the
-> `AEC-DIAG-07` production-design draft (§3, the per-period
-> `snd_pcm_delay` delay line) — see [Design decision](#design-decision)
-> for why. Engine internals live in
+> supersedes an earlier dynamic-aligner mechanism from a
+> production-design draft that never landed as a checked-in doc (a
+> per-period `snd_pcm_delay` delay line) — see
+> [Design decision](#design-decision), which summarizes that mechanism
+> inline and explains why it's wrong. Engine internals live in
 > [HANDOFF-aec.md](HANDOFF-aec.md); the chip itself in
 > [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md); the lab evidence in
 > [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) and
@@ -50,9 +51,9 @@
 ## Design decision
 
 The chip-ref alignment problem decomposes into three physical classes, and
-the right mechanism differs per class. The `AEC-DIAG-07` draft used one
-tool (a per-period delay line servo'd on `snd_pcm_delay`) for all three;
-that is wrong.
+the right mechanism differs per class. The earlier (unlanded)
+production-design draft used one tool (a per-period delay line servo'd on
+`snd_pcm_delay`) for all three; that is wrong.
 
 | Variability source | Right mechanism |
 |---|---|
@@ -80,7 +81,7 @@ HANDOFF-aec.md):
 **Our advantage:** outputd owns *both* ALSA endpoints (the DAC and the XVF
 USB-IN), so it recovers the clock ratio from **ground-truth counters** —
 `dac_frames_written − dac_snd_pcm_delay` vs `chip_ref_frames_written −
-chip_ref_snd_pcm_delay`, plus `chip_ref_sequence_lag` (`state.rs:934`).
+chip_ref_snd_pcm_delay`, plus `chip_ref_sequence_lag` (`state.rs:1577`).
 This is easier than the blind acoustic SRO estimation the academic work
 does. The control machinery already exists: the `RateController` (PI servo)
 + windowed-sinc resampler in `content_bridge.rs` (`render_period` /

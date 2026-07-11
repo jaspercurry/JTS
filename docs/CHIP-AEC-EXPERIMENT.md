@@ -366,7 +366,7 @@ infrastructure to change — these are values, not new code paths.
 | 1 | **Chip DSP profile** — `SHF_BYPASS`, the fixed beam azimuths (150°/210°), `AEC_ASROUTONOFF`, `AEC_AECEMPHASISONOFF`, `AEC_FAR_EXTGAIN`, `AUDIO_MGR_OP_L/R` | `jasper/cli/aec_init.py` production chip-AEC mode, gated by the reconciler's `JASPER_AEC_CHIP_AEC_ENABLED=1` | XVF register writes, **read-back-verified** (a failed write is a mode-transition failure, not a warning). Best-known values: the "Best lab configuration" block above. **Brick hazard: never `SAVE_CONFIGURATION` / `REBOOT`.** | the beam carries ASR-shaped speech with music cancelled (the 02-vs-03 ear test + low reference correlation) |
 | 2 | **Per-(leg, condition) wake-threshold offsets** | `jasper/wake_fusion.py` `WakeFuser(offsets={...})` (the Phase-1.3 seam — already wired into the OR-gate) | `{(leg_token, condition): float}` additive offset in [0,1] score units, e.g. `{("chip_aec_150","music"): +0.05}`. Absent pair ⇒ base threshold (today's behavior) | per-(leg, condition) FRR improves with no FA/h regression on a fresh labeled corpus window |
 | 3 | **Wake model for the beams** — does the active model (`jarvis_v2`) score the chip beam well, or does it need a beam-specific model? | the wake-model registry ([`jasper/wake_models.py`](../jasper/wake_models.py)) + `JASPER_WAKE_THRESHOLD` | a registered model + threshold (same mechanism as every other leg) | the chip-beam score distribution separates real wakes from noise at the chosen threshold (cf. the `raw0` warning in HANDOFF-mic-fusion §2.8 — an unconditioned stream can need its own model) |
-| 4 | **Per-leg cost** (RAM / CPU) | the `_LAYERS` row in [`jasper/web/wake_setup.py`](../jasper/web/wake_setup.py) + the AGENTS.md sub-toggle table | `<RAM> · <CPU>` label (currently the estimate `~10 MB · light`) | the displayed figure matches measured Pi-5 resident cost |
+| 4 | **Per-leg cost** (RAM / CPU) | the `_FUSION_LAYERS` row in [`jasper/web/wake_setup.py`](../jasper/web/wake_setup.py) + the AGENTS.md sub-toggle table | `<RAM> · <CPU>` label (currently the estimate `~30 MB · light`) | the displayed figure matches measured Pi-5 resident cost |
 
 **Frozen — do NOT change while tuning** (the historical corpus + analysis
 tooling key off these): the leg tokens `chip_aec_150` / `chip_aec_210`,
@@ -383,8 +383,8 @@ conversion from the same telemetry spine: `fired_legs`, per-leg score
 columns, and explicit per-beam WAV paths.
 
 > ⚠️ **Policy carve-out.** [AGENTS.md](../AGENTS.md) "AEC bridge —
-> input profile and reconciler" says *"Architecture is fixed; swap the engine,
-> not the topology"* and names "dual-USB-sink hardware-AEC retry"
+> input profile and reconciler" says *"Architecture is fixed; swap the
+> engine/profile, not the topology"* and names "dual-USB-sink hardware-AEC retry"
 > and "custom XVF firmware" as paths agents must not propose.
 > [HANDOFF-barge-in.md](HANDOFF-barge-in.md) "Hardware AEC, revisited"
 > repeats this as `Policy status: rejected by name`. **This doc and
@@ -934,8 +934,10 @@ drift compensation anywhere**: it paces its loop on the blocking
 `outputd_dac` write, fans the *same* mixed period to the chip USB-IN
 via an **integer** 48 k→16 k decimator (`ChipRefDownsampler` in
 `main.rs`, asserts exact divisibility), and ships it through a bounded
-queue that only **drops periods on overflow** / recovers xruns
-(`event=outputd.chip_ref.queue_full`). A lossy producer/consumer pair
+queue that only **drops periods on overflow** / recovers xruns (a
+silent counter, `chip_ref_writer.dropped_periods_due_to_full_queue` on
+`/state` — see Step 3 below; no log line is emitted on drop). A lossy
+producer/consumer pair
 stays glitch-free long-term *only* if both ends run at one physical
 rate — which holds because every endpoint (mic, chip USB-IN, Apple
 DAC) rides the one USB SOF. Swap in a DAC on a different timebase and
@@ -1056,7 +1058,11 @@ Apple-DAC figure. Also watch for the *delay-stability* failure mode
 (Step 2.2), not just rate:
 ```sh
 curl -s http://jts.local:8780/state | jq '.outputd.reference_outputs.chip_ref_writer'
-journalctl -u jasper-outputd | grep -E 'chip_ref.(queue_full|write_failed)'
+# dropped_periods_due_to_full_queue is a silent counter (no log line on
+# drop) — read it from /state above, not the journal. Recoverable/terminal
+# write failures DO log, under outputd.chip_ref.unavailable (retry) and
+# outputd.chip_ref.tee.write_failed (terminal):
+journalctl -u jasper-outputd | grep -E 'chip_ref\.(unavailable|tee\.write_failed)'
 ```
 - **≤~1 ppm + clean chip-ref state/log** ⇒ the domains are effectively
   coherent; chip-AEC is viable as-is. (Given the shared crystal, this

@@ -113,6 +113,8 @@ a new cue" below for both patterns.
 | `internal_error` | reactive | turn-open hits an unexpected local/internal error (e.g. a failed state write) while the connection looks healthy — NOT a connectivity problem (the 2026-06-19 incident) | "Sorry, something went wrong on my end. Please try again." |
 | `research_failed` | proactive | async research job fails or is interrupted by daemon restart; rate-limited to once per hour | "Sorry, I couldn't finish that research. Please ask me again." |
 | `cant_reach_cloud` | proactive | supervisor sees 5 consecutive identical reconnect failures (~30 s on the default backoff schedule); rate-limited to once per hour | "Heads up — I'm having trouble reaching the cloud and I'll keep trying. You might want to check on me at `{hostname}`." |
+| `measurement_relay_unreachable` | proactive | phone-mic capture relay: Pi cannot reach the cloud relay to run a new measurement (`jasper/capture_relay`, `RELAY_UNREACHABLE_CUE_SLUG`) | "I couldn't reach the measurement service. New measurements need internet, but anything already set up still works." |
+| `measurement_failed` | proactive | phone-mic capture relay: a started measurement can't be used — phone timeout, decrypt/integrity failure, stimulus alignment failure, or phone aborted (`jasper/capture_relay`, `MEASUREMENT_FAILED_CUE_SLUG`) | "Sorry, that measurement didn't work. Visit `{hostname}` to try again." |
 
 Cues are **provider-agnostic** — they don't say "Google" or
 "Gemini". The voice backend is replaceable; baking provider names
@@ -260,8 +262,9 @@ Exit codes (stable so install.sh can read them):
      can't garble an in-progress reply, dynamic announcement, or cue
      by trying to layer a second WAV onto the single TTS stream. The
      `GeminiLiveConnection.set_failure_escalation_cb` →
-     `WakeLoop.play_supervisor_cue` wiring in `voice_daemon.run()`
-     is the canonical example. Don't forget to rate-limit at the
+     `WakeLoop.play_supervisor_cue` wiring in
+     `jasper/voice/daemon_main.py`'s `run()` is the canonical
+     example. Don't forget to rate-limit at the
      supervisor — `play_supervisor_cue` itself doesn't.
 
 3. **Bake the audio**. Either restart `jasper-voice` (its startup
@@ -312,4 +315,4 @@ failures on the affected paths, but every other path works.
 
 ---
 
-Last verified: 2026-06-30
+Last verified: 2026-07-11 (registry table diffed against `jasper/cues/registry.py` CUES — added the two capture-relay rows; `set_failure_escalation_cb` wiring location corrected to `jasper/voice/daemon_main.py`'s `run()`)

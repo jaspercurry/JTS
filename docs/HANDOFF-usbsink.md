@@ -1214,7 +1214,7 @@ This is ~10 lines of change in
 
 ### 4.8 jasper-doctor checks
 
-**Modified file**: `jasper/cli/doctor.py`. Add three checks, all
+**Modified file**: `jasper/cli/doctor/usbsink.py`. Add three checks, all
 under the `usbsink` namespace (analogue of the AEC checks):
 
 ```python
@@ -1412,7 +1412,7 @@ reboot". UI surfaces the specific reason in the row's note text.
 | `jasper/volume_coordinator.py` | USB sink uses the shared `music_sources` volume mode; no source-local push writeback |
 | `jasper/control/server.py` | `/volume/set` accepts optional `source` field |
 | `jasper/control/system_metrics.py` | `/state` exposes `usbsink` section |
-| `jasper/cli/doctor.py` | Three new checks |
+| `jasper/cli/doctor/usbsink.py` | Three new checks |
 | `pyproject.toml` | Register `jasper-usbsink` script (no new mixer dep — uses `amixer` from alsa-utils) |
 | `BRINGUP.md` | New phase: 8086 splitter setup + reboot for dtoverlay |
 | `README.md` | Sources list gains USB; RAM table gains usbsink row |
@@ -1666,7 +1666,7 @@ between USB and existing sources.
 **Goal**: `jasper-doctor` reports usbsink state accurately on/off.
 
 **Deliverables**:
-- `jasper/cli/doctor.py` three new checks
+- `jasper/cli/doctor/usbsink.py` three new checks
 - All three return ok/warn/fail with useful detail strings
 
 **Acceptance**:

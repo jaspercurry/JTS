@@ -23,9 +23,12 @@
 // the SPSC contract, the mod-buffer clamp, and the writer/reader-dead survival
 // discipline are shared code.
 //
-// PROTOTYPE, flag-gated: only reachable via the lab-only asound drop-in
-// (scripts/ring-proto/arm.sh installs /etc/alsa/conf.d/98-jts-ring-proto.conf).
-// Nothing in the product ALSA config references `type jts_ring`.
+// PRODUCT-INSTALLED, coupling-gated: deploy/lib/install/ring-platform.sh ships
+// pcm.jts_ring_capture/playback (type jts_ring) via
+// /etc/alsa/conf.d/60-jts-ring.conf on every box, but the PCMs stay INERT
+// until the coupling reconciler arms JASPER_FANIN_CAMILLA_COUPLING=shm_ring /
+// JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring on a ring-eligible box; otherwise the
+// historical loopback / direct topology remains active.
 //
 // ---- The eight questions ----
 //

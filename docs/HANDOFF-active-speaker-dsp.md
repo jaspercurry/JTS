@@ -219,7 +219,7 @@
 > `jts_active_speaker_crossover_preview`. The preview proposes bounded
 > low-pass/high-pass filter intent for active 2-way and 3-way speaker groups,
 > raises a candidate up to the upper driver's recommended-highpass / usable-range
-> soft floor (`_upper_soft_floor`) with a warning, and — fail closed — **blocks**
+> soft floor (`_upper_recommended_floor`) with a warning, and — fail closed — **blocks**
 > a crossover sitting at or below the upper driver's `do_not_test_below_hz`
 > protection line (`crossover_below_do_not_test_floor`), dropping its filter
 > intent so a compression/horn driver is never crossed on or under its

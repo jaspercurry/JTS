@@ -189,6 +189,12 @@ divergent leg vocabularies** that exist today (the daemon's 3-slot
 `on/off/dtln` and `wake_ports.build_ports()`'s larger
 `on/off/dtln/raw0/ref/usb_*/sweep` map) into one.
 
+> **Shipped as Phase 0.1 (#366).** The 5-field `LegSpec` below is what
+> actually landed in `jasper/wake_legs.py`. `telemetry_prefix` and
+> `default_threshold_offset` were deferred to later phases — telemetry
+> mapping lives in `voice_daemon.py`'s `_LEG_DB` dict, and the
+> threshold-offset seam is `WakeFuser(offsets={...})` (§2.4b below).
+
 ```python
 @dataclass(frozen=True)
 class LegSpec:
@@ -197,15 +203,13 @@ class LegSpec:
     udp_port: int        # 9876 | 9877 | 9878 | ...
     kind: LegKind        # SOFTWARE_AEC | RAW | NEURAL_AEC | HARDWARE_AEC | CORPUS
     wake_input: bool     # True = consumed by WakeFuser; False = corpus-only (raw0/ref/usb_*/sweep)
-    telemetry_prefix: str # column stem, e.g. "aec_on" / "aec_off" / "dtln_aec"
-    default_threshold_offset: float = 0.0  # added to base threshold for this leg
 ```
 
 **Back-compat invariant (load-bearing).** The existing telemetry
 corpus, `fired_legs` CSV, `trigger_kind` (`fire_aec_on` etc.), the
 SQLite per-leg columns, and `analyze-three-leg.sh` all key off the
 tokens `on`/`off`/`dtln`. The registry's `name` may be more
-descriptive, but `token`, `udp_port`, and `telemetry_prefix` for the
+descriptive, but `token` and `udp_port` for the
 three existing legs are **frozen** so the historical corpus and the
 analysis tooling keep working. Renaming the wire/DB keys would orphan
 the data — non-goal.

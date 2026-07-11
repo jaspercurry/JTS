@@ -311,7 +311,7 @@ flag it on the second provider, do it on the third.
 
 ## Testing
 
-- `tests/test_citibike.py` — 38 unit tests for the fetcher (cache
+- `tests/test_citibike.py` — 51 unit tests for the fetcher (cache
   hit/miss/expiry/stale-on-error/5xx/parse-error), parser
   (round-trip + edge cases), runtime client (missing/offline/filter),
   provider (bbox, sort, snapshot rendering).

@@ -25,8 +25,10 @@ selected tools can ship shorter model-facing text. Per-tool conditional
 rules live in the provider-visible description under `jasper/tools/`;
 Path B moved them out of `SYSTEM_INSTRUCTION`. **It did not bring the
 constant under Gemini's oft-cited ~500-token figure:**
-the static constant measures ~720 words ≈ ~1,000–1,150 tokens
-(2026-06-15), ~2× that figure — and that figure is now flagged as
+the static constant measures ~997 words ≈ ~1,400–1,600 tokens
+(2026-07-11; grew from a 2026-06-15 measurement of ~720 words after
+`dc8d0459` added the Google Routes travel-time tool clause), well
+over 2× that figure — and that figure is now flagged as
 an unverified heuristic, not a hard ceiling (see
 ["Length and structure"](#2-length-and-structure-are-inversely-valued)).
 The "Recommended edits to current code" section at the bottom
@@ -211,8 +213,8 @@ system-instruction budget.
   catalogs the same modes (handle-drop-on-first-failure, 1008 "session
   expired", audio+video breakage, 409 races, silent-session-2) and
   never blames instruction size.
-- **Production runs ~2× over it.** The static `SYSTEM_INSTRUCTION`
-  is ~720 words ≈ **~1,000–1,150 tokens** today — measure with
+- **Production runs well over 2× over it.** The static `SYSTEM_INSTRUCTION`
+  is ~997 words ≈ **~1,400–1,600 tokens** today (2026-07-11) — measure with
   `python -c "from jasper.voice.prompt import SYSTEM_INSTRUCTION as S; print(len(S), len(S.split()))"`
   — and the runtime-built instruction (home location + linked Google
   accounts appended by `_build_system_instruction`) is larger still
@@ -530,8 +532,8 @@ What's working:
   preambles.
 - Rationale block makes the design legible to the next
   maintainer.
-- Size caveat (not a win): the static constant is ~720 words ≈
-  ~1,000–1,150 tokens (2026-06-15), ~2× the ~500-token figure
+- Size caveat (not a win): the static constant is ~997 words ≈
+  ~1,400–1,600 tokens (2026-07-11), well over 2× the ~500-token figure
   PLAN.md tracks. That figure is an unverified heuristic, not a
   confirmed ceiling — see
   ["Length and structure"](#2-length-and-structure-are-inversely-valued).

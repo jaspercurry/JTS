@@ -766,14 +766,16 @@ sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E "cgroup memory|audio path"
 #### What the rest of Stage 2 would still add (still deferred)
 
 The audio-protection subset doesn't enforce `MemoryHigh=`/`MemoryMax=`
-on non-audio daemons. The 6 unit files that already have those
+on non-audio daemons. The unit files that already have those
 directives (mux, input, usbsink, system-web, bluetooth-web,
-librespot) **do now enforce** as a side-effect of memory cgroup
-being on — those values become live the moment the controller is
-enabled.
+librespot, and `jasper-voice` — which carries `MemoryHigh=384M`
+since commit be2909e93) **do now enforce** as a side-effect of memory
+cgroup being on — those values become live the moment the controller
+is enabled.
 
-But there are no per-daemon caps on `jasper-voice` (~150 MB) or
-`jasper-control` (~35 MB) yet, and no per-slice cap on the
+`jasper-voice` therefore has a throttle-only `MemoryHigh=384M` but no
+`MemoryMax=` kill-cap. There are still no per-daemon caps on
+`jasper-control` (~35 MB) at all, and no per-slice cap on the
 non-audio path. Adding those would catch:
 - Slow memory leak in jasper-voice or jasper-control
 - A future regression that ballooned a daemon's working set

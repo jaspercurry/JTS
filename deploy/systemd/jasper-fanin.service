@@ -74,8 +74,8 @@ CPUSchedulingPriority=30
 # PipeWire RTKit's RTTimeUSec. Carried by every FIFO unit (camilla/fanin/outputd).
 LimitRTTIME=200000
 
-# Hardening — matches the conventions of jasper-camilla,
-# jasper-aec-bridge, jasper-voice. Defense in depth.
+# Hardening — matches the conventions of jasper-voice,
+# jasper-outputd. Defense in depth.
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=read-only
