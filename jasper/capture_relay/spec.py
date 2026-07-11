@@ -1063,6 +1063,8 @@ def build_crossover_sweep_spec(
 def build_level_ramp_spec(
     *,
     geometry_label: str = "listening position",
+    placement_instruction: str = "",
+    tone_frequency_hz: float = 1000.0,
     hard_timeout_ms: int = 75000,
     pre_roll_ms: int = 400,
     post_roll_ms: int = 400,
@@ -1099,8 +1101,10 @@ def build_level_ramp_spec(
     automatic level result. It is a
     level comparison, not a timing one, so alignment is not required and clock
     drift is irrelevant (``require_alignment=False``, ``clock_drift="ignore"``).
-    ``geometry_label`` tailors the copy for the near-field (baffle) vs
-    listening-position step.
+    ``geometry_label`` tailors the heading for the near-field (baffle) vs
+    listening-position step. ``placement_instruction`` optionally supplies the
+    exact Pi-owned geometry copy; the page renders that same instruction after
+    microphone setup instead of inventing a second placement description.
     """
     duration_ms = max(pre_roll_ms + post_roll_ms + 1000, int(hard_timeout_ms))
     if calibration_models is None:
@@ -1114,7 +1118,8 @@ def build_level_ramp_spec(
         post_roll_ms=post_roll_ms,
         constraints=CaptureConstraints(),  # all false → measurement-clean
         stimulus=CaptureStimulus(
-            played_by="pi", label="band-limited level-match noise"
+            played_by="pi",
+            label=f"{float(tone_frequency_hz):g} Hz level-match tone",
         ),
         run_token=run_token,
         validity=CaptureValidity(
@@ -1128,13 +1133,14 @@ def build_level_ramp_spec(
             ui_heading(f"Level match — {geometry_label}"),
             ui_steps(
                 [
-                    f"Hold the phone at the {geometry_label}",
+                    placement_instruction
+                    or f"Place the microphone at the {geometry_label}",
                     "Tap Start — the speaker rises slowly from quiet",
                     "Stay still; it locks the level automatically",
                 ]
             ),
             ui_level_meter("mic"),
-            ui_button("Start", action="begin_capture"),
+            ui_button("Start level check", action="begin_capture"),
             ui_note("Keep the screen on — leaving this page stops the level match."),
         ),
         calibration_models=tuple(calibration_models),

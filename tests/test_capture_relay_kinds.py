@@ -87,6 +87,40 @@ def test_per_kind_validity_policy_is_the_differentiation():
     assert ramp.validity.clock_drift == "ignore"
     headings = [c for c in ramp.screen if c["type"] == "heading"]
     assert headings and "speaker baffle" in headings[0]["text"]
+    assert [c for c in ramp.screen if c["type"] == "button"][0]["label"] == (
+        "Start level check"
+    )
+
+
+def test_level_ramp_preserves_exact_pi_owned_placement_instruction():
+    from jasper.active_speaker.capture_geometry import driver_placement_instruction
+    from jasper.capture_relay.spec import build_level_ramp_spec
+
+    placement = driver_placement_instruction("woofer")
+    ramp = build_level_ramp_spec(
+        geometry_label="speaker baffle measurement position",
+        placement_instruction=placement,
+    )
+
+    steps = [c for c in ramp.screen if c["type"] == "steps"]
+    assert steps[0]["items"][0] == placement
+    assert "3 cm" in steps[0]["items"][0]
+    assert "woofer cone" in steps[0]["items"][0]
+    assert ramp.stimulus is not None
+    assert ramp.stimulus.label == "1000 Hz level-match tone"
+
+
+def test_crossover_level_reference_matches_two_and_three_way_passbands():
+    from jasper.active_speaker.capture_geometry import crossover_level_reference
+    from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
+
+    two_way = crossover_level_reference(_two_way_preset("mono"))
+    three_way = crossover_level_reference(_three_way_preset("mono"))
+
+    assert (two_way.role, two_way.tone_frequency_hz) == ("woofer", 1000.0)
+    assert "woofer cone" in two_way.placement_instruction
+    assert (three_way.role, three_way.tone_frequency_hz) == ("mid", 1000.0)
+    assert "midrange cone" in three_way.placement_instruction
 
 
 def test_server_driven_copy_names_the_driver():

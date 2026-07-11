@@ -2590,6 +2590,7 @@ async def _run_relay_level_match(
     geometry: str,
     run_token: str,
     setup_binding_id: str = "",
+    tone_frequency_hz: float = 1000.0,
 ) -> None:
     """Run one relay-fed level match without blocking the correction loop.
 
@@ -2828,7 +2829,7 @@ async def _run_relay_level_match(
             )
 
             tone_wav = playback._ensure_tone_wav(
-                freq_hz=1000.0,
+                freq_hz=tone_frequency_hz,
                 duration_s=90.0,
                 dbfs=AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
                 sample_rate=48000,
@@ -2994,7 +2995,10 @@ def _handle_crossover_relay_level_match(
         clear_active_comparison_set,
         start_active_comparison_set,
     )
-    from jasper.active_speaker.capture_geometry import DRIVER_PLACEMENT_POLICY_ID
+    from jasper.active_speaker.capture_geometry import (
+        DRIVER_PLACEMENT_POLICY_ID,
+        crossover_level_reference,
+    )
     from jasper.correction.level_match import MicGeometry
     from jasper.output_topology import load_output_topology
 
@@ -3031,6 +3035,22 @@ def _handle_crossover_relay_level_match(
             "before level matching"
         )
 
+    applied_profile = status.get("applied_profile")
+    recomposition = (
+        applied_profile.get("recomposition_snapshot")
+        if isinstance(applied_profile, dict)
+        else None
+    )
+    preset_payload = (
+        recomposition.get("preset") if isinstance(recomposition, dict) else None
+    )
+    if not isinstance(preset_payload, dict):
+        raise ValueError(
+            "the applied crossover has no protected preset snapshot; reapply it "
+            "before level matching"
+        )
+    level_reference = crossover_level_reference(preset_payload)
+
     lease = backend.level_lease()
     topology = load_output_topology()
     run_token = secrets.token_urlsafe(18)
@@ -3045,7 +3065,9 @@ def _handle_crossover_relay_level_match(
         return correction_adapter.open_capture(
             client,
             build_level_ramp_spec(
-                geometry_label="speaker baffle measurement position",
+                geometry_label=f"{level_reference.role} measurement position",
+                placement_instruction=level_reference.placement_instruction,
+                tone_frequency_hz=level_reference.tone_frequency_hz,
                 run_token=run_token,
                 setup_binding_id=setup_binding_id,
                 setup_collect_positions=False,
@@ -3074,6 +3096,7 @@ def _handle_crossover_relay_level_match(
             geometry=MicGeometry.NEAR_FIELD_DRIVER.value,
             run_token=run_token,
             setup_binding_id=setup_binding_id,
+            tone_frequency_hz=level_reference.tone_frequency_hz,
         )
         lease.context_id = context_id
         binding = getattr(lease, "relay_setup_binding", None)
@@ -3106,6 +3129,8 @@ def _handle_crossover_relay_level_match(
             topology_id=topology.topology_id,
             comparison_set_id=comparison_set["comparison_set_id"],
             geometry_policy=DRIVER_PLACEMENT_POLICY_ID,
+            level_reference_role=level_reference.role,
+            level_tone_frequency_hz=f"{level_reference.tone_frequency_hz:.1f}",
             calibrated=bool(identity.calibration_id),
             locked_main_volume_db=f"{float(locked_main_volume_db):.2f}",
         )

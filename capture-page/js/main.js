@@ -595,29 +595,16 @@ function renderCalibration(screenEl, ctx) {
 }
 
 function renderLevelReady(screenEl, ctx) {
-  const meterBar = el("div", { class: "cap-meter-bar" });
-  const meter = el("div", { class: "cap-meter", role: "meter" }, [meterBar]);
-  const start = button("Start level check", () => onLevelRampStart(ctx));
   const back = button("Back", () => renderCalibration(screenEl, ctx), true);
-  setScreen(screenEl, [
-    el("h1", { class: "cap-heading", text: "Ready for the level check" }),
-    el("p", {
-      class: "cap-note",
-      text: "Place the microphone as shown on the speaker page and keep it still. The tone starts quietly and rises only as needed.",
-    }),
-    meter,
-    el("div", { class: "cap-actions" }, [
-      start,
-      back,
-    ]),
-  ]);
-  ctx.captureRefs = {
-    buttons: [
-      { action: "begin_capture", el: start },
-      { action: null, el: back },
-    ],
-    levelMeters: [meterBar],
-  };
+  // The Pi-owned spec is the single source of truth for measurement geometry.
+  // Reusing the fixed DATA renderer here prevents the guided setup shell from
+  // replacing an exact near-field/listening-position instruction with generic
+  // copy after microphone selection.
+  ctx.captureRefs = renderScreen(screenEl, ctx.spec, {
+    handlers: { begin_capture: () => onLevelRampStart(ctx) },
+  });
+  screenEl.appendChild(el("div", { class: "cap-actions" }, [back]));
+  ctx.captureRefs.buttons.push({ action: null, el: back });
   setStatus("Ready. Tap Start level check.", "info");
 }
 
