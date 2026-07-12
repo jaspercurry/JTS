@@ -66,7 +66,7 @@ function renderToggles() {
   const scanning = state.discovering || intent;
   btn.classList.toggle("scanning", scanning);
   btn.innerHTML = scanning
-    ? '<span class="btn-spinner"></span>Scanning'
+    ? '<span class="spinner spinner--button"></span>Scanning'
     : "Scan";
 
   // While scanning, poll faster so the button reverts promptly when

@@ -32,7 +32,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
 
 function spinner() {
   const s = document.createElement("span");
-  s.className = "ha-spinner";
+  s.className = "spinner";
   return s;
 }
 

@@ -258,7 +258,7 @@ async function rescan() {
   scanning = true;
   const btn = document.getElementById('scan-btn');
   btn.classList.add('scanning');
-  btn.innerHTML = '<span class="btn-spinner"></span>Scanning';
+  btn.innerHTML = '<span class="spinner spinner--button"></span>Scanning';
   btn.disabled = true;
   renderAvail();
   try {
