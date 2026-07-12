@@ -1234,7 +1234,6 @@ static void test_stale_reclaimer_a_cannot_delete_replacement_for_b_and_c(void) {
           "size stale-reclaimer torn inode");
     struct stat torn_st;
     CHECK(fstat(torn_fd, &torn_st) == 0, "stat stale-reclaimer torn inode");
-    close(torn_fd);
 
     int reclaim_ready[2] = {-1, -1};
     int reclaim_release[2] = {-1, -1};
@@ -1246,6 +1245,7 @@ static void test_stale_reclaimer_a_cannot_delete_replacement_for_b_and_c(void) {
     CHECK(pipe(results) == 0, "create stale-reclaimer result pipe");
     if (reclaim_ready[0] < 0 || reclaim_release[0] < 0 || lock_wait[0] < 0 ||
         results[0] < 0) {
+        close(torn_fd);
         unlink(path);
         return;
     }
@@ -1338,6 +1338,7 @@ static void test_stale_reclaimer_a_cannot_delete_replacement_for_b_and_c(void) {
     CHECK(observed[0].dev != (uint64_t)torn_st.st_dev ||
               observed[0].ino != (uint64_t)torn_st.st_ino,
           "serialized reclaim replaced the original torn inode once");
+    close(torn_fd);
     unlink(path);
 }
 
@@ -1441,8 +1442,8 @@ static void test_owned_magicless_file_is_reclaimed(void) {
     struct stat old_st;
     int stat_rc = fstat(fd, &old_st);
     CHECK(stat_rc == 0, "stat owned magicless inode");
-    close(fd);
     if (stat_rc != 0) {
+        close(fd);
         unlink(path);
         return;
     }
@@ -1461,6 +1462,7 @@ static void test_owned_magicless_file_is_reclaimed(void) {
               "reclaimed owned ring publishes valid magic");
         jts_ring_reader_close(&r);
     }
+    close(fd);
     unlink(path);
 }
 
@@ -1479,8 +1481,8 @@ static void test_owned_reclaim_enoent_retries_after_concurrent_reclaimer(void) {
     struct stat old_st;
     int stat_rc = fstat(fd, &old_st);
     CHECK(stat_rc == 0, "stat pre-reclaim torn inode");
-    close(fd);
     if (stat_rc != 0) {
+        close(fd);
         unlink(path);
         return;
     }
@@ -1504,6 +1506,7 @@ static void test_owned_reclaim_enoent_retries_after_concurrent_reclaimer(void) {
               "concurrent-reclaimer retry publishes valid magic");
         jts_ring_reader_close(&r);
     }
+    close(fd);
     unlink(path);
 }
 
