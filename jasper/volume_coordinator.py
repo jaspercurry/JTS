@@ -2093,8 +2093,8 @@ class VolumeCoordinator:
             db, context="set_camilla",
         )
         # main_volume IS what the user is controlling in idle. Persist
-        # it explicitly so the legacy regress_if_stale path still has
-        # the right value if some future restart goes through it.
+        # it explicitly so diagnostics and the on-disk schema keep a
+        # coherent dB mirror of listening_level.
         self._persistence.save_now(db)
         # No echo prevention for camilla — there's no observer for
         # main_volume changes (no source generates them externally
