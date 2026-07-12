@@ -1413,6 +1413,12 @@ Delay alignment is measured, not guessed.
 > `{region, proposal}` entry per region (each independently phase_aware-
 > gated on ITS OWN contributing captures' calibration), and the top-level
 > `mode`/`proposal` stay the lowest region's dict for backward compatibility.
+> Pairing is comparison-set scoped: the newest polarity capture anchors a
+> region to its server-normalized `placement_proof.comparison_set_id`, and an
+> older run may not fill the missing side. This prevents a moved microphone or
+> new commissioning attempt from fabricating a same-position null margin out
+> of two individually valid captures. Legacy records without placement proof
+> pair only with other legacy records.
 > `jasper.active_speaker.crossover_alignment.propose_crossover_alignment`
 > itself is unchanged — this is wiring persisted paired evidence around the
 > already-shipped proposer, per

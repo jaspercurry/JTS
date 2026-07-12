@@ -1382,6 +1382,7 @@ def _capture_summed(
     state_path: Path | None = None,
     now: str | None = None,
     wav_name: str = "cap.wav",
+    placement_proof: dict | None = None,
 ) -> dict:
     """Run the REAL record_summed_acoustic_capture -> record_summed_validation
     wire (region stamping included), unlike most tests above which spy on
@@ -1394,6 +1395,7 @@ def _capture_summed(
         sweep_meta={"sample_rate": 48000, "n_samples": 4096},
         crossover_fc_hz=crossover_fc_hz,
         expect_null=result.expect_null,
+        placement_proof=placement_proof,
         analyze=lambda *a, **k: result,
         state_path=state_path or (tmp_path / "measurements.json"),
         now=now,
@@ -1653,6 +1655,60 @@ def test_build_proposal_reaches_both_captures_margin_through_persisted_pairs(
     assert proposal["reverse_null_depth_db"] == 18.0
     assert proposal["polarity_margin_db"] == pytest.approx(18.0 - 2.0)
     assert proposal["polarity_action"] == ca.POLARITY_KEEP
+
+
+def test_build_proposal_never_combines_polarities_from_different_runs(
+    tmp_path: Path,
+) -> None:
+    """Consumer-level guard for the Lane-E review finding.
+
+    A reverse capture from a new fixed-position run must stay a reverse-only
+    proposal. It may not borrow the prior run's in-phase capture and invent a
+    cross-run null margin.
+    """
+    preset = _two_way()
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+
+    _capture_summed(
+        tmp_path,
+        preset,
+        SummedAcousticResult(
+            verdict="blend_ok", null_depth_db=2.0, crossover_fc_hz=1600.0,
+            observed_mic_dbfs=-34.0, mic_clipping=False,
+            quality={"failed": False, "rms_dbfs": -34.0},
+            expect_null=False, calibrated=True,
+        ),
+        topology=topology,
+        state_path=state_path,
+        placement_proof={"comparison_set_id": "a" * 32},
+        wav_name="run_a_inphase.wav",
+        now="2026-07-11T12:00:00Z",
+    )
+    _capture_summed(
+        tmp_path,
+        preset,
+        SummedAcousticResult(
+            verdict="blend_ok", null_depth_db=24.0, crossover_fc_hz=1600.0,
+            observed_mic_dbfs=-50.0, mic_clipping=False,
+            quality={"failed": False, "rms_dbfs": -50.0},
+            expect_null=True, calibrated=True,
+        ),
+        topology=topology,
+        state_path=state_path,
+        placement_proof={"comparison_set_id": "b" * 32},
+        wav_name="run_b_reverse.wav",
+        now="2026-07-11T12:01:00Z",
+    )
+
+    measurements = load_measurement_state(topology, state_path=state_path)
+    out = build_crossover_alignment_proposal(
+        preset, measurements, requested_mode=ca.PHASE_AWARE,
+    )
+    proposal = out["proposal"]
+    assert proposal["in_phase_null_depth_db"] is None
+    assert proposal["reverse_null_depth_db"] == 24.0
+    assert proposal["polarity_margin_db"] is None
 
 
 def test_max_summed_records_eviction_degrades_to_single_capture_fallback(

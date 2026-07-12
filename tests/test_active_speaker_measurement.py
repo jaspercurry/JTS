@@ -1339,6 +1339,121 @@ def test_in_phase_capture_after_reverse_does_not_lose_the_reverse_pair_slot(
     assert pair["reverse"]["validation_id"] == reverse_record["validation_id"]
 
 
+def _comparison_proof(comparison_set_id: str) -> dict[str, str]:
+    return {"comparison_set_id": comparison_set_id}
+
+
+def test_paired_summed_evidence_never_crosses_comparison_sets(
+    tmp_path: Path,
+) -> None:
+    """A fresh run cannot borrow the missing polarity from an older run.
+
+    The microphone may have moved between runs, so combining run B's in-phase
+    response with run A's reverse response would fabricate a same-position
+    null margin. The newest record anchors the region to its comparison set.
+    """
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+    run_a = "a" * 32
+    run_b = "b" * 32
+
+    for expect_null, depth, created_at in (
+        (False, 2.0, "2026-07-11T12:00:00Z"),
+        (True, 24.0, "2026-07-11T12:01:00Z"),
+    ):
+        record_summed_validation(
+            topology,
+            {
+                "speaker_group_id": "mono",
+                "outcome": "blend_ok",
+                "observed_mic_dbfs": -40,
+                "summed_test_id": "summed-playback-1",
+                "acoustic": _summed_acoustic(
+                    null_depth_db=depth, expect_null=expect_null,
+                ),
+                "placement_proof": _comparison_proof(run_a),
+            },
+            state_path=state_path,
+            driver_target_proof_complete=True,
+            now=created_at,
+        )
+
+    fresh = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -41,
+            "summed_test_id": "summed-playback-1",
+            "acoustic": _summed_acoustic(
+                null_depth_db=3.0, expect_null=False,
+            ),
+            "placement_proof": _comparison_proof(run_b),
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+        now="2026-07-11T12:02:00Z",
+    )
+
+    pair = fresh["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert pair["in_phase"]["placement_proof"]["comparison_set_id"] == run_b
+    assert pair["reverse"] is None
+
+
+def test_reverse_only_new_run_does_not_fall_back_to_old_in_phase(
+    tmp_path: Path,
+) -> None:
+    """The pair object exists for run B, so consumers must see its missing side.
+
+    In particular, ``commissioning_capture._resolve_region_pair`` must not use
+    the flat latest-in-phase compatibility slot from run A beside run B's
+    reverse capture.
+    """
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+    run_a = "a" * 32
+    run_b = "b" * 32
+
+    record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40,
+            "summed_test_id": "summed-playback-1",
+            "acoustic": _summed_acoustic(
+                null_depth_db=2.0, expect_null=False,
+            ),
+            "placement_proof": _comparison_proof(run_a),
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+        now="2026-07-11T12:00:00Z",
+    )
+    fresh = record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -55,
+            "summed_test_id": "summed-playback-1",
+            "acoustic": _summed_acoustic(
+                null_depth_db=25.0, expect_null=True,
+            ),
+            "placement_proof": _comparison_proof(run_b),
+        },
+        state_path=state_path,
+        driver_target_proof_complete=True,
+        now="2026-07-11T12:01:00Z",
+    )
+
+    pair = fresh["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert pair["in_phase"] is None
+    assert pair["reverse"]["placement_proof"]["comparison_set_id"] == run_b
+
+
 def test_summed_validation_persists_valid_region(tmp_path: Path) -> None:
     topology = _topology()
     state_path = tmp_path / "measurements.json"
