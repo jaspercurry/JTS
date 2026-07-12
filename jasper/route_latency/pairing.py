@@ -160,6 +160,10 @@ def pair_events(
     matched_mic_idx: set[int] = set()
     ambiguous_tap_idx: set[int] = set()
     ambiguous_mic_idx: set[int] = set()
+
+    # Phase 1: establish the complete ambiguity/poison set before emitting
+    # any matches.  Otherwise a rival mic from an earlier ambiguous tap can
+    # be matched by a later tap and appear in both result categories.
     for tap_i, eligible in candidates.items():
         mic_i = nearest_mic_for_tap[tap_i]
         tap_ambiguous = len(eligible) > 1
@@ -172,6 +176,16 @@ def pair_events(
             # 35ms candidate got rejected, so it belongs in ambiguous_mic
             # (a real rival candidate), never in unmatched_mic (which
             # implies "no tap detection is plausibly related to this").
+            ambiguous_mic_idx.update(eligible)
+
+    # Phase 2: only a tap with one unpoisoned candidate may contribute a
+    # latency sample.  A tap whose sole candidate was implicated by another
+    # ambiguous tap is itself ambiguous, not unmatched: it still has a
+    # plausible partner, but that partner cannot be certified uniquely.
+    for tap_i, eligible in candidates.items():
+        mic_i = nearest_mic_for_tap[tap_i]
+        if tap_i in ambiguous_tap_idx or mic_i in ambiguous_mic_idx:
+            ambiguous_tap_idx.add(tap_i)
             ambiguous_mic_idx.update(eligible)
             continue
         # Carry the indices the loop already has rather than re-deriving them

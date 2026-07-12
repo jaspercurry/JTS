@@ -100,6 +100,32 @@ def test_tap_side_two_eligible_mics_marks_ambiguous():
     assert len(result.ambiguous_mic) == 2
 
 
+def test_ambiguous_mic_cannot_be_reused_by_later_tap():
+    # Tap 0 sees both 5ms and 15ms mics, so both mic detections are poisoned.
+    # The 10ms tap must not reuse the 15ms rival as a clean 5ms match.  Keep a
+    # well-separated control pair to prove the rejection is localized.
+    taps = [_tap(0), _tap(10_000_000), _tap(1_000_000_000)]
+    mics = [_mic(5_000_000), _mic(15_000_000), _mic(1_030_000_000)]
+
+    result = pair_events(taps, mics, window_ms=200)
+
+    matched_taps = {match.tap.monotonic_ns for match in result.matched}
+    matched_mics = {match.mic.monotonic_ns for match in result.matched}
+    ambiguous_taps = {tap.monotonic_ns for tap in result.ambiguous_tap}
+    ambiguous_mics = {mic.monotonic_ns for mic in result.ambiguous_mic}
+    unmatched_taps = {tap.monotonic_ns for tap in result.unmatched_tap}
+    unmatched_mics = {mic.monotonic_ns for mic in result.unmatched_mic}
+
+    assert matched_taps == {1_000_000_000}
+    assert matched_mics == {1_030_000_000}
+    assert ambiguous_taps == {0, 10_000_000}
+    assert ambiguous_mics == {5_000_000, 15_000_000}
+    assert unmatched_taps == set()
+    assert unmatched_mics == set()
+    assert matched_taps.isdisjoint(ambiguous_taps)
+    assert matched_mics.isdisjoint(ambiguous_mics)
+
+
 def test_totally_dead_route_reports_zero_match_rate_without_crashing():
     taps = [_tap(i) for i in range(5)]
 
