@@ -1197,6 +1197,32 @@ def test_usb_low_latency_accepts_coherent_shm_ring_pair():
     assert plan.route_policy_errors == ()
 
 
+def test_coherent_shm_ring_preserves_camilla_device_mismatch_errors(tmp_path):
+    config = tmp_path / "camilla.yml"
+    config.write_text(
+        "devices:\n"
+        "  capture:\n"
+        "    type: Alsa\n"
+        "    device: wrong_ring_capture\n"
+        "  playback:\n"
+        "    type: Alsa\n"
+        "    device: wrong_ring_playback\n",
+        encoding="utf-8",
+    )
+
+    plan = build_audio_runtime_plan(
+        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        route_mode="solo",
+        correction_config_path=str(config),
+    )
+
+    assert len(plan.route_policy_errors) == 2
+    assert any("wrong_ring_capture" in error for error in plan.route_policy_errors)
+    assert any("wrong_ring_playback" in error for error in plan.route_policy_errors)
+
+
 def test_usb_low_latency_rejects_partial_ring_flip_fanin_only():
     # shm_ring fan-in + direct outputd = partial flip -> rejected.
     plan = build_audio_runtime_plan(
